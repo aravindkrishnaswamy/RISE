@@ -437,6 +437,30 @@ int main()
 		Check( comp && hasComp, "painter-decl-func2d: ...and composite_function2d_painter.child_a/child_b" );
 	}
 
+	//----------------------------------------------------------------------
+	// [ior-phantom] (workstream #2) ior/film_ior resolve scalar-painter ->
+	// colour-painter -> numeric, NEVER a Function (Job::ResolveOrDiagnoseScalar
+	// consults no Function manager).  The descriptor over-declared
+	// {Painter,Function}, so ior naming a Function-CATEGORY chunk (a plf2d --
+	// NOT a colour painter, unlike expression_function2d whose category IS
+	// Painter) traced a phantom edge the engine treats as dangling.  Now
+	// {Painter}: the phantom is gone.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"piecewise_linear_function2d\n{\nname f\n}\n"   // Function-category, not a colour painter
+			"ggx_material\n{\nname m\nior f\n}\n" );
+		const NodeId fid  = DocFindByName( doc, "piecewise_linear_function2d/f" );
+		const NodeId mid  = DocFindByName( doc, "ggx_material/m" );
+		const NodeId mIor = DocParamId( doc, mid, "ior", 0 );
+		ReferenceGraph g = BuildReferenceGraph( doc );
+		Check( fid && mid && mIor, "ior-phantom: scene parsed (plf2d f + ggx m.ior f)" );
+		Check( !HasEdge( g, mIor, fid ), "ior-phantom: ior naming a Function2D produces NO edge (engine never resolves ior via Function)" );
+		bool clHasMat = false; for( NodeId n : DocEditClosure( fid, g ) ) if( n == mid ) clHasMat = true;
+		Check( !clHasMat, "ior-phantom: editing the Function2D does NOT re-derive the ior material" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

@@ -1780,8 +1780,11 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 				// Function1D+Function2D pair binds the RIGHT one (matching the engine's GetFunction1Ds vs
 				// GetFunction2Ds), NOT the (Function,name) first-wins edge.  No fallback to the coarse key:
 				// a function1d naming only a Function2D is genuinely dangling (the engine would not find it
-				// either).  The coarse {Painter,Function} slots (ior/film_ior) keep the referenceCategories
-				// loop -- their ambiguity is painter-vs-function, not 1D-vs-2D.
+				// either).  The else branch iterates a param's declared referenceCategories (params NOT in
+				// FunctionSubNamespace).  ior/film_ior were the coarse {Painter,Function} slots here until
+				// workstream #2 dropped their phantom Function category (ResolveOrDiagnoseScalar resolves a
+				// scalar-then-colour painter, then numeric -- NEVER a Function manager), so they are now
+				// {Painter}; their residual painter colour-vs-scalar ambiguity is handled by the alias above.
 				const int fsub = FunctionSubNamespace( role );
 				if( fsub != 0 ) {
 					std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( fsub, val ) );

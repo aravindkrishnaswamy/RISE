@@ -212,10 +212,13 @@ int main()
 		j->release();
 	}
 
-	// A dangling FUNCTION-category reference (ior -> a non-existent name) must ALSO refuse
-	// atomically: `ior` is {Painter, Function}; without EntityExists checking the Function
-	// managers, the preflight would pass and the material would be dropped + fail to
-	// re-Finalize -> permanently gone (review: the P1.7 Function-gap).
+	// A dangling reference edit (ior -> a non-existent name) must refuse atomically.  Historical:
+	// ior was {Painter,Function} and this guarded the P1.7 "Function-gap" -- the preflight must
+	// check EVERY referenceCategory, else a Function-named ior would pass a Painter-only
+	// preflight, get dropped, then fail to re-Finalize -> permanently gone.  Workstream #2 made
+	// ior {Painter} (the engine resolves it via scalar-then-colour painter, NEVER a Function),
+	// so the gap is gone for ior; "nosuchfunc" is now caught by the Painter preflight.  The
+	// all-categories preflight loop (Cst.cpp ~1335) still stands for any future multi-cat slot.
 	{
 		std::string s =
 			"RISE ASCII SCENE 6\n"
@@ -233,9 +236,9 @@ int main()
 		std::vector<std::string> di;
 		int applied = DeriveToJobIncremental( docD, *j, closure, &di );
 		const bool stillGlass = j->GetMaterials() && j->GetMaterials()->GetItem( "glass" ) != 0;
-		Check( hadGlass, "function-gap: precondition -- glass material derived" );
-		Check( applied == 0 && !di.empty(), "function-gap: dangling {Function} ior ref REFUSED (preflight checks the Function managers)" );
-		Check( stillGlass && DumpJob( *j ) == before, "function-gap: refused ATOMICALLY -- the material is NOT dropped (review P1.7 Function-gap)" );
+		Check( hadGlass, "dangling-ior: precondition -- glass material derived" );
+		Check( applied == 0 && !di.empty(), "dangling-ior: dangling {Function} ior ref REFUSED (preflight checks the Function managers)" );
+		Check( stillGlass && DumpJob( *j ) == before, "dangling-ior: refused ATOMICALLY -- the material is NOT dropped (review P1.7 Function-gap)" );
 		j->release();
 	}
 

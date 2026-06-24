@@ -381,9 +381,9 @@ until it is green:
    review audit found + fixed all four (advanced_shader.shaderop, voronoi2d.gen, voronoi3d.gen,
    scalar_painter.multiply); (c) the (category,name) namespace is COARSER than the engine's per-slot
    resolution — `scalar_painter` shares ChunkCategory::Painter with colour painters but a SEPARATE
-   manager (a same-name scalar+colour pair mis-resolves), and `ior` over-declares {Painter,Function}
-   though the engine resolves it only against scalar painters (spurious edge if a name exists only as a
-   Function). The production primary path (D35) records `ReferenceUse` FROM the actual derivation
+   manager (a same-name scalar+colour pair mis-resolves), and `ior`/`film_ior` previously over-declared {Painter,Function} (a spurious edge if a name
+   existed only as a Function); workstream #2 dropped that phantom Function category, so they are
+   now {Painter}, matching the engine (scalar-then-colour painter, never Function). The production primary path (D35) records `ReferenceUse` FROM the actual derivation
    resolver as it runs (no parallel pass → no drift, dynamic refs captured); this pass is the
    transfer-gate demonstration of the graph + its uses (rename / closure / dangling), with that
    derive-time tracing deferred. **Item-6 review: 6 self-driven rounds** — rounds 1-2 found the real

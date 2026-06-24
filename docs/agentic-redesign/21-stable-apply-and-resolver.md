@@ -330,10 +330,11 @@ a medium would not re-derive its consuming objects once a consumer relied on the
    + the painter alias are now GUARDED by the bidirectional cross-check (recorded == static
    guarantees they match the engine), so they cannot drift undetected. They are NOT removed:
    rename always needs the param-level static path + its conflation refusals (P1.4/#3), and
-   closure won't depend on the recorded graph until the consumer-switch lands. Removal-for-
-   closure (and with it the dissolution of the `ior`/`film_ior` phantom + painter colour/scalar
-   residual, since the recorded edge is whatever `GetItem` actually returned) follows the
-   consumer-switch.
+   closure won't depend on the recorded graph until the consumer-switch lands. Removal-for-closure (and with it the dissolution of the painter colour/scalar residual, since
+   the recorded edge is whatever `GetItem` actually returned) follows the consumer-switch.  (The
+   `ior`/`film_ior` phantom-Function over-declaration was dissolved INDEPENDENTLY in workstream #2
+   -- a descriptor fix dropping the spurious Function category -- needing no recorded graph, since
+   the engine resolves ior via scalar-then-colour painter, never Function.)
 
 **Chunk-level boundary (honest).** The chokepoint records the resolved ENTITY pointer, not the
 SOURCE param NodeId, so the recorded graph is **chunk→chunk**, sufficient for closure. Rename needs

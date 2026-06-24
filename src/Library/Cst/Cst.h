@@ -540,10 +540,10 @@ namespace RISE
 		//!   * The (category,name) namespace is slightly COARSER than the engine's
 		//!     per-slot resolution: `scalar_painter` and colour painters share
 		//!     ChunkCategory::Painter but live in SEPARATE managers, so a same-name
-		//!     scalar+colour pair can mis-resolve; and a param whose
-		//!     `referenceCategories` over-declares (e.g. `ior` lists {Painter,
-		//!     Function} but the engine resolves it only against scalar painters)
-		//!     can yield a spurious edge if a name exists only in the wrong category.
+		//!     scalar+colour pair can mis-resolve (handled by a conservative same-name
+		//!     ALIAS -> a superset closure).  (ior/film_ior previously ALSO over-declared
+		//!     {Painter,Function}; workstream #2 dropped that phantom Function category --
+		//!     they are now {Painter}, matching the engine's scalar-then-colour resolution.)
 		//! The production primary path (D35) records `ReferenceUse` FROM the actual
 		//! derivation resolver as it runs (no parallel pass -> no drift, dynamic refs
 		//! captured); this descriptor-based pass is the transfer-gate demonstration

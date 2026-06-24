@@ -3176,7 +3176,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "refractance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance painter"; }
-						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Index of refraction"; }
+						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
 						return cd;
 					}();
 					return d;
@@ -3206,7 +3206,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";              p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "reflectance";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse substrate"; }
 						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance"; }
-						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Index of refraction"; }
+						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
 						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; p.defaultValueHint = "64"; }
 						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
 						return cd;
@@ -3272,7 +3272,7 @@ namespace RISE
 						cd.description = "Diffusion-based subsurface scattering material.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Index of refraction"; }
+						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
 						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption coefficient"; }
 						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; }
 						{ auto& p = P(); p.name = "g";          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Henyey-Greenstein g"; }
@@ -3305,7 +3305,7 @@ namespace RISE
 						cd.description = "Random-walk (path-traced) subsurface scattering.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Index of refraction"; }
+						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
 						{ auto& p = P(); p.name = "absorption";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption"; }
 						{ auto& p = P(); p.name = "scattering";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering"; }
 						{ auto& p = P(); p.name = "g";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Henyey-Greenstein g"; }
@@ -3822,12 +3822,12 @@ namespace RISE
 						{ auto& p = P(); p.name = "rs";             p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance / F0"; }
 						{ auto& p = P(); p.name = "alphax";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X roughness"; }
 						{ auto& p = P(); p.name = "alphay";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y roughness"; }
-						{ auto& p = P(); p.name = "ior";            p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Fresnel IOR (ignored in schlick_f0 mode)"; }
+						{ auto& p = P(); p.name = "ior";            p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel IOR (ignored in schlick_f0 mode)"; }
 						{ auto& p = P(); p.name = "extinction";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (ignored in schlick_f0 mode)"; }
 						{ auto& p = P(); p.name = "emissive";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Optional emissive painter (LambertianEmitter folded in when present)"; }
 						{ auto& p = P(); p.name = "emissive_scale"; p.kind = ValueKind::Double;    p.description = "Multiplier on emissive radiance"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "fresnel_mode";   p.kind = ValueKind::String;    p.description = "Fresnel model: conductor | schlick_f0 | thinfilm"; p.defaultValueHint = "conductor"; }
-						{ auto& p = P(); p.name = "film_ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Thin-film oxide n (scalar_painter; eFresnelThinFilmConductor only)"; }
+						{ auto& p = P(); p.name = "film_ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide n (scalar_painter; eFresnelThinFilmConductor only)"; }
 						{ auto& p = P(); p.name = "film_extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide k (scalar_painter; eFresnelThinFilmConductor only; default 0/none = transparent film)"; }
 						{ auto& p = P(); p.name = "film_thickness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide thickness in nm (scalar_painter, may be spatially varying; eFresnelThinFilmConductor only)"; }
 						{ auto& p = P(); p.name = "tangent_rotation"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Anisotropy tangent-frame rotation in RADIANS: a colour-painter reference (an expression_function2d gives a SPATIALLY-VARYING field, e.g. groove direction) OR an inline scalar.  \"none\" = aligned with the geometry tangent.  Resolved in the colour-painter manager, so a scalar_painter does NOT bind here -- use expression_function2d or a scalar.  Steers alphax!=alphay anisotropy."; p.defaultValueHint = "none"; }
@@ -3942,7 +3942,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rd";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
 						{ auto& p = P(); p.name = "rs";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
 						{ auto& p = P(); p.name = "facets";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Microfacet slope distribution (scalar_painter, or inline `r g b` or scalar)"; }
-						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Fresnel IOR (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel IOR (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "fresnel_mode"; p.kind = ValueKind::String; p.description = "Fresnel model: conductor (only).  `thinfilm` is GGX-only and rejected here."; p.defaultValueHint = "conductor"; }
 						return cd;
