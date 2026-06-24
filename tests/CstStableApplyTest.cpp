@@ -20,8 +20,8 @@
 //                  interior_medium -> "none") is now APPLIED in place: a re-point cannot
 //                  clear a slot the chunk omits, so the apply CLEARS it explicitly
 //                  (workstream #3), matching a full derive of the edited doc.
-//    [csg]         a csg_object re-points in place too (AssignObjects + SetOperation + slots);
-//                  its operands are themselves objects re-pointed in place.
+//    [csg]         a csg_object re-points in place too (op / slot / operand-INTERNAL edits); an
+//                  operand-REFERENCE change (obja/objb -> a different object) is REFUSED (full derive).
 //    [refusals]    an Object chunk that is NEITHER standard_object NOR csg_object falls back
 //                  to a full derive (D51: never a silent partial / stale binding).
 //
@@ -225,9 +225,10 @@ int main()
 		jf->release(); j->release();
 	}
 
-	// ---- [csg re-point] csg_object is now re-pointed IN PLACE (workstream #3): AddCSGObject
-	//      repoint re-binds operands (AssignObjects -- un-hides old, hides new) + op (SetOperation)
-	//      + slots.  The four cases below each match a FULL derive of the edited doc.
+	// ---- [csg re-point] csg_object is now re-pointed IN PLACE (workstream #3): AddCSGObject repoint
+	//      re-points op (SetOperation) + slots + the SAME operands (AssignObjects).  An operand-
+	//      REFERENCE change (obja/objb -> a different object) is REFUSED (re-binding would un-hide a
+	//      possibly-shared dropped operand).  The cases below cover the applied edits + the refusals.
 	const std::string csgScene =
 		"RISE ASCII SCENE 6\n"
 		"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"

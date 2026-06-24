@@ -297,7 +297,9 @@ namespace RISE
 		//! materials (PBR creates helper painters -- IsMaterialComposed), translucent_-
 		//! material (ambient thread-local parser state -- P1.3/P1.5), gltf_import (a bulk
 		//! importer), an Object chunk that is neither standard_object nor csg_object (both re-point
-		//! in place; other object-spawning chunks are unknown), any document with an animation/timeline,
+		//! in place; other object-spawning chunks are unknown), a csg_object operand-REFERENCE change
+		//! (obja/objb re-pointed to a DIFFERENT object -- re-binding would un-hide a possibly-shared
+		//! dropped operand), any document with an animation/timeline,
 		//! and any document with an override_object (its String target reference is
 		//! untraceable -- review P1.3).  (An optional-slot removal -- a material/modifier/
 		//! shader/radiance_map/interior_medium set to "none" -- is APPLIED by clearing it in
@@ -322,7 +324,8 @@ namespace RISE
 		//! deferred: routing the derive's OWN resolution through the recorded graph so the
 		//! static graph and the apply resolution cannot drift even in principle (the
 		//! remaining D35 step -- Part B of review #1/#3, the typed resolver).  Both slice-3
-		//! follow-ups -- optional-slot removal AND CSG-operand re-point -- LANDED in workstream #3.
+		//! follow-ups -- optional-slot removal AND CSG-operand re-point (op/slot/operand-INTERNAL edits;
+		//! an operand-REFERENCE change falls back) -- LANDED in workstream #3.
 		int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<NodeId>& chunkIds, std::vector<std::string>* diagnostics = nullptr );
 
 		//==============================================================

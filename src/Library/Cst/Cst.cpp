@@ -1255,10 +1255,11 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		}
 		if( cat == ChunkCategory::Object && node->role != "standard_object" && node->role != "csg_object" ) {
 			// standard_object + csg_object are re-pointed in place (AddObject / AddCSGObject repoint).
-			// A csg_object re-binds its operands (AssignObjects -- un-hiding the old, hiding the new)
-			// + op (SetOperation) + slots; its operands are themselves objects re-pointed in place,
-			// so the addresses the parent CSG holds stay valid.  Any OTHER object-spawning chunk is
-			// unknown -- refuse -> full derive (D51).
+			// A csg_object re-points op (SetOperation) + slots + its operands via AssignObjects with
+			// the SAME operand pointers (operands are re-pointed in place, address-stable, so the
+			// parent CSG's pointers stay valid).  An operand-REFERENCE change (obja/objb -> a different
+			// object) is refused later in the snapshot loop (re-binding would un-hide a possibly-shared
+			// dropped operand).  Any OTHER object-spawning chunk is unknown -- refuse -> full derive (D51).
 			diags.push_back( node->role + ": only standard_object/csg_object are re-pointed in place incrementally (other object chunks need a full derive); fall back" );
 			return 0;
 		}
