@@ -46,6 +46,12 @@ static std::string Sphere( const std::string& radius )
 	return HDR + "sphere_geometry\n{\nname s\nradius " + radius + "\n}\n";
 }
 
+static bool DiagHas( const std::vector<std::string>& d, const char* sub )
+{
+	for( const std::string& s : d ) if( s.find( sub ) != std::string::npos ) return true;
+	return false;
+}
+
 int main()
 {
 	std::printf( "CstExprTest -- Facet 1 / #5 slice 2: expr(...) derive-time evaluation (D4)\n" );
@@ -102,6 +108,31 @@ int main()
 		DumpCst( scene, &d );
 		Check( d.empty(), "neutral: a reference named 'expr' (no paren) is a normal token, not intercepted" );
 	}
+
+	// [refuse: non-finite] a DOMAIN-ERROR expr (log(-1) -> nan) is rejected AT THE EVAL BOUNDARY (not
+	// only by the numeric descriptor), so it is caught even in a NON-numeric slot -- the escape
+	// ExpressionProgram::IsFinite leaves open under -ffast-math.
+	{
+		std::vector<std::string> d;
+		DumpCst( Sphere( "expr(log(-1))" ), &d );
+		Check( DiagHas( d, "non-finite value" ), "refuse: a non-finite expr (numeric slot) is caught at the eval boundary" );
+	}
+	{
+		// a STRING slot (name) has NO descriptor numeric check -- without the eval-boundary guard this
+		// would SILENTLY bake an entity literally named "nan".
+		std::vector<std::string> d;
+		DumpCst( HDR + "sphere_geometry\n{\nname expr(log(-1))\nradius 1\n}\n", &d );
+		Check( DiagHas( d, "non-finite value" ), "refuse: a non-finite expr in a STRING slot is rejected (no silent nan-named entity)" );
+	}
+	// [tuple slot] expr yields ONE scalar -- a per-component expr in a Vec3 slot is NOT a single expr
+	// value, so it is passed through + rejected (per-component evaluation is out of scope).
+	{
+		std::vector<std::string> d;
+		DumpCst( HDR + "uniformcolor_painter\n{\nname p\ncolor expr(0.1) expr(0.2) expr(0.3)\n}\n", &d );
+		Check( !d.empty(), "tuple: per-component expr in a Vec3 (color) slot is rejected (expr is one scalar)" );
+	}
+	// [whitespace-heavy] interior spacing + nested parens evaluate the same.
+	Check( DumpCst( Sphere( "expr(  sqrt( ( 4 ) * 4 )  )" ) ) == DumpCst( Sphere( "4" ) ), "derive: whitespace-heavy nested expr == literal 4" );
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

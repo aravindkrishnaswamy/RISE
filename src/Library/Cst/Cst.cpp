@@ -996,12 +996,21 @@ static bool TryEvalExprValue( const std::string& value, std::string& outLit,
 		return false;
 	}
 	const Scalar r = prog.Eval( 0, 0 );   // no instance vars yet -- u/v unused by a constant expr
-	if( !RISE::Implementation::ExpressionProgram::IsFinite( r ) ) {
-		diags.push_back( kw + "." + pname + ": expr(...) evaluated to a non-finite value" );
-		return false;
-	}
 	char buf[64];
-	std::snprintf( buf, sizeof(buf), "%.17g", (double)r );   // round-trips the double exactly
+	// %.17g round-trips the double EXACTLY; C-locale '.' decimal, shared with every sscanf("%lf")/
+	// strtod in the parse-back path (RISE never setlocale()s -- the whole scene format is C-locale).
+	std::snprintf( buf, sizeof(buf), "%.17g", (double)r );
+	// Reject a NON-FINITE result HERE, at the eval boundary -- not via ExpressionProgram::IsFinite,
+	// which is UNRELIABLE under -O3 -flto -ffast-math (the bit test folds to always-true).  A String /
+	// inline-scalar-painter slot has NO later numeric check (only numeric ValueKinds get the descriptor's
+	// finite-token check), so without this guard a non-finite expr would SILENTLY bake nan/inf there.
+	// A finite %.17g is only [0-9.eE+-]; an 'n'(an)/'i'(nf) char (any case) marks nan/inf -- and a byte
+	// scan of the formatted string is compiler-opaque (immune to the ffast-math folding).
+	for( const char* q = buf; *q; ++q )
+		if( *q == 'n' || *q == 'N' || *q == 'i' || *q == 'I' ) {
+			diags.push_back( kw + "." + pname + ": expr(...) evaluated to a non-finite value (" + std::string( buf ) + ")" );
+			return false;
+		}
 	outLit = buf;
 	return true;
 }

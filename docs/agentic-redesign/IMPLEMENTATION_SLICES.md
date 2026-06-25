@@ -124,9 +124,10 @@ lives, so it deserves scrutiny:
 4. **Persistent cache / stamps.** The memo/dep state is plain `std::map`, mutated in place — not
    the D23 persistent containers / D29–D30 stamp-keyed artifacts. (Per D23 the headline is
    formally gated on these; slice 3 proves the *work-count* invariance, an honest analogue.)
-5. **Scene-language breadth.** No `expr(...)` (D4 traced-input), no RepeatGroup (D3), no
-   `instance_array` (generators), no multi-token DoubleVec3 params (they currently parse as
-   separate params).
+5. **Scene-language breadth.** RepeatGroup (D3) DONE (#5 slice 1, the read-through view +
+   per-element addressing); `expr(...)` derive-time evaluation DONE (#5 slice 2 -- the D4
+   traced-input INVALIDATION is still deferred Facet-2/editor work); still no `instance_array`
+   (generators), no multi-token DoubleVec3 params (they currently parse as separate params).
 6. **Gate G2 wall-clock.** Slice 3 proves O(closure) by **operation count**, not by a <50 ms
    wall-clock on a 155-mesh Sponza scene. The cost *model* is validated; the absolute latency on a
    real big scene is not yet measured.
@@ -166,7 +167,8 @@ is fixed.
 ## Next increment: the in-tree transfer gate (the agreed plan)
 
 A single narrow vertical that closes the transfer risk, keeping expr/RepeatGroup/instance_array OUT
-until it is green:
+until it is green (HISTORICAL: the gate is now green; RepeatGroup + expr's Facet-1 derive-time
+halves have since landed as #5 slices 1-2, with traced-input invalidation still deferred):
 
 1. **Build the render-equivalence harness first** (the pre-P0 regression oracle). **✅ DONE** —
    [`tests/CstRenderEquivalence.h`](../../tests/CstRenderEquivalence.h) (`ParseLegacy` drives the

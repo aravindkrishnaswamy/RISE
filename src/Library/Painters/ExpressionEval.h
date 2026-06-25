@@ -72,8 +72,12 @@ namespace RISE
 			static const int kStackCap      = 512;	//!< value-stack depth
 			static const int kMaxParseDepth = 200;	//!< recursive-descent nesting
 
-			//! ffast-math-SAFE finiteness test (bit inspection, not value
-			//! comparison -- isnan/isinf are unreliable under -ffast-math).
+			//! Finiteness test by exponent-bit inspection.  CAVEAT: under -O3 -flto -ffast-math the
+			//! compiler may ASSUME finiteness and fold this to always-true (the union read is optimized
+			//! away), so it is NOT a reliable hard guard in the production build -- it is best-effort.
+			//! A caller needing a DEFINITE non-finite rejection must inspect the FORMATTED string (the
+			//! byte scan is compiler-opaque), as Cst.cpp's TryEvalExprValue does.  (isnan/isinf are also
+			//! unreliable under -ffast-math; this is the standing 'ffast-math: no infinity' limitation.)
 			static bool IsFinite( const Scalar x )
 			{
 				union { double d; unsigned long long u; } c;
