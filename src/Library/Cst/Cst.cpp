@@ -1006,7 +1006,7 @@ static bool IsExprValue( const std::string& value, std::string& body )
 //! set (a compile error, or a non-finite result -- rejected by a compiler-opaque scan of the %.17g
 //! string, since ExpressionProgram::IsFinite folds to always-true under -ffast-math).  No u/v: a
 //! scene expr is a constant.
-static bool EvalExprBody( const std::string& body, const LetBindings& lets, double& outVal, std::string& err )
+static bool EvalExprBody( const std::string& body, const LetBindings& lets, double u, double v, double& outVal, std::string& err )
 {
 	RISE::Implementation::ExpressionProgram prog = RISE::Implementation::ExpressionProgram::Invalid();
 	RISE::Implementation::ExpressionProgram::Builder b;
@@ -1014,7 +1014,7 @@ static bool EvalExprBody( const std::string& body, const LetBindings& lets, doub
 	b.AddParam( "PI", (Scalar)3.14159265358979323846 );
 	b.AddParam( "E",  (Scalar)2.71828182845904523536 );
 	if( !b.Finalize( body, prog ) || !prog.IsValid() ) { err = "failed to compile: " + prog.Error(); return false; }
-	const Scalar r = prog.Eval( 0, 0 );
+	const Scalar r = prog.Eval( (Scalar)u, (Scalar)v );   // u/v = the query coordinates (instance vars for instance_array; 0 for a constant expr)
 	char buf[64];
 	// %.17g round-trips the double EXACTLY (C-locale '.' decimal, shared with the sscanf("%lf")/strtod
 	// parse-back path).  A finite %.17g is only [0-9.eE+-]; an 'n'(an)/'i'(nf) char marks nan/inf.
@@ -1034,6 +1034,53 @@ static bool IsReservedExprName( const std::string& n )
 {
 	return n == "u" || n == "v" || n == "i" || n == "j" ||
 	       n == "pi" || n == "e" || n == "tau" || n == "PI" || n == "E";
+}
+
+//! Split a value into whitespace-separated components, treating a BALANCED (...) span as part of one
+//! component, so `expr( i + 1 ) 0 0` -> 3 components (not 7).  Used for per-component instance eval.
+static std::vector<std::string> SplitComponents( const std::string& value )
+{
+	std::vector<std::string> out;
+	size_t i = 0, n = value.size();
+	while( i < n ) {
+		while( i < n && ( value[i] == ' ' || value[i] == '\t' ) ) ++i;
+		if( i >= n ) break;
+		const size_t start = i; int depth = 0;
+		while( i < n ) {
+			const char ch = value[i];
+			if( ch == '(' ) ++depth;
+			else if( ch == ')' ) { if( depth > 0 ) --depth; }
+			else if( ( ch == ' ' || ch == '\t' ) && depth == 0 ) break;
+			++i;
+		}
+		out.push_back( value.substr( start, i - start ) );
+	}
+	return out;
+}
+
+//! #5 slice 4: evaluate a multi-component instance_array param VALUE for ONE instance (i,j indices +
+//! u,v in [0,1] in scope) -- each component is an `expr(...)` (evaluated) or a literal (kept verbatim);
+//! the components are re-joined single-spaced.  i/j are passed as numeric bindings; u/v via the
+//! evaluator's query coordinates (they are pre-registered slots, so they CANNOT be AddParam'd).
+static bool EvalInstanceValue( const std::string& value, const LetBindings& lets,
+                               int iVal, int jVal, double u, double v, std::string& out, std::string& err )
+{
+	LetBindings inst = lets;
+	inst.push_back( std::make_pair( std::string( "i" ), (double)iVal ) );
+	inst.push_back( std::make_pair( std::string( "j" ), (double)jVal ) );
+	out.clear();
+	for( const std::string& comp : SplitComponents( value ) ) {
+		std::string body;
+		if( IsExprValue( comp, body ) ) {
+			double r;
+			if( !EvalExprBody( body, inst, u, v, r, err ) ) return false;
+			char buf[64]; std::snprintf( buf, sizeof(buf), "%.17g", r );
+			if( !out.empty() ) out += ' '; out += buf;
+		} else {
+			if( !out.empty() ) out += ' '; out += comp;
+		}
+	}
+	return true;
 }
 
 static LetBindings CollectLetBindings( const std::vector<NodeRef>& items, std::vector<std::string>& diags )
@@ -1059,7 +1106,7 @@ static LetBindings CollectLetBindings( const std::vector<NodeRef>& items, std::v
 			std::string body; double val = 0;
 			if( IsExprValue( raw, body ) ) {                  // expr-valued let: eval over the EARLIER lets only
 				std::string err;
-				if( !EvalExprBody( body, out, val, err ) ) {   // a forward/cyclic ref fails here (not yet in `out`)
+				if( !EvalExprBody( body, out, 0, 0, val, err ) ) {   // a forward/cyclic ref fails here (not yet in `out`)
 					diags.push_back( "let." + name + ": expr binding " + err );
 					continue;
 				}
@@ -1083,15 +1130,15 @@ static bool TryEvalExprValue( const std::string& value, std::string& outLit,
 {
 	std::string body;
 	if( !IsExprValue( value, body ) ) return false;   // not a single expr( ... ) value -> passed through verbatim
-	double v; std::string err;
-	if( !EvalExprBody( body, lets, v, err ) ) {        // compile error / non-finite -> refuse (refuse-all upstream).
+	double result; std::string err;
+	if( !EvalExprBody( body, lets, 0, 0, result, err ) ) {        // compile error / non-finite -> refuse (refuse-all upstream).
 		// Caught at the eval boundary so EVERY slot kind is guarded, incl. String / inline-scalar-painter
 		// slots that have no later numeric check (the slice-2 non-finite escape).
 		diags.push_back( kw + "." + pname + ": expr(...) " + err );
 		return false;
 	}
 	char buf[64];
-	std::snprintf( buf, sizeof(buf), "%.17g", v );
+	std::snprintf( buf, sizeof(buf), "%.17g", result );
 	outLit = buf;
 	return true;
 }
@@ -1157,6 +1204,77 @@ static bool DropChunkByCategory( IJob& pJob, ChunkCategory cat, const char* name
 	}
 }
 
+//! #5 slice 4: expand an `instance_array` generator (§2.6.1) into N standard_objects.  The generator
+//! is NOT an engine entity -- the CST stores it; DeriveToJob expands it here (the canonical derive)
+//! AFTER the normal entities so the template geometry + referenced materials exist.  Params: name +
+//! template (-> the object's geometry) + count_u (+ optional count_v, default 1); EVERY OTHER param
+//! (material / position / orientation / scale / ...) is passed through to each object with PER-COMPONENT
+//! expr eval (instance vars: i,j indices; u=i/(count_u-1), v=j/(count_v-1) in [0,1]).  Each object is
+//! named `name[i,j]`.  Errors are apply-time (a partial apply, like DeriveToJob's other Finalize
+//! failures); the editor's incremental re-expansion + the generated objects' reference-graph tracing
+//! are deferred (Facet-2).
+static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, const IAsciiChunkParser* stdObj,
+                                 IJob& pJob, std::vector<std::string>& diags, int& made )
+{
+	made = 0;
+	std::string name, templ, countU_raw, countV_raw;
+	std::vector<std::pair<std::string,std::string> > pass;   // params passed through to each generated object
+	for( const NodeRef& kid : chunk->kids ) {
+		if( kid->kind != NodeKind::Param ) continue;
+		std::string pn, pv; bool first = true;
+		for( const NodeRef& tk : kid->kids )
+			if( tk->kind == NodeKind::Token ) {
+				if( first ) { pn = tk->text; first = false; }
+				else { if( !pv.empty() ) pv += ' '; pv += tk->text; }
+			}
+		if( pn == "name" ) name = pv;
+		else if( pn == "template" ) templ = pv;
+		else if( pn == "count_u" ) countU_raw = pv;
+		else if( pn == "count_v" ) countV_raw = pv;
+		else pass.push_back( std::make_pair( pn, pv ) );
+	}
+	if( name.empty() )       { diags.push_back( "instance_array: needs a `name`" ); return false; }
+	if( templ.empty() )      { diags.push_back( "instance_array '" + name + "': needs a `template` geometry" ); return false; }
+	if( countU_raw.empty() ) { diags.push_back( "instance_array '" + name + "': needs `count_u`" ); return false; }
+	bool countOk = true;
+	auto evalCount = [&]( const std::string& raw, const char* which ) -> int {
+		std::string cs, e;
+		if( !EvalInstanceValue( raw, lets, 0, 0, 0.0, 0.0, cs, e ) ) { diags.push_back( "instance_array '" + name + "': " + which + " " + e ); countOk = false; return 0; }
+		char* end = nullptr; const double d = std::strtod( cs.c_str(), &end );
+		if( cs.empty() || end != cs.c_str() + cs.size() || d < 0 || d > 1.0e6 ) { diags.push_back( "instance_array '" + name + "': " + which + " must be a non-negative integer <= 1e6 (got '" + cs + "')" ); countOk = false; return 0; }
+		return (int)( d + 0.5 );
+	};
+	const int countU = evalCount( countU_raw, "count_u" );
+	const int countV = countV_raw.empty() ? 1 : evalCount( countV_raw, "count_v" );
+	if( !countOk ) return false;
+	if( (long long)countU * (long long)countV > 10000000LL ) { diags.push_back( "instance_array '" + name + "': count_u*count_v exceeds 10,000,000 instances" ); return false; }
+	for( int j = 0; j < countV; ++j ) {
+		for( int i = 0; i < countU; ++i ) {
+			const double u = ( countU > 1 ) ? (double)i / (double)( countU - 1 ) : 0.0;
+			const double v = ( countV > 1 ) ? (double)j / (double)( countV - 1 ) : 0.0;
+			IAsciiChunkParser::ParamsList plist;
+			char nm[256]; std::snprintf( nm, sizeof(nm), "%s[%d,%d]", name.c_str(), i, j );
+			plist.push_back( String( ( std::string( "name " ) + nm ).c_str() ) );
+			plist.push_back( String( ( std::string( "geometry " ) + templ ).c_str() ) );
+			bool ok = true;
+			for( const std::pair<std::string,std::string>& op : pass ) {
+				std::string ev, e;
+				if( !EvalInstanceValue( op.second, lets, i, j, u, v, ev, e ) ) {
+					char where[64]; std::snprintf( where, sizeof(where), "[%d,%d]", i, j );
+					diags.push_back( "instance_array '" + name + "' " + where + ": " + op.first + " " + e ); ok = false; break;
+				}
+				plist.push_back( String( ( op.first + " " + ev ).c_str() ) );
+			}
+			if( !ok ) return false;
+			ParseStateBag bag( &stdObj->Describe() );
+			if( !DispatchChunkParameters( stdObj->Describe(), bag, plist ) ) { diags.push_back( "instance_array '" + name + "': a synthesized standard_object has invalid params (see log)" ); return false; }
+			if( !stdObj->Finalize( bag, pJob ) ) { diags.push_back( "instance_array '" + name + "': object Finalize failed (template geometry / a referenced material missing?)" ); return false; }
+			++made;
+		}
+	}
+	return true;
+}
+
 int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics, ReferenceGraph* outRecorded )
 {
 	std::vector<std::string> local;
@@ -1199,7 +1317,7 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	for( size_t i = 0; i < items.size(); ++i ) {
 		const NodeRef& c = items[i];
 		if( c->kind != NodeKind::Chunk ) continue;   // header strays / trivia: not derivable chunks
-		if( c->role == "let" ) continue;             // #5 slice 3: a CST-level constant block, not an engine chunk (collected above)
+		if( c->role == "let" || c->role == "instance_array" ) continue;   // #5 slice 3/4: CST-level (let) / generator (instance_array) -- not 1:1 engine chunks
 		// Resolve the parser + normalise the params (shared with the incremental
 		// derive, so both paths normalise identically -- see ResolveChunkParams).
 		IAsciiChunkParser::ParamsList plist;
@@ -1254,6 +1372,20 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 		if( ok ) { ++count; continue; }
 		diags.push_back( p.keyword + ": apply failed (e.g. unresolved reference); see log" );
 		break;
+	}
+	// #5 slice 4: expand instance_array generators AFTER the normal entities (so their template
+	// geometry + referenced materials exist).  Skipped if a pending apply already failed.
+	if( diags.empty() ) {
+		std::map<std::string, const IAsciiChunkParser*>::const_iterator soi = registry.find( "standard_object" );
+		const IAsciiChunkParser* stdObj = ( soi != registry.end() ) ? soi->second : nullptr;
+		for( size_t i = 0; i < items.size(); ++i ) {
+			const NodeRef& c = items[i];
+			if( c->kind != NodeKind::Chunk || c->role != "instance_array" ) continue;
+			if( !stdObj ) { diags.push_back( "instance_array: the standard_object parser is unavailable" ); break; }
+			int made = 0;
+			if( !ExpandInstanceArray( c, lets, stdObj, pJob, diags, made ) ) break;
+			count += made;
+		}
 	}
 	return count;
 }
@@ -1373,6 +1505,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		const int idx = DocIndexOfNodeId( doc, id, &node, nullptr );
 		if( idx < 0 || !node || node->kind != NodeKind::Chunk ) { diags.push_back( "incremental: id is not a chunk in this document" ); return 0; }
 		if( node->role == "let" ) { diags.push_back( "incremental: a let-binding edit requires a full derive (its consumers are not yet traced)" ); return 0; }   // #5 slice 3
+		if( node->role == "instance_array" ) { diags.push_back( "incremental: an instance_array edit requires a full derive (its expansion is not yet incrementally traced)" ); return 0; }   // #5 slice 4
 		IAsciiChunkParser::ParamsList plist;
 		// #5 slice 3: NO lets collected on the O(closure) path (collecting them is O(N)); a closure expr
 		// referencing a let then refuses + the caller full-derives (which has the lets).  Plain / PI/E exprs work.
