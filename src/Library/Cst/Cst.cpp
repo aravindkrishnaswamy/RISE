@@ -28,6 +28,7 @@
 #include "../Painters/ExpressionEval.h"      // ExpressionProgram (expr(...) derive-time eval, #5 slice 2)
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdlib>
 #include <map>
 #include <set>
@@ -1246,13 +1247,17 @@ static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, 
 	auto evalCount = [&]( const std::string& raw, const char* which ) -> int {
 		std::string cs, e;
 		if( !EvalInstanceValue( raw, lets, 0, 0, 0.0, 0.0, cs, e ) ) { diags.push_back( "instance_array '" + name + "': " + which + " " + e ); countOk = false; return 0; }
+		errno = 0;
 		char* end = nullptr; const double d = std::strtod( cs.c_str(), &end );
 		// require a fully-consumed, NON-NEGATIVE, INTEGRAL literal within the DoS cap.  The (long long)
 		// round-trip rejects a FRACTIONAL count (P1-B: silently rounding via (int)(d+0.5) would change the
-		// generator's cardinality, e.g. count_u 1.5 -> 2 objects); it runs only AFTER the range check, so the
-		// cast can't overflow.  The nan/inf char scan is compiler-opaque (an FP compare on a non-finite value
-		// is unreliable under -ffast-math); an expr-valued count already passed EvalExprBody's finite guard.
-		bool bad = cs.empty() || end != cs.c_str() + cs.size();
+		// generator's cardinality, e.g. count_u 1.5 -> 2 objects); it runs only AFTER the range check.
+		// errno==ERANGE rejects an OVERFLOWING literal (count_u 1e400 -> inf) AT THE SOURCE -- the standard
+		// guarantees ERANGE on strtod overflow -- so the (long long) cast is never reached for a non-finite d
+		// (no reliance on an inf>1e6 compare, which is unreliable under -ffast-math).  The nan/inf char scan
+		// catches an explicit "nan"/"inf" literal (strtod sets no errno for those); an expr-valued count
+		// already passed EvalExprBody's finite guard.
+		bool bad = cs.empty() || end != cs.c_str() + cs.size() || errno == ERANGE;
 		for( size_t ci = 0; ci < cs.size(); ++ci ) { const char ch = cs[ci]; if( ch == 'n' || ch == 'N' || ch == 'i' || ch == 'I' ) bad = true; }
 		if( !bad ) { if( d < 0.0 || d > 1.0e6 ) bad = true; else if( (double)(long long)d != d ) bad = true; }
 		if( bad ) { diags.push_back( "instance_array '" + name + "': " + which + " must be a non-negative integer <= 1e6 (got '" + cs + "')" ); countOk = false; return 0; }

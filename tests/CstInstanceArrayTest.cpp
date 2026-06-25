@@ -202,6 +202,11 @@ int main()
 		Check( !d.empty(), "frac-count: count_u expr(1.5) refuses (no silent round)" );
 	}
 	{
+		std::vector<std::string> d;
+		DumpCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u 1e400\n}\n" ), &d );
+		Check( !d.empty(), "frac-count: count_u 1e400 (overflow -> inf) refuses (errno==ERANGE, no UB cast)" );
+	}
+	{
 		const std::string ia = DumpCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u expr(1.0+1.0)\nposition expr(i) 0 0\n}\n" ) );
 		Check( ia == DumpCst( Scene( Obj( "g[0,0]", "0 0 0" ) + Obj( "g[1,0]", "1 0 0" ) ) ),
 		       "frac-count: an INTEGRAL expr count (1.0+1.0 -> 2) still expands" );
