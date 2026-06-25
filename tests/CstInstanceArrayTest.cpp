@@ -51,6 +51,15 @@ static std::string DumpCst( const std::string& scene, std::vector<std::string>* 
 	return s;
 }
 
+// Build a NodeRef for the first chunk of a freshly-parsed source (a replacement item for DocReplaceItem).
+static NodeRef FirstChunk( const std::string& src )
+{
+	Document d = ParseToCst( src );
+	NodeRef item; size_t start = 0; int v = 0;
+	DocItemAtByteOffset( d, 0, &item, &start, &v );
+	return item;
+}
+
 int main()
 {
 	std::printf( "CstInstanceArrayTest -- Facet 1 / #5 slice 4: instance_array generator (§2.6.1)\n" );
@@ -210,6 +219,54 @@ int main()
 		const std::string ia = DumpCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u expr(1.0+1.0)\nposition expr(i) 0 0\n}\n" ) );
 		Check( ia == DumpCst( Scene( Obj( "g[0,0]", "0 0 0" ) + Obj( "g[1,0]", "1 0 0" ) ) ),
 		       "frac-count: an INTEGRAL expr count (1.0+1.0 -> 2) still expands" );
+	}
+
+	// [replace: normal -> instance_array] DocReplaceItem (the public whole-item replace) can FLIP a chunk's
+	// role; instanceArrayCount must follow, else a later template edit BYPASSES the global guard and the
+	// stale-generated-object divergence returns (P1).
+	{
+		Document d = ParseToCst( Scene( "sphere_geometry\n{\nname placeholder\nradius 1\n}\n" ) );
+		Check( d.instanceArrayCount == 0, "replace: source doc (no array) has count 0" );
+		NodeRef pn; const int idx = DocIndexOfNodeId( d, DocFindByName( d, "sphere_geometry/placeholder" ), &pn );
+		NodeRef ia = FirstChunk( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u 2\nposition expr(i) 0 0\n}" );
+		Document d2 = DocReplaceItem( d, idx, ia );
+		Check( idx >= 0 && d2.instanceArrayCount == 1, "replace: normal -> instance_array bumps count 0 -> 1" );
+		Job* j = new Job(); std::vector<std::string> dd;
+		DeriveToJob( d2, *j, &dd );
+		Check( dd.empty(), "replace: the full derive of the replaced-in array succeeds" );
+		const NodeId geoId = DocFindByName( d2, "sphere_geometry/geo" );
+		Document d3 = DocSetParamValue( d2, geoId, "radius", 0, "2" );
+		std::vector<std::string> di;
+		const int applied = DeriveToJobIncremental( d3, *j, std::vector<NodeId>( 1, geoId ), &di );
+		Check( applied == 0 && !di.empty(), "replace: after normal->array, a template edit REFUSES (no global-guard bypass) (P1)" );
+		j->release();
+	}
+
+	// [replace: instance_array -> normal] the reverse: count must DROP, else an unnecessary global refusal.
+	{
+		Document d = ParseToCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u 2\nposition expr(i) 0 0\n}\n" ) );
+		Check( d.instanceArrayCount == 1, "replace: source doc (1 array) has count 1" );
+		NodeRef an; const int idx = DocIndexOfNodeId( d, DocFindByName( d, "instance_array/g" ), &an );
+		NodeRef norm = FirstChunk( "sphere_geometry\n{\nname x\nradius 1\n}" );
+		Document d2 = DocReplaceItem( d, idx, norm );
+		Check( idx >= 0 && d2.instanceArrayCount == 0, "replace: instance_array -> normal drops count 1 -> 0" );
+		Job* j = new Job(); std::vector<std::string> dd;
+		DeriveToJob( d2, *j, &dd );
+		Check( dd.empty(), "replace: the full derive after array->normal succeeds" );
+		const NodeId geoId = DocFindByName( d2, "sphere_geometry/geo" );
+		Document d3 = DocSetParamValue( d2, geoId, "radius", 0, "2" );
+		std::vector<std::string> di;
+		const int applied = DeriveToJobIncremental( d3, *j, std::vector<NodeId>( 1, geoId ), &di );
+		Check( applied >= 1 && di.empty(), "replace: after array->normal, an incremental edit is ALLOWED again (no spurious refusal) (P1)" );
+		j->release();
+	}
+
+	// [replace: same-role value edit nets 0] DocSetParamValue routes through DocReplaceItem; a same-role
+	// (count_u) edit must NOT change the count (+new-old = 0).
+	{
+		Document d = ParseToCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u 2\nposition expr(i) 0 0\n}\n" ) );
+		Document d2 = DocSetParamValue( d, DocFindByName( d, "instance_array/g" ), "count_u", 0, "3" );
+		Check( d2.instanceArrayCount == 1, "replace: a same-role value edit (count_u) on the array keeps count == 1 (nets 0)" );
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );

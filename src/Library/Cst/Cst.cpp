@@ -2684,6 +2684,8 @@ Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* v
 	int iv = 0; const NodeId id = IdAt( doc.idseq, index, iv );    // the persisting id
 	int v = 0;
 	Document d = doc;                                              // carry idseq / byName / byId / paramIds / nextId
+	d.instanceArrayCount += ( ( newChunk && newChunk->kind == NodeKind::Chunk && newChunk->role == "instance_array" ) ? 1 : 0 )   // P1: a whole-item replace can FLIP the role
+	                      - ( ( oldChunk && oldChunk->kind == NodeKind::Chunk && oldChunk->role == "instance_array" ) ? 1 : 0 );  // (normal <-> instance_array); a same-role value/name edit nets 0
 	d.byId  = IdMapRepoint( d.byId, id, newItem );               // reverse index -> the new node (label unchanged)
 	d.items = SeqReplace( doc.items, index, std::move(newItem), v );
 	if( visits ) *visits = v;
