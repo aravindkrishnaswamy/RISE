@@ -40,6 +40,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <memory>
 #include <cstdint>
 
@@ -512,7 +513,7 @@ namespace RISE
 		//! missed staleness.
 		struct ReferenceGraph {
 			std::vector<ReferenceUse>             edges;        //!< resolved (sourceParam NodeId -> targetChunk NodeId) edges
-			std::map<NodeId, std::vector<NodeId> > dependents;  //!< reverse adjacency: a referenced chunk -> the CHUNKS that reference it. Computed in the SAME single BuildReferenceGraph pass as `edges`, so a caller holding the graph gets DocEditClosure( changedChunkId, graph ) as a pure O(closure . log N) reverse-BFS (the BFS in isolation) instead of the O(N . log N) full re-trace. The END-TO-END reuse across edits is MaintainedReferenceGraph (it decides reuse from the EDIT in O(log N) -- a NodeId-index chunk lookup + a descriptor scan, NOT O(1) -- whereas a stamp-gated reuse cannot decide at all without an O(N) re-trace, since computing the new stamp is itself an O(N) BuildReferenceGraph).
+			std::map<NodeId, std::set<NodeId> >    dependents;  //!< reverse adjacency: a referenced chunk -> the CHUNKS that reference it. A SET since #4b -- a referrer appears ONCE per target regardless of how many of its params reference it; closure-neutral (the reverse-BFS already dedups via its seen-set) and O(log N) referrer REMOVAL for MaintainedReferenceGraph's incremental update. Computed in the SAME single BuildReferenceGraph pass as `edges`, so a caller holding the graph gets DocEditClosure( changedChunkId, graph ) as a pure O(closure . log N) reverse-BFS (the BFS in isolation) instead of the O(N . log N) full re-trace. The END-TO-END reuse across edits is MaintainedReferenceGraph (it decides reuse from the EDIT in O(log N) -- a NodeId-index chunk lookup + a descriptor scan, NOT O(1) -- whereas a stamp-gated reuse cannot decide at all without an O(N) re-trace, since computing the new stamp is itself an O(N) BuildReferenceGraph).
 			unsigned long long                    stamp = 0;    //!< conservative content fingerprint (see above)
 		};
 

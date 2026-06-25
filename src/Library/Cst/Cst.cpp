@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <map>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -1101,7 +1102,7 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 			for( const void* e : resolved ) {
 				std::map<const void*, NodeId>::const_iterator it = productionMap.find( e );
 				if( it != productionMap.end() && it->second != p.nodeId )   // skip self-reference (a chunk resolving its own product)
-					outRecorded->dependents[ it->second ].push_back( p.nodeId );   // editing the producer re-derives this consumer
+					outRecorded->dependents[ it->second ].insert( p.nodeId );   // editing the producer re-derives this consumer
 			}
 		}
 		if( ok ) { ++count; continue; }
@@ -1620,7 +1621,7 @@ static const NodeId kRuntimeDefaultTarget = -1;
 static std::map<std::pair<int,std::string>, NodeId> BuildReferenceNamespace(
 	const Document& doc, const std::vector<NodeRef>& items,
 	const std::map<std::string, const IAsciiChunkParser*>& registry,
-	std::map<NodeId, std::vector<NodeId> >& aliasDeps, std::vector<std::string>& diags )
+	std::map<NodeId, std::set<NodeId> >& aliasDeps, std::vector<std::string>& diags )
 {
 	std::map<std::pair<int,std::string>, NodeId> defs;
 	for( const auto& rd : RuntimeDefaultDefs() )
@@ -1665,8 +1666,8 @@ static std::map<std::pair<int,std::string>, NodeId> BuildReferenceNamespace(
 				if( prev.first != isScalar && prev.second != thisId ) {
 					if( painterAliasDiagnosed.insert( name ).second )
 						diags.push_back( "painter '" + name + "': defined in BOTH the colour and scalar painter managers; the (category,name) graph cannot disambiguate them, so the edge is imprecise (review P1.4) -- aliased for a CONSERVATIVE (superset) closure" );
-					aliasDeps[ thisId ].push_back( prev.second );
-					aliasDeps[ prev.second ].push_back( thisId );
+					aliasDeps[ thisId ].insert( prev.second );
+					aliasDeps[ prev.second ].insert( thisId );
 				}
 			}
 			painterNs[ name ].push_back( std::make_pair( isScalar, thisId ) );
@@ -1903,7 +1904,7 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 		const NodeId chunkId = DocNodeIdAt( doc, (int)i );
 		ChunkRefs cr = ComputeChunkRefs( doc, defs, it->second->Describe(), c, chunkId, diags );
 		graph.edges.insert( graph.edges.end(), cr.edges.begin(), cr.edges.end() );
-		for( NodeId t : cr.deps ) graph.dependents[ t ].push_back( chunkId );
+		for( NodeId t : cr.deps ) graph.dependents[ t ].insert( chunkId );
 		stamp += cr.cs;
 	}
 	graph.stamp = stamp;
@@ -2173,7 +2174,7 @@ std::vector<NodeId> DocEditClosure( NodeId changedChunkId, const ReferenceGraph&
 		const NodeId n = stack.back(); stack.pop_back();
 		if( !seen.insert( (long long)n ).second ) continue;
 		closure.push_back( n );
-		std::map<NodeId, std::vector<NodeId> >::const_iterator d = graph.dependents.find( n );
+		std::map<NodeId, std::set<NodeId> >::const_iterator d = graph.dependents.find( n );
 		if( d != graph.dependents.end() ) for( NodeId r : d->second ) if( !seen.count( (long long)r ) ) stack.push_back( r );
 	}
 	return closure;

@@ -46,7 +46,7 @@ static void Check( bool c, const char* w ) { if( c ) ++g_pass; else { ++g_fail; 
 static std::set<std::pair<NodeId,NodeId> > DepSet( const ReferenceGraph& g )
 {
 	std::set<std::pair<NodeId,NodeId> > s;
-	for( std::map<NodeId, std::vector<NodeId> >::const_iterator it = g.dependents.begin(); it != g.dependents.end(); ++it )
+	for( std::map<NodeId, std::set<NodeId> >::const_iterator it = g.dependents.begin(); it != g.dependents.end(); ++it )
 		for( NodeId c : it->second ) s.insert( std::make_pair( it->first, c ) );
 	return s;
 }
