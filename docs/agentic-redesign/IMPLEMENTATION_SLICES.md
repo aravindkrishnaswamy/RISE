@@ -438,7 +438,7 @@ until it is green:
    `MaintainedReferenceGraph` holder removes the dominant non-spatial closure-COMPUTE cost END-TO-END
    by deciding reuse from the EDIT in O(log N) (a NodeId-index lookup + a descriptor scan -- not
    O(1)), NOT from the stamp (~7.6 µs end-to-end vs ~19 ms
-   from-scratch at N=4096; a stamp-gated reuse can't, since computing the stamp is itself O(N)); the static graph guarded
+   from-scratch at N=4096; a stamp-gated reuse can't, since computing the stamp is itself O(N)); #4b makes a reference/cp edit on the holder INCREMENTAL (re-resolve only the edited chunk + diff its dependents/stamp, O(this chunk's refs · log N), ~11 µs vs ~23 ms from-scratch at N=4096), while a name or alias-painter edit still rebuilds; the static graph guarded
    against drift by `CstResolverTest` [consistency]/[drift] -- which cross-verify every
    object->material/geometry edge against the derive's actual binding by pointer (a drift
    detector on the tested scenes, not an exhaustive structural every-edge proof)). Per-parser reversibility (P1.3/P1.5),

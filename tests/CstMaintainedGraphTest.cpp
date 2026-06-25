@@ -14,7 +14,9 @@
 //    [stamp-reuse] a graph-NEUTRAL edit (a non-reference value) leaves the stamp stable,
 //                  so reusing the OLD graph on the edited doc still yields the correct
 //                  closure; a graph-CHANGING edit (a reference re-point / rename) moves
-//                  the stamp, signalling the holder to rebuild (P1.8 staleness in O(1)).
+//                  the stamp -- a STAMP-GATED holder would rebuild (the actual
+//                  MaintainedReferenceGraph instead decides the edit class from the edit and
+//                  updates a reference edit INCREMENTALLY; see [maintained-incremental]).
 //
 //////////////////////////////////////////////////////////////////////
 

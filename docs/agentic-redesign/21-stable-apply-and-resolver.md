@@ -220,7 +220,7 @@ the drift guard LANDED, with the structural one-resolution-path the remaining D3
    itself an O(N) `BuildReferenceGraph`, so a stamp-validated reuse would save nothing
    end-to-end. A non-reference value edit reuses the graph (no rebuild); a reference/cp edit
    updates INCREMENTALLY (#4b: re-resolve ONLY that chunk against the held namespace, diff its
-   dependents + swap its commutative per-chunk stamp -- O(this chunk's refs), proven by the
+   dependents + swap its commutative per-chunk stamp -- O(this chunk's refs · log N), proven by the
    ComputeChunkRefs counter); a name or alias-involved-painter edit rebuilds (O(N)). The HONEST end-to-end per-edit cost (edit + the O(log N) reuse decision +
    the closure) is ~7.6 µs flat vs ~19 ms for the from-scratch edit+O(N log N) closure at
    N=4096 — that is the number, not the isolated BFS. (Structural edits are not yet handled
@@ -243,7 +243,10 @@ the drift guard LANDED, with the structural one-resolution-path the remaining D3
 With `std::map` managers and the CST's `std::map`-backed identity, the bounds carry
 log factors: a structured edit is **O(log N)**; the incremental apply is
 **O(closure · log N)** (per-member identity lookup + manager remove/insert + an
-O(C log C) sort), **not O(closure)**; a full derive is **O(N · log N)**, not O(N).
+O(C log C) sort), **not O(closure)**; an incremental REFERENCE/cp edit on the maintained
+graph is **O(this chunk's refs · log N)** (#4b: re-resolve one chunk against the held
+namespace + diff its dependents/stamp, vs the old O(N) rebuild); a full derive is
+**O(N · log N)**, not O(N).
 R13 stands: we do **not** claim flat O(closure) before persistent O(1) managers
 exist — the wall-clock shows the apply is *flat in N* (C fixed, log N slow), which
 is consistent with O(closure · log N), and the suite asserts only ratios/scaling,

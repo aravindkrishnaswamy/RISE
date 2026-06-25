@@ -158,7 +158,7 @@ int main()
 	std::printf( "  %6s | %8s | %10s | %10s | %11s | %10s | %11s | %11s\n", "N", "edit", "closure", "clo:graph", "increment", "full", "prep:spat", "prep:nonsp" );
 
 	const int NS[] = { 256, 1024, 4096 };
-	double incrAt[3] = {0,0,0}, fullAt[3] = {0,0,0}, prepSpatAt[3] = {0,0,0}, prepNonAt[3] = {0,0,0}, cloAt[3] = {0,0,0}, cloGraphAt[3] = {0,0,0}, mtnAt[3] = {0,0,0}, editAt[3] = {0,0,0};
+	double incrAt[3] = {0,0,0}, fullAt[3] = {0,0,0}, prepSpatAt[3] = {0,0,0}, prepNonAt[3] = {0,0,0}, cloAt[3] = {0,0,0}, cloGraphAt[3] = {0,0,0}, mtnAt[3] = {0,0,0}, mtnRefAt[3] = {0,0,0}, editAt[3] = {0,0,0};
 	for( int k = 0; k < 3; ++k ) {
 		const int N = NS[k];
 		Document doc = ParseToCst( SceneN( N, false ) );
@@ -206,6 +206,17 @@ int main()
 			const NodeId mgid = DocFindByName( mg.Doc(), "sphere_geometry/g0" );
 			mtnAt[k] = MedianMicros( 21, [&]{ mg.SetParamValue( mgid, "radius", 0, "2" ); volatile auto c = mg.EditClosure( mgid ); (void)c; } );
 			Check( !mg.LastEditRebuilt(), "maintained: the non-reference (radius) edit did NOT rebuild the graph (reuse from the edit, not the stamp)" );
+		}
+
+		// [maintained:reference] the #4b END-TO-END reference edit: re-point o0's material via the
+		// holder -> the graph updates INCREMENTALLY (re-resolve only o0 + diff its dependents/stamp,
+		// O(o0's refs . log N)), no O(N) rebuild; then the closure over the updated graph.
+		{
+			MaintainedReferenceGraph mgr( doc );
+			const NodeId moid = DocFindByName( mgr.Doc(), "standard_object/o0" );
+			int tog = 0;
+			mtnRefAt[k] = MedianMicros( 21, [&]{ tog ^= 1; mgr.SetParamValue( moid, "material", 0, tog ? "m1" : "m0" ); volatile auto c = mgr.EditClosure( moid ); (void)c; } );
+			Check( !mgr.LastEditRebuilt(), "maintained: the REFERENCE (material re-point) edit updated INCREMENTALLY -- no rebuild (#4b)" );
 		}
 
 		// [full] : a complete re-derive into a fresh Job (the baseline).
@@ -301,10 +312,16 @@ int main()
 	// end-to-end number -- not the isolated BFS.
 	Check( mtnAt[2] * 4 < ( editAt[2] + cloAt[2] ), "maintained END-TO-END edit (edit+reuse-decision+closure) >=4x cheaper than the from-scratch edit+closure at N=4096" );
 	Check( mtnAt[2] < mtnAt[0] * 6.0 + 50.0, "maintained END-TO-END edit ~flat in N (no O(N) rebuild on a non-reference edit)" );
+	// The #4b reference-edit endpoint: a REFERENCE re-point via the holder updates the graph
+	// INCREMENTALLY (no O(N) rebuild) + finds the closure -- ~flat in N, far below from-scratch.
+	Check( mtnRefAt[2] * 4 < ( editAt[2] + cloAt[2] ), "maintained END-TO-END REFERENCE edit (incremental update + closure) >=4x cheaper than from-scratch edit+closure at N=4096 (#4b)" );
+	Check( mtnRefAt[2] < mtnRefAt[0] * 6.0 + 50.0, "maintained END-TO-END reference edit ~flat in N (incremental, no O(N) rebuild -- #4b)" );
 
 	std::printf( "  decomposition at N=4096 (microseconds):\n" );
 	std::printf( "    maintained END-TO-END per-edit (non-reference): %.1f us (edit + O(log N) reuse decision + closure), ~flat -- vs from-scratch edit+closure %.1f us.\n",
 		mtnAt[2], editAt[2] + cloAt[2] );
+	std::printf( "    maintained END-TO-END per-edit (REFERENCE, #4b): %.1f us (incremental graph update + closure), ~flat -- vs from-scratch %.1f us.\n",
+		mtnRefAt[2], editAt[2] + cloAt[2] );
 	std::printf( "    edit %.1f + closure-compute %.1f (from scratch) -> %.1f (over a maintained graph, slice 5) + incremental-apply %.1f\n",
 		editAt[2], cloAt[2], cloGraphAt[2], incrAt[2] );
 	std::printf( "    (the from-scratch O(N log N) closure-COMPUTE was the dominant non-spatial cost; the maintained-graph (id, graph) overload makes it O(closure . log N), ~flat in N.)\n" );

@@ -373,7 +373,7 @@ namespace RISE
 
 		//! #4b cost gate: total ComputeChunkRefs evaluations.  A from-scratch BuildReferenceGraph or a
 		//! MaintainedReferenceGraph REBUILD does N (one per chunk); an INCREMENTAL reference/cp edit does
-		//! exactly 1 -- the committed proof the maintained edit is O(this chunk's refs), not O(N).
+		//! exactly 1 -- the committed proof the maintained edit is O(this chunk's refs . log N), not O(N).
 		unsigned long DebugChunkRefsComputed();
 
 		//! Locate the top-level item spanning byte `offset` (the byte->node map a
@@ -707,7 +707,7 @@ namespace RISE
 
 		//! A MAINTAINED reference graph (slice 5 / #4b): holds a Document + its ReferenceGraph and keeps
 		//! them in sync INCREMENTALLY, so the END-TO-END per-edit cost -- not just the closure BFS in
-		//! isolation -- is sub-O(N) for the common edits.  The reuse decision is made from the EDIT ITSELF
+		//! isolation -- is sub-O(N) for the common edits.  The edit CLASS is decided from the EDIT ITSELF
 		//! in O(log N) (resolve the chunk via the NodeId index + scan its descriptor), NOT by recomputing
 		//! the stamp (recomputing the stamp is itself an O(N) BuildReferenceGraph, so a stamp-validated
 		//! reuse saves nothing end-to-end).  Three edit classes:
@@ -715,7 +715,7 @@ namespace RISE
 		//!     untouched -- a value edit preserves NodeIds) -> REUSED, O(log N), no rebuild;
 		//!   - a REFERENCE / cp edit re-resolves only THIS chunk against the held namespace `m_defs`
 		//!     (producers are unchanged by a value edit, so `m_defs` is reused): diff this chunk's
-		//!     reverse-dependent targets + replace its commutative per-chunk stamp -> O(this chunk's refs),
+		//!     reverse-dependent targets + replace its commutative per-chunk stamp -> O(this chunk's refs . log N),
 		//!     NO O(N) re-trace (#4b).  The flat `edges` view is lazily reflattened on Graph();
 		//!   - a NAME edit changes the namespace (re-resolves every edge TO this chunk), and a reference
 		//!     edit on an ALIAS-involved painter could touch a dependents entry shared with the painter
@@ -729,6 +729,9 @@ namespace RISE
 			const Document&       Doc() const   { return m_doc; }
 			//! The held graph.  Lazily reflattens the `edges` view if an incremental edit dirtied it
 			//! (dependents + stamp are always current; only the flat edges view is deferred).
+			//! The reflatten is O(N) (one item pass) but fires only on the FIRST Graph() after an
+			//! incremental edit; EditClosure (dependents) never triggers it, so per-edit cost stays
+			//! sub-O(N) UNLESS a caller polls Graph().edges every edit.
 			const ReferenceGraph& Graph() const;
 			void SetParamValue( NodeId chunkId, const std::string& paramRole, int occurrence, const std::string& value );
 			//! The edit closure over the maintained graph -- O(closure . log N), no re-trace.  Reads the
@@ -743,6 +746,8 @@ namespace RISE
 			mutable ReferenceGraph m_graph;          // mutable: Graph() lazily reflattens m_graph.edges (a derived cache)
 			bool                   m_lastRebuilt;
 			mutable bool           m_edgesDirty;     // m_graph.edges stale after an incremental edit -> reflatten on Graph()
+			// The #4b incremental caches add O(total edges + N) memory (m_chunkEdges duplicates the flat
+			// m_graph.edges) -- the price of O(this chunk's refs . log N) reference edits vs an O(N) rebuild.
 			std::map<std::pair<int,std::string>, NodeId> m_defs;        // the (category,name) namespace -- REUSED across reference edits
 			std::map<NodeId, std::vector<ReferenceUse> > m_chunkEdges;   // per-chunk edges (source of truth; flat m_graph.edges is derived)
 			std::map<NodeId, unsigned long long>         m_chunkCs;      // per-chunk commutative stamp -- stamp += new-old on an edit

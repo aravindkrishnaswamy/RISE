@@ -1745,7 +1745,7 @@ static std::map<std::pair<int,std::string>, NodeId> BuildReferenceNamespace(
 
 //! One chunk's reference edges, reverse-dependent TARGETS, and per-chunk stamp `cs`, resolved
 //! against the already-built namespace `defs` (PASS B's per-chunk body, factored out for #4b so the
-//! maintained graph can re-run it for a SINGLE chunk on a reference edit -- O(this chunk's refs)).
+//! maintained graph can re-run it for a SINGLE chunk on a reference edit -- O(this chunk's refs . log N)).
 //! `deps` lists each resolved target T (chunkId != T); the caller adds chunkId to dependents[T].
 struct ChunkRefs { std::vector<ReferenceUse> edges; std::vector<NodeId> deps; unsigned long long cs; };
 static ChunkRefs ComputeChunkRefs( const Document& doc,
@@ -1891,11 +1891,6 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 	std::vector<NodeRef> items;
 	SeqToVec( doc.items, items );
 
-	// PASS A -- index the namespace by (category, name): FIRST the engine's runtime
-	// defaults -> kRuntimeDefaultTarget (a sentinel: "resolves to a default, not a CST
-	// chunk"), THEN the CST chunk defs. Defaults are seeded first so a chunk whose
-	// name collides with a default does NOT override it -- matching the manager, which
-	// registered the default before any chunk and rejects the colliding AddItem.
 	// PASS A -- the (category,name) namespace + painter-alias dependents (factored: #4b).
 	std::map<std::pair<int,std::string>, NodeId> defs = BuildReferenceNamespace( doc, items, registry, graph.dependents, diags );
 
@@ -2303,7 +2298,8 @@ void MaintainedReferenceGraph::SetParamValue( NodeId chunkId, const std::string&
 		return;
 	}
 	// INCREMENTAL (#4b): a reference/cp edit on a non-alias chunk re-resolves ONLY this chunk against
-	// the held namespace m_defs (producers are unchanged by a value edit) -> O(this chunk's refs).
+	// the held namespace m_defs (producers are unchanged by a value edit) -> O(this chunk's refs . log N),
+	// atop the O(log N + this chunk's params) DocSetParamValue every edit pays.
 	const std::vector<ReferenceUse> oldEdges = m_chunkEdges[ chunkId ];
 	const unsigned long long oldCs = m_chunkCs[ chunkId ];
 	std::set<NodeId> oldDeps;
