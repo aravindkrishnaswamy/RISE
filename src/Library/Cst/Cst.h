@@ -111,8 +111,8 @@ namespace RISE
 		typedef std::shared_ptr<const IdNode> IdSeqRef;
 
 		//! Persistent name-path -> NodeId index (KEY-ordered, weight-balanced):
-		//! counted O(log N) name resolution, maintained on parse/rename/insert/
-		//! erase. Kernel keys on "keyword/name", e.g. "sphere_geometry/s".
+		//! counted O(log N) name resolution, maintained on parse/rename/replace/
+		//! insert/erase/reparse. Kernel keys on "keyword/name", e.g. "sphere_geometry/s".
 		//! (Category name-paths like "geometry/s" -- one category maps to MANY
 		//! keywords -- are DEFERRED: item 5 binds the descriptor registry for
 		//! validation + derive, but reference resolution in the derive runs
