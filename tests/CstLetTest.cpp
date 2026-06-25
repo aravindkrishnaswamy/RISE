@@ -101,7 +101,32 @@ int main()
 	{
 		std::vector<std::string> d;
 		DumpCst( HDR + "let\n{\nB expr(A)\nA 1\n}\n" + "sphere_geometry\n{\nname s\nradius expr(B)\n}\n", &d );
-		Check( !d.empty(), "refuse: a forward let reference (B before A) is out of scope -> refuses" );
+		Check( DiagHas( d, "let.B" ), "refuse: a forward let reference (B before A) is out of scope -> refuses (let.B diagnosed)" );
+	}
+
+	// [reserved] a let may not bind a reserved expr identifier (u/v/i/j coordinate or pi/e/tau/PI/E
+	// constant) -- u/v are pre-registered Builder slots a let would be SILENTLY clobbered into (0).
+	{
+		std::vector<std::string> d; DumpCst( HDR + "let\n{\nu 5\n}\n", &d );
+		Check( DiagHas( d, "let.u" ), "reserved: a let named u (a query coordinate) is rejected (no silent clobber)" );
+	}
+	{
+		std::vector<std::string> d; DumpCst( HDR + "let\n{\nPI 9\n}\n", &d );
+		Check( DiagHas( d, "let.PI" ), "reserved: a let named PI is rejected (the built-in is un-shadowable)" );
+	}
+	{
+		std::vector<std::string> d; DumpCst( HDR + "let\n{\npi 9\n}\n", &d );
+		Check( DiagHas( d, "let.pi" ), "reserved: a let named pi is rejected (lowercase math constant un-shadowable too)" );
+	}
+	// [duplicate] a duplicate let name is last-wins (the later binding overwrites the slot).
+	{
+		const std::string s = HDR + "let\n{\nA 1\nA 2\n}\n" + "sphere_geometry\n{\nname s\nradius expr(A)\n}\n";
+		Check( DumpCst( s ) == DumpCst( Radius( "2" ) ), "duplicate: a duplicate let name is last-wins (A 1 then A 2 -> 2)" );
+	}
+	// [value-less] a let binding with no value diagnoses.
+	{
+		std::vector<std::string> d; DumpCst( HDR + "let\n{\nX\n}\n", &d );
+		Check( DiagHas( d, "let.X" ), "value-less: a let binding with no value diagnoses" );
 	}
 
 	// [incremental] a closure expr referencing a let refuses on the O(closure) path (no lets) ->

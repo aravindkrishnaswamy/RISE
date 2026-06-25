@@ -1025,11 +1025,25 @@ static bool EvalExprBody( const std::string& body, const LetBindings& lets, doub
 	return true;
 }
 
+//! Identifiers the expression grammar OWNS, so a `let` may not bind them: the query coordinates
+//! u/v + the future instance vars i/j (pre-registered Builder slots -- a let named u/v would be
+//! silently clobbered by Eval), and the math constants pi/e/tau (ExpressionProgram lexer constants)
+//! + PI/E (the reserved uppercase built-ins).  Rejecting them keeps every math constant + coordinate
+//! un-shadowable and avoids the u/v clobber.
+static bool IsReservedExprName( const std::string& n )
+{
+	return n == "u" || n == "v" || n == "i" || n == "j" ||
+	       n == "pi" || n == "e" || n == "tau" || n == "PI" || n == "E";
+}
+
 static LetBindings CollectLetBindings( const std::vector<NodeRef>& items, std::vector<std::string>& diags )
 {
 	LetBindings out;
 	for( const NodeRef& c : items ) {
 		if( c->kind != NodeKind::Chunk || c->role != "let" ) continue;
+		for( const NodeRef& kid : c->kids )                       // a name with no value on its line
+			if( kid->kind == NodeKind::Token && kid->role == "pname" )
+				diags.push_back( "let." + kid->text + ": value-less binding (needs one numeric literal or expr(...))" );
 		for( const NodeRef& kid : c->kids ) {
 			if( kid->kind != NodeKind::Param ) continue;
 			std::string name, raw; bool first = true;
@@ -1038,6 +1052,10 @@ static LetBindings CollectLetBindings( const std::vector<NodeRef>& items, std::v
 					if( first ) { name = tk->text; first = false; }
 					else { if( !raw.empty() ) raw += ' '; raw += tk->text; }
 				}
+			if( IsReservedExprName( name ) ) {
+				diags.push_back( "let." + name + ": reserved expression identifier (u/v/i/j coordinate or pi/e/tau/PI/E constant) -- cannot be a let name" );
+				continue;
+			}
 			std::string body; double val = 0;
 			if( IsExprValue( raw, body ) ) {                  // expr-valued let: eval over the EARLIER lets only
 				std::string err;
