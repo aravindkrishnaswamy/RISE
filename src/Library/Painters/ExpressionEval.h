@@ -39,6 +39,8 @@
 #include <map>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>	// std::memcpy (finiteness bit test)
+#include <cstdint>	// std::uint64_t (finiteness bit test)
 #include "../Utilities/Math3D/Math3D.h"	// Scalar
 
 namespace RISE
@@ -72,17 +74,35 @@ namespace RISE
 			static const int kStackCap      = 512;	//!< value-stack depth
 			static const int kMaxParseDepth = 200;	//!< recursive-descent nesting
 
-			//! Finiteness test by exponent-bit inspection.  CAVEAT: under -O3 -flto -ffast-math the
-			//! compiler may ASSUME finiteness and fold this to always-true (the union read is optimized
-			//! away), so it is NOT a reliable hard guard in the production build -- it is best-effort.
-			//! A caller needing a DEFINITE non-finite rejection must inspect the FORMATTED string (the
-			//! byte scan is compiler-opaque), as Cst.cpp's TryEvalExprValue does.  (isnan/isinf are also
-			//! unreliable under -ffast-math; this is the standing 'ffast-math: no infinity' limitation.)
+			//! Finiteness test by exponent-bit inspection, HARDENED for the production build's
+			//! -O3 -flto -ffast-math.  fast-math licenses the optimizer to ASSUME every double is finite,
+			//! which folds isnan/isinf -- AND a naive union/memcpy exponent test -- to a constant `true`
+			//! even when the runtime value is a genuine nan/inf (verified with a probe: a fast-math FP
+			//! overflow reaches here with 0x7ff... bits, yet the un-laundered test still reported finite).
+			//! Laundering the value through a `volatile` load FIRST strips that assumption: a volatile
+			//! access is observable and opaque to value-range analysis, and -- unlike isnan/isinf -- is NOT
+			//! subject to fast-math, so the exponent test below runs on a value the compiler can no longer
+			//! prove finite and therefore cannot fold.  (An extern -fno-fast-math helper is NOT enough: under
+			//! -flto the caller's finiteness assumption follows the value into the inlined helper -- the same
+			//! probe showed it folding.)  memcpy (not a union) avoids type-punning UB.  Cost: one stack
+			//! store+load per call, negligible beside the surrounding eval.  The launder survives even when
+			//! this is INLINED into the bake hot path (verified by probe + the regression test), so -- unlike
+			//! the cold-path sibling SceneEditor/FilmIntrospection.cpp IsFiniteOpaque -- it deliberately does
+			//! NOT add `noinline` (which would force a real call on every per-vertex eval).  This is now a reliable hard
+			//! guard, so Safe() and the displacement bake actually reject nan/inf.  (Cst.cpp's
+			//! TryEvalExprValue keeps its own %.17g string scan -- that derive path formats the value to
+			//! text anyway, so the scan is free there; this hardened test is the equivalent hot-path guard.)
 			static bool IsFinite( const Scalar x )
 			{
-				union { double d; unsigned long long u; } c;
-				c.d = (double)x;
-				return ( ( c.u >> 52 ) & 0x7FF ) != 0x7FF;	// exponent != all-ones (not inf/nan)
+				// Test the IEEE-754 binary64 layout explicitly (not Scalar's): Scalar is
+				// double today, and a future Scalar=float would widen exactly here, so the
+				// finiteness verdict stays correct either way.  Don't retype this to uint32.
+				static_assert( sizeof( double ) == sizeof( std::uint64_t ), "IsFinite assumes an 8-byte IEEE-754 double" );
+				volatile double vd = (double)x;	// volatile store, then...
+				const double d = vd;				// ...volatile load: launders away the -ffast-math 'is finite' assumption
+				std::uint64_t bits;
+				std::memcpy( &bits, &d, sizeof( bits ) );
+				return ( ( bits >> 52 ) & 0x7FFull ) != 0x7FFull;	// exponent != all-ones (not inf/nan)
 			}
 
 			//! Reset the environment + bind u, v, then run the program.

@@ -110,8 +110,8 @@ int main()
 	}
 
 	// [refuse: non-finite] a DOMAIN-ERROR expr (log(-1) -> nan) is rejected AT THE EVAL BOUNDARY (not
-	// only by the numeric descriptor), so it is caught even in a NON-numeric slot -- the escape
-	// ExpressionProgram::IsFinite leaves open under -ffast-math.
+	// only by the numeric descriptor), so it is caught even in a NON-numeric slot.  (The CST eval
+	// boundary scans the formatted value independently; ExpressionProgram::IsFinite is now hardened too.)
 	{
 		std::vector<std::string> d;
 		DumpCst( Sphere( "expr(log(-1))" ), &d );

@@ -1004,7 +1004,8 @@ static bool IsExprValue( const std::string& value, std::string& body )
 //! Compile + evaluate one expr BODY over the numeric `lets` + the reserved built-ins PI/E (added
 //! AFTER the lets, so a let cannot shadow them).  Returns the finite result, or false with `err`
 //! set (a compile error, or a non-finite result -- rejected by a compiler-opaque scan of the %.17g
-//! string, since ExpressionProgram::IsFinite folds to always-true under -ffast-math).  u/v are the evaluator's query coordinates --
+//! string -- this derive path formats r to %.17g anyway, so the byte scan is the free check here;
+//! ExpressionProgram::IsFinite is now volatile-hardened and is the equivalent hot-path guard).  u/v are the evaluator's query coordinates --
 //! bound to the instance_array i/j-derived u,v (slice 4); a let / scene expr passes u=v=0 (a constant).
 static bool EvalExprBody( const std::string& body, const LetBindings& lets, double u, double v, double& outVal, std::string& err )
 {
