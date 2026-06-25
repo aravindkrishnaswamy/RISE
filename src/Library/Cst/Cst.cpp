@@ -1645,7 +1645,8 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 	std::map<std::pair<int,std::string>, NodeId> defs;
 	for( const auto& rd : RuntimeDefaultDefs() )
 		defs[ std::pair<int,std::string>( (int)rd.first, rd.second ) ] = kRuntimeDefaultTarget;
-	std::map<std::string, std::pair<bool,NodeId> > painterNs;   // painter name -> (isScalar, NodeId) first seen: detect + alias a cross-manager conflation (P1.4)
+	std::map<std::string, std::vector<std::pair<bool,NodeId> > > painterNs;   // painter name -> ALL same-name painters (isScalar, NodeId): detect + alias the cross-manager conflation (P1.4)
+	std::unordered_set<std::string> painterAliasDiagnosed;   // emit the cross-manager conflation diagnostic ONCE per name
 	std::map<std::string, bool> funcChunkNames;  // names produced by a Function-category chunk: detect the 1D/2D conflation (#3)
 	for( size_t i = 0; i < items.size(); ++i ) {
 		const NodeRef& c = items[i];
@@ -1666,22 +1667,26 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 		if( cat == ChunkCategory::Painter ) {
 			const bool isScalar = ( c->role == "scalar_painter" );
 			const NodeId thisId = DocNodeIdAt( doc, (int)i );
-			std::map<std::string, std::pair<bool,NodeId> >::const_iterator pit = painterNs.find( name );
-			if( pit == painterNs.end() ) painterNs[ name ] = std::make_pair( isScalar, thisId );
-			else if( pit->second.first != isScalar ) {
-				diags.push_back( "painter '" + name + "': defined in BOTH the colour and scalar painter managers; the (category,name) graph cannot disambiguate them, so the edge is imprecise (review P1.4) -- aliased for a CONSERVATIVE (superset) closure" );
-				// CONSERVATIVE closure alias (review P1.4, 2nd pass): the (Painter,name) edge
-				// first-wins to ONE of the two same-named painters, so a consumer the engine binds
-				// to the OTHER (by its slot's colour/scalar sub-type) would be MISSED from that
-				// painter's closure -- the closure twin of the now-fixed Function 1D/2D misbind.
-				// Precise per-slot resolution needs a descriptor colour/scalar discriminator on
-				// EVERY painter slot (deferred -- larger than the Function param-name switch).
-				// Until then, make the two painters MUTUAL dependents so editing EITHER re-derives
-				// BOTH + every consumer of either: a SUPERSET closure (never misses a real
-				// dependent; may over-include).  DocRename still REFUSES the rename (P1.4 guard).
-				const NodeId other = pit->second.second;
-				if( other != thisId ) { graph.dependents[ thisId ].push_back( other ); graph.dependents[ other ].push_back( thisId ); }
+			// CONSERVATIVE closure alias (review P1.4): scalar + colour painters share ChunkCategory::
+			// Painter but live in SEPARATE managers; the (Painter,name) edge first-wins to ONE, so a
+			// consumer the engine binds to the OTHER (by its slot's colour/scalar sub-type) would be
+			// MISSED from that painter's closure.  Make them MUTUAL dependents so editing EITHER
+			// re-derives BOTH -- a SUPERSET closure (never misses; may over-include).  ORDER-INSENSITIVE
+			// (review P1, 2nd): link THIS painter to EVERY previously-seen same-name painter of the
+			// OPPOSITE kind, so the alias set is (all colour-q) x (all scalar-q) -- a function of the
+			// chunk SET, NOT its declaration order.  (A first-seen-only alias was order-sensitive for
+			// >=3 same-named mixed painters: a reorder changed the dependents while the COMMUTATIVE
+			// stamp stayed put -> 'same stamp, different graph'.  All-cross-kind depends only on the
+			// chunk set, which the per-chunk stamp already reflects.)  DocRename still REFUSES the rename.
+			for( const std::pair<bool,NodeId>& prev : painterNs[ name ] ) {
+				if( prev.first != isScalar && prev.second != thisId ) {
+					if( painterAliasDiagnosed.insert( name ).second )
+						diags.push_back( "painter '" + name + "': defined in BOTH the colour and scalar painter managers; the (category,name) graph cannot disambiguate them, so the edge is imprecise (review P1.4) -- aliased for a CONSERVATIVE (superset) closure" );
+					graph.dependents[ thisId ].push_back( prev.second );
+					graph.dependents[ prev.second ].push_back( thisId );
+				}
 			}
+			painterNs[ name ].push_back( std::make_pair( isScalar, thisId ) );
 		}
 		const std::pair<int,std::string> key( (int)cat, name );
 		// Function-namespace CONFLATION diagnostic (review #3): Function1D and Function2D

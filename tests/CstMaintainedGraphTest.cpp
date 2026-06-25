@@ -227,6 +227,40 @@ int main()
 		Check( g1.stamp != g2.stamp, "stamp-reorder: the stamp MOVED with the resolved edge (folds the resolved target NodeId -- review P1)" );
 	}
 
+	// [stamp-alias] (review P1, 2nd) the painter same-name ALIAS (PASS A mutual dependents) must be
+	// ORDER-INSENSITIVE: for >=3 same-named MIXED-kind painters the OLD first-seen alias linked a
+	// different SET depending on declaration order, while the commutative stamp stayed put -> same
+	// stamp, DIFFERENT graph (closure).  The fix links ALL cross-kind same-name pairs (a function of
+	// the chunk SET), so a reorder leaves the closure -- and the stamp -- unchanged.  DocReparse
+	// carries the 3 painters' NodeIds BY CONTENT (distinct content), giving the exact same-NodeId
+	// reorder (two independent parses would differ trivially by NodeId).
+	{
+		const std::string sA =
+			"RISE ASCII SCENE 6\n"
+			"scalar_painter\n{\nname q\nfile noise.dat\n}\n"
+			"uniformcolor_painter\n{\nname q\ncolor 0.5 0.5 0.5\n}\n"
+			"uniformcolor_painter\n{\nname q\ncolor 0.7 0.7 0.7\n}\n";
+		const std::string sB =   // the scalar moved AFTER the first colour (reorder; SAME chunk set)
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname q\ncolor 0.5 0.5 0.5\n}\n"
+			"scalar_painter\n{\nname q\nfile noise.dat\n}\n"
+			"uniformcolor_painter\n{\nname q\ncolor 0.7 0.7 0.7\n}\n";
+		Document dA = ParseToCst( sA );
+		Document dB = DocReparse( dA, sB );   // carries scalar/colour0.5/colour0.7 NodeIds BY CONTENT -> reordered, SAME NodeIds
+		const ReferenceGraph gA = BuildReferenceGraph( dA );
+		const ReferenceGraph gB = BuildReferenceGraph( dB );
+		const NodeId sqA = DocFindByName( dA, "scalar_painter/q" );
+		const NodeId sqB = DocFindByName( dB, "scalar_painter/q" );
+		if( sqA != 0 && sqB != 0 ) {
+			const size_t clA = DocEditClosure( sqA, gA ).size();
+			const size_t clB = DocEditClosure( sqB, gB ).size();
+			Check( gA.stamp == gB.stamp, "stamp-alias: reorder of >=3 same-named painters -> stamp stable (same chunk SET)" );
+			Check( clA == clB && clA == 3, "stamp-alias: closure(scalar q) = {scalar, 2 colours} = 3 in BOTH orders -> alias is ORDER-INSENSITIVE (same stamp => same graph)" );
+		} else {
+			std::printf( "  (skip stamp-alias: scalar_painter did not parse in this build)\n" );
+		}
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }
