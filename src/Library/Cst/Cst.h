@@ -586,7 +586,9 @@ namespace RISE
 		//! It does NOT yet capture DYNAMIC references created at derive time (timeline
 		//! String elements, expr): those are the slice-5 derive-time-routing scope --
 		//! callers that must be exact about dynamics (incremental apply, rename) refuse
-		//! when the Job has any animation (see DeriveToJobIncremental). O(N log N).
+		//! when the Job has any animation (see DeriveToJobIncremental). O(N log N) for typical
+		//! documents; the conservative painter same-name ALIAS (PASS A) adds O(K^2) per name for
+		//! K same-named MIXED-kind painters -- a degenerate case (real scenes have distinct names).
 		ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string>* diagnostics = nullptr );
 
 		//! Reparse `newText` and carry NodeIds from `oldDoc` via FOUR hashed passes

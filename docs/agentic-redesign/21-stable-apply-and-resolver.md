@@ -327,8 +327,11 @@ a medium would not re-derive its consuming objects once a consumer relied on the
    refusals (see the chunk-level note below).
 
 3. **Retire the heuristics — DEMOTED + GUARDED; full retirement gated.** `FunctionSubNamespace`
-   + the painter alias are now GUARDED by the bidirectional cross-check (recorded == static
-   guarantees they match the engine), so they cannot drift undetected. They are NOT removed:
+   is now GUARDED by the bidirectional cross-check (recorded == static guarantees it matches the
+   engine), so it cannot drift undetected. The painter same-name ALIAS is NOT covered by the
+   cross-check — its edges are static-only by design (the engine does not alias; they would
+   break `==`, so CstRecordDeriveTest deliberately scopes them out) — but it is a CONSERVATIVE
+   superset (never misses a real dependent) and order-insensitive (8f9aea29), safe by construction. They are NOT removed:
    rename always needs the param-level static path + its conflation refusals (P1.4/#3), and
    closure won't depend on the recorded graph until the consumer-switch lands. Removal-for-closure (and with it the dissolution of the painter colour/scalar residual, since
    the recorded edge is whatever `GetItem` actually returned) follows the consumer-switch.  (The

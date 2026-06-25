@@ -1678,6 +1678,9 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 			// >=3 same-named mixed painters: a reorder changed the dependents while the COMMUTATIVE
 			// stamp stayed put -> 'same stamp, different graph'.  All-cross-kind depends only on the
 			// chunk set, which the per-chunk stamp already reflects.)  DocRename still REFUSES the rename.
+			// COST: O(K) per painter -> O(K^2) for K same-name MIXED-kind painters (the alias edge count
+			// K_scalar x K_colour is the true dependent set, not waste); degenerate only -- real scenes
+			// have distinct painter names, so this stays within BuildReferenceGraph's O(N log N) bound.
 			for( const std::pair<bool,NodeId>& prev : painterNs[ name ] ) {
 				if( prev.first != isScalar && prev.second != thisId ) {
 					if( painterAliasDiagnosed.insert( name ).second )
