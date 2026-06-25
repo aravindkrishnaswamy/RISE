@@ -129,8 +129,11 @@ lives, so it deserves scrutiny:
    value }` document-level constants DONE (#5 slice 3, the DEFINE replacement; reserved expr
    identifiers u/v/i/j/pi/e/tau/PI/E).  For expr/let the D4 traced-input INVALIDATION + the
    `lets/NAME` name-path addressing + per-component expr inside a multi-token tuple slot (the
-   §2.6.3 `position 0 0 expr(LZ)` form) are still deferred; still no `instance_array` (generators),
-   no multi-token DoubleVec3 params (they currently parse as separate params).
+   §2.6.3 `position 0 0 expr(LZ)` form, for NORMAL chunks) are still deferred.  `instance_array`
+   (the grid/linear nested-FOR replacement, §2.6.1; its OWN per-component exprs DO evaluate) DONE (#5
+   slice 4) -- the NEAR-TERM scene-language breadth is COMPLETE.  Still no multi-token DoubleVec3 params
+   (they currently parse as separate params); the migrator / front-line-pivot / legacy-drop remain the
+   separate far-future workstream.
 6. **Gate G2 wall-clock.** Slice 3 proves O(closure) by **operation count**, not by a <50 ms
    wall-clock on a 155-mesh Sponza scene. The cost *model* is validated; the absolute latency on a
    real big scene is not yet measured.
@@ -171,7 +174,7 @@ is fixed.
 
 A single narrow vertical that closes the transfer risk, keeping expr/RepeatGroup/instance_array OUT
 until it is green (HISTORICAL: the gate is now green; RepeatGroup + expr's Facet-1 derive-time
-halves have since landed as #5 slices 1-3 (RepeatGroup, expr, let), with traced-input invalidation still deferred):
+halves have since landed as #5 slices 1-4 (RepeatGroup, expr, let, instance_array), with traced-input invalidation still deferred):
 
 1. **Build the render-equivalence harness first** (the pre-P0 regression oracle). **✅ DONE** —
    [`tests/CstRenderEquivalence.h`](../../tests/CstRenderEquivalence.h) (`ParseLegacy` drives the
@@ -277,7 +280,7 @@ halves have since landed as #5 slices 1-3 (RepeatGroup, expr, let), with traced-
    **Disclosed scope / fallbacks:** name-path key is `keyword/name` (category paths like `geometry/s`
    are DEFERRED — item 5 left them out: a CST-navigation nicety, not load-bearing, since the derive
    resolves references through the engine's named managers; see item 5); value-ATOM sub-identity within a multi-atom value, and repeated-param
-   VALUE nodes, are RepeatGroup-era (value-ATOM sub-identity is still deferred; RepeatGroup + expr + let's Facet-1 halves have since landed as #5 slices 1-3 (RepeatGroup, expr, let)); **`DocInsertItem` is
+   VALUE nodes, are RepeatGroup-era (value-ATOM sub-identity is still deferred; RepeatGroup + expr + let's Facet-1 halves have since landed as #5 slices 1-4 (RepeatGroup, expr, let, instance_array)); **`DocInsertItem` is
    NOT uniformly O(log N)** — assigning the order-label is O(log N) when a gap is available (the common
    case), but a gap-exhausting insert triggers a **WINDOWED** reflow (`ReflowWindow`). That window is
    tiny in the common/sparse case (`DebugReflowLabelWrites` measures **2** on sparse mid-edits), so it
@@ -463,4 +466,4 @@ applies an incremental edit by recreating only the non-object entities while RE-
 (so a non-spatial edit skips the TLAS; apply O(closure·log N), full derive O(N·log N)), and finds an
 edit's closure in O(closure·log N) over a held maintained graph. The
 remaining work is the structural D35 one-resolution-path (so the static graph cannot drift from the apply
-resolution even in principle).  All slice-3 follow-ups LANDED in workstream #3 (CSG re-point needed no object-rollback; an operand-REFERENCE change falls back). (RepeatGroup + expr + let's Facet-1 halves have since LANDED as #5 slices 1-3 (RepeatGroup, expr, let); the gate is green; instance_array still out.)
+resolution even in principle).  All slice-3 follow-ups LANDED in workstream #3 (CSG re-point needed no object-rollback; an operand-REFERENCE change falls back). (RepeatGroup + expr + let's Facet-1 halves have since LANDED as #5 slices 1-4 (RepeatGroup, expr, let, instance_array); the gate is green.)

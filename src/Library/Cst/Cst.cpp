@@ -1004,8 +1004,8 @@ static bool IsExprValue( const std::string& value, std::string& body )
 //! Compile + evaluate one expr BODY over the numeric `lets` + the reserved built-ins PI/E (added
 //! AFTER the lets, so a let cannot shadow them).  Returns the finite result, or false with `err`
 //! set (a compile error, or a non-finite result -- rejected by a compiler-opaque scan of the %.17g
-//! string, since ExpressionProgram::IsFinite folds to always-true under -ffast-math).  No u/v: a
-//! scene expr is a constant.
+//! string, since ExpressionProgram::IsFinite folds to always-true under -ffast-math).  u/v are the evaluator's query coordinates --
+//! bound to the instance_array i/j-derived u,v (slice 4); a let / scene expr passes u=v=0 (a constant).
 static bool EvalExprBody( const std::string& body, const LetBindings& lets, double u, double v, double& outVal, std::string& err )
 {
 	RISE::Implementation::ExpressionProgram prog = RISE::Implementation::ExpressionProgram::Invalid();
@@ -1211,8 +1211,12 @@ static bool DropChunkByCategory( IJob& pJob, ChunkCategory cat, const char* name
 //! (material / position / orientation / scale / ...) is passed through to each object with PER-COMPONENT
 //! expr eval (instance vars: i,j indices; u=i/(count_u-1), v=j/(count_v-1) in [0,1]).  Each object is
 //! named `name[i,j]`.  Errors are apply-time (a partial apply, like DeriveToJob's other Finalize
-//! failures); the editor's incremental re-expansion + the generated objects' reference-graph tracing
-//! are deferred (Facet-2).
+//! failures); the editor's incremental re-expansion + the generated objects' reference-graph tracing are
+//! deferred (Facet-2).  CAVEAT: the static graph SKIPS instance_array (not a registry chunk), so not only
+//! does an instance_array EDIT full-derive -- editing the array's TEMPLATE geometry or a referenced
+//! MATERIAL is NOT traced to the array either (the closure misses it).  Until the generator participates
+//! in the reference graph, ANY edit that should re-expand the array must full-derive (currently latent --
+//! DeriveToJobIncremental has no live caller).
 static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, const IAsciiChunkParser* stdObj,
                                  IJob& pJob, std::vector<std::string>& diags, int& made )
 {
@@ -1248,12 +1252,16 @@ static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, 
 	const int countV = countV_raw.empty() ? 1 : evalCount( countV_raw, "count_v" );
 	if( !countOk ) return false;
 	if( (long long)countU * (long long)countV > 10000000LL ) { diags.push_back( "instance_array '" + name + "': count_u*count_v exceeds 10,000,000 instances" ); return false; }
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( &pJob );          // collision pre-check (best-effort): a generated name
+	IObjectManager* objMgr = priv ? priv->GetObjects() : 0;     // clashing an existing object would otherwise silently
+	                                                            // first-win (Job::AddObject ignores AddItem's bool).
 	for( int j = 0; j < countV; ++j ) {
 		for( int i = 0; i < countU; ++i ) {
 			const double u = ( countU > 1 ) ? (double)i / (double)( countU - 1 ) : 0.0;
 			const double v = ( countV > 1 ) ? (double)j / (double)( countV - 1 ) : 0.0;
 			IAsciiChunkParser::ParamsList plist;
 			char nm[256]; std::snprintf( nm, sizeof(nm), "%s[%d,%d]", name.c_str(), i, j );
+			if( objMgr && objMgr->GetItem( nm ) ) { diags.push_back( "instance_array '" + name + "': generated object '" + std::string( nm ) + "' collides with an existing object" ); return false; }
 			plist.push_back( String( ( std::string( "name " ) + nm ).c_str() ) );
 			plist.push_back( String( ( std::string( "geometry " ) + templ ).c_str() ) );
 			bool ok = true;

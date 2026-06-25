@@ -121,6 +121,39 @@ int main()
 		Check( !d.empty(), "refuse: a non-numeric count diagnoses" );
 	}
 
+	// [count cap] a typo-huge count refuses BEFORE allocating (DoS guard).
+	{
+		std::vector<std::string> d;
+		DumpCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u 1000001\n}\n" ), &d );
+		Check( !d.empty(), "cap: count_u > 1e6 refuses (no allocation)" );
+	}
+	{
+		std::vector<std::string> d;
+		DumpCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u 4000\ncount_v 4000\n}\n" ), &d );
+		Check( !d.empty(), "cap: count_u*count_v > 1e7 refuses (no allocation)" );
+	}
+	// [count_u==1 + expr(u)] u must be 0, not a 0/0 NaN.
+	{
+		const std::string ia = DumpCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u 1\nposition expr(u) expr(v) 0\n}\n" ) );
+		Check( ia == DumpCst( Scene( Obj( "g[0,0]", "0 0 0" ) ) ), "count_u==1: expr(u)/expr(v) -> 0 (no 0/0 NaN)" );
+	}
+	// [passthrough] orientation/scale evaluate per-component like position (generic pass-through).
+	{
+		const std::string ia = DumpCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u 2\norientation expr(i*90) 0 0\nscale expr(u+1) 1 1\n}\n" ) );
+		const std::string hand = DumpCst( Scene(
+			"standard_object\n{\nname g[0,0]\ngeometry geo\nmaterial m\norientation 0 0 0\nscale 1 1 1\n}\n"
+			"standard_object\n{\nname g[1,0]\ngeometry geo\nmaterial m\norientation 90 0 0\nscale 2 1 1\n}\n" ) );
+		Check( ia == hand, "passthrough: orientation/scale per-component eval == hand-written" );
+	}
+	// [collision] a generated name clashing an existing object diagnoses (the pre-check).
+	{
+		std::vector<std::string> d;
+		DumpCst( Scene(
+			"standard_object\n{\nname g[0,0]\ngeometry geo\nmaterial m\n}\n"
+			"instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u 1\n}\n" ), &d );
+		Check( !d.empty(), "collision: a generated name clashing an existing object diagnoses (no silent first-win)" );
+	}
+
 	// [incremental] an instance_array edit refuses on the O(closure) path -> full-derive fallback.
 	{
 		Document d = ParseToCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u 2\nposition expr(i) 0 0\n}\n" ) );
