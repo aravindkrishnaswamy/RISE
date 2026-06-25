@@ -134,8 +134,9 @@ int main()
 		Check( BuildReferenceGraph( docR ).stamp == g0.stamp, "graph-neutral edit (radius): stamp STABLE -> cached graph reusable" );
 		Check( SameClosure( DocEditClosure( gid, g0 ), DocEditClosure( docR, gid ) ), "reuse-on-stable-stamp: old graph yields the correct closure on the edited doc" );
 
-		// graph-CHANGING edit: re-point o2's material m -> m2.  Stamp moves -> the holder
-		// MUST rebuild; the rebuilt graph yields the new closure (m's dependents shrink).
+		// graph-CHANGING edit: re-point o2's material m -> m2.  Stamp moves -> a STAMP-GATED holder
+		// MUST rebuild (the actual MaintainedReferenceGraph updates incrementally -- see [maintained]);
+		// the rebuilt graph yields the new closure (m's dependents shrink).
 		const NodeId o2 = DocFindByName( doc, "standard_object/o2" );
 		Document docP = DocSetParamValue( doc, o2, "material", 0, "m2" );
 		const ReferenceGraph g1 = BuildReferenceGraph( docP );
@@ -280,7 +281,7 @@ int main()
 	// [maintained-incremental] (#4b) a sequence of reference + cp edits each updates the held graph
 	// INCREMENTALLY (LastEditRebuilt false) with the result EQUAL to a from-scratch BuildReferenceGraph
 	// (stamp + dependents + edges); a NAME edit falls back to a full REBUILD.  The cost counter proves
-	// the incremental edit does EXACTLY 1 ComputeChunkRefs (O(this chunk's refs)) vs N for a rebuild.
+	// the incremental edit does EXACTLY 1 ComputeChunkRefs call (vs N for a rebuild); that one call is O(this chunk's refs . log N).
 	{
 		MaintainedReferenceGraph mg( ParseToCst(
 			"RISE ASCII SCENE 6\n"
@@ -294,7 +295,7 @@ int main()
 		const unsigned long b1 = DebugChunkRefsComputed();
 		mg.SetParamValue( mId, "reflectance", 0, "p2" );
 		Check( !mg.LastEditRebuilt(), "incremental: reflectance re-point did NOT rebuild" );
-		Check( DebugChunkRefsComputed() - b1 == 1, "incremental: reflectance re-point did EXACTLY 1 ComputeChunkRefs (O(this chunk))" );
+		Check( DebugChunkRefsComputed() - b1 == 1, "incremental: reflectance re-point did EXACTLY 1 ComputeChunkRefs (1 call, not N)" );
 		Check( SameGraph( mg.Graph(), BuildReferenceGraph( mg.Doc() ) ), "incremental: reflectance re-point graph == from-scratch" );
 		// (b) reference -> none (drop the edge): incremental, the dependent is removed.
 		mg.SetParamValue( mId, "reflectance", 0, "none" );
@@ -312,7 +313,7 @@ int main()
 
 	// [maintained-incremental-cost] (#4b cost gate) the incremental reference edit's ComputeChunkRefs
 	// count is invariant to document SIZE -- 1 at a small doc AND at a 50x-larger doc -- the committed
-	// proof the maintained reference edit is O(this chunk's refs), not O(N).
+	// proof the maintained reference edit is O(this chunk's refs . log N), not O(N).
 	{
 		auto sceneOfN = []( int extra ) {
 			std::string sc = "RISE ASCII SCENE 6\n"
@@ -333,7 +334,7 @@ int main()
 			mg.SetParamValue( mId, "reflectance", 0, "p2" );
 			( pass == 0 ? deltaSmall : deltaLarge ) = DebugChunkRefsComputed() - b;
 		}
-		Check( deltaSmall == 1 && deltaLarge == 1, "cost: an incremental reference edit does 1 ComputeChunkRefs at BOTH N+4 and N+200 (O(this chunk), invariant to N)" );
+		Check( deltaSmall == 1 && deltaLarge == 1, "cost: an incremental reference edit does 1 ComputeChunkRefs at BOTH N+4 and N+200 (1 call, invariant to N)" );
 	}
 
 	// [maintained-alias-rebuild] (#4b) a reference edit on an ALIAS-involved painter (a same-name
