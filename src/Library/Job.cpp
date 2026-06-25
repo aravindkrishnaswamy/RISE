@@ -63,6 +63,67 @@ static void BumpSceneLightGen( RISE::IScenePriv* pScene )
 		sc->BumpLightTopologyGeneration();
 }
 
+// ---------------------------------------------------------------------------
+// Duplicate-name registration helpers (honor IManager::AddItem's bool).
+//
+// GenericManager::AddItem REFUSES a duplicate name (logs "Item of same name
+// already exists" + returns false).  Historically every Job::Add* IGNORED that
+// bool and returned true, so a second entity sharing a name was silently dropped
+// (first-wins) while the add still reported SUCCESS -- no parse- or derive-time
+// error.  These helpers make the add report the truth: a clear, kind-specific
+// diagnostic + a false return.  The descriptor-driven legacy parser turns that
+// false into a hard "Failed to load chunk" scene-load error (AsciiSceneParser
+// PASS-2 loop); the CST derive turns it into a refused apply (DeriveToJob breaks
+// + diagnoses; DeriveToJobIncremental rolls back).  Both derive paths share these
+// Job methods, so CstDeriveDifferentialTest stays equivalent (legacy == CST).
+// ---------------------------------------------------------------------------
+namespace {
+
+	//! Emit the canonical duplicate-name diagnostic.  Shared by the manager-backed
+	//! RegisterOrDiag below AND the mediaMap-backed medium adders (which bypass
+	//! GenericManager), so the wording can never drift between the two paths.
+	//! `what` is the human-facing entity kind ("object", "geometry", "medium", ...).
+	void DiagDuplicateName( const char* what, const char* name )
+	{
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job:: duplicate %s name `%s` -- another %s of this name already exists; "
+			"names must be unique within their kind (the duplicate was NOT added)",
+			what, name ? name : "(null)", what );
+	}
+
+	//! Register pItem in mgr under name, honoring AddItem's bool.  On refusal
+	//! (duplicate name) logs the kind-specific diagnostic and returns false.
+	//! `what` is the human-facing entity kind ("object", "geometry", ...).
+	template< class Mgr, class T >
+	bool RegisterOrDiag( Mgr* mgr, T* pItem, const char* name, const char* what )
+	{
+		if( mgr->AddItem( pItem, name ) ) {
+			return true;
+		}
+		DiagDuplicateName( what, name );
+		return false;
+	}
+
+	//! Painters dual-register: the colour-painter manager (PRIMARY, authoritative)
+	//! and the function-2D manager (SECONDARY index, so a painter is usable wherever
+	//! a 2D function is expected).  Honor the PRIMARY's bool; attach the secondary
+	//! ONLY when the primary accepted.  A duplicate painter name is refused by the
+	//! primary; a standalone function_2d already occupying the secondary slot
+	//! legitimately coexists (RemovePainter drops the secondary identity-gated), so a
+	//! secondary collision must NOT count as a painter-add failure -- which is exactly
+	//! why the secondary is gated on, and reports through, the primary.
+	bool RegisterPainterDual( IPainterManager* pnt, IFunction2DManager* f2d,
+	                          IPainter* p, const char* name )
+	{
+		if( !RegisterOrDiag( pnt, p, name, "painter" ) ) {
+			return false;
+		}
+		f2d->AddItem( p, name );   // secondary index (gated on primary; coexist-safe)
+		return true;
+	}
+
+} // anonymous namespace
+
 using namespace RISE::Implementation;
 
 // Forward declarations for scalar-painter resolution helpers — full
@@ -793,10 +854,9 @@ bool Job::AddCheckerPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateCheckerPainter( &pPainter, size, *pA, *pB );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 
@@ -820,10 +880,9 @@ bool Job::AddLinesPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateLinesPainter( &pPainter, size, *pA, *pB, bvert );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Adds a mandelbrot fractal painter
@@ -848,10 +907,9 @@ bool Job::AddMandelbrotFractalPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateMandelbrotFractalPainter( &pPainter, *pA, *pB, lower_x, upper_x, lower_y, upper_y, exp );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Adds a 2D perlin noise painter
@@ -876,10 +934,9 @@ bool Job::AddPerlin2DPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreatePerlin2DPainter( &pPainter, dPersistence, nOctaves, *pA, *pB, Vector2(vScale), Vector2(vShift) );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Adds a controlled-smoothness radial-bump painter (test/diagnostic).
@@ -909,10 +966,9 @@ bool Job::AddControlledSmoothness2DPainter(
 	if( !pPainter ) {
 		return false;
 	}
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Adds a polynomial-based Function2D painter.
@@ -951,10 +1007,9 @@ bool Job::AddPolynomialFunction2DPainter(
 	if( !pPainter ) {
 		return false;
 	}
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Adds a composable Function2D painter that combines two operand
@@ -1019,10 +1074,9 @@ bool Job::AddCompositeFunction2DPainter(
 	if( !pPainter ) {
 		return false;
 	}
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Adds a sum-of-sines water-wave painter
@@ -1062,10 +1116,9 @@ bool Job::AddGerstnerWavePainter(
 		dispersionSpeed,
 		seed,
 		time );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Adds a 2D perlin noise painter
@@ -1089,10 +1142,9 @@ bool Job::AddPerlin3DPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreatePerlin3DPainter( &pPainter, dPersistence, nOctaves, *pA, *pB, Vector3(vScale), Vector3(vShift) );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 bool Job::AddWavelet3DPainter(
@@ -1112,10 +1164,9 @@ bool Job::AddWavelet3DPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateWavelet3DPainter( &pPainter, nTileSize, dPersistence, nOctaves, *pA, *pB, Vector3(vScale), Vector3(vShift) );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 bool Job::AddReactionDiffusion3DPainter(
@@ -1138,10 +1189,9 @@ bool Job::AddReactionDiffusion3DPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateReactionDiffusion3DPainter( &pPainter, nGridSize, dDa, dDb, dFeed, dKill, nIterations, *pA, *pB, Vector3(vScale), Vector3(vShift) );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 bool Job::AddGabor3DPainter(
@@ -1165,10 +1215,9 @@ bool Job::AddGabor3DPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateGabor3DPainter( &pPainter, dFrequency, dBandwidth, Vector3(vOrientation), dImpulseDensity, *pA, *pB, Vector3(vScale), Vector3(vShift) );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 bool Job::AddSimplex3DPainter(
@@ -1190,10 +1239,9 @@ bool Job::AddSimplex3DPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateSimplex3DPainter( &pPainter, dPersistence, nOctaves, *pA, *pB, Vector3(vScale), Vector3(vShift) );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 bool Job::AddSDF3DPainter(
@@ -1220,10 +1268,9 @@ bool Job::AddSDF3DPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateSDF3DPainter( &pPainter, nType, dParam1, dParam2, dParam3, dShellThickness, dNoiseAmplitude, dNoiseFrequency, *pA, *pB, Vector3(vScale), Vector3(vShift) );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 bool Job::AddCurlNoise3DPainter(
@@ -1246,10 +1293,9 @@ bool Job::AddCurlNoise3DPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateCurlNoise3DPainter( &pPainter, dPersistence, nOctaves, dEpsilon, *pA, *pB, Vector3(vScale), Vector3(vShift) );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 bool Job::AddDomainWarp3DPainter(
@@ -1273,10 +1319,9 @@ bool Job::AddDomainWarp3DPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateDomainWarp3DPainter( &pPainter, dPersistence, nOctaves, dWarpAmplitude, nWarpLevels, *pA, *pB, Vector3(vScale), Vector3(vShift) );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 bool Job::AddPerlinWorley3DPainter(
@@ -1300,10 +1345,9 @@ bool Job::AddPerlinWorley3DPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreatePerlinWorley3DPainter( &pPainter, dPersistence, nOctaves, dWorleyJitter, dBlend, *pA, *pB, Vector3(vScale), Vector3(vShift) );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Adds a 3D Worley (cellular) noise painter
@@ -1328,10 +1372,9 @@ bool Job::AddWorley3DPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateWorley3DPainter( &pPainter, dJitter, nMetric, nOutput, *pA, *pB, Vector3(vScale), Vector3(vShift) );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Adds a 3D turbulence noise painter
@@ -1355,10 +1398,9 @@ bool Job::AddTurbulence3DPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTurbulence3DPainter( &pPainter, dPersistence, nOctaves, *pA, *pB, Vector3(vScale), Vector3(vShift) );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Adds a spectral color painter
@@ -1384,11 +1426,10 @@ bool Job::AddSpectralColorPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateSpectralColorPainter( &pPainter, spectrum, scale );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 	safe_release( pFunc );
-	return true;
+	return ok;
 }
 
 static IRasterImageAccessor* RasterImageAccessorFromChar( const char filter_type, IRasterImage& image,
@@ -1496,8 +1537,7 @@ bool Job::AddPNGTexturePainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 
 	safe_release( pRIA );
@@ -1505,7 +1545,7 @@ bool Job::AddPNGTexturePainter(
 	safe_release( pReadBuffer );
 	safe_release( pImage );
 
-	return true;
+	return ok;
 }
 
 //! Adds a PNG texture painter from an in-memory byte buffer (e.g., a
@@ -1604,8 +1644,7 @@ bool Job::AddInMemoryPNGTexturePainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 
 	safe_release( pRIA );
@@ -1613,7 +1652,7 @@ bool Job::AddInMemoryPNGTexturePainter(
 	safe_release( pMemBuffer );
 	safe_release( pImage );
 
-	return true;
+	return ok;
 }
 
 //! Adds a JPEG texture painter from an in-memory byte buffer.  See
@@ -1701,8 +1740,7 @@ bool Job::AddInMemoryJPEGTexturePainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 
 	safe_release( pRIA );
@@ -1710,7 +1748,7 @@ bool Job::AddInMemoryJPEGTexturePainter(
 	safe_release( pMemBuffer );
 	safe_release( pImage );
 
-	return true;
+	return ok;
 }
 
 //! Adds a JPEG texture painter
@@ -1789,8 +1827,7 @@ bool Job::AddJPEGTexturePainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 
 	safe_release( pRIA );
@@ -1798,7 +1835,7 @@ bool Job::AddJPEGTexturePainter(
 	safe_release( pReadBuffer );
 	safe_release( pImage );
 
-	return true;
+	return ok;
 }
 
 //! Decodes N PNG/JPEG texture painters in parallel via the global
@@ -2056,8 +2093,7 @@ bool Job::AddHDRTexturePainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 
 	safe_release( pRIA );
@@ -2065,7 +2101,7 @@ bool Job::AddHDRTexturePainter(
 	safe_release( pReadBuffer );
 	safe_release( pImage );
 
-	return true;
+	return ok;
 }
 
 //! Adds an EXR texture painter
@@ -2144,8 +2180,7 @@ bool Job::AddEXRTexturePainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 
 	safe_release( pRIA );
@@ -2153,7 +2188,7 @@ bool Job::AddEXRTexturePainter(
 	safe_release( pReadBuffer );
 	safe_release( pImage );
 
-	return true;
+	return ok;
 }
 
 //! Adds a texture painter
@@ -2231,8 +2266,7 @@ bool Job::AddTIFFTexturePainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 
 	safe_release( pRIA );
@@ -2240,7 +2274,7 @@ bool Job::AddTIFFTexturePainter(
 	safe_release( pReadBuffer );
 	safe_release( pImage );
 
-	return true;
+	return ok;
 }
 
 //! Adds a painter that paints a uniform color
@@ -2273,10 +2307,9 @@ bool Job::AddUniformColorPainter(
 		RISE_API_CreateUniformColorPainter( &pPainter, sRGBPel(pel) );
 	}
 
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 bool Job::AddVertexColorPainter(
@@ -2306,10 +2339,9 @@ bool Job::AddVertexColorPainter(
 		RISE_API_CreateVertexColorPainter( &pPainter, sRGBPel(fallback) );
 	}
 
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Adds a painter that paints a voronoi diagram
@@ -2345,11 +2377,10 @@ bool Job::AddVoronoi2DPainter(
 	IPainter* pPainter = 0;
 	RISE_API_CreateVoronoi2DPainter( &pPainter, pts, ptrs, *pBorder, bsize );
 
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 
-	return true;
+	return ok;
 }
 
 //! Adds a painter that paints a voronoi diagram in 3D
@@ -2386,11 +2417,10 @@ bool Job::AddVoronoi3DPainter(
 	IPainter* pPainter = 0;
 	RISE_API_CreateVoronoi3DPainter( &pPainter, pts, ptrs, *pBorder, bsize );
 
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 
-	return true;
+	return ok;
 }
 
 //! Adds a iridescent painter (a painter whose color changes as viewing angle changes)
@@ -2411,10 +2441,9 @@ bool Job::AddIridescentPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateIridescentPainter( &pPainter, *pA, *pB, bias );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Creates a black body radiator painter
@@ -2431,10 +2460,9 @@ bool Job::AddBlackBodyPainter(
 {
 	IPainter* pPainter = 0;
 	RISE_API_CreateBlackBodyPainter( &pPainter, temperature, lambda_begin, lambda_end, num_freq, normalize, scale );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Adds a channel-extraction painter.  See IJob.h for the doc.
@@ -2461,10 +2489,9 @@ bool Job::AddChannelPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateChannelPainter( &pPainter, *pSrc, channel, scale, bias );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Adds a TEXCOORD_1 selector painter.  See IJob.h for the doc.
@@ -2483,10 +2510,9 @@ bool Job::AddTexCoord1Painter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexCoord1Painter( &pPainter, *pSrc );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 bool Job::SetGlobalRadianceMap( IRadianceMap* pRm )
@@ -2561,10 +2587,9 @@ bool Job::AddUVTransformPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateUVTransformPainter( &pPainter, *pSrc, offset_u, offset_v, rotation, scale_u, scale_v );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Adds a blend painter
@@ -2586,10 +2611,9 @@ bool Job::AddBlendPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateBlendPainter( &pPainter, *pA, *pB, *pMask );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //
@@ -2612,10 +2636,10 @@ bool Job::AddLambertianMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateLambertianMaterial( &pMaterial, *pRef );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 	safe_release( pMaterial );
 
-	return true;
+	return ok;
 }
 
 //! Creates a Polished material
@@ -2648,14 +2672,14 @@ bool Job::AddPolishedMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreatePolishedMaterial( &pMaterial, *pRef, *pTau, *pRefract, *pScat, hg );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pTau );
 	safe_release( pRefract );
 	safe_release( pScat );
 
-	return true;
+	return ok;
 }
 
 // Resolve a `const char*` material-parameter string to an `IScalarPainter*`
@@ -2853,14 +2877,14 @@ bool Job::AddDielectricMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateDielectricMaterial( &pMaterial, *pTau, *pIor, *pScat, hg, arN, arK, arThickness );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pTau );
 	safe_release( pIor );
 	safe_release( pScat );
 
-	return true;
+	return ok;
 }
 
 //! Creates a SubSurface Scattering material
@@ -2894,14 +2918,14 @@ bool Job::AddSubSurfaceScatteringMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateSubSurfaceScatteringMaterial( &pMaterial, *pIOR, *pAbsorption, *pScattering, gVal, roughnessVal );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pIOR );
 	safe_release( pAbsorption );
 	safe_release( pScattering );
 
-	return true;
+	return ok;
 }
 
 //! Creates a Random Walk SSS material
@@ -2934,14 +2958,14 @@ bool Job::AddRandomWalkSSSMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateRandomWalkSSSMaterial( &pMaterial, *pIOR, *pAbsorption, *pScattering, gVal, roughnessVal, maxBouncesVal );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pIOR );
 	safe_release( pAbsorption );
 	safe_release( pScattering );
 
-	return true;
+	return ok;
 }
 
 //! Creates an isotropic phong material
@@ -2969,12 +2993,12 @@ bool Job::AddIsotropicPhongMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateIsotropicPhongMaterial( &pMaterial, *pRd, *pRs, *pExp );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pExp );
 
-	return true;
+	return ok;
 }
 
 //! Creates the anisotropic phong material of Ashikmin and Shirley
@@ -3008,13 +3032,13 @@ bool Job::AddAshikminShirleyAnisotropicPhongMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateAshikminShirleyAnisotropicPhongMaterial( &pMaterial, *pRd, *pRs, *pNu, *pNv );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pNu );
 	safe_release( pNv );
 
-	return true;
+	return ok;
 }
 
 //! Creates a perfect reflector
@@ -3033,10 +3057,10 @@ bool Job::AddPerfectReflectorMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreatePerfectReflectorMaterial( &pMaterial, *pRd );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 	safe_release( pMaterial );
 
-	return true;
+	return ok;
 }
 
 //! Creates a perfect refractor
@@ -3061,12 +3085,12 @@ bool Job::AddPerfectRefractorMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreatePerfectRefractorMaterial( &pMaterial, *pRd, *pIOR );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pIOR );
 	safe_release( pMaterial );
 
-	return true;
+	return ok;
 }
 
 //! Creates a translucent material
@@ -3101,14 +3125,14 @@ bool Job::AddTranslucentMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateTranslucentMaterial( &pMaterial, *pRf, *pTau, *pExt, *pN, *pScat );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pExt );
 	safe_release( pN );
 	safe_release( pScat );
 	safe_release( pMaterial );
 
-	return true;
+	return ok;
 }
 
 bool Job::AddBioSpecSkinMaterial(
@@ -3210,7 +3234,7 @@ bool Job::AddBioSpecSkinMaterial(
 		bSubdermalLayer
 		);
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	// Release the 19 resolved scalar painters — the SPF holds its
@@ -3218,7 +3242,7 @@ bool Job::AddBioSpecSkinMaterial(
 	// drops them back to refcount 1 instead of leaking at 2.
 	for( int i = 0; i < 19; ++i ) safe_release( all[i] );
 
-	return true;
+	return ok;
 }
 
 bool Job::AddDonnerJensenSkinBSSRDFMaterial(
@@ -3282,14 +3306,14 @@ bool Job::AddDonnerJensenSkinBSSRDFMaterial(
 		roughnessVal
 		);
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	// Release the 9 resolved scalar painters — the material's
 	// diffusion profile holds its own refs.
 	for( int i = 0; i < 9; ++i ) safe_release( all_dj[i] );
 
-	return true;
+	return ok;
 }
 
 //! Adds a generic human tissue material based on BioSpec
@@ -3326,12 +3350,12 @@ bool Job::AddGenericHumanTissueMaterial(
 		betacarotene_concentration_,
 		diffuse );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 	safe_release( pMaterial );
 	safe_release( pSca );
 	safe_release( pG );
 
-	return true;
+	return ok;
 }
 
 //! Adds Composite material
@@ -3365,10 +3389,10 @@ bool Job::AddCompositeMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateCompositeMaterial( &pMaterial, *pTop, *pBottom, max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion, max_translucent_recursion, thickness, *pExt );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 	safe_release( pMaterial );
 
-	return true;
+	return ok;
 }
 
 //! Adds Composite material
@@ -3397,12 +3421,12 @@ bool Job::AddWardIsotropicGaussianMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateWardIsotropicGaussianMaterial( &pMaterial, *pRd, *pRs, *pAlpha );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pAlpha );
 
-	return true;
+	return ok;
 }
 
 //! Adds Ward's anisotropic elliptical gaussian material
@@ -3436,13 +3460,13 @@ bool Job::AddWardAnisotropicEllipticalGaussianMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateWardAnisotropicEllipticalGaussianMaterial( &pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pAlphaX );
 	safe_release( pAlphaY );
 
-	return true;
+	return ok;
 }
 
 //! Adds Cook Torrance material
@@ -3578,7 +3602,7 @@ bool Job::AddGGXMaterial(
 	RISE_API_CreateGGXMaterialThinFilm( &pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt,
 		resolvedFresnel, pTangentRotation, pFilmIOR, pFilmExt, pFilmThk );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pAlphaX );
@@ -3590,7 +3614,7 @@ bool Job::AddGGXMaterial(
 	safe_release( pFilmExt );
 	safe_release( pFilmThk );
 
-	return true;
+	return ok;
 }
 
 //! AddGGXEmissiveMaterial -- GGX with an optional LambertianEmitter folded
@@ -3717,7 +3741,7 @@ bool Job::AddGGXEmissiveMaterial(
 		&pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt, pEmissive, emissive_scale,
 		resolvedFresnel, pTangentRotation, pFilmIOR, pFilmExt, pFilmThk );
 
-	const bool added = pMatManager->AddItem( pMaterial, name );
+	const bool added = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 	// Only mark as composed when AddItem actually registered the
 	// new material — a duplicate-name failure (existing direct
 	// material under the same name) would otherwise mark THAT
@@ -3991,7 +4015,7 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 		ResolveFresnelMode( "schlick_f0" ),
 		pTangentRotation );
 
-	const bool added = pMatManager->AddItem( pMaterial, name );
+	const bool added = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 	// Only mark as composed on successful registration — see the
 	// matching guard in AddGGXEmissiveMaterial for rationale.
 	if( added ) {
@@ -4029,11 +4053,11 @@ bool Job::AddSheenMaterial(
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateSheenMaterial( &pMaterial, *pColor, *pRoughness );
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pRoughness );
-	return true;
+	return ok;
 }
 
 bool Job::AddCookTorranceMaterial(
@@ -4069,14 +4093,14 @@ bool Job::AddCookTorranceMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateCookTorranceMaterial( &pMaterial, *pRd, *pRs, *pFacet, *pIOR, *pExt );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pFacet );
 	safe_release( pIOR );
 	safe_release( pExt );
 
-	return true;
+	return ok;
 }
 
 //! Adds Oren-Nayar material
@@ -4102,12 +4126,12 @@ bool Job::AddOrenNayarMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateOrenNayarMaterial( &pMaterial, *pRef, *pRoughness );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pRoughness );
 
-	return true;
+	return ok;
 }
 
 //! Adds Schlick material
@@ -4141,13 +4165,13 @@ bool Job::AddSchlickMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateSchlickMaterial( &pMaterial, *pRd, *pRs, *pRoughness, *pIsotropy );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pRoughness );
 	safe_release( pIsotropy );
 
-	return true;
+	return ok;
 }
 
 //! Adds a data driven material
@@ -4160,10 +4184,10 @@ bool Job::AddDataDrivenMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateDataDrivenMaterial( &pMaterial, filename );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
-    return true;
+    return ok;
 }
 
 //! Creates a lambertian luminaire material
@@ -4185,10 +4209,10 @@ bool Job::AddLambertianLuminaireMaterial(
 	IMaterial* pLumMaterial = 0;
 	RISE_API_CreateLambertianLuminaireMaterial( &pLumMaterial, *pRadEx, *pMaterial, scale );
 
-	pMatManager->AddItem( pLumMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pLumMaterial, name, "material" );
 	safe_release( pLumMaterial );
 
-	return true;
+	return ok;
 }
 
 //! Creates a phong luminaire material
@@ -4216,12 +4240,12 @@ bool Job::AddPhongLuminaireMaterial(
 	IMaterial* pLumMaterial = 0;
 	RISE_API_CreatePhongLuminaireMaterial( &pLumMaterial, *pRadEx, *pMaterial, *pN, scale );
 
-	pMatManager->AddItem( pLumMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pLumMaterial, name, "material" );
 
 	safe_release( pN );
 	safe_release( pLumMaterial );
 
-	return true;
+	return ok;
 }
 
 
@@ -4241,9 +4265,9 @@ bool Job::AddBoxGeometry(
 	IGeometry* pGeometry = 0;
 	RISE_API_CreateBoxGeometry( &pGeometry, width, height, depth );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Creates a circular disk at the origin
@@ -4257,9 +4281,9 @@ bool Job::AddCircularDiskGeometry(
 	IGeometry* pGeometry = 0;
 	RISE_API_CreateCircularDiskGeometry( &pGeometry, radius, axis );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Creates a clipped plane, defined by four points
@@ -4281,9 +4305,9 @@ bool Job::AddClippedPlaneGeometry(
 	pts[3] = Point3( ptD );
 	RISE_API_CreateClippedPlaneGeometry( &pGeometry, pts, doublesided );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Creates a Cylinder at the origin
@@ -4298,9 +4322,9 @@ bool Job::AddCylinderGeometry(
 	IGeometry* pGeometry = 0;
 	RISE_API_CreateCylinderGeometry( &pGeometry, axis, radius, height );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Creates an infinite plane that passes through the origin
@@ -4315,9 +4339,9 @@ bool Job::AddInfinitePlaneGeometry(
 	IGeometry* pGeometry = 0;
 	RISE_API_CreateInfinitePlaneGeometry( &pGeometry, xt, yt );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Creates a sphere at the origin
@@ -4330,9 +4354,9 @@ bool Job::AddSphereGeometry(
 	IGeometry* pGeometry = 0;
 	RISE_API_CreateSphereGeometry( &pGeometry, radius );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Creates an ellipsoid at the origin
@@ -4345,9 +4369,9 @@ bool Job::AddEllipsoidGeometry(
 	IGeometry* pGeometry = 0;
 	RISE_API_CreateEllipsoidGeometry( &pGeometry, Vector3(radii) );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Creates a torus at the origin
@@ -4361,9 +4385,9 @@ bool Job::AddTorusGeometry(
 	IGeometry* pGeometry = 0;
 	RISE_API_CreateTorusGeometry( &pGeometry, majorRad, minorRad );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Adds a signed-distance-field (implicit) geometry from inline part lines
@@ -4393,9 +4417,9 @@ bool Job::AddSDFGeometry( const char* name, const char* szFileName, const char* 
 			maxSteps, surfaceEpsilonFraction, samplingDetail ) ) {
 		return false;   // the factory already logged the source / line / token reason
 	}
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Heightfield SDF geometry: the exact analytic surface z = scale*field(u,v),
@@ -4416,9 +4440,9 @@ bool Job::AddSDFHeightfieldGeometry( const char* name, const char* heightfieldFu
 	if( !RISE_API_CreateSDFHeightfieldGeometry( &pGeometry, pField, radius, scale, maxSteps, surfaceEpsilonFraction, samplingDetail ) ) {
 		return false;   // the factory already logged why
 	}
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 bool Job::AddCartesianDiskGeometry( const char* name, const double radius, const int meshN )
@@ -4427,9 +4451,9 @@ bool Job::AddCartesianDiskGeometry( const char* name, const double radius, const
 	if( !RISE_API_CreateCartesianDiskGeometry( &pGeometry, radius, meshN ) ) {
 		return false;   // the factory already logged why
 	}
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 bool Job::AddFunction2DColorPainter( const char* name, const char* szFunction, const double scale, const double bias )
@@ -4445,10 +4469,9 @@ bool Job::AddFunction2DColorPainter( const char* name, const char* szFunction, c
 	if( !RISE_API_CreateFunction2DColorPainter( &pPainter, pFunc, scale, bias ) ) {
 		return false;
 	}
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 bool Job::AddSweepGeometry( const char* name, const SweepDescriptor& desc )
@@ -4457,9 +4480,9 @@ bool Job::AddSweepGeometry( const char* name, const SweepDescriptor& desc )
 	if( !RISE_API_CreateSweepGeometry( &pGeometry, desc ) ) {
 		return false;   // the factory already logged why
 	}
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 bool Job::AddPathInstancesGeometry( const char* name, const char* szTemplate, const PathInstancesDescriptor& desc )
@@ -4477,9 +4500,9 @@ bool Job::AddPathInstancesGeometry( const char* name, const char* szTemplate, co
 	if( !RISE_API_CreatePathInstancesGeometry( &pGeometry, d ) ) {
 		return false;   // the factory already logged why
 	}
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Adds a triangle mesh geometry from the pointers passed it
@@ -4580,7 +4603,7 @@ bool Job::Add3DSTriangleMeshGeometry(
 
 	bool bRet = pLoader->LoadTriangleMesh( pGeometry );
 	if( bRet ) {
-		pGeomManager->AddItem( pGeometry, name );
+		bRet = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	}
 
 	safe_release( pGeometry );
@@ -4606,7 +4629,7 @@ bool Job::AddRAWTriangleMeshGeometry(
 
 	bool bRet = pLoader->LoadTriangleMesh( pGeometry );
 	if( bRet ) {
-		pGeomManager->AddItem( pGeometry, name );
+		bRet = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	}
 
 	safe_release( pGeometry );
@@ -4634,7 +4657,7 @@ bool Job::AddRAW2TriangleMeshGeometry(
 
 	bool bRet = pLoader->LoadTriangleMesh( pGeometry );
 	if( bRet ) {
-		pGeomManager->AddItem( pGeometry, name );
+		bRet = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	}
 
 	safe_release( pGeometry );
@@ -4662,7 +4685,7 @@ bool Job::AddPLYTriangleMeshGeometry(
 
 	bool bRet = pLoader->LoadTriangleMesh( pGeometry );
 	if( bRet ) {
-		pGeomManager->AddItem( pGeometry, name );
+		bRet = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	}
 
 	safe_release( pGeometry );
@@ -4923,9 +4946,9 @@ bool Job::AddBezierPatchGeometry(
 
 	fclose( inputFile );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Creates a bilinear patch geometry
@@ -4979,9 +5002,9 @@ bool Job::AddBilinearPatchGeometry(
 		pGeometry->Prepare();
 	}
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 bool Job::AddDisplacedGeometry(
@@ -5025,9 +5048,9 @@ bool Job::AddDisplacedGeometry(
 		return false;
 	}
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //
@@ -5048,9 +5071,9 @@ bool Job::AddPointOmniLight(
 	RISE_API_CreatePointOmniLight( &pLight, power, sRGBPel(srgb), shootPhotons );
 	pLight->SetPosition( Point3( pos ) );
 	pLight->FinalizeTransformations();
-	pLightManager->AddItem( pLight, name );   // H3: self-invalidates (LightManager::AddItem bumps the gen)
+	const bool ok = RegisterOrDiag( pLightManager, pLight, name, "light" );   // H3: LightManager::AddItem self-invalidates the light-topology gen on success
 	safe_release( pLight );
-	return true;
+	return ok;
 }
 
 //! Creates a infinite point spot light
@@ -5070,9 +5093,9 @@ bool Job::AddPointSpotLight(
 	RISE_API_CreatePointSpotLight( &pLight, power, sRGBPel(srgb), Point3(foc), inner, outer, shootPhotons );
 	pLight->SetPosition( Point3( pos ) );
 	pLight->FinalizeTransformations();
-	pLightManager->AddItem( pLight, name );   // H3: self-invalidates (LightManager::AddItem bumps the gen)
+	const bool ok = RegisterOrDiag( pLightManager, pLight, name, "light" );   // H3: LightManager::AddItem self-invalidates the light-topology gen on success
 	safe_release( pLight );
-	return true;
+	return ok;
 }
 
 //! Creates the ambient light
@@ -5085,9 +5108,9 @@ bool Job::AddAmbientLight(
 {
 	ILightPriv* pLight = 0;
 	RISE_API_CreateAmbientLight( &pLight, power, sRGBPel(srgb) );
-	pLightManager->AddItem( pLight, name );   // H3: self-invalidates (LightManager::AddItem bumps the gen)
+	const bool ok = RegisterOrDiag( pLightManager, pLight, name, "light" );   // H3: LightManager::AddItem self-invalidates the light-topology gen on success
 	safe_release( pLight );
-	return true;
+	return ok;
 }
 
 //! Adds an infinite directional light, shining in a particular direction
@@ -5101,9 +5124,9 @@ bool Job::AddDirectionalLight(
 {
 	ILightPriv* pLight = 0;
 	RISE_API_CreateDirectionalLight( &pLight, power, sRGBPel(srgb), Vector3(dir) );
-	pLightManager->AddItem( pLight, name );   // H3: self-invalidates (LightManager::AddItem bumps the gen)
+	const bool ok = RegisterOrDiag( pLightManager, pLight, name, "light" );   // H3: LightManager::AddItem self-invalidates the light-topology gen on success
 	safe_release( pLight );
-	return true;
+	return ok;
 }
 
 //
@@ -5135,13 +5158,13 @@ bool Job::AddPiecewiseLinearFunction(
 	IPainter* pPainter = 0;
 	RISE_API_CreateFunction1DSpectralPainter( &pPainter, *pFunction );
 
-	pPntManager->AddItem( pPainter, name );
+	const bool ok = RegisterOrDiag( pPntManager, pPainter, name, "function" );
 	safe_release( pPainter );
 
-	pFunc1DManager->AddItem( pFunction, name );
+	if( ok ) pFunc1DManager->AddItem( pFunction, name );   // primary's source func1D, gated on the painter add; its own bool stays intentionally unchecked -- a remove-then-re-add leaves a stale func1D (documented known limitation; see RemovePainter)
 	safe_release( pFunction );
 
-	return true;
+	return ok;
 }
 
 //! Adds a 2D piecewise linear function built up of other functions
@@ -5164,10 +5187,10 @@ bool Job::AddPiecewiseLinearFunction2D(
 		pFunction->addControlPoint( x[i], pFunc );
 	}
 
-	pFunc2DManager->AddItem( pFunction, name );
+	const bool ok = RegisterOrDiag( pFunc2DManager, pFunction, name, "function" );
 	safe_release( pFunction );
 
-	return true;
+	return ok;
 }
 
 //
@@ -5189,9 +5212,9 @@ bool Job::AddBumpMapModifier(
 	IRayIntersectionModifier* pModifier = 0;
 	RISE_API_CreateBumpMapModifier( &pModifier, *pFunc, scale, window );
 
-	pModManager->AddItem( pModifier, name );
+	const bool ok = RegisterOrDiag( pModManager, pModifier, name, "modifier" );
 	safe_release( pModifier );
-	return true;
+	return ok;
 }
 
 bool Job::AddNormalMapModifier(
@@ -5210,9 +5233,9 @@ bool Job::AddNormalMapModifier(
 	IRayIntersectionModifier* pModifier = 0;
 	RISE_API_CreateNormalMapModifier( &pModifier, *pPainter, scale );
 
-	pModManager->AddItem( pModifier, name );
+	const bool ok = RegisterOrDiag( pModManager, pModifier, name, "modifier" );
 	safe_release( pModifier );
-	return true;
+	return ok;
 }
 
 //
@@ -5288,11 +5311,11 @@ bool Job::AddObject(
 		object->ResetRuntimeData();   // stable object re-pointed: already in the manager, manager owns it; reset stale caches
 		return true;
 	}
-	pObjectManager->AddItem( object, name );
-	if( object->GetMaterial() && object->GetMaterial()->GetEmitter() )
+	const bool ok = RegisterOrDiag( pObjectManager, object, name, "object" );
+	if( ok && object->GetMaterial() && object->GetMaterial()->GetEmitter() )
 		BumpSceneLightGen( pScene );   // P2a: added an emissive object (mesh luminary)
 	safe_release( object );
-	return true;
+	return ok;
 }
 
 bool Job::AddObjectMatrix(
@@ -5359,11 +5382,11 @@ bool Job::AddObjectMatrix(
 		object->ResetRuntimeData();
 		return true;
 	}
-	pObjectManager->AddItem( object, name );
-	if( object->GetMaterial() && object->GetMaterial()->GetEmitter() )
+	const bool ok = RegisterOrDiag( pObjectManager, object, name, "object" );
+	if( ok && object->GetMaterial() && object->GetMaterial()->GetEmitter() )
 		BumpSceneLightGen( pScene );   // P2a: added an emissive object (mesh luminary)
 	safe_release( object );
-	return true;
+	return ok;
 }
 
 ///////////////////////////////////////////////////////////
@@ -5399,14 +5422,16 @@ bool Job::AddHomogeneousMedium(
 
 	safe_release( pPhase );
 
-	// Store in our map
-	MediumMap::iterator existing = mediaMap.find( name );
-	if( existing != mediaMap.end() ) {
-		safe_release( existing->second );
-		existing->second = pMedium;
-	} else {
-		mediaMap[name] = pMedium;
+	// Store in our map.  Reject a duplicate name: media bypass GenericManager
+	// (they live in mediaMap), so the "unique within their kind" contract that
+	// every manager-backed Job::Add* now enforces is honored explicitly here
+	// (previously a duplicate medium silently LAST-won and reported success).
+	if( mediaMap.find( name ) != mediaMap.end() ) {
+		DiagDuplicateName( "medium", name );
+		safe_release( pMedium );
+		return false;
 	}
+	mediaMap[name] = pMedium;
 	if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( pMedium ) );   // D35: PRODUCED medium (mediaMap bypasses GenericManager)
 
 	return true;
@@ -5467,14 +5492,16 @@ bool Job::AddHeterogeneousMedium(
 
 	safe_release( pPhase );
 
-	// Store in our map
-	MediumMap::iterator existing = mediaMap.find( name );
-	if( existing != mediaMap.end() ) {
-		safe_release( existing->second );
-		existing->second = pMedium;
-	} else {
-		mediaMap[name] = pMedium;
+	// Store in our map.  Reject a duplicate name: media bypass GenericManager
+	// (they live in mediaMap), so the "unique within their kind" contract that
+	// every manager-backed Job::Add* now enforces is honored explicitly here
+	// (previously a duplicate medium silently LAST-won and reported success).
+	if( mediaMap.find( name ) != mediaMap.end() ) {
+		DiagDuplicateName( "medium", name );
+		safe_release( pMedium );
+		return false;
 	}
+	mediaMap[name] = pMedium;
 	if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( pMedium ) );   // D35: PRODUCED medium (mediaMap bypasses GenericManager)
 
 	return true;
@@ -5537,14 +5564,16 @@ bool Job::AddPainterHeterogeneousMedium(
 
 	safe_release( pPhase );
 
-	// Store in our map
-	MediumMap::iterator existing = mediaMap.find( name );
-	if( existing != mediaMap.end() ) {
-		safe_release( existing->second );
-		existing->second = pMedium;
-	} else {
-		mediaMap[name] = pMedium;
+	// Store in our map.  Reject a duplicate name: media bypass GenericManager
+	// (they live in mediaMap), so the "unique within their kind" contract that
+	// every manager-backed Job::Add* now enforces is honored explicitly here
+	// (previously a duplicate medium silently LAST-won and reported success).
+	if( mediaMap.find( name ) != mediaMap.end() ) {
+		DiagDuplicateName( "medium", name );
+		safe_release( pMedium );
+		return false;
 	}
+	mediaMap[name] = pMedium;
 	if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( pMedium ) );   // D35: PRODUCED medium (mediaMap bypasses GenericManager)
 
 	return true;
@@ -5669,6 +5698,7 @@ bool Job::AddCSGObject(
 	// From here on nothing can fail.
 	IObjectPriv* object = 0;
 	bool repoint = false;
+	bool ok = true;   // re-point path always succeeds (object already in manager); create path sets this from AddItem
 	if( m_bIncrementalRepoint ) {
 		object = pObjectManager->GetItem( name );
 		repoint = ( object != 0 && dynamic_cast<CSGObject*>( object ) != 0 );
@@ -5702,13 +5732,13 @@ bool Job::AddCSGObject(
 		// caller's closure-gated invariant pass handles the light-topology bump (via wasEmissive),
 		// so -- like AddObject's re-point branch -- skip the create-path BumpSceneLightGen here.
 	} else {
-		pObjectManager->AddItem( object, name );
-		if( object->GetMaterial() && object->GetMaterial()->GetEmitter() )
+		ok = RegisterOrDiag( pObjectManager, object, name, "object" );
+		if( ok && object->GetMaterial() && object->GetMaterial()->GetEmitter() )
 			BumpSceneLightGen( pScene );   // P2a: added an emissive object (mesh luminary)
 		safe_release( object );
 	}
 
-	return true;
+	return ok;
 }
 
 //
@@ -5721,9 +5751,9 @@ bool Job::AddReflectionShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateReflectionShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddRefractionShaderOp(
@@ -5733,9 +5763,9 @@ bool Job::AddRefractionShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateRefractionShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddEmissionShaderOp(
@@ -5745,9 +5775,9 @@ bool Job::AddEmissionShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateEmissionShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddDirectLightingShaderOp(
@@ -5763,9 +5793,9 @@ bool Job::AddDirectLightingShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateDirectLightingShaderOp( &pShaderOp, pBSDF );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddCausticPelPhotonMapShaderOp(
@@ -5775,9 +5805,9 @@ bool Job::AddCausticPelPhotonMapShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateCausticPelPhotonMapShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddCausticSpectralPhotonMapShaderOp(
@@ -5787,9 +5817,9 @@ bool Job::AddCausticSpectralPhotonMapShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateCausticSpectralPhotonMapShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddGlobalPelPhotonMapShaderOp(
@@ -5799,9 +5829,9 @@ bool Job::AddGlobalPelPhotonMapShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateGlobalPelPhotonMapShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddGlobalSpectralPhotonMapShaderOp(
@@ -5811,9 +5841,9 @@ bool Job::AddGlobalSpectralPhotonMapShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateGlobalSpectralPhotonMapShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddTranslucentPelPhotonMapShaderOp(
@@ -5823,9 +5853,9 @@ bool Job::AddTranslucentPelPhotonMapShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateTranslucentPelPhotonMapShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddShadowPhotonMapShaderOp(
@@ -5835,9 +5865,9 @@ bool Job::AddShadowPhotonMapShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateShadowPhotonMapShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddDistributionTracingShaderOp(
@@ -5854,9 +5884,9 @@ bool Job::AddDistributionTracingShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateDistributionTracingShaderOp( &pShaderOp, samples, irradiancecaching, forcecheckemitters, reflections, refractions, diffuse, translucents );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddFinalGatherShaderOp(
@@ -5872,9 +5902,9 @@ bool Job::AddFinalGatherShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateFinalGatherShaderOp( &pShaderOp, numtheta, numphi, cachegradients, min_effective_contributors, high_variation_reuse_scale, cache );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddPathTracingShaderOp(
@@ -5888,9 +5918,9 @@ bool Job::AddPathTracingShaderOp(
 {
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreatePathTracingShaderOp( &pShaderOp, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddSMSShaderOp(
@@ -5903,9 +5933,9 @@ bool Job::AddSMSShaderOp(
 {
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateSMSShaderOp( &pShaderOp, maxIterations, threshold, maxChainDepth, biased );
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddAmbientOcclusionShaderOp(
@@ -5919,9 +5949,9 @@ bool Job::AddAmbientOcclusionShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateAmbientOcclusionShaderOp( &pShaderOp, numtheta, numphi, multiplybrdf, irradiance_cache );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddSimpleSubSurfaceScatteringShaderOp(
@@ -5949,9 +5979,9 @@ bool Job::AddSimpleSubSurfaceScatteringShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateSimpleSubSurfaceScatteringShaderOp( &pShaderOp, numPoints, error, maxPointsPerNode, maxDepth, irrad_scale, geometric_scale, multiplyBSDF, regenerate, *pShader, cache, low_discrepancy, RISEPel(extinction) );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddDiffusionApproximationSubSurfaceScatteringShaderOp(
@@ -5982,9 +6012,9 @@ bool Job::AddDiffusionApproximationSubSurfaceScatteringShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateDiffusionApproximationSubSurfaceScatteringShaderOp( &pShaderOp, numPoints, error, maxPointsPerNode, maxDepth, irrad_scale, geometric_scale, multiplyBSDF, regenerate, *pShader, cache, low_discrepancy, RISEPel(scattering), RISEPel(absorption), ior, g );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddDonnerJensenSkinSSSShaderOp(
@@ -6033,9 +6063,9 @@ bool Job::AddDonnerJensenSkinSSSShaderOp(
 		pOffMel, pOffHbEpi, pOffHbDerm );
 	GlobalLog()->PrintNew( pShaderOp, __FILE__, __LINE__, "donner jensen skin sss shaderop" );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddAreaLightShaderOp(
@@ -6072,10 +6102,10 @@ bool Job::AddAreaLightShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateAreaLightShaderOp( &pShaderOp, width, height, Point3(location), Vector3Ops::Normalize(Vector3(dir)), samples, *pEmm, power, *pN, hotSpot, cache );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
 	safe_release( pN );
-	return true;
+	return ok;
 }
 
 bool Job::AddTransparencyShaderOp(
@@ -6093,9 +6123,9 @@ bool Job::AddTransparencyShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateTransparencyShaderOp( &pShaderOp, *pTrans, one_sided );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddAlphaTestShaderOp(
@@ -6113,9 +6143,9 @@ bool Job::AddAlphaTestShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateAlphaTestShaderOp( &pShaderOp, *pAlpha, cutoff );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 //
@@ -6205,9 +6235,9 @@ bool Job::AddStandardShader(
 
 	RISE_API_CreateStandardShader( &pShader, shops );
 
-	pShaderManager->AddItem( pShader, name );
+	const bool ok = RegisterOrDiag( pShaderManager, pShader, name, "shader" );
 	safe_release( pShader );
-	return true;
+	return ok;
 }
 
 bool Job::AddAdvancedShader(
@@ -6238,9 +6268,9 @@ bool Job::AddAdvancedShader(
 
 	RISE_API_CreateAdvancedShader( &pShader, shops, mins, maxs, operations );
 
-	pShaderManager->AddItem( pShader, name );
+	const bool ok = RegisterOrDiag( pShaderManager, pShader, name, "shader" );
 	safe_release( pShader );
-	return true;
+	return ok;
 }
 
 bool Job::AddDirectVolumeRenderingShader(
@@ -6302,9 +6332,9 @@ bool Job::AddDirectVolumeRenderingShader(
 	RISE_API_CreateDirectVolumeRenderingShader( &pShader, szVolumeFilePattern, width, height, startz, endz, accessor,
 		gradient, composite, dThresholdStart, dThresholdEnd, *pSampler, *pRed, *pGreen, *pBlue, *pAlpha, pISOShader );
 
-	pShaderManager->AddItem( pShader, name );
+	const bool ok = RegisterOrDiag( pShaderManager, pShader, name, "shader" );
 	safe_release( pShader );
-	return true;
+	return ok;
 }
 
 bool Job::AddSpectralDirectVolumeRenderingShader(
@@ -6368,9 +6398,9 @@ bool Job::AddSpectralDirectVolumeRenderingShader(
 	RISE_API_CreateSpectralDirectVolumeRenderingShader( &pShader, szVolumeFilePattern, width, height, startz, endz, accessor,
 		gradient, composite, dThresholdStart, dThresholdEnd, *pSampler, *pAlpha, *pSpectral, pISOShader );
 
-	pShaderManager->AddItem( pShader, name );
+	const bool ok = RegisterOrDiag( pShaderManager, pShader, name, "shader" );
 	safe_release( pShader );
-	return true;
+	return ok;
 }
 
 //

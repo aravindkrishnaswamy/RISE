@@ -1253,9 +1253,11 @@ static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, 
 	const int countV = countV_raw.empty() ? 1 : evalCount( countV_raw, "count_v" );
 	if( !countOk ) return false;
 	if( (long long)countU * (long long)countV > 10000000LL ) { diags.push_back( "instance_array '" + name + "': count_u*count_v exceeds 10,000,000 instances" ); return false; }
-	IJobPriv* priv = dynamic_cast<IJobPriv*>( &pJob );          // collision pre-check (best-effort): a generated name
-	IObjectManager* objMgr = priv ? priv->GetObjects() : 0;     // clashing an existing object would otherwise silently
-	                                                            // first-win (Job::AddObject ignores AddItem's bool).
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( &pJob );          // collision pre-check: emit a generator-localized diagnostic
+	IObjectManager* objMgr = priv ? priv->GetObjects() : 0;     // (names the exact generated index that clashes) BEFORE building
+	                                                            // the synthesized object.  Job::AddObject now also rejects a
+	                                                            // duplicate name (honors AddItem's bool), so this is the clearer
+	                                                            // early diagnostic, no longer the sole guard against a silent first-win.
 	for( int j = 0; j < countV; ++j ) {
 		for( int i = 0; i < countU; ++i ) {
 			const double u = ( countU > 1 ) ? (double)i / (double)( countU - 1 ) : 0.0;
