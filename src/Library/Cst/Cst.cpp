@@ -25,6 +25,7 @@
 #include "../Objects/CSGObject.h"         // workstream #3c: detect a CSG operand-reference change (GetOperandA/B) to refuse it
 #include "../Parsers/ChunkParserRegistry.h"   // CreateAllChunkParsers (the LIVE registry)
 #include "../Parsers/IAsciiChunkParser.h"     // IAsciiChunkParser, DispatchChunkParameters
+#include "../Painters/ExpressionEval.h"      // ExpressionProgram (expr(...) derive-time eval, #5 slice 2)
 
 #include <algorithm>
 #include <cstdlib>
@@ -967,6 +968,44 @@ static const std::map<std::string, const IAsciiChunkParser*>& DescriptorRegistry
 //! Returns the parser (caller constructs the bag + dispatches + Finalizes) or
 //! null + a diagnostic on an unknown chunk type. (Value-less-param diagnostics
 //! are pushed even when the parser resolves, matching the legacy reject.)
+//! #5 slice 2 -- the expr(...) value sublanguage (Facet 1 owns PARSING+the canonical derive-time
+//! evaluation; the editor's incremental traced-input invalidation is deferred Facet-2/D4 work).
+//! If `value` is exactly `expr( <arithmetic> )`, evaluate it via the shared ExpressionProgram and
+//! return the numeric literal in `outLit` (so the descriptor parser sees a number -- exactly what
+//! the v6->v7 migrator would bake).  A non-expr value returns false + is passed through VERBATIM
+//! (so non-expr scenes are byte-identical, the CstDeriveDifferentialTest gate).  A malformed /
+//! non-finite expr pushes a diagnostic + returns false -> the value stays `expr(...)`, which the
+//! descriptor parser then rejects -> the caller's refuse-all applies NOTHING (no silent bad value).
+static bool TryEvalExprValue( const std::string& value, std::string& outLit,
+                              std::vector<std::string>& diags, const std::string& kw, const std::string& pname )
+{
+	if( value.size() < 6 || value.compare( 0, 5, "expr(" ) != 0 || value.back() != ')' ) return false;
+	// The opening '(' (index 4) must balance to the FINAL ')' -- so `expr(a)+expr(b)` or `expr(a) x`
+	// is NOT taken as a single expr value (it falls through to the descriptor parser's rejection).
+	int depth = 0; size_t lastClose = std::string::npos;
+	for( size_t k = 4; k < value.size(); ++k ) {
+		if( value[k] == '(' ) ++depth;
+		else if( value[k] == ')' ) { if( --depth == 0 ) { lastClose = k; break; } }
+	}
+	if( lastClose != value.size() - 1 ) return false;
+	const std::string body = value.substr( 5, value.size() - 6 );   // between `expr(` and the final `)`
+	RISE::Implementation::ExpressionProgram prog = RISE::Implementation::ExpressionProgram::Invalid();
+	RISE::Implementation::ExpressionProgram::Builder b;
+	if( !b.Finalize( body, prog ) || !prog.IsValid() ) {
+		diags.push_back( kw + "." + pname + ": expr(...) failed to compile: " + prog.Error() );
+		return false;
+	}
+	const Scalar r = prog.Eval( 0, 0 );   // no instance vars yet -- u/v unused by a constant expr
+	if( !RISE::Implementation::ExpressionProgram::IsFinite( r ) ) {
+		diags.push_back( kw + "." + pname + ": expr(...) evaluated to a non-finite value" );
+		return false;
+	}
+	char buf[64];
+	std::snprintf( buf, sizeof(buf), "%.17g", (double)r );   // round-trips the double exactly
+	outLit = buf;
+	return true;
+}
+
 static const IAsciiChunkParser* ResolveChunkParams(
 	const NodeRef& c,
 	const std::map<std::string, const IAsciiChunkParser*>& registry,
@@ -981,12 +1020,19 @@ static const IAsciiChunkParser* ResolveChunkParams(
 			diags.push_back( kw + ": value-less parameter '" + kid->text + "'" );
 	for( const auto& kid : c->kids )
 		if( kid->kind == NodeKind::Param ) {
-			std::string line;
+			std::string pname, value;
+			bool first = true;
 			for( const auto& tk : kid->kids )
 				if( tk->kind == NodeKind::Token ) {            // pname + pvalue tokens; skip trivia
-					if( !line.empty() ) line += ' ';
-					line += tk->text;
+					if( first ) { pname = tk->text; first = false; }
+					else { if( !value.empty() ) value += ' '; value += tk->text; }
 				}
+			// #5 slice 2: an expr(...) value -> a numeric literal (Facet-1 derive-time eval); a non-expr
+			// value is passed through verbatim, so non-expr scenes stay byte-identical to legacy.
+			std::string lit;
+			if( TryEvalExprValue( value, lit, diags, kw, pname ) ) value = lit;
+			std::string line = pname;
+			if( !value.empty() ) { line += ' '; line += value; }
 			plist.push_back( String( line.c_str() ) );
 		}
 	return it->second;
