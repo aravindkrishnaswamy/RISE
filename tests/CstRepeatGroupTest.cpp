@@ -81,6 +81,11 @@ int main()
 	{ NodeRef n; DocRepeatElementId( doc, fId, "cp", 9, &n ); Check( !n, "addressing: out-of-range leaves outParam null" ); }
 	Check( DocRepeatElementId( doc, fId, "nonesuch", 0 ) == 0, "addressing: an absent role -> 0" );
 
+	// [edge] an absent / non-chunk chunkId -> empty view / 0 (the guard branch).
+	Check( DocRepeatGroup( doc, 999999, "cp" ).occurrences.empty(), "edge: an absent chunkId -> empty view" );
+	Check( DocRepeatCount( doc, 999999, "cp" ) == 0, "edge: an absent chunkId -> count 0" );
+	Check( DocRepeatElementId( doc, 999999, "cp", 0 ) == 0, "edge: an absent chunkId -> 0" );
+
 	// [order] editing occ=0 changes the FIRST cp (document order); the rest intact.
 	{
 		Document d0 = DocSetParamValue( doc, fId, "cp", 0, "9 9" );

@@ -481,10 +481,12 @@ namespace RISE
 		NodeId DocParamId( const Document& doc, NodeId chunkId, const std::string& role, int occ = 0 );
 
 		//! RepeatGroup view (D3): all occurrences of a repeatable parameter `role` in chunk `chunkId`,
-		//! as a read-through SNAPSHOT over the document-ordered Param children (NOT a stored node --
+		//! as a POINT-IN-TIME SNAPSHOT over the document-ordered Param children (NOT a stored node --
 		//! document order stays canonical, D3).  `occurrences[k]` is the k-th Param green node;
 		//! `occurrenceIds[k]` its stable per-occurrence NodeId (parallel arrays).  The basis for
 		//! per-element name-path addressing `chunk.role[k]` (e.g. `geometry/dial.part[3]`).
+		//! The snapshot does NOT track later edits (the handles are into the immutable tree it was
+		//! built from); rebuild it against the current Document after an edit.
 		struct RepeatGroupView {
 			NodeId               chunkId;
 			std::string          role;
@@ -492,7 +494,8 @@ namespace RISE
 			std::vector<NodeId>  occurrenceIds;   //!< each occurrence's stable NodeId (parallel to `occurrences`)
 		};
 
-		//! Build the RepeatGroup view for (chunkId, role).  O(log N to the chunk + occurrences-in-chunk).
+		//! Build the RepeatGroup view for (chunkId, role).  O(log N to resolve the chunk + the chunk's
+		//! child count, with an O(log N) id lookup per occurrence).
 		RepeatGroupView DocRepeatGroup( const Document& doc, NodeId chunkId, const std::string& role );
 
 		//! The number of `role` occurrences in `chunkId` -- the `[]` bound for element addressing.
