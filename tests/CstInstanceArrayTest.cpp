@@ -269,6 +269,15 @@ int main()
 		Check( d2.instanceArrayCount == 1, "replace: a same-role value edit (count_u) on the array keeps count == 1 (nets 0)" );
 	}
 
+	// [replace: array -> array] a role-PRESERVING whole-item replace nets 0 (count stays 1).
+	{
+		Document d = ParseToCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u 2\nposition expr(i) 0 0\n}\n" ) );
+		NodeRef an; const int idx = DocIndexOfNodeId( d, DocFindByName( d, "instance_array/g" ), &an );
+		NodeRef ia2 = FirstChunk( "instance_array\n{\nname g2\ntemplate geo\nmaterial m\ncount_u 3\nposition expr(i) 0 0\n}" );
+		Document d2 = DocReplaceItem( d, idx, ia2 );
+		Check( idx >= 0 && d2.instanceArrayCount == 1, "replace: instance_array -> instance_array keeps count == 1 (role-preserving, nets 0)" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

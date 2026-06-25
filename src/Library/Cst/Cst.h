@@ -181,7 +181,7 @@ namespace RISE
 			IdMapRef    byId;      //!< NodeId -> current green node, O(log N) reverse lookup (item 4)
 			ParamMapRef paramIds;  //!< (chunkId, role, occurrence) -> param NodeId (item 4)
 			NodeId      nextId = 1;
-			int         instanceArrayCount = 0;  //!< # of instance_array generators -- the O(1) signal DeriveToJobIncremental uses to refuse globally (their input edges are not yet traced; P1-A). Set at parse, maintained on insert/erase/reparse, carried by the O(1) Document copy on value/name edits.
+			int         instanceArrayCount = 0;  //!< # of instance_array generators -- the O(1) signal DeriveToJobIncremental uses to refuse globally (their input edges are not yet traced; P1-A). Maintained on parse/replace/insert/erase/reparse (replace adjusts +new-old on a role flip, nets 0 for a same-role value/name edit; insert +1; erase -1; reparse = fresh's); carried by the O(1) Document copy on a label-only ReflowWindow.
 		};
 
 		//! bytes -> CST. Lossless: every input byte lands in exactly one leaf,

@@ -1511,7 +1511,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// would then replace the producer entity while the generated objects keep their OLD binding, diverging
 	// from a full derive's re-expansion.  Until the generator's input edges are traced (Facet-2), refuse
 	// globally whenever the document holds ANY instance_array.  O(1): a Document-level count maintained at
-	// parse / insert / erase / reparse -- NOT a per-edit O(N) doc scan (which would fail the ~flat-in-N gate,
+	// parse / replace / insert / erase / reparse -- NOT a per-edit O(N) doc scan (which would fail the ~flat-in-N gate,
 	// exactly as the animation guard above warns).
 	if( doc.instanceArrayCount > 0 ) {
 		diags.push_back( "incremental: the document contains an instance_array generator whose template/material/painter dependencies are not yet traced; fall back to a full derive" );
