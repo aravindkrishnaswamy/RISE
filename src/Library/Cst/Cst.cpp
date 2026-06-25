@@ -228,6 +228,10 @@ namespace
 	//! regression to the nested-loop matcher would make it O(P^2).
 	unsigned long g_paramMatchVisits = 0;
 
+	//! #4b cost gate: ComputeChunkRefs evaluations.  A from-scratch / rebuild does N (one per
+	//! chunk); an incremental reference/cp edit does exactly 1.  Read by Cst::DebugChunkRefsComputed().
+	unsigned long g_chunkRefsComputed = 0;
+
 	//! An item's own serialized byte width + newline count (computed once; the
 	//! immutable item never changes, so it is cached in the SeqNode).
 	void NodeStats( const NodeRef& n, size_t& bytes, int& newlines )
@@ -1748,6 +1752,7 @@ static ChunkRefs ComputeChunkRefs( const Document& doc,
 	const std::map<std::pair<int,std::string>, NodeId>& defs, const ChunkDescriptor& desc,
 	const NodeRef& c, NodeId chunkId, std::vector<std::string>& diags )
 {
+	++g_chunkRefsComputed;   // #4b cost gate (1 per incremental edit; N per full build)
 	ChunkRefs out;
 	unsigned long long cs;   // this chunk's accumulator (the body's first line seeds the FNV-1a basis)
 	auto mix = [&cs]( const std::string& s ) {
@@ -2193,7 +2198,8 @@ std::vector<NodeId> DocEditClosure( const Document& doc, NodeId changedChunkId )
 //! edge FROM it; any other (non-reference) value leaves the edges + NodeId-keyed
 //! dependents untouched.  Decided in O(log N) -- resolve the chunk via the NodeId index
 //! (O(log N)) + scan its descriptor (O(params)); the basis for MaintainedReferenceGraph's
-//! reuse-vs-rebuild decision WITHOUT recomputing the (O(N)) stamp.
+//! reuse-vs-update decision (#4b: non-affecting -> reuse; reference/cp -> INCREMENTAL;
+//! name / alias-involved-painter -> rebuild) WITHOUT recomputing the (O(N)) stamp.
 static bool IsGraphAffectingParam( const Document& doc, NodeId chunkId, const std::string& paramRole )
 {
 	if( paramRole == "name" ) return true;
@@ -2212,18 +2218,125 @@ static bool IsGraphAffectingParam( const Document& doc, NodeId chunkId, const st
 	return true;   // param not in the descriptor -> conservatively rebuild
 }
 
-MaintainedReferenceGraph::MaintainedReferenceGraph( const Document& doc )
-	: m_doc( doc ), m_graph( BuildReferenceGraph( doc ) ), m_lastRebuilt( true )
+void MaintainedReferenceGraph::RebuildAll()
 {
+	// Full O(N) build: the namespace m_defs + the per-chunk caches (edges/cs) + the held graph.  Used
+	// by the ctor and by name/alias edits (which can change the namespace or the painter alias set).
+	m_graph = ReferenceGraph();
+	m_chunkEdges.clear();
+	m_chunkCs.clear();
+	m_aliasInvolved.clear();
+	std::vector<NodeRef> items;
+	SeqToVec( m_doc.items, items );
+	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
+	std::vector<std::string> diags;
+	m_defs = BuildReferenceNamespace( m_doc, items, registry, m_graph.dependents, diags );
+	// PASS A wrote the painter same-name ALIAS mutual dependents into m_graph.dependents; their keys
+	// are exactly the alias-involved painters (the alias is mutual).  Capture them BEFORE PASS B adds
+	// reference-edge dependents, so a reference edit on such a painter falls back to a rebuild (its
+	// dependents entry is shared with the alias and can't be incrementally distinguished).
+	for( std::map<NodeId, std::set<NodeId> >::const_iterator it = m_graph.dependents.begin(); it != m_graph.dependents.end(); ++it )
+		m_aliasInvolved.insert( it->first );
+	unsigned long long stamp = 0;
+	for( size_t i = 0; i < items.size(); ++i ) {
+		const NodeRef& c = items[i];
+		if( c->kind != NodeKind::Chunk ) continue;
+		std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( c->role );
+		if( it == registry.end() ) continue;
+		const NodeId chunkId = DocNodeIdAt( m_doc, (int)i );
+		ChunkRefs cr = ComputeChunkRefs( m_doc, m_defs, it->second->Describe(), c, chunkId, diags );
+		m_graph.edges.insert( m_graph.edges.end(), cr.edges.begin(), cr.edges.end() );
+		for( NodeId t : cr.deps ) m_graph.dependents[ t ].insert( chunkId );
+		m_chunkEdges[ chunkId ] = cr.edges;
+		m_chunkCs[ chunkId ] = cr.cs;
+		stamp += cr.cs;
+	}
+	m_graph.stamp = stamp;
+	m_edgesDirty = false;
+}
+
+MaintainedReferenceGraph::MaintainedReferenceGraph( const Document& doc )
+	: m_doc( doc ), m_lastRebuilt( true ), m_edgesDirty( false )
+{
+	RebuildAll();
+}
+
+const ReferenceGraph& MaintainedReferenceGraph::Graph() const
+{
+	// Lazily reflatten the edges view from the per-chunk source of truth (an incremental edit updates
+	// m_chunkEdges + dependents + stamp but DEFERS the flat edges rebuild).  Emitted in DOC order to
+	// match a from-scratch BuildReferenceGraph.  dependents + stamp are already current (no work here).
+	if( m_edgesDirty ) {
+		m_graph.edges.clear();
+		std::vector<NodeRef> items;
+		SeqToVec( m_doc.items, items );
+		for( size_t i = 0; i < items.size(); ++i ) {
+			const NodeRef& c = items[i];
+			if( c->kind != NodeKind::Chunk ) continue;
+			const NodeId chunkId = DocNodeIdAt( m_doc, (int)i );
+			std::map<NodeId, std::vector<ReferenceUse> >::const_iterator it = m_chunkEdges.find( chunkId );
+			if( it != m_chunkEdges.end() )
+				m_graph.edges.insert( m_graph.edges.end(), it->second.begin(), it->second.end() );
+		}
+		m_edgesDirty = false;
+	}
+	return m_graph;
 }
 
 void MaintainedReferenceGraph::SetParamValue( NodeId chunkId, const std::string& paramRole, int occurrence, const std::string& value )
 {
-	// Decide reuse-vs-rebuild from the EDIT (O(log N)), NOT by recomputing the stamp (O(N)).
+	// Decide the edit class from the EDIT (O(log N)), NOT by recomputing the stamp (O(N)).
 	const bool affecting = IsGraphAffectingParam( m_doc, chunkId, paramRole );
+	if( !affecting ) {                                  // non-reference value edit: graph unchanged -> reuse
+		m_doc = DocSetParamValue( m_doc, chunkId, paramRole, occurrence, value );
+		m_lastRebuilt = false;
+		return;
+	}
+	// A NAME edit changes the namespace; a reference edit on an ALIAS-involved painter could touch a
+	// dependents entry shared with the painter same-name alias (the merged set can't tell them apart);
+	// an unknown chunk (no cached cs) is conservative.  All -> full O(N) rebuild.
+	if( paramRole == "name" || m_aliasInvolved.count( chunkId ) ||
+	    m_chunkCs.find( chunkId ) == m_chunkCs.end() ) {
+		m_doc = DocSetParamValue( m_doc, chunkId, paramRole, occurrence, value );
+		RebuildAll();
+		m_lastRebuilt = true;
+		return;
+	}
+	// INCREMENTAL (#4b): a reference/cp edit on a non-alias chunk re-resolves ONLY this chunk against
+	// the held namespace m_defs (producers are unchanged by a value edit) -> O(this chunk's refs).
+	const std::vector<ReferenceUse> oldEdges = m_chunkEdges[ chunkId ];
+	const unsigned long long oldCs = m_chunkCs[ chunkId ];
+	std::set<NodeId> oldDeps;
+	for( const ReferenceUse& e : oldEdges ) if( e.targetNodeId != chunkId ) oldDeps.insert( e.targetNodeId );
+
 	m_doc = DocSetParamValue( m_doc, chunkId, paramRole, occurrence, value );
-	if( affecting ) { m_graph = BuildReferenceGraph( m_doc ); m_lastRebuilt = true; }   // a reference/name edit changed the graph -> rebuild O(N)
-	else            { m_lastRebuilt = false; }                                          // a non-reference value edit cannot change it -> reuse, no rebuild
+
+	NodeRef c = DocResolveNodeId( m_doc, chunkId );
+	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
+	std::map<std::string, const IAsciiChunkParser*>::const_iterator it =
+		( c && c->kind == NodeKind::Chunk ) ? registry.find( c->role ) : registry.end();
+	if( !c || c->kind != NodeKind::Chunk || it == registry.end() ) {   // defensive: can't resolve -> rebuild
+		RebuildAll(); m_lastRebuilt = true; return;
+	}
+	std::vector<std::string> diags;
+	ChunkRefs cr = ComputeChunkRefs( m_doc, m_defs, it->second->Describe(), c, chunkId, diags );
+	std::set<NodeId> newDeps;
+	for( const ReferenceUse& e : cr.edges ) if( e.targetNodeId != chunkId ) newDeps.insert( e.targetNodeId );
+
+	// Reverse adjacency: drop this chunk from targets it no longer references (cleaning emptied entries
+	// to match a from-scratch build), add it to the new ones.  Safe to erase: this chunk is NOT
+	// alias-involved (guarded above), so it never sits in dependents[T] via the alias.
+	for( NodeId t : oldDeps ) if( !newDeps.count( t ) ) {
+		std::map<NodeId, std::set<NodeId> >::iterator d = m_graph.dependents.find( t );
+		if( d != m_graph.dependents.end() ) { d->second.erase( chunkId ); if( d->second.empty() ) m_graph.dependents.erase( d ); }
+	}
+	for( NodeId t : newDeps ) m_graph.dependents[ t ].insert( chunkId );
+
+	m_graph.stamp += cr.cs - oldCs;                  // commutative: swap this chunk's per-chunk stamp (modular, exact)
+	m_chunkEdges[ chunkId ] = cr.edges;
+	m_chunkCs[ chunkId ] = cr.cs;
+	m_edgesDirty = true;                             // the flat edges view is now stale (Graph() reflattens lazily)
+	m_lastRebuilt = false;
 }
 
 int    DocItemCount  ( const Document& doc ) { return SeqCount( doc.items ); }
@@ -2233,6 +2346,7 @@ unsigned long DebugItemStatWalks() { return g_itemStatWalks; }
 unsigned long DebugReparseOldVisits() { return g_reparseOldVisits; }
 unsigned long DebugReflowLabelWrites() { return g_reflowLabelWrites; }
 unsigned long DebugParamMatchVisits() { return g_paramMatchVisits; }
+unsigned long DebugChunkRefsComputed() { return g_chunkRefsComputed; }
 
 int DocItemAtByteOffset( const Document& doc, size_t offset, NodeRef* outItem, size_t* outStart, int* visits )
 {

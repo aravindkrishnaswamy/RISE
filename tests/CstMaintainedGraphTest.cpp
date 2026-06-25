@@ -39,6 +39,17 @@ static bool SameClosure( std::vector<NodeId> a, std::vector<NodeId> b )
 	return a == b;
 }
 
+// Full graph equivalence: stamp (exact) + dependents (exact set-map) + edges (order-insensitive).
+static bool SameGraph( const ReferenceGraph& a, const ReferenceGraph& b )
+{
+	if( a.stamp != b.stamp || a.dependents != b.dependents ) return false;
+	std::vector<std::pair<NodeId,NodeId> > ea, eb;
+	for( const ReferenceUse& e : a.edges ) ea.push_back( std::make_pair( e.sourceValueNodeId, e.targetNodeId ) );
+	for( const ReferenceUse& e : b.edges ) eb.push_back( std::make_pair( e.sourceValueNodeId, e.targetNodeId ) );
+	std::sort( ea.begin(), ea.end() ); std::sort( eb.begin(), eb.end() );
+	return ea == eb;
+}
+
 int main()
 {
 	std::printf( "CstMaintainedGraphTest -- slice 5 (maintained-graph closure: equivalence / reuse / stamp)\n" );
@@ -151,7 +162,8 @@ int main()
 
 	// [maintained] (review P1.6) the holder keeps the graph in sync from the EDIT (O(log N)
 	// decision), not by recomputing the stamp: a non-reference value edit REUSES the graph
-	// (no rebuild), a reference / name edit REBUILDS it; the closure stays correct either way.
+	// (no rebuild), a reference / cp edit updates INCREMENTALLY (#4b), a name edit REBUILDS;
+	// the closure stays correct either way.
 	{
 		Document d = ParseToCst( scene );
 		MaintainedReferenceGraph mg( d );
@@ -160,11 +172,12 @@ int main()
 		Check( !mg.LastEditRebuilt(), "maintained: non-reference value edit (radius) REUSES the graph (no rebuild)" );
 		{ const NodeId gid = DocFindByName( mg.Doc(), "sphere_geometry/g" );
 		  Check( SameClosure( mg.EditClosure( gid ), DocEditClosure( mg.Doc(), gid ) ), "maintained: closure correct after a REUSED edit" ); }
-		// reference re-point (object material m -> m2): graph REBUILT.
+		// reference re-point (object material m -> m2): graph updated INCREMENTALLY (#4b), no rebuild.
 		mg.SetParamValue( DocFindByName( mg.Doc(), "standard_object/o" ), "material", 0, "m2" );
-		Check( mg.LastEditRebuilt(), "maintained: reference re-point (material) REBUILDS the graph" );
+		Check( !mg.LastEditRebuilt(), "maintained: reference re-point (material) updates INCREMENTALLY (no rebuild, #4b)" );
+		Check( SameGraph( mg.Graph(), BuildReferenceGraph( mg.Doc() ) ), "maintained: incremental reference re-point == from-scratch (stamp + dependents + edges)" );
 		{ const NodeId mid2 = DocFindByName( mg.Doc(), "lambertian_material/m2" );
-		  Check( SameClosure( mg.EditClosure( mid2 ), DocEditClosure( mg.Doc(), mid2 ) ), "maintained: closure correct after a REBUILT edit" ); }
+		  Check( SameClosure( mg.EditClosure( mid2 ), DocEditClosure( mg.Doc(), mid2 ) ), "maintained: closure correct after an INCREMENTAL edit" ); }
 		// name edit (rename via value): graph REBUILT.
 		mg.SetParamValue( DocFindByName( mg.Doc(), "lambertian_material/m2" ), "name", 0, "mRenamed" );
 		Check( mg.LastEditRebuilt(), "maintained: a `name` edit REBUILDS the graph" );
@@ -172,7 +185,7 @@ int main()
 
 	// [maintained-cp] (review #2, 2nd pass) a piecewise_linear_function2d.cp edit carries a
 	// TRACED Function1D ref even though `cp` is a String param -- the maintained graph must
-	// REBUILD on it (else it reuses a stale graph) and the closure must reflect the new ref.
+	// update INCREMENTALLY on it (cp is a traced Function1D ref; #4b) and the closure must reflect it.
 	{
 		Document d = ParseToCst(
 			"RISE ASCII SCENE 6\n"
@@ -182,7 +195,8 @@ int main()
 		MaintainedReferenceGraph mg( d );
 		const NodeId p2 = DocFindByName( mg.Doc(), "piecewise_linear_function2d/p2" );
 		mg.SetParamValue( p2, "cp", 0, "0.0 f2" );   // re-point the cp's Function1D f1 -> f2
-		Check( mg.LastEditRebuilt(), "maintained-cp: a plf2d cp edit REBUILDS the graph (cp carries a traced Function1D ref)" );
+		Check( !mg.LastEditRebuilt(), "maintained-cp: a plf2d cp edit updates INCREMENTALLY (cp's traced Function1D ref, #4b)" );
+		Check( SameGraph( mg.Graph(), BuildReferenceGraph( mg.Doc() ) ), "maintained-cp: incremental cp edit == from-scratch" );
 		const NodeId f2 = DocFindByName( mg.Doc(), "piecewise_linear_function/f2" );
 		bool f2HasP2 = false; for( NodeId n : mg.EditClosure( f2 ) ) if( n == p2 ) f2HasP2 = true;
 		Check( f2HasP2, "maintained-cp: after the edit, closure(f2) includes the plf2d (new cp ref traced)" );
@@ -258,6 +272,86 @@ int main()
 			Check( clA == clB && clA == 3, "stamp-alias: closure(scalar q) = {scalar, 2 colours} = 3 in BOTH orders -> alias is ORDER-INSENSITIVE (same stamp => same graph)" );
 		} else {
 			std::printf( "  (skip stamp-alias: scalar_painter did not parse in this build)\n" );
+		}
+	}
+
+	// [maintained-incremental] (#4b) a sequence of reference + cp edits each updates the held graph
+	// INCREMENTALLY (LastEditRebuilt false) with the result EQUAL to a from-scratch BuildReferenceGraph
+	// (stamp + dependents + edges); a NAME edit falls back to a full REBUILD.  The cost counter proves
+	// the incremental edit does EXACTLY 1 ComputeChunkRefs (O(this chunk's refs)) vs N for a rebuild.
+	{
+		MaintainedReferenceGraph mg( ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p1\ncolor 0.1 0.1 0.1\n}\n"
+			"uniformcolor_painter\n{\nname p2\ncolor 0.2 0.2 0.2\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p1\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n" ) );
+		const NodeId mId = DocFindByName( mg.Doc(), "lambertian_material/m" );
+		// (a) reference re-point p1 -> p2: incremental, exactly 1 ComputeChunkRefs, == from-scratch.
+		const unsigned long b1 = DebugChunkRefsComputed();
+		mg.SetParamValue( mId, "reflectance", 0, "p2" );
+		Check( !mg.LastEditRebuilt(), "incremental: reflectance re-point did NOT rebuild" );
+		Check( DebugChunkRefsComputed() - b1 == 1, "incremental: reflectance re-point did EXACTLY 1 ComputeChunkRefs (O(this chunk))" );
+		Check( SameGraph( mg.Graph(), BuildReferenceGraph( mg.Doc() ) ), "incremental: reflectance re-point graph == from-scratch" );
+		// (b) reference -> none (drop the edge): incremental, the dependent is removed.
+		mg.SetParamValue( mId, "reflectance", 0, "none" );
+		Check( !mg.LastEditRebuilt() && SameGraph( mg.Graph(), BuildReferenceGraph( mg.Doc() ) ), "incremental: reflectance -> none drops the edge, == from-scratch" );
+		// (c) none -> reference (add the edge back): incremental, correct.
+		mg.SetParamValue( mId, "reflectance", 0, "p1" );
+		Check( !mg.LastEditRebuilt() && SameGraph( mg.Graph(), BuildReferenceGraph( mg.Doc() ) ), "incremental: reflectance none -> p1 re-adds the edge, == from-scratch" );
+		// (d) a NAME edit rebuilds (the namespace changes) -> ComputeChunkRefs runs for every chunk.
+		const unsigned long b2 = DebugChunkRefsComputed();
+		mg.SetParamValue( DocFindByName( mg.Doc(), "uniformcolor_painter/p1" ), "name", 0, "p1b" );
+		Check( mg.LastEditRebuilt(), "rebuild: a name edit rebuilds" );
+		Check( DebugChunkRefsComputed() - b2 >= 3, "rebuild: a name edit re-runs ComputeChunkRefs for EVERY chunk (>=3, not 1)" );
+		Check( SameGraph( mg.Graph(), BuildReferenceGraph( mg.Doc() ) ), "rebuild: the rebuilt graph == from-scratch" );
+	}
+
+	// [maintained-incremental-cost] (#4b cost gate) the incremental reference edit's ComputeChunkRefs
+	// count is invariant to document SIZE -- 1 at a small doc AND at a 50x-larger doc -- the committed
+	// proof the maintained reference edit is O(this chunk's refs), not O(N).
+	{
+		auto sceneOfN = []( int extra ) {
+			std::string sc = "RISE ASCII SCENE 6\n"
+				"uniformcolor_painter\n{\nname p1\ncolor 0.1 0.1 0.1\n}\n"
+				"uniformcolor_painter\n{\nname p2\ncolor 0.2 0.2 0.2\n}\n"
+				"lambertian_material\n{\nname m\nreflectance p1\n}\n";
+			for( int i = 0; i < extra; ++i ) {                 // unrelated filler producers (grow N)
+				char nm[32]; std::snprintf( nm, sizeof(nm), "f%d", i );
+				sc += std::string("uniformcolor_painter\n{\nname ") + nm + "\ncolor 0.5 0.5 0.5\n}\n";
+			}
+			return sc;
+		};
+		unsigned long deltaSmall = 0, deltaLarge = 0;
+		for( int pass = 0; pass < 2; ++pass ) {
+			MaintainedReferenceGraph mg( ParseToCst( sceneOfN( pass == 0 ? 4 : 200 ) ) );
+			const NodeId mId = DocFindByName( mg.Doc(), "lambertian_material/m" );
+			const unsigned long b = DebugChunkRefsComputed();
+			mg.SetParamValue( mId, "reflectance", 0, "p2" );
+			( pass == 0 ? deltaSmall : deltaLarge ) = DebugChunkRefsComputed() - b;
+		}
+		Check( deltaSmall == 1 && deltaLarge == 1, "cost: an incremental reference edit does 1 ComputeChunkRefs at BOTH N+4 and N+200 (O(this chunk), invariant to N)" );
+	}
+
+	// [maintained-alias-rebuild] (#4b) a reference edit on an ALIAS-involved painter (a same-name
+	// colour+scalar pair) falls back to a full REBUILD -- its dependents entry is shared with the
+	// painter same-name alias and can't be incrementally distinguished -- and the rebuild is correct.
+	{
+		MaintainedReferenceGraph mg( ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname base\ncolor 0.3 0.3 0.3\n}\n"
+			"uniformcolor_painter\n{\nname base2\ncolor 0.7 0.7 0.7\n}\n"
+			"function2d_painter\n{\nname x\nfunction2d base\n}\n"
+			"scalar_painter\n{\nname x\nfile noise.dat\n}\n" ) );
+		const NodeId fx = DocFindByName( mg.Doc(), "function2d_painter/x" );   // colour painter x, has a function2d ref
+		const NodeId sx = DocFindByName( mg.Doc(), "scalar_painter/x" );       // scalar painter x -> alias(x,x)
+		if( fx != 0 && sx != 0 ) {
+			mg.SetParamValue( fx, "function2d", 0, "base2" );   // reference edit on the ALIAS-involved painter x
+			Check( mg.LastEditRebuilt(), "alias: a reference edit on an ALIAS-involved painter REBUILDS (conservative guard, #4b)" );
+			Check( SameGraph( mg.Graph(), BuildReferenceGraph( mg.Doc() ) ), "alias: the conservative rebuild is correct (== from-scratch)" );
+		} else {
+			std::printf( "  (skip maintained-alias-rebuild: function2d_painter/scalar_painter did not parse)\n" );
 		}
 	}
 

@@ -371,6 +371,11 @@ namespace RISE
 		//! to the nested-loop matcher would make it O(P^2)). Test-only.
 		unsigned long DebugParamMatchVisits();
 
+		//! #4b cost gate: total ComputeChunkRefs evaluations.  A from-scratch BuildReferenceGraph or a
+		//! MaintainedReferenceGraph REBUILD does N (one per chunk); an INCREMENTAL reference/cp edit does
+		//! exactly 1 -- the committed proof the maintained edit is O(this chunk's refs), not O(N).
+		unsigned long DebugChunkRefsComputed();
+
 		//! Locate the top-level item spanning byte `offset` (the byte->node map a
 		//! UI/agent uses for "what's at this cursor position"). Returns the item's
 		//! index (or -1 if out of range); `outItem`/`outStart` receive the item and
@@ -700,37 +705,48 @@ namespace RISE
 		//! BFS needs only the graph's reverse adjacency.)
 		std::vector<NodeId> DocEditClosure( NodeId changedChunkId, const ReferenceGraph& graph );
 
-		//! A MAINTAINED reference graph (slice 5, review P1.6): holds a Document + its
-		//! ReferenceGraph and keeps them in sync INCREMENTALLY, so the END-TO-END per-edit
-		//! cost -- not just the closure BFS in isolation -- is O(closure . log N) for the
-		//! common edit.  The crux: a value edit's reuse decision is made from the EDIT
-		//! ITSELF in O(log N) (resolve the chunk via the NodeId index + scan its descriptor -- is the edited param a reference, or the chunk's name? -- NOT O(1)), NOT by
-		//! recomputing the stamp -- recomputing the stamp is itself an O(N) BuildReference-
-		//! Graph, so a stamp-validated reuse saves nothing end-to-end (you rebuilt to
-		//! check).  A NON-reference value edit cannot change the graph (its edges and
-		//! NodeId-keyed dependents are untouched -- a value edit preserves NodeIds), so the
-		//! graph is REUSED with no rebuild; a reference / name edit rebuilds (O(N)).  This
-		//! is the holder CstEditCostTest exercises end-to-end.  (Structural edits -- insert/
-		//! erase/reparse -- are not handled here yet; a holder would rebuild on those.)
+		//! A MAINTAINED reference graph (slice 5 / #4b): holds a Document + its ReferenceGraph and keeps
+		//! them in sync INCREMENTALLY, so the END-TO-END per-edit cost -- not just the closure BFS in
+		//! isolation -- is sub-O(N) for the common edits.  The reuse decision is made from the EDIT ITSELF
+		//! in O(log N) (resolve the chunk via the NodeId index + scan its descriptor), NOT by recomputing
+		//! the stamp (recomputing the stamp is itself an O(N) BuildReferenceGraph, so a stamp-validated
+		//! reuse saves nothing end-to-end).  Three edit classes:
+		//!   - a NON-reference value edit cannot change the graph (NodeId-keyed edges/dependents are
+		//!     untouched -- a value edit preserves NodeIds) -> REUSED, O(log N), no rebuild;
+		//!   - a REFERENCE / cp edit re-resolves only THIS chunk against the held namespace `m_defs`
+		//!     (producers are unchanged by a value edit, so `m_defs` is reused): diff this chunk's
+		//!     reverse-dependent targets + replace its commutative per-chunk stamp -> O(this chunk's refs),
+		//!     NO O(N) re-trace (#4b).  The flat `edges` view is lazily reflattened on Graph();
+		//!   - a NAME edit changes the namespace (re-resolves every edge TO this chunk), and a reference
+		//!     edit on an ALIAS-involved painter could touch a dependents entry shared with the painter
+		//!     same-name alias (indistinguishable in the merged set) -> REBUILD, O(N) (rare; conservative).
+		//! (Structural edits -- insert/erase/reparse -- are not handled here; a holder rebuilds on those.)
+		//! CstEditCostTest / CstMaintainedGraphTest exercise + measure this end-to-end.
 		class MaintainedReferenceGraph
 		{
 		public:
 			explicit MaintainedReferenceGraph( const Document& doc );
 			const Document&       Doc() const   { return m_doc; }
-			const ReferenceGraph& Graph() const { return m_graph; }
-			//! Apply a single value edit: when the edit cannot change the graph (a
-			//! non-reference, non-name param) the graph is REUSED, so the per-edit cost stays
-			//! O(log N) (the IsGraphAffectingParam decision: a NodeId-index lookup + a
-			//! descriptor scan) -- no O(N) rebuild; otherwise it rebuilds (O(N)).
+			//! The held graph.  Lazily reflattens the `edges` view if an incremental edit dirtied it
+			//! (dependents + stamp are always current; only the flat edges view is deferred).
+			const ReferenceGraph& Graph() const;
 			void SetParamValue( NodeId chunkId, const std::string& paramRole, int occurrence, const std::string& value );
-			//! The edit closure over the maintained graph -- O(closure . log N), no re-trace.
+			//! The edit closure over the maintained graph -- O(closure . log N), no re-trace.  Reads the
+			//! (always-current) dependents, so it does NOT trigger the lazy edges reflatten.
 			std::vector<NodeId> EditClosure( NodeId changedChunkId ) const { return DocEditClosure( changedChunkId, m_graph ); }
-			//! Whether the most recent SetParamValue rebuilt the graph (measurement/diagnostics).
+			//! Whether the most recent SetParamValue REBUILT the graph (O(N)) vs reused/updated it
+			//! incrementally (measurement/diagnostics; CstMaintainedGraphTest asserts on it).
 			bool LastEditRebuilt() const { return m_lastRebuilt; }
 		private:
-			Document       m_doc;
-			ReferenceGraph m_graph;
-			bool           m_lastRebuilt;
+			void RebuildAll();   // full O(N) build of m_defs + the per-chunk caches + m_graph (ctor + name/alias edits)
+			Document               m_doc;
+			mutable ReferenceGraph m_graph;          // mutable: Graph() lazily reflattens m_graph.edges (a derived cache)
+			bool                   m_lastRebuilt;
+			mutable bool           m_edgesDirty;     // m_graph.edges stale after an incremental edit -> reflatten on Graph()
+			std::map<std::pair<int,std::string>, NodeId> m_defs;        // the (category,name) namespace -- REUSED across reference edits
+			std::map<NodeId, std::vector<ReferenceUse> > m_chunkEdges;   // per-chunk edges (source of truth; flat m_graph.edges is derived)
+			std::map<NodeId, unsigned long long>         m_chunkCs;      // per-chunk commutative stamp -- stamp += new-old on an edit
+			std::set<NodeId>                             m_aliasInvolved; // painters with a same-name cross-kind alias twin (conservative rebuild)
 		};
 	}
 }
