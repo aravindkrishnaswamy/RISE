@@ -8,7 +8,7 @@
 > persistent `Document` with NodeId/name-path lookup counted *in* the complexity measure → live
 > descriptor registry → real-resolver reference tracing on a 3-level chain → measure a non-spatial
 > AND a spatial edit, TLAS reported separately), keeping expr/RepeatGroup/instance_array out until
-> it is green (SINCE LANDED: the gate is green; RepeatGroup + expr's Facet-1 halves are #5 slices 1-2; instance_array still out). **Claims narrowed per that review:** the O(closure) result is by **apply-layer-call
+> it is green (SINCE LANDED: the gate is green; RepeatGroup + expr + let's Facet-1 halves are #5 slices 1-3 (RepeatGroup, expr, let); instance_array still out). **Claims narrowed per that review:** the O(closure) result is by **apply-layer-call
 > count with the closure already computed** — it excludes target lookup, persistent-cache/COW,
 > realization, and TLAS rebuild, and **spatial edits remain O(N log N)** (D24); "reparse-stable
 > identity" (in the PROTOTYPES) covered **param/value NodeIds only** (chunk identity +
