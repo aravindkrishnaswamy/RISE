@@ -167,6 +167,46 @@ int main()
 		j->release();
 	}
 
+	// [incremental: template edit] editing the array's TEMPLATE geometry (NOT the array chunk) must also
+	// refuse -> full-derive (P1-A).  The static graph skips instance_array, so the closure of editing `geo`
+	// does NOT include the array; without the global instanceArrayCount guard, incremental would re-point
+	// `geo` while the generated g[i,j] keep the OLD binding -> divergence from a full derive's re-expansion.
+	{
+		Document d = ParseToCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u 2\nposition expr(i) 0 0\n}\n" ) );
+		Job* j = new Job(); std::vector<std::string> dd;
+		DeriveToJob( d, *j, &dd );
+		Check( dd.empty(), "incremental(template): the full derive of the instance_array scene succeeds" );
+		const NodeId geoId = DocFindByName( d, "sphere_geometry/geo" );
+		Document d2 = DocSetParamValue( d, geoId, "radius", 0, "2" );
+		std::vector<std::string> di;
+		const int applied = DeriveToJobIncremental( d2, *j, std::vector<NodeId>( 1, geoId ), &di );
+		Check( geoId != 0 && applied == 0 && !di.empty(),
+		       "incremental(template): editing the array's template geometry refuses (applied=0) -> full-derive (P1-A)" );
+		j->release();
+	}
+
+	// [frac-count] a FRACTIONAL count refuses instead of silently rounding (P1-B); an INTEGRAL expr works.
+	{
+		std::vector<std::string> d;
+		DumpCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u 1.5\n}\n" ), &d );
+		Check( !d.empty(), "frac-count: count_u 1.5 (literal) refuses (no silent round to 2)" );
+	}
+	{
+		std::vector<std::string> d;
+		DumpCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u 1.4\n}\n" ), &d );
+		Check( !d.empty(), "frac-count: count_u 1.4 (literal) refuses (no silent round to 1)" );
+	}
+	{
+		std::vector<std::string> d;
+		DumpCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u expr(1.5)\n}\n" ), &d );
+		Check( !d.empty(), "frac-count: count_u expr(1.5) refuses (no silent round)" );
+	}
+	{
+		const std::string ia = DumpCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u expr(1.0+1.0)\nposition expr(i) 0 0\n}\n" ) );
+		Check( ia == DumpCst( Scene( Obj( "g[0,0]", "0 0 0" ) + Obj( "g[1,0]", "1 0 0" ) ) ),
+		       "frac-count: an INTEGRAL expr count (1.0+1.0 -> 2) still expands" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

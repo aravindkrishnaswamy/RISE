@@ -926,6 +926,7 @@ Document ParseToCst( const std::string& bytes )
 		d.byId = IdMapSet( d.byId, id, items[k], label );
 		std::string np = ChunkNamePath( items[k] );
 		if( !np.empty() ) d.byName = NameInsert( d.byName, np, id );
+		if( items[k]->kind == NodeKind::Chunk && items[k]->role == "instance_array" ) ++d.instanceArrayCount;   // P1-A: the O(1) incremental-refuse signal
 	}
 	d.idseq  = IdBuild( ids, labels, 0, (int)ids.size() );
 	d.nextId = (NodeId)items.size() + 1;
@@ -1213,11 +1214,11 @@ static bool DropChunkByCategory( IJob& pJob, ChunkCategory cat, const char* name
 //! expr eval (instance vars: i,j indices; u=i/(count_u-1), v=j/(count_v-1) in [0,1]).  Each object is
 //! named `name[i,j]`.  Errors are apply-time (a partial apply, like DeriveToJob's other Finalize
 //! failures); the editor's incremental re-expansion + the generated objects' reference-graph tracing are
-//! deferred (Facet-2).  CAVEAT: the static graph SKIPS instance_array (not a registry chunk), so not only
-//! does an instance_array EDIT full-derive -- editing the array's TEMPLATE geometry or a referenced
-//! MATERIAL is NOT traced to the array either (the closure misses it).  Until the generator participates
-//! in the reference graph, ANY edit that should re-expand the array must full-derive (currently latent --
-//! DeriveToJobIncremental has no live caller).
+//! deferred (Facet-2).  Because the static graph SKIPS instance_array (not a registry chunk), editing the
+//! array's TEMPLATE geometry / a referenced MATERIAL / a painter is NOT traced to the array (the closure
+//! never includes the generator or its g[i,j] objects).  DeriveToJobIncremental therefore REFUSES globally
+//! whenever the document holds ANY instance_array -- its O(1) Document `instanceArrayCount` guard (P1-A) --
+//! so full == incremental until the generator's input edges are traced (Facet-2).
 static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, const IAsciiChunkParser* stdObj,
                                  IJob& pJob, std::vector<std::string>& diags, int& made )
 {
@@ -1246,8 +1247,16 @@ static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, 
 		std::string cs, e;
 		if( !EvalInstanceValue( raw, lets, 0, 0, 0.0, 0.0, cs, e ) ) { diags.push_back( "instance_array '" + name + "': " + which + " " + e ); countOk = false; return 0; }
 		char* end = nullptr; const double d = std::strtod( cs.c_str(), &end );
-		if( cs.empty() || end != cs.c_str() + cs.size() || d < 0 || d > 1.0e6 ) { diags.push_back( "instance_array '" + name + "': " + which + " must be a non-negative integer <= 1e6 (got '" + cs + "')" ); countOk = false; return 0; }
-		return (int)( d + 0.5 );
+		// require a fully-consumed, NON-NEGATIVE, INTEGRAL literal within the DoS cap.  The (long long)
+		// round-trip rejects a FRACTIONAL count (P1-B: silently rounding via (int)(d+0.5) would change the
+		// generator's cardinality, e.g. count_u 1.5 -> 2 objects); it runs only AFTER the range check, so the
+		// cast can't overflow.  The nan/inf char scan is compiler-opaque (an FP compare on a non-finite value
+		// is unreliable under -ffast-math); an expr-valued count already passed EvalExprBody's finite guard.
+		bool bad = cs.empty() || end != cs.c_str() + cs.size();
+		for( size_t ci = 0; ci < cs.size(); ++ci ) { const char ch = cs[ci]; if( ch == 'n' || ch == 'N' || ch == 'i' || ch == 'I' ) bad = true; }
+		if( !bad ) { if( d < 0.0 || d > 1.0e6 ) bad = true; else if( (double)(long long)d != d ) bad = true; }
+		if( bad ) { diags.push_back( "instance_array '" + name + "': " + which + " must be a non-negative integer <= 1e6 (got '" + cs + "')" ); countOk = false; return 0; }
+		return (int)d;
 	};
 	const int countU = evalCount( countU_raw, "count_u" );
 	const int countV = countV_raw.empty() ? 1 : evalCount( countV_raw, "count_v" );
@@ -1491,6 +1500,19 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		return 0;
 	}
 
+	// instance_array guard (P1-A): the static reference graph SKIPS instance_array generators (they are
+	// not registry chunks), so editing an array's TEMPLATE geometry / a referenced MATERIAL / a painter does
+	// NOT put the generator -- or its generated g[i,j] objects -- in the edit closure.  An incremental apply
+	// would then replace the producer entity while the generated objects keep their OLD binding, diverging
+	// from a full derive's re-expansion.  Until the generator's input edges are traced (Facet-2), refuse
+	// globally whenever the document holds ANY instance_array.  O(1): a Document-level count maintained at
+	// parse / insert / erase / reparse -- NOT a per-edit O(N) doc scan (which would fail the ~flat-in-N gate,
+	// exactly as the animation guard above warns).
+	if( doc.instanceArrayCount > 0 ) {
+		diags.push_back( "incremental: the document contains an instance_array generator whose template/material/painter dependencies are not yet traced; fall back to a full derive" );
+		return 0;
+	}
+
 	// Re-apply ONLY the given closure (DocEditClosure) into an ALREADY-derived Job
 	// after an edit: recreate the non-object entities (drop + re-Finalize), but
 	// re-point the closure's OBJECTS in place (slice 3) -- so the work is
@@ -1516,7 +1538,6 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		const int idx = DocIndexOfNodeId( doc, id, &node, nullptr );
 		if( idx < 0 || !node || node->kind != NodeKind::Chunk ) { diags.push_back( "incremental: id is not a chunk in this document" ); return 0; }
 		if( node->role == "let" ) { diags.push_back( "incremental: a let-binding edit requires a full derive (its consumers are not yet traced)" ); return 0; }   // #5 slice 3
-		if( node->role == "instance_array" ) { diags.push_back( "incremental: an instance_array edit requires a full derive (its expansion is not yet incrementally traced)" ); return 0; }   // #5 slice 4
 		IAsciiChunkParser::ParamsList plist;
 		// #5 slice 3: NO lets collected on the O(closure) path (collecting them is O(N)); a closure expr
 		// referencing a let then refuses + the caller full-derives (which has the lets).  Plain / PI/E exprs work.
@@ -2701,6 +2722,7 @@ Document DocInsertItem( const Document& doc, int index, NodeRef newItem, int* vi
 	if( !np.empty() ) d.byName = NameInsert( d.byName, np, id );
 	d.nextId = src.nextId + 1;
 	AddChunkParams( d.paramIds, d.byId, id, newChunk, d.nextId );        // param occurrence ids
+	d.instanceArrayCount = doc.instanceArrayCount + ( ( newChunk && newChunk->kind == NodeKind::Chunk && newChunk->role == "instance_array" ) ? 1 : 0 );   // P1-A
 	if( visits ) *visits = v;
 	return d;
 }
@@ -2715,6 +2737,7 @@ Document DocEraseItem( const Document& doc, int index, int* visits, std::vector<
 	int iv = 0; const NodeId eid = IdAt( doc.idseq, index, iv );   // the erased item's id
 	int v = 0;
 	Document d = doc;
+	if( oldChunk && oldChunk->kind == NodeKind::Chunk && oldChunk->role == "instance_array" && d.instanceArrayCount > 0 ) --d.instanceArrayCount;   // P1-A
 	d.items  = SeqEraseAt( doc.items, index, v );                  // O(log N) WBT
 	d.idseq  = IdEraseAt( doc.idseq, index );                      // O(log N) lockstep splice
 	d.byId   = IdMapErase( d.byId, eid );                          // reverse index drops the id
@@ -2951,6 +2974,7 @@ Document DocReparse( const Document& oldDoc, const std::string& newText, std::ve
 	NodeId mx = pnext;                                 // nextId strictly above every live id
 	for( NodeId id : carried ) if( id + 1 > mx ) mx = id + 1;
 	d.nextId = mx;
+	d.instanceArrayCount = fresh.instanceArrayCount;   // P1-A: the reparsed items' generator count (fresh has it from ParseToCst)
 	return d;
 }
 
