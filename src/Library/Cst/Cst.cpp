@@ -1608,40 +1608,20 @@ static int FunctionSubNamespace( const std::string& paramName )
 	return 0;
 }
 
-ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string>* diagnostics )
+//! Runtime-default target sentinel (file scope: shared by BuildReferenceNamespace + ComputeChunkRefs):
+//! a (category,name) that resolves to an engine runtime default, NOT a CST chunk.
+static const NodeId kRuntimeDefaultTarget = -1;
+
+//! PASS A (factored out for #4b): build the (category,name) -> producer-NodeId namespace `defs`
+//! (runtime defaults first, then CST producers first-wins; the dimension-precise Function 1D/2D
+//! sub-namespace seeds; the colour-painter <-> Function2D dual-register seeds) AND emit the
+//! order-insensitive painter same-name ALIAS mutual dependents into `aliasDeps`.  Producers do not
+//! change on a reference-VALUE edit, so the maintained graph holds + REUSES this across such edits.
+static std::map<std::pair<int,std::string>, NodeId> BuildReferenceNamespace(
+	const Document& doc, const std::vector<NodeRef>& items,
+	const std::map<std::string, const IAsciiChunkParser*>& registry,
+	std::map<NodeId, std::vector<NodeId> >& aliasDeps, std::vector<std::string>& diags )
 {
-	std::vector<std::string> local;
-	std::vector<std::string>& diags = diagnostics ? *diagnostics : local;
-	ReferenceGraph graph;
-	// Commutative per-chunk stamp (#4): each chunk folds its reference-relevant content into a
-	// FRESH per-chunk FNV-1a accumulator `cs` (reset per chunk in PASS B); the graph stamp is the
-	// SUM of those per-chunk stamps.  Order-independent + per-chunk, so the maintained graph can
-	// update it INCREMENTALLY on a single-chunk edit (subtract the chunk's old cs, add its new) in
-	// O(chunk) rather than an O(N) re-fold -- preserving "same stamp => same graph" (each cs folds
-	// the chunk's distinct NodeId, so distinct chunks don't sum-cancel).
-	// Each cs ALSO folds the RESOLVED TARGET NodeId of every edge (review P1): the per-chunk SUM is
-	// order-independent, but namespace resolution is FIRST-WINS (order-sensitive) on duplicate
-	// definitions -- so without the target fold a producer reorder would change an edge while leaving
-	// the sum unchanged.  Folding the resolved target makes the stamp reflect the resolved GRAPH,
-	// restoring "same stamp => same graph".  (Incremental-safe: the target is recomputed in the
-	// per-chunk resolution that the maintained graph re-runs on an edit -- #4b.)
-	unsigned long long stamp = 0;                          // sum of per-chunk stamps (0 == empty graph)
-	unsigned long long cs    = 0;                          // the CURRENT chunk's accumulator (reset per chunk in PASS B)
-	auto mix = [&cs]( const std::string& s ) {             // fold reference-relevant content into the current chunk's stamp
-		for( unsigned char ch : s ) { cs ^= ch; cs *= 1099511628211ULL; }
-		cs ^= (unsigned char)'|'; cs *= 1099511628211ULL;
-	};
-
-	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
-	std::vector<NodeRef> items;
-	SeqToVec( doc.items, items );
-
-	// PASS A -- index the namespace by (category, name): FIRST the engine's runtime
-	// defaults -> kRuntimeDefaultTarget (a sentinel: "resolves to a default, not a CST
-	// chunk"), THEN the CST chunk defs. Defaults are seeded first so a chunk whose
-	// name collides with a default does NOT override it -- matching the manager, which
-	// registered the default before any chunk and rejects the colliding AddItem.
-	static const NodeId kRuntimeDefaultTarget = -1;
 	std::map<std::pair<int,std::string>, NodeId> defs;
 	for( const auto& rd : RuntimeDefaultDefs() )
 		defs[ std::pair<int,std::string>( (int)rd.first, rd.second ) ] = kRuntimeDefaultTarget;
@@ -1685,8 +1665,8 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 				if( prev.first != isScalar && prev.second != thisId ) {
 					if( painterAliasDiagnosed.insert( name ).second )
 						diags.push_back( "painter '" + name + "': defined in BOTH the colour and scalar painter managers; the (category,name) graph cannot disambiguate them, so the edge is imprecise (review P1.4) -- aliased for a CONSERVATIVE (superset) closure" );
-					graph.dependents[ thisId ].push_back( prev.second );
-					graph.dependents[ prev.second ].push_back( thisId );
+					aliasDeps[ thisId ].push_back( prev.second );
+					aliasDeps[ prev.second ].push_back( thisId );
 				}
 			}
 			painterNs[ name ].push_back( std::make_pair( isScalar, thisId ) );
@@ -1755,129 +1735,176 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 		}
 	}
 
-	// PASS B -- resolve each EXPLICIT reference (a Reference-kind param's whole value,
-	// or each Reference token of a TUPLE param) against that namespace, and fold the
-	// reference-relevant content into the stamp.
+	return defs;
+}
+
+//! One chunk's reference edges, reverse-dependent TARGETS, and per-chunk stamp `cs`, resolved
+//! against the already-built namespace `defs` (PASS B's per-chunk body, factored out for #4b so the
+//! maintained graph can re-run it for a SINGLE chunk on a reference edit -- O(this chunk's refs)).
+//! `deps` lists each resolved target T (chunkId != T); the caller adds chunkId to dependents[T].
+struct ChunkRefs { std::vector<ReferenceUse> edges; std::vector<NodeId> deps; unsigned long long cs; };
+static ChunkRefs ComputeChunkRefs( const Document& doc,
+	const std::map<std::pair<int,std::string>, NodeId>& defs, const ChunkDescriptor& desc,
+	const NodeRef& c, NodeId chunkId, std::vector<std::string>& diags )
+{
+	ChunkRefs out;
+	unsigned long long cs;   // this chunk's accumulator (the body's first line seeds the FNV-1a basis)
+	auto mix = [&cs]( const std::string& s ) {
+		for( unsigned char ch : s ) { cs ^= ch; cs *= 1099511628211ULL; }
+		cs ^= (unsigned char)'|'; cs *= 1099511628211ULL;
+	};
+	cs = 1469598103934665603ULL;   // #4: reset the per-chunk stamp accumulator (FNV-1a basis)
+	mix( c->role );
+	mix( std::to_string( (long long)chunkId ) );
+	{ std::string nm; if( ParamValue( c.get(), "name", nm ) ) mix( nm ); }
+	std::map<std::string,int> occ;   // per-role occurrence index, for DocParamId
+	for( const auto& kid : c->kids ) {
+		if( kid->kind != NodeKind::Param ) continue;
+		const std::string role = kid->role;
+		const int thisOcc = occ[role]++;
+		const ParameterDescriptor* pd = 0;
+		for( const auto& p : desc.parameters ) if( p.name == role ) { pd = &p; break; }
+		if( !pd ) continue;
+		// piecewise_linear_function2d.cp embeds a Function1D NAME as the 2nd whitespace token of
+		// each repeatable `cp` row ("<x> <function1d_name>"; consumed by AddPiecewiseLinearFunction2D
+		// via GetFunction1Ds).  The descriptor types `cp` as an opaque String, so the generic
+		// reference pass below would SKIP it -- trace it explicitly here (against the dimension-
+		// precise 1D sub-namespace) so DocEditClosure includes this Function2D consumer when its
+		// Function1D dependency is edited (review #2, 2nd pass).  Rename still REFUSES a doc with
+		// this chunk (the name is a String token, not a rewritable Reference -- the cp guard);
+		// fold the name into the stamp so a maintained graph notices an edit to it.
+		if( c->role == "piecewise_linear_function2d" && role == "cp" ) {
+			const std::vector<std::string> toks = SplitWs( ParamNodeValue( kid.get() ) );
+			if( toks.size() >= 2 ) {
+				const std::string& fname = toks[1];
+				mix( fname );
+				if( !fname.empty() && fname != "none" && !LooksNumeric( fname ) ) {
+					std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( kFunc1DSubCat, fname ) );
+					if( d != defs.end() && d->second != kRuntimeDefaultTarget && d->second != 0 ) {
+						const NodeId srcParam = DocParamId( doc, chunkId, role, thisOcc );
+						mix( std::to_string( (long long)srcParam ) );
+						mix( std::to_string( (long long)d->second ) );   // #4a-fix (review P1): fold the RESOLVED target (cp)
+						out.edges.push_back( ReferenceUse{ srcParam, d->second } );
+						if( chunkId != d->second ) out.deps.push_back( d->second );
+					}
+				}
+			}
+			continue;   // handled this cp row; do not fall through to the generic skip
+		}
+		std::vector<std::string> refVals;
+		if( pd->kind == ValueKind::Reference ) {
+			refVals.push_back( ParamNodeValue( kid.get() ) );
+		} else if( !pd->tupleKinds.empty() ) {
+			const std::vector<std::string> toks = SplitWs( ParamNodeValue( kid.get() ) );
+			for( size_t k = 0; k < pd->tupleKinds.size() && k < toks.size(); ++k )
+				if( pd->tupleKinds[k] == ValueKind::Reference ) refVals.push_back( toks[k] );
+		} else {
+			continue;
+		}
+		for( const std::string& val : refVals ) {
+			mix( val );                                        // stamp: every reference value
+			if( val.empty() || val == "none" ) continue;       // explicit-none / empty: not an edge
+			NodeId target = 0;
+			// DIMENSION-PRECISE resolution for the function consumers FunctionSubNamespace maps
+			// (function1d/transfer_* -> 1D; function2d/heightfield_function/transfer_spectral -> 2D)
+			// (review #3, 2nd pass): resolve through the 1D/2D sub-namespace key so a same-named
+			// Function1D+Function2D pair binds the RIGHT one (matching the engine's GetFunction1Ds vs
+			// GetFunction2Ds), NOT the (Function,name) first-wins edge.  No fallback to the coarse key:
+			// a function1d naming only a Function2D is genuinely dangling (the engine would not find it
+			// either).  The else branch iterates a param's declared referenceCategories (params NOT in
+			// FunctionSubNamespace).  ior/film_ior were the coarse {Painter,Function} slots here until
+			// workstream #2 dropped their phantom Function category (ResolveOrDiagnoseScalar resolves a
+			// scalar-then-colour painter, then numeric -- NEVER a Function manager), so they are now
+			// {Painter}; their residual painter colour-vs-scalar ambiguity is handled by the alias above.
+			const int fsub = FunctionSubNamespace( role );
+			if( fsub != 0 ) {
+				std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( fsub, val ) );
+				if( d != defs.end() ) target = d->second;
+			} else {
+				for( ChunkCategory rc : pd->referenceCategories ) {
+					std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( (int)rc, val ) );
+					if( d != defs.end() ) { target = d->second; break; }
+				}
+			}
+			if( target == kRuntimeDefaultTarget ) continue;    // resolves to a runtime default: not an edge, not dangling
+			if( target == 0 ) {                                // unresolved
+				// A non-resolving value is a DANGLING reference only if it is a
+				// NAME (not entirely numeric tokens). An entirely-numeric value is
+				// a LITERAL (a scalar `0.5` or an inline `r g b`) -- not a dangling
+				// reference. (In a pure-reference slot a numeric is a TYPE mismatch,
+				// which DeriveToJob refuses at apply time; the static pass does not
+				// double-report it. See LooksNumeric.)
+				if( !LooksNumeric( val ) )
+					diags.push_back( c->role + "." + role + " -> '" + val + "': unresolved reference" );
+				continue;
+			}
+			// sourceValueNodeId is the param NodeId (a tuple's ref tokens share it;
+			// value-atom sub-identity is the deferred refinement).
+			const NodeId srcParam = DocParamId( doc, chunkId, role, thisOcc );
+			// Fold the SOURCE-PARAM NodeId into the stamp (review #4, the param-level
+			// twin of P1.5's chunk-NodeId fold): edges are KEYED by the source param's
+			// NodeId, so removing a reference param and reinserting an identical one (a
+			// NEW param NodeId, same value) changes the graph's edge -- the stamp must
+			// move, else a reused graph carries a dead source NodeId.  A value edit
+			// preserves the param NodeId, so this stays stable across non-structural edits.
+			mix( std::to_string( (long long)srcParam ) );
+			mix( std::to_string( (long long)target ) );   // #4a-fix (review P1): fold the RESOLVED target -- a first-wins producer reorder changes this edge but not the per-chunk-value sum
+			out.edges.push_back( ReferenceUse{ srcParam, target } );
+			// Reverse adjacency, computed in this SAME pass (slice 5): the referenced
+			// chunk -> the chunk that references it, so DocEditClosure( id, graph ) is a
+			// pure O(closure . log N) BFS over a reused graph.  (Self-reference excluded,
+			// matching the from-scratch DocEditClosure; duplicate dependents are harmless
+			// -- the BFS dedups via its seen-set.)
+			if( chunkId != target ) out.deps.push_back( target );
+		}
+	}
+	out.cs = cs;
+	return out;
+}
+
+ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string>* diagnostics )
+{
+	std::vector<std::string> local;
+	std::vector<std::string>& diags = diagnostics ? *diagnostics : local;
+	ReferenceGraph graph;
+	// Commutative per-chunk stamp (#4): each chunk folds its reference-relevant content into a
+	// FRESH per-chunk FNV-1a accumulator `cs` (reset per chunk in PASS B); the graph stamp is the
+	// SUM of those per-chunk stamps.  Order-independent + per-chunk, so the maintained graph can
+	// update it INCREMENTALLY on a single-chunk edit (subtract the chunk's old cs, add its new) in
+	// O(chunk) rather than an O(N) re-fold -- preserving "same stamp => same graph" (each cs folds
+	// the chunk's distinct NodeId, so distinct chunks don't sum-cancel).
+	// Each cs ALSO folds the RESOLVED TARGET NodeId of every edge (review P1): the per-chunk SUM is
+	// order-independent, but namespace resolution is FIRST-WINS (order-sensitive) on duplicate
+	// definitions -- so without the target fold a producer reorder would change an edge while leaving
+	// the sum unchanged.  Folding the resolved target makes the stamp reflect the resolved GRAPH,
+	// restoring "same stamp => same graph".  (Incremental-safe: the target is recomputed in the
+	// per-chunk resolution that the maintained graph re-runs on an edit -- #4b.)
+	unsigned long long stamp = 0;                          // sum of per-chunk stamps (0 == empty graph)
+
+	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
+	std::vector<NodeRef> items;
+	SeqToVec( doc.items, items );
+
+	// PASS A -- index the namespace by (category, name): FIRST the engine's runtime
+	// defaults -> kRuntimeDefaultTarget (a sentinel: "resolves to a default, not a CST
+	// chunk"), THEN the CST chunk defs. Defaults are seeded first so a chunk whose
+	// name collides with a default does NOT override it -- matching the manager, which
+	// registered the default before any chunk and rejects the colliding AddItem.
+	// PASS A -- the (category,name) namespace + painter-alias dependents (factored: #4b).
+	std::map<std::pair<int,std::string>, NodeId> defs = BuildReferenceNamespace( doc, items, registry, graph.dependents, diags );
+
+	// PASS B -- resolve each chunk's references against that namespace; the graph is the union of
+	// the per-chunk edges/dependents and the COMMUTATIVE SUM of the per-chunk stamps (#4).
 	for( size_t i = 0; i < items.size(); ++i ) {
 		const NodeRef& c = items[i];
 		if( c->kind != NodeKind::Chunk ) continue;
 		std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( c->role );
 		if( it == registry.end() ) continue;
-		const ChunkDescriptor& desc = it->second->Describe();
 		const NodeId chunkId = DocNodeIdAt( doc, (int)i );
-		// Fold the chunk's NodeId into the stamp (review P1.5): the graph's edges +
-		// dependents are NodeId-KEYED, so "stamp-unchanged => graph-unchanged" must also
-		// cover identity, not just content.  Without this, erasing a chunk and reinserting
-		// a byte-IDENTICAL one (a NEW NodeId, same content) leaves the stamp unchanged
-		// while the graph's NodeId-keyed edges go stale -> a holder reusing the cached
-		// graph would walk a dead NodeId.  A value edit PRESERVES NodeIds (D26), so this
-		// stays stable across the non-reference edits the stamp must not move on.
-		cs = 1469598103934665603ULL;   // #4: reset the per-chunk stamp accumulator (FNV-1a basis)
-		mix( c->role );
-		mix( std::to_string( (long long)chunkId ) );
-		{ std::string nm; if( ParamValue( c.get(), "name", nm ) ) mix( nm ); }
-		std::map<std::string,int> occ;   // per-role occurrence index, for DocParamId
-		for( const auto& kid : c->kids ) {
-			if( kid->kind != NodeKind::Param ) continue;
-			const std::string role = kid->role;
-			const int thisOcc = occ[role]++;
-			const ParameterDescriptor* pd = 0;
-			for( const auto& p : desc.parameters ) if( p.name == role ) { pd = &p; break; }
-			if( !pd ) continue;
-			// piecewise_linear_function2d.cp embeds a Function1D NAME as the 2nd whitespace token of
-			// each repeatable `cp` row ("<x> <function1d_name>"; consumed by AddPiecewiseLinearFunction2D
-			// via GetFunction1Ds).  The descriptor types `cp` as an opaque String, so the generic
-			// reference pass below would SKIP it -- trace it explicitly here (against the dimension-
-			// precise 1D sub-namespace) so DocEditClosure includes this Function2D consumer when its
-			// Function1D dependency is edited (review #2, 2nd pass).  Rename still REFUSES a doc with
-			// this chunk (the name is a String token, not a rewritable Reference -- the cp guard);
-			// fold the name into the stamp so a maintained graph notices an edit to it.
-			if( c->role == "piecewise_linear_function2d" && role == "cp" ) {
-				const std::vector<std::string> toks = SplitWs( ParamNodeValue( kid.get() ) );
-				if( toks.size() >= 2 ) {
-					const std::string& fname = toks[1];
-					mix( fname );
-					if( !fname.empty() && fname != "none" && !LooksNumeric( fname ) ) {
-						std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( kFunc1DSubCat, fname ) );
-						if( d != defs.end() && d->second != kRuntimeDefaultTarget && d->second != 0 ) {
-							const NodeId srcParam = DocParamId( doc, chunkId, role, thisOcc );
-							mix( std::to_string( (long long)srcParam ) );
-							mix( std::to_string( (long long)d->second ) );   // #4a-fix (review P1): fold the RESOLVED target (cp)
-							graph.edges.push_back( ReferenceUse{ srcParam, d->second } );
-							if( chunkId != d->second ) graph.dependents[ d->second ].push_back( chunkId );
-						}
-					}
-				}
-				continue;   // handled this cp row; do not fall through to the generic skip
-			}
-			std::vector<std::string> refVals;
-			if( pd->kind == ValueKind::Reference ) {
-				refVals.push_back( ParamNodeValue( kid.get() ) );
-			} else if( !pd->tupleKinds.empty() ) {
-				const std::vector<std::string> toks = SplitWs( ParamNodeValue( kid.get() ) );
-				for( size_t k = 0; k < pd->tupleKinds.size() && k < toks.size(); ++k )
-					if( pd->tupleKinds[k] == ValueKind::Reference ) refVals.push_back( toks[k] );
-			} else {
-				continue;
-			}
-			for( const std::string& val : refVals ) {
-				mix( val );                                        // stamp: every reference value
-				if( val.empty() || val == "none" ) continue;       // explicit-none / empty: not an edge
-				NodeId target = 0;
-				// DIMENSION-PRECISE resolution for the function consumers FunctionSubNamespace maps
-				// (function1d/transfer_* -> 1D; function2d/heightfield_function/transfer_spectral -> 2D)
-				// (review #3, 2nd pass): resolve through the 1D/2D sub-namespace key so a same-named
-				// Function1D+Function2D pair binds the RIGHT one (matching the engine's GetFunction1Ds vs
-				// GetFunction2Ds), NOT the (Function,name) first-wins edge.  No fallback to the coarse key:
-				// a function1d naming only a Function2D is genuinely dangling (the engine would not find it
-				// either).  The else branch iterates a param's declared referenceCategories (params NOT in
-				// FunctionSubNamespace).  ior/film_ior were the coarse {Painter,Function} slots here until
-				// workstream #2 dropped their phantom Function category (ResolveOrDiagnoseScalar resolves a
-				// scalar-then-colour painter, then numeric -- NEVER a Function manager), so they are now
-				// {Painter}; their residual painter colour-vs-scalar ambiguity is handled by the alias above.
-				const int fsub = FunctionSubNamespace( role );
-				if( fsub != 0 ) {
-					std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( fsub, val ) );
-					if( d != defs.end() ) target = d->second;
-				} else {
-					for( ChunkCategory rc : pd->referenceCategories ) {
-						std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( (int)rc, val ) );
-						if( d != defs.end() ) { target = d->second; break; }
-					}
-				}
-				if( target == kRuntimeDefaultTarget ) continue;    // resolves to a runtime default: not an edge, not dangling
-				if( target == 0 ) {                                // unresolved
-					// A non-resolving value is a DANGLING reference only if it is a
-					// NAME (not entirely numeric tokens). An entirely-numeric value is
-					// a LITERAL (a scalar `0.5` or an inline `r g b`) -- not a dangling
-					// reference. (In a pure-reference slot a numeric is a TYPE mismatch,
-					// which DeriveToJob refuses at apply time; the static pass does not
-					// double-report it. See LooksNumeric.)
-					if( !LooksNumeric( val ) )
-						diags.push_back( c->role + "." + role + " -> '" + val + "': unresolved reference" );
-					continue;
-				}
-				// sourceValueNodeId is the param NodeId (a tuple's ref tokens share it;
-				// value-atom sub-identity is the deferred refinement).
-				const NodeId srcParam = DocParamId( doc, chunkId, role, thisOcc );
-				// Fold the SOURCE-PARAM NodeId into the stamp (review #4, the param-level
-				// twin of P1.5's chunk-NodeId fold): edges are KEYED by the source param's
-				// NodeId, so removing a reference param and reinserting an identical one (a
-				// NEW param NodeId, same value) changes the graph's edge -- the stamp must
-				// move, else a reused graph carries a dead source NodeId.  A value edit
-				// preserves the param NodeId, so this stays stable across non-structural edits.
-				mix( std::to_string( (long long)srcParam ) );
-				mix( std::to_string( (long long)target ) );   // #4a-fix (review P1): fold the RESOLVED target -- a first-wins producer reorder changes this edge but not the per-chunk-value sum
-				graph.edges.push_back( ReferenceUse{ srcParam, target } );
-				// Reverse adjacency, computed in this SAME pass (slice 5): the referenced
-				// chunk -> the chunk that references it, so DocEditClosure( id, graph ) is a
-				// pure O(closure . log N) BFS over a reused graph.  (Self-reference excluded,
-				// matching the from-scratch DocEditClosure; duplicate dependents are harmless
-				// -- the BFS dedups via its seen-set.)
-				if( chunkId != target ) graph.dependents[ target ].push_back( chunkId );
-			}
-		}
-		stamp += cs;   // #4: add this chunk's per-chunk stamp (commutative sum)
+		ChunkRefs cr = ComputeChunkRefs( doc, defs, it->second->Describe(), c, chunkId, diags );
+		graph.edges.insert( graph.edges.end(), cr.edges.begin(), cr.edges.end() );
+		for( NodeId t : cr.deps ) graph.dependents[ t ].push_back( chunkId );
+		stamp += cr.cs;
 	}
 	graph.stamp = stamp;
 	return graph;
