@@ -976,41 +976,104 @@ static const std::map<std::string, const IAsciiChunkParser*>& DescriptorRegistry
 //! (so non-expr scenes are byte-identical, the CstDeriveDifferentialTest gate).  A malformed /
 //! non-finite expr pushes a diagnostic + returns false -> the value stays `expr(...)`, which the
 //! descriptor parser then rejects -> the caller's refuse-all applies NOTHING (no silent bad value).
-static bool TryEvalExprValue( const std::string& value, std::string& outLit,
-                              std::vector<std::string>& diags, const std::string& kw, const std::string& pname )
+//! #5 slice 3 -- document-level `let` constants (§2.6, the DEFINE replacement).  A `let { NAME
+//! value ... }` chunk declares scene-global named constants used in expr(...): `let { POWER 2.3 }` +
+//! `power expr( POWER )`.  `let` is NOT an engine entity -- DeriveToJob collects its bindings here and
+//! does NOT apply the chunk.  A binding is one numeric literal OR an expr(...) that may reference
+//! EARLIER lets (lexical document-order scope, no UNDEF; a forward/cyclic reference fails to resolve
+//! -> diagnosed -> refuse).  Bindings are stored as EVALUATED NUMERIC values (NAME -> double),
+//! evaluated once here in document order; a consumer's expr then simply AddParams them.
+typedef std::vector<std::pair<std::string,double> > LetBindings;
+
+//! Is `value` exactly `expr( <balanced> )`?  If so set `body` to the inside.  The opening '(' (index
+//! 4) must balance to the FINAL ')', so `expr(a)+expr(b)` / `expr(a) x` are NOT a single expr value
+//! (they fall through to the descriptor parser's rejection).
+static bool IsExprValue( const std::string& value, std::string& body )
 {
 	if( value.size() < 6 || value.compare( 0, 5, "expr(" ) != 0 || value.back() != ')' ) return false;
-	// The opening '(' (index 4) must balance to the FINAL ')' -- so `expr(a)+expr(b)` or `expr(a) x`
-	// is NOT taken as a single expr value (it falls through to the descriptor parser's rejection).
 	int depth = 0; size_t lastClose = std::string::npos;
 	for( size_t k = 4; k < value.size(); ++k ) {
 		if( value[k] == '(' ) ++depth;
 		else if( value[k] == ')' ) { if( --depth == 0 ) { lastClose = k; break; } }
 	}
 	if( lastClose != value.size() - 1 ) return false;
-	const std::string body = value.substr( 5, value.size() - 6 );   // between `expr(` and the final `)`
+	body = value.substr( 5, value.size() - 6 );   // between `expr(` and the final `)`
+	return true;
+}
+
+//! Compile + evaluate one expr BODY over the numeric `lets` + the reserved built-ins PI/E (added
+//! AFTER the lets, so a let cannot shadow them).  Returns the finite result, or false with `err`
+//! set (a compile error, or a non-finite result -- rejected by a compiler-opaque scan of the %.17g
+//! string, since ExpressionProgram::IsFinite folds to always-true under -ffast-math).  No u/v: a
+//! scene expr is a constant.
+static bool EvalExprBody( const std::string& body, const LetBindings& lets, double& outVal, std::string& err )
+{
 	RISE::Implementation::ExpressionProgram prog = RISE::Implementation::ExpressionProgram::Invalid();
 	RISE::Implementation::ExpressionProgram::Builder b;
-	if( !b.Finalize( body, prog ) || !prog.IsValid() ) {
-		diags.push_back( kw + "." + pname + ": expr(...) failed to compile: " + prog.Error() );
+	for( const std::pair<std::string,double>& L : lets ) b.AddParam( L.first, (Scalar)L.second );
+	b.AddParam( "PI", (Scalar)3.14159265358979323846 );
+	b.AddParam( "E",  (Scalar)2.71828182845904523536 );
+	if( !b.Finalize( body, prog ) || !prog.IsValid() ) { err = "failed to compile: " + prog.Error(); return false; }
+	const Scalar r = prog.Eval( 0, 0 );
+	char buf[64];
+	// %.17g round-trips the double EXACTLY (C-locale '.' decimal, shared with the sscanf("%lf")/strtod
+	// parse-back path).  A finite %.17g is only [0-9.eE+-]; an 'n'(an)/'i'(nf) char marks nan/inf.
+	std::snprintf( buf, sizeof(buf), "%.17g", (double)r );
+	for( const char* q = buf; *q; ++q )
+		if( *q == 'n' || *q == 'N' || *q == 'i' || *q == 'I' ) { err = std::string( "evaluated to a non-finite value (" ) + buf + ")"; return false; }
+	outVal = (double)r;
+	return true;
+}
+
+static LetBindings CollectLetBindings( const std::vector<NodeRef>& items, std::vector<std::string>& diags )
+{
+	LetBindings out;
+	for( const NodeRef& c : items ) {
+		if( c->kind != NodeKind::Chunk || c->role != "let" ) continue;
+		for( const NodeRef& kid : c->kids ) {
+			if( kid->kind != NodeKind::Param ) continue;
+			std::string name, raw; bool first = true;
+			for( const NodeRef& tk : kid->kids )
+				if( tk->kind == NodeKind::Token ) {
+					if( first ) { name = tk->text; first = false; }
+					else { if( !raw.empty() ) raw += ' '; raw += tk->text; }
+				}
+			std::string body; double val = 0;
+			if( IsExprValue( raw, body ) ) {                  // expr-valued let: eval over the EARLIER lets only
+				std::string err;
+				if( !EvalExprBody( body, out, val, err ) ) {   // a forward/cyclic ref fails here (not yet in `out`)
+					diags.push_back( "let." + name + ": expr binding " + err );
+					continue;
+				}
+			} else {                                          // literal: exactly ONE finite numeric token
+				char* end = nullptr;
+				val = std::strtod( raw.c_str(), &end );
+				if( raw.empty() || end != raw.c_str() + raw.size() ) {
+					diags.push_back( "let." + name + ": a binding must be one numeric literal or expr(...) (got '" + raw + "')" );
+					continue;
+				}
+			}
+			out.push_back( std::make_pair( name, val ) );
+		}
+	}
+	return out;
+}
+
+static bool TryEvalExprValue( const std::string& value, std::string& outLit,
+                              std::vector<std::string>& diags, const std::string& kw, const std::string& pname,
+                              const LetBindings& lets )
+{
+	std::string body;
+	if( !IsExprValue( value, body ) ) return false;   // not a single expr( ... ) value -> passed through verbatim
+	double v; std::string err;
+	if( !EvalExprBody( body, lets, v, err ) ) {        // compile error / non-finite -> refuse (refuse-all upstream).
+		// Caught at the eval boundary so EVERY slot kind is guarded, incl. String / inline-scalar-painter
+		// slots that have no later numeric check (the slice-2 non-finite escape).
+		diags.push_back( kw + "." + pname + ": expr(...) " + err );
 		return false;
 	}
-	const Scalar r = prog.Eval( 0, 0 );   // no instance vars yet -- u/v unused by a constant expr
 	char buf[64];
-	// %.17g round-trips the double EXACTLY; C-locale '.' decimal, shared with every sscanf("%lf")/
-	// strtod in the parse-back path (RISE never setlocale()s -- the whole scene format is C-locale).
-	std::snprintf( buf, sizeof(buf), "%.17g", (double)r );
-	// Reject a NON-FINITE result HERE, at the eval boundary -- not via ExpressionProgram::IsFinite,
-	// which is UNRELIABLE under -O3 -flto -ffast-math (the bit test folds to always-true).  A String /
-	// inline-scalar-painter slot has NO later numeric check (only numeric ValueKinds get the descriptor's
-	// finite-token check), so without this guard a non-finite expr would SILENTLY bake nan/inf there.
-	// A finite %.17g is only [0-9.eE+-]; an 'n'(an)/'i'(nf) char (any case) marks nan/inf -- and a byte
-	// scan of the formatted string is compiler-opaque (immune to the ffast-math folding).
-	for( const char* q = buf; *q; ++q )
-		if( *q == 'n' || *q == 'N' || *q == 'i' || *q == 'I' ) {
-			diags.push_back( kw + "." + pname + ": expr(...) evaluated to a non-finite value (" + std::string( buf ) + ")" );
-			return false;
-		}
+	std::snprintf( buf, sizeof(buf), "%.17g", v );
 	outLit = buf;
 	return true;
 }
@@ -1019,7 +1082,8 @@ static const IAsciiChunkParser* ResolveChunkParams(
 	const NodeRef& c,
 	const std::map<std::string, const IAsciiChunkParser*>& registry,
 	IAsciiChunkParser::ParamsList& plist,
-	std::vector<std::string>& diags )
+	std::vector<std::string>& diags,
+	const LetBindings& lets )
 {
 	const std::string& kw = c->role;
 	std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( kw );
@@ -1039,7 +1103,7 @@ static const IAsciiChunkParser* ResolveChunkParams(
 			// #5 slice 2: an expr(...) value -> a numeric literal (Facet-1 derive-time eval); a non-expr
 			// value is passed through verbatim, so non-expr scenes stay byte-identical to legacy.
 			std::string lit;
-			if( TryEvalExprValue( value, lit, diags, kw, pname ) ) value = lit;
+			if( TryEvalExprValue( value, lit, diags, kw, pname, lets ) ) value = lit;
 			std::string line = pname;
 			if( !value.empty() ) { line += ' '; line += value; }
 			plist.push_back( String( line.c_str() ) );
@@ -1102,6 +1166,10 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 
 	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
 
+	// #5 slice 3: collect document-level `let` constants up front (a malformed binding diags -> the
+	// refuse-all below applies nothing).  `let` chunks are CST-level, NOT engine entities -> skipped.
+	const LetBindings lets = CollectLetBindings( items, diags );
+
 	// PASS 1 -- validate EVERY chunk through the live descriptor registry, the
 	// SAME validation the legacy parser runs (DispatchChunkParameters: rejects a
 	// no-space line, an undeclared parameter name, or a non-finite/non-numeric
@@ -1113,10 +1181,11 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	for( size_t i = 0; i < items.size(); ++i ) {
 		const NodeRef& c = items[i];
 		if( c->kind != NodeKind::Chunk ) continue;   // header strays / trivia: not derivable chunks
+		if( c->role == "let" ) continue;             // #5 slice 3: a CST-level constant block, not an engine chunk (collected above)
 		// Resolve the parser + normalise the params (shared with the incremental
 		// derive, so both paths normalise identically -- see ResolveChunkParams).
 		IAsciiChunkParser::ParamsList plist;
-		const IAsciiChunkParser* parser = ResolveChunkParams( c, registry, plist, diags );
+		const IAsciiChunkParser* parser = ResolveChunkParams( c, registry, plist, diags, lets );
 		if( !parser ) continue;                       // unknown chunk type (diagnostic already pushed)
 		ParseStateBag bag( &parser->Describe() );
 		if( !DispatchChunkParameters( parser->Describe(), bag, plist ) ) {
@@ -1285,8 +1354,11 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		NodeRef node;
 		const int idx = DocIndexOfNodeId( doc, id, &node, nullptr );
 		if( idx < 0 || !node || node->kind != NodeKind::Chunk ) { diags.push_back( "incremental: id is not a chunk in this document" ); return 0; }
+		if( node->role == "let" ) { diags.push_back( "incremental: a let-binding edit requires a full derive (its consumers are not yet traced)" ); return 0; }   // #5 slice 3
 		IAsciiChunkParser::ParamsList plist;
-		const IAsciiChunkParser* parser = ResolveChunkParams( node, registry, plist, diags );
+		// #5 slice 3: NO lets collected on the O(closure) path (collecting them is O(N)); a closure expr
+		// referencing a let then refuses + the caller full-derives (which has the lets).  Plain / PI/E exprs work.
+		const IAsciiChunkParser* parser = ResolveChunkParams( node, registry, plist, diags, LetBindings() );
 		if( !parser ) return 0;                                  // unknown chunk type (diagnostic pushed)
 		const ChunkCategory cat = parser->Describe().category;
 		std::string name; ParamValue( node.get(), "name", name );
