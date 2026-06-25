@@ -2511,6 +2511,50 @@ NodeId DocParamId( const Document& doc, NodeId chunkId, const std::string& role,
 	return ParamGet( doc.paramIds, ParamKey(chunkId, role, occ) );
 }
 
+RepeatGroupView DocRepeatGroup( const Document& doc, NodeId chunkId, const std::string& role )
+{
+	// D3 read-through view: the repeated Param children in DOCUMENT order (the order Finalize's
+	// GetRepeatable consumes), each paired with its stable per-occurrence NodeId.  A snapshot, not a
+	// stored node -- document order stays canonical.
+	RepeatGroupView v;
+	v.chunkId = chunkId;
+	v.role = role;
+	NodeRef c = DocResolveNodeId( doc, chunkId );
+	if( !c || c->kind != NodeKind::Chunk ) return v;
+	int occ = 0;
+	for( const NodeRef& kid : c->kids ) {
+		if( kid->kind != NodeKind::Param || kid->role != role ) continue;
+		v.occurrences.push_back( kid );
+		v.occurrenceIds.push_back( DocParamId( doc, chunkId, role, occ ) );
+		++occ;
+	}
+	return v;
+}
+
+int DocRepeatCount( const Document& doc, NodeId chunkId, const std::string& role )
+{
+	NodeRef c = DocResolveNodeId( doc, chunkId );
+	if( !c || c->kind != NodeKind::Chunk ) return 0;
+	int n = 0;
+	for( const NodeRef& kid : c->kids ) if( kid->kind == NodeKind::Param && kid->role == role ) ++n;
+	return n;
+}
+
+NodeId DocRepeatElementId( const Document& doc, NodeId chunkId, const std::string& role, int index, NodeRef* outParam )
+{
+	if( outParam ) *outParam = NodeRef();
+	if( index < 0 ) return 0;
+	NodeRef c = DocResolveNodeId( doc, chunkId );
+	if( !c || c->kind != NodeKind::Chunk ) return 0;
+	int occ = 0;
+	for( const NodeRef& kid : c->kids ) {
+		if( kid->kind != NodeKind::Param || kid->role != role ) continue;
+		if( occ == index ) { if( outParam ) *outParam = kid; return DocParamId( doc, chunkId, role, occ ); }
+		++occ;
+	}
+	return 0;
+}
+
 Document DocReparse( const Document& oldDoc, const std::string& newText, std::vector<NodeId>* invalidated )
 {
 	Document fresh = ParseToCst( newText );   // fresh ids 1..M

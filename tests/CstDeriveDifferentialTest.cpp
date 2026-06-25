@@ -114,6 +114,7 @@ int main()
 	       "standard_object\n{\nname b\ngeometry g\nmaterial m\nposition 3 0 0\n}\n", "two objects share one material" );
 	// repeated param (last-wins, matches ParseStateBag overwrite)
 	Equiv( "sphere_geometry\n{\nname s\nradius 1\nradius 2\nradius 0.3\n}\n", "repeated radius (last wins)" );
+	Equiv( "piecewise_linear_function\n{\nname f\ncp 0 0\ncp 0.5 1\ncp 1 0\n}\n", "TRUE repeatable: cp accumulates as an ordered list (not last-wins) -- the RepeatGroup-view derive twin" );
 	// whitespace normalisation (tabs / multi-space in string + ref values)
 	Equiv( "uniformcolor_painter\n{\nname red\ncolor 0.2 0.4 0.6\n}\n"
 	       "lambertian_material\n{\nname m\nreflectance red\n}\n"

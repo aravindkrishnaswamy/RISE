@@ -480,6 +480,29 @@ namespace RISE
 		//! resolve the chunk by name, then its param by role. O(log N).
 		NodeId DocParamId( const Document& doc, NodeId chunkId, const std::string& role, int occ = 0 );
 
+		//! RepeatGroup view (D3): all occurrences of a repeatable parameter `role` in chunk `chunkId`,
+		//! as a read-through SNAPSHOT over the document-ordered Param children (NOT a stored node --
+		//! document order stays canonical, D3).  `occurrences[k]` is the k-th Param green node;
+		//! `occurrenceIds[k]` its stable per-occurrence NodeId (parallel arrays).  The basis for
+		//! per-element name-path addressing `chunk.role[k]` (e.g. `geometry/dial.part[3]`).
+		struct RepeatGroupView {
+			NodeId               chunkId;
+			std::string          role;
+			std::vector<NodeRef> occurrences;     //!< the repeated Param green nodes, in document order
+			std::vector<NodeId>  occurrenceIds;   //!< each occurrence's stable NodeId (parallel to `occurrences`)
+		};
+
+		//! Build the RepeatGroup view for (chunkId, role).  O(log N to the chunk + occurrences-in-chunk).
+		RepeatGroupView DocRepeatGroup( const Document& doc, NodeId chunkId, const std::string& role );
+
+		//! The number of `role` occurrences in `chunkId` -- the `[]` bound for element addressing.
+		int DocRepeatCount( const Document& doc, NodeId chunkId, const std::string& role );
+
+		//! Resolve `chunk.role[index]` (D3 per-element addressing) to the index-th occurrence's stable
+		//! NodeId (0 if out of range), optionally returning its Param green node.  Equals
+		//! DocParamId(doc, chunkId, role, index) for an in-range index.
+		NodeId DocRepeatElementId( const Document& doc, NodeId chunkId, const std::string& role, int index, NodeRef* outParam = nullptr );
+
 		//! One traced reference edge (D14/D25, the §2.5 reference graph): a
 		//! resolved reference FROM a referring param TO the chunk it names.
 		//!   * sourceValueNodeId -- the NodeId of the referring param (e.g. an
