@@ -39,6 +39,10 @@
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Interfaces/ICamera.h"
 #include "../src/Library/Interfaces/ICameraManager.h"
+#include "../src/Library/Interfaces/ILightManager.h"
+#include "../src/Library/Interfaces/IMedium.h"
+#include "../src/Library/Interfaces/IScene.h"
+#include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Interfaces/IEnumCallback.h"
 #include "../src/Library/Utilities/BoundingBox.h"
 
@@ -106,9 +110,12 @@ inline bool ParseLegacy( const std::string& sceneText, Job& job, const char* tmp
 // value divergence WHEREVER the value reaches a dumped field -- geometry
 // bounding-sphere radius; OBJECT reference wiring (geometry + material names) and
 // world-space bounding box (encodes position / scale / geometry size) -- and the
-// chunk set/order always. (A value that reaches no dumped field, e.g. a material
-// IOR or a light power, is not surfaced here; it is covered by the
-// by-construction argument below.) Painter colour and
+// chunk set/order always. (A value that reaches no cheaply-readable interface field -- material IOR, camera
+// intrinsics, the accelerator choice, the light-RR threshold -- is not surfaced here; those stay covered by
+// the by-construction argument below + a Phase-B render spot-check (docs/agentic-redesign/61-...). LIGHT power
+// and MEDIUM coefficients ARE now surfaced directly -- the lights:/media: sections at the end -- because
+// they ARE cheaply readable (ILight::emission*/radiantExitance, IMedium::GetCoefficients), so a CST value
+// divergence in either is caught here, not merely argued. Painter colour and
 // material scalar state are identical BY CONSTRUCTION (same Finalize) once the
 // param values match -- and the multi-token value path that feeds them is
 // covered END-TO-END here: an object's `position`/`scale` are multi-token
@@ -168,6 +175,57 @@ inline std::string DumpJob( Job& job )
 		ICamera* c = job.GetCameras() ? job.GetCameras()->GetItem( n.c_str() ) : 0;
 		if( c ) { Point3 p = c->GetLocation(); char b[96]; std::snprintf( b, sizeof(b), " loc=[%.17g %.17g %.17g]", (double)p.x, (double)p.y, (double)p.z ); o << b; }
 		o << "\n";
+	}
+	// --- lights + media (Phase B / 0b: close the F1 verification gap for the CHEAPLY-READABLE blind values).
+	// Lights have no manager names, so dump a value-tuple per light and SORT for a stable canonical order; a
+	// CST divergence in any light value (power/colour/position/cone) reorders or changes a row. Media dump the
+	// global medium identity + per-medium coefficients at the origin (homogeneous media ignore the point).
+	o << "lights:\n";
+	{
+		std::vector<std::string> rows;
+		ILightManager* lm = job.GetLights();
+		if( lm ) {
+			const ILightManager::LightsList& ls = lm->getLights();
+			for( const ILightPriv* lp : ls ) {
+				const ILight* l = lp; if( !l ) continue;
+				const RISEPel col = l->emissionColor(); const RISEPel rx = l->radiantExitance();
+				const Point3 p = l->position(), tg = l->emissionTarget(); const Vector3 d = l->emissionDirection();
+				char b[768];
+				std::snprintf( b, sizeof(b),
+					"  type=%d energy=%.17g col=[%.17g %.17g %.17g] exitance=[%.17g %.17g %.17g] pos=[%.17g %.17g %.17g] dir=[%.17g %.17g %.17g] cone=%.17g inner=%.17g outer=%.17g target=[%.17g %.17g %.17g]",
+					(int)l->lightType(), (double)l->emissionEnergy(),
+					(double)col.r,(double)col.g,(double)col.b, (double)rx.r,(double)rx.g,(double)rx.b,
+					(double)p.x,(double)p.y,(double)p.z, (double)d.x,(double)d.y,(double)d.z,
+					(double)l->emissionConeHalfAngle(), (double)l->emissionInnerAngle(), (double)l->emissionOuterAngle(),
+					(double)tg.x,(double)tg.y,(double)tg.z );
+				rows.push_back( b );
+			}
+		}
+		std::sort( rows.begin(), rows.end() );
+		for( const auto& r : rows ) o << r << "\n";
+	}
+	o << "media:\n";
+	{
+		IScenePriv* sc = job.GetScene(); const IMedium* gm = sc ? sc->GetGlobalMedium() : 0;
+		o << "  global=" << ( gm ? "set" : "(none)" );
+		if( gm ) {
+			const MediumCoefficients c = gm->GetCoefficients( Point3(0,0,0) ); char b[320];
+			std::snprintf( b, sizeof(b), " sigma_t=[%.17g %.17g %.17g] sigma_s=[%.17g %.17g %.17g] emission=[%.17g %.17g %.17g] homog=%d",
+				(double)c.sigma_t.r,(double)c.sigma_t.g,(double)c.sigma_t.b, (double)c.sigma_s.r,(double)c.sigma_s.g,(double)c.sigma_s.b,
+				(double)c.emission.r,(double)c.emission.g,(double)c.emission.b, gm->IsHomogeneous()?1:0 ); o << b;
+		}
+		o << "\n";
+		NameCollector mns; job.EnumerateMediumNames( mns ); std::sort( mns.names.begin(), mns.names.end() );
+		for( const auto& n : mns.names ) {
+			o << "  " << n; const IMedium* m = job.GetMedium( n.c_str() );
+			if( m ) {
+				const MediumCoefficients c = m->GetCoefficients( Point3(0,0,0) ); char b[320];
+				std::snprintf( b, sizeof(b), " sigma_t=[%.17g %.17g %.17g] sigma_s=[%.17g %.17g %.17g] emission=[%.17g %.17g %.17g] homog=%d",
+					(double)c.sigma_t.r,(double)c.sigma_t.g,(double)c.sigma_t.b, (double)c.sigma_s.r,(double)c.sigma_s.g,(double)c.sigma_s.b,
+					(double)c.emission.r,(double)c.emission.g,(double)c.emission.b, m->IsHomogeneous()?1:0 ); o << b;
+			}
+			o << "\n";
+		}
 	}
 	return o.str();
 }
