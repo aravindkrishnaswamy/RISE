@@ -198,8 +198,12 @@ static void ProcessLines( const std::vector<std::string>& lines, size_t lo, size
 		const std::string tt = Trim( code );
 		std::vector<std::string> toks;
 		if( !wasIn && !tt.empty() ) { std::istringstream iss(tt); std::string tk; while( iss>>tk ) toks.push_back(tk); }
-		if( toks.size() >= 3 && toks[0] == "DEFINE" ) { std::string dv = toks[2]; SubstituteMacrosInPlace( dv, macros ); FoldExprsInPlace( dv ); macros[toks[1]] = atof( dv.c_str() ); ++i; continue; }
-		if( toks.size() >= 2 && toks[0] == "UNDEF" )  { macros.erase(toks[1]); ++i; continue; }
+		// Legacy macro surface (AsciiSceneParser.cpp ~10731/~10760): define = DEFINE | define | leading '!';
+		// undef = UNDEF | undef | leading '~'.  Both -> add_macro(tokens[1],tokens[2]) / remove(tokens[1]).
+		const bool isDefine = !toks.empty() && !toks[0].empty() && ( toks[0] == "DEFINE" || toks[0] == "define" || toks[0][0] == '!' );
+		const bool isUndef  = !toks.empty() && !toks[0].empty() && ( toks[0] == "UNDEF" || toks[0] == "undef" || toks[0][0] == '~' );
+		if( toks.size() >= 3 && isDefine ) { std::string dv = toks[2]; SubstituteMacrosInPlace( dv, macros ); FoldExprsInPlace( dv ); macros[toks[1]] = atof( dv.c_str() ); ++i; continue; }
+		if( toks.size() >= 2 && isUndef )  { macros.erase(toks[1]); ++i; continue; }
 		if( toks.size() >= 5 && toks[0] == "FOR" ) {
 			std::string fl = tt; SubstituteMacrosInPlace( fl, macros ); FoldExprsInPlace( fl );
 			std::vector<std::string> ft; { std::istringstream iss(fl); std::string tk; while( iss>>tk ) ft.push_back(tk); }
@@ -276,9 +280,41 @@ static std::string KnownAccepted( const std::string& path )
 	return "";
 }
 
+// SELF-TEST (runs with NO scene root, so the unit suite exercises it without the media corpus): the
+// migrator macro surface must match legacy's -- define = DEFINE|define|leading '!', undef =
+// UNDEF|undef|leading '~' (AsciiSceneParser.cpp ~10731/~10760) -- plus `> set global_medium` -> chunk.
+static int RunSelfTest()
+{
+	int fails = 0;
+	auto CHECK = [&]( bool c, const char* m ){ if(!c){ ++fails; std::printf("  SELFTEST FAIL: %s\n", m); } };
+
+	const std::string base = "sphere_geometry\n{\nname s\nradius @CY\n}\n";
+	const std::string up = Migrate( "DEFINE CY 5\n" + base );
+	const std::string lo = Migrate( "define CY 5\n" + base );
+	const std::string bg = Migrate( "! CY 5\n"      + base );
+	CHECK( up == lo, "lowercase 'define' == 'DEFINE'" );
+	CHECK( up == bg, "bang '! CY 5' == 'DEFINE'" );
+	CHECK( up.find( "@CY" ) == std::string::npos, "@CY substituted (macro took effect)" );
+	CHECK( up.find( "DEFINE" ) == std::string::npos && up.find( "define" ) == std::string::npos, "define directive consumed" );
+
+	const std::string ub = "sphere_geometry\n{\nname s\nradius 1\n}\n";
+	const std::string u1 = Migrate( "DEFINE Q 1\nUNDEF Q\n" + ub );
+	const std::string u2 = Migrate( "DEFINE Q 1\nundef Q\n" + ub );
+	const std::string u3 = Migrate( "DEFINE Q 1\n~ Q\n"     + ub );
+	CHECK( u1 == u2, "lowercase 'undef' == 'UNDEF'" );
+	CHECK( u1 == u3, "tilde '~ Q' == 'UNDEF'" );
+	CHECK( u1.find( "UNDEF" ) == std::string::npos && u1.find( "undef" ) == std::string::npos, "undef directive consumed" );
+
+	const std::string gm = Migrate( "> set global_medium fog\n" );
+	CHECK( gm.find( "global_medium\n{\nmedium fog\n}" ) != std::string::npos, "'> set global_medium' -> chunk" );
+
+	std::printf( "CstCorpusEquivalenceTest SELF-TEST: %s (%d failure[s])\n", fails ? "FAIL" : "PASS", fails );
+	return fails ? 1 : 0;
+}
+
 int main( int argc, char** argv )
 {
-	if( argc < 2 ) { std::printf("CstCorpusEquivalenceTest: MANUAL gate -- pass a scene root (e.g. \"scenes\") to run the\n  corpus legacy-vs-CST(migrated) comparison.  Skipped (suite-safe: it loads media for the whole corpus).\n"); return 0; }
+	if( argc < 2 ) { std::printf("CstCorpusEquivalenceTest: MANUAL gate -- pass a scene root (e.g. \"scenes\") to run the\n  corpus legacy-vs-CST(migrated) comparison.  Running SELF-TEST only (suite-safe; the corpus gate needs the media root).\n"); return RunSelfTest(); }
 	const std::string rootArg = argv[1];
 	char cwd[4096]; if( !getcwd( cwd, sizeof(cwd) ) ) { std::printf("getcwd failed\n"); return 2; }
 	setenv( "RISE_MEDIA_PATH", (std::string(cwd) + "/").c_str(), 1 );

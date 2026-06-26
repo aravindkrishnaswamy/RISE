@@ -10207,6 +10207,19 @@ void AsciiSceneParser::OnEntityChunkFinalized(
 	// Every camera / light / material / medium chunk carries a `name`
 	// parameter — same extraction as objects.
 	const std::string runtimeName = ExtractObjectName( chunkparams );
+	// A chunk with NO explicit `name` line (e.g. global_medium{} -- a SETTING the descriptor categorizes
+	// as ChunkCategory::Medium, NOT a named entity) must not be indexed as a savable entity:
+	// ExtractObjectName defaults to "noname", which would collide with / overwrite the source span of a
+	// real medium actually named "noname" (and splice later medium edits into the wrong chunk).  Refuse it
+	// here; its descriptor reference category stays intact for the CST graph/rename.
+	{
+		bool hasExplicitName = false;
+		for( std::vector<String>::const_iterator nit = chunkparams.begin(); nit != chunkparams.end(); ++nit ) {
+			const String& s = *nit;
+			if( s.size() >= 6 && s[0]=='n' && s[1]=='a' && s[2]=='m' && s[3]=='e' && s[4]==' ' ) { hasExplicitName = true; break; }
+		}
+		if( !hasExplicitName ) return;
+	}
 
 	// FOR-revisit detection: a chunk byte offset seen before means the
 	// parser is iterating a FOR body.  Flip chunkRevisited on the

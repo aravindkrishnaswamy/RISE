@@ -31,6 +31,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <iterator>
 #ifdef _WIN32
 #include <process.h>
 #define getpid _getpid
@@ -42,6 +43,7 @@
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/SceneEditor/SourceSpanIndex.h"
+#include "../src/Library/SceneEditor/DirtyTracker.h"   // EntityCategory
 #include "../src/Library/SceneEditor/TransformSnapshot.h"
 
 using namespace RISE;
@@ -431,6 +433,78 @@ static void TestRepeatedParseClears()
 
 // --------------------------------------------------------------------
 
+static void TestGlobalMediumNotIndexedAsEntity()
+{
+    gCurrentTest = "TestGlobalMediumNotIndexedAsEntity";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // global_medium{} has NO `name` -- it is a SETTING categorized ChunkCategory::Medium, not a named
+    // entity, so it must NOT be indexed as a savable entity (ExtractObjectName would default it to
+    // "noname").  Here a real medium is named "realfog"; the index must hold "realfog" and NO "noname".
+    IJobPriv* pJob = LoadScene(
+        "homogeneous_medium\n{\n"
+        "    name realfog\n"
+        "    absorption 0.002 0.0015 0.004\n"
+        "    scattering 0.015 0.013 0.009\n"
+        "}\n"
+        "global_medium\n{\n"
+        "    medium realfog\n"
+        "}\n",
+        "global_medium_entity"
+    );
+    Check( pJob != nullptr, "parse succeeded" );
+    if( !pJob ) return;
+    const SourceSpanIndex* idx = pJob->GetSourceSpanIndex();
+    Check( idx != nullptr, "SourceSpanIndex available" );
+    if( idx ) {
+        Check( idx->FindEntity(EntityCategory::Medium, "realfog") != nullptr, "real medium 'realfog' IS indexed" );
+        Check( idx->FindEntity(EntityCategory::Medium, "noname")  == nullptr, "nameless global_medium{} NOT indexed as (Medium,'noname')" );
+        Check( idx->EntityCount() == 1, "exactly one entity span (the real medium; global_medium refused)" );
+    }
+    safe_release( pJob );
+}
+
+static void TestGlobalMediumNonameCollision()
+{
+    gCurrentTest = "TestGlobalMediumNonameCollision";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // The exact collision: a REAL medium named "noname" + a nameless global_medium{} referencing it.
+    // Pre-fix the global_medium chunk indexed as entity (Medium,"noname") and could OVERWRITE the real
+    // medium's source span, so a later medium edit would splice into the wrong chunk.  Post-fix the
+    // "noname" span must cover the homogeneous_medium chunk, not the global_medium chunk.  Keep the file
+    // so we can read the recorded span bytes.
+    char path[512];
+    std::snprintf( path, sizeof(path), "/tmp/source_span_gm_collision_%d.RISEscene", (int)::getpid() );
+    {
+        std::ofstream ofs( path );
+        ofs << "RISE ASCII SCENE 6\n"
+            << "sphere_geometry\n{\n    name sph\n    radius 1.0\n}\n"
+            << "homogeneous_medium\n{\n    name noname\n    absorption 0.002 0.0015 0.004\n    scattering 0.015 0.013 0.009\n}\n"
+            << "global_medium\n{\n    medium noname\n}\n";
+    }
+    IJobPriv* pJob = nullptr;
+    if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { Check(false,"job create"); std::remove(path); return; }
+    const bool ok = pJob->LoadAsciiScene( path );
+    Check( ok, "parse succeeded" );
+    if( ok ) {
+        const SourceSpan* sp = pJob->GetSourceSpanIndex()->FindEntity( EntityCategory::Medium, "noname" );
+        Check( sp != nullptr, "(Medium,'noname') has a SourceSpan" );
+        if( sp ) {
+            std::ifstream ifs( path, std::ios::binary );
+            std::string all( (std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>() );
+            const std::string span =
+                ( sp->chunkBeginOffset < sp->chunkEndOffset && sp->chunkEndOffset <= all.size() )
+                ? all.substr( sp->chunkBeginOffset, sp->chunkEndOffset - sp->chunkBeginOffset )
+                : std::string();
+            Check( span.find("homogeneous_medium") != std::string::npos,
+                   "'noname' span covers the homogeneous_medium chunk" );
+            Check( span.find("global_medium") == std::string::npos,
+                   "'noname' span does NOT cover the global_medium chunk" );
+        }
+    }
+    safe_release( pJob );
+    std::remove( path );
+}
+
 int main()
 {
     std::cout << "===== SourceSpanIndexBuilderTest =====" << std::endl;
@@ -443,6 +517,8 @@ int main()
     TestNameAfterTransformParams();
     TestNoTransformParameters();
     TestRepeatedParseClears();
+    TestGlobalMediumNotIndexedAsEntity();
+    TestGlobalMediumNonameCollision();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;
     return failCount == 0 ? 0 : 1;
 }
