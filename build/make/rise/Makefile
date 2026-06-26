@@ -126,6 +126,13 @@ HDRVarianceTest : $(OBJLIB) $(PATHTOOLS)HDRVarianceTest.o
 	@mkdir -p $(PATHTOOLDEST)
 	@echo Linking $(PATHTOOLDEST)HDRVarianceTest
 	@$(CXX) $(CPPFLAGS) -o $(PATHTOOLDEST)HDRVarianceTest $(PATHTOOLS)HDRVarianceTest.o $(OBJLIB) $(LDLIBS)
+
+# MigrateScenesV6toV7 -- the canonical v6->v7 scene migrator tool (Phase A of the parser cutover;
+# docs/agentic-redesign/61-...).  Wraps the shared tools/CstMigrator.h, same pattern as HDRVarianceTest.
+MigrateScenesV6toV7 : $(OBJLIB) $(PATHTOOLS)MigrateScenesV6toV7.o
+	@mkdir -p $(PATHTOOLDEST)
+	@echo Linking $(PATHTOOLDEST)MigrateScenesV6toV7
+	@$(CXX) $(CPPFLAGS) -o $(PATHTOOLDEST)MigrateScenesV6toV7 $(PATHTOOLS)MigrateScenesV6toV7.o $(OBJLIB) $(LDLIBS)
 drise_server : $(OBJLIB) $(OBJDRISE) $(PATHSRCSDRISE)drise_server.o
 	@echo Linking $(PATHDEST)drise_server
 	@$(CXX) $(CPPFLAGS) -o $(PATHDEST)drise_server $(PATHSRCSDRISE)drise_server.o $(OBJLIB) $(OBJDRISE) $(LDLIBS) 
