@@ -39,8 +39,14 @@
 #include <unistd.h>
 #endif
 
+#include <vector>
+
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/IScene.h"
+#include "../src/Library/Interfaces/IScenePriv.h"
+#include "../src/Library/Interfaces/ICameraManager.h"
+#include "../src/Library/Interfaces/IEnumCallback.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/SceneEditor/SourceSpanIndex.h"
 #include "../src/Library/SceneEditor/DirtyTracker.h"   // EntityCategory
@@ -66,6 +72,19 @@ static void Check( bool cond, const char* msg )
         std::cout << "  FAIL [" << gCurrentTest << "]: " << msg << std::endl;
     }
 }
+
+// Collects the names a runtime manager holds — the SAME enumeration the
+// editor uses to name dirty entities (SceneEditController::CategoryEntityName
+// -> ICameraManager::EnumerateItemNames).  Binding a test to this enumeration
+// proves the parser-side SourceSpan key and the editor-side dirty key agree.
+struct CollectNames : public IEnumCallback<const char*>
+{
+    std::vector<std::string> names;
+    bool operator()( const char* const& name ) override {
+        if( name ) names.push_back( name );
+        return true;
+    }
+};
 
 // Write a scene file with a minimal geometry chunk before the body,
 // load it, and return the IJobPriv (caller releases).  Returns null
@@ -527,10 +546,7 @@ static void TestCameraNameKeying()
 {
     gCurrentTest = "TestCameraNameKeying";
     std::cout << gCurrentTest << "..." << std::endl;
-    // A NAMED camera keys consistently (ExtractObjectName == AllocateCameraName) -> indexed.  A NAME-OMITTED
-    // camera's runtime name is "default" (AllocateCameraName), NOT "noname" (ExtractObjectName), so it must
-    // NOT be indexed (a dead/colliding (Camera,"noname") span the editor -- keying by "default" -- could
-    // never retrieve).  This is the camera carve-out in the entity-index hook.
+    // A NAMED camera keys consistently (ExtractObjectName == AllocateCameraName) -> indexed under its name.
     {
         IJobPriv* pJob = LoadScene(
             "pinhole_camera\n{\n"
@@ -547,6 +563,12 @@ static void TestCameraNameKeying()
             safe_release( pJob );
         }
     }
+    // A NAME-OMITTED camera's runtime name is "default" (AllocateCameraName), NOT "noname"
+    // (ExtractObjectName).  The fix keys its SourceSpan under the runtime name the editor enumerates
+    // so its property edits round-trip.  Bind the assertion to the ACTUAL camera-manager enumeration
+    // (the same call SceneEditController::CategoryEntityName makes) so the parser-side span key and
+    // the editor-side dirty key cannot silently diverge again.  This is the regression guard for the
+    // unnamed-camera round-trip bug.
     {
         IJobPriv* pJob = LoadScene(
             "pinhole_camera\n{\n"
@@ -557,11 +579,142 @@ static void TestCameraNameKeying()
         Check( pJob != nullptr, "nameless camera parse succeeded" );
         if( pJob ) {
             const SourceSpanIndex* idx = pJob->GetSourceSpanIndex();
+            // The runtime name the editor would use for this camera.
+            std::string runtimeName;
+            IScenePriv* scene = pJob->GetScene();
+            if( scene && scene->GetCameras() ) {
+                CollectNames cb;
+                scene->GetCameras()->EnumerateItemNames( cb );
+                Check( cb.names.size() == 1, "exactly one runtime camera" );
+                if( !cb.names.empty() ) runtimeName = cb.names[0];
+            }
+            Check( runtimeName == "default",
+                   "name-omitted camera's runtime name is 'default'" );
+            Check( idx && !runtimeName.empty() &&
+                   idx->FindEntity(EntityCategory::Camera, runtimeName) != nullptr,
+                   "name-omitted pinhole_camera IS indexed under its runtime name (editor can retrieve it)" );
             Check( idx && idx->FindEntity(EntityCategory::Camera, "noname") == nullptr,
-                   "name-omitted pinhole_camera NOT indexed as (Camera,'noname') [runtime is 'default']" );
+                   "name-omitted pinhole_camera NOT indexed under stale 'noname' key" );
             safe_release( pJob );
         }
     }
+    // Two NAME-OMITTED cameras exercise the auto-suffix capture path: runtime names "default" and
+    // "default_1" must BOTH be indexed (the wrapper records each allocation, and the entity-index
+    // hook reads the freshest value right after each camera's Finalize).
+    {
+        IJobPriv* pJob = LoadScene(
+            "pinhole_camera\n{\n"
+            "    location 0 0 0.45\n    lookat 0 0 0\n    up 0 1 0\n    fov 30.0\n"
+            "}\n"
+            "pinhole_camera\n{\n"
+            "    location 0 0 0.90\n    lookat 0 0 0\n    up 0 1 0\n    fov 45.0\n"
+            "}\n",
+            "two_nameless_cameras"
+        );
+        Check( pJob != nullptr, "two nameless cameras parse succeeded" );
+        if( pJob ) {
+            const SourceSpanIndex* idx = pJob->GetSourceSpanIndex();
+            Check( idx && idx->FindEntity(EntityCategory::Camera, "default") != nullptr,
+                   "first nameless camera indexed as (Camera,'default')" );
+            Check( idx && idx->FindEntity(EntityCategory::Camera, "default_1") != nullptr,
+                   "second nameless camera indexed as (Camera,'default_1') [auto-suffix]" );
+            Check( idx && idx->FindEntity(EntityCategory::Camera, "noname") == nullptr,
+                   "neither nameless camera mis-keyed as (Camera,'noname')" );
+            safe_release( pJob );
+        }
+    }
+}
+
+static void TestNamedAndUnnamedCameraMix()
+{
+    gCurrentTest = "TestNamedAndUnnamedCameraMix";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // The HasExplicitName branch in OnEntityChunkFinalized must interact correctly with
+    // AllocateCameraName's auto-suffix, AND the per-camera capture must be read FRESH for the
+    // SECOND camera (not the first camera's stale value).  Two orderings:
+    //  (a) explicit "cam_a" then an unnamed camera -> the unnamed one's runtime name is "default".
+    //  (b) explicit "default" then an unnamed camera -> the unnamed one auto-suffixes to "default_1"
+    //      (because "default" is already taken).  The explicit camera keys via ExtractObjectName
+    //      ("default") while the unnamed one keys via the allocator ("default_1") -- if the capture
+    //      were stale (still "default" from camera 1) the unnamed span would collide/overwrite.
+    {
+        IJobPriv* pJob = LoadScene(
+            "pinhole_camera\n{\n"
+            "    name cam_a\n"
+            "    location 0 0 0.45\n    lookat 0 0 0\n    up 0 1 0\n    fov 30.0\n"
+            "}\n"
+            "pinhole_camera\n{\n"
+            "    location 0 0 0.90\n    lookat 0 0 0\n    up 0 1 0\n    fov 45.0\n"
+            "}\n",
+            "named_then_unnamed"
+        );
+        Check( pJob != nullptr, "named-then-unnamed parse succeeded" );
+        if( pJob ) {
+            const SourceSpanIndex* idx = pJob->GetSourceSpanIndex();
+            Check( idx && idx->FindEntity(EntityCategory::Camera, "cam_a") != nullptr,
+                   "explicit camera 'cam_a' indexed under its source name" );
+            Check( idx && idx->FindEntity(EntityCategory::Camera, "default") != nullptr,
+                   "unnamed camera after a named one indexed as (Camera,'default')" );
+            Check( idx && idx->EntityCount() == 2, "both cameras indexed as distinct spans" );
+            safe_release( pJob );
+        }
+    }
+    {
+        IJobPriv* pJob = LoadScene(
+            "pinhole_camera\n{\n"
+            "    name default\n"
+            "    location 0 0 0.45\n    lookat 0 0 0\n    up 0 1 0\n    fov 30.0\n"
+            "}\n"
+            "pinhole_camera\n{\n"
+            "    location 0 0 0.90\n    lookat 0 0 0\n    up 0 1 0\n    fov 45.0\n"
+            "}\n",
+            "explicit_default_then_unnamed"
+        );
+        Check( pJob != nullptr, "explicit-'default'-then-unnamed parse succeeded" );
+        if( pJob ) {
+            const SourceSpanIndex* idx = pJob->GetSourceSpanIndex();
+            Check( idx && idx->FindEntity(EntityCategory::Camera, "default") != nullptr,
+                   "explicit camera 'default' indexed under its source name" );
+            Check( idx && idx->FindEntity(EntityCategory::Camera, "default_1") != nullptr,
+                   "unnamed camera auto-suffixed to (Camera,'default_1') -- capture read fresh, no collision" );
+            Check( idx && idx->EntityCount() == 2,
+                   "both cameras indexed as distinct entity spans (no overwrite)" );
+            safe_release( pJob );
+        }
+    }
+}
+
+static void TestCameraSettingsChunksNotIndexed()
+{
+    gCurrentTest = "TestCameraSettingsChunksNotIndexed";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // scene_options and camera_defaults are ChunkCategory::Camera but are SETTINGS (no `name` param, no
+    // runtime entity).  Even though the unnamed-camera fix now indexes name-omitted CAMERAS under their
+    // runtime name, these settings chunks must STILL be refused from the entity index -- they are gated
+    // out by the descriptor `name`-param check (never reaching the entity-index hook) and never call
+    // AllocateCameraName, so they cannot pollute the nameless camera's "default" key.
+    IJobPriv* pJob = LoadScene(
+        "scene_options\n{\n    scene_unit 1.0\n}\n"
+        "camera_defaults\n{\n    sensor_size 36\n    focal_length 35\n    fstop 2.8\n}\n"
+        "pinhole_camera\n{\n"
+        "    location 0 0 0.45\n    lookat 0 0 0\n    up 0 1 0\n    fov 30.0\n"
+        "}\n",
+        "camera_settings"
+    );
+    Check( pJob != nullptr, "parse succeeded" );
+    if( !pJob ) return;
+    const SourceSpanIndex* idx = pJob->GetSourceSpanIndex();
+    if( idx ) {
+        // The nameless camera still keys cleanly under its runtime name "default".
+        Check( idx->FindEntity(EntityCategory::Camera, "default") != nullptr,
+               "nameless camera after settings chunks IS indexed as (Camera,'default')" );
+        Check( idx->FindEntity(EntityCategory::Camera, "noname") == nullptr,
+               "no stale (Camera,'noname') span from settings chunks" );
+        // Exactly one camera-category entity span (the real camera; both settings chunks refused).
+        Check( idx->EntityCount() == 1,
+               "exactly one entity span (scene_options + camera_defaults not indexed)" );
+    }
+    safe_release( pJob );
 }
 
 static void TestGlobalMediumNotIndexedAsEntity()
@@ -653,6 +806,8 @@ int main()
     TestNamelessMediumStillIndexed();
     TestNamelessMaterialStillIndexed();
     TestCameraNameKeying();
+    TestNamedAndUnnamedCameraMix();
+    TestCameraSettingsChunksNotIndexed();
     TestGlobalMediumNotIndexedAsEntity();
     TestGlobalMediumNonameCollision();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;

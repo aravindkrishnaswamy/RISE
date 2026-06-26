@@ -1475,6 +1475,70 @@ static void TestCameraPropertySaveRoundTrips()
     std::remove( path.c_str() );
 }
 
+static void TestUnnamedCameraPropertySaveRoundTrips()
+{
+    gCurrentTest = "TestUnnamedCameraPropertySaveRoundTrips";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // Regression (unnamed-camera round-trip bug): a camera authored with NO `name`
+    // parameter gets the runtime name "default" (AllocateCameraName), and the editor
+    // marks (Camera,"default") dirty.  Before the fix the parser keyed its SourceSpan
+    // under "noname" (or refused it entirely), so SaveEngine's FindEntity(Camera,"default")
+    // missed and the property save was REFUSED — the edit silently failed to round-trip.
+    // With the fix the span is keyed under "default", so the edit saves like a named
+    // camera's.
+    const std::string body =
+        "RISE ASCII SCENE 6\n"
+        "pinhole_camera\n{\n"
+        "    location 0 0 20\n"
+        "    lookat 0 0 0\n"
+        "    up 0 1 0\n"
+        "    fov 30.0\n"
+        "}\n";
+    const std::string path = WriteSceneFile( body, "unnamedcamprop" );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    Check( pJob != nullptr, "loaded unnamed-camera scene" );
+    if( !pJob ) { std::remove( path.c_str() ); return; }
+
+    // The unnamed camera's runtime name — the name the editor marks dirty — is "default".
+    Check( pJob->GetActiveCameraName() == "default",
+           "unnamed camera's active runtime name is 'default'" );
+
+    SceneEditor editor( *pJob->GetScene() );
+    Check( !editor.HasUnsavedChanges(), "fresh load: no unsaved changes" );
+    const std::string fovLoaded = CameraParamValue( pJob, "default", "fov" );
+
+    SceneEdit e;
+    e.op            = SceneEdit::SetCameraProperty;
+    e.objectName    = "fov";
+    e.propertyValue = "45";
+    Check( editor.Apply( e ), "fov edit applied" );
+    Check( editor.HasUnsavedChanges(),
+           "unnamed-camera property edit marks the scene dirty" );
+
+    const std::string fovAfterEdit = CameraParamValue( pJob, "default", "fov" );
+    Check( fovAfterEdit != fovLoaded, "fov introspection reflects the edit" );
+
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r = engine.Save( path );
+    Check( r.status == SaveResult::Status::Saved,
+           "unnamed-camera property save: Saved (was Refused before the fix)" );
+    Check( r.directRewriteCount >= 1, "one Mode A property splice" );
+
+    safe_release( pJob );
+    IJobPriv* pJob2 = LoadSceneFromPath( path );
+    Check( pJob2 != nullptr, "reloaded saved unnamed-camera scene" );
+    if( pJob2 ) {
+        const std::string fovReloaded = CameraParamValue( pJob2, "default", "fov" );
+        Check( fovReloaded == fovAfterEdit,
+               "unnamed-camera fov round-tripped through save → reload" );
+        Check( fovReloaded != fovLoaded,
+               "reloaded fov differs from the original loaded value" );
+        safe_release( pJob2 );
+    }
+    std::remove( path.c_str() );
+}
+
 static void TestCameraPropertySecondSaveIsNoOp()
 {
     gCurrentTest = "TestCameraPropertySecondSaveIsNoOp";
@@ -2351,6 +2415,7 @@ int main()
     TestSaveAsWritesEvenWhenBytesNetToSource();
     TestInPlaceSaveStillNoOpsOnDragUndo();
     TestCameraPropertySaveRoundTrips();
+    TestUnnamedCameraPropertySaveRoundTrips();
     TestCameraPropertySecondSaveIsNoOp();
     TestMediumPropertySaveRoundTrips();
     TestLightPropertySaveRoundTrips();

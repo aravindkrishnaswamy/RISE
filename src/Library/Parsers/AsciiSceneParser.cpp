@@ -592,13 +592,27 @@ namespace RISE
 			// once per camera chunk, before the Add*Camera call.
 			static thread_local std::set<std::string> s_cameraNamesUsed;
 
+			// The runtime name AllocateCameraName issued for the MOST
+			// RECENTLY finalized camera chunk.  The Phase-B entity-index hook
+			// (AsciiSceneParser::OnEntityChunkFinalized) reads this to key a
+			// NAME-OMITTED camera's SourceSpan under the SAME runtime name the
+			// editor enumerates ("default", auto-suffixed) instead of
+			// ExtractObjectName's "noname" -- otherwise an unnamed camera's
+			// property edits can't round-trip (the editor keys
+			// (Camera,"default") but the index would hold (Camera,"noname")).
+			// Set on every AllocateCameraName call; the hook fires immediately
+			// after the camera's Finalize, so it always reflects the
+			// just-parsed camera.  thread_local for the same reason as
+			// s_cameraNamesUsed.
+			static thread_local std::string s_lastAllocatedCameraName;
+
 			// Default name issued to an unnamed camera chunk.  The
 			// design treats `name` as optional; first unnamed camera
 			// gets "default", second "default_1", and so on.  An
 			// explicit `name "default"` followed by an unnamed camera
 			// also auto-suffixes — that's what the s_cameraNamesUsed
 			// set is for.
-			static std::string AllocateCameraName( const std::string& requested ) {
+			static std::string AllocateCameraNameImpl( const std::string& requested ) {
 				if( !requested.empty() ) {
 					s_cameraNamesUsed.insert( requested );
 					return requested;
@@ -619,11 +633,28 @@ namespace RISE
 				return std::string( "default_overflow" );
 			}
 
+			// Capturing wrapper around the (unchanged) allocator: every
+			// camera Finalize calls this, so s_lastAllocatedCameraName always
+			// holds the runtime name of the most recently finalized camera.
+			static std::string AllocateCameraName( const std::string& requested ) {
+				s_lastAllocatedCameraName = AllocateCameraNameImpl( requested );
+				return s_lastAllocatedCameraName;
+			}
+
+			// Read-only accessor for the Phase-B entity-index hook
+			// (AsciiSceneParser::OnEntityChunkFinalized, defined outside this
+			// namespace).  Returns the runtime name issued to the most
+			// recently finalized camera chunk.
+			static const std::string& LastAllocatedCameraName() {
+				return s_lastAllocatedCameraName;
+			}
+
 			static void ClearParseState() {
 				s_painterColors.clear();
 				s_cameraDefaults = CameraDefaultsState();
 				s_sceneOptions   = SceneOptionsState();
 				s_cameraNamesUsed.clear();
+				s_lastAllocatedCameraName.clear();
 			}
 
 			// Generic dispatch used by migrated chunk parsers to replace the
@@ -9977,7 +10008,7 @@ namespace
 	// last write.  Matching that ensures our IObjectManager lookup
 	// uses the same key that AddObject was called with.
 	// True iff `s` is an explicit `name <value>` line (leading "name " -- 5 chars).  Hoisted so the name
-	// extractor below and the entity-index hook's camera carve-out share ONE detection and cannot drift.
+	// extractor below and the entity-index hook's name-omitted-camera branch share ONE detection and cannot drift.
 	static bool IsNameLine( const String& s )
 	{
 		return s.size() >= 6 && s[0]=='n' && s[1]=='a' && s[2]=='m' && s[3]=='e' && s[4]==' ';
@@ -10215,12 +10246,26 @@ void AsciiSceneParser::OnEntityChunkFinalized(
 	const std::size_t chunkBeginOffset = headerLine.tokens[0].byteBegin;
 	const std::size_t chunkEndOffset   = closeLine.lineEndOffset;
 
-	// Every camera / light / material / medium chunk carries a `name`
-	// parameter — same extraction as objects.
-	// The caller gates on the descriptor declaring a `name` parameter, so a name-OMITTED producer still
-	// reaches here and is correctly indexed under its default "noname" runtime name; settings chunks with
-	// no `name` param (global_medium, hosek_wilkie_skylight, scene_options, camera_defaults) never reach this hook.
-	const std::string runtimeName = ExtractObjectName( chunkparams );
+	// Derive the runtime name this entity is keyed under.  Cameras are
+	// special: a NAME-OMITTED camera's runtime name comes from
+	// AllocateCameraName ("default", auto-suffixed), NOT
+	// ExtractObjectName's "noname".  Key its span under the allocator's
+	// result so the editor (which enumerates the runtime "default") can
+	// retrieve it for a property-edit round-trip.  For an EXPLICITLY-named
+	// camera (HasExplicitName==true) we KEEP ExtractObjectName -- it already
+	// equals the runtime name, because AllocateCameraName returns a non-empty
+	// request verbatim.  Non-camera producers likewise key under
+	// ExtractObjectName, which matches their runtime name
+	// (bag.GetString("name","noname")).
+	// s_lastAllocatedCameraName is fresh here: this hook fires right after
+	// the camera's Finalize ran AllocateCameraName.  Settings chunks with
+	// no `name` param (global_medium, hosek_wilkie_skylight, scene_options,
+	// camera_defaults) never reach this hook -- the caller gates on the
+	// descriptor declaring a `name` parameter.
+	std::string runtimeName = ExtractObjectName( chunkparams );
+	if( category == EntityCategory::Camera && !HasExplicitName( chunkparams ) ) {
+		runtimeName = Implementation::ChunkParsers::LastAllocatedCameraName();
+	}
 
 	// FOR-revisit detection: a chunk byte offset seen before means the
 	// parser is iterating a FOR body.  Flip chunkRevisited on the
@@ -11026,15 +11071,13 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 				if( savableEntity )
 					for( const ParameterDescriptor& pd : desc.parameters )
 						if( pd.name == "name" ) { producesNamedEntity = true; break; }
-				// Camera exception: a camera's RUNTIME name comes from AllocateCameraName (a name-OMITTED camera
-				// becomes "default", NOT "noname"), so ExtractObjectName's "noname" key would not match the runtime
-				// entity -- indexing a name-omitted camera inserts a dead, collision-prone (Camera,"noname") span the
-				// editor (keying by "default") can never retrieve.  Index a camera ONLY when its name is explicit in
-				// the source; non-camera producers name via bag.GetString("name","noname") == ExtractObjectName, so a
-				// name-omitted one keys consistently and is indexed.  (Unifying the camera key so name-omitted cameras
-				// round-trip is a separate tracked task.)
-				if( producesNamedEntity && ec == EntityCategory::Camera )
-					producesNamedEntity = HasExplicitName( chunkparams );
+				// Cameras are NOT carved out here.  A name-OMITTED camera's
+				// runtime name is AllocateCameraName's "default" (auto-
+				// suffixed), not "noname" -- we still index it, and
+				// OnEntityChunkFinalized keys its span under that runtime name
+				// (matching what the editor enumerates) rather than
+				// ExtractObjectName's "noname".  That is what lets an unnamed
+				// camera's property edits round-trip.
 				if( producesNamedEntity ) {
 					const std::size_t closeBraceIdx = mRawTokens.AllLines().size() - 1;
 					OnEntityChunkFinalized(
