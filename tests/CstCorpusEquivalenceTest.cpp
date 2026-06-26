@@ -33,6 +33,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <cstring>
 #include <unistd.h>
 
 using namespace RISE;
@@ -105,10 +106,63 @@ static std::string FlattenIncludes( const std::string& text, int depth )
 	return out;
 }
 
+// Substitute @NAME / !NAME macro refs in-place (exactly substitute_macro): a name is [A-Z_]+; @ -> %.12f
+// of the value, ! -> %.4d of (int)value; an unknown macro is left as-is.
+static void SubstituteMacrosInPlace( std::string& s, const std::map<std::string,double>& macros )
+{
+	size_t i = 0;
+	while( i < s.size() ) {
+		if( s[i] == '@' || s[i] == '!' ) {
+			const char mc = s[i];
+			size_t j = i + 1;
+			while( j < s.size() && ( ( s[j] >= 'A' && s[j] <= 'Z' ) || s[j] == '_' ) ) ++j;
+			const std::string name = s.substr( i + 1, j - ( i + 1 ) );
+			std::map<std::string,double>::const_iterator it = macros.find( name );
+			if( !name.empty() && it != macros.end() ) {
+				char buf[64];
+				if( mc == '@' ) std::snprintf( buf, sizeof(buf), "%.12f", it->second );
+				else            std::snprintf( buf, sizeof(buf), "%.4d", (int)it->second );
+				s = s.substr( 0, i ) + buf + s.substr( j );
+				i += std::strlen( buf );
+			} else { i = j; }
+		} else ++i;
+	}
+}
+
+// Process DEFINE/UNDEF directives (removed) + substitute @NAME/!NAME.  Directive DETECTION is
+// comment-aware (a DEFINE inside /* */ or after # is not processed); substitution is whole-line
+// (DumpJob-neutral inside comments).  Document-order macro scope, like the legacy parser.
+static std::string ApplyMacros( const std::string& text )
+{
+	std::map<std::string,double> macros;
+	std::string out; bool inComment = false; size_t i = 0;
+	while( true ) {
+		size_t e = text.find( '\n', i ); const bool last = ( e == std::string::npos ); if( last ) e = text.size();
+		const std::string line = text.substr( i, e - i );
+		const bool wasInComment = inComment;
+		std::string code = StripBlockComments( line, inComment );
+		const size_t h = code.find( '#' ); if( h != std::string::npos ) code = code.substr( 0, h );
+		const std::string tt = Trim( code );
+		bool directive = false;
+		if( !wasInComment && !tt.empty() && ( tt[0] == 'D' || tt[0] == 'U' ) ) {
+			std::istringstream iss( tt ); std::string tk; std::vector<std::string> toks; while( iss >> tk ) toks.push_back( tk );
+			if( toks.size() >= 3 && toks[0] == "DEFINE" ) { macros[ toks[1] ] = atof( toks[2].c_str() ); directive = true; }
+			else if( toks.size() >= 2 && toks[0] == "UNDEF" ) { macros.erase( toks[1] ); directive = true; }
+		}
+		if( !directive ) {
+			std::string ln = line;
+			SubstituteMacrosInPlace( ln, macros );
+			out += ln; if( !last ) out += '\n';
+		}
+		if( last ) break; i = e + 1;
+	}
+	return out;
+}
+
 // The offline v6->v7 migrator transform (text -> text).  Grows per slice.
 static std::string Migrate( const std::string& text )
 {
-	return FlattenIncludes( text, 0 );                        // slice 1
+	return ApplyMacros( FlattenIncludes( text, 0 ) );         // slice 1 flatten; slice 2 DEFINE/@ macros
 }
 
 // Categorize a residual mismatch by the FIRST v6-only construct present in the MIGRATED text.
