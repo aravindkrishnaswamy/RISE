@@ -26,6 +26,7 @@
 #include "CstRenderEquivalence.h"
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Parsers/MathExpressionEvaluator.h"
+#include "../src/Library/Sampling/HaltonPoints.h"   // legacy MultiHalton for hal() fold
 
 #include <cstdio>
 #include <cstdlib>
@@ -133,7 +134,15 @@ static void SubstituteMacrosInPlace( std::string& s, const std::map<std::string,
 
 // --- $() fold: a faithful port of the legacy evaluate_functions/evaluate_expression (same
 // MathExpressionEvaluator + the same per-function %.17f intermediate rounding, so the folded literal
-// is byte-identical to what the legacy parser produced).  hal() is DEFERRED (a stateful halton seq).
+// is byte-identical to what the legacy parser produced).  hal() folds via the process-global
+// g_migratorHalton below.
+
+// Process-global Halton mirroring the legacy parser's file-static `mh` (AsciiSceneParser.cpp): it
+// accumulates across scenes in corpus order and is NEVER reset, so the migrator's per-dimension halton
+// state tracks legacy's EXACTLY across every scene that uses hal() (diamond_teapot_pour sorts first and
+// gets the index-0 samples; painters picks up where diamond left off) -- the only way a stateful seq
+// can be folded deterministically to match legacy.
+static MultiHalton g_migratorHalton;
 static int FoldFirstFunction( std::string& token )
 {
 	std::string str = token; std::string processed;
@@ -152,7 +161,13 @@ static int FoldFirstFunction( std::string& token )
 		          else return 2; break;
 		case 'c': if( str[1]=='o' && str[2]=='s' ) val = std::cos( (double)expr.eval() ); else return 2; break;
 		case 't': if( str[1]=='a' && str[2]=='n' ) val = std::tan( (double)expr.eval() ); else return 2; break;
-		case 'h': return 2;   // hal(): deferred (stateful halton sequence)
+		case 'h':
+			if( str[1]=='a' && str[2]=='l' ) {
+				const int d = int( expr.eval() );
+				if( d < 0 || d >= QMC_NUM_PRIMES ) return 2;
+				val = g_migratorHalton.next_halton( d );
+			} else return 2;
+			break;
 		default:  return 2;
 	}
 	char buf[512]; std::snprintf( buf, sizeof(buf), "%.17f", val );
@@ -286,8 +301,6 @@ static std::string KnownAccepted( const std::string& path )
 	if( path.find( "SubsurfaceScattering/sss.RISEscene" ) != std::string::npos ||
 	    path.find( "SubsurfaceScattering/sss_multiple_lights.RISEscene" ) != std::string::npos )
 		return "legacy s_painterColors include-isolation quirk -- the CST energy-conserves the translucent material (more physically correct than legacy); accepted";
-	if( path.find( "Combined/diamond_teapot_pour.RISEscene" ) != std::string::npos )
-		return "hal() stateful halton sequence -- deferred (1 scene, marginal ROI)";
 	return "";
 }
 
@@ -333,6 +346,12 @@ static int RunSelfTest()
 
 	const std::string gm = Migrate( "> set global_medium fog\n" );
 	CHECK( gm.find( "global_medium\n{\nmedium fog\n}" ) != std::string::npos, "'> set global_medium' -> chunk" );
+
+	// hal() now FOLDS via the process-global Halton (mirroring legacy).  Fresh in this bare self-test: the
+	// first sample of any dimension is the radical inverse of 0 = 0, so $(hal(0)+1.0) folds to exactly 1.0.
+	const std::string hf = Migrate( "sphere_geometry\n{\nname s\nradius $(hal(0)+1.0)\n}\n" );
+	CHECK( hf.find( "hal(" ) == std::string::npos, "hal() is folded (no $()/hal remains)" );
+	CHECK( hf.find( "1.00000000000000000" ) != std::string::npos, "hal(0) first sample 0 -> $(hal(0)+1.0) folds to 1.0" );
 
 	std::printf( "CstCorpusEquivalenceTest SELF-TEST: %s (%d failure[s])\n", fails ? "FAIL" : "PASS", fails );
 	return fails ? 1 : 0;
