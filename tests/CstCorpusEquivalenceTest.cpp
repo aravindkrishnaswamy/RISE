@@ -205,6 +205,9 @@ static void ProcessLines( const std::vector<std::string>& lines, size_t lo, size
 		// ~10769 does NOT substitute token[0], so '~ NAME' genuinely works).
 		const bool isDefine = !toks.empty() && ( toks[0] == "DEFINE" || toks[0] == "define" );
 		const bool isUndef  = !toks.empty() && !toks[0].empty() && ( toks[0] == "UNDEF" || toks[0] == "undef" || toks[0][0] == '~' );
+		// FAITHFULNESS NOTE: the migrator is faithful on WELL-FORMED macros (the corpus).  On MALFORMED ones
+		// (redefine, undef-of-undefined, missing value/name, non-[A-Z_] names) it is intentionally LENIENT
+		// where legacy HARD-FAILS; the cutover's front-line parser must restore legacy's strict validation.
 		if( toks.size() >= 3 && isDefine ) { std::string dv = toks[2]; SubstituteMacrosInPlace( dv, macros ); FoldExprsInPlace( dv ); macros[toks[1]] = atof( dv.c_str() ); ++i; continue; }
 		if( toks.size() >= 2 && isUndef )  { macros.erase(toks[1]); ++i; continue; }
 		if( toks.size() >= 5 && toks[0] == "FOR" ) {
@@ -231,8 +234,11 @@ static void ProcessLines( const std::vector<std::string>& lines, size_t lo, size
 		}
 		if( toks.size() >= 4 && toks[0] == ">" && toks[1] == "set" && toks[2] == "global_medium" ) {
 			out += "global_medium\n{\nmedium " + toks[3] + "\n}\n"; ++i; continue;   // v6 `> set global_medium X` -> v7 chunk (at the `> set` position -- after the medium def, so SetGlobalMedium's definitions-before-use order holds).
-			// (Only `> set global_medium` is converted here; `> set accelerator` (~136 scenes) + `> set
-			// light_rr_threshold` pass through unchanged -- render-neutral / pending the cutover; Reason() buckets them "set".)
+			// (Only `> set global_medium` is converted here.  `> set accelerator` (~136 scenes) is render-neutral
+			// -- a TLAS perf choice, image-identical to the default BVH4 -- so it passes through harmlessly.  But
+			// `> set light_rr_threshold` (1 scene) is NOT render-neutral: the CST path drops the `>` line,
+			// disabling that scene's Russian-roulette (DumpJob is blind to it, so the gate still says MATCH).
+			// Both are deferred cutover work; Reason() buckets them "set".)
 		}
 		std::string ln = line; SubstituteMacrosInPlace( ln, macros ); FoldExprsInPlace( ln );
 		out += ln; out += '\n'; ++i;
