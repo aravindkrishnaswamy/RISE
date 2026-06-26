@@ -31,6 +31,8 @@ def reduce_and_retarget(text, outbase):
     return text
 
 def migrate(text):
+    # NOTE: looser standalone regex (matches `>set`, not comment-aware) -- fine for this corpus;
+    # the SHIPPING migrator is the comment-aware token transform in the C++ gate (ProcessLines).
     return re.sub(r'>\s*set\s+global_medium\s+(\S+)', r'global_medium\n{\nmedium \1\n}', text)
 
 def render(scene_text, name):
@@ -39,7 +41,7 @@ def render(scene_text, name):
     env = dict(os.environ); env["RISE_MEDIA_PATH"] = REPO + "/"
     subprocess.run(["./bin/rise", path], input="render\nquit\n", text=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, timeout=900)
-    png = os.path.join(REPO, name + ".png")          # pattern outbase + RISE_MEDIA_PATH prepend, type PNG
+    png = os.path.join(REPO, name + ".png")          # pattern=outbase resolves CWD-relative to REPO (RISE_MEDIA_PATH is NOT prepended unless the scene opts in), type PNG
     return png if os.path.exists(png) else None
 
 def chan_mean(png):
@@ -52,6 +54,9 @@ def cleanup():
         if f.startswith(("pg_orig", "pg_mig")) or f.startswith("fro_temp_"):
             try: os.remove(os.path.join(REPO, f))
             except OSError: pass
+    for tmp in ("/tmp/pg_orig.RISEscene", "/tmp/pg_mig.RISEscene"):
+        try: os.remove(tmp)
+        except OSError: pass
 
 def gate(scene):
     text = open(scene).read()
