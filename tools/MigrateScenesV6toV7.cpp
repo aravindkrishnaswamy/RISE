@@ -9,11 +9,10 @@
 //    header line stays `RISE ASCII SCENE 6` until Phase C bumps it (Phase C also does the in-place /
 //    out-dir corpus rewrite); this Phase-A tool is the migrator made first-class + runnable.
 //
-//  Exit: 0 = all inputs migrated; 1 = an input could not be read (named on stderr); 2 = no args.
+//  Exit: 0 = all inputs migrated; 1 = an input was empty or unreadable (named on stderr); 2 = no args.
 //////////////////////////////////////////////////////////////////////
 #include <cstdio>
 #include <string>
-#include <fstream>
 #include "CstMigrator.h"
 
 int main( int argc, char** argv )
@@ -25,9 +24,9 @@ int main( int argc, char** argv )
 	}
 	int failures = 0;
 	for( int i = 1; i < argc; ++i ) {
-		{ std::ifstream probe( argv[i], std::ios::binary );
-		  if( !probe ) { std::fprintf( stderr, "MigrateScenesV6toV7: cannot read '%s'\n", argv[i] ); ++failures; continue; } }
-		const std::string v7 = Migrate( ReadFile( argv[i] ) );
+		const std::string src = ReadFile( argv[i] );   // "" on missing / unreadable / directory / empty
+		if( src.empty() ) { std::fprintf( stderr, "MigrateScenesV6toV7: '%s' is empty or unreadable (skipped)\n", argv[i] ); ++failures; continue; }
+		const std::string v7 = Migrate( src );
 		std::fputs( v7.c_str(), stdout );
 	}
 	return failures ? 1 : 0;
