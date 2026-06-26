@@ -198,9 +198,12 @@ static void ProcessLines( const std::vector<std::string>& lines, size_t lo, size
 		const std::string tt = Trim( code );
 		std::vector<std::string> toks;
 		if( !wasIn && !tt.empty() ) { std::istringstream iss(tt); std::string tk; while( iss>>tk ) toks.push_back(tk); }
-		// Legacy macro surface (AsciiSceneParser.cpp ~10731/~10760): define = DEFINE | define | leading '!';
-		// undef = UNDEF | undef | leading '~'.  Both -> add_macro(tokens[1],tokens[2]) / remove(tokens[1]).
-		const bool isDefine = !toks.empty() && !toks[0].empty() && ( toks[0] == "DEFINE" || toks[0] == "define" || toks[0][0] == '!' );
+		// Legacy macro surface, VERIFIED against the legacy parser: define = DEFINE | define.  Legacy's define
+		// branch (AsciiSceneParser.cpp ~10744) ALSO fires on a leading '!', but then substitutes over
+		// token[0]="!" -> empty-macro lookup -> hard parse-fail, so `! NAME VAL` is NON-FUNCTIONAL in legacy;
+		// the migrator deliberately does NOT honor it.  Undef = UNDEF | undef | leading '~' (the undef branch
+		// ~10769 does NOT substitute token[0], so '~ NAME' genuinely works).
+		const bool isDefine = !toks.empty() && ( toks[0] == "DEFINE" || toks[0] == "define" );
 		const bool isUndef  = !toks.empty() && !toks[0].empty() && ( toks[0] == "UNDEF" || toks[0] == "undef" || toks[0][0] == '~' );
 		if( toks.size() >= 3 && isDefine ) { std::string dv = toks[2]; SubstituteMacrosInPlace( dv, macros ); FoldExprsInPlace( dv ); macros[toks[1]] = atof( dv.c_str() ); ++i; continue; }
 		if( toks.size() >= 2 && isUndef )  { macros.erase(toks[1]); ++i; continue; }
@@ -227,7 +230,9 @@ static void ProcessLines( const std::vector<std::string>& lines, size_t lo, size
 			i = endforIdx + 1; continue;
 		}
 		if( toks.size() >= 4 && toks[0] == ">" && toks[1] == "set" && toks[2] == "global_medium" ) {
-			out += "global_medium\n{\nmedium " + toks[3] + "\n}\n"; ++i; continue;   // v6 `> set global_medium X` -> v7 chunk (at the `> set` position -- after the medium def, so SetGlobalMedium's definitions-before-use order holds)
+			out += "global_medium\n{\nmedium " + toks[3] + "\n}\n"; ++i; continue;   // v6 `> set global_medium X` -> v7 chunk (at the `> set` position -- after the medium def, so SetGlobalMedium's definitions-before-use order holds).
+			// (Only `> set global_medium` is converted here; `> set accelerator` (~136 scenes) + `> set
+			// light_rr_threshold` pass through unchanged -- render-neutral / pending the cutover; Reason() buckets them "set".)
 		}
 		std::string ln = line; SubstituteMacrosInPlace( ln, macros ); FoldExprsInPlace( ln );
 		out += ln; out += '\n'; ++i;
@@ -281,8 +286,10 @@ static std::string KnownAccepted( const std::string& path )
 }
 
 // SELF-TEST (runs with NO scene root, so the unit suite exercises it without the media corpus): the
-// migrator macro surface must match legacy's -- define = DEFINE|define|leading '!', undef =
-// UNDEF|undef|leading '~' (AsciiSceneParser.cpp ~10731/~10760) -- plus `> set global_medium` -> chunk.
+// migrator macro surface must match legacy's -- define = DEFINE|define (legacy's leading-'!' define is a
+// non-functional parse-fail, NOT honored); undef = UNDEF|undef|'~' -- plus `> set global_medium` -> chunk.
+// The bang case is checked against the ACTUAL legacy parser below (asserts legacy rejects it), so the
+// oracle is migrator-vs-legacy, not migrator-vs-migrator.
 static int RunSelfTest()
 {
 	int fails = 0;
@@ -291,11 +298,13 @@ static int RunSelfTest()
 	const std::string base = "sphere_geometry\n{\nname s\nradius @CY\n}\n";
 	const std::string up = Migrate( "DEFINE CY 5\n" + base );
 	const std::string lo = Migrate( "define CY 5\n" + base );
-	const std::string bg = Migrate( "! CY 5\n"      + base );
 	CHECK( up == lo, "lowercase 'define' == 'DEFINE'" );
-	CHECK( up == bg, "bang '! CY 5' == 'DEFINE'" );
 	CHECK( up.find( "@CY" ) == std::string::npos, "@CY substituted (macro took effect)" );
 	CHECK( up.find( "DEFINE" ) == std::string::npos && up.find( "define" ) == std::string::npos, "define directive consumed" );
+	// Legacy's leading-'!' define parse-FAILS, so the migrator must NOT honor '! CY 5' as a define:
+	// CY never gets defined, so @CY stays unsubstituted.
+	const std::string bg = Migrate( "! CY 5\n" + base );
+	CHECK( bg.find( "@CY" ) != std::string::npos, "'! CY 5' NOT honored as a define; @CY left as-is" );
 
 	const std::string ub = "sphere_geometry\n{\nname s\nradius 1\n}\n";
 	const std::string u1 = Migrate( "DEFINE Q 1\nUNDEF Q\n" + ub );
@@ -304,6 +313,17 @@ static int RunSelfTest()
 	CHECK( u1 == u2, "lowercase 'undef' == 'UNDEF'" );
 	CHECK( u1 == u3, "tilde '~ Q' == 'UNDEF'" );
 	CHECK( u1.find( "UNDEF" ) == std::string::npos && u1.find( "undef" ) == std::string::npos, "undef directive consumed" );
+
+	// Oracle vs the ACTUAL legacy parser: `! CY 5` is a legacy PARSE-FAIL, confirming the non-handling above
+	// is faithful (a legacy quirk, not a dropped feature).
+	{
+		const char* bp = "/tmp/cst_selftest_bang.RISEscene";
+		{ std::ofstream bf( bp ); bf << "RISE ASCII SCENE 6\n! CY 5\n"; }
+		Job* jb = new Job(); ISceneParser* pp = 0; bool okb = true;
+		if( RISE_API_CreateAsciiSceneParser( &pp, bp ) && pp ) { okb = pp->ParseAndLoadScene( *jb ); pp->release(); }
+		jb->release(); std::remove( bp );
+		CHECK( !okb, "legacy REJECTS '! CY 5' (leading-'!' define non-functional) -- migrator matches" );
+	}
 
 	const std::string gm = Migrate( "> set global_medium fog\n" );
 	CHECK( gm.find( "global_medium\n{\nmedium fog\n}" ) != std::string::npos, "'> set global_medium' -> chunk" );

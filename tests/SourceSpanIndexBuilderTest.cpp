@@ -458,6 +458,31 @@ static void TestTabSeparatedEntityName()
     safe_release( pJob );
 }
 
+static void TestNamelessLightSettingNotIndexed()
+{
+    gCurrentTest = "TestNamelessLightSettingNotIndexed";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // The nameless-refuse is GENERIC across entity categories, not Medium-specific: a nameless Light
+    // SETTINGS chunk (hosek_wilkie_skylight has no `name`) must not be indexed as (Light,"noname").
+    IJobPriv* pJob = LoadScene(
+        "hosek_wilkie_skylight\n{\n"
+        "    solar_elevation 60.0\n"
+        "    solar_azimuth 135.0\n"
+        "    turbidity 3.0\n"
+        "    sky_intensity_scale 1.0\n"
+        "    sun_intensity_scale 3.14\n"
+        "    create_sun FALSE\n"
+        "}\n",
+        "nameless_light"
+    );
+    Check( pJob != nullptr, "parse succeeded" );
+    if( !pJob ) return;
+    const SourceSpanIndex* idx = pJob->GetSourceSpanIndex();
+    Check( idx && idx->FindEntity(EntityCategory::Light, "noname") == nullptr,
+           "nameless hosek_wilkie_skylight NOT indexed as (Light,'noname')" );
+    safe_release( pJob );
+}
+
 static void TestGlobalMediumNotIndexedAsEntity()
 {
     gCurrentTest = "TestGlobalMediumNotIndexedAsEntity";
@@ -543,6 +568,7 @@ int main()
     TestNoTransformParameters();
     TestRepeatedParseClears();
     TestTabSeparatedEntityName();
+    TestNamelessLightSettingNotIndexed();
     TestGlobalMediumNotIndexedAsEntity();
     TestGlobalMediumNonameCollision();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;
