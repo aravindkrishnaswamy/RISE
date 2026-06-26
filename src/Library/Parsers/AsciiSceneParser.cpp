@@ -6002,6 +6002,25 @@ namespace RISE
 				}
 			};
 
+			struct GlobalMediumAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					return pJob.SetGlobalMedium( bag.GetString( "medium", "" ).c_str() );
+				}
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "global_medium"; cd.category = ChunkCategory::Medium;
+						cd.description = "Sets the scene's global participating medium to a previously-added medium (the v7 form of `> set global_medium`).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "medium"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Medium}; p.description = "Name of a previously-added medium"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct HeterogeneousMediumAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -9768,6 +9787,7 @@ namespace RISE
 
 		// Media
 		add( "homogeneous_medium",                    new HomogeneousMediumAsciiChunkParser() );
+		add( "global_medium",                         new GlobalMediumAsciiChunkParser() );
 		add( "heterogeneous_medium",                  new HeterogeneousMediumAsciiChunkParser() );
 		add( "painter_heterogeneous_medium",          new PainterHeterogeneousMediumAsciiChunkParser() );
 

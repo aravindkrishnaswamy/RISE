@@ -222,6 +222,9 @@ static void ProcessLines( const std::vector<std::string>& lines, size_t lo, size
 			{ bool ic = snap; for( size_t k = bodyStart; k < endforIdx; ++k ) StripBlockComments( lines[k], ic ); inComment = ic; }
 			i = endforIdx + 1; continue;
 		}
+		if( toks.size() >= 4 && toks[0] == ">" && toks[1] == "set" && toks[2] == "global_medium" ) {
+			out += "global_medium\n{\nmedium " + toks[3] + "\n}\n"; ++i; continue;   // v6 `> set global_medium X` -> v7 chunk
+		}
 		std::string ln = line; SubstituteMacrosInPlace( ln, macros ); FoldExprsInPlace( ln );
 		out += ln; out += '\n'; ++i;
 	}
