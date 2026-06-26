@@ -25,6 +25,7 @@
 
 #include "CstRenderEquivalence.h"
 #include "../src/Library/Cst/Cst.h"
+#include "../src/Library/Parsers/MathExpressionEvaluator.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -34,6 +35,7 @@
 #include <vector>
 #include <map>
 #include <cstring>
+#include <cmath>
 #include <unistd.h>
 
 using namespace RISE;
@@ -129,40 +131,114 @@ static void SubstituteMacrosInPlace( std::string& s, const std::map<std::string,
 	}
 }
 
-// Process DEFINE/UNDEF directives (removed) + substitute @NAME/!NAME.  Directive DETECTION is
-// comment-aware (a DEFINE inside /* */ or after # is not processed); substitution is whole-line
-// (DumpJob-neutral inside comments).  Document-order macro scope, like the legacy parser.
-static std::string ApplyMacros( const std::string& text )
+// --- $() fold: a faithful port of the legacy evaluate_functions/evaluate_expression (same
+// MathExpressionEvaluator + the same per-function %.17f intermediate rounding, so the folded literal
+// is byte-identical to what the legacy parser produced).  hal() is DEFERRED (a stateful halton seq).
+static int FoldFirstFunction( std::string& token )
 {
-	std::map<std::string,double> macros;
-	std::string out; bool inComment = false; size_t i = 0;
-	while( true ) {
-		size_t e = text.find( '\n', i ); const bool last = ( e == std::string::npos ); if( last ) e = text.size();
-		const std::string line = text.substr( i, e - i );
-		const bool wasInComment = inComment;
-		std::string code = StripBlockComments( line, inComment );
-		const size_t h = code.find( '#' ); if( h != std::string::npos ) code = code.substr( 0, h );
-		const std::string tt = Trim( code );
-		bool directive = false;
-		if( !wasInComment && !tt.empty() && ( tt[0] == 'D' || tt[0] == 'U' ) ) {
-			std::istringstream iss( tt ); std::string tk; std::vector<std::string> toks; while( iss >> tk ) toks.push_back( tk );
-			if( toks.size() >= 3 && toks[0] == "DEFINE" ) { macros[ toks[1] ] = atof( toks[2].c_str() ); directive = true; }
-			else if( toks.size() >= 2 && toks[0] == "UNDEF" ) { macros.erase( toks[1] ); directive = true; }
-		}
-		if( !directive ) {
-			std::string ln = line;
-			SubstituteMacrosInPlace( ln, macros );
-			out += ln; if( !last ) out += '\n';
-		}
-		if( last ) break; i = e + 1;
+	std::string str = token; std::string processed;
+	std::string::size_type x = str.find_first_of( "scth" );
+	if( x == std::string::npos ) return 0;
+	if( x > 0 ) { processed = str.substr( 0, x ); str = str.substr( x ); }
+	const std::string::size_type px = str.find_first_of( "(" );  if( px == std::string::npos ) return 2;
+	const std::string::size_type py = str.find_first_of( ")" );  if( py == std::string::npos ) return 2;
+	const std::string szexpr = str.substr( px, py - px + 1 );
+	MathExpressionEvaluator::Expression expr( szexpr.c_str() );
+	if( expr.error() ) return 2;
+	double val = 0;
+	switch( str[0] ) {
+		case 's': if( str[1]=='i' && str[2]=='n' ) val = std::sin( (double)expr.eval() );
+		          else if( str[1]=='q' && str[2]=='r' && str[3]=='t' ) val = std::sqrt( (double)expr.eval() );
+		          else return 2; break;
+		case 'c': if( str[1]=='o' && str[2]=='s' ) val = std::cos( (double)expr.eval() ); else return 2; break;
+		case 't': if( str[1]=='a' && str[2]=='n' ) val = std::tan( (double)expr.eval() ); else return 2; break;
+		case 'h': return 2;   // hal(): deferred (stateful halton sequence)
+		default:  return 2;
 	}
+	char buf[512]; std::snprintf( buf, sizeof(buf), "%.17f", val );
+	processed.append( buf ); processed.append( str.substr( py + 1 ) );
+	token = processed; return 1;
+}
+static bool FoldFunctions( std::string& token )
+{
+	for(;;) { const int c = FoldFirstFunction( token ); if( c == 0 ) return true; if( c == 2 ) return false; }
+}
+static bool FoldExpr( std::string& token )   // "$(...)" -> %.17f of its value
+{
+	if( token.size() <= 4 || token[0] != '$' || token[1] != '(' || token[token.size()-1] != ')' ) return false;
+	if( !FoldFunctions( token ) ) return false;
+	MathExpressionEvaluator::Expression expr( token.c_str() + 1 );   // skip '$', eval "(...)"
+	if( expr.error() ) return false;
+	char buf[512]; std::snprintf( buf, sizeof(buf), "%.17f", (double)expr.eval() );
+	token = buf; return true;
+}
+// Fold every $(...) token in a line in place (balanced-paren match; an unfoldable one, e.g. hal, is left).
+static void FoldExprsInPlace( std::string& s )
+{
+	size_t i = 0;
+	while( ( i = s.find( "$(", i ) ) != std::string::npos ) {
+		int depth = 0; size_t j = i + 1;
+		for( ; j < s.size(); ++j ) { if( s[j]=='(' ) ++depth; else if( s[j]==')' ) { if( --depth == 0 ) { ++j; break; } } }
+		std::string tok = s.substr( i, j - i );
+		if( FoldExpr( tok ) ) { s = s.substr( 0, i ) + tok + s.substr( j ); i += tok.size(); } else i = j;
+	}
+}
+
+// Recursive line processor (the migrator's slice 2+3): DEFINE/UNDEF (removed) + FOR unroll (do-while,
+// var as a macro, nested) + @/! substitution + $() fold.  A faithful port of the legacy preprocessor;
+// document-order macro scope, comment-aware directive/FOR detection.
+static void ProcessLines( const std::vector<std::string>& lines, size_t lo, size_t hi,
+                          std::map<std::string,double>& macros, std::string& out, bool& inComment )
+{
+	for( size_t i = lo; i < hi; ) {
+		const std::string& line = lines[i];
+		const bool wasIn = inComment;
+		std::string code = StripBlockComments( line, inComment );
+		const size_t hh = code.find( '#' ); if( hh != std::string::npos ) code = code.substr( 0, hh );
+		const std::string tt = Trim( code );
+		std::vector<std::string> toks;
+		if( !wasIn && !tt.empty() ) { std::istringstream iss(tt); std::string tk; while( iss>>tk ) toks.push_back(tk); }
+		if( toks.size() >= 3 && toks[0] == "DEFINE" ) { std::string dv = toks[2]; SubstituteMacrosInPlace( dv, macros ); FoldExprsInPlace( dv ); macros[toks[1]] = atof( dv.c_str() ); ++i; continue; }
+		if( toks.size() >= 2 && toks[0] == "UNDEF" )  { macros.erase(toks[1]); ++i; continue; }
+		if( toks.size() >= 5 && toks[0] == "FOR" ) {
+			std::string fl = tt; SubstituteMacrosInPlace( fl, macros ); FoldExprsInPlace( fl );
+			std::vector<std::string> ft; { std::istringstream iss(fl); std::string tk; while( iss>>tk ) ft.push_back(tk); }
+			const std::string var = ft.size()>1 ? ft[1] : std::string();
+			const double start = ft.size()>2 ? atof(ft[2].c_str()) : 0.0;
+			const double endv  = ft.size()>3 ? atof(ft[3].c_str()) : 0.0;
+			const double inc   = ft.size()>4 ? atof(ft[4].c_str()) : 1.0;
+			size_t bodyStart = i + 1, j = bodyStart; int nest = 1; bool sc = inComment;
+			for( ; j < hi; ++j ) {
+				std::string c2 = StripBlockComments( lines[j], sc ); size_t h2 = c2.find('#'); if( h2!=std::string::npos ) c2 = c2.substr(0,h2);
+				std::string t2 = Trim( c2 );
+				if( t2.compare(0,3,"FOR")==0 && ( t2.size()==3 || t2[3]==' ' || t2[3]=='\t' ) ) ++nest;
+				else if( t2 == "ENDFOR" ) { if( --nest == 0 ) break; }
+			}
+			const size_t endforIdx = j;
+			const bool snap = inComment;
+			double v = start;
+			do { macros[var] = v; bool ic = snap; ProcessLines( lines, bodyStart, endforIdx, macros, out, ic ); v += inc; } while( v <= endv );
+			macros.erase( var );
+			{ bool ic = snap; for( size_t k = bodyStart; k < endforIdx; ++k ) StripBlockComments( lines[k], ic ); inComment = ic; }
+			i = endforIdx + 1; continue;
+		}
+		std::string ln = line; SubstituteMacrosInPlace( ln, macros ); FoldExprsInPlace( ln );
+		out += ln; out += '\n'; ++i;
+	}
+}
+static std::string Preprocess( const std::string& text )
+{
+	std::vector<std::string> lines;
+	{ size_t i=0; for(;;) { size_t e=text.find('\n',i); const bool last=(e==std::string::npos); if(last)e=text.size(); lines.push_back(text.substr(i,e-i)); if(last)break; i=e+1; } }
+	std::map<std::string,double> macros; macros["PI"]=M_PI; macros["E"]=M_E; std::string out; bool inComment=false;
+	ProcessLines( lines, 0, lines.size(), macros, out, inComment );
 	return out;
 }
 
 // The offline v6->v7 migrator transform (text -> text).  Grows per slice.
 static std::string Migrate( const std::string& text )
 {
-	return ApplyMacros( FlattenIncludes( text, 0 ) );         // slice 1 flatten; slice 2 DEFINE/@ macros
+	return Preprocess( FlattenIncludes( text, 0 ) );         // flatten includes; then DEFINE/UNDEF/FOR/@/!/$()
 }
 
 // Categorize a residual mismatch by the FIRST v6-only construct present in the MIGRATED text.
