@@ -523,6 +523,47 @@ static void TestNamelessMaterialStillIndexed()
     safe_release( pJob );
 }
 
+static void TestCameraNameKeying()
+{
+    gCurrentTest = "TestCameraNameKeying";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // A NAMED camera keys consistently (ExtractObjectName == AllocateCameraName) -> indexed.  A NAME-OMITTED
+    // camera's runtime name is "default" (AllocateCameraName), NOT "noname" (ExtractObjectName), so it must
+    // NOT be indexed (a dead/colliding (Camera,"noname") span the editor -- keying by "default" -- could
+    // never retrieve).  This is the camera carve-out in the entity-index hook.
+    {
+        IJobPriv* pJob = LoadScene(
+            "pinhole_camera\n{\n"
+            "    name mycam\n"
+            "    location 0 0 0.45\n    lookat 0 0 0\n    up 0 1 0\n    fov 30.0\n"
+            "}\n",
+            "named_camera"
+        );
+        Check( pJob != nullptr, "named camera parse succeeded" );
+        if( pJob ) {
+            const SourceSpanIndex* idx = pJob->GetSourceSpanIndex();
+            Check( idx && idx->FindEntity(EntityCategory::Camera, "mycam") != nullptr,
+                   "named pinhole_camera IS indexed under its name" );
+            safe_release( pJob );
+        }
+    }
+    {
+        IJobPriv* pJob = LoadScene(
+            "pinhole_camera\n{\n"
+            "    location 0 0 0.45\n    lookat 0 0 0\n    up 0 1 0\n    fov 30.0\n"
+            "}\n",
+            "nameless_camera"
+        );
+        Check( pJob != nullptr, "nameless camera parse succeeded" );
+        if( pJob ) {
+            const SourceSpanIndex* idx = pJob->GetSourceSpanIndex();
+            Check( idx && idx->FindEntity(EntityCategory::Camera, "noname") == nullptr,
+                   "name-omitted pinhole_camera NOT indexed as (Camera,'noname') [runtime is 'default']" );
+            safe_release( pJob );
+        }
+    }
+}
+
 static void TestGlobalMediumNotIndexedAsEntity()
 {
     gCurrentTest = "TestGlobalMediumNotIndexedAsEntity";
@@ -611,6 +652,7 @@ int main()
     TestNamelessLightSettingNotIndexed();
     TestNamelessMediumStillIndexed();
     TestNamelessMaterialStillIndexed();
+    TestCameraNameKeying();
     TestGlobalMediumNotIndexedAsEntity();
     TestGlobalMediumNonameCollision();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;

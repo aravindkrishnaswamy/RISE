@@ -11008,13 +11008,28 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 				// name-OMITTED producer (homogeneous_medium / lambertian_material with no `name` line) still
 				// creates a real runtime entity defaulting to "noname" and MUST be saveable.  A chunk in an
 				// entity CATEGORY but with NO `name` param is a SETTINGS chunk (global_medium,
-				// hosek_wilkie_skylight, scene_options, camera_defaults): it creates no named entity, so indexing
+				// hosek_wilkie_skylight, scene_options, camera_defaults): none creates an entity keyed by its OWN name (hosek synthesizes a global radiance map + an internal sun), so indexing
 				// its nameless span would collide on "noname" and corrupt a real one -- skip it.  Gate on the
 				// DESCRIPTOR, not the source text (which would wrongly drop a name-omitted producer).
 				bool producesNamedEntity = false;
 				if( savableEntity )
 					for( const ParameterDescriptor& pd : desc.parameters )
 						if( pd.name == "name" ) { producesNamedEntity = true; break; }
+				// Camera exception: a camera's RUNTIME name comes from AllocateCameraName (a name-OMITTED camera
+				// becomes "default", NOT "noname"), so ExtractObjectName's "noname" key would not match the runtime
+				// entity -- indexing a name-omitted camera inserts a dead, collision-prone (Camera,"noname") span the
+				// editor (keying by "default") can never retrieve.  Index a camera ONLY when its name is explicit in
+				// the source; non-camera producers name via bag.GetString("name","noname") == ExtractObjectName, so a
+				// name-omitted one keys consistently and is indexed.  (Unifying the camera key so name-omitted cameras
+				// round-trip is a separate tracked task.)
+				if( producesNamedEntity && ec == EntityCategory::Camera ) {
+					bool explicitName = false;
+					for( std::vector<String>::const_iterator z = chunkparams.begin(); z != chunkparams.end(); ++z ) {
+						const String& q = *z;
+						if( q.size() >= 6 && q[0]=='n' && q[1]=='a' && q[2]=='m' && q[3]=='e' && q[4]==' ' ) { explicitName = true; break; }
+					}
+					producesNamedEntity = explicitName;
+				}
 				if( producesNamedEntity ) {
 					const std::size_t closeBraceIdx = mRawTokens.AllLines().size() - 1;
 					OnEntityChunkFinalized(
