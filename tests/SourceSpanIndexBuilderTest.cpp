@@ -483,6 +483,46 @@ static void TestNamelessLightSettingNotIndexed()
     safe_release( pJob );
 }
 
+static void TestNamelessMediumStillIndexed()
+{
+    gCurrentTest = "TestNamelessMediumStillIndexed";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // A PRODUCER chunk whose DESCRIPTOR declares `name` creates a real entity even when the source OMITS
+    // the name (default "noname").  Such an entity MUST be indexed for round-trip save -- the refuse is
+    // descriptor-based (settings chunks with no `name` param), NOT source-text-based.
+    IJobPriv* pJob = LoadScene(
+        "homogeneous_medium\n{\n"
+        "    absorption 0.002 0.0015 0.004\n"
+        "    scattering 0.015 0.013 0.009\n"
+        "}\n",
+        "nameless_medium"
+    );
+    Check( pJob != nullptr, "parse succeeded" );
+    if( !pJob ) return;
+    const SourceSpanIndex* idx = pJob->GetSourceSpanIndex();
+    Check( idx && idx->FindEntity(EntityCategory::Medium, "noname") != nullptr,
+           "name-omitted homogeneous_medium IS indexed as (Medium,'noname')" );
+    safe_release( pJob );
+}
+
+static void TestNamelessMaterialStillIndexed()
+{
+    gCurrentTest = "TestNamelessMaterialStillIndexed";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // Cross-category: a name-omitted lambertian_material (descriptor has `name`) creates material "noname".
+    IJobPriv* pJob = LoadScene(
+        "lambertian_material\n{\n"
+        "}\n",
+        "nameless_material"
+    );
+    Check( pJob != nullptr, "parse succeeded" );
+    if( !pJob ) return;
+    const SourceSpanIndex* idx = pJob->GetSourceSpanIndex();
+    Check( idx && idx->FindEntity(EntityCategory::Material, "noname") != nullptr,
+           "name-omitted lambertian_material IS indexed as (Material,'noname')" );
+    safe_release( pJob );
+}
+
 static void TestGlobalMediumNotIndexedAsEntity()
 {
     gCurrentTest = "TestGlobalMediumNotIndexedAsEntity";
@@ -569,6 +609,8 @@ int main()
     TestRepeatedParseClears();
     TestTabSeparatedEntityName();
     TestNamelessLightSettingNotIndexed();
+    TestNamelessMediumStillIndexed();
+    TestNamelessMaterialStillIndexed();
     TestGlobalMediumNotIndexedAsEntity();
     TestGlobalMediumNonameCollision();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;

@@ -10206,20 +10206,10 @@ void AsciiSceneParser::OnEntityChunkFinalized(
 
 	// Every camera / light / material / medium chunk carries a `name`
 	// parameter — same extraction as objects.
+	// The caller gates on the descriptor declaring a `name` parameter, so a name-OMITTED producer still
+	// reaches here and is correctly indexed under its default "noname" runtime name; settings chunks with
+	// no `name` param (global_medium, hosek_wilkie_skylight, scene_options, camera_defaults) never reach this hook.
 	const std::string runtimeName = ExtractObjectName( chunkparams );
-	// A chunk with NO explicit `name` line (e.g. global_medium{} -- a SETTING the descriptor categorizes
-	// as ChunkCategory::Medium, NOT a named entity) must not be indexed as a savable entity:
-	// ExtractObjectName defaults to "noname", which would collide with / overwrite the source span of a
-	// real medium actually named "noname" (and splice later medium edits into the wrong chunk).  Refuse it
-	// here; its descriptor reference category stays intact for the CST graph/rename.
-	{
-		bool hasExplicitName = false;
-		for( std::vector<String>::const_iterator nit = chunkparams.begin(); nit != chunkparams.end(); ++nit ) {
-			const String& s = *nit;
-			if( s.size() >= 6 && s[0]=='n' && s[1]=='a' && s[2]=='m' && s[3]=='e' && s[4]==' ' ) { hasExplicitName = true; break; }
-		}
-		if( !hasExplicitName ) return;
-	}
 
 	// FOR-revisit detection: a chunk byte offset seen before means the
 	// parser is iterating a FOR body.  Flip chunkRevisited on the
@@ -11000,8 +10990,9 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 			if( sawCloseBrace && pChunkParser
 			    && !mRawTokens.AllLines().empty() ) {
 				EntityCategory ec = EntityCategory::Object;
+				const ChunkDescriptor& desc = pChunkParser->Describe();
 				bool savableEntity = false;
-				switch( pChunkParser->Describe().category ) {
+				switch( desc.category ) {
 					case ChunkCategory::Camera:
 						ec = EntityCategory::Camera;   savableEntity = true; break;
 					case ChunkCategory::Light:
@@ -11013,7 +11004,18 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 					default:
 						break;
 				}
-				if( savableEntity ) {
+				// Index ONLY named-entity PRODUCERS -- chunks whose DESCRIPTOR declares a `name` parameter.  A
+				// name-OMITTED producer (homogeneous_medium / lambertian_material with no `name` line) still
+				// creates a real runtime entity defaulting to "noname" and MUST be saveable.  A chunk in an
+				// entity CATEGORY but with NO `name` param is a SETTINGS chunk (global_medium,
+				// hosek_wilkie_skylight, scene_options, camera_defaults): it creates no named entity, so indexing
+				// its nameless span would collide on "noname" and corrupt a real one -- skip it.  Gate on the
+				// DESCRIPTOR, not the source text (which would wrongly drop a name-omitted producer).
+				bool producesNamedEntity = false;
+				if( savableEntity )
+					for( const ParameterDescriptor& pd : desc.parameters )
+						if( pd.name == "name" ) { producesNamedEntity = true; break; }
+				if( producesNamedEntity ) {
 					const std::size_t closeBraceIdx = mRawTokens.AllLines().size() - 1;
 					OnEntityChunkFinalized(
 						pJob, ec, chunkparams,
