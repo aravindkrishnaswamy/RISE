@@ -264,6 +264,18 @@ static std::string Reason( const std::string& t )
 	return "other";
 }
 
+// KNOWN-ACCEPTED divergences (user-ratified 2026-06-25): a mismatch here is EXPECTED, not a regression,
+// so the gate does not fail on it (and CI fails only on an UNEXPECTED mismatch).
+static std::string KnownAccepted( const std::string& path )
+{
+	if( path.find( "SubsurfaceScattering/sss.RISEscene" ) != std::string::npos ||
+	    path.find( "SubsurfaceScattering/sss_multiple_lights.RISEscene" ) != std::string::npos )
+		return "legacy s_painterColors include-isolation quirk -- the CST energy-conserves the translucent material (more physically correct than legacy); accepted";
+	if( path.find( "Combined/diamond_teapot_pour.RISEscene" ) != std::string::npos )
+		return "hal() stateful halton sequence -- deferred (1 scene, marginal ROI)";
+	return "";
+}
+
 int main( int argc, char** argv )
 {
 	if( argc < 2 ) { std::printf("CstCorpusEquivalenceTest: MANUAL gate -- pass a scene root (e.g. \"scenes\") to run the\n  corpus legacy-vs-CST(migrated) comparison.  Skipped (suite-safe: it loads media for the whole corpus).\n"); return 0; }
@@ -299,7 +311,7 @@ int main( int argc, char** argv )
 		pclose( pp );
 	}
 
-	int match = 0, mismatch = 0, legacyFail = 0;
+	int match = 0, mismatch = 0, legacyFail = 0, accepted = 0;
 	std::map<std::string,int> mmReason, lfReason;
 	for( size_t k = 0; k < paths.size(); ++k ) {
 		const std::string& path = paths[k];
@@ -321,15 +333,19 @@ int main( int argc, char** argv )
 
 		if( !okL ) { ++legacyFail; ++lfReason[Reason(migrated)]; std::printf("LEGACY-FAIL[%-7s] %s\n", Reason(migrated).c_str(), path.c_str()); }
 		else if( dumpL == dumpC ) { ++match; }
-		else { ++mismatch; const std::string r = Reason(migrated); ++mmReason[r]; std::printf("MISMATCH[%-7s] %s\n", r.c_str(), path.c_str()); }
+		else {
+			const std::string acc = KnownAccepted( path );
+			if( !acc.empty() ) { ++accepted; std::printf("ACCEPTED            %s -- %s\n", path.c_str(), acc.c_str()); }
+			else { ++mismatch; const std::string r = Reason(migrated); ++mmReason[r]; std::printf("MISMATCH[%-7s] %s\n", r.c_str(), path.c_str()); }
+		}
 		std::fflush( stdout );
 		jL->release(); jC->release();
 	}
 
-	std::printf( "\n=== %zu scenes: %d MATCH, %d MISMATCH, %d LEGACY-FAIL ===\n", paths.size(), match, mismatch, legacyFail );
+	std::printf( "\n=== %zu scenes: %d MATCH, %d ACCEPTED, %d MISMATCH(unexpected), %d LEGACY-FAIL ===\n", paths.size(), match, accepted, mismatch, legacyFail );
 	for( std::map<std::string,int>::const_iterator it = mmReason.begin(); it != mmReason.end(); ++it )
 		std::printf( "  MISMATCH[%-7s] = %d\n", it->first.c_str(), it->second );
 	for( std::map<std::string,int>::const_iterator it = lfReason.begin(); it != lfReason.end(); ++it )
 		std::printf( "  LEGACY-FAIL[%-7s] = %d\n", it->first.c_str(), it->second );
-	return 0;
+	return mismatch > 0 ? 1 : 0;   // CI: fail only on an UNEXPECTED mismatch
 }
