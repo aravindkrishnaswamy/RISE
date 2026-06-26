@@ -9976,16 +9976,27 @@ namespace
 	// malformed chunk with two name lines, bag.GetString returns the
 	// last write.  Matching that ensures our IObjectManager lookup
 	// uses the same key that AddObject was called with.
+	// True iff `s` is an explicit `name <value>` line (leading "name " -- 5 chars).  Hoisted so the name
+	// extractor below and the entity-index hook's camera carve-out share ONE detection and cannot drift.
+	static bool IsNameLine( const String& s )
+	{
+		return s.size() >= 6 && s[0]=='n' && s[1]=='a' && s[2]=='m' && s[3]=='e' && s[4]==' ';
+	}
+	// True iff the chunk has an explicit `name` line at all.
+	static bool HasExplicitName( const std::vector<String>& chunkparams )
+	{
+		for( std::vector<String>::const_iterator it = chunkparams.begin(); it != chunkparams.end(); ++it )
+			if( IsNameLine( *it ) ) return true;
+		return false;
+	}
 	std::string ExtractObjectName( const std::vector<String>& chunkparams )
 	{
 		std::string found = "noname";
 		for( std::vector<String>::const_iterator it = chunkparams.begin();
 		     it != chunkparams.end(); ++it ) {
 			const String& s = *it;
-			// First token of the line followed by a space, then the value.
-			// Looking for: leading "name " (5 chars).
-			if( s.size() < 6 ) continue;
-			if( s[0] == 'n' && s[1] == 'a' && s[2] == 'm' && s[3] == 'e' && s[4] == ' ' ) {
+			// Leading "name " (5 chars), then the value.
+			if( IsNameLine( s ) ) {
 				found = std::string( s.c_str() + 5 );
 				// keep scanning — bag.SetSingle overwrites on dupes
 			}
@@ -11022,14 +11033,8 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 				// the source; non-camera producers name via bag.GetString("name","noname") == ExtractObjectName, so a
 				// name-omitted one keys consistently and is indexed.  (Unifying the camera key so name-omitted cameras
 				// round-trip is a separate tracked task.)
-				if( producesNamedEntity && ec == EntityCategory::Camera ) {
-					bool explicitName = false;
-					for( std::vector<String>::const_iterator z = chunkparams.begin(); z != chunkparams.end(); ++z ) {
-						const String& q = *z;
-						if( q.size() >= 6 && q[0]=='n' && q[1]=='a' && q[2]=='m' && q[3]=='e' && q[4]==' ' ) { explicitName = true; break; }
-					}
-					producesNamedEntity = explicitName;
-				}
+				if( producesNamedEntity && ec == EntityCategory::Camera )
+					producesNamedEntity = HasExplicitName( chunkparams );
 				if( producesNamedEntity ) {
 					const std::size_t closeBraceIdx = mRawTokens.AllLines().size() - 1;
 					OnEntityChunkFinalized(
