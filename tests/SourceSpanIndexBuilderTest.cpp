@@ -433,6 +433,31 @@ static void TestRepeatedParseClears()
 
 // --------------------------------------------------------------------
 
+static void TestTabSeparatedEntityName()
+{
+    gCurrentTest = "TestTabSeparatedEntityName";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // Corpus media/entities use TAB-separated names (e.g. `name\t\tglobal_haze`).  ExtractObjectName and
+    // the new HasExplicitName guard must AGREE on these or a real tab-named entity gets mis-indexed as
+    // "noname" (old) or wrongly refused (new).  This pins the name-detection's whitespace handling.
+    IJobPriv* pJob = LoadScene(
+        "homogeneous_medium\n{\n"
+        "\tname\ttabfog\n"
+        "\tabsorption 0.002 0.0015 0.004\n"
+        "\tscattering 0.015 0.013 0.009\n"
+        "}\n",
+        "tab_name"
+    );
+    Check( pJob != nullptr, "parse succeeded" );
+    if( !pJob ) return;
+    const SourceSpanIndex* idx = pJob->GetSourceSpanIndex();
+    Check( idx && idx->FindEntity(EntityCategory::Medium, "tabfog") != nullptr,
+           "tab-separated medium name IS indexed (not refused)" );
+    Check( idx && idx->FindEntity(EntityCategory::Medium, "noname") == nullptr,
+           "tab-named medium NOT mis-indexed as 'noname'" );
+    safe_release( pJob );
+}
+
 static void TestGlobalMediumNotIndexedAsEntity()
 {
     gCurrentTest = "TestGlobalMediumNotIndexedAsEntity";
@@ -517,6 +542,7 @@ int main()
     TestNameAfterTransformParams();
     TestNoTransformParameters();
     TestRepeatedParseClears();
+    TestTabSeparatedEntityName();
     TestGlobalMediumNotIndexedAsEntity();
     TestGlobalMediumNonameCollision();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;
