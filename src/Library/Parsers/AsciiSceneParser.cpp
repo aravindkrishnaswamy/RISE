@@ -585,7 +585,8 @@ namespace RISE
 			};
 			static thread_local SceneOptionsState s_sceneOptions;
 
-			// Tracks every camera name issued during this parse so the
+			// Tracks every camera name issued across the whole top-level load (incl. recursive `> load`/`> run`
+			// includes; reset only at top-level) so the
 			// auto-name helper below doesn't collide with names the
 			// user explicitly supplied.  Insertion is the parser's
 			// responsibility — happens inside `AllocateCameraName`,
@@ -649,12 +650,20 @@ namespace RISE
 				return s_lastAllocatedCameraName;
 			}
 
-			static void ClearParseState() {
+			// Per-parse reset.  `resetCameraNaming` is true for a top-level scene-build (a top-level
+			// ParseAndLoadScene, or a DeriveToJob) and FALSE for a recursive `> load`/`> run` parse: camera
+			// auto-naming must stay unique manager-wide ACROSS includes, so a nested parse must NOT wipe the
+			// outer scene's allocated names (else a child's unnamed camera re-allocates "default" and
+			// Scene::AddCamera rejects the duplicate, failing the include).  The other caches reset on every
+			// parse (incl. nested), matching the legacy per-sub-parse semantics.
+			static void ClearParseState( bool resetCameraNaming = true ) {
 				s_painterColors.clear();
 				s_cameraDefaults = CameraDefaultsState();
 				s_sceneOptions   = SceneOptionsState();
-				s_cameraNamesUsed.clear();
-				s_lastAllocatedCameraName.clear();
+				if( resetCameraNaming ) {
+					s_cameraNamesUsed.clear();
+					s_lastAllocatedCameraName.clear();
+				}
 			}
 
 			// Generic dispatch used by migrated chunk parsers to replace the
@@ -10531,8 +10540,6 @@ void AsciiSceneParser::PopulateLoadedPropertySnapshot( IJob& pJob )
 
 bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 {
-	Implementation::ChunkParsers::ClearParseState();
-
 	// Phase 6.1: detect whether THIS is a top-level scene-load or a
 	// recursive one (triggered by `> load file.RISEscene` or
 	// `> run script.RISEscript` mid-parse of an outer scene).
@@ -10544,6 +10551,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	// outer- vs inner-file owners — the save engine's R7 §1 / pinned
 	// 2.25 cross-file-refusal check relies on that.
 	ParseDepthGuard depthGuard;
+	Implementation::ChunkParsers::ClearParseState( depthGuard.isTopLevel );
 
 	// Phase 0 (docs/ROUND_TRIP_SAVE_PLAN.md §6.2): begin recording raw
 	// per-line byte spans + tokens.  Parser-local state — always

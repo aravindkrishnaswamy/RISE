@@ -717,6 +717,44 @@ static void TestCameraSettingsChunksNotIndexed()
     safe_release( pJob );
 }
 
+static void TestUnnamedCameraAcrossInclude()
+{
+    gCurrentTest = "TestUnnamedCameraAcrossInclude";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // Recursive `> load`: parent AND child each have an UNNAMED camera.  The camera-name allocator state
+    // must SURVIVE the nested parse (reset only on the OUTERMOST parse) so the child's camera auto-suffixes
+    // to "default_1" instead of re-allocating "default", which Scene::AddCamera would reject -- failing an
+    // otherwise-valid include composition.  Regression guard for the recursive-include duplicate-camera bug.
+    char childPath[512], parentPath[512];
+    std::snprintf( childPath,  sizeof(childPath),  "/tmp/source_span_inc_child_%d.RISEscene",  (int)::getpid() );
+    std::snprintf( parentPath, sizeof(parentPath), "/tmp/source_span_inc_parent_%d.RISEscene", (int)::getpid() );
+    { std::ofstream ofs( childPath );
+      ofs << "RISE ASCII SCENE 6\n"
+          << "pinhole_camera\n{\n    location 0 0 40\n    lookat 0 0 0\n    up 0 1 0\n    fov 45.0\n}\n"; }
+    { std::ofstream ofs( parentPath );
+      ofs << "RISE ASCII SCENE 6\n"
+          << "pinhole_camera\n{\n    location 0 0 20\n    lookat 0 0 0\n    up 0 1 0\n    fov 30.0\n}\n"
+          << "> load " << childPath << "\n"; }
+    IJobPriv* pJob = nullptr;
+    if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { Check(false,"job create"); std::remove(childPath); std::remove(parentPath); return; }
+    const bool ok = pJob->LoadAsciiScene( parentPath );
+    Check( ok, "parent + `> load` child both parse (no duplicate-camera failure)" );
+    if( ok ) {
+        const SourceSpanIndex* idx = pJob->GetSourceSpanIndex();
+        Check( idx && idx->FindEntity(EntityCategory::Camera, "default") != nullptr,
+               "parent's unnamed camera indexed as (Camera,'default')" );
+        Check( idx && idx->FindEntity(EntityCategory::Camera, "default_1") != nullptr,
+               "child's unnamed camera auto-suffixed + indexed as (Camera,'default_1')" );
+        IScenePriv* scene = pJob->GetScene();
+        if( scene && scene->GetCameras() ) {
+            CollectNames cb; scene->GetCameras()->EnumerateItemNames( cb );
+            Check( cb.names.size() == 2, "both cameras registered in the manager (no dup rejection)" );
+        }
+    }
+    safe_release( pJob );
+    std::remove( childPath ); std::remove( parentPath );
+}
+
 static void TestGlobalMediumNotIndexedAsEntity()
 {
     gCurrentTest = "TestGlobalMediumNotIndexedAsEntity";
@@ -808,6 +846,7 @@ int main()
     TestCameraNameKeying();
     TestNamedAndUnnamedCameraMix();
     TestCameraSettingsChunksNotIndexed();
+    TestUnnamedCameraAcrossInclude();
     TestGlobalMediumNotIndexedAsEntity();
     TestGlobalMediumNonameCollision();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;
