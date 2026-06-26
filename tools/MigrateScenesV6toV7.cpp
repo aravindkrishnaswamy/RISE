@@ -5,23 +5,30 @@
 //  BY CONSTRUCTION.  Phase A of docs/agentic-redesign/61-v6v7-parser-cutover-execution-plan.md.
 //
 //  Usage:  MigrateScenesV6toV7 <scene.RISEscene> [more ...]
-//    Prints each input's migrated v7 text to stdout.  Corpus file-rewriting (in-place / out-dir) is
-//    Phase C; this Phase-A tool is the migrator made first-class + runnable.
+//    Prints each input's migrated text to stdout.  Constructs are folded toward v7, but the scene-version
+//    header line stays `RISE ASCII SCENE 6` until Phase C bumps it (Phase C also does the in-place /
+//    out-dir corpus rewrite); this Phase-A tool is the migrator made first-class + runnable.
+//
+//  Exit: 0 = all inputs migrated; 1 = an input could not be read (named on stderr); 2 = no args.
 //////////////////////////////////////////////////////////////////////
 #include <cstdio>
 #include <string>
+#include <fstream>
 #include "CstMigrator.h"
 
 int main( int argc, char** argv )
 {
 	if( argc < 2 ) {
 		std::fprintf( stderr, "usage: MigrateScenesV6toV7 <scene.RISEscene> [more ...]\n"
-		                      "  prints each input's migrated v7 text to stdout\n" );
+		                      "  prints each input's migrated text to stdout (folded; header stays SCENE 6 until Phase C)\n" );
 		return 2;
 	}
+	int failures = 0;
 	for( int i = 1; i < argc; ++i ) {
+		{ std::ifstream probe( argv[i], std::ios::binary );
+		  if( !probe ) { std::fprintf( stderr, "MigrateScenesV6toV7: cannot read '%s'\n", argv[i] ); ++failures; continue; } }
 		const std::string v7 = Migrate( ReadFile( argv[i] ) );
 		std::fputs( v7.c_str(), stdout );
 	}
-	return 0;
+	return failures ? 1 : 0;
 }

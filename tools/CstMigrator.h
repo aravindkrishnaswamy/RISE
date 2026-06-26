@@ -1,13 +1,16 @@
 #ifndef RISE_CST_MIGRATOR_H
 #define RISE_CST_MIGRATOR_H
 // Shared v6->v7 scene migrator (text -> text): flatten includes (D7) + the legacy macro / $() / FOR / hal
-// surface, folded to the v7 declarative form.  Extracted from CstCorpusEquivalenceTest so the equivalence
+// surface, folded to the v7 declarative form -- BODY ONLY: the scene-version header line stays
+// `RISE ASCII SCENE 6` until Phase C bumps it to 7.  Extracted from CstCorpusEquivalenceTest so the equivalence
 // GATE and the migration TOOL (tools/MigrateScenesV6toV7) share ONE migrator -- byte-identical by
 // construction.  Phase A of docs/agentic-redesign/61-v6v7-parser-cutover-execution-plan.md.
 //
 // Header-local `static` functions + state: each translation unit that includes this (the gate, the tool --
 // separate executables) gets its own copy + its own g_migratorHalton.  That is correct: each PROCESS
 // accumulates the Halton sequence in its own scene order, mirroring the legacy parser's file-static `mh`.
+// INVARIANT: include this into at most ONE translation unit per executable -- two includers linked into the
+// same binary would each get an independent g_migratorHalton, silently diverging their hal() folds.
 #include <string>
 #include <vector>
 #include <map>
@@ -191,10 +194,10 @@ static void ProcessLines( const std::vector<std::string>& lines, size_t lo, size
 		std::vector<std::string> toks;
 		if( !wasIn && !tt.empty() ) { std::istringstream iss(tt); std::string tk; while( iss>>tk ) toks.push_back(tk); }
 		// Legacy macro surface, VERIFIED against the legacy parser: define = DEFINE | define.  Legacy's define
-		// branch (AsciiSceneParser.cpp ~10744) ALSO fires on a leading '!', but then substitutes over
+		// branch (AsciiSceneParser.cpp ~10798) ALSO fires on a leading '!', but then substitutes over
 		// token[0]="!" -> empty-macro lookup -> hard parse-fail, so `! NAME VAL` is NON-FUNCTIONAL in legacy;
 		// the migrator deliberately does NOT honor it.  Undef = UNDEF | undef | leading '~' (the undef branch
-		// ~10769 does NOT substitute token[0], so '~ NAME' genuinely works).
+		// ~10823 does NOT substitute token[0], so '~ NAME' genuinely works).
 		const bool isDefine = !toks.empty() && ( toks[0] == "DEFINE" || toks[0] == "define" );
 		const bool isUndef  = !toks.empty() && !toks[0].empty() && ( toks[0] == "UNDEF" || toks[0] == "undef" || toks[0][0] == '~' );
 		// FAITHFULNESS NOTE: the migrator is faithful on WELL-FORMED macros (the corpus).  On MALFORMED ones
@@ -250,6 +253,5 @@ static std::string Migrate( const std::string& text )
 {
 	return Preprocess( FlattenIncludes( text, 0 ) );         // flatten includes; then DEFINE/UNDEF/FOR/@/!/$()
 }
-
 
 #endif // RISE_CST_MIGRATOR_H
