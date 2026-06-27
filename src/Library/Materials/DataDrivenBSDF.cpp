@@ -15,6 +15,7 @@
 #include "DataDrivenBSDF.h"
 #include "../Interfaces/ILog.h"
 #include "../RISE_API.h"
+#include "../Utilities/Color/RGBSpectra.h"   // RGBUnboundedSpectrum (RGB->spectral uplift for valueNM)
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -178,7 +179,16 @@ RISEPel DataDrivenBSDF::value( const Vector3& vLightIn, const RayIntersectionGeo
 
 Scalar DataDrivenBSDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
-	return 0;
+	// RGB-tabulated BRDF -- there is no per-wavelength data, so uplift the RGB BRDF value to a spectral value
+	// (chroma-preserving JH uplift: the SAME RGBUnboundedSpectrum::FromRGB(...).Eval(nm) mechanism
+	// UniformColorPainter::GetColorNM uses) and sample at nm.  Was `return 0`, which rendered data-driven
+	// materials FULLY BLACK under every spectral integrator (the spectral consumers -- e.g. AreaLightShaderOp
+	// -- multiply the emitter's spectral radiance by valueNM with no RGB fallback).  Unbounded (not Albedo)
+	// because a BRDF f_r can exceed 1, which Albedo would clamp.  (Luminance would be simpler but desaturates;
+	// the uplift keeps the BRDF's chroma so the spectral render matches the RGB render, per the material
+	// convention -- every other material's valueNM goes through GetColorNM.)  Per-call uplift is fine: the
+	// spectral path is the slow path and correctness beats a small LUT lookup.
+	return RGBUnboundedSpectrum::FromRGB( value( vLightIn, ri ) ).Eval( nm );
 }
 
 RISEPel DataDrivenBSDF::albedo( const RayIntersectionGeometric& /*ri*/ ) const
