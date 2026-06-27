@@ -115,11 +115,43 @@ static int RunSelfTest()
 	const std::string gm = Migrate( "> set global_medium fog\n" );
 	CHECK( gm.find( "global_medium\n{\nmedium fog\n}" ) != std::string::npos, "'> set global_medium' -> chunk" );
 
-	// hal() now FOLDS via the process-global Halton (mirroring legacy).  Fresh in this bare self-test: the
-	// first sample of any dimension is the radical inverse of 0 = 0, so $(hal(0)+1.0) folds to exactly 1.0.
+	// hal() FOLDS via the per-top-level-scene Halton: Migrate() Reset()s g_migratorHalton at its start
+	// (mirroring the legacy parser's per-top-level `mh` reset), so the first sample of any dimension is the
+	// radical inverse of 0 = 0 and $(hal(0)+1.0) folds to exactly 1.0.
 	const std::string hf = Migrate( "sphere_geometry\n{\nname s\nradius $(hal(0)+1.0)\n}\n" );
 	CHECK( hf.find( "hal(" ) == std::string::npos, "hal() is folded (no $()/hal remains)" );
 	CHECK( hf.find( "1.00000000000000000" ) != std::string::npos, "hal(0) first sample 0 -> $(hal(0)+1.0) folds to 1.0" );
+
+	// P1 (order-independence): the folded hal() literals must NOT depend on what was migrated earlier in the
+	// same process (corpus batch order).  Migrate scene A fresh, then again AFTER a different hal scene B that
+	// advances the sequence -- the two A migrations must be byte-identical.  (Pre-fix, with a never-reset
+	// global Halton, the second A folds hal() at a higher index and DIFFERS.)  Probe DIMENSION 1: dim 0's
+	// bit-reversed Halton is mod1(integer)=0 for small indices, so it cannot witness an index shift.
+	const std::string halA = "sphere_geometry\n{\nname a\nradius $(hal(1)+1.0)\n}\n";
+	const std::string halB = "a $(hal(1))\nb $(hal(1))\nc $(hal(1))\nd $(hal(1))\n";
+	const std::string a1 = Migrate( halA );
+	(void) Migrate( halB );
+	const std::string a2 = Migrate( halA );
+	CHECK( a1 == a2, "Migrate(hal scene) is order-independent (Halton Reset() per top-level scene)" );
+
+	// P1 (SCENE-6 dual-readable): inlining a `> run X.RISEscript` must STRIP the script's `RISE ASCII
+	// SCRIPT N` version header -- else a stray header line is spliced into the scene body, which the legacy
+	// v6 reader rejects as an unknown chunk.  Write a temp script (with a header), migrate a scene that runs
+	// it, and assert (a) no stray version header survives and (b) the migrated text LEGACY-parses.
+	{
+		const char* sp = "/tmp/cstmig_selftest_script.RISEscript";
+		const char* sc = "/tmp/cstmig_selftest_scene.RISEscene";
+		{ std::ofstream f( sp ); f << "RISE ASCII SCRIPT 3\nsphere_geometry\n{\nname sst\nradius 1.0\n}\n"; }
+		const std::string mig = Migrate( std::string( "RISE ASCII SCENE 6\n> run " ) + sp + "\n" );
+		CHECK( mig.find( "RISE ASCII SCRIPT" ) == std::string::npos, "inlined script version header is stripped (no stray header)" );
+		CHECK( mig.find( "sphere_geometry" ) != std::string::npos, "inlined script body survives the header strip" );
+		{ std::ofstream f( sc ); f << mig; }
+		Job* js = new Job(); ISceneParser* ps = 0; bool oks = false;
+		if( RISE_API_CreateAsciiSceneParser( &ps, sc ) && ps ) { oks = ps->ParseAndLoadScene( *js ); ps->release(); }
+		js->release();
+		CHECK( oks, "legacy parser ACCEPTS the migrated `> run script` output (SCENE-6 dual-readable)" );
+		std::remove( sp ); std::remove( sc );
+	}
 
 	std::printf( "CstCorpusEquivalenceTest SELF-TEST: %s (%d failure[s])\n", fails ? "FAIL" : "PASS", fails );
 	return fails ? 1 : 0;

@@ -650,19 +650,23 @@ namespace RISE
 				return s_lastAllocatedCameraName;
 			}
 
-			// Per-parse reset.  `resetCameraNaming` is true for a top-level scene-build (a top-level
-			// ParseAndLoadScene, or a DeriveToJob) and FALSE for a recursive `> load`/`> run` parse: camera
-			// auto-naming must stay unique manager-wide ACROSS includes, so a nested parse must NOT wipe the
-			// outer scene's allocated names (else a child's unnamed camera re-allocates "default" and
-			// Scene::AddCamera rejects the duplicate, failing the include).  The other caches reset on every
-			// parse (incl. nested), matching the legacy per-sub-parse semantics.
-			static void ClearParseState( bool resetCameraNaming = true ) {
+			// Per-parse reset (ParseAndLoadScene / DeriveToJob; a nested `> load`/`> run` parse passes false).
+			// resetTopLevelState gates the reset of state that accumulates ACROSS a top-level build to TOP-LEVEL
+			// parses only.  Camera auto-naming must stay unique manager-wide ACROSS includes, so a nested parse
+			// must NOT wipe the outer scene's allocated names (else a child's unnamed camera re-allocates
+			// "default" and Scene::AddCamera rejects the duplicate, failing the include).  The Halton sequence
+			// `mh` is the same kind of state: Reset() it per TOP-LEVEL parse so each scene's hal() QMC starts at
+			// index 0 (standalone-equivalent + order-independent), but persist it across a scene's includes (a
+			// nested parse passes false).  The other caches reset on every parse (incl. nested), matching the
+			// legacy per-sub-parse semantics.
+			static void ClearParseState( bool resetTopLevelState = true ) {
 				s_painterColors.clear();
 				s_cameraDefaults = CameraDefaultsState();
 				s_sceneOptions   = SceneOptionsState();
-				if( resetCameraNaming ) {
+				if( resetTopLevelState ) {
 					s_cameraNamesUsed.clear();
 					s_lastAllocatedCameraName.clear();
+					mh.Reset();   // each top-level scene's hal() QMC sequence starts fresh (see above)
 				}
 			}
 

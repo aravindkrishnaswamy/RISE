@@ -22,6 +22,7 @@
 #include <cmath>
 #include "../src/Library/Parsers/MathExpressionEvaluator.h"
 #include "../src/Library/Sampling/HaltonPoints.h"
+#include "../src/Library/Utilities/Math3D/Constants.h"   // RISE::PI / RISE::E_ -- the SAME constants the legacy preprocessor seeds (AsciiSceneParser.cpp:9965-9966); portable, unlike M_PI/M_E (undefined on MSVC).
 
 static std::string ReadFile( const std::string& p )
 {
@@ -56,6 +57,27 @@ static std::string StripBlockComments( const std::string& line, bool& inComment 
 	return out;
 }
 
+// An inlined sub-file (.RISEscene / .RISEscript) carries its OWN `RISE ASCII SCENE/SCRIPT N` version
+// header.  Splicing it verbatim into the parent scene body leaves a stray header line that the legacy v6
+// reader rejects as an unknown chunk -- breaking the SCENE-6 dual-readable invariant (a migrated scene
+// must parse under BOTH the CST and the legacy AsciiSceneParser).  Strip a leading version header (the
+// first non-blank line, when it is one) from each inlined file.  The top-level scene's own header never
+// reaches here -- Migrate() flattens the scene text directly; only INCLUDED files pass through this.
+static std::string StripVersionHeader( const std::string& text )
+{
+	size_t i = 0;
+	while( i < text.size() ) {
+		const size_t e = text.find( '\n', i ); const bool last = ( e == std::string::npos );
+		const std::string ln = Trim( text.substr( i, ( last ? text.size() : e ) - i ) );
+		if( ln.empty() ) { if( last ) break; i = e + 1; continue; }                 // skip leading blank lines
+		if( ln.compare( 0, 11, "RISE ASCII " ) == 0 &&
+		    ( ln.find( "SCENE" ) != std::string::npos || ln.find( "SCRIPT" ) != std::string::npos ) )
+			return last ? std::string() : text.substr( e + 1 );                    // drop the header, keep the body
+		break;                                                                      // first non-blank line is not a header
+	}
+	return text;
+}
+
 // Recursively inline `> run` / `> load` includes (comment-aware), depth-capped
 // against cycles.  An include path is repo-root-relative (read from cwd).
 static std::string FlattenIncludes( const std::string& text, int depth )
@@ -78,7 +100,7 @@ static std::string FlattenIncludes( const std::string& text, int depth )
 		}
 		if( !incPath.empty() ) {
 			std::ifstream f( incPath.c_str(), std::ios::binary );
-			if( f ) { std::stringstream ss; ss << f.rdbuf(); out += FlattenIncludes( ss.str(), depth + 1 ); if( !out.empty() && out.back() != '\n' ) out += '\n'; }
+			if( f ) { std::stringstream ss; ss << f.rdbuf(); out += FlattenIncludes( StripVersionHeader( ss.str() ), depth + 1 ); if( !out.empty() && out.back() != '\n' ) out += '\n'; }
 			else { out += line; if( !last ) out += '\n'; }     // missing include: keep the directive (legacy fails too)
 		} else {
 			out += line; if( !last ) out += '\n';
@@ -117,11 +139,12 @@ static void SubstituteMacrosInPlace( std::string& s, const std::map<std::string,
 // is byte-identical to what the legacy parser produced).  hal() folds via the process-global
 // g_migratorHalton below.
 
-// Process-global Halton mirroring the legacy parser's file-static `mh` (AsciiSceneParser.cpp): it
-// accumulates across scenes in corpus order and is NEVER reset, so the migrator's per-dimension halton
-// state tracks legacy's EXACTLY across every scene that uses hal() (diamond_teapot_pour sorts first and
-// gets the index-0 samples; painters picks up where diamond left off) -- the only way a stateful seq
-// can be folded deterministically to match legacy.
+// Process-global Halton mirroring the legacy parser's file-static `mh` (AsciiSceneParser.cpp).  Migrate()
+// Reset()s it at the start of EVERY top-level scene, so each scene's hal() folds from a FRESH sequence
+// (index 0) -- matching a standalone legacy load (a fresh `rise` process; the parser's `mh` is likewise
+// Reset() per top-level parse in ClearParseState).  This makes Migrate() a PURE function of its input:
+// the folded hal() literals do NOT depend on what was migrated earlier in the same process (corpus batch
+// order), so a converted scene renders identically when later loaded standalone.
 static RISE::MultiHalton g_migratorHalton;
 static int FoldFirstFunction( std::string& token )
 {
@@ -243,7 +266,7 @@ static std::string Preprocess( const std::string& text )
 {
 	std::vector<std::string> lines;
 	{ size_t i=0; for(;;) { size_t e=text.find('\n',i); const bool last=(e==std::string::npos); if(last)e=text.size(); lines.push_back(text.substr(i,e-i)); if(last)break; i=e+1; } }
-	std::map<std::string,double> macros; macros["PI"]=M_PI; macros["E"]=M_E; std::string out; bool inComment=false;
+	std::map<std::string,double> macros; macros["PI"]=double(RISE::PI); macros["E"]=double(RISE::E_); std::string out; bool inComment=false;
 	ProcessLines( lines, 0, lines.size(), macros, out, inComment );
 	return out;
 }
@@ -251,6 +274,8 @@ static std::string Preprocess( const std::string& text )
 // The offline v6->v7 migrator transform (text -> text).  Grows per slice.
 static std::string Migrate( const std::string& text )
 {
+	g_migratorHalton.Reset();   // per top-level scene: fold hal() from a FRESH sequence (standalone-equivalent
+	                            // + order-independent across scenes) -- see g_migratorHalton above.
 	return Preprocess( FlattenIncludes( text, 0 ) );         // flatten includes; then DEFINE/UNDEF/FOR/@/!/$()
 }
 
