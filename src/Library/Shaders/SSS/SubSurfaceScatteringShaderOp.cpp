@@ -19,6 +19,8 @@
 #include "../../Interfaces/IGeometry.h"		// CanBeAreaLight(): SSS needs real surface sampling
 #include "../../Utilities/stl_utils.h"
 #include "../../Sampling/HaltonPoints.h"
+#include "../../Utilities/Color/RGBSpectra.h"	// RGBUnboundedSpectrum (RGB->spectral uplift for PerformOperationNM)
+#include <mutex>									// std::lock_guard (exception-safe create_mutex)
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -128,19 +130,29 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 		}
 	}
 
-	// Lets check our internal map and see if we have already setup a point set for this object
-	PointSetMap::iterator it = pointsets.find( ri.pObject );
-
+	// Find-or-build this object's irradiance point set.  ALL access to
+	// `pointsets` (a std::map, NOT thread-safe) is serialized by a std::lock_guard
+	// on create_mutex spanning the whole find-or-build; the guard unlocks on EVERY
+	// exit -- normal return, the CanBeAreaLight sentinel, AND a bad_alloc thrown by
+	// the large build -- so a build OOM can never leave the mutex held and deadlock
+	// the render.
+	// A prior double-checked-locking variant did an UNLOCKED find() that raced
+	// with the locked insert below: the unlocked read could observe a torn /
+	// half-inserted node -- a data race on std::map, i.e. undefined behavior.
+	// This is a latent-UB fix ONLY; it does NOT cure the separate, pre-existing
+	// build non-determinism (the lazy build below runs once on whichever thread
+	// wins the race, consuming that thread's scheduling-dependent rc.random, so
+	// the whole SSS image lands on one of a few discrete brightness levels
+	// run-to-run).  That residual survives this fix and hits the RGB path
+	// identically -- see the SubsurfaceScatteringSpectralTest header.  The
+	// one-time build runs inside the lock; the expensive octree Evaluate (Pass
+	// 2) runs OUTSIDE the lock on the now-immutable octree, so render threads
+	// still evaluate in parallel.
 	PointSetOctree* ps = 0;
-
-	if( it == pointsets.end() ) {
-
-		// Grab the mutex, we should only create this once per object
-		create_mutex.lock();
-
-		// Once grabbed, check again, just in case someone else made one
-		PointSetMap::iterator again = pointsets.find( ri.pObject );
-		if( again == pointsets.end() ) {
+	{
+		std::lock_guard<RMutex> guard( create_mutex );
+		PointSetMap::iterator it = pointsets.find( ri.pObject );
+		if( it == pointsets.end() ) {
 			// SSS point-set generation uniformly samples the object's SURFACE via
 			// UniformRandomPoint/GetArea.  A geometry that cannot honour that contract
 			// (CanBeAreaLight() false -- e.g. a degenerate zero-area field) would
@@ -150,14 +162,13 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 			if( pSSSGeom && !pSSSGeom->CanBeAreaLight() ) {
 				GlobalLog()->PrintEasyWarning( "SubSurfaceScatteringShaderOp:: object geometry cannot be uniformly surface-sampled (CanBeAreaLight() == false); subsurface scattering is unsupported on it -- skipping (no SSS contribution)." );
 				pointsets[ri.pObject] = 0;	// cache null sentinel: warn once per object, skip the bogus build on every later hit
-				create_mutex.unlock();
 				c = RISEPel( 0.0 );
 				return;
 			}
 			// Pass 1: Generate the irradiance point set for this object.
 			// This happens once per object, lazily on first hit.
 			GlobalLog()->PrintEasyInfo( "SubSurfaceScatteringShaderOp:: Generating point sample set for object" );
-			
+		
 			PointSetOctree::PointSet points;
 			BoundingBox bbox( Point3(RISE_INFINITY,RISE_INFINITY,RISE_INFINITY), Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY) );
 
@@ -166,7 +177,7 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 
 			// Use a halton point sequence to make sure the sampling points are distributed in a good way
 			MultiHalton mh;
-			
+		
 			for( unsigned int i=0; i<numPoints; i++ ) {
 				// Ask the object for a uniform random point
 				PointSetOctree::SamplePoint sp;
@@ -181,7 +192,7 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 
 				ri.pObject->UniformRandomPoint( &sp.ptPosition, &normal, 0, random_variables );
 				// We may want in the future to move the point in (away from the surface) if we decide to add the option of occluders
-//				sp.ptPosition = Point3Ops::mkPoint3( sp.ptPosition, normal*NEARZERO );		// move the sample points slightly away from the surface
+	//				sp.ptPosition = Point3Ops::mkPoint3( sp.ptPosition, normal*NEARZERO );		// move the sample points slightly away from the surface
 
 				// Now compute the irradiance for this point using the BDF
 				RayIntersection newri( ri );
@@ -216,15 +227,9 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 			}
 			pointsets[ri.pObject] = ps;
 		} else {
-			// Some other thread just set it
-			ps = again->second;
+			// There is already a point set, so we can just do our approximation now
+			ps = it->second;
 		}
-
-		create_mutex.unlock();
-
-	} else {
-		// There is already a point set, so we can just do our approximation now
-		ps = it->second;
 	}
 
 	// Unsupported geometry was cached as a null sentinel above -> no SSS contribution
@@ -268,11 +273,28 @@ Scalar SubSurfaceScatteringShaderOp::PerformOperationNM(
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
-	Scalar c=0;
-
-	//! \TODO To be implemented
-
-	return c;
+	// Spectral path: evaluate the full RGB BSSRDF (this reuses the
+	// per-object irradiance octree -- built once and shared across all
+	// wavelengths) and uplift the resulting RGB exitant radiance to
+	// wavelength `nm` with the same chroma-preserving JH uplift the RGB
+	// painters use for GetColorNM.  The prior `return 0` stub rendered
+	// every SSS object BLACK under the *_spectral_* rasterizers
+	// (pixelintegratingspectral / pathtracing_spectral / bdpt_spectral /
+	// vcm_spectral / mlt_spectral).
+	//
+	// Result-uplift rather than a true per-wavelength transport because
+	// both the diffusion profile (ISubSurfaceExtinctionFunction, RGB
+	// ComputeTotalExtinction) and the cached irradiance are RGB-valued;
+	// a per-lambda port would need a spectral extinction interface plus a
+	// per-wavelength irradiance cache.  Uplifting the result makes the
+	// spectral render reconstruct the RGB SSS appearance (the uplift
+	// round-trips through the CMFs).  The diffusion *radius* is therefore
+	// at RGB resolution, not per-lambda -- documented approximation; a
+	// true spectral BSSRDF is future work.  RGBUnboundedSpectrum (not
+	// Albedo): SSS exitant radiance is >= 0 and may exceed 1.
+	RISEPel c;
+	PerformOperation( rc, ri, caster, rs, c, ior_stack, pScat );
+	return RGBUnboundedSpectrum::FromRGB( c ).Eval( nm );
 }
 
 void SubSurfaceScatteringShaderOp::ResetRuntimeData() const

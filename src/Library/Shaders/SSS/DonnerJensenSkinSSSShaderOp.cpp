@@ -23,6 +23,8 @@
 #include "../../Sampling/HaltonPoints.h"
 #include "../../RISE_API.h"
 #include "../../Interfaces/ILog.h"
+#include "../../Utilities/Color/RGBSpectra.h"	// RGBUnboundedSpectrum (RGB->spectral uplift for PerformOperationNM)
+#include <mutex>									// std::lock_guard (exception-safe create_mutex)
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -747,14 +749,26 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 	}
 
 	// --- Pass 1: Lazy octree construction ---
-	PointSetMap::iterator it = pointsets.find( ri.pObject );
+	// ALL access to `pointsets` (a std::map, NOT thread-safe) is serialized by a
+	// std::lock_guard on create_mutex spanning the whole find-or-build; the guard
+	// unlocks on EVERY exit -- normal return, the CanBeAreaLight sentinel, AND a
+	// bad_alloc from the large build -- so a build OOM can never leave the mutex
+	// held and deadlock the render.  A prior double-checked-locking variant did an UNLOCKED
+	// find() that raced with the locked insert below: the unlocked read could
+	// observe a torn / half-inserted node -- a data race on std::map, i.e.
+	// undefined behavior.  Latent-UB fix ONLY; it does NOT cure the separate,
+	// pre-existing build non-determinism (the lazy build runs once on whichever
+	// thread wins the race, consuming that thread's scheduling-dependent
+	// rc.random, so the SSS image lands on one of a few discrete brightness
+	// levels run-to-run) which survives this fix and hits the RGB path
+	// identically.  The one-time build runs inside the lock; the expensive
+	// octree Evaluate (Pass 2) runs OUTSIDE the lock on the now-immutable
+	// octree, so render threads still evaluate in parallel.
 	PointSetOctree* ps = 0;
-
-	if( it == pointsets.end() )
 	{
-		create_mutex.lock();
-		PointSetMap::iterator again = pointsets.find( ri.pObject );
-		if( again == pointsets.end() )
+		std::lock_guard<RMutex> guard( create_mutex );
+		PointSetMap::iterator it = pointsets.find( ri.pObject );
+		if( it == pointsets.end() )
 		{
 			// SSS point-set generation uniformly samples the object's SURFACE via
 			// UniformRandomPoint/GetArea.  A geometry that cannot honour that contract
@@ -765,7 +779,6 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 			if( pSSSGeom && !pSSSGeom->CanBeAreaLight() ) {
 				GlobalLog()->PrintEasyWarning( "DonnerJensenSkinSSSShaderOp:: object geometry cannot be uniformly surface-sampled (CanBeAreaLight() == false); subsurface scattering is unsupported on it -- skipping (no SSS contribution)." );
 				pointsets[ri.pObject] = 0;	// cache null sentinel: warn once per object, skip the bogus build on every later hit
-				create_mutex.unlock();
 				c = RISEPel( 0.0 );
 				return;
 			}
@@ -835,13 +848,8 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 		}
 		else
 		{
-			ps = again->second;
+			ps = it->second;
 		}
-		create_mutex.unlock();
-	}
-	else
-	{
-		ps = it->second;
 	}
 
 	// --- Pass 2: Hierarchical octree evaluation ---
@@ -906,8 +914,28 @@ Scalar DonnerJensenSkinSSSShaderOp::PerformOperationNM(
 	const ScatteredRayContainer* pScat
 	) const
 {
-	// TODO: spectral version
-	return 0;
+	// Spectral path: evaluate the full RGB skin BSSRDF (this reuses the
+	// per-object irradiance octree -- built once and shared across all
+	// wavelengths) and uplift the RGB exitant radiance to wavelength `nm`
+	// via the same chroma-preserving JH uplift the RGB painters use for
+	// GetColorNM.  The prior `return 0` stub rendered every skin object
+	// BLACK under the *_spectral_* rasterizers.
+	//
+	// NOTE: this skin model is physically spectral (per-wavelength
+	// melanin / haemoglobin / carotene absorption -- ComputePerLayer-
+	// Coefficients(nm)), but its diffusion profile is tabulated at RGB
+	// (m_Rd_table, the R=615/G=550/B=465 nm channels) and the irradiance
+	// octree is RGB-valued, so a true per-lambda evaluation would need a
+	// per-wavelength profile plus a per-wavelength irradiance cache.
+	// Uplifting the RGB result keeps the spectral render matching the RGB
+	// appearance (the uplift round-trips through the CMFs) and reuses the
+	// existing tabulation; the per-lambda diffusion radius is RGB-
+	// resolution, not re-derived -- documented approximation, true
+	// spectral skin is future work.  RGBUnboundedSpectrum (not Albedo):
+	// exitant radiance is >= 0 and may exceed 1.
+	RISEPel c;
+	PerformOperation( rc, ri, caster, rs, c, ior_stack, pScat );
+	return RGBUnboundedSpectrum::FromRGB( c ).Eval( nm );
 }
 
 void DonnerJensenSkinSSSShaderOp::ResetRuntimeData() const
