@@ -166,7 +166,10 @@ inline void DumpRadianceMap( std::ostream& o, const IRadianceMap* rm, Job& job )
 // IEmitter::averageRadiantExitance LOOKS cheap but RefreshAverages() ESTIMATES it by sampling the painter
 // via GlobalRNG (LambertianEmitter.cpp:47), so two parse paths that reach emitter construction with
 // different RNG states get different averages (it falsely flagged the gltf-import scenes); the deterministic
-// emittedRadiance() path needs an eval context. Painter colour and
+// emittedRadiance() path needs an eval context. A Hosek/procedural SKY global-rmap is a partial case: its
+// painter/scale/transform ARE dumped, but the painter is an internal unregistered adapter (reverse-names to
+// (unknown)) and its dome params (solar elevation/turbidity/albedo) need an eval context, so only those
+// dome params stay by-construction. Painter colour and
 // material scalar state are identical BY CONSTRUCTION (same Finalize) once the
 // param values match -- and the multi-token value path that feeds them is
 // covered END-TO-END here: an object's `position`/`scale` are multi-token
@@ -234,6 +237,7 @@ inline std::string DumpJob( Job& job )
 		if( fl ) { std::snprintf( fb, sizeof(fb), "  film=[%u x %u par=%.17g]", fl->GetWidth(), fl->GetHeight(), (double)fl->GetPixelAR() ); o << fb << "\n"; } else o << "  film=(none)\n";
 		const IRadianceMap* grm = scp ? scp->GetGlobalRadianceMap() : 0;
 		o << "  global_rmap="; if( grm ) DumpRadianceMap( o, grm, job ); else o << "(none)"; o << "\n";
+		o << "  active_camera=" << job.GetActiveCameraName() << "\n";   // last-add-wins; catches a camera-ORDER divergence the sorted cameras: section cannot
 	}
 	// --- lights + media (Phase B / 0b: close the F1 verification gap for the CHEAPLY-READABLE blind values).
 	// Lights have no manager names, so dump a value-tuple per light and SORT for a stable canonical order; a
