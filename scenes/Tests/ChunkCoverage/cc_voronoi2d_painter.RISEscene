@@ -1,0 +1,29 @@
+RISE ASCII SCENE 6
+# Coverage: voronoi2d_painter (inline `gen x y painter` generators + border).
+
+film
+{
+	width		64
+	height		64
+}
+
+uniformcolor_painter
+{
+	name		cc_white
+	color		1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name		cc_black
+	color		0.0 0.0 0.0
+}
+
+voronoi2d_painter
+{
+	name		cc_voronoi2d
+	border		cc_black
+	bordersize	0.0
+	gen		0.25 0.25 cc_white
+	gen		0.75 0.75 cc_black
+}

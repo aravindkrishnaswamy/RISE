@@ -1,0 +1,23 @@
+RISE ASCII SCENE 6
+# Coverage: channel_painter (extracts one channel from another painter).
+
+film
+{
+	width		64
+	height		64
+}
+
+uniformcolor_painter
+{
+	name		cc_src
+	color		0.8 0.4 0.2
+}
+
+channel_painter
+{
+	name		cc_channel
+	source		cc_src
+	channel		R
+	scale		1.0
+	bias		0.0
+}

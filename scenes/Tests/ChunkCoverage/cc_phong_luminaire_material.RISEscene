@@ -1,0 +1,41 @@
+RISE ASCII SCENE 6
+# Coverage: phong_luminaire_material (directional area-light material).
+
+film
+{
+	width		64
+	height		64
+}
+
+uniformcolor_painter
+{
+	name		cc_white
+	color		1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name		cc_gray
+	color		0.5 0.5 0.5
+}
+
+scalar_painter
+{
+	name		cc_N
+	value		16.0
+}
+
+lambertian_material
+{
+	name		cc_base
+	reflectance	cc_gray
+}
+
+phong_luminaire_material
+{
+	name		cc_phong_lum
+	material	cc_base
+	exitance	cc_white
+	N		cc_N
+	scale		10.0
+}

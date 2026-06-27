@@ -1,0 +1,21 @@
+RISE ASCII SCENE 6
+# Coverage: global_medium CHUNK (v7 form of `> set global_medium`).
+
+film
+{
+	width		64
+	height		64
+}
+
+homogeneous_medium
+{
+	name		cc_fog
+	absorption	0.01 0.01 0.01
+	scattering	0.02 0.02 0.02
+	phase		isotropic
+}
+
+global_medium
+{
+	medium		cc_fog
+}

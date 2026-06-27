@@ -1,0 +1,13 @@
+RISE ASCII SCENE 6
+# Coverage: global_spectral_gather (global photon gather params, spectral).
+
+film
+{
+	width		64
+	height		64
+}
+
+global_spectral_gather
+{
+	radius		1.0
+}

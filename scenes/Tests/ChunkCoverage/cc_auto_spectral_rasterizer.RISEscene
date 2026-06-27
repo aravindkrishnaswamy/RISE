@@ -1,0 +1,20 @@
+RISE ASCII SCENE 6
+# Coverage: auto_spectral_rasterizer (spectral auto-routing dispatcher).
+
+film
+{
+	width		64
+	height		64
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+auto_spectral_rasterizer
+{
+	samples		4
+	integrator	pt
+}

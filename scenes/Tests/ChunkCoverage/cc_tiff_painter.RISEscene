@@ -1,0 +1,14 @@
+RISE ASCII SCENE 6
+# Coverage: tiff_painter (loads a tiny 2x2 baseline TIFF asset).
+
+film
+{
+	width		64
+	height		64
+}
+
+tiff_painter
+{
+	name		cc_tiff
+	file		scenes/Tests/ChunkCoverage/assets/tiny.tiff
+}

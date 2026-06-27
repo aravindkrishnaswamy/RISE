@@ -1,0 +1,14 @@
+RISE ASCII SCENE 6
+# Coverage: exr_painter (loads a tiny 2x2 OpenEXR asset).
+
+film
+{
+	width		64
+	height		64
+}
+
+exr_painter
+{
+	name		cc_exr
+	file		scenes/Tests/ChunkCoverage/assets/tiny.exr
+}

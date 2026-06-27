@@ -1,0 +1,22 @@
+RISE ASCII SCENE 6
+# Coverage: function2d_painter (wraps a named IFunction2D as greyscale colour).
+
+film
+{
+	width		64
+	height		64
+}
+
+expression_function2d
+{
+	name		cc_fn2d
+	expr		u*v
+}
+
+function2d_painter
+{
+	name		cc_func2d_painter
+	function2d	cc_fn2d
+	scale		1.0
+	bias		0.0
+}

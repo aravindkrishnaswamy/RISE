@@ -1,0 +1,14 @@
+RISE ASCII SCENE 6
+# Coverage: datadriven_material (RISE data-driven BSDF loaded from a tiny .bdf asset).
+
+film
+{
+	width		64
+	height		64
+}
+
+datadriven_material
+{
+	name		cc_datadriven
+	filename	scenes/Tests/ChunkCoverage/assets/tiny.bdf
+}

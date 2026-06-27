@@ -1,0 +1,40 @@
+RISE ASCII SCENE 6
+# Coverage: override_object (transform override of an already-declared object).
+
+film
+{
+	width		64
+	height		64
+}
+
+uniformcolor_painter
+{
+	name		cc_gray
+	color		0.5 0.5 0.5
+}
+
+lambertian_material
+{
+	name		cc_base
+	reflectance	cc_gray
+}
+
+sphere_geometry
+{
+	name		cc_sph
+	radius		1.0
+}
+
+standard_object
+{
+	name		cc_obj
+	geometry	cc_sph
+	material	cc_base
+	position	0 0 0
+}
+
+override_object
+{
+	name		cc_obj
+	position	3 2 1
+}

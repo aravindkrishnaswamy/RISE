@@ -1,0 +1,21 @@
+RISE ASCII SCENE 6
+# Coverage: alpha_test_shaderop (cutout-alpha shader op).
+
+film
+{
+	width		64
+	height		64
+}
+
+uniformcolor_painter
+{
+	name		cc_white
+	color		1.0 1.0 1.0
+}
+
+alpha_test_shaderop
+{
+	name		cc_alphatest
+	alpha		cc_white
+	cutoff		0.5
+}

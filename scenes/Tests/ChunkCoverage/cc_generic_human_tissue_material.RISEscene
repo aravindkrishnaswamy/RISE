@@ -1,0 +1,32 @@
+RISE ASCII SCENE 6
+# Coverage: generic_human_tissue_material (parametric tissue scattering).
+
+film
+{
+	width		64
+	height		64
+}
+
+scalar_painter
+{
+	name		cc_sca
+	value		0.85
+}
+
+scalar_painter
+{
+	name		cc_g
+	value		0.0
+}
+
+generic_human_tissue_material
+{
+	name		cc_tissue
+	sca		cc_sca
+	g		cc_g
+	whole_blood	0.012
+	hb_ratio	0.75
+	bilirubin_concentration	0.05
+	betacarotene_concentration	7.0e-5
+	diffuse		TRUE
+}

@@ -1,0 +1,13 @@
+RISE ASCII SCENE 6
+# Coverage: shadow_photonmap (shadow photon-map / visibility cache).
+
+film
+{
+	width		64
+	height		64
+}
+
+shadow_photonmap
+{
+	num		1000
+}

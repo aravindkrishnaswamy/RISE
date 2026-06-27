@@ -1,0 +1,18 @@
+RISE ASCII SCENE 6
+# Coverage: onb_pinhole_camera (ONB-oriented pinhole camera).
+
+film
+{
+	width		64
+	height		64
+}
+
+onb_pinhole_camera
+{
+	name		cc_onbcam
+	location	0 0 -10
+	va		1 0 0
+	vb		0 1 0
+	components	UV
+	fov		30.0
+}

@@ -1,0 +1,14 @@
+RISE ASCII SCENE 6
+# Coverage: 3dsmesh_geometry (triangle mesh from a tiny one-triangle .3ds asset).
+
+film
+{
+	width		64
+	height		64
+}
+
+3dsmesh_geometry
+{
+	name		cc_3ds
+	file		scenes/Tests/ChunkCoverage/assets/tiny.3ds
+}

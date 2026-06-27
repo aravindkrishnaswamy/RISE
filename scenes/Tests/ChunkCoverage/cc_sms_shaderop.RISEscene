@@ -1,0 +1,17 @@
+RISE ASCII SCENE 6
+# Coverage: sms_shaderop (Specular Manifold Sampling shader op).
+
+film
+{
+	width		64
+	height		64
+}
+
+sms_shaderop
+{
+	name		cc_sms
+	max_iterations	20
+	threshold	1e-5
+	max_chain_depth	10
+	biased		TRUE
+}

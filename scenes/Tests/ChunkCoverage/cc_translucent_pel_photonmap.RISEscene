@@ -1,0 +1,13 @@
+RISE ASCII SCENE 6
+# Coverage: translucent_pel_photonmap (translucent photon-map generation, RGB).
+
+film
+{
+	width		64
+	height		64
+}
+
+translucent_pel_photonmap
+{
+	num		1000
+}

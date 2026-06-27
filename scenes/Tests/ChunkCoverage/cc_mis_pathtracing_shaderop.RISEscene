@@ -1,0 +1,13 @@
+RISE ASCII SCENE 6
+# Coverage: mis_pathtracing_shaderop (legacy alias of pathtracing_shaderop, same parser).
+
+film
+{
+	width		64
+	height		64
+}
+
+mis_pathtracing_shaderop
+{
+	name		cc_mispt
+}

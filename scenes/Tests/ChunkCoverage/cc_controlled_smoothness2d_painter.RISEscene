@@ -1,0 +1,31 @@
+RISE ASCII SCENE 6
+# Coverage: controlled_smoothness2d_painter (radial bump test painter).
+
+film
+{
+	width		64
+	height		64
+}
+
+uniformcolor_painter
+{
+	name		cc_white
+	color		1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name		cc_black
+	color		0.0 0.0 0.0
+}
+
+controlled_smoothness2d_painter
+{
+	name		cc_csmooth
+	colora		cc_black
+	colorb		cc_white
+	center		0.5 0.5 0
+	radius		0.5
+	amplitude	1.0
+	smoothness	3
+}
