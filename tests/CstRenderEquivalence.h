@@ -168,7 +168,7 @@ inline void DumpRadianceMap( std::ostream& o, const IRadianceMap* rm, Job& job )
 // different RNG states get different averages (it falsely flagged the gltf-import scenes); the deterministic
 // emittedRadiance() path needs an eval context. A Hosek/procedural SKY global-rmap is a partial case: its
 // painter/scale/transform ARE dumped, but the painter is an internal unregistered adapter (reverse-names to
-// (unknown)) and its dome params (solar elevation/turbidity/albedo) need an eval context, so only those
+// (unknown)) and its dome params (solar elevation/azimuth, turbidity, ground albedo) need an eval context, so only those
 // dome params stay by-construction. Painter colour and
 // material scalar state are identical BY CONSTRUCTION (same Finalize) once the
 // param values match -- and the multi-token value path that feeds them is
