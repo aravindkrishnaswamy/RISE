@@ -195,7 +195,10 @@ e49908c8.
 - **0d grammar (D-1 = fold-all)**: ratified. The migrator already constant-folds `$()`/DEFINE/FOR/`hal()` to
   literals and flattens includes; NO dynamic forms (`let`/`expr`/`halton`) for the corpus (the v6 originals
   in git history are the authoritative source until P8). The migrated output KEEPS the `RISE ASCII SCENE 6`
-  header (verified) → it is DUAL-READABLE (valid v6 AND CST-derivable). The `RISE ASCII SCENE 7` header is
+  header (verified) → it is DUAL-READABLE (valid v6 AND CST-derivable).  Inlined sub-file
+  (.RISEscript/.RISEscene) version headers are STRIPPED during flattening (StripVersionHeader) so no stray
+  `RISE ASCII SCRIPT N` survives in the scene body — without that, the ~220 scenes that `> run
+  scenes/colors.RISEscript` would fail the legacy v6 reader (a stray header = unknown chunk). The `RISE ASCII SCENE 7` header is
   the Phase-D PATH SELECTOR; the migrator does not emit it today.
 
 ### Phase C/D — the gated decision point (this REVISES D-3's "do A-B-C now")

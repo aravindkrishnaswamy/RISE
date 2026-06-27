@@ -6,11 +6,12 @@
 // GATE and the migration TOOL (tools/MigrateScenesV6toV7) share ONE migrator -- byte-identical by
 // construction.  Phase A of docs/agentic-redesign/61-v6v7-parser-cutover-execution-plan.md.
 //
-// Header-local `static` functions + state: each translation unit that includes this (the gate, the tool --
-// separate executables) gets its own copy + its own g_migratorHalton.  That is correct: each PROCESS
-// accumulates the Halton sequence in its own scene order, mirroring the legacy parser's file-static `mh`.
-// INVARIANT: include this into at most ONE translation unit per executable -- two includers linked into the
-// same binary would each get an independent g_migratorHalton, silently diverging their hal() folds.
+// Header-local `static` functions + state: each translation unit that includes this gets its own copy +
+// its own g_migratorHalton.  Migrate() Reset()s g_migratorHalton at the start of every top-level scene (see
+// its decl below), so each scene's hal() folds from a FRESH sequence -- Migrate() is a PURE function of its
+// input, independent of what was migrated earlier in the process.  INVARIANT: include this into at most ONE
+// translation unit per executable (the gate + the tool are separate binaries).  A duplicate copy is harmless
+// to correctness now (the per-scene Reset makes each fold self-contained) but wastes the static state.
 #include <string>
 #include <vector>
 #include <map>
