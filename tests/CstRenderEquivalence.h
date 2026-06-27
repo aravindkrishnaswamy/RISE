@@ -44,6 +44,8 @@
 #include "../src/Library/Interfaces/IPhaseFunction.h"
 #include "../src/Library/Interfaces/IScene.h"
 #include "../src/Library/Interfaces/IScenePriv.h"
+#include "../src/Library/Interfaces/IRadianceMap.h"
+#include "../src/Library/Interfaces/IFilm.h"
 #include "../src/Library/Interfaces/IEnumCallback.h"
 #include "../src/Library/Utilities/BoundingBox.h"
 
@@ -115,6 +117,26 @@ inline void DumpMedium( std::ostream& o, const IMedium* m )
 	}
 }
 
+// Reverse-lookup a medium pointer to its registered name (media use Job::GetMedium/EnumerateMediumNames,
+// not a GenericManager, so this mirrors ReverseName for that surface). Used by global= and interior_medium.
+inline std::string ReverseMediumName( Job& job, const IMedium* m )
+{
+	if( !m ) return "(none)";
+	NameCollector c; job.EnumerateMediumNames( c ); std::sort( c.names.begin(), c.names.end() );
+	for( const auto& n : c.names ) if( job.GetMedium( n.c_str() ) == m ) return n;
+	return "(unnamed)";
+}
+// Dump a radiance map's cheaply-readable state: bound painter (reverse-named), scale, and the full 4x4
+// transform (encodes radiance_orient). Shared by the scene global_rmap and per-object radiance_map.
+inline void DumpRadianceMap( std::ostream& o, const IRadianceMap* rm, Job& job )
+{
+	o << "painter=" << ReverseName( job.GetPainters(), &rm->GetPainter() );
+	const Matrix4& t = rm->GetTransform(); char b[640];
+	std::snprintf( b, sizeof(b), " scale=%.17g xform=[%.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g]",
+		(double)rm->GetScale(), (double)t._00,(double)t._01,(double)t._02,(double)t._03, (double)t._10,(double)t._11,(double)t._12,(double)t._13,
+		(double)t._20,(double)t._21,(double)t._22,(double)t._23, (double)t._30,(double)t._31,(double)t._32,(double)t._33 ); o << b;
+}
+
 // Canonical structural dump of a Job -- the equivalence metric. Two parse paths
 // that yield the same dump produce the same scene (hence the same render). Sorted
 // per manager for stability. Numeric fields use LOSSLESS %.17g (exactly
@@ -134,13 +156,17 @@ inline void DumpMedium( std::ostream& o, const IMedium* m )
 // world-space bounding box (encodes position / scale / geometry size) -- and the
 // chunk set/order always. (A value that reaches no cheaply-readable interface field -- material IOR, camera
 // intrinsics, the accelerator choice, the light-RR threshold -- is not surfaced here; those stay covered by
-// the by-construction argument below + a Phase-B render spot-check (docs/agentic-redesign/61-...). DELTA-light
-// (ILight) power/photons AND medium coefficients + phase-g + placement ARE now surfaced directly (the
-// lights:/media: sections at the end), because they ARE cheaply readable (ILight::emission*/radiantExitance/
-// CanGeneratePhotons; IMedium::GetCoefficients/GetMeanCosine/GetBoundingBox), so a CST divergence in those
-// is caught here, not merely argued. (AREA-light / luminaire-material emission stays by-construction -- it
-// reaches no cheaply-readable field, like material IOR; a heterogeneous medium's spatial field beyond the
-// one bbox-centre sample likewise stays by-construction.) Painter colour and
+// the by-construction argument below + a Phase-B render spot-check (docs/agentic-redesign/61-...). The
+// cheaply-readable, render-discriminating values ARE now surfaced DIRECTLY (caught here, not merely argued):
+// DELTA-light (ILight) power/photons; medium coefficients + phase-g + placement; per-object radiance-map
+// (painter/scale/transform) + interior-medium name; the scene global radiance map + film dims. What STAYS
+// by-construction (no cheaply + DETERMINISTICALLY readable Job field -> the render spot-check): material IOR,
+// camera intrinsics, the accelerator, the RR threshold, rasterizer flags (radiance_background), a
+// heterogeneous medium's spatial field beyond the bbox-centre sample, AND area-light/luminaire emission --
+// IEmitter::averageRadiantExitance LOOKS cheap but RefreshAverages() ESTIMATES it by sampling the painter
+// via GlobalRNG (LambertianEmitter.cpp:47), so two parse paths that reach emitter construction with
+// different RNG states get different averages (it falsely flagged the gltf-import scenes); the deterministic
+// emittedRadiance() path needs an eval context. Painter colour and
 // material scalar state are identical BY CONSTRUCTION (same Finalize) once the
 // param values match -- and the multi-token value path that feeds them is
 // covered END-TO-END here: an object's `position`/`scale` are multi-token
@@ -171,8 +197,8 @@ inline std::string DumpJob( Job& job )
 			o << " material=" << ReverseName( job.GetMaterials(),  ob->GetMaterial() );
 			o << " modifier=" << ReverseName( job.GetModifiers(), ob->GetModifier() );
 			o << " shader=" << ReverseName( job.GetShaders(), ob->GetShader() );
-			o << " radiance_map=" << ( ob->GetRadianceMap() ? "set" : "(none)" );
-			o << " interior_medium=" << ( ob->GetInteriorMedium() ? "set" : "(none)" );
+			o << " radiance_map="; if( ob->GetRadianceMap() ) DumpRadianceMap( o, ob->GetRadianceMap(), job ); else o << "(none)";
+			o << " interior_medium=" << ReverseMediumName( job, ob->GetInteriorMedium() );
 			o << " visible=" << ( ob->IsWorldVisible() ? "1" : "0" );
 			BoundingBox bb = ob->getBoundingBox();
 			char b[160];
@@ -201,10 +227,18 @@ inline std::string DumpJob( Job& job )
 		if( c ) { Point3 p = c->GetLocation(); char b[96]; std::snprintf( b, sizeof(b), " loc=[%.17g %.17g %.17g]", (double)p.x, (double)p.y, (double)p.z ); o << b; }
 		o << "\n";
 	}
+	// --- scene singletons reachable via job.GetScene() (audit-by-bug-pattern: the global-medium sibling set).
+	o << "scene:\n";
+	{
+		IScenePriv* scp = job.GetScene(); const IFilm* fl = scp ? scp->GetFilm() : 0; char fb[96];
+		if( fl ) { std::snprintf( fb, sizeof(fb), "  film=[%u x %u par=%.17g]", fl->GetWidth(), fl->GetHeight(), (double)fl->GetPixelAR() ); o << fb << "\n"; } else o << "  film=(none)\n";
+		const IRadianceMap* grm = scp ? scp->GetGlobalRadianceMap() : 0;
+		o << "  global_rmap="; if( grm ) DumpRadianceMap( o, grm, job ); else o << "(none)"; o << "\n";
+	}
 	// --- lights + media (Phase B / 0b: close the F1 verification gap for the CHEAPLY-READABLE blind values).
 	// Lights have no manager names, so dump a value-tuple per light and SORT for a stable canonical order; a
 	// CST divergence in any light value (power/colour/position/cone) reorders or changes a row. Media dump the
-	// global medium identity + per-medium coefficients at the origin (homogeneous media ignore the point).
+	// global medium identity + per-medium state via DumpMedium (coefficients at the bbox centre, phase-g, placement).
 	o << "lights:\n";
 	{
 		std::vector<std::string> rows;
@@ -232,10 +266,8 @@ inline std::string DumpJob( Job& job )
 	o << "media:\n";
 	{
 		IScenePriv* sc = job.GetScene(); const IMedium* gm = sc ? sc->GetGlobalMedium() : 0;
+		o << "  global=" << ReverseMediumName( job, gm ); if( gm ) DumpMedium( o, gm ); o << "\n";
 		NameCollector mns; job.EnumerateMediumNames( mns ); std::sort( mns.names.begin(), mns.names.end() );
-		std::string gname = "(none)";
-		if( gm ) { gname = "(unnamed)"; for( const auto& nm : mns.names ) if( job.GetMedium( nm.c_str() ) == gm ) { gname = nm; break; } }
-		o << "  global=" << gname; if( gm ) DumpMedium( o, gm ); o << "\n";
 		for( const auto& n : mns.names ) {
 			o << "  " << n; const IMedium* m = job.GetMedium( n.c_str() ); if( m ) DumpMedium( o, m ); o << "\n";
 		}
