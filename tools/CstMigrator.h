@@ -10,7 +10,7 @@
 // its own g_migratorHalton.  Migrate() Reset()s g_migratorHalton at the start of every top-level scene (see
 // its decl below), so each scene's hal() folds from a FRESH sequence -- Migrate() is a PURE function of its
 // input, independent of what was migrated earlier in the process.  INVARIANT: include this into at most ONE
-// translation unit per executable (the gate + the tool are separate binaries).  A duplicate copy is harmless
+// translation unit per executable (the corpus gate, the render-equivalence test, and the migrate tool are each a separate binary).  A duplicate copy is harmless
 // to correctness now (the per-scene Reset makes each fold self-contained) but wastes the static state.
 #include <string>
 #include <vector>

@@ -26,7 +26,7 @@ The migrator + the render-equivalence harness (§3.6) are built and green:
   global_medium` → `global_medium{}` chunk + **`hal()` folded** via a process-global
   `MultiHalton` mirroring legacy.
 - **The gate**: `legacy(v6)` DumpJob **≡** `CST(migrate(v6))` DumpJob over the corpus
-  → **347 MATCH, 2 ACCEPTED** (the user-ratified `sss` energy-conservation
+  → **372 MATCH, 2 ACCEPTED** (the user-ratified `sss` energy-conservation
   divergences), **0 unexpected**, 27 LEGACY-FAIL (media-missing, need a machine with
   the assets). Plus a global_medium **pixel** gate (mean-luminance).
 
@@ -44,7 +44,7 @@ geometry/material/painter/object/camera **structure** (reference wiring, world b
 names, chunk set/order) but is **blind to any value that reaches no dumped field** —
 explicitly: **material IOR, light power, camera intrinsics** (sensor/focal/fstop,
 not on `ICamera`), and (per memory) **accelerator, light-RR threshold, the global
-medium** (the last pixel-verified separately). So "347 MATCH" proves the CST derives
+medium** (the last pixel-verified separately). So "372 MATCH" proves the CST derives
 the same *structure*, **not** that the rendered image is identical. **Trusting the
 CST as the runtime parser requires closing this** (see Phase 1).
 
