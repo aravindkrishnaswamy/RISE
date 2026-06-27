@@ -34,6 +34,7 @@
 #include "../src/Library/Interfaces/IGeometryManager.h"
 #include "../src/Library/Interfaces/IMaterial.h"
 #include "../src/Library/Interfaces/IMaterialManager.h"
+#include "../src/Library/Interfaces/IEmitter.h"
 #include "../src/Library/Interfaces/IPainterManager.h"
 #include "../src/Library/Interfaces/IObject.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
@@ -158,15 +159,14 @@ inline void DumpRadianceMap( std::ostream& o, const IRadianceMap* rm, Job& job )
 // intrinsics, the accelerator choice, the light-RR threshold -- is not surfaced here; those stay covered by
 // the by-construction argument below + a Phase-B render spot-check (docs/agentic-redesign/61-...). The
 // cheaply-readable, render-discriminating values ARE now surfaced DIRECTLY (caught here, not merely argued):
-// DELTA-light (ILight) power/photons; medium coefficients + phase-g + placement; per-object radiance-map
-// (painter/scale/transform) + interior-medium name; the scene global radiance map + film dims. What STAYS
-// by-construction (no cheaply + DETERMINISTICALLY readable Job field -> the render spot-check): material IOR,
-// camera intrinsics, the accelerator, the RR threshold, rasterizer flags (radiance_background), a
-// heterogeneous medium's spatial field beyond the bbox-centre sample, AND area-light/luminaire emission --
-// IEmitter::averageRadiantExitance LOOKS cheap but RefreshAverages() ESTIMATES it by sampling the painter
-// via GlobalRNG (LambertianEmitter.cpp:47), so two parse paths that reach emitter construction with
-// different RNG states get different averages (it falsely flagged the gltf-import scenes); the deterministic
-// emittedRadiance() path needs an eval context. A Hosek/procedural SKY global-rmap is a partial case: its
+// DELTA-light (ILight) power/photons; AREA-light luminaire-material emitter exitance (IMaterial::GetEmitter
+// ->averageRadiantExitance -- now DETERMINISTIC since the RefreshAverages stratified-grid fix; it formerly
+// sampled the painter via GlobalRNG at construction and falsely flagged the gltf-import scenes); medium
+// coefficients + phase-g + placement; per-object radiance-map (painter/scale/transform) + interior-medium
+// name; the scene global radiance map + film dims. What STAYS by-construction (no cheaply + DETERMINISTICALLY
+// readable Job field -> the render spot-check): material IOR, camera intrinsics, the accelerator, the RR
+// threshold, rasterizer flags (radiance_background), a heterogeneous medium's spatial field beyond the
+// bbox-centre sample. A Hosek/procedural SKY global-rmap is a partial case: its
 // painter/scale/transform ARE dumped, but the painter is an internal unregistered adapter (reverse-names to
 // (unknown)) and its dome params (solar elevation/azimuth, turbidity, ground albedo) need an eval context, so only those
 // dome params stay by-construction. Painter colour and
@@ -189,7 +189,12 @@ inline std::string DumpJob( Job& job )
 		if( g ) { Point3 c; Scalar r = 0; g->GenerateBoundingSphere( c, r ); char b[64]; std::snprintf( b, sizeof(b), " bsphere=%.17g", (double)r ); o << b; }
 		o << "\n";
 	}
-	o << "materials:\n"; for( const auto& n : SortedNames( job.GetMaterials() ) ) o << "  " << n << "\n";
+	o << "materials:\n";
+	for( const auto& n : SortedNames( job.GetMaterials() ) ) {
+		o << "  " << n; IMaterial* mat = job.GetMaterials() ? job.GetMaterials()->GetItem( n.c_str() ) : 0;
+		if( mat && mat->GetEmitter() ) { const RISEPel e = mat->GetEmitter()->averageRadiantExitance(); char eb[96]; std::snprintf( eb, sizeof(eb), " emitter=[%.17g %.17g %.17g]", (double)e.r,(double)e.g,(double)e.b ); o << eb; }
+		o << "\n";
+	}
 	o << "painters:\n";  for( const auto& n : SortedNames( job.GetPainters()  ) ) o << "  " << n << "\n";
 	o << "objects:\n";
 	for( const auto& n : SortedNames( job.GetObjects() ) ) {
