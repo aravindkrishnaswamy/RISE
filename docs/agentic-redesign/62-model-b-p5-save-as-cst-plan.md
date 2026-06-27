@@ -70,37 +70,47 @@ So the hard algorithmic parts are done. **What's missing is wiring + provenance*
   complete than `ROUND_TRIP_SAVE_PLAN.md`'s stale "design-pending" header claims — but that's moot, it's
   replaced.)
 
-## 3. Proposed slices (reversible until the corpus convert)
+## 3. Proposed slices (D1 = full upfront convert; reversible — SCENE-6 dual-readable + git — until the v6-delete)
 
 - **Slice 0 — down-payment (no live change).** (a) the G5 fidelity test (edit → `SerializeCst` minimal-diff,
   preserving comments / layout around the edit); (b) a CST-canonical *session harness* in a test:
   `text → Migrate → ParseToCst → retain Document → DeriveToJob → assert Scene == legacy-parsed Scene` (reuse
   the corpus gate's DumpJob oracle). Proves G1 end-to-end + pins fidelity, touching nothing live. *Low risk;
   the de-risking step.*
-- **Slice 1 — load retains the CST (flagged, additive).** `Job::LoadAsciiScene` optionally builds + retains
-  a `Document` (migrate-on-load → `ParseToCst` → `DeriveToJob`); Scene = derive(CST); the legacy load stays
-  the default. Corpus-gate-verified to produce an identical Scene.
-- **Slice 2 — edits → CST patches (flagged).** In CST mode, retarget `SceneEditor::Apply`: a property edit →
+- **Slice 1 — load via the CST (flagged, additive).** `Job::LoadAsciiScene` optionally builds + retains a
+  `Document` (Migrate-in-memory → `ParseToCst` → `DeriveToJob`); Scene = derive(CST); the legacy load stays
+  the default. Corpus-gate-verified identical Scene. Enables the convert (the runtime can read a CST scene)
+  without yet touching the on-disk corpus.
+- **Slice 2 — FULL CORPUS CONVERT (D1).** Run `tools/MigrateScenesV6toV7` over the ENTIRE corpus as one
+  deliberate batch → the **SCENE-6 fold-all dual-readable** form (both the legacy runtime and the CST read
+  it). Resolve the convert TAIL here: the 2 `sss` energy-conservation divergences + the 27 media-missing
+  legacy-fails (on a machine with the assets). git history keeps the authored originals. *The big diff, but
+  reversible (dual-readable + git).*
+- **Slice 3 — edits → CST patches (flagged).** Retarget `SceneEditor::Apply`: a property edit →
   `DocSetParamValue` → `DeriveToJobIncremental` → Scene; undo = CST versions; animated / `instance_array`
-  docs → full-re-derive fallback (F-P5.2). *The bulk + the highest-risk slice — the edit-model pivot.*
-- **Slice 3 — save = SerializeCst (flagged).** In CST mode, `RequestSave` → `SerializeCst(head)` + D17; the
+  docs → the full-re-derive fallback (D2). *The bulk + the highest-risk slice — the edit-model pivot.*
+- **Slice 4 — save = SerializeCst (flagged).** In CST mode, `RequestSave` → `SerializeCst(head)` + D17; the
   byte-splice path is bypassed. Verify against the G5 fidelity test + the existing save-test suite.
-- **Slice 4 — Phase C: convert the corpus to v7.** `tools/MigrateScenesV6toV7` converts on disk;
-  `RISE ASCII SCENE 6` → `7`; gated on the Slice-1 dual-path accepting a `SCENE 7` header. *The first
-  irreversible-ish step (the on-disk format changes).*
-- **Slice 5 — Phase D/E: flip the default + drop the coupling.** CST-load becomes the default; delete the
-  `SaveEngine` byte-splice + `SourceSpanIndex` / `OverrideSpanIndex` + the editor's `AsciiSceneParser`
-  dependency (F3 severed).
-- **Slice 6 — P8/F: delete the v6 reader.** Once every load is CST-native.
+- **Slice 5 — flip the default + drop the coupling.** CST-load becomes the default; delete the `SaveEngine`
+  byte-splice + `SourceSpanIndex` / `OverrideSpanIndex` + the editor's `AsciiSceneParser` dependency (F3 severed).
+- **Slice 6 — delete the v6 reader (P8) + the `SCENE 6`→`7` header bump.** Once every load is CST-native.
 
 ## 4. Decisions for ratification
 
-- **D1 — migrate-on-load vs convert-corpus-first.** Recommend **migrate-on-load** behind the Slice-1 flag
-  for development (open any v6 scene as CST), then the Slice-4 corpus convert once the editor path is proven.
-  Caveat to surface in the UI: a v6 scene opened + saved in CST mode becomes v7 (a format change).
-- **D2 — animated / `instance_array` scenes → full-re-derive fallback** (recommended) vs extending the static
-  reference graph to dynamic refs (much larger). Full re-derive always works; the incremental path stays the
-  fast path for static scenes.
+- **D1 — RATIFIED (2026-06-27): full corpus convert, not migrate-on-load.** Convert the WHOLE corpus to the
+  canonical fold-all form as one deliberate upfront batch (Slice 2) — every scene natively CST-editable, no
+  per-scene surprises later. Target the **SCENE-6 fold-all dual-readable** form (both runtimes read it →
+  the dual-path stays reversible); the cosmetic `SCENE 6`→`7` bump rides the v6-delete (Slice 6). Trade-off:
+  the convert FLATTENS authored `FOR`/macros/includes into verbose canonical text (the Model-B "text is the
+  compiled view" premise; git history keeps the authored originals). "No surprises" also means resolving the
+  convert TAIL up front (the 2 `sss` divergences + the 27 media-missing legacy-fails).
+- **D2 — RATIFIED: full-re-derive fallback** for animated / `instance_array` scenes. MEASURED (CstEditCostTest,
+  this machine): a full re-derive is ~2 ms @ ~1k chunks, ~9 ms @ ~4k, ~38 ms @ ~16k (O(N log N)); the
+  incremental path is ~5 µs, flat. In absolute terms that is low-single-digit ms for realistic scenes (a hero
+  is tens-to-low-hundreds of chunks; Sponza ~600) — within the ~16 ms/edit interactive frame budget up to ~4k
+  chunks. Only a very large (>~8k-chunk) animated scene would lag a CONTINUOUS gizmo drag on the derive alone,
+  which a debounce (re-derive on drag-RELEASE, not per-frame) fully mitigates. So the fallback is the default;
+  extending the static graph to dynamic refs is NOT justified (large effort for a sub-frame saving).
 - **D3 — accept the minimal-diff fidelity behavior** (F-P5.3): the edited value re-tokenizes single-spaced;
   everything else verbatim.
 - **D4 — scope = the C + D + P5 bundle** (forced by F-P5.1) — one workstream, not save-only.
@@ -110,7 +120,7 @@ So the hard algorithmic parts are done. **What's missing is wiring + provenance*
 
 ## 5. Gating + size
 
-P5 unblocks Phase E (flip the default) + Phase F / P8 (delete the v6 reader). **Size: multi-week** — Slice 2
+P5 unblocks Phase E (flip the default) + Phase F / P8 (delete the v6 reader). **Size: multi-week** — Slice 3
 (the edit-model pivot: retargeting `SceneEditor::Apply` + undo + introspection from the live Scene to the CST)
 is the bulk and the risk; Slices 0–1 are a low-risk down-payment that proves readiness end-to-end. Every slice
-is reversible (flagged) until Slice 4 (the corpus convert).
+is reversible (flagged) until the v6-delete (the convert is SCENE-6 dual-readable, git-reversible).
