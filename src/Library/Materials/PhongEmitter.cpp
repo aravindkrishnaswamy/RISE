@@ -41,8 +41,12 @@ void PhongEmitter::RefreshAverages()
 
 	// Sample the texture space of the radiance exitance to compute the average radiant exitance
 	RayIntersectionGeometric rig( Ray(), nullRasterizerState );
-	for( int i=0; i<100; i++ ) {
-		rig.ptCoord = Point2( GlobalRNG().CanonicalRandom(), GlobalRNG().CanonicalRandom() );
+	// Deterministic 10x10 stratified UV grid (cell centres), NOT 100 GlobalRNG samples: reproducible and
+	// consumes no render-RNG at parse (this runs at emitter construction). It feeds only a light-importance
+	// weight, so the converged render is unchanged -- a grid is also a lower-variance estimate of the same
+	// painter average.
+	for( int gy=0; gy<10; gy++ ) for( int gx=0; gx<10; gx++ ) {
+		rig.ptCoord = Point2( (Scalar(gx)+Scalar(0.5))/Scalar(10), (Scalar(gy)+Scalar(0.5))/Scalar(10) );
 		averageRadEx = averageRadEx + pRadEx->GetColor(rig);
 		averageSpectrum = averageSpectrum + pRadEx->GetSpectrum(rig);
 	}

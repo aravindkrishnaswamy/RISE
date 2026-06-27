@@ -16,7 +16,6 @@
 #include "CompositeEmitter.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/GeometricUtilities.h"
-#include "../Utilities/RandomNumbers.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -45,8 +44,12 @@ CompositeEmitter::CompositeEmitter(
 	// Sample extinction over texture space to get an average
 	RISEPel avgExtinction;
 	RayIntersectionGeometric rig( Ray(), nullRasterizerState );
-	for( int i=0; i<100; i++ ) {
-		rig.ptCoord = Point2( GlobalRNG().CanonicalRandom(), GlobalRNG().CanonicalRandom() );
+	// Deterministic 10x10 stratified UV grid (cell centres), NOT 100 GlobalRNG samples: reproducible and
+	// consumes no render-RNG at parse (this runs at emitter construction). It feeds only a light-importance
+	// weight, so the converged render is unchanged -- a grid is also a lower-variance estimate of the same
+	// painter average.
+	for( int gy=0; gy<10; gy++ ) for( int gx=0; gx<10; gx++ ) {
+		rig.ptCoord = Point2( (Scalar(gx)+Scalar(0.5))/Scalar(10), (Scalar(gy)+Scalar(0.5))/Scalar(10) );
 		avgExtinction = avgExtinction + extinction_.GetColor(rig);
 	}
 	avgExtinction = avgExtinction * (1.0/100.0);
