@@ -155,3 +155,61 @@ If approved: **Phase A** (extract `Migrate()` to a shared header + a real
 win, unblocks Phases B/C, and changes no runtime behavior. Phases B–F follow the gates
 above; Phase D (runtime pivot) and Phase F (v6 delete) are the decision points (D-3,
 and P5 readiness).
+
+---
+
+## 7. Execution status (2026-06-26) — Phases A + B DONE; C/D is the gated decision point
+
+Phases A and B are complete on `feature/gui-snapshot-prototype` (unpushed), each driven through the
+implementation-review-loop to zero P1s.
+
+### Phase A — the migrator as a first-class tool (0a) ✓
+`Migrate()` + helpers extracted to `tools/CstMigrator.h`, shared by the gate and a real
+`tools/MigrateScenesV6toV7` executable (byte-identical by construction). Commits b4118667 / 909fff22 /
+e49908c8.
+
+### Phase B — verification gap (0b) + chunk audit (0c) + grammar (0d) ✓
+- **0b structural oracle**: `DumpJob` extended past structure to every cheaply + DETERMINISTICALLY readable
+  value — lights (power/colour/cone/photons), media (coefficients + phase-g + bbox-centre + placement +
+  named global medium), the scene singletons (film, global radiance map, active camera), per-object
+  radiance-map (painter/scale/transform) + interior-medium name, and the luminaire emitter exitance. The
+  corpus gate held at MATCH throughout. A measurement-artifact was caught + fixed mid-stream:
+  `IEmitter::averageRadiantExitance` was GlobalRNG-estimated at parse (`LambertianEmitter::RefreshAverages`),
+  so it false-flagged the gltf scenes; fixed to a deterministic stratified grid (08db3d71), then the emitter
+  row was re-enabled (94689f66) — the gltf scenes that diverged 20-180x now MATCH bit-exactly. Commits
+  eace7535..94689f66.
+- **0b render spot-check** (closes R-V1): the two fields with no readable surface — material IOR + camera
+  intrinsics — are covered by the same-`Finalize` by-construction argument; `tests/CstRenderPixelEquivalence
+  Test.cpp` CONFIRMS it by rendering the legacy-Job vs the CST-Job and comparing PER-CHANNEL mean luminance.
+  11+ scenes across PT/BDPT/photon-mapping + RGB/spectral (incl. a glass-dominant scene + spectral-dispersive
+  caustic): per-channel maxrel 0.0000-0.0111, all under 3%. So the CST derives IOR/intrinsics identically to
+  legacy. Commits cb5ddeba / 65f3254e. (The CST DROPS `> set light_rr_threshold` — a known gap — but RR is
+  unbiased, so the drop is render-mean-neutral; the threshold itself is a Phase-D dual-path item.)
+- **0c chunk audit (F2)**: the full `DeriveToJob` is GENERIC over the descriptor registry — there is NO
+  per-chunk special-casing (PASS-1 validates via `Describe()`, PASS-2 applies the same `Finalize` as legacy).
+  154 registered chunk keywords; 129 corpus-covered (the gate proves them); 25 uncovered. Built a minimal
+  scene per uncovered chunk in `scenes/Tests/ChunkCoverage/` (+ tiny synthetic exr/tiff/3ds/bdf assets),
+  verified by the existing gate: all 25 MATCH. The corpus is now 401 scenes / 372 MATCH / 0 unexpected.
+  Commit 6e57f729. (Side finding, spun off as a separate task: a pre-existing DataDrivenBSDF transmission-
+  lobe copy-paste bug — unrelated to the cutover.)
+- **0d grammar (D-1 = fold-all)**: ratified. The migrator already constant-folds `$()`/DEFINE/FOR/`hal()` to
+  literals and flattens includes; NO dynamic forms (`let`/`expr`/`halton`) for the corpus (the v6 originals
+  in git history are the authoritative source until P8). The migrated output KEEPS the `RISE ASCII SCENE 6`
+  header (verified) → it is DUAL-READABLE (valid v6 AND CST-derivable). The `RISE ASCII SCENE 7` header is
+  the Phase-D PATH SELECTOR; the migrator does not emit it today.
+
+### Phase C/D — the gated decision point (this REVISES D-3's "do A-B-C now")
+0d surfaced a sequencing fact D-3 glossed over: **Phase C (convert the corpus) cannot safely precede Phase D
+(the dual-path runtime).** The legacy runtime is `CURRENT_SCENE_VERSION = 6` and rejects a `SCENE 7` header;
+the CST ignores the version line. Therefore:
+- Converting the corpus to **`SCENE 7`** (CST-only) BREAKS the legacy runtime — which still parses every
+  scene — until Phase D's dual-path can read it. Unsafe before D.
+- Converting to **`SCENE 6` fold-all** (dual-readable) is safe but PREMATURE: it flattens the LIVE corpus
+  (macros/FOR/includes inlined → loses authorial editability) for NO runtime benefit, and the gate ALREADY
+  proves the migrate→derive equivalence over 372 scenes, so rewriting the live files de-risks nothing.
+
+**Conclusion: the near-term reversible down-payment ends at Phase B.** Phase C should BUNDLE with Phase D
+(convert + header-bump-to-7 + dual-path, together), which is the deferred runtime pivot — gated on Model-B
+**P5** ("save = serialize the CST", so the editor no longer needs `AsciiSceneParser`'s `SourceSpanIndex`,
+per F3). Phase E/F (delete the v6 reader, D8) follow P5 + P8. This is the **major-design / blocker boundary**:
+A + B are the safe, additive, reversible work; C/D/E/F are the entangled, gated pivot.
