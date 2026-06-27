@@ -41,6 +41,7 @@
 #include "../src/Library/Interfaces/ICameraManager.h"
 #include "../src/Library/Interfaces/ILightManager.h"
 #include "../src/Library/Interfaces/IMedium.h"
+#include "../src/Library/Interfaces/IPhaseFunction.h"
 #include "../src/Library/Interfaces/IScene.h"
 #include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Interfaces/IEnumCallback.h"
@@ -93,6 +94,27 @@ inline bool ParseLegacy( const std::string& sceneText, Job& job, const char* tmp
 	return ok;
 }
 
+// Dump a medium's discriminating, cheaply-readable state: coefficients sampled at the bbox CENTRE for a
+// bounded/heterogeneous medium (so the sample is not vacuum -- homogeneous media ignore the point), the
+// phase asymmetry g (GetMeanCosine), homogeneity, and the world bbox when bounded (placement). The spatial
+// FIELD of a heterogeneous medium beyond that one centre sample is still by-construction (a render
+// spot-check covers it); a single non-vacuum sample + bbox is far stronger than the prior origin-only one.
+inline void DumpMedium( std::ostream& o, const IMedium* m )
+{
+	Point3 bbMin, bbMax; const bool bounded = m->GetBoundingBox( bbMin, bbMax );
+	const Point3 sp = bounded ? Point3( (bbMin.x+bbMax.x)*0.5, (bbMin.y+bbMax.y)*0.5, (bbMin.z+bbMax.z)*0.5 ) : Point3(0,0,0);
+	const MediumCoefficients c = m->GetCoefficients( sp ); const IPhaseFunction* pf = m->GetPhaseFunction();
+	char b[480];
+	std::snprintf( b, sizeof(b), " sigma_t=[%.17g %.17g %.17g] sigma_s=[%.17g %.17g %.17g] emission=[%.17g %.17g %.17g] g=%.17g homog=%d",
+		(double)c.sigma_t.r,(double)c.sigma_t.g,(double)c.sigma_t.b, (double)c.sigma_s.r,(double)c.sigma_s.g,(double)c.sigma_s.b,
+		(double)c.emission.r,(double)c.emission.g,(double)c.emission.b, (double)( pf ? pf->GetMeanCosine() : 0 ), m->IsHomogeneous()?1:0 );
+	o << b;
+	if( bounded ) {
+		char bb[224]; std::snprintf( bb, sizeof(bb), " bbox=[%.17g %.17g %.17g .. %.17g %.17g %.17g]",
+			(double)bbMin.x,(double)bbMin.y,(double)bbMin.z, (double)bbMax.x,(double)bbMax.y,(double)bbMax.z ); o << bb;
+	}
+}
+
 // Canonical structural dump of a Job -- the equivalence metric. Two parse paths
 // that yield the same dump produce the same scene (hence the same render). Sorted
 // per manager for stability. Numeric fields use LOSSLESS %.17g (exactly
@@ -112,10 +134,13 @@ inline bool ParseLegacy( const std::string& sceneText, Job& job, const char* tmp
 // world-space bounding box (encodes position / scale / geometry size) -- and the
 // chunk set/order always. (A value that reaches no cheaply-readable interface field -- material IOR, camera
 // intrinsics, the accelerator choice, the light-RR threshold -- is not surfaced here; those stay covered by
-// the by-construction argument below + a Phase-B render spot-check (docs/agentic-redesign/61-...). LIGHT power
-// and MEDIUM coefficients ARE now surfaced directly -- the lights:/media: sections at the end -- because
-// they ARE cheaply readable (ILight::emission*/radiantExitance, IMedium::GetCoefficients), so a CST value
-// divergence in either is caught here, not merely argued. Painter colour and
+// the by-construction argument below + a Phase-B render spot-check (docs/agentic-redesign/61-...). DELTA-light
+// (ILight) power/photons AND medium coefficients + phase-g + placement ARE now surfaced directly (the
+// lights:/media: sections at the end), because they ARE cheaply readable (ILight::emission*/radiantExitance/
+// CanGeneratePhotons; IMedium::GetCoefficients/GetMeanCosine/GetBoundingBox), so a CST divergence in those
+// is caught here, not merely argued. (AREA-light / luminaire-material emission stays by-construction -- it
+// reaches no cheaply-readable field, like material IOR; a heterogeneous medium's spatial field beyond the
+// one bbox-centre sample likewise stays by-construction.) Painter colour and
 // material scalar state are identical BY CONSTRUCTION (same Finalize) once the
 // param values match -- and the multi-token value path that feeds them is
 // covered END-TO-END here: an object's `position`/`scale` are multi-token
@@ -192,12 +217,12 @@ inline std::string DumpJob( Job& job )
 				const Point3 p = l->position(), tg = l->emissionTarget(); const Vector3 d = l->emissionDirection();
 				char b[768];
 				std::snprintf( b, sizeof(b),
-					"  type=%d energy=%.17g col=[%.17g %.17g %.17g] exitance=[%.17g %.17g %.17g] pos=[%.17g %.17g %.17g] dir=[%.17g %.17g %.17g] cone=%.17g inner=%.17g outer=%.17g target=[%.17g %.17g %.17g]",
+					"  type=%d energy=%.17g col=[%.17g %.17g %.17g] exitance=[%.17g %.17g %.17g] pos=[%.17g %.17g %.17g] dir=[%.17g %.17g %.17g] cone=%.17g inner=%.17g outer=%.17g target=[%.17g %.17g %.17g] photons=%d",
 					(int)l->lightType(), (double)l->emissionEnergy(),
 					(double)col.r,(double)col.g,(double)col.b, (double)rx.r,(double)rx.g,(double)rx.b,
 					(double)p.x,(double)p.y,(double)p.z, (double)d.x,(double)d.y,(double)d.z,
 					(double)l->emissionConeHalfAngle(), (double)l->emissionInnerAngle(), (double)l->emissionOuterAngle(),
-					(double)tg.x,(double)tg.y,(double)tg.z );
+					(double)tg.x,(double)tg.y,(double)tg.z, (int)l->CanGeneratePhotons() );
 				rows.push_back( b );
 			}
 		}
@@ -207,24 +232,12 @@ inline std::string DumpJob( Job& job )
 	o << "media:\n";
 	{
 		IScenePriv* sc = job.GetScene(); const IMedium* gm = sc ? sc->GetGlobalMedium() : 0;
-		o << "  global=" << ( gm ? "set" : "(none)" );
-		if( gm ) {
-			const MediumCoefficients c = gm->GetCoefficients( Point3(0,0,0) ); char b[320];
-			std::snprintf( b, sizeof(b), " sigma_t=[%.17g %.17g %.17g] sigma_s=[%.17g %.17g %.17g] emission=[%.17g %.17g %.17g] homog=%d",
-				(double)c.sigma_t.r,(double)c.sigma_t.g,(double)c.sigma_t.b, (double)c.sigma_s.r,(double)c.sigma_s.g,(double)c.sigma_s.b,
-				(double)c.emission.r,(double)c.emission.g,(double)c.emission.b, gm->IsHomogeneous()?1:0 ); o << b;
-		}
-		o << "\n";
 		NameCollector mns; job.EnumerateMediumNames( mns ); std::sort( mns.names.begin(), mns.names.end() );
+		std::string gname = "(none)";
+		if( gm ) { gname = "(unnamed)"; for( const auto& nm : mns.names ) if( job.GetMedium( nm.c_str() ) == gm ) { gname = nm; break; } }
+		o << "  global=" << gname; if( gm ) DumpMedium( o, gm ); o << "\n";
 		for( const auto& n : mns.names ) {
-			o << "  " << n; const IMedium* m = job.GetMedium( n.c_str() );
-			if( m ) {
-				const MediumCoefficients c = m->GetCoefficients( Point3(0,0,0) ); char b[320];
-				std::snprintf( b, sizeof(b), " sigma_t=[%.17g %.17g %.17g] sigma_s=[%.17g %.17g %.17g] emission=[%.17g %.17g %.17g] homog=%d",
-					(double)c.sigma_t.r,(double)c.sigma_t.g,(double)c.sigma_t.b, (double)c.sigma_s.r,(double)c.sigma_s.g,(double)c.sigma_s.b,
-					(double)c.emission.r,(double)c.emission.g,(double)c.emission.b, m->IsHomogeneous()?1:0 ); o << b;
-			}
-			o << "\n";
+			o << "  " << n; const IMedium* m = job.GetMedium( n.c_str() ); if( m ) DumpMedium( o, m ); o << "\n";
 		}
 	}
 	return o.str();
