@@ -88,7 +88,12 @@ DataDrivenBSDF::DataDrivenBSDF(
 		std::reverse( btdf.values.begin(), btdf.values.end() );
 
 		this->brdf.push_back( brdf );
-		this->btdf.push_back( brdf );
+		// Store the BUILT transmission lobe (btdf, read from the file's SECOND patch set above), not a
+		// copy of brdf.  NOTE: value()/valueNM() are currently REFLECTION-ONLY -- they iterate `brdf` and
+		// return 0 for transmission geometry (nr<0||nv<0) -- so this->btdf is not yet read at render time.
+		// This corrects the stored lobe (was a discarded-then-wrong brdf copy); it is render-inert today
+		// and becomes live once a DataDrivenBSDF transmission path is implemented.
+		this->btdf.push_back( btdf );
 	}
 
 	pInterpolator = new CatmullRomCubicInterpolator<RISEPel>();
