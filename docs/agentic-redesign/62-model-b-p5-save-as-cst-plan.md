@@ -93,7 +93,7 @@ So the hard algorithmic parts are done. **What's missing is wiring + provenance*
   legacy-fails (on a machine with the assets); **and the one LIVE render-AFFECTING `>` directive** (round-4
   review): easy-convert `meshlight_rr_test_pt`'s `> set light_rr_threshold` -> a rasterizer chunk param.
   (`watch_dial`'s `> modify` night-mode swaps are currently COMMENTED OUT, so it CST-loads as-is; the new
-  **light-configurations** CST feature -- separate spec, doc 63 -- will let that night-mode be re-expressed in
+  **scene-variants** CST feature (named, selectable overlays) -- separate spec, doc 63 -- will let that night-mode be re-expressed in
   v7 so the deprecated `> modify` can be dropped.) git history keeps the authored originals. *The big diff, but
   reversible (dual-readable + git).*
 - **Slice 3 — edits → CST patches (flagged).** Retarget `SceneEditor::Apply`: a property edit →
