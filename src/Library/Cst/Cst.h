@@ -193,11 +193,11 @@ namespace RISE
 		std::string SerializeCst( const Document& doc );
 
 		//! True iff `doc` is native v7-form -- loadable by the CST path without mis-deriving.  Accepts a
-		//! `RISE ASCII SCENE <n>` header + chunks + render-side `>` directives (`> set`/`> echo`/`> modify`, which
-		//! the migrator passes through and DeriveToJob skips render-neutrally).  REJECTS the UN-migrated top-level
-		//! constructs DeriveToJob would silently skip + mis-derive: a `FOR`/`ENDFOR` loop (body derived once, not
-		//! N times) and a `> run`/`> load` include (included chunks dropped); also a missing/malformed header.
-		//! Does NOT check the version NUMBER (the CST is version-agnostic); a skew is caught by DeriveToJob.
+		//! `RISE ASCII SCENE <n>` header + chunks + render-NEUTRAL `>` directives ONLY (`> echo`, `> set
+		//! accelerator`).  REJECTS what DeriveToJob would silently skip + thereby mis-derive: a `FOR`/`ENDFOR`
+		//! loop, a `> run`/`> load` include, and render-AFFECTING `>` directives (`> modify`, `> set <other>` like
+		//! light_rr_threshold -- the migrator must convert these to chunks first); also a missing/malformed header.
+		//! Does NOT check the version NUMBER (the CST is version-agnostic; a skew is caught by DeriveToJob).
 		bool IsNativeV7Document( const Document& doc );
 
 		//! Derive the document's chunks into pJob through the LIVE chunk-parser

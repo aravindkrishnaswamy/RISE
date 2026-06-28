@@ -899,20 +899,25 @@ namespace
 
 namespace RISE { namespace Cst {
 
-// True iff `doc` is native v7-form -- loadable by the CST path WITHOUT mis-deriving.  The migrator's output
-// (plan Slice 2) is the contract: a `RISE ASCII SCENE <n>` header + chunks + render-side `>` directives.
-// `> set`/`> echo`/`> modify` are PASSED THROUGH by the migrator and skipped render-neutrally by DeriveToJob
-// (the corpus gate confirms those derive DumpJob-identical to legacy), so they are ALLOWED.  We REJECT only
-// the UN-migrated top-level constructs DeriveToJob would silently skip AND thereby mis-derive:
-//   * a `FOR`/`ENDFOR` loop      -- skipped => body derives once, not N times
-//   * a `> run`/`> load` include -- skipped => the included chunks are dropped
-// plus a missing / malformed `RISE ASCII SCENE` header.  We do NOT check the version NUMBER (the CST is
-// version-agnostic; a true version skew is caught downstream by DeriveToJob's descriptor validation).
-// ($()/@ macro refs inside a chunk VALUE are caught by DeriveToJob's numeric validation; a folded-away
-// DEFINE never reaches here, and a DEFINE with no surviving use is a render-neutral no-op.)  NOTE:
-// `> set light_rr_threshold` is the one render-AFFECTING `> set` the migrator passes through -- a
-// documented, DumpJob-blind cutover gap to be closed migrator-side (Slice 2), not by this loader guard.
-// (SeqToVec is the anon-namespace flattener above; it is TU-visible here.)
+// True iff `doc` is native v7-form -- loadable by the CST path WITHOUT mis-deriving.  CST-load (DeriveToJob)
+// SILENTLY SKIPS every top-level `>` directive (v7 has no `>` command layer), so the ONLY `>` lines safe to
+// accept are ones whose effect is RENDER-NEUTRAL when dropped.  DumpJob is blind to render state, so
+// "render-neutral" -- NOT "DumpJob-MATCH" -- is the bar.  ACCEPTED top-level content:
+//   * the `RISE ASCII SCENE <n>` header (required; version NUMBER not checked -- the CST is version-agnostic;
+//     a true skew is caught downstream by DeriveToJob's descriptor validation)
+//   * any chunk
+//   * `> echo ...`            -- logging only
+//   * `> set accelerator ...` -- an image-identical TLAS choice (vs the default BVH4)
+// REJECTED (each would mis-derive / mis-render if its `>`/construct were silently skipped):
+//   * `FOR`/`ENDFOR`          -- a loop: body derives once, not N times
+//   * `> run`/`> load`        -- an include: the included chunks are dropped
+//   * `> modify ...`          -- RENDER-AFFECTING engine mutations (material swaps, scale, ...).  Being
+//     deprecated; its watch-hero "light configurations" use case moves to a first-class CST feature.
+//   * `> set <other>` (e.g. light_rr_threshold) -- RENDER-AFFECTING; the migrator must convert it to a chunk
+//     (Slice 2 easy-convert) before such a scene is CST-loadable.
+// (`> set global_medium` IS already converted to a chunk -> never a `>` line here; `$()/@` refs inside a chunk
+// VALUE are caught by DeriveToJob's numeric validation; a folded-away DEFINE never reaches here.  SeqToVec is
+// the anon-namespace flattener above; it is TU-visible here.)
 bool IsNativeV7Document( const Document& doc )
 {
 	std::vector<NodeRef> items;
@@ -930,8 +935,11 @@ bool IsNativeV7Document( const Document& doc )
 				!ln[3].empty() && ln[3].find_first_not_of( "0123456789" ) == std::string::npos );
 			return sawHeader;
 		}
-		if( ln[0] == ">" )        // a directive line: reject `> run`/`> load` (un-flattened include), allow the rest
-			return !( ln.size() >= 2 && ( ln[1] == "run" || ln[1] == "load" ) );
+		if( ln[0] == ">" ) {      // a directive line: accept ONLY proven render-NEUTRAL directives (see the header)
+			if( ln.size() >= 2 && ln[1] == "echo" ) return true;                            // logging only, no scene effect
+			if( ln.size() >= 3 && ln[1] == "set" && ln[2] == "accelerator" ) return true;   // image-identical TLAS choice
+			return false;         // render-AFFECTING (> modify / > set <other>) or an include (> run / > load) => reject
+		}
 		return false;             // FOR/ENDFOR/DEFINE/UNDEF / a bare stray at line start => NOT native v7
 	};
 	for( const NodeRef& c : items ) {

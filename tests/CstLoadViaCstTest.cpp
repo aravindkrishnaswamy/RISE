@@ -124,6 +124,14 @@ int main()
 	RefuseCase( "missing version header refused", "/tmp/cst_loadvia_nohdr.RISEscene",
 		"sphere_geometry\n{\nname s\nradius 1\n}\n" );
 
+	// P1 (round-4 fix): a RENDER-AFFECTING `>` directive must be REFUSED -- CST-load silently drops every `>`
+	// line, so a `> modify` / `> set <other>` scene would mis-render (DumpJob is blind).  The migrator must
+	// convert these to v7 chunks (or, for `> modify`, the light-configurations feature) before they CST-load.
+	RefuseCase( "render-affecting `> modify` refused", "/tmp/cst_loadvia_modify.RISEscene",
+		"RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 1\n}\n> modify object s material glow\n" );
+	RefuseCase( "render-affecting `> set light_rr_threshold` refused", "/tmp/cst_loadvia_rr.RISEscene",
+		"RISE ASCII SCENE 6\n> set light_rr_threshold 0.5\nsphere_geometry\n{\nname s\nradius 1\n}\n" );
+
 	// P1 (round-3 fix): a MIGRATED scene retains render-side `>` directives (the migrator passes `> set`/
 	// `> echo`/`> modify` through); they MUST be accepted, not false-rejected (else ~185 corpus scenes break).
 	AcceptCase( "> set accelerator accepted", "/tmp/cst_loadvia_set.RISEscene",

@@ -9435,11 +9435,12 @@ bool Job::LoadAsciiSceneViaCst( const char* filename )
 	// Model-B: the canonical CST is the source; the Scene is derive(CST).
 	std::unique_ptr<RISE::Cst::Document> doc( new RISE::Cst::Document( RISE::Cst::ParseToCst( text ) ) );
 
-	// Enforce the NATIVE-v7 contract: refuse a scene whose top-level content is not just the version header +
-	// chunks.  A v6 construct (FOR/NEXT/DEFINE/`>`) is a top-level token DeriveToJob would SILENTLY skip
-	// (mis-deriving -- e.g. a 3-iteration FOR -> one body); a missing header is rejected too.  Convert offline.
+	// Enforce the NATIVE-v7 contract (Cst::IsNativeV7Document): refuse a scene carrying an UN-migrated top-level
+	// construct DeriveToJob would SILENTLY skip + mis-derive -- a FOR/ENDFOR loop, a > run/> load include, or a
+	// render-AFFECTING > directive (> modify, > set <other>) -- or a missing header.  (Render-neutral > echo /
+	// > set accelerator are accepted.)  Convert offline first (the migrator, plan Slice 2).
 	if( !RISE::Cst::IsNativeV7Document( *doc ) ) {
-		GlobalLog()->PrintEx( eLog_Error, "Job::LoadAsciiSceneViaCst:: '%s' is not native v7-form (a v6 construct or a missing 'RISE ASCII SCENE' header); convert it offline first (the migrator)", filename );
+		GlobalLog()->PrintEx( eLog_Error, "Job::LoadAsciiSceneViaCst:: '%s' is not native v7-form (an un-migrated construct -- FOR/ENDFOR, > run/> load, or a render-affecting > directive -- or a missing 'RISE ASCII SCENE' header); convert it offline first (the migrator)", filename );
 		return false;
 	}
 

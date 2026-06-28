@@ -83,13 +83,18 @@ So the hard algorithmic parts are done. **What's missing is wiring + provenance*
   transition migrator), so the CST path loads NATIVE-v7 scenes.  **[IMPLEMENTED]** -- CstLoadViaCstTest
   proves `LoadAsciiSceneViaCst` == `LoadAsciiScene` (DumpJob) + Document retention on native-v7 scenes; it ENFORCES the
   native-v7 contract (Cst::IsNativeV7Document -- a `FOR`/`ENDFOR` loop, a `> run`/`> load` include, or a
-  missing header is REFUSED, not mis-derived; render-side `> set`/`> echo`/`> modify` directives are ACCEPTED,
-  matching the migrator's pass-through) + load-once.  Slice 2 extends the equivalence corpus-wide.  (It is a `Job` method for now; Slice 5 exposes it on
+  render-AFFECTING `>` directive [`> modify`, `> set <other>`] is REFUSED, not mis-derived; only render-NEUTRAL
+  `> echo`/`> set accelerator` are ACCEPTED -- CST-load silently drops every `>`, so DumpJob-blind
+  render-affecting directives must NOT be certified loadable) + load-once.  Slice 2 extends the equivalence corpus-wide.  (It is a `Job` method for now; Slice 5 exposes it on
   `IJobPriv` to wire the GUI/CLI.)
 - **Slice 2 — FULL CORPUS CONVERT (D1).** Run `tools/MigrateScenesV6toV7` over the ENTIRE corpus as one
   deliberate batch → the **SCENE-6 fold-all dual-readable** form (both the legacy runtime and the CST read
   it). Resolve the convert TAIL here: the 2 `sss` energy-conservation divergences + the 27 media-missing
-  legacy-fails (on a machine with the assets). git history keeps the authored originals. *The big diff, but
+  legacy-fails (on a machine with the assets); **and the one LIVE render-AFFECTING `>` directive** (round-4
+  review): easy-convert `meshlight_rr_test_pt`'s `> set light_rr_threshold` -> a rasterizer chunk param.
+  (`watch_dial`'s `> modify` night-mode swaps are currently COMMENTED OUT, so it CST-loads as-is; the new
+  **light-configurations** CST feature -- separate spec, doc 63 -- will let that night-mode be re-expressed in
+  v7 so the deprecated `> modify` can be dropped.) git history keeps the authored originals. *The big diff, but
   reversible (dual-readable + git).*
 - **Slice 3 — edits → CST patches (flagged).** Retarget `SceneEditor::Apply`: a property edit →
   `DocSetParamValue` → `DeriveToJobIncremental` → Scene; undo = CST versions; animated / `instance_array`

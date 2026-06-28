@@ -72,6 +72,41 @@ static std::string KnownAccepted( const std::string& path )
 	return "";
 }
 
+// A render-AFFECTING `>` directive survives migration but is SILENTLY dropped by CST-load (DeriveToJob skips
+// `>` lines), so a scene carrying one mis-renders if CST-loaded.  These are everything EXCEPT the proven
+// render-neutral `> echo` / `> set accelerator` (`> run`/`> load`/`> set global_medium` are flattened/converted
+// away by the migrator -> never present here).  An INDEPENDENT oracle mirroring IsNativeV7Document's accept set
+// (the gate must not merely re-run the function under test).
+static bool HasRenderAffectingDirective( const std::string& migrated )
+{
+	// Strip /* */ block + # line comments first: a COMMENTED-OUT `>` line (e.g. watch_dial's disabled
+	// night-mode `/* > modify ... */` block) is NOT a live directive.  ParseToCst -- hence IsNativeV7Document --
+	// already ignores comments (Trivia); this independent text oracle must match, else it false-flags.
+	std::string s; s.reserve( migrated.size() );
+	for( size_t i = 0; i < migrated.size(); ) {
+		if( migrated[i] == '/' && i + 1 < migrated.size() && migrated[i+1] == '*' ) {   // block comment
+			i += 2;
+			while( i + 1 < migrated.size() && !( migrated[i] == '*' && migrated[i+1] == '/' ) ) ++i;
+			i = ( i + 2 <= migrated.size() ) ? i + 2 : migrated.size();
+			continue;
+		}
+		if( migrated[i] == '#' ) { while( i < migrated.size() && migrated[i] != '\n' ) ++i; continue; }   // line comment
+		s += migrated[i++];
+	}
+	std::istringstream is( s );
+	std::string ln;
+	while( std::getline( is, ln ) ) {
+		const size_t p = ln.find_first_not_of( " \t" );
+		if( p == std::string::npos || ln[p] != '>' ) continue;
+		std::istringstream ts( ln.substr( p + 1 ) );
+		std::string a, b; ts >> a >> b;
+		if( a == "echo" ) continue;
+		if( a == "set" && b == "accelerator" ) continue;
+		return true;   // a LIVE > modify / > set <other> => render-affecting
+	}
+	return false;
+}
+
 // SELF-TEST (runs with NO scene root, so the unit suite exercises it without the media corpus): the
 // migrator macro surface must match legacy's -- define = DEFINE|define (legacy's leading-'!' define is a
 // non-functional parse-fail, NOT honored); undef = UNDEF|undef|'~' -- plus `> set global_medium` -> chunk.
@@ -192,7 +227,7 @@ int main( int argc, char** argv )
 		pclose( pp );
 	}
 
-	int match = 0, mismatch = 0, legacyFail = 0, accepted = 0, falseReject = 0;
+	int match = 0, mismatch = 0, legacyFail = 0, accepted = 0, falseReject = 0, falseAccept = 0, deferredDirective = 0;
 	std::map<std::string,int> mmReason, lfReason;
 	for( size_t k = 0; k < paths.size(); ++k ) {
 		const std::string& path = paths[k];
@@ -215,8 +250,17 @@ int main( int argc, char** argv )
 		if( !okL ) { ++legacyFail; ++lfReason[Reason(migrated)]; std::printf("LEGACY-FAIL[%-7s] %s\n", Reason(migrated).c_str(), path.c_str()); }
 		else if( dumpL == dumpC ) {
 			++match;
-			if( !IsNativeV7Document( d ) ) { ++falseReject;
-				std::printf("FALSE-REJECT (derives MATCH but IsNativeV7Document=false -> LoadAsciiSceneViaCst would refuse it) %s\n", path.c_str()); }
+			// A MATCH (DumpJob-identical) scene SHOULD be CST-loadable -- UNLESS it carries a render-affecting `>`
+			// directive (DumpJob is blind to those; CST-load drops them).  Bidirectional: render-affecting => MUST be
+			// refused (else FALSE-ACCEPT = a silent mis-render); otherwise => MUST be accepted (else FALSE-REJECT).
+			const bool affecting = HasRenderAffectingDirective( migrated );
+			const bool native    = IsNativeV7Document( d );
+			if( affecting && native ) { ++falseAccept;
+				std::printf("FALSE-ACCEPT (render-affecting > directive but IsNativeV7Document=true -> CST-load would silently drop it) %s\n", path.c_str()); }
+			else if( !affecting && !native ) { ++falseReject;
+				std::printf("FALSE-REJECT (no render-affecting directive but IsNativeV7Document=false -> would refuse a CST-loadable scene) %s\n", path.c_str()); }
+			else if( affecting ) { ++deferredDirective;
+				std::printf("DEFERRED-DIRECTIVE (render-affecting > directive; correctly refused, pending Slice-2 migrator conversion) %s\n", path.c_str()); }
 		}
 		else {
 			const std::string acc = KnownAccepted( path );
@@ -227,10 +271,10 @@ int main( int argc, char** argv )
 		jL->release(); jC->release();
 	}
 
-	std::printf( "\n=== %zu scenes: %d MATCH, %d ACCEPTED, %d MISMATCH(unexpected), %d LEGACY-FAIL, %d FALSE-REJECT ===\n", paths.size(), match, accepted, mismatch, legacyFail, falseReject );
+	std::printf( "\n=== %zu scenes: %d MATCH, %d ACCEPTED, %d MISMATCH(unexpected), %d LEGACY-FAIL, %d FALSE-REJECT, %d FALSE-ACCEPT, %d DEFERRED-DIRECTIVE ===\n", paths.size(), match, accepted, mismatch, legacyFail, falseReject, falseAccept, deferredDirective );
 	for( std::map<std::string,int>::const_iterator it = mmReason.begin(); it != mmReason.end(); ++it )
 		std::printf( "  MISMATCH[%-7s] = %d\n", it->first.c_str(), it->second );
 	for( std::map<std::string,int>::const_iterator it = lfReason.begin(); it != lfReason.end(); ++it )
 		std::printf( "  LEGACY-FAIL[%-7s] = %d\n", it->first.c_str(), it->second );
-	return ( mismatch > 0 || falseReject > 0 ) ? 1 : 0;   // CI: fail on an UNEXPECTED mismatch OR a native-v7 false-reject
+	return ( mismatch > 0 || falseReject > 0 || falseAccept > 0 ) ? 1 : 0;   // CI: fail on an UNEXPECTED mismatch, a false-reject, OR a false-accept (silent mis-render)
 }
