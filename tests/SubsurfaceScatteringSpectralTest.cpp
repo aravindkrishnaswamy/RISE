@@ -48,27 +48,24 @@
 //         accidental swap to one of those would still PASS A, B and C
 //         (measured).  Catching that subtle class distinction would need an
 //         HDR (>1.0) scene for Albedo's clamp plus a deterministic magnitude
-//         check, which the build non-determinism (below) defeats -- so it is
-//         out of scope here; the magnitude was instead verified manually
-//         single-threaded (spectral/RGB mean-luminance ratio 0.97, in the
-//         commit message).
+//         check.  It is out of scope here (this test targets the spectral-
+//         black bug, not the spectrum-class subtlety); the magnitude was
+//         verified manually -- spectral/RGB mean-luminance ratio 0.97.
 //
-//    ROBUST TO A PRE-EXISTING BUILD NON-DETERMINISM.  The SSS lazy build
-//    (PerformOperation) is run once, on whichever render thread first hits
-//    the object, consuming that thread's scheduling-dependent RNG, so it
-//    captures a sparser or denser irradiance set run-to-run -- the image
-//    lands on one of a few discrete brightness levels.  This is NOT a pure
-//    global scale: the dim falloff region collapses hardest, so the MEAN
-//    luminance craters (to ~1/6 of nominal) while the PEAK barely moves and
-//    the hue (R:G:B ratio of the uplift) is unchanged.  The assertions are
-//    chosen accordingly: B and C are scale-invariant (ratios / red
-//    fraction), and A floors on the build-stable PEAK luminance, NOT the
-//    mean.  The non-determinism affects the RGB path identically (verified
-//    on pristine master), is orthogonal to the spectral stub fixed here,
-//    and is flagged separately.  Single-threaded the renders are bit-exact
-//    and the spectral/RGB mean-luminance ratio is ~0.97 (the magnitude IS
-//    correct); this test asserts only the build-robust invariants so it
-//    stays reliable under the default multithreaded renderer.
+//    ROBUST BY DESIGN (the build non-determinism it guarded against is now
+//    FIXED).  The SSS lazy build (PerformOperation) once captured each sample
+//    point's irradiance using the triggering thread's scheduling-dependent
+//    RNG and the triggering pixel's geometric frame, so the image landed on
+//    one of a few discrete brightness levels run-to-run -- the MEAN cratered
+//    to ~1/6 of nominal while the PEAK barely moved.  That was FIXED: the
+//    build now uses a dedicated fixed-seed RNG and sets the SAMPLE POINT's
+//    own surface frame (the reproducibility regression is SSSBuildDetermin-
+//    ismTest).  These assertions were originally chosen to survive that
+//    non-determinism -- B and C are scale-invariant (ratios / red fraction),
+//    A floors on the then-build-stable PEAK luminance, not the mean -- and
+//    are retained as-is: still valid, and now also magnitude-stable.
+//    Single-threaded the renders were always bit-exact; the spectral/RGB
+//    mean-luminance ratio is ~0.97 (the magnitude IS correct).
 //
 //    COVERAGE: this renders the simple_sss_shaderop path directly.  The
 //    diffusion_approximation path is the SAME class (SubSurfaceScattering-
@@ -208,8 +205,8 @@ static double MeanLum( const ImageStats& s )
 
 // Red fraction of the mean colour, R/(R+G+B).  Scale-invariant: a global
 // scale on the image leaves it unchanged.  Used to compare hue across the
-// spectral and RGB renders without depending on their (non-deterministic)
-// absolute magnitude.
+// spectral and RGB renders without depending on their absolute magnitude
+// (a scale-invariant hue check).
 static double RedFraction( const ImageStats& s )
 {
 	const double sum = s.mean[0] + s.mean[1] + s.mean[2];
@@ -425,12 +422,11 @@ int main()
 	if( sssSpec.valid )
 	{
 		// A. LIT — the spectral-black fix.  Floored on the PEAK luminance
-		//    (maxLum), not the mean: the build non-determinism collapses the
-		//    dim falloff region (so the MEAN craters hard, to ~1/6) but barely
-		//    moves the bright centre, so maxLum is the more build-stable
-		//    statistic (~0.02-0.07 lit across runs, vs the 0.01 floor).  It is
-		//    EXACTLY 0 on the pre-fix stub (pure black), so the 0.01 floor keeps
-		//    teeth with a wide margin while removing crater-driven flakiness.
+		//    (maxLum): EXACTLY 0 on the pre-fix stub (pure black) and ~0.07 when
+		//    lit, so the 0.01 floor keeps teeth with a wide margin.  (maxLum was
+		//    also the build-STABLE statistic back when the build was non-
+		//    deterministic -- the mean cratered, the peak barely moved; the build
+		//    is deterministic now, but maxLum remains a fine floor.)
 		Check( sssSpec.maxlum > 0.01,
 			"spectral SSS render is LIT (not black) -- the PerformOperationNM fix" );
 
@@ -444,8 +440,9 @@ int main()
 	// C. HUE matches the RGB render.  Both renders root in the same RGB
 	//    irradiance octree (PerformOperation); the spectral path only
 	//    uplifts the RGB result, so its red fraction R/(R+G+B) must track
-	//    the RGB render's.  Scale-invariant -> robust to the build-scale
-	//    non-determinism.  A hue-CONSISTENCY cross-check (catches gross hue
+	//    the RGB render's.  Scale-invariant (robust by design; the build
+	//    non-determinism that motivated this is now fixed).  A hue-CONSISTENCY
+	//    cross-check (catches gross hue
 	//    errors / a desaturating fallback), NOT a spectrum-class
 	//    discriminator -- Albedo/Illuminant pass C on this scene; see header.
 	if( sssSpec.valid && sssRgb.valid )
