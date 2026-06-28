@@ -9410,6 +9410,13 @@ bool Job::LoadAsciiSceneViaCst( const char* filename )
 		return false;
 	}
 
+	// Load-once: re-loading into a live Job would desync the retained Document from the accumulated Scene
+	// (DeriveToJob does not reset the managers).  Refuse; callers load into a FRESH Job (Slice 5 handles reopen).
+	if( pCstDocument ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::LoadAsciiSceneViaCst:: this Job already loaded a scene; re-load is not supported (use a fresh Job)" );
+		return false;
+	}
+
 	// Read the scene file as-given (same as the legacy loader's top-level open; inner media resolves via the
 	// ambient GlobalMediaPathLocator during DeriveToJob).  Input must be NATIVE v7-form -- the v6 corpus is
 	// converted OFFLINE (migrator, plan Slice 2); the runtime does NOT Migrate.
@@ -9427,6 +9434,15 @@ bool Job::LoadAsciiSceneViaCst( const char* filename )
 
 	// Model-B: the canonical CST is the source; the Scene is derive(CST).
 	std::unique_ptr<RISE::Cst::Document> doc( new RISE::Cst::Document( RISE::Cst::ParseToCst( text ) ) );
+
+	// Enforce the NATIVE-v7 contract: refuse a scene whose top-level content is not just the version header +
+	// chunks.  A v6 construct (FOR/NEXT/DEFINE/`>`) is a top-level token DeriveToJob would SILENTLY skip
+	// (mis-deriving -- e.g. a 3-iteration FOR -> one body); a missing header is rejected too.  Convert offline.
+	if( !RISE::Cst::IsNativeV7Document( *doc ) ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::LoadAsciiSceneViaCst:: '%s' is not native v7-form (a v6 construct or a missing 'RISE ASCII SCENE' header); convert it offline first (the migrator)", filename );
+		return false;
+	}
+
 	std::vector<std::string> diags;
 	RISE::Cst::DeriveToJob( *doc, *this, &diags );
 	if( !diags.empty() ) {

@@ -67,6 +67,18 @@ namespace
 		jC->release();
 		std::remove( path );
 	}
+
+	// Assert LoadAsciiSceneViaCst REFUSES a non-native-v7 scene (returns false, retains no Document).
+	void RefuseCase( const char* label, const char* path, const std::string& scene )
+	{
+		if( !WriteTmp( path, scene ) ) { Check( false, std::string( label ) + ": write temp scene" ); return; }
+		Job* j = new Job();
+		const bool ok = j->LoadAsciiSceneViaCst( path );
+		Check( !ok, std::string( label ) + ": LoadAsciiSceneViaCst REFUSES (returns false)" );
+		Check( j->GetCstDocument() == nullptr, std::string( label ) + ": no Document retained on refusal" );
+		j->release();
+		std::remove( path );
+	}
 }
 
 int main()
@@ -90,6 +102,28 @@ int main()
 		"sphere_geometry\n{\nname g2\nradius 2\n}\n"
 		"standard_object\n{\nname o1\ngeometry g1\nmaterial mm\nposition -1 0 0\n}\n"
 		"standard_object\n{\nname o2\ngeometry g2\nmaterial mm\nposition 1 0 0\n}\n" );
+
+	// P1 fix: non-native-v7 input is REFUSED (not silently mis-derived -- e.g. a 3-iteration FOR -> 1 body).
+	RefuseCase( "v6 FOR loop refused", "/tmp/cst_loadvia_for.RISEscene",
+		"RISE ASCII SCENE 6\nFOR i 0 1 2\nsphere_geometry\n{\nname s\nradius 1\n}\nNEXT\n" );
+	RefuseCase( "v6 `> run` directive refused", "/tmp/cst_loadvia_run.RISEscene",
+		"RISE ASCII SCENE 6\n> run somewhere/palette.RISEscript\n" );
+	RefuseCase( "missing version header refused", "/tmp/cst_loadvia_nohdr.RISEscene",
+		"sphere_geometry\n{\nname s\nradius 1\n}\n" );
+
+	// P2 fix: load-once -- re-loading into a live Job is refused (Document/Scene desync otherwise).
+	{
+		const char* p = "/tmp/cst_loadvia_reload.RISEscene";
+		if( WriteTmp( p, "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 1\n}\n" ) ) {
+			Job* j = new Job();
+			const bool ok1 = j->LoadAsciiSceneViaCst( p );
+			const bool ok2 = j->LoadAsciiSceneViaCst( p );
+			Check( ok1, "reload: first load succeeds" );
+			Check( !ok2, "reload: second load REFUSED (load-once contract)" );
+			j->release();
+			std::remove( p );
+		}
+	}
 
 	std::printf( "%d passed, %d failed.\n", s_pass, s_fail );
 	return s_fail == 0 ? 0 : 1;

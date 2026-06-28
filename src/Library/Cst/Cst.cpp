@@ -899,6 +899,29 @@ namespace
 
 namespace RISE { namespace Cst {
 
+// True iff `doc` is native v7-form: its only top-level non-chunk content is the `RISE ASCII SCENE <n>`
+// header (+ trivia).  A v6 construct (FOR/NEXT/DEFINE/`>`/stray) becomes a top-level token DeriveToJob would
+// SILENTLY skip -- so a loader can refuse an unconverted scene loudly instead of mis-deriving.  (SeqToVec is
+// the anon-namespace flattener above; it is TU-visible here.)
+bool IsNativeV7Document( const Document& doc )
+{
+	std::vector<NodeRef> items;
+	SeqToVec( doc.items, items );
+	int tok = 0;   // index among top-level Token nodes; the version header is exactly RISE ASCII SCENE <n>
+	for( const NodeRef& c : items ) {
+		if( !c || c->kind != NodeKind::Token ) continue;   // Chunk / Param / Trivia are legitimate top-level content
+		const std::string& tt = c->text;
+		const bool headerTok =
+			( tok == 0 && tt == "RISE"  ) ||
+			( tok == 1 && tt == "ASCII" ) ||
+			( tok == 2 && tt == "SCENE" ) ||
+			( tok == 3 && !tt.empty() && tt.find_first_not_of( "0123456789" ) == std::string::npos );
+		if( !headerTok ) return false;   // a non-header top-level token => v6 construct / stray => NOT native v7
+		++tok;
+	}
+	return tok == 4;   // require the full `RISE ASCII SCENE <n>` header (parity with the legacy version gate)
+}
+
 Document ParseToCst( const std::string& bytes )
 {
 	std::vector<RawTok> t = Tokenize( bytes );

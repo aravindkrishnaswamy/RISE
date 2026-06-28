@@ -192,6 +192,13 @@ namespace RISE
 		//! (the INV-4 round-trip invariant).
 		std::string SerializeCst( const Document& doc );
 
+		//! True iff `doc` is NATIVE v7-form: its ONLY top-level non-chunk content is the `RISE ASCII SCENE <n>`
+		//! version header (+ trivia).  A v6 construct (FOR/NEXT/DEFINE/`>`/a stray) that ParseToCst captured as a
+		//! top-level token -- which DeriveToJob SILENTLY skips -- makes this false, so a loader can refuse an
+		//! unconverted scene LOUDLY instead of mis-deriving (e.g. a 3-iteration FOR deriving its body once).
+		//! Also false for a missing / non-`RISE ASCII SCENE` header (parity with the legacy parser's version gate).
+		bool IsNativeV7Document( const Document& doc );
+
 		//! Derive the document's chunks into pJob through the LIVE chunk-parser
 		//! registry (item 5). FIRST resets the chunk parsers' cross-chunk parse
 		//! state (ClearChunkParserState, as the legacy ParseAndLoadScene does at
