@@ -194,3 +194,33 @@ front-end. A future implementer works off §3.2/§3.4, not from scratch.
   `> modify` dispatch this subsumes; [Job::SetActiveCamera](../../src/Library/Job.h) — the active-camera hook.
 - [src/Library/Parsers/README.md](../../src/Library/Parsers/README.md) — how to add the `scene_variant` chunk +
   the `variant` tag (descriptor-driven `IAsciiChunkParser`).
+
+## 12. P0 implementation build sheet (turnkey — resolved against the code 2026-06-28)
+
+Every integration point below is verified against the tree; the build is mechanical execution + the review loop.
+
+**Precedents to copy:** the named-animation feature (`animation` chunk + `DeclareAnimation(...active)` + `> modify animation` selection) and the `static`-cross-chunk parse-state reset (`ClearParseState` / `ClearChunkParserState`, called by BOTH load paths) — the seam that lets one apply-pass serve both.
+
+**(a) `IJob` ABI** — add 4 NON-pure virtuals (default `{return false;}` / `{}`, like `SetActiveAnimation` at `IJob.h:2797`) after `GetActiveAnimationName` (`IJob.h:2823`): `DeclareSceneVariant(name, active_camera)`, `SetActiveSceneVariant(name)`, `SetPendingMaterialVariant(variant)`, `ApplyActiveSceneVariant()`. (Non-pure = no out-of-tree implementer breaks.)
+
+**(b) `Job` store** (after `composedMaterialNames`, `Job.h:281`): `struct SceneVariantData { String activeCamera; std::map<String,IMaterial*> materialOverrides; };` + `std::map<String,SceneVariantData> sceneVariants;` + `String activeSceneVariant;` + `String pendingMaterialVariant;`. Decls (after `Job.h:2840`): the 4 IJob overrides (NO `override` keyword — Job convention) + `RegisterMaterialOrVariant(IMaterial*,name)` + `ClearSceneVariants()`. Defs in `Job.cpp` near `Job::DeclareAnimation` (`9633`).
+
+**(c) Material routing** — the 26 material `RegisterOrDiag(pMatManager, …, name, "material")` calls (24 `pMaterial` + 2 `pLumMaterial` at `Job.cpp:4215,4246` — the luminaires the watch night-mode needs) become `RegisterMaterialOrVariant(pMaterial|pLumMaterial, name)`. `RegisterMaterialOrVariant`: if `pendingMaterialVariant` non-empty → addref into `sceneVariants[pending].materialOverrides[name]` (last-write-wins releases prior); else `RegisterOrDiag(pMatManager,…)`. Behavior-neutral until the parser sets `pendingMaterialVariant`.
+
+**(d) Apply (`ApplyActiveSceneVariant`, the crux)** — objects bind materials by POINTER (realize bakes geometry only; `RayCaster.cpp:159`), so the apply re-points objects, it does NOT just swap the manager entry. Build `remap: const IMaterial*(base ptr from pMatManager->GetItem(name)) -> IMaterial*(override)`; a base miss = a dangling-override diagnostic. Re-point: `IObjectManager : IManager<IObjectPriv>` so enumerate object NAMES (IManager name-enum) → `pObjectManager->GetItem(name)` (NON-const → can call `AssignMaterial`, avoiding a const_cast on the `const`-ref `EnumerateObjects(IEnumCallback<IObjectPriv>)` callback; confirm SceneEditor.cpp:195's pattern at build). For each object whose `GetMaterial()` is a remap key → `AssignMaterial(*override)`; track `anyEmitter` (base or override `GetEmitter()`); if any → `BumpSceneLightGen(pScene)` (regenerates the light list — handles the luminaire dual-role, mirroring `Job::SetObjectMaterial`). Then `pScene->SetActiveCamera(activeCamera)` if set. Empty `activeSceneVariant` → no-op (base default); unknown active variant → warn + base.
+
+**(e) Chunks** (`AsciiSceneParser.cpp`, mirror `AnimationAsciiChunkParser:9666`): `SceneVariantAsciiChunkParser` (Finalize: name REQUIRED else false → `DeclareSceneVariant`; `active_camera` ValueKind::Reference{Camera}) + `ActiveSceneVariantAsciiChunkParser` (Finalize → `SetActiveSceneVariant`). Register after `9909`. Add `static AddVariantTagParam(cd)` (an optional `variant` String param) and CALL it in each of the 26 material `Describe()` IIFEs (descriptor = accepted-set invariant; without it the parser rejects `variant`).
+
+**(f) Pending-variant routing (central, 2 sites)** — around the single `Finalize` call in the default `ParseChunk` (`AsciiSceneParser.cpp:9929`) AND the CST PASS-2 loop (`Cst.cpp:~1441`): if the chunk's category is Material, `pJob.SetPendingMaterialVariant(bag.GetString("variant",""))` before, and `SetPendingMaterialVariant("")` UNCONDITIONALLY after (no leak — the `s_painterColors` reset discipline).
+
+**(g) Apply hook (both paths reach it)** — `pJob.ApplyActiveSceneVariant()` at: legacy end-of-load top-level block (`AsciiSceneParser.cpp:~11116`, beside the snapshot population, `depthGuard.isTopLevel` so a `> load` child doesn't fire early) AND CST `DeriveToJob` end (`Cst.cpp:~1468`, guarded on `diags.empty()`). Apply at derive-end (not realize) so DumpJob + the editor see it pre-render.
+
+**(h) Reset** — `ClearSceneVariants()` (release stored override refs) at both reset sites: legacy `ParseAndLoadScene` metadata clear (`~10569`) + `Cst.cpp` `ClearChunkParserState` (`~1380`) — re-derive must not accumulate stale overrides.
+
+**(i) CST** — the chunk + `variant` param auto-flow through `DeriveToJob` (descriptor-driven). `IsNativeV7Document` accepts them (they're `NodeKind::Chunk`, not `>`/FOR — verify). `DeriveToJobIncremental` must REFUSE (fall back to full derive) when the edited chunk is `scene_variant`/`active_scene_variant`/a `variant`-tagged material (same-name-as-base collision) — mirror the existing refusals (`Cst.cpp:~1622`).
+
+**(j) Build projects** — P0 folds into existing files (no new `.cpp`/`.h`) → NO build-project edits. Tests auto-discover (`run_all_tests.sh` globs `tests/*.cpp`).
+
+**(k) Tests** (`tests/SceneVariantTest.cpp` + `scenes/Tests/SceneVariants/*.RISEscene`, mirror `CstRenderEquivalence.h`'s DumpJob which surfaces luminaire exitance + active_camera): name-required parse error; override-by-name applies (luminaire `scale 0` → object's material exitance ≈ 0) via BOTH legacy + CST; dangling-override diagnostic; base-as-default (no override when inactive); active-camera selection; save round-trip (`SerializeCst`); **CST == legacy DumpJob** with the variant active (the headline gate).
+
+**Risks:** const-callback mutation (use name-enum+GetItem, (d)); luminaire light-gen (BumpSceneLightGen, (d)); incremental-derive collision (refuse, (i)); `pendingMaterialVariant` leak (unconditional clear, (f)); load-once / nested `> load` (top-level-only apply, (g)).
