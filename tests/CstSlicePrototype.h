@@ -364,10 +364,21 @@ inline int DeriveAllSpheres( const cst::GP& doc, const RISE::ChunkDescriptor& de
 template <typename F>
 inline double TimeMicros( F&& f )
 {
-	auto t0 = std::chrono::steady_clock::now();
-	f();
-	auto t1 = std::chrono::steady_clock::now();
-	return std::chrono::duration<double, std::micro>( t1 - t0 ).count();
+	// Best-of-N: a single steady_clock sample of a microsecond-scale op is dominated by scheduling / cache /
+	// interrupt noise (which only ever ADDS time), so a one-shot timing makes an A<B comparison flaky -- notably
+	// when stdout is redirected to a file (different scheduling) vs a TTY.  The MINIMUM over several reps is the
+	// standard noise-free estimator of how fast the op actually runs.  (Seed `best` from the first sample, not a
+	// large sentinel -- RISE builds -ffast-math, under which sentinel-seeded min/max can miscompile.)
+	f();   // warm-up: page in code/data, not measured
+	double best = 0.0;
+	for( int rep = 0; rep < 64; ++rep ) {
+		const auto t0 = std::chrono::steady_clock::now();
+		f();
+		const auto t1 = std::chrono::steady_clock::now();
+		const double us = std::chrono::duration<double, std::micro>( t1 - t0 ).count();
+		if( rep == 0 || us < best ) best = us;
+	}
+	return best;
 }
 
 #endif // RISE_TESTS_CST_SLICE_PROTOTYPE_H
