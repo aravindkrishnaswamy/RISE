@@ -2822,6 +2822,14 @@ namespace RISE
 		//! Copies the active animation's name into `buf`.  FALSE if none declared.
 		virtual bool GetActiveAnimationName( char* /*buf*/, const unsigned int /*bufLen*/ ) const { return false; }
 
+		//! Declares a named scene variant (a selectable overlay).  active_camera may be "" (none).  See
+		//! docs/agentic-redesign/63-scene-variants-feature-spec.md.
+		virtual bool DeclareSceneVariant( const char* /*name*/, const char* /*active_camera*/ ) { return false; }
+		//! Sets the stored active scene variant ("" / "none" => the base default).
+		virtual bool SetActiveSceneVariant( const char* /*name*/ ) { return false; }
+		//! Returns the active scene variant name into buf (empty if none).
+		virtual bool GetActiveSceneVariant( char* /*buf*/, const unsigned int /*bufLen*/ ) const { return false; }
+
 		//! Sets progress class to report progress for anything we do
 		virtual void SetProgress(
 			IProgressCallback* pProgress				///< [in] The progress function

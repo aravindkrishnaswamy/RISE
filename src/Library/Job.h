@@ -279,6 +279,11 @@ namespace RISE
 		// blend chain).  Set is keyed by the material's manager-
 		// registered name and grows-only (no removal path today).
 		std::set<String>							composedMaterialNames;
+		// Scene variants (doc 63): named selectable overlays.  P0 records name->active_camera + the active
+		// selection (for GUI/save + the derive-end active-camera apply); the material override BAKE is
+		// derive-local (Cst.cpp), so there is no override store here.
+		std::map<String,String>						sceneVariantCameras;	// scene_variant name -> active_camera ("" = none)
+		String										activeSceneVariant;	// "" / "none" => base default
 
 		//
 		// Helper functions
@@ -2838,6 +2843,12 @@ namespace RISE
 		bool GetAnimationName( const unsigned int index, char* buf, const unsigned int bufLen ) const;
 		unsigned int GetActiveAnimationIndex() const;
 		bool GetActiveAnimationName( char* buf, const unsigned int bufLen ) const;
+		bool DeclareSceneVariant( const char* name, const char* active_camera );
+		bool SetActiveSceneVariant( const char* name );
+		bool GetActiveSceneVariant( char* buf, const unsigned int bufLen ) const;
+		const std::map<String,String>& GetSceneVariantCameras() const { return sceneVariantCameras; }
+		const String& GetActiveSceneVariantName() const { return activeSceneVariant; }
+		void ClearSceneVariants() { sceneVariantCameras.clear(); activeSceneVariant.clear(); }
 
 		//! Sets progress class to report progress for anything we do
 		void SetProgress(

@@ -9697,6 +9697,36 @@ bool Job::GetActiveAnimationName( char* buf, const unsigned int bufLen ) const
 	return ( src[0] != 0 );
 }
 
+bool Job::DeclareSceneVariant( const char* name, const char* active_camera )
+{
+	if( !name || !name[0] ) {
+		GlobalLog()->PrintEasyError( "Job::DeclareSceneVariant:: a scene_variant requires a non-empty name" );
+		return false;
+	}
+	sceneVariantCameras[ String(name) ] = ( active_camera && active_camera[0] ) ? String(active_camera) : String();
+	return true;
+}
+
+bool Job::SetActiveSceneVariant( const char* name )
+{
+	activeSceneVariant = ( name && name[0] && String(name) != String("none") ) ? String(name) : String();
+	return true;
+}
+
+bool Job::GetActiveSceneVariant( char* buf, const unsigned int bufLen ) const
+{
+	if( !buf || bufLen == 0 ) {
+		return false;
+	}
+	const char* src = activeSceneVariant.c_str();
+	unsigned int i = 0;
+	for( ; src[i] && i+1 < bufLen; i++ ) {
+		buf[i] = src[i];
+	}
+	buf[i] = 0;
+	return ( src[0] != 0 );
+}
+
 //! Rasterizes an animation using the global preset options
 /// \return TRUE if successful, FALSE otherwise
 bool Job::RasterizeAnimationUsingOptions(
