@@ -85,6 +85,7 @@ namespace RISE
 			case ChunkCategory::PhotonGather:     return "Photon Gather";
 			case ChunkCategory::IrradianceCache:  return "Irradiance Cache";
 			case ChunkCategory::Animation:        return "Animation";
+			case ChunkCategory::SceneVariant:     return "Scene Variant";
 			}
 			return "";
 		}

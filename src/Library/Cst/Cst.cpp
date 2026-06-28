@@ -1411,6 +1411,24 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	}
 	if( !diags.empty() ) return 0;   // refuse-all: a malformed scene applies NOTHING
 
+	// ----- scene_variant bake-at-derive (doc 63 §12): pre-scan the active variant + its overridden material
+	// names so PASS-2 registers the ACTIVE definition per material name (objects then bind to it by name -- no
+	// post-derive re-pointing of a built scene).  CST-native; the legacy reader renders the base.
+	std::string svActiveName, svActiveCamera;
+	for( const Pending& p : pending )
+		if( p.keyword == "active_scene_variant" ) svActiveName = p.bag.GetString( "name", "" );
+	if( svActiveName == "none" ) svActiveName.clear();
+	std::set<std::string> svOverriddenNames;
+	if( !svActiveName.empty() ) {
+		for( const Pending& p : pending ) {
+			if( p.keyword == "scene_variant" && p.bag.GetString( "name", "" ) == svActiveName )
+				svActiveCamera = p.bag.GetString( "active_camera", "" );
+			if( p.parser->Describe().category == ChunkCategory::Material
+			    && p.bag.GetString( "variant", "" ) == svActiveName )
+				svOverriddenNames.insert( p.bag.GetString( "name", "noname" ) );
+		}
+	}
+
 	// PASS 2 -- apply via the SAME Finalize the legacy parser calls, so the CST
 	// path and the legacy path build an identical Job for a validation-clean
 	// CANONICAL registry scene (see DeriveToJob's doc for the exact scope).
@@ -1436,6 +1454,13 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 
 	int count = 0;
 	for( Pending& p : pending ) {
+		// scene_variant bake (doc 63): skip the inactive-override + overridden-base material chunks.  The active
+		// override (variant==active) Finalizes + registers under its name (the skipped base freed the name).
+		if( p.parser->Describe().category == ChunkCategory::Material ) {
+			const std::string svv = p.bag.GetString( "variant", "" );
+			if( !svv.empty() && svv != svActiveName ) continue;                                          // inactive override
+			if( svv.empty() && svOverriddenNames.count( p.bag.GetString( "name", "noname" ) ) ) continue; // overridden base
+		}
 		std::vector<const void*> produced, resolved;
 		if( outRecorded ) { g_cstProductionSink = &produced; g_cstResolutionSink = &resolved; }
 		const bool ok = p.parser->Finalize( p.bag, pJob );
@@ -1466,6 +1491,9 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 			count += made;
 		}
 	}
+	// scene_variant: apply the active variant's camera (its material overrides were baked above).
+	if( diags.empty() && !svActiveName.empty() && !svActiveCamera.empty() )
+		pJob.SetActiveCamera( svActiveCamera.c_str() );
 	return count;
 }
 
@@ -1533,6 +1561,13 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// earlier O(N) doc-scan made the incremental O(N), failing the ~flat-in-N gate).
 	if( pJob.GetAnimationCount() > 0 ) {
 		diags.push_back( "incremental: the Job has an animation/timeline whose String element references the static graph cannot trace; fall back to a full derive" );
+		return 0;
+	}
+
+	// scene_variant is baked whole-document (doc 63): an incremental edit cannot re-run the bake, so a Job with
+	// any declared/active scene variant falls back to a full re-derive (which re-bakes).  O(1) engine query.
+	if( pJob.HasSceneVariants() ) {
+		diags.push_back( "incremental: the Job has scene variant(s) whose override bake is whole-document; fall back to a full derive" );
 		return 0;
 	}
 

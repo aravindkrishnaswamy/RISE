@@ -2848,6 +2848,7 @@ namespace RISE
 		bool GetActiveSceneVariant( char* buf, const unsigned int bufLen ) const;
 		const std::map<String,String>& GetSceneVariantCameras() const { return sceneVariantCameras; }
 		const String& GetActiveSceneVariantName() const { return activeSceneVariant; }
+		bool HasSceneVariants() const { return !sceneVariantCameras.empty() || !activeSceneVariant.empty(); }
 		void ClearSceneVariants() { sceneVariantCameras.clear(); activeSceneVariant.clear(); }
 
 		//! Sets progress class to report progress for anything we do

@@ -2829,6 +2829,9 @@ namespace RISE
 		virtual bool SetActiveSceneVariant( const char* /*name*/ ) { return false; }
 		//! Returns the active scene variant name into buf (empty if none).
 		virtual bool GetActiveSceneVariant( char* /*buf*/, const unsigned int /*bufLen*/ ) const { return false; }
+		//! True iff the Job has any declared scene variant or an active selection -- the O(1) incremental-derive
+		//! refuse signal (a variant's bake is whole-document, so a variant scene's edits fall back to a full re-derive).
+		virtual bool HasSceneVariants() const { return false; }
 
 		//! Sets progress class to report progress for anything we do
 		virtual void SetProgress(

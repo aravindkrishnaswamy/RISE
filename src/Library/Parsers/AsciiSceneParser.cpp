@@ -441,6 +441,17 @@ namespace RISE
 	{
 		namespace ChunkParsers
 		{
+			// Adds the optional `variant` tag to a chunk descriptor (doc 63): when set, the chunk OVERRIDES its base
+			// same-named counterpart while that scene_variant is active.  The chunk's own Finalize ignores `variant`
+			// -- it is a marker the CST derive reads (bake-at-derive); the legacy reader skips a tagged material.
+			static void AddVariantTagParam( ChunkDescriptor& cd )
+			{
+				cd.parameters.emplace_back();
+				ParameterDescriptor& p = cd.parameters.back();
+				p.name = "variant"; p.kind = ValueKind::String;
+				p.description = "If set, this chunk overrides the base same-named chunk when scene_variant <name> is active.";
+			}
+
 			// Tracks uniform color painter values so that material parsers
 			// can validate energy conservation at scene-definition time.
 			struct PainterColor { double c[3]; };
@@ -3171,6 +3182,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Albedo painter"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3195,6 +3207,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Reflectance painter"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3221,6 +3234,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "refractance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance painter"; }
 						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3253,6 +3267,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
 						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; p.defaultValueHint = "64"; }
 						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3289,6 +3304,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "ar_film_thickness";  p.kind = ValueKind::Double; p.description = "AR coating physical thickness, nm (e.g. MgF2 quarter-wave ~99.6 at 550nm). 0 = no coating."; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "ar_film_extinction"; p.kind = ValueKind::Double; p.description = "AR coating film extinction k (~0 for a transparent AR dielectric)."; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3321,6 +3337,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; }
 						{ auto& p = P(); p.name = "g";          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Henyey-Greenstein g"; }
 						{ auto& p = P(); p.name = "roughness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3355,6 +3372,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "g";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Henyey-Greenstein g"; }
 						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness"; }
 						{ auto& p = P(); p.name = "max_bounces"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Max volume bounces per ray"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3383,6 +3401,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "exitance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Emitted radiance"; }
 						{ auto& p = P(); p.name = "material"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Underlying material"; }
 						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::Double;    p.description = "Exitance multiplier"; p.defaultValueHint = "1.0"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3413,6 +3432,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "material"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Underlying material"; }
 						{ auto& p = P(); p.name = "N";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent"; }
 						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::Double;    p.description = "Exitance multiplier"; p.defaultValueHint = "1.0"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3443,6 +3463,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
 						{ auto& p = P(); p.name = "nu";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "U-direction exponent (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "nv";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "V-direction exponent (scalar_painter, or inline `r g b` or scalar)"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3471,6 +3492,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rd";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
 						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
 						{ auto& p = P(); p.name = "N";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent (scalar_painter, or inline `r g b` or scalar)"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3555,6 +3577,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "ext";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Extinction"; }
 						{ auto& p = P(); p.name = "N";          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent"; }
 						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3613,6 +3636,7 @@ namespace RISE
 							auto& p = P(); p.name = n; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Skin-model painter parameter";
 						}
 						{ auto& p = P(); p.name = "subdermal_layer"; p.kind = ValueKind::Bool; p.description = "Include subdermal fat layer"; p.defaultValueHint = "TRUE"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3659,6 +3683,7 @@ namespace RISE
 						for (const char* n : painterRefs) {
 							auto& p = P(); p.name = n; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Skin-model painter parameter";
 						}
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3695,6 +3720,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "bilirubin_concentration";  p.kind = ValueKind::Double;    p.description = "Bilirubin concentration"; p.defaultValueHint = "0.05"; }
 						{ auto& p = P(); p.name = "betacarotene_concentration";p.kind = ValueKind::Double;   p.description = "Beta-carotene concentration"; p.defaultValueHint = "7.0e-5"; }
 						{ auto& p = P(); p.name = "diffuse";                  p.kind = ValueKind::Bool;      p.description = "Use diffuse approximation"; p.defaultValueHint = "TRUE"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3735,6 +3761,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "max_translucent_recursion";p.kind = ValueKind::UInt; p.description = "Max translucent recursion"; p.defaultValueHint = "3"; }
 						{ auto& p = P(); p.name = "thickness";            p.kind = ValueKind::Double;    p.description = "Layer thickness"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "extinction";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Interior extinction"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3763,6 +3790,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rd";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
 						{ auto& p = P(); p.name = "rs";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
 						{ auto& p = P(); p.name = "alpha"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface slope RMS (scalar_painter, or inline `r g b` or scalar)"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3793,6 +3821,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rs";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
 						{ auto& p = P(); p.name = "alphax"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X-direction slope RMS (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "alphay"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y-direction slope RMS (scalar_painter, or inline `r g b` or scalar)"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3875,6 +3904,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "film_extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide k (scalar_painter; eFresnelThinFilmConductor only; default 0/none = transparent film)"; }
 						{ auto& p = P(); p.name = "film_thickness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide thickness in nm (scalar_painter, may be spatially varying; eFresnelThinFilmConductor only)"; }
 						{ auto& p = P(); p.name = "tangent_rotation"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Anisotropy tangent-frame rotation in RADIANS: a colour-painter reference (an expression_function2d gives a SPATIALLY-VARYING field, e.g. groove direction) OR an inline scalar.  \"none\" = aligned with the geometry tangent.  Resolved in the colour-painter manager, so a scalar_painter does NOT bind here -- use expression_function2d or a scalar.  Steers alphax!=alphay anisotropy."; p.defaultValueHint = "none"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3939,6 +3969,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "specular_color";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 7 / KHR_materials_specular: RGB tint on dielectric F0.  Default \"none\" = white (untinted, F0 stays at 0.04 across all wavelengths).  Set to a non-white painter for measured dielectrics where the Fresnel response varies with wavelength.  Final F0 = 0.04 × specular_color × specular_factor."; p.defaultValueHint = "none"; }
 						{ auto& p = P(); p.name = "anisotropy_factor"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 8 / KHR_materials_anisotropy: scalar in [0, 1] (or scalar painter) controlling specular-lobe stretch along the tangent direction.  Default 0 = isotropic (αx = αy = roughness²; bit-identical to pre-L8 PBR-MR).  Larger values stretch the lobe: αt = mix(α, 1, anisotropy²), αb = α.  Useful for brushed metal, hair, fabric.  Accepts a painter reference OR a literal scalar string."; p.defaultValueHint = "0.0"; }
 						{ auto& p = P(); p.name = "anisotropy_rotation"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 8 / KHR_materials_anisotropy: tangent-frame rotation in RADIANS (or scalar painter).  Default 0 = aligned with the geometry's TANGENT attribute.  Phase 1 reads but does not yet APPLY the rotation; rotation is wired alongside the anisotropy_texture in L12.  Document for forward compatibility."; p.defaultValueHint = "0.0"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -3989,6 +4020,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel IOR (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "fresnel_mode"; p.kind = ValueKind::String; p.description = "Fresnel model: conductor (only).  `thinfilm` is GGX-only and rejected here."; p.defaultValueHint = "conductor"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -4015,6 +4047,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Albedo"; }
 						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness sigma (scalar_painter, or inline `r g b` or scalar)"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -4045,6 +4078,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "sheen_color";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.required = true; p.description = "Sheen tint (typical 0..1)"; }
 						{ auto& p = P(); p.name = "sheen_roughness"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Sheen roughness painter or scalar (clamped to >= 1e-3 internally)"; p.defaultValueHint = "0.5"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -4075,6 +4109,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rs";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
 						{ auto& p = P(); p.name = "roughness"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "isotropy";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Isotropy factor (scalar_painter, or inline `r g b` or scalar)"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -4099,6 +4134,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "filename"; p.kind = ValueKind::Filename; p.description = "BRDF data file"; }
+						AddVariantTagParam( cd );
 						return cd;
 					}();
 					return d;
@@ -9663,6 +9699,48 @@ namespace RISE
 				}
 			};
 
+			struct SceneVariantAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "" );
+					std::string cam  = bag.GetString( "active_camera", "" );
+					return pJob.DeclareSceneVariant( name.c_str(), cam.c_str() );   // empty name -> false
+				}
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "scene_variant"; cd.category = ChunkCategory::SceneVariant;
+						cd.description = "Declares a named, selectable scene variant (an overlay).  variant-tagged chunks override their base when this variant is active; active_camera selects a camera.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;    p.description = "Variant name (REQUIRED; the UI handle / switch key)"; }
+						{ auto& p = P(); p.name = "active_camera"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Camera}; p.description = "Camera to activate when this variant is active"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ActiveSceneVariantAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "" );
+					return pJob.SetActiveSceneVariant( name.c_str() );
+				}
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "active_scene_variant"; cd.category = ChunkCategory::SceneVariant;
+						cd.description = "Selects the active scene variant by name (empty / none / absent => the base default).  Single-select.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Active variant name (empty / none => base default)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct AnimationAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -9907,6 +9985,8 @@ namespace RISE
 		add( "timeline",                              new TimelineAsciiChunkParser() );
 		add( "animation_options",                     new AnimationOptionsAsciiChunkParser() );
 		add( "animation",                             new AnimationAsciiChunkParser() );
+		add( "scene_variant",                         new SceneVariantAsciiChunkParser() );
+		add( "active_scene_variant",                  new ActiveSceneVariantAsciiChunkParser() );
 
 		return entries;
 	}
@@ -9931,6 +10011,12 @@ namespace RISE
 		ParseStateBag bag( &Describe() );
 		if( !Implementation::ChunkParsers::DispatchChunkParameters( Describe(), bag, in ) ) {
 			return false;
+		}
+		// scene_variant is CST-native (doc 63): the legacy streaming reader can't pre-scan for the active variant,
+		// so it renders the BASE -- skip a variant-tagged material's registration (else it dup-name-collides with
+		// the base material).  The CST DeriveToJob bakes variants properly.
+		if( Describe().category == ChunkCategory::Material && !bag.GetString( "variant", "" ).empty() ) {
+			return true;
 		}
 		return Finalize( bag, pJob );
 	}
