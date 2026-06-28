@@ -2753,10 +2753,11 @@ namespace RISE
 		//! P5 Slice 1: load a scene by building the canonical CST (ParseToCst) and deriving the Scene from
 		//! it (DeriveToJob), RETAINING the Document for edit/save (Model-B "Scene = derive(CST)").  Additive +
 		//! flagged -- the legacy LoadAsciiScene above stays the default.  Input must be NATIVE v7-form
-		//! (macro/expr/directive-free) -- ENFORCED via Cst::IsNativeV7Document: a v6 construct (FOR/DEFINE/$()/`>`)
-		//! or a missing `RISE ASCII SCENE` header is REFUSED (returns false), NOT silently mis-derived.  The v6
-		//! corpus is converted OFFLINE (migrator, plan Slice 2), so the runtime takes no dependency on it.
-		//! Load-once: re-loading into a live Job is refused (load into a fresh Job).
+		//! (macro/expr/directive-free) -- ENFORCED via Cst::IsNativeV7Document: an UN-migrated top-level construct
+		//! (a `FOR`/`ENDFOR` loop or a `> run`/`> load` include) or a missing `RISE ASCII SCENE` header is REFUSED
+		//! (returns false), NOT silently mis-derived.  (Render-side `>` directives -- `> set`/`> echo`/`> modify`
+		//! -- that the migrator passes through ARE accepted; DeriveToJob skips them render-neutrally.)  The v6
+		//! corpus is converted OFFLINE (migrator, plan Slice 2).  Load-once: re-loading a live Job is refused.
 		/// \return TRUE iff native v7-form AND derived with no error diagnostics
 		bool LoadAsciiSceneViaCst(
 			const char* filename

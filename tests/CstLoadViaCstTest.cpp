@@ -79,6 +79,19 @@ namespace
 		j->release();
 		std::remove( path );
 	}
+
+	// Assert LoadAsciiSceneViaCst ACCEPTS a scene carrying render-side `>` directives (NOT false-rejected --
+	// the migrator passes `> set`/`> echo`/`> modify` through; DeriveToJob skips them render-neutrally).
+	void AcceptCase( const char* label, const char* path, const std::string& scene )
+	{
+		if( !WriteTmp( path, scene ) ) { Check( false, std::string( label ) + ": write temp scene" ); return; }
+		Job* j = new Job();
+		const bool ok = j->LoadAsciiSceneViaCst( path );
+		Check( ok, std::string( label ) + ": LoadAsciiSceneViaCst ACCEPTS (render-side > directive not false-rejected)" );
+		Check( j->GetCstDocument() != nullptr, std::string( label ) + ": Document retained" );
+		j->release();
+		std::remove( path );
+	}
 }
 
 int main()
@@ -105,23 +118,34 @@ int main()
 
 	// P1 fix: non-native-v7 input is REFUSED (not silently mis-derived -- e.g. a 3-iteration FOR -> 1 body).
 	RefuseCase( "v6 FOR loop refused", "/tmp/cst_loadvia_for.RISEscene",
-		"RISE ASCII SCENE 6\nFOR i 0 1 2\nsphere_geometry\n{\nname s\nradius 1\n}\nNEXT\n" );
+		"RISE ASCII SCENE 6\nFOR i 0 1 2\nsphere_geometry\n{\nname s\nradius 1\n}\nENDFOR\n" );
 	RefuseCase( "v6 `> run` directive refused", "/tmp/cst_loadvia_run.RISEscene",
 		"RISE ASCII SCENE 6\n> run somewhere/palette.RISEscript\n" );
 	RefuseCase( "missing version header refused", "/tmp/cst_loadvia_nohdr.RISEscene",
 		"sphere_geometry\n{\nname s\nradius 1\n}\n" );
 
+	// P1 (round-3 fix): a MIGRATED scene retains render-side `>` directives (the migrator passes `> set`/
+	// `> echo`/`> modify` through); they MUST be accepted, not false-rejected (else ~185 corpus scenes break).
+	AcceptCase( "> set accelerator accepted", "/tmp/cst_loadvia_set.RISEscene",
+		"RISE ASCII SCENE 6\n> set accelerator B 10 8\nsphere_geometry\n{\nname s\nradius 1\n}\n" );
+	AcceptCase( "> echo accepted", "/tmp/cst_loadvia_echo.RISEscene",
+		"RISE ASCII SCENE 6\n> echo loading the scene\nsphere_geometry\n{\nname s\nradius 1\n}\n" );
+
 	// P2 fix: load-once -- re-loading into a live Job is refused (Document/Scene desync otherwise).
+	// Use a DIFFERENT, otherwise-valid 2nd scene (distinct name) so ONLY the load-once guard can refuse it --
+	// loading the same file twice would mask a neutered guard behind the duplicate-name hard error.
 	{
-		const char* p = "/tmp/cst_loadvia_reload.RISEscene";
-		if( WriteTmp( p, "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 1\n}\n" ) ) {
+		const char* pa = "/tmp/cst_loadvia_reload_a.RISEscene";
+		const char* pb = "/tmp/cst_loadvia_reload_b.RISEscene";
+		if( WriteTmp( pa, "RISE ASCII SCENE 6\nsphere_geometry\n{\nname sa\nradius 1\n}\n" ) &&
+		    WriteTmp( pb, "RISE ASCII SCENE 6\nsphere_geometry\n{\nname sb\nradius 2\n}\n" ) ) {
 			Job* j = new Job();
-			const bool ok1 = j->LoadAsciiSceneViaCst( p );
-			const bool ok2 = j->LoadAsciiSceneViaCst( p );
+			const bool ok1 = j->LoadAsciiSceneViaCst( pa );
+			const bool ok2 = j->LoadAsciiSceneViaCst( pb );   // distinct valid scene -> only load-once can refuse it
 			Check( ok1, "reload: first load succeeds" );
-			Check( !ok2, "reload: second load REFUSED (load-once contract)" );
+			Check( !ok2, "reload: second load REFUSED by load-once (not masked by a dup-name error)" );
 			j->release();
-			std::remove( p );
+			std::remove( pa ); std::remove( pb );
 		}
 	}
 

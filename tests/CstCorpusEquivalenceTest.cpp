@@ -192,7 +192,7 @@ int main( int argc, char** argv )
 		pclose( pp );
 	}
 
-	int match = 0, mismatch = 0, legacyFail = 0, accepted = 0;
+	int match = 0, mismatch = 0, legacyFail = 0, accepted = 0, falseReject = 0;
 	std::map<std::string,int> mmReason, lfReason;
 	for( size_t k = 0; k < paths.size(); ++k ) {
 		const std::string& path = paths[k];
@@ -213,7 +213,11 @@ int main( int argc, char** argv )
 		const std::string dumpC = DumpJob( *jC );
 
 		if( !okL ) { ++legacyFail; ++lfReason[Reason(migrated)]; std::printf("LEGACY-FAIL[%-7s] %s\n", Reason(migrated).c_str(), path.c_str()); }
-		else if( dumpL == dumpC ) { ++match; }
+		else if( dumpL == dumpC ) {
+			++match;
+			if( !IsNativeV7Document( d ) ) { ++falseReject;
+				std::printf("FALSE-REJECT (derives MATCH but IsNativeV7Document=false -> LoadAsciiSceneViaCst would refuse it) %s\n", path.c_str()); }
+		}
 		else {
 			const std::string acc = KnownAccepted( path );
 			if( !acc.empty() ) { ++accepted; std::printf("ACCEPTED            %s -- %s\n", path.c_str(), acc.c_str()); }
@@ -223,10 +227,10 @@ int main( int argc, char** argv )
 		jL->release(); jC->release();
 	}
 
-	std::printf( "\n=== %zu scenes: %d MATCH, %d ACCEPTED, %d MISMATCH(unexpected), %d LEGACY-FAIL ===\n", paths.size(), match, accepted, mismatch, legacyFail );
+	std::printf( "\n=== %zu scenes: %d MATCH, %d ACCEPTED, %d MISMATCH(unexpected), %d LEGACY-FAIL, %d FALSE-REJECT ===\n", paths.size(), match, accepted, mismatch, legacyFail, falseReject );
 	for( std::map<std::string,int>::const_iterator it = mmReason.begin(); it != mmReason.end(); ++it )
 		std::printf( "  MISMATCH[%-7s] = %d\n", it->first.c_str(), it->second );
 	for( std::map<std::string,int>::const_iterator it = lfReason.begin(); it != lfReason.end(); ++it )
 		std::printf( "  LEGACY-FAIL[%-7s] = %d\n", it->first.c_str(), it->second );
-	return mismatch > 0 ? 1 : 0;   // CI: fail only on an UNEXPECTED mismatch
+	return ( mismatch > 0 || falseReject > 0 ) ? 1 : 0;   // CI: fail on an UNEXPECTED mismatch OR a native-v7 false-reject
 }

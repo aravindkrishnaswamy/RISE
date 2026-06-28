@@ -899,27 +899,50 @@ namespace
 
 namespace RISE { namespace Cst {
 
-// True iff `doc` is native v7-form: its only top-level non-chunk content is the `RISE ASCII SCENE <n>`
-// header (+ trivia).  A v6 construct (FOR/NEXT/DEFINE/`>`/stray) becomes a top-level token DeriveToJob would
-// SILENTLY skip -- so a loader can refuse an unconverted scene loudly instead of mis-deriving.  (SeqToVec is
-// the anon-namespace flattener above; it is TU-visible here.)
+// True iff `doc` is native v7-form -- loadable by the CST path WITHOUT mis-deriving.  The migrator's output
+// (plan Slice 2) is the contract: a `RISE ASCII SCENE <n>` header + chunks + render-side `>` directives.
+// `> set`/`> echo`/`> modify` are PASSED THROUGH by the migrator and skipped render-neutrally by DeriveToJob
+// (the corpus gate confirms those derive DumpJob-identical to legacy), so they are ALLOWED.  We REJECT only
+// the UN-migrated top-level constructs DeriveToJob would silently skip AND thereby mis-derive:
+//   * a `FOR`/`ENDFOR` loop      -- skipped => body derives once, not N times
+//   * a `> run`/`> load` include -- skipped => the included chunks are dropped
+// plus a missing / malformed `RISE ASCII SCENE` header.  We do NOT check the version NUMBER (the CST is
+// version-agnostic; a true version skew is caught downstream by DeriveToJob's descriptor validation).
+// ($()/@ macro refs inside a chunk VALUE are caught by DeriveToJob's numeric validation; a folded-away
+// DEFINE never reaches here, and a DEFINE with no surviving use is a render-neutral no-op.)  NOTE:
+// `> set light_rr_threshold` is the one render-AFFECTING `> set` the migrator passes through -- a
+// documented, DumpJob-blind cutover gap to be closed migrator-side (Slice 2), not by this loader guard.
+// (SeqToVec is the anon-namespace flattener above; it is TU-visible here.)
 bool IsNativeV7Document( const Document& doc )
 {
 	std::vector<NodeRef> items;
 	SeqToVec( doc.items, items );
-	int tok = 0;   // index among top-level Token nodes; the version header is exactly RISE ASCII SCENE <n>
+
+	// Group consecutive top-level WORD tokens into "lines" (a newline-bearing Trivia, or a Chunk, ends one),
+	// then classify each line by its FIRST token -- so a `> echo FOR done` is judged a directive (allowed),
+	// not a FOR loop.
+	bool sawHeader = false;
+	std::vector<std::string> line;
+	auto classify = [&]( const std::vector<std::string>& ln ) -> bool {   // true = native-v7 OK; false = reject
+		if( ln.empty() ) return true;
+		if( ln[0] == "RISE" ) {   // the version-header line
+			sawHeader = ( ln.size() >= 4 && ln[1] == "ASCII" && ln[2] == "SCENE" &&
+				!ln[3].empty() && ln[3].find_first_not_of( "0123456789" ) == std::string::npos );
+			return sawHeader;
+		}
+		if( ln[0] == ">" )        // a directive line: reject `> run`/`> load` (un-flattened include), allow the rest
+			return !( ln.size() >= 2 && ( ln[1] == "run" || ln[1] == "load" ) );
+		return false;             // FOR/ENDFOR/DEFINE/UNDEF / a bare stray at line start => NOT native v7
+	};
 	for( const NodeRef& c : items ) {
-		if( !c || c->kind != NodeKind::Token ) continue;   // Chunk / Param / Trivia are legitimate top-level content
-		const std::string& tt = c->text;
-		const bool headerTok =
-			( tok == 0 && tt == "RISE"  ) ||
-			( tok == 1 && tt == "ASCII" ) ||
-			( tok == 2 && tt == "SCENE" ) ||
-			( tok == 3 && !tt.empty() && tt.find_first_not_of( "0123456789" ) == std::string::npos );
-		if( !headerTok ) return false;   // a non-header top-level token => v6 construct / stray => NOT native v7
-		++tok;
+		if( !c ) continue;
+		if( c->kind == NodeKind::Token ) { line.push_back( c->text ); continue; }
+		const bool endsLine = ( c->kind == NodeKind::Chunk ) ||
+			( c->kind == NodeKind::Trivia && c->text.find( '\n' ) != std::string::npos );
+		if( endsLine ) { if( !classify( line ) ) return false; line.clear(); }
 	}
-	return tok == 4;   // require the full `RISE ASCII SCENE <n>` header (parity with the legacy version gate)
+	if( !classify( line ) ) return false;   // trailing line (no terminating newline)
+	return sawHeader;
 }
 
 Document ParseToCst( const std::string& bytes )

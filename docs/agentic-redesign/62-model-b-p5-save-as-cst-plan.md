@@ -82,8 +82,9 @@ So the hard algorithmic parts are done. **What's missing is wiring + provenance*
   `Migrate`** (D1: the corpus is converted OFFLINE in Slice 2; the library takes no dependency on the
   transition migrator), so the CST path loads NATIVE-v7 scenes.  **[IMPLEMENTED]** -- CstLoadViaCstTest
   proves `LoadAsciiSceneViaCst` == `LoadAsciiScene` (DumpJob) + Document retention on native-v7 scenes; it ENFORCES the
-  native-v7 contract (Cst::IsNativeV7Document -- a v6 construct or a missing header is REFUSED, not
-  mis-derived) + load-once.  Slice 2 extends the equivalence corpus-wide.  (It is a `Job` method for now; Slice 5 exposes it on
+  native-v7 contract (Cst::IsNativeV7Document -- a `FOR`/`ENDFOR` loop, a `> run`/`> load` include, or a
+  missing header is REFUSED, not mis-derived; render-side `> set`/`> echo`/`> modify` directives are ACCEPTED,
+  matching the migrator's pass-through) + load-once.  Slice 2 extends the equivalence corpus-wide.  (It is a `Job` method for now; Slice 5 exposes it on
   `IJobPriv` to wire the GUI/CLI.)
 - **Slice 2 — FULL CORPUS CONVERT (D1).** Run `tools/MigrateScenesV6toV7` over the ENTIRE corpus as one
   deliberate batch → the **SCENE-6 fold-all dual-readable** form (both the legacy runtime and the CST read
