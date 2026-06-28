@@ -156,11 +156,37 @@ the animation feature owns that field.
   old object-rebind / material-scale / rasterizer-radiance ops are subsumed (§2), not P0 primitives. *Ratified.*
 - **D-composition (O4): single-select.** *Ratified.*
 - **D-default (O5): implicit base-as-default.** *Recommended; not contested.*
-- **OPEN-1 — override syntax:** the `variant <name>` tag on a flat top-level chunk (§3.2; recommended —
-  fits the descriptor-driven parser, generalizes to any chunk type) vs material chunks nested inside the
-  `scene_variant` chunk (more cohesive but needs nested-chunk parsing). Recommend the **tag**.
+- **D-syntax (OPEN-1): RESOLVED (2026-06-28) — the `variant <name>` tag** on flat top-level chunks (§3.2);
+  it fits the descriptor-driven parser with no nested-chunk machinery and generalizes to any chunk type. The
+  nested-material-chunk alternative is a nice future affordance but adds real parser complexity for marginal
+  value today; explored + documented in §10 so a future add has an easy starting point.
 
-## 10. Read next
+## 10. Explored + deferred: material chunks nested in the `scene_variant`
+
+We considered expressing a variant's overrides as material chunks **nested inside** the `scene_variant` chunk:
+
+```
+scene_variant
+{
+    name           night
+    active_camera   night_hero
+    lambertian_luminaire_material { name soft_top_lum   exitance pnt_soft       scale 0.0 }
+    lambertian_luminaire_material { name lume_white      exitance pnt_lume_glow  scale 0.9 }
+}
+```
+
+This is more **cohesive** — a variant's entire delta reads in one place, with no `variant`-tagged chunks
+scattered across the file. We **deferred** it (decision 2026-06-28): it requires nested-chunk parsing the
+descriptor-driven grammar does not have (chunks are flat — params, not sub-chunks), which is real machinery
+for marginal value at P0, since the flat `variant <name>` tag (§3.2) expresses the same semantics.
+
+**If added later, the easy starting point:** the P0 `variant`-tag path already builds the variant-override
+store + the active-variant application (§3.4) — nesting is just *sugar* over it. Extend the `scene_variant`
+chunk parser to recognize a nested-chunk region and route each inner chunk through its normal `Finalize` with
+the enclosing variant supplied as an implicit `variant` tag. No new derive/apply semantics — only a parser
+front-end. A future implementer works off §3.2/§3.4, not from scratch.
+
+## 11. Read next
 
 - [62-model-b-p5-save-as-cst-plan.md](62-model-b-p5-save-as-cst-plan.md) — P5 plan; Slice 2 owns the
   `> modify` → `scene_variant` migrator conversion + the `light_rr_threshold` easy-convert.
