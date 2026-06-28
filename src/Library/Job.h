@@ -57,6 +57,8 @@
 
 namespace RISE
 {
+	namespace Cst { struct Document; }   // P5 (save-as-CST): the retained canonical CST; fwd-decl keeps Cst.h out of Job.h
+
 	//! Job - This is used to simplify the creation of a job, all things can be
 	//! easily accessed by name, no need to keep track of managers and such
 	class Job : public virtual IJobPriv, public Implementation::Reference
@@ -118,6 +120,11 @@ namespace RISE
 		std::unique_ptr<TransformSnapshot>			pLoadedTransforms;
 		// Phase 6.2 (§6.8): per-`override_object` chunk catalog.
 		std::unique_ptr<OverrideSpanIndex>			pOverrideSpans;
+
+		// P5 (save-as-CST, Slice 1): the retained canonical CST when the scene was loaded via
+		// LoadAsciiSceneViaCst (Model-B: Scene = derive(CST)); null for a legacy LoadAsciiScene.  Slices 3-4
+		// (edit/save) patch + serialize this.  unique_ptr<fwd-decl> is safe -- Job::~Job is out-of-line (Job.cpp).
+		std::unique_ptr<RISE::Cst::Document>		pCstDocument;
 
 		// L6b — canonical FrameStore allocated at the active camera's
 		// dims and threaded into every rasterizer factory.  Per
@@ -2742,6 +2749,19 @@ namespace RISE
 		bool LoadAsciiScene(
 			const char* filename							///< [in] Name of the file containing the scene
 			);
+
+		//! P5 Slice 1: load a scene by building the canonical CST (ParseToCst) and deriving the Scene from
+		//! it (DeriveToJob), RETAINING the Document for edit/save (Model-B "Scene = derive(CST)").  Additive +
+		//! flagged -- the legacy LoadAsciiScene above stays the default.  Input must be NATIVE v7-form
+		//! (macro/expr/directive-free); the v6 corpus is converted OFFLINE (migrator, plan Slice 2), so the
+		//! runtime takes no dependency on the migrator.
+		/// \return TRUE if successful (DeriveToJob produced no error diagnostics)
+		bool LoadAsciiSceneViaCst(
+			const char* filename
+			);
+
+		//! P5: the retained canonical CST (null unless the scene was loaded via LoadAsciiSceneViaCst).
+		const RISE::Cst::Document*	GetCstDocument() const { return pCstDocument.get(); }
 
 		//! Runs an ascii script
 		/// \return TRUE if successful, FALSE otherwise

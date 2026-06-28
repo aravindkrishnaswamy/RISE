@@ -77,10 +77,13 @@ So the hard algorithmic parts are done. **What's missing is wiring + provenance*
   `text → Migrate → ParseToCst → retain Document → DeriveToJob → assert Scene == legacy-parsed Scene` (reuse
   the corpus gate's DumpJob oracle). Proves G1 end-to-end + pins fidelity, touching nothing live. *Low risk;
   the de-risking step.*
-- **Slice 1 — load via the CST (flagged, additive).** `Job::LoadAsciiScene` optionally builds + retains a
-  `Document` (Migrate-in-memory → `ParseToCst` → `DeriveToJob`); Scene = derive(CST); the legacy load stays
-  the default. Corpus-gate-verified identical Scene. Enables the convert (the runtime can read a CST scene)
-  without yet touching the on-disk corpus.
+- **Slice 1 — load via the CST (flagged, additive).** A new `Job::LoadAsciiSceneViaCst` reads the file -> `ParseToCst` -> retains the `Document` ->
+  `DeriveToJob`; Scene = derive(CST); the legacy `LoadAsciiScene` stays the default.  **NO runtime
+  `Migrate`** (D1: the corpus is converted OFFLINE in Slice 2; the library takes no dependency on the
+  transition migrator), so the CST path loads NATIVE-v7 scenes.  **[IMPLEMENTED]** -- CstLoadViaCstTest
+  proves `LoadAsciiSceneViaCst` == `LoadAsciiScene` (DumpJob) + Document retention on native-v7 scenes;
+  Slice 2 extends the equivalence corpus-wide.  (It is a `Job` method for now; Slice 5 exposes it on
+  `IJobPriv` to wire the GUI/CLI.)
 - **Slice 2 — FULL CORPUS CONVERT (D1).** Run `tools/MigrateScenesV6toV7` over the ENTIRE corpus as one
   deliberate batch → the **SCENE-6 fold-all dual-readable** form (both the legacy runtime and the CST read
   it). Resolve the convert TAIL here: the 2 `sss` energy-conservation divergences + the 27 media-missing

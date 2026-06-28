@@ -20,6 +20,9 @@
 #include <cstring>
 #define _USE_MATH_DEFINES
 #include "Job.h"
+#include "Cst/Cst.h"   // P5 (save-as-CST): ParseToCst / DeriveToJob / Document
+#include <fstream>
+#include <sstream>
 #include "RISE_API.h"
 #include "Rendering/Film.h"		// kDefaultFilm* / kMaxFilm* constants
 #include <algorithm>
@@ -9397,6 +9400,45 @@ bool Job::LoadAsciiScene(
 		PushJobFrameStoreToRasterizers();
 	}
 	return bRet;
+}
+
+// P5 (Model-B, Slice 1): load a scene by building the canonical CST and deriving the Scene from it,
+// RETAINING the Document for edit/save.  Additive + flagged -- the legacy LoadAsciiScene stays the default.
+bool Job::LoadAsciiSceneViaCst( const char* filename )
+{
+	if( !filename ) {
+		return false;
+	}
+
+	// Read the scene file as-given (same as the legacy loader's top-level open; inner media resolves via the
+	// ambient GlobalMediaPathLocator during DeriveToJob).  Input must be NATIVE v7-form -- the v6 corpus is
+	// converted OFFLINE (migrator, plan Slice 2); the runtime does NOT Migrate.
+	std::ifstream in( filename, std::ios::binary );
+	if( !in ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::LoadAsciiSceneViaCst:: cannot open scene file '%s'", filename );
+		return false;
+	}
+	std::stringstream ss;
+	ss << in.rdbuf();
+	const std::string text = ss.str();
+	if( text.empty() ) {
+		return false;
+	}
+
+	// Model-B: the canonical CST is the source; the Scene is derive(CST).
+	std::unique_ptr<RISE::Cst::Document> doc( new RISE::Cst::Document( RISE::Cst::ParseToCst( text ) ) );
+	std::vector<std::string> diags;
+	RISE::Cst::DeriveToJob( *doc, *this, &diags );
+	if( !diags.empty() ) {
+		for( size_t i = 0; i < diags.size() && i < 8u; ++i ) {
+			GlobalLog()->PrintEx( eLog_Error, "Job::LoadAsciiSceneViaCst:: derive diagnostic: %s", diags[i].c_str() );
+		}
+		return false;   // refuse-all: a malformed / unsupported (v6-construct) scene applies nothing
+	}
+
+	pCstDocument = std::move( doc );    // RETAIN the canonical CST for edit/save (Slices 3-4)
+	PushJobFrameStoreToRasterizers();   // L6b parity with LoadAsciiScene
+	return true;
 }
 
 // L6b — push the canonical FrameStore to every registered rasterizer.
