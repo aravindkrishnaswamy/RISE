@@ -99,10 +99,14 @@ lambertian_luminaire_material { name lume_white      variant night   exitance pn
 
 ### 3.4 Derive integration (Model-B)
 
-`DeriveToJob` applies the base chunks; then, if `active_scene_variant` names a variant, it (a) applies that
-variant's `variant`-tagged chunks as overrides (replace base same-named), and (b) applies the variant's
-`active_camera` via `SetActiveCamera`. No `>` layer; CST-loadable / -editable / -saveable end-to-end.
-Switching variants = a CST edit to `active_scene_variant` → re-derive (full or incremental per [62](62-model-b-p5-save-as-cst-plan.md) D2; a handful of overrides is sub-millisecond).
+`DeriveToJob` **bakes** the active variant: it registers, per material *name*, the ACTIVE definition (the
+variant's override if `active_scene_variant` overrides that name, else the base) so objects bind to the active
+material BY NAME at derive time — there is NO post-derive re-pointing of a built scene. (Objects bind materials
+by pointer — the correct render-time form, realize bakes geometry only — and re-pointing a built graph is the
+fragile mutation pattern Model-B avoids: change the source + re-derive, don't mutate.) It also applies the
+active variant's `active_camera` via `SetActiveCamera`. No `>` layer; CST-loadable / -editable / -saveable
+end-to-end. Switching variants = a CST edit to `active_scene_variant` → re-derive (full per [62](62-model-b-p5-save-as-cst-plan.md) D2; sub-millisecond). CST-native: the whole-document derive sees the active variant before
+objects resolve; the legacy streaming reader (slated for deletion) parses the chunks and renders the base.
 
 ## 4. Why an overlay, not N full scenes
 
@@ -195,32 +199,56 @@ front-end. A future implementer works off §3.2/§3.4, not from scratch.
 - [src/Library/Parsers/README.md](../../src/Library/Parsers/README.md) — how to add the `scene_variant` chunk +
   the `variant` tag (descriptor-driven `IAsciiChunkParser`).
 
-## 12. P0 implementation build sheet (turnkey — resolved against the code 2026-06-28)
 
-Every integration point below is verified against the tree; the build is mechanical execution + the review loop.
+## 12. P0 implementation build sheet (design B: BAKE-AT-DERIVE — ratified 2026-06-28)
 
-**Precedents to copy:** the named-animation feature (`animation` chunk + `DeclareAnimation(...active)` + `> modify animation` selection) and the `static`-cross-chunk parse-state reset (`ClearParseState` / `ClearChunkParserState`, called by BOTH load paths) — the seam that lets one apply-pass serve both.
+Ratified pivot from re-point to bake-at-derive (the pointer-binding-fragility discussion, §3.4): the variant is
+baked DURING the CST derive so objects bind to the active material by name from the start. This DROPS the
+trickiest parts of the re-point design — no object iteration, no `const`-callback, no light-gen bump, no
+override store, no 26-site Job rewire. "Derive the right scene," not "mutate a built one."
 
-**(a) `IJob` ABI** — add 4 NON-pure virtuals (default `{return false;}` / `{}`, like `SetActiveAnimation` at `IJob.h:2797`) after `GetActiveAnimationName` (`IJob.h:2823`): `DeclareSceneVariant(name, active_camera)`, `SetActiveSceneVariant(name)`, `SetPendingMaterialVariant(variant)`, `ApplyActiveSceneVariant()`. (Non-pure = no out-of-tree implementer breaks.)
+**(a) Chunks** (`AsciiSceneParser.cpp`, mirror `AnimationAsciiChunkParser:9666`): `scene_variant { name <REQUIRED>
+active_camera <opt, ValueKind::Reference{Camera}> }` → Finalize `DeclareSceneVariant(name, camera)` (empty name ⇒
+return false). `active_scene_variant { name <opt> }` → Finalize `SetActiveSceneVariant(name)` (""/"none"/absent ⇒
+base default). Register after `:9909`.
 
-**(b) `Job` store** (after `composedMaterialNames`, `Job.h:281`): `struct SceneVariantData { String activeCamera; std::map<String,IMaterial*> materialOverrides; };` + `std::map<String,SceneVariantData> sceneVariants;` + `String activeSceneVariant;` + `String pendingMaterialVariant;`. Decls (after `Job.h:2840`): the 4 IJob overrides (NO `override` keyword — Job convention) + `RegisterMaterialOrVariant(IMaterial*,name)` + `ClearSceneVariants()`. Defs in `Job.cpp` near `Job::DeclareAnimation` (`9633`).
+**(b) `variant` descriptor tag** — a shared `AddVariantTagParam(cd)` (optional `variant` String) called in each of
+the 26 material `Describe()` IIFEs (so `variant` parses; descriptor=accepted-set invariant holds). The material
+`Finalize` IGNORES `variant` — it is a marker the derive reads. NO Job-side material rewire / pending-variant /
+override store.
 
-**(c) Material routing** — the 26 material `RegisterOrDiag(pMatManager, …, name, "material")` calls (24 `pMaterial` + 2 `pLumMaterial` at `Job.cpp:4215,4246` — the luminaires the watch night-mode needs) become `RegisterMaterialOrVariant(pMaterial|pLumMaterial, name)`. `RegisterMaterialOrVariant`: if `pendingMaterialVariant` non-empty → addref into `sceneVariants[pending].materialOverrides[name]` (last-write-wins releases prior); else `RegisterOrDiag(pMatManager,…)`. Behavior-neutral until the parser sets `pendingMaterialVariant`.
+**(c) IJob/Job records** (for GUI + save; the bake is derive-local) — 2 non-pure IJob virtuals after `IJob.h:2823`:
+`DeclareSceneVariant(name, active_camera)`, `SetActiveSceneVariant(name)`. `Job` (store near `:281`, decls near
+`:2840`, defs near `:9633`, NO `override` keyword): `std::map<String,String> sceneVariantCameras` + `String
+activeSceneVariant`; methods record; add `GetActiveSceneVariant()` + `ClearSceneVariants()` (called at both load
+resets — `AsciiSceneParser ~:10569`, `Cst ClearChunkParserState ~:1380`).
 
-**(d) Apply (`ApplyActiveSceneVariant`, the crux)** — objects bind materials by POINTER (realize bakes geometry only; `RayCaster.cpp:159`), so the apply re-points objects, it does NOT just swap the manager entry. Build `remap: const IMaterial*(base ptr from pMatManager->GetItem(name)) -> IMaterial*(override)`; a base miss = a dangling-override diagnostic. Re-point: `IObjectManager : IManager<IObjectPriv>` so enumerate object NAMES (IManager name-enum) → `pObjectManager->GetItem(name)` (NON-const → can call `AssignMaterial`, avoiding a const_cast on the `const`-ref `EnumerateObjects(IEnumCallback<IObjectPriv>)` callback; confirm SceneEditor.cpp:195's pattern at build). For each object whose `GetMaterial()` is a remap key → `AssignMaterial(*override)`; track `anyEmitter` (base or override `GetEmitter()`); if any → `BumpSceneLightGen(pScene)` (regenerates the light list — handles the luminaire dual-role, mirroring `Job::SetObjectMaterial`). Then `pScene->SetActiveCamera(activeCamera)` if set. Empty `activeSceneVariant` → no-op (base default); unknown active variant → warn + base.
+**(d) CST bake (the crux — `Cst.cpp DeriveToJob`)** — between PASS-1 and PASS-2, PRE-SCAN the chunks →
+`activeName` (the `active_scene_variant` chunk's `name`), `activeCamera` (that variant's `scene_variant` chunk's
+`active_camera`), `activeOverriddenNames` (material chunks whose `variant` == activeName, keyed by `name`). PASS-2
+loop: SKIP a material chunk's `Finalize` iff (it has `variant` != activeName) [inactive override] OR (no `variant`
+but its `name` ∈ activeOverriddenNames) [overridden base]; `Finalize` everything else. The active override
+(`variant`==activeName) Finalizes → registers under its `name` (the skipped base left the name free → no
+collision); objects (later, definitions-before-use) bind that name → the active material. After the loop
+(guard `diags.empty()`): `pJob.SetActiveCamera(activeCamera)` if set. No re-point, no light-gen bump (lights
+build from correctly-bound objects).
 
-**(e) Chunks** (`AsciiSceneParser.cpp`, mirror `AnimationAsciiChunkParser:9666`): `SceneVariantAsciiChunkParser` (Finalize: name REQUIRED else false → `DeclareSceneVariant`; `active_camera` ValueKind::Reference{Camera}) + `ActiveSceneVariantAsciiChunkParser` (Finalize → `SetActiveSceneVariant`). Register after `9909`. Add `static AddVariantTagParam(cd)` (an optional `variant` String param) and CALL it in each of the 26 material `Describe()` IIFEs (descriptor = accepted-set invariant; without it the parser rejects `variant`).
+**(e) Legacy path** (`AsciiSceneParser ParseChunk`, 1 central site) — a streaming reader can't pre-scan and
+scene_variant is CST-native, so legacy renders the BASE: SKIP a material chunk's `Finalize` iff it carries a
+`variant` tag (prevents the override↔base dup-name collision). The `scene_variant`/`active_scene_variant` chunks
+Finalize normally (record only). No material/camera bake in legacy.
 
-**(f) Pending-variant routing (central, 2 sites)** — around the single `Finalize` call in the default `ParseChunk` (`AsciiSceneParser.cpp:9929`) AND the CST PASS-2 loop (`Cst.cpp:~1441`): if the chunk's category is Material, `pJob.SetPendingMaterialVariant(bag.GetString("variant",""))` before, and `SetPendingMaterialVariant("")` UNCONDITIONALLY after (no leak — the `s_painterColors` reset discipline).
+**(f) CST incremental-derive** — `DeriveToJobIncremental` REFUSES (full re-derive) when the edited chunk is
+`scene_variant` / `active_scene_variant` / a `variant`-tagged material (the bake is a whole-document decision) —
+mirror existing refusals (`Cst.cpp ~:1622`). `IsNativeV7Document` accepts all three (`NodeKind::Chunk`).
 
-**(g) Apply hook (both paths reach it)** — `pJob.ApplyActiveSceneVariant()` at: legacy end-of-load top-level block (`AsciiSceneParser.cpp:~11116`, beside the snapshot population, `depthGuard.isTopLevel` so a `> load` child doesn't fire early) AND CST `DeriveToJob` end (`Cst.cpp:~1468`, guarded on `diags.empty()`). Apply at derive-end (not realize) so DumpJob + the editor see it pre-render.
+**(g) Build projects** — folds into existing files (no new `.cpp`/`.h`) → no build-project edits. Tests
+auto-discover (`run_all_tests.sh` globs `tests/*.cpp`).
 
-**(h) Reset** — `ClearSceneVariants()` (release stored override refs) at both reset sites: legacy `ParseAndLoadScene` metadata clear (`~10569`) + `Cst.cpp` `ClearChunkParserState` (`~1380`) — re-derive must not accumulate stale overrides.
-
-**(i) CST** — the chunk + `variant` param auto-flow through `DeriveToJob` (descriptor-driven). `IsNativeV7Document` accepts them (they're `NodeKind::Chunk`, not `>`/FOR — verify). `DeriveToJobIncremental` must REFUSE (fall back to full derive) when the edited chunk is `scene_variant`/`active_scene_variant`/a `variant`-tagged material (same-name-as-base collision) — mirror the existing refusals (`Cst.cpp:~1622`).
-
-**(j) Build projects** — P0 folds into existing files (no new `.cpp`/`.h`) → NO build-project edits. Tests auto-discover (`run_all_tests.sh` globs `tests/*.cpp`).
-
-**(k) Tests** (`tests/SceneVariantTest.cpp` + `scenes/Tests/SceneVariants/*.RISEscene`, mirror `CstRenderEquivalence.h`'s DumpJob which surfaces luminaire exitance + active_camera): name-required parse error; override-by-name applies (luminaire `scale 0` → object's material exitance ≈ 0) via BOTH legacy + CST; dangling-override diagnostic; base-as-default (no override when inactive); active-camera selection; save round-trip (`SerializeCst`); **CST == legacy DumpJob** with the variant active (the headline gate).
-
-**Risks:** const-callback mutation (use name-enum+GetItem, (d)); luminaire light-gen (BumpSceneLightGen, (d)); incremental-derive collision (refuse, (i)); `pendingMaterialVariant` leak (unconditional clear, (f)); load-once / nested `> load` (top-level-only apply, (g)).
+**(h) Tests** (`tests/SceneVariantTest.cpp` + `scenes/Tests/SceneVariants/*`, mirror `CstRenderEquivalence.h`'s
+DumpJob — surfaces luminaire exitance + active_camera): via CST `DeriveToJob` — name-required parse error; night
+active ⇒ the soft-luminaire object's material exitance ≈ 0 AND the marker object's material glows AND
+`GetActiveCameraName` == the night camera; base-default (no active ⇒ base values); a `variant` overriding a
+non-existent base ⇒ diagnostic. Legacy ⇒ base (variant materials skipped). CST==legacy DumpJob for the BASE case;
+for the active case assert the CST bake (legacy = base, documented). Risks: pre-scan reads chunk params before
+Finalize (resolve against DeriveToJob's PASS-1 bags); legacy central-skip correctness; incremental refusal.
