@@ -243,14 +243,15 @@ scene_variant is CST-native, so legacy renders the BASE: SKIP a material chunk's
 `variant` tag (prevents the override↔base dup-name collision). The `scene_variant`/`active_scene_variant` chunks
 Finalize normally (record only). No material/camera bake in legacy.
 
-**(f) CST incremental-derive** — `DeriveToJobIncremental` REFUSES (full re-derive) when the edited chunk is
-`scene_variant` / `active_scene_variant` / a `variant`-tagged material (the bake is a whole-document decision) —
-mirror existing refusals (`Cst.cpp ~:1622`). `IsNativeV7Document` accepts all three (`NodeKind::Chunk`).
+**(f) CST incremental-derive** — `DeriveToJobIncremental` REFUSES (full re-derive) for ANY scene that has
+variants, via the O(1) `pJob.HasSceneVariants()` engine signal (the bake is a whole-document decision, so a
+per-edited-chunk refusal isn't needed — refusing the whole variant scene is strictly safe and O(1)).
+`IsNativeV7Document` accepts `scene_variant` / `active_scene_variant` / `variant`-tagged materials (all `NodeKind::Chunk`).
 
 **(g) Build projects** — folds into existing files (no new `.cpp`/`.h`) → no build-project edits. Tests
 auto-discover (`run_all_tests.sh` globs `tests/*.cpp`).
 
-**(h) Tests** (`tests/SceneVariantTest.cpp` + `scenes/Tests/SceneVariants/*`, mirror `CstRenderEquivalence.h`'s
+**(h) Tests** (`tests/SceneVariantTest.cpp` — synthetic inline scene strings, no external scene files — mirror `CstRenderEquivalence.h`'s
 DumpJob — surfaces luminaire exitance + active_camera): via CST `DeriveToJob` — name-required parse error; night
 active ⇒ the soft-luminaire object's material exitance ≈ 0 AND the marker object's material glows AND
 `GetActiveCameraName` == the night camera; base-default (no active ⇒ base values); a `variant` overriding a

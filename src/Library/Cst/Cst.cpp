@@ -1517,6 +1517,8 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 		}
 	}
 	// scene_variant: apply the active variant's camera (its material overrides were baked above).
+	// `none` is the universal no-reference sentinel (cf. `material none`) -> no camera override, NOT a
+	// missing-camera error; exclude it from the diagnostic below.
 	if( diags.empty() && !svActiveName.empty() && !svActiveCamera.empty() && svActiveCamera != "none" )
 		if( !pJob.SetActiveCamera( svActiveCamera.c_str() ) )   // Reference not existence-checked in PASS-1 -> diag here
 			diags.push_back( "scene_variant `" + svActiveName + "`: active_camera `" + svActiveCamera + "` is not a declared camera" );
