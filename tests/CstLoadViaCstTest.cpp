@@ -80,14 +80,15 @@ namespace
 		std::remove( path );
 	}
 
-	// Assert LoadAsciiSceneViaCst ACCEPTS a scene carrying render-side `>` directives (NOT false-rejected --
-	// the migrator passes `> set`/`> echo`/`> modify` through; DeriveToJob skips them render-neutrally).
+	// Assert LoadAsciiSceneViaCst ACCEPTS a scene carrying a render-NEUTRAL `>` directive (`> echo` / `> set
+	// accelerator` -- the migrator passes those through; DeriveToJob skips them render-neutrally).  (Render-
+	// AFFECTING `> modify` / `> set <other>` are REFUSED -- see the RefuseCases below.)
 	void AcceptCase( const char* label, const char* path, const std::string& scene )
 	{
 		if( !WriteTmp( path, scene ) ) { Check( false, std::string( label ) + ": write temp scene" ); return; }
 		Job* j = new Job();
 		const bool ok = j->LoadAsciiSceneViaCst( path );
-		Check( ok, std::string( label ) + ": LoadAsciiSceneViaCst ACCEPTS (render-side > directive not false-rejected)" );
+		Check( ok, std::string( label ) + ": LoadAsciiSceneViaCst ACCEPTS (render-neutral > directive not false-rejected)" );
 		Check( j->GetCstDocument() != nullptr, std::string( label ) + ": Document retained" );
 		j->release();
 		std::remove( path );
@@ -132,8 +133,9 @@ int main()
 	RefuseCase( "render-affecting `> set light_rr_threshold` refused", "/tmp/cst_loadvia_rr.RISEscene",
 		"RISE ASCII SCENE 6\n> set light_rr_threshold 0.5\nsphere_geometry\n{\nname s\nradius 1\n}\n" );
 
-	// P1 (round-3 fix): a MIGRATED scene retains render-side `>` directives (the migrator passes `> set`/
-	// `> echo`/`> modify` through); they MUST be accepted, not false-rejected (else ~185 corpus scenes break).
+	// A MIGRATED scene retains render-NEUTRAL `>` directives (`> echo`, `> set accelerator`); these MUST be
+	// accepted, not false-rejected (else ~185 corpus scenes break).  (Round-4: render-AFFECTING `> modify` /
+	// `> set <other>` are refused instead -- the RefuseCases above.)
 	AcceptCase( "> set accelerator accepted", "/tmp/cst_loadvia_set.RISEscene",
 		"RISE ASCII SCENE 6\n> set accelerator B 10 8\nsphere_geometry\n{\nname s\nradius 1\n}\n" );
 	AcceptCase( "> echo accepted", "/tmp/cst_loadvia_echo.RISEscene",
