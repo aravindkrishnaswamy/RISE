@@ -83,7 +83,7 @@ lambertian_luminaire_material { name lume_white      variant night   exitance pn
 ```
 
 - A `variant night` chunk's `name` must match a base chunk: a **dangling override** (no base material of that
-  name — typically a typo of the base name) is **REFUSED** with a derive diagnostic, so it cannot silently
+  name — typically a typo of the base name) is **REFUSED** (refuse-all — the whole derive applies nothing) with a derive diagnostic, so it cannot silently
   register a phantom material while the intended base stays unchanged (the exact silent mis-render §1 exists to
   prevent). Add-new (a `variant` chunk introducing a brand-new name) is **out of P0 scope** — a variant has no
   way to bind a new material to an object yet (variant-tagged *objects* are a later extension, §5), so a
@@ -95,7 +95,7 @@ lambertian_luminaire_material { name lume_white      variant night   exitance pn
 
 - The base scene (no overrides) is the implicit **default**.
 - A stored top-level **`active_scene_variant <name>`** selects one (round-trips through save — a
-  panel-editable property that *is* storable). `none` / absent = the base default.
+  panel-editable property that *is* storable). `none` / absent = the base default; a name matching neither a declared `scene_variant` nor any `variant`-tagged chunk is REFUSED (a selector typo — symmetric to a dangling override).
 - **Single-select** (one active variant at a time — matches `> modify`; the watch needs only day/night).
 - GUI: a **"Variants" accordion** with a selector, mirroring named-animation-paths; CLI/agent: a CST edit to
   `active_scene_variant` → re-derive.
@@ -208,7 +208,7 @@ front-end. A future implementer works off §3.2/§3.4, not from scratch.
 Ratified pivot from re-point to bake-at-derive (the pointer-binding-fragility discussion, §3.4): the variant is
 baked DURING the CST derive so objects bind to the active material by name from the start. This DROPS the
 trickiest parts of the re-point design — no object iteration, no `const`-callback, no light-gen bump, no
-override store, no 26-site Job rewire. "Derive the right scene," not "mutate a built one."
+override store, no per-material Job rewire. "Derive the right scene," not "mutate a built one."
 
 **(a) Chunks** (`AsciiSceneParser.cpp`, mirror `AnimationAsciiChunkParser:9666`): `scene_variant { name <REQUIRED>
 active_camera <opt, ValueKind::Reference{Camera}> }` → Finalize `DeclareSceneVariant(name, camera)` (empty name ⇒
@@ -216,15 +216,17 @@ return false). `active_scene_variant { name <opt> }` → Finalize `SetActiveScen
 base default). Register after `:9909`.
 
 **(b) `variant` descriptor tag** — a shared `AddVariantTagParam(cd)` (optional `variant` String) called in each of
-the 26 material `Describe()` IIFEs (so `variant` parses; descriptor=accepted-set invariant holds). The material
+the 25 material `Describe()` IIFEs (so `variant` parses; descriptor=accepted-set invariant holds). The material
 `Finalize` IGNORES `variant` — it is a marker the derive reads. NO Job-side material rewire / pending-variant /
 override store.
 
-**(c) IJob/Job records** (for GUI + save; the bake is derive-local) — 2 non-pure IJob virtuals after `IJob.h:2823`:
-`DeclareSceneVariant(name, active_camera)`, `SetActiveSceneVariant(name)`. `Job` (store near `:281`, decls near
-`:2840`, defs near `:9633`, NO `override` keyword): `std::map<String,String> sceneVariantCameras` + `String
-activeSceneVariant`; methods record; add `GetActiveSceneVariant()` + `ClearSceneVariants()` (called at both load
-resets — `AsciiSceneParser ~:10569`, `Cst ClearChunkParserState ~:1380`).
+**(c) IJob/Job records** (for GUI + save; the bake is derive-local) — 5 non-pure IJob virtuals after `IJob.h:2823`:
+`DeclareSceneVariant`, `SetActiveSceneVariant`, `GetActiveSceneVariant`, `HasSceneVariants` (the incremental-refuse
+signal), `ClearSceneVariants`. `Job` (store near `:281`, decls near `:2840`, defs near `:9633`, NO `override`
+keyword): `std::map<String,String> sceneVariantCameras` + `String activeSceneVariant`; methods record.
+`ClearSceneVariants` is wired at the per-derive resets: `Job::InitializeContainers` (beside `m_objectOverrideCount
+= 0` — the creation + legacy reset) AND `DeriveToJob`'s start (CST re-derive; `ClearChunkParserState` clears
+PARSER state, not Job state).
 
 **(d) CST bake (the crux — `Cst.cpp DeriveToJob`)** — between PASS-1 and PASS-2, PRE-SCAN the chunks →
 `activeName` (the `active_scene_variant` chunk's `name`), `activeCamera` (that variant's `scene_variant` chunk's

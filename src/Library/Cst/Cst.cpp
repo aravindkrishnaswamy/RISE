@@ -1425,14 +1425,26 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	std::set<std::string> svOverriddenNames;
 	if( !svActiveName.empty() ) {
 		std::set<std::string> svBaseMaterialNames;
+		bool svActiveDeclared = false;
 		for( const Pending& p : pending ) {
-			if( p.keyword == "scene_variant" && p.bag.GetString( "name", "" ) == svActiveName )
+			if( p.keyword == "scene_variant" && p.bag.GetString( "name", "" ) == svActiveName ) {
 				svActiveCamera = p.bag.GetString( "active_camera", "" );
+				svActiveDeclared = true;
+			}
 			if( p.parser->Describe().category != ChunkCategory::Material ) continue;
 			const std::string mv = p.bag.GetString( "variant", "" );
-			if( mv == svActiveName )  svOverriddenNames.insert( p.bag.GetString( "name", "noname" ) );
-			else if( mv.empty() )     svBaseMaterialNames.insert( p.bag.GetString( "name", "noname" ) );
+			const std::string mn = p.bag.GetString( "name", "noname" );
+			if( mv == svActiveName ) { svOverriddenNames.insert( mn ); svActiveDeclared = true; }
+			else if( mv.empty() && !svBaseMaterialNames.insert( mn ).second )
+				// Two untagged base materials of the same name: a dup-name error (88ca744d) the override-skip below
+				// would otherwise MASK (both bases skipped -> the PASS-2 dup-name hard-error never fires).
+				diags.push_back( "scene_variant: duplicate base material name `" + mn + "`" );
 		}
+		// An active_scene_variant naming a variant neither declared (a scene_variant chunk) nor used (a variant-
+		// tagged material) is a selector typo -- the symmetric twin of a dangling override.  Refuse, don't silently
+		// fall back to the base.
+		if( !svActiveDeclared )
+			diags.push_back( "active_scene_variant `" + svActiveName + "` names no declared scene_variant (typo?)" );
 		// A variant override whose name has NO base material is a dangling override (typically a typo of the base
 		// name): it would silently register a phantom material while the intended base stays unchanged -- exactly
 		// the silent mis-render this feature exists to prevent (doc 63 §3.2).  Refuse-all so the author fixes it.
@@ -1505,7 +1517,7 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 		}
 	}
 	// scene_variant: apply the active variant's camera (its material overrides were baked above).
-	if( diags.empty() && !svActiveName.empty() && !svActiveCamera.empty() )
+	if( diags.empty() && !svActiveName.empty() && !svActiveCamera.empty() && svActiveCamera != "none" )
 		if( !pJob.SetActiveCamera( svActiveCamera.c_str() ) )   // Reference not existence-checked in PASS-1 -> diag here
 			diags.push_back( "scene_variant `" + svActiveName + "`: active_camera `" + svActiveCamera + "` is not a declared camera" );
 	return count;

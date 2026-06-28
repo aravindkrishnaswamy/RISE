@@ -107,10 +107,10 @@ int main()
 		j->release();
 	}
 
-	// 4. An active variant that overrides NOTHING (the `night` override is inactive) -> base.
+	// 4. An active_scene_variant naming an UNDECLARED variant (a selector typo) is refused, not silently base.
 	{
-		Job* j; DeriveText( SceneWithActive( "day" ), j );
-		Check( LumExitanceR( j, "lum" ) > 1.0, "active `day` (no `day` overrides): the `night` override is inactive -> base" );
+		Job* j; const int d = DeriveText( SceneWithActive( "day" ), j );   // only `night` is declared
+		Check( d > 0, "active an undeclared variant (`day`) is refused (selector typo guard)" );
 		j->release();
 	}
 
@@ -172,6 +172,53 @@ int main()
 		std::vector<std::string> diags;
 		DeriveToJob( doc, *j, &diags );
 		Check( !diags.empty(), "variant active_camera referencing a non-existent camera is refused (diagnostic)" );
+		j->release();
+	}
+
+	// 10. A DECLARED variant with no overrides is active -> base (the active-undeclared guard does not over-refuse).
+	{
+		Job* j = new Job();
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
+			"scene_variant\n{\nname quiet\n}\n"
+			"active_scene_variant\n{\nname quiet\n}\n" );
+		std::vector<std::string> diags; DeriveToJob( doc, *j, &diags );
+		Check( diags.empty(), "a declared no-override variant is active -> derives clean (not over-refused)" );
+		Check( LumExitanceR( j, "lum" ) > 1.0, "declared no-override variant -> base material" );
+		j->release();
+	}
+
+	// 11. A duplicate untagged base material name (masked by an active override skip) is refused (review P2-b).
+	{
+		Job* j = new Job();
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 6.0\nmaterial none\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nvariant night\nexitance white\nscale 0.0\nmaterial none\n}\n"
+			"scene_variant\n{\nname night\n}\n"
+			"active_scene_variant\n{\nname night\n}\n" );
+		std::vector<std::string> diags; DeriveToJob( doc, *j, &diags );
+		Check( !diags.empty(), "duplicate base material name (masked by the override skip) is refused" );
+		j->release();
+	}
+
+	// 12. active_camera `none` is the no-override sentinel, not a missing-camera error (review P2-a).
+	{
+		Job* j = new Job();
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nvariant night\nexitance white\nscale 0.0\nmaterial none\n}\n"
+			"scene_variant\n{\nname night\nactive_camera none\n}\n"
+			"active_scene_variant\n{\nname night\n}\n" );
+		std::vector<std::string> diags; DeriveToJob( doc, *j, &diags );
+		Check( diags.empty(), "active_camera `none` derives clean (no missing-camera diagnostic)" );
+		Check( LumExitanceR( j, "lum" ) < 0.01, "active_camera `none`: the material override still bakes" );
 		j->release();
 	}
 
