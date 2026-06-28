@@ -82,9 +82,12 @@ lambertian_luminaire_material { name soft_top_lum   variant night   exitance pnt
 lambertian_luminaire_material { name lume_white      variant night   exitance pnt_lume_glow  scale 0.9 }
 ```
 
-- A `variant night` chunk's `name` must match a base chunk (override) — a dangling override is a derive
-  diagnostic. (Add-new — a `variant` chunk with a brand-new name — is allowed but only takes effect once
-  something binds it; the override case is the common one.)
+- A `variant night` chunk's `name` must match a base chunk: a **dangling override** (no base material of that
+  name — typically a typo of the base name) is **REFUSED** with a derive diagnostic, so it cannot silently
+  register a phantom material while the intended base stays unchanged (the exact silent mis-render §1 exists to
+  prevent). Add-new (a `variant` chunk introducing a brand-new name) is **out of P0 scope** — a variant has no
+  way to bind a new material to an object yet (variant-tagged *objects* are a later extension, §5), so a
+  brand-new variant material could only register unbound; refusing it catches the far-likelier typo.
 - This is the user's "specify new materials": variant-tagged material chunks redefine base materials for that
   variant. The same tag mechanism extends to other chunk types later without a new concept.
 

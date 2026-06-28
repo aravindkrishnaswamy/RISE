@@ -1379,6 +1379,10 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	// every edit), giving B a Job a fresh parse of B would not.
 	ClearChunkParserState();
 
+	// Reset the Job's scene-variant records too (ClearChunkParserState above clears PARSER state, not Job state):
+	// a re-derive on a reused Job must not inherit the prior derive's variant declarations / active selection.
+	pJob.ClearSceneVariants();
+
 	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
 
 	// #5 slice 3: collect document-level `let` constants up front (a malformed binding diags -> the
@@ -1420,13 +1424,22 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	if( svActiveName == "none" ) svActiveName.clear();
 	std::set<std::string> svOverriddenNames;
 	if( !svActiveName.empty() ) {
+		std::set<std::string> svBaseMaterialNames;
 		for( const Pending& p : pending ) {
 			if( p.keyword == "scene_variant" && p.bag.GetString( "name", "" ) == svActiveName )
 				svActiveCamera = p.bag.GetString( "active_camera", "" );
-			if( p.parser->Describe().category == ChunkCategory::Material
-			    && p.bag.GetString( "variant", "" ) == svActiveName )
-				svOverriddenNames.insert( p.bag.GetString( "name", "noname" ) );
+			if( p.parser->Describe().category != ChunkCategory::Material ) continue;
+			const std::string mv = p.bag.GetString( "variant", "" );
+			if( mv == svActiveName )  svOverriddenNames.insert( p.bag.GetString( "name", "noname" ) );
+			else if( mv.empty() )     svBaseMaterialNames.insert( p.bag.GetString( "name", "noname" ) );
 		}
+		// A variant override whose name has NO base material is a dangling override (typically a typo of the base
+		// name): it would silently register a phantom material while the intended base stays unchanged -- exactly
+		// the silent mis-render this feature exists to prevent (doc 63 §3.2).  Refuse-all so the author fixes it.
+		for( const std::string& on : svOverriddenNames )
+			if( !svBaseMaterialNames.count( on ) )
+				diags.push_back( "scene_variant `" + svActiveName + "`: override of `" + on + "` has no base material of that name (dangling override -- typo?)" );
+		if( !diags.empty() ) return 0;
 	}
 
 	// PASS 2 -- apply via the SAME Finalize the legacy parser calls, so the CST
@@ -1493,7 +1506,8 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	}
 	// scene_variant: apply the active variant's camera (its material overrides were baked above).
 	if( diags.empty() && !svActiveName.empty() && !svActiveCamera.empty() )
-		pJob.SetActiveCamera( svActiveCamera.c_str() );
+		if( !pJob.SetActiveCamera( svActiveCamera.c_str() ) )   // Reference not existence-checked in PASS-1 -> diag here
+			diags.push_back( "scene_variant `" + svActiveName + "`: active_camera `" + svActiveCamera + "` is not a declared camera" );
 	return count;
 }
 

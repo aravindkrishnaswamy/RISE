@@ -134,6 +134,47 @@ int main()
 		j->release();
 	}
 
+	// 7. ClearSceneVariants: re-deriving on the same Job clears prior variant state (no cross-derive leak).
+	{
+		Job* j = new Job();
+		{ Document a = ParseToCst( SceneWithActive( "night" ) ); std::vector<std::string> d; DeriveToJob( a, *j, &d ); }
+		Check( j->HasSceneVariants(), "after deriving a variant scene, the Job reports variants" );
+		{ Document b = ParseToCst( "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s2\nradius 1\n}\n" ); std::vector<std::string> d; DeriveToJob( b, *j, &d ); }
+		Check( !j->HasSceneVariants(), "re-deriving a non-variant scene on the same Job clears prior variant state (ClearSceneVariants)" );
+		j->release();
+	}
+
+	// 8. A dangling variant override (a `variant` material whose name has no base of that name -- a typo) is
+	//    refused with a diagnostic, not silently registered as a phantom (doc 63 §3.2).
+	{
+		Job* j = new Job();
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
+			"lambertian_luminaire_material\n{\nname lumX\nvariant night\nexitance white\nscale 0.0\nmaterial none\n}\n"
+			"scene_variant\n{\nname night\n}\n"
+			"active_scene_variant\n{\nname night\n}\n" );
+		std::vector<std::string> diags;
+		DeriveToJob( doc, *j, &diags );
+		Check( !diags.empty(), "dangling variant override (no base of that name) is refused (diagnostic)" );
+		j->release();
+	}
+
+	// 9. A variant active_camera referencing a non-existent camera is refused (the Reference is not
+	//    existence-checked in PASS-1, so the apply-time SetActiveCamera failure must diagnose).
+	{
+		Job* j = new Job();
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"scene_variant\n{\nname night\nactive_camera ghostcam\n}\n"
+			"active_scene_variant\n{\nname night\n}\n" );
+		std::vector<std::string> diags;
+		DeriveToJob( doc, *j, &diags );
+		Check( !diags.empty(), "variant active_camera referencing a non-existent camera is refused (diagnostic)" );
+		j->release();
+	}
+
 	std::printf( "%d passed, %d failed.\n", s_pass, s_fail );
 	return s_fail == 0 ? 0 : 1;
 }

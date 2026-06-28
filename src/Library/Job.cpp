@@ -336,6 +336,7 @@ void Job::InitializeContainers()
 	pGlobalProgress = 0;
 	lightSampleRRThreshold = 0;
 	m_objectOverrideCount = 0;   // reset per derive/clear (override_object Finalize increments it)
+	ClearSceneVariants();        // doc 63: reset the scene-variant records per derive/clear (no cross-load leak)
 
 	// Phase 6.1: allocate the round-trip-save metadata containers up
 	// front so IJobPriv::GetSourceSpanIndex etc. return stable pointers
