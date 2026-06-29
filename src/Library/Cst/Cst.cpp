@@ -1433,7 +1433,8 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 				svActiveDeclared = true;
 			}
 			if( p.parser->Describe().category != ChunkCategory::Material ) continue;
-			const std::string mv = p.bag.GetString( "variant", "" );
+			std::string mv = p.bag.GetString( "variant", "" );
+			if( mv == "none" ) mv.clear();   // `variant none` = the no-variant sentinel -> an ordinary base, not a tag
 			const std::string mn = p.bag.GetString( "name", "noname" );
 			if( mv == svActiveName ) {
 				svOverriddenNames.insert( mn );
@@ -1442,8 +1443,9 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 				svActiveDeclared = true;
 			}
 			else if( mv.empty() && !svBaseMaterialNames.insert( mn ).second )
-				// Two untagged base materials of the same name: a dup-name error (88ca744d) the override-skip below
-				// would otherwise MASK (both bases skipped -> the PASS-2 dup-name hard-error never fires).
+				// Two untagged base materials of the same name.  Belt-and-suspenders: the bake redirects an overridden
+				// base's slot to the single override (it never skips an untagged base), so a dup base would ALSO trip
+				// AddItem's dup-name hard-error in PASS-2 -- but this pre-scan diagnostic is clearer + fires before apply.
 				diags.push_back( "scene_variant: duplicate base material name `" + mn + "`" );
 		}
 		// An active_scene_variant naming a variant neither declared (a scene_variant chunk) nor used (a variant-
@@ -1491,7 +1493,8 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 		// override are then dropped, and so is the now-superseded base.
 		const Pending* applyP = &p;
 		if( p.parser->Describe().category == ChunkCategory::Material ) {
-			const std::string svv = p.bag.GetString( "variant", "" );
+			std::string svv = p.bag.GetString( "variant", "" );
+			if( svv == "none" ) svv.clear();   // `variant none` sentinel -> base, not a tag (mirrors svActiveName=="none")
 			if( !svv.empty() ) continue;   // variant-tagged: the active override is applied at its base's slot (below); inactive ones dropped
 			std::map<std::string, size_t>::const_iterator ov = svActiveOverride.find( p.bag.GetString( "name", "noname" ) );
 			if( ov != svActiveOverride.end() ) applyP = &pending[ ov->second ];   // overridden base -> apply the active override HERE

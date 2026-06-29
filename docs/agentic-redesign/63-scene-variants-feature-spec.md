@@ -89,9 +89,9 @@ lambertian_luminaire_material { name lume_white      variant night   exitance pn
   way to bind a new material to an object yet (variant-tagged *objects* are a later extension, §5), so a
   brand-new variant material could only register unbound; refusing it catches the far-likelier typo.
 - A material name has at most ONE active definition: two `variant night` chunks of the same `name` (an **ambiguous
-  override**) — or two untagged bases of the same `name`, which the override-skip would otherwise mask — are
-  **REFUSED** with a diagnostic. (The override is applied at the base's slot, so the base must both exist — the
-  dangling guard above — and be unique.)
+  override**) — or two untagged bases of the same `name` (which AddItem would otherwise reject only mid-apply, with
+  a less clear diagnostic) — are **REFUSED** in the pre-scan. (The override is applied at the base's slot, so the
+  base must both exist — the dangling guard above — and be unique.)
 - This is the user's "specify new materials": variant-tagged material chunks redefine base materials for that
   variant. The same tag mechanism extends to other chunk types later without a new concept.
 
@@ -254,6 +254,11 @@ Finalize normally (record only). No material/camera bake in legacy.
 variants, via the O(1) `pJob.HasSceneVariants()` engine signal (the bake is a whole-document decision, so a
 per-edited-chunk refusal isn't needed — refusing the whole variant scene is strictly safe and O(1)).
 `IsNativeV7Document` accepts `scene_variant` / `active_scene_variant` / `variant`-tagged materials (all `NodeKind::Chunk`).
+Note: the *recorded* dependency graph (the D35 record-during-derive capture in `DeriveToJob`, which sees the
+redirect) is authoritative for variant scenes and records the override→consumer edges correctly. The *static*
+`BuildReferenceGraph` is variant-blind (it records both base→consumer and override-painter edges), but it is never
+consulted for a variant scene — incremental edits fall back to full re-derive via `HasSceneVariants()` above — so
+the divergence is inert today; a future static-path consumer of a variant-active scene would need variant handling.
 
 **(g) Build projects** — folds into existing files (no new `.cpp`/`.h`) → no build-project edits. Tests
 auto-discover (`run_all_tests.sh` globs `tests/*.cpp`).

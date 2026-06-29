@@ -263,6 +263,24 @@ int main()
 		j->release();
 	}
 
+	// 15. `variant none` is the no-variant sentinel -> the material is an ORDINARY BASE (registered, not dropped
+	//     as a variant tag); CST and legacy agree.  (Mirrors `material none` / `active_scene_variant none`.)
+	{
+		Job* j; DeriveText(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nvariant none\nexitance white\nscale 5.0\nmaterial none\n}\n", j );
+		Check( LumExitanceR( j, "lum" ) > 1.0, "`variant none` material is registered as a base (CST path)" );
+		j->release();
+		Job* jl = new Job();
+		risequiv::ParseLegacy(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nvariant none\nexitance white\nscale 5.0\nmaterial none\n}\n", *jl );
+		Check( LumExitanceR( jl, "lum" ) > 1.0, "`variant none` material is registered as a base (legacy path)" );
+		jl->release();
+	}
+
 	std::printf( "%d passed, %d failed.\n", s_pass, s_fail );
 	return s_fail == 0 ? 0 : 1;
 }
