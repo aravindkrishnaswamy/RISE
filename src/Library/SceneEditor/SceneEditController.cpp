@@ -163,24 +163,24 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 	for( int i = 0; i < kNumCategories; ++i ) {
 		mSectionExpanded[i] = false;
 	}
-	// Phase 3: install material + shader manager hooks so
-	// SetObjectMaterial / SetObjectShader edits can resolve names
-	// at apply time.  Test harnesses that build a SceneEditor
-	// directly (without the controller) skip this and the editor
-	// degrades to "transform / camera ops only" mode.
-	mEditor.SetMaterialManager( mJob.GetMaterials() );
+	// Bind the editor to the Job's scene + managers (see RebindEditorToJob -- also re-run after a whole-scene
+	// re-derive).  Test harnesses that build a SceneEditor directly skip this and degrade to "transform /
+	// camera ops only" mode.
+	RebindEditorToJob();
+}
+
+// Re-point the editor at the Job's CURRENT scene + managers.  Called at construction AND after every whole-scene
+// rebuild: a scene_variant switch's Job::RederiveCstWithVariant does ClearAll() (releasing the Scene + all
+// managers) then re-derives fresh ones -- without this re-bind, mEditor's cached scene + manager pointers dangle
+// into freed storage and the next edit/gizmo/undo is a use-after-free.
+void SceneEditController::RebindEditorToJob()
+{
+	mEditor.RebindScene( *mJob.GetScene() );
+	mEditor.SetMaterialManager( mJob.GetMaterials() );          // Phase 3: name resolution for SetObjectMaterial/Shader
 	mEditor.SetShaderManager( mJob.GetShaders() );
-	// Phase 4: plumb the painter managers so SceneEdit::
-	// SetMaterialProperty can resolve painter-name strings (the
-	// panel's painter-rebind value) into the actual IPainter*
-	// / IScalarPainter* the material expects on its slot.
-	mEditor.SetPainterManager( mJob.GetPainters() );
+	mEditor.SetPainterManager( mJob.GetPainters() );            // Phase 4: painter-name -> IPainter*/IScalarPainter*
 	mEditor.SetScalarPainterManager( mJob.GetScalarPainters() );
-	// Plumb IJob so SceneEdit::SetObjectInteriorMedium can resolve
-	// medium names through IJob::GetMedium and recover prev-state via
-	// IJob::EnumerateMediumNames.  IJobPriv inherits IJob virtually,
-	// so the upcast is implicit.
-	mEditor.SetJob( &mJob );
+	mEditor.SetJob( &mJob );                                    // medium-name resolution (IJobPriv : IJob)
 }
 
 namespace {
@@ -2056,7 +2056,11 @@ unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
 		return mJob.GetAnimationCount();
 	}
 	case Category::SceneVariant: {
-		return mJob.GetSceneVariantCount() + 1u;   // +1 for the synthetic "(base)" entry at index 0
+		// The variant SWITCH needs the retained CST Document to re-derive; a legacy-loaded scene (no Document) or
+		// a scene with no declared variants offers nothing to switch -> 0 rows (no pickable entry that would
+		// silently no-op).  Otherwise: the declared variants + the synthetic "(base)" at index 0.
+		if( !mJob.HasRetainedCstDocument() || mJob.GetSceneVariantCount() == 0 ) return 0;
+		return mJob.GetSceneVariantCount() + 1u;
 	}
 	case Category::None:
 	default:
@@ -2408,8 +2412,13 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 			// A variant switch RE-BAKES the scene (new materials), unlike the other activations -> re-derive the
 			// retained CST Document with the forced variant + bump the epoch so the panels re-read the changed
 			// structure.  "(base)" is the synthetic no-variant entry.
+			// Note: the full re-derive also resets the other live activations (active camera / rasterizer / animation)
+			// to the document's values -- intended (a variant may set its own active_camera), but a surprise worth flagging.
 			ok = mJob.RederiveCstWithVariant( entityName == String( "(base)" ) ? "none" : entityName.c_str() );
-			if( ok ) mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+			if( ok ) {
+				RebindEditorToJob();   // the re-derive replaced the Scene + managers -> re-point mEditor (else UAF)
+				mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+			}
 		}
 		else if( cat == Category::Film && filmPreset )
 		{

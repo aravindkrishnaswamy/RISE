@@ -79,9 +79,36 @@ int main()
 		Check( c.SetSelection( Cat::SceneVariant, String( "(base)" ) ), "SetSelection((base)) re-derives clean" );
 		Check( LumR( *pJob, "lum" ) > 1.0, "after switch back: base material active (lum scale 5)" );
 		Check( c.CategoryActiveName( Cat::SceneVariant ) == String( "(base)" ), "active is back to (base)" );
+
+		// UAF regression (reviewer-found P1): a variant switch ClearAll's + rebuilds the Scene + managers, so an
+		// edit routed through mEditor must NOT dereference the freed old scene -- RebindEditorToJob re-points
+		// mEditor after the re-derive.  Pre-fix this segfaulted; reaching the final Check means no use-after-free.
+		Check( c.SetSelection( Cat::SceneVariant, String( "night" ) ), "switch to night (for the post-switch edit)" );
+		c.SetSelection( Cat::Material, String( "lum" ) );
+		c.RefreshProperties();   // builds mPropertiesByCategory[Material] (via mJob, safe post-switch) so the edit has a real property
+		const unsigned int np = c.PropertyCountFor( Cat::Material );
+		Check( np > 0, "the material exposes editable properties (so the edit actually exercises mEditor)" );
+		if( np > 0 ) {
+			const String pn = c.PropertyNameFor( Cat::Material, 0 );
+			const String pv = c.PropertyValueFor( Cat::Material, 0 );
+			c.SetPropertyForCategory( Cat::Material, pn, pv );   // self-valued edit through mEditor -> the (rebound) new scene
+		}
+		Check( true, "edit through mEditor AFTER a variant switch did not crash (mEditor rebound to the new scene)" );
 	}
 	pJob->release();
 	std::remove( tmp );
+
+	// Legacy-load gate (reviewer-found P2): the legacy reader DECLARES the variants (record-only), but with no
+	// retained CST Document the switch cannot re-derive -- so the controller reports 0 variant entries (the GUI
+	// shows no pickable rows that would silently no-op), even though GetSceneVariantCount() > 0.
+	{
+		Job* pLegacy = new Job();
+		Check( risequiv::ParseLegacy( scene, *pLegacy ), "scene parses via the legacy path" );
+		Check( pLegacy->GetSceneVariantCount() > 0, "legacy DOES declare the variants (record-only)" );
+		SceneEditController lc( *pLegacy, 0 );
+		Check( lc.CategoryEntityCount( Cat::SceneVariant ) == 0, "legacy-loaded (no CST Document) -> 0 variant entries (switch gated off)" );
+		pLegacy->release();
+	}
 
 	std::cout << passCount << " passed, " << failCount << " failed." << std::endl;
 	return failCount == 0 ? 0 : 1;

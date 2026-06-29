@@ -82,6 +82,11 @@ namespace RISE
 		//! material / shader / shadow / camera / light ops without it.
 		void SetJob( IJob* job ) { mJob = job; }
 
+		//! Re-point the editor at the Job's CURRENT scene after a whole-scene rebuild (e.g. a scene_variant
+		//! re-derive ClearAll's + recreates the Scene + managers); call ALONGSIDE the SetXManager setters,
+		//! otherwise mScene + the cached managers dangle into freed storage.
+		void RebindScene( IScenePriv& scene ) { mScene = &scene; }
+
 		//! Apply an edit.  On success, runs the invariant chain,
 		//! pushes the edit (with its prevTransform/prevTime captured
 		//! before the mutation) onto the history, and updates
@@ -272,7 +277,7 @@ namespace RISE
 		//! converge (re-review finding B).  No-op for null / non-emissive mat.
 		void BumpSceneLightGenerationIfMaterialEmits( const class IMaterial* mat );
 
-		IScenePriv&  mScene;
+		IScenePriv*  mScene;   // borrowed; re-pointable via RebindScene after a whole-scene rebuild
 		class IMaterialManager*       mMaterialManager;       // borrowed; nullable
 		class IShaderManager*         mShaderManager;         // borrowed; nullable
 		class IPainterManager*        mPainterManager;        // borrowed; nullable (Phase 4)

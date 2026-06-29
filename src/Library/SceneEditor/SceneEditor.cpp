@@ -66,7 +66,7 @@ void SceneEditor::BumpSceneLightGeneration()
 	// and the abi-preserving-api-evolution skill).  Downcast to the concrete
 	// Scene at this single editor call site; out-of-tree scenes no-op.
 	if( Implementation::Scene* concrete =
-	    dynamic_cast<Implementation::Scene*>( &mScene ) )
+	    dynamic_cast<Implementation::Scene*>( mScene ) )
 	{
 		concrete->BumpLightTopologyGeneration();
 	}
@@ -107,7 +107,7 @@ void SceneEditor::BumpSceneLightGenerationIfMaterialEmits( const IMaterial* mat 
 }
 
 SceneEditor::SceneEditor( IScenePriv& scene )
-: mScene( scene )
+: mScene( &scene )
 , mMaterialManager( 0 )
 , mShaderManager( 0 )
 , mPainterManager( 0 )
@@ -191,7 +191,7 @@ Scalar SceneEditor::SceneScale() const
 	if( mSceneScale > 0 ) return mSceneScale;
 
 	BoundingBoxAccumulator acc;
-	if( const IObjectManager* objs = mScene.GetObjects() ) {
+	if( const IObjectManager* objs = mScene->GetObjects() ) {
 		objs->EnumerateObjects( acc );
 	}
 
@@ -211,12 +211,12 @@ Scalar SceneEditor::SceneScale() const
 
 bool SceneEditor::ComputeScenePhotonsExist() const
 {
-	return mScene.GetCausticPelMap()       != 0
-	    || mScene.GetGlobalPelMap()        != 0
-	    || mScene.GetTranslucentPelMap()   != 0
-	    || mScene.GetCausticSpectralMap()  != 0
-	    || mScene.GetGlobalSpectralMap()   != 0
-	    || mScene.GetShadowMap()           != 0;
+	return mScene->GetCausticPelMap()       != 0
+	    || mScene->GetGlobalPelMap()        != 0
+	    || mScene->GetTranslucentPelMap()   != 0
+	    || mScene->GetCausticSpectralMap()  != 0
+	    || mScene->GetGlobalSpectralMap()   != 0
+	    || mScene->GetShadowMap()           != 0;
 }
 
 // The IObjectManager only exposes EnumerateItemNames + GetItem
@@ -500,7 +500,7 @@ namespace
 
 IObjectPriv* SceneEditor::FindObject( const String& name ) const
 {
-	const IObjectManager* objs = mScene.GetObjects();
+	const IObjectManager* objs = mScene->GetObjects();
 	if( !objs ) return 0;
 	IObjectPriv* obj = objs->GetItem( name.c_str() );
 	return obj;
@@ -851,7 +851,7 @@ void SceneEditor::RunObjectInvariantChain( IObjectPriv& obj )
 {
 	obj.FinalizeTransformations();
 	obj.ResetRuntimeData();
-	const IObjectManager* objs = mScene.GetObjects();
+	const IObjectManager* objs = mScene->GetObjects();
 	if( objs )
 	{
 		objs->InvalidateSpatialStructure();
@@ -893,7 +893,7 @@ void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
 		// Camera ops target the ACTIVE camera (the op carries no
 		// camera name — SetCameraProperty's objectName is the
 		// PROPERTY name).
-		const String camName = mScene.GetActiveCameraName();
+		const String camName = mScene->GetActiveCameraName();
 		if( camName.size() > 0 ) {
 			mDirtyTracker.MarkEntityDirty( EntityCategory::Camera,
 				std::string( camName.c_str() ) );
@@ -967,7 +967,7 @@ ICamera* SceneEditor::ResolveEditedCamera( const SceneEdit& e )
 	// F4: restore the camera that was EDITED (recorded at Apply time), not
 	// whatever camera happens to be active now.
 	if( e.cameraTargetName.size() > 0 ) {
-		if( ICameraManager* cm = mScene.GetCamerasMutable() ) {
+		if( ICameraManager* cm = mScene->GetCamerasMutable() ) {
 			if( ICamera* c = cm->GetItem( e.cameraTargetName.c_str() ) ) return c;
 		}
 		// P1-#5: a recorded name that no longer resolves means the edited
@@ -977,7 +977,7 @@ ICamera* SceneEditor::ResolveEditedCamera( const SceneEdit& e )
 		return 0;
 	}
 	// Legacy edit with no recorded name: the active camera is the target.
-	return mScene.GetCameraMutable();
+	return mScene->GetCameraMutable();
 }
 
 unsigned long long SceneEditor::ResolveTargetSerial( const SceneEdit& e ) const
@@ -997,11 +997,11 @@ unsigned long long SceneEditor::ResolveTargetSerial( const SceneEdit& e ) const
 	// the recreated entity must PRESERVE its identity serial across undo/redo (e.g. a
 	// serial-preserving re-add), not just its name.
 	if( SceneEdit::IsObjectOp( e.op ) ) {
-		const IObjectManager* objs = mScene.GetObjects();
+		const IObjectManager* objs = mScene->GetObjects();
 		return objs ? objs->GetItemSerial( e.objectName.c_str() ) : 0;
 	}
 	if( SceneEdit::IsCameraOp( e.op ) || e.op == SceneEdit::SetCameraProperty ) {
-		const ICameraManager* cams = mScene.GetCameras();
+		const ICameraManager* cams = mScene->GetCameras();
 		return ( cams && e.cameraTargetName.size() > 0 )
 		     ? cams->GetItemSerial( e.cameraTargetName.c_str() ) : 0;
 	}
@@ -1009,7 +1009,7 @@ unsigned long long SceneEditor::ResolveTargetSerial( const SceneEdit& e ) const
 		return mMaterialManager ? mMaterialManager->GetItemSerial( e.objectName.c_str() ) : 0;
 	}
 	if( e.op == SceneEdit::SetLightProperty ) {
-		const ILightManager* lights = mScene.GetLights();
+		const ILightManager* lights = mScene->GetLights();
 		return lights ? lights->GetItemSerial( e.objectName.c_str() ) : 0;
 	}
 	return 0;
@@ -1123,11 +1123,11 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 
 	if( SceneEdit::IsCameraOp( edit.op ) )
 	{
-		ICamera* baseCam = mScene.GetCameraMutable();
+		ICamera* baseCam = mScene->GetCameraMutable();
 		if( !baseCam ) return false;
 		// Record the active camera name so ApplyForwardMutation resolves the
 		// SAME camera via ResolveEditedCamera (pActiveCamera == GetItem(name)).
-		edit.cameraTargetName = mScene.GetActiveCameraName();
+		edit.cameraTargetName = mScene->GetActiveCameraName();
 		Implementation::CameraCommon* cam =
 			dynamic_cast<Implementation::CameraCommon*>( baseCam );
 		if( !cam ) return true;   // skeleton camera: nothing to capture; forward arm no-ops
@@ -1147,10 +1147,10 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 
 	if( edit.op == SceneEdit::SetCameraProperty )
 	{
-		ICamera* baseCam = mScene.GetCameraMutable();
+		ICamera* baseCam = mScene->GetCameraMutable();
 		if( !baseCam ) return false;
 		edit.prevPropertyValue = CameraIntrospection::GetPropertyValue( *baseCam, edit.objectName );
-		edit.cameraTargetName  = mScene.GetActiveCameraName();
+		edit.cameraTargetName  = mScene->GetActiveCameraName();
 		// The parse/read-only rejection is fused with the SetProperty mutation;
 		// ApplyForwardMutation surfaces it (returns false) so Apply rejects.
 		return true;
@@ -1222,7 +1222,7 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 
 	if( edit.op == SceneEdit::SetLightProperty )
 	{
-		ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
+		ILightManager* lights = const_cast<ILightManager*>( mScene->GetLights() );
 		if( !lights ) return false;
 		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
 		if( !light ) return false;
@@ -1470,7 +1470,7 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 	{
 		// Restore the time captured before the edit.  Use the preview
 		// path (no photon regen) so undo is fast.
-		mScene.SetSceneTimeForPreview( edit.prevTime );
+		mScene->SetSceneTimeForPreview( edit.prevTime );
 		mLastSetTime = edit.prevTime;
 		mLastScope = mScenePhotonsExist ? Dirty_TimeAndPhotons : Dirty_Time;
 		return true;
@@ -1519,7 +1519,7 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 
 	if( edit.op == SceneEdit::SetLightProperty )
 	{
-		ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
+		ILightManager* lights = const_cast<ILightManager*>( mScene->GetLights() );
 		if( !lights ) return false;
 		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
 		if( !light ) return false;
@@ -1650,7 +1650,7 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 
 	if( edit.op == SceneEdit::SetLightProperty )
 	{
-		ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
+		ILightManager* lights = const_cast<ILightManager*>( mScene->GetLights() );
 		if( !lights ) return false;
 		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
 		if( !light ) return false;
@@ -1699,7 +1699,7 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 
 	if( edit.op == SceneEdit::SetSceneTime )
 	{
-		mScene.SetSceneTimeForPreview( edit.s );
+		mScene->SetSceneTimeForPreview( edit.s );
 		mLastSetTime = edit.s;
 		mLastScope = mScenePhotonsExist ? Dirty_TimeAndPhotons : Dirty_Time;
 		return true;

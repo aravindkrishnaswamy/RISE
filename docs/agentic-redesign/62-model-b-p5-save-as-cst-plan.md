@@ -87,7 +87,8 @@ So the hard algorithmic parts are done. **What's missing is wiring + provenance*
   `> echo`/`> set accelerator` are ACCEPTED -- CST-load silently drops every `>`, so DumpJob-blind
   render-affecting directives must NOT be certified loadable) + load-once.  Slice 2 extends the equivalence corpus-wide.  (UPDATE: `LoadAsciiSceneViaCst` has since been promoted to an `IJob`
   default-bodied virtual — overridden only by `Job` — and wired into the CLI (`commandconsole.cpp` `LoadScenePerEnv`) + the Mac GUI bridge AHEAD of Slice 5, gated behind the `RISE_LOAD_VIA_CST` env
-  var, so the watch `scene_variant` hero (see [63](63-scene-variants-feature-spec.md)) can render its active variant — the legacy reader only renders the base.  Slice 5 flips this to the default.)
+  var, so the watch `scene_variant` hero (see [63](63-scene-variants-feature-spec.md)) can render its active variant — the legacy reader only renders the base.  Slice 5 flips this to the default.  The in-GUI variant
+  SWITCH (63 P1) is a second D2 consumer: `Job::RederiveCstWithVariant` does the §"D2" full re-derive on each pick (sub-ms..~38 ms over 1k–16k chunks), so the heavier-than-Animation switch is bounded, not a footgun.)
 - **Slice 2 — FULL CORPUS CONVERT (D1).** Run `tools/MigrateScenesV6toV7` over the ENTIRE corpus as one
   deliberate batch → the **SCENE-6 fold-all dual-readable** form (both the legacy runtime and the CST read
   it). Resolve the convert TAIL here: the 2 `sss` energy-conservation divergences + the 27 media-missing

@@ -9462,11 +9462,29 @@ bool Job::LoadAsciiSceneViaCst( const char* filename )
 // P5 (Model-B): re-derive the retained CST Document with a FORCED active scene_variant -- the GUI variant switch.
 // ClearAll() releases + re-creates the containers (fresh slate, no dup-name on re-bake) but does NOT touch the
 // retained Document; preserve it across the reset, re-bake with the variant override, then re-retain it.
+// Lifetime: ClearAll shuts down the old Scene, but the interactive RayCaster's scene refcount (AttachScene
+// addref's the scene) defers its actual free until the next render pass re-attaches the NEW Scene -- and
+// SceneEditController parks the render thread before calling this, so no in-flight caster dangles.  Adding an
+// off-render-thread reader of the caster's cached scene/samplers would break this -- revisit if you do.
 bool Job::RederiveCstWithVariant( const char* variantName )
 {
 	if( !pCstDocument ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::RederiveCstWithVariant:: no retained CST Document (load via LoadAsciiSceneViaCst first)" );
 		return false;
+	}
+	// Validate-before-destroy: a variant's materials are SKIPPED at load (inactive), so a buggy variant could
+	// fail to derive -- dry-run it into a throwaway Job first and only COMMIT (ClearAll + re-derive) if it
+	// succeeds, so a bad variant leaves the CURRENT live scene intact instead of gutting the Job (no rollback).
+	{
+		Job staging;
+		std::vector<std::string> vdiags;
+		RISE::Cst::DeriveToJob( *pCstDocument, staging, &vdiags, nullptr, variantName ? variantName : "none" );
+		if( !vdiags.empty() ) {
+			for( size_t i = 0; i < vdiags.size() && i < 8u; ++i ) {
+				GlobalLog()->PrintEx( eLog_Error, "Job::RederiveCstWithVariant:: variant `%s` would not derive: %s", variantName ? variantName : "(base)", vdiags[i].c_str() );
+			}
+			return false;   // live scene UNTOUCHED
+		}
 	}
 	std::unique_ptr<RISE::Cst::Document> doc = std::move( pCstDocument );   // preserve across the container reset
 	ClearAll();                                                            // DestroyContainers + InitializeContainers (fresh slate)
@@ -9727,6 +9745,10 @@ bool Job::DeclareSceneVariant( const char* name, const char* active_camera )
 {
 	if( !name || !name[0] ) {
 		GlobalLog()->PrintEasyError( "Job::DeclareSceneVariant:: a scene_variant requires a non-empty name" );
+		return false;
+	}
+	if( String(name) == String("none") || String(name) == String("(base)") ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::DeclareSceneVariant:: `%s` is a reserved scene_variant name (the no-variant sentinel / the GUI base-entry label)", name );
 		return false;
 	}
 	sceneVariantCameras[ String(name) ] = ( active_camera && active_camera[0] ) ? String(active_camera) : String();

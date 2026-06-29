@@ -786,6 +786,12 @@ namespace RISE
 		void RenderLoop();
 		void KickRender();
 
+		//! Re-point mEditor at the Job's CURRENT scene + managers.  Called at construction AND after any
+		//! whole-scene re-derive (a scene_variant switch ClearAll's + recreates the Scene + managers); without
+		//! the re-bind the editor's cached scene/manager pointers dangle into freed storage (use-after-free on
+		//! the next edit/gizmo/undo).
+		void RebindEditorToJob();
+
 		//! Cast a ray through pixel `px` (image-pixel space) and set
 		//! `mSelected` to the hit object's name (or empty if no hit).
 		//! Called from OnPointerDown when the Select tool is active.

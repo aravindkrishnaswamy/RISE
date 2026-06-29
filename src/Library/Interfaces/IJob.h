@@ -2731,6 +2731,11 @@ namespace RISE
 			const char* variantName							///< [in] variant to force active ("none"/"" = base)
 			) { return false; }
 
+		//! P5: does this Job retain a CST Document (loaded via LoadAsciiSceneViaCst)?  The GUI gates the
+		//! "Variants" accordion on this -- the variant SWITCH needs the Document to re-derive, so a legacy-loaded
+		//! scene (no Document) must not offer pickable variants that would silently no-op.  Default FALSE.
+		virtual bool HasRetainedCstDocument() const { return false; }
+
 		//! Runs an ascii script
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool RunAsciiScript(

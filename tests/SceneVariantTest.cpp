@@ -322,6 +322,23 @@ int main()
 		std::remove( tmp );
 	}
 
+	// 18. Reserved variant names: `none` (the no-variant sentinel) and `(base)` (the GUI base-entry label) are
+	//     REFUSED at declaration -- a variant so named would be unreachable (the switch routes both to the base).
+	{
+		Job* j = new Job();
+		Document doc = ParseToCst( "RISE ASCII SCENE 6\nscene_variant\n{\nname none\n}\n" );
+		std::vector<std::string> diags; DeriveToJob( doc, *j, &diags );
+		Check( !diags.empty(), "scene_variant named `none` (reserved sentinel) is refused" );
+		j->release();
+	}
+	{
+		Job* j = new Job();
+		Document doc = ParseToCst( "RISE ASCII SCENE 6\nscene_variant\n{\nname (base)\n}\n" );
+		std::vector<std::string> diags; DeriveToJob( doc, *j, &diags );
+		Check( !diags.empty(), "scene_variant named `(base)` (reserved GUI label) is refused" );
+		j->release();
+	}
+
 	std::printf( "%d passed, %d failed.\n", s_pass, s_fail );
 	return s_fail == 0 ? 0 : 1;
 }

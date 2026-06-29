@@ -2774,6 +2774,8 @@ namespace RISE
 			const char* variantName
 			);
 
+		bool HasRetainedCstDocument() const { return pCstDocument != nullptr; }
+
 		//! P5: the retained canonical CST (null unless the scene was loaded via LoadAsciiSceneViaCst).
 		const RISE::Cst::Document*	GetCstDocument() const { return pCstDocument.get(); }
 

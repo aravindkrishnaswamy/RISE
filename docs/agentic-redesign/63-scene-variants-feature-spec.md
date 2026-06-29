@@ -101,8 +101,13 @@ lambertian_luminaire_material { name lume_white      variant night   exitance pn
 - A stored top-level **`active_scene_variant <name>`** selects one (round-trips through save — a
   panel-editable property that *is* storable). `none` / absent = the base default; a name matching neither a declared `scene_variant` nor any `variant`-tagged chunk is REFUSED (a selector typo — symmetric to a dangling override).
 - **Single-select** (one active variant at a time — matches `> modify`; the watch needs only day/night).
-- GUI: a **"Variants" accordion** with a selector, mirroring named-animation-paths; CLI/agent: a CST edit to
-  `active_scene_variant` → re-derive.
+- GUI (BUILT): a **"Variants" accordion** with a selector, mirroring named-animation-paths — picking a row calls
+  `SceneEditController::SetSelection(Category::SceneVariant, name)` → `Job::RederiveCstWithVariant` (ClearAll +
+  re-derive the retained CST Document with that variant forced active) + a scene-epoch bump.  Requires the scene to
+  have been CST-loaded (`RISE_LOAD_VIA_CST`, pending the Slice-5 default); the section lists NO entries (no pickable
+  rows) when no CST Document is retained or the scene declares no variants — gated in `CategoryEntityCount` on
+  `HasRetainedCstDocument()`, so a legacy-loaded scene can't offer a variant pick that would silently no-op.
+  CLI/agent: a CST edit to `active_scene_variant` → re-derive.
 
 ### 3.4 Derive integration (Model-B)
 
@@ -155,8 +160,11 @@ the animation feature owns that field.
   material chunks + `active_scene_variant` + `active_camera`. Derive applies the active variant's overrides +
   camera. Tests: name-required parse error, override-by-name applies, dangling-override diagnostic,
   base-default, active-camera selection, save round-trip.
-- **P1 — GUI.** A "Variants" accordion + selector (mirror the Animation accordion); selecting re-derives.
-- **P2 — migrator.** Convert `> modify` blocks → `scene_variant` + tagged overrides (watch_dial night).
+- **P1 — GUI (DONE, commits 782fa451 + fc3ea0c3).** A "Variants" accordion + selector (mirrors the Animation
+  accordion) on Mac (+ Windows parity); picking a row re-derives via `Job::RederiveCstWithVariant`.  The switch
+  needs a CST-loaded scene (`RISE_LOAD_VIA_CST`); the core is `DeriveToJob`'s `activeVariantOverride` (slice 3a).
+- **P2 — migrator.** watch_dial's night `> modify` block is converted (commit 8cd2b48a); the general corpus-wide
+  `> modify` → `scene_variant` migrator is P5 Slice 2.
 - **P3 — deprecate `> modify`.** Remove the command once the corpus is converted (rides P5 Slice 6).
 
 ## 9. Decisions (ratified 2026-06-28) + one remaining detail
@@ -224,9 +232,11 @@ the 25 material `Describe()` IIFEs (so `variant` parses; descriptor=accepted-set
 `Finalize` IGNORES `variant` — it is a marker the derive reads. NO Job-side material rewire / pending-variant /
 override store.
 
-**(c) IJob/Job records** (for GUI + save; the bake is derive-local) — 5 non-pure IJob virtuals after `IJob.h:2823`:
-`DeclareSceneVariant`, `SetActiveSceneVariant`, `GetActiveSceneVariant`, `HasSceneVariants` (the incremental-refuse
-signal), `ClearSceneVariants`. `Job` (store near `:281`, decls near `:2840`, defs near `:9633`, NO `override`
+**(c) IJob/Job records** (for GUI + save; the active-variant bake is whole-document but RE-RUNNABLE on demand from
+the GUI via `RederiveCstWithVariant`) — 8 non-pure IJob virtuals after `IJob.h:2823`: `DeclareSceneVariant`,
+`SetActiveSceneVariant`, `GetActiveSceneVariant`, `HasSceneVariants` (the incremental-refuse signal),
+`ClearSceneVariants`, `GetSceneVariantCount` / `GetSceneVariantName` (the GUI variant list), and
+`RederiveCstWithVariant` (the GUI switch: ClearAll + re-derive the retained Document with a forced variant). `Job` (store near `:281`, decls near `:2840`, defs near `:9633`, NO `override`
 keyword): `std::map<String,String> sceneVariantCameras` + `String activeSceneVariant`; methods record.
 `ClearSceneVariants` is wired at the per-derive resets: `Job::InitializeContainers` (beside `m_objectOverrideCount
 = 0` — the creation + legacy reset) AND `DeriveToJob`'s start (CST re-derive; `ClearChunkParserState` clears
