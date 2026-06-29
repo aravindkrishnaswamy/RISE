@@ -2414,8 +2414,12 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 			// structure.  "(base)" is the synthetic no-variant entry.
 			// Note: the full re-derive resets the other live activations to the document's values -- the active camera to
 			// the variant's active_camera (if it sets one) else the base camera; the active rasterizer/animation to their
-			// authored defaults.  Intended (a mode switch), but a surprise worth flagging.  The prior undo history survives;
-			// the per-entity serial guards make a stale post-switch undo a safe no-op (it does not apply to the new scene).
+			// authored defaults.  Intended (a mode switch), but a surprise worth flagging.  The prior undo history
+			// survives the switch.  A stale post-switch undo of a CST material edit no longer relies on the serial
+			// guard (Slice 3 skips it for SetMaterialProperty on a retained-CST scene): it replays BY NAME through
+			// Job::ApplyCstParamEdit against the CURRENT document and re-derives (the D2 full re-derive, since a
+			// variant scene refuses the incremental), reverting that param within the active variant -- a real
+			// revert, not a no-op.  Direct-mutation (object/camera/light) undos still hit the serial guard.
 			ok = mJob.RederiveCstWithVariant( entityName == String( "(base)" ) ? "none" : entityName.c_str() );
 			if( ok ) {
 				RebindEditorToJob();   // the re-derive replaced the Scene + managers -> re-point mEditor (else UAF)

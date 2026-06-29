@@ -50,6 +50,7 @@
 #include "../Interfaces/ILightManager.h"
 #include "../Interfaces/IMedium.h"
 #include "../Interfaces/IJob.h"
+#include "../Interfaces/IJobPriv.h"
 #include "../Interfaces/IKeyframable.h"
 #include "../Interfaces/IEnumCallback.h"
 #include "../Utilities/Math3D/Math3D.h"
@@ -1015,6 +1016,22 @@ unsigned long long SceneEditor::ResolveTargetSerial( const SceneEdit& e ) const
 	return 0;
 }
 
+// P5 Slice 3: re-point this editor at the Job's CURRENT scene + managers after a CST D2 full re-derive
+// (Job::ApplyCstParamEdit result 2) ClearAll'd the Job -- the Scene + managers this editor cached are now
+// freed.  Mirrors SceneEditController::RebindEditorToJob (which re-binds for a variant switch); here the
+// editor re-binds ITSELF, synchronously at the edit site, so no frame above derefs a dangling pointer.
+// The Job object itself is unchanged (only its containers), so mJob stays valid.
+void SceneEditor::RebindToJob_()
+{
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( mJob );
+	if( !priv ) return;
+	if( IScenePriv* sc = priv->GetScene() ) RebindScene( *sc );
+	SetMaterialManager( priv->GetMaterials() );
+	SetShaderManager( priv->GetShaders() );
+	SetPainterManager( priv->GetPainters() );
+	SetScalarPainterManager( priv->GetScalarPainters() );
+}
+
 bool SceneEditor::ApplyMaterialSlotByName( const SceneEdit& e, const String& painterName )
 {
 	// F1: shared SetMaterialProperty restore -- resolves the slot's pipe
@@ -1028,12 +1045,18 @@ bool SceneEditor::ApplyMaterialSlotByName( const SceneEdit& e, const String& pai
 	if( !mat ) return false;
 	if( painterName.size() <= 1 ) return false;
 	// P5 Slice 3 (edit-model pivot): when the Job retains a CST Document (LoadAsciiSceneViaCst), route the
-	// slot re-point through a CST param-edit + incremental re-derive so the canonical CST stays the source
-	// of truth (Slice 4's save serializes it).  Serves BOTH forward and undo (the inverse re-point replays
-	// through here), so the mHistory undo stack works unchanged.  Legacy-loaded scenes (no Document) fall
-	// through to the direct MaterialIntrospection::SetSlot below.
-	if( mJob && mJob->HasRetainedCstDocument() )
-		return mJob->ApplyCstParamEdit( e.objectName.c_str(), e.propertyName.c_str(), 0, painterName.c_str() );
+	// slot re-point through a CST param-edit + re-derive so the canonical CST stays the source of truth
+	// (Slice 4's save serializes it).  Serves BOTH forward and undo (the inverse re-point replays through
+	// here), so the mHistory undo stack works unchanged.  "material" disambiguates a cross-category name
+	// clash.  Result 2 = the D2 full re-derive ClearAll'd + replaced the Scene + managers, so re-point THIS
+	// editor's cached pointers before returning (the SetMaterialProperty arm reads mLastScope but not the
+	// managers after we return; the next edit/undo would dereference the freed ones) -- else use-after-free.
+	// Legacy-loaded scenes (no Document) fall through to the direct MaterialIntrospection::SetSlot below.
+	if( mJob && mJob->HasRetainedCstDocument() ) {
+		const int r = mJob->ApplyCstParamEdit( e.objectName.c_str(), "material", e.propertyName.c_str(), 0, painterName.c_str() );
+		if( r == 2 ) RebindToJob_();
+		return r != 0;
+	}
 	const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, e.propertyName );
 	if( cur.kind == MaterialSlotRef::Painter ) {
 		if( !mPainterManager ) return false;
@@ -1373,11 +1396,13 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 	// instance re-registered under the same name (serial mismatch); applying the
 	// captured state to the replacement would corrupt it.  capturedTargetSerial==0
 	// means the op tracks no identity (medium/time/marker/legacy) -> no check.
-	// SKIP on the CST edit-model (HasRetainedCstDocument): it RE-DERIVES entities on every edit, so their
-	// serials legitimately change each time, and it applies/reverts/redoes by NAME (ApplyCstParamEdit /
-	// ApplyMaterialSlotByName's CST branch -- never the stale pointer).  So the serial guard is both moot
-	// and would FALSELY trip there; it stays in force for legacy direct edits.
-	if( edit.capturedTargetSerial != 0 && !( mJob && mJob->HasRetainedCstDocument() ) &&
+	// SKIP on the CST edit-model ONLY for the op(s) routed through ApplyCstParamEdit (currently
+	// SetMaterialProperty): that path RE-DERIVES the entity on every edit, so its serial legitimately
+	// changes each time, and it applies/reverts/redoes BY NAME (never the stale pointer) -- the serial
+	// guard is both moot and would FALSELY trip.  Direct-mutation ops (object/camera/light) KEEP the
+	// guard even on a CST-loaded scene, since they DO mutate the captured instance in place.
+	if( edit.capturedTargetSerial != 0 &&
+	    !( mJob && mJob->HasRetainedCstDocument() && edit.op == SceneEdit::SetMaterialProperty ) &&
 	    ResolveTargetSerial( edit ) != edit.capturedTargetSerial )
 		return false;
 	if( SceneEdit::IsObjectOp( edit.op ) )
@@ -1599,11 +1624,13 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 	// instance re-registered under the same name (serial mismatch); applying the
 	// captured state to the replacement would corrupt it.  capturedTargetSerial==0
 	// means the op tracks no identity (medium/time/marker/legacy) -> no check.
-	// SKIP on the CST edit-model (HasRetainedCstDocument): it RE-DERIVES entities on every edit, so their
-	// serials legitimately change each time, and it applies/reverts/redoes by NAME (ApplyCstParamEdit /
-	// ApplyMaterialSlotByName's CST branch -- never the stale pointer).  So the serial guard is both moot
-	// and would FALSELY trip there; it stays in force for legacy direct edits.
-	if( edit.capturedTargetSerial != 0 && !( mJob && mJob->HasRetainedCstDocument() ) &&
+	// SKIP on the CST edit-model ONLY for the op(s) routed through ApplyCstParamEdit (currently
+	// SetMaterialProperty): that path RE-DERIVES the entity on every edit, so its serial legitimately
+	// changes each time, and it applies/reverts/redoes BY NAME (never the stale pointer) -- the serial
+	// guard is both moot and would FALSELY trip.  Direct-mutation ops (object/camera/light) KEEP the
+	// guard even on a CST-loaded scene, since they DO mutate the captured instance in place.
+	if( edit.capturedTargetSerial != 0 &&
+	    !( mJob && mJob->HasRetainedCstDocument() && edit.op == SceneEdit::SetMaterialProperty ) &&
 	    ResolveTargetSerial( edit ) != edit.capturedTargetSerial )
 		return false;
 	if( SceneEdit::IsObjectOp( edit.op ) )

@@ -2736,13 +2736,6 @@ namespace RISE
 		//! scene (no Document) must not offer pickable variants that would silently no-op.  Default FALSE.
 		virtual bool HasRetainedCstDocument() const { return false; }
 
-		//! P5 Slice 3 (edit-model pivot): apply ONE param-value edit to the retained CST Document and
-		//! incrementally re-derive only the affected closure.  `entityName` = the chunk (bare name, unique-or-
-		//! refuse), `role` = its param (e.g. "reflectance"), `occ` = the occurrence, `newValue` = the new value
-		//! token.  Returns FALSE (Job UNTOUCHED -- the incremental derive rolls back) if no Document is retained,
-		//! the chunk isn't found/unique, or the derive diagnoses.  Default FALSE (only Job overrides).
-		virtual bool ApplyCstParamEdit( const char* entityName, const char* role, int occ, const char* newValue ) { return false; }
-
 		//! Runs an ascii script
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool RunAsciiScript(
@@ -3255,6 +3248,17 @@ namespace RISE
 		virtual bool SetActiveRasterizerRadianceScale(
 			const double scale						///< [in] New environment radiance scale
 			) = 0;
+
+		//! P5 Slice 3 (edit-model pivot): apply ONE param-value edit to the retained CST Document, then re-derive
+		//! (incrementally for the common case; a FULL document re-derive for variant / animated / instance_array
+		//! scenes).  `entityName` = the chunk's bare name (unique-or-refuse); `entityKind` = a keyword-suffix that
+		//! disambiguates a cross-category name clash ("material" for a material edit, "" = none); `role` = the
+		//! param (e.g. "reflectance"); `occ` = the occurrence; `newValue` = the new value (INSERTED if the scene
+		//! text omitted the slot).  Returns 0 = no change (live scene intact); 1 = applied incrementally (managers
+		//! untouched); 2 = applied via a FULL re-derive (the Scene + managers were REPLACED -- the caller MUST
+		//! re-point any cached scene/manager pointers).  Default 0 (only Job overrides).
+		//! NB: appended at the IJob tail per the append-only ABI convention (preserves every prior vtable slot).
+		virtual int ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue ) { return 0; }
 	};
 
 

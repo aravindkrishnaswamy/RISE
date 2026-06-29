@@ -2413,6 +2413,58 @@ Document DocSetParamValue( const Document& doc, NodeId chunkId, const std::strin
 	return DocReplaceItem( doc, index, edited, visits );                      // chunk NodeId PRESERVED (D44)
 }
 
+// Like WithParamValue but INSERTS `role value` as a new param line before the closing brace when the param
+// is ABSENT (a defaulted slot the scene text omits).  Returns the chunk UNCHANGED only if !chunk.
+static NodeRef WithParamValueOrInsert( const NodeRef& chunk, const std::string& role, int occ,
+                                       const std::string& newValue, bool* inserted )
+{
+	if( inserted ) *inserted = false;
+	if( !chunk ) return chunk;
+	NodeRef edited = WithParamValue( chunk, role, occ, newValue );            // existing param: replace in place
+	if( edited.get() != chunk.get() ) return edited;
+
+	// Param ABSENT: build a `role value` Param and splice it in before `rbrace`.  Chunk braces are on their
+	// own lines (parser invariant), so the trivia already before `rbrace` ends the previous line; we append a
+	// trailing newline so `}` stays on its own line.
+	std::vector<NodeRef> pk;
+	pk.push_back( Leaf( NodeKind::Token, role, "pname" ) );
+	const std::vector<std::string> toks = SplitWs( newValue );
+	for( size_t t = 0; t < toks.size(); ++t ) {
+		pk.push_back( Leaf( NodeKind::Trivia, " ", "" ) );
+		pk.push_back( Leaf( NodeKind::Token, toks[t], "pvalue" ) );
+	}
+	NodeRef param = Internal( NodeKind::Param, std::move( pk ), role );
+
+	std::vector<NodeRef> kids; kids.reserve( chunk->kids.size() + 2 );
+	bool placed = false;
+	for( const auto& k : chunk->kids ) {
+		if( !placed && k->kind == NodeKind::Token && k->role == "rbrace" ) {
+			kids.push_back( param );
+			kids.push_back( Leaf( NodeKind::Trivia, "\n", "" ) );
+			placed = true;
+		}
+		kids.push_back( k );
+	}
+	if( !placed ) {                                                          // no rbrace (defensive): append
+		kids.push_back( Leaf( NodeKind::Trivia, "\n", "" ) );
+		kids.push_back( param );
+	}
+	if( inserted ) *inserted = true;
+	return Internal( NodeKind::Chunk, std::move( kids ), chunk->role );
+}
+
+Document DocSetOrAddParamValue( const Document& doc, NodeId chunkId, const std::string& role, int occ, const std::string& newValue, bool* inserted, int* visits )
+{
+	if( visits ) *visits = 0;
+	if( inserted ) *inserted = false;
+	NodeRef chunk;
+	const int index = DocIndexOfNodeId( doc, chunkId, &chunk, visits );
+	if( index < 0 || !chunk || chunk->kind != NodeKind::Chunk ) return doc;   // not a top-level chunk: no-op
+	NodeRef edited = WithParamValueOrInsert( chunk, role, occ, newValue, inserted );
+	if( edited.get() == chunk.get() ) return doc;                             // nothing changed
+	return DocReplaceItem( doc, index, edited, visits );                      // chunk NodeId PRESERVED (D44)
+}
+
 //! Rewrite a TUPLE value's reference tokens: at each tupleKinds position that is a
 //! Reference whose token == oldName, substitute newName; rejoin single-spaced. (So a
 //! rename rewrites a tuple referrer -- advanced_shader's `shaderop <ref> <min> <max>`,
@@ -2912,18 +2964,37 @@ NodeId DocFindByName( const Document& doc, const std::string& namePath, int* vis
 	return ( count == 1 ) ? id : 0;   // unique-or-refuse: an ambiguous duplicate name resolves to 0
 }
 
-NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, int* occurrences )
+NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, int* occurrences, const std::string& roleKindSuffix )
 {
 	std::vector<NodeRef> items; SeqToVec( doc.items, items );
-	std::string matchPath; int count = 0;
+	std::vector<std::string> matches;                              // "keyword/name" of every bare-name hit
 	for( size_t i = 0; i < items.size(); ++i ) {
 		const std::string np = ChunkNamePath( items[i] );          // "keyword/name" or ""
 		if( np.empty() ) continue;
 		const size_t slash = np.rfind( '/' );
-		if( slash != std::string::npos && np.compare( slash + 1, std::string::npos, bareName ) == 0 ) { ++count; matchPath = np; }
+		if( slash != std::string::npos && np.compare( slash + 1, std::string::npos, bareName ) == 0 ) matches.push_back( np );
 	}
-	if( occurrences ) *occurrences = count;
-	if( count != 1 ) return 0;                                     // absent or ambiguous -> refuse (caller falls back)
+	if( occurrences ) *occurrences = (int)matches.size();
+	std::string matchPath;
+	if( matches.size() == 1 ) {
+		matchPath = matches[0];
+	} else if( matches.size() > 1 && !roleKindSuffix.empty() ) {
+		// Cross-category collision (e.g. a material AND a geometry named "m"): keep only the chunk whose
+		// keyword (the role, before the '/') names this kind -- role == suffix (the bare "material") or role
+		// ends in "_<suffix>" (lambertian_material, ggx_material, ...).  One survivor -> use it; else refuse.
+		const std::string under = "_" + roleKindSuffix;
+		int narrowed = 0;
+		for( size_t m = 0; m < matches.size(); ++m ) {
+			const size_t slash = matches[m].rfind( '/' );
+			const std::string role = ( slash == std::string::npos ) ? matches[m] : matches[m].substr( 0, slash );
+			const bool kindMatch = ( role == roleKindSuffix ) ||
+				( role.size() > under.size() && role.compare( role.size() - under.size(), under.size(), under ) == 0 );
+			if( kindMatch ) { ++narrowed; matchPath = matches[m]; }
+		}
+		if( narrowed != 1 ) return 0;                              // still ambiguous (or none of the kind) -> refuse
+	} else {
+		return 0;                                                  // absent, or ambiguous with no kind hint -> refuse
+	}
 	int v = 0, c = 0; return NameFind( doc.byName, matchPath, v, c );
 }
 

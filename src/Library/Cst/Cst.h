@@ -462,7 +462,12 @@ namespace RISE
 		//! level items for a `name` param matching `bareName` and resolves the single hit to its NodeId;
 		//! returns 0 if absent or ambiguous (>1 chunks share the name).  O(N) scan -- used on discrete panel
 		//! edits, not the per-frame gizmo path (which will carry the NodeId forward).
-		NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, int* occurrences = nullptr );
+		//! `roleKindSuffix` (optional) disambiguates a CROSS-category bare-name collision (e.g. a material and
+		//! a geometry both named "m"): when >1 chunks share the name, narrow to those whose keyword (the item's
+		//! role) equals the suffix or ends in "_<suffix>" -- every material keyword ends in "_material" (or is
+		//! the bare "material"), so the editor passes "material" for a material edit.  If exactly one survives
+		//! the narrowing, return it; else still refuse.  Empty suffix = no narrowing (pure unique-or-refuse).
+		NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, int* occurrences = nullptr, const std::string& roleKindSuffix = std::string() );
 
 		//! Resolve a durable NodeId to the green node it now labels (null if gone),
 		//! in O(log N) via the persistent reverse index -- the counted "agent holds
@@ -686,6 +691,14 @@ namespace RISE
 		//! chunk's own rebuild. (newValue is re-tokenised whole; rewriting a single
 		//! ATOM within a multi-token value is the deferred value-atom refinement.)
 		Document DocSetParamValue( const Document& doc, NodeId chunkId, const std::string& role, int occ, const std::string& newValue, int* visits = nullptr );
+
+		//! Like DocSetParamValue but INSERTS the param as a new `role value` line (before the closing brace)
+		//! when the chunk does not already spell it out -- the editor's property panel surfaces EVERY material
+		//! slot, including DEFAULTED ones the scene text omits, and editing one must take effect + persist
+		//! (DocSetParamValue alone no-ops on an absent param).  `*inserted` (if non-null) reports whether a new
+		//! param was added (vs an existing value replaced).  Chunk braces are on their own lines (parser
+		//! invariant), so the inserted line is newline-delimited on both sides.  O(log N) + chunk rebuild.
+		Document DocSetOrAddParamValue( const Document& doc, NodeId chunkId, const std::string& role, int occ, const std::string& newValue, bool* inserted = nullptr, int* visits = nullptr );
 
 		//! RENAME a chunk (item 7, the D14 driver): set the chunk's `name` to
 		//! `newName` AND rewrite every referrer's value to `newName`, found from the

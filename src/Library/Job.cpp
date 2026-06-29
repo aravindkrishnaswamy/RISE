@@ -9506,27 +9506,61 @@ bool Job::RederiveCstWithVariant( const char* variantName )
 	return true;
 }
 
-// P5 Slice 3 (edit-model pivot): apply ONE param-value edit to the retained CST + incrementally re-derive
-// only the affected closure (the CST transfer-gate kernel, O(closure)).  Atomic: DeriveToJobIncremental
-// rolls the Job back on a diagnostic, so a failed edit leaves the live scene intact.  Callers (SceneEditor)
-// gate on HasRetainedCstDocument() and fall back to the direct mutation for legacy-loaded scenes.
-bool Job::ApplyCstParamEdit( const char* entityName, const char* role, int occ, const char* newValue )
+// P5 Slice 3 (edit-model pivot): apply ONE param-value edit to the retained CST Document, then re-derive.
+// FAST PATH: an incremental re-derive of just the affected closure (the CST transfer-gate kernel, O(closure));
+// atomic -- DeriveToJobIncremental rolls the Job back on a diagnostic, so a refusal leaves the live scene
+// byte-identical.  FALLBACK (D2): when the incremental refuses (a scene_variant / animation / instance_array /
+// override_object / composed material in the closure -- e.g. watch_dial, which DECLARES a variant) OR errors,
+// re-derive the WHOLE edited document (preserving the active variant), validate-before-destroy so a genuinely
+// invalid edit leaves the live scene intact.  The slot is INSERTED if the scene text omitted it (a defaulted
+// slot the panel still surfaces).  `entityKind` (e.g. "material") disambiguates a cross-category name clash.
+// Return: 0 = no change (live scene intact); 1 = applied incrementally (managers untouched, no rebind); 2 =
+// applied via a FULL re-derive (ClearAll replaced the Scene + managers, so the caller MUST re-point its cached
+// scene/manager pointers -- SceneEditor self-rebinds; else the next access is a use-after-free).
+int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue )
 {
-	if( !pCstDocument || !entityName || !role || !newValue ) return false;
-	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, entityName );
-	if( id == 0 ) return false;   // absent or ambiguous -- caller falls back to the direct edit
-	std::vector<std::string> diags;
-	RISE::Cst::Document d1 = RISE::Cst::DocSetParamValue( *pCstDocument, id, role, occ, newValue );
-	std::vector<RISE::Cst::NodeId> closure = RISE::Cst::DocEditClosure( d1, id );
-	if( closure.empty() ) return false;
-	const int applied = RISE::Cst::DeriveToJobIncremental( d1, *this, closure, &diags );
-	if( applied != (int)closure.size() || !diags.empty() ) {
-		for( size_t i = 0; i < diags.size() && i < 8u; ++i )
-			GlobalLog()->PrintEx( eLog_Error, "Job::ApplyCstParamEdit:: `%s`.`%s` did not derive: %s", entityName, role, diags[i].c_str() );
-		return false;   // rolled back -- live scene UNTOUCHED
+	if( !pCstDocument || !entityName || !role || !newValue ) return 0;
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, entityName, nullptr, entityKind ? entityKind : "" );
+	if( id == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamEdit:: `%s` not found or ambiguous in the CST Document; edit rejected", entityName );
+		return 0;
 	}
-	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit the new Document version
-	return true;
+	RISE::Cst::Document d1 = RISE::Cst::DocSetOrAddParamValue( *pCstDocument, id, role, occ, newValue );
+	std::vector<RISE::Cst::NodeId> closure = RISE::Cst::DocEditClosure( d1, id );
+	if( closure.empty() ) return 0;   // id resolved but produced no closure (should not happen)
+
+	// Fast path: incremental re-derive of just the closure.
+	std::vector<std::string> idiags;
+	const int applied = RISE::Cst::DeriveToJobIncremental( d1, *this, closure, &idiags );
+	if( applied == (int)closure.size() && idiags.empty() ) {
+		pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit
+		return 1;
+	}
+
+	// D2 fallback: full re-derive of the edited document, FORCING the currently-active variant so a variant
+	// switch the user made survives the edit.  Validate-before-destroy (dry-run into a throwaway Job) so a
+	// genuinely invalid edit leaves the live scene intact -- the incremental above already rolled back.
+	char vbuf[256]; vbuf[0] = '\0';
+	const bool hasVar = GetActiveSceneVariant( vbuf, sizeof( vbuf ) );
+	const char* activeVariant = ( hasVar && vbuf[0] ) ? vbuf : "none";
+	{
+		Job staging;
+		std::vector<std::string> vdiags;
+		RISE::Cst::DeriveToJob( d1, staging, &vdiags, nullptr, activeVariant );
+		if( !vdiags.empty() ) {
+			for( size_t i = 0; i < vdiags.size() && i < 8u; ++i )
+				GlobalLog()->PrintEx( eLog_Error, "Job::ApplyCstParamEdit:: `%s`.`%s` would not derive: %s", entityName, role, vdiags[i].c_str() );
+			return 0;   // live scene UNTOUCHED
+		}
+	}
+	ClearAll();
+	std::vector<std::string> fdiags;
+	RISE::Cst::DeriveToJob( d1, *this, &fdiags, nullptr, activeVariant );
+	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // re-retain (intact even if the re-derive erred)
+	for( size_t i = 0; i < fdiags.size() && i < 8u; ++i )
+		GlobalLog()->PrintEx( eLog_Error, "Job::ApplyCstParamEdit:: full re-derive diagnostic: %s", fdiags[i].c_str() );
+	PushJobFrameStoreToRasterizers();
+	return 2;   // managers were replaced -> caller MUST rebind (even on fdiags: avoids UAF on the freed managers)
 }
 
 // L6b — push the canonical FrameStore to every registered rasterizer.
