@@ -85,8 +85,9 @@ So the hard algorithmic parts are done. **What's missing is wiring + provenance*
   native-v7 contract (Cst::IsNativeV7Document -- a `FOR`/`ENDFOR` loop, a `> run`/`> load` include, or a
   render-AFFECTING `>` directive [`> modify`, `> set <other>`] is REFUSED, not mis-derived; only render-NEUTRAL
   `> echo`/`> set accelerator` are ACCEPTED -- CST-load silently drops every `>`, so DumpJob-blind
-  render-affecting directives must NOT be certified loadable) + load-once.  Slice 2 extends the equivalence corpus-wide.  (It is a `Job` method for now; Slice 5 exposes it on
-  `IJobPriv` to wire the GUI/CLI.)
+  render-affecting directives must NOT be certified loadable) + load-once.  Slice 2 extends the equivalence corpus-wide.  (UPDATE: `LoadAsciiSceneViaCst` has since been promoted to an `IJob`
+  default-bodied virtual — overridden only by `Job` — and wired into the CLI (`commandconsole.cpp` `LoadScenePerEnv`) + the Mac GUI bridge AHEAD of Slice 5, gated behind the `RISE_LOAD_VIA_CST` env
+  var, so the watch `scene_variant` hero (see [63](63-scene-variants-feature-spec.md)) can render its active variant — the legacy reader only renders the base.  Slice 5 flips this to the default.)
 - **Slice 2 — FULL CORPUS CONVERT (D1).** Run `tools/MigrateScenesV6toV7` over the ENTIRE corpus as one
   deliberate batch → the **SCENE-6 fold-all dual-readable** form (both the legacy runtime and the CST read
   it). Resolve the convert TAIL here: the 2 `sss` energy-conservation divergences + the 27 media-missing

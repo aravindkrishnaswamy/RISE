@@ -10015,10 +10015,15 @@ namespace RISE
 		// scene_variant is CST-native (doc 63): the legacy streaming reader can't pre-scan for the active variant,
 		// so it renders the BASE -- skip a variant-tagged material's registration (else it dup-name-collides with
 		// the base material).  `variant none` is the no-variant sentinel (cf. `material none`) -- an ordinary base
-		// material, so it is NOT skipped.  The CST DeriveToJob bakes real variants properly.
-		const std::string variantTag = bag.GetString( "variant", "" );
-		if( Describe().category == ChunkCategory::Material && !variantTag.empty() && variantTag != "none" ) {
-			return true;
+		// material, so it is NOT skipped.  The CST DeriveToJob bakes real variants properly.  Gate the `variant`
+		// lookup behind the material category: GetString on a chunk whose descriptor does not declare `variant`
+		// trips ValidateAccess's "ChunkParser Bug" diagnostic, which would otherwise fire for every non-material
+		// chunk on this (default) legacy path.
+		if( Describe().category == ChunkCategory::Material ) {
+			const std::string variantTag = bag.GetString( "variant", "" );
+			if( !variantTag.empty() && variantTag != "none" ) {
+				return true;
+			}
 		}
 		return Finalize( bag, pJob );
 	}

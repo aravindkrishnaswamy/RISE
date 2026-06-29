@@ -48,8 +48,8 @@ using namespace RISE;
 // P5 (Model-B): route a USER-scene load through the canonical CST path when RISE_LOAD_VIA_CST is set
 // in the environment (else the legacy streaming parser).  The CST path refuses non-native-v7 / derive-
 // error scenes (returns false -- NO silent fallback, so a failed CST load is visible, not masked).  This
-// is the opt-in hook for rendering scene_variant scenes (the variant bake is CST-native); Slice-5 makes
-// CST-load the default with a legacy fallback.
+// is the opt-in hook for rendering scene_variant scenes (the variant bake is CST-native); Slice-5 flips
+// CST-load to the default (fallback policy per docs/agentic-redesign/62).
 static bool LoadScenePerEnv( IJobPriv* pJob, const char* sceneArg )
 {
 	if( getenv( "RISE_LOAD_VIA_CST" ) ) {
