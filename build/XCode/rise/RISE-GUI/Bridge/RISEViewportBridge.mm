@@ -800,6 +800,7 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         case 6: return RISEViewportCategoryMaterial;
         case 7: return RISEViewportCategoryMedium;
         case 8: return RISEViewportCategoryAnimation;
+        case 9: return RISEViewportCategorySceneVariant;
         default: return RISEViewportCategoryNone;
     }
 }

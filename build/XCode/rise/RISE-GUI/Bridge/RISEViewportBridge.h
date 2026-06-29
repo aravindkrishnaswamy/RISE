@@ -305,6 +305,7 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
     RISEViewportCategoryMaterial   = 6,   ///< Materials
     RISEViewportCategoryMedium     = 7,   ///< Participating media
     RISEViewportCategoryAnimation  = 8,   ///< Named animation paths (pick to activate)
+    RISEViewportCategorySceneVariant = 9, ///< scene_variant overlays (pick to re-derive that variant active)
 };
 
 /// Current panel mode — lets the SwiftUI parent decide whether to

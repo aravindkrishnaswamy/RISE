@@ -9753,6 +9753,23 @@ bool Job::GetActiveSceneVariant( char* buf, const unsigned int bufLen ) const
 	return ( src[0] != 0 );
 }
 
+// P5: the idx-th declared scene_variant name (sorted-map order) -- feeds the GUI accordion's variant list.
+bool Job::GetSceneVariantName( unsigned int idx, char* buf, const unsigned int bufLen ) const
+{
+	if( !buf || bufLen == 0 || idx >= sceneVariantCameras.size() ) {
+		return false;
+	}
+	std::map<String,String>::const_iterator it = sceneVariantCameras.begin();
+	for( unsigned int k = 0; k < idx; ++k ) ++it;   // std::map is key-sorted -> stable idx-th name
+	const char* src = it->first.c_str();
+	unsigned int i = 0;
+	for( ; src[i] && i+1 < bufLen; i++ ) {
+		buf[i] = src[i];
+	}
+	buf[i] = '\0';
+	return true;
+}
+
 //! Rasterizes an animation using the global preset options
 /// \return TRUE if successful, FALSE otherwise
 bool Job::RasterizeAnimationUsingOptions(

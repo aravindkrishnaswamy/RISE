@@ -2055,6 +2055,9 @@ unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
 	case Category::Animation: {
 		return mJob.GetAnimationCount();
 	}
+	case Category::SceneVariant: {
+		return mJob.GetSceneVariantCount() + 1u;   // +1 for the synthetic "(base)" entry at index 0
+	}
 	case Category::None:
 	default:
 		return 0;
@@ -2123,6 +2126,12 @@ String SceneEditController::CategoryEntityName( Category cat, unsigned int idx )
 		if( !mJob.GetAnimationName( idx, buf, sizeof(buf) ) ) return String();
 		return String( buf );
 	}
+	case Category::SceneVariant: {
+		if( idx == 0 ) return String( "(base)" );   // index 0 = the no-variant default
+		char buf[256] = { 0 };
+		if( !mJob.GetSceneVariantName( idx - 1, buf, sizeof(buf) ) ) return String();
+		return String( buf );
+	}
 	case Category::None:
 	default:
 		return String();
@@ -2164,6 +2173,11 @@ String SceneEditController::CategoryActiveName( Category cat ) const
 		char buf[256] = { 0 };
 		if( !mJob.GetActiveAnimationName( buf, sizeof(buf) ) ) return String();
 		return String( buf );
+	}
+	case Category::SceneVariant: {
+		char buf[256] = { 0 };
+		mJob.GetActiveSceneVariant( buf, sizeof(buf) );
+		return buf[0] ? String( buf ) : String( "(base)" );   // empty active => the base default
 	}
 	case Category::Object:
 	case Category::Light:
@@ -2335,7 +2349,8 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 	// are pure UI state and don't need the lock.
 	const bool needsRenderSerialization =
 		( cat == Category::Camera || cat == Category::Rasterizer
-		  || cat == Category::Film || cat == Category::Animation )
+		  || cat == Category::Film || cat == Category::Animation
+		  || cat == Category::SceneVariant )
 		&& entityName.size() > 1;   // empty name = just expand, no swap
 
 	if( needsRenderSerialization )
@@ -2387,6 +2402,14 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 			// Activating a named animation changes which timelines drive the
 			// scene; the next render evaluates the new active animation.
 			ok = mJob.SetActiveAnimation( entityName.c_str() );
+		}
+		else if( cat == Category::SceneVariant )
+		{
+			// A variant switch RE-BAKES the scene (new materials), unlike the other activations -> re-derive the
+			// retained CST Document with the forced variant + bump the epoch so the panels re-read the changed
+			// structure.  "(base)" is the synthetic no-variant entry.
+			ok = mJob.RederiveCstWithVariant( entityName == String( "(base)" ) ? "none" : entityName.c_str() );
+			if( ok ) mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
 		}
 		else if( cat == Category::Film && filmPreset )
 		{
@@ -2992,6 +3015,9 @@ SceneEditController::PanelMode SceneEditController::CurrentPanelMode() const
 		return mSelectionName.size() > 1 ? PanelMode::Medium : PanelMode::None;
 	case Category::Animation:
 		// No editable properties — selection just activates the path.
+		return PanelMode::None;
+	case Category::SceneVariant:
+		// No editable properties -- selection re-derives the scene with that variant active.
 		return PanelMode::None;
 	case Category::None:
 	default:

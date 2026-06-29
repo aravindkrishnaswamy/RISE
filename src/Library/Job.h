@@ -2853,6 +2853,8 @@ namespace RISE
 		bool GetActiveSceneVariant( char* buf, const unsigned int bufLen ) const;
 		const std::map<String,String>& GetSceneVariantCameras() const { return sceneVariantCameras; }
 		const String& GetActiveSceneVariantName() const { return activeSceneVariant; }
+		unsigned int GetSceneVariantCount() const { return (unsigned int)sceneVariantCameras.size(); }
+		bool GetSceneVariantName( unsigned int idx, char* buf, const unsigned int bufLen ) const;
 		bool HasSceneVariants() const { return !sceneVariantCameras.empty() || !activeSceneVariant.empty(); }
 		void ClearSceneVariants() { sceneVariantCameras.clear(); activeSceneVariant.clear(); }
 

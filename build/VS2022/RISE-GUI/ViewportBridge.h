@@ -285,7 +285,8 @@ public:
         Film       = 5,   ///< Output Settings (single Film per scene)
         Material   = 6,   ///< Materials
         Medium     = 7,   ///< Participating media
-        Animation  = 8    ///< Named animation paths (pick to activate; no editable properties)
+        Animation  = 8,   ///< Named animation paths (pick to activate; no editable properties)
+        SceneVariant = 9  ///< scene_variant overlays (pick to re-derive that variant active)
     };
 
     PanelMode panelMode() const;

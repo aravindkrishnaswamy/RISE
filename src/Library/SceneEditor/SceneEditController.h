@@ -217,9 +217,10 @@ namespace RISE
 			Medium     = 7,   ///< Participating media section (Homogeneous editable;
 			                  ///< Heterogeneous read-only because the majorant grid is
 			                  ///< baked at construction).
-			Animation  = 8    ///< Named animation paths — picking one makes it the
+			Animation  = 8,   ///< Named animation paths — picking one makes it the
 			                  ///< active animation (like picking a camera); no editable
 			                  ///< properties, selection just activates it.
+			SceneVariant = 9  ///< scene_variant overlays; picking one RE-DERIVES the scene with that variant active.
 		};
 
 		//! @param job                     borrowed; caller keeps alive.
@@ -879,7 +880,7 @@ namespace RISE
 		// pick, used for the panel header / single-tuple callers.
 		// All writes happen on the UI thread; render thread doesn't
 		// touch these.
-		static constexpr int        kNumCategories = 9;   // None..Animation
+		static constexpr int        kNumCategories = 10;  // None..SceneVariant
 		String                      mSelectionByCategory[ kNumCategories ];
 		//! Per-category "is the accordion section expanded?" flag,
 		//! tracked SEPARATELY from `mSelectionByCategory` so a user

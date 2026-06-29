@@ -2846,6 +2846,12 @@ namespace RISE
 		virtual bool SetActiveSceneVariant( const char* /*name*/ ) { return false; }
 		//! Returns the active scene variant name into buf (empty if none).
 		virtual bool GetActiveSceneVariant( char* /*buf*/, const unsigned int /*bufLen*/ ) const { return false; }
+
+		//! P5: COUNT of declared scene_variants (the GUI accordion's variant list).  Default 0.
+		virtual unsigned int GetSceneVariantCount() const { return 0; }
+
+		//! P5: the idx-th declared scene_variant name (0-based, in the map's sorted order).  Default false.
+		virtual bool GetSceneVariantName( unsigned int /*idx*/, char* /*buf*/, const unsigned int /*bufLen*/ ) const { return false; }
 		//! True iff the Job has any declared scene variant or an active selection -- the O(1) incremental-derive
 		//! refuse signal (a variant's bake is whole-document, so a variant scene's edits fall back to a full re-derive).
 		virtual bool HasSceneVariants() const { return false; }

@@ -224,6 +224,7 @@ struct AccordionSectionDef {
 static const AccordionSectionDef kSectionDefs[] = {
     { ViewportBridge::Category::Camera,     "Cameras"         },
     { ViewportBridge::Category::Animation,  "Animation"       },
+    { ViewportBridge::Category::SceneVariant, "Variants"      },
     { ViewportBridge::Category::Rasterizer, "Rasterizer"      },
     { ViewportBridge::Category::Object,     "Objects"         },
     { ViewportBridge::Category::Light,      "Lights"          },
