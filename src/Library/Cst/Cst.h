@@ -457,6 +457,13 @@ namespace RISE
 		//! O(log N); `*visits` receives the BST descent count -- COUNTED, not O(N).
 		NodeId DocFindByName( const Document& doc, const std::string& namePath, int* visits = nullptr, int* occurrences = nullptr );
 
+		//! Find a chunk by its BARE name (no `keyword/` prefix), unique-or-refuse like DocFindByName.  The
+		//! interactive editor addresses entities by name (it lacks the CST keyword), so this scans the top-
+		//! level items for a `name` param matching `bareName` and resolves the single hit to its NodeId;
+		//! returns 0 if absent or ambiguous (>1 chunks share the name).  O(N) scan -- used on discrete panel
+		//! edits, not the per-frame gizmo path (which will carry the NodeId forward).
+		NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, int* occurrences = nullptr );
+
 		//! Resolve a durable NodeId to the green node it now labels (null if gone),
 		//! in O(log N) via the persistent reverse index -- the counted "agent holds
 		//! a NodeId, what is it now" path. `*visits` (if non-null) receives the BST

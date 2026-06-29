@@ -2736,6 +2736,13 @@ namespace RISE
 		//! scene (no Document) must not offer pickable variants that would silently no-op.  Default FALSE.
 		virtual bool HasRetainedCstDocument() const { return false; }
 
+		//! P5 Slice 3 (edit-model pivot): apply ONE param-value edit to the retained CST Document and
+		//! incrementally re-derive only the affected closure.  `entityName` = the chunk (bare name, unique-or-
+		//! refuse), `role` = its param (e.g. "reflectance"), `occ` = the occurrence, `newValue` = the new value
+		//! token.  Returns FALSE (Job UNTOUCHED -- the incremental derive rolls back) if no Document is retained,
+		//! the chunk isn't found/unique, or the derive diagnoses.  Default FALSE (only Job overrides).
+		virtual bool ApplyCstParamEdit( const char* entityName, const char* role, int occ, const char* newValue ) { return false; }
+
 		//! Runs an ascii script
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool RunAsciiScript(

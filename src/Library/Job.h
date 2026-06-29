@@ -2777,6 +2777,7 @@ namespace RISE
 			);
 
 		bool HasRetainedCstDocument() const { return pCstDocument != nullptr; }
+		bool ApplyCstParamEdit( const char* entityName, const char* role, int occ, const char* newValue );
 
 		//! P5: the retained canonical CST (null unless the scene was loaded via LoadAsciiSceneViaCst).
 		const RISE::Cst::Document*	GetCstDocument() const { return pCstDocument.get(); }

@@ -2912,6 +2912,21 @@ NodeId DocFindByName( const Document& doc, const std::string& namePath, int* vis
 	return ( count == 1 ) ? id : 0;   // unique-or-refuse: an ambiguous duplicate name resolves to 0
 }
 
+NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, int* occurrences )
+{
+	std::vector<NodeRef> items; SeqToVec( doc.items, items );
+	std::string matchPath; int count = 0;
+	for( size_t i = 0; i < items.size(); ++i ) {
+		const std::string np = ChunkNamePath( items[i] );          // "keyword/name" or ""
+		if( np.empty() ) continue;
+		const size_t slash = np.rfind( '/' );
+		if( slash != std::string::npos && np.compare( slash + 1, std::string::npos, bareName ) == 0 ) { ++count; matchPath = np; }
+	}
+	if( occurrences ) *occurrences = count;
+	if( count != 1 ) return 0;                                     // absent or ambiguous -> refuse (caller falls back)
+	int v = 0, c = 0; return NameFind( doc.byName, matchPath, v, c );
+}
+
 NodeRef DocResolveNodeId( const Document& doc, NodeId id, int* visits )
 {
 	int v = 0;

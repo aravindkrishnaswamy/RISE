@@ -9506,6 +9506,29 @@ bool Job::RederiveCstWithVariant( const char* variantName )
 	return true;
 }
 
+// P5 Slice 3 (edit-model pivot): apply ONE param-value edit to the retained CST + incrementally re-derive
+// only the affected closure (the CST transfer-gate kernel, O(closure)).  Atomic: DeriveToJobIncremental
+// rolls the Job back on a diagnostic, so a failed edit leaves the live scene intact.  Callers (SceneEditor)
+// gate on HasRetainedCstDocument() and fall back to the direct mutation for legacy-loaded scenes.
+bool Job::ApplyCstParamEdit( const char* entityName, const char* role, int occ, const char* newValue )
+{
+	if( !pCstDocument || !entityName || !role || !newValue ) return false;
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, entityName );
+	if( id == 0 ) return false;   // absent or ambiguous -- caller falls back to the direct edit
+	std::vector<std::string> diags;
+	RISE::Cst::Document d1 = RISE::Cst::DocSetParamValue( *pCstDocument, id, role, occ, newValue );
+	std::vector<RISE::Cst::NodeId> closure = RISE::Cst::DocEditClosure( d1, id );
+	if( closure.empty() ) return false;
+	const int applied = RISE::Cst::DeriveToJobIncremental( d1, *this, closure, &diags );
+	if( applied != (int)closure.size() || !diags.empty() ) {
+		for( size_t i = 0; i < diags.size() && i < 8u; ++i )
+			GlobalLog()->PrintEx( eLog_Error, "Job::ApplyCstParamEdit:: `%s`.`%s` did not derive: %s", entityName, role, diags[i].c_str() );
+		return false;   // rolled back -- live scene UNTOUCHED
+	}
+	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit the new Document version
+	return true;
+}
+
 // L6b — push the canonical FrameStore to every registered rasterizer.
 // Called after scene load completes and after SetActiveCamera in case
 // the new camera has different dimensions.  Each rasterizer addrefs

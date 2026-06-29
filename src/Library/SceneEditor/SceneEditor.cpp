@@ -1027,6 +1027,13 @@ bool SceneEditor::ApplyMaterialSlotByName( const SceneEdit& e, const String& pai
 	IMaterial* mat = mMaterialManager->GetItem( e.objectName.c_str() );
 	if( !mat ) return false;
 	if( painterName.size() <= 1 ) return false;
+	// P5 Slice 3 (edit-model pivot): when the Job retains a CST Document (LoadAsciiSceneViaCst), route the
+	// slot re-point through a CST param-edit + incremental re-derive so the canonical CST stays the source
+	// of truth (Slice 4's save serializes it).  Serves BOTH forward and undo (the inverse re-point replays
+	// through here), so the mHistory undo stack works unchanged.  Legacy-loaded scenes (no Document) fall
+	// through to the direct MaterialIntrospection::SetSlot below.
+	if( mJob && mJob->HasRetainedCstDocument() )
+		return mJob->ApplyCstParamEdit( e.objectName.c_str(), e.propertyName.c_str(), 0, painterName.c_str() );
 	const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, e.propertyName );
 	if( cur.kind == MaterialSlotRef::Painter ) {
 		if( !mPainterManager ) return false;
@@ -1366,7 +1373,12 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 	// instance re-registered under the same name (serial mismatch); applying the
 	// captured state to the replacement would corrupt it.  capturedTargetSerial==0
 	// means the op tracks no identity (medium/time/marker/legacy) -> no check.
-	if( edit.capturedTargetSerial != 0 && ResolveTargetSerial( edit ) != edit.capturedTargetSerial )
+	// SKIP on the CST edit-model (HasRetainedCstDocument): it RE-DERIVES entities on every edit, so their
+	// serials legitimately change each time, and it applies/reverts/redoes by NAME (ApplyCstParamEdit /
+	// ApplyMaterialSlotByName's CST branch -- never the stale pointer).  So the serial guard is both moot
+	// and would FALSELY trip there; it stays in force for legacy direct edits.
+	if( edit.capturedTargetSerial != 0 && !( mJob && mJob->HasRetainedCstDocument() ) &&
+	    ResolveTargetSerial( edit ) != edit.capturedTargetSerial )
 		return false;
 	if( SceneEdit::IsObjectOp( edit.op ) )
 	{
@@ -1587,7 +1599,12 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 	// instance re-registered under the same name (serial mismatch); applying the
 	// captured state to the replacement would corrupt it.  capturedTargetSerial==0
 	// means the op tracks no identity (medium/time/marker/legacy) -> no check.
-	if( edit.capturedTargetSerial != 0 && ResolveTargetSerial( edit ) != edit.capturedTargetSerial )
+	// SKIP on the CST edit-model (HasRetainedCstDocument): it RE-DERIVES entities on every edit, so their
+	// serials legitimately change each time, and it applies/reverts/redoes by NAME (ApplyCstParamEdit /
+	// ApplyMaterialSlotByName's CST branch -- never the stale pointer).  So the serial guard is both moot
+	// and would FALSELY trip there; it stays in force for legacy direct edits.
+	if( edit.capturedTargetSerial != 0 && !( mJob && mJob->HasRetainedCstDocument() ) &&
+	    ResolveTargetSerial( edit ) != edit.capturedTargetSerial )
 		return false;
 	if( SceneEdit::IsObjectOp( edit.op ) )
 	{
