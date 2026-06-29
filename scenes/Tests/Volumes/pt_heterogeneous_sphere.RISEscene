@@ -86,7 +86,10 @@ heterogeneous_medium
 	bbox_max		478 473 480
 }
 
-> set global_medium sphere_vol
+global_medium
+{
+medium sphere_vol
+}
 
 ##################################################
 # Painters
@@ -255,3 +258,4 @@ standard_object
 	geometry			lightgeom
 	material			light_mat
 }
+

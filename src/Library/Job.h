@@ -378,6 +378,8 @@ namespace RISE
 			const unsigned int nMaxTreeDepth						///< [in] Maximum tree depth
 			);
 
+		double GetLightSampleRRThreshold() const { return lightSampleRRThreshold; }
+
 		bool SetLightSampleRRThreshold(
 			const double threshold									///< [in] RR threshold (0=disabled)
 			);

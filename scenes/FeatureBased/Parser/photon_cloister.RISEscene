@@ -13,9 +13,6 @@ RISE ASCII SCENE 6
 > set accelerator B 10 8
 > echo event Building the Photon Cloister with final gather, global photons, caustic photons, and parser-generated architecture.
 
-	DEFINE TWOPI $(2*@PI)
-	DEFINE STEP_COUNT 4
-	DEFINE DROPLET_COUNT 3
 
 ##################################################
 # Setup a renderer
@@ -78,7 +75,146 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_silver
+	color		0.90 0.91 0.98 
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 uniformcolor_painter
 {
@@ -122,12 +258,6 @@ uniformcolor_painter
 	color				0.63 0.49 0.32
 }
 
-uniformcolor_painter
-{
-	name				pnt_clear_glass
-	color				0.97 0.98 1.0
-	colorspace			RISERGB
-}
 
 uniformcolor_painter
 {
@@ -141,19 +271,7 @@ uniformcolor_painter
 	color				0.98 0.96 0.92
 }
 
-uniformcolor_painter
-{
-	name				pnt_lens_glass
-	color				1.0 0.82 0.62
-	colorspace			RISERGB
-}
 
-uniformcolor_painter
-{
-	name				pnt_prism_glass
-	color				0.64 0.88 1.0
-	colorspace			RISERGB
-}
 
 ##################################################
 # Materials
@@ -423,169 +541,715 @@ standard_object
 # Loop-generated stair banks
 ##################################################
 
-FOR SIDE -1 1 2
-	FOR STEP 0 @STEP_COUNT 1
 
-			DEFINE SW $(1.15+@STEP*0.08)
-			DEFINE SH $(0.22+@STEP*0.18)
-			DEFINE SD $(7.4-@STEP*0.4)
-			DEFINE SX $(@SIDE*(4.9-@STEP*0.78))
-			DEFINE SZ $(0.0-@STEP*0.25)
-			DEFINE SR $(0.58+0.08*@STEP-0.18*@SIDE)
-			DEFINE SG $(0.44+0.06*@STEP+0.04*@SIDE)
-			DEFINE SB $(0.46+0.05*@STEP+0.18*@SIDE)
 
 		uniformcolor_painter
 		{
-			name			pnt_step@SIDE@STEP
-			color			@SR @SG @SB
+			name			pnt_step-1.0000000000000.000000000000
+			color			0.760000000000 0.400000000000 0.280000000000
 		}
 
 		orennayar_material
 		{
-			name			step_mat@SIDE@STEP
-			reflectance		pnt_step@SIDE@STEP
+			name			step_mat-1.0000000000000.000000000000
+			reflectance		pnt_step-1.0000000000000.000000000000
 			roughness		0.8
 		}
 
 		box_geometry
 		{
-			name			stepgeom@SIDE@STEP
-			width			@SW
-			height			@SH
-			depth			@SD
+			name			stepgeom-1.0000000000000.000000000000
+			width			1.150000000000
+			height			0.220000000000
+			depth			7.400000000000
 		}
 
 		standard_object
 		{
-			name			step@SIDE@STEP
-			geometry		stepgeom@SIDE@STEP
-			position		@SX $(@SH*0.5) @SZ
-			material		step_mat@SIDE@STEP
+			name			step-1.0000000000000.000000000000
+			geometry		stepgeom-1.0000000000000.000000000000
+			position		-4.900000000000 0.11000000000000000 0.000000000000
+			material		step_mat-1.0000000000000.000000000000
 		}
 
 		standard_object
 		{
-			name			stepcap@SIDE@STEP
+			name			stepcap-1.0000000000000.000000000000
 			geometry		stepcapgeom
-			position		@SX $(@SH+0.06) @SZ
+			position		-4.900000000000 0.28000000000000003 0.000000000000
 			material		floor_mat
 		}
 
-		UNDEF SW
-		UNDEF SH
-		UNDEF SD
-		UNDEF SX
-		UNDEF SZ
-		UNDEF SR
-		UNDEF SG
-		UNDEF SB
 
-	ENDFOR
-ENDFOR
+
+
+		uniformcolor_painter
+		{
+			name			pnt_step-1.0000000000001.000000000000
+			color			0.840000000000 0.460000000000 0.330000000000
+		}
+
+		orennayar_material
+		{
+			name			step_mat-1.0000000000001.000000000000
+			reflectance		pnt_step-1.0000000000001.000000000000
+			roughness		0.8
+		}
+
+		box_geometry
+		{
+			name			stepgeom-1.0000000000001.000000000000
+			width			1.230000000000
+			height			0.400000000000
+			depth			7.000000000000
+		}
+
+		standard_object
+		{
+			name			step-1.0000000000001.000000000000
+			geometry		stepgeom-1.0000000000001.000000000000
+			position		-4.120000000000 0.20000000000000001 -0.250000000000
+			material		step_mat-1.0000000000001.000000000000
+		}
+
+		standard_object
+		{
+			name			stepcap-1.0000000000001.000000000000
+			geometry		stepcapgeom
+			position		-4.120000000000 0.46000000000000002 -0.250000000000
+			material		floor_mat
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_step-1.0000000000002.000000000000
+			color			0.920000000000 0.520000000000 0.380000000000
+		}
+
+		orennayar_material
+		{
+			name			step_mat-1.0000000000002.000000000000
+			reflectance		pnt_step-1.0000000000002.000000000000
+			roughness		0.8
+		}
+
+		box_geometry
+		{
+			name			stepgeom-1.0000000000002.000000000000
+			width			1.310000000000
+			height			0.580000000000
+			depth			6.600000000000
+		}
+
+		standard_object
+		{
+			name			step-1.0000000000002.000000000000
+			geometry		stepgeom-1.0000000000002.000000000000
+			position		-3.340000000000 0.28999999999999998 -0.500000000000
+			material		step_mat-1.0000000000002.000000000000
+		}
+
+		standard_object
+		{
+			name			stepcap-1.0000000000002.000000000000
+			geometry		stepcapgeom
+			position		-3.340000000000 0.63999999999999990 -0.500000000000
+			material		floor_mat
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_step-1.0000000000003.000000000000
+			color			1.000000000000 0.580000000000 0.430000000000
+		}
+
+		orennayar_material
+		{
+			name			step_mat-1.0000000000003.000000000000
+			reflectance		pnt_step-1.0000000000003.000000000000
+			roughness		0.8
+		}
+
+		box_geometry
+		{
+			name			stepgeom-1.0000000000003.000000000000
+			width			1.390000000000
+			height			0.760000000000
+			depth			6.200000000000
+		}
+
+		standard_object
+		{
+			name			step-1.0000000000003.000000000000
+			geometry		stepgeom-1.0000000000003.000000000000
+			position		-2.560000000000 0.38000000000000000 -0.750000000000
+			material		step_mat-1.0000000000003.000000000000
+		}
+
+		standard_object
+		{
+			name			stepcap-1.0000000000003.000000000000
+			geometry		stepcapgeom
+			position		-2.560000000000 0.82000000000000006 -0.750000000000
+			material		floor_mat
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_step-1.0000000000004.000000000000
+			color			1.080000000000 0.640000000000 0.480000000000
+		}
+
+		orennayar_material
+		{
+			name			step_mat-1.0000000000004.000000000000
+			reflectance		pnt_step-1.0000000000004.000000000000
+			roughness		0.8
+		}
+
+		box_geometry
+		{
+			name			stepgeom-1.0000000000004.000000000000
+			width			1.470000000000
+			height			0.940000000000
+			depth			5.800000000000
+		}
+
+		standard_object
+		{
+			name			step-1.0000000000004.000000000000
+			geometry		stepgeom-1.0000000000004.000000000000
+			position		-1.780000000000 0.46999999999999997 -1.000000000000
+			material		step_mat-1.0000000000004.000000000000
+		}
+
+		standard_object
+		{
+			name			stepcap-1.0000000000004.000000000000
+			geometry		stepcapgeom
+			position		-1.780000000000 1.00000000000000000 -1.000000000000
+			material		floor_mat
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_step1.0000000000000.000000000000
+			color			0.400000000000 0.480000000000 0.640000000000
+		}
+
+		orennayar_material
+		{
+			name			step_mat1.0000000000000.000000000000
+			reflectance		pnt_step1.0000000000000.000000000000
+			roughness		0.8
+		}
+
+		box_geometry
+		{
+			name			stepgeom1.0000000000000.000000000000
+			width			1.150000000000
+			height			0.220000000000
+			depth			7.400000000000
+		}
+
+		standard_object
+		{
+			name			step1.0000000000000.000000000000
+			geometry		stepgeom1.0000000000000.000000000000
+			position		4.900000000000 0.11000000000000000 0.000000000000
+			material		step_mat1.0000000000000.000000000000
+		}
+
+		standard_object
+		{
+			name			stepcap1.0000000000000.000000000000
+			geometry		stepcapgeom
+			position		4.900000000000 0.28000000000000003 0.000000000000
+			material		floor_mat
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_step1.0000000000001.000000000000
+			color			0.480000000000 0.540000000000 0.690000000000
+		}
+
+		orennayar_material
+		{
+			name			step_mat1.0000000000001.000000000000
+			reflectance		pnt_step1.0000000000001.000000000000
+			roughness		0.8
+		}
+
+		box_geometry
+		{
+			name			stepgeom1.0000000000001.000000000000
+			width			1.230000000000
+			height			0.400000000000
+			depth			7.000000000000
+		}
+
+		standard_object
+		{
+			name			step1.0000000000001.000000000000
+			geometry		stepgeom1.0000000000001.000000000000
+			position		4.120000000000 0.20000000000000001 -0.250000000000
+			material		step_mat1.0000000000001.000000000000
+		}
+
+		standard_object
+		{
+			name			stepcap1.0000000000001.000000000000
+			geometry		stepcapgeom
+			position		4.120000000000 0.46000000000000002 -0.250000000000
+			material		floor_mat
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_step1.0000000000002.000000000000
+			color			0.560000000000 0.600000000000 0.740000000000
+		}
+
+		orennayar_material
+		{
+			name			step_mat1.0000000000002.000000000000
+			reflectance		pnt_step1.0000000000002.000000000000
+			roughness		0.8
+		}
+
+		box_geometry
+		{
+			name			stepgeom1.0000000000002.000000000000
+			width			1.310000000000
+			height			0.580000000000
+			depth			6.600000000000
+		}
+
+		standard_object
+		{
+			name			step1.0000000000002.000000000000
+			geometry		stepgeom1.0000000000002.000000000000
+			position		3.340000000000 0.28999999999999998 -0.500000000000
+			material		step_mat1.0000000000002.000000000000
+		}
+
+		standard_object
+		{
+			name			stepcap1.0000000000002.000000000000
+			geometry		stepcapgeom
+			position		3.340000000000 0.63999999999999990 -0.500000000000
+			material		floor_mat
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_step1.0000000000003.000000000000
+			color			0.640000000000 0.660000000000 0.790000000000
+		}
+
+		orennayar_material
+		{
+			name			step_mat1.0000000000003.000000000000
+			reflectance		pnt_step1.0000000000003.000000000000
+			roughness		0.8
+		}
+
+		box_geometry
+		{
+			name			stepgeom1.0000000000003.000000000000
+			width			1.390000000000
+			height			0.760000000000
+			depth			6.200000000000
+		}
+
+		standard_object
+		{
+			name			step1.0000000000003.000000000000
+			geometry		stepgeom1.0000000000003.000000000000
+			position		2.560000000000 0.38000000000000000 -0.750000000000
+			material		step_mat1.0000000000003.000000000000
+		}
+
+		standard_object
+		{
+			name			stepcap1.0000000000003.000000000000
+			geometry		stepcapgeom
+			position		2.560000000000 0.82000000000000006 -0.750000000000
+			material		floor_mat
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_step1.0000000000004.000000000000
+			color			0.720000000000 0.720000000000 0.840000000000
+		}
+
+		orennayar_material
+		{
+			name			step_mat1.0000000000004.000000000000
+			reflectance		pnt_step1.0000000000004.000000000000
+			roughness		0.8
+		}
+
+		box_geometry
+		{
+			name			stepgeom1.0000000000004.000000000000
+			width			1.470000000000
+			height			0.940000000000
+			depth			5.800000000000
+		}
+
+		standard_object
+		{
+			name			step1.0000000000004.000000000000
+			geometry		stepgeom1.0000000000004.000000000000
+			position		1.780000000000 0.46999999999999997 -1.000000000000
+			material		step_mat1.0000000000004.000000000000
+		}
+
+		standard_object
+		{
+			name			stepcap1.0000000000004.000000000000
+			geometry		stepcapgeom
+			position		1.780000000000 1.00000000000000000 -1.000000000000
+			material		floor_mat
+		}
+
+
 
 ##################################################
 # Ceiling luminaire grid
 ##################################################
 
-FOR IX -1 1 1
 
-	DEFINE LX $(@IX*2.25)
 
 	standard_object
 	{
-		name			ceilingdiskwarm@IX
+		name			ceilingdiskwarm-1.000000000000
 		geometry		lightdiskgeom
-		position		@LX 5.92 -2.2
+		position		-2.250000000000 5.92 -2.2
 		material		ceiling_lum
 	}
 
 	standard_object
 	{
-		name			ceilingdiskcool@IX
+		name			ceilingdiskcool-1.000000000000
 		geometry		lightdiskgeom
-		position		@LX 5.92 0.0
+		position		-2.250000000000 5.92 0.0
 		material		ceiling_lum_cool
 	}
 
-	UNDEF LX
 
-ENDFOR
+
+
+	standard_object
+	{
+		name			ceilingdiskwarm0.000000000000
+		geometry		lightdiskgeom
+		position		0.000000000000 5.92 -2.2
+		material		ceiling_lum
+	}
+
+	standard_object
+	{
+		name			ceilingdiskcool0.000000000000
+		geometry		lightdiskgeom
+		position		0.000000000000 5.92 0.0
+		material		ceiling_lum_cool
+	}
+
+
+
+
+	standard_object
+	{
+		name			ceilingdiskwarm1.000000000000
+		geometry		lightdiskgeom
+		position		2.250000000000 5.92 -2.2
+		material		ceiling_lum
+	}
+
+	standard_object
+	{
+		name			ceilingdiskcool1.000000000000
+		geometry		lightdiskgeom
+		position		2.250000000000 5.92 0.0
+		material		ceiling_lum_cool
+	}
+
+
 
 ##################################################
 # Mirrors
 ##################################################
 
-FOR SIDE -1 1 2
 
 	standard_object
 	{
-		name			mirror@SIDE
+		name			mirror-1.000000000000
 		geometry		mirrorgeom
-		position		$(@SIDE*5.7) 1.6 -1.9
-		orientation		0 $(@SIDE*12.0) 0
+		position		-5.70000000000000018 1.6 -1.9
+		orientation		0 -12.00000000000000000 0
 		material		mirror_mat
 	}
 
-ENDFOR
+
+	standard_object
+	{
+		name			mirror1.000000000000
+		geometry		mirrorgeom
+		position		5.70000000000000018 1.6 -1.9
+		orientation		0 12.00000000000000000 0
+		material		mirror_mat
+	}
+
 
 ##################################################
 # Parser-generated droplet canopy
 ##################################################
 
-FOR I -@DROPLET_COUNT @DROPLET_COUNT 1
 
-	DEFINE GX $(@I*1.2)
-	DEFINE GZ $(0.70+0.16*cos(@I*0.9))
-	DEFINE GY $(3.15+0.20*sin(@I*0.8))
-	DEFINE GABS $(sqrt(@I*@I))
-	DEFINE GRX $(0.5*(0.20+0.02*(@DROPLET_COUNT-@GABS)))
-	DEFINE GRY $(0.5*(0.40+0.04*cos(@I*0.7)))
-	DEFINE GC_R $(0.82+0.12*sin(@I*0.8))
-	DEFINE GC_G $(0.58+0.18*cos(@I*0.9))
-	DEFINE GC_B $(0.78+0.16*sin(@I*0.5))
-	DEFINE GLOW $(14.0+2.5*(@DROPLET_COUNT-@GABS))
 
 	uniformcolor_painter
 	{
-		name			pnt_glass@I
-		color			@GC_R @GC_G @GC_B
+		name			pnt_glass-3.000000000000
+		color			0.738944418334 0.417267014437 0.620400802143
 	}
 
 	lambertian_luminaire_material
 	{
-		name			glass@I
-		exitance		pnt_glass@I
-		scale			@GLOW
+		name			glass-3.000000000000
+		exitance		pnt_glass-3.000000000000
+		scale			14.000000000000
 		material		none
 	}
 
 	ellipsoid_geometry
 	{
-		name			dropletgeom@I
-		radii			@GRX @GRY @GRX
+		name			dropletgeom-3.000000000000
+		radii			0.100000000000 0.189903077908 0.100000000000
 	}
 
 	standard_object
 	{
-		name			droplet@I
-		geometry		dropletgeom@I
-		position		@GX @GY @GZ
-		material		glass@I
+		name			droplet-3.000000000000
+		geometry		dropletgeom-3.000000000000
+		position		-3.600000000000 3.014907363890 0.555348457277
+		material		glass-3.000000000000
 	}
 
-	UNDEF GX
-	UNDEF GZ
-	UNDEF GY
-	UNDEF GABS
-	UNDEF GRX
-	UNDEF GRY
-	UNDEF GC_R
-	UNDEF GC_G
-	UNDEF GC_B
-		UNDEF GLOW
 
-ENDFOR
+
+
+	uniformcolor_painter
+	{
+		name			pnt_glass-2.000000000000
+		color			0.700051167635 0.539103622955 0.645364642431
+	}
+
+	lambertian_luminaire_material
+	{
+		name			glass-2.000000000000
+		exitance		pnt_glass-2.000000000000
+		scale			16.500000000000
+		material		none
+	}
+
+	ellipsoid_geometry
+	{
+		name			dropletgeom-2.000000000000
+		radii			0.110000000000 0.203399342858 0.110000000000
+	}
+
+	standard_object
+	{
+		name			droplet-2.000000000000
+		geometry		dropletgeom-2.000000000000
+		position		-2.400000000000 2.950085279392 0.663647664849
+		material		glass-2.000000000000
+	}
+
+
+
+
+	uniformcolor_painter
+	{
+		name			pnt_glass-1.000000000000
+		color			0.733917269092 0.691889794289 0.703291913823
+	}
+
+	lambertian_luminaire_material
+	{
+		name			glass-1.000000000000
+		exitance		pnt_glass-1.000000000000
+		scale			19.000000000000
+		material		none
+	}
+
+	ellipsoid_geometry
+	{
+		name			dropletgeom-1.000000000000
+		radii			0.120000000000 0.215296843746 0.120000000000
+	}
+
+	standard_object
+	{
+		name			droplet-1.000000000000
+		geometry		dropletgeom-1.000000000000
+		position		-1.200000000000 3.006528781820 0.799457594923
+		material		glass-1.000000000000
+	}
+
+
+
+
+	uniformcolor_painter
+	{
+		name			pnt_glass0.000000000000
+		color			0.820000000000 0.760000000000 0.780000000000
+	}
+
+	lambertian_luminaire_material
+	{
+		name			glass0.000000000000
+		exitance		pnt_glass0.000000000000
+		scale			21.500000000000
+		material		none
+	}
+
+	ellipsoid_geometry
+	{
+		name			dropletgeom0.000000000000
+		radii			0.130000000000 0.220000000000 0.130000000000
+	}
+
+	standard_object
+	{
+		name			droplet0.000000000000
+		geometry		dropletgeom0.000000000000
+		position		0.000000000000 3.150000000000 0.860000000000
+		material		glass0.000000000000
+	}
+
+
+
+
+	uniformcolor_painter
+	{
+		name			pnt_glass1.000000000000
+		color			0.906082730908 0.691889794289 0.856708086177
+	}
+
+	lambertian_luminaire_material
+	{
+		name			glass1.000000000000
+		exitance		pnt_glass1.000000000000
+		scale			19.000000000000
+		material		none
+	}
+
+	ellipsoid_geometry
+	{
+		name			dropletgeom1.000000000000
+		radii			0.120000000000 0.215296843746 0.120000000000
+	}
+
+	standard_object
+	{
+		name			droplet1.000000000000
+		geometry		dropletgeom1.000000000000
+		position		1.200000000000 3.293471218180 0.799457594923
+		material		glass1.000000000000
+	}
+
+
+
+
+	uniformcolor_painter
+	{
+		name			pnt_glass2.000000000000
+		color			0.939948832365 0.539103622955 0.914635357569
+	}
+
+	lambertian_luminaire_material
+	{
+		name			glass2.000000000000
+		exitance		pnt_glass2.000000000000
+		scale			16.500000000000
+		material		none
+	}
+
+	ellipsoid_geometry
+	{
+		name			dropletgeom2.000000000000
+		radii			0.110000000000 0.203399342858 0.110000000000
+	}
+
+	standard_object
+	{
+		name			droplet2.000000000000
+		geometry		dropletgeom2.000000000000
+		position		2.400000000000 3.349914720608 0.663647664849
+		material		glass2.000000000000
+	}
+
+
+
+
+	uniformcolor_painter
+	{
+		name			pnt_glass3.000000000000
+		color			0.901055581666 0.417267014437 0.939599197857
+	}
+
+	lambertian_luminaire_material
+	{
+		name			glass3.000000000000
+		exitance		pnt_glass3.000000000000
+		scale			14.000000000000
+		material		none
+	}
+
+	ellipsoid_geometry
+	{
+		name			dropletgeom3.000000000000
+		radii			0.100000000000 0.189903077908 0.100000000000
+	}
+
+	standard_object
+	{
+		name			droplet3.000000000000
+		geometry		dropletgeom3.000000000000
+		position		3.600000000000 3.285092636110 0.555348457277
+		material		glass3.000000000000
+	}
+
+
 
 ##################################################
 # Central caustic target
@@ -721,3 +1385,5 @@ global_pel_gather
 	radius				0.18
 	ellipse_ratio		0.05
 }
+
+

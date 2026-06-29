@@ -72,7 +72,146 @@ pinhole_camera
 ##################################################
 # Painters
 ##################################################
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_silver
+	color		0.90 0.91 0.98 
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # Floor and walls
 uniformcolor_painter
@@ -125,61 +264,13 @@ uniformcolor_painter
 }
 
 # Glass tints -- subtle colors for artistic variety
-uniformcolor_painter
-{
-	name				pnt_water_glass
-	color				0.92 0.96 1.0
-	colorspace			RISERGB
-}
 
-uniformcolor_painter
-{
-	name				pnt_amber_glass
-	color				1.0 0.88 0.65
-	colorspace			RISERGB
-}
 
-uniformcolor_painter
-{
-	name				pnt_emerald_glass
-	color				0.70 0.95 0.75
-	colorspace			RISERGB
-}
 
-uniformcolor_painter
-{
-	name				pnt_ruby_glass
-	color				0.98 0.72 0.72
-	colorspace			RISERGB
-}
 
-uniformcolor_painter
-{
-	name				pnt_sapphire_glass
-	color				0.72 0.78 0.98
-	colorspace			RISERGB
-}
 
-uniformcolor_painter
-{
-	name				pnt_clear_glass
-	color				0.97 0.97 0.99
-	colorspace			RISERGB
-}
 
-uniformcolor_painter
-{
-	name				pnt_diamond_glass
-	color				0.98 0.98 1.0
-	colorspace			RISERGB
-}
 
-uniformcolor_painter
-{
-	name				pnt_crystal_glass
-	color				0.94 0.96 1.0
-	colorspace			RISERGB
-}
 
 ##################################################
 # Materials
@@ -805,3 +896,5 @@ spot_light
 	inner				25
 	outer				50
 }
+
+

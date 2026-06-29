@@ -86,7 +86,10 @@ homogeneous_medium
 	phase		isotropic
 }
 
-> set global_medium absorber
+global_medium
+{
+medium absorber
+}
 
 ##################################################
 # Painters
@@ -249,3 +252,4 @@ standard_object
 	geometry			lightgeom
 	material			light_mat
 }
+

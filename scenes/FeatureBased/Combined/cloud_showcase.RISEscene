@@ -121,7 +121,10 @@ painter_heterogeneous_medium
 	bbox_max			556 450 556
 }
 
-> set global_medium cloud_fog
+global_medium
+{
+medium cloud_fog
+}
 
 ##################################################
 # Painters and Materials
@@ -249,3 +252,4 @@ standard_object
 	geometry			lightgeom
 	material			light_mat
 }
+

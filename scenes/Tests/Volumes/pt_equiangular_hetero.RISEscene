@@ -88,7 +88,10 @@ heterogeneous_medium
 	bbox_max		478 473 480
 }
 
-> set global_medium sphere_vol
+global_medium
+{
+medium sphere_vol
+}
 
 ##################################################
 # Point Light (near the dense volume region)
@@ -238,3 +241,4 @@ standard_object
 	geometry			rightwallgeom
 	material			green
 }
+

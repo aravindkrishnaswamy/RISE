@@ -86,7 +86,10 @@ homogeneous_medium
 	phase		hg 0.8
 }
 
-> set global_medium fog
+global_medium
+{
+medium fog
+}
 
 ##################################################
 # Painters
@@ -248,3 +251,4 @@ standard_object
 	position			278 140 280
 	material			white
 }
+

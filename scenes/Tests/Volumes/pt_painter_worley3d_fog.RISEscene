@@ -88,7 +88,10 @@ painter_heterogeneous_medium
 	bbox_max		476 400 500
 }
 
-> set global_medium worley_fog
+global_medium
+{
+medium worley_fog
+}
 
 ##################################################
 # Painters and Materials
@@ -309,3 +312,4 @@ standard_object
 	material			blue
 	position			416 60 420
 }
+

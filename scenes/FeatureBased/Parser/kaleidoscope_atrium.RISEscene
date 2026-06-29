@@ -14,10 +14,6 @@ RISE ASCII SCENE 6
 > set accelerator B 10 8
 > echo event Generating the Kaleidoscope Atrium using nested loops, computed geometry, generated materials, and loop-built lights.
 
-DEFINE TWOPI $(2*@PI)
-DEFINE GRID_RADIUS 4
-DEFINE GRID_SPACE 0.75
-DEFINE CORE_COUNT 3
 
 ##################################################
 # Setup a renderer
@@ -101,7 +97,141 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 uniformcolor_painter
 {
@@ -153,19 +283,7 @@ uniformcolor_painter
 	color				0.92 0.95 0.99
 }
 
-uniformcolor_painter
-{
-	name				pnt_alpha_y
-	colorspace			RISERGB
-	color				0.22 0.22 0.22
-}
 
-uniformcolor_painter
-{
-	name				pnt_glass
-	color				0.94 0.98 1.0
-	colorspace			RISERGB
-}
 
 uniformcolor_painter
 {
@@ -284,237 +402,3200 @@ standard_object
 # Generated wave field
 ##################################################
 
-FOR IX -@GRID_RADIUS @GRID_RADIUS 1
-	FOR IZ -@GRID_RADIUS @GRID_RADIUS 1
 
-		DEFINE PX $(@IX*@GRID_SPACE)
-		DEFINE PZ $(@IZ*@GRID_SPACE)
-		DEFINE RAD $(sqrt(@PX*@PX+@PZ*@PZ))
-		DEFINE HT $(0.50+0.14*sin(@PX*0.9)+0.12*cos(@PZ*0.85)+0.06*cos(@RAD*1.7))
 
-		DEFINE RR $(0.72+0.10*sin(@PX*0.5+@PZ*0.2))
-		DEFINE GG $(0.76+0.10*cos(@PZ*0.45))
-		DEFINE BB $(0.82+0.08*sin(@RAD*1.2))
 
 		uniformcolor_painter
 		{
-			name			pnt_tile@IX@IZ
-			color			@RR @GG @BB
+			name			pnt_tile-4.000000000000-4.000000000000
+			color			0.633679063335 0.781900668709 0.745670678004
 		}
 
 		lambertian_material
 		{
-			name			tile@IX@IZ
-			reflectance		pnt_tile@IX@IZ
+			name			tile-4.000000000000-4.000000000000
+			reflectance		pnt_tile-4.000000000000-4.000000000000
 		}
 
 		box_geometry
 		{
-			name			wavegeom@IX@IZ
+			name			wavegeom-4.000000000000-4.000000000000
 			width			0.68
-			height			@HT
+			height			0.376463905120
 			depth			0.68
 		}
 
 		standard_object
 		{
-			name			wavebox@IX@IZ
-			geometry		wavegeom@IX@IZ
-			position		@PX $(@HT*0.5) @PZ
-			orientation		0 $((@IX-@IZ)*8) 0
-			material		tile@IX@IZ
+			name			wavebox-4.000000000000-4.000000000000
+			geometry		wavegeom-4.000000000000-4.000000000000
+			position		-3.000000000000 0.18823195256000000 -3.000000000000
+			orientation		0 0.00000000000000000 0
+			material		tile-4.000000000000-4.000000000000
 		}
 
-		UNDEF PX
-		UNDEF PZ
-		UNDEF RAD
-		UNDEF HT
-		UNDEF RR
-		UNDEF GG
-		UNDEF BB
 
-	ENDFOR
-ENDFOR
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-4.000000000000-3.000000000000
+			color			0.627104028500 0.812974198190 0.741797590587
+		}
+
+		lambertian_material
+		{
+			name			tile-4.000000000000-3.000000000000
+			reflectance		pnt_tile-4.000000000000-3.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-4.000000000000-3.000000000000
+			width			0.68
+			height			0.459702965852
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-4.000000000000-3.000000000000
+			geometry		wavegeom-4.000000000000-3.000000000000
+			position		-3.000000000000 0.22985148292599999 -2.250000000000
+			orientation		0 -8.00000000000000000 0
+			material		tile-4.000000000000-3.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-4.000000000000-2.000000000000
+			color			0.622615236912 0.838070695113 0.758171509732
+		}
+
+		lambertian_material
+		{
+			name			tile-4.000000000000-2.000000000000
+			reflectance		pnt_tile-4.000000000000-2.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-4.000000000000-2.000000000000
+			width			0.68
+			height			0.525294889982
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-4.000000000000-2.000000000000
+			geometry		wavegeom-4.000000000000-2.000000000000
+			position		-3.000000000000 0.26264744499100001 -1.500000000000
+			orientation		0 -16.00000000000000000 0
+			material		tile-4.000000000000-2.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-4.000000000000-1.000000000000
+			color			0.620313497155 0.854358543628 0.776883169207
+		}
+
+		lambertian_material
+		{
+			name			tile-4.000000000000-1.000000000000
+			reflectance		pnt_tile-4.000000000000-1.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-4.000000000000-1.000000000000
+			width			0.68
+			height			0.567680221173
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-4.000000000000-1.000000000000
+			geometry		wavegeom-4.000000000000-1.000000000000
+			position		-3.000000000000 0.28384011058649999 -0.750000000000
+			orientation		0 -24.00000000000000000 0
+			material		tile-4.000000000000-1.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-4.0000000000000.000000000000
+			color			0.620250501340 0.860000000000 0.784598364536
+		}
+
+		lambertian_material
+		{
+			name			tile-4.0000000000000.000000000000
+			reflectance		pnt_tile-4.0000000000000.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-4.0000000000000.000000000000
+			width			0.68
+			height			0.582845481330
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-4.0000000000000.000000000000
+			geometry		wavegeom-4.0000000000000.000000000000
+			position		-3.000000000000 0.29142274066500001 0.000000000000
+			orientation		0 -32.00000000000000000 0
+			material		tile-4.0000000000000.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-4.0000000000001.000000000000
+			color			0.622427664217 0.854358543628 0.776883169207
+		}
+
+		lambertian_material
+		{
+			name			tile-4.0000000000001.000000000000
+			reflectance		pnt_tile-4.0000000000001.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-4.0000000000001.000000000000
+			width			0.68
+			height			0.567680221173
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-4.0000000000001.000000000000
+			geometry		wavegeom-4.0000000000001.000000000000
+			position		-3.000000000000 0.28384011058649999 0.750000000000
+			orientation		0 -40.00000000000000000 0
+			material		tile-4.0000000000001.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-4.0000000000002.000000000000
+			color			0.626796091403 0.838070695113 0.758171509732
+		}
+
+		lambertian_material
+		{
+			name			tile-4.0000000000002.000000000000
+			reflectance		pnt_tile-4.0000000000002.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-4.0000000000002.000000000000
+			width			0.68
+			height			0.525294889982
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-4.0000000000002.000000000000
+			geometry		wavegeom-4.0000000000002.000000000000
+			position		-3.000000000000 0.26264744499100001 1.500000000000
+			orientation		0 -48.00000000000000000 0
+			material		tile-4.0000000000002.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-4.0000000000003.000000000000
+			color			0.633257677441 0.812974198190 0.741797590587
+		}
+
+		lambertian_material
+		{
+			name			tile-4.0000000000003.000000000000
+			reflectance		pnt_tile-4.0000000000003.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-4.0000000000003.000000000000
+			width			0.68
+			height			0.459702965852
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-4.0000000000003.000000000000
+			geometry		wavegeom-4.0000000000003.000000000000
+			position		-3.000000000000 0.22985148292599999 2.250000000000
+			orientation		0 -56.00000000000000000 0
+			material		tile-4.0000000000003.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-4.0000000000004.000000000000
+			color			0.641667309037 0.781900668709 0.745670678004
+		}
+
+		lambertian_material
+		{
+			name			tile-4.0000000000004.000000000000
+			reflectance		pnt_tile-4.0000000000004.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-4.0000000000004.000000000000
+			width			0.68
+			height			0.376463905120
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-4.0000000000004.000000000000
+			geometry		wavegeom-4.0000000000004.000000000000
+			position		-3.000000000000 0.18823195256000000 3.000000000000
+			orientation		0 -64.00000000000000000 0
+			material		tile-4.0000000000004.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-3.000000000000-4.000000000000
+			color			0.621186584550 0.781900668709 0.741797590587
+		}
+
+		lambertian_material
+		{
+			name			tile-3.000000000000-4.000000000000
+			reflectance		pnt_tile-3.000000000000-4.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-3.000000000000-4.000000000000
+			width			0.68
+			height			0.334335357394
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-3.000000000000-4.000000000000
+			geometry		wavegeom-3.000000000000-4.000000000000
+			position		-2.250000000000 0.16716767869700000 -3.000000000000
+			orientation		0 8.00000000000000000 0
+			material		tile-3.000000000000-4.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-3.000000000000-3.000000000000
+			color			0.620000883542 0.812974198190 0.769896873972
+		}
+
+		lambertian_material
+		{
+			name			tile-3.000000000000-3.000000000000
+			reflectance		pnt_tile-3.000000000000-3.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-3.000000000000-3.000000000000
+			width			0.68
+			height			0.372497570719
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-3.000000000000-3.000000000000
+			geometry		wavegeom-3.000000000000-3.000000000000
+			position		-2.250000000000 0.18624878535950001 -2.250000000000
+			orientation		0 0.00000000000000000 0
+			material		tile-3.000000000000-3.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-3.000000000000-2.000000000000
+			color			0.621060947105 0.838070695113 0.811742454167
+		}
+
+		lambertian_material
+		{
+			name			tile-3.000000000000-2.000000000000
+			reflectance		pnt_tile-3.000000000000-2.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-3.000000000000-2.000000000000
+			width			0.68
+			height			0.402271360427
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-3.000000000000-2.000000000000
+			geometry		wavegeom-3.000000000000-2.000000000000
+			position		-2.250000000000 0.20113568021350001 -1.500000000000
+			orientation		0 -8.00000000000000000 0
+			material		tile-3.000000000000-2.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-3.000000000000-1.000000000000
+			color			0.624342968496 0.854358543628 0.843300729653
+		}
+
+		lambertian_material
+		{
+			name			tile-3.000000000000-1.000000000000
+			reflectance		pnt_tile-3.000000000000-1.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-3.000000000000-1.000000000000
+			width			0.68
+			height			0.432874648079
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-3.000000000000-1.000000000000
+			geometry		wavegeom-3.000000000000-1.000000000000
+			position		-2.250000000000 0.21643732403950000 -0.750000000000
+			orientation		0 -16.00000000000000000 0
+			material		tile-3.000000000000-1.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-3.0000000000000.000000000000
+			color			0.629773240590 0.860000000000 0.854190390419
+		}
+
+		lambertian_material
+		{
+			name			tile-3.0000000000000.000000000000
+			reflectance		pnt_tile-3.0000000000000.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-3.0000000000000.000000000000
+			width			0.68
+			height			0.447668960541
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-3.0000000000000.000000000000
+			geometry		wavegeom-3.0000000000000.000000000000
+			position		-2.250000000000 0.22383448027050001 0.000000000000
+			orientation		0 -24.00000000000000000 0
+			material		tile-3.0000000000000.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-3.0000000000001.000000000000
+			color			0.637229811183 0.854358543628 0.843300729653
+		}
+
+		lambertian_material
+		{
+			name			tile-3.0000000000001.000000000000
+			reflectance		pnt_tile-3.0000000000001.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-3.0000000000001.000000000000
+			width			0.68
+			height			0.432874648079
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-3.0000000000001.000000000000
+			geometry		wavegeom-3.0000000000001.000000000000
+			position		-2.250000000000 0.21643732403950000 0.750000000000
+			orientation		0 -32.00000000000000000 0
+			material		tile-3.0000000000001.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-3.0000000000002.000000000000
+			color			0.646545221775 0.838070695113 0.811742454167
+		}
+
+		lambertian_material
+		{
+			name			tile-3.0000000000002.000000000000
+			reflectance		pnt_tile-3.0000000000002.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-3.0000000000002.000000000000
+			width			0.68
+			height			0.402271360427
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-3.0000000000002.000000000000
+			geometry		wavegeom-3.0000000000002.000000000000
+			position		-2.250000000000 0.20113568021350001 1.500000000000
+			orientation		0 -40.00000000000000000 0
+			material		tile-3.0000000000002.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-3.0000000000003.000000000000
+			color			0.657510268327 0.812974198190 0.769896873972
+		}
+
+		lambertian_material
+		{
+			name			tile-3.0000000000003.000000000000
+			reflectance		pnt_tile-3.0000000000003.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-3.0000000000003.000000000000
+			width			0.68
+			height			0.372497570719
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-3.0000000000003.000000000000
+			geometry		wavegeom-3.0000000000003.000000000000
+			position		-2.250000000000 0.18624878535950001 2.250000000000
+			orientation		0 -48.00000000000000000 0
+			material		tile-3.0000000000003.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-3.0000000000004.000000000000
+			color			0.669878699533 0.781900668709 0.741797590587
+		}
+
+		lambertian_material
+		{
+			name			tile-3.0000000000004.000000000000
+			reflectance		pnt_tile-3.0000000000004.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-3.0000000000004.000000000000
+			width			0.68
+			height			0.334335357394
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-3.0000000000004.000000000000
+			geometry		wavegeom-3.0000000000004.000000000000
+			position		-2.250000000000 0.16716767869700000 3.000000000000
+			orientation		0 -56.00000000000000000 0
+			material		tile-3.0000000000004.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-2.000000000000-4.000000000000
+			color			0.622427664217 0.781900668709 0.758171509732
+		}
+
+		lambertian_material
+		{
+			name			tile-2.000000000000-4.000000000000
+			reflectance		pnt_tile-2.000000000000-4.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-2.000000000000-4.000000000000
+			width			0.68
+			height			0.313940176686
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-2.000000000000-4.000000000000
+			geometry		wavegeom-2.000000000000-4.000000000000
+			position		-1.500000000000 0.15697008834300000 -3.000000000000
+			orientation		0 16.00000000000000000 0
+			material		tile-2.000000000000-4.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-2.000000000000-3.000000000000
+			color			0.626796091403 0.812974198190 0.811742454167
+		}
+
+		lambertian_material
+		{
+			name			tile-2.000000000000-3.000000000000
+			reflectance		pnt_tile-2.000000000000-3.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-2.000000000000-3.000000000000
+			width			0.68
+			height			0.316284255588
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-2.000000000000-3.000000000000
+			geometry		wavegeom-2.000000000000-3.000000000000
+			position		-1.500000000000 0.15814212779400000 -2.250000000000
+			orientation		0 8.00000000000000000 0
+			material		tile-2.000000000000-3.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-2.000000000000-2.000000000000
+			color			0.633257677441 0.838070695113 0.864907475440
+		}
+
+		lambertian_material
+		{
+			name			tile-2.000000000000-2.000000000000
+			reflectance		pnt_tile-2.000000000000-2.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-2.000000000000-2.000000000000
+			width			0.68
+			height			0.344740276483
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-2.000000000000-2.000000000000
+			geometry		wavegeom-2.000000000000-2.000000000000
+			position		-1.500000000000 0.17237013824149999 -1.500000000000
+			orientation		0 0.00000000000000000 0
+			material		tile-2.000000000000-2.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-2.000000000000-1.000000000000
+			color			0.641667309037 0.854358543628 0.892323302648
+		}
+
+		lambertian_material
+		{
+			name			tile-2.000000000000-1.000000000000
+			reflectance		pnt_tile-2.000000000000-1.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-2.000000000000-1.000000000000
+			width			0.68
+			height			0.402344853454
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-2.000000000000-1.000000000000
+			geometry		wavegeom-2.000000000000-1.000000000000
+			position		-1.500000000000 0.20117242672700000 -0.750000000000
+			orientation		0 -8.00000000000000000 0
+			material		tile-2.000000000000-1.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-2.0000000000000.000000000000
+			color			0.651836123998 0.860000000000 0.897907810470
+		}
+
+		lambertian_material
+		{
+			name			tile-2.0000000000000.000000000000
+			reflectance		pnt_tile-2.0000000000000.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-2.0000000000000.000000000000
+			width			0.68
+			height			0.433595517790
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-2.0000000000000.000000000000
+			geometry		wavegeom-2.0000000000000.000000000000
+			position		-1.500000000000 0.21679775889500000 0.000000000000
+			orientation		0 -16.00000000000000000 0
+			material		tile-2.0000000000000.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-2.0000000000001.000000000000
+			color			0.663535752660 0.854358543628 0.892323302648
+		}
+
+		lambertian_material
+		{
+			name			tile-2.0000000000001.000000000000
+			reflectance		pnt_tile-2.0000000000001.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-2.0000000000001.000000000000
+			width			0.68
+			height			0.402344853454
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-2.0000000000001.000000000000
+			geometry		wavegeom-2.0000000000001.000000000000
+			position		-1.500000000000 0.20117242672700000 0.750000000000
+			orientation		0 -24.00000000000000000 0
+			material		tile-2.0000000000001.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-2.0000000000002.000000000000
+			color			0.676503446589 0.838070695113 0.864907475440
+		}
+
+		lambertian_material
+		{
+			name			tile-2.0000000000002.000000000000
+			reflectance		pnt_tile-2.0000000000002.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-2.0000000000002.000000000000
+			width			0.68
+			height			0.344740276483
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-2.0000000000002.000000000000
+			geometry		wavegeom-2.0000000000002.000000000000
+			position		-1.500000000000 0.17237013824149999 1.500000000000
+			orientation		0 -32.00000000000000000 0
+			material		tile-2.0000000000002.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-2.0000000000003.000000000000
+			color			0.690447979334 0.812974198190 0.811742454167
+		}
+
+		lambertian_material
+		{
+			name			tile-2.0000000000003.000000000000
+			reflectance		pnt_tile-2.0000000000003.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-2.0000000000003.000000000000
+			width			0.68
+			height			0.316284255588
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-2.0000000000003.000000000000
+			geometry		wavegeom-2.0000000000003.000000000000
+			position		-1.500000000000 0.15814212779400000 2.250000000000
+			orientation		0 -40.00000000000000000 0
+			material		tile-2.0000000000003.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-2.0000000000004.000000000000
+			color			0.705056186753 0.781900668709 0.758171509732
+		}
+
+		lambertian_material
+		{
+			name			tile-2.0000000000004.000000000000
+			reflectance		pnt_tile-2.0000000000004.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-2.0000000000004.000000000000
+			width			0.68
+			height			0.313940176686
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-2.0000000000004.000000000000
+			geometry		wavegeom-2.0000000000004.000000000000
+			position		-1.500000000000 0.15697008834300000 3.000000000000
+			orientation		0 -48.00000000000000000 0
+			material		tile-2.0000000000004.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-1.000000000000-4.000000000000
+			color			0.637229811183 0.781900668709 0.776883169207
+		}
+
+		lambertian_material
+		{
+			name			tile-1.000000000000-4.000000000000
+			reflectance		pnt_tile-1.000000000000-4.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-1.000000000000-4.000000000000
+			width			0.68
+			height			0.343991007229
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-1.000000000000-4.000000000000
+			geometry		wavegeom-1.000000000000-4.000000000000
+			position		-0.750000000000 0.17199550361450000 -3.000000000000
+			orientation		0 24.00000000000000000 0
+			material		tile-1.000000000000-4.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-1.000000000000-3.000000000000
+			color			0.646545221775 0.812974198190 0.843300729653
+		}
+
+		lambertian_material
+		{
+			name			tile-1.000000000000-3.000000000000
+			reflectance		pnt_tile-1.000000000000-3.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-1.000000000000-3.000000000000
+			width			0.68
+			height			0.334553042593
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-1.000000000000-3.000000000000
+			geometry		wavegeom-1.000000000000-3.000000000000
+			position		-0.750000000000 0.16727652129650000 -2.250000000000
+			orientation		0 16.00000000000000000 0
+			material		tile-1.000000000000-3.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-1.000000000000-2.000000000000
+			color			0.657510268327 0.838070695113 0.892323302648
+		}
+
+		lambertian_material
+		{
+			name			tile-1.000000000000-2.000000000000
+			reflectance		pnt_tile-1.000000000000-2.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-1.000000000000-2.000000000000
+			width			0.68
+			height			0.390010352807
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-1.000000000000-2.000000000000
+			geometry		wavegeom-1.000000000000-2.000000000000
+			position		-0.750000000000 0.19500517640350001 -1.500000000000
+			orientation		0 8.00000000000000000 0
+			material		tile-1.000000000000-2.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-1.000000000000-1.000000000000
+			color			0.669878699533 0.854358543628 0.896473952688
+		}
+
+		lambertian_material
+		{
+			name			tile-1.000000000000-1.000000000000
+			reflectance		pnt_tile-1.000000000000-1.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-1.000000000000-1.000000000000
+			width			0.68
+			height			0.495130227125
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-1.000000000000-1.000000000000
+			geometry		wavegeom-1.000000000000-1.000000000000
+			position		-0.750000000000 0.24756511356249999 -0.750000000000
+			orientation		0 0.00000000000000000 0
+			material		tile-1.000000000000-1.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-1.0000000000000.000000000000
+			color			0.683372747091 0.860000000000 0.882666152770
+		}
+
+		lambertian_material
+		{
+			name			tile-1.0000000000000.000000000000
+			reflectance		pnt_tile-1.0000000000000.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-1.0000000000000.000000000000
+			width			0.68
+			height			0.550004476761
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-1.0000000000000.000000000000
+			geometry		wavegeom-1.0000000000000.000000000000
+			position		-0.750000000000 0.27500223838049997 0.000000000000
+			orientation		0 -8.00000000000000000 0
+			material		tile-1.0000000000000.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-1.0000000000001.000000000000
+			color			0.697689363787 0.854358543628 0.896473952688
+		}
+
+		lambertian_material
+		{
+			name			tile-1.0000000000001.000000000000
+			reflectance		pnt_tile-1.0000000000001.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-1.0000000000001.000000000000
+			width			0.68
+			height			0.495130227125
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-1.0000000000001.000000000000
+			geometry		wavegeom-1.0000000000001.000000000000
+			position		-0.750000000000 0.24756511356249999 0.750000000000
+			orientation		0 -16.00000000000000000 0
+			material		tile-1.0000000000001.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-1.0000000000002.000000000000
+			color			0.712507029273 0.838070695113 0.892323302648
+		}
+
+		lambertian_material
+		{
+			name			tile-1.0000000000002.000000000000
+			reflectance		pnt_tile-1.0000000000002.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-1.0000000000002.000000000000
+			width			0.68
+			height			0.390010352807
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-1.0000000000002.000000000000
+			geometry		wavegeom-1.0000000000002.000000000000
+			position		-0.750000000000 0.19500517640350001 1.500000000000
+			orientation		0 -24.00000000000000000 0
+			material		tile-1.0000000000002.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-1.0000000000003.000000000000
+			color			0.727492970727 0.812974198190 0.843300729653
+		}
+
+		lambertian_material
+		{
+			name			tile-1.0000000000003.000000000000
+			reflectance		pnt_tile-1.0000000000003.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-1.0000000000003.000000000000
+			width			0.68
+			height			0.334553042593
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-1.0000000000003.000000000000
+			geometry		wavegeom-1.0000000000003.000000000000
+			position		-0.750000000000 0.16727652129650000 2.250000000000
+			orientation		0 -32.00000000000000000 0
+			material		tile-1.0000000000003.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile-1.0000000000004.000000000000
+			color			0.742310636213 0.781900668709 0.776883169207
+		}
+
+		lambertian_material
+		{
+			name			tile-1.0000000000004.000000000000
+			reflectance		pnt_tile-1.0000000000004.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom-1.0000000000004.000000000000
+			width			0.68
+			height			0.343991007229
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox-1.0000000000004.000000000000
+			geometry		wavegeom-1.0000000000004.000000000000
+			position		-0.750000000000 0.17199550361450000 3.000000000000
+			orientation		0 -40.00000000000000000 0
+			material		tile-1.0000000000004.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile0.000000000000-4.000000000000
+			color			0.663535752660 0.781900668709 0.784598364536
+		}
+
+		lambertian_material
+		{
+			name			tile0.000000000000-4.000000000000
+			reflectance		pnt_tile0.000000000000-4.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom0.000000000000-4.000000000000
+			width			0.68
+			height			0.423072240335
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox0.000000000000-4.000000000000
+			geometry		wavegeom0.000000000000-4.000000000000
+			position		0.000000000000 0.21153612016750001 -3.000000000000
+			orientation		0 32.00000000000000000 0
+			material		tile0.000000000000-4.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile0.000000000000-3.000000000000
+			color			0.676503446589 0.812974198190 0.854190390419
+		}
+
+		lambertian_material
+		{
+			name			tile0.000000000000-3.000000000000
+			reflectance		pnt_tile0.000000000000-3.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom0.000000000000-3.000000000000
+			width			0.68
+			height			0.413263328004
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox0.000000000000-3.000000000000
+			geometry		wavegeom0.000000000000-3.000000000000
+			position		0.000000000000 0.20663166400200000 -2.250000000000
+			orientation		0 24.00000000000000000 0
+			material		tile0.000000000000-3.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile0.000000000000-2.000000000000
+			color			0.690447979334 0.838070695113 0.897907810470
+		}
+
+		lambertian_material
+		{
+			name			tile0.000000000000-2.000000000000
+			reflectance		pnt_tile0.000000000000-2.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom0.000000000000-2.000000000000
+			width			0.68
+			height			0.485176990091
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox0.000000000000-2.000000000000
+			geometry		wavegeom0.000000000000-2.000000000000
+			position		0.000000000000 0.24258849504550001 -1.500000000000
+			orientation		0 16.00000000000000000 0
+			material		tile0.000000000000-2.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile0.000000000000-1.000000000000
+			color			0.705056186753 0.854358543628 0.882666152770
+		}
+
+		lambertian_material
+		{
+			name			tile0.000000000000-1.000000000000
+			reflectance		pnt_tile0.000000000000-1.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom0.000000000000-1.000000000000
+			width			0.68
+			height			0.613920449709
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox0.000000000000-1.000000000000
+			geometry		wavegeom0.000000000000-1.000000000000
+			position		0.000000000000 0.30696022485449997 -0.750000000000
+			orientation		0 8.00000000000000000 0
+			material		tile0.000000000000-1.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile0.0000000000000.000000000000
+			color			0.720000000000 0.860000000000 0.820000000000
+		}
+
+		lambertian_material
+		{
+			name			tile0.0000000000000.000000000000
+			reflectance		pnt_tile0.0000000000000.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom0.0000000000000.000000000000
+			width			0.68
+			height			0.680000000000
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox0.0000000000000.000000000000
+			geometry		wavegeom0.0000000000000.000000000000
+			position		0.000000000000 0.34000000000000002 0.000000000000
+			orientation		0 0.00000000000000000 0
+			material		tile0.0000000000000.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile0.0000000000001.000000000000
+			color			0.734943813247 0.854358543628 0.882666152770
+		}
+
+		lambertian_material
+		{
+			name			tile0.0000000000001.000000000000
+			reflectance		pnt_tile0.0000000000001.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom0.0000000000001.000000000000
+			width			0.68
+			height			0.613920449709
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox0.0000000000001.000000000000
+			geometry		wavegeom0.0000000000001.000000000000
+			position		0.000000000000 0.30696022485449997 0.750000000000
+			orientation		0 -8.00000000000000000 0
+			material		tile0.0000000000001.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile0.0000000000002.000000000000
+			color			0.749552020666 0.838070695113 0.897907810470
+		}
+
+		lambertian_material
+		{
+			name			tile0.0000000000002.000000000000
+			reflectance		pnt_tile0.0000000000002.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom0.0000000000002.000000000000
+			width			0.68
+			height			0.485176990091
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox0.0000000000002.000000000000
+			geometry		wavegeom0.0000000000002.000000000000
+			position		0.000000000000 0.24258849504550001 1.500000000000
+			orientation		0 -16.00000000000000000 0
+			material		tile0.0000000000002.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile0.0000000000003.000000000000
+			color			0.763496553411 0.812974198190 0.854190390419
+		}
+
+		lambertian_material
+		{
+			name			tile0.0000000000003.000000000000
+			reflectance		pnt_tile0.0000000000003.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom0.0000000000003.000000000000
+			width			0.68
+			height			0.413263328004
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox0.0000000000003.000000000000
+			geometry		wavegeom0.0000000000003.000000000000
+			position		0.000000000000 0.20663166400200000 2.250000000000
+			orientation		0 -24.00000000000000000 0
+			material		tile0.0000000000003.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile0.0000000000004.000000000000
+			color			0.776464247340 0.781900668709 0.784598364536
+		}
+
+		lambertian_material
+		{
+			name			tile0.0000000000004.000000000000
+			reflectance		pnt_tile0.0000000000004.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom0.0000000000004.000000000000
+			width			0.68
+			height			0.423072240335
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox0.0000000000004.000000000000
+			geometry		wavegeom0.0000000000004.000000000000
+			position		0.000000000000 0.21153612016750001 3.000000000000
+			orientation		0 -32.00000000000000000 0
+			material		tile0.0000000000004.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile1.000000000000-4.000000000000
+			color			0.697689363787 0.781900668709 0.776883169207
+		}
+
+		lambertian_material
+		{
+			name			tile1.000000000000-4.000000000000
+			reflectance		pnt_tile1.000000000000-4.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom1.000000000000-4.000000000000
+			width			0.68
+			height			0.518962255913
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox1.000000000000-4.000000000000
+			geometry		wavegeom1.000000000000-4.000000000000
+			position		0.750000000000 0.25948112795650002 -3.000000000000
+			orientation		0 40.00000000000000000 0
+			material		tile1.000000000000-4.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile1.000000000000-3.000000000000
+			color			0.712507029273 0.812974198190 0.843300729653
+		}
+
+		lambertian_material
+		{
+			name			tile1.000000000000-3.000000000000
+			reflectance		pnt_tile1.000000000000-3.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom1.000000000000-3.000000000000
+			width			0.68
+			height			0.509524291277
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox1.000000000000-3.000000000000
+			geometry		wavegeom1.000000000000-3.000000000000
+			position		0.750000000000 0.25476214563850003 -2.250000000000
+			orientation		0 32.00000000000000000 0
+			material		tile1.000000000000-3.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile1.000000000000-2.000000000000
+			color			0.727492970727 0.838070695113 0.892323302648
+		}
+
+		lambertian_material
+		{
+			name			tile1.000000000000-2.000000000000
+			reflectance		pnt_tile1.000000000000-2.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom1.000000000000-2.000000000000
+			width			0.68
+			height			0.564981601491
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox1.000000000000-2.000000000000
+			geometry		wavegeom1.000000000000-2.000000000000
+			position		0.750000000000 0.28249080074549998 -1.500000000000
+			orientation		0 24.00000000000000000 0
+			material		tile1.000000000000-2.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile1.000000000000-1.000000000000
+			color			0.742310636213 0.854358543628 0.896473952688
+		}
+
+		lambertian_material
+		{
+			name			tile1.000000000000-1.000000000000
+			reflectance		pnt_tile1.000000000000-1.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom1.000000000000-1.000000000000
+			width			0.68
+			height			0.670101475809
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox1.000000000000-1.000000000000
+			geometry		wavegeom1.000000000000-1.000000000000
+			position		0.750000000000 0.33505073790450002 -0.750000000000
+			orientation		0 16.00000000000000000 0
+			material		tile1.000000000000-1.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile1.0000000000000.000000000000
+			color			0.756627252909 0.860000000000 0.882666152770
+		}
+
+		lambertian_material
+		{
+			name			tile1.0000000000000.000000000000
+			reflectance		pnt_tile1.0000000000000.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom1.0000000000000.000000000000
+			width			0.68
+			height			0.724975725444
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox1.0000000000000.000000000000
+			geometry		wavegeom1.0000000000000.000000000000
+			position		0.750000000000 0.36248786272200001 0.000000000000
+			orientation		0 8.00000000000000000 0
+			material		tile1.0000000000000.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile1.0000000000001.000000000000
+			color			0.770121300467 0.854358543628 0.896473952688
+		}
+
+		lambertian_material
+		{
+			name			tile1.0000000000001.000000000000
+			reflectance		pnt_tile1.0000000000001.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom1.0000000000001.000000000000
+			width			0.68
+			height			0.670101475809
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox1.0000000000001.000000000000
+			geometry		wavegeom1.0000000000001.000000000000
+			position		0.750000000000 0.33505073790450002 0.750000000000
+			orientation		0 0.00000000000000000 0
+			material		tile1.0000000000001.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile1.0000000000002.000000000000
+			color			0.782489731673 0.838070695113 0.892323302648
+		}
+
+		lambertian_material
+		{
+			name			tile1.0000000000002.000000000000
+			reflectance		pnt_tile1.0000000000002.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom1.0000000000002.000000000000
+			width			0.68
+			height			0.564981601491
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox1.0000000000002.000000000000
+			geometry		wavegeom1.0000000000002.000000000000
+			position		0.750000000000 0.28249080074549998 1.500000000000
+			orientation		0 -8.00000000000000000 0
+			material		tile1.0000000000002.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile1.0000000000003.000000000000
+			color			0.793454778225 0.812974198190 0.843300729653
+		}
+
+		lambertian_material
+		{
+			name			tile1.0000000000003.000000000000
+			reflectance		pnt_tile1.0000000000003.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom1.0000000000003.000000000000
+			width			0.68
+			height			0.509524291277
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox1.0000000000003.000000000000
+			geometry		wavegeom1.0000000000003.000000000000
+			position		0.750000000000 0.25476214563850003 2.250000000000
+			orientation		0 -16.00000000000000000 0
+			material		tile1.0000000000003.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile1.0000000000004.000000000000
+			color			0.802770188817 0.781900668709 0.776883169207
+		}
+
+		lambertian_material
+		{
+			name			tile1.0000000000004.000000000000
+			reflectance		pnt_tile1.0000000000004.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom1.0000000000004.000000000000
+			width			0.68
+			height			0.518962255913
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox1.0000000000004.000000000000
+			geometry		wavegeom1.0000000000004.000000000000
+			position		0.750000000000 0.25948112795650002 3.000000000000
+			orientation		0 -24.00000000000000000 0
+			material		tile1.0000000000004.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile2.000000000000-4.000000000000
+			color			0.734943813247 0.781900668709 0.758171509732
+		}
+
+		lambertian_material
+		{
+			name			tile2.000000000000-4.000000000000
+			reflectance		pnt_tile2.000000000000-4.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom2.000000000000-4.000000000000
+			width			0.68
+			height			0.587142716878
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox2.000000000000-4.000000000000
+			geometry		wavegeom2.000000000000-4.000000000000
+			position		1.500000000000 0.29357135843900001 -3.000000000000
+			orientation		0 48.00000000000000000 0
+			material		tile2.000000000000-4.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile2.000000000000-3.000000000000
+			color			0.749552020666 0.812974198190 0.811742454167
+		}
+
+		lambertian_material
+		{
+			name			tile2.000000000000-3.000000000000
+			reflectance		pnt_tile2.000000000000-3.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom2.000000000000-3.000000000000
+			width			0.68
+			height			0.589486795780
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox2.000000000000-3.000000000000
+			geometry		wavegeom2.000000000000-3.000000000000
+			position		1.500000000000 0.29474339788999998 -2.250000000000
+			orientation		0 40.00000000000000000 0
+			material		tile2.000000000000-3.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile2.000000000000-2.000000000000
+			color			0.763496553411 0.838070695113 0.864907475440
+		}
+
+		lambertian_material
+		{
+			name			tile2.000000000000-2.000000000000
+			reflectance		pnt_tile2.000000000000-2.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom2.000000000000-2.000000000000
+			width			0.68
+			height			0.617942816674
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox2.000000000000-2.000000000000
+			geometry		wavegeom2.000000000000-2.000000000000
+			position		1.500000000000 0.30897140833699999 -1.500000000000
+			orientation		0 32.00000000000000000 0
+			material		tile2.000000000000-2.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile2.000000000000-1.000000000000
+			color			0.776464247340 0.854358543628 0.892323302648
+		}
+
+		lambertian_material
+		{
+			name			tile2.000000000000-1.000000000000
+			reflectance		pnt_tile2.000000000000-1.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom2.000000000000-1.000000000000
+			width			0.68
+			height			0.675547393646
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox2.000000000000-1.000000000000
+			geometry		wavegeom2.000000000000-1.000000000000
+			position		1.500000000000 0.33777369682300001 -0.750000000000
+			orientation		0 24.00000000000000000 0
+			material		tile2.000000000000-1.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile2.0000000000000.000000000000
+			color			0.788163876002 0.860000000000 0.897907810470
+		}
+
+		lambertian_material
+		{
+			name			tile2.0000000000000.000000000000
+			reflectance		pnt_tile2.0000000000000.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom2.0000000000000.000000000000
+			width			0.68
+			height			0.706798057982
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox2.0000000000000.000000000000
+			geometry		wavegeom2.0000000000000.000000000000
+			position		1.500000000000 0.35339902899100001 0.000000000000
+			orientation		0 16.00000000000000000 0
+			material		tile2.0000000000000.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile2.0000000000001.000000000000
+			color			0.798332690963 0.854358543628 0.892323302648
+		}
+
+		lambertian_material
+		{
+			name			tile2.0000000000001.000000000000
+			reflectance		pnt_tile2.0000000000001.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom2.0000000000001.000000000000
+			width			0.68
+			height			0.675547393646
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox2.0000000000001.000000000000
+			geometry		wavegeom2.0000000000001.000000000000
+			position		1.500000000000 0.33777369682300001 0.750000000000
+			orientation		0 8.00000000000000000 0
+			material		tile2.0000000000001.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile2.0000000000002.000000000000
+			color			0.806742322559 0.838070695113 0.864907475440
+		}
+
+		lambertian_material
+		{
+			name			tile2.0000000000002.000000000000
+			reflectance		pnt_tile2.0000000000002.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom2.0000000000002.000000000000
+			width			0.68
+			height			0.617942816674
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox2.0000000000002.000000000000
+			geometry		wavegeom2.0000000000002.000000000000
+			position		1.500000000000 0.30897140833699999 1.500000000000
+			orientation		0 0.00000000000000000 0
+			material		tile2.0000000000002.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile2.0000000000003.000000000000
+			color			0.813203908597 0.812974198190 0.811742454167
+		}
+
+		lambertian_material
+		{
+			name			tile2.0000000000003.000000000000
+			reflectance		pnt_tile2.0000000000003.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom2.0000000000003.000000000000
+			width			0.68
+			height			0.589486795780
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox2.0000000000003.000000000000
+			geometry		wavegeom2.0000000000003.000000000000
+			position		1.500000000000 0.29474339788999998 2.250000000000
+			orientation		0 -8.00000000000000000 0
+			material		tile2.0000000000003.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile2.0000000000004.000000000000
+			color			0.817572335783 0.781900668709 0.758171509732
+		}
+
+		lambertian_material
+		{
+			name			tile2.0000000000004.000000000000
+			reflectance		pnt_tile2.0000000000004.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom2.0000000000004.000000000000
+			width			0.68
+			height			0.587142716878
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox2.0000000000004.000000000000
+			geometry		wavegeom2.0000000000004.000000000000
+			position		1.500000000000 0.29357135843900001 3.000000000000
+			orientation		0 -16.00000000000000000 0
+			material		tile2.0000000000004.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile3.000000000000-4.000000000000
+			color			0.770121300467 0.781900668709 0.741797590587
+		}
+
+		lambertian_material
+		{
+			name			tile3.000000000000-4.000000000000
+			reflectance		pnt_tile3.000000000000-4.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom3.000000000000-4.000000000000
+			width			0.68
+			height			0.585946353100
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox3.000000000000-4.000000000000
+			geometry		wavegeom3.000000000000-4.000000000000
+			position		2.250000000000 0.29297317654999999 -3.000000000000
+			orientation		0 56.00000000000000000 0
+			material		tile3.000000000000-4.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile3.000000000000-3.000000000000
+			color			0.782489731673 0.812974198190 0.769896873972
+		}
+
+		lambertian_material
+		{
+			name			tile3.000000000000-3.000000000000
+			reflectance		pnt_tile3.000000000000-3.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom3.000000000000-3.000000000000
+			width			0.68
+			height			0.624108566424
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox3.000000000000-3.000000000000
+			geometry		wavegeom3.000000000000-3.000000000000
+			position		2.250000000000 0.31205428321200002 -2.250000000000
+			orientation		0 48.00000000000000000 0
+			material		tile3.000000000000-3.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile3.000000000000-2.000000000000
+			color			0.793454778225 0.838070695113 0.811742454167
+		}
+
+		lambertian_material
+		{
+			name			tile3.000000000000-2.000000000000
+			reflectance		pnt_tile3.000000000000-2.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom3.000000000000-2.000000000000
+			width			0.68
+			height			0.653882356132
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox3.000000000000-2.000000000000
+			geometry		wavegeom3.000000000000-2.000000000000
+			position		2.250000000000 0.32694117806599998 -1.500000000000
+			orientation		0 40.00000000000000000 0
+			material		tile3.000000000000-2.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile3.000000000000-1.000000000000
+			color			0.802770188817 0.854358543628 0.843300729653
+		}
+
+		lambertian_material
+		{
+			name			tile3.000000000000-1.000000000000
+			reflectance		pnt_tile3.000000000000-1.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom3.000000000000-1.000000000000
+			width			0.68
+			height			0.684485643784
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox3.000000000000-1.000000000000
+			geometry		wavegeom3.000000000000-1.000000000000
+			position		2.250000000000 0.34224282189200000 -0.750000000000
+			orientation		0 32.00000000000000000 0
+			material		tile3.000000000000-1.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile3.0000000000000.000000000000
+			color			0.810226759410 0.860000000000 0.854190390419
+		}
+
+		lambertian_material
+		{
+			name			tile3.0000000000000.000000000000
+			reflectance		pnt_tile3.0000000000000.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom3.0000000000000.000000000000
+			width			0.68
+			height			0.699279956247
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox3.0000000000000.000000000000
+			geometry		wavegeom3.0000000000000.000000000000
+			position		2.250000000000 0.34963997812350001 0.000000000000
+			orientation		0 24.00000000000000000 0
+			material		tile3.0000000000000.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile3.0000000000001.000000000000
+			color			0.815657031504 0.854358543628 0.843300729653
+		}
+
+		lambertian_material
+		{
+			name			tile3.0000000000001.000000000000
+			reflectance		pnt_tile3.0000000000001.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom3.0000000000001.000000000000
+			width			0.68
+			height			0.684485643784
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox3.0000000000001.000000000000
+			geometry		wavegeom3.0000000000001.000000000000
+			position		2.250000000000 0.34224282189200000 0.750000000000
+			orientation		0 16.00000000000000000 0
+			material		tile3.0000000000001.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile3.0000000000002.000000000000
+			color			0.818939052895 0.838070695113 0.811742454167
+		}
+
+		lambertian_material
+		{
+			name			tile3.0000000000002.000000000000
+			reflectance		pnt_tile3.0000000000002.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom3.0000000000002.000000000000
+			width			0.68
+			height			0.653882356132
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox3.0000000000002.000000000000
+			geometry		wavegeom3.0000000000002.000000000000
+			position		2.250000000000 0.32694117806599998 1.500000000000
+			orientation		0 8.00000000000000000 0
+			material		tile3.0000000000002.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile3.0000000000003.000000000000
+			color			0.819999116458 0.812974198190 0.769896873972
+		}
+
+		lambertian_material
+		{
+			name			tile3.0000000000003.000000000000
+			reflectance		pnt_tile3.0000000000003.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom3.0000000000003.000000000000
+			width			0.68
+			height			0.624108566424
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox3.0000000000003.000000000000
+			geometry		wavegeom3.0000000000003.000000000000
+			position		2.250000000000 0.31205428321200002 2.250000000000
+			orientation		0 0.00000000000000000 0
+			material		tile3.0000000000003.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile3.0000000000004.000000000000
+			color			0.818813415450 0.781900668709 0.741797590587
+		}
+
+		lambertian_material
+		{
+			name			tile3.0000000000004.000000000000
+			reflectance		pnt_tile3.0000000000004.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom3.0000000000004.000000000000
+			width			0.68
+			height			0.585946353100
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox3.0000000000004.000000000000
+			geometry		wavegeom3.0000000000004.000000000000
+			position		2.250000000000 0.29297317654999999 3.000000000000
+			orientation		0 -8.00000000000000000 0
+			material		tile3.0000000000004.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile4.000000000000-4.000000000000
+			color			0.798332690963 0.781900668709 0.745670678004
+		}
+
+		lambertian_material
+		{
+			name			tile4.000000000000-4.000000000000
+			reflectance		pnt_tile4.000000000000-4.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom4.000000000000-4.000000000000
+			width			0.68
+			height			0.496130271586
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox4.000000000000-4.000000000000
+			geometry		wavegeom4.000000000000-4.000000000000
+			position		3.000000000000 0.24806513579299999 -3.000000000000
+			orientation		0 64.00000000000000000 0
+			material		tile4.000000000000-4.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile4.000000000000-3.000000000000
+			color			0.806742322559 0.812974198190 0.741797590587
+		}
+
+		lambertian_material
+		{
+			name			tile4.000000000000-3.000000000000
+			reflectance		pnt_tile4.000000000000-3.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom4.000000000000-3.000000000000
+			width			0.68
+			height			0.579369332318
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox4.000000000000-3.000000000000
+			geometry		wavegeom4.000000000000-3.000000000000
+			position		3.000000000000 0.28968466615900001 -2.250000000000
+			orientation		0 56.00000000000000000 0
+			material		tile4.000000000000-3.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile4.000000000000-2.000000000000
+			color			0.813203908597 0.838070695113 0.758171509732
+		}
+
+		lambertian_material
+		{
+			name			tile4.000000000000-2.000000000000
+			reflectance		pnt_tile4.000000000000-2.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom4.000000000000-2.000000000000
+			width			0.68
+			height			0.644961256448
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox4.000000000000-2.000000000000
+			geometry		wavegeom4.000000000000-2.000000000000
+			position		3.000000000000 0.32248062822399998 -1.500000000000
+			orientation		0 48.00000000000000000 0
+			material		tile4.000000000000-2.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile4.000000000000-1.000000000000
+			color			0.817572335783 0.854358543628 0.776883169207
+		}
+
+		lambertian_material
+		{
+			name			tile4.000000000000-1.000000000000
+			reflectance		pnt_tile4.000000000000-1.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom4.000000000000-1.000000000000
+			width			0.68
+			height			0.687346587638
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox4.000000000000-1.000000000000
+			geometry		wavegeom4.000000000000-1.000000000000
+			position		3.000000000000 0.34367329381900003 -0.750000000000
+			orientation		0 40.00000000000000000 0
+			material		tile4.000000000000-1.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile4.0000000000000.000000000000
+			color			0.819749498660 0.860000000000 0.784598364536
+		}
+
+		lambertian_material
+		{
+			name			tile4.0000000000000.000000000000
+			reflectance		pnt_tile4.0000000000000.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom4.0000000000000.000000000000
+			width			0.68
+			height			0.702511847796
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox4.0000000000000.000000000000
+			geometry		wavegeom4.0000000000000.000000000000
+			position		3.000000000000 0.35125592389799998 0.000000000000
+			orientation		0 32.00000000000000000 0
+			material		tile4.0000000000000.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile4.0000000000001.000000000000
+			color			0.819686502845 0.854358543628 0.776883169207
+		}
+
+		lambertian_material
+		{
+			name			tile4.0000000000001.000000000000
+			reflectance		pnt_tile4.0000000000001.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom4.0000000000001.000000000000
+			width			0.68
+			height			0.687346587638
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox4.0000000000001.000000000000
+			geometry		wavegeom4.0000000000001.000000000000
+			position		3.000000000000 0.34367329381900003 0.750000000000
+			orientation		0 24.00000000000000000 0
+			material		tile4.0000000000001.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile4.0000000000002.000000000000
+			color			0.817384763088 0.838070695113 0.758171509732
+		}
+
+		lambertian_material
+		{
+			name			tile4.0000000000002.000000000000
+			reflectance		pnt_tile4.0000000000002.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom4.0000000000002.000000000000
+			width			0.68
+			height			0.644961256448
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox4.0000000000002.000000000000
+			geometry		wavegeom4.0000000000002.000000000000
+			position		3.000000000000 0.32248062822399998 1.500000000000
+			orientation		0 16.00000000000000000 0
+			material		tile4.0000000000002.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile4.0000000000003.000000000000
+			color			0.812895971500 0.812974198190 0.741797590587
+		}
+
+		lambertian_material
+		{
+			name			tile4.0000000000003.000000000000
+			reflectance		pnt_tile4.0000000000003.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom4.0000000000003.000000000000
+			width			0.68
+			height			0.579369332318
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox4.0000000000003.000000000000
+			geometry		wavegeom4.0000000000003.000000000000
+			position		3.000000000000 0.28968466615900001 2.250000000000
+			orientation		0 8.00000000000000000 0
+			material		tile4.0000000000003.000000000000
+		}
+
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_tile4.0000000000004.000000000000
+			color			0.806320936665 0.781900668709 0.745670678004
+		}
+
+		lambertian_material
+		{
+			name			tile4.0000000000004.000000000000
+			reflectance		pnt_tile4.0000000000004.000000000000
+		}
+
+		box_geometry
+		{
+			name			wavegeom4.0000000000004.000000000000
+			width			0.68
+			height			0.496130271586
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox4.0000000000004.000000000000
+			geometry		wavegeom4.0000000000004.000000000000
+			position		3.000000000000 0.24806513579299999 3.000000000000
+			orientation		0 0.00000000000000000 0
+			material		tile4.0000000000004.000000000000
+		}
+
+
 
 ##################################################
 # Cook-Torrance torus ring
 ##################################################
 
-FOR I -3 3 1
 
-	DEFINE TX $(@I*1.75)
-	DEFINE TZ $(-4.7+0.45*cos(@I*0.7))
-	DEFINE TY $(2.15+0.18*sin(@I*0.9))
-	DEFINE MR $(0.62+0.07*cos(@I*0.8))
 
 	torus_geometry
 	{
-		name			torusgeom@I
-		majorradius		@MR
+		name			torusgeom-3.000000000000
+		majorradius		0.568382439912
 		minorratio		0.13
 	}
 
 	standard_object
 	{
-		name			ringtorus@I
-		geometry		torusgeom@I
-		position		@TX @TY @TZ
-		orientation		90 $(@I*18.0) $(@I*12.0)
+		name			ringtorus-3.000000000000
+		geometry		torusgeom-3.000000000000
+		position		-5.250000000000 2.073071621558 -4.927180747070
+		orientation		90 -54.00000000000000000 -36.00000000000000000
 		material		ring_mat
 		shader			glossy_shader
 	}
 
-	UNDEF TX
-	UNDEF TZ
-	UNDEF TY
-	UNDEF MR
 
-ENDFOR
+
+
+	torus_geometry
+	{
+		name			torusgeom-2.000000000000
+		majorradius		0.617956033439
+		minorratio		0.13
+	}
+
+	standard_object
+	{
+		name			ringtorus-2.000000000000
+		geometry		torusgeom-2.000000000000
+		position		-3.500000000000 1.974707426442 -4.623514785695
+		orientation		90 -36.00000000000000000 -24.00000000000000000
+		material		ring_mat
+		shader			glossy_shader
+	}
+
+
+
+
+	torus_geometry
+	{
+		name			torusgeom-1.000000000000
+		majorradius		0.668769469654
+		minorratio		0.13
+	}
+
+	standard_object
+	{
+		name			ringtorus-1.000000000000
+		geometry		torusgeom-1.000000000000
+		position		-1.750000000000 2.009001156267 -4.355821015722
+		orientation		90 -18.00000000000000000 -12.00000000000000000
+		material		ring_mat
+		shader			glossy_shader
+	}
+
+
+
+
+	torus_geometry
+	{
+		name			torusgeom0.000000000000
+		majorradius		0.690000000000
+		minorratio		0.13
+	}
+
+	standard_object
+	{
+		name			ringtorus0.000000000000
+		geometry		torusgeom0.000000000000
+		position		0.000000000000 2.150000000000 -4.250000000000
+		orientation		90 0.00000000000000000 0.00000000000000000
+		material		ring_mat
+		shader			glossy_shader
+	}
+
+
+
+
+	torus_geometry
+	{
+		name			torusgeom1.000000000000
+		majorradius		0.668769469654
+		minorratio		0.13
+	}
+
+	standard_object
+	{
+		name			ringtorus1.000000000000
+		geometry		torusgeom1.000000000000
+		position		1.750000000000 2.290998843733 -4.355821015722
+		orientation		90 18.00000000000000000 12.00000000000000000
+		material		ring_mat
+		shader			glossy_shader
+	}
+
+
+
+
+	torus_geometry
+	{
+		name			torusgeom2.000000000000
+		majorradius		0.617956033439
+		minorratio		0.13
+	}
+
+	standard_object
+	{
+		name			ringtorus2.000000000000
+		geometry		torusgeom2.000000000000
+		position		3.500000000000 2.325292573558 -4.623514785695
+		orientation		90 36.00000000000000000 24.00000000000000000
+		material		ring_mat
+		shader			glossy_shader
+	}
+
+
+
+
+	torus_geometry
+	{
+		name			torusgeom3.000000000000
+		majorradius		0.568382439912
+		minorratio		0.13
+	}
+
+	standard_object
+	{
+		name			ringtorus3.000000000000
+		geometry		torusgeom3.000000000000
+		position		5.250000000000 2.226928378442 -4.927180747070
+		orientation		90 54.00000000000000000 36.00000000000000000
+		material		ring_mat
+		shader			glossy_shader
+	}
+
+
 
 ##################################################
 # Brushed metal inner pillars
 ##################################################
 
-FOR SIDE -1 1 2
-	FOR I -1 1 1
 
-		DEFINE PX $(@SIDE*4.3+@I*0.35)
-		DEFINE PZ $(@I*1.9-@SIDE*0.25)
-		DEFINE PHA $((@I+@SIDE)*1.2)
-		DEFINE PH $(1.65+0.35*(0.5+0.5*cos(@PHA)))
-		DEFINE PR $(0.22+0.02*cos(@I*1.5))
 
 		cylinder_geometry
 		{
-			name			pillargeom@SIDE@I
+			name			pillargeom-1.000000000000-1.000000000000
 			axis			y
-			radius			@PR
-			height			@PH
+			radius			0.221414744033
+			height			1.695956099780
 		}
 
 		standard_object
 		{
-			name			plinth@SIDE@I
+			name			plinth-1.000000000000-1.000000000000
 			geometry		plinthgeom
-			position		@PX 0.175 @PZ
+			position		-4.650000000000 0.175 -1.650000000000
 			material		back_wall_mat
 		}
 
 		standard_object
 		{
-			name			pillar@SIDE@I
-			geometry		pillargeom@SIDE@I
-			position		@PX $(0.35+@PH*0.5) @PZ
+			name			pillar-1.000000000000-1.000000000000
+			geometry		pillargeom-1.000000000000-1.000000000000
+			position		-4.650000000000 1.19797804989000012 -1.650000000000
 			material		pillar_mat
 			shader			glossy_shader
 		}
 
-		UNDEF PX
-		UNDEF PZ
-		UNDEF PHA
-		UNDEF PH
-		UNDEF PR
 
-	ENDFOR
-ENDFOR
+
+
+		cylinder_geometry
+		{
+			name			pillargeom-1.0000000000000.000000000000
+			axis			y
+			radius			0.240000000000
+			height			1.888412607033
+		}
+
+		standard_object
+		{
+			name			plinth-1.0000000000000.000000000000
+			geometry		plinthgeom
+			position		-4.300000000000 0.175 0.250000000000
+			material		back_wall_mat
+		}
+
+		standard_object
+		{
+			name			pillar-1.0000000000000.000000000000
+			geometry		pillargeom-1.0000000000000.000000000000
+			position		-4.300000000000 1.29420630351649990 0.250000000000
+			material		pillar_mat
+			shader			glossy_shader
+		}
+
+
+
+
+		cylinder_geometry
+		{
+			name			pillargeom-1.0000000000001.000000000000
+			axis			y
+			radius			0.221414744033
+			height			2.000000000000
+		}
+
+		standard_object
+		{
+			name			plinth-1.0000000000001.000000000000
+			geometry		plinthgeom
+			position		-3.950000000000 0.175 2.150000000000
+			material		back_wall_mat
+		}
+
+		standard_object
+		{
+			name			pillar-1.0000000000001.000000000000
+			geometry		pillargeom-1.0000000000001.000000000000
+			position		-3.950000000000 1.35000000000000009 2.150000000000
+			material		pillar_mat
+			shader			glossy_shader
+		}
+
+
+
+
+		cylinder_geometry
+		{
+			name			pillargeom1.000000000000-1.000000000000
+			axis			y
+			radius			0.221414744033
+			height			2.000000000000
+		}
+
+		standard_object
+		{
+			name			plinth1.000000000000-1.000000000000
+			geometry		plinthgeom
+			position		3.950000000000 0.175 -2.150000000000
+			material		back_wall_mat
+		}
+
+		standard_object
+		{
+			name			pillar1.000000000000-1.000000000000
+			geometry		pillargeom1.000000000000-1.000000000000
+			position		3.950000000000 1.35000000000000009 -2.150000000000
+			material		pillar_mat
+			shader			glossy_shader
+		}
+
+
+
+
+		cylinder_geometry
+		{
+			name			pillargeom1.0000000000000.000000000000
+			axis			y
+			radius			0.240000000000
+			height			1.888412607033
+		}
+
+		standard_object
+		{
+			name			plinth1.0000000000000.000000000000
+			geometry		plinthgeom
+			position		4.300000000000 0.175 -0.250000000000
+			material		back_wall_mat
+		}
+
+		standard_object
+		{
+			name			pillar1.0000000000000.000000000000
+			geometry		pillargeom1.0000000000000.000000000000
+			position		4.300000000000 1.29420630351649990 -0.250000000000
+			material		pillar_mat
+			shader			glossy_shader
+		}
+
+
+
+
+		cylinder_geometry
+		{
+			name			pillargeom1.0000000000001.000000000000
+			axis			y
+			radius			0.221414744033
+			height			1.695956099780
+		}
+
+		standard_object
+		{
+			name			plinth1.0000000000001.000000000000
+			geometry		plinthgeom
+			position		4.650000000000 0.175 1.650000000000
+			material		back_wall_mat
+		}
+
+		standard_object
+		{
+			name			pillar1.0000000000001.000000000000
+			geometry		pillargeom1.0000000000001.000000000000
+			position		4.650000000000 1.19797804989000012 1.650000000000
+			material		pillar_mat
+			shader			glossy_shader
+		}
+
+
 
 ##################################################
 # Suspended glass crown
 ##################################################
 
-FOR I -2 2 1
 
-	DEFINE GX $(@I*1.85)
-	DEFINE GZ $(-0.8+0.35*sin(@I*0.8))
-	DEFINE GY $(4.05+0.28*cos(@I*0.9))
-	DEFINE GR $(0.30+0.08*(0.5+0.5*cos(@I*1.5)))
 
 	sphere_geometry
 	{
-		name			crowngeom@I
-		radius			@GR
+		name			crowngeom-2.000000000000
+		radius			0.300400300136
 	}
 
 	standard_object
 	{
-		name			crownsphere@I
-		geometry		crowngeom@I
-		position		@GX @GY @GZ
+		name			crownsphere-2.000000000000
+		geometry		crowngeom-2.000000000000
+		position		-3.700000000000 3.986383413486 -1.149850761065
 		material		crown_glass
 		shader			glass_shader
 	}
 
-	UNDEF GX
-	UNDEF GZ
-	UNDEF GY
-	UNDEF GR
 
-ENDFOR
+
+
+	sphere_geometry
+	{
+		name			crowngeom-1.000000000000
+		radius			0.342829488067
+	}
+
+	standard_object
+	{
+		name			crownsphere-1.000000000000
+		geometry		crowngeom-1.000000000000
+		position		-1.850000000000 4.224050791116 -1.051074631815
+		material		crown_glass
+		shader			glass_shader
+	}
+
+
+
+
+	sphere_geometry
+	{
+		name			crowngeom0.000000000000
+		radius			0.380000000000
+	}
+
+	standard_object
+	{
+		name			crownsphere0.000000000000
+		geometry		crowngeom0.000000000000
+		position		0.000000000000 4.330000000000 -0.800000000000
+		material		crown_glass
+		shader			glass_shader
+	}
+
+
+
+
+	sphere_geometry
+	{
+		name			crowngeom1.000000000000
+		radius			0.342829488067
+	}
+
+	standard_object
+	{
+		name			crownsphere1.000000000000
+		geometry		crowngeom1.000000000000
+		position		1.850000000000 4.224050791116 -0.548925368185
+		material		crown_glass
+		shader			glass_shader
+	}
+
+
+
+
+	sphere_geometry
+	{
+		name			crowngeom2.000000000000
+		radius			0.300400300136
+	}
+
+	standard_object
+	{
+		name			crownsphere2.000000000000
+		geometry		crowngeom2.000000000000
+		position		3.700000000000 3.986383413486 -0.450149238935
+		material		crown_glass
+		shader			glass_shader
+	}
+
+
 
 ##################################################
 # Translucent central bloom
 ##################################################
 
-FOR I 0 $(@CORE_COUNT-1) 1
 
-	DEFINE ANG $(@I/@CORE_COUNT*@TWOPI+@PI/6.0)
-	DEFINE CX $(cos(@ANG)*1.15)
-	DEFINE CZ $(sin(@ANG)*0.9)
-	DEFINE CY $(1.55+0.18*sin(@ANG*3.0))
-	DEFINE RY $(0.5*(0.95+0.25*sin(@ANG*2.0)))
 
 	ellipsoid_geometry
 	{
-		name			coregeom@I
-		radii			0.23 @RY 0.23
+		name			coregeom0.000000000000
+		radii			0.23 0.583253175473 0.23
 	}
 
 	standard_object
 	{
-		name			core@I
-		geometry		coregeom@I
-		position		@CX @CY @CZ
-		orientation		0 $(@I*60.0) $(@I*25.0)
+		name			core0.000000000000
+		geometry		coregeom0.000000000000
+		position		0.995929214352 1.730000000000 0.450000000000
+		orientation		0 0.00000000000000000 0.00000000000000000
 		material		jade_core
 	}
 
-	UNDEF ANG
-	UNDEF CX
-	UNDEF CZ
-	UNDEF CY
-	UNDEF RY
 
-ENDFOR
+
+
+	ellipsoid_geometry
+	{
+		name			coregeom1.000000000000
+		radii			0.23 0.589263414955 0.23
+	}
+
+	standard_object
+	{
+		name			core1.000000000000
+		geometry		coregeom1.000000000000
+		position		0.964037642627 1.727725081486 0.490697164715
+		orientation		0 60.00000000000000000 25.00000000000000000
+		material		jade_core
+	}
+
+
+
+
+	ellipsoid_geometry
+	{
+		name			coregeom2.000000000000
+		radii			0.23 0.593988493641 0.23
+	}
+
+	standard_object
+	{
+		name			core2.000000000000
+		geometry		coregeom2.000000000000
+		position		0.929433445126 1.720957828769 0.530013597269
+		orientation		0 120.00000000000000000 50.00000000000000000
+		material		jade_core
+	}
+
+
 
 ##################################################
 # Loop-generated light rig
 ##################################################
 
-FOR L 0 3 1
 
-	DEFINE LANG $(@L/4.0*@TWOPI+@PI/8.0)
-	DEFINE LX $(cos(@LANG)*9.0)
-	DEFINE LZ $(sin(@LANG)*7.0)
-	DEFINE LR $(0.82+0.12*sin(@LANG))
-	DEFINE LG $(0.82+0.12*sin(@LANG+@PI*0.66))
-	DEFINE LB $(0.82+0.12*sin(@LANG+@PI*1.33))
 
 	omni_light
 	{
-		name			light@L
+		name			light0.000000000000
 		power			80
-		color			@LR @LG @LB
-		position		@LX 8.8 @LZ
+		color			0.865922011884 0.895029118760 0.701197161074
+		position		8.314915792601 8.8 2.678784026557
 	}
 
-	UNDEF LANG
-	UNDEF LX
-	UNDEF LZ
-	UNDEF LR
-	UNDEF LG
-	UNDEF LB
 
-ENDFOR
+
+
+	omni_light
+	{
+		name			light1.000000000000
+		power			80
+		color			0.870295702110 0.891244438081 0.700618613309
+		position		8.171332554408 8.8 2.933915956404
+	}
+
+
+
+
+	omni_light
+	{
+		name			light2.000000000000
+		power			80
+		color			0.874589777526 0.887346982112 0.700229038477
+		position		8.014814630831 8.8 3.184403689042
+	}
+
+
+
+
+	omni_light
+	{
+		name			light3.000000000000
+		power			80
+		color			0.878797440893 0.883342920273 0.700029053249
+		position		7.845609779514 8.8 3.429850718762
+	}
+
+
 
 omni_light
 {
@@ -539,3 +3620,5 @@ directional_light
 	color		0.92 0.95 1.0
 	direction	0.2 -1.0 -0.35
 }
+
+

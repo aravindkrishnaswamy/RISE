@@ -56,7 +56,10 @@ homogeneous_medium
 	phase		isotropic
 }
 
-> set global_medium fog
+global_medium
+{
+medium fog
+}
 
 homogeneous_medium
 {
@@ -182,3 +185,4 @@ standard_object
 	material	mred
 	position	4.4 1.1 1.0
 }
+

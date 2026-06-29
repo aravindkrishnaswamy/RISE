@@ -86,7 +86,146 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # ---- Floor ----
 uniformcolor_painter
@@ -222,26 +361,8 @@ uniformcolor_painter
 }
 
 # ---- Glass ----
-uniformcolor_painter
-{
-	name				pnt_clear_tau
-	color				0.998 0.998 0.998
-	colorspace			RISERGB
-}
 
-uniformcolor_painter
-{
-	name				pnt_amber_tau
-	color				0.998 0.72 0.32
-	colorspace			RISERGB
-}
 
-uniformcolor_painter
-{
-	name				pnt_sapphire_tau
-	color				0.35 0.55 0.998
-	colorspace			RISERGB
-}
 
 # ---- Light emitter (warm daylight through slot) ----
 uniformcolor_painter
@@ -947,3 +1068,5 @@ standard_object
 	position			4.0 1.65 7.5
 	material			bronze_mat
 }
+
+

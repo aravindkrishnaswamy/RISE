@@ -73,25 +73,144 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
 
-uniformcolor_painter
-{
-	name				pnt_floor
-	color				0.10 0.08 0.08
-}
 
-uniformcolor_painter
-{
-	name				pnt_pearl
-	color				0.96 0.97 0.94
-}
 
-uniformcolor_painter
-{
-	name				pnt_back_a
-	color				0.17 0.11 0.10
-}
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 uniformcolor_painter
 {
@@ -262,38 +381,18 @@ standard_object
 	receives_shadows	FALSE
 }
 
-FOR YY -2 2 0.4
-		FOR XX -2 2 0.4
 
-			DEFINE DIST $(sqrt(@XX*@XX+@YY*@YY))
-			DEFINE SHADE $(1.0-@DIST/3.2)
-			DEFINE FX $((@XX+2.0)/4.0)
-			DEFINE FY $((@YY+2.0)/4.0)
-			DEFINE SAT_R $(0.16+0.10*@SHADE+0.16*@FX)
-			DEFINE SAT_G $(0.34+0.16*@SHADE+0.05*cos(@YY*1.0))
-			DEFINE SAT_B $(0.48+0.16*(1.0-@FY)+0.06*sin(@XX*0.9))
-			DEFINE OFFX $(@XX+0.55)
-			DEFINE OFFY $(@YY-0.35)
-			DEFINE OFFD $(sqrt(@OFFX*@OFFX+@OFFY*@OFFY))
-			DEFINE BEND $(@XX+@YY)
-			DEFINE SWEEP $(@XX+1.0)
-			DEFINE PX $(@XX*0.92+0.20*sin(@YY*1.4)-0.15*@FY+0.18)
-			DEFINE PY $(@YY*0.88-0.55*@FX+0.10*cos(@YY*1.1)+0.12*sin(@XX*0.8)-0.05)
-			DEFINE PZ $(-0.40*@FX+0.22*sin(@BEND*0.7)+0.06*cos(@YY*1.5)-0.10)
-			DEFINE BASE_RAD $(1.10/(0.80+@OFFD/3.8))
-			DEFINE RAD_MOD $(0.88+0.10*cos(@XX*0.7-@YY*0.9)+0.04*sin(@SWEEP*1.2))
-			DEFINE RAD $(@BASE_RAD*@RAD_MOD)
 
 		uniformcolor_painter
 		{
-			name			pnt_satin@YY@XX
-			color			@SAT_R @SAT_G @SAT_B
+			name			pnt_satin-2.000000000000-2.000000000000
+			color			0.171611652352 0.337771301935 0.581569142147
 		}
 
 		polished_material
 		{
-			name			satin@YY@XX
-			reflectance		pnt_satin@YY@XX
+			name			satin-2.000000000000-2.000000000000
+			reflectance		pnt_satin-2.000000000000-2.000000000000
 			tau			0.96 0.97 0.94
 			ior				1.5
 			scattering		560.0
@@ -301,40 +400,3980 @@ FOR YY -2 2 0.4
 
 		sphere_geometry
 		{
-			name			spheregeom@YY@XX
-			radius			@RAD
+			name			spheregeom-2.000000000000-2.000000000000
+			radius			0.673562726721
 		}
 
 		standard_object
 		{
-			name			sphere@YY@XX
-			geometry		spheregeom@YY@XX
-			position		@PX @PY @PZ
-			material		satin@YY@XX
+			name			sphere-2.000000000000-2.000000000000
+			geometry		spheregeom-2.000000000000-2.000000000000
+			position		-2.086997630031 -1.531201055909 -0.233096942830
+			material		satin-2.000000000000-2.000000000000
 			shader			satin_shader
 		}
 
-			UNDEF DIST
-			UNDEF SHADE
-			UNDEF FX
-			UNDEF FY
-			UNDEF SAT_R
-			UNDEF SAT_G
-			UNDEF SAT_B
-			UNDEF OFFX
-			UNDEF OFFY
-			UNDEF OFFD
-			UNDEF BEND
-			UNDEF SWEEP
-			UNDEF PX
-			UNDEF PY
-			UNDEF PZ
-		UNDEF BASE_RAD
-		UNDEF RAD_MOD
-		UNDEF RAD
 
-	ENDFOR
-ENDFOR
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-2.000000000000-1.600000000000
+			color			0.195960947032 0.351130173424 0.580512499108
+		}
+
+		polished_material
+		{
+			name			satin-2.000000000000-1.600000000000
+			reflectance		pnt_satin-2.000000000000-1.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-2.000000000000-1.600000000000
+			radius			0.693487780987
+		}
+
+		standard_object
+		{
+			name			sphere-2.000000000000-1.600000000000
+			geometry		spheregeom-2.000000000000-1.600000000000
+			position		-1.718997630031 -1.591187985040 -0.327512292691
+			material		satin-2.000000000000-1.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-2.000000000000-1.200000000000
+			color			0.219113101314 0.362573620276 0.587082531587
+		}
+
+		polished_material
+		{
+			name			satin-2.000000000000-1.200000000000
+			reflectance		pnt_satin-2.000000000000-1.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-2.000000000000-1.200000000000
+			radius			0.707962694360
+		}
+
+		standard_object
+		{
+			name			sphere-2.000000000000-1.200000000000
+			geometry		spheregeom-2.000000000000-1.200000000000
+			position		-1.350997630031 -1.662846900078 -0.411949053315
+			material		satin-2.000000000000-1.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-2.000000000000-0.800000000000
+			color			0.240685439911 0.371489362030 0.600436919682
+		}
+
+		polished_material
+		{
+			name			satin-2.000000000000-0.800000000000
+			reflectance		pnt_satin-2.000000000000-0.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-2.000000000000-0.800000000000
+			radius			0.713256145032
+		}
+
+		standard_object
+		{
+			name			sphere-2.000000000000-0.800000000000
+			geometry		spheregeom-2.000000000000-0.800000000000
+			position		-0.982997630031 -1.744486435311 -0.482946084369
+			material		satin-2.000000000000-0.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-2.000000000000-0.400000000000
+			color			0.260262256080 0.377212267901 0.618863546003
+		}
+
+		polished_material
+		{
+			name			satin-2.000000000000-0.400000000000
+			reflectance		pnt_satin-2.000000000000-0.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-2.000000000000-0.400000000000
+			radius			0.706214373827
+		}
+
+		standard_object
+		{
+			name			sphere-2.000000000000-0.400000000000
+			geometry		spheregeom-2.000000000000-0.400000000000
+			position		-0.614997630031 -1.833401901001 -0.538089054280
+			material		satin-2.000000000000-0.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-2.000000000000-0.000000000000
+			color			0.277500000000 0.379192658173 0.640000000000
+		}
+
+		polished_material
+		{
+			name			satin-2.000000000000-0.000000000000
+			reflectance		pnt_satin-2.000000000000-0.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-2.000000000000-0.000000000000
+			radius			0.685663140781
+		}
+
+		standard_object
+		{
+			name			sphere-2.000000000000-0.000000000000
+			geometry		spheregeom-2.000000000000-0.000000000000
+			position		-0.246997630031 -1.926149888274 -0.576198490393
+			material		satin-2.000000000000-0.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-2.0000000000000.400000000000
+			color			0.292262256080 0.377212267901 0.661136453997
+		}
+
+		polished_material
+		{
+			name			satin-2.0000000000000.400000000000
+			reflectance		pnt_satin-2.0000000000000.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-2.0000000000000.400000000000
+			radius			0.653093149917
+		}
+
+		standard_object
+		{
+			name			sphere-2.0000000000000.400000000000
+			geometry		spheregeom-2.0000000000000.400000000000
+			position		0.121002369969 -2.018897875548 -0.597421647075
+			material		satin-2.0000000000000.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-2.0000000000000.800000000000
+			color			0.304685439911 0.371489362030 0.679563080318
+		}
+
+		polished_material
+		{
+			name			satin-2.0000000000000.800000000000
+			reflectance		pnt_satin-2.0000000000000.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-2.0000000000000.800000000000
+			radius			0.612280410264
+		}
+
+		standard_object
+		{
+			name			sphere-2.0000000000000.800000000000
+			geometry		spheregeom-2.0000000000000.800000000000
+			position		0.489002369969 -2.107813341238 -0.603221036190
+			material		satin-2.0000000000000.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-2.0000000000001.200000000000
+			color			0.315113101314 0.362573620276 0.692917468413
+		}
+
+		polished_material
+		{
+			name			satin-2.0000000000001.200000000000
+			reflectance		pnt_satin-2.0000000000001.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-2.0000000000001.200000000000
+			radius			0.568220094888
+		}
+
+		standard_object
+		{
+			name			sphere-2.0000000000001.200000000000
+			geometry		spheregeom-2.0000000000001.200000000000
+			position		0.857002369969 -2.189452876471 -0.596260513339
+			material		satin-2.0000000000001.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-2.0000000000001.600000000000
+			color			0.323960947032 0.351130173424 0.699487500892
+		}
+
+		polished_material
+		{
+			name			satin-2.0000000000001.600000000000
+			reflectance		pnt_satin-2.0000000000001.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-2.0000000000001.600000000000
+			radius			0.525970551963
+		}
+
+		standard_object
+		{
+			name			sphere-2.0000000000001.600000000000
+			geometry		spheregeom-2.0000000000001.600000000000
+			position		1.225002369969 -2.261111791509 -0.580197792480
+			material		satin-2.0000000000001.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-2.0000000000002.000000000000
+			color			0.331611652352 0.337771301935 0.698430857853
+		}
+
+		polished_material
+		{
+			name			satin-2.0000000000002.000000000000
+			reflectance		pnt_satin-2.0000000000002.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-2.0000000000002.000000000000
+			radius			0.489745895018
+		}
+
+		standard_object
+		{
+			name			sphere-2.0000000000002.000000000000
+			geometry		spheregeom-2.0000000000002.000000000000
+			position		1.593002369969 -2.321098720639 -0.559399549796
+			material		satin-2.0000000000002.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.600000000000-2.000000000000
+			color			0.179960947032 0.370477539136 0.565569142147
+		}
+
+		polished_material
+		{
+			name			satin-1.600000000000-2.000000000000
+			reflectance		pnt_satin-1.600000000000-2.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.600000000000-2.000000000000
+			radius			0.720331606551
+		}
+
+		standard_object
+		{
+			name			sphere-1.600000000000-2.000000000000
+			geometry		spheregeom-1.600000000000-2.000000000000
+			position		-2.191863185017 -1.219243483746 -0.272356365828
+			material		satin-1.600000000000-2.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.600000000000-1.600000000000
+			color			0.205289321881 0.385402938895 0.564512499108
+		}
+
+		polished_material
+		{
+			name			satin-1.600000000000-1.600000000000
+			reflectance		pnt_satin-1.600000000000-1.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.600000000000-1.600000000000
+			radius			0.754546137112
+		}
+
+		standard_object
+		{
+			name			sphere-1.600000000000-1.600000000000
+			geometry		spheregeom-1.600000000000-1.600000000000
+			position		-1.823863185017 -1.279230412876 -0.356793126451
+			material		satin-1.600000000000-1.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.600000000000-1.200000000000
+			color			0.229500000000 0.398540023885 0.571082531587
+		}
+
+		polished_material
+		{
+			name			satin-1.600000000000-1.200000000000
+			reflectance		pnt_satin-1.600000000000-1.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.600000000000-1.200000000000
+			radius			0.781799954730
+		}
+
+		standard_object
+		{
+			name			sphere-1.600000000000-1.200000000000
+			geometry		spheregeom-1.600000000000-1.200000000000
+			position		-1.455863185017 -1.350889327915 -0.427790157506
+			material		satin-1.600000000000-1.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.600000000000-0.800000000000
+			color			0.252098300562 0.409097304785 0.584436919682
+		}
+
+		polished_material
+		{
+			name			satin-1.600000000000-0.800000000000
+			reflectance		pnt_satin-1.600000000000-0.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.600000000000-0.800000000000
+			radius			0.795945792340
+		}
+
+		standard_object
+		{
+			name			sphere-1.600000000000-0.800000000000
+			geometry		spheregeom-1.600000000000-0.800000000000
+			position		-1.087863185017 -1.432528863147 -0.482933127416
+			material		satin-1.600000000000-0.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.600000000000-0.400000000000
+			color			0.272461179680 0.416077911373 0.602863546003
+		}
+
+		polished_material
+		{
+			name			satin-1.600000000000-0.400000000000
+			reflectance		pnt_satin-1.600000000000-0.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.600000000000-0.400000000000
+			radius			0.791785928291
+		}
+
+		standard_object
+		{
+			name			sphere-1.600000000000-0.400000000000
+			geometry		spheregeom-1.600000000000-0.400000000000
+			position		-0.719863185017 -1.521444328837 -0.521042563530
+			material		satin-1.600000000000-0.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.600000000000-0.000000000000
+			color			0.290000000000 0.418540023885 0.624000000000
+		}
+
+		polished_material
+		{
+			name			satin-1.600000000000-0.000000000000
+			reflectance		pnt_satin-1.600000000000-0.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.600000000000-0.000000000000
+			radius			0.767606132740
+		}
+
+		standard_object
+		{
+			name			sphere-1.600000000000-0.000000000000
+			geometry		spheregeom-1.600000000000-0.000000000000
+			position		-0.351863185017 -1.614192316111 -0.542265720211
+			material		satin-1.600000000000-0.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.6000000000000.400000000000
+			color			0.304461179680 0.416077911373 0.645136453997
+		}
+
+		polished_material
+		{
+			name			satin-1.6000000000000.400000000000
+			reflectance		pnt_satin-1.6000000000000.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.6000000000000.400000000000
+			radius			0.726126809236
+		}
+
+		standard_object
+		{
+			name			sphere-1.6000000000000.400000000000
+			geometry		spheregeom-1.6000000000000.400000000000
+			position		0.016136814983 -1.706940303385 -0.548065109326
+			material		satin-1.6000000000000.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.6000000000000.800000000000
+			color			0.316098300562 0.409097304785 0.663563080318
+		}
+
+		polished_material
+		{
+			name			satin-1.6000000000000.800000000000
+			reflectance		pnt_satin-1.6000000000000.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.6000000000000.800000000000
+			radius			0.673254686308
+		}
+
+		standard_object
+		{
+			name			sphere-1.6000000000000.800000000000
+			geometry		spheregeom-1.6000000000000.800000000000
+			position		0.384136814983 -1.795855769074 -0.541104586475
+			material		satin-1.6000000000000.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.6000000000001.200000000000
+			color			0.325500000000 0.398540023885 0.676917468413
+		}
+
+		polished_material
+		{
+			name			satin-1.6000000000001.200000000000
+			reflectance		pnt_satin-1.6000000000001.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.6000000000001.200000000000
+			radius			0.615990991404
+		}
+
+		standard_object
+		{
+			name			sphere-1.6000000000001.200000000000
+			geometry		spheregeom-1.6000000000001.200000000000
+			position		0.752136814983 -1.877495304307 -0.525041865617
+			material		satin-1.6000000000001.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.6000000000001.600000000000
+			color			0.333289321881 0.385402938895 0.683487500892
+		}
+
+		polished_material
+		{
+			name			satin-1.6000000000001.600000000000
+			reflectance		pnt_satin-1.6000000000001.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.6000000000001.600000000000
+			radius			0.560822246817
+		}
+
+		standard_object
+		{
+			name			sphere-1.6000000000001.600000000000
+			geometry		spheregeom-1.6000000000001.600000000000
+			position		1.120136814983 -1.949154219345 -0.504243622932
+			material		satin-1.6000000000001.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.6000000000002.000000000000
+			color			0.339960947032 0.370477539136 0.682430857853
+		}
+
+		polished_material
+		{
+			name			satin-1.6000000000002.000000000000
+			reflectance		pnt_satin-1.6000000000002.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.6000000000002.000000000000
+			radius			0.512832845015
+		}
+
+		standard_object
+		{
+			name			sphere-1.6000000000002.000000000000
+			geometry		spheregeom-1.6000000000002.000000000000
+			position		1.488136814983 -2.009141148476 -0.483445380248
+			material		satin-1.6000000000002.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.200000000000-2.000000000000
+			color			0.187113101314 0.401498849827 0.549569142147
+		}
+
+		polished_material
+		{
+			name			satin-1.200000000000-2.000000000000
+			reflectance		pnt_satin-1.200000000000-2.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.200000000000-2.000000000000
+			radius			0.759195077456
+		}
+
+		standard_object
+		{
+			name			sphere-1.200000000000-2.000000000000
+			geometry		spheregeom-1.200000000000-2.000000000000
+			position		-2.248808640440 -0.910868712800 -0.286181629200
+			material		satin-1.200000000000-2.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.200000000000-1.600000000000
+			color			0.213500000000 0.418117887724 0.548512499108
+		}
+
+		polished_material
+		{
+			name			satin-1.200000000000-1.600000000000
+			reflectance		pnt_satin-1.200000000000-1.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.200000000000-1.600000000000
+			radius			0.811417555137
+		}
+
+		standard_object
+		{
+			name			sphere-1.200000000000-1.600000000000
+			geometry		spheregeom-1.200000000000-1.600000000000
+			position		-1.880808640440 -0.970855641931 -0.357178660255
+			material		satin-1.200000000000-1.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.200000000000-1.200000000000
+			color			0.238966991411 0.433265073981 0.555082531587
+		}
+
+		polished_material
+		{
+			name			satin-1.200000000000-1.200000000000
+			reflectance		pnt_satin-1.200000000000-1.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.200000000000-1.200000000000
+			radius			0.856782322171
+		}
+
+		standard_object
+		{
+			name			sphere-1.200000000000-1.200000000000
+			geometry		spheregeom-1.200000000000-1.200000000000
+			position		-1.512808640440 -1.042514556969 -0.412321630165
+			material		satin-1.200000000000-1.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.200000000000-0.800000000000
+			color			0.262930609057 0.446006862215 0.568436919682
+		}
+
+		polished_material
+		{
+			name			satin-1.200000000000-0.800000000000
+			reflectance		pnt_satin-1.200000000000-0.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.200000000000-0.800000000000
+			radius			0.885219979352
+		}
+
+		standard_object
+		{
+			name			sphere-1.200000000000-0.800000000000
+			geometry		spheregeom-1.200000000000-0.800000000000
+			position		-1.144808640440 -1.124154092202 -0.450431066279
+			material		satin-1.200000000000-0.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.200000000000-0.400000000000
+			color			0.284471529248 0.454872334520 0.586863546003
+		}
+
+		polished_material
+		{
+			name			satin-1.200000000000-0.400000000000
+			reflectance		pnt_satin-1.200000000000-0.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.200000000000-0.400000000000
+			radius			0.887461063784
+		}
+
+		standard_object
+		{
+			name			sphere-1.200000000000-0.400000000000
+			geometry		spheregeom-1.200000000000-0.400000000000
+			position		-0.776808640440 -1.213069557891 -0.471654222960
+			material		satin-1.200000000000-0.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.200000000000-0.000000000000
+			color			0.302500000000 0.458117887724 0.608000000000
+		}
+
+		polished_material
+		{
+			name			satin-1.200000000000-0.000000000000
+			reflectance		pnt_satin-1.200000000000-0.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.200000000000-0.000000000000
+			radius			0.860516608511
+		}
+
+		standard_object
+		{
+			name			sphere-1.200000000000-0.000000000000
+			geometry		spheregeom-1.200000000000-0.000000000000
+			position		-0.408808640440 -1.305817545165 -0.477453612075
+			material		satin-1.200000000000-0.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.2000000000000.400000000000
+			color			0.316471529248 0.454872334520 0.629136453997
+		}
+
+		polished_material
+		{
+			name			satin-1.2000000000000.400000000000
+			reflectance		pnt_satin-1.2000000000000.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.2000000000000.400000000000
+			radius			0.809405802698
+		}
+
+		standard_object
+		{
+			name			sphere-1.2000000000000.400000000000
+			geometry		spheregeom-1.2000000000000.400000000000
+			position		-0.040808640440 -1.398565532439 -0.470493089224
+			material		satin-1.2000000000000.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.2000000000000.800000000000
+			color			0.326930609057 0.446006862215 0.647563080318
+		}
+
+		polished_material
+		{
+			name			satin-1.2000000000000.800000000000
+			reflectance		pnt_satin-1.2000000000000.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.2000000000000.800000000000
+			radius			0.743502654683
+		}
+
+		standard_object
+		{
+			name			sphere-1.2000000000000.800000000000
+			geometry		spheregeom-1.2000000000000.800000000000
+			position		0.327191359560 -1.487480998129 -0.454430368366
+			material		satin-1.2000000000000.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.2000000000001.200000000000
+			color			0.334966991411 0.433265073981 0.660917468413
+		}
+
+		polished_material
+		{
+			name			satin-1.2000000000001.200000000000
+			reflectance		pnt_satin-1.2000000000001.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.2000000000001.200000000000
+			radius			0.672360333121
+		}
+
+		standard_object
+		{
+			name			sphere-1.2000000000001.200000000000
+			geometry		spheregeom-1.2000000000001.200000000000
+			position		0.695191359560 -1.569120533361 -0.433632125682
+			material		satin-1.2000000000001.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.2000000000001.600000000000
+			color			0.341500000000 0.418117887724 0.667487500892
+		}
+
+		polished_material
+		{
+			name			satin-1.2000000000001.600000000000
+			reflectance		pnt_satin-1.2000000000001.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.2000000000001.600000000000
+			radius			0.603819288059
+		}
+
+		standard_object
+		{
+			name			sphere-1.2000000000001.600000000000
+			geometry		spheregeom-1.2000000000001.600000000000
+			position		1.063191359560 -1.640779448400 -0.412833882997
+			material		satin-1.2000000000001.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-1.2000000000002.000000000000
+			color			0.347113101314 0.401498849827 0.666430857853
+		}
+
+		polished_material
+		{
+			name			satin-1.2000000000002.000000000000
+			reflectance		pnt_satin-1.2000000000002.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-1.2000000000002.000000000000
+			radius			0.543581449774
+		}
+
+		standard_object
+		{
+			name			sphere-1.2000000000002.000000000000
+			geometry		spheregeom-1.2000000000002.000000000000
+			position		1.431191359560 -1.700766377530 -0.396771162139
+			material		satin-1.2000000000002.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.800000000000-2.000000000000
+			color			0.192685439911 0.427132039325 0.533569142147
+		}
+
+		polished_material
+		{
+			name			satin-0.800000000000-2.000000000000
+			reflectance		pnt_satin-0.800000000000-2.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.800000000000-2.000000000000
+			radius			0.786719221117
+		}
+
+		standard_object
+		{
+			name			sphere-0.800000000000-2.000000000000
+			geometry		spheregeom-0.800000000000-2.000000000000
+			position		-2.245020088435 -0.597766282055 -0.281805069305
+			material		satin-0.800000000000-2.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.800000000000-1.600000000000
+			color			0.220098300563 0.445392616367 0.532512499108
+		}
+
+		polished_material
+		{
+			name			satin-0.800000000000-1.600000000000
+			reflectance		pnt_satin-0.800000000000-1.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.800000000000-1.600000000000
+			radius			0.859897109842
+		}
+
+		standard_object
+		{
+			name			sphere-0.800000000000-1.600000000000
+			geometry		spheregeom-0.800000000000-1.600000000000
+			position		-1.877020088435 -0.657753211185 -0.336948039215
+			material		satin-0.800000000000-1.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.800000000000-1.200000000000
+			color			0.246930609057 0.462724309958 0.539082531587
+		}
+
+		polished_material
+		{
+			name			satin-0.800000000000-1.200000000000
+			reflectance		pnt_satin-0.800000000000-1.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.800000000000-1.200000000000
+			radius			0.929526382855
+		}
+
+		standard_object
+		{
+			name			sphere-0.800000000000-1.200000000000
+			geometry		spheregeom-0.800000000000-1.200000000000
+			position		-1.509020088435 -0.729412126224 -0.375057475329
+			material		satin-0.800000000000-1.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.800000000000-0.800000000000
+			color			0.272644660941 0.478266792972 0.552436919682
+		}
+
+		polished_material
+		{
+			name			satin-0.800000000000-0.800000000000
+			reflectance		pnt_satin-0.800000000000-0.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.800000000000-0.800000000000
+			radius			0.979592554338
+		}
+
+		standard_object
+		{
+			name			sphere-0.800000000000-0.800000000000
+			geometry		spheregeom-0.800000000000-0.800000000000
+			position		-1.141020088435 -0.811051661456 -0.396280632010
+			material		satin-0.800000000000-0.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.800000000000-0.400000000000
+			color			0.296049150281 0.490113975917 0.570863546003
+		}
+
+		polished_material
+		{
+			name			satin-0.800000000000-0.400000000000
+			reflectance		pnt_satin-0.800000000000-0.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.800000000000-0.400000000000
+			radius			0.992164746505
+		}
+
+		standard_object
+		{
+			name			sphere-0.800000000000-0.400000000000
+			geometry		spheregeom-0.800000000000-0.400000000000
+			position		-0.773020088435 -0.899967127146 -0.402080021125
+			material		satin-0.800000000000-0.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.800000000000-0.000000000000
+			color			0.315000000000 0.494835335467 0.592000000000
+		}
+
+		polished_material
+		{
+			name			satin-0.800000000000-0.000000000000
+			reflectance		pnt_satin-0.800000000000-0.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.800000000000-0.000000000000
+			radius			0.961466374539
+		}
+
+		standard_object
+		{
+			name			sphere-0.800000000000-0.000000000000
+			geometry		spheregeom-0.800000000000-0.000000000000
+			position		-0.405020088435 -0.992715114420 -0.395119498274
+			material		satin-0.800000000000-0.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.8000000000000.400000000000
+			color			0.328049150281 0.490113975917 0.613136453997
+		}
+
+		polished_material
+		{
+			name			satin-0.8000000000000.400000000000
+			reflectance		pnt_satin-0.8000000000000.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.8000000000000.400000000000
+			radius			0.898228310976
+		}
+
+		standard_object
+		{
+			name			sphere-0.8000000000000.400000000000
+			geometry		spheregeom-0.8000000000000.400000000000
+			position		-0.037020088435 -1.085463101694 -0.379056777416
+			material		satin-0.8000000000000.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.8000000000000.800000000000
+			color			0.336644660941 0.478266792972 0.631563080318
+		}
+
+		polished_material
+		{
+			name			satin-0.8000000000000.800000000000
+			reflectance		pnt_satin-0.8000000000000.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.8000000000000.800000000000
+			radius			0.817975272868
+		}
+
+		standard_object
+		{
+			name			sphere-0.8000000000000.800000000000
+			geometry		spheregeom-0.8000000000000.800000000000
+			position		0.330979911565 -1.174378567383 -0.358258534731
+			material		satin-0.8000000000000.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.8000000000001.200000000000
+			color			0.342930609057 0.462724309958 0.644917468413
+		}
+
+		polished_material
+		{
+			name			satin-0.8000000000001.200000000000
+			reflectance		pnt_satin-0.8000000000001.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.8000000000001.200000000000
+			radius			0.733010832505
+		}
+
+		standard_object
+		{
+			name			sphere-0.8000000000001.200000000000
+			geometry		spheregeom-0.8000000000001.200000000000
+			position		0.698979911565 -1.256018102616 -0.337460292047
+			material		satin-0.8000000000001.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.8000000000001.600000000000
+			color			0.348098300563 0.445392616367 0.651487500892
+		}
+
+		polished_material
+		{
+			name			satin-0.8000000000001.600000000000
+			reflectance		pnt_satin-0.8000000000001.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.8000000000001.600000000000
+			radius			0.651822304654
+		}
+
+		standard_object
+		{
+			name			sphere-0.8000000000001.600000000000
+			geometry		spheregeom-0.8000000000001.600000000000
+			position		1.066979911565 -1.327677017655 -0.321397571189
+			material		satin-0.8000000000001.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.8000000000002.000000000000
+			color			0.352685439911 0.427132039325 0.650430857853
+		}
+
+		polished_material
+		{
+			name			satin-0.8000000000002.000000000000
+			reflectance		pnt_satin-0.8000000000002.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.8000000000002.000000000000
+			radius			0.580096873204
+		}
+
+		standard_object
+		{
+			name			sphere-0.8000000000002.000000000000
+			geometry		spheregeom-0.8000000000002.000000000000
+			position		1.434979911565 -1.387663946785 -0.314437048338
+			material		satin-0.8000000000002.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.400000000000-2.000000000000
+			color			0.196262256080 0.444072659428 0.517569142147
+		}
+
+		polished_material
+		{
+			name			satin-0.400000000000-2.000000000000
+			reflectance		pnt_satin-0.400000000000-2.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.400000000000-2.000000000000
+			radius			0.799181787238
+		}
+
+		standard_object
+		{
+			name			sphere-0.400000000000-2.000000000000
+			geometry		spheregeom-0.400000000000-2.000000000000
+			position		-2.186237239584 -0.272526333957 -0.269169367589
+			material		satin-0.400000000000-2.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.400000000000-1.600000000000
+			color			0.224461179680 0.463590937188 0.516512499108
+		}
+
+		polished_material
+		{
+			name			satin-0.400000000000-1.600000000000
+			reflectance		pnt_satin-0.400000000000-1.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.400000000000-1.600000000000
+			radius			0.893953933740
+		}
+
+		standard_object
+		{
+			name			sphere-0.400000000000-1.600000000000
+			geometry		spheregeom-0.400000000000-1.600000000000
+			position		-1.818237239584 -0.332513263087 -0.307278803703
+			material		satin-0.400000000000-1.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.400000000000-1.200000000000
+			color			0.252471529248 0.482807496497 0.523082531587
+		}
+
+		polished_material
+		{
+			name			satin-0.400000000000-1.200000000000
+			reflectance		pnt_satin-0.400000000000-1.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.400000000000-1.200000000000
+			radius			0.994283490273
+		}
+
+		standard_object
+		{
+			name			sphere-0.400000000000-1.200000000000
+			geometry		spheregeom-0.400000000000-1.200000000000
+			position		-1.450237239584 -0.404172178126 -0.328501960384
+			material		satin-0.400000000000-1.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.400000000000-0.800000000000
+			color			0.280049150281 0.501331690150 0.536436919682
+		}
+
+		polished_material
+		{
+			name			satin-0.400000000000-0.800000000000
+			reflectance		pnt_satin-0.400000000000-0.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.400000000000-0.800000000000
+			radius			1.077597417362
+		}
+
+		standard_object
+		{
+			name			sphere-0.400000000000-0.800000000000
+			geometry		spheregeom-0.400000000000-0.800000000000
+			position		-1.082237239584 -0.485811713359 -0.334301349499
+			material		satin-0.400000000000-0.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.400000000000-0.400000000000
+			color			0.306322330470 0.517768778453 0.554863546003
+		}
+
+		polished_material
+		{
+			name			satin-0.400000000000-0.400000000000
+			reflectance		pnt_satin-0.400000000000-0.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.400000000000-0.400000000000
+			radius			1.105249614381
+		}
+
+		standard_object
+		{
+			name			sphere-0.400000000000-0.400000000000
+			geometry		spheregeom-0.400000000000-0.400000000000
+			position		-0.714237239584 -0.574727179048 -0.327340826648
+			material		satin-0.400000000000-0.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.400000000000-0.000000000000
+			color			0.327500000000 0.526053049700 0.576000000000
+		}
+
+		polished_material
+		{
+			name			satin-0.400000000000-0.000000000000
+			reflectance		pnt_satin-0.400000000000-0.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.400000000000-0.000000000000
+			radius			1.064328611373
+		}
+
+		standard_object
+		{
+			name			sphere-0.400000000000-0.000000000000
+			geometry		spheregeom-0.400000000000-0.000000000000
+			position		-0.346237239584 -0.667475166322 -0.311278105790
+			material		satin-0.400000000000-0.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.4000000000000.400000000000
+			color			0.338322330470 0.517768778453 0.597136453997
+		}
+
+		polished_material
+		{
+			name			satin-0.4000000000000.400000000000
+			reflectance		pnt_satin-0.4000000000000.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.4000000000000.400000000000
+			radius			0.983415146702
+		}
+
+		standard_object
+		{
+			name			sphere-0.4000000000000.400000000000
+			geometry		spheregeom-0.4000000000000.400000000000
+			position		0.021762760416 -0.760223153596 -0.290479863105
+			material		satin-0.4000000000000.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.4000000000000.800000000000
+			color			0.344049150281 0.501331690150 0.615563080318
+		}
+
+		polished_material
+		{
+			name			satin-0.4000000000000.800000000000
+			reflectance		pnt_satin-0.4000000000000.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.4000000000000.800000000000
+			radius			0.887943766298
+		}
+
+		standard_object
+		{
+			name			sphere-0.4000000000000.800000000000
+			geometry		spheregeom-0.4000000000000.800000000000
+			position		0.389762760416 -0.849138619285 -0.269681620421
+			material		satin-0.4000000000000.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.4000000000001.200000000000
+			color			0.348471529248 0.482807496497 0.628917468413
+		}
+
+		polished_material
+		{
+			name			satin-0.4000000000001.200000000000
+			reflectance		pnt_satin-0.4000000000001.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.4000000000001.200000000000
+			radius			0.790919082994
+		}
+
+		standard_object
+		{
+			name			sphere-0.4000000000001.200000000000
+			geometry		spheregeom-0.4000000000001.200000000000
+			position		0.757762760416 -0.930778154518 -0.253618899563
+			material		satin-0.4000000000001.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.4000000000001.600000000000
+			color			0.352461179680 0.463590937188 0.635487500892
+		}
+
+		polished_material
+		{
+			name			satin-0.4000000000001.600000000000
+			reflectance		pnt_satin-0.4000000000001.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.4000000000001.600000000000
+			radius			0.699618039825
+		}
+
+		standard_object
+		{
+			name			sphere-0.4000000000001.600000000000
+			geometry		spheregeom-0.4000000000001.600000000000
+			position		1.125762760416 -1.002437069557 -0.246658376712
+			material		satin-0.4000000000001.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.4000000000002.000000000000
+			color			0.356262256080 0.444072659428 0.634430857853
+		}
+
+		polished_material
+		{
+			name			satin-0.4000000000002.000000000000
+			reflectance		pnt_satin-0.4000000000002.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.4000000000002.000000000000
+			radius			0.618776811665
+		}
+
+		standard_object
+		{
+			name			sphere-0.4000000000002.000000000000
+			geometry		spheregeom-0.4000000000002.000000000000
+			position		1.493762760416 -1.062423998687 -0.252457765827
+			material		satin-0.4000000000002.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.000000000000-2.000000000000
+			color			0.197500000000 0.450000000000 0.501569142147
+		}
+
+		polished_material
+		{
+			name			satin-0.000000000000-2.000000000000
+			reflectance		pnt_satin-0.000000000000-2.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.000000000000-2.000000000000
+			radius			0.793003557885
+		}
+
+		standard_object
+		{
+			name			sphere-0.000000000000-2.000000000000
+			geometry		spheregeom-0.000000000000-2.000000000000
+			position		-2.095000000000 0.069948832365 -0.256798940597
+			material		satin-0.000000000000-2.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.000000000000-1.600000000000
+			color			0.226000000000 0.470000000000 0.500512499108
+		}
+
+		polished_material
+		{
+			name			satin-0.000000000000-1.600000000000
+			reflectance		pnt_satin-0.000000000000-1.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.000000000000-1.600000000000
+			radius			0.904376554156
+		}
+
+		standard_object
+		{
+			name			sphere-0.000000000000-1.600000000000
+			geometry		spheregeom-0.000000000000-1.600000000000
+			position		-1.727000000000 0.009961903235 -0.278022097279
+			material		satin-0.000000000000-1.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.000000000000-1.200000000000
+			color			0.254500000000 0.490000000000 0.507082531587
+		}
+
+		polished_material
+		{
+			name			satin-0.000000000000-1.200000000000
+			reflectance		pnt_satin-0.000000000000-1.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.000000000000-1.200000000000
+			radius			1.036899293455
+		}
+
+		standard_object
+		{
+			name			sphere-0.000000000000-1.200000000000
+			geometry		spheregeom-0.000000000000-1.200000000000
+			position		-1.359000000000 -0.061697011804 -0.283821486394
+			material		satin-0.000000000000-1.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.000000000000-0.800000000000
+			color			0.283000000000 0.510000000000 0.520436919682
+		}
+
+		polished_material
+		{
+			name			satin-0.000000000000-0.800000000000
+			reflectance		pnt_satin-0.000000000000-0.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.000000000000-0.800000000000
+			radius			1.173533163297
+		}
+
+		standard_object
+		{
+			name			sphere-0.000000000000-0.800000000000
+			geometry		spheregeom-0.000000000000-0.800000000000
+			position		-0.991000000000 -0.143336547037 -0.276860963543
+			material		satin-0.000000000000-0.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.000000000000-0.400000000000
+			color			0.311500000000 0.530000000000 0.538863546003
+		}
+
+		polished_material
+		{
+			name			satin-0.000000000000-0.400000000000
+			reflectance		pnt_satin-0.000000000000-0.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.000000000000-0.400000000000
+			radius			1.224971991147
+		}
+
+		standard_object
+		{
+			name			sphere-0.000000000000-0.400000000000
+			geometry		spheregeom-0.000000000000-0.400000000000
+			position		-0.623000000000 -0.232252012726 -0.260798242684
+			material		satin-0.000000000000-0.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.000000000000-0.000000000000
+			color			0.340000000000 0.550000000000 0.560000000000
+		}
+
+		polished_material
+		{
+			name			satin-0.000000000000-0.000000000000
+			reflectance		pnt_satin-0.000000000000-0.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.000000000000-0.000000000000
+			radius			1.151768363928
+		}
+
+		standard_object
+		{
+			name			sphere-0.000000000000-0.000000000000
+			geometry		spheregeom-0.000000000000-0.000000000000
+			position		-0.255000000000 -0.325000000000 -0.240000000000
+			material		satin-0.000000000000-0.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.0000000000000.400000000000
+			color			0.343500000000 0.530000000000 0.581136453997
+		}
+
+		polished_material
+		{
+			name			satin-0.0000000000000.400000000000
+			reflectance		pnt_satin-0.0000000000000.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.0000000000000.400000000000
+			radius			1.047848501471
+		}
+
+		standard_object
+		{
+			name			sphere-0.0000000000000.400000000000
+			geometry		spheregeom-0.0000000000000.400000000000
+			position		0.113000000000 -0.417747987274 -0.219201757316
+			material		satin-0.0000000000000.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.0000000000000.800000000000
+			color			0.347000000000 0.510000000000 0.599563080318
+		}
+
+		polished_material
+		{
+			name			satin-0.0000000000000.800000000000
+			reflectance		pnt_satin-0.0000000000000.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.0000000000000.800000000000
+			radius			0.940677696965
+		}
+
+		standard_object
+		{
+			name			sphere-0.0000000000000.800000000000
+			geometry		spheregeom-0.0000000000000.800000000000
+			position		0.481000000000 -0.506663452963 -0.203139036457
+			material		satin-0.0000000000000.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.0000000000001.200000000000
+			color			0.350500000000 0.490000000000 0.612917468413
+		}
+
+		polished_material
+		{
+			name			satin-0.0000000000001.200000000000
+			reflectance		pnt_satin-0.0000000000001.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.0000000000001.200000000000
+			radius			0.836907814360
+		}
+
+		standard_object
+		{
+			name			sphere-0.0000000000001.200000000000
+			geometry		spheregeom-0.0000000000001.200000000000
+			position		0.849000000000 -0.588302988196 -0.196178513606
+			material		satin-0.0000000000001.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.0000000000001.600000000000
+			color			0.354000000000 0.470000000000 0.619487500892
+		}
+
+		polished_material
+		{
+			name			satin-0.0000000000001.600000000000
+			reflectance		pnt_satin-0.0000000000001.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.0000000000001.600000000000
+			radius			0.740494744506
+		}
+
+		standard_object
+		{
+			name			sphere-0.0000000000001.600000000000
+			geometry		spheregeom-0.0000000000001.600000000000
+			position		1.217000000000 -0.659961903235 -0.201977902721
+			material		satin-0.0000000000001.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin-0.0000000000002.000000000000
+			color			0.357500000000 0.450000000000 0.618430857853
+		}
+
+		polished_material
+		{
+			name			satin-0.0000000000002.000000000000
+			reflectance		pnt_satin-0.0000000000002.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom-0.0000000000002.000000000000
+			radius			0.654705626079
+		}
+
+		standard_object
+		{
+			name			sphere-0.0000000000002.000000000000
+			geometry		spheregeom-0.0000000000002.000000000000
+			position		1.585000000000 -0.719948832365 -0.223201059403
+			material		satin-0.0000000000002.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.400000000000-2.000000000000
+			color			0.196262256080 0.444072659428 0.485569142147
+		}
+
+		polished_material
+		{
+			name			satin0.400000000000-2.000000000000
+			reflectance		pnt_satin0.400000000000-2.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.400000000000-2.000000000000
+			radius			0.766878850805
+		}
+
+		standard_object
+		{
+			name			sphere0.400000000000-2.000000000000
+			geometry		spheregeom0.400000000000-2.000000000000
+			position		-2.003762760416 0.431473666043 -0.248501960384
+			material		satin0.400000000000-2.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.400000000000-1.600000000000
+			color			0.224461179680 0.463590937188 0.484512499108
+		}
+
+		polished_material
+		{
+			name			satin0.400000000000-1.600000000000
+			reflectance		pnt_satin0.400000000000-1.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.400000000000-1.600000000000
+			radius			0.881418803899
+		}
+
+		standard_object
+		{
+			name			sphere0.400000000000-1.600000000000
+			geometry		spheregeom0.400000000000-1.600000000000
+			position		-1.635762760416 0.371486736913 -0.254301349499
+			material		satin0.400000000000-1.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.400000000000-1.200000000000
+			color			0.252471529248 0.482807496497 0.491082531587
+		}
+
+		polished_material
+		{
+			name			satin0.400000000000-1.200000000000
+			reflectance		pnt_satin0.400000000000-1.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.400000000000-1.200000000000
+			radius			1.026599009545
+		}
+
+		standard_object
+		{
+			name			sphere0.400000000000-1.200000000000
+			geometry		spheregeom0.400000000000-1.200000000000
+			position		-1.267762760416 0.299827821874 -0.247340826648
+			material		satin0.400000000000-1.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.400000000000-0.800000000000
+			color			0.280049150281 0.501331690150 0.504436919682
+		}
+
+		polished_material
+		{
+			name			satin0.400000000000-0.800000000000
+			reflectance		pnt_satin0.400000000000-0.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.400000000000-0.800000000000
+			radius			1.205291591264
+		}
+
+		standard_object
+		{
+			name			sphere0.400000000000-0.800000000000
+			geometry		spheregeom0.400000000000-0.800000000000
+			position		-0.899762760416 0.218188286641 -0.231278105790
+			material		satin0.400000000000-0.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.400000000000-0.400000000000
+			color			0.306322330470 0.517768778453 0.522863546003
+		}
+
+		polished_material
+		{
+			name			satin0.400000000000-0.400000000000
+			reflectance		pnt_satin0.400000000000-0.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.400000000000-0.400000000000
+			radius			1.289486645819
+		}
+
+		standard_object
+		{
+			name			sphere0.400000000000-0.400000000000
+			geometry		spheregeom0.400000000000-0.400000000000
+			position		-0.531762760416 0.129272820952 -0.210479863105
+			material		satin0.400000000000-0.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.400000000000-0.000000000000
+			color			0.327500000000 0.526053049700 0.544000000000
+		}
+
+		polished_material
+		{
+			name			satin0.400000000000-0.000000000000
+			reflectance		pnt_satin0.400000000000-0.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.400000000000-0.000000000000
+			radius			1.176260164232
+		}
+
+		standard_object
+		{
+			name			sphere0.400000000000-0.000000000000
+			geometry		spheregeom0.400000000000-0.000000000000
+			position		-0.163762760416 0.036524833678 -0.189681620421
+			material		satin0.400000000000-0.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.4000000000000.400000000000
+			color			0.338322330470 0.517768778453 0.565136453997
+		}
+
+		polished_material
+		{
+			name			satin0.4000000000000.400000000000
+			reflectance		pnt_satin0.4000000000000.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.4000000000000.400000000000
+			radius			1.067634918634
+		}
+
+		standard_object
+		{
+			name			sphere0.4000000000000.400000000000
+			geometry		spheregeom0.4000000000000.400000000000
+			position		0.204237239584 -0.056223153596 -0.173618899563
+			material		satin0.4000000000000.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.4000000000000.800000000000
+			color			0.344049150281 0.501331690150 0.583563080318
+		}
+
+		polished_material
+		{
+			name			satin0.4000000000000.800000000000
+			reflectance		pnt_satin0.4000000000000.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.4000000000000.800000000000
+			radius			0.962684299613
+		}
+
+		standard_object
+		{
+			name			sphere0.4000000000000.800000000000
+			geometry		spheregeom0.4000000000000.800000000000
+			position		0.572237239584 -0.145138619285 -0.166658376712
+			material		satin0.4000000000000.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.4000000000001.200000000000
+			color			0.348471529248 0.482807496497 0.596917468413
+		}
+
+		polished_material
+		{
+			name			satin0.4000000000001.200000000000
+			reflectance		pnt_satin0.4000000000001.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.4000000000001.200000000000
+			radius			0.861992032558
+		}
+
+		standard_object
+		{
+			name			sphere0.4000000000001.200000000000
+			geometry		spheregeom0.4000000000001.200000000000
+			position		0.940237239584 -0.226778154518 -0.172457765827
+			material		satin0.4000000000001.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.4000000000001.600000000000
+			color			0.352461179680 0.463590937188 0.603487500892
+		}
+
+		polished_material
+		{
+			name			satin0.4000000000001.600000000000
+			reflectance		pnt_satin0.4000000000001.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.4000000000001.600000000000
+			radius			0.767735099490
+		}
+
+		standard_object
+		{
+			name			sphere0.4000000000001.600000000000
+			geometry		spheregeom0.4000000000001.600000000000
+			position		1.308237239584 -0.298437069557 -0.193680922508
+			material		satin0.4000000000001.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.4000000000002.000000000000
+			color			0.356262256080 0.444072659428 0.602430857853
+		}
+
+		polished_material
+		{
+			name			satin0.4000000000002.000000000000
+			reflectance		pnt_satin0.4000000000002.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.4000000000002.000000000000
+			radius			0.682589638425
+		}
+
+		standard_object
+		{
+			name			sphere0.4000000000002.000000000000
+			geometry		spheregeom0.4000000000002.000000000000
+			position		1.676237239584 -0.358423998687 -0.231790358622
+			material		satin0.4000000000002.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.800000000000-2.000000000000
+			color			0.192685439911 0.427132039325 0.469569142147
+		}
+
+		polished_material
+		{
+			name			satin0.800000000000-2.000000000000
+			reflectance		pnt_satin0.800000000000-2.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.800000000000-2.000000000000
+			radius			0.724923704898
+		}
+
+		standard_object
+		{
+			name			sphere0.800000000000-2.000000000000
+			geometry		spheregeom0.800000000000-2.000000000000
+			position		-1.944979911565 0.810233717945 -0.242080021125
+			material		satin0.800000000000-2.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.800000000000-1.600000000000
+			color			0.220098300563 0.445392616367 0.468512499108
+		}
+
+		polished_material
+		{
+			name			satin0.800000000000-1.600000000000
+			reflectance		pnt_satin0.800000000000-1.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.800000000000-1.600000000000
+			radius			0.826560375406
+		}
+
+		standard_object
+		{
+			name			sphere0.800000000000-1.600000000000
+			geometry		spheregeom0.800000000000-1.600000000000
+			position		-1.576979911565 0.750246788815 -0.235119498274
+			material		satin0.800000000000-1.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.800000000000-1.200000000000
+			color			0.246930609057 0.462724309958 0.475082531587
+		}
+
+		polished_material
+		{
+			name			satin0.800000000000-1.200000000000
+			reflectance		pnt_satin0.800000000000-1.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.800000000000-1.200000000000
+			radius			0.951077634434
+		}
+
+		standard_object
+		{
+			name			sphere0.800000000000-1.200000000000
+			geometry		spheregeom0.800000000000-1.200000000000
+			position		-1.208979911565 0.678587873776 -0.219056777416
+			material		satin0.800000000000-1.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.800000000000-0.800000000000
+			color			0.272644660941 0.478266792972 0.488436919682
+		}
+
+		polished_material
+		{
+			name			satin0.800000000000-0.800000000000
+			reflectance		pnt_satin0.800000000000-0.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.800000000000-0.800000000000
+			radius			1.079669968225
+		}
+
+		standard_object
+		{
+			name			sphere0.800000000000-0.800000000000
+			geometry		spheregeom0.800000000000-0.800000000000
+			position		-0.840979911565 0.596948338544 -0.198258534731
+			material		satin0.800000000000-0.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.800000000000-0.400000000000
+			color			0.296049150281 0.490113975917 0.506863546003
+		}
+
+		polished_material
+		{
+			name			satin0.800000000000-0.400000000000
+			reflectance		pnt_satin0.800000000000-0.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.800000000000-0.400000000000
+			radius			1.142317930905
+		}
+
+		standard_object
+		{
+			name			sphere0.800000000000-0.400000000000
+			geometry		spheregeom0.800000000000-0.400000000000
+			position		-0.472979911565 0.508032872854 -0.177460292047
+			material		satin0.800000000000-0.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.800000000000-0.000000000000
+			color			0.315000000000 0.494835335467 0.528000000000
+		}
+
+		polished_material
+		{
+			name			satin0.800000000000-0.000000000000
+			reflectance		pnt_satin0.800000000000-0.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.800000000000-0.000000000000
+			radius			1.106077601994
+		}
+
+		standard_object
+		{
+			name			sphere0.800000000000-0.000000000000
+			geometry		spheregeom0.800000000000-0.000000000000
+			position		-0.104979911565 0.415284885580 -0.161397571189
+			material		satin0.800000000000-0.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.8000000000000.400000000000
+			color			0.328049150281 0.490113975917 0.549136453997
+		}
+
+		polished_material
+		{
+			name			satin0.8000000000000.400000000000
+			reflectance		pnt_satin0.8000000000000.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.8000000000000.400000000000
+			radius			1.032166783483
+		}
+
+		standard_object
+		{
+			name			sphere0.8000000000000.400000000000
+			geometry		spheregeom0.8000000000000.400000000000
+			position		0.263020088435 0.322536898306 -0.154437048338
+			material		satin0.8000000000000.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.8000000000000.800000000000
+			color			0.336644660941 0.478266792972 0.567563080318
+		}
+
+		polished_material
+		{
+			name			satin0.8000000000000.800000000000
+			reflectance		pnt_satin0.8000000000000.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.8000000000000.800000000000
+			radius			0.947802974274
+		}
+
+		standard_object
+		{
+			name			sphere0.8000000000000.800000000000
+			geometry		spheregeom0.8000000000000.800000000000
+			position		0.631020088435 0.233621432617 -0.160236437453
+			material		satin0.8000000000000.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.8000000000001.200000000000
+			color			0.342930609057 0.462724309958 0.580917468413
+		}
+
+		polished_material
+		{
+			name			satin0.8000000000001.200000000000
+			reflectance		pnt_satin0.8000000000001.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.8000000000001.200000000000
+			radius			0.861119637341
+		}
+
+		standard_object
+		{
+			name			sphere0.8000000000001.200000000000
+			geometry		spheregeom0.8000000000001.200000000000
+			position		0.999020088435 0.151981897384 -0.181459594134
+			material		satin0.8000000000001.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.8000000000001.600000000000
+			color			0.348098300563 0.445392616367 0.587487500892
+		}
+
+		polished_material
+		{
+			name			satin0.8000000000001.600000000000
+			reflectance		pnt_satin0.8000000000001.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.8000000000001.600000000000
+			radius			0.776653290629
+		}
+
+		standard_object
+		{
+			name			sphere0.8000000000001.600000000000
+			geometry		spheregeom0.8000000000001.600000000000
+			position		1.367020088435 0.080322982345 -0.219569030248
+			material		satin0.8000000000001.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin0.8000000000002.000000000000
+			color			0.352685439911 0.427132039325 0.586430857853
+		}
+
+		polished_material
+		{
+			name			satin0.8000000000002.000000000000
+			reflectance		pnt_satin0.8000000000002.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom0.8000000000002.000000000000
+			radius			0.698020206162
+		}
+
+		standard_object
+		{
+			name			sphere0.8000000000002.000000000000
+			geometry		spheregeom0.8000000000002.000000000000
+			position		1.735020088435 0.020336053215 -0.274712000158
+			material		satin0.8000000000002.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.200000000000-2.000000000000
+			color			0.187113101314 0.401498849827 0.453569142147
+		}
+
+		polished_material
+		{
+			name			satin1.200000000000-2.000000000000
+			reflectance		pnt_satin1.200000000000-2.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.200000000000-2.000000000000
+			radius			0.676320270739
+		}
+
+		standard_object
+		{
+			name			sphere1.200000000000-2.000000000000
+			geometry		spheregeom1.200000000000-2.000000000000
+			position		-1.941191359560 1.201131287200 -0.230493089224
+			material		satin1.200000000000-2.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.200000000000-1.600000000000
+			color			0.213500000000 0.418117887724 0.452512499108
+		}
+
+		polished_material
+		{
+			name			satin1.200000000000-1.600000000000
+			reflectance		pnt_satin1.200000000000-1.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.200000000000-1.600000000000
+			radius			0.756596151235
+		}
+
+		standard_object
+		{
+			name			sphere1.200000000000-1.600000000000
+			geometry		spheregeom1.200000000000-1.600000000000
+			position		-1.573191359560 1.141144358069 -0.214430368366
+			material		satin1.200000000000-1.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.200000000000-1.200000000000
+			color			0.238966991411 0.433265073981 0.459082531587
+		}
+
+		polished_material
+		{
+			name			satin1.200000000000-1.200000000000
+			reflectance		pnt_satin1.200000000000-1.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.200000000000-1.200000000000
+			radius			0.850510419482
+		}
+
+		standard_object
+		{
+			name			sphere1.200000000000-1.200000000000
+			geometry		spheregeom1.200000000000-1.200000000000
+			position		-1.205191359560 1.069485443031 -0.193632125682
+			material		satin1.200000000000-1.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.200000000000-0.800000000000
+			color			0.262930609057 0.446006862215 0.472436919682
+		}
+
+		polished_material
+		{
+			name			satin1.200000000000-0.800000000000
+			reflectance		pnt_satin1.200000000000-0.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.200000000000-0.800000000000
+			radius			0.939693761182
+		}
+
+		standard_object
+		{
+			name			sphere1.200000000000-0.800000000000
+			geometry		spheregeom1.200000000000-0.800000000000
+			position		-0.837191359560 0.987845907798 -0.172833882997
+			material		satin1.200000000000-0.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.200000000000-0.400000000000
+			color			0.284471529248 0.454872334520 0.490863546003
+		}
+
+		polished_material
+		{
+			name			satin1.200000000000-0.400000000000
+			reflectance		pnt_satin1.200000000000-0.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.200000000000-0.400000000000
+			radius			0.993076602854
+		}
+
+		standard_object
+		{
+			name			sphere1.200000000000-0.400000000000
+			geometry		spheregeom1.200000000000-0.400000000000
+			position		-0.469191359560 0.898930442109 -0.156771162139
+			material		satin1.200000000000-0.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.200000000000-0.000000000000
+			color			0.302500000000 0.458117887724 0.512000000000
+		}
+
+		polished_material
+		{
+			name			satin1.200000000000-0.000000000000
+			reflectance		pnt_satin1.200000000000-0.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.200000000000-0.000000000000
+			radius			0.994775805482
+		}
+
+		standard_object
+		{
+			name			sphere1.200000000000-0.000000000000
+			geometry		spheregeom1.200000000000-0.000000000000
+			position		-0.101191359560 0.806182454835 -0.149810639288
+			material		satin1.200000000000-0.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.2000000000000.400000000000
+			color			0.316471529248 0.454872334520 0.533136453997
+		}
+
+		polished_material
+		{
+			name			satin1.2000000000000.400000000000
+			reflectance		pnt_satin1.2000000000000.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.2000000000000.400000000000
+			radius			0.958531259475
+		}
+
+		standard_object
+		{
+			name			sphere1.2000000000000.400000000000
+			geometry		spheregeom1.2000000000000.400000000000
+			position		0.266808640440 0.713434467561 -0.155610028403
+			material		satin1.2000000000000.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.2000000000000.800000000000
+			color			0.326930609057 0.446006862215 0.551563080318
+		}
+
+		polished_material
+		{
+			name			satin1.2000000000000.800000000000
+			reflectance		pnt_satin1.2000000000000.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.2000000000000.800000000000
+			radius			0.901808010178
+		}
+
+		standard_object
+		{
+			name			sphere1.2000000000000.800000000000
+			geometry		spheregeom1.2000000000000.800000000000
+			position		0.634808640440 0.624519001871 -0.176833185084
+			material		satin1.2000000000000.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.2000000000001.200000000000
+			color			0.334966991411 0.433265073981 0.564917468413
+		}
+
+		polished_material
+		{
+			name			satin1.2000000000001.200000000000
+			reflectance		pnt_satin1.2000000000001.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.2000000000001.200000000000
+			radius			0.835383898808
+		}
+
+		standard_object
+		{
+			name			sphere1.2000000000001.200000000000
+			geometry		spheregeom1.2000000000001.200000000000
+			position		1.002808640440 0.542879466639 -0.214942621198
+			material		satin1.2000000000001.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.2000000000001.600000000000
+			color			0.341500000000 0.418117887724 0.571487500892
+		}
+
+		polished_material
+		{
+			name			satin1.2000000000001.600000000000
+			reflectance		pnt_satin1.2000000000001.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.2000000000001.600000000000
+			radius			0.766018804970
+		}
+
+		standard_object
+		{
+			name			sphere1.2000000000001.600000000000
+			geometry		spheregeom1.2000000000001.600000000000
+			position		1.370808640440 0.471220551600 -0.270085591108
+			material		satin1.2000000000001.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.2000000000002.000000000000
+			color			0.347113101314 0.401498849827 0.570430857853
+		}
+
+		polished_material
+		{
+			name			satin1.2000000000002.000000000000
+			reflectance		pnt_satin1.2000000000002.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.2000000000002.000000000000
+			radius			0.698539749546
+		}
+
+		standard_object
+		{
+			name			sphere1.2000000000002.000000000000
+			geometry		spheregeom1.2000000000002.000000000000
+			position		1.738808640440 0.411233622470 -0.341082622163
+			material		satin1.2000000000002.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.600000000000-2.000000000000
+			color			0.179960947032 0.370477539136 0.437569142147
+		}
+
+		polished_material
+		{
+			name			satin1.600000000000-2.000000000000
+			reflectance		pnt_satin1.600000000000-2.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.600000000000-2.000000000000
+			radius			0.630433088701
+		}
+
+		standard_object
+		{
+			name			sphere1.600000000000-2.000000000000
+			geometry		spheregeom1.600000000000-2.000000000000
+			position		-1.998136814983 1.596756516254 -0.205041865617
+			material		satin1.600000000000-2.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.600000000000-1.600000000000
+			color			0.205289321881 0.385402938895 0.436512499108
+		}
+
+		polished_material
+		{
+			name			satin1.600000000000-1.600000000000
+			reflectance		pnt_satin1.600000000000-1.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.600000000000-1.600000000000
+			radius			0.688900298034
+		}
+
+		standard_object
+		{
+			name			sphere1.600000000000-1.600000000000
+			geometry		spheregeom1.600000000000-1.600000000000
+			position		-1.630136814983 1.536769587124 -0.184243622932
+			material		satin1.600000000000-1.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.600000000000-1.200000000000
+			color			0.229500000000 0.398540023885 0.443082531587
+		}
+
+		polished_material
+		{
+			name			satin1.600000000000-1.200000000000
+			reflectance		pnt_satin1.600000000000-1.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.600000000000-1.200000000000
+			radius			0.756690847314
+		}
+
+		standard_object
+		{
+			name			sphere1.600000000000-1.200000000000
+			geometry		spheregeom1.600000000000-1.200000000000
+			position		-1.262136814983 1.465110672085 -0.163445380248
+			material		satin1.600000000000-1.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.600000000000-0.800000000000
+			color			0.252098300562 0.409097304785 0.456436919682
+		}
+
+		polished_material
+		{
+			name			satin1.600000000000-0.800000000000
+			reflectance		pnt_satin1.600000000000-0.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.600000000000-0.800000000000
+			radius			0.821412710883
+		}
+
+		standard_object
+		{
+			name			sphere1.600000000000-0.800000000000
+			geometry		spheregeom1.600000000000-0.800000000000
+			position		-0.894136814983 1.383471136853 -0.147382659390
+			material		satin1.600000000000-0.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.600000000000-0.400000000000
+			color			0.272461179680 0.416077911373 0.474863546003
+		}
+
+		polished_material
+		{
+			name			satin1.600000000000-0.400000000000
+			reflectance		pnt_satin1.600000000000-0.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.600000000000-0.400000000000
+			radius			0.866839034569
+		}
+
+		standard_object
+		{
+			name			sphere1.600000000000-0.400000000000
+			geometry		spheregeom1.600000000000-0.400000000000
+			position		-0.526136814983 1.294555671163 -0.140422136539
+			material		satin1.600000000000-0.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.600000000000-0.000000000000
+			color			0.290000000000 0.418540023885 0.496000000000
+		}
+
+		polished_material
+		{
+			name			satin1.600000000000-0.000000000000
+			reflectance		pnt_satin1.600000000000-0.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.600000000000-0.000000000000
+			radius			0.882674297864
+		}
+
+		standard_object
+		{
+			name			sphere1.600000000000-0.000000000000
+			geometry		spheregeom1.600000000000-0.000000000000
+			position		-0.158136814983 1.201807683889 -0.146221525654
+			material		satin1.600000000000-0.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.6000000000000.400000000000
+			color			0.304461179680 0.416077911373 0.517136453997
+		}
+
+		polished_material
+		{
+			name			satin1.6000000000000.400000000000
+			reflectance		pnt_satin1.6000000000000.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.6000000000000.400000000000
+			radius			0.870173586648
+		}
+
+		standard_object
+		{
+			name			sphere1.6000000000000.400000000000
+			geometry		spheregeom1.6000000000000.400000000000
+			position		0.209863185017 1.109059696615 -0.167444682335
+			material		satin1.6000000000000.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.6000000000000.800000000000
+			color			0.316098300562 0.409097304785 0.535563080318
+		}
+
+		polished_material
+		{
+			name			satin1.6000000000000.800000000000
+			reflectance		pnt_satin1.6000000000000.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.6000000000000.800000000000
+			radius			0.836859209713
+		}
+
+		standard_object
+		{
+			name			sphere1.6000000000000.800000000000
+			geometry		spheregeom1.6000000000000.800000000000
+			position		0.577863185017 1.020144230926 -0.205554118449
+			material		satin1.6000000000000.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.6000000000001.200000000000
+			color			0.325500000000 0.398540023885 0.548917468413
+		}
+
+		polished_material
+		{
+			name			satin1.6000000000001.200000000000
+			reflectance		pnt_satin1.6000000000001.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.6000000000001.200000000000
+			radius			0.790621238321
+		}
+
+		standard_object
+		{
+			name			sphere1.6000000000001.200000000000
+			geometry		spheregeom1.6000000000001.200000000000
+			position		0.945863185017 0.938504695693 -0.260697088359
+			material		satin1.6000000000001.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.6000000000001.600000000000
+			color			0.333289321881 0.385402938895 0.555487500892
+		}
+
+		polished_material
+		{
+			name			satin1.6000000000001.600000000000
+			reflectance		pnt_satin1.6000000000001.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.6000000000001.600000000000
+			radius			0.737980005460
+		}
+
+		standard_object
+		{
+			name			sphere1.6000000000001.600000000000
+			geometry		spheregeom1.6000000000001.600000000000
+			position		1.313863185017 0.866845780655 -0.331694119414
+			material		satin1.6000000000001.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin1.6000000000002.000000000000
+			color			0.339960947032 0.370477539136 0.554430857853
+		}
+
+		polished_material
+		{
+			name			satin1.6000000000002.000000000000
+			reflectance		pnt_satin1.6000000000002.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom1.6000000000002.000000000000
+			radius			0.684038858067
+		}
+
+		standard_object
+		{
+			name			sphere1.6000000000002.000000000000
+			geometry		spheregeom1.6000000000002.000000000000
+			position		1.681863185017 0.806858851524 -0.416130880037
+			material		satin1.6000000000002.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin2.000000000000-2.000000000000
+			color			0.171611652352 0.337771301935 0.421569142147
+		}
+
+		polished_material
+		{
+			name			satin2.000000000000-2.000000000000
+			reflectance		pnt_satin2.000000000000-2.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom2.000000000000-2.000000000000
+			radius			0.592995991321
+		}
+
+		standard_object
+		{
+			name			sphere2.000000000000-2.000000000000
+			geometry		spheregeom2.000000000000-2.000000000000
+			position		-2.103002369969 1.988798944091 -0.159399549796
+			material		satin2.000000000000-2.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin2.000000000000-1.600000000000
+			color			0.195960947032 0.351130173424 0.420512499108
+		}
+
+		polished_material
+		{
+			name			satin2.000000000000-1.600000000000
+			reflectance		pnt_satin2.000000000000-1.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom2.000000000000-1.600000000000
+			radius			0.632610672188
+		}
+
+		standard_object
+		{
+			name			sphere2.000000000000-1.600000000000
+			geometry		spheregeom2.000000000000-1.600000000000
+			position		-1.735002369969 1.928812014960 -0.138601307112
+			material		satin2.000000000000-1.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin2.000000000000-1.200000000000
+			color			0.219113101314 0.362573620276 0.427082531587
+		}
+
+		polished_material
+		{
+			name			satin2.000000000000-1.200000000000
+			reflectance		pnt_satin2.000000000000-1.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom2.000000000000-1.200000000000
+			radius			0.679797272573
+		}
+
+		standard_object
+		{
+			name			sphere2.000000000000-1.200000000000
+			geometry		spheregeom2.000000000000-1.200000000000
+			position		-1.367002369969 1.857153099922 -0.122538586253
+			material		satin2.000000000000-1.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin2.000000000000-0.800000000000
+			color			0.240685439911 0.371489362030 0.440436919682
+		}
+
+		polished_material
+		{
+			name			satin2.000000000000-0.800000000000
+			reflectance		pnt_satin2.000000000000-0.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom2.000000000000-0.800000000000
+			radius			0.726602827144
+		}
+
+		standard_object
+		{
+			name			sphere2.000000000000-0.800000000000
+			geometry		spheregeom2.000000000000-0.800000000000
+			position		-0.999002369969 1.775513564689 -0.115578063402
+			material		satin2.000000000000-0.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin2.000000000000-0.400000000000
+			color			0.260262256080 0.377212267901 0.458863546003
+		}
+
+		polished_material
+		{
+			name			satin2.000000000000-0.400000000000
+			reflectance		pnt_satin2.000000000000-0.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom2.000000000000-0.400000000000
+			radius			0.763259757469
+		}
+
+		standard_object
+		{
+			name			sphere2.000000000000-0.400000000000
+			geometry		spheregeom2.000000000000-0.400000000000
+			position		-0.631002369969 1.686598098999 -0.121377452517
+			material		satin2.000000000000-0.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin2.000000000000-0.000000000000
+			color			0.277500000000 0.379192658173 0.480000000000
+		}
+
+		polished_material
+		{
+			name			satin2.000000000000-0.000000000000
+			reflectance		pnt_satin2.000000000000-0.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom2.000000000000-0.000000000000
+			radius			0.782395634645
+		}
+
+		standard_object
+		{
+			name			sphere2.000000000000-0.000000000000
+			geometry		spheregeom2.000000000000-0.000000000000
+			position		-0.263002369969 1.593850111726 -0.142600609199
+			material		satin2.000000000000-0.000000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin2.0000000000000.400000000000
+			color			0.292262256080 0.377212267901 0.501136453997
+		}
+
+		polished_material
+		{
+			name			satin2.0000000000000.400000000000
+			reflectance		pnt_satin2.0000000000000.400000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom2.0000000000000.400000000000
+			radius			0.781932061500
+		}
+
+		standard_object
+		{
+			name			sphere2.0000000000000.400000000000
+			geometry		spheregeom2.0000000000000.400000000000
+			position		0.104997630031 1.501102124452 -0.180710045312
+			material		satin2.0000000000000.400000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin2.0000000000000.800000000000
+			color			0.304685439911 0.371489362030 0.519563080318
+		}
+
+		polished_material
+		{
+			name			satin2.0000000000000.800000000000
+			reflectance		pnt_satin2.0000000000000.800000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom2.0000000000000.800000000000
+			radius			0.764355794406
+		}
+
+		standard_object
+		{
+			name			sphere2.0000000000000.800000000000
+			geometry		spheregeom2.0000000000000.800000000000
+			position		0.472997630031 1.412186658762 -0.235853015223
+			material		satin2.0000000000000.800000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin2.0000000000001.200000000000
+			color			0.315113101314 0.362573620276 0.532917468413
+		}
+
+		polished_material
+		{
+			name			satin2.0000000000001.200000000000
+			reflectance		pnt_satin2.0000000000001.200000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom2.0000000000001.200000000000
+			radius			0.734320670871
+		}
+
+		standard_object
+		{
+			name			sphere2.0000000000001.200000000000
+			geometry		spheregeom2.0000000000001.200000000000
+			position		0.840997630031 1.330547123529 -0.306850046277
+			material		satin2.0000000000001.200000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin2.0000000000001.600000000000
+			color			0.323960947032 0.351130173424 0.539487500892
+		}
+
+		polished_material
+		{
+			name			satin2.0000000000001.600000000000
+			reflectance		pnt_satin2.0000000000001.600000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom2.0000000000001.600000000000
+			radius			0.696855599494
+		}
+
+		standard_object
+		{
+			name			sphere2.0000000000001.600000000000
+			geometry		spheregeom2.0000000000001.600000000000
+			position		1.208997630031 1.258888208491 -0.391286806901
+			material		satin2.0000000000001.600000000000
+			shader			satin_shader
+		}
+
+
+
+
+		uniformcolor_painter
+		{
+			name			pnt_satin2.0000000000002.000000000000
+			color			0.331611652352 0.337771301935 0.538430857853
+		}
+
+		polished_material
+		{
+			name			satin2.0000000000002.000000000000
+			reflectance		pnt_satin2.0000000000002.000000000000
+			tau			0.96 0.97 0.94
+			ior				1.5
+			scattering		560.0
+		}
+
+		sphere_geometry
+		{
+			name			spheregeom2.0000000000002.000000000000
+			radius			0.656448546088
+		}
+
+		standard_object
+		{
+			name			sphere2.0000000000002.000000000000
+			geometry		spheregeom2.0000000000002.000000000000
+			position		1.576997630031 1.198901279361 -0.485702156762
+			material		satin2.0000000000002.000000000000
+			shader			satin_shader
+		}
+
+
 
 ##################################################
 # Lights
@@ -379,3 +4418,5 @@ omni_light
 	color				0.88 0.72 1.0
 	position			-4.4 4.8 -0.8
 }
+
+

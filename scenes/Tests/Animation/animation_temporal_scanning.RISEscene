@@ -37,13 +37,12 @@ file_rasterizeroutput
 }
 */
 
-DEFINE FRAMES 	30
 
 animation_options
 {
 	time_start			0
 	time_end			1
-	num_frames			@FRAMES
+	num_frames			30.000000000000
 	do_fields			TRUE
 }
 
@@ -52,30 +51,21 @@ animation_options
 ##################################################
 
 # Shutter time is amount of time per frame the entire shutter isopen
-DEFINE SHUTTER_TIME			0.8
 
 # Frame exposure gives the total amount of time a frame is exposed
-DEFINE FRAME_EXPOSURE		$((1.0/@FRAMES)*@SHUTTER_TIME)
 
 # Total number of scanlines
-DEFINE TOTAL_SCANLINES		200
 
 # Each scanline is scanned individually and all pixels in a scanline
 # are recorded instantaneously
-DEFINE SCANLINE_RATE		$(@FRAME_EXPOSURE/@TOTAL_SCANLINES)
-DEFINE EXPOSURE				$(@SCANLINE_RATE)
 
-UNDEF EXPOSURE
-UNDEF SCANLINE_RATE
 
 # This is just arbritary non-physically based settings, but they look cool
-DEFINE EXPOSURE 			0.05
-DEFINE SCANLINE_RATE 		0.001
 
 film
 {
 	width			600
-	height			@TOTAL_SCANLINES
+	height			200.000000000000
 }
 
 pinhole_camera
@@ -84,15 +74,159 @@ pinhole_camera
 	lookat				0 0 0
 	up					0 1 0
 	fov					20.0
-	exposure			@EXPOSURE
-	scanning_rate		@SCANLINE_RATE
+	exposure			0.050000000000
+	scanning_rate		0.001000000000
 }
 
 ##################################################
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_gold
+	color		0.8 0.498039 0.196078 
+}
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ##################################################
 # Materials
@@ -170,4 +304,6 @@ timeline
 	time		1.0
 	value		0.2 0 0.0
 }
+
+
 

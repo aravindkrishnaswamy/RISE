@@ -243,6 +243,7 @@ inline std::string DumpJob( Job& job )
 		const IRadianceMap* grm = scp ? scp->GetGlobalRadianceMap() : 0;
 		o << "  global_rmap="; if( grm ) DumpRadianceMap( o, grm, job ); else o << "(none)"; o << "\n";
 		o << "  active_camera=" << job.GetActiveCameraName() << "\n";   // last-add-wins; catches a camera-ORDER divergence the sorted cameras: section cannot
+		{ char rrb[64]; std::snprintf( rrb, sizeof(rrb), "  light_rr_threshold=%.17g\n", job.GetLightSampleRRThreshold() ); o << rrb; }   // render-affecting light-sample RR (v7 light_rr_threshold chunk)
 	}
 	// --- lights + media (Phase B / 0b: close the F1 verification gap for the CHEAPLY-READABLE blind values).
 	// Lights have no manager names, so dump a value-tuple per light and SORT for a stable canonical order; a

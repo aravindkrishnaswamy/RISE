@@ -104,7 +104,10 @@ painter_heterogeneous_medium
 	bbox_max		476 400 500
 }
 
-> set global_medium turbulence_fog
+global_medium
+{
+medium turbulence_fog
+}
 
 ##################################################
 # Painters
@@ -346,3 +349,4 @@ standard_object
 	material			blue
 	position			416 60 420
 }
+

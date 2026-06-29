@@ -134,7 +134,10 @@ painter_heterogeneous_medium
 	bbox_max		300 300 300
 }
 
-> set global_medium bounded_fog
+global_medium
+{
+medium bounded_fog
+}
 
 ##################################################
 # Materials
@@ -163,3 +166,4 @@ standard_object
 	position			0 0 0
 	material			spherewhite
 }
+

@@ -59,7 +59,166 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_yellow
+	color		1.0 1.0 0.0
+}
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name		color_aquamarine
+	color		0.439216 0.858824 0.576471
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_gold
+	color		0.8 0.498039 0.196078 
+}
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_lightsteelblue
+	color		0.560784 0.560784 0.737255 
+}
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_orange
+	color		1.0 0.5 0.0 
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 png_painter
 {
@@ -211,54 +370,236 @@ displaced_geometry
 # Objects — lay out in a grid matching shapes.RISEscene
 ##################################################
 
-FOR I 0 4 1
 
 	standard_object
 	{
-		name			dbox!I
+		name			dbox0000
 		geometry		disp_box
-		position		$(@I*2-4) 4 0
-		orientation		$(@I*35) $(@I*60) 0
+		position		-4.00000000000000000 4 0
+		orientation		0.00000000000000000 0.00000000000000000 0
 		material		aquamarine
 	}
 
 	standard_object
 	{
-		name			dtorus!I
+		name			dtorus0000
 		geometry		disp_torus
-		position		$(@I*2-4) 2 0
-		orientation		$(@I*25) 0 $(@I*60)
+		position		-4.00000000000000000 2 0
+		orientation		0.00000000000000000 0 0.00000000000000000
 		material		gold
 	}
 
 	standard_object
 	{
-		name			dellipsoid!I
+		name			dellipsoid0000
 		geometry		disp_ellipsoid
-		position		$(@I*2-4) 0 0
-		orientation		$(@I*60) 0 $(@I*35)
+		position		-4.00000000000000000 0 0
+		orientation		0.00000000000000000 0 0.00000000000000000
 		material		orange
 	}
 
 	standard_object
 	{
-		name			dcylinder!I
+		name			dcylinder0000
 		geometry		disp_cylinder
-		position		$(@I*2-4) -2 0
-		orientation		$(@I*20) $(@I*60) 0
+		position		-4.00000000000000000 -2 0
+		orientation		0.00000000000000000 0.00000000000000000 0
 		material		lightsteelblue
 	}
 
 	standard_object
 	{
-		name			dcp!I
+		name			dcp0000
 		geometry		disp_cp
-		position		$(@I*2-4) -4 0
-		orientation		0 $(@I*15) $(@I*25)
+		position		-4.00000000000000000 -4 0
+		orientation		0 0.00000000000000000 0.00000000000000000
 		material		yellow
 	}
 
-ENDFOR
+
+	standard_object
+	{
+		name			dbox0001
+		geometry		disp_box
+		position		-2.00000000000000000 4 0
+		orientation		35.00000000000000000 60.00000000000000000 0
+		material		aquamarine
+	}
+
+	standard_object
+	{
+		name			dtorus0001
+		geometry		disp_torus
+		position		-2.00000000000000000 2 0
+		orientation		25.00000000000000000 0 60.00000000000000000
+		material		gold
+	}
+
+	standard_object
+	{
+		name			dellipsoid0001
+		geometry		disp_ellipsoid
+		position		-2.00000000000000000 0 0
+		orientation		60.00000000000000000 0 35.00000000000000000
+		material		orange
+	}
+
+	standard_object
+	{
+		name			dcylinder0001
+		geometry		disp_cylinder
+		position		-2.00000000000000000 -2 0
+		orientation		20.00000000000000000 60.00000000000000000 0
+		material		lightsteelblue
+	}
+
+	standard_object
+	{
+		name			dcp0001
+		geometry		disp_cp
+		position		-2.00000000000000000 -4 0
+		orientation		0 15.00000000000000000 25.00000000000000000
+		material		yellow
+	}
+
+
+	standard_object
+	{
+		name			dbox0002
+		geometry		disp_box
+		position		0.00000000000000000 4 0
+		orientation		70.00000000000000000 120.00000000000000000 0
+		material		aquamarine
+	}
+
+	standard_object
+	{
+		name			dtorus0002
+		geometry		disp_torus
+		position		0.00000000000000000 2 0
+		orientation		50.00000000000000000 0 120.00000000000000000
+		material		gold
+	}
+
+	standard_object
+	{
+		name			dellipsoid0002
+		geometry		disp_ellipsoid
+		position		0.00000000000000000 0 0
+		orientation		120.00000000000000000 0 70.00000000000000000
+		material		orange
+	}
+
+	standard_object
+	{
+		name			dcylinder0002
+		geometry		disp_cylinder
+		position		0.00000000000000000 -2 0
+		orientation		40.00000000000000000 120.00000000000000000 0
+		material		lightsteelblue
+	}
+
+	standard_object
+	{
+		name			dcp0002
+		geometry		disp_cp
+		position		0.00000000000000000 -4 0
+		orientation		0 30.00000000000000000 50.00000000000000000
+		material		yellow
+	}
+
+
+	standard_object
+	{
+		name			dbox0003
+		geometry		disp_box
+		position		2.00000000000000000 4 0
+		orientation		105.00000000000000000 180.00000000000000000 0
+		material		aquamarine
+	}
+
+	standard_object
+	{
+		name			dtorus0003
+		geometry		disp_torus
+		position		2.00000000000000000 2 0
+		orientation		75.00000000000000000 0 180.00000000000000000
+		material		gold
+	}
+
+	standard_object
+	{
+		name			dellipsoid0003
+		geometry		disp_ellipsoid
+		position		2.00000000000000000 0 0
+		orientation		180.00000000000000000 0 105.00000000000000000
+		material		orange
+	}
+
+	standard_object
+	{
+		name			dcylinder0003
+		geometry		disp_cylinder
+		position		2.00000000000000000 -2 0
+		orientation		60.00000000000000000 180.00000000000000000 0
+		material		lightsteelblue
+	}
+
+	standard_object
+	{
+		name			dcp0003
+		geometry		disp_cp
+		position		2.00000000000000000 -4 0
+		orientation		0 45.00000000000000000 75.00000000000000000
+		material		yellow
+	}
+
+
+	standard_object
+	{
+		name			dbox0004
+		geometry		disp_box
+		position		4.00000000000000000 4 0
+		orientation		140.00000000000000000 240.00000000000000000 0
+		material		aquamarine
+	}
+
+	standard_object
+	{
+		name			dtorus0004
+		geometry		disp_torus
+		position		4.00000000000000000 2 0
+		orientation		100.00000000000000000 0 240.00000000000000000
+		material		gold
+	}
+
+	standard_object
+	{
+		name			dellipsoid0004
+		geometry		disp_ellipsoid
+		position		4.00000000000000000 0 0
+		orientation		240.00000000000000000 0 140.00000000000000000
+		material		orange
+	}
+
+	standard_object
+	{
+		name			dcylinder0004
+		geometry		disp_cylinder
+		position		4.00000000000000000 -2 0
+		orientation		80.00000000000000000 240.00000000000000000 0
+		material		lightsteelblue
+	}
+
+	standard_object
+	{
+		name			dcp0004
+		geometry		disp_cp
+		position		4.00000000000000000 -4 0
+		orientation		0 60.00000000000000000 100.00000000000000000
+		material		yellow
+	}
+
 
 directional_light
 {
@@ -267,3 +608,5 @@ directional_light
 	color		1.0 1.0 1.0
 	direction	0 0 1
 }
+
+

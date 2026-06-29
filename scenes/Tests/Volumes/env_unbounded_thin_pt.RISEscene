@@ -117,7 +117,10 @@ homogeneous_medium
 	phase		isotropic
 }
 
-> set global_medium thin_vacuum_fog
+global_medium
+{
+medium thin_vacuum_fog
+}
 
 ##################################################
 # Self-emissive sphere (non-black anchor)
@@ -144,3 +147,4 @@ standard_object
 	position			0 0 0
 	material			emit_mat
 }
+

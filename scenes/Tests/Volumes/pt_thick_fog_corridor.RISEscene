@@ -104,7 +104,10 @@ homogeneous_medium
 	phase		isotropic
 }
 
-> set global_medium fog
+global_medium
+{
+medium fog
+}
 
 ##################################################
 # Point Light ~60% down the corridor (z = 1200)
@@ -242,3 +245,4 @@ standard_object
 	geometry			farwallgeom
 	material			walls
 }
+

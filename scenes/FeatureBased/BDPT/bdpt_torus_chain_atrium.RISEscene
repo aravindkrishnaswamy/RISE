@@ -139,7 +139,141 @@ pinhole_camera
 ##################################################
 # Painters
 ##################################################
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # Atrium surfaces
 uniformcolor_painter
@@ -371,25 +505,91 @@ standard_object
 # Procedural columns -- 5 per side
 ##################################################
 
-FOR C 0 4 1
 
 	standard_object
 	{
-		name			col_left_!C
+		name			col_left_0000
 		geometry		columngeom
-		position		-8.5 4.0 $(@C*3.5-0.5)
+		position		-8.5 4.0 -0.50000000000000000
 		material		column_mat
 	}
 
 	standard_object
 	{
-		name			col_right_!C
+		name			col_right_0000
 		geometry		columngeom
-		position		8.5 4.0 $(@C*3.5-0.5)
+		position		8.5 4.0 -0.50000000000000000
 		material		column_mat
 	}
 
-ENDFOR
+
+	standard_object
+	{
+		name			col_left_0001
+		geometry		columngeom
+		position		-8.5 4.0 3.00000000000000000
+		material		column_mat
+	}
+
+	standard_object
+	{
+		name			col_right_0001
+		geometry		columngeom
+		position		8.5 4.0 3.00000000000000000
+		material		column_mat
+	}
+
+
+	standard_object
+	{
+		name			col_left_0002
+		geometry		columngeom
+		position		-8.5 4.0 6.50000000000000000
+		material		column_mat
+	}
+
+	standard_object
+	{
+		name			col_right_0002
+		geometry		columngeom
+		position		8.5 4.0 6.50000000000000000
+		material		column_mat
+	}
+
+
+	standard_object
+	{
+		name			col_left_0003
+		geometry		columngeom
+		position		-8.5 4.0 10.00000000000000000
+		material		column_mat
+	}
+
+	standard_object
+	{
+		name			col_right_0003
+		geometry		columngeom
+		position		8.5 4.0 10.00000000000000000
+		material		column_mat
+	}
+
+
+	standard_object
+	{
+		name			col_left_0004
+		geometry		columngeom
+		position		-8.5 4.0 13.50000000000000000
+		material		column_mat
+	}
+
+	standard_object
+	{
+		name			col_right_0004
+		geometry		columngeom
+		position		8.5 4.0 13.50000000000000000
+		material		column_mat
+	}
+
 
 ##################################################
 # Ceiling Area Lights -- 4 panels
@@ -489,7 +689,6 @@ torus_geometry
 #   angle offset for odd = 4*pi/29 = 0.4333 rad = 24.83 deg
 #   y step per I = 2 * 3.9/29 = 0.2690
 
-FOR I 0 14 1
 
 	# ==== EVEN LINK (K = 2*I) ====
 	# Per-channel tau RGB inlined as a values triple (IScalarPainter
@@ -497,37 +696,598 @@ FOR I 0 14 1
 	# binding no longer works for scalar slots after Phase 4.
 	dielectric_material
 	{
-		name			glass_e!I
-		tau				$(0.15+0.849*cos(@I*4.1888)*cos(@I*4.1888)) $(0.15+0.849*cos(@I*4.1888+2.0944)*cos(@I*4.1888+2.0944)) $(0.15+0.849*cos(@I*4.1888+4.1888)*cos(@I*4.1888+4.1888))
-		ior				$(1.33+@I*0.06)
+		name			glass_e0000
+		tau				0.99900000000000000 0.36225360100285409 0.36224279805538595
+		ior				1.33000000000000007
 		scattering		100000.0
 	}
 
 	standard_object
 	{
-		name			link_e!I
+		name			link_e0000
 		geometry		chain_torus_geom
-		position		$(2.5*cos(@I*0.8666)) $(1.5+@I*0.2690) $(4.0+2.5*sin(@I*0.8666))
-		orientation		90 $(@I*49.66) 0
-		material		glass_e!I
+		position		2.50000000000000000 1.50000000000000000 4.00000000000000000
+		orientation		90 0.00000000000000000 0
+		material		glass_e0000
 	}
 
 	# ==== ODD LINK (K = 2*I + 1) ====
 	dielectric_material
 	{
-		name			glass_o!I
-		tau				$(0.15+0.849*cos(@I*4.1888+2.0944)*cos(@I*4.1888+2.0944)) $(0.15+0.849*cos(@I*4.1888+4.1888)*cos(@I*4.1888+4.1888)) $(0.15+0.849*cos(@I*4.1888+6.2832)*cos(@I*4.1888+6.2832))
-		ior				$(1.36+@I*0.06)
+		name			glass_o0000
+		tau				0.36225360100285409 0.36224279805538595 0.99899999981671883
+		ior				1.36000000000000010
 		scattering		100000.0
 	}
 
 	standard_object
 	{
-		name			link_o!I
+		name			link_o0000
 		geometry		chain_torus_geom
-		position		$(2.5*cos(@I*0.8666+0.4333)) $(1.6345+@I*0.2690) $(4.0+2.5*sin(@I*0.8666+0.4333))
-		orientation		0 $(@I*49.66+24.83) 0
-		material		glass_o!I
+		position		2.26896282302424890 1.63450000000000006 5.04967028524857753
+		orientation		0 24.82999999999999829 0
+		material		glass_o0000
 	}
 
-ENDFOR
+
+	# ==== EVEN LINK (K = 2*I) ====
+	# Per-channel tau RGB inlined as a values triple (IScalarPainter
+	# RGBScalarPainter form) — the previous named-uniformcolor_painter
+	# binding no longer works for scalar slots after Phase 4.
+	dielectric_material
+	{
+		name			glass_e0001
+		tau				0.36224279805538595 0.99899999981671883 0.36226440413360028
+		ior				1.39000000000000012
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_e0001
+		geometry		chain_torus_geom
+		position		1.61855383381293505 1.76900000000000013 5.90533028292982554
+		orientation		90 49.65999999999999659 0
+		material		glass_e0001
+	}
+
+	# ==== ODD LINK (K = 2*I + 1) ====
+	dielectric_material
+	{
+		name			glass_o0001
+		tau				0.99899999981671883 0.36226440413360028 0.36223199529120492
+		ior				1.42000000000000015
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_o0001
+		geometry		chain_torus_geom
+		position		0.66898795776368591 1.90350000000000019 6.40882857679146056
+		orientation		0 74.48999999999999488 0
+		material		glass_o0001
+	}
+
+
+	# ==== EVEN LINK (K = 2*I) ====
+	# Per-channel tau RGB inlined as a values triple (IScalarPainter
+	# RGBScalarPainter form) — the previous named-uniformcolor_painter
+	# binding no longer works for scalar slots after Phase 4.
+	dielectric_material
+	{
+		name			glass_e0002
+		tau				0.36226440413360028 0.36223199529120492 0.99899999926687499
+		ior				1.45000000000000018
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_e0002
+		geometry		chain_torus_geom
+		position		-0.40422678963955955 2.03800000000000026 6.46710370729276285
+		orientation		90 99.31999999999999318 0
+		material		glass_e0002
+	}
+
+	# ==== ODD LINK (K = 2*I + 1) ====
+	dielectric_material
+	{
+		name			glass_o0002
+		tau				0.36223199529120492 0.99899999926687499 0.36227520744761499
+		ior				1.47999999999999998
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_o0002
+		geometry		chain_torus_geom
+		position		-1.40272840397376930 2.17250000000000032 6.06938469712260176
+		orientation		0 124.14999999999999147 0
+		material		glass_o0002
+	}
+
+
+	# ==== EVEN LINK (K = 2*I) ====
+	# Per-channel tau RGB inlined as a values triple (IScalarPainter
+	# RGBScalarPainter form) — the previous named-uniformcolor_painter
+	# binding no longer works for scalar slots after Phase 4.
+	dielectric_material
+	{
+		name			glass_e0003
+		tau				0.99899999926687499 0.36227520744761499 0.36222119271032138
+		ior				1.51000000000000001
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_e0003
+		geometry		chain_torus_geom
+		position		-2.14196408989373843 2.30699999999999994 5.28918184815242043
+		orientation		90 148.97999999999998977 0
+		material		glass_e0003
+	}
+
+	# ==== ODD LINK (K = 2*I + 1) ====
+	dielectric_material
+	{
+		name			glass_o0003
+		tau				0.36227520744761499 0.36222119271032138 0.99899999835046882
+		ior				1.54000000000000004
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_o0003
+		geometry		chain_torus_geom
+		position		-2.48530110660372072 2.44150000000000000 4.27069985133782470
+		orientation		0 173.81000000000000227 0
+		material		glass_o0003
+	}
+
+
+	# ==== EVEN LINK (K = 2*I) ====
+	# Per-channel tau RGB inlined as a values triple (IScalarPainter
+	# RGBScalarPainter form) — the previous named-uniformcolor_painter
+	# binding no longer works for scalar slots after Phase 4.
+	dielectric_material
+	{
+		name			glass_e0004
+		tau				0.36222119271032138 0.99899999835046882 0.36228601094489060
+		ior				1.57000000000000006
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_e0004
+		geometry		chain_torus_geom
+		position		-2.36928056203015647 2.57600000000000007 3.20218447095455261
+		orientation		90 198.63999999999998636 0
+		material		glass_e0004
+	}
+
+	# ==== ODD LINK (K = 2*I + 1) ====
+	dielectric_material
+	{
+		name			glass_o0004
+		tau				0.99899999835046882 0.36228601094489060 0.36221039031274271
+		ior				1.60000000000000009
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_o0004
+		geometry		chain_torus_geom
+		position		-1.81534650344461701 2.71050000000000013 2.28112912863374095
+		orientation		0 223.46999999999997044 0
+		material		glass_o0004
+	}
+
+
+	# ==== EVEN LINK (K = 2*I) ====
+	# Per-channel tau RGB inlined as a values triple (IScalarPainter
+	# RGBScalarPainter form) — the previous named-uniformcolor_painter
+	# binding no longer works for scalar slots after Phase 4.
+	dielectric_material
+	{
+		name			glass_e0005
+		tau				0.36228601094489060 0.36221039031274271 0.99899999706750009
+		ior				1.63000000000000012
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_e0005
+		geometry		chain_torus_geom
+		position		-0.92588241974816188 2.84500000000000020 1.67777224527797708
+		orientation		90 248.29999999999998295 0
+		material		glass_e0005
+	}
+
+	# ==== ODD LINK (K = 2*I + 1) ====
+	dielectric_material
+	{
+		name			glass_o0005
+		tau				0.36221039031274271 0.99899999706750009 0.36229681462541630
+		ior				1.66000000000000014
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_o0005
+		geometry		chain_torus_geom
+		position		0.13471227232436750 2.97950000000000026 1.50363211771878325
+		orientation		0 273.12999999999999545 0
+		material		glass_o0005
+	}
+
+
+	# ==== EVEN LINK (K = 2*I) ====
+	# Per-channel tau RGB inlined as a values triple (IScalarPainter
+	# RGBScalarPainter form) — the previous named-uniformcolor_painter
+	# binding no longer works for scalar slots after Phase 4.
+	dielectric_material
+	{
+		name			glass_e0006
+		tau				0.99899999706750009 0.36229681462541369 0.36219958809848202
+		ior				1.68999999999999995
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_e0006
+		geometry		chain_torus_geom
+		position		1.17040812991544851 3.11399999999999988 1.79089502073173934
+		orientation		90 297.95999999999997954 0
+		material		glass_e0006
+	}
+
+	# ==== ODD LINK (K = 2*I + 1) ====
+	dielectric_material
+	{
+		name			glass_o0006
+		tau				0.36229681462541369 0.36219958809848202 0.99899999541796891
+		ior				1.72000000000000020
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_o0006
+		geometry		chain_torus_geom
+		position		1.98977775531042278 3.24849999999999994 2.48646622618726632
+		orientation		0 322.78999999999996362 0
+		material		glass_o0006
+	}
+
+
+	# ==== EVEN LINK (K = 2*I) ====
+	# Per-channel tau RGB inlined as a values triple (IScalarPainter
+	# RGBScalarPainter form) — the previous named-uniformcolor_painter
+	# binding no longer works for scalar slots after Phase 4.
+	dielectric_material
+	{
+		name			glass_e0007
+		tau				0.36219958809848202 0.99899999541796891 0.36230761848918019
+		ior				1.75000000000000000
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_e0007
+		geometry		chain_torus_geom
+		position		2.44137727238854341 3.38300000000000001 3.46178348793011281
+		orientation		90 347.62000000000000455 0
+		material		glass_e0007
+	}
+
+	# ==== ODD LINK (K = 2*I + 1) ====
+	dielectric_material
+	{
+		name			glass_o0007
+		tau				0.99899999541796891 0.36230761848918019 0.36218878606754357
+		ior				1.78000000000000003
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_o0007
+		geometry		chain_torus_geom
+		position		2.44173765911033769 3.51750000000000007 4.53657916851324838
+		orientation		0 372.44999999999998863 0
+		material		glass_o0007
+	}
+
+
+	# ==== EVEN LINK (K = 2*I) ====
+	# Per-channel tau RGB inlined as a values triple (IScalarPainter
+	# RGBScalarPainter form) — the previous named-uniformcolor_painter
+	# binding no longer works for scalar slots after Phase 4.
+	dielectric_material
+	{
+		name			glass_e0008
+		tau				0.36230761848918019 0.36218878606754357 0.99899999340187517
+		ior				1.81000000000000005
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_e0008
+		geometry		chain_torus_geom
+		position		1.99079230529114648 3.65200000000000014 5.51219906004254678
+		orientation		90 397.27999999999997272 0
+		material		glass_e0008
+	}
+
+	# ==== ODD LINK (K = 2*I + 1) ====
+	dielectric_material
+	{
+		name			glass_o0008
+		tau				0.36218878606754357 0.99899999340187517 0.36231842253617819
+		ior				1.84000000000000008
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_o0008
+		geometry		chain_torus_geom
+		position		1.17188932414434421 3.78650000000000020 6.20831959008575396
+		orientation		0 422.10999999999995680 0
+		material		glass_o0008
+	}
+
+
+	# ==== EVEN LINK (K = 2*I) ====
+	# Per-channel tau RGB inlined as a values triple (IScalarPainter
+	# RGBScalarPainter form) — the previous named-uniformcolor_painter
+	# binding no longer works for scalar slots after Phase 4.
+	dielectric_material
+	{
+		name			glass_e0009
+		tau				0.99899999340187517 0.36231842253617819 0.36217798421993919
+		ior				1.87000000000000011
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_e0009
+		geometry		chain_torus_geom
+		position		0.13638634205487760 3.92100000000000026 6.49627698096603279
+		orientation		90 446.93999999999994088 0
+		material		glass_e0009
+	}
+
+	# ==== ODD LINK (K = 2*I + 1) ====
+	dielectric_material
+	{
+		name			glass_o0009
+		tau				0.36231842253617819 0.36217798421993919 0.99899999101921899
+		ior				1.90000000000000013
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_o0009
+		geometry		chain_torus_geom
+		position		-0.92432489239171745 4.05550000000000033 6.32284814254075656
+		orientation		0 471.76999999999992497 0
+		material		glass_o0009
+	}
+
+
+	# ==== EVEN LINK (K = 2*I) ====
+	# Per-channel tau RGB inlined as a values triple (IScalarPainter
+	# RGBScalarPainter form) — the previous named-uniformcolor_painter
+	# binding no longer works for scalar slots after Phase 4.
+	dielectric_material
+	{
+		name			glass_e0010
+		tau				0.36217798421993919 0.99899999101921899 0.36232922676639834
+		ior				1.93000000000000016
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_e0010
+		geometry		chain_torus_geom
+		position		-1.81419339584103079 4.19000000000000039 5.72008788219869402
+		orientation		90 496.59999999999996589 0
+		material		glass_e0010
+	}
+
+	# ==== ODD LINK (K = 2*I + 1) ====
+	dielectric_material
+	{
+		name			glass_o0010
+		tau				0.99899999101921899 0.36232922676639834 0.36216718255567826
+		ior				1.95999999999999996
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_o0010
+		geometry		chain_torus_geom
+		position		-2.36874500275981514 4.32450000000000045 4.79940422309392556
+		orientation		0 521.42999999999994998 0
+		material		glass_o0010
+	}
+
+
+	# ==== EVEN LINK (K = 2*I) ====
+	# Per-channel tau RGB inlined as a values triple (IScalarPainter
+	# RGBScalarPainter form) — the previous named-uniformcolor_painter
+	# binding no longer works for scalar slots after Phase 4.
+	dielectric_material
+	{
+		name			glass_e0011
+		tau				0.36232922676639834 0.36216718255567826 0.99899998827000025
+		ior				1.98999999999999999
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_e0011
+		geometry		chain_torus_geom
+		position		-2.48548208294816453 4.45899999999999963 3.73096688801626231
+		orientation		90 546.25999999999999091 0
+		material		glass_e0011
+	}
+
+	# ==== ODD LINK (K = 2*I + 1) ====
+	dielectric_material
+	{
+		name			glass_o0011
+		tau				0.36216718255567826 0.99899998827000025 0.36234003117983132
+		ior				2.02000000000000002
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_o0011
+		geometry		chain_torus_geom
+		position		-2.14282815204198851 4.59350000000000058 2.71225487350317840
+		orientation		0 571.09000000000003183 0
+		material		glass_o0011
+	}
+
+
+	# ==== EVEN LINK (K = 2*I) ====
+	# Per-channel tau RGB inlined as a values triple (IScalarPainter
+	# RGBScalarPainter form) — the previous named-uniformcolor_painter
+	# binding no longer works for scalar slots after Phase 4.
+	dielectric_material
+	{
+		name			glass_e0012
+		tau				0.99899998827000025 0.36234003117982605 0.36215638107477521
+		ior				2.04999999999999982
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_e0012
+		geometry		chain_torus_geom
+		position		-1.40411584754225793 4.72799999999999976 1.93155645794218334
+		orientation		90 595.91999999999995907 0
+		material		glass_e0012
+	}
+
+	# ==== ODD LINK (K = 2*I + 1) ====
+	dielectric_material
+	{
+		name			glass_o0012
+		tau				0.36234003117982605 0.36215638107477521 0.99899998515421906
+		ior				2.08000000000000007
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_o0012
+		geometry		chain_torus_geom
+		position		-0.40588117379206640 4.86250000000000071 1.53316792773379618
+		orientation		0 620.75000000000000000 0
+		material		glass_o0012
+	}
+
+
+	# ==== EVEN LINK (K = 2*I) ====
+	# Per-channel tau RGB inlined as a values triple (IScalarPainter
+	# RGBScalarPainter form) — the previous named-uniformcolor_painter
+	# binding no longer works for scalar slots after Phase 4.
+	dielectric_material
+	{
+		name			glass_e0013
+		tau				0.36215638107477521 0.99899998515421906 0.36235083577646254
+		ior				2.11000000000000032
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_e0013
+		geometry		chain_torus_geom
+		position		0.66737241242254786 4.99699999999999989 1.59072333196510840
+		orientation		90 645.57999999999992724 0
+		material		glass_e0013
+	}
+
+	# ==== ODD LINK (K = 2*I + 1) ====
+	dielectric_material
+	{
+		name			glass_o0013
+		tau				0.99899998515421906 0.36235083577646254 0.36214557977722917
+		ior				2.14000000000000012
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_o0013
+		geometry		chain_torus_geom
+		position		1.61727572811108011 5.13150000000000084 2.09358472014548314
+		orientation		0 670.40999999999996817 0
+		material		glass_o0013
+	}
+
+
+	# ==== EVEN LINK (K = 2*I) ====
+	# Per-channel tau RGB inlined as a values triple (IScalarPainter
+	# RGBScalarPainter form) — the previous named-uniformcolor_painter
+	# binding no longer works for scalar slots after Phase 4.
+	dielectric_material
+	{
+		name			glass_e0014
+		tau				0.36235083577646254 0.36214557977722917 0.99899998167187554
+		ior				2.16999999999999993
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_e0014
+		geometry		chain_torus_geom
+		position		2.26825838890825970 5.26600000000000001 2.94880835184667411
+		orientation		90 695.24000000000000909 0
+		material		glass_e0014
+	}
+
+	# ==== ODD LINK (K = 2*I + 1) ====
+	dielectric_material
+	{
+		name			glass_o0014
+		tau				0.36214557977722917 0.99899998167187554 0.36236164055628795
+		ior				2.20000000000000018
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_o0014
+		geometry		chain_torus_geom
+		position		2.49999943784549750 5.40050000000000008 3.99832346422772966
+		orientation		0 720.07000000000005002 0
+		material		glass_o0014
+	}
+
+
+

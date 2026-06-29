@@ -47,7 +47,6 @@ file_rasterizeroutput
 	multiple			TRUE
 }
 
-DEFINE FRAMES 120
 
 # Animation: 120 frames spanning normalized time [0, 1].  The Gerstner painter's
 # `time` parameter is keyframed in the timeline block at the bottom — that's
@@ -56,7 +55,7 @@ animation_options
 {
 	time_start			0.0
 	time_end			1.0
-	num_frames			@FRAMES
+	num_frames			120.000000000000
 }
 
 ##################################################
@@ -81,14 +80,158 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
 
-# Water tint - near-white, very faint blue-green for realism
 uniformcolor_painter
 {
-	name				pnt_water
-	color				0.92 0.97 0.99
+	name		color_black
+	color		0.0 0.0 0.0
 }
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_darkturquoise
+	color		0.439216 0.576471 0.858824 
+}
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Water tint - near-white, very faint blue-green for realism
 
 # Surrounding courtyard - two-tone sandstone checker
 uniformcolor_painter
@@ -715,3 +858,5 @@ timeline
 	time			1.0
 	value			1.5
 }
+
+

@@ -13,11 +13,11 @@
 //             COMMENT-AWARE (a directive inside a /* */ block is NOT inlined,
 //             per D37 -- a line-grep rewriter would fold watch_dial's
 //             commented-out `> modify` and break equivalence).
-//  The live corpus is NOT modified (offline dev, per D8); the actual file
-//  rewrite + front-line pivot is a separate atomic cutover later.
+//  The GATE is read-only; the one-time `--convert <root>` mode (ConvertCorpus, Model-B P5 Slice 2)
+//  rewrites every non-native scene in place to the fold-all form (the front-line pivot follows).
 //
 //  Both paths run from the REPO ROOT (cwd) so repo-root-relative `> run`/media
-//  resolve identically.  Read-only.  Per-scene status is flushed so a crash
+//  resolve identically.  Read-only except the one-time --convert mode.  Per-scene status is flushed so a crash
 //  names the offending scene.  SUITE-SAFE: run bare it SKIPS (loads media for
 //  the whole corpus); pass a scene root to run it manually.
 //
@@ -37,6 +37,7 @@
 #include <cstring>
 #include <cmath>
 #include <unistd.h>
+#include <sys/stat.h>   // stat/chmod -- preserve file mode in the --convert rewrite
 
 using namespace RISE;
 using namespace RISE::Cst;
@@ -62,19 +63,18 @@ static std::string Reason( const std::string& t )
 	return "other";
 }
 
-// KNOWN-ACCEPTED divergences (user-ratified 2026-06-25): a mismatch here is EXPECTED, not a regression,
-// so the gate does not fail on it (and CI fails only on an UNEXPECTED mismatch).
-static std::string KnownAccepted( const std::string& path )
+// KNOWN-ACCEPTED divergences: an entry is an EXPECTED mismatch the gate does not fail on (CI fails only on
+// an UNEXPECTED mismatch).  NONE remain after the Slice-2 in-place convert: the 2 `sss` scenes that pre-
+// convert diverged (legacy's s_painterColors include-isolation quirk vs the CST energy-conserving the
+// translucent material) now MATCH -- the convert INLINES the colors, so legacy energy-conserves identically.
+static std::string KnownAccepted( const std::string& /*path*/ )
 {
-	if( path.find( "SubsurfaceScattering/sss.RISEscene" ) != std::string::npos ||
-	    path.find( "SubsurfaceScattering/sss_multiple_lights.RISEscene" ) != std::string::npos )
-		return "legacy s_painterColors include-isolation quirk -- the CST energy-conserves the translucent material (more physically correct than legacy); accepted";
 	return "";
 }
 
 // A render-AFFECTING `>` directive survives migration but is SILENTLY dropped by CST-load (DeriveToJob skips
 // `>` lines), so a scene carrying one mis-renders if CST-loaded.  These are everything EXCEPT the proven
-// render-neutral `> echo` / `> set accelerator` (`> run`/`> load`/`> set global_medium` are flattened/converted
+// render-neutral `> echo` / `> set accelerator` (`> run`/`> load`/`> set global_medium`/`> set light_rr_threshold` are flattened/converted
 // away by the migrator -> never present here).  An INDEPENDENT oracle mirroring IsNativeV7Document's accept set
 // (the gate must not merely re-run the function under test).
 static bool HasRenderAffectingDirective( const std::string& migrated )
@@ -149,6 +149,8 @@ static int RunSelfTest()
 
 	const std::string gm = Migrate( "> set global_medium fog\n" );
 	CHECK( gm.find( "global_medium\n{\nmedium fog\n}" ) != std::string::npos, "'> set global_medium' -> chunk" );
+	const std::string lr = Migrate( "> set light_rr_threshold 0.5\n" );
+	CHECK( lr.find( "light_rr_threshold\n{\nthreshold 0.5\n}" ) != std::string::npos, "'> set light_rr_threshold' -> chunk" );
 
 	// hal() FOLDS via the per-top-level-scene Halton: Migrate() Reset()s g_migratorHalton at its start
 	// (mirroring the legacy parser's per-top-level `mh` reset), so the first sample of any dimension is the
@@ -192,10 +194,55 @@ static int RunSelfTest()
 	return fails ? 1 : 0;
 }
 
+// Slice-2 (Model-B P5 cutover) ONE-TIME in-place corpus converter: rewrite every NON-native-v7 scene to
+// the dual-readable SCENE-6 fold-all form (Migrate()) so CST-load can become the default (Slice 5).
+// Already-native scenes (CST-loadable as-is) are left BYTE-untouched (minimal diff).  Render-affecting `>`
+// scenes (a `> set <other>` the migrator does NOT convert to a chunk) are SKIPPED -- writing one would
+// silently drop the directive on CST-load.  Today NONE remain (global_medium + light_rr_threshold both
+// convert to chunks inline -> 0 deferred); the SKIP is a safety net for a future unconverted directive.
+// A scene is written only if its folded form IS native-v7
+// (else CST-load would later refuse it).  VALIDATION is the normal gate run AFTERWARD on the converted
+// corpus: legacy(converted) vs CST(Migrate(converted)=converted) must MATCH -- proving the fold is dual-
+// readable + legacy-render-neutral (and that the color-prune dropped nothing referenced).
+static int ConvertCorpus( const std::string& root )
+{
+	std::vector<std::string> paths;
+	{
+		const std::string cmd = "find " + root + " -name '*.RISEscene' | sort";
+		FILE* pp = popen( cmd.c_str(), "r" );
+		if( !pp ) { std::printf( "popen(find) failed\n" ); return 2; }
+		char line[8192];
+		while( std::fgets( line, sizeof(line), pp ) ) { std::string ss( line ); while( !ss.empty() && (ss.back()=='\n'||ss.back()=='\r') ) ss.pop_back(); if( !ss.empty() ) paths.push_back( ss ); }
+		pclose( pp );
+	}
+	int converted=0, alreadyNative=0, deferred=0, notNative=0, unreadable=0;
+	for( size_t k=0; k<paths.size(); ++k ) {
+		const std::string& path = paths[k];
+		const std::string text = ReadFile( path );
+		if( text.empty() ) { ++unreadable; std::printf( "  SKIP (empty/unreadable) %s\n", path.c_str() ); continue; }
+		if( IsNativeV7Document( ParseToCst( text ) ) ) { ++alreadyNative; continue; }
+		const std::string migrated = Migrate( text );
+		if( HasRenderAffectingDirective( migrated ) ) { ++deferred; std::printf( "  DEFER (unconverted render-affecting directive) %s\n", path.c_str() ); continue; }
+		if( !IsNativeV7Document( ParseToCst( migrated ) ) ) { ++notNative; std::printf( "  SKIP (folded form NOT native-v7 -- unexpected) %s\n", path.c_str() ); continue; }
+		struct stat origStat; const bool haveMode = ( stat( path.c_str(), &origStat ) == 0 );   // preserve mode across temp+rename
+		const std::string tmp = path + ".cstmig.tmp";
+		{ std::ofstream o( tmp.c_str(), std::ios::binary ); o << migrated; if( !o ) { std::printf( "  WRITE-FAIL %s\n", path.c_str() ); return 2; } }
+		if( std::rename( tmp.c_str(), path.c_str() ) != 0 ) { std::printf( "  RENAME-FAIL %s\n", path.c_str() ); return 2; }
+		if( haveMode ) chmod( path.c_str(), origStat.st_mode & 07777 );   // restore original mode (temp defaults to 0644)
+		++converted;
+	}
+	std::printf( "\n=== CONVERT: %d converted, %d already-native (untouched), %d deferred-directive (unconverted render-affecting), %d folded-not-native (SKIPPED), %d unreadable ===\n", converted, alreadyNative, deferred, notNative, unreadable );
+	return ( notNative > 0 ) ? 1 : 0;
+}
+
 int main( int argc, char** argv )
 {
 	if( argc < 2 ) { std::printf("CstCorpusEquivalenceTest: MANUAL gate -- pass a scene root (e.g. \"scenes\") to run the\n  corpus legacy-vs-CST(migrated) comparison.  Running SELF-TEST only (suite-safe; the corpus gate needs the media root).\n"); return RunSelfTest(); }
 	const std::string rootArg = argv[1];
+	if( rootArg == "--convert" ) {
+		if( argc < 3 ) { std::printf( "--convert needs a scene root (e.g. --convert scenes)\n" ); return 2; }
+		return ConvertCorpus( argv[2] );   // ParseToCst is text-only -> no media path needed
+	}
 	char cwd[4096]; if( !getcwd( cwd, sizeof(cwd) ) ) { std::printf("getcwd failed\n"); return 2; }
 	setenv( "RISE_MEDIA_PATH", (std::string(cwd) + "/").c_str(), 1 );
 	// single-scene debug: dump legacy(original) + CST(migrated) to /tmp and report the diags.

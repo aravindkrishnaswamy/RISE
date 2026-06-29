@@ -63,7 +63,236 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name		color_black
+	color		0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name		color_red
+	color		1.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name		color_green
+	color		0.0 1.0 0.0
+}
+
+uniformcolor_painter
+{
+	name		color_blue
+	color		0.0 0.0 1.0
+}
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name		color_aquamarine
+	color		0.439216 0.858824 0.576471
+}
+
+
+uniformcolor_painter
+{
+	name		color_brown
+	color		0.647059 0.164706 0.164706 
+}
+
+uniformcolor_painter
+{
+	name		color_cadetblue
+	color		0.372549 0.623529 0.623529 
+}
+
+uniformcolor_painter
+{
+	name		color_coral
+	color		1.0 0.498039 0.0 
+}
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_firebrick
+	color		0.556863 0.137255 0.137255 
+}
+
+uniformcolor_painter
+{
+	name		color_forestgreen
+	color		0.137255 0.556863 0.137255 
+}
+
+uniformcolor_painter
+{
+	name		color_gold
+	color		0.8 0.498039 0.196078 
+}
+
+
+
+uniformcolor_painter
+{
+	name		color_indianred
+	color		0.309804 0.184314 0.184314 
+}
+
+
+
+uniformcolor_painter
+{
+	name		color_lightsteelblue
+	color		0.560784 0.560784 0.737255 
+}
+	
+uniformcolor_painter
+{
+	name		color_limegreen
+	color		0.196078 0.8 0.196078 
+}
+	
+uniformcolor_painter
+{
+	name		color_maroon
+	color		0.556863 0.137255 0.419608 
+}
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_orange
+	color		1.0 0.5 0.0 
+}
+
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_slateblue
+	color		0.0 0.498039 1.0 
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_darkpurple
+	color		0.53 0.12 0.47 
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 mandelbrot_painter
 {
@@ -100,16 +329,16 @@ voronoi3d_painter
 #	gen					0.3 0.3 0.0 color_gold
 #	gen					-0.2 -0.1 0.1 color_coral
 
-	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_indianred
-	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_cadetblue
-	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_forestgreen
-	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_gold
-	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_coral
-	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_aquamarine
-	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_lightsteelblue
-	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_limegreen
-	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_firebrick
-	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_maroon
+	gen					0.00000000000000000	0.00000000000000000	0.00000000000000000	color_indianred
+	gen					0.00000000000000000	0.66666666666666663	1.20000000000000018	color_cadetblue
+	gen					0.00000000000000000	1.33333333333333326	0.80000000000000004	color_forestgreen
+	gen					0.00000000000000000	0.22222222222222221	0.40000000000000002	color_gold
+	gen					0.00000000000000000	0.88888888888888884	1.60000000000000009	color_coral
+	gen					0.00000000000000000	1.55555555555555536	0.24000000000000005	color_aquamarine
+	gen					0.00000000000000000	0.44444444444444442	1.44000000000000017	color_lightsteelblue
+	gen					0.00000000000000000	1.11111111111111116	1.04000000000000004	color_limegreen
+	gen					0.00000000000000000	1.77777777777777768	0.64000000000000012	color_firebrick
+	gen					0.00000000000000000	0.07407407407407406	1.84000000000000008	color_maroon
 }
 
 checker_painter
@@ -331,4 +560,6 @@ directional_light
 	color		1.0 1.0 1.0
 	direction	0 0 1
 }
+
+
 

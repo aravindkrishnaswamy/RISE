@@ -110,7 +110,10 @@ homogeneous_medium
 	phase		isotropic
 }
 
-> set global_medium global_haze
+global_medium
+{
+medium global_haze
+}
 
 # Outer fog sphere -- blue absorption, high density for visible effect
 homogeneous_medium
@@ -325,3 +328,4 @@ standard_object
 	position			-3.0 -1.2 1.0
 	material			white
 }
+

@@ -77,7 +77,10 @@ painter_heterogeneous_medium
 	bbox_max		14 12 14
 }
 
-> set global_medium cloud_fog
+global_medium
+{
+medium cloud_fog
+}
 
 uniformcolor_painter
 {
@@ -167,3 +170,4 @@ standard_object
 	position	-2.6 2.5 3.2
 	orientation	0 25 0
 }
+

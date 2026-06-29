@@ -6101,6 +6101,25 @@ namespace RISE
 				}
 			};
 
+			struct LightRRThresholdAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					return pJob.SetLightSampleRRThreshold( bag.GetDouble( "threshold", 0.0 ) );
+				}
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "light_rr_threshold"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Sets the light-sample Russian-roulette threshold (the v7 form of `> set light_rr_threshold`).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "threshold"; p.kind = ValueKind::Double; p.description = "Light-sample RR threshold (0 disables RR)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct HeterogeneousMediumAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -9910,6 +9929,7 @@ namespace RISE
 		// Media
 		add( "homogeneous_medium",                    new HomogeneousMediumAsciiChunkParser() );
 		add( "global_medium",                         new GlobalMediumAsciiChunkParser() );
+		add( "light_rr_threshold",                   new LightRRThresholdAsciiChunkParser() );
 		add( "heterogeneous_medium",                  new HeterogeneousMediumAsciiChunkParser() );
 		add( "painter_heterogeneous_medium",          new PainterHeterogeneousMediumAsciiChunkParser() );
 

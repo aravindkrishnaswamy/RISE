@@ -73,7 +73,10 @@ painter_heterogeneous_medium
 	bbox_max		476 400 500
 }
 
-> set global_medium wavelet_fog
+global_medium
+{
+medium wavelet_fog
+}
 
 uniformcolor_painter
 {
@@ -286,3 +289,4 @@ standard_object
 	material			blue
 	position			416 60 420
 }
+

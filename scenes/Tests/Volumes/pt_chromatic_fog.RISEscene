@@ -92,7 +92,10 @@ homogeneous_medium
 	phase		isotropic
 }
 
-> set global_medium fog
+global_medium
+{
+medium fog
+}
 
 ##################################################
 # Point Light
@@ -271,3 +274,4 @@ standard_object
 	orientation			0 17 0
 	material			white
 }
+

@@ -59,7 +59,141 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ##################################################
 # Materials
@@ -75,32 +209,1546 @@ sphere_geometry
 	radius			0.0095
 }
 
-FOR I 0 9 1 
-	FOR J 0 6 1
 		
 		blackbody_painter
 		{
-			name				bb!I!J
-			temperature			$((@J*1000+2000)+(@I*100))
+			name				bb00000000
+			temperature			2000.00000000000000000
 		}
 
 		lambertian_material
 		{
-			name				bb!I!J
-			reflectance			bb!I!J
+			name				bb00000000
+			reflectance			bb00000000
 		}
 
 		standard_object
 		{
-			name			sphere!I!J
+			name			sphere00000000
 			geometry		spheregeom
-			position		$(@I*0.02-0.09) $(@J*-0.02+0.06) 0
-			material		bb!I!J
+			position		-0.09000000000000000 0.06000000000000000 0
+			material		bb00000000
 			receives_shadows false
 		}
 
-	ENDFOR
-ENDFOR
+		
+		blackbody_painter
+		{
+			name				bb00000001
+			temperature			3000.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00000001
+			reflectance			bb00000001
+		}
+
+		standard_object
+		{
+			name			sphere00000001
+			geometry		spheregeom
+			position		-0.09000000000000000 0.03999999999999999 0
+			material		bb00000001
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00000002
+			temperature			4000.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00000002
+			reflectance			bb00000002
+		}
+
+		standard_object
+		{
+			name			sphere00000002
+			geometry		spheregeom
+			position		-0.09000000000000000 0.02000000000000000 0
+			material		bb00000002
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00000003
+			temperature			5000.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00000003
+			reflectance			bb00000003
+		}
+
+		standard_object
+		{
+			name			sphere00000003
+			geometry		spheregeom
+			position		-0.09000000000000000 0.00000000000000000 0
+			material		bb00000003
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00000004
+			temperature			6000.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00000004
+			reflectance			bb00000004
+		}
+
+		standard_object
+		{
+			name			sphere00000004
+			geometry		spheregeom
+			position		-0.09000000000000000 -0.02000000000000000 0
+			material		bb00000004
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00000005
+			temperature			7000.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00000005
+			reflectance			bb00000005
+		}
+
+		standard_object
+		{
+			name			sphere00000005
+			geometry		spheregeom
+			position		-0.09000000000000000 -0.04000000000000001 0
+			material		bb00000005
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00000006
+			temperature			8000.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00000006
+			reflectance			bb00000006
+		}
+
+		standard_object
+		{
+			name			sphere00000006
+			geometry		spheregeom
+			position		-0.09000000000000000 -0.06000000000000000 0
+			material		bb00000006
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00010000
+			temperature			2100.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00010000
+			reflectance			bb00010000
+		}
+
+		standard_object
+		{
+			name			sphere00010000
+			geometry		spheregeom
+			position		-0.06999999999999999 0.06000000000000000 0
+			material		bb00010000
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00010001
+			temperature			3100.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00010001
+			reflectance			bb00010001
+		}
+
+		standard_object
+		{
+			name			sphere00010001
+			geometry		spheregeom
+			position		-0.06999999999999999 0.03999999999999999 0
+			material		bb00010001
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00010002
+			temperature			4100.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00010002
+			reflectance			bb00010002
+		}
+
+		standard_object
+		{
+			name			sphere00010002
+			geometry		spheregeom
+			position		-0.06999999999999999 0.02000000000000000 0
+			material		bb00010002
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00010003
+			temperature			5100.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00010003
+			reflectance			bb00010003
+		}
+
+		standard_object
+		{
+			name			sphere00010003
+			geometry		spheregeom
+			position		-0.06999999999999999 0.00000000000000000 0
+			material		bb00010003
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00010004
+			temperature			6100.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00010004
+			reflectance			bb00010004
+		}
+
+		standard_object
+		{
+			name			sphere00010004
+			geometry		spheregeom
+			position		-0.06999999999999999 -0.02000000000000000 0
+			material		bb00010004
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00010005
+			temperature			7100.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00010005
+			reflectance			bb00010005
+		}
+
+		standard_object
+		{
+			name			sphere00010005
+			geometry		spheregeom
+			position		-0.06999999999999999 -0.04000000000000001 0
+			material		bb00010005
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00010006
+			temperature			8100.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00010006
+			reflectance			bb00010006
+		}
+
+		standard_object
+		{
+			name			sphere00010006
+			geometry		spheregeom
+			position		-0.06999999999999999 -0.06000000000000000 0
+			material		bb00010006
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00020000
+			temperature			2200.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00020000
+			reflectance			bb00020000
+		}
+
+		standard_object
+		{
+			name			sphere00020000
+			geometry		spheregeom
+			position		-0.05000000000000000 0.06000000000000000 0
+			material		bb00020000
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00020001
+			temperature			3200.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00020001
+			reflectance			bb00020001
+		}
+
+		standard_object
+		{
+			name			sphere00020001
+			geometry		spheregeom
+			position		-0.05000000000000000 0.03999999999999999 0
+			material		bb00020001
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00020002
+			temperature			4200.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00020002
+			reflectance			bb00020002
+		}
+
+		standard_object
+		{
+			name			sphere00020002
+			geometry		spheregeom
+			position		-0.05000000000000000 0.02000000000000000 0
+			material		bb00020002
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00020003
+			temperature			5200.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00020003
+			reflectance			bb00020003
+		}
+
+		standard_object
+		{
+			name			sphere00020003
+			geometry		spheregeom
+			position		-0.05000000000000000 0.00000000000000000 0
+			material		bb00020003
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00020004
+			temperature			6200.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00020004
+			reflectance			bb00020004
+		}
+
+		standard_object
+		{
+			name			sphere00020004
+			geometry		spheregeom
+			position		-0.05000000000000000 -0.02000000000000000 0
+			material		bb00020004
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00020005
+			temperature			7200.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00020005
+			reflectance			bb00020005
+		}
+
+		standard_object
+		{
+			name			sphere00020005
+			geometry		spheregeom
+			position		-0.05000000000000000 -0.04000000000000001 0
+			material		bb00020005
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00020006
+			temperature			8200.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00020006
+			reflectance			bb00020006
+		}
+
+		standard_object
+		{
+			name			sphere00020006
+			geometry		spheregeom
+			position		-0.05000000000000000 -0.06000000000000000 0
+			material		bb00020006
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00030000
+			temperature			2300.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00030000
+			reflectance			bb00030000
+		}
+
+		standard_object
+		{
+			name			sphere00030000
+			geometry		spheregeom
+			position		-0.03000000000000000 0.06000000000000000 0
+			material		bb00030000
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00030001
+			temperature			3300.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00030001
+			reflectance			bb00030001
+		}
+
+		standard_object
+		{
+			name			sphere00030001
+			geometry		spheregeom
+			position		-0.03000000000000000 0.03999999999999999 0
+			material		bb00030001
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00030002
+			temperature			4300.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00030002
+			reflectance			bb00030002
+		}
+
+		standard_object
+		{
+			name			sphere00030002
+			geometry		spheregeom
+			position		-0.03000000000000000 0.02000000000000000 0
+			material		bb00030002
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00030003
+			temperature			5300.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00030003
+			reflectance			bb00030003
+		}
+
+		standard_object
+		{
+			name			sphere00030003
+			geometry		spheregeom
+			position		-0.03000000000000000 0.00000000000000000 0
+			material		bb00030003
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00030004
+			temperature			6300.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00030004
+			reflectance			bb00030004
+		}
+
+		standard_object
+		{
+			name			sphere00030004
+			geometry		spheregeom
+			position		-0.03000000000000000 -0.02000000000000000 0
+			material		bb00030004
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00030005
+			temperature			7300.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00030005
+			reflectance			bb00030005
+		}
+
+		standard_object
+		{
+			name			sphere00030005
+			geometry		spheregeom
+			position		-0.03000000000000000 -0.04000000000000001 0
+			material		bb00030005
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00030006
+			temperature			8300.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00030006
+			reflectance			bb00030006
+		}
+
+		standard_object
+		{
+			name			sphere00030006
+			geometry		spheregeom
+			position		-0.03000000000000000 -0.06000000000000000 0
+			material		bb00030006
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00040000
+			temperature			2400.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00040000
+			reflectance			bb00040000
+		}
+
+		standard_object
+		{
+			name			sphere00040000
+			geometry		spheregeom
+			position		-0.01000000000000000 0.06000000000000000 0
+			material		bb00040000
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00040001
+			temperature			3400.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00040001
+			reflectance			bb00040001
+		}
+
+		standard_object
+		{
+			name			sphere00040001
+			geometry		spheregeom
+			position		-0.01000000000000000 0.03999999999999999 0
+			material		bb00040001
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00040002
+			temperature			4400.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00040002
+			reflectance			bb00040002
+		}
+
+		standard_object
+		{
+			name			sphere00040002
+			geometry		spheregeom
+			position		-0.01000000000000000 0.02000000000000000 0
+			material		bb00040002
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00040003
+			temperature			5400.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00040003
+			reflectance			bb00040003
+		}
+
+		standard_object
+		{
+			name			sphere00040003
+			geometry		spheregeom
+			position		-0.01000000000000000 0.00000000000000000 0
+			material		bb00040003
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00040004
+			temperature			6400.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00040004
+			reflectance			bb00040004
+		}
+
+		standard_object
+		{
+			name			sphere00040004
+			geometry		spheregeom
+			position		-0.01000000000000000 -0.02000000000000000 0
+			material		bb00040004
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00040005
+			temperature			7400.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00040005
+			reflectance			bb00040005
+		}
+
+		standard_object
+		{
+			name			sphere00040005
+			geometry		spheregeom
+			position		-0.01000000000000000 -0.04000000000000001 0
+			material		bb00040005
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00040006
+			temperature			8400.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00040006
+			reflectance			bb00040006
+		}
+
+		standard_object
+		{
+			name			sphere00040006
+			geometry		spheregeom
+			position		-0.01000000000000000 -0.06000000000000000 0
+			material		bb00040006
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00050000
+			temperature			2500.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00050000
+			reflectance			bb00050000
+		}
+
+		standard_object
+		{
+			name			sphere00050000
+			geometry		spheregeom
+			position		0.01000000000000001 0.06000000000000000 0
+			material		bb00050000
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00050001
+			temperature			3500.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00050001
+			reflectance			bb00050001
+		}
+
+		standard_object
+		{
+			name			sphere00050001
+			geometry		spheregeom
+			position		0.01000000000000001 0.03999999999999999 0
+			material		bb00050001
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00050002
+			temperature			4500.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00050002
+			reflectance			bb00050002
+		}
+
+		standard_object
+		{
+			name			sphere00050002
+			geometry		spheregeom
+			position		0.01000000000000001 0.02000000000000000 0
+			material		bb00050002
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00050003
+			temperature			5500.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00050003
+			reflectance			bb00050003
+		}
+
+		standard_object
+		{
+			name			sphere00050003
+			geometry		spheregeom
+			position		0.01000000000000001 0.00000000000000000 0
+			material		bb00050003
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00050004
+			temperature			6500.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00050004
+			reflectance			bb00050004
+		}
+
+		standard_object
+		{
+			name			sphere00050004
+			geometry		spheregeom
+			position		0.01000000000000001 -0.02000000000000000 0
+			material		bb00050004
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00050005
+			temperature			7500.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00050005
+			reflectance			bb00050005
+		}
+
+		standard_object
+		{
+			name			sphere00050005
+			geometry		spheregeom
+			position		0.01000000000000001 -0.04000000000000001 0
+			material		bb00050005
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00050006
+			temperature			8500.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00050006
+			reflectance			bb00050006
+		}
+
+		standard_object
+		{
+			name			sphere00050006
+			geometry		spheregeom
+			position		0.01000000000000001 -0.06000000000000000 0
+			material		bb00050006
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00060000
+			temperature			2600.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00060000
+			reflectance			bb00060000
+		}
+
+		standard_object
+		{
+			name			sphere00060000
+			geometry		spheregeom
+			position		0.03000000000000000 0.06000000000000000 0
+			material		bb00060000
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00060001
+			temperature			3600.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00060001
+			reflectance			bb00060001
+		}
+
+		standard_object
+		{
+			name			sphere00060001
+			geometry		spheregeom
+			position		0.03000000000000000 0.03999999999999999 0
+			material		bb00060001
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00060002
+			temperature			4600.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00060002
+			reflectance			bb00060002
+		}
+
+		standard_object
+		{
+			name			sphere00060002
+			geometry		spheregeom
+			position		0.03000000000000000 0.02000000000000000 0
+			material		bb00060002
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00060003
+			temperature			5600.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00060003
+			reflectance			bb00060003
+		}
+
+		standard_object
+		{
+			name			sphere00060003
+			geometry		spheregeom
+			position		0.03000000000000000 0.00000000000000000 0
+			material		bb00060003
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00060004
+			temperature			6600.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00060004
+			reflectance			bb00060004
+		}
+
+		standard_object
+		{
+			name			sphere00060004
+			geometry		spheregeom
+			position		0.03000000000000000 -0.02000000000000000 0
+			material		bb00060004
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00060005
+			temperature			7600.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00060005
+			reflectance			bb00060005
+		}
+
+		standard_object
+		{
+			name			sphere00060005
+			geometry		spheregeom
+			position		0.03000000000000000 -0.04000000000000001 0
+			material		bb00060005
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00060006
+			temperature			8600.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00060006
+			reflectance			bb00060006
+		}
+
+		standard_object
+		{
+			name			sphere00060006
+			geometry		spheregeom
+			position		0.03000000000000000 -0.06000000000000000 0
+			material		bb00060006
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00070000
+			temperature			2700.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00070000
+			reflectance			bb00070000
+		}
+
+		standard_object
+		{
+			name			sphere00070000
+			geometry		spheregeom
+			position		0.05000000000000002 0.06000000000000000 0
+			material		bb00070000
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00070001
+			temperature			3700.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00070001
+			reflectance			bb00070001
+		}
+
+		standard_object
+		{
+			name			sphere00070001
+			geometry		spheregeom
+			position		0.05000000000000002 0.03999999999999999 0
+			material		bb00070001
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00070002
+			temperature			4700.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00070002
+			reflectance			bb00070002
+		}
+
+		standard_object
+		{
+			name			sphere00070002
+			geometry		spheregeom
+			position		0.05000000000000002 0.02000000000000000 0
+			material		bb00070002
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00070003
+			temperature			5700.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00070003
+			reflectance			bb00070003
+		}
+
+		standard_object
+		{
+			name			sphere00070003
+			geometry		spheregeom
+			position		0.05000000000000002 0.00000000000000000 0
+			material		bb00070003
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00070004
+			temperature			6700.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00070004
+			reflectance			bb00070004
+		}
+
+		standard_object
+		{
+			name			sphere00070004
+			geometry		spheregeom
+			position		0.05000000000000002 -0.02000000000000000 0
+			material		bb00070004
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00070005
+			temperature			7700.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00070005
+			reflectance			bb00070005
+		}
+
+		standard_object
+		{
+			name			sphere00070005
+			geometry		spheregeom
+			position		0.05000000000000002 -0.04000000000000001 0
+			material		bb00070005
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00070006
+			temperature			8700.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00070006
+			reflectance			bb00070006
+		}
+
+		standard_object
+		{
+			name			sphere00070006
+			geometry		spheregeom
+			position		0.05000000000000002 -0.06000000000000000 0
+			material		bb00070006
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00080000
+			temperature			2800.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00080000
+			reflectance			bb00080000
+		}
+
+		standard_object
+		{
+			name			sphere00080000
+			geometry		spheregeom
+			position		0.07000000000000001 0.06000000000000000 0
+			material		bb00080000
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00080001
+			temperature			3800.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00080001
+			reflectance			bb00080001
+		}
+
+		standard_object
+		{
+			name			sphere00080001
+			geometry		spheregeom
+			position		0.07000000000000001 0.03999999999999999 0
+			material		bb00080001
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00080002
+			temperature			4800.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00080002
+			reflectance			bb00080002
+		}
+
+		standard_object
+		{
+			name			sphere00080002
+			geometry		spheregeom
+			position		0.07000000000000001 0.02000000000000000 0
+			material		bb00080002
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00080003
+			temperature			5800.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00080003
+			reflectance			bb00080003
+		}
+
+		standard_object
+		{
+			name			sphere00080003
+			geometry		spheregeom
+			position		0.07000000000000001 0.00000000000000000 0
+			material		bb00080003
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00080004
+			temperature			6800.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00080004
+			reflectance			bb00080004
+		}
+
+		standard_object
+		{
+			name			sphere00080004
+			geometry		spheregeom
+			position		0.07000000000000001 -0.02000000000000000 0
+			material		bb00080004
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00080005
+			temperature			7800.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00080005
+			reflectance			bb00080005
+		}
+
+		standard_object
+		{
+			name			sphere00080005
+			geometry		spheregeom
+			position		0.07000000000000001 -0.04000000000000001 0
+			material		bb00080005
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00080006
+			temperature			8800.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00080006
+			reflectance			bb00080006
+		}
+
+		standard_object
+		{
+			name			sphere00080006
+			geometry		spheregeom
+			position		0.07000000000000001 -0.06000000000000000 0
+			material		bb00080006
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00090000
+			temperature			2900.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00090000
+			reflectance			bb00090000
+		}
+
+		standard_object
+		{
+			name			sphere00090000
+			geometry		spheregeom
+			position		0.09000000000000000 0.06000000000000000 0
+			material		bb00090000
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00090001
+			temperature			3900.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00090001
+			reflectance			bb00090001
+		}
+
+		standard_object
+		{
+			name			sphere00090001
+			geometry		spheregeom
+			position		0.09000000000000000 0.03999999999999999 0
+			material		bb00090001
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00090002
+			temperature			4900.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00090002
+			reflectance			bb00090002
+		}
+
+		standard_object
+		{
+			name			sphere00090002
+			geometry		spheregeom
+			position		0.09000000000000000 0.02000000000000000 0
+			material		bb00090002
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00090003
+			temperature			5900.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00090003
+			reflectance			bb00090003
+		}
+
+		standard_object
+		{
+			name			sphere00090003
+			geometry		spheregeom
+			position		0.09000000000000000 0.00000000000000000 0
+			material		bb00090003
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00090004
+			temperature			6900.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00090004
+			reflectance			bb00090004
+		}
+
+		standard_object
+		{
+			name			sphere00090004
+			geometry		spheregeom
+			position		0.09000000000000000 -0.02000000000000000 0
+			material		bb00090004
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00090005
+			temperature			7900.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00090005
+			reflectance			bb00090005
+		}
+
+		standard_object
+		{
+			name			sphere00090005
+			geometry		spheregeom
+			position		0.09000000000000000 -0.04000000000000001 0
+			material		bb00090005
+			receives_shadows false
+		}
+
+		
+		blackbody_painter
+		{
+			name				bb00090006
+			temperature			8900.00000000000000000
+		}
+
+		lambertian_material
+		{
+			name				bb00090006
+			reflectance			bb00090006
+		}
+
+		standard_object
+		{
+			name			sphere00090006
+			geometry		spheregeom
+			position		0.09000000000000000 -0.06000000000000000 0
+			material		bb00090006
+			receives_shadows false
+		}
+
 
 directional_light
 {
@@ -109,4 +1757,6 @@ directional_light
 	color		1.0 1.0 1.0
 	direction	0.0 0.0 1.0
 }
+
+
 

@@ -81,7 +81,7 @@ static std::string StripVersionHeader( const std::string& text )
 
 // Recursively inline `> run` / `> load` includes (comment-aware), depth-capped
 // against cycles.  An include path is repo-root-relative (read from cwd).
-static std::string FlattenIncludes( const std::string& text, int depth )
+static std::string FlattenIncludes( const std::string& text, int depth, bool* didInline = nullptr )
 {
 	if( depth > 24 ) return text;                              // cycle / runaway guard
 	std::string out; bool inComment = false; size_t i = 0;
@@ -101,7 +101,7 @@ static std::string FlattenIncludes( const std::string& text, int depth )
 		}
 		if( !incPath.empty() ) {
 			std::ifstream f( incPath.c_str(), std::ios::binary );
-			if( f ) { std::stringstream ss; ss << f.rdbuf(); out += FlattenIncludes( StripVersionHeader( ss.str() ), depth + 1 ); if( !out.empty() && out.back() != '\n' ) out += '\n'; }
+			if( f ) { if( didInline ) *didInline = true; std::stringstream ss; ss << f.rdbuf(); out += FlattenIncludes( StripVersionHeader( ss.str() ), depth + 1, didInline ); if( !out.empty() && out.back() != '\n' ) out += '\n'; }
 			else { out += line; if( !last ) out += '\n'; }     // missing include: keep the directive (legacy fails too)
 		} else {
 			out += line; if( !last ) out += '\n';
@@ -251,13 +251,15 @@ static void ProcessLines( const std::vector<std::string>& lines, size_t lo, size
 			{ bool ic = snap; for( size_t k = bodyStart; k < endforIdx; ++k ) StripBlockComments( lines[k], ic ); inComment = ic; }
 			i = endforIdx + 1; continue;
 		}
+		if( toks.size() >= 4 && toks[0] == ">" && toks[1] == "set" && toks[2] == "light_rr_threshold" ) {
+			out += "light_rr_threshold\n{\nthreshold " + toks[3] + "\n}\n"; ++i; continue;   // v6 `> set light_rr_threshold X` -> v7 chunk (render-affecting; DumpJob-visible via GetLightSampleRRThreshold)
+		}
 		if( toks.size() >= 4 && toks[0] == ">" && toks[1] == "set" && toks[2] == "global_medium" ) {
 			out += "global_medium\n{\nmedium " + toks[3] + "\n}\n"; ++i; continue;   // v6 `> set global_medium X` -> v7 chunk (at the `> set` position -- after the medium def, so SetGlobalMedium's definitions-before-use order holds).
-			// (Only `> set global_medium` is converted here.  `> set accelerator` (~136 scenes) is render-neutral
-			// -- a TLAS perf choice, image-identical to the default BVH4 -- so it passes through harmlessly.  But
-			// `> set light_rr_threshold` (1 scene) is NOT render-neutral: the CST path drops the `>` line,
-			// disabling that scene's Russian-roulette (DumpJob is blind to it, so the gate still says MATCH).
-			// Both are deferred cutover work; Reason() buckets them "set".)
+			// (`> set global_medium` here and `> set light_rr_threshold` in the branch just above are BOTH converted
+			// to chunks so they survive CST-load.  `> set accelerator` (~136 scenes) is render-neutral -- a TLAS
+			// perf choice, image-identical to the default BVH4 -- so it passes through harmlessly (CST-load drops
+			// the `>` line; same image).  Reason() buckets any residual `> set` as "set".)
 		}
 		std::string ln = line; SubstituteMacrosInPlace( ln, macros ); FoldExprsInPlace( ln );
 		out += ln; out += '\n'; ++i;
@@ -272,12 +274,54 @@ static std::string Preprocess( const std::string& text )
 	return out;
 }
 
+// Prune dead color constants from the flattened text: drop every `uniformcolor_painter { name N ... }`
+// whose name token N occurs ONLY at its own definition (referenced nowhere else, whole-token).
+// FlattenIncludes inlines the ~108-entry standard color libraries into every scene that `> run`s them,
+// but a scene uses a handful -- pruning keeps each scene SELF-CONTAINED (D1) yet lean (no 219x library
+// duplication).  SAFE: a dropped painter is unreferenced -> never sampled -> render-identical; over-
+// pruning a USED painter makes DeriveToJob fail to resolve the reference, which the corpus gate
+// (legacy(converted)==CST(converted)) catches.  Only uniformcolor_painter (a leaf color constant) is
+// pruned; non-leaf painters (blend, etc.) keep their sub-painter references alive via the freq count.
+static std::string PruneDeadColorPainters( const std::string& text )
+{
+	std::map<std::string,int> freq;
+	{ std::istringstream is( text ); std::string t; while( is >> t ) ++freq[t]; }
+	std::vector<std::string> lines;
+	{ size_t i=0; for(;;) { size_t e=text.find('\n',i); const bool last=(e==std::string::npos); if(last)e=text.size(); lines.push_back(text.substr(i,e-i)); if(last)break; i=e+1; } }
+	const bool trailingNL = !text.empty() && text[text.size()-1]=='\n';
+	std::string out; out.reserve( text.size() );
+	for( size_t i=0; i<lines.size(); ) {
+		if( Trim( lines[i] ) == "uniformcolor_painter" ) {
+			size_t k=i+1; int depth=0; bool opened=false; std::string name;
+			while( k < lines.size() ) {
+				const std::string tl = Trim( lines[k] );
+				if( tl == "{" ) { ++depth; opened=true; }
+				else if( tl == "}" ) { --depth; if( opened && depth==0 ) break; }
+				else { std::istringstream ls( tl ); std::string key; if( (ls >> key) && key=="name" ) ls >> name; }
+				++k;
+			}
+			const bool dead = !name.empty() && freq[name] <= 1;
+			const size_t next = ( k < lines.size() ? k+1 : k );
+			if( !dead ) for( size_t m=i; m<next && m<lines.size(); ++m ) { out += lines[m]; out += "\n"; }
+			i = next;
+		} else { out += lines[i]; out += "\n"; ++i; }
+	}
+	if( !trailingNL && !out.empty() && out[out.size()-1]=='\n' ) out.erase( out.size()-1 );
+	return out;
+}
+
 // The offline v6->v7 migrator transform (text -> text).  Grows per slice.
 static std::string Migrate( const std::string& text )
 {
 	g_migratorHalton.Reset();   // per top-level scene: fold hal() from a FRESH sequence (standalone-equivalent
 	                            // + order-independent across scenes) -- see g_migratorHalton above.
-	return Preprocess( FlattenIncludes( text, 0 ) );         // flatten includes; then DEFINE/UNDEF/FOR/@/!/$()
+	bool didInline = false;
+	const std::string flat = FlattenIncludes( text, 0, &didInline );          // flatten > run/load includes
+	const std::string processed = Preprocess( flat );                          // DEFINE/UNDEF/FOR/@/!/$()
+	// Prune dead color constants (inlined OR hand-authored) ONLY when an include was actually flattened in (the standard
+	// color-library bloat).  No-include scenes -- already-native scenes AND the library files -- keep
+	// their hand-authored inline painters, so their (unconverted-on-disk) text still matches CST(Migrate).
+	return didInline ? PruneDeadColorPainters( processed ) : processed;
 }
 
 #endif // RISE_CST_MIGRATOR_H

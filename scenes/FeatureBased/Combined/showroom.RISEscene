@@ -96,7 +96,141 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # Iridescent painter for the torus knot
 uniformcolor_painter
@@ -177,34 +311,10 @@ uniformcolor_painter
 }
 
 # Anisotropic highlight parameters for the cylinder
-uniformcolor_painter
-{
-	name				pnt_aniso_alpha_x
-	colorspace			RISERGB
-	color				0.01 0.01 0.01
-}
 
-uniformcolor_painter
-{
-	name				pnt_aniso_alpha_y
-	colorspace			RISERGB
-	color				0.3 0.3 0.3
-}
 
 # Ashikmin-Shirley Nu/Nv
-uniformcolor_painter
-{
-	name				pnt_nu
-	colorspace			RISERGB
-	color				10 10 10
-}
 
-uniformcolor_painter
-{
-	name				pnt_nv
-	colorspace			RISERGB
-	color				500 500 500
-}
 
 ##################################################
 # Materials
@@ -420,3 +530,5 @@ irradiance_cache
 	min_spacing			8
 	max_spacing			100
 }
+
+

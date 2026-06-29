@@ -82,7 +82,10 @@ painter_heterogeneous_medium
 	bbox_max		476 400 500
 }
 
-> set global_medium curl_fog
+global_medium
+{
+medium curl_fog
+}
 
 uniformcolor_painter
 {
@@ -295,3 +298,4 @@ standard_object
 	material			blue
 	position			416 60 420
 }
+

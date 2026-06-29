@@ -93,7 +93,7 @@ So the hard algorithmic parts are done. **What's missing is wiring + provenance*
   deliberate batch → the **SCENE-6 fold-all dual-readable** form (both the legacy runtime and the CST read
   it). Resolve the convert TAIL here: the 2 `sss` energy-conservation divergences + the 27 media-missing
   legacy-fails (on a machine with the assets); **and the one LIVE render-AFFECTING `>` directive** (round-4
-  review): easy-convert `meshlight_rr_test_pt`'s `> set light_rr_threshold` -> a rasterizer chunk param.
+  review): easy-convert `meshlight_rr_test_pt`'s `> set light_rr_threshold` -> a standalone `light_rr_threshold` chunk (mirroring `global_medium`).
   (`watch_dial`'s `> modify` night-mode swaps are currently COMMENTED OUT, so it CST-loads as-is; the new
   **scene-variants** CST feature (named, selectable overlays) -- separate spec, doc 63 -- will let that night-mode be re-expressed in
   v7 so the deprecated `> modify` can be dropped.) git history keeps the authored originals. *The big diff, but
@@ -115,7 +115,7 @@ So the hard algorithmic parts are done. **What's missing is wiring + provenance*
   the dual-path stays reversible); the cosmetic `SCENE 6`→`7` bump rides the v6-delete (Slice 6). Trade-off:
   the convert FLATTENS authored `FOR`/macros/includes into verbose canonical text (the Model-B "text is the
   compiled view" premise; git history keeps the authored originals). "No surprises" also means resolving the
-  convert TAIL up front (the 2 `sss` divergences + the 27 media-missing legacy-fails).
+  convert TAIL up front (the 2 `sss` divergences + the 27 media-missing legacy-fails).  **As-built (2026-06-29):** the convert is a LEAN fold -- dead inlined color constants are pruned per-scene (a `> run colors` scene keeps only the colors it references), so the corpus lands at ~245k lines, not the naive fold-all's ~359k; the 2 `sss` divergences self-resolved (inlining makes legacy energy-conserve too).
 - **D2 — RATIFIED: full-re-derive fallback** for animated / `instance_array` scenes. MEASURED (CstEditCostTest,
   this machine): a full re-derive is ~2 ms @ ~1k chunks, ~9 ms @ ~4k, ~38 ms @ ~16k (O(N log N)); the
   incremental path is ~5 µs, flat. In absolute terms that is low-single-digit ms for realistic scenes (a hero
