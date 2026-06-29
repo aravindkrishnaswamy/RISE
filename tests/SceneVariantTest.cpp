@@ -6,9 +6,11 @@
 //  `variant <name>`-tagged material chunk OVERRIDES its base same-named
 //  counterpart when that variant is active.  The override is BAKED DURING the
 //  CST derive (DeriveToJob): a pre-scan finds the active variant + its
-//  overridden material names, then PASS-2 skips the overridden-base + the
-//  inactive-override chunks and Finalizes the ACTIVE override -- so objects bind
-//  the active material BY NAME from the start (no post-derive re-pointing).
+//  overridden material names, then PASS-2 applies the ACTIVE
+//  override at its overridden BASE's slot (dropping the base, the override's own
+//  slot, and every inactive override) -- so objects bind the active material BY
+//  NAME from the start, regardless of where the override sits in the file (it may
+//  follow the objects, as the watch night block does), with no post-derive re-pointing.
 //
 //  These tests drive the CST path (ParseToCst + DeriveToJob) and verify, via the
 //  derived Job's material managers (the same emitter-exitance accessor DumpJob
@@ -219,6 +221,45 @@ int main()
 		std::vector<std::string> diags; DeriveToJob( doc, *j, &diags );
 		Check( diags.empty(), "active_camera `none` derives clean (no missing-camera diagnostic)" );
 		Check( LumExitanceR( j, "lum" ) < 0.01, "active_camera `none`: the material override still bakes" );
+		j->release();
+	}
+
+	// 13. A variant override placed AFTER the object that binds it (the watch_dial night pattern) still bakes: it is
+	//     applied at its base's slot, so the object resolves the active material by name regardless of the override's
+	//     file position.  Under the prior "Finalize the override at its own slot" bake this case dangled (unresolved ref).
+	{
+		Job* j = new Job();
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"   // base
+			"sphere_geometry\n{\nname s\nradius 1\n}\n"
+			"standard_object\n{\nname obj\ngeometry s\nmaterial lum\n}\n"                                 // binds lum -- BEFORE the override
+			"lambertian_luminaire_material\n{\nname lum\nvariant night\nexitance white\nscale 0.0\nmaterial none\n}\n"  // override AFTER the object
+			"scene_variant\n{\nname night\n}\n"
+			"active_scene_variant\n{\nname night\n}\n" );
+		std::vector<std::string> diags; DeriveToJob( doc, *j, &diags );
+		Check( diags.empty(), "override AFTER the binding object derives clean (applied at the base's slot, not the override's)" );
+		const double e = LumExitanceR( j, "lum" );
+		Check( e >= 0.0 && e < 0.01, "override-after-object: the night override (scale 0) baked, not the base (scale 5)" );
+		j->release();
+	}
+
+	// 14. Two active overrides of one material name are ambiguous -> refused.  (The bake applies a single override per
+	//     name at the base slot, so it can no longer rely on the AddItem dup-name hard-error -- only one override would
+	//     reach it -- to catch this; an explicit pre-scan guard does.)
+	{
+		Job* j = new Job();
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nvariant night\nexitance white\nscale 0.0\nmaterial none\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nvariant night\nexitance white\nscale 1.0\nmaterial none\n}\n"
+			"scene_variant\n{\nname night\n}\n"
+			"active_scene_variant\n{\nname night\n}\n" );
+		std::vector<std::string> diags; DeriveToJob( doc, *j, &diags );
+		Check( !diags.empty(), "two overrides of the same name (active variant) is refused (ambiguous)" );
 		j->release();
 	}
 

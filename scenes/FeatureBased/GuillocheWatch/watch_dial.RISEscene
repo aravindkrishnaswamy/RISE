@@ -649,6 +649,14 @@ uniformcolor_painter
 	color				1.0 1.0 1.0
 }
 
+# glow colour for the `night` scene_variant (the night material overrides at EOF reference it)
+uniformcolor_painter
+{
+	name				pnt_lume_glow
+	color				0.45 0.95 0.70
+}
+
+
 scalar_painter
 {
 	name				Ti_n
@@ -1357,9 +1365,9 @@ standard_object
 */
 
 ##################################################
-# NIGHT / LUME SHOT: authored as a self-contained `> modify` command
-# block at the END of this file (the commands must follow the objects
-# they repoint).  Uncomment that block to switch day -> night.
+# NIGHT / LUME SHOT: a CST `scene_variant` named `night` at the END of this
+# file (variant-tagged material overrides + a scene_variant chunk).  See its
+# header there to render night (uncomment active_scene_variant + RISE_LOAD_VIA_CST=1).
 ##################################################
 ##################################################
 ##################################################
@@ -2366,35 +2374,74 @@ standard_object
 # NIGHT / LUME SHOT (alternate mode -- self-contained, NO manual chunk edits).
 # The photoluminescent lume carries the frame: the chapter-ring arcs, the
 # hands, and the centre pin glow blue-green while everything else falls to
-# near black.  `lume_glow_night` is defined but UNUSED in day mode (an unbound
-# material has no render effect); the `>` command block below applies the mode
-# at scene-load time via the generalized `> modify` command.
+# near black.  A CST `scene_variant` named `night` (below) carries it: its `variant night`
+# material chunks OVERRIDE their base same-named materials when active (baked at
+# the CST derive -- docs/agentic-redesign/63).  Day is the default (the variant
+# is declared, not active).
 #
-# TO ACTIVATE: delete the '/*' and '*/' lines around the command block (and
-# re-add them to return to day).  Tuning: lume_glow_night 'scale' = glow
-# brightness, pnt_lume_glow = glow colour; the lume is then the ONLY light, so
-# raise the rasterizer 'samples' (e.g. 32 -> 256) for a clean night hero.
+# TO RENDER NIGHT: uncomment the `active_scene_variant` chunk below AND load via
+# the CST path (the bake is CST-native; the legacy reader renders the base):
+# `RISE_LOAD_VIA_CST=1`.  The lume is then the ONLY light, so raise the rasterizer
+# `samples` (e.g. 32 -> 256).  Exposure: the old night used rasterizer
+# `radiance_scale 0.02` (day is 0.30) + glow `scale 45`; a variant cannot override
+# the rasterizer, so the glow `scale` folds it in -> 45 * 0.02/0.30 = 3.0.
 ##################################################
-uniformcolor_painter
+
+# --- night overrides (active only when scene_variant `night` is the active_scene_variant) ---
+# day studio lights OFF:
+lambertian_luminaire_material
 {
-	name				pnt_lume_glow
-	color				0.45 0.95 0.70
+	name				soft_top_lum
+	variant				night
+	exitance			pnt_white
+	scale				0.0
+	material			none
 }
 
 lambertian_luminaire_material
 {
-	name				lume_glow_night
-	exitance			pnt_lume_glow
-	scale				45.0
+	name				soft_bot_lum
+	variant				night
+	exitance			pnt_white
+	scale				0.0
 	material			none
 }
 
-/*
-> modify rasterizer radiance_scale 0.02
-> modify material soft_top_lum scale 0
-> modify material soft_bot_lum scale 0
-> modify object markerlume material lume_glow_night
-> modify object sdfhour material lume_glow_night
-> modify object sdfminute material lume_glow_night
-> modify object pin material lume_glow_night
-*/
+# the lume objects glow blue-green (redefine each object's day material as a pure emitter):
+lambertian_luminaire_material
+{
+	name				lume_day
+	variant				night
+	exitance			pnt_lume_glow
+	scale				3.0
+	material			none
+}   # markerlume
+
+lambertian_luminaire_material
+{
+	name				lume_white
+	variant				night
+	exitance			pnt_lume_glow
+	scale				3.0
+	material			none
+}   # pin
+
+lambertian_luminaire_material
+{
+	name				white_hands
+	variant				night
+	exitance			pnt_lume_glow
+	scale				3.0
+	material			none
+}   # sdfhour + sdfminute
+
+scene_variant
+{
+	name				night
+}
+
+# Night is DECLARED but not active (day = default).  Uncomment to render the night hero (RISE_LOAD_VIA_CST=1):
+# active_scene_variant
+# {
+# 	name				night
+# }

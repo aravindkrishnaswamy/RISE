@@ -1423,6 +1423,7 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 		if( p.keyword == "active_scene_variant" ) svActiveName = p.bag.GetString( "name", "" );
 	if( svActiveName == "none" ) svActiveName.clear();
 	std::set<std::string> svOverriddenNames;
+	std::map<std::string, size_t> svActiveOverride;   // active-variant override name -> its pending index (applied at the base's slot)
 	if( !svActiveName.empty() ) {
 		std::set<std::string> svBaseMaterialNames;
 		bool svActiveDeclared = false;
@@ -1434,7 +1435,12 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 			if( p.parser->Describe().category != ChunkCategory::Material ) continue;
 			const std::string mv = p.bag.GetString( "variant", "" );
 			const std::string mn = p.bag.GetString( "name", "noname" );
-			if( mv == svActiveName ) { svOverriddenNames.insert( mn ); svActiveDeclared = true; }
+			if( mv == svActiveName ) {
+				svOverriddenNames.insert( mn );
+				if( !svActiveOverride.insert( std::make_pair( mn, (size_t)( &p - pending.data() ) ) ).second )   // two overrides of one name -> ambiguous
+					diags.push_back( "scene_variant `" + svActiveName + "`: duplicate override of material `" + mn + "`" );
+				svActiveDeclared = true;
+			}
 			else if( mv.empty() && !svBaseMaterialNames.insert( mn ).second )
 				// Two untagged base materials of the same name: a dup-name error (88ca744d) the override-skip below
 				// would otherwise MASK (both bases skipped -> the PASS-2 dup-name hard-error never fires).
@@ -1479,27 +1485,31 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 
 	int count = 0;
 	for( Pending& p : pending ) {
-		// scene_variant bake (doc 63): skip the inactive-override + overridden-base material chunks.  The active
-		// override (variant==active) Finalizes + registers under its name (the skipped base freed the name).
+		// scene_variant bake (doc 63): apply the ACTIVE definition per material name.  An active override is applied at
+		// its overridden BASE's slot (so objects bind it by name regardless of the override chunk's file position -- the
+		// override may sit after the objects, as the watch night block does); the override's own slot + every inactive
+		// override are then dropped, and so is the now-superseded base.
+		const Pending* applyP = &p;
 		if( p.parser->Describe().category == ChunkCategory::Material ) {
 			const std::string svv = p.bag.GetString( "variant", "" );
-			if( !svv.empty() && svv != svActiveName ) continue;                                          // inactive override
-			if( svv.empty() && svOverriddenNames.count( p.bag.GetString( "name", "noname" ) ) ) continue; // overridden base
+			if( !svv.empty() ) continue;   // variant-tagged: the active override is applied at its base's slot (below); inactive ones dropped
+			std::map<std::string, size_t>::const_iterator ov = svActiveOverride.find( p.bag.GetString( "name", "noname" ) );
+			if( ov != svActiveOverride.end() ) applyP = &pending[ ov->second ];   // overridden base -> apply the active override HERE
 		}
 		std::vector<const void*> produced, resolved;
 		if( outRecorded ) { g_cstProductionSink = &produced; g_cstResolutionSink = &resolved; }
-		const bool ok = p.parser->Finalize( p.bag, pJob );
+		const bool ok = applyP->parser->Finalize( applyP->bag, pJob );
 		if( outRecorded ) {
 			g_cstProductionSink = nullptr; g_cstResolutionSink = nullptr;   // no GetItem between here and the next set
-			for( const void* e : produced ) productionMap[ e ] = p.nodeId;  // this chunk's productions (incl. intra-chunk, so a self-ref self-skips)
+			for( const void* e : produced ) productionMap[ e ] = applyP->nodeId;  // this chunk's productions (incl. intra-chunk, so a self-ref self-skips)
 			for( const void* e : resolved ) {
 				std::map<const void*, NodeId>::const_iterator it = productionMap.find( e );
-				if( it != productionMap.end() && it->second != p.nodeId )   // skip self-reference (a chunk resolving its own product)
-					outRecorded->dependents[ it->second ].insert( p.nodeId );   // editing the producer re-derives this consumer
+				if( it != productionMap.end() && it->second != applyP->nodeId )   // skip self-reference (a chunk resolving its own product)
+					outRecorded->dependents[ it->second ].insert( applyP->nodeId );   // editing the producer re-derives this consumer
 			}
 		}
 		if( ok ) { ++count; continue; }
-		diags.push_back( p.keyword + ": apply failed (e.g. unresolved reference); see log" );
+		diags.push_back( applyP->keyword + ": apply failed (e.g. unresolved reference); see log" );
 		break;
 	}
 	// #5 slice 4: expand instance_array generators AFTER the normal entities (so their template

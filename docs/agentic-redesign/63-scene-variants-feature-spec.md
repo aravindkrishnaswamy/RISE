@@ -88,6 +88,10 @@ lambertian_luminaire_material { name lume_white      variant night   exitance pn
   prevent). Add-new (a `variant` chunk introducing a brand-new name) is **out of P0 scope** — a variant has no
   way to bind a new material to an object yet (variant-tagged *objects* are a later extension, §5), so a
   brand-new variant material could only register unbound; refusing it catches the far-likelier typo.
+- A material name has at most ONE active definition: two `variant night` chunks of the same `name` (an **ambiguous
+  override**) — or two untagged bases of the same `name`, which the override-skip would otherwise mask — are
+  **REFUSED** with a diagnostic. (The override is applied at the base's slot, so the base must both exist — the
+  dangling guard above — and be unique.)
 - This is the user's "specify new materials": variant-tagged material chunks redefine base materials for that
   variant. The same tag mechanism extends to other chunk types later without a new concept.
 
@@ -230,13 +234,16 @@ PARSER state, not Job state).
 
 **(d) CST bake (the crux — `Cst.cpp DeriveToJob`)** — between PASS-1 and PASS-2, PRE-SCAN the chunks →
 `activeName` (the `active_scene_variant` chunk's `name`), `activeCamera` (that variant's `scene_variant` chunk's
-`active_camera`), `activeOverriddenNames` (material chunks whose `variant` == activeName, keyed by `name`). PASS-2
-loop: SKIP a material chunk's `Finalize` iff (it has `variant` != activeName) [inactive override] OR (no `variant`
-but its `name` ∈ activeOverriddenNames) [overridden base]; `Finalize` everything else. The active override
-(`variant`==activeName) Finalizes → registers under its `name` (the skipped base left the name free → no
-collision); objects (later, definitions-before-use) bind that name → the active material. After the loop
-(guard `diags.empty()`): `pJob.SetActiveCamera(activeCamera)` if set. No re-point, no light-gen bump (lights
-build from correctly-bound objects).
+`active_camera`), `activeOverride` (material chunks whose `variant` == activeName, mapped `name` → pending index;
+a second override of one name ⇒ ambiguous ⇒ diagnostic). PASS-2 loop: for an untagged base whose `name` is in
+`activeOverride`, `Finalize` the ACTIVE OVERRIDE'S pending **at the base's slot** (not the base) — so the active
+material registers under its `name` exactly where the base would have, and objects (later, definitions-before-use)
+bind that name → the active material **regardless of where the override chunk sits in the file** (it may follow the
+objects, as the watch night block does). SKIP a material chunk's `Finalize` iff it carries any `variant` tag (the
+active one was already applied at its base's slot; inactive ones are dropped); `Finalize` everything else. After the
+loop (guard `diags.empty()`): `pJob.SetActiveCamera(activeCamera)` if set. No re-point, no light-gen bump (lights
+build from correctly-bound objects). **Authoring constraint: only the override's PAINTERS need precede the base
+(standard painters-before-materials); the override material chunk itself is position-free.**
 
 **(e) Legacy path** (`AsciiSceneParser ParseChunk`, 1 central site) — a streaming reader can't pre-scan and
 scene_variant is CST-native, so legacy renders the BASE: SKIP a material chunk's `Finalize` iff it carries a
