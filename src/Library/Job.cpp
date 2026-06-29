@@ -9466,6 +9466,10 @@ bool Job::LoadAsciiSceneViaCst( const char* filename )
 // addref's the scene) defers its actual free until the next render pass re-attaches the NEW Scene -- and
 // SceneEditController parks the render thread before calling this, so no in-flight caster dangles.  Adding an
 // off-render-thread reader of the caster's cached scene/samplers would break this -- revisit if you do.
+// CALLERS holding a SceneEditor MUST re-point it after this (SceneEditController::SetSelection does, via
+// RebindEditorToJob) -- ClearAll frees the scene + managers the editor cached, so skipping the re-bind
+// reintroduces the UAF.  Cost: the validate dry-run is a 2nd full derive per switch (under the render-parked
+// lock) -- bounded (~2-38 ms for 1k-16k chunks per doc 62 D2), acceptable for the no-rollback safety.
 bool Job::RederiveCstWithVariant( const char* variantName )
 {
 	if( !pCstDocument ) {

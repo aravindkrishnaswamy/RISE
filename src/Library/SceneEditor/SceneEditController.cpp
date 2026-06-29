@@ -2412,8 +2412,10 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 			// A variant switch RE-BAKES the scene (new materials), unlike the other activations -> re-derive the
 			// retained CST Document with the forced variant + bump the epoch so the panels re-read the changed
 			// structure.  "(base)" is the synthetic no-variant entry.
-			// Note: the full re-derive also resets the other live activations (active camera / rasterizer / animation)
-			// to the document's values -- intended (a variant may set its own active_camera), but a surprise worth flagging.
+			// Note: the full re-derive resets the other live activations to the document's values -- the active camera to
+			// the variant's active_camera (if it sets one) else the base camera; the active rasterizer/animation to their
+			// authored defaults.  Intended (a mode switch), but a surprise worth flagging.  The prior undo history survives;
+			// the per-entity serial guards make a stale post-switch undo a safe no-op (it does not apply to the new scene).
 			ok = mJob.RederiveCstWithVariant( entityName == String( "(base)" ) ? "none" : entityName.c_str() );
 			if( ok ) {
 				RebindEditorToJob();   // the re-derive replaced the Scene + managers -> re-point mEditor (else UAF)

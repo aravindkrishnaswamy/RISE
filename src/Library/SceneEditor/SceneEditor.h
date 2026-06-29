@@ -85,7 +85,7 @@ namespace RISE
 		//! Re-point the editor at the Job's CURRENT scene after a whole-scene rebuild (e.g. a scene_variant
 		//! re-derive ClearAll's + recreates the Scene + managers); call ALONGSIDE the SetXManager setters,
 		//! otherwise mScene + the cached managers dangle into freed storage.
-		void RebindScene( IScenePriv& scene ) { mScene = &scene; }
+		void RebindScene( IScenePriv& scene ) { mScene = &scene; mScenePhotonsExist = ComputeScenePhotonsExist(); mSceneScale = 0; }   // also refresh the scene-derived caches
 
 		//! Apply an edit.  On success, runs the invariant chain,
 		//! pushes the edit (with its prevTransform/prevTime captured

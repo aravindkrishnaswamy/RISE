@@ -233,10 +233,12 @@ the 25 material `Describe()` IIFEs (so `variant` parses; descriptor=accepted-set
 override store.
 
 **(c) IJob/Job records** (for GUI + save; the active-variant bake is whole-document but RE-RUNNABLE on demand from
-the GUI via `RederiveCstWithVariant`) — 8 non-pure IJob virtuals after `IJob.h:2823`: `DeclareSceneVariant`,
-`SetActiveSceneVariant`, `GetActiveSceneVariant`, `HasSceneVariants` (the incremental-refuse signal),
-`ClearSceneVariants`, `GetSceneVariantCount` / `GetSceneVariantName` (the GUI variant list), and
-`RederiveCstWithVariant` (the GUI switch: ClearAll + re-derive the retained Document with a forced variant). `Job` (store near `:281`, decls near `:2840`, defs near `:9633`, NO `override`
+the GUI via `RederiveCstWithVariant`) — 9 non-pure IJob virtuals: the declare/query/clear set near `IJob.h:2844`
+(`DeclareSceneVariant`, `SetActiveSceneVariant`, `GetActiveSceneVariant`, `HasSceneVariants` [the
+incremental-refuse signal], `ClearSceneVariants`), the GUI variant-list pair `GetSceneVariantCount` /
+`GetSceneVariantName`, and — beside `LoadAsciiSceneViaCst` — `RederiveCstWithVariant` (the GUI switch: ClearAll +
+re-derive the retained Document with a forced variant) + `HasRetainedCstDocument` (gates the GUI accordion on a
+retained Document). `Job` (store near `:281`, decls near `:2840`, defs near `:9633`, NO `override`
 keyword): `std::map<String,String> sceneVariantCameras` + `String activeSceneVariant`; methods record.
 `ClearSceneVariants` is wired at the per-derive resets: `Job::InitializeContainers` (beside `m_objectOverrideCount
 = 0` — the creation + legacy reset) AND `DeriveToJob`'s start (CST re-derive; `ClearChunkParserState` clears
