@@ -687,7 +687,15 @@ public:
 
 - (BOOL)loadAsciiScene:(NSString *)filePath {
     if (!_job) return NO;
-    return _job->LoadAsciiScene([filePath UTF8String]) ? YES : NO;
+    const char* path = [filePath UTF8String];
+    // P5 (Model-B): RISE_LOAD_VIA_CST opts the GUI into the canonical CST path (retains the CST Document,
+    // bakes scene_variant overrides) instead of the legacy streaming parser.  No silent fallback -- a
+    // non-native-v7 / derive-error scene returns NO so the failure is visible.  Pending Slice-5 default-on.
+    if (getenv("RISE_LOAD_VIA_CST")) {
+        NSLog(@"[RISE_LOAD_VIA_CST] loading via the Model-B CST path");
+        return _job->LoadAsciiSceneViaCst(path) ? YES : NO;
+    }
+    return _job->LoadAsciiScene(path) ? YES : NO;
 }
 
 - (BOOL)clearAll {

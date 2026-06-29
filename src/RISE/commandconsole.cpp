@@ -45,6 +45,20 @@
 
 using namespace RISE;
 
+// P5 (Model-B): route a USER-scene load through the canonical CST path when RISE_LOAD_VIA_CST is set
+// in the environment (else the legacy streaming parser).  The CST path refuses non-native-v7 / derive-
+// error scenes (returns false -- NO silent fallback, so a failed CST load is visible, not masked).  This
+// is the opt-in hook for rendering scene_variant scenes (the variant bake is CST-native); Slice-5 makes
+// CST-load the default with a legacy fallback.
+static bool LoadScenePerEnv( IJobPriv* pJob, const char* sceneArg )
+{
+	if( getenv( "RISE_LOAD_VIA_CST" ) ) {
+		std::cout << "[RISE_LOAD_VIA_CST] loading via the Model-B CST path" << std::endl;
+		return pJob->LoadAsciiSceneViaCst( sceneArg );
+	}
+	return pJob->LoadAsciiScene( sceneArg );
+}
+
 //
 // Console version
 //
@@ -315,7 +329,7 @@ int main( int argc, char** argv )
 
 			StdOutProgress progress( "Parsing scene: " );
 			pJob->SetProgress( &progress );
-			if( pJob->LoadAsciiScene( sceneArg ) ) {
+			if( LoadScenePerEnv( pJob, sceneArg ) ) {
 				// CLI Film overrides — applied AFTER scene parse so they
 				// replace whatever the scene file's `film` chunk (or
 				// camera-chunk auto-sync) installed.  Partial overrides
@@ -350,7 +364,7 @@ int main( int argc, char** argv )
 
 #else
 			std::cout << "Loading ascii scene file: " << sceneArg << std::endl;
-			if( pJob->LoadAsciiScene( sceneArg ) ) {
+			if( LoadScenePerEnv( pJob, sceneArg ) ) {
 				if( haveCliFilmOverride ) {
 					const IFilm* curFilm = pJob->GetScene()->GetFilm();
 					const unsigned int w   = ( cliFilmWidth   > 0 ) ? (unsigned)cliFilmWidth   : ( curFilm ? curFilm->GetWidth()   : 960 );
