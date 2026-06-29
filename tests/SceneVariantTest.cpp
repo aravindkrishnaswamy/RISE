@@ -27,6 +27,8 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <fstream>
+#include <cstdio>
 
 #include "CstRenderEquivalence.h"          // Job + the material/emitter accessors + includes
 #include "../src/Library/Cst/Cst.h"        // ParseToCst, DeriveToJob
@@ -279,6 +281,45 @@ int main()
 			"lambertian_luminaire_material\n{\nname lum\nvariant none\nexitance white\nscale 5.0\nmaterial none\n}\n", *jl );
 		Check( LumExitanceR( jl, "lum" ) > 1.0, "`variant none` material is registered as a base (legacy path)" );
 		jl->release();
+	}
+
+	// 16. DeriveToJob's activeVariantOverride FORCES a variant, winning over the active_scene_variant chunk (the
+	//     GUI switch's core).  nullptr => use the chunk; "none"/"" => base; a name => that variant; + it reconciles
+	//     the Job's active-variant record.
+	{
+		const std::string nightChunk = SceneWithActive( "night" );   // has active_scene_variant{night}
+		{ Job* j = new Job(); Document d = ParseToCst( nightChunk ); std::vector<std::string> g;
+		  DeriveToJob( d, *j, &g, nullptr, "none" );
+		  Check( LumExitanceR( j, "lum" ) > 1.0, "override `none` forces base, overriding the active_scene_variant{night} chunk" );
+		  j->release(); }
+		{ Job* j = new Job(); Document d = ParseToCst( nightChunk ); std::vector<std::string> g;
+		  DeriveToJob( d, *j, &g, nullptr, nullptr );
+		  Check( LumExitanceR( j, "lum" ) < 0.01, "override nullptr defers to the chunk (night active)" );
+		  j->release(); }
+		{ Job* j = new Job(); Document d = ParseToCst( SceneWithActive( "" ) ); std::vector<std::string> g;
+		  DeriveToJob( d, *j, &g, nullptr, "night" );
+		  Check( LumExitanceR( j, "lum" ) < 0.01, "override `night` forces the night variant on a base scene" );
+		  char buf[64] = {0}; j->GetActiveSceneVariant( buf, sizeof(buf) );
+		  Check( std::string(buf) == "night", "override reconciles the Job's active-variant record" );
+		  j->release(); }
+	}
+
+	// 17. RederiveCstWithVariant: load a variant scene via the CST path, then re-derive with a FORCED variant (the
+	//     GUI variant switch) -- ClearAll + re-bake the retained Document, no dup-name, the active record updates.
+	{
+		const char* tmp = "sv_rederive_tmp.RISEscene";
+		{ std::ofstream o( tmp ); o << SceneWithActive( "" ); }   // base scene; night variant declared, not active
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tmp ), "RederiveCstWithVariant: scene loads via the CST path" );
+		Check( LumExitanceR( j, "lum" ) > 1.0, "RederiveCstWithVariant: initial load is base (lum scale 5)" );
+		Check( j->RederiveCstWithVariant( "night" ), "RederiveCstWithVariant(night) re-derives clean" );
+		Check( LumExitanceR( j, "lum" ) < 0.01, "RederiveCstWithVariant(night): the night override (scale 0) is now active" );
+		char buf[64] = {0}; j->GetActiveSceneVariant( buf, sizeof(buf) );
+		Check( std::string(buf) == "night", "RederiveCstWithVariant(night): the Job's active-variant record reflects it" );
+		Check( j->RederiveCstWithVariant( "none" ), "RederiveCstWithVariant(none) re-derives clean" );
+		Check( LumExitanceR( j, "lum" ) > 1.0, "RederiveCstWithVariant(none): back to base (lum scale 5)" );
+		j->release();
+		std::remove( tmp );
 	}
 
 	std::printf( "%d passed, %d failed.\n", s_pass, s_fail );

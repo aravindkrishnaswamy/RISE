@@ -2769,6 +2769,11 @@ namespace RISE
 			const char* filename
 			);
 
+		//! P5: re-derive the retained CST Document with a forced active scene_variant ("none"/"" = base).
+		bool RederiveCstWithVariant(
+			const char* variantName
+			);
+
 		//! P5: the retained canonical CST (null unless the scene was loaded via LoadAsciiSceneViaCst).
 		const RISE::Cst::Document*	GetCstDocument() const { return pCstDocument.get(); }
 

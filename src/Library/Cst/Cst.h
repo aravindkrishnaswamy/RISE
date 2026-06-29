@@ -281,7 +281,7 @@ namespace RISE
 		//! Covers `GenericManager`-backed entities AND participating media (slice 2 hooks the
 		//! Job's separate `mediaMap` -- `Add*Medium` + `SetObjectInteriorMedium`/`SetGlobalMedium`
 		//! -- since media bypass the GenericManager chokepoint).
-		int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics = nullptr, ReferenceGraph* outRecorded = nullptr );
+		int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics = nullptr, ReferenceGraph* outRecorded = nullptr, const char* activeVariantOverride = nullptr );
 
 		//! Incrementally re-apply ONLY a closure (DocEditClosure) into an
 		//! already-derived Job after an edit, instead of a full DeriveToJob: it recreates

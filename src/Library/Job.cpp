@@ -9459,6 +9459,31 @@ bool Job::LoadAsciiSceneViaCst( const char* filename )
 	return true;
 }
 
+// P5 (Model-B): re-derive the retained CST Document with a FORCED active scene_variant -- the GUI variant switch.
+// ClearAll() releases + re-creates the containers (fresh slate, no dup-name on re-bake) but does NOT touch the
+// retained Document; preserve it across the reset, re-bake with the variant override, then re-retain it.
+bool Job::RederiveCstWithVariant( const char* variantName )
+{
+	if( !pCstDocument ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::RederiveCstWithVariant:: no retained CST Document (load via LoadAsciiSceneViaCst first)" );
+		return false;
+	}
+	std::unique_ptr<RISE::Cst::Document> doc = std::move( pCstDocument );   // preserve across the container reset
+	ClearAll();                                                            // DestroyContainers + InitializeContainers (fresh slate)
+	std::vector<std::string> diags;
+	// activeVariantOverride is non-null -> the bake FORCES this variant, bypassing the active_scene_variant chunk.
+	RISE::Cst::DeriveToJob( *doc, *this, &diags, nullptr, variantName ? variantName : "none" );
+	pCstDocument = std::move( doc );                                       // re-retain (intact even if the re-derive erred)
+	if( !diags.empty() ) {
+		for( size_t i = 0; i < diags.size() && i < 8u; ++i ) {
+			GlobalLog()->PrintEx( eLog_Error, "Job::RederiveCstWithVariant:: derive diagnostic: %s", diags[i].c_str() );
+		}
+		return false;
+	}
+	PushJobFrameStoreToRasterizers();
+	return true;
+}
+
 // L6b — push the canonical FrameStore to every registered rasterizer.
 // Called after scene load completes and after SetActiveCamera in case
 // the new camera has different dimensions.  Each rasterizer addrefs

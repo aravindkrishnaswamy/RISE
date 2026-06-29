@@ -1354,7 +1354,7 @@ static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, 
 	return true;
 }
 
-int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics, ReferenceGraph* outRecorded )
+int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics, ReferenceGraph* outRecorded, const char* activeVariantOverride )
 {
 	std::vector<std::string> local;
 	std::vector<std::string>& diags = diagnostics ? *diagnostics : local;
@@ -1419,8 +1419,12 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	// names so PASS-2 registers the ACTIVE definition per material name (objects then bind to it by name -- no
 	// post-derive re-pointing of a built scene).  CST-native; the legacy reader renders the base.
 	std::string svActiveName, svActiveCamera;
-	for( const Pending& p : pending )
-		if( p.keyword == "active_scene_variant" ) svActiveName = p.bag.GetString( "name", "" );
+	if( activeVariantOverride ) {                       // GUI re-derive FORCES a variant ("none"/"" => base), bypassing the active_scene_variant chunk
+		svActiveName = activeVariantOverride;
+	} else {
+		for( const Pending& p : pending )
+			if( p.keyword == "active_scene_variant" ) svActiveName = p.bag.GetString( "name", "" );
+	}
 	if( svActiveName == "none" ) svActiveName.clear();
 	std::set<std::string> svOverriddenNames;
 	std::map<std::string, size_t> svActiveOverride;   // active-variant override name -> its pending index (applied at the base's slot)
@@ -1535,6 +1539,10 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	if( diags.empty() && !svActiveName.empty() && !svActiveCamera.empty() && svActiveCamera != "none" )
 		if( !pJob.SetActiveCamera( svActiveCamera.c_str() ) )   // Reference not existence-checked in PASS-1 -> diag here
 			diags.push_back( "scene_variant `" + svActiveName + "`: active_camera `" + svActiveCamera + "` is not a declared camera" );
+	// The GUI re-derive forces a variant via activeVariantOverride (which bypasses the active_scene_variant
+	// chunk's Finalize); reconcile the Job's active-variant record with the forced decision ("" => base).
+	if( diags.empty() && activeVariantOverride )
+		pJob.SetActiveSceneVariant( svActiveName.c_str() );
 	return count;
 }
 

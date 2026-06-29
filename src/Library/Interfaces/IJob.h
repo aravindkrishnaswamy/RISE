@@ -2723,6 +2723,14 @@ namespace RISE
 			const char* filename							///< [in] Name of the file containing the scene
 			) { return false; }
 
+		//! P5 (Model-B): re-derive the RETAINED CST Document with a FORCED active scene_variant ("none"/"" =
+		//! base), re-baking the materials -- the GUI variant switch.  Resets the managers first (ClearAll), so the
+		//! Document must already be retained (loaded via LoadAsciiSceneViaCst).  Default FALSE (only Job overrides).
+		/// \return TRUE iff re-derived with no error diagnostics
+		virtual bool RederiveCstWithVariant(
+			const char* variantName							///< [in] variant to force active ("none"/"" = base)
+			) { return false; }
+
 		//! Runs an ascii script
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool RunAsciiScript(
