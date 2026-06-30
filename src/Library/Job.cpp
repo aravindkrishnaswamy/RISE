@@ -9960,8 +9960,16 @@ int Job::ApplyCstRemoveCameraChunk( const char* camName )
 // -- DocSetOrAddParamValue handles insert (and emits a leading newline to avoid brace-glue).  NodeIds are preserved
 // across edits, so the resolved filmId stays valid across the chained sets; commit ONCE at the end (atomic).
 //
-// Returns 1 on success, 0 on a clean no-op (no retained Document -> legacy scene, the live SetFilm already happened)
-// or a soft failure (film chunk not found), leaving the Document intact.
+// ABSENT `film` chunk: a CST scene may legitimately have NONE (renders on the built-in default; CST does not
+// synthesize one).  Rather than a lossy no-op (which would lose the resolution edit on save / next D2 -- the SAME
+// data-loss class as the present-chunk bug, just the sibling case), this INSERTS a fresh `film` chunk built from the
+// LIVE post-SetFilm dims and appends it to the Document (mirroring ApplyCstInsertCameraChunk's symmetric anti-glue
+// idiom).  The width/height/pixelAR string args are ignored in that branch (they carry only the single edited param;
+// an insert must reproduce the FULL live film state).  No undo path (Film edits aren't undoable).
+//
+// Returns 1 on success (param-set on a present chunk OR insert of an absent one), 0 on a clean no-op (no retained
+// Document -> legacy scene, the live SetFilm already happened) or a soft failure (no live IFilm to seed the insert /
+// chunk-build failed), leaving the Document intact.
 int Job::ApplyCstFilmEdit( const char* width, const char* height, const char* pixelAR )
 {
 	if( !pCstDocument ) return 0;   // legacy / no-Document scene -> clean no-op (live SetFilm already applied)
@@ -9970,8 +9978,64 @@ int Job::ApplyCstFilmEdit( const char* width, const char* height, const char* pi
 	// uniqueFallback path (DocFindByNameAnyRole's uniqueFallback branch finds the sole chunk whose role == "film").
 	const RISE::Cst::NodeId filmId = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, "", nullptr, "film", true );
 	if( filmId == 0 ) {
-		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstFilmEdit:: no unique `film` chunk in the CST Document; Film dims not recorded (live edit stands, but a save / D2 will revert them)" );
-		return 0;
+		// ABSENT `film` chunk (completes the P1 close -- sibling of the present-chunk data-loss case): a CST scene may
+		// legitimately omit `film` and render on the built-in default (CST does NOT synthesize one).  A no-op here would
+		// lose a resolution edit on save / next D2 exactly like the present-chunk bug.  So INSERT a fresh `film` chunk
+		// built from the LIVE post-SetFilm values (authoritative, post-clamp) and append it to the Document, mirroring
+		// ApplyCstInsertCameraChunk's symmetric anti-glue idiom: [leadSep "\n"][chunk][trailSep "\n"] at DocItemCount.
+		// No undo path is needed (Film edits aren't undoable -- there's no remove inverse to write, unlike the camera
+		// clone).  Document-only: NO re-derive (the live SetFilm already mutated the scene).  Returns 1 on insert.
+		const IFilm* pLiveFilm = pScene ? pScene->GetFilm() : nullptr;
+		if( !pLiveFilm ) {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstFilmEdit:: no `film` chunk in the CST Document and no live IFilm to seed an insert; Film dims not recorded (live edit stands, but a save / D2 will revert them)" );
+			return 0;
+		}
+		const unsigned int liveW = pLiveFilm->GetWidth();
+		const unsigned int liveH = pLiveFilm->GetHeight();
+		const double       liveP = static_cast<double>( pLiveFilm->GetPixelAR() );
+
+		// Build `film { width <liveW> height <liveH> [pixelAR <liveP>] }` -- pixelAR ONLY when it differs from the 1.0
+		// default (don't spuriously write the default).  pixelAR uses %.17g (the FIX-1 widened, round-trip-exact format
+		// matching FormatMatrix16 / FormatVec3 / the Cst derive path); width/height are exact %u.
+		char chunkText[256];
+		if( liveP != 1.0 ) {
+			std::snprintf( chunkText, sizeof(chunkText), "film {\n\twidth %u\n\theight %u\n\tpixelAR %.17g\n}", liveW, liveH, liveP );
+		} else {
+			std::snprintf( chunkText, sizeof(chunkText), "film {\n\twidth %u\n\theight %u\n}", liveW, liveH );
+		}
+
+		// Parse to a throwaway Document and extract its first CHUNK item (defensive against a leading trivia leaf) --
+		// same extraction ApplyCstInsertCameraChunk uses.
+		RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( std::string( chunkText ) );
+		const int nItems = RISE::Cst::DocItemCount( chunkDoc );
+		RISE::Cst::NodeRef chunkItem;
+		for( int i = 0; i < nItems; ++i ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { chunkItem = it; break; }
+		}
+		if( !chunkItem ) {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstFilmEdit:: built film chunk text did not parse to a film chunk; insert rejected (live edit stands)" );
+			return 0;
+		}
+
+		// Symmetric anti-glue insert (reuse ApplyCstInsertCameraChunk's exact idiom): UNCONDITIONALLY append
+		// [leadSep "\n"][chunk][trailSep "\n"] at DocItemCount.  The leading "\n" keeps the chunk on its own line so a
+		// no-trailing-newline document never serializes `}film` glue; the trailing "\n" keeps the file well-formed.
+		RISE::Cst::Document leadDoc = RISE::Cst::ParseToCst( std::string( "\n" ) );
+		RISE::Cst::NodeRef leadItem = RISE::Cst::DocResolveNodeId( leadDoc, RISE::Cst::DocNodeIdAt( leadDoc, 0 ) );
+		RISE::Cst::Document trailDoc = RISE::Cst::ParseToCst( std::string( "\n" ) );
+		RISE::Cst::NodeRef trailItem = RISE::Cst::DocResolveNodeId( trailDoc, RISE::Cst::DocNodeIdAt( trailDoc, 0 ) );
+		if( !leadItem || !trailItem ) {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstFilmEdit:: could not build the inter-chunk separators; film insert rejected (live edit stands)" );
+			return 0;
+		}
+		RISE::Cst::Document d1 = *pCstDocument;
+		const int at = RISE::Cst::DocItemCount( d1 );
+		d1 = RISE::Cst::DocInsertItem( d1, at,     leadItem );
+		d1 = RISE::Cst::DocInsertItem( d1, at + 1, chunkItem );
+		d1 = RISE::Cst::DocInsertItem( d1, at + 2, trailItem );
+		pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
+		return 1;
 	}
 
 	RISE::Cst::Document d1 = *pCstDocument;

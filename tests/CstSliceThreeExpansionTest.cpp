@@ -1040,6 +1040,129 @@ int main()
 		std::remove( tf );
 	}
 
+	{
+		// FILM5 -- high-precision pixelAR round-trip: a pixelAR that %.6g would TRUNCATE (1.7777778 -> 1.77778, Delta~2e-6)
+		// must survive verbatim.  The controller formats the edited pixelAR with %.17g (FIX 1 widening); replicate that
+		// snprintf here so the test exercises the SAME formatting, then save->reload and assert full-double fidelity.
+		// RED-PROVE: change the snprintf below to "%.6g" -> the reloaded pixelAR is 1.77778, the < 1e-7 assertion fails.
+		const char* tf = "cst_film5.RISEscene";
+		{ std::ofstream o( tf );
+		  o << "RISE ASCII SCENE 6\n"
+		       "film\n{\nwidth 640\nheight 480\n}\n"                                  // NO pixelAR (defaults to 1.0)
+		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tf ), "FILM5: loads film scene via CST" );
+
+		const double hiPAR = 1.7777778;   // a value %.6g rounds to 1.77778 (loses ~2e-6) but %.17g preserves exactly
+		Check( j->SetFilm( 640, 480, hiPAR ), "FILM5: live SetFilm with the high-precision pixelAR succeeds" );
+		// Replicate the controller's pixelAR formatting (SceneEditController Film SetProperty route).  %.17g is the
+		// FIX-1 widened, round-trip-exact format; under the old %.6g this string would be the truncated "1.77778".
+		char vbuf[64];
+		std::snprintf( vbuf, sizeof(vbuf), "%.17g", (double)FilmPAR( *j ) );
+		Check( j->ApplyCstFilmEdit( nullptr, nullptr, vbuf ) == 1, "FILM5: ApplyCstFilmEdit(pixelAR) INSERTs the param" );
+
+		SceneEditController c( *j, 0 );
+		const SaveResult res = c.RequestSave( std::string( tf ) );
+		Check( res.status == SaveResult::Status::Saved, "FILM5: SaveEngine reported Saved" );
+		j->release();
+		Job* j2 = new Job();
+		Check( j2->LoadAsciiSceneViaCst( tf ), "FILM5: reloads the saved file via CST" );
+		Check( std::fabs( FilmPAR( *j2 ) - hiPAR ) < 1e-7,
+		       "FILM5: the high-precision pixelAR round-tripped to full double precision (< 1e-7; %.6g would FAIL here)" );
+		j2->release();
+		std::remove( tf );
+	}
+
+	{
+		// FILM6 -- no-film-chunk INSERT (completes the P1 close, sibling case): a native-v7 scene that OMITS the `film`
+		// chunk renders on the built-in default.  A resolution edit must NOT be lost: ApplyCstFilmEdit INSERTs a fresh
+		// `film { ... }` chunk built from the live dims.  The dims must then survive a D2 (re-derive) AND a save->reload.
+		// RED-PROVE: disable the absent-chunk INSERT branch in Job::ApplyCstFilmEdit (make it `return 0`) -> the insert
+		// returns 0, the D2 reverts to the default dims, and the "DocText contains film" / D2-survival assertions fail.
+		const char* tf = "cst_film6.RISEscene";
+		{ std::ofstream o( tf );
+		  o << "RISE ASCII SCENE 6\n"
+		       "scene_variant\n{\nname night\n}\n"                                   // variant -> material edit takes D2
+		       // NO `film` chunk at all -> renders on the built-in default
+		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tf ), "FILM6: loads variant scene (NO film chunk) via CST" );
+		Check( DocText( *j ).find( "film" ) == std::string::npos, "FILM6: the authored Document has NO film chunk" );
+
+		Check( j->SetFilm( 1280, 720, FilmPAR( *j ) ), "FILM6: live SetFilm to 1280x720 succeeds" );
+		Check( FilmW( *j ) == 1280u && FilmH( *j ) == 720u, "FILM6: live film dims are now 1280x720" );
+		// Absent-chunk branch INSERTs a `film` chunk from the live dims (the width/height args are ignored there).
+		Check( j->ApplyCstFilmEdit( "1280", "720", nullptr ) == 1, "FILM6: ApplyCstFilmEdit INSERTs a film chunk (returns 1)" );
+		{ const std::string s = DocText( *j );
+		  Check( s.find( "film" ) != std::string::npos, "FILM6: the Document now CONTAINS a film chunk" );
+		  Check( s.find( "width 1280" ) != std::string::npos && s.find( "height 720" ) != std::string::npos,
+		         "FILM6: the inserted film chunk declares the new width 1280 + height 720" );
+		  // Well-formed: no `}film` brace-glue onto the preceding chunk; `}` of the inserted chunk on its own line.
+		  Check( s.find( "}film" ) == std::string::npos, "FILM6: the inserted film chunk did not glue onto a preceding `}`" ); }
+
+		// D2: a material edit forces a full re-derive from the Document.  The inserted dims must SURVIVE.
+		SceneEditController c( *j, 0 );
+		c.SetSelection( Cat::Material, String( "m" ) );
+		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "FILM6: material edit applies (D2)" );
+		Check( FilmW( *j ) == 1280u && FilmH( *j ) == 720u, "FILM6: the INSERTED film dims SURVIVED the material D2 (data-loss closed)" );
+
+		// Survives a save->reload into a FRESH Job.
+		const SaveResult res = c.RequestSave( std::string( tf ) );
+		Check( res.status == SaveResult::Status::Saved, "FILM6: SaveEngine reported Saved" );
+		j->release();
+		Job* j2 = new Job();
+		Check( j2->LoadAsciiSceneViaCst( tf ), "FILM6: reloads the saved file via CST" );
+		Check( FilmW( *j2 ) == 1280u && FilmH( *j2 ) == 720u, "FILM6: the inserted dims PERSISTED through save->reload (1280x720)" );
+		j2->release();
+		std::remove( tf );
+	}
+
+	{
+		// FILM7 -- two SEPARATE edits persist: edit width (route), then LATER edit height (route) on the SAME Document;
+		// both must survive a save->reload.  Closes the "no test of two separate sequential edits" gap.
+		// RED-PROVE: drop the second ApplyCstFilmEdit(height) call -> the reloaded height reverts to the authored 600
+		// -> the "height 1080" assertion fails (the width edit alone would still pass).
+		const char* tf = "cst_film7.RISEscene";
+		{ std::ofstream o( tf );
+		  o << "RISE ASCII SCENE 6\n"
+		       "film\n{\nwidth 800\nheight 600\n}\n"
+		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tf ), "FILM7: loads film scene via CST" );
+
+		// First edit: WIDTH only (height arg nullptr -> minimal diff).
+		Check( j->SetFilm( 1920, 600, FilmPAR( *j ) ), "FILM7: live SetFilm to width 1920 succeeds" );
+		Check( j->ApplyCstFilmEdit( "1920", nullptr, nullptr ) == 1, "FILM7: ApplyCstFilmEdit(width) records the first edit" );
+
+		// LATER, SEPARATE edit: HEIGHT only (width arg nullptr) -- the width edit above must NOT be clobbered.
+		Check( j->SetFilm( 1920, 1080, FilmPAR( *j ) ), "FILM7: live SetFilm to height 1080 succeeds" );
+		Check( j->ApplyCstFilmEdit( nullptr, "1080", nullptr ) == 1, "FILM7: ApplyCstFilmEdit(height) records the second edit" );
+
+		SceneEditController c( *j, 0 );
+		const SaveResult res = c.RequestSave( std::string( tf ) );
+		Check( res.status == SaveResult::Status::Saved, "FILM7: SaveEngine reported Saved" );
+		j->release();
+		Job* j2 = new Job();
+		Check( j2->LoadAsciiSceneViaCst( tf ), "FILM7: reloads the saved file via CST" );
+		Check( FilmW( *j2 ) == 1920u, "FILM7: the FIRST edit (width 1920) PERSISTED through save->reload" );
+		Check( FilmH( *j2 ) == 1080u, "FILM7: the SECOND edit (height 1080) PERSISTED through save->reload (both separate edits survived)" );
+		j2->release();
+		std::remove( tf );
+	}
+
 	std::remove( tmp );
 	std::cout << passCount << " passed, " << failCount << " failed." << std::endl;
 	return failCount == 0 ? 0 : 1;

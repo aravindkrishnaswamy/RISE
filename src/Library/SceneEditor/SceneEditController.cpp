@@ -3863,7 +3863,10 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 			} else if( n == "height" ) {
 				std::snprintf( vbuf, sizeof(vbuf), "%u", filmRef->GetHeight() ); h = vbuf;
 			} else if( n == "pixelAR" ) {
-				std::snprintf( vbuf, sizeof(vbuf), "%.6g", filmRef->GetPixelAR() ); p = vbuf;
+				// %.17g (NOT %.6g) so the edited double round-trips bit-for-bit -- matches the house
+				// scalar-serialization convention (FormatMatrix16 / FormatVec3 in SceneEditor.cpp, and the
+				// Cst.cpp derive path, all use %.17g).  %.6g truncated e.g. 1.7777778 -> 1.77778 (Delta~2e-6).
+				std::snprintf( vbuf, sizeof(vbuf), "%.17g", filmRef->GetPixelAR() ); p = vbuf;
 			}
 			if( w || h || p ) mJob.ApplyCstFilmEdit( w, h, p );
 		}
