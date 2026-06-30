@@ -2803,6 +2803,15 @@ namespace RISE
 		int ApplyCstCameraPoseEdit( const char* camName, const char* location, const char* lookat, const char* up,
 		                            const char* orientation, const char* targetOrientation );
 
+		//! Model-B P5 (camera-clone CST insert): INSERT a faithful camera chunk (built by
+		//! CameraIntrospection::BuildCameraChunkText) into the retained Document so a future D2 / save reproduces the
+		//! clone.  Document-only (no re-derive) -> returns 1 on success / 0 on failure; no rebind needed.
+		int ApplyCstInsertCameraChunk( const char* chunkText );
+
+		//! Model-B P5 (camera-clone CST insert -- undo): REMOVE the camera chunk named `camName` (the inverse of
+		//! ApplyCstInsertCameraChunk).  Document-only -> 1 on success / 0 on failure; no rebind needed.
+		int ApplyCstRemoveCameraChunk( const char* camName );
+
 		//! P5: the retained canonical CST (null unless the scene was loaded via LoadAsciiSceneViaCst).
 		const RISE::Cst::Document*	GetCstDocument() const { return pCstDocument.get(); }
 

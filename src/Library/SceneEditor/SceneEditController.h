@@ -765,10 +765,13 @@ namespace RISE
 		//! unsupported camera type, or `outLen == 0`.  Bumps
 		//! `SceneEpoch` so platform UIs auto-rebuild the camera list.
 		//!
-		//! Persistence caveat: the clone lives in the in-memory
-		//! Scene/Job only.  Reloading the .RISEscene file via
-		//! `LoadAsciiScene` drops it — the SceneEditor's scene-text
-		//! round-trip (Phase 6 serializer) is still pending.
+		//! Persistence: on a CST-loaded scene (the edit-model pivot),
+		//! the clone is ALSO recorded as a faithful camera chunk in the
+		//! retained canonical CST Document, so it survives a D2 full
+		//! re-derive AND a save->reload (the SaveEngine serializes the
+		//! Document).  Undo removes that chunk; redo re-inserts it.  On a
+		//! LEGACY (non-CST) scene the clone still lives in the in-memory
+		//! Scene/Job only and a reload drops it (legacy serializer gap).
 		bool CloneActiveCamera( const String& proposedName,
 		                        char* outName, unsigned int outLen );
 

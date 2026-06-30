@@ -35,6 +35,7 @@
 #include "../src/Library/SceneEditor/LightIntrospection.h"
 #include "../src/Library/Interfaces/ILightManager.h"
 #include "../src/Library/Interfaces/ICamera.h"
+#include "../src/Library/Interfaces/ICameraManager.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Interfaces/IObject.h"
 #include "../src/Library/Interfaces/IMaterialManager.h"
@@ -59,6 +60,23 @@ static double LightProp( Job& j, const char* lightName, const char* prop )
 	for( size_t i = 0; i < props.size(); ++i )
 		if( props[i].name == String( prop ) ) return std::atof( props[i].value.c_str() );
 	return -999.0;
+}
+
+// Does a NAMED camera exist on the LIVE scene?
+static bool CamExists( Job& j, const char* name )
+{
+	const IScene* sc = j.GetScene();
+	const ICameraManager* cams = sc ? sc->GetCameras() : 0;
+	return cams && cams->GetItem( name ) != 0;
+}
+
+// A named camera's rest-location Z (the authored `location` z), off the LIVE scene; -999 if absent.
+static double NamedCamZ( Job& j, const char* name )
+{
+	const IScene* sc = j.GetScene();
+	const ICameraManager* cams = sc ? sc->GetCameras() : 0;
+	const ICamera* cam = cams ? cams->GetItem( name ) : 0;
+	return cam ? cam->GetLocation().z : -999.0;
 }
 
 // Active camera's eye-Z off the LIVE scene.
@@ -408,6 +426,128 @@ int main()
 		Check( LocEq( orbited, afterD2 ), "CD1: camera orbit SURVIVED the material D2 (drag pose committed to CST, data-loss closed)" );
 		j->release();
 		std::remove( tc );
+	}
+
+	// ---- CADD: CLONING a camera on a CST scene INSERTS a faithful camera chunk into the retained Document, so the
+	//      clone SURVIVES a material-edit D2 AND a save->reload; UNDO removes the chunk (the clone stays gone across a
+	//      later D2); REDO re-inserts it.  Closes the round-5 data-loss for camera clones (CloneActiveCamera used to
+	//      register the live camera but never record it in the CST).  The variant scene makes material edits take D2. ----
+	{
+		const char* tk = "cst_s3_camclone.RISEscene";
+		{ std::ofstream o( tk );
+		  o << "RISE ASCII SCENE 6\n"
+		       "scene_variant\n{\nname night\n}\n"                                    // declares a variant -> material edits take D2
+		       "film\n{\nwidth 64\nheight 64\n}\n"
+		       "pinhole_camera\n{\nname cam\nlocation 0 0 7\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"   // NAMED + clonable
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tk ), "CADD: loads variant + named-camera scene via CST" );
+
+		SceneEditController c( *j, 0 );
+		// Select the source camera (the sole named one) so it's active, then clone it.
+		c.SetSelection( Cat::Camera, String( "cam" ) );
+		char buf[256]; buf[0] = '\0';
+		Check( c.CloneActiveCamera( String( "cam_copy" ), buf, sizeof( buf ) ), "CADD: clone of the active camera succeeds" );
+		const std::string cloneName( buf );
+		Check( !cloneName.empty(), "CADD: the clone got a non-empty name" );
+
+		// (1) The new camera exists on the LIVE scene.
+		Check( CamExists( *j, cloneName.c_str() ), "CADD1: the cloned camera exists on the live scene" );
+		// The clone is a faithful copy: same authored rest-location z (7).
+		Check( std::fabs( NamedCamZ( *j, cloneName.c_str() ) - 7.0 ) < 1e-6, "CADD1: the clone copied the source location (z=7)" );
+
+		// (2) It SURVIVES a material-edit D2 (the variant scene re-derives the whole Document; the clone must
+		//     still be present because its chunk is now IN the Document).  RED-PROVE: disable the forward insert
+		//     (ApplyCstInsertCameraChunk call in SceneEditor's AddCamera branch) and this D2 drops the clone.
+		c.SetSelection( Cat::Material, String( "m" ) );
+		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "CADD2: material edit applies (D2)" );
+		Check( CamExists( *j, cloneName.c_str() ), "CADD2: the clone SURVIVED the material D2 (chunk recorded in the CST)" );
+		Check( std::fabs( NamedCamZ( *j, cloneName.c_str() ) - 7.0 ) < 1e-6, "CADD2: the re-derived clone matches the original (faithful chunk)" );
+
+		// (3) It SURVIVES save->reload: save the Document, then load into a FRESH Job -- the clone chunk must be there.
+		const SaveResult res = c.RequestSave( std::string( tk ) );
+		Check( res.status == SaveResult::Status::Saved, "CADD3: SaveEngine reported Saved" );
+		j->release();
+		Job* j2 = new Job();
+		Check( j2->LoadAsciiSceneViaCst( tk ), "CADD3: reloads the saved file via CST" );
+		Check( CamExists( *j2, cloneName.c_str() ), "CADD3: the clone PERSISTED through save->reload (CST chunk serialized)" );
+		Check( std::fabs( NamedCamZ( *j2, cloneName.c_str() ) - 7.0 ) < 1e-6, "CADD3: the reloaded clone is faithful (z=7)" );
+		j2->release();
+
+		// (4) UNDO + (5) REDO on a fresh load (so the history is the single clone op).  Re-clone, then exercise undo/redo.
+		{
+			const char* tk2 = "cst_s3_camclone2.RISEscene";
+			{ std::ofstream o( tk2 );
+			  o << "RISE ASCII SCENE 6\n"
+			       "scene_variant\n{\nname night\n}\n"
+			       "film\n{\nwidth 64\nheight 64\n}\n"
+			       "pinhole_camera\n{\nname cam\nlocation 0 0 7\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
+			       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+			       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
+			       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+			       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+			       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+			Job* ju = new Job();
+			Check( ju->LoadAsciiSceneViaCst( tk2 ), "CADD: (undo/redo) loads via CST" );
+			SceneEditController cu( *ju, 0 );
+			cu.SetSelection( Cat::Camera, String( "cam" ) );
+			char ub[256]; ub[0] = '\0';
+			Check( cu.CloneActiveCamera( String( "cam_copy" ), ub, sizeof( ub ) ), "CADD: (undo/redo) clone succeeds" );
+			const std::string un( ub );
+			Check( CamExists( *ju, un.c_str() ), "CADD: the clone exists before undo" );
+
+			// (4) UNDO -> the clone is gone live.  Then a material D2 must keep it gone (proves the chunk was REMOVED
+			//     from the Document, not just the live camera).  RED-PROVE: disable the remove (ApplyCstRemoveCameraChunk
+			//     in SceneEditor's revert AddCamera branch) and the D2 re-adds the clone from the still-present chunk.
+			//     NOTE: the material edit below CLEARS the redo stack, so REDO (case 5) is exercised on a fresh load.
+			cu.Undo();
+			Check( !CamExists( *ju, un.c_str() ), "CADD4: undo removed the clone live" );
+			cu.SetSelection( Cat::Material, String( "m" ) );
+			Check( cu.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "CADD4: material edit applies (D2)" );
+			Check( !CamExists( *ju, un.c_str() ), "CADD4: the clone STAYED gone across the D2 (chunk removed from the Document)" );
+			ju->release();
+			std::remove( tk2 );
+		}
+
+		// (5) REDO -> the clone is back (redo replays the forward AddCamera, re-inserting the chunk).  Exercised on a
+		//     FRESH load with NO intervening edit (an intervening edit clears the redo stack).  Then a material D2
+		//     must KEEP the redone clone (proves redo re-inserted the chunk into the Document, not just the live cam).
+		{
+			const char* tk3 = "cst_s3_camclone3.RISEscene";
+			{ std::ofstream o( tk3 );
+			  o << "RISE ASCII SCENE 6\n"
+			       "scene_variant\n{\nname night\n}\n"
+			       "film\n{\nwidth 64\nheight 64\n}\n"
+			       "pinhole_camera\n{\nname cam\nlocation 0 0 7\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
+			       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+			       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
+			       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+			       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+			       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+			Job* jr = new Job();
+			Check( jr->LoadAsciiSceneViaCst( tk3 ), "CADD: (redo) loads via CST" );
+			SceneEditController cr( *jr, 0 );
+			cr.SetSelection( Cat::Camera, String( "cam" ) );
+			char rb[256]; rb[0] = '\0';
+			Check( cr.CloneActiveCamera( String( "cam_copy" ), rb, sizeof( rb ) ), "CADD: (redo) clone succeeds" );
+			const std::string rn( rb );
+			cr.Undo();
+			Check( !CamExists( *jr, rn.c_str() ), "CADD5: clone gone after undo (pre-redo)" );
+			cr.Redo();
+			Check( CamExists( *jr, rn.c_str() ), "CADD5: redo brought the clone back" );
+			Check( std::fabs( NamedCamZ( *jr, rn.c_str() ) - 7.0 ) < 1e-6, "CADD5: the redone clone is faithful (z=7)" );
+			// And the redone clone is back IN the Document: a material D2 keeps it.
+			cr.SetSelection( Cat::Material, String( "m" ) );
+			Check( cr.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "CADD5: material edit applies (D2)" );
+			Check( CamExists( *jr, rn.c_str() ), "CADD5: the redone clone SURVIVED a material D2 (redo re-inserted the chunk)" );
+			jr->release();
+			std::remove( tk3 );
+		}
+		std::remove( tk );
 	}
 
 	// ---- CSG: a transform edit on a csg_object (pickable, but it authors only position/orientation -- NO matrix

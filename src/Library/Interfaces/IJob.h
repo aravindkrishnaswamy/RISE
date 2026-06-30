@@ -3280,6 +3280,15 @@ namespace RISE
 		virtual int ApplyCstCameraPoseEdit( const char* camName, const char* location, const char* lookat, const char* up,
 		                                    const char* orientation, const char* targetOrientation ) { return 0; }
 
+		//! Model-B P5 (camera-clone CST insert): INSERT a faithful camera chunk into the retained CST so a future
+		//! D2 / save reproduces a cloned camera.  Document-only (no re-derive); 1 = inserted, 0 = failure.  Default
+		//! no-op (legacy jobs have no retained CST).  See Job override.  Appended at the IJob tail (append-only ABI).
+		virtual int ApplyCstInsertCameraChunk( const char* chunkText ) { return 0; }
+
+		//! Model-B P5 (camera-clone CST insert -- undo): REMOVE the camera chunk named `camName` (inverse of
+		//! ApplyCstInsertCameraChunk).  Document-only; 1 = removed, 0 = failure.  Default no-op; see Job override.
+		virtual int ApplyCstRemoveCameraChunk( const char* camName ) { return 0; }
+
 		//! P5 Slice 3 expansion (object transform): 0 = not routable / 1 = matrix (standard_object) / 2 = components
 		//! (csg_object).  Default 0; see Job override.
 		virtual int CstObjectTransformKind( const char* name ) const { return 0; }

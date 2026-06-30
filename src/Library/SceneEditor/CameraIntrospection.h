@@ -30,6 +30,7 @@
 #include "../Utilities/RString.h"
 #include "SceneEdit.h"   // for CameraSnapshot used by Capture/ApplyCameraSnapshot
 #include <vector>
+#include <string>
 
 namespace RISE
 {
@@ -118,6 +119,23 @@ namespace RISE
 		//! Phase C: the save engine needs this to emit a fresh chunk
 		//! for a newly-created (cloned) camera.
 		static String GetDescriptorKeyword( const ICamera& camera );
+
+		//! Model-B P5 (camera-clone CST insert): build a FAITHFUL,
+		//! re-derivable scene-file chunk for `camera` under `cloneName`.
+		//! The keyword is the camera's type; the body emits `name
+		//! <cloneName>` followed by every AUTHORABLE pose/param row
+		//! (location / lookat / up / orientation / theta / phi + fov /
+		//! thinlens photographic quartet / fisheye scale / orthographic
+		//! viewport_scale + exposure / scanning_rate / pixel_rate), each
+		//! formatted in the form the parser accepts (degrees for angles,
+		//! mm / scene-units as the descriptor declares) so a re-derive of
+		//! this chunk reproduces an equivalent camera.  NO width / height
+		//! / pixelAR (the `film` chunk owns dims; pixelAR is const-bound).
+		//! The chunk has NO trailing newline (the inter-chunk separator is
+		//! a separate trivia leaf the caller inserts).  Returns an empty
+		//! string for an out-of-tree / ONB camera type (not re-derivable).
+		static std::string BuildCameraChunkText( const ICamera& camera,
+		                                         const String& cloneName );
 	};
 }
 

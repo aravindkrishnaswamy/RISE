@@ -1867,6 +1867,17 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		// leave the auto-promoted active in place rather than
 		// silently swallowing the inconsistency.
 		if( !mJob ) return false;
+		// Model-B P5 (camera-clone CST insert -- undo): on a CST scene, REMOVE the cloned camera's chunk from the
+		// retained Document FIRST (the inverse of the forward insert), so the undo stays Document-consistent -- a
+		// subsequent D2 must NOT resurrect the undone clone.  Document-only (no re-derive); redo re-inserts via the
+		// forward branch.  No-op on a legacy scene.
+		if( mJob->HasRetainedCstDocument() ) {
+			if( mJob->ApplyCstRemoveCameraChunk( edit.objectName.c_str() ) != 1 ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"SceneEditor: undo of camera clone `%s` could not remove its CST chunk (live camera removed, but the Document still holds it -- a re-derive would bring it back)",
+					edit.objectName.c_str() );
+			}
+		}
 		mJob->RemoveCamera( edit.objectName.c_str() );
 		if( edit.prevPropertyValue.size() > 1 ) {
 			if( !mJob->SetActiveCamera( edit.prevPropertyValue.c_str() ) ) {
@@ -2095,6 +2106,28 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 			return false;
 		}
 		mJob->SetActiveCamera( edit.objectName.c_str() );
+		// Model-B P5 (camera-clone CST insert): on a CST scene, also INSERT a faithful camera chunk into the
+		// retained Document so the clone SURVIVES a future D2 re-derive AND a save->reload (else it's a live-only
+		// camera the Document doesn't know about, dropped the first time the scene re-derives from the CST).  This
+		// is purely a Document-only edit (the live camera is already registered above) -- no re-derive, no rebind.
+		// Serves forward AND redo (both route here).  Resolve the just-added live camera by name to introspect its
+		// authorable params.  On a legacy (no-Document) scene this is a no-op (HasRetainedCstDocument false).
+		if( mJob->HasRetainedCstDocument() ) {
+			const ICameraManager* cams = mScene ? mScene->GetCameras() : 0;
+			const ICamera* newCam = cams ? cams->GetItem( edit.objectName.c_str() ) : 0;
+			if( newCam ) {
+				const std::string chunk = CameraIntrospection::BuildCameraChunkText( *newCam, edit.objectName );
+				if( chunk.empty() || mJob->ApplyCstInsertCameraChunk( chunk.c_str() ) != 1 ) {
+					GlobalLog()->PrintEx( eLog_Error,
+						"SceneEditor: camera clone `%s` could not be recorded in the CST Document (live clone stands, but a future re-derive / save would lose it)",
+						edit.objectName.c_str() );
+				}
+			} else {
+				GlobalLog()->PrintEx( eLog_Error,
+					"SceneEditor: camera clone `%s` not resolvable post-add for CST insert (live clone stands, but the Document is out of sync)",
+					edit.objectName.c_str() );
+			}
+		}
 		mLastScope = Dirty_Camera;
 		return true;
 	}

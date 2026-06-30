@@ -9751,6 +9751,83 @@ int Job::ApplyCstCameraPoseEdit( const char* camName, const char* location, cons
 	return DeriveEditedCstDocument_( std::move( d1 ), id, camName, "pose" );
 }
 
+// Model-B P5 (camera-clone CST insert): INSERT a faithful, re-derivable camera chunk into the retained Document so
+// a FUTURE D2 re-derive / save reproduces a cloned camera.  This is a DOCUMENT-ONLY edit -- the live scene already
+// carries the clone (CameraIntrospection::AddCameraFromSnapshot ran first), so NO re-derive / ClearAll / manager
+// replacement happens here (and so no render-thread parking is needed beyond what CloneActiveCamera already did).
+// `chunkText` is a bare `<keyword> { name <clone> ... }` with NO trailing newline (built by BuildCameraChunkText).
+// Parse it into a throwaway Document, extract its first CHUNK item (skipping any stray/trivia leaves), then append
+// it + a "\n" inter-chunk separator trivia leaf (a chunk item does NOT own its trailing newline -- the separator is
+// a SEPARATE rope item, so the serialized Document stays well-formed and ParseToCst round-trips).  Returns 1 on a
+// successful insert, 0 on any failure (no Document / null/empty text / un-parseable chunk) leaving the Document
+// intact.  No 2/3 (no re-derive) -> the caller needs no rebind.
+int Job::ApplyCstInsertCameraChunk( const char* chunkText )
+{
+	if( !pCstDocument || !chunkText || !chunkText[0] ) return 0;
+
+	RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( std::string( chunkText ) );
+	// Find the first top-level CHUNK item (a bare chunk with no `RISE ASCII SCENE` header parses to the chunk at
+	// index 0, but be defensive against a leading stray/trivia leaf).
+	const int nItems = RISE::Cst::DocItemCount( chunkDoc );
+	RISE::Cst::NodeRef chunkItem;
+	for( int i = 0; i < nItems; ++i ) {
+		const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
+		if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { chunkItem = it; break; }
+	}
+	if( !chunkItem ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertCameraChunk:: chunk text did not parse to a camera chunk; insert rejected" );
+		return 0;
+	}
+
+	// Build the "\n" separator trivia leaf the same way (its own one-item Document).
+	RISE::Cst::Document sepDoc = RISE::Cst::ParseToCst( std::string( "\n" ) );
+	RISE::Cst::NodeRef sepItem = RISE::Cst::DocResolveNodeId( sepDoc, RISE::Cst::DocNodeIdAt( sepDoc, 0 ) );
+	if( !sepItem ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertCameraChunk:: could not build the inter-chunk separator; insert rejected" );
+		return 0;
+	}
+
+	const int end = RISE::Cst::DocItemCount( *pCstDocument );
+	RISE::Cst::Document d1 = RISE::Cst::DocInsertItem( *pCstDocument, end,     chunkItem );
+	d1                     = RISE::Cst::DocInsertItem( d1,           end + 1, sepItem );
+	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
+	return 1;
+}
+
+// Model-B P5 (camera-clone CST insert -- undo): REMOVE the camera chunk named `camName` from the retained Document
+// (the exact inverse of ApplyCstInsertCameraChunk).  Resolve by name (uniqueFallback allows the sole-unnamed-camera
+// resolve-by-position, matching ApplyCstCameraPoseEdit), drop the chunk item, then drop its trailing inter-chunk
+// separator if the next item is a pure-newline trivia leaf (the chunk item doesn't own that "\n", so a chunk-only
+// remove would leave an orphan separator -- removing both keeps the round-trip byte-clean).  DOCUMENT-ONLY: no
+// re-derive (the live camera is removed by SceneEditor's RemoveCamera path), so the caller needs no rebind.
+// Returns 1 on success, 0 on any failure (no Document / null name / not found / ambiguous) leaving it intact.
+int Job::ApplyCstRemoveCameraChunk( const char* camName )
+{
+	if( !pCstDocument || !camName ) return 0;
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, camName, nullptr, "camera", true );
+	if( id == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveCameraChunk:: `%s` not found or ambiguous in the CST Document; remove rejected", camName );
+		return 0;
+	}
+	const int idx = RISE::Cst::DocIndexOfNodeId( *pCstDocument, id, nullptr );
+	if( idx < 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveCameraChunk:: `%s` resolved no top-level index; remove rejected", camName );
+		return 0;
+	}
+	RISE::Cst::Document d1 = RISE::Cst::DocRemoveItem( *pCstDocument, idx );
+	// After removing the chunk, the item now AT `idx` is the chunk's old trailing separator -- drop it too if it's
+	// a pure-newline trivia leaf (defensive: if it's anything else, e.g. the chunk was last with no separator, leave
+	// it alone rather than excise an unrelated item).
+	const int nAfter = RISE::Cst::DocItemCount( d1 );
+	if( idx < nAfter ) {
+		const RISE::Cst::NodeRef sep = RISE::Cst::DocResolveNodeId( d1, RISE::Cst::DocNodeIdAt( d1, idx ) );
+		if( sep && sep->kind == RISE::Cst::NodeKind::Trivia && sep->text.find_first_not_of( "\n\r" ) == std::string::npos )
+			d1 = RISE::Cst::DocRemoveItem( d1, idx );
+	}
+	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
+	return 1;
+}
+
 // L6b — push the canonical FrameStore to every registered rasterizer.
 // Called after scene load completes and after SetActiveCamera in case
 // the new camera has different dimensions.  Each rasterizer addrefs

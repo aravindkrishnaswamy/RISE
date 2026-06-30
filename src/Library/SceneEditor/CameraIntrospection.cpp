@@ -970,6 +970,76 @@ bool CameraIntrospection::CaptureCameraSnapshot( const ICamera& camera, CameraSn
 	return false;
 }
 
+// -------------------------------------------------------------------
+// Model-B P5 (camera-clone CST insert): build a faithful, re-derivable
+// scene-file chunk for a (cloned) camera.  Reuses Inspect() so each
+// authorable param is emitted in the exact form the parser accepts
+// (degrees for angles, mm / scene-units per descriptor) -- the same
+// single source of truth that drives the panel.  The validation that
+// the chunk is faithful is the round-trip test (clone survives a D2 ==
+// the re-derived camera matches the clone).
+// -------------------------------------------------------------------
+
+namespace
+{
+	// True for an Inspect() row that must NOT be authored into a fresh
+	// camera chunk: the film-owned raster dims + const-bound pixelAR,
+	// the `name` row (we emit our own clone name), the redundant Vec3
+	// `target_orientation` (theta/phi already cover it -- the parser
+	// reads BOTH but authoring both would double-apply), and any row a
+	// concrete camera type doesn't support (Inspect marks those
+	// editable=false with an "(unavailable)" placeholder value).
+	bool IsAuthorableChunkRow( const CameraProperty& p )
+	{
+		const std::string n( p.name.c_str() );
+		if( n == "name" || n == "width" || n == "height" || n == "pixelAR" ) return false;
+		if( n == "target_orientation" ) return false;   // theta/phi cover it; don't double-author
+		if( !p.editable ) return false;                 // type-unavailable rows (value is a placeholder)
+		return true;
+	}
+}
+
+std::string CameraIntrospection::BuildCameraChunkText( const ICamera& camera, const String& cloneName )
+{
+	const String keyword = GetDescriptorKeyword( camera );
+	if( keyword.size() <= 1 ) return std::string();   // out-of-tree type -> not re-derivable
+
+	// ONB cameras don't round-trip through the lookAt/up factory path
+	// (matches CaptureCameraSnapshot's rejection); a chunk authored from
+	// synthesised lookAt/up would not reproduce the camera -> refuse.
+	if( const CameraCommon* cc = dynamic_cast<const CameraCommon*>( &camera ) ) {
+		if( cc->IsFromONB() ) return std::string();
+	} else {
+		return std::string();
+	}
+	if( cloneName.size() <= 1 ) return std::string();   // empty name -> caller error
+
+	// includeRollOrientation=true keeps the canonical Vec3 `orientation`
+	// row (a roll edit lives there); the pitch/roll/yaw scalar shadows
+	// stay filtered by Inspect, and theta/phi (not target_orientation)
+	// carry the orbit angles.
+	const std::vector<CameraProperty> rows = Inspect( camera, /*includeRollOrientation=*/true );
+
+	std::string out;
+	out += keyword.c_str();
+	out += "\n{\n";
+	out += "name ";
+	out += cloneName.c_str();
+	out += "\n";
+	for( size_t i = 0; i < rows.size(); ++i ) {
+		if( !IsAuthorableChunkRow( rows[i] ) ) continue;
+		// A row whose value didn't read (empty) would author an
+		// ill-formed `param\n` line -- skip it defensively.
+		if( rows[i].value.size() <= 1 ) continue;
+		out += rows[i].name.c_str();
+		out += " ";
+		out += rows[i].value.c_str();
+		out += "\n";
+	}
+	out += "}";   // NO trailing newline -- the caller inserts the separator trivia leaf
+	return out;
+}
+
 bool CameraIntrospection::AddCameraFromSnapshot( IJob& job, const String& newName, const CameraSnapshot& s )
 {
 	if( newName.size() <= 1 ) return false;   // empty name
