@@ -818,14 +818,45 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     // below splices values into the load-time SourceSpanIndex, which CST-load never populates; on a CST scene
     // it would therefore write the ORIGINAL bytes back and LOSE every edit.  SerializeCst is byte-exact on an
     // unedited round-trip and minimal-diff on edits (CstSaveFidelityTest), so this preserves fidelity.  The
-    // external-modification mtime guard / source-span re-anchor are N/A here (no spans; a full re-serialize
-    // always writes a complete valid file).
+    // source-span re-anchor is N/A (no spans).  The external-modification guard IS still needed for an in-place
+    // save (below) -- a full re-serialize that blindly overwrote an externally-edited file would silently clobber
+    // those disk changes; CST-load now captures a FileIdentity (Job::LoadAsciiSceneViaCst) so we can refuse it.
     if( mJob.HasRetainedCstDocument() ) {
         const RISE::Cst::Document* doc = mJob.GetCstDocument();
         if( !doc ) {
             result.status = SaveResult::Status::Failed;
             result.errorMessage = "Job reports a retained CST Document but GetCstDocument() returned null";
             return result;
+        }
+        // External-modification guard, IN-PLACE save only: if the loaded file was edited on disk after load, an
+        // in-place re-serialize would clobber those external edits with the in-memory CST -- refuse, exactly as
+        // the legacy path does (§11.6).  A Save-As writes a DIFFERENT file from the in-memory doc, so the loaded
+        // file's on-disk state is irrelevant; only guard when writing back to the loaded path.  (CST-load now
+        // captures the FileIdentity; before that this guard was both bypassed AND unavailable -- reviewer P1.)
+        {
+            const FileIdentity& cstLoadIdent = mSpans.GetFileIdentity();
+            if( cstLoadIdent.captured && cstLoadIdent.filePath == filePath ) {
+                struct ::stat cur = {};
+                if( ::stat( filePath.c_str(), &cur ) == 0 ) {
+                    const long long curSize  = static_cast<long long>( cur.st_size );
+                    const long long curMtime = static_cast<long long>( cur.st_mtime );
+                    long long curMtimeNsec = 0;
+#if defined(__APPLE__)
+                    curMtimeNsec = static_cast<long long>( cur.st_mtimespec.tv_nsec );
+#elif defined(__linux__) || defined(__unix__)
+                    curMtimeNsec = static_cast<long long>( cur.st_mtim.tv_nsec );
+#endif
+                    if( curSize != cstLoadIdent.sizeBytes || curMtime != cstLoadIdent.mtimeSec
+                        || curMtimeNsec != cstLoadIdent.mtimeNsec ) {
+                        result.status = SaveResult::Status::Refused;
+                        result.errorMessage =
+                            "scene file '" + filePath + "' was modified externally between load and save "
+                            "(mtime/size mismatch).  Saving would overwrite those external changes with the "
+                            "in-memory scene.  Reload the file before saving.";
+                        return result;
+                    }
+                }
+            }
         }
         const std::string text = RISE::Cst::SerializeCst( *doc );
         // NoOp when the target already holds exactly these bytes (e.g. a save with no pending edits).

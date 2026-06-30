@@ -23,6 +23,7 @@
 #include "Cst/Cst.h"   // P5 (save-as-CST): ParseToCst / DeriveToJob / Document
 #include <fstream>
 #include <sstream>
+#include <sys/stat.h>   // P5 Slice 4: capture the loaded file's mtime/size for the CST-save external-mod guard
 #include "RISE_API.h"
 #include "Rendering/Film.h"		// kDefaultFilm* / kMaxFilm* constants
 #include <algorithm>
@@ -343,6 +344,10 @@ void Job::InitializeContainers()
 	// for the Job's lifetime.  AsciiSceneParser clears + repopulates
 	// them on each ParseAndLoadScene call.
 	pSourceSpanIndex.reset(  new SourceSpanIndex() );
+	// P5 Slice 4 (reviewer P1): re-apply the CST-load file identity preserved across this ClearAll, so the
+	// external-modification save guard survives a D2 re-derive (which recreates the span index above).  No-op at
+	// construction (uncaptured) and for legacy-loaded scenes.
+	if( mCstLoadFileIdentity.captured ) pSourceSpanIndex->SetFileIdentity( mCstLoadFileIdentity );
 	pBaseTransforms.reset(   new TransformSnapshot() );
 	pLoadedTransforms.reset( new TransformSnapshot() );
 	pOverrideSpans.reset(    new OverrideSpanIndex() );
@@ -9455,6 +9460,34 @@ bool Job::LoadAsciiSceneViaCst( const char* filename )
 	}
 
 	pCstDocument = std::move( doc );    // RETAIN the canonical CST for edit/save (Slices 3-4)
+
+	// Reviewer P1 (Slice 4 follow-up): capture the loaded file's identity (path + mtime + size) so the CST save
+	// path can REFUSE an in-place save that would clobber EXTERNAL edits made to the file after load.  The legacy
+	// loader captures this for its mtime/size guard; CST-load must too (it populates no byte spans, only the
+	// identity).  Mirrors AsciiSceneParser's top-level capture.
+	if( pSourceSpanIndex ) {
+		struct stat fileStats = {};
+		if( ::stat( filename, &fileStats ) == 0 ) {
+			RISE::FileIdentity ident;
+			ident.filePath  = filename;
+			ident.mtimeSec  = static_cast<long long>( fileStats.st_mtime );
+#if defined(__APPLE__)
+			ident.mtimeNsec = static_cast<long long>( fileStats.st_mtimespec.tv_nsec );
+#elif defined(__linux__) || defined(__unix__)
+			ident.mtimeNsec = static_cast<long long>( fileStats.st_mtim.tv_nsec );
+#else
+			ident.mtimeNsec = 0;
+#endif
+			ident.sizeBytes = static_cast<long long>( fileStats.st_size );
+			ident.captured  = true;
+			pSourceSpanIndex->SetFileIdentity( ident );
+			// PRESERVE across a later D2 re-derive: ApplyCstParamEdit's D2 calls ClearAll -> InitializeContainers,
+			// which RECREATES pSourceSpanIndex (losing this identity).  Stash it in a Job member that survives
+			// ClearAll; InitializeContainers re-applies it onto the fresh span index so the save guard still sees it.
+			mCstLoadFileIdentity = ident;
+		}
+	}
+
 	PushJobFrameStoreToRasterizers();   // L6b parity with LoadAsciiScene
 	return true;
 }

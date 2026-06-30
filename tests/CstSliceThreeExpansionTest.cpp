@@ -497,6 +497,28 @@ int main()
 		const SaveResult res3 = c3.RequestSave( std::string( ts ) );
 		Check( res3.status == SaveResult::Status::NoOp, "SV2: re-saving an unedited CST scene is a NoOp (byte-identical)" );
 		j3->release();
+
+		// SV3: an in-place save REFUSES when the loaded file was modified externally after load -- the CST
+		// re-serialize must NOT silently clobber those on-disk edits (reviewer P1).  Red-provable: disable the
+		// in-place external-mod guard in SaveEngine::Save and the save reports Saved + overwrites the external edit.
+		{
+			const char* te = "cst_s4_extmod.RISEscene";
+			{ std::ofstream o( te ); o << SCENE; }
+			Job* je = new Job();
+			Check( je->LoadAsciiSceneViaCst( te ), "SV3: loads via CST" );
+			SceneEditController ce( *je, 0 );
+			ce.SetSelection( Cat::Light, String( "l" ) );
+			Check( ce.SetPropertyForCategory( Cat::Light, String( "power" ), String( "8" ) ), "SV3: light power edit applies" );
+			// Simulate an EXTERNAL edit to the file on disk after load (a different SIZE -> a guaranteed mtime/size mismatch).
+			{ std::ofstream o( te, std::ios::app ); o << "\n/* externally appended after load */\n"; }
+			const SaveResult rese = ce.RequestSave( std::string( te ) );
+			Check( rese.status == SaveResult::Status::Refused, "SV3: in-place save REFUSES on external modification (no clobber)" );
+			// The on-disk external edit must still be present (the save did not overwrite it).
+			{ std::ifstream in( te ); std::stringstream ss; ss << in.rdbuf(); const std::string disk = ss.str();
+			  Check( disk.find( "externally appended" ) != std::string::npos, "SV3: the external edit is preserved on disk (not overwritten)" ); }
+			je->release();
+			std::remove( te );
+		}
 		std::remove( ts );
 	}
 

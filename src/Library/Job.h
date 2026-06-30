@@ -117,6 +117,7 @@ namespace RISE
 		// returned by the IJobPriv getters remain stable across the
 		// scene's lifetime.
 		std::unique_ptr<SourceSpanIndex>			pSourceSpanIndex;
+		RISE::FileIdentity						mCstLoadFileIdentity;   // P5 Slice 4: CST-load file identity, preserved across ClearAll for the save external-mod guard
 		std::unique_ptr<TransformSnapshot>			pBaseTransforms;
 		std::unique_ptr<TransformSnapshot>			pLoadedTransforms;
 		// Phase 6.2 (§6.8): per-`override_object` chunk catalog.
