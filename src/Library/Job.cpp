@@ -9532,7 +9532,10 @@ bool Job::RederiveCstWithVariant( const char* variantName )
 int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue )
 {
 	if( !pCstDocument || !entityName || !role || !newValue || !newValue[0] ) return 0;   // empty value rejected (defense)
-	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, entityName, nullptr, entityKind ? entityKind : "" );
+	// Cameras are the one editor-addressable kind that can be UNNAMED (the sole `pinhole_camera { ... }`), so
+	// allow the unique-in-kind resolve-by-position fallback for them; always-named kinds keep strict refuse.
+	const bool uniqueFallback = ( entityKind && std::string( entityKind ) == "camera" );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, entityName, nullptr, entityKind ? entityKind : "", uniqueFallback );
 	if( id == 0 ) {
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamEdit:: `%s` not found or ambiguous in the CST Document; edit rejected", entityName );
 		return 0;

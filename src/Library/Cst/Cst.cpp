@@ -2975,7 +2975,7 @@ NodeId DocFindByName( const Document& doc, const std::string& namePath, int* vis
 	return ( count == 1 ) ? id : 0;   // unique-or-refuse: an ambiguous duplicate name resolves to 0
 }
 
-NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, int* occurrences, const std::string& roleKindSuffix )
+NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, int* occurrences, const std::string& roleKindSuffix, bool uniqueFallback )
 {
 	std::vector<NodeRef> items; SeqToVec( doc.items, items );
 	std::vector<std::string> matches;                              // "keyword/name" of every bare-name hit
@@ -3003,6 +3003,21 @@ NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, i
 			if( kindMatch ) { ++narrowed; matchPath = matches[m]; }
 		}
 		if( narrowed != 1 ) return 0;                              // still ambiguous (or none of the kind) -> refuse
+	} else if( uniqueFallback && matches.empty() && !roleKindSuffix.empty() ) {
+		// Unnamed-entity fallback (e.g. the sole, UNNAMED camera the editor addresses as the active camera):
+		// no chunk carries this bare name, but if exactly ONE top-level chunk is of the requested kind, use it,
+		// resolved by POSITION (DocNodeIdAt) since it has no name to NameFind.  SAFE for always-named kinds
+		// (material/light): a name match would have been found first, so this branch never fires for them.
+		const std::string under = "_" + roleKindSuffix;
+		int kindCount = 0, kindIndex = -1;
+		for( size_t i = 0; i < items.size(); ++i ) {
+			if( items[i]->kind != NodeKind::Chunk ) continue;
+			const std::string& role = items[i]->role;
+			const bool kindMatch = ( role == roleKindSuffix ) ||
+				( role.size() > under.size() && role.compare( role.size() - under.size(), under.size(), under ) == 0 );
+			if( kindMatch ) { ++kindCount; kindIndex = (int)i; }
+		}
+		return ( kindCount == 1 ) ? DocNodeIdAt( doc, kindIndex ) : 0;
 	} else {
 		return 0;                                                  // absent, or ambiguous with no kind hint -> refuse
 	}

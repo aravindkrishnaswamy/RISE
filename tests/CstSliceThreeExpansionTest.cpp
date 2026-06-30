@@ -29,6 +29,7 @@
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/SceneEditor/LightIntrospection.h"
 #include "../src/Library/Interfaces/ILightManager.h"
+#include "../src/Library/Interfaces/ICamera.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -48,6 +49,14 @@ static double LightProp( Job& j, const char* lightName, const char* prop )
 	for( size_t i = 0; i < props.size(); ++i )
 		if( props[i].name == String( prop ) ) return std::atof( props[i].value.c_str() );
 	return -999.0;
+}
+
+// Active camera's eye-Z off the LIVE scene.
+static double CamZ( Job& j )
+{
+	const IScene* sc = j.GetScene();
+	const ICamera* cam = sc ? sc->GetCamera() : 0;
+	return cam ? cam->GetLocation().z : -999.0;
 }
 
 static const char* SCENE =
@@ -104,6 +113,35 @@ int main()
 		Check( std::fabs( LightProp( *j, "l", "power" ) - 8.0 ) < 1e-6,
 		       "L2: the light edit SURVIVED the material-edit D2 (data-loss closed)" );
 		j->release();
+	}
+
+	// ---- C1: a CAMERA edit on an UNNAMED camera (exercises the resolve-by-position fallback) survives a
+	//      material D2 -- the camera data-loss closure ----
+	{
+		const char* tc = "cst_s3_cam.RISEscene";
+		{ std::ofstream o( tc );
+		  o << "RISE ASCII SCENE 6\n"
+		       "scene_variant\n{\nname night\n}\n"
+		       "film\n{\nwidth 64\nheight 64\n}\n"
+		       "pinhole_camera\n{\nlocation 0 0 3\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"   // UNNAMED
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tc ), "C1: loads variant + unnamed-camera scene via CST" );
+		Check( std::fabs( CamZ( *j ) - 3.0 ) < 1e-6, "C1: camera z is 3 before the edit" );
+		SceneEditController c( *j, 0 );
+		Check( c.SetPropertyForCategory( Cat::Camera, String( "location" ), String( "0 0 9" ) ), "C1: camera location edit applies" );
+		Check( std::fabs( CamZ( *j ) - 9.0 ) < 1e-6, "C1: after edit, camera z is 9" );
+		// Material D2 rebuilds cameras from the Document; the (unnamed) camera edit must survive.
+		c.SetSelection( Cat::Material, String( "m" ) );
+		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "C1: material edit applies (D2)" );
+		Check( std::fabs( CamZ( *j ) - 9.0 ) < 1e-6,
+		       "C1: the UNNAMED-camera edit SURVIVED the material D2 (resolve-by-position fallback + data-loss closed)" );
+		j->release();
+		std::remove( tc );
 	}
 
 	std::remove( tmp );

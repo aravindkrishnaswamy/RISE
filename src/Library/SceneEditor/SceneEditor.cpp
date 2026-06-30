@@ -989,7 +989,8 @@ ICamera* SceneEditor::ResolveEditedCamera( const SceneEdit& e )
 static inline bool IsCstRoutedOp( SceneEdit::Op op )
 {
 	return op == SceneEdit::SetMaterialProperty
-	    || op == SceneEdit::SetLightProperty;
+	    || op == SceneEdit::SetLightProperty
+	    || op == SceneEdit::SetCameraProperty;
 }
 
 unsigned long long SceneEditor::ResolveTargetSerial( const SceneEdit& e ) const
@@ -1540,6 +1541,12 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 	{
 		ICamera* baseCam = ResolveEditedCamera( edit );
 		if( !baseCam ) return false;
+		// P5 Slice 3 expansion: CST-route the inverse camera edit too.
+		if( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) {
+			if( !RouteCstParamEdit_( edit.cameraTargetName.c_str(), "camera", edit.objectName.c_str(), edit.prevPropertyValue.c_str() ) ) return false;
+			mLastScope = Dirty_Camera;
+			return true;
+		}
 		// Replay the captured prev value through the same parser.
 		CameraIntrospection::SetProperty( *baseCam, edit.objectName, edit.prevPropertyValue );
 		mLastScope = Dirty_Camera;
@@ -1789,6 +1796,13 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 	{
 		ICamera* baseCam = ResolveEditedCamera( edit );
 		if( !baseCam ) return false;
+		// P5 Slice 3 expansion: CST-route the camera edit (entity = the active camera by name, or the unique
+		// camera chunk by position for an UNNAMED camera) so the Document stays complete.
+		if( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) {
+			if( !RouteCstParamEdit_( edit.cameraTargetName.c_str(), "camera", edit.objectName.c_str(), edit.propertyValue.c_str() ) ) return false;
+			mLastScope = Dirty_Camera;
+			return true;
+		}
 		if( !CameraIntrospection::SetProperty( *baseCam, edit.objectName, edit.propertyValue ) ) return false;   // H2-S3: surface parse failure so Apply can reject
 		mLastScope = Dirty_Camera;
 		return true;
