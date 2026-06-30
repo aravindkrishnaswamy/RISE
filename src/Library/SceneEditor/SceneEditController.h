@@ -837,8 +837,9 @@ namespace RISE
 		//! spawned and consumed by RenderLoop on entry.  When set, the
 		//! loop skips its initial "show something on Start" pass so the
 		//! current on-screen image (the just-finished production render)
-		//! is preserved until the first user edit.  See Start()'s
-		//! @param suppressInitialRender for the full rationale.
+		//! is preserved until the first user edit.  See the
+		//! suppressInitialRender parameter on Start() for the full
+		//! rationale.
 		std::atomic<bool>           mSuppressInitialRender;
 		std::atomic<bool>           mRendering;
 		// Phase 6.5: signals the render loop NOT to start a new pass
