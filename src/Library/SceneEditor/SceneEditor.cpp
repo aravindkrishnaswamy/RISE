@@ -1027,7 +1027,7 @@ unsigned long long SceneEditor::ResolveTargetSerial( const SceneEdit& e ) const
 }
 
 // P5 Slice 3: re-point this editor at the Job's CURRENT scene + managers after a CST D2 full re-derive
-// (Job::ApplyCstParamEdit result 2) ClearAll'd the Job -- the Scene + managers this editor cached are now
+// (Job::ApplyCstParamEdit result 2 or 3) ClearAll'd the Job -- the Scene + managers this editor cached are now
 // freed.  Mirrors SceneEditController::RebindEditorToJob (which re-binds for a variant switch); here the
 // editor re-binds ITSELF, synchronously at the edit site, so no frame above derefs a dangling pointer.
 // The Job object itself is unchanged (only its containers), so mJob stays valid.
@@ -1058,7 +1058,7 @@ bool SceneEditor::ApplyMaterialSlotByName( const SceneEdit& e, const String& pai
 	// slot re-point through a CST param-edit + re-derive so the canonical CST stays the source of truth
 	// (Slice 4's save serializes it).  Serves BOTH forward and undo (the inverse re-point replays through
 	// here), so the mHistory undo stack works unchanged.  "material" disambiguates a cross-category name
-	// clash.  Result 2 = the D2 full re-derive ClearAll'd + replaced the Scene + managers, so re-point THIS
+	// clash.  Result 2 or 3 = the D2 full re-derive ClearAll'd + replaced the Scene + managers, so re-point THIS
 	// editor's cached pointers before returning (the SetMaterialProperty arm reads mLastScope but not the
 	// managers after we return; the next edit/undo would dereference the freed ones) -- else use-after-free.
 	// Legacy-loaded scenes (no Document) fall through to the direct MaterialIntrospection::SetSlot below.

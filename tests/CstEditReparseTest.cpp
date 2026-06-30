@@ -149,7 +149,10 @@ int main()
 		Document d2 = DocReparse( d, text );
 		Check( DocFindByName( d2, "uniformcolor_painter/red" ) == red, "red's NodeId carried across the reparse (value edit keeps lineage)" );
 		Check( SerializeCst( d2 ) == text, "reparsed Document serializes to the new text" );
-		//----------------------------------------------------------------------
+		Check( DeriveMatchesReparse( d2 ), "reparsed CST derives faithfully" );
+	}
+
+	//----------------------------------------------------------------------
 	std::printf( "[insert] DocSetOrAddParamValue inserts an absent param that re-lexes faithfully even when the closing brace shares the last param's line (no glue)\n" );
 	{
 		// The closing brace SHARES name's line (the loader accepts this; "braces on own lines" is an
@@ -172,9 +175,6 @@ int main()
 		Document d3 = ParseToCst( SerializeCst( d2 ) );
 		Check( DeriveDump( d2 ) == DeriveDump( d3 ), "[insert] inserted param on a brace-sharing chunk re-lexes faithfully via the CST (save+reload matches -- no glue)" );
 		Check( DeriveDump( d2 ).find( "grn" ) != std::string::npos, "[insert] the inserted reflectance reached the derived Job" );
-	}
-
-	Check( DeriveMatchesReparse( d2 ), "reparsed CST derives faithfully" );
 	}
 
 	//----------------------------------------------------------------------

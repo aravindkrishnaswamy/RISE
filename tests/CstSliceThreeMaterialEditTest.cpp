@@ -219,7 +219,7 @@ int main()
 		j->release();
 	}
 
-	// ---- I: the Job::ApplyCstParamEdit return-code contract (1 incremental / 2 D2 full re-derive / 0 reject) ----
+	// ---- I: the Job::ApplyCstParamEdit return-code contract (0 reject / 1 incremental / 2 D2 full re-derive; 3 = replaced-but-diagnosed, not separately reachable) ----
 	{
 		// non-variant scene -> incremental fast path (1)
 		Job* j = new Job();
@@ -249,6 +249,32 @@ int main()
 		       "I: after the D2 edit the live scene shows p2" );
 		j->release();
 		std::remove( ti );
+	}
+
+	// ---- K: a D2 material edit on a variant scene PRESERVES the user's active camera (a full re-derive
+	//      would otherwise reset it to the document default -- a surprising side-effect on the hero scene) ----
+	{
+		const char* tk = "cst_s3_camkeep.RISEscene";
+		{ std::ofstream o( tk );
+		  o << "RISE ASCII SCENE 6\n"
+		       "scene_variant\n{\nname night\n}\n"
+		       "film\n{\nwidth 64\nheight 64\n}\n"
+		       "pinhole_camera\n{\nname cam1\nlocation 0 0 3\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
+		       "pinhole_camera\n{\nname cam2\nlocation 3 0 0\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tk ), "K: loads variant + 2-camera scene via CST" );
+		Check( j->SetActiveCamera( "cam1" ), "K: switch the active camera to cam1 (cam2 is the load default)" );
+		Check( j->GetActiveCameraName() == std::string( "cam1" ), "K: active camera is cam1 before the edit" );
+		Check( j->ApplyCstParamEdit( "m", "material", "reflectance", 0, "p2" ) == 2, "K: the material edit takes the D2 path" );
+		Check( j->GetActiveCameraName() == std::string( "cam1" ),
+		       "K: the D2 material edit PRESERVED the active camera (not reset to the cam2 doc default)" );
+		j->release();
+		std::remove( tk );
 	}
 
 	std::remove( tmp );

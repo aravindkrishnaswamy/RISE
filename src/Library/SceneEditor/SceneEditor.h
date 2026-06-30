@@ -358,7 +358,7 @@ namespace RISE
 		bool ApplyMaterialSlotByName( const SceneEdit& e, const String& painterName );
 
 		//! P5 Slice 3: re-point this editor's cached scene + managers at the Job's CURRENT ones after a CST
-		//! D2 full re-derive (Job::ApplyCstParamEdit result 2 ClearAll'd the Job, freeing the old ones).
+		//! D2 full re-derive (Job::ApplyCstParamEdit result 2 or 3 ClearAll'd the Job, freeing the old ones).
 		void RebindToJob_();
 
 		//! H2 (P-WALK): the SINGLE per-op forward + revert dispatchers.  Each

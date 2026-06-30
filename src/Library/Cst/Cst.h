@@ -699,8 +699,9 @@ namespace RISE
 		//! when the chunk does not already spell it out -- the editor's property panel surfaces EVERY material
 		//! slot, including DEFAULTED ones the scene text omits, and editing one must take effect + persist
 		//! (DocSetParamValue alone no-ops on an absent param).  `*inserted` (if non-null) reports whether a new
-		//! param was added (vs an existing value replaced).  Chunk braces are on their own lines (parser
-		//! invariant), so the inserted line is newline-delimited on both sides.  O(log N) + chunk rebuild.
+		//! param was added (vs an existing value replaced).  The "braces on their own lines" rule is an AUTHORING
+		//! convention the CST loader does NOT enforce, so the insert emits a LEADING newline (see
+		//! WithParamValueOrInsert) -- it never glues onto a brace-sharing previous param.  O(log N) + chunk rebuild.
 		Document DocSetOrAddParamValue( const Document& doc, NodeId chunkId, const std::string& role, int occ, const std::string& newValue, bool* inserted = nullptr, int* visits = nullptr );
 
 		//! RENAME a chunk (item 7, the D14 driver): set the chunk's `name` to

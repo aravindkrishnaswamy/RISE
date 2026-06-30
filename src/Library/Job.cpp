@@ -9509,8 +9509,9 @@ bool Job::RederiveCstWithVariant( const char* variantName )
 // P5 Slice 3 (edit-model pivot): apply ONE param-value edit to the retained CST Document, then re-derive.
 // FAST PATH: re-derive just the affected closure incrementally.  COST NOTE: one edit is O(N log N), NOT
 // "O(closure) flat" -- DocEditClosure below recomputes the reference graph from scratch each call (the
-// incremental APPLY is ~microseconds, but the closure COMPUTE dominates: ~5ms @ 1k chunks, ~23ms @ 4k per
-// CstEditCostTest).  Fine for DISCRETE panel edits (human cadence); the per-frame gizmo path the expansion
+// incremental APPLY is ~microseconds, but the closure COMPUTE dominates: ~1.2ms @ ~1k chunks, ~5ms @ ~4k,
+// ~24ms @ ~16k chunks (per CstEditCostTest, whose N counts entity GROUPS = 4 chunks each).  Fine for DISCRETE
+// panel edits (human cadence); the per-frame gizmo path the expansion
 // adds will need a Job-retained ReferenceGraph + a carried-forward NodeId (DocEditClosure's (id,graph)
 // overload IS O(closure)) to hit interactive rates.  Atomic: DeriveToJobIncremental rolls the Job back on a
 // diagnostic, so a refusal leaves the live scene byte-identical.
@@ -9518,7 +9519,9 @@ bool Job::RederiveCstWithVariant( const char* variantName )
 // composed material in the closure -- e.g. watch_dial, which DECLARES a variant) OR errors, re-derive the WHOLE
 // edited document (forcing the active variant).  This derives TWICE: a validate-before-destroy dry-run into a
 // throwaway Job (so a genuinely invalid edit leaves the live scene intact) THEN the real ClearAll+re-derive --
-// ~2x the single-derive cost (see RederiveCstWithVariant, same convention).  The slot is INSERTED if the scene
+// ~2x the single-derive cost (see RederiveCstWithVariant, same convention).  Unlike a variant SWITCH, the edit
+// PRESERVES the active camera/rasterizer/animation across the re-derive (a full derive resets them to the
+// document defaults; an EDIT must not -- captured + restored below).  The slot is INSERTED if the scene
 // text omitted it (a defaulted slot the panel still surfaces).  `entityKind` (e.g. "material") disambiguates a
 // cross-category name clash (reliable for materials; see DocFindByNameAnyRole).
 // Return: 0 = no change (live scene intact); 1 = applied incrementally (managers untouched, no rebind);
@@ -9562,12 +9565,24 @@ int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, cons
 			return 0;   // live scene UNTOUCHED
 		}
 	}
+	// A material EDIT must not reset the user's runtime activations the way a variant SWITCH intentionally does:
+	// a full DeriveToJob re-applies the document's active_camera + default rasterizer/animation, so capture the
+	// live ones across the ClearAll and restore them after (best-effort -- the edit only changed a slot, so the
+	// camera/rasterizer/animation still exist).
+	const std::string keepCamera     = GetActiveCameraName();
+	const std::string keepRasterizer = GetActiveRasterizerName();
+	char keepAnim[256]; keepAnim[0] = '\0'; GetActiveAnimationName( keepAnim, sizeof( keepAnim ) );
 	ClearAll();
 	std::vector<std::string> fdiags;
 	RISE::Cst::DeriveToJob( d1, *this, &fdiags, nullptr, activeVariant );
 	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // re-retain (intact even if the re-derive erred)
 	for( size_t i = 0; i < fdiags.size() && i < 8u; ++i )
 		GlobalLog()->PrintEx( eLog_Error, "Job::ApplyCstParamEdit:: full re-derive diagnostic: %s", fdiags[i].c_str() );
+	// Restore the activations the full re-derive reset to document defaults (best-effort; before the framestore
+	// push so it targets the restored rasterizer).
+	if( !keepCamera.empty()     ) SetActiveCamera( keepCamera.c_str() );
+	if( !keepRasterizer.empty() ) SetActiveRasterizer( keepRasterizer.c_str() );
+	if( keepAnim[0]             ) SetActiveAnimation( keepAnim );
 	PushJobFrameStoreToRasterizers();
 	// 2 = replaced + clean; 3 = replaced but the re-derive diagnosed (still rebind to avoid UAF, but it FAILED).
 	return fdiags.empty() ? 2 : 3;
