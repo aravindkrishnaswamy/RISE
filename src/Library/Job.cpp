@@ -9859,38 +9859,42 @@ int Job::ApplyCstInsertCameraChunk( const char* chunkText )
 		return 0;
 	}
 
-	// LEADING-separator guard (same defect class as commit bf74399b's WithParamValueOrInsert insert-glue fix):
-	// "braces on their own lines" is an AUTHORING convention the CST loader does NOT enforce, and editors/git
-	// commonly drop a file's FINAL newline.  If the retained Document's last top-level item's tail trivia lacks
-	// a trailing newline, appending the chunk would splice it directly after the prior chunk's `}` (`}pinhole_camera`
-	// on one line) -- the lenient relexer survives, but SerializeCst then writes a file the documented grammar
-	// rejects (`}` must be on its own line), breaking legacy LoadAsciiScene reload + external tooling.  Emit a
-	// LEADING `\n` separator first whenever the Document's serialized tail lacks one (the tail of the whole
-	// serialization IS the last item's tail).  ApplyCstRemoveCameraChunk drops this leading separator on the
-	// inverse so an insert->remove cycle stays SerializeCst-identical.
-	const int end = RISE::Cst::DocItemCount( *pCstDocument );
+	// LEADING-separator (symmetric-by-construction): ALWAYS prepend a `\n` separator before the chunk, then the
+	// chunk, then the trailing `\n` separator -- the inserted unit is UNCONDITIONALLY exactly three leaves in
+	// order: [leadSep "\n"][chunk][trailSep "\n"], appended at DocItemCount.  ApplyCstRemoveCameraChunk is the
+	// structural inverse (it drops exactly those three leaves at idx, idx, idx-1), so an insert->remove cycle is
+	// SerializeCst-BYTE-IDENTICAL in EVERY case -- there is no heuristic to misfire.  Why unconditional: "braces
+	// on their own lines" is an AUTHORING convention the CST loader does NOT enforce, and editors/git commonly
+	// drop a file's FINAL newline; gluing the chunk after a prior `}` (`}pinhole_camera` on one line) would make
+	// SerializeCst write a file the documented grammar rejects.  The leading `\n` keeps every chunk on its own
+	// line; on a normal trailing-newline doc it yields a (harmless, idiomatic) blank line before the clone and
+	// PRESERVES the file's own trailing newline (the lead sep is a NEW leaf, never the document's final one).
 	RISE::Cst::Document d1 = *pCstDocument;
-	int at = end;
-	if( end > 0 ) {
-		const std::string tail = RISE::Cst::SerializeCst( d1 );
-		if( !tail.empty() && tail.back() != '\n' ) {
-			RISE::Cst::Document leadDoc = RISE::Cst::ParseToCst( std::string( "\n" ) );
-			RISE::Cst::NodeRef leadItem = RISE::Cst::DocResolveNodeId( leadDoc, RISE::Cst::DocNodeIdAt( leadDoc, 0 ) );
-			if( leadItem ) { d1 = RISE::Cst::DocInsertItem( d1, at, leadItem ); ++at; }
-		}
+	const int at = RISE::Cst::DocItemCount( d1 );
+	RISE::Cst::Document leadDoc = RISE::Cst::ParseToCst( std::string( "\n" ) );
+	RISE::Cst::NodeRef leadItem = RISE::Cst::DocResolveNodeId( leadDoc, RISE::Cst::DocNodeIdAt( leadDoc, 0 ) );
+	if( !leadItem ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertCameraChunk:: could not build the leading separator; insert rejected" );
+		return 0;
 	}
-	d1 = RISE::Cst::DocInsertItem( d1, at,     chunkItem );
-	d1 = RISE::Cst::DocInsertItem( d1, at + 1, sepItem );
+	d1 = RISE::Cst::DocInsertItem( d1, at,     leadItem );
+	d1 = RISE::Cst::DocInsertItem( d1, at + 1, chunkItem );
+	d1 = RISE::Cst::DocInsertItem( d1, at + 2, sepItem );
 	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
 	return 1;
 }
 
 // Model-B P5 (camera-clone CST insert -- undo): REMOVE the camera chunk named `camName` from the retained Document
-// (the exact inverse of ApplyCstInsertCameraChunk).  Resolve by name (uniqueFallback allows the sole-unnamed-camera
-// resolve-by-position, matching ApplyCstCameraPoseEdit), drop the chunk item, then drop its trailing inter-chunk
-// separator if the next item is a pure-newline trivia leaf (the chunk item doesn't own that "\n", so a chunk-only
-// remove would leave an orphan separator -- removing both keeps the round-trip byte-clean).  DOCUMENT-ONLY: no
-// re-derive (the live camera is removed by SceneEditor's RemoveCamera path), so the caller needs no rebind.
+// (the exact STRUCTURAL inverse of ApplyCstInsertCameraChunk, which always appends [leadSep][chunk][trailSep]).
+// Resolve by name (uniqueFallback allows the sole-unnamed-camera resolve-by-position, matching ApplyCstCameraPoseEdit),
+// get its index `idx`, then remove EXACTLY those three leaves: (1) the chunk at `idx`; (2) its TRAILING separator,
+// the item now at `idx` after the chunk drop, if it's a pure-newline trivia leaf; (3) its LEADING separator, the
+// item at `idx-1`, if `idx-1 >= 0` and it's a pure-newline trivia leaf.  Because insert ALWAYS places
+// [leadSep][chunk] adjacent, the item at `idx-1` is ALWAYS this insert's own leading separator -- position-
+// independent (works even when the removed camera isn't the last chunk) and it can NEVER reach the document's own
+// earlier trailing newline (that leaf is at least one position further back).  So an insert->remove cycle is
+// SerializeCst-BYTE-IDENTICAL in every case (normal trailing-newline, no-trailing-newline, empty).  DOCUMENT-ONLY:
+// no re-derive (the live camera is removed by SceneEditor's RemoveCamera path), so the caller needs no rebind.
 // Returns 1 on success, 0 on any failure (no Document / null name / not found / ambiguous) leaving it intact.
 int Job::ApplyCstRemoveCameraChunk( const char* camName )
 {
@@ -9906,28 +9910,24 @@ int Job::ApplyCstRemoveCameraChunk( const char* camName )
 		return 0;
 	}
 	RISE::Cst::Document d1 = RISE::Cst::DocRemoveItem( *pCstDocument, idx );
-	// After removing the chunk, the item now AT `idx` is the chunk's old trailing separator -- drop it too if it's
-	// a pure-newline trivia leaf (defensive: if it's anything else, e.g. the chunk was last with no separator, leave
-	// it alone rather than excise an unrelated item).
+	// (2) TRAILING separator: after removing the chunk, the item now AT `idx` is the chunk's old trailing separator
+	// -- drop it too if it's a pure-newline trivia leaf (defensive: if it's anything else, e.g. the chunk was last
+	// with no separator, leave it alone rather than excise an unrelated item).
 	const int nAfter = RISE::Cst::DocItemCount( d1 );
 	if( idx < nAfter ) {
 		const RISE::Cst::NodeRef sep = RISE::Cst::DocResolveNodeId( d1, RISE::Cst::DocNodeIdAt( d1, idx ) );
 		if( sep && sep->kind == RISE::Cst::NodeKind::Trivia && sep->text.find_first_not_of( "\n\r" ) == std::string::npos )
 			d1 = RISE::Cst::DocRemoveItem( d1, idx );
 	}
-	// Clean inverse of ApplyCstInsertCameraChunk's LEADING-separator guard: when the original Document had no
-	// trailing newline, the insert prepended a pure-newline separator BEFORE the cloned chunk.  After removing the
-	// chunk + its trailing separator above, that leading separator is now the document's last item -- drop it so an
-	// insert->remove cycle restores the byte-identical (no-trailing-newline) Document.  Only fires at the tail and
-	// only on a pure-newline leaf, so a legitimate trailing newline (the non-glue case, where no leading separator
-	// was added and the item before the gap is the prior chunk) is untouched.
-	{
-		const int nTail = RISE::Cst::DocItemCount( d1 );
-		if( idx >= nTail && nTail > 0 ) {
-			const RISE::Cst::NodeRef lead = RISE::Cst::DocResolveNodeId( d1, RISE::Cst::DocNodeIdAt( d1, nTail - 1 ) );
-			if( lead && lead->kind == RISE::Cst::NodeKind::Trivia && lead->text.find_first_not_of( "\n\r" ) == std::string::npos )
-				d1 = RISE::Cst::DocRemoveItem( d1, nTail - 1 );
-		}
+	// (3) LEADING separator: the item at `idx-1` (immediately BEFORE where the chunk was) is the leading separator
+	// this insert always prepended -- drop it if `idx-1 >= 0` and it's a pure-newline trivia leaf.  Targeting
+	// `idx-1` (not the document tail) is what makes this position-independent AND safe: insert places
+	// [leadSep][chunk] adjacent, so `idx-1` is ALWAYS our own leading sep, and the document's own final newline
+	// (if any) sits at least one leaf further back, so it is NEVER touched.
+	if( idx - 1 >= 0 ) {
+		const RISE::Cst::NodeRef lead = RISE::Cst::DocResolveNodeId( d1, RISE::Cst::DocNodeIdAt( d1, idx - 1 ) );
+		if( lead && lead->kind == RISE::Cst::NodeKind::Trivia && lead->text.find_first_not_of( "\n\r" ) == std::string::npos )
+			d1 = RISE::Cst::DocRemoveItem( d1, idx - 1 );
 	}
 	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
 	return 1;

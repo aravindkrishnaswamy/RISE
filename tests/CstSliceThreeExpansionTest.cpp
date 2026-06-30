@@ -752,6 +752,48 @@ int main()
 		std::remove( tn );
 	}
 
+	// ---- CINS-EOL: the COMMON case -- a scene that ENDS in a trailing newline (every file in scenes/ does).  The
+	//      symmetric-by-construction insert/remove (insert ALWAYS prepends a `\n` lead separator; remove drops the
+	//      chunk + trailing sep + the leading sep at idx-1) must leave the Document SerializeCst-BYTE-IDENTICAL after
+	//      an insert->remove cycle, WITHOUT losing the document's own pre-existing final newline.  RED-PROVE on the
+	//      pre-fix code: the old tail-heuristic remove over-fires and strips the document's final `\n` (193 bytes ->
+	//      192 bytes, tail `}` instead of `\n`), so the byte-identity assertion FAILS. ----
+	{
+		const char* tn = "cst_s5_eol.RISEscene";
+		// Write the scene WITH a trailing newline (the last byte is `\n`).
+		{ std::ofstream o( tn, std::ios::binary );
+		  o << "RISE ASCII SCENE 6\n"
+		       "film\n{\nwidth 64\nheight 64\n}\n"
+		       "pinhole_camera\n{\nname cam\nlocation 0 0 7\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";   // <-- trailing '\n'
+		}
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tn ), "CINS-EOL: loads the trailing-newline scene via CST" );
+		const RISE::Cst::Document* d0 = j->GetCstDocument();
+		Check( d0 != nullptr, "CINS-EOL: Document retained" );
+		const std::string before = d0 ? RISE::Cst::SerializeCst( *d0 ) : std::string();
+		Check( !before.empty() && before.back() == '\n', "CINS-EOL: the loaded Document's tail HAS a trailing newline (the common case)" );
+
+		const char* clone = "pinhole_camera\n{\nname cam_new\nlocation 0 0 9\nlookat 0 0 0\nup 0 1 0\nfov 30\n}";
+		Check( j->ApplyCstInsertCameraChunk( clone ) == 1, "CINS-EOL: insert reports success" );
+		const RISE::Cst::Document* d1 = j->GetCstDocument();
+		const std::string after = d1 ? RISE::Cst::SerializeCst( *d1 ) : std::string();
+		// The clone keyword starts on its own line (no `}<keyword>` glue) -- the unconditional leading separator.
+		Check( after.find( "}pinhole_camera" ) == std::string::npos, "CINS-EOL: the inserted chunk did NOT glue onto the previous `}` (no `}pinhole_camera`)" );
+		Check( after.find( "\npinhole_camera\n{\nname cam_new" ) != std::string::npos, "CINS-EOL: the inserted camera keyword starts on its own line" );
+
+		// The byte-identity round-trip: insert->remove restores the Document EXACTLY, including the final newline.
+		Check( j->ApplyCstRemoveCameraChunk( "cam_new" ) == 1, "CINS-EOL: remove of the inserted chunk reports success" );
+		const RISE::Cst::Document* d2 = j->GetCstDocument();
+		const std::string roundtrip = d2 ? RISE::Cst::SerializeCst( *d2 ) : std::string();
+		Check( roundtrip == before, "CINS-EOL: insert->remove round-trips SerializeCst-BYTE-IDENTICAL (the document's own final newline is preserved)" );
+		j->release();
+		std::remove( tn );
+	}
+
 	// ---- REOPEN: the Slice-5 CST-load DEFAULT must not regress GUI scene RE-OPEN.  The GUIs reuse ONE persistent
 	//      Job across opens: clearAll() THEN load.  ClearAll() now resets the retained Document so the second
 	//      native-v7 LoadAsciiSceneAuto (-> LoadAsciiSceneViaCst) does NOT hit the load-once refusal.  RED-PROVE:

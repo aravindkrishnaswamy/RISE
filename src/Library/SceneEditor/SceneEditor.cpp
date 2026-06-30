@@ -1201,8 +1201,9 @@ bool SceneEditor::RouteCstParamEdit_( const char* entityName, const char* entity
 
 // P5 Slice 3 expansion (object): a shadow-flags edit maps to TWO standard_object bool params, so route both
 // (casts_shadows then receives_shadows).  `flags` bit0 = casts, bit1 = receives (the SetObjectShadowFlags
-// encoding).  Each route re-derives; RouteCstParamEdit_ rebinds on a D2, and the retained Document survives the
-// ClearAll, so the second route sees the first param already applied.  Returns false if EITHER route fails.
+// encoding).  Each route re-derives; RouteCstParamEdit_ rebinds on a D2, and the retained Document is re-retained
+// across the ClearAll (reset DURING ClearAll, re-retained immediately after inside DeriveEditedCstDocument_), so
+// the second route sees the first param already applied.  Returns false if EITHER route fails.
 bool SceneEditor::RouteObjectShadowFlagsToCst_( const String& objectName, int flags )
 {
 	const char* casts = ( flags & 1 ) ? "true" : "false";
