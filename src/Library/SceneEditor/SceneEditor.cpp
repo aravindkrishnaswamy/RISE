@@ -1131,8 +1131,8 @@ bool SceneEditor::RouteObjectShadowFlagsToCst_( const String& objectName, int fl
 {
 	const char* casts = ( flags & 1 ) ? "true" : "false";
 	const char* recvs = ( flags & 2 ) ? "true" : "false";
-	bool ok = RouteCstParamEdit_( objectName.c_str(), "object", "casts_shadows", casts );
-	ok = RouteCstParamEdit_( objectName.c_str(), "object", "receives_shadows", recvs ) && ok;
+	bool ok = RouteCstParamEdit_( objectName.c_str(), "standard_object", "casts_shadows", casts );
+	ok = RouteCstParamEdit_( objectName.c_str(), "standard_object", "receives_shadows", recvs ) && ok;
 	return ok;
 }
 
@@ -1542,11 +1542,12 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 	// instance re-registered under the same name (serial mismatch); applying the
 	// captured state to the replacement would corrupt it.  capturedTargetSerial==0
 	// means the op tracks no identity (medium/time/marker/legacy) -> no check.
-	// SKIP on the CST edit-model for the ops routed through ApplyCstParamEdit (IsCstRoutedOp): that path
-	// RE-DERIVES the entity on every edit, so its serial legitimately changes each time, and it applies/
-	// reverts/redoes BY NAME (never the stale pointer) -- the serial guard is both moot and would FALSELY
-	// trip.  Direct-mutation ops (object/camera/light) KEEP the guard even on a CST-loaded scene, since
-	// they DO mutate the captured instance in place.
+	// SKIP on the CST edit-model for the CST-routed ops (IsCstRoutedOp -- now ALL of material/light/camera +
+	// every IsObjectOp): that path RE-DERIVES the entity (object transforms mutate the live object then RECOMMIT
+	// the result as the `matrix` param at the boundary), so its serial legitimately changes each edit, and it
+	// applies/reverts/redoes BY NAME (never the stale pointer) -- the serial guard is both moot and would FALSELY
+	// trip.  The guard still applies ONLY on a LEGACY (no-Document) scene, where these ops DO mutate the captured
+	// instance in place.
 	if( edit.capturedTargetSerial != 0 &&
 	    !( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) &&
 	    ResolveTargetSerial( edit ) != edit.capturedTargetSerial )
@@ -1574,7 +1575,7 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 					val = edit.prevPropertyValue;
 					break;
 				}
-				if( !RouteCstParamEdit_( edit.objectName.c_str(), "object", ObjectBindingRole( edit.op ), val.c_str() ) ) return false;
+				if( !RouteCstParamEdit_( edit.objectName.c_str(), "standard_object", ObjectBindingRole( edit.op ), val.c_str() ) ) return false;
 				mLastScope = Dirty_ObjectTransform;
 				return true;
 			}
@@ -1815,11 +1816,12 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 	// instance re-registered under the same name (serial mismatch); applying the
 	// captured state to the replacement would corrupt it.  capturedTargetSerial==0
 	// means the op tracks no identity (medium/time/marker/legacy) -> no check.
-	// SKIP on the CST edit-model for the ops routed through ApplyCstParamEdit (IsCstRoutedOp): that path
-	// RE-DERIVES the entity on every edit, so its serial legitimately changes each time, and it applies/
-	// reverts/redoes BY NAME (never the stale pointer) -- the serial guard is both moot and would FALSELY
-	// trip.  Direct-mutation ops (object/camera/light) KEEP the guard even on a CST-loaded scene, since
-	// they DO mutate the captured instance in place.
+	// SKIP on the CST edit-model for the CST-routed ops (IsCstRoutedOp -- now ALL of material/light/camera +
+	// every IsObjectOp): that path RE-DERIVES the entity (object transforms mutate the live object then RECOMMIT
+	// the result as the `matrix` param at the boundary), so its serial legitimately changes each edit, and it
+	// applies/reverts/redoes BY NAME (never the stale pointer) -- the serial guard is both moot and would FALSELY
+	// trip.  The guard still applies ONLY on a LEGACY (no-Document) scene, where these ops DO mutate the captured
+	// instance in place.
 	if( edit.capturedTargetSerial != 0 &&
 	    !( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) &&
 	    ResolveTargetSerial( edit ) != edit.capturedTargetSerial )
@@ -1838,7 +1840,7 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 				String val = edit.propertyValue;
 				if( edit.op == SceneEdit::SetObjectInteriorMedium
 				 && ( val.size() <= 1 || val == String( "none" ) ) ) val = String( "none" );
-				if( !RouteCstParamEdit_( edit.objectName.c_str(), "object", ObjectBindingRole( edit.op ), val.c_str() ) ) return false;
+				if( !RouteCstParamEdit_( edit.objectName.c_str(), "standard_object", ObjectBindingRole( edit.op ), val.c_str() ) ) return false;
 				mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );
 				mLastScope = Dirty_ObjectTransform;
 				return true;

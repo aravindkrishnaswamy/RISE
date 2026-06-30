@@ -9507,28 +9507,11 @@ bool Job::RederiveCstWithVariant( const char* variantName )
 }
 
 // P5 Slice 3 (edit-model pivot): apply ONE param-value edit to the retained CST Document, then re-derive.
-// FAST PATH: re-derive just the affected closure incrementally.  COST NOTE: one edit is O(N log N), NOT
-// "O(closure) flat" -- DocEditClosure below recomputes the reference graph from scratch each call (the
-// incremental APPLY is ~microseconds, but the closure COMPUTE dominates: ~1.2ms @ ~1k chunks, ~5ms @ ~4k,
-// ~24ms @ ~16k chunks (per CstEditCostTest, whose N counts entity GROUPS = 4 chunks each).  Fine for DISCRETE
-// panel edits (human cadence); the per-frame gizmo path the expansion
-// adds will need a Job-retained ReferenceGraph + a carried-forward NodeId (DocEditClosure's (id,graph)
-// overload IS O(closure)) to hit interactive rates.  Atomic: DeriveToJobIncremental rolls the Job back on a
-// diagnostic, so a refusal leaves the live scene byte-identical.
-// FALLBACK (D2): when the incremental refuses (a scene_variant / animation / instance_array / override_object /
-// composed material in the closure -- e.g. watch_dial, which DECLARES a variant) OR errors, re-derive the WHOLE
-// edited document (forcing the active variant).  This derives TWICE: a validate-before-destroy dry-run into a
-// throwaway Job (so a genuinely invalid edit leaves the live scene intact) THEN the real ClearAll+re-derive --
-// ~2x the single-derive cost (see RederiveCstWithVariant, same convention).  Unlike a variant SWITCH, the edit
-// PRESERVES the active camera/rasterizer/animation across the re-derive (a full derive resets them to the
-// document defaults; an EDIT must not -- captured + restored below).  The slot is INSERTED if the scene
-// text omitted it (a defaulted slot the panel still surfaces).  `entityKind` (e.g. "material") disambiguates a
-// cross-category name clash (reliable for materials; see DocFindByNameAnyRole).
-// Return: 0 = no change (live scene intact); 1 = applied incrementally (managers untouched, no rebind);
-// 2 = applied via a FULL re-derive (ClearAll REPLACED the Scene + managers -- the caller MUST re-point its
-// cached scene/manager pointers; SceneEditor self-rebinds, else the next access is a use-after-free);
-// 3 = same as 2 BUT the re-derive emitted diagnostics (managers still replaced -> caller MUST rebind, but the
-// edit FAILED -- treat as failure).  Should-not-happen: the dry-run already validated the identical derive.
+// Resolves the named entity (the slot is INSERTED if the scene text omitted it -- a defaulted slot the panel
+// still surfaces), sets the param, and delegates the re-derive to DeriveEditedCstDocument_, which owns the
+// incremental fast path, the D2 full-re-derive fallback, and the 0/1/2/3 return contract (documented there).
+// `entityKind` (e.g. "material") disambiguates a cross-category name clash; for an UNNAMED camera it also
+// enables a unique-in-kind resolve-by-position fallback (see DocFindByNameAnyRole).
 int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue )
 {
 	if( !pCstDocument || !entityName || !role || !newValue || !newValue[0] ) return 0;   // empty value rejected (defense)
@@ -9545,9 +9528,23 @@ int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, cons
 }
 
 // P5 Slice 3 expansion: shared re-derive tail for an already-edited CST Document `d1` whose edit closure is
-// anchored at `id`.  Incremental fast path; D2 full-re-derive fallback (validate-before-destroy + active
-// camera/rasterizer/animation preservation).  Returns the same 0/1/2/3 contract as ApplyCstParamEdit.
-// `entityName`/`role` are for diagnostics only.
+// anchored at `id` (used by ApplyCstParamEdit AND ApplyCstObjectMatrixEdit).  `entityName`/`role` are diagnostics.
+// FAST PATH: incrementally re-derive just the affected closure.  COST: one edit is O(N log N) -- DocEditClosure
+// recomputes the reference graph from scratch (~1.2ms@1k, ~5ms@4k, ~24ms@16k CHUNKS; CstEditCostTest N counts
+// entity GROUPS = 4 chunks each).  Fine for DISCRETE panel edits; the per-frame gizmo path commits ONCE at the
+// drag boundary (not per frame) for exactly this reason.  Atomic: DeriveToJobIncremental rolls the Job back on
+// a diagnostic, so a refusal leaves the live scene byte-identical.
+// FALLBACK (D2): when the incremental refuses (a scene_variant / animation / instance_array / override_object /
+// composed material in the closure -- e.g. watch_dial, which DECLARES a variant) OR errors, re-derive the WHOLE
+// edited document (forcing the active variant).  This derives TWICE: a validate-before-destroy dry-run into a
+// throwaway Job (so a genuinely invalid edit leaves the live scene intact) THEN the real ClearAll+re-derive --
+// ~2x the single-derive cost (see RederiveCstWithVariant, same convention).  Unlike a variant SWITCH, an EDIT
+// PRESERVES the active camera/rasterizer/animation across the re-derive (captured + restored below).
+// Return: 0 = no change (live scene intact); 1 = applied incrementally (managers untouched, no rebind);
+// 2 = applied via a FULL re-derive (ClearAll REPLACED the Scene + managers -- the caller MUST re-point its
+// cached scene/manager pointers; SceneEditor self-rebinds, else the next access is a use-after-free);
+// 3 = same as 2 BUT the re-derive emitted diagnostics (managers still replaced -> caller MUST rebind, but the
+// edit FAILED -- treat as failure).  Should-not-happen: the dry-run already validated the identical derive.
 int Job::DeriveEditedCstDocument_( RISE::Cst::Document&& d1in, RISE::Cst::NodeId id, const char* entityName, const char* role )
 {
 	RISE::Cst::Document d1 = std::move( d1in );
@@ -9608,7 +9605,12 @@ int Job::DeriveEditedCstDocument_( RISE::Cst::Document&& d1in, RISE::Cst::NodeId
 int Job::ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 )
 {
 	if( !pCstDocument || !objectName || !matrix16 || !matrix16[0] ) return 0;
-	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, objectName, nullptr, "object", false );
+	// Resolve by the EXACT keyword `standard_object`, NOT the loose "_object" suffix: an override_object (the
+	// `> modify` / variant override layer) carries the SAME name as its base object and also ends in "_object",
+	// so the suffix would match both and refuse (occ=2).  The base standard_object is the transform owner an
+	// object edit targets.  (Exotic object chunks -- csg_object / center_object -- fall outside this and are not
+	// CST-routed; documented limitation, future ChunkCategory-based resolution.)
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, objectName, nullptr, "standard_object", false );
 	if( id == 0 ) {
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectMatrixEdit:: `%s` not found or ambiguous in the CST Document; edit rejected", objectName );
 		return 0;

@@ -9,9 +9,14 @@
 //    rebuilt the scene from the incomplete Document and silently reverted
 //    the direct edit.  With the edit CST-routed, the D2 re-derives it back.
 //
-//    Case L1: a LIGHT edit takes effect, PERSISTS to the Document (a fresh
-//    re-derive still shows it), and SURVIVES a subsequent material-edit D2
-//    (red-provable: revert IsCstRoutedOp(SetLightProperty) and L1 fails).
+//    Cases:
+//      L1 -- a LIGHT edit takes effect + PERSISTS to the Document (fresh re-derive still shows it).
+//      L2 -- a light edit SURVIVES a subsequent material-edit D2 (the data-loss closure).
+//      C1 -- an UNNAMED-camera edit survives a material D2 (exercises the resolve-by-position fallback).
+//      OB1-OB4 -- object BINDING edits (material/geometry/shadow) survive a material D2.
+//      OT1-OT2 -- object TRANSFORM edits commit to the `matrix` param + survive a D2, fwd + undo.
+//      OV1 -- an object edit resolves the BASE standard_object, not a same-named override_object.
+//    Each survive-D2 / persistence assertion is red-provable by reverting the corresponding route.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -283,6 +288,38 @@ int main()
 		Check( Mat16Eq( undone, afterUndoD2 ), "OT2: the UNDONE transform SURVIVED a material D2 (undo stayed Document-consistent)" );
 		j->release();
 		std::remove( tx );
+	}
+
+	// ---- OV: an object edit must resolve the BASE standard_object, not a same-named override_object (the
+	//      `> modify` / variant override layer, which also ends in `_object` and carries the same name).  Before
+	//      the exact-keyword fix this resolved to occ=2 -> refused -> the object edit silently failed (data-loss). ----
+	{
+		const char* tv = "cst_s3_objoverride.RISEscene";
+		{ std::ofstream o( tv );
+		  o << "RISE ASCII SCENE 6\n"
+		       "scene_variant\n{\nname night\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\nposition 0 0 0\n}\n"
+		       "override_object\n{\nname o\nposition 0 1 0\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tv ), "OV: loads standard_object + same-named override_object via CST" );
+		SceneEditController c( *j, 0 );
+		c.SetSelection( Cat::Object, String( "o" ) );
+		// A transform edit must route (resolve the base standard_object) and SURVIVE a material D2 -- red-provable:
+		// resolve via the loose "object" suffix instead and the commit refuses (occ=2) -> the D2 reverts the move.
+		double before[16]; ObjMat16( *j, "o", before );
+		Check( c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "5 0 0" ) ), "OV1: object position edit applies" );
+		double moved[16]; ObjMat16( *j, "o", moved );
+		Check( !Mat16Eq( before, moved ), "OV1: the edit changed the object transform" );
+		c.SetSelection( Cat::Material, String( "m" ) );
+		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "OV1: material edit applies (D2)" );
+		double afterD2[16]; ObjMat16( *j, "o", afterD2 );
+		Check( Mat16Eq( moved, afterD2 ), "OV1: object edit resolved the BASE standard_object + SURVIVED the D2 (override_object collision avoided)" );
+		j->release();
+		std::remove( tv );
 	}
 
 	std::remove( tmp );

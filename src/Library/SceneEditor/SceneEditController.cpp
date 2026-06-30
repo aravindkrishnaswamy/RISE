@@ -1900,6 +1900,13 @@ bool SceneEditController::RollbackTransaction()
 	{
 		if( !mEditor.Undo() ) { fullyReverted = false; break; }   // target gone -> honest partial
 	}
+	// P5 Slice 3 expansion (object transform): the Undo loop reverted the live objects, NOTING any transform-
+	// touched object into the editor's pending set.  Commit them now (lk held -> parked, the re-derive can't race
+	// a worker) so the retained CST matches the REVERTED live transforms -- a mid-scrub SetProperty(Object) may
+	// have committed the scrubbed matrix to the CST, and without this re-sync the Document would keep the
+	// rejected pose (a later D2 would then re-apply it).  Also drains the set so no stale snapshot leaks past the
+	// rollback.
+	if( mEditor.HasPendingCstObjectTransforms() ) mEditor.CommitPendingCstObjectTransforms();
 	// F2: if the cap trimmed a transaction edit (seq >= marker) off the
 	// front, the revert could not be complete -- report it honestly.
 	if( mEditor.History().DidTrim() && mEditor.History().MaxTrimmedSeq() >= mTxnBaseline.historyMarker ) {
