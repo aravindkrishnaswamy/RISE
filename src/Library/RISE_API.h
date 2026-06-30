@@ -3385,6 +3385,14 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! Start the controller's render thread.
 	bool RISE_API_SceneEditController_Start( SceneEditController* p );
 
+	//! Start the controller's render thread WITHOUT the one-shot
+	//! initial render pass.  The GUI uses this when it restarts the
+	//! interactive viewport immediately after a production render, so
+	//! the finished render stays on screen until the user interacts
+	//! (rather than being overwritten by the first live-preview pass).
+	bool RISE_API_SceneEditController_StartSuppressingInitialRender(
+		SceneEditController* p );
+
 	//! Stop the controller's render thread.  Joins the thread.
 	bool RISE_API_SceneEditController_Stop( SceneEditController* p );
 

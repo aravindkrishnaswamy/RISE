@@ -7344,6 +7344,14 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_SceneEditController_StartSuppressingInitialRender(
+		SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->Start( /*suppressInitialRender=*/true );
+		return true;
+	}
+
 	bool RISE_API_SceneEditController_Stop( SceneEditController* p )
 	{
 		if( !p ) return false;

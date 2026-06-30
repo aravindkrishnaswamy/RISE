@@ -75,14 +75,20 @@ public:
 
     /// Spawn the C++ render thread.  Idempotent.
     void start();
+    /// Spawn the C++ render thread WITHOUT its one-shot initial render
+    /// pass.  Call this (instead of `start`) when restarting the
+    /// viewport right after a production render: the finished render is
+    /// already on screen and the render thread stays parked until the
+    /// user interacts, so the production image survives.  This avoids
+    /// the "render flashes then flips back to the live preview" bug —
+    /// the interactive rasterizer never produces the overwriting frame
+    /// in the first place, so no display-layer frame-suppression (which
+    /// only ever covered the LDR sink path, not the HDR observer path)
+    /// is needed.
+    void startSuppressingInitialRender();
     /// Stop the render thread and join.  Idempotent.
     void stop();
     bool isRunning() const { return m_running; }
-
-    /// Drop exactly one upcoming preview frame.  Call right before
-    /// `start` after a production render so the production image
-    /// stays on screen until the user actually starts dragging.
-    void suppressNextFrame();
 
     /// Shrink the scene Film so the interactive preview renders at a
     /// screen-appropriate resolution rather than blindly inheriting

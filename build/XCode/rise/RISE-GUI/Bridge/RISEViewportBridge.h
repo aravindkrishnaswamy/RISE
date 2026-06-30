@@ -52,6 +52,16 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
 /// Spawn the C++ render thread.  Idempotent.
 - (void)start;
 
+/// Spawn the C++ render thread WITHOUT its one-shot initial render
+/// pass.  Call this (instead of `start`) when restarting the viewport
+/// right after a production render: the finished render is already on
+/// screen and the render thread stays parked until the user interacts,
+/// so the production image survives.  Using this avoids the
+/// "render flashes then flips back to the live preview" bug — the
+/// interactive rasterizer never produces the overwriting frame in the
+/// first place, so no display-layer frame-suppression is needed.
+- (void)startSuppressingInitialRender;
+
 /// Stop the render thread and join.  Idempotent.
 - (void)stop;
 
@@ -269,12 +279,6 @@ typedef void (^RISEViewportImageBlock)(NSImage *image);
 /// some other resource was missing).  Edits still mutate the in-memory
 /// scene; the user can click "Render" to see the production result.
 @property (nonatomic, readonly) BOOL hasLivePreview;
-
-/// Drop exactly one upcoming preview frame.  Call right before
-/// `start` after a production render so the production image stays
-/// on screen until the user actually starts dragging.  Auto-clears
-/// after one drop.
-- (void)suppressNextFrame;
 
 #pragma mark - Properties panel (descriptor-driven)
 

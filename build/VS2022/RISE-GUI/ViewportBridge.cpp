@@ -32,11 +32,19 @@ using namespace RISE;
 // of each render pass to a QImage and queues it onto the UI thread via
 // the bridge's `imageUpdated` signal.
 //
-// Suppress-next: drops exactly one upcoming dispatch.  Used right
-// after a production render returns so the production image stays
-// on screen until the user actually starts interacting.  Beyond
-// that we do NOT throttle: every frame the rasterizer produces
-// reaches the screen, including partials from cancelled passes.
+// Keeping the production image on screen after a production render is
+// NOT handled here.  It used to be a one-shot "drop the next dispatch"
+// flag on this sink, but that only covered this LDR QImage path — when
+// the HDR/EDR display path is active the interactive frame reaches the
+// screen through the interactive ViewportFrameStore's frame-complete
+// observer (bound to the rasterizer's FrameStore), bypassing this sink
+// entirely, so the suppression was a no-op and the production image
+// flipped back to the live preview.  The fix lives one layer down: the
+// SceneEditController is restarted via startSuppressingInitialRender(),
+// so it simply doesn't produce the overwriting frame on any path until
+// the user interacts.  We do NOT throttle here: every frame the
+// rasterizer produces reaches the screen, including partials from
+// cancelled passes.
 // =====================================================================
 class ViewportPreviewSink : public IRasterizerOutput,
                             public Implementation::Reference
@@ -48,11 +56,6 @@ public:
     // Borrowed; the bridge keeps the controller alive for the sink's
     // lifetime.  Used to query IsCancelRequested at end-of-pass.
     void SetController(SceneEditController* c) { m_controller = c; }
-
-    // Drop the very next OutputImage call.  Auto-clears after one
-    // drop.  Atomic so the bridge can call this from the UI thread
-    // while the render thread fires OutputImage from a worker thread.
-    void SuppressNextFrame() { m_suppressNext.store(true); }
 
     // Per-tile callback fires many times per render pass — explicitly
     // ignore so the user doesn't see tile-by-tile fills.
@@ -66,18 +69,11 @@ public:
     // trips on every pointer move, and dropping the resulting
     // partial buffers makes the viewport feel throttled (the user
     // only sees post-pause refinement frames).  Center-out tile
-    // order keeps partial buffers visually usable.  The one-shot
-    // suppress is kept because it serves a distinct purpose
-    // (preserving the production image until the user drags).
+    // order keeps partial buffers visually usable.
     void OutputImage(const IRasterImage& pImage,
                      const RISE::Rect* /*pRegion*/,
                      const unsigned int /*frame*/) override {
         if (!m_bridge) return;
-        if (m_suppressNext.exchange(false)) {
-            // One-shot suppression (post-production) — skip exactly
-            // this dispatch.  The next render's frame goes through.
-            return;
-        }
         const unsigned int W = pImage.GetWidth();
         const unsigned int H = pImage.GetHeight();
         if (W == 0 || H == 0) return;
@@ -118,7 +114,6 @@ public:
 private:
     ViewportBridge*      m_bridge = nullptr;
     SceneEditController* m_controller = nullptr;   // borrowed
-    std::atomic<bool>    m_suppressNext{false};
 };
 
 // =====================================================================
@@ -242,16 +237,18 @@ void ViewportBridge::start()
     m_running = true;
 }
 
+void ViewportBridge::startSuppressingInitialRender()
+{
+    if (!m_controller) return;
+    RISE_API_SceneEditController_StartSuppressingInitialRender(m_controller);
+    m_running = true;
+}
+
 void ViewportBridge::stop()
 {
     if (!m_controller) return;
     RISE_API_SceneEditController_Stop(m_controller);
     m_running = false;
-}
-
-void ViewportBridge::suppressNextFrame()
-{
-    if (m_previewSink) m_previewSink->SuppressNextFrame();
 }
 
 void ViewportBridge::setTool(ViewportTool t)

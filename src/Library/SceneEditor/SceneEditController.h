@@ -236,7 +236,21 @@ namespace RISE
 		// Lifecycle ---------------------------------------------------
 
 		//! Spawn the render thread.  Idempotent.
-		void Start();
+		//!
+		//! @param suppressInitialRender  When true, the render thread
+		//!        skips the one-shot "show something on Start" pass it
+		//!        normally runs at startup.  The GUI sets this when it
+		//!        restarts the interactive viewport right after a
+		//!        production render: the production result is already on
+		//!        screen, and an initial preview pass would immediately
+		//!        overwrite it (the user-visible "the finished render
+		//!        flashes then flips back to the live preview" bug).
+		//!        The render thread stays parked until the first real
+		//!        edit / gesture, so the production image survives until
+		//!        the user actually interacts.  One-shot — consumed on
+		//!        the next Start(); a subsequent Start() (e.g. a fresh
+		//!        scene load) renders normally.
+		void Start( bool suppressInitialRender = false );
 
 		//! Set the running flag false, trip the cancel flag, signal the
 		//! condvar, and join the render thread.  Idempotent.
@@ -819,6 +833,13 @@ namespace RISE
 		std::condition_variable     mCV;
 		std::atomic<bool>           mRunning;
 		std::atomic<bool>           mEditPending;
+		//! One-shot, set by Start( true ) before the render thread is
+		//! spawned and consumed by RenderLoop on entry.  When set, the
+		//! loop skips its initial "show something on Start" pass so the
+		//! current on-screen image (the just-finished production render)
+		//! is preserved until the first user edit.  See Start()'s
+		//! @param suppressInitialRender for the full rationale.
+		std::atomic<bool>           mSuppressInitialRender;
 		std::atomic<bool>           mRendering;
 		// Phase 6.5: signals the render loop NOT to start a new pass
 		// while a save is in flight (mirror of mRendering for the
