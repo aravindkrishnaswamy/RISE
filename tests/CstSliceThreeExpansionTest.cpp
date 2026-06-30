@@ -158,6 +158,15 @@ static std::string DocText( Job& j )
 	return d ? RISE::Cst::SerializeCst( *d ) : std::string();
 }
 
+// Count NON-overlapping occurrences of `needle` in `hay` (precise chunk-header counting).
+static int CountOcc( const std::string& hay, const std::string& needle )
+{
+	if( needle.empty() ) return 0;
+	int n = 0;
+	for( std::string::size_type p = hay.find( needle ); p != std::string::npos; p = hay.find( needle, p + needle.size() ) ) ++n;
+	return n;
+}
+
 // A medium's absorption-R off the LIVE scene; -999 if absent.
 static double MedAbsR( Job& j, const char* med )
 {
@@ -1159,6 +1168,62 @@ int main()
 		Check( j2->LoadAsciiSceneViaCst( tf ), "FILM7: reloads the saved file via CST" );
 		Check( FilmW( *j2 ) == 1920u, "FILM7: the FIRST edit (width 1920) PERSISTED through save->reload" );
 		Check( FilmH( *j2 ) == 1080u, "FILM7: the SECOND edit (height 1080) PERSISTED through save->reload (both separate edits survived)" );
+		j2->release();
+		std::remove( tf );
+	}
+
+	{
+		// FILM8 -- NO-DOUBLE-INSERT idempotency: ApplyCstFilmEdit on a Document with NO `film` chunk INSERTs one (FILM6
+		// path); a SECOND (and THIRD) ApplyCstFilmEdit on the SAME Document must take the present-chunk
+		// DocSetOrAddParamValue route -- it must NOT insert a SECOND `film` chunk.  A double-insert would push occ>1, and
+		// the singleton resolver DocFindByNameAnyRole(..., "film", uniqueFallback=true) would thereafter REFUSE (occ>1),
+		// bricking ALL future film edits.  The sibling camera insert/remove path has had occ/separator bugs twice, so this
+		// invariant is locked with a committed test.  Modeled on FILM6's no-film-chunk setup; the inserted chunk text is
+		// `film {\n\twidth ...\n\theight ...\n}` (per Job::ApplyCstFilmEdit), so the chunk header serializes as `film {`.
+		// RED-PROVE: make Job::ApplyCstFilmEdit ALWAYS take the insert branch (skip the present-chunk filmId!=0 route) ->
+		// the second/third calls double-insert -> "exactly one film chunk" fails AND the singleton resolver would brick.
+		const char* tf = "cst_film8.RISEscene";
+		{ std::ofstream o( tf );
+		  o << "RISE ASCII SCENE 6\n"
+		       // NO `film` chunk at all -> renders on the built-in default; the first ApplyCstFilmEdit INSERTs one.
+		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tf ), "FILM8: loads scene (NO film chunk) via CST" );
+		Check( CountOcc( DocText( *j ), "film {" ) == 0, "FILM8: the authored Document has NO film chunk" );
+
+		// First call: INSERT path (FILM6).  Returns 1 and yields EXACTLY ONE `film {` chunk.
+		Check( j->SetFilm( 1280, 720, FilmPAR( *j ) ), "FILM8: live SetFilm to 1280x720 succeeds" );
+		Check( j->ApplyCstFilmEdit( "1280", "720", nullptr ) == 1, "FILM8: 1st ApplyCstFilmEdit INSERTs a film chunk (returns 1)" );
+		Check( CountOcc( DocText( *j ), "film {" ) == 1, "FILM8: after the INSERT there is EXACTLY ONE film chunk" );
+
+		// Second call: a DIFFERENT width.  MUST take the present-chunk route -> still EXACTLY ONE `film {` chunk.
+		Check( j->SetFilm( 1600, 720, FilmPAR( *j ) ), "FILM8: live SetFilm to width 1600 succeeds" );
+		Check( j->ApplyCstFilmEdit( "1600", nullptr, nullptr ) == 1, "FILM8: 2nd ApplyCstFilmEdit(width) returns 1 (present-chunk route)" );
+		Check( CountOcc( DocText( *j ), "film {" ) == 1, "FILM8: after the 2nd edit there is STILL EXACTLY ONE film chunk (no double-insert)" );
+		{ const std::string s = DocText( *j );
+		  Check( s.find( "width 1600" ) != std::string::npos, "FILM8: the single film chunk reflects the LATEST width 1600" ); }
+
+		// Third call: a DIFFERENT height.  MUST take the present-chunk route -> still EXACTLY ONE `film {` chunk.
+		Check( j->SetFilm( 1600, 900, FilmPAR( *j ) ), "FILM8: live SetFilm to height 900 succeeds" );
+		Check( j->ApplyCstFilmEdit( nullptr, "900", nullptr ) == 1, "FILM8: 3rd ApplyCstFilmEdit(height) returns 1 (present-chunk route)" );
+		Check( CountOcc( DocText( *j ), "film {" ) == 1, "FILM8: after the 3rd edit there is STILL EXACTLY ONE film chunk (no double-insert)" );
+		{ const std::string s = DocText( *j );
+		  Check( s.find( "width 1600" ) != std::string::npos && s.find( "height 900" ) != std::string::npos,
+		         "FILM8: the single film chunk reflects the LATEST width 1600 + height 900" ); }
+
+		// Save -> reload into a FRESH Job: the final dims persist AND there is still exactly one film chunk.
+		SceneEditController c( *j, 0 );
+		const SaveResult res = c.RequestSave( std::string( tf ) );
+		Check( res.status == SaveResult::Status::Saved, "FILM8: SaveEngine reported Saved" );
+		j->release();
+		Job* j2 = new Job();
+		Check( j2->LoadAsciiSceneViaCst( tf ), "FILM8: reloads the saved file via CST" );
+		Check( FilmW( *j2 ) == 1600u && FilmH( *j2 ) == 900u, "FILM8: the LATEST dims PERSISTED through save->reload (1600x900)" );
+		Check( CountOcc( DocText( *j2 ), "film {" ) == 1, "FILM8: the reloaded Document has EXACTLY ONE film chunk (no double-insert survived save)" );
 		j2->release();
 		std::remove( tf );
 	}
