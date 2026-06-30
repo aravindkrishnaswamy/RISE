@@ -654,6 +654,20 @@ crosses the colored glass before and after). **Protocol:**
    **Worley/cellular normal map is a labelled preview only**, never the physical
    model.
 
+> **RESOLVED (Phase-1.5, 2026-06-30) → TOP-SURFACE dielectric relief.** Zoomed
+> crops of the bright clip (`zoom_350_18.5`, `zoom_350_21.0`) decide it: at a
+> **raking** angle the dimples blaze as **colour-neutral white specular glints**
+> sitting on the raspberry field (colour glows *between* them, glints not
+> red-tinted); at a **flatter/diffuse** view the same texture nearly vanishes. That
+> **angle-gating** (Fresnel glints at grazing light, gone when lit flat) + the
+> uncolored glints = a **top-surface fired "orange-peel" relief on the air–glass
+> interface**, not buried colored crystallization (which would give angle-stable,
+> colour-filtered glints). **Decision:** model it as **real micro-displacement of
+> the top dielectric surface** over the colored medium (heightfield/bump on the
+> air–glass interface); the secondary colour mottling falls out of the bumpy
+> interface refracting into the medium. (The anOrdain "crystalline" descriptor =
+> surface devitrification of the fired glass, consistent with this.)
+
 ### 10.3 The analytic Beer slab is the ground truth — NM is itself under test (P1)
 **Ground truth = the closed-form Beer-Lambert slab**, `T(λ)=exp(−σ_a(λ)·d)` — **not
 NM.** NM and HWSS are *both* estimators to validate against it. This matters because
