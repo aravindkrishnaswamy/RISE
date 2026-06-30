@@ -1055,7 +1055,8 @@ static inline bool IsCstRoutedOp( SceneEdit::Op op )
 	    || op == SceneEdit::SetLightProperty
 	    || op == SceneEdit::SetCameraProperty
 	    || op == SceneEdit::SetMediumProperty
-	    || SceneEdit::IsObjectOp( op );
+	    || SceneEdit::IsObjectOp( op )
+	    || SceneEdit::IsCameraOp( op );   // camera DRAG ops re-derive at the pose-commit boundary too
 }
 
 // P5 Slice 3 expansion (medium): only the homogeneous_medium chunk params that EXIST are routable -- absorption
@@ -1190,6 +1191,37 @@ bool SceneEditor::CommitPendingCstObjectTransforms()
 		}
 	}
 	return ok;
+}
+
+// P5 Slice 3 expansion (camera drag): note that the active camera's pose changed, for a deferred commit.
+void SceneEditor::NoteCstCameraDrag_( const String& camName )
+{
+	mPendingCstCameraName = std::string( camName.c_str() );
+}
+
+// Commit the dragged camera's NET pose to the retained CST.  Called by the CONTROLLER at a render-thread-PARKED
+// boundary (the commit re-derives).  Reads the REST pose params via CameraIntrospection (NOT the post-orbit
+// composed position) so the route reconstructs the same pose -- see Job::ApplyCstCameraPoseEdit.
+bool SceneEditor::CommitPendingCstCameraPose()
+{
+	if( mPendingCstCameraName.empty() ) return true;
+	const std::string camName = mPendingCstCameraName;
+	mPendingCstCameraName.clear();
+	if( !mScene ) return false;
+	const ICameraManager* cams = mScene->GetCameras();
+	const ICamera* cam = cams ? cams->GetItem( camName.c_str() ) : 0;
+	if( !cam ) cam = mScene->GetCamera();   // fall back to the active camera (e.g. an unnamed sole camera)
+	if( !cam ) return false;
+	const String loc    = CameraIntrospection::GetPropertyValue( *cam, String( "location" ) );
+	const String lookat = CameraIntrospection::GetPropertyValue( *cam, String( "lookat" ) );
+	const String up     = CameraIntrospection::GetPropertyValue( *cam, String( "up" ) );
+	const String orient = CameraIntrospection::GetPropertyValue( *cam, String( "orientation" ) );
+	const String target = CameraIntrospection::GetPropertyValue( *cam, String( "target_orientation" ) );
+	const int r = mJob->ApplyCstCameraPoseEdit( camName.c_str(), loc.c_str(), lookat.c_str(), up.c_str(), orient.c_str(), target.c_str() );
+	if( r >= 2 ) RebindToJob_();
+	if( r == 0 || r == 3 )
+		GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: camera pose commit to the CST failed for `%s` (live edit stands, but the Document is out of sync)", camName.c_str() );
+	return r == 1 || r == 2;
 }
 
 bool SceneEditor::ApplyMaterialSlotByName( const SceneEdit& e, const String& painterName )
@@ -1690,6 +1722,10 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		if( !cam ) return true;   // skeleton-camera edit was a no-op
 		RestoreCameraTransform( *cam, edit );
 		cam->RegenerateData();
+		// P5 Slice 3 expansion (camera drag): the inverse changed the live camera pose too -> note it for the same
+		// deferred pose commit, so undo stays Document-consistent.
+		if( mJob && mJob->HasRetainedCstDocument() )
+			NoteCstCameraDrag_( edit.cameraTargetName );
 		mLastScope = Dirty_Camera;
 		return true;
 	}
@@ -1900,6 +1936,10 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		if( !cam ) { mLastScope = Dirty_Camera; return true; }   // H2-S3: skeleton camera no-op, keep Apply's scope
 		ApplyCameraOpForward( *cam, edit, SceneScale() );
 		cam->RegenerateData();
+		// P5 Slice 3 expansion (camera drag): on a CST scene, NOTE the active camera for a deferred pose commit
+		// (the controller flushes it at a parked boundary -- per-op routing would be N re-derives per drag).
+		if( mJob && mJob->HasRetainedCstDocument() )
+			NoteCstCameraDrag_( edit.cameraTargetName );
 		mLastScope = Dirty_Camera;
 		return true;
 	}

@@ -3269,6 +3269,11 @@ namespace RISE
 		//! P5 Slice 3 expansion (object transform): commit an object's NET world transform as the authoritative
 		//! standard_object `matrix` param.  Default no-op (legacy jobs have no retained CST).  See Job override.
 		virtual int ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 ) { return 0; }
+
+		//! P5 Slice 3 expansion (camera drag): commit a camera's NET pose params to the retained CST.  Default
+		//! no-op (legacy jobs have no retained CST).  See Job override.
+		virtual int ApplyCstCameraPoseEdit( const char* camName, const char* location, const char* lookat, const char* up,
+		                                    const char* orientation, const char* targetOrientation ) { return 0; }
 	};
 
 

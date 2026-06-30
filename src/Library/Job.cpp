@@ -9623,6 +9623,34 @@ int Job::ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 
 	return DeriveEditedCstDocument_( std::move( d1 ), id, objectName, "matrix" );
 }
 
+// P5 Slice 3 expansion (camera drag): commit a camera's NET pose to the retained CST.  A drag gesture
+// (Orbit/Pan/Zoom/Roll) mutates the live camera's REST params -- location (rest position, pre-orbit), lookat,
+// up, orientation (Euler), target_orientation (theta/phi orbit) -- which the pinhole/thinlens/... chunk all
+// AUTHOR and COMPOSE (no masking).  The caller reads the rest values via CameraIntrospection (NOT the post-orbit
+// composed position), so routing all five with their current values reconstructs the same pose on re-derive --
+// no double-apply.  One re-derive (vs five for per-param routes).  Same 0/1/2/3 contract.  Unnamed-camera
+// resolve-by-position fallback (cameras can be the sole unnamed `pinhole_camera { ... }`).
+int Job::ApplyCstCameraPoseEdit( const char* camName, const char* location, const char* lookat, const char* up,
+                                 const char* orientation, const char* targetOrientation )
+{
+	if( !pCstDocument || !camName ) return 0;
+	// All five rest params must read non-empty (every CameraCommon-derived camera supplies them); a missing one
+	// means an unexpected camera type -> refuse the pose commit rather than write a partial/empty param.
+	if( !location || !location[0] || !lookat || !lookat[0] || !up || !up[0]
+	 || !orientation || !orientation[0] || !targetOrientation || !targetOrientation[0] ) return 0;
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, camName, nullptr, "camera", true );
+	if( id == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstCameraPoseEdit:: `%s` not found or ambiguous in the CST Document; pose commit rejected", camName );
+		return 0;
+	}
+	RISE::Cst::Document d1 = RISE::Cst::DocSetOrAddParamValue( *pCstDocument, id, "location", 0, location );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "lookat", 0, lookat );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "up", 0, up );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "orientation", 0, orientation );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "target_orientation", 0, targetOrientation );
+	return DeriveEditedCstDocument_( std::move( d1 ), id, camName, "pose" );
+}
+
 // L6b — push the canonical FrameStore to every registered rasterizer.
 // Called after scene load completes and after SetActiveCamera in case
 // the new camera has different dimensions.  Each rasterizer addrefs

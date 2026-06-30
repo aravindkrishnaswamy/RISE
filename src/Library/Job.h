@@ -2785,6 +2785,11 @@ namespace RISE
 		//! 0/1/2/3 contract as ApplyCstParamEdit (2/3 => Scene+managers REPLACED, caller MUST rebind).
 		int ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 );
 
+		//! P5 Slice 3 expansion (camera drag): commit a camera's NET pose (rest location/lookat/up/orientation/
+		//! target_orientation) to the retained CST as the authored chunk params.  Same 0/1/2/3 contract.
+		int ApplyCstCameraPoseEdit( const char* camName, const char* location, const char* lookat, const char* up,
+		                            const char* orientation, const char* targetOrientation );
+
 		//! P5: the retained canonical CST (null unless the scene was loaded via LoadAsciiSceneViaCst).
 		const RISE::Cst::Document*	GetCstDocument() const { return pCstDocument.get(); }
 

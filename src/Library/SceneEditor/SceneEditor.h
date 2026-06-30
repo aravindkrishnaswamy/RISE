@@ -315,6 +315,11 @@ namespace RISE
 		// param by the controller at a parked boundary.  UI-thread-only.
 		std::unordered_set<std::string> mPendingCstObjMatrix;
 
+		// P5 Slice 3 expansion (camera drag): the active camera's name if a camera-drag op changed its pose since
+		// the last CommitPendingCstCameraPose (empty = none).  Flushed to the camera chunk's pose params by the
+		// controller at a parked boundary.  UI-thread-only.
+		std::string mPendingCstCameraName;
+
 		//! Phase 6.5 UI hook: GUI-installed listener fired on
 		//! `HasUnsavedChanges()` TRANSITIONS only.  Empty by default
 		//! (no callbacks fire until SetDirtyChangedListener is called).
@@ -341,6 +346,8 @@ namespace RISE
 		//! scene ClearAll's), so it MUST run parked -- hence it is the controller's job, not auto-flushed here.
 		bool HasPendingCstObjectTransforms() const { return !mPendingCstObjMatrix.empty(); }
 		bool CommitPendingCstObjectTransforms();
+		bool HasPendingCstCameraPose() const { return !mPendingCstCameraName.empty(); }
+		bool CommitPendingCstCameraPose();
 
 	private:
 		//! Look up an object by name on the live ObjectManager and
@@ -386,6 +393,7 @@ namespace RISE
 		//! P5 Slice 3 expansion (object transform): note an object whose transform changed for a deferred
 		//! `matrix`-param commit; route ONE object's net transform (rebinds on a D2).
 		void NoteCstObjectTransform_( const String& name );
+		void NoteCstCameraDrag_( const String& camName );
 		bool ApplyCstObjectMatrix_( const std::string& name, const std::string& matrix16 );
 
 		//! H2 (P-WALK): the SINGLE per-op forward + revert dispatchers.  Each

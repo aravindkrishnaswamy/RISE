@@ -69,6 +69,22 @@ static double CamZ( Job& j )
 	return cam ? cam->GetLocation().z : -999.0;
 }
 
+// Active camera's POST-orbit eye position (the rendered-from point).
+static void CamLoc( Job& j, double out[3] )
+{
+	out[0] = out[1] = out[2] = -999.0;
+	const IScene* sc = j.GetScene();
+	const ICamera* cam = sc ? sc->GetCamera() : 0;
+	if( !cam ) return;
+	Point3 p = cam->GetLocation();
+	out[0] = p.x; out[1] = p.y; out[2] = p.z;
+}
+static bool LocEq( const double a[3], const double b[3] )
+{
+	for( int i = 0; i < 3; ++i ) if( std::fabs( a[i] - b[i] ) > 1e-6 ) return false;
+	return true;
+}
+
 // Object accessors off the LIVE scene -- compare bound dependency identity to the manager item.
 static const IObject* Obj( Job& j, const char* n )
 {
@@ -132,6 +148,7 @@ static const char* SCENE =
 int main()
 {
 	using Cat = SceneEditController::Category;
+	using Tool = SceneEditController::Tool;
 	std::cout << "CstSliceThreeExpansionTest" << std::endl;
 	const char* tmp = "cst_s3_exp.RISEscene";
 	{ std::ofstream o( tmp ); o << SCENE; }
@@ -357,6 +374,40 @@ int main()
 		Check( std::fabs( MedAbsR( *j, "fog" ) - 0.5 ) < 1e-6, "MD1: medium absorption edit SURVIVED the material D2 (data-loss closed)" );
 		j->release();
 		std::remove( tm );
+	}
+
+	// ---- CD: a CAMERA DRAG (orbit gesture) commits the NET pose to the CST at drag-end and SURVIVES a
+	//      material D2 (data-loss closure for camera drags -- the pose params, not just panel SetCameraProperty). ----
+	{
+		const char* tc = "cst_s3_camdrag.RISEscene";
+		{ std::ofstream o( tc );
+		  o << "RISE ASCII SCENE 6\n"
+		       "scene_variant\n{\nname night\n}\n"
+		       "film\n{\nwidth 64\nheight 64\n}\n"
+		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tc ), "CD: loads variant + named-camera scene via CST" );
+		SceneEditController c( *j, 0 );
+		double pre[3]; CamLoc( *j, pre );
+		// Simulate an orbit drag gesture (down -> move-right -> up).  OnPointerUp commits the net pose to the CST.
+		c.SetTool( Tool::OrbitCamera );
+		c.OnPointerDown( Point2( 100, 100 ) );
+		c.OnPointerMove( Point2( 160, 100 ) );
+		c.OnPointerUp(   Point2( 160, 100 ) );
+		double orbited[3]; CamLoc( *j, orbited );
+		Check( !LocEq( pre, orbited ), "CD: the orbit drag changed the camera eye position" );
+		// Material D2 rebuilds the camera from the Document; the orbited pose must survive.
+		c.SetSelection( Cat::Material, String( "m" ) );
+		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "CD1: material edit applies (D2)" );
+		double afterD2[3]; CamLoc( *j, afterD2 );
+		Check( LocEq( orbited, afterD2 ), "CD1: camera orbit SURVIVED the material D2 (drag pose committed to CST, data-loss closed)" );
+		j->release();
+		std::remove( tc );
 	}
 
 	std::remove( tmp );

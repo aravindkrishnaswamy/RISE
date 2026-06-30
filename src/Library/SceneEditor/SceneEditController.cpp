@@ -1383,14 +1383,15 @@ void SceneEditController::OnPointerUp( const Point2& px )
 	// param now -- ONCE -- under a render-thread park, because a commit RE-DERIVES (on a variant scene it ClearAll's
 	// the live scene, which must not race a worker mid-traversal).  No-op when nothing is pending (camera drags,
 	// legacy-loaded scenes).
-	if( mEditor.HasPendingCstObjectTransforms() ) {
+	if( mEditor.HasPendingCstObjectTransforms() || mEditor.HasPendingCstCameraPose() ) {
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( mRendering.load( std::memory_order_acquire ) ) {
 			mCancelProgress.RequestCancel();
 			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
 		}
 		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
-		mEditor.CommitPendingCstObjectTransforms();
+		mEditor.CommitPendingCstObjectTransforms();   // object gizmo drag -> `matrix` param
+		mEditor.CommitPendingCstCameraPose();          // camera orbit/pan/zoom/roll -> pose params
 		mEditPending.store( true, std::memory_order_release );
 		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
 		lk.unlock();
@@ -1644,6 +1645,7 @@ void SceneEditController::Undo()
 	// P5 Slice 3 expansion (object transform): an undone transform noted its object -> commit the RESTORED matrix
 	// to the CST under this park so undo stays Document-consistent (else a later D2 would re-apply the dragged pose).
 	if( mEditor.HasPendingCstObjectTransforms() ) mEditor.CommitPendingCstObjectTransforms();
+	if( mEditor.HasPendingCstCameraPose() ) mEditor.CommitPendingCstCameraPose();
 	// P1: re-validate the selection UNCONDITIONALLY -- a stale selection (selected
 	// entity gone, e.g. removed externally) must clear on ANY undo attempt, incl. an
 	// atomic no-op composite undo (didWork == false -> the gated refresh is skipped).
@@ -1689,6 +1691,7 @@ void SceneEditController::Redo()
 	// P5 Slice 3 expansion (object transform): a redone transform noted its object -> commit the re-applied matrix
 	// to the CST under this park (symmetric with Undo).
 	if( mEditor.HasPendingCstObjectTransforms() ) mEditor.CommitPendingCstObjectTransforms();
+	if( mEditor.HasPendingCstCameraPose() ) mEditor.CommitPendingCstCameraPose();
 	DropStaleSelection_();   // P1: see Undo -- re-validate selection on any redo attempt
 	if( didWork ) {
 		// Re-derive auto-synced Material / Medium section selections
@@ -1907,6 +1910,7 @@ bool SceneEditController::RollbackTransaction()
 	// rejected pose (a later D2 would then re-apply it).  Also drains the set so no stale snapshot leaks past the
 	// rollback.
 	if( mEditor.HasPendingCstObjectTransforms() ) mEditor.CommitPendingCstObjectTransforms();
+	if( mEditor.HasPendingCstCameraPose() ) mEditor.CommitPendingCstCameraPose();
 	// F2: if the cap trimmed a transaction edit (seq >= marker) off the
 	// front, the revert could not be complete -- report it honestly.
 	if( mEditor.History().DidTrim() && mEditor.History().MaxTrimmedSeq() >= mTxnBaseline.historyMarker ) {
@@ -3687,6 +3691,7 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		// P5 Slice 3 expansion (object transform): a PANEL transform edit (position / orientation / scale) noted the
 		// object for a `matrix`-param commit; flush it here under the SAME park (the commit re-derives).
 		if( mEditor.HasPendingCstObjectTransforms() ) mEditor.CommitPendingCstObjectTransforms();
+		if( mEditor.HasPendingCstCameraPose() ) mEditor.CommitPendingCstCameraPose();
 
 		// Phase 4b auto-sync follow-through: when the user changes
 		// the selected Object's material binding (or interior medium)
