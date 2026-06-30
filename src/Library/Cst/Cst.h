@@ -435,6 +435,20 @@ namespace RISE
 		//! item's NodeId plus its param NodeIds (their durable bindings just died).
 		Document DocEraseItem ( const Document& doc, int index, int* visits = nullptr, std::vector<NodeId>* invalidated = nullptr );
 
+		//! Remove the top-level item at `index` -- the exact INVERSE of DocInsertItem:
+		//! the item is dropped from the rope, its idseq order-label is dropped, and its
+		//! byId/byName entries are removed, leaving every OTHER item's NodeId and label
+		//! intact (sibling identities are preserved -- only the removed id disappears).
+		//! So DocRemoveItem(DocInsertItem(doc, i, x), i) round-trips to `doc` byte-for-
+		//! byte (SerializeCst equality). Out-of-range `index` is a no-op (returns `doc`
+		//! unchanged), mirroring DocInsertItem's bounds clamp. `*visits` (if non-null)
+		//! receives the rope rebuilt-node count. This is the by-index removal the
+		//! AddCamera/edit-model cutover drives after resolving the chunk by name
+		//! (DocFindByName -> DocIndexOfNodeId -> DocRemoveItem). Thin wrapper over
+		//! DocEraseItem (the param-aware erase); use DocEraseItem directly when you
+		//! also need the dropped param NodeIds.
+		Document DocRemoveItem( const Document& doc, int index, int* visits = nullptr );
+
 		//==============================================================
 		// Item 4 -- NodeId identity + name-path addressing (the name-path half of
 		// the counted lookup; the byte-offset half is item 3). Identity lives in a

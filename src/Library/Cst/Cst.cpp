@@ -2992,6 +2992,15 @@ Document DocEraseItem( const Document& doc, int index, int* visits, std::vector<
 	return d;
 }
 
+Document DocRemoveItem( const Document& doc, int index, int* visits )
+{
+	// Exact inverse of DocInsertItem: drop the item + its idseq label + its byId/byName
+	// (and its param ids) consistently, leaving every sibling's NodeId/label intact.
+	// DocEraseItem already performs exactly this symmetric remove; delegate to it (the
+	// dropped param ids are this caller's don't-care, so pass invalidated=nullptr).
+	return DocEraseItem( doc, index, visits, nullptr );
+}
+
 //---- item 4: identity + name-path lookups ----
 
 NodeId DocNodeIdAt( const Document& doc, int index, int* visits )

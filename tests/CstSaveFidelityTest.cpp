@@ -61,6 +61,16 @@ namespace
 		if( i != std::string::npos ) s.replace( i, a.size(), b );
 		return s;
 	}
+
+	// Build a standalone item NodeRef from `src` (its first top-level item) -- the chunk
+	// to splice in for the insert-then-remove round-trip cases.
+	Cst::NodeRef FirstChunk( const std::string& src )
+	{
+		Document d = ParseToCst( src );
+		NodeRef item; size_t start = 0; int v = 0;
+		DocItemAtByteOffset( d, 0, &item, &start, &v );
+		return item;
+	}
 }
 
 int main()
@@ -120,6 +130,86 @@ int main()
 		const std::string got = EditOne( t, "uniformcolor_painter/p", "color", 0, "1 0 0" );
 		Check( got == exp, "F: editing a multi-token value normalizes ITS internal spacing (single-spaced), nothing else" );
 		Check( got != t,   "F: the normalization is observable (the edited value's gaps collapsed)" );
+	}
+
+	// ---- DocRemoveItem (inverse of DocInsertItem) ----
+
+	// G. INSERT-THEN-REMOVE ROUND-TRIP: parse a doc, insert a new chunk at index i, then
+	//    remove the SAME index -> SerializeCst is byte-identical to the original.  The
+	//    insert/remove pair is an exact no-op on the serialized bytes.
+	{
+		const std::string t =
+			"RISE ASCII SCENE 6\n"
+			"sphere_geometry\n{\nname a\nradius 1\n}\n"
+			"sphere_geometry\n{\nname b\nradius 2\n}\n";
+		Document d0  = ParseToCst( t );
+		Document ins = DocInsertItem( d0, 1, FirstChunk( "sphere_geometry\n{\nname mid\nradius 9\n}\n" ) );
+		Check( SerializeCst( ins ).find( "name mid" ) != std::string::npos, "G: the insert actually took effect (chunk present after insert)" );
+		int v = 0;
+		Document rem = DocRemoveItem( ins, 1, &v );
+		Check( SerializeCst( rem ) == t, "G: insert-then-remove round-trips byte-identically to the original" );
+		Check( DocItemCount( rem ) == DocItemCount( d0 ), "G: item count restored after the round-trip" );
+	}
+
+	// H. SIBLING IDENTITY PRESERVED: removing a MIDDLE item leaves every OTHER item's
+	//    NodeId UNCHANGED (only the removed item's id disappears).  Chunks are addressed
+	//    by name (DocFindByName -> DocIndexOfNodeId), since the magic header "RISE ASCII
+	//    SCENE 6" tokenizes into leading stray leaf items ahead of the chunks.
+	{
+		const std::string t =
+			"RISE ASCII SCENE 6\n"
+			"sphere_geometry\n{\nname a\nradius 1\n}\n"
+			"sphere_geometry\n{\nname b\nradius 2\n}\n"
+			"sphere_geometry\n{\nname c\nradius 3\n}\n";
+		Document d   = ParseToCst( t );
+		const int n  = DocItemCount( d );
+		const NodeId idFirst = DocFindByName( d, "sphere_geometry/a" );
+		const NodeId idMid   = DocFindByName( d, "sphere_geometry/b" );   // to be removed
+		const NodeId idLast  = DocFindByName( d, "sphere_geometry/c" );
+		Check( idFirst && idMid && idLast, "H: all three chunks resolve by name before the remove" );
+
+		const NodeId idMidPosBefore = DocNodeIdAt( d, DocIndexOfNodeId( d, idMid, nullptr ) - 1 );   // the item just BEFORE "b"
+		Document rem = DocRemoveItem( d, DocIndexOfNodeId( d, idMid, nullptr ) );                     // drop the middle chunk "b"
+		Check( DocItemCount( rem ) == n - 1, "H: removing a middle item drops exactly one item" );
+		Check( DocResolveNodeId( rem, idMid ) == nullptr, "H: the removed item's NodeId no longer resolves" );
+		Check( DocFindByName( rem, "sphere_geometry/b" ) == 0, "H: the removed item's name no longer resolves" );
+		Check( DocFindByName( rem, "sphere_geometry/a" ) == idFirst, "H: the sibling BEFORE the removed item keeps its NodeId" );
+		Check( DocFindByName( rem, "sphere_geometry/c" ) == idLast,  "H: the sibling AFTER the removed item keeps its NodeId" );
+		Check( DocResolveNodeId( rem, idFirst ) != nullptr && DocResolveNodeId( rem, idLast ) != nullptr, "H: both survivors still resolve" );
+		Check( DocResolveNodeId( rem, idMidPosBefore ) != nullptr, "H: the item immediately preceding the removed one is untouched" );
+	}
+
+	// I. REMOVE A STANDALONE-AUTHORED CHUNK from a multi-chunk doc -> the remaining text is
+	//    exactly the original with that chunk's own bytes excised (resolve by name, then
+	//    remove by index).  The chunk item spans `keyword { ... }`; its trailing newline is
+	//    a SEPARATE trivia leaf (the inter-chunk separator), so a single-item removal of the
+	//    chunk leaves that separator behind -- the expected text below reflects exactly that
+	//    (the AddCamera cutover removes the orphan separator as a second DocRemoveItem).
+	{
+		const std::string chunkBytes = "lambertian_material\n{\nname m\nreflectance p\n}";
+		const std::string t =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			+ chunkBytes + "\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n";
+		const std::string exp = Replace1( t, chunkBytes, "" );   // original minus exactly the chunk item's own bytes
+		Document d   = ParseToCst( t );
+		NodeRef  it  = NodeRef();
+		const NodeId mid = DocFindByName( d, "lambertian_material/m" );
+		const int    idx = DocIndexOfNodeId( d, mid, &it );
+		Check( mid != 0 && idx >= 0, "I: the named chunk resolves to a top-level index" );
+		Document rem = DocRemoveItem( d, idx );
+		Check( SerializeCst( rem ) == exp, "I: removing a named chunk yields the original minus exactly that chunk item's bytes" );
+		Check( SerializeCst( rem ).find( "reflectance p" ) == std::string::npos, "I: the removed chunk's content is gone" );
+		Check( SerializeCst( rem ).find( "name p" ) != std::string::npos && SerializeCst( rem ).find( "name g" ) != std::string::npos, "I: the surviving chunks' content remains" );
+	}
+
+	// J. Out-of-range index is a no-op (mirrors DocInsertItem's bounds clamp).
+	{
+		const std::string t = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname a\nradius 1\n}\n";
+		Document d = ParseToCst( t );
+		Check( SerializeCst( DocRemoveItem( d, -1 ) ) == t, "J: DocRemoveItem at index<0 is a no-op" );
+		Check( SerializeCst( DocRemoveItem( d, DocItemCount(d) ) ) == t, "J: DocRemoveItem past the end is a no-op" );
 	}
 
 	std::printf( "%d passed, %d failed.\n", s_pass, s_fail );
