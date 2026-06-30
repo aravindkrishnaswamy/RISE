@@ -1390,6 +1390,14 @@ void SceneEditController::OnPointerUp( const Point2& px )
 			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
 		}
 		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+		// INVARIANT: the object and camera pending sets are MUTUALLY EXCLUSIVE here -- a gesture composite is
+		// single-tool ("Drag" object-motion XOR "Camera" camera-motion) and every commit boundary drains BOTH
+		// sets, so they are never simultaneously populated.  That matters because the object commit may take a D2
+		// (ClearAll + re-derive), which would rebuild the live CAMERA from the Document's pre-drag pose -- if a
+		// camera pose were ALSO pending, the camera commit below would then read+record that reset pose.  Should a
+		// future composite ever span both categories, snapshot BOTH (object matrices + camera pose strings) BEFORE
+		// routing EITHER (CommitPendingCstObjectTransforms already snapshots its matrices first; the camera commit
+		// would need the same).
 		mEditor.CommitPendingCstObjectTransforms();   // object gizmo drag -> `matrix` param
 		mEditor.CommitPendingCstCameraPose();          // camera orbit/pan/zoom/roll -> pose params
 		mEditPending.store( true, std::memory_order_release );

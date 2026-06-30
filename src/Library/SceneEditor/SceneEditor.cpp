@@ -1585,12 +1585,13 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 	// instance re-registered under the same name (serial mismatch); applying the
 	// captured state to the replacement would corrupt it.  capturedTargetSerial==0
 	// means the op tracks no identity (medium/time/marker/legacy) -> no check.
-	// SKIP on the CST edit-model for the CST-routed ops (IsCstRoutedOp -- now ALL of material/light/camera +
-	// every IsObjectOp): that path RE-DERIVES the entity (object transforms mutate the live object then RECOMMIT
-	// the result as the `matrix` param at the boundary), so its serial legitimately changes each edit, and it
-	// applies/reverts/redoes BY NAME (never the stale pointer) -- the serial guard is both moot and would FALSELY
-	// trip.  The guard still applies ONLY on a LEGACY (no-Document) scene, where these ops DO mutate the captured
-	// instance in place.
+	// SKIP on the CST edit-model for the CST-routed ops (IsCstRoutedOp -- now material/light/camera-property +
+	// medium + every IsObjectOp + every IsCameraOp drag): that path RE-DERIVES the entity (object transforms
+	// mutate the live object then RECOMMIT as the `matrix` param at the boundary; camera drags recommit the pose
+	// params), so its serial legitimately changes each edit, and it applies/reverts/redoes BY NAME (never the
+	// stale pointer) -- the serial guard is both moot and would FALSELY trip.  (Medium ops carry serial==0
+	// anyway, so the guard never reaches them regardless.)  The guard still applies ONLY on a LEGACY (no-Document)
+	// scene, where these ops DO mutate the captured instance in place.
 	if( edit.capturedTargetSerial != 0 &&
 	    !( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) &&
 	    ResolveTargetSerial( edit ) != edit.capturedTargetSerial )
@@ -1869,12 +1870,13 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 	// instance re-registered under the same name (serial mismatch); applying the
 	// captured state to the replacement would corrupt it.  capturedTargetSerial==0
 	// means the op tracks no identity (medium/time/marker/legacy) -> no check.
-	// SKIP on the CST edit-model for the CST-routed ops (IsCstRoutedOp -- now ALL of material/light/camera +
-	// every IsObjectOp): that path RE-DERIVES the entity (object transforms mutate the live object then RECOMMIT
-	// the result as the `matrix` param at the boundary), so its serial legitimately changes each edit, and it
-	// applies/reverts/redoes BY NAME (never the stale pointer) -- the serial guard is both moot and would FALSELY
-	// trip.  The guard still applies ONLY on a LEGACY (no-Document) scene, where these ops DO mutate the captured
-	// instance in place.
+	// SKIP on the CST edit-model for the CST-routed ops (IsCstRoutedOp -- now material/light/camera-property +
+	// medium + every IsObjectOp + every IsCameraOp drag): that path RE-DERIVES the entity (object transforms
+	// mutate the live object then RECOMMIT as the `matrix` param at the boundary; camera drags recommit the pose
+	// params), so its serial legitimately changes each edit, and it applies/reverts/redoes BY NAME (never the
+	// stale pointer) -- the serial guard is both moot and would FALSELY trip.  (Medium ops carry serial==0
+	// anyway, so the guard never reaches them regardless.)  The guard still applies ONLY on a LEGACY (no-Document)
+	// scene, where these ops DO mutate the captured instance in place.
 	if( edit.capturedTargetSerial != 0 &&
 	    !( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) &&
 	    ResolveTargetSerial( edit ) != edit.capturedTargetSerial )

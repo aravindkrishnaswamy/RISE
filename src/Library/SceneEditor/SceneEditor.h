@@ -317,7 +317,10 @@ namespace RISE
 
 		// P5 Slice 3 expansion (camera drag): the active camera's name if a camera-drag op changed its pose since
 		// the last CommitPendingCstCameraPose (empty = none).  Flushed to the camera chunk's pose params by the
-		// controller at a parked boundary.  UI-thread-only.
+		// controller at a parked boundary.  UI-thread-only.  Intentionally a SINGLE name, not a set (unlike
+		// mPendingCstObjMatrix): a drag gesture targets the ONE active camera, so a composite is single-camera.
+		// If a future path ever drags multiple cameras in one composite, convert this to an unordered_set + a
+		// snapshot-before-route pass (mirroring the object commit).
 		std::string mPendingCstCameraName;
 
 		//! Phase 6.5 UI hook: GUI-installed listener fired on
