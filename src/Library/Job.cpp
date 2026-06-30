@@ -9374,6 +9374,14 @@ bool Job::RemoveRasterizerOutputs(
 bool Job::ClearAll(
 	)
 {
+	// A deliberate ClearAll is a FULL scene reset -- it must include the retained canonical CST Document so a
+	// subsequent reopen (the GUIs reuse ONE persistent Job: clearAll() THEN load) starts fresh.  Without this,
+	// LoadAsciiSceneViaCst's load-once guard (a non-null pCstDocument) would falsely refuse the second native-v7
+	// open.  The variant/edit re-derive paths (RederiveCstWithVariant, DeriveEditedCstDocument_) do NOT rely on the
+	// member surviving ClearAll -- each std::move's the Document into a LOCAL before ClearAll and re-retains from
+	// that local after, so this reset is a no-op for them.  mCstLoadFileIdentity is preserved across ClearAll by
+	// InitializeContainers (re-applied) and overwritten on a reopen via RefreshCstLoadFileIdentity.
+	pCstDocument.reset();
 	DestroyContainers();
 	InitializeContainers();
 
@@ -9504,8 +9512,10 @@ bool Job::LoadAsciiSceneViaCst( const char* filename )
 		return false;
 	}
 
-	// Load-once: re-loading into a live Job would desync the retained Document from the accumulated Scene
-	// (DeriveToJob does not reset the managers).  Refuse; callers load into a FRESH Job (Slice 5 handles reopen).
+	// Load-once guard: a load WITHOUT a prior ClearAll would desync the retained Document from the accumulated
+	// Scene (DeriveToJob does not reset the managers), so refuse it.  A GUI REOPEN is supported: the front-ends
+	// call ClearAll() (which now resets pCstDocument -- see Job::ClearAll) THEN load, so the reopen reaches here
+	// with a null Document and proceeds.
 	if( pCstDocument ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::LoadAsciiSceneViaCst:: this Job already loaded a scene; re-load is not supported (use a fresh Job)" );
 		return false;
@@ -9560,8 +9570,9 @@ bool Job::LoadAsciiSceneViaCst( const char* filename )
 }
 
 // P5 (Model-B): re-derive the retained CST Document with a FORCED active scene_variant -- the GUI variant switch.
-// ClearAll() releases + re-creates the containers (fresh slate, no dup-name on re-bake) but does NOT touch the
-// retained Document; preserve it across the reset, re-bake with the variant override, then re-retain it.
+// ClearAll() releases + re-creates the containers (fresh slate, no dup-name on re-bake) AND now resets the
+// retained Document; this path is unaffected because it std::move's the Document into a LOCAL before ClearAll
+// and re-retains it after -- so the member is already null when ClearAll resets it (a no-op here).
 // Lifetime: ClearAll shuts down the old Scene, but the interactive RayCaster's scene refcount (AttachScene
 // addref's the scene) defers its actual free until the next render pass re-attaches the NEW Scene -- and
 // SceneEditController parks the render thread before calling this, so no in-flight caster dangles.  Adding an
@@ -9848,9 +9859,28 @@ int Job::ApplyCstInsertCameraChunk( const char* chunkText )
 		return 0;
 	}
 
+	// LEADING-separator guard (same defect class as commit bf74399b's WithParamValueOrInsert insert-glue fix):
+	// "braces on their own lines" is an AUTHORING convention the CST loader does NOT enforce, and editors/git
+	// commonly drop a file's FINAL newline.  If the retained Document's last top-level item's tail trivia lacks
+	// a trailing newline, appending the chunk would splice it directly after the prior chunk's `}` (`}pinhole_camera`
+	// on one line) -- the lenient relexer survives, but SerializeCst then writes a file the documented grammar
+	// rejects (`}` must be on its own line), breaking legacy LoadAsciiScene reload + external tooling.  Emit a
+	// LEADING `\n` separator first whenever the Document's serialized tail lacks one (the tail of the whole
+	// serialization IS the last item's tail).  ApplyCstRemoveCameraChunk drops this leading separator on the
+	// inverse so an insert->remove cycle stays SerializeCst-identical.
 	const int end = RISE::Cst::DocItemCount( *pCstDocument );
-	RISE::Cst::Document d1 = RISE::Cst::DocInsertItem( *pCstDocument, end,     chunkItem );
-	d1                     = RISE::Cst::DocInsertItem( d1,           end + 1, sepItem );
+	RISE::Cst::Document d1 = *pCstDocument;
+	int at = end;
+	if( end > 0 ) {
+		const std::string tail = RISE::Cst::SerializeCst( d1 );
+		if( !tail.empty() && tail.back() != '\n' ) {
+			RISE::Cst::Document leadDoc = RISE::Cst::ParseToCst( std::string( "\n" ) );
+			RISE::Cst::NodeRef leadItem = RISE::Cst::DocResolveNodeId( leadDoc, RISE::Cst::DocNodeIdAt( leadDoc, 0 ) );
+			if( leadItem ) { d1 = RISE::Cst::DocInsertItem( d1, at, leadItem ); ++at; }
+		}
+	}
+	d1 = RISE::Cst::DocInsertItem( d1, at,     chunkItem );
+	d1 = RISE::Cst::DocInsertItem( d1, at + 1, sepItem );
 	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
 	return 1;
 }
@@ -9884,6 +9914,20 @@ int Job::ApplyCstRemoveCameraChunk( const char* camName )
 		const RISE::Cst::NodeRef sep = RISE::Cst::DocResolveNodeId( d1, RISE::Cst::DocNodeIdAt( d1, idx ) );
 		if( sep && sep->kind == RISE::Cst::NodeKind::Trivia && sep->text.find_first_not_of( "\n\r" ) == std::string::npos )
 			d1 = RISE::Cst::DocRemoveItem( d1, idx );
+	}
+	// Clean inverse of ApplyCstInsertCameraChunk's LEADING-separator guard: when the original Document had no
+	// trailing newline, the insert prepended a pure-newline separator BEFORE the cloned chunk.  After removing the
+	// chunk + its trailing separator above, that leading separator is now the document's last item -- drop it so an
+	// insert->remove cycle restores the byte-identical (no-trailing-newline) Document.  Only fires at the tail and
+	// only on a pure-newline leaf, so a legitimate trailing newline (the non-glue case, where no leading separator
+	// was added and the item before the gap is the prior chunk) is untouched.
+	{
+		const int nTail = RISE::Cst::DocItemCount( d1 );
+		if( idx >= nTail && nTail > 0 ) {
+			const RISE::Cst::NodeRef lead = RISE::Cst::DocResolveNodeId( d1, RISE::Cst::DocNodeIdAt( d1, nTail - 1 ) );
+			if( lead && lead->kind == RISE::Cst::NodeKind::Trivia && lead->text.find_first_not_of( "\n\r" ) == std::string::npos )
+				d1 = RISE::Cst::DocRemoveItem( d1, nTail - 1 );
+		}
 	}
 	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
 	return 1;

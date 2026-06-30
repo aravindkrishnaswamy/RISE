@@ -41,6 +41,7 @@
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Interfaces/IGeometry.h"
 #include "../src/Library/SceneEditor/MediaIntrospection.h"
+#include "../src/Library/Cst/Cst.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -704,6 +705,90 @@ int main()
 			std::remove( ta ); std::remove( tb );
 		}
 		std::remove( ts );
+	}
+
+	// ---- CINS: ApplyCstInsertCameraChunk must NOT glue the new chunk onto the previous chunk's `}` when the
+	//      retained Document has NO final newline (editors/git commonly drop it).  The lenient relexer survives
+	//      glue, but SerializeCst would then write `}pinhole_camera` on one line -- a file the documented grammar
+	//      rejects (`}` on its own line).  Assert the inserted keyword starts a line + the insert->remove round-trip
+	//      stays SerializeCst-identical.  RED-PROVE: disable the LEADING-separator guard in ApplyCstInsertCameraChunk
+	//      and the `no `}'-glue` assertion FAILS (the keyword lands right after `}`). ----
+	{
+		const char* tn = "cst_s5_noeol.RISEscene";
+		// Write the scene with NO trailing newline (the last byte is the closing `}` of the last chunk).
+		{ std::ofstream o( tn, std::ios::binary );
+		  o << "RISE ASCII SCENE 6\n"
+		       "film\n{\nwidth 64\nheight 64\n}\n"
+		       "pinhole_camera\n{\nname cam\nlocation 0 0 7\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}";   // <-- NO trailing '\n'
+		}
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tn ), "CINS: loads the no-final-newline scene via CST" );
+		const RISE::Cst::Document* d0 = j->GetCstDocument();
+		Check( d0 != nullptr, "CINS: Document retained" );
+		const std::string before = d0 ? RISE::Cst::SerializeCst( *d0 ) : std::string();
+		Check( !before.empty() && before.back() != '\n', "CINS: the loaded Document's tail lacks a trailing newline (the glue precondition)" );
+
+		// Insert a faithful camera chunk (bare chunk text, no trailing newline -- as BuildCameraChunkText emits).
+		const char* clone = "pinhole_camera\n{\nname cam_new\nlocation 0 0 9\nlookat 0 0 0\nup 0 1 0\nfov 30\n}";
+		Check( j->ApplyCstInsertCameraChunk( clone ) == 1, "CINS: insert reports success" );
+		const RISE::Cst::Document* d1 = j->GetCstDocument();
+		const std::string after = d1 ? RISE::Cst::SerializeCst( *d1 ) : std::string();
+		// The defect signature: `}pinhole_camera` spliced on one line.  With the guard, the keyword starts a line.
+		Check( after.find( "}pinhole_camera" ) == std::string::npos, "CINS: the inserted chunk did NOT glue onto the previous `}` (no `}pinhole_camera`)" );
+		Check( after.find( "\npinhole_camera\n{\nname cam_new" ) != std::string::npos, "CINS: the inserted camera keyword starts on its own line" );
+		// And it reloads/round-trips: re-lex the serialized text via the CST -> it stays byte-identical.
+		Check( RISE::Cst::SerializeCst( RISE::Cst::ParseToCst( after ) ) == after, "CINS: the post-insert Document round-trips through ParseToCst (well-formed)" );
+
+		// Clean inverse: removing the inserted chunk restores the byte-identical (no-trailing-newline) Document.
+		Check( j->ApplyCstRemoveCameraChunk( "cam_new" ) == 1, "CINS: remove of the inserted chunk reports success" );
+		const RISE::Cst::Document* d2 = j->GetCstDocument();
+		const std::string roundtrip = d2 ? RISE::Cst::SerializeCst( *d2 ) : std::string();
+		Check( roundtrip == before, "CINS: insert->remove round-trips SerializeCst-identical (the leading separator was not orphaned)" );
+		j->release();
+		std::remove( tn );
+	}
+
+	// ---- REOPEN: the Slice-5 CST-load DEFAULT must not regress GUI scene RE-OPEN.  The GUIs reuse ONE persistent
+	//      Job across opens: clearAll() THEN load.  ClearAll() now resets the retained Document so the second
+	//      native-v7 LoadAsciiSceneAuto (-> LoadAsciiSceneViaCst) does NOT hit the load-once refusal.  RED-PROVE:
+	//      remove the `pCstDocument.reset();` from Job::ClearAll and the second LoadAsciiSceneAuto returns false. ----
+	{
+		const char* sa = "cst_s5_reopenA.RISEscene";
+		const char* sb = "cst_s5_reopenB.RISEscene";
+		{ std::ofstream o( sa );
+		  o << "RISE ASCII SCENE 6\n"
+		       "film\n{\nwidth 64\nheight 64\n}\n"
+		       "uniformcolor_painter\n{\nname pa\ncolor 1 0 0\n}\n"
+		       "lambertian_material\n{\nname ma\nreflectance pa\n}\n"
+		       "sphere_geometry\n{\nname ga\nradius 1\n}\n"
+		       "standard_object\n{\nname oa\ngeometry ga\nmaterial ma\n}\n"; }
+		{ std::ofstream o( sb );
+		  o << "RISE ASCII SCENE 6\n"
+		       "film\n{\nwidth 64\nheight 64\n}\n"
+		       "uniformcolor_painter\n{\nname pb\ncolor 0 1 0\n}\n"
+		       "lambertian_material\n{\nname mb_distinct\nreflectance pb\n}\n"
+		       "sphere_geometry\n{\nname gb\nradius 1\n}\n"
+		       "standard_object\n{\nname ob\ngeometry gb\nmaterial mb_distinct\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneAuto( sa ), "REOPEN: first native-v7 load via LoadAsciiSceneAuto succeeds" );
+		Check( j->GetCstDocument() != nullptr, "REOPEN: a Document is retained after the first CST-default load" );
+		{ const RISE::Cst::Document* d = j->GetCstDocument();
+		  const std::string s = d ? RISE::Cst::SerializeCst( *d ) : std::string();
+		  Check( s.find( "name ma" ) != std::string::npos, "REOPEN: the retained Document is scene A (material `ma`)" ); }
+		// The GUI reopen path: clearAll() THEN load on the SAME Job.
+		Check( j->ClearAll(), "REOPEN: ClearAll succeeds" );
+		Check( j->LoadAsciiSceneAuto( sb ), "REOPEN: the SECOND native-v7 load (after ClearAll) SUCCEEDS -- no load-once refusal" );
+		{ const RISE::Cst::Document* d = j->GetCstDocument();
+		  Check( d != nullptr, "REOPEN: a Document is retained after the reopen" );
+		  const std::string s = d ? RISE::Cst::SerializeCst( *d ) : std::string();
+		  Check( s.find( "name mb_distinct" ) != std::string::npos, "REOPEN: the retained Document now reflects scene B (material `mb_distinct`)" );
+		  Check( s.find( "name ma\n" ) == std::string::npos, "REOPEN: scene A's content is gone from the retained Document" ); }
+		j->release();
+		std::remove( sa ); std::remove( sb );
 	}
 
 	std::remove( tmp );

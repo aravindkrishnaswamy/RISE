@@ -2717,8 +2717,8 @@ namespace RISE
 
 		//! P5 (Model-B): load via the canonical CST path (Scene = derive(CST)) instead of the legacy
 		//! streaming parser.  Refuses non-native-v7 documents and derive-error scenes.  Default returns
-		//! FALSE (only Job overrides this -- it retains the CST Document); the CLI/GUI opt in via the
-		//! RISE_LOAD_VIA_CST environment variable, pending the Slice-5 default-on.
+		//! FALSE (only Job overrides this -- it retains the CST Document).  Reached via LoadAsciiSceneAuto's
+		//! native-v7 branch -- CST-load is the Slice-5 DEFAULT (the RISE_LOAD_VIA_CST opt-in env var was removed).
 		/// \return TRUE iff loaded via the CST path with no error diagnostics
 		virtual bool LoadAsciiSceneViaCst(
 			const char* filename							///< [in] Name of the file containing the scene
