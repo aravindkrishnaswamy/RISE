@@ -988,7 +988,8 @@ ICamera* SceneEditor::ResolveEditedCamera( const SceneEdit& e )
 // each newly-CST-routed op HERE -- one place, both guard sites read it.
 static inline bool IsCstRoutedOp( SceneEdit::Op op )
 {
-	return op == SceneEdit::SetMaterialProperty;
+	return op == SceneEdit::SetMaterialProperty
+	    || op == SceneEdit::SetLightProperty;
 }
 
 unsigned long long SceneEditor::ResolveTargetSerial( const SceneEdit& e ) const
@@ -1047,6 +1048,16 @@ void SceneEditor::RebindToJob_()
 	if( mScene && mLastSetTime != 0 ) mScene->SetSceneTimeForPreview( mLastSetTime );
 }
 
+// P5 Slice 3 expansion: shared CST-routing for a property edit (material/light/...).  Mirrors the material
+// branch -- DocSetOrAddParamValue + re-derive via Job::ApplyCstParamEdit; rebind on a D2 (result >=2); a
+// diagnosed re-derive (3) rebinds but reports failure.
+bool SceneEditor::RouteCstParamEdit_( const char* entityName, const char* entityKind, const char* role, const char* value )
+{
+	const int r = mJob->ApplyCstParamEdit( entityName, entityKind, role, 0, value );
+	if( r >= 2 ) RebindToJob_();
+	return r == 1 || r == 2;
+}
+
 bool SceneEditor::ApplyMaterialSlotByName( const SceneEdit& e, const String& painterName )
 {
 	// F1: shared SetMaterialProperty restore -- resolves the slot's pipe
@@ -1067,11 +1078,8 @@ bool SceneEditor::ApplyMaterialSlotByName( const SceneEdit& e, const String& pai
 	// editor's cached pointers before returning (the SetMaterialProperty arm reads mLastScope but not the
 	// managers after we return; the next edit/undo would dereference the freed ones) -- else use-after-free.
 	// Legacy-loaded scenes (no Document) fall through to the direct MaterialIntrospection::SetSlot below.
-	if( mJob && mJob->HasRetainedCstDocument() ) {
-		const int r = mJob->ApplyCstParamEdit( e.objectName.c_str(), "material", e.propertyName.c_str(), 0, painterName.c_str() );
-		if( r >= 2 ) RebindToJob_();        // 2 or 3: the D2 re-derive REPLACED the scene + managers -> re-point
-		return r == 1 || r == 2;            // 3 = replaced but the re-derive diagnosed -> rebound, but report failure
-	}
+	if( mJob && mJob->HasRetainedCstDocument() )
+		return RouteCstParamEdit_( e.objectName.c_str(), "material", e.propertyName.c_str(), painterName.c_str() );
 	const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, e.propertyName );
 	if( cur.kind == MaterialSlotRef::Painter ) {
 		if( !mPainterManager ) return false;
@@ -1575,6 +1583,12 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		if( !lights ) return false;
 		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
 		if( !light ) return false;
+		// P5 Slice 3 expansion: CST-route the inverse light edit too (replays through the SAME CST path).
+		if( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) {
+			if( !RouteCstParamEdit_( edit.objectName.c_str(), "light", edit.propertyName.c_str(), edit.prevPropertyValue.c_str() ) ) return false;
+			mLastScope = Dirty_Camera;
+			return true;
+		}
 		// shootphotons round-trips through the direct setter, not the
 		// keyframe path.  Match the Apply branch above.
 		if( edit.propertyName == String( "shootphotons" ) ) {
@@ -1713,6 +1727,13 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		if( !lights ) return false;
 		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
 		if( !light ) return false;
+		// P5 Slice 3 expansion: CST-route the light edit (incl. shootphotons -- the re-derive applies it from
+		// the chunk param) so the Document stays complete; a later material D2 then can't revert this edit.
+		if( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) {
+			if( !RouteCstParamEdit_( edit.objectName.c_str(), "light", edit.propertyName.c_str(), edit.propertyValue.c_str() ) ) return false;
+			mLastScope = Dirty_Camera;
+			return true;
+		}
 		// shootphotons re-replays through the direct setter to match
 		// the Apply / Undo paths.
 		if( edit.propertyName == String( "shootphotons" ) ) {

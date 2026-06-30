@@ -361,6 +361,12 @@ namespace RISE
 		//! D2 full re-derive (Job::ApplyCstParamEdit result 2 or 3 ClearAll'd the Job, freeing the old ones).
 		void RebindToJob_();
 
+		//! P5 Slice 3 expansion: route a property edit through the retained CST (Job::ApplyCstParamEdit) instead
+		//! of the direct manager mutation, so the Document stays complete (a later material D2 can't lose it).
+		//! Self-rebinds on a D2 full re-derive (result >=2).  Returns false (caller fails the edit) on a reject
+		//! (0) or a diagnosed re-derive (3).  Shared by the material/light/... CST branches.
+		bool RouteCstParamEdit_( const char* entityName, const char* entityKind, const char* role, const char* value );
+
 		//! H2 (P-WALK): the SINGLE per-op forward + revert dispatchers.  Each
 		//! IS the single-edit body; the composite walk-loops call them per
 		//! inner edit so the single and composite paths can NEVER drift (the
