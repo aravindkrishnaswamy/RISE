@@ -2491,6 +2491,18 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 						std::memory_order_release );
 					mFullResH.store( filmAfter->GetHeight(),
 						std::memory_order_release );
+
+					// CST-route the preset (Model-B P5): record width+height in the retained Document so a SAVE /
+					// future D2 preserves the new resolution (the live SetFilm above already mutated the scene).
+					// pixelAR is UNCHANGED by a preset (preserved above) -> pass nullptr (no diff to that param).
+					// Read the LIVE post-SetFilm dims (authoritative, post-clamp).  A Document-record failure is a
+					// SOFT warning logged inside ApplyCstFilmEdit; it must NOT fail the preset (the live edit stands).
+					if( mJob.HasRetainedCstDocument() ) {
+						char wStr[64]; char hStr[64];
+						std::snprintf( wStr, sizeof(wStr), "%u", filmAfter->GetWidth() );
+						std::snprintf( hStr, sizeof(hStr), "%u", filmAfter->GetHeight() );
+						mJob.ApplyCstFilmEdit( wStr, hStr, nullptr );
+					}
 				}
 			}
 		}
@@ -3834,6 +3846,26 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		if( filmRef ) {
 			mFullResW.store( filmRef->GetWidth(),  std::memory_order_release );
 			mFullResH.store( filmRef->GetHeight(), std::memory_order_release );
+		}
+
+		// CST-route the edit (Model-B P5): the live SetFilm above already mutated the scene, but on a CST-default
+		// load the retained Document still carries the AUTHORED dims -- a SAVE serializes that Document and a future
+		// D2 re-derives from it, so without recording the new dim here the edit is LIVE-ONLY and lost on save /
+		// reverted on the next D2.  Patch ONLY the edited param (the other two nullptr -> minimal diff), reading the
+		// LIVE post-SetFilm value (authoritative, post-clamp).  A Document-record failure is a SOFT warning (the live
+		// edit already succeeded) -- it must NOT fail the user-facing edit, but it is logged loudly inside ApplyCstFilmEdit.
+		if( mJob.HasRetainedCstDocument() && filmRef ) {
+			char vbuf[64];
+			const char* w = nullptr; const char* h = nullptr; const char* p = nullptr;
+			const std::string n( name.c_str() );
+			if( n == "width" ) {
+				std::snprintf( vbuf, sizeof(vbuf), "%u", filmRef->GetWidth() );  w = vbuf;
+			} else if( n == "height" ) {
+				std::snprintf( vbuf, sizeof(vbuf), "%u", filmRef->GetHeight() ); h = vbuf;
+			} else if( n == "pixelAR" ) {
+				std::snprintf( vbuf, sizeof(vbuf), "%.6g", filmRef->GetPixelAR() ); p = vbuf;
+			}
+			if( w || h || p ) mJob.ApplyCstFilmEdit( w, h, p );
 		}
 
 		mEditPending.store( true, std::memory_order_release );

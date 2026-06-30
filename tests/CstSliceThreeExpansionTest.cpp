@@ -41,6 +41,7 @@
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Interfaces/IGeometry.h"
 #include "../src/Library/SceneEditor/MediaIntrospection.h"
+#include "../src/Library/Interfaces/IFilm.h"
 #include "../src/Library/Cst/Cst.h"
 
 using namespace RISE;
@@ -143,6 +144,18 @@ static bool Mat16Eq( const double a[16], const double b[16] )
 {
 	for( int i = 0; i < 16; ++i ) if( std::fabs( a[i] - b[i] ) > 1e-9 ) return false;
 	return true;
+}
+
+// Live Film dims off the scene; 0 / -999 if absent.
+static unsigned int FilmW( Job& j )  { const IScene* s = j.GetScene(); const IFilm* f = s ? s->GetFilm() : 0; return f ? f->GetWidth()  : 0u; }
+static unsigned int FilmH( Job& j )  { const IScene* s = j.GetScene(); const IFilm* f = s ? s->GetFilm() : 0; return f ? f->GetHeight() : 0u; }
+static double       FilmPAR( Job& j ){ const IScene* s = j.GetScene(); const IFilm* f = s ? s->GetFilm() : 0; return f ? (double)f->GetPixelAR() : -999.0; }
+
+// The serialized retained Document as a string ("" if none).
+static std::string DocText( Job& j )
+{
+	const RISE::Cst::Document* d = j.GetCstDocument();
+	return d ? RISE::Cst::SerializeCst( *d ) : std::string();
 }
 
 // A medium's absorption-R off the LIVE scene; -999 if absent.
@@ -891,6 +904,140 @@ int main()
 		  Check( s.find( "name ma\n" ) == std::string::npos, "REOPEN: scene A's content is gone from the retained Document" ); }
 		j->release();
 		std::remove( sa ); std::remove( sb );
+	}
+
+	// ---- FILM: a Film dim edit / resolution preset is CST-routed -> the live SetFilm mutation is RECORDED in the
+	//      retained Document, so it SURVIVES a material-edit D2 (re-derive from the Document) AND a save->reload.
+	//      Before this routing, Film edits were LIVE-ONLY: a D2 reverted them to the authored dims and a SAVE
+	//      serialized the stale Document.  width/height/pixelAR each routable independently (minimal diff); pixelAR
+	//      may need INSERTing when the authored chunk omits it.  Each survive/persist assertion is red-provable by
+	//      disabling the ApplyCstFilmEdit call below. ----
+	{
+		// FILM1 -- a WIDTH edit: live SetFilm + ApplyCstFilmEdit records the new width; it SURVIVES a material D2.
+		const char* tf = "cst_film1.RISEscene";
+		{ std::ofstream o( tf );
+		  o << "RISE ASCII SCENE 6\n"
+		       "scene_variant\n{\nname night\n}\n"                                   // variant -> material edits take D2
+		       "film\n{\nwidth 800\nheight 600\n}\n"
+		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tf ), "FILM1: loads variant + film scene via CST" );
+		Check( FilmW( *j ) == 800u, "FILM1: film width is 800 before the edit" );
+
+		// Live edit (what the panel's FilmIntrospection::SetProperty does) + CST-route the changed param.
+		Check( j->SetFilm( 1024, 600, FilmPAR( *j ) ), "FILM1: live SetFilm to width 1024 succeeds" );
+		Check( FilmW( *j ) == 1024u, "FILM1: live film width is now 1024" );
+		Check( j->ApplyCstFilmEdit( "1024", nullptr, nullptr ) == 1, "FILM1: ApplyCstFilmEdit(width) records to the Document" );
+		Check( DocText( *j ).find( "width 1024" ) != std::string::npos, "FILM1: the retained Document now declares width 1024" );
+
+		// D2: a material edit on this variant scene forces the full re-derive from the Document.  The film width
+		// must SURVIVE (it's recorded).  RED-PROVE: disable the ApplyCstFilmEdit call above (in the controller's Film
+		// SetProperty route, or here) -> the D2 reverts the live width to the authored 800 -> this assertion fails.
+		SceneEditController c( *j, 0 );
+		c.SetSelection( Cat::Material, String( "m" ) );
+		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "FILM1: material edit applies (D2)" );
+		Check( FilmW( *j ) == 1024u, "FILM1: the film WIDTH edit SURVIVED the material D2 (recorded in the CST; data-loss closed)" );
+		Check( DocText( *j ).find( "width 1024" ) != std::string::npos, "FILM1: the Document still has width 1024 after the D2" );
+		j->release();
+		std::remove( tf );
+	}
+
+	{
+		// FILM2 -- pixelAR INSERT: the authored film chunk OMITS pixelAR; setting it must INSERT `pixelAR 1.5` on its
+		// own line (no brace-glue), and survive a D2 + a save->reload.
+		const char* tf = "cst_film2.RISEscene";
+		{ std::ofstream o( tf );
+		  o << "RISE ASCII SCENE 6\n"
+		       "scene_variant\n{\nname night\n}\n"
+		       "film\n{\nwidth 640\nheight 480\n}\n"                                  // NO pixelAR (defaults to 1.0)
+		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tf ), "FILM2: loads variant + no-pixelAR film scene via CST" );
+		Check( DocText( *j ).find( "pixelAR" ) == std::string::npos, "FILM2: the authored Document has NO pixelAR param" );
+
+		Check( j->SetFilm( 640, 480, 1.5 ), "FILM2: live SetFilm with pixelAR 1.5 succeeds" );
+		Check( std::fabs( FilmPAR( *j ) - 1.5 ) < 1e-6, "FILM2: live pixelAR is now 1.5" );
+		Check( j->ApplyCstFilmEdit( nullptr, nullptr, "1.5" ) == 1, "FILM2: ApplyCstFilmEdit(pixelAR) INSERTs the param" );
+		{ const std::string s = DocText( *j );
+		  Check( s.find( "pixelAR 1.5" ) != std::string::npos, "FILM2: the Document now declares pixelAR 1.5" );
+		  // No brace-glue: the inserted param must NOT land right after a `}` or on the `film` keyword line.
+		  Check( s.find( "}pixelAR" ) == std::string::npos && s.find( "filmpixelAR" ) == std::string::npos,
+		         "FILM2: the inserted pixelAR is on its own line (no brace/keyword glue)" ); }
+
+		// Survives a D2.
+		SceneEditController c( *j, 0 );
+		c.SetSelection( Cat::Material, String( "m" ) );
+		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "FILM2: material edit applies (D2)" );
+		Check( std::fabs( FilmPAR( *j ) - 1.5 ) < 1e-6, "FILM2: the pixelAR INSERT SURVIVED the material D2" );
+
+		// Survives a save->reload into a FRESH Job.
+		const SaveResult res = c.RequestSave( std::string( tf ) );
+		Check( res.status == SaveResult::Status::Saved, "FILM2: SaveEngine reported Saved" );
+		j->release();
+		Job* j2 = new Job();
+		Check( j2->LoadAsciiSceneViaCst( tf ), "FILM2: reloads the saved file via CST" );
+		Check( std::fabs( FilmPAR( *j2 ) - 1.5 ) < 1e-6, "FILM2: pixelAR PERSISTED through save->reload (CST serialized the INSERT)" );
+		j2->release();
+		std::remove( tf );
+	}
+
+	{
+		// FILM3 -- a resolution PRESET (width+height together, pixelAR unchanged -> nullptr): survives a save->reload.
+		const char* tf = "cst_film3.RISEscene";
+		{ std::ofstream o( tf );
+		  o << "RISE ASCII SCENE 6\n"
+		       "film\n{\nwidth 800\nheight 600\n}\n"
+		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tf ), "FILM3: loads film scene via CST" );
+		Check( j->SetFilm( 1920, 1080, FilmPAR( *j ) ), "FILM3: live SetFilm to the 1920x1080 preset succeeds" );
+		Check( j->ApplyCstFilmEdit( "1920", "1080", nullptr ) == 1, "FILM3: ApplyCstFilmEdit(width,height) records the preset" );
+		SceneEditController c( *j, 0 );
+		const SaveResult res = c.RequestSave( std::string( tf ) );
+		Check( res.status == SaveResult::Status::Saved, "FILM3: SaveEngine reported Saved" );
+		j->release();
+		// Reload into a FRESH Job -> the preset dims must be present.
+		Job* j2 = new Job();
+		Check( j2->LoadAsciiSceneViaCst( tf ), "FILM3: reloads the saved file via CST" );
+		Check( FilmW( *j2 ) == 1920u && FilmH( *j2 ) == 1080u, "FILM3: the preset dims PERSISTED through save->reload (1920x1080)" );
+		j2->release();
+		std::remove( tf );
+	}
+
+	{
+		// FILM4 -- legacy no-op: a Job with NO retained Document (loaded NOT via CST) -> ApplyCstFilmEdit returns 0,
+		// does not crash, and leaves the live film untouched (the live SetFilm path is unaffected).
+		const char* tf = "cst_film4.RISEscene";
+		{ std::ofstream o( tf );
+		  o << "RISE ASCII SCENE 6\n"
+		       "film\n{\nwidth 320\nheight 240\n}\n"
+		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiScene( tf ), "FILM4: loads via the LEGACY (non-CST) path" );
+		Check( !j->HasRetainedCstDocument(), "FILM4: the legacy load retains NO CST Document" );
+		Check( j->SetFilm( 512, 512, FilmPAR( *j ) ), "FILM4: live SetFilm still works on a legacy scene" );
+		Check( j->ApplyCstFilmEdit( "512", "512", nullptr ) == 0, "FILM4: ApplyCstFilmEdit is a clean no-op (returns 0) with no Document" );
+		Check( FilmW( *j ) == 512u, "FILM4: the live film width is unaffected by the no-op route" );
+		j->release();
+		std::remove( tf );
 	}
 
 	std::remove( tmp );

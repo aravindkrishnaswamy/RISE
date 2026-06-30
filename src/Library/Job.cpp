@@ -9946,6 +9946,42 @@ int Job::ApplyCstRemoveCameraChunk( const char* camName )
 	return 1;
 }
 
+// Model-B P5 Slice 3 expansion (FILM edit/preset): record a Film dim edit in the retained CST.  The live
+// Job::SetFilm has ALREADY fully mutated the scene (replaced IFilm, resynced cameras, reallocated FrameStore);
+// this only PATCHES the singleton unnamed `film` chunk so a SAVE (SerializeCst serializes the retained Document)
+// and a future D2 re-derive (DeriveToJob from the retained Document) preserve the dims instead of reverting to
+// the authored values.  Modeled on ApplyCstInsertCameraChunk (Document-only -- NO re-derive, NO rebind), NOT on
+// ApplyCstParamEdit (which re-derives).  Both call sites are already inside the UI-thread parked critical section,
+// and the Document is touched only by the UI thread, so no extra parking is needed.
+//
+// width/height/pixelAR are each OPTIONAL: nullptr means "leave that param untouched" -> a single-property panel
+// edit writes ONLY the changed param (minimal diff); a resolution PRESET passes width+height with pixelAR=nullptr.
+// pixelAR is commonly OMITTED from the authored `film` chunk (defaults to 1.0), so setting it may INSERT the param
+// -- DocSetOrAddParamValue handles insert (and emits a leading newline to avoid brace-glue).  NodeIds are preserved
+// across edits, so the resolved filmId stays valid across the chained sets; commit ONCE at the end (atomic).
+//
+// Returns 1 on success, 0 on a clean no-op (no retained Document -> legacy scene, the live SetFilm already happened)
+// or a soft failure (film chunk not found), leaving the Document intact.
+int Job::ApplyCstFilmEdit( const char* width, const char* height, const char* pixelAR )
+{
+	if( !pCstDocument ) return 0;   // legacy / no-Document scene -> clean no-op (live SetFilm already applied)
+
+	// The `film` chunk is an UNNAMED unique-in-kind singleton: resolve it by KIND with the empty-bareName +
+	// uniqueFallback path (DocFindByNameAnyRole's uniqueFallback branch finds the sole chunk whose role == "film").
+	const RISE::Cst::NodeId filmId = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, "", nullptr, "film", true );
+	if( filmId == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstFilmEdit:: no unique `film` chunk in the CST Document; Film dims not recorded (live edit stands, but a save / D2 will revert them)" );
+		return 0;
+	}
+
+	RISE::Cst::Document d1 = *pCstDocument;
+	if( width )   d1 = RISE::Cst::DocSetOrAddParamValue( d1, filmId, "width",   0, width );
+	if( height )  d1 = RISE::Cst::DocSetOrAddParamValue( d1, filmId, "height",  0, height );
+	if( pixelAR ) d1 = RISE::Cst::DocSetOrAddParamValue( d1, filmId, "pixelAR", 0, pixelAR );
+	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit ONCE (Document-only; no re-derive)
+	return 1;
+}
+
 // L6b — push the canonical FrameStore to every registered rasterizer.
 // Called after scene load completes and after SetActiveCamera in case
 // the new camera has different dimensions.  Each rasterizer addrefs

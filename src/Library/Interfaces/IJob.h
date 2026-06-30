@@ -3300,6 +3300,14 @@ namespace RISE
 		//! ApplyCstInsertCameraChunk).  Document-only; 1 = removed, 0 = failure.  Default no-op; see Job override.
 		virtual int ApplyCstRemoveCameraChunk( const char* camName ) { return 0; }
 
+		//! Model-B P5 Slice 3 expansion (FILM edit/preset): record a Film dim edit in the retained CST so a SAVE
+		//! (SerializeCst) and a future D2 re-derive preserve it -- the live SetFilm already mutated the scene, this
+		//! only PATCHES the singleton unnamed `film` chunk.  Each of width/height/pixelAR is OPTIONAL (nullptr =
+		//! leave that param untouched -> a single-property edit writes ONLY the changed param; a preset passes
+		//! width+height with pixelAR=nullptr).  Document-only (no re-derive, no rebind); 1 = recorded, 0 = no-op /
+		//! failure (legacy scene with no retained Document -> clean 0).  Default no-op; see Job override.
+		virtual int ApplyCstFilmEdit( const char* width, const char* height, const char* pixelAR ) { return 0; }
+
 		//! P5 Slice 3 expansion (object transform): 0 = not routable / 1 = matrix (standard_object) / 2 = components
 		//! (csg_object).  Default 0; see Job override.
 		virtual int CstObjectTransformKind( const char* name ) const { return 0; }

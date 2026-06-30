@@ -2820,6 +2820,12 @@ namespace RISE
 		//! ApplyCstInsertCameraChunk).  Document-only -> 1 on success / 0 on failure; no rebind needed.
 		int ApplyCstRemoveCameraChunk( const char* camName );
 
+		//! Model-B P5 Slice 3 expansion (FILM edit/preset): PATCH the singleton unnamed `film` chunk in the retained
+		//! Document so a SAVE / future D2 preserves a Film dim edit the live SetFilm already applied.  width/height/
+		//! pixelAR are each OPTIONAL (nullptr = leave that param untouched -> minimal diff; pixelAR may need INSERTing
+		//! when the chunk omits it).  Document-only (no re-derive, no rebind) -> 1 on success / 0 on no-op/failure.
+		int ApplyCstFilmEdit( const char* width, const char* height, const char* pixelAR );
+
 		//! P5: the retained canonical CST (null unless the scene was loaded via LoadAsciiSceneViaCst).
 		const RISE::Cst::Document*	GetCstDocument() const { return pCstDocument.get(); }
 
