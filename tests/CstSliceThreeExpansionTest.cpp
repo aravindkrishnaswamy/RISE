@@ -455,6 +455,16 @@ int main()
 		Check( !c.SetPropertyForCategory( Cat::Object, String( "scale" ), String( "2 2 2" ) ), "CSG3: a csg SCALE edit is REFUSED (no scale param)" );
 		double postScale[16]; ObjMat16( *j, "cu", postScale );
 		Check( Mat16Eq( preScale, postScale ), "CSG3: the refused scale left the csg transform unchanged (no divergence)" );
+
+		// CSG4: a csg rotation that lands on GIMBAL-LOCK (Y=90 deg, not decomposable to Euler position/orientation)
+		// is REFUSED by the post-mutate decomposability check, leaving the csg transform unchanged (no divergence).
+		// Red-provable: remove the post-mutate DecomposeRigid check and the Y=90 rotation applies live, then the
+		// commit's decompose fails and a later D2 reverts it.
+		c.SetSelection( Cat::Object, String( "cu" ) );
+		double preGimbal[16]; ObjMat16( *j, "cu", preGimbal );
+		Check( !c.SetPropertyForCategory( Cat::Object, String( "orientation" ), String( "0 90 0" ) ), "CSG4: a Y=90deg (gimbal-lock) csg rotation is REFUSED" );
+		double postGimbal[16]; ObjMat16( *j, "cu", postGimbal );
+		Check( Mat16Eq( preGimbal, postGimbal ), "CSG4: the refused gimbal rotation left the csg transform unchanged (no divergence)" );
 		j->release();
 		std::remove( tg );
 	}

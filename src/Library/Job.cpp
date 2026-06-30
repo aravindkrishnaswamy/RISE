@@ -9619,7 +9619,7 @@ int Job::ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 
 	// suffix, so a csg_object (also ChunkCategory::Object, also uniquely named) would be accepted here -- but it
 	// has NO `matrix` param, so the insert below would fail the dry-run derive and silently drop the transform.
 	// Verify the resolved chunk really is a standard_object (the only object chunk with a `matrix` param).  The
-	// editor blocks non-standard_object transform edits up front (IsCstObjectTransformRoutable); this is defence.
+	// editor classifies + routes transforms up front (CstObjectTransformKind), refusing what it can't commit; this is defence.
 	{
 		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
 		if( !chunk || chunk->role != "standard_object" ) {

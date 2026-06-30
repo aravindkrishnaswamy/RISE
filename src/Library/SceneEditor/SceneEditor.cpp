@@ -1251,7 +1251,8 @@ bool SceneEditor::CommitPendingCstObjectTransforms()
 	// Snapshot EACH pending object's route BEFORE applying ANY -- the first route's D2 rebuilds the scene from the
 	// Document, which would reset a not-yet-routed object's live transform to its (stale) Document value.  Per
 	// object: kind 1 (standard_object) commits the full `matrix`; kind 2 (csg_object) commits decomposed position +
-	// orientation (the editor's apply-gate already refused any csg scale/shear, so DecomposeRigid succeeds here).
+	// orientation (the editor's apply-gate + its post-mutate decomposability check already refused any csg
+	// scale/shear/gimbal-lock, so DecomposeRigid is guaranteed to succeed here).
 	struct Route { std::string name; int kind; std::string a; std::string b; bool ready; };
 	std::vector<Route> work;
 	work.reserve( mPendingCstObjMatrix.size() );
@@ -1982,6 +1983,7 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 	{
 		IObjectPriv* obj = FindObject( edit.objectName );
 		if( !obj ) return false;
+		int cstKind = -1;   // CST object-transform kind (set in the gate below): -1 non-CST, 0 none, 1 matrix, 2 components
 		// P5 Slice 3 expansion (object): on a CST-loaded scene, route the PER-OP object edits (reference BINDINGS +
 		// shadow flags) through the canonical CST so the Document stays complete (a later D2 re-derive can't lose
 		// them).  The re-derive rebuilds the object from the edited chunk (bbox / TLAS / light-gen included), so we
@@ -2009,18 +2011,39 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 			// position/orientation (translate+rotate ONLY -- it has no scale param).  Refuse anything else HERE,
 			// before the live mutate.  (Bindings above already routed -- csg has material/shader params.)
 			if( IsObjectTransformOp( edit.op ) ) {
-				const int kind = mJob->CstObjectTransformKind( edit.objectName.c_str() );
-				const bool committable = ( kind == 1 ) || ( kind == 2 && IsObjectTranslateOrRotateOp( edit.op ) );
+				cstKind = mJob->CstObjectTransformKind( edit.objectName.c_str() );
+				const bool committable = ( cstKind == 1 ) || ( cstKind == 2 && IsObjectTranslateOrRotateOp( edit.op ) );
 				if( !committable ) {
 					if( mLastNonRoutableTransformObj != std::string( edit.objectName.c_str() ) ) {
 						mLastNonRoutableTransformObj = std::string( edit.objectName.c_str() );
-						GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` transform cannot be saved on a CST-loaded scene (%s); edit refused", edit.objectName.c_str(), ( kind == 2 ) ? "csg_object has no scale param -- only translate/rotate are committable" : "object has no CST `matrix` param and is not a csg_object" );
+						GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` transform cannot be saved on a CST-loaded scene (%s); edit refused", edit.objectName.c_str(), ( cstKind == 2 ) ? "csg_object has no scale param -- only translate/rotate are committable" : "object has no CST `matrix` param and is not a csg_object" );
 					}
 					return false;
 				}
 			}
 		}
 		const bool fwdOk = ApplyObjectOpForward( *obj, edit );   // P1: false if a redo target vanished
+		// POST-MUTATE: the op-level gate above admits a csg (kind 2) translate/rotate, but a ROTATE can land on
+		// GIMBAL-LOCK (~90 deg about Y) which DecomposeRigid cannot express as position/orientation.  The committable
+		// guarantee is therefore matrix-level, not op-level -- so VERIFY it here, after the mutate: if the csg result
+		// is not decomposable, RESTORE the object (the edit carries the captured prev state) and reject, so the live
+		// transform never diverges from the un-committable CST.  (Translate always decomposes; this only ever fires
+		// on a near-singular rotation.)  Makes the commit-time DecomposeRigid in CommitPendingCstObjectTransforms a
+		// guaranteed success.
+		if( fwdOk && cstKind == 2 ) {
+			obj->FinalizeTransformations();   // ApplyObjectOpForward updates components/stack but not m_mxFinalTrans; compose it before reading
+			Vector3 dpos, dorient;
+			if( !DecomposeRigid( obj->GetFinalTransformMatrix(), dpos, dorient ) ) {
+				RestoreObjectTransform( *obj, edit );
+				RunObjectInvariantChain( *obj );
+				if( mLastNonRoutableTransformObj != std::string( edit.objectName.c_str() ) ) {
+					mLastNonRoutableTransformObj = std::string( edit.objectName.c_str() );
+					GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` rotation is not committable to a csg_object (gimbal-lock / non-decomposable to position+orientation); edit refused", edit.objectName.c_str() );
+				}
+				mLastScope = Dirty_ObjectTransform;
+				return false;
+			}
+		}
 		// Property-style ops don't move geometry — symmetric with
 		// Apply()'s spatial-rebuild gate.  Pre-Phase-1 this path ran
 		// the chain unconditionally, costing a spurious BSP
