@@ -9635,20 +9635,53 @@ int Job::ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 
 	return DeriveEditedCstDocument_( std::move( d1 ), id, objectName, "matrix" );
 }
 
-// P5 Slice 3 expansion (object transform): true iff object `name`'s retained-CST chunk is a standard_object --
-// the only object chunk with a `matrix` param, so the only one whose transform a gizmo/panel edit can commit to
-// the CST.  A csg_object is also a ChunkCategory::Object and is gizmo-pickable, but authors only position/
-// orientation (no matrix/scale), so its transform CANNOT be committed via the matrix param -- the editor refuses
-// such an edit up front (this query) rather than mutate the live object then silently fail the commit (which a
-// later D2 would revert -- data-loss).  Resolves by bare name then VERIFIES the keyword (DocFindByNameAnyRole's
-// single-match path ignores the suffix).  False on a non-CST job / unknown name / non-standard_object.
-bool Job::IsCstObjectTransformRoutable( const char* name ) const
+// P5 Slice 3 expansion (object transform): classify how object `name`'s retained-CST chunk can accept a transform
+// edit -- 0 = NOT routable (not in the CST as an object chunk: unknown / gltf-import sub-object), 1 = MATRIX
+// (standard_object -- has a `matrix` param, commits any transform losslessly), 2 = COMPONENTS (csg_object -- has
+// position/orientation but no matrix/scale, so it commits only translate+rotate via those params).  Resolves by
+// bare name then VERIFIES the keyword (DocFindByNameAnyRole's single-match path ignores the suffix, so a uniquely-
+// named csg_object would otherwise masquerade as the requested standard_object).  The editor uses this to route
+// the commit (matrix vs components) AND to refuse, up front, a transform it cannot represent (a non-routable
+// object, or a SCALE on a components-only csg) -- so the live object never diverges from an un-committable CST.
+int Job::CstObjectTransformKind( const char* name ) const
 {
-	if( !pCstDocument || !name ) return false;
-	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, name, nullptr, "standard_object", false );
-	if( id == 0 ) return false;
+	if( !pCstDocument || !name ) return 0;
+	// standard_object FIRST (the suffix also narrows past a same-named override_object).
+	RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, name, nullptr, "standard_object", false );
+	if( id != 0 ) {
+		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
+		if( chunk && chunk->role == "standard_object" ) return 1;
+	}
+	id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, name, nullptr, "csg_object", false );
+	if( id != 0 ) {
+		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
+		if( chunk && chunk->role == "csg_object" ) return 2;
+	}
+	return 0;
+}
+
+// P5 Slice 3 expansion (csg transform): commit a components-only object's (csg_object) NET translate+rotate as
+// its position + orientation (Euler degrees) chunk params.  The caller (editor) decomposes the final transform
+// and refuses anything a csg can't represent (scale / shear / gimbal) BEFORE the live mutate, so this only ever
+// receives a representable pose.  Strips matrix/quaternion defensively (no-op on a csg).  Same 0/1/2/3 contract.
+int Job::ApplyCstObjectComponentsEdit( const char* objectName, const char* position, const char* orientation )
+{
+	if( !pCstDocument || !objectName || !position || !position[0] || !orientation || !orientation[0] ) return 0;
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, objectName, nullptr, "csg_object", false );
+	if( id == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectComponentsEdit:: `%s` not found or ambiguous in the CST Document; edit rejected", objectName );
+		return 0;
+	}
 	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
-	return chunk && chunk->role == "standard_object";
+	if( !chunk || chunk->role != "csg_object" ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectComponentsEdit:: `%s` is not a csg_object; edit rejected", objectName );
+		return 0;
+	}
+	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, id, "matrix" );
+	d1 = RISE::Cst::DocRemoveParam( d1, id, "quaternion" );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "position", 0, position );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "orientation", 0, orientation );
+	return DeriveEditedCstDocument_( std::move( d1 ), id, objectName, "position/orientation" );
 }
 
 // P5 Slice 3 expansion (camera drag): commit a camera's NET pose to the retained CST.  A drag gesture

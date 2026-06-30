@@ -3275,9 +3275,13 @@ namespace RISE
 		virtual int ApplyCstCameraPoseEdit( const char* camName, const char* location, const char* lookat, const char* up,
 		                                    const char* orientation, const char* targetOrientation ) { return 0; }
 
-		//! P5 Slice 3 expansion (object transform): true iff `name`'s retained-CST chunk is a standard_object (the
-		//! only object chunk a transform edit can commit to via `matrix`).  Default false; see Job override.
-		virtual bool IsCstObjectTransformRoutable( const char* name ) const { return false; }
+		//! P5 Slice 3 expansion (object transform): 0 = not routable / 1 = matrix (standard_object) / 2 = components
+		//! (csg_object).  Default 0; see Job override.
+		virtual int CstObjectTransformKind( const char* name ) const { return 0; }
+
+		//! P5 Slice 3 expansion (csg transform): commit a csg_object's translate+rotate as position+orientation
+		//! params.  Default no-op; see Job override.
+		virtual int ApplyCstObjectComponentsEdit( const char* objectName, const char* position, const char* orientation ) { return 0; }
 	};
 
 

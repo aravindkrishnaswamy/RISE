@@ -1044,6 +1044,70 @@ static std::string FormatMatrix16( const Matrix4& m )
 	return out;
 }
 
+// Format a Vector3 as "x y z" at full precision.
+static std::string FormatVec3( const Vector3& v )
+{
+	char buf[ 96 ];
+	std::snprintf( buf, sizeof( buf ), "%.17g %.17g %.17g", static_cast<double>( v.x ), static_cast<double>( v.y ), static_cast<double>( v.z ) );
+	return std::string( buf );
+}
+
+// P5 Slice 3 expansion (csg transform): decompose a RIGID (translate+rotate, UNIT-scale) transform into
+// position + Euler(XYZ, DEGREES), matching RISE's P*O composition (O = XRot*YRot*ZRot, Transformable::SetOrientation).
+// Returns false on shear / non-unit scale / gimbal-lock / reflection.  Mirrors SaveEngine's §9.5 TryDecompose
+// (kept local to avoid a Job/editor -> SaveEngine-internal dependency); like it, it REBUILDS the matrix RISE's
+// way and compares, so a future composition-convention change fails SAFE (returns false -> the csg edit is
+// refused, never mis-saved).  Used to commit a csg_object transform via its position/orientation params (csg
+// authors no matrix/scale param).  Non-unit scale returns false because csg has no scale param to persist it.
+static bool DecomposeRigid( const Matrix4& M, Vector3& outPos, Vector3& outOrientDeg )
+{
+	if( std::fabs( M._03 ) > 1e-9 || std::fabs( M._13 ) > 1e-9 ||
+	    std::fabs( M._23 ) > 1e-9 || std::fabs( M._33 - 1.0 ) > 1e-9 ) return false;   // not affine
+	const Vector3 c0( M._00, M._01, M._02 );
+	const Vector3 c1( M._10, M._11, M._12 );
+	const Vector3 c2( M._20, M._21, M._22 );
+	const double s0 = Vector3Ops::Magnitude( c0 );
+	const double s1 = Vector3Ops::Magnitude( c1 );
+	const double s2 = Vector3Ops::Magnitude( c2 );
+	if( std::fabs( s0 - 1.0 ) > 1e-6 || std::fabs( s1 - 1.0 ) > 1e-6 || std::fabs( s2 - 1.0 ) > 1e-6 ) return false;   // non-unit scale -> csg has no scale param
+	const Vector3 r0( c0.x / s0, c0.y / s0, c0.z / s0 );
+	const Vector3 r1( c1.x / s1, c1.y / s1, c1.z / s1 );
+	const Vector3 r2( c2.x / s2, c2.y / s2, c2.z / s2 );
+	const double tol = 1e-6;
+	if( std::fabs( Vector3Ops::Dot( r0, r1 ) ) > tol ||
+	    std::fabs( Vector3Ops::Dot( r0, r2 ) ) > tol ||
+	    std::fabs( Vector3Ops::Dot( r1, r2 ) ) > tol ) return false;   // shear
+	if( Vector3Ops::Dot( r0, Vector3Ops::Cross( r1, r2 ) ) < 0.0 ) return false;   // reflection
+	// Euler extraction for RISE's Rx*Ry*Rz (see SaveEngine TryDecompose for the cell-by-cell derivation).
+	const double sin_y = r2.x;
+	if( std::fabs( sin_y ) >= 1.0 - 1e-9 ) return false;   // gimbal-lock
+	const double cos_y = std::sqrt( 1.0 - sin_y * sin_y );
+	const double y_rad = std::atan2( sin_y, cos_y );
+	const double x_rad = std::atan2( -r2.y, r2.z );
+	const double z_rad = std::atan2( -r1.x, r0.x );
+	// Rebuild EXACTLY the way Transformable composes and compare (binds correctness to RISE's actual rule).
+	const Vector3 pos( M._30, M._31, M._32 );
+	const Matrix4 cand = Matrix4Ops::Translation( pos )
+	                   * ( Matrix4Ops::XRotation( x_rad ) * Matrix4Ops::YRotation( y_rad ) * Matrix4Ops::ZRotation( z_rad ) );
+	for( int col = 0; col < 4; ++col ) for( int row = 0; row < 4; ++row ) {
+		const Scalar* cp = &cand._00; const Scalar* mp = &M._00;
+		const int k = col * 4 + row;
+		if( std::fabs( static_cast<double>( cp[k] ) - static_cast<double>( mp[k] ) ) > 1e-6 ) return false;
+	}
+	outPos       = pos;
+	outOrientDeg = Vector3( x_rad * 180.0 / PI, y_rad * 180.0 / PI, z_rad * 180.0 / PI );
+	return true;
+}
+
+// True for the object transform ops a non-matrix object (csg) CAN represent: pure translate / rotate (no scale).
+static inline bool IsObjectTranslateOrRotateOp( SceneEdit::Op op )
+{
+	return op == SceneEdit::TranslateObject
+	    || op == SceneEdit::RotateObjectArb
+	    || op == SceneEdit::SetObjectPosition
+	    || op == SceneEdit::SetObjectOrientation;
+}
+
 static inline bool IsCstRoutedOp( SceneEdit::Op op )
 {
 	// CST-routed = the entity is RE-DERIVED (not mutated in place) on a CST-loaded scene, so the remove+re-add
@@ -1165,6 +1229,14 @@ bool SceneEditor::ApplyCstObjectMatrix_( const std::string& name, const std::str
 	return r == 1 || r == 2;
 }
 
+// Route ONE csg_object's translate+rotate as its position + orientation params (rebinds on a D2).
+bool SceneEditor::ApplyCstObjectComponents_( const std::string& name, const std::string& position, const std::string& orientation )
+{
+	const int r = mJob->ApplyCstObjectComponentsEdit( name.c_str(), position.c_str(), orientation.c_str() );
+	if( r >= 2 ) RebindToJob_();
+	return r == 1 || r == 2;
+}
+
 // P5 Slice 3 expansion (object transform): commit every pending object's NET world transform to the retained CST
 // as the authoritative `matrix` param.  Called by the CONTROLLER at a render-thread-PARKED boundary (a commit
 // re-derives, which on a variant scene ClearAll's the live scene -- it must NOT race a render worker).  The
@@ -1176,18 +1248,43 @@ bool SceneEditor::ApplyCstObjectMatrix_( const std::string& name, const std::str
 bool SceneEditor::CommitPendingCstObjectTransforms()
 {
 	if( mPendingCstObjMatrix.empty() ) return true;
-	std::vector< std::pair<std::string,std::string> > work;
+	// Snapshot EACH pending object's route BEFORE applying ANY -- the first route's D2 rebuilds the scene from the
+	// Document, which would reset a not-yet-routed object's live transform to its (stale) Document value.  Per
+	// object: kind 1 (standard_object) commits the full `matrix`; kind 2 (csg_object) commits decomposed position +
+	// orientation (the editor's apply-gate already refused any csg scale/shear, so DecomposeRigid succeeds here).
+	struct Route { std::string name; int kind; std::string a; std::string b; bool ready; };
+	std::vector<Route> work;
 	work.reserve( mPendingCstObjMatrix.size() );
 	for( std::unordered_set<std::string>::const_iterator it = mPendingCstObjMatrix.begin(); it != mPendingCstObjMatrix.end(); ++it ) {
 		IObjectPriv* obj = FindObject( String( it->c_str() ) );
-		if( obj ) work.push_back( std::make_pair( *it, FormatMatrix16( obj->GetFinalTransformMatrix() ) ) );
+		if( !obj ) continue;
+		const Matrix4 M = obj->GetFinalTransformMatrix();
+		const int kind = mJob->CstObjectTransformKind( it->c_str() );
+		Route r; r.name = *it; r.kind = kind; r.ready = false;
+		if( kind == 1 ) {
+			r.a = FormatMatrix16( M );
+			r.ready = true;
+		} else if( kind == 2 ) {
+			Vector3 pos, orientDeg;
+			if( DecomposeRigid( M, pos, orientDeg ) ) {
+				r.a = FormatVec3( pos );
+				r.b = FormatVec3( orientDeg );
+				r.ready = true;
+			}
+		}
+		work.push_back( r );
 	}
 	mPendingCstObjMatrix.clear();
 	bool ok = true;
 	for( size_t i = 0; i < work.size(); ++i ) {
-		if( !ApplyCstObjectMatrix_( work[i].first, work[i].second ) ) {
+		bool routed = false;
+		if( work[i].ready ) {
+			if( work[i].kind == 1 )      routed = ApplyCstObjectMatrix_( work[i].name, work[i].a );
+			else if( work[i].kind == 2 ) routed = ApplyCstObjectComponents_( work[i].name, work[i].a, work[i].b );
+		}
+		if( !routed ) {
 			ok = false;
-			GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: object transform commit to the CST failed for `%s` (live edit stands, but the Document is out of sync)", work[i].first.c_str() );
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: object transform commit to the CST failed for `%s` (live edit stands, but the Document is out of sync)", work[i].name.c_str() );
 		}
 	}
 	return ok;
@@ -1906,17 +2003,21 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 				mLastScope = Dirty_ObjectTransform;
 				return true;
 			}
-			// A TRANSFORM edit can only be committed to the CST as the standard_object `matrix` param.  If this
-			// object's chunk has no matrix (e.g. a csg_object -- also pickable, but it authors only position/
-			// orientation), REFUSE the edit here: mutating it live then failing the deferred commit would leave the
-			// live transform DIVERGED from the un-committable CST, and a later D2 would silently revert it (data-loss).
-			// Bindings above already routed (csg has material/shader params); only transforms are matrix-gated.
-			if( IsObjectTransformOp( edit.op ) && !mJob->IsCstObjectTransformRoutable( edit.objectName.c_str() ) ) {
-				if( mLastNonRoutableTransformObj != std::string( edit.objectName.c_str() ) ) {
-					mLastNonRoutableTransformObj = std::string( edit.objectName.c_str() );
-					GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` is not a standard_object (no CST `matrix` param); its transform cannot be saved on a CST-loaded scene, so the edit is refused", edit.objectName.c_str() );
+			// A TRANSFORM edit must be COMMITTABLE to the CST, or it would mutate the live object then fail the
+			// deferred commit -- leaving the live transform DIVERGED from the un-committable CST, which a later D2
+			// would silently revert (data-loss).  standard_object -> `matrix` (any transform); csg_object ->
+			// position/orientation (translate+rotate ONLY -- it has no scale param).  Refuse anything else HERE,
+			// before the live mutate.  (Bindings above already routed -- csg has material/shader params.)
+			if( IsObjectTransformOp( edit.op ) ) {
+				const int kind = mJob->CstObjectTransformKind( edit.objectName.c_str() );
+				const bool committable = ( kind == 1 ) || ( kind == 2 && IsObjectTranslateOrRotateOp( edit.op ) );
+				if( !committable ) {
+					if( mLastNonRoutableTransformObj != std::string( edit.objectName.c_str() ) ) {
+						mLastNonRoutableTransformObj = std::string( edit.objectName.c_str() );
+						GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` transform cannot be saved on a CST-loaded scene (%s); edit refused", edit.objectName.c_str(), ( kind == 2 ) ? "csg_object has no scale param -- only translate/rotate are committable" : "object has no CST `matrix` param and is not a csg_object" );
+					}
+					return false;
 				}
-				return false;
 			}
 		}
 		const bool fwdOk = ApplyObjectOpForward( *obj, edit );   // P1: false if a redo target vanished

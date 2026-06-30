@@ -430,18 +430,31 @@ int main()
 		SceneEditController c( *j, 0 );
 		c.SetSelection( Cat::Object, String( "cu" ) );
 		double before[16]; ObjMat16( *j, "cu", before );
-		// The transform edit must be REFUSED (csg_object has no `matrix` param to commit to).
-		const bool applied = c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "5 0 0" ) );
-		Check( !applied, "CSG1: a transform edit on a csg_object is REFUSED on a CST scene" );
-		double afterAttempt[16]; ObjMat16( *j, "cu", afterAttempt );
-		Check( Mat16Eq( before, afterAttempt ), "CSG1: the refused edit left the csg transform UNCHANGED (no live divergence)" );
-		// A material D2 must leave the csg transform exactly as authored -- proving there was no silent divergence
-		// to revert.  Red-provable: remove the editor's routability block and `applied` becomes true, the live
-		// transform moves to 5 0 0, and this D2 reverts it (the data-loss the block prevents).
+
+		// CSG1: a csg POSITION edit (translate) routes via the csg `position` param and SURVIVES a material D2.
+		Check( c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "5 0 0" ) ), "CSG1: csg position edit applies (translate is committable)" );
+		double moved[16]; ObjMat16( *j, "cu", moved );
+		Check( !Mat16Eq( before, moved ), "CSG1: the position edit moved the csg object" );
 		c.SetSelection( Cat::Material, String( "m" ) );
 		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "CSG1: material edit applies (D2)" );
 		double afterD2[16]; ObjMat16( *j, "cu", afterD2 );
-		Check( Mat16Eq( before, afterD2 ), "CSG1: csg transform is its authored value after a material D2 (no silent data-loss)" );
+		Check( Mat16Eq( moved, afterD2 ), "CSG1: csg position edit SURVIVED the material D2 (decomposed to position param; data-loss closed)" );
+
+		// CSG2: a csg ORIENTATION edit (rotate) routes via the csg `orientation` param and survives a D2.
+		c.SetSelection( Cat::Object, String( "cu" ) );
+		Check( c.SetPropertyForCategory( Cat::Object, String( "orientation" ), String( "0 0 90" ) ), "CSG2: csg orientation edit applies (rotate is committable)" );
+		double rotated[16]; ObjMat16( *j, "cu", rotated );
+		Check( !Mat16Eq( moved, rotated ), "CSG2: the orientation edit rotated the csg object" );
+		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p1" ) ), "CSG2: material edit applies (D2)" );
+		double afterD2b[16]; ObjMat16( *j, "cu", afterD2b );
+		Check( Mat16Eq( rotated, afterD2b ), "CSG2: csg orientation edit SURVIVED the material D2" );
+
+		// CSG3: a csg SCALE edit is REFUSED (csg_object has no scale param -- not representable, would silently lose).
+		c.SetSelection( Cat::Object, String( "cu" ) );
+		double preScale[16]; ObjMat16( *j, "cu", preScale );
+		Check( !c.SetPropertyForCategory( Cat::Object, String( "scale" ), String( "2 2 2" ) ), "CSG3: a csg SCALE edit is REFUSED (no scale param)" );
+		double postScale[16]; ObjMat16( *j, "cu", postScale );
+		Check( Mat16Eq( preScale, postScale ), "CSG3: the refused scale left the csg transform unchanged (no divergence)" );
 		j->release();
 		std::remove( tg );
 	}

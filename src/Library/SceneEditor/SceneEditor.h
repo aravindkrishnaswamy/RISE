@@ -403,6 +403,7 @@ namespace RISE
 		void NoteCstObjectTransform_( const String& name );
 		void NoteCstCameraDrag_( const String& camName );
 		bool ApplyCstObjectMatrix_( const std::string& name, const std::string& matrix16 );
+		bool ApplyCstObjectComponents_( const std::string& name, const std::string& position, const std::string& orientation );
 
 		//! H2 (P-WALK): the SINGLE per-op forward + revert dispatchers.  Each
 		//! IS the single-edit body; the composite walk-loops call them per
