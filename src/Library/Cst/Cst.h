@@ -467,6 +467,9 @@ namespace RISE
 		//! role) equals the suffix or ends in "_<suffix>" -- every material keyword ends in "_material" (or is
 		//! the bare "material"), so the editor passes "material" for a material edit.  If exactly one survives
 		//! the narrowing, return it; else still refuse.  Empty suffix = no narrowing (pure unique-or-refuse).
+		//! NOTE: this suffix scheme is reliable ONLY for materials; geometry/light/camera keywords have
+		//! exceptions (gltf_import, hosek_wilkie_skylight, camera_defaults), so those kinds will need a
+		//! ChunkCategory-based disambiguator (the category is known at derive time) rather than a string suffix.
 		NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, int* occurrences = nullptr, const std::string& roleKindSuffix = std::string() );
 
 		//! Resolve a durable NodeId to the green node it now labels (null if gone),

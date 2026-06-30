@@ -981,6 +981,16 @@ ICamera* SceneEditor::ResolveEditedCamera( const SceneEdit& e )
 	return mScene->GetCameraMutable();
 }
 
+// P5 Slice 3: which SceneEdit ops route through the CST (Job::ApplyCstParamEdit) on a retained-CST scene,
+// and so RE-DERIVE their entity (churning its serial) instead of mutating it in place.  The identity
+// serial-guard in Apply{Forward,Revert}Mutation is SKIPPED for exactly these (it would falsely trip -- they
+// apply/revert/redo BY NAME, never the stale pointer).  As the edit set expands (object/light/camera), add
+// each newly-CST-routed op HERE -- one place, both guard sites read it.
+static inline bool IsCstRoutedOp( SceneEdit::Op op )
+{
+	return op == SceneEdit::SetMaterialProperty;
+}
+
 unsigned long long SceneEditor::ResolveTargetSerial( const SceneEdit& e ) const
 {
 	// P1: the entity whose STATE this op restores -- compare its serial at capture vs
@@ -1054,8 +1064,8 @@ bool SceneEditor::ApplyMaterialSlotByName( const SceneEdit& e, const String& pai
 	// Legacy-loaded scenes (no Document) fall through to the direct MaterialIntrospection::SetSlot below.
 	if( mJob && mJob->HasRetainedCstDocument() ) {
 		const int r = mJob->ApplyCstParamEdit( e.objectName.c_str(), "material", e.propertyName.c_str(), 0, painterName.c_str() );
-		if( r == 2 ) RebindToJob_();
-		return r != 0;
+		if( r >= 2 ) RebindToJob_();        // 2 or 3: the D2 re-derive REPLACED the scene + managers -> re-point
+		return r == 1 || r == 2;            // 3 = replaced but the re-derive diagnosed -> rebound, but report failure
 	}
 	const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, e.propertyName );
 	if( cur.kind == MaterialSlotRef::Painter ) {
@@ -1396,13 +1406,13 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 	// instance re-registered under the same name (serial mismatch); applying the
 	// captured state to the replacement would corrupt it.  capturedTargetSerial==0
 	// means the op tracks no identity (medium/time/marker/legacy) -> no check.
-	// SKIP on the CST edit-model ONLY for the op(s) routed through ApplyCstParamEdit (currently
-	// SetMaterialProperty): that path RE-DERIVES the entity on every edit, so its serial legitimately
-	// changes each time, and it applies/reverts/redoes BY NAME (never the stale pointer) -- the serial
-	// guard is both moot and would FALSELY trip.  Direct-mutation ops (object/camera/light) KEEP the
-	// guard even on a CST-loaded scene, since they DO mutate the captured instance in place.
+	// SKIP on the CST edit-model for the ops routed through ApplyCstParamEdit (IsCstRoutedOp): that path
+	// RE-DERIVES the entity on every edit, so its serial legitimately changes each time, and it applies/
+	// reverts/redoes BY NAME (never the stale pointer) -- the serial guard is both moot and would FALSELY
+	// trip.  Direct-mutation ops (object/camera/light) KEEP the guard even on a CST-loaded scene, since
+	// they DO mutate the captured instance in place.
 	if( edit.capturedTargetSerial != 0 &&
-	    !( mJob && mJob->HasRetainedCstDocument() && edit.op == SceneEdit::SetMaterialProperty ) &&
+	    !( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) &&
 	    ResolveTargetSerial( edit ) != edit.capturedTargetSerial )
 		return false;
 	if( SceneEdit::IsObjectOp( edit.op ) )
@@ -1624,13 +1634,13 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 	// instance re-registered under the same name (serial mismatch); applying the
 	// captured state to the replacement would corrupt it.  capturedTargetSerial==0
 	// means the op tracks no identity (medium/time/marker/legacy) -> no check.
-	// SKIP on the CST edit-model ONLY for the op(s) routed through ApplyCstParamEdit (currently
-	// SetMaterialProperty): that path RE-DERIVES the entity on every edit, so its serial legitimately
-	// changes each time, and it applies/reverts/redoes BY NAME (never the stale pointer) -- the serial
-	// guard is both moot and would FALSELY trip.  Direct-mutation ops (object/camera/light) KEEP the
-	// guard even on a CST-loaded scene, since they DO mutate the captured instance in place.
+	// SKIP on the CST edit-model for the ops routed through ApplyCstParamEdit (IsCstRoutedOp): that path
+	// RE-DERIVES the entity on every edit, so its serial legitimately changes each time, and it applies/
+	// reverts/redoes BY NAME (never the stale pointer) -- the serial guard is both moot and would FALSELY
+	// trip.  Direct-mutation ops (object/camera/light) KEEP the guard even on a CST-loaded scene, since
+	// they DO mutate the captured instance in place.
 	if( edit.capturedTargetSerial != 0 &&
-	    !( mJob && mJob->HasRetainedCstDocument() && edit.op == SceneEdit::SetMaterialProperty ) &&
+	    !( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) &&
 	    ResolveTargetSerial( edit ) != edit.capturedTargetSerial )
 		return false;
 	if( SceneEdit::IsObjectOp( edit.op ) )

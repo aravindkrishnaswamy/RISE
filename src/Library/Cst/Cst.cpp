@@ -2423,22 +2423,33 @@ static NodeRef WithParamValueOrInsert( const NodeRef& chunk, const std::string& 
 	NodeRef edited = WithParamValue( chunk, role, occ, newValue );            // existing param: replace in place
 	if( edited.get() != chunk.get() ) return edited;
 
-	// Param ABSENT: build a `role value` Param and splice it in before `rbrace`.  Chunk braces are on their
-	// own lines (parser invariant), so the trivia already before `rbrace` ends the previous line; we append a
-	// trailing newline so `}` stays on its own line.
+	// Param ABSENT.  Insert only makes sense for the FIRST occurrence with a non-empty value; refuse
+	// otherwise (the sole caller passes occ 0 + a validated non-empty value, but a future caller must not
+	// silently get a value-less or mis-indexed insert).
+	const std::vector<std::string> toks = SplitWs( newValue );
+	if( occ != 0 || toks.empty() ) return chunk;
+
+	// Build a `role value` Param.
 	std::vector<NodeRef> pk;
 	pk.push_back( Leaf( NodeKind::Token, role, "pname" ) );
-	const std::vector<std::string> toks = SplitWs( newValue );
 	for( size_t t = 0; t < toks.size(); ++t ) {
 		pk.push_back( Leaf( NodeKind::Trivia, " ", "" ) );
 		pk.push_back( Leaf( NodeKind::Token, toks[t], "pvalue" ) );
 	}
 	NodeRef param = Internal( NodeKind::Param, std::move( pk ), role );
 
-	std::vector<NodeRef> kids; kids.reserve( chunk->kids.size() + 2 );
+	// Splice it in before the closing brace.  The "braces on their own lines" rule is an AUTHORING convention
+	// the CST loader does NOT enforce -- a brace-sharing / one-line chunk parses cleanly -- so we must NOT rely
+	// on the pre-brace trivia ending the previous line.  Emit a LEADING newline whenever that trivia lacks one,
+	// else the relexer would glue the new tokens onto the previous param's value list (the parser's same-line
+	// value loop) and save+reload would derive a DIFFERENT scene than the in-memory edit -- a Slice-4 round-trip
+	// corruption (the material's slot reference would absorb `<role> <value>` and become unresolvable).
+	std::vector<NodeRef> kids; kids.reserve( chunk->kids.size() + 3 );
 	bool placed = false;
 	for( const auto& k : chunk->kids ) {
 		if( !placed && k->kind == NodeKind::Token && k->role == "rbrace" ) {
+			if( kids.empty() || kids.back()->text.find( '\n' ) == std::string::npos )
+				kids.push_back( Leaf( NodeKind::Trivia, "\n", "" ) );
 			kids.push_back( param );
 			kids.push_back( Leaf( NodeKind::Trivia, "\n", "" ) );
 			placed = true;

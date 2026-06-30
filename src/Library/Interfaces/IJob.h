@@ -3252,11 +3252,15 @@ namespace RISE
 		//! P5 Slice 3 (edit-model pivot): apply ONE param-value edit to the retained CST Document, then re-derive
 		//! (incrementally for the common case; a FULL document re-derive for variant / animated / instance_array
 		//! scenes).  `entityName` = the chunk's bare name (unique-or-refuse); `entityKind` = a keyword-suffix that
-		//! disambiguates a cross-category name clash ("material" for a material edit, "" = none); `role` = the
-		//! param (e.g. "reflectance"); `occ` = the occurrence; `newValue` = the new value (INSERTED if the scene
-		//! text omitted the slot).  Returns 0 = no change (live scene intact); 1 = applied incrementally (managers
-		//! untouched); 2 = applied via a FULL re-derive (the Scene + managers were REPLACED -- the caller MUST
-		//! re-point any cached scene/manager pointers).  Default 0 (only Job overrides).
+		//! disambiguates a cross-category name clash -- reliable ONLY for materials today ("material"; every
+		//! material keyword is "material" or ends in "_material").  geometry/light/camera keywords have exceptions
+		//! (gltf_import, hosek_wilkie_skylight, camera_defaults), so the expansion will narrow by ChunkCategory
+		//! instead; "" = no narrowing.  `role` = the param (e.g. "reflectance"); `occ` = the occurrence; `newValue`
+		//! = the new value (INSERTED if the scene text omitted the slot; occ 0 + non-empty value only).  Returns
+		//! 0 = no change (live scene intact); 1 = applied incrementally (managers untouched); 2 = applied via a FULL
+		//! re-derive (the Scene + managers were REPLACED -- the caller MUST re-point any cached scene/manager
+		//! pointers); 3 = managers replaced BUT the re-derive diagnosed -> rebind required AND treat as failure.
+		//! Default 0 (only Job overrides).
 		//! NB: appended at the IJob tail per the append-only ABI convention (preserves every prior vtable slot).
 		virtual int ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue ) { return 0; }
 	};

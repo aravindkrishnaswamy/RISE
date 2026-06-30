@@ -149,7 +149,32 @@ int main()
 		Document d2 = DocReparse( d, text );
 		Check( DocFindByName( d2, "uniformcolor_painter/red" ) == red, "red's NodeId carried across the reparse (value edit keeps lineage)" );
 		Check( SerializeCst( d2 ) == text, "reparsed Document serializes to the new text" );
-		Check( DeriveMatchesReparse( d2 ), "reparsed CST derives faithfully" );
+		//----------------------------------------------------------------------
+	std::printf( "[insert] DocSetOrAddParamValue inserts an absent param that re-lexes faithfully even when the closing brace shares the last param's line (no glue)\n" );
+	{
+		// The closing brace SHARES name's line (the loader accepts this; "braces on own lines" is an
+		// unenforced convention).  Inserting reflectance must put it on its OWN line, else the relexer
+		// would swallow `reflectance grn` into name's value list -> save+reload derives a different scene.
+		const char* S =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter { name grn color 0 1 0 }\n"
+			"lambertian_material\n{\nname m }\n"            // brace shares name's line; reflectance defaulted
+			"sphere_geometry { name s radius 1 }\n"
+			"standard_object { name obj geometry s material m }\n";
+		Document d = ParseToCst( S );
+		const NodeId m = DocFindByName( d, "lambertian_material/m" );
+		Check( m != 0, "[insert] brace-sharing material located" );
+		bool ins = false;
+		Document d2 = DocSetOrAddParamValue( d, m, "reflectance", 0, "grn", &ins );
+		Check( ins, "[insert] reflectance was inserted (absent in the source)" );
+		// The save->reload path is ParseToCst (LoadAsciiSceneViaCst), NOT the legacy parser, so relex via the
+		// CST and compare derives; a glued insert would fold `reflectance grn` into name's value list and diverge.
+		Document d3 = ParseToCst( SerializeCst( d2 ) );
+		Check( DeriveDump( d2 ) == DeriveDump( d3 ), "[insert] inserted param on a brace-sharing chunk re-lexes faithfully via the CST (save+reload matches -- no glue)" );
+		Check( DeriveDump( d2 ).find( "grn" ) != std::string::npos, "[insert] the inserted reflectance reached the derived Job" );
+	}
+
+	Check( DeriveMatchesReparse( d2 ), "reparsed CST derives faithfully" );
 	}
 
 	//----------------------------------------------------------------------

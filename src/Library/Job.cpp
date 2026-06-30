@@ -9507,16 +9507,25 @@ bool Job::RederiveCstWithVariant( const char* variantName )
 }
 
 // P5 Slice 3 (edit-model pivot): apply ONE param-value edit to the retained CST Document, then re-derive.
-// FAST PATH: an incremental re-derive of just the affected closure (the CST transfer-gate kernel, O(closure));
-// atomic -- DeriveToJobIncremental rolls the Job back on a diagnostic, so a refusal leaves the live scene
-// byte-identical.  FALLBACK (D2): when the incremental refuses (a scene_variant / animation / instance_array /
-// override_object / composed material in the closure -- e.g. watch_dial, which DECLARES a variant) OR errors,
-// re-derive the WHOLE edited document (preserving the active variant), validate-before-destroy so a genuinely
-// invalid edit leaves the live scene intact.  The slot is INSERTED if the scene text omitted it (a defaulted
-// slot the panel still surfaces).  `entityKind` (e.g. "material") disambiguates a cross-category name clash.
-// Return: 0 = no change (live scene intact); 1 = applied incrementally (managers untouched, no rebind); 2 =
-// applied via a FULL re-derive (ClearAll replaced the Scene + managers, so the caller MUST re-point its cached
-// scene/manager pointers -- SceneEditor self-rebinds; else the next access is a use-after-free).
+// FAST PATH: re-derive just the affected closure incrementally.  COST NOTE: one edit is O(N log N), NOT
+// "O(closure) flat" -- DocEditClosure below recomputes the reference graph from scratch each call (the
+// incremental APPLY is ~microseconds, but the closure COMPUTE dominates: ~5ms @ 1k chunks, ~23ms @ 4k per
+// CstEditCostTest).  Fine for DISCRETE panel edits (human cadence); the per-frame gizmo path the expansion
+// adds will need a Job-retained ReferenceGraph + a carried-forward NodeId (DocEditClosure's (id,graph)
+// overload IS O(closure)) to hit interactive rates.  Atomic: DeriveToJobIncremental rolls the Job back on a
+// diagnostic, so a refusal leaves the live scene byte-identical.
+// FALLBACK (D2): when the incremental refuses (a scene_variant / animation / instance_array / override_object /
+// composed material in the closure -- e.g. watch_dial, which DECLARES a variant) OR errors, re-derive the WHOLE
+// edited document (forcing the active variant).  This derives TWICE: a validate-before-destroy dry-run into a
+// throwaway Job (so a genuinely invalid edit leaves the live scene intact) THEN the real ClearAll+re-derive --
+// ~2x the single-derive cost (see RederiveCstWithVariant, same convention).  The slot is INSERTED if the scene
+// text omitted it (a defaulted slot the panel still surfaces).  `entityKind` (e.g. "material") disambiguates a
+// cross-category name clash (reliable for materials; see DocFindByNameAnyRole).
+// Return: 0 = no change (live scene intact); 1 = applied incrementally (managers untouched, no rebind);
+// 2 = applied via a FULL re-derive (ClearAll REPLACED the Scene + managers -- the caller MUST re-point its
+// cached scene/manager pointers; SceneEditor self-rebinds, else the next access is a use-after-free);
+// 3 = same as 2 BUT the re-derive emitted diagnostics (managers still replaced -> caller MUST rebind, but the
+// edit FAILED -- treat as failure).  Should-not-happen: the dry-run already validated the identical derive.
 int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue )
 {
 	if( !pCstDocument || !entityName || !role || !newValue ) return 0;
@@ -9560,7 +9569,8 @@ int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, cons
 	for( size_t i = 0; i < fdiags.size() && i < 8u; ++i )
 		GlobalLog()->PrintEx( eLog_Error, "Job::ApplyCstParamEdit:: full re-derive diagnostic: %s", fdiags[i].c_str() );
 	PushJobFrameStoreToRasterizers();
-	return 2;   // managers were replaced -> caller MUST rebind (even on fdiags: avoids UAF on the freed managers)
+	// 2 = replaced + clean; 3 = replaced but the re-derive diagnosed (still rebind to avoid UAF, but it FAILED).
+	return fdiags.empty() ? 2 : 3;
 }
 
 // L6b — push the canonical FrameStore to every registered rasterizer.
