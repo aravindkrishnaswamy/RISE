@@ -136,6 +136,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mCV()
 , mRunning( false )
 , mEditPending( false )
+, mSuppressInitialRender( false )
 , mRendering( false )
 , mSaving( false )
 , mCancelCount( 0 )
@@ -533,13 +534,22 @@ SceneEditController::~SceneEditController()
 
 // Lifecycle -----------------------------------------------------------
 
-void SceneEditController::Start()
+void SceneEditController::Start( bool suppressInitialRender )
 {
 	bool expected = false;
 	if( !mRunning.compare_exchange_strong( expected, true ) )
 	{
 		return;  // already running
 	}
+
+	// Record the one-shot "skip the initial render" request before the
+	// render thread is spawned, so RenderLoop observes it on entry.
+	// std::thread construction below is a synchronization point, so the
+	// release store is visible to the new thread without further
+	// fencing.  Stored AFTER the running-CAS so a no-op Start() on an
+	// already-running controller can't clobber the flag.
+	mSuppressInitialRender.store( suppressInitialRender,
+	                              std::memory_order_release );
 
 	// Refresh the cancellable progress with whatever sink is installed
 	// at Start time.  Sinks set later via Set*Sink() take effect on the
@@ -2509,8 +2519,19 @@ std::string SceneEditController::LastSaveError() const
 
 void SceneEditController::RenderLoop()
 {
-	// Initial render so the user sees something on Start.
-	mEditPending.store( true, std::memory_order_release );
+	// Initial render so the user sees something on Start — UNLESS the
+	// caller asked us to keep the current on-screen image (Start( true )).
+	// The GUI does that when it restarts the interactive viewport right
+	// after a production render: the finished render is already on screen
+	// and a fresh preview pass would immediately overwrite it (the
+	// "render flashes then flips back to the live preview" bug).  When
+	// suppressed we stay parked on the cv.wait below until the first real
+	// edit / gesture arrives, so the production image survives until the
+	// user actually interacts.  Consume the one-shot flag either way.
+	if( !mSuppressInitialRender.exchange( false, std::memory_order_acq_rel ) )
+	{
+		mEditPending.store( true, std::memory_order_release );
+	}
 
 	while( mRunning.load( std::memory_order_acquire ) )
 	{

@@ -85,18 +85,28 @@ namespace {
 // frame appear whole — not a half-rendered image with tile
 // boundaries.
 //
-// Suppress-next: lets the bridge skip exactly one dispatch.
-// Used right after a production render returns, so the
-// production image stays on screen until the user actually
-// starts interacting in the viewport.  Beyond that, we do NOT
-// throttle: every frame the rasterizer produces reaches the
-// screen, including partial buffers from cancelled passes.
-// During fast manipulation the cancel flag trips on every
-// pointer move, so dropping cancelled frames would mean the
-// user only ever sees post-pause refinement passes — visually
-// indistinguishable from the viewport being throttled.  Center-
-// out tile order keeps partial buffers usable (centre-of-image
-// fills first).
+// Keeping the production image on screen after a production
+// render is NOT handled here anymore.  It used to be a one-shot
+// "drop the next dispatch" flag on this sink, but that only
+// covered the legacy LDR NSImage path — in EDR mode the
+// interactive frame reaches the shared Metal layer through the
+// interactive ViewportFrameStore's frame-complete observer
+// (bound to the rasterizer's FrameStore via
+// OnRasterizerFrameStoreChanged), which never passes through
+// this sink, so the suppression was bypassed and the production
+// image flipped back to the live preview.  The fix lives one
+// layer down: the SceneEditController is restarted via
+// `startSuppressingInitialRender`, so it simply doesn't produce
+// the overwriting frame on any path until the user interacts.
+//
+// We do NOT throttle here: every frame the rasterizer produces
+// reaches the screen, including partial buffers from cancelled
+// passes.  During fast manipulation the cancel flag trips on
+// every pointer move, so dropping cancelled frames would mean
+// the user only ever sees post-pause refinement passes —
+// visually indistinguishable from the viewport being throttled.
+// Center-out tile order keeps partial buffers usable
+// (centre-of-image fills first).
 // ============================================================
 class ViewportPreviewSink :
     public IRasterizerOutput,
@@ -107,7 +117,6 @@ public:
     : mBlock( nil )
     , mController( nullptr )
     , mFanoutVFS( nullptr )
-    , mSuppressNext( false )
     {}
 
     virtual ~ViewportPreviewSink() {
@@ -167,12 +176,6 @@ public:
         }
     }
 
-    // Set true to drop the very next OutputImage call.  Auto-clears
-    // after one drop.  Atomic so the bridge can call this from the
-    // UI thread while the render thread fires OutputImage from a
-    // worker thread.
-    void SuppressNextFrame() { mSuppressNext.store( true ); }
-
     // Per-tile callback fires many times per render pass — and
     // each fire would draw red tile-corner toggles (DrawToggles)
     // into the IRasterImage before pixels are written.  Legacy
@@ -203,17 +206,10 @@ public:
     // viewport is throttled.  The user explicitly wants every
     // produced frame on-screen, even if it's a partial buffer with
     // only the centre tiles filled (CenterOut tile order makes
-    // partials usable).  The one-shot suppress is kept because it
-    // serves a distinct purpose (preserving the production image
-    // until the user starts dragging).
+    // partials usable).
     void OutputImage( const IRasterImage& pImage,
                       const RISE::Rect* pRegion,
                       const unsigned int frame ) override {
-        if( mSuppressNext.exchange( false ) ) {
-            // One-shot suppression (post-production) — skip exactly
-            // this dispatch.  The next render's frame goes through.
-            return;
-        }
         // L5a round-4 — fan into VFS first so EDR mode gets the
         // frame-complete observer fire (which drives the Metal
         // layer present).  Then run the legacy NSImage path.
@@ -227,7 +223,6 @@ private:
     __strong RISEViewportImageBlock                mBlock;
     SceneEditController*                            mController;   // borrowed
     Implementation::ViewportFrameStore*             mFanoutVFS;    // strong (addref'd in SetFanoutVFS)
-    std::atomic<bool>                               mSuppressNext;
 
     static unsigned char Clamp8( double v ) {
         if( v <= 0.0 ) return 0;
@@ -447,6 +442,12 @@ private:
 - (void)start {
     if (!_controller) return;
     RISE_API_SceneEditController_Start(_controller);
+    _ownsRunning = YES;
+}
+
+- (void)startSuppressingInitialRender {
+    if (!_controller) return;
+    RISE_API_SceneEditController_StartSuppressingInitialRender(_controller);
     _ownsRunning = YES;
 }
 
@@ -737,12 +738,6 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 
 - (BOOL)hasLivePreview {
     return _interactiveRasterizer != nullptr;
-}
-
-- (void)suppressNextFrame {
-    if (_previewSink) {
-        _previewSink->SuppressNextFrame();
-    }
 }
 
 #pragma mark - Properties panel

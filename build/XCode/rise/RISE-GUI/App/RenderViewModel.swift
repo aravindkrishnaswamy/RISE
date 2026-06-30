@@ -894,14 +894,19 @@ final class RenderViewModel: ObservableObject {
 
                 // Production render is done (success / cancel / error).
                 // Restart the interactive viewport so the user can keep
-                // editing on the freshly-updated scene state.  Suppress
-                // the very next preview frame at the sink layer so the
-                // production image stays on screen until the user
-                // actually starts dragging — otherwise the bridge's
-                // initial render would flash a half-rendered preview
-                // image right after a clean production result.
-                self.viewportBridge?.suppressNextFrame()
-                self.viewportBridge?.start()
+                // editing on the freshly-updated scene state — but WITHOUT
+                // its initial render pass, so the just-finished production
+                // image stays on screen until the user actually interacts.
+                // Without this the interactive rasterizer's first pass
+                // would overwrite the production result (visible as the
+                // render "flashing then flipping back to the live
+                // preview").  The render thread stays parked until the
+                // first edit / gesture; this works for both the LDR
+                // NSImage path and the EDR Metal-layer path, which the
+                // old sink-level frame-drop did not (the EDR frame reaches
+                // the layer through the FrameStore observer, bypassing the
+                // sink entirely).
+                self.viewportBridge?.startSuppressingInitialRender()
             }
         }
     }
@@ -1050,9 +1055,11 @@ final class RenderViewModel: ObservableObject {
                 } else {
                     self.renderState = .error("Animation rasterization failed")
                 }
-                // Restart the interactive viewport (see startRender).
-                self.viewportBridge?.suppressNextFrame()
-                self.viewportBridge?.start()
+                // Restart the interactive viewport (see startRender) —
+                // without its initial render pass so the finished
+                // animation's last frame stays on screen until the user
+                // interacts.
+                self.viewportBridge?.startSuppressingInitialRender()
             }
         }
     }
