@@ -2785,6 +2785,11 @@ namespace RISE
 		//! 0/1/2/3 contract as ApplyCstParamEdit (2/3 => Scene+managers REPLACED, caller MUST rebind).
 		int ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 );
 
+		//! P5 Slice 3 expansion (object transform): true iff `name`'s retained-CST chunk is a standard_object (the
+		//! only object chunk with a `matrix` param).  The editor refuses transform edits on non-routable objects
+		//! (e.g. csg_object) on a CST scene, so the live transform never diverges from the un-committable CST.
+		bool IsCstObjectTransformRoutable( const char* name ) const;
+
 		//! P5 Slice 3 expansion (camera drag): commit a camera's NET pose (rest location/lookat/up/orientation/
 		//! target_orientation) to the retained CST as the authored chunk params.  Same 0/1/2/3 contract.
 		int ApplyCstCameraPoseEdit( const char* camName, const char* location, const char* lookat, const char* up,

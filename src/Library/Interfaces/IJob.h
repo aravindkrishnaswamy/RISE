@@ -3274,6 +3274,10 @@ namespace RISE
 		//! no-op (legacy jobs have no retained CST).  See Job override.
 		virtual int ApplyCstCameraPoseEdit( const char* camName, const char* location, const char* lookat, const char* up,
 		                                    const char* orientation, const char* targetOrientation ) { return 0; }
+
+		//! P5 Slice 3 expansion (object transform): true iff `name`'s retained-CST chunk is a standard_object (the
+		//! only object chunk a transform edit can commit to via `matrix`).  Default false; see Job override.
+		virtual bool IsCstObjectTransformRoutable( const char* name ) const { return false; }
 	};
 
 

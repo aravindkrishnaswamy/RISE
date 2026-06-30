@@ -410,6 +410,42 @@ int main()
 		std::remove( tc );
 	}
 
+	// ---- CSG: a transform edit on a csg_object (pickable, but it authors only position/orientation -- NO matrix
+	//      param) must be REFUSED on a CST scene, not applied-live-then-silently-lost.  csg_object's transform
+	//      cannot be committed to the CST via `matrix`, so the editor refuses the edit up front (no divergence). ----
+	{
+		const char* tg = "cst_s3_csg.RISEscene";
+		{ std::ofstream o( tg );
+		  o << "RISE ASCII SCENE 6\n"
+		       "scene_variant\n{\nname night\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname a\ngeometry g\nmaterial m\nposition -1 0 0\n}\n"
+		       "standard_object\n{\nname b\ngeometry g\nmaterial m\nposition 1 0 0\n}\n"
+		       "csg_object\n{\nname cu\nobja a\nobjb b\noperation union\nmaterial m\nposition 0 0 0\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tg ), "CSG: loads variant + csg_object scene via CST" );
+		SceneEditController c( *j, 0 );
+		c.SetSelection( Cat::Object, String( "cu" ) );
+		double before[16]; ObjMat16( *j, "cu", before );
+		// The transform edit must be REFUSED (csg_object has no `matrix` param to commit to).
+		const bool applied = c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "5 0 0" ) );
+		Check( !applied, "CSG1: a transform edit on a csg_object is REFUSED on a CST scene" );
+		double afterAttempt[16]; ObjMat16( *j, "cu", afterAttempt );
+		Check( Mat16Eq( before, afterAttempt ), "CSG1: the refused edit left the csg transform UNCHANGED (no live divergence)" );
+		// A material D2 must leave the csg transform exactly as authored -- proving there was no silent divergence
+		// to revert.  Red-provable: remove the editor's routability block and `applied` becomes true, the live
+		// transform moves to 5 0 0, and this D2 reverts it (the data-loss the block prevents).
+		c.SetSelection( Cat::Material, String( "m" ) );
+		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "CSG1: material edit applies (D2)" );
+		double afterD2[16]; ObjMat16( *j, "cu", afterD2 );
+		Check( Mat16Eq( before, afterD2 ), "CSG1: csg transform is its authored value after a material D2 (no silent data-loss)" );
+		j->release();
+		std::remove( tg );
+	}
+
 	std::remove( tmp );
 	std::cout << passCount << " passed, " << failCount << " failed." << std::endl;
 	return failCount == 0 ? 0 : 1;

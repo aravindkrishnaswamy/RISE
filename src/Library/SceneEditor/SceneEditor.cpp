@@ -1906,6 +1906,18 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 				mLastScope = Dirty_ObjectTransform;
 				return true;
 			}
+			// A TRANSFORM edit can only be committed to the CST as the standard_object `matrix` param.  If this
+			// object's chunk has no matrix (e.g. a csg_object -- also pickable, but it authors only position/
+			// orientation), REFUSE the edit here: mutating it live then failing the deferred commit would leave the
+			// live transform DIVERGED from the un-committable CST, and a later D2 would silently revert it (data-loss).
+			// Bindings above already routed (csg has material/shader params); only transforms are matrix-gated.
+			if( IsObjectTransformOp( edit.op ) && !mJob->IsCstObjectTransformRoutable( edit.objectName.c_str() ) ) {
+				if( mLastNonRoutableTransformObj != std::string( edit.objectName.c_str() ) ) {
+					mLastNonRoutableTransformObj = std::string( edit.objectName.c_str() );
+					GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` is not a standard_object (no CST `matrix` param); its transform cannot be saved on a CST-loaded scene, so the edit is refused", edit.objectName.c_str() );
+				}
+				return false;
+			}
 		}
 		const bool fwdOk = ApplyObjectOpForward( *obj, edit );   // P1: false if a redo target vanished
 		// Property-style ops don't move geometry — symmetric with

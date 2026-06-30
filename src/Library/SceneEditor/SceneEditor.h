@@ -323,6 +323,11 @@ namespace RISE
 		// snapshot-before-route pass (mirroring the object commit).
 		std::string mPendingCstCameraName;
 
+		// P5 Slice 3 expansion (object transform): the last object whose transform edit was REFUSED on a CST scene
+		// for lacking a `matrix` param (csg_object).  Used to log the refusal once per distinct object instead of
+		// per gizmo drag-frame.  UI-thread-only.
+		std::string mLastNonRoutableTransformObj;
+
 		//! Phase 6.5 UI hook: GUI-installed listener fired on
 		//! `HasUnsavedChanges()` TRANSITIONS only.  Empty by default
 		//! (no callbacks fire until SetDirtyChangedListener is called).

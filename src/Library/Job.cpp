@@ -9615,12 +9615,40 @@ int Job::ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectMatrixEdit:: `%s` not found or ambiguous in the CST Document; edit rejected", objectName );
 		return 0;
 	}
+	// DocFindByNameAnyRole's single-match path returns a uniquely-named chunk REGARDLESS of the "standard_object"
+	// suffix, so a csg_object (also ChunkCategory::Object, also uniquely named) would be accepted here -- but it
+	// has NO `matrix` param, so the insert below would fail the dry-run derive and silently drop the transform.
+	// Verify the resolved chunk really is a standard_object (the only object chunk with a `matrix` param).  The
+	// editor blocks non-standard_object transform edits up front (IsCstObjectTransformRoutable); this is defence.
+	{
+		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
+		if( !chunk || chunk->role != "standard_object" ) {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectMatrixEdit:: `%s` is not a standard_object (no `matrix` param); transform commit rejected", objectName );
+			return 0;
+		}
+	}
 	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, id, "position" );
 	d1 = RISE::Cst::DocRemoveParam( d1, id, "orientation" );
 	d1 = RISE::Cst::DocRemoveParam( d1, id, "quaternion" );
 	d1 = RISE::Cst::DocRemoveParam( d1, id, "scale" );
 	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "matrix", 0, matrix16 );
 	return DeriveEditedCstDocument_( std::move( d1 ), id, objectName, "matrix" );
+}
+
+// P5 Slice 3 expansion (object transform): true iff object `name`'s retained-CST chunk is a standard_object --
+// the only object chunk with a `matrix` param, so the only one whose transform a gizmo/panel edit can commit to
+// the CST.  A csg_object is also a ChunkCategory::Object and is gizmo-pickable, but authors only position/
+// orientation (no matrix/scale), so its transform CANNOT be committed via the matrix param -- the editor refuses
+// such an edit up front (this query) rather than mutate the live object then silently fail the commit (which a
+// later D2 would revert -- data-loss).  Resolves by bare name then VERIFIES the keyword (DocFindByNameAnyRole's
+// single-match path ignores the suffix).  False on a non-CST job / unknown name / non-standard_object.
+bool Job::IsCstObjectTransformRoutable( const char* name ) const
+{
+	if( !pCstDocument || !name ) return false;
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, name, nullptr, "standard_object", false );
+	if( id == 0 ) return false;
+	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
+	return chunk && chunk->role == "standard_object";
 }
 
 // P5 Slice 3 expansion (camera drag): commit a camera's NET pose to the retained CST.  A drag gesture
