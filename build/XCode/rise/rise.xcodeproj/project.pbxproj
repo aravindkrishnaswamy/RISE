@@ -6089,6 +6089,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				COPY_PHASE_STRIP = NO;
@@ -6107,13 +6108,20 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = /opt/homebrew/include;
+				HEADER_SEARCH_PATHS = (
+					/opt/homebrew/include,
+					"$(HOME)/working/deps/openpgl-0.7.1/include",
+				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					/opt/homebrew/lib,
+					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
+				LIBRARY_SEARCH_PATHS = (
+					/opt/homebrew/lib,
+					"$(HOME)/working/deps/openpgl-0.7.1/lib",
+				);
 				OPTIMIZATION_CFLAGS = "-O0";
 				OTHER_CPLUSPLUSFLAGS = (
 					"-DNO_PNG_SUPPORT",
@@ -6144,6 +6152,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				COPY_PHASE_STRIP = YES;
@@ -6160,13 +6169,20 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = /opt/homebrew/include;
+				HEADER_SEARCH_PATHS = (
+					/opt/homebrew/include,
+					"$(HOME)/working/deps/openpgl-0.7.1/include",
+				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					/opt/homebrew/lib,
+					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
+				LIBRARY_SEARCH_PATHS = (
+					/opt/homebrew/lib,
+					"$(HOME)/working/deps/openpgl-0.7.1/lib",
+				);
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-DNO_PNG_SUPPORT",
@@ -6197,6 +6213,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				DEAD_CODE_STRIPPING = YES;
@@ -6212,13 +6229,20 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = /opt/homebrew/include;
+				HEADER_SEARCH_PATHS = (
+					/opt/homebrew/include,
+					"$(HOME)/working/deps/openpgl-0.7.1/include",
+				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					/opt/homebrew/lib,
+					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
+				LIBRARY_SEARCH_PATHS = (
+					/opt/homebrew/lib,
+					"$(HOME)/working/deps/openpgl-0.7.1/lib",
+				);
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-DNO_PNG_SUPPORT",
@@ -6371,6 +6395,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -6429,6 +6454,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
+					"$(HOME)/working/deps/openpgl-0.7.1/include",
 					"$(SRCROOT)/../../../src/Library/**",
 					/opt/homebrew/include/OpenEXR,
 					/opt/homebrew/include/Imath,
@@ -6438,8 +6464,12 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
+					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
+				LIBRARY_SEARCH_PATHS = (
+					/opt/homebrew/lib,
+					"$(HOME)/working/deps/openpgl-0.7.1/lib",
+				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
 				MARKETING_VERSION = 1.0;
@@ -6486,6 +6516,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -6543,6 +6574,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
+					"$(HOME)/working/deps/openpgl-0.7.1/include",
 					"$(SRCROOT)/../../../src/Library/**",
 					/opt/homebrew/include/OpenEXR,
 					/opt/homebrew/include/Imath,
@@ -6552,8 +6584,12 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
+					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
+				LIBRARY_SEARCH_PATHS = (
+					/opt/homebrew/lib,
+					"$(HOME)/working/deps/openpgl-0.7.1/lib",
+				);
 				LLVM_LTO = YES_THIN;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
@@ -6600,6 +6636,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -6657,6 +6694,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
+					"$(HOME)/working/deps/openpgl-0.7.1/include",
 					"$(SRCROOT)/../../../src/Library/**",
 					/opt/homebrew/include/OpenEXR,
 					/opt/homebrew/include/Imath,
@@ -6666,8 +6704,12 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
+					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
+				LIBRARY_SEARCH_PATHS = (
+					/opt/homebrew/lib,
+					"$(HOME)/working/deps/openpgl-0.7.1/lib",
+				);
 				LLVM_LTO = YES_THIN;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
