@@ -1054,7 +1054,18 @@ static inline bool IsCstRoutedOp( SceneEdit::Op op )
 	return op == SceneEdit::SetMaterialProperty
 	    || op == SceneEdit::SetLightProperty
 	    || op == SceneEdit::SetCameraProperty
+	    || op == SceneEdit::SetMediumProperty
 	    || SceneEdit::IsObjectOp( op );
+}
+
+// P5 Slice 3 expansion (medium): only the homogeneous_medium chunk params that EXIST are routable -- absorption
+// and scattering.  `emission` is editable on the live HomogeneousMedium but the homogeneous_medium SCENE chunk
+// has NO emission param (see MediaIntrospection), so routing it would insert a param the descriptor-driven
+// parser rejects on re-derive -> the edit would be wrongly REFUSED.  Emission therefore falls through to the
+// direct mutate (live-but-transient -- a pre-existing, documented limitation, not closed here).
+static inline bool IsCstRoutableMediumProp( const String& prop )
+{
+	return prop == String( "absorption" ) || prop == String( "scattering" );
 }
 
 unsigned long long SceneEditor::ResolveTargetSerial( const SceneEdit& e ) const
@@ -1782,6 +1793,12 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		if( !medConst ) return false;
 		IMedium* medium = const_cast<IMedium*>( medConst );
 		if( edit.prevPropertyValue.size() <= 1 ) return true;
+		// P5 Slice 3 expansion (medium): CST-route the inverse absorption/scattering edit too.
+		if( mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) && IsCstRoutableMediumProp( edit.propertyName ) ) {
+			if( !RouteCstParamEdit_( edit.objectName.c_str(), "medium", edit.propertyName.c_str(), edit.prevPropertyValue.c_str() ) ) return false;
+			mLastScope = Dirty_Camera;
+			return true;
+		}
 		ApplyMediumPropertyValue( *medium, edit.propertyName, edit.prevPropertyValue );
 		mLastScope = Dirty_Camera;
 		return true;
@@ -1962,6 +1979,13 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		const IMedium* medConst = mJob->GetMedium( edit.objectName.c_str() );
 		if( !medConst ) return false;
 		IMedium* medium = const_cast<IMedium*>( medConst );
+		// P5 Slice 3 expansion (medium): route absorption/scattering through the CST so the Document stays complete
+		// (a later D2 can't lose them); emission has no chunk param -> direct mutate (documented transient).
+		if( mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) && IsCstRoutableMediumProp( edit.propertyName ) ) {
+			if( !RouteCstParamEdit_( edit.objectName.c_str(), "medium", edit.propertyName.c_str(), edit.propertyValue.c_str() ) ) return false;
+			mLastScope = Dirty_Camera;
+			return true;
+		}
 		if( !ApplyMediumPropertyValue( *medium, edit.propertyName, edit.propertyValue ) ) return false;   // H2-S3: surface failure so Apply can reject
 		mLastScope = Dirty_Camera;
 		return true;

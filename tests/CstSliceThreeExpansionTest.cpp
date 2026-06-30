@@ -39,6 +39,7 @@
 #include "../src/Library/Interfaces/IObject.h"
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Interfaces/IGeometry.h"
+#include "../src/Library/SceneEditor/MediaIntrospection.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -107,6 +108,15 @@ static bool Mat16Eq( const double a[16], const double b[16] )
 {
 	for( int i = 0; i < 16; ++i ) if( std::fabs( a[i] - b[i] ) > 1e-9 ) return false;
 	return true;
+}
+
+// A medium's absorption-R off the LIVE scene; -999 if absent.
+static double MedAbsR( Job& j, const char* med )
+{
+	const IMedium* m = j.GetMedium( med );
+	if( !m ) return -999.0;
+	MediumSlotValue v = MediaIntrospection::GetSlotValue( *m, String( "absorption" ) );
+	return ( v.kind == MediumSlotValue::Vec3 ) ? v.v3[0] : -999.0;
 }
 
 static const char* SCENE =
@@ -320,6 +330,33 @@ int main()
 		Check( Mat16Eq( moved, afterD2 ), "OV1: object edit resolved the BASE standard_object + SURVIVED the D2 (override_object collision avoided)" );
 		j->release();
 		std::remove( tv );
+	}
+
+	// ---- MD: a MEDIUM absorption edit is CST-routed -> takes effect and SURVIVES a material D2 (data-loss
+	//      closure for absorption/scattering; emission stays transient -- no chunk param). ----
+	{
+		const char* tm = "cst_s3_medium.RISEscene";
+		{ std::ofstream o( tm );
+		  o << "RISE ASCII SCENE 6\n"
+		       "scene_variant\n{\nname night\n}\n"
+		       "homogeneous_medium\n{\nname fog\nabsorption 0.1 0.1 0.1\nscattering 0.2 0.2 0.2\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\ninterior_medium fog\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tm ), "MD: loads variant + medium scene via CST" );
+		Check( std::fabs( MedAbsR( *j, "fog" ) - 0.1 ) < 1e-6, "MD: fog absorption is 0.1 before the edit" );
+		SceneEditController c( *j, 0 );
+		c.SetSelection( Cat::Medium, String( "fog" ) );
+		Check( c.SetPropertyForCategory( Cat::Medium, String( "absorption" ), String( "0.5 0.5 0.5" ) ), "MD1: medium absorption edit applies" );
+		Check( std::fabs( MedAbsR( *j, "fog" ) - 0.5 ) < 1e-6, "MD1: after edit, fog absorption is 0.5" );
+		c.SetSelection( Cat::Material, String( "m" ) );
+		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "MD1: material edit applies (D2)" );
+		Check( std::fabs( MedAbsR( *j, "fog" ) - 0.5 ) < 1e-6, "MD1: medium absorption edit SURVIVED the material D2 (data-loss closed)" );
+		j->release();
+		std::remove( tm );
 	}
 
 	std::remove( tmp );
