@@ -9886,15 +9886,26 @@ int Job::ApplyCstInsertCameraChunk( const char* chunkText )
 
 // Model-B P5 (camera-clone CST insert -- undo): REMOVE the camera chunk named `camName` from the retained Document
 // (the exact STRUCTURAL inverse of ApplyCstInsertCameraChunk, which always appends [leadSep][chunk][trailSep]).
+//
+// PRECONDITION -- CLONE-UNDO ONLY: this function must be used ONLY to undo a chunk that its forward sibling
+// ApplyCstInsertCameraChunk clone-inserted (its SOLE caller is the AddCamera revert/undo path).  It MUST NOT be
+// repurposed to remove an arbitrary FILE-AUTHORED camera.  The `idx-1` / `idx` separator removals below assume the
+// synthetic [leadSep][chunk][trailSep] triple that ONLY clone-insert produces; for a file-authored camera the item
+// at `idx-1` is the PREVIOUS chunk's trailing newline, and dropping it would CORRUPT the document (glue the prior
+// chunk onto the next).  Removing an arbitrary file-authored camera safely requires a separate trivia-preserving
+// erase that does NOT exist yet -- do not route file-authored removals through here.
+//
 // Resolve by name (uniqueFallback allows the sole-unnamed-camera resolve-by-position, matching ApplyCstCameraPoseEdit),
 // get its index `idx`, then remove EXACTLY those three leaves: (1) the chunk at `idx`; (2) its TRAILING separator,
 // the item now at `idx` after the chunk drop, if it's a pure-newline trivia leaf; (3) its LEADING separator, the
-// item at `idx-1`, if `idx-1 >= 0` and it's a pure-newline trivia leaf.  Because insert ALWAYS places
-// [leadSep][chunk] adjacent, the item at `idx-1` is ALWAYS this insert's own leading separator -- position-
-// independent (works even when the removed camera isn't the last chunk) and it can NEVER reach the document's own
-// earlier trailing newline (that leaf is at least one position further back).  So an insert->remove cycle is
-// SerializeCst-BYTE-IDENTICAL in every case (normal trailing-newline, no-trailing-newline, empty).  DOCUMENT-ONLY:
-// no re-derive (the live camera is removed by SceneEditor's RemoveCamera path), so the caller needs no rebind.
+// item at `idx-1`, if `idx-1 >= 0` and it's a pure-newline trivia leaf.  For a chunk THIS function's forward sibling
+// clone-inserted, insert ALWAYS places [leadSep][chunk] adjacent, so the item at `idx-1` is ALWAYS that insert's own
+// leading separator -- position-independent (works even when the removed clone isn't the last chunk) and it can NEVER
+// reach the document's own earlier trailing newline (that leaf is at least one position further back).  So a
+// clone-insert->remove cycle is SerializeCst-BYTE-IDENTICAL in every case (normal trailing-newline, no-trailing-
+// newline, empty).  (This invariant holds ONLY for the clone-insert triple -- see the CLONE-UNDO-ONLY precondition
+// above; it does NOT hold for file-authored chunks.)  DOCUMENT-ONLY: no re-derive (the live camera is removed by
+// SceneEditor's RemoveCamera path), so the caller needs no rebind.
 // Returns 1 on success, 0 on any failure (no Document / null name / not found / ambiguous) leaving it intact.
 int Job::ApplyCstRemoveCameraChunk( const char* camName )
 {
@@ -9920,10 +9931,12 @@ int Job::ApplyCstRemoveCameraChunk( const char* camName )
 			d1 = RISE::Cst::DocRemoveItem( d1, idx );
 	}
 	// (3) LEADING separator: the item at `idx-1` (immediately BEFORE where the chunk was) is the leading separator
-	// this insert always prepended -- drop it if `idx-1 >= 0` and it's a pure-newline trivia leaf.  Targeting
-	// `idx-1` (not the document tail) is what makes this position-independent AND safe: insert places
-	// [leadSep][chunk] adjacent, so `idx-1` is ALWAYS our own leading sep, and the document's own final newline
-	// (if any) sits at least one leaf further back, so it is NEVER touched.
+	// the clone-insert always prepended -- drop it if `idx-1 >= 0` and it's a pure-newline trivia leaf.  Targeting
+	// `idx-1` (not the document tail) is what makes this position-independent AND safe FOR A CHUNK THIS FUNCTION'S
+	// forward sibling clone-inserted: insert places [leadSep][chunk] adjacent, so `idx-1` is ALWAYS our own leading
+	// sep, and the document's own final newline (if any) sits at least one leaf further back, so it is NEVER touched.
+	// (For a FILE-AUTHORED camera this would instead be the PREVIOUS chunk's trailing newline -- see the
+	// CLONE-UNDO-ONLY precondition in the method's doc comment; this path is not safe for that case.)
 	if( idx - 1 >= 0 ) {
 		const RISE::Cst::NodeRef lead = RISE::Cst::DocResolveNodeId( d1, RISE::Cst::DocNodeIdAt( d1, idx - 1 ) );
 		if( lead && lead->kind == RISE::Cst::NodeKind::Trivia && lead->text.find_first_not_of( "\n\r" ) == std::string::npos )

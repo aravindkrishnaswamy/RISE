@@ -551,6 +551,66 @@ int main()
 		std::remove( tk );
 	}
 
+	// ---- CINS-MID: directly exercise the "position-independent" claim of the ApplyCstInsertCameraChunk /
+	//      ApplyCstRemoveCameraChunk pair at the Document level.  Clone-insert camera A, then clone-insert camera B
+	//      (items become [...][leadSepA][chunkA][trailSepA][leadSepB][chunkB][trailSepB]).  Then REMOVE A -- the
+	//      NON-LAST clone, by A's name.  The Document must be SerializeCst-BYTE-IDENTICAL to the state in which ONLY
+	//      B was ever inserted (removing the first clone cleanly drops A's own [leadSep][chunk][trailSep] triple and
+	//      leaves B's intact -- no glue between the prior chunk and B, no orphan separator).  Then ALSO remove B and
+	//      assert byte-identity to the original Document.  This is an ADDITIVE test over UNCHANGED code: the logic is
+	//      already correct, so it PASSES as written.  (chunkText for ApplyCstInsertCameraChunk is a bare
+	//      `<keyword> { ... }` with no trailing newline, exactly what BuildCameraChunkText emits.) ----
+	{
+		const char* tk = "cst_s3_caminsmid.RISEscene";
+		{ std::ofstream o( tk );
+		  o << "RISE ASCII SCENE 6\n"
+		       "film\n{\nwidth 64\nheight 64\n}\n"
+		       "pinhole_camera\n{\nname cam\nlocation 0 0 7\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+
+		// Bare camera chunk texts (NO trailing newline -- the insert prepends/appends the separators itself).
+		const char* chunkA = "pinhole_camera\n{\nname camA\nlocation 1 0 7\nlookat 0 0 0\nup 0 1 0\nfov 30\n}";
+		const char* chunkB = "pinhole_camera\n{\nname camB\nlocation 2 0 7\nlookat 0 0 0\nup 0 1 0\nfov 30\n}";
+
+		// Document #1: insert A then B, then remove A (the non-last clone).
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tk ), "CINS-MID: loads base scene via CST" );
+		Check( j->HasRetainedCstDocument(), "CINS-MID: a CST Document was retained" );
+		const std::string sOrig = RISE::Cst::SerializeCst( *j->GetCstDocument() );
+
+		Check( j->ApplyCstInsertCameraChunk( chunkA ) == 1, "CINS-MID: clone-insert camera A succeeds" );
+		Check( j->ApplyCstInsertCameraChunk( chunkB ) == 1, "CINS-MID: clone-insert camera B succeeds" );
+		const std::string sAB = RISE::Cst::SerializeCst( *j->GetCstDocument() );
+		Check( sAB != sOrig, "CINS-MID: inserting A+B changed the serialized Document" );
+
+		// Remove A by name -- the NON-LAST clone (B's triple sits after it).
+		Check( j->ApplyCstRemoveCameraChunk( "camA" ) == 1, "CINS-MID: remove of the non-last clone A succeeds" );
+		const std::string sAfterRemoveA = RISE::Cst::SerializeCst( *j->GetCstDocument() );
+
+		// Document #2: a FRESH base into which ONLY B was ever inserted -- the byte-identity reference.
+		Job* jref = new Job();
+		Check( jref->LoadAsciiSceneViaCst( tk ), "CINS-MID: (ref) loads base scene via CST" );
+		Check( jref->ApplyCstInsertCameraChunk( chunkB ) == 1, "CINS-MID: (ref) insert of B-only succeeds" );
+		const std::string sBOnly = RISE::Cst::SerializeCst( *jref->GetCstDocument() );
+
+		// THE CLAIM: removing the first (non-last) clone is byte-identical to never having inserted A.
+		Check( sAfterRemoveA == sBOnly,
+		       "CINS-MID: remove(A) on [A][B] is SerializeCst-BYTE-IDENTICAL to inserting only B (position-independent, no glue, no orphan sep)" );
+
+		// Now remove B too -> back to the pristine original Document, byte-for-byte.
+		Check( j->ApplyCstRemoveCameraChunk( "camB" ) == 1, "CINS-MID: remove of the remaining clone B succeeds" );
+		const std::string sAfterRemoveBoth = RISE::Cst::SerializeCst( *j->GetCstDocument() );
+		Check( sAfterRemoveBoth == sOrig,
+		       "CINS-MID: removing BOTH clones restores the original Document byte-for-byte (full insert->remove cycle is identity)" );
+
+		jref->release();
+		j->release();
+		std::remove( tk );
+	}
+
 	// ---- CSG: a transform edit on a csg_object (pickable, but it authors only position/orientation -- NO matrix
 	//      param) must be REFUSED on a CST scene, not applied-live-then-silently-lost.  csg_object's transform
 	//      cannot be committed to the CST via `matrix`, so the editor refuses the edit up front (no divergence). ----

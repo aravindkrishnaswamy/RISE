@@ -264,10 +264,11 @@ behind the material category so it never trips the descriptor diagnostic on non-
 `scene_variant`/`active_scene_variant` chunks Finalize normally (record only). No material/camera bake in legacy.
 
 **Render entry point.** Because legacy renders the BASE, rendering a scene's *active* variant requires the CST
-load path. The CLI and Mac GUI honor the **`RISE_LOAD_VIA_CST=1`** environment variable (→ `Job::LoadAsciiSceneViaCst`,
-an `IJob` virtual) to load via the CST and bake the active variant; no silent fallback (a non-native-v7 / derive-error
-scene fails visibly). This is the opt-in hook pending the Slice-5 default-on. To render the watch night hero:
-uncomment `watch_dial.RISEscene`'s `active_scene_variant { name night }` and set `RISE_LOAD_VIA_CST=1`.
+load path — which, as of Slice 5, is the **DEFAULT** (the former `RISE_LOAD_VIA_CST=1` opt-in env var has been
+REMOVED). Loading a scene normally now goes through `Job::LoadAsciiSceneViaCst` (an `IJob` virtual), which loads via
+the CST and bakes the active variant; no silent fallback (a non-native-v7 / derive-error scene fails visibly). To
+render the watch night hero, just uncomment `watch_dial.RISEscene`'s `active_scene_variant { name night }` and load
+the scene as usual — the active variant resolves automatically via the retained CST Document.
 
 **(f) CST incremental-derive** — `DeriveToJobIncremental` REFUSES (full re-derive) for ANY scene that has
 variants, via the O(1) `pJob.HasSceneVariants()` engine signal (the bake is a whole-document decision, so a
