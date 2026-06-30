@@ -277,6 +277,7 @@ int main()
 		std::remove( tk );
 	}
 
+
 	std::remove( tmp );
 	std::cout << passCount << " passed, " << failCount << " failed." << std::endl;
 	return failCount == 0 ? 0 : 1;

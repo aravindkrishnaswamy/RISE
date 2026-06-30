@@ -3260,6 +3260,8 @@ namespace RISE
 		//! 0 = no change (live scene intact); 1 = applied incrementally (managers untouched); 2 = applied via a FULL
 		//! re-derive (the Scene + managers were REPLACED -- the caller MUST re-point any cached scene/manager
 		//! pointers); 3 = managers replaced BUT the re-derive diagnosed -> rebind required AND treat as failure.
+		//! A full re-derive (2/3) PRESERVES the user's runtime state -- active camera/rasterizer/animation and the
+		//! interactive scrub time -- across the rebuild (an EDIT must not reset them the way a variant SWITCH does).
 		//! Default 0 (only Job overrides).
 		//! NB: appended at the IJob tail per the append-only ABI convention (preserves every prior vtable slot).
 		virtual int ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue ) { return 0; }

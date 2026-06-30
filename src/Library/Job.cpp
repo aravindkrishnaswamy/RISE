@@ -9531,7 +9531,7 @@ bool Job::RederiveCstWithVariant( const char* variantName )
 // edit FAILED -- treat as failure).  Should-not-happen: the dry-run already validated the identical derive.
 int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue )
 {
-	if( !pCstDocument || !entityName || !role || !newValue ) return 0;
+	if( !pCstDocument || !entityName || !role || !newValue || !newValue[0] ) return 0;   // empty value rejected (defense)
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, entityName, nullptr, entityKind ? entityKind : "" );
 	if( id == 0 ) {
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamEdit:: `%s` not found or ambiguous in the CST Document; edit rejected", entityName );

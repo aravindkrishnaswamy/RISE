@@ -1040,6 +1040,11 @@ void SceneEditor::RebindToJob_()
 	SetShaderManager( priv->GetShaders() );
 	SetPainterManager( priv->GetPainters() );
 	SetScalarPainterManager( priv->GetScalarPainters() );
+	// A material EDIT must not reset the interactive scrub: the D2 ClearAll+re-derive built a fresh scene at
+	// the animator's default time, but the user is parked at mLastSetTime -- re-apply it (the scrub-TIME twin of
+	// the camera/rasterizer/animation preservation) so the viewport pose matches the timeline slider; the
+	// production path already re-applies LastSceneTime before dispatch.  Skipped at the implicit t=0 (no scrub).
+	if( mScene && mLastSetTime != 0 ) mScene->SetSceneTimeForPreview( mLastSetTime );
 }
 
 bool SceneEditor::ApplyMaterialSlotByName( const SceneEdit& e, const String& painterName )
