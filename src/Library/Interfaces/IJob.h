@@ -2724,6 +2724,17 @@ namespace RISE
 			const char* filename							///< [in] Name of the file containing the scene
 			) { return false; }
 
+		//! P5 (Model-B, Slice 5): DEFAULT scene-load entry point used by every front-end (CLI/GUI/bridges).
+		//! Routes a NATIVE-v7 scene to the CST path (LoadAsciiSceneViaCst -- retains the Document for
+		//! edit/save/scene_variant) and an un-migrated scene to the legacy LoadAsciiScene.  No env var is needed
+		//! for the CST-default; setting RISE_FORCE_LEGACY_LOAD forces the legacy path (diagnostics).  A derive
+		//! error on the native-v7 branch is a REAL, visible failure (returns false) -- it is NOT masked by a
+		//! legacy retry.  Default (non-Job implementers) just delegates to the legacy LoadAsciiScene.
+		/// \return TRUE iff the scene loaded successfully
+		virtual bool LoadAsciiSceneAuto(
+			const char* filename							///< [in] Name of the file containing the scene
+			) { return LoadAsciiScene( filename ); }
+
 		//! P5 (Model-B): re-derive the RETAINED CST Document with a FORCED active scene_variant ("none"/"" =
 		//! base), re-baking the materials -- the GUI variant switch.  Resets the managers first (ClearAll), so the
 		//! Document must already be retained (loaded via LoadAsciiSceneViaCst).  Default FALSE (only Job overrides).

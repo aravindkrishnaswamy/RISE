@@ -45,18 +45,14 @@
 
 using namespace RISE;
 
-// P5 (Model-B): route a USER-scene load through the canonical CST path when RISE_LOAD_VIA_CST is set
-// in the environment (else the legacy streaming parser).  The CST path refuses non-native-v7 / derive-
-// error scenes (returns false -- NO silent fallback, so a failed CST load is visible, not masked).  This
-// is the opt-in hook for rendering scene_variant scenes (the variant bake is CST-native); Slice-5 flips
-// CST-load to the default (fallback policy per docs/agentic-redesign/62).
+// P5 (Model-B, Slice 5): CST-load is now the DEFAULT.  LoadAsciiSceneAuto classifies the scene (native-v7 ->
+// canonical CST path, retaining the Document so scene_variant switching + CST edit/save work WITHOUT any env
+// var; un-migrated -> the legacy streaming parser).  A derive error on the native-v7 branch is a REAL, visible
+// failure (returns false) -- it is NOT masked by a legacy retry.  The escape hatch RISE_FORCE_LEGACY_LOAD (read
+// inside LoadAsciiSceneAuto) forces the legacy path for diagnostics.  The old opt-in RISE_LOAD_VIA_CST is gone.
 static bool LoadScenePerEnv( IJobPriv* pJob, const char* sceneArg )
 {
-	if( getenv( "RISE_LOAD_VIA_CST" ) ) {
-		std::cout << "[RISE_LOAD_VIA_CST] loading via the Model-B CST path" << std::endl;
-		return pJob->LoadAsciiSceneViaCst( sceneArg );
-	}
-	return pJob->LoadAsciiScene( sceneArg );
+	return pJob->LoadAsciiSceneAuto( sceneArg );
 }
 
 //

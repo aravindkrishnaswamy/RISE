@@ -9408,6 +9408,67 @@ bool Job::LoadAsciiScene(
 	return bRet;
 }
 
+// P5 (Model-B, Slice 5): the DEFAULT scene-load entry point -- routes a USER scene to the canonical CST path
+// when it can (so scene_variant switching + all CST edit/save features work WITHOUT an opt-in env var), else
+// to the legacy streaming parser.  This is the ONE place the load-path decision lives; every front-end (CLI,
+// Mac/Windows/Android GUI, Blender bridge) calls THIS so the policy can't drift between them.
+//
+// Decision (NOT a silent error-masking fallback):
+//   1. Cheaply classify the file: ParseToCst(bytes) -> IsNativeV7Document(doc).
+//   2. NATIVE-v7  -> LoadAsciiSceneViaCst (which re-parses + re-checks + DERIVES).  A derive ERROR there is a
+//      REAL, visible failure (returns false) -- we do NOT fall back to legacy on a derive error, which would
+//      mask a genuine problem in a migrated scene.
+//   3. NOT native-v7 (un-migrated FOR/ENDFOR, > run/> load, render-affecting > directive, or no header) ->
+//      the legacy LoadAsciiScene, the expected path for an un-migrated scene.
+//
+// Escape hatch: set RISE_FORCE_LEGACY_LOAD in the environment to force the legacy path for ALL scenes
+// (diagnostics / bisecting a CST-derive regression).  No env var is needed for the normal CST-default path.
+//
+// Double-parse note: the native-v7 classify here re-parses, and LoadAsciiSceneViaCst re-parses again on the
+// native branch.  That's a single extra ParseToCst on a one-time load -- acceptable; keeping the classify in
+// Job (where Cst is already included + the Document is retained) is cleaner than duplicating it per front-end.
+bool Job::LoadAsciiSceneAuto(
+	const char* filename							///< [in] Name of the file containing the scene
+	)
+{
+	if( !filename ) {
+		return false;
+	}
+
+	// Opt-out escape hatch: force the legacy streaming parser (diagnostics / regression bisect).
+	// eLog_Event so the chosen load path is visible on the console (eLog_Console includes Event, not Info).
+	if( getenv( "RISE_FORCE_LEGACY_LOAD" ) ) {
+		GlobalLog()->PrintEx( eLog_Event, "Job::LoadAsciiSceneAuto:: RISE_FORCE_LEGACY_LOAD set -- loading '%s' via the legacy streaming parser", filename );
+		return LoadAsciiScene( filename );
+	}
+
+	// Classify the file: only a NATIVE-v7 document is safe for the CST derive path.  Read the bytes, parse to a
+	// CST, and ask IsNativeV7Document.  An unreadable/empty file falls through to the legacy parser, which emits
+	// its own diagnostic (we don't want to second-guess its error reporting here).
+	bool bNativeV7 = false;
+	{
+		std::ifstream in( filename, std::ios::binary );
+		if( in ) {
+			std::stringstream ss;
+			ss << in.rdbuf();
+			const std::string text = ss.str();
+			if( !text.empty() ) {
+				RISE::Cst::Document classifyDoc = RISE::Cst::ParseToCst( text );
+				bNativeV7 = RISE::Cst::IsNativeV7Document( classifyDoc );
+			}
+		}
+	}
+
+	// eLog_Event (not Info) so the resolved load path is visible on the console + in the log.
+	if( bNativeV7 ) {
+		GlobalLog()->PrintEx( eLog_Event, "Job::LoadAsciiSceneAuto:: '%s' is native v7-form -- loading via the canonical CST path (retains the CST Document for edit/save/variant)", filename );
+		return LoadAsciiSceneViaCst( filename );   // a derive error here is a REAL failure -- NO legacy fallback
+	}
+
+	GlobalLog()->PrintEx( eLog_Event, "Job::LoadAsciiSceneAuto:: '%s' is not native v7-form (un-migrated) -- loading via the legacy streaming parser", filename );
+	return LoadAsciiScene( filename );
+}
+
 // P5 (Model-B, Slice 1): load a scene by building the canonical CST and deriving the Scene from it,
 // RETAINING the Document for edit/save.  Additive + flagged -- the legacy LoadAsciiScene stays the default.
 // P5 Slice 4 (reviewer P1 + follow-up): capture/refresh the CST-loaded file's identity (path + mtime + size).

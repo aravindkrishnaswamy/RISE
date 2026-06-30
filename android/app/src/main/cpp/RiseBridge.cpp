@@ -246,8 +246,13 @@ bool RiseBridge::loadScene(const std::string& absPath) {
     // itself reports progress.
     m_job->SetProgress(m_progress.get());
 
-    if (!m_job->LoadAsciiScene(absPath.c_str())) {
-        LOGE("loadScene: LoadAsciiScene failed for %s", absPath.c_str());
+    // P5 (Model-B, Slice 5): CST-load is now the DEFAULT.  LoadAsciiSceneAuto routes a native-v7 scene to the
+    // canonical CST path (retains the CST Document so scene_variant switching + CST edit/save work WITHOUT any
+    // env var) and an un-migrated scene to the legacy streaming parser; a derive error on the native-v7 branch
+    // is a real, visible failure (returns false), NOT masked by a legacy retry.  RISE_FORCE_LEGACY_LOAD forces
+    // legacy for diagnostics.
+    if (!m_job->LoadAsciiSceneAuto(absPath.c_str())) {
+        LOGE("loadScene: LoadAsciiSceneAuto failed for %s", absPath.c_str());
         teardownJob();
         return false;
     }

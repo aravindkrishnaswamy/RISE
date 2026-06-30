@@ -386,7 +386,12 @@ void RenderEngine::loadScene(const QString& filePath)
     // before Qt got around to delivering it.  See ~RenderEngine().
     QPointer<RenderEngine> guard(this);
     QThread* thread = QThread::create([this, filePath, guard]() {
-        bool ok = m_job->LoadAsciiScene(filePath.toUtf8().constData());
+        // P5 (Model-B, Slice 5): CST-load is now the DEFAULT.  LoadAsciiSceneAuto routes a native-v7 scene
+        // to the canonical CST path (retains the CST Document so scene_variant switching + CST edit/save work
+        // WITHOUT any env var) and an un-migrated scene to the legacy streaming parser; a derive error on the
+        // native-v7 branch is a real, visible failure (returns false), NOT masked by a legacy retry.  Set
+        // RISE_FORCE_LEGACY_LOAD to force legacy for diagnostics.
+        bool ok = m_job->LoadAsciiSceneAuto(filePath.toUtf8().constData());
 
         QMetaObject::invokeMethod(this, [guard, ok]() {
             if (!guard) return;
