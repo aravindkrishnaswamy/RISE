@@ -310,6 +310,11 @@ namespace RISE
 		// of whether `TryDecompose(Mfinal).ok` succeeds.
 		std::unordered_set<std::string> mScaleFromAnchorSet;
 
+		// P5 Slice 3 expansion (object transform): objects whose live transform changed since the last
+		// CommitPendingCstObjectTransforms.  Populated by transform ops on a CST scene; flushed to the `matrix`
+		// param by the controller at a parked boundary.  UI-thread-only.
+		std::unordered_set<std::string> mPendingCstObjMatrix;
+
 		//! Phase 6.5 UI hook: GUI-installed listener fired on
 		//! `HasUnsavedChanges()` TRANSITIONS only.  Empty by default
 		//! (no callbacks fire until SetDirtyChangedListener is called).
@@ -329,6 +334,13 @@ namespace RISE
 		//! invokes it from Apply / Undo / Redo's scope-exit; no
 		//! preconditions — safe to call from anywhere.
 		void FireDirtyChangedIfTransitioned();
+
+		//! P5 Slice 3 expansion (object transform): the CONTROLLER calls these at a render-thread-PARKED boundary
+		//! (drag-end / panel transform edit / undo / redo) to commit object transforms accumulated by the
+		//! per-frame edits as the authoritative standard_object `matrix` param.  Committing re-derives (a variant
+		//! scene ClearAll's), so it MUST run parked -- hence it is the controller's job, not auto-flushed here.
+		bool HasPendingCstObjectTransforms() const { return !mPendingCstObjMatrix.empty(); }
+		bool CommitPendingCstObjectTransforms();
 
 	private:
 		//! Look up an object by name on the live ObjectManager and
@@ -370,6 +382,11 @@ namespace RISE
 		//! P5 Slice 3 expansion (object): route a SetObjectShadowFlags edit to the standard_object
 		//! casts_shadows / receives_shadows bool params (bit0 = casts, bit1 = receives).  Two CST re-derives.
 		bool RouteObjectShadowFlagsToCst_( const String& objectName, int flags );
+
+		//! P5 Slice 3 expansion (object transform): note an object whose transform changed for a deferred
+		//! `matrix`-param commit; route ONE object's net transform (rebinds on a D2).
+		void NoteCstObjectTransform_( const String& name );
+		bool ApplyCstObjectMatrix_( const std::string& name, const std::string& matrix16 );
 
 		//! H2 (P-WALK): the SINGLE per-op forward + revert dispatchers.  Each
 		//! IS the single-edit body; the composite walk-loops call them per

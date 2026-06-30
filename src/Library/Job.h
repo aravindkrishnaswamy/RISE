@@ -18,6 +18,7 @@
 #define JOB_
 
 #include "Interfaces/IJobPriv.h"
+#include <cstdint>
 #include "Interfaces/IScenePriv.h"
 #include "Interfaces/IMaterial.h"
 #include "Interfaces/IRayIntersectionModifier.h"
@@ -57,7 +58,7 @@
 
 namespace RISE
 {
-	namespace Cst { struct Document; }   // P5 (save-as-CST): the retained canonical CST; fwd-decl keeps Cst.h out of Job.h
+	namespace Cst { struct Document; typedef std::int64_t NodeId; }   // P5 (save-as-CST): the retained canonical CST; fwd-decl keeps Cst.h out of Job.h (NodeId == Cst.h's, a legal typedef redeclaration)
 
 	//! Job - This is used to simplify the creation of a job, all things can be
 	//! easily accessed by name, no need to keep track of managers and such
@@ -2779,6 +2780,11 @@ namespace RISE
 		bool HasRetainedCstDocument() const { return pCstDocument != nullptr; }
 		int ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue );
 
+		//! P5 Slice 3 expansion (object transform): commit an object's NET world transform to the retained CST as
+		//! the authoritative `matrix` param (16 col-major doubles), stripping the dead component params.  Same
+		//! 0/1/2/3 contract as ApplyCstParamEdit (2/3 => Scene+managers REPLACED, caller MUST rebind).
+		int ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 );
+
 		//! P5: the retained canonical CST (null unless the scene was loaded via LoadAsciiSceneViaCst).
 		const RISE::Cst::Document*	GetCstDocument() const { return pCstDocument.get(); }
 
@@ -2937,6 +2943,10 @@ namespace RISE
 									);
 
 	private:
+		//! P5 Slice 3 expansion: shared incremental + D2 re-derive tail for an already-edited CST Document
+		//! (closure anchored at `closureAnchorId`).  Activation-preserving D2 fallback.  Returns the 0/1/2/3
+		//! contract.  `entityName`/`role` are diagnostic-only.  Used by ApplyCstParamEdit + ApplyCstObjectMatrixEdit.
+		int DeriveEditedCstDocument_( RISE::Cst::Document&& editedDoc, RISE::Cst::NodeId closureAnchorId, const char* entityName, const char* role );
 		//! Lazy-build a rasterizer of the given chunk-name with
 		//! sensible defaults and a shader picked from the scene's
 		//! shader manager (first registered name).  Returns false if

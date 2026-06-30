@@ -1378,6 +1378,24 @@ void SceneEditController::OnPointerUp( const Point2& px )
 		mEditor.EndComposite();
 		mGestureOpenedComposite = false;
 	}
+	// P5 Slice 3 expansion (object transform): a gizmo drag accumulated per-frame transform edits (each a cheap
+	// direct mutate under the per-frame park).  Commit the NET transform to the CST as the authoritative `matrix`
+	// param now -- ONCE -- under a render-thread park, because a commit RE-DERIVES (on a variant scene it ClearAll's
+	// the live scene, which must not race a worker mid-traversal).  No-op when nothing is pending (camera drags,
+	// legacy-loaded scenes).
+	if( mEditor.HasPendingCstObjectTransforms() ) {
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( mRendering.load( std::memory_order_acquire ) ) {
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+		mEditor.CommitPendingCstObjectTransforms();
+		mEditPending.store( true, std::memory_order_release );
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+		lk.unlock();
+		mCV.notify_one();
+	}
 	// Always clear the drag state (incl. the armed-but-no-motion case).
 	mGizmoDrag.active = false;
 
@@ -1623,6 +1641,9 @@ void SceneEditController::Undo()
 	// but the scene WAS mutated (the undo stack advanced) so we must still refresh.
 	// "did work" = succeeded OR the undo stack changed; only an empty-stack no-op skips.
 	const bool didWork = ok || ( mEditor.History().UndoDepth() != beforeUndoDepth );
+	// P5 Slice 3 expansion (object transform): an undone transform noted its object -> commit the RESTORED matrix
+	// to the CST under this park so undo stays Document-consistent (else a later D2 would re-apply the dragged pose).
+	if( mEditor.HasPendingCstObjectTransforms() ) mEditor.CommitPendingCstObjectTransforms();
 	// P1: re-validate the selection UNCONDITIONALLY -- a stale selection (selected
 	// entity gone, e.g. removed externally) must clear on ANY undo attempt, incl. an
 	// atomic no-op composite undo (didWork == false -> the gated refresh is skipped).
@@ -1665,6 +1686,9 @@ void SceneEditController::Redo()
 	const bool ok = mEditor.Redo();
 	// P1-#2 follow-up: see Undo -- a partial composite redo still mutated the scene.
 	const bool didWork = ok || ( mEditor.History().RedoDepth() != beforeRedoDepth );
+	// P5 Slice 3 expansion (object transform): a redone transform noted its object -> commit the re-applied matrix
+	// to the CST under this park (symmetric with Undo).
+	if( mEditor.HasPendingCstObjectTransforms() ) mEditor.CommitPendingCstObjectTransforms();
 	DropStaleSelection_();   // P1: see Undo -- re-validate selection on any redo attempt
 	if( didWork ) {
 		// Re-derive auto-synced Material / Medium section selections
@@ -3519,9 +3543,24 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		edit.op = SceneEdit::SetCameraProperty;
 		edit.objectName = name;            // overload: holds the property name
 		edit.propertyValue = valueStr;
-		if( !mEditor.Apply( edit ) ) return false;
-		KickRender();
-		return true;
+		// P5 Slice 3 expansion: on a CST-loaded scene a camera property edit ROUTES THROUGH THE CST, whose D2 full
+		// re-derive (variant scene) ClearAll's the live scene -- so cancel-and-park the render thread around the
+		// Apply, exactly like Light / Object / Material.  (Pre-expansion camera edits only mutated camera state,
+		// read at GenerateRay time and BVH-exempt, so they ran unparked; the CST route changed that surface and the
+		// park was not added with it.)
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( mRendering.load( std::memory_order_acquire ) ) {
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+		const bool ok = mEditor.Apply( edit );
+		if( ok ) {
+			mEditPending.store( true, std::memory_order_release );
+			lk.unlock();
+			mCV.notify_one();
+		}
+		return ok;
 	}
 
 	case Category::Animation: {
@@ -3637,6 +3676,10 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 
 		const bool ok = mEditor.Apply( edit );
 		if( !ok ) return false;
+
+		// P5 Slice 3 expansion (object transform): a PANEL transform edit (position / orientation / scale) noted the
+		// object for a `matrix`-param commit; flush it here under the SAME park (the commit re-derives).
+		if( mEditor.HasPendingCstObjectTransforms() ) mEditor.CommitPendingCstObjectTransforms();
 
 		// Phase 4b auto-sync follow-through: when the user changes
 		// the selected Object's material binding (or interior medium)

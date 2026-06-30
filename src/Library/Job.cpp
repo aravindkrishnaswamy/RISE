@@ -9541,6 +9541,16 @@ int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, cons
 		return 0;
 	}
 	RISE::Cst::Document d1 = RISE::Cst::DocSetOrAddParamValue( *pCstDocument, id, role, occ, newValue );
+	return DeriveEditedCstDocument_( std::move( d1 ), id, entityName, role );
+}
+
+// P5 Slice 3 expansion: shared re-derive tail for an already-edited CST Document `d1` whose edit closure is
+// anchored at `id`.  Incremental fast path; D2 full-re-derive fallback (validate-before-destroy + active
+// camera/rasterizer/animation preservation).  Returns the same 0/1/2/3 contract as ApplyCstParamEdit.
+// `entityName`/`role` are for diagnostics only.
+int Job::DeriveEditedCstDocument_( RISE::Cst::Document&& d1in, RISE::Cst::NodeId id, const char* entityName, const char* role )
+{
+	RISE::Cst::Document d1 = std::move( d1in );
 	std::vector<RISE::Cst::NodeId> closure = RISE::Cst::DocEditClosure( d1, id );
 	if( closure.empty() ) return 0;   // id resolved but produced no closure (should not happen)
 
@@ -9564,11 +9574,11 @@ int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, cons
 		RISE::Cst::DeriveToJob( d1, staging, &vdiags, nullptr, activeVariant );
 		if( !vdiags.empty() ) {
 			for( size_t i = 0; i < vdiags.size() && i < 8u; ++i )
-				GlobalLog()->PrintEx( eLog_Error, "Job::ApplyCstParamEdit:: `%s`.`%s` would not derive: %s", entityName, role, vdiags[i].c_str() );
+				GlobalLog()->PrintEx( eLog_Error, "Job::DeriveEditedCstDocument_:: `%s`.`%s` would not derive: %s", entityName, role, vdiags[i].c_str() );
 			return 0;   // live scene UNTOUCHED
 		}
 	}
-	// A material EDIT must not reset the user's runtime activations the way a variant SWITCH intentionally does:
+	// An EDIT must not reset the user's runtime activations the way a variant SWITCH intentionally does:
 	// a full DeriveToJob re-applies the document's active_camera + default rasterizer/animation, so capture the
 	// live ones across the ClearAll and restore them after (best-effort -- the edit only changed a slot, so the
 	// camera/rasterizer/animation still exist).
@@ -9580,7 +9590,7 @@ int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, cons
 	RISE::Cst::DeriveToJob( d1, *this, &fdiags, nullptr, activeVariant );
 	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // re-retain (intact even if the re-derive erred)
 	for( size_t i = 0; i < fdiags.size() && i < 8u; ++i )
-		GlobalLog()->PrintEx( eLog_Error, "Job::ApplyCstParamEdit:: full re-derive diagnostic: %s", fdiags[i].c_str() );
+		GlobalLog()->PrintEx( eLog_Error, "Job::DeriveEditedCstDocument_:: full re-derive diagnostic: %s", fdiags[i].c_str() );
 	// Restore the activations the full re-derive reset to document defaults (best-effort; before the framestore
 	// push so it targets the restored rasterizer).
 	if( !keepCamera.empty()     ) SetActiveCamera( keepCamera.c_str() );
@@ -9589,6 +9599,26 @@ int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, cons
 	PushJobFrameStoreToRasterizers();
 	// 2 = replaced + clean; 3 = replaced but the re-derive diagnosed (still rebind to avoid UAF, but it FAILED).
 	return fdiags.empty() ? 2 : 3;
+}
+
+// P5 Slice 3 expansion (object transform): commit an object's NET world transform to the retained CST as the
+// authoritative `matrix` param (16 col-major doubles).  Strips the now-dead position/orientation/quaternion/
+// scale params first (matrix masks them AND a coexisting component param trips the parser's `matrix overrides`
+// warning).  Uniform for panel + gizmo edits -> avoids the param/matrix mixing break.  Same 0/1/2/3 contract.
+int Job::ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 )
+{
+	if( !pCstDocument || !objectName || !matrix16 || !matrix16[0] ) return 0;
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, objectName, nullptr, "object", false );
+	if( id == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectMatrixEdit:: `%s` not found or ambiguous in the CST Document; edit rejected", objectName );
+		return 0;
+	}
+	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, id, "position" );
+	d1 = RISE::Cst::DocRemoveParam( d1, id, "orientation" );
+	d1 = RISE::Cst::DocRemoveParam( d1, id, "quaternion" );
+	d1 = RISE::Cst::DocRemoveParam( d1, id, "scale" );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "matrix", 0, matrix16 );
+	return DeriveEditedCstDocument_( std::move( d1 ), id, objectName, "matrix" );
 }
 
 // L6b — push the canonical FrameStore to every registered rasterizer.

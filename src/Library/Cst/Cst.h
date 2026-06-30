@@ -707,6 +707,12 @@ namespace RISE
 		//! WithParamValueOrInsert) -- it never glues onto a brace-sharing previous param.  O(log N) + chunk rebuild.
 		Document DocSetOrAddParamValue( const Document& doc, NodeId chunkId, const std::string& role, int occ, const std::string& newValue, bool* inserted = nullptr, int* visits = nullptr );
 
+		//! P5 Slice 3 expansion (object transform): remove EVERY occurrence of param `role` from a chunk
+		//! (idempotent -- no-op if absent).  Used to strip the dead component-transform params (position /
+		//! orientation / quaternion / scale) when an object transform is committed as the authoritative `matrix`
+		//! param.  Brace-safe (drops nodes only; token-separating Trivia keeps neighbours from gluing).
+		Document DocRemoveParam( const Document& doc, NodeId chunkId, const std::string& role, int* visits = nullptr );
+
 		//! RENAME a chunk (item 7, the D14 driver): set the chunk's `name` to
 		//! `newName` AND rewrite every referrer's value to `newName`, found from the
 		//! traced reference graph (TraceReferences -- NOT a re-resolution). The

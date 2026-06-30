@@ -2464,6 +2464,42 @@ static NodeRef WithParamValueOrInsert( const NodeRef& chunk, const std::string& 
 	return Internal( NodeKind::Chunk, std::move( kids ), chunk->role );
 }
 
+// P5 Slice 3 expansion (object transform): remove EVERY occurrence of param `role` from a chunk (and one
+// whitespace-only Trivia immediately following each, so no blank line is left).  Idempotent: returns the chunk
+// unchanged when the param is absent.  Used to strip the now-dead position/orientation/quaternion/scale params
+// when an object transform is committed as the authoritative `matrix` param (a coexisting component param would
+// be masked AND would emit the parser's `matrix overrides ...` warning).  Brace-safe: it only DROPS nodes, and
+// params are token-separated by Trivia, so the surviving neighbours never glue.
+static NodeRef WithParamRemoved( const NodeRef& chunk, const std::string& role )
+{
+	if( !chunk ) return chunk;
+	bool found = false;
+	for( const auto& k : chunk->kids ) if( k->kind == NodeKind::Param && k->role == role ) { found = true; break; }
+	if( !found ) return chunk;
+	std::vector<NodeRef> kids; kids.reserve( chunk->kids.size() );
+	bool justRemoved = false;
+	for( const auto& k : chunk->kids ) {
+		if( k->kind == NodeKind::Param && k->role == role ) { justRemoved = true; continue; }
+		if( justRemoved && k->kind == NodeKind::Trivia && k->text.find_first_not_of( " \t\r\n" ) == std::string::npos ) {
+			justRemoved = false; continue;
+		}
+		justRemoved = false;
+		kids.push_back( k );
+	}
+	return Internal( NodeKind::Chunk, std::move( kids ), chunk->role );
+}
+
+Document DocRemoveParam( const Document& doc, NodeId chunkId, const std::string& role, int* visits )
+{
+	if( visits ) *visits = 0;
+	NodeRef chunk;
+	const int index = DocIndexOfNodeId( doc, chunkId, &chunk, visits );
+	if( index < 0 || !chunk || chunk->kind != NodeKind::Chunk ) return doc;
+	NodeRef edited = WithParamRemoved( chunk, role );
+	if( edited.get() == chunk.get() ) return doc;
+	return DocReplaceItem( doc, index, edited, visits );
+}
+
 Document DocSetOrAddParamValue( const Document& doc, NodeId chunkId, const std::string& role, int occ, const std::string& newValue, bool* inserted, int* visits )
 {
 	if( visits ) *visits = 0;

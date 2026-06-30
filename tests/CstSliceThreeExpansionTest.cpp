@@ -86,6 +86,24 @@ static int ObjCasts( Job& j, const char* obj )
 	return o ? ( o->DoesCastShadows() ? 1 : 0 ) : -1;
 }
 
+// Snapshot an object's final world transform as 16 doubles (declaration order = the col-major encoding).
+static void ObjMat16( Job& j, const char* obj, double out[16] )
+{
+	for( int i = 0; i < 16; ++i ) out[i] = 0.0;
+	const IObject* o = Obj( j, obj );
+	if( !o ) return;
+	Matrix4 m = o->GetFinalTransformMatrix();
+	out[ 0] = m._00; out[ 1] = m._01; out[ 2] = m._02; out[ 3] = m._03;
+	out[ 4] = m._10; out[ 5] = m._11; out[ 6] = m._12; out[ 7] = m._13;
+	out[ 8] = m._20; out[ 9] = m._21; out[10] = m._22; out[11] = m._23;
+	out[12] = m._30; out[13] = m._31; out[14] = m._32; out[15] = m._33;
+}
+static bool Mat16Eq( const double a[16], const double b[16] )
+{
+	for( int i = 0; i < 16; ++i ) if( std::fabs( a[i] - b[i] ) > 1e-9 ) return false;
+	return true;
+}
+
 static const char* SCENE =
 	"RISE ASCII SCENE 6\n"
 	"scene_variant\n{\nname night\n}\n"                       // declares a variant -> material edits take D2
@@ -221,6 +239,50 @@ int main()
 		Check( ObjCasts( *j, "o" ) == 0, "OB4: object shadow-flags edit SURVIVED the material D2" );
 		j->release();
 		std::remove( tb );
+	}
+
+	// ---- OT: object TRANSFORM edits commit to the authoritative `matrix` param at the edit/undo boundary, take
+	//      effect, and SURVIVE a subsequent material-edit D2 (data-loss closure for transforms).  The authored
+	//      object carries an `orientation` so the commit exercises the strip of the now-dead component params. ----
+	{
+		const char* tx = "cst_s3_objxform.RISEscene";
+		{ std::ofstream o( tx );
+		  o << "RISE ASCII SCENE 6\n"
+		       "scene_variant\n{\nname night\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\norientation 30 0 0\nposition 0 0 0\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tx ), "OT: loads variant + oriented-object scene via CST" );
+		SceneEditController c( *j, 0 );
+		c.SetSelection( Cat::Object, String( "o" ) );
+
+		double authored[16]; ObjMat16( *j, "o", authored );
+		// OT1: a PANEL position edit takes effect (the transform changes) and PERSISTS across a material D2.
+		Check( c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "0 5 0" ) ), "OT1: object position edit applies" );
+		double moved[16]; ObjMat16( *j, "o", moved );
+		Check( !Mat16Eq( authored, moved ), "OT1: the position edit changed the object transform" );
+		c.SetSelection( Cat::Material, String( "m" ) );
+		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "OT1: material edit applies (D2)" );
+		double afterD2[16]; ObjMat16( *j, "o", afterD2 );
+		Check( Mat16Eq( moved, afterD2 ), "OT1: object transform SURVIVED the material D2 (data-loss closed, matrix committed)" );
+
+		// OT2: UNDO back through the two OT1 edits (material, then position).  Undoing the position edit restores
+		// the authored transform AND commits it to the CST (the undo-side commit), so a further material D2 keeps it
+		// there.  Red-provable: without the undo-side commit the CST still holds the dragged matrix and the D2
+		// re-applies the dragged pose.
+		c.Undo();   // undo the material edit (reflectance p2 -> p1)
+		c.Undo();   // undo the position edit -> RestoreTransformState(authored) + commit the authored matrix
+		double undone[16]; ObjMat16( *j, "o", undone );
+		Check( Mat16Eq( authored, undone ), "OT2: undo restored the authored object transform" );
+		c.SetSelection( Cat::Material, String( "m" ) );
+		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "OT2: a material edit applies (D2)" );
+		double afterUndoD2[16]; ObjMat16( *j, "o", afterUndoD2 );
+		Check( Mat16Eq( undone, afterUndoD2 ), "OT2: the UNDONE transform SURVIVED a material D2 (undo stayed Document-consistent)" );
+		j->release();
+		std::remove( tx );
 	}
 
 	std::remove( tmp );

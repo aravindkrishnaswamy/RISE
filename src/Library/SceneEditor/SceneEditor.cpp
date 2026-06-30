@@ -1009,17 +1009,52 @@ static inline const char* ObjectBindingRole( SceneEdit::Op op )
 	}
 }
 
+// P5 Slice 3 expansion (object transform): a TRANSFORM edit (panel absolute OR gizmo delta) is committed to the
+// standard_object `matrix` param (authoritative, lossless) at the composite/edit boundary -- NOT per-op (a gizmo
+// drag emits one per frame, which would be N full re-derives).  See CommitPendingCstObjectTransforms.
+static inline bool IsObjectTransformOp( SceneEdit::Op op )
+{
+	return op == SceneEdit::TranslateObject
+	    || op == SceneEdit::RotateObjectArb
+	    || op == SceneEdit::SetObjectPosition
+	    || op == SceneEdit::SetObjectOrientation
+	    || op == SceneEdit::SetObjectScale
+	    || op == SceneEdit::SetObjectStretch
+	    || op == SceneEdit::ScaleObjectFromAnchor;
+}
+
+// Serialise a Matrix4 as the 16 col-major doubles the standard_object `matrix` param expects.  RISE's Matrix4
+// stores fields `_<col><row>` contiguously in declaration order (_00,_01,..,_33), and the load-time parser maps
+// matrix[k] -> the k-th field in that same order (Job::AddObjectMatrix), so emitting the fields in declaration
+// order is a ROUND-TRIP-EXACT col-major encoding.  %.17g preserves every double bit-for-bit.
+static std::string FormatMatrix16( const Matrix4& m )
+{
+	const Scalar v[16] = {
+		m._00, m._01, m._02, m._03,
+		m._10, m._11, m._12, m._13,
+		m._20, m._21, m._22, m._23,
+		m._30, m._31, m._32, m._33 };
+	std::string out;
+	char buf[ 32 ];
+	for( int i = 0; i < 16; ++i ) {
+		std::snprintf( buf, sizeof( buf ), "%.17g", static_cast<double>( v[i] ) );
+		if( i ) out += ' ';
+		out += buf;
+	}
+	return out;
+}
+
 static inline bool IsCstRoutedOp( SceneEdit::Op op )
 {
 	// CST-routed = the entity is RE-DERIVED (not mutated in place) on a CST-loaded scene, so the remove+re-add
 	// serial guard must SKIP it (its serial legitimately changes each edit) and it applies/reverts/redoes BY
-	// NAME.  Per-op routes: material/light/camera + object bindings + object shadow flags.  (Object TRANSFORM
-	// ops join this set in Stage B once they commit to the `matrix` param.)
+	// NAME.  Material/light/camera + object bindings + object shadow flags route PER-OP; object TRANSFORM ops
+	// commit to the `matrix` param at the composite/edit boundary -- all of IsObjectOp is re-derived on a CST
+	// scene, so all of it skips the guard.
 	return op == SceneEdit::SetMaterialProperty
 	    || op == SceneEdit::SetLightProperty
 	    || op == SceneEdit::SetCameraProperty
-	    || IsObjectBindingOp( op )
-	    || op == SceneEdit::SetObjectShadowFlags;
+	    || SceneEdit::IsObjectOp( op );
 }
 
 unsigned long long SceneEditor::ResolveTargetSerial( const SceneEdit& e ) const
@@ -1098,6 +1133,51 @@ bool SceneEditor::RouteObjectShadowFlagsToCst_( const String& objectName, int fl
 	const char* recvs = ( flags & 2 ) ? "true" : "false";
 	bool ok = RouteCstParamEdit_( objectName.c_str(), "object", "casts_shadows", casts );
 	ok = RouteCstParamEdit_( objectName.c_str(), "object", "receives_shadows", recvs ) && ok;
+	return ok;
+}
+
+// P5 Slice 3 expansion (object transform): a transform op direct-mutates the live object now (cheap, so a gizmo
+// drag stays responsive) and NOTES the object for a deferred `matrix`-param commit at the composite/edit
+// boundary.  Only on a CST-loaded scene (else there is no Document to keep in sync).
+void SceneEditor::NoteCstObjectTransform_( const String& name )
+{
+	mPendingCstObjMatrix.insert( std::string( name.c_str() ) );
+}
+
+// Route ONE object's net transform as the standard_object `matrix` param (Job strips the dead component params
+// first).  Rebinds this editor on a D2 full re-derive (result >=2), mirroring RouteCstParamEdit_.
+bool SceneEditor::ApplyCstObjectMatrix_( const std::string& name, const std::string& matrix16 )
+{
+	const int r = mJob->ApplyCstObjectMatrixEdit( name.c_str(), matrix16.c_str() );
+	if( r >= 2 ) RebindToJob_();
+	return r == 1 || r == 2;
+}
+
+// P5 Slice 3 expansion (object transform): commit every pending object's NET world transform to the retained CST
+// as the authoritative `matrix` param.  Called by the CONTROLLER at a render-thread-PARKED boundary (a commit
+// re-derives, which on a variant scene ClearAll's the live scene -- it must NOT race a render worker).  The
+// per-frame gizmo edits only NOTE objects (NoteCstObjectTransform_); this single flush at drag-end / panel-edit /
+// undo / redo does the one re-derive.  Snapshot EVERY target matrix BEFORE routing any -- the first route's D2
+// rebuilds the scene from the Document, which would reset a not-yet-routed object's live transform to its (stale)
+// Document value.  Returns false if any route failed (the live edit still stands; the CST just couldn't record
+// it -- logged).
+bool SceneEditor::CommitPendingCstObjectTransforms()
+{
+	if( mPendingCstObjMatrix.empty() ) return true;
+	std::vector< std::pair<std::string,std::string> > work;
+	work.reserve( mPendingCstObjMatrix.size() );
+	for( std::unordered_set<std::string>::const_iterator it = mPendingCstObjMatrix.begin(); it != mPendingCstObjMatrix.end(); ++it ) {
+		IObjectPriv* obj = FindObject( String( it->c_str() ) );
+		if( obj ) work.push_back( std::make_pair( *it, FormatMatrix16( obj->GetFinalTransformMatrix() ) ) );
+	}
+	mPendingCstObjMatrix.clear();
+	bool ok = true;
+	for( size_t i = 0; i < work.size(); ++i ) {
+		if( !ApplyCstObjectMatrix_( work[i].first, work[i].second ) ) {
+			ok = false;
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: object transform commit to the CST failed for `%s` (live edit stands, but the Document is out of sync)", work[i].first.c_str() );
+		}
+	}
 	return ok;
 }
 
@@ -1579,6 +1659,10 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 			if( edit.op == SceneEdit::ScaleObjectFromAnchor ) {
 				mScaleFromAnchorSet.insert( std::string( edit.objectName.c_str() ) );
 			}
+			// P5 Slice 3 expansion (object transform): the inverse transform changed the live object too -> note it
+			// for the same deferred `matrix`-param commit, so undo stays Document-consistent.
+			if( mJob && mJob->HasRetainedCstDocument() && IsObjectTransformOp( edit.op ) )
+				NoteCstObjectTransform_( edit.objectName );
 			break;
 		}
 		mLastScope = Dirty_ObjectTransform;
@@ -1780,6 +1864,10 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 				mScaleFromAnchorSet.insert( std::string( edit.objectName.c_str() ) );
 			}
 		}
+		// P5 Slice 3 expansion (object transform): on a CST scene, NOTE this object for a deferred `matrix`-param
+		// commit (the controller flushes it at a parked boundary -- per-op routing would be N re-derives per drag).
+		if( fwdOk && mJob && mJob->HasRetainedCstDocument() && IsObjectTransformOp( edit.op ) )
+			NoteCstObjectTransform_( edit.objectName );
 		mLastScope = Dirty_ObjectTransform;
 		return fwdOk;   // P1: forward-bind failure (vanished redo target) is a partial redo
 	}
