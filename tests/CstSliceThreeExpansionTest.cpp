@@ -469,6 +469,37 @@ int main()
 		std::remove( tg );
 	}
 
+	// ---- SV: Slice 4 -- a CST-routed edit is SERIALIZED by the SaveEngine and survives a save->reload round-trip.
+	//      The legacy byte-splice path would write the ORIGINAL bytes back (CST-load populates no source spans) and
+	//      lose the edit; the CST branch in SaveEngine::Save serializes the retained Document instead. ----
+	{
+		const char* ts = "cst_s4_save.RISEscene";
+		{ std::ofstream o( ts ); o << SCENE; }   // light `l` power 4 (+ a declared variant -> edits take D2)
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( ts ), "SV: loads via CST" );
+		SceneEditController c( *j, 0 );
+		c.SetSelection( Cat::Light, String( "l" ) );
+		Check( c.SetPropertyForCategory( Cat::Light, String( "power" ), String( "8" ) ), "SV: light power edit applies" );
+		const SaveResult res = c.RequestSave( std::string( ts ) );
+		Check( res.status == SaveResult::Status::Saved, "SV1: SaveEngine reported Saved" );
+		j->release();
+		// Reload the saved file into a FRESH Job: the edit must be present (proving the SaveEngine serialized the
+		// CST Document, not the legacy byte-splice).  Red-provable: disable the CST branch in SaveEngine::Save and
+		// the legacy path writes the original power-4 bytes -> this reload reads 4.
+		Job* j2 = new Job();
+		Check( j2->LoadAsciiSceneViaCst( ts ), "SV: reloads the saved file via CST" );
+		Check( std::fabs( LightProp( *j2, "l", "power" ) - 8.0 ) < 1e-6, "SV1: the edit PERSISTED through save->reload (CST serialized, not byte-spliced)" );
+		j2->release();
+		// A second save with NO further edits is a NoOp (serialized bytes already on disk).
+		Job* j3 = new Job();
+		Check( j3->LoadAsciiSceneViaCst( ts ), "SV: reloads for the NoOp check" );
+		SceneEditController c3( *j3, 0 );
+		const SaveResult res3 = c3.RequestSave( std::string( ts ) );
+		Check( res3.status == SaveResult::Status::NoOp, "SV2: re-saving an unedited CST scene is a NoOp (byte-identical)" );
+		j3->release();
+		std::remove( ts );
+	}
+
 	std::remove( tmp );
 	std::cout << passCount << " passed, " << failCount << " failed." << std::endl;
 	return failCount == 0 ? 0 : 1;

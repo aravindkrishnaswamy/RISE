@@ -40,6 +40,7 @@
 
 namespace RISE
 {
+	namespace Cst { struct Document; }   // P5 Slice 4 (save-as-CST): the retained canonical CST; fwd-decl keeps Cst.h out of IJob.h
 	// Forward declaration to avoid pulling in the full
 	// ITriangleMeshGeometry.h dependency chain.  Used by
 	// AddPrebuiltTriangleMeshGeometry, declared near the bottom.
@@ -2735,6 +2736,10 @@ namespace RISE
 		//! "Variants" accordion on this -- the variant SWITCH needs the Document to re-derive, so a legacy-loaded
 		//! scene (no Document) must not offer pickable variants that would silently no-op.  Default FALSE.
 		virtual bool HasRetainedCstDocument() const { return false; }
+
+		//! P5 Slice 4 (save-as-CST): the retained canonical CST Document (null unless loaded via
+		//! LoadAsciiSceneViaCst).  The SaveEngine serializes it directly when present.  Default null; see Job.
+		virtual const RISE::Cst::Document* GetCstDocument() const { return nullptr; }
 
 		//! Runs an ascii script
 		/// \return TRUE if successful, FALSE otherwise
