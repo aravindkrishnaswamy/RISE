@@ -692,6 +692,22 @@ to NM." NM is the *validated reference* while the fix is built; correct HWSS
 (matching NM+analytic within MC noise) is the goal. (Consistent with the HWSS
 spectral-bundle-bias notes in CLAUDE.md.)
 
+> **DONE (Increment 1, 2026-06-30) — non-HWSS double-attenuation FIXED + regression
+> test.** Empirically confirmed the bug: a pure-absorber slab read **τ ≈ 2× authored**
+> (measured exp(−2σ_a·d)) because the analog no-scatter branches multiplied Beer
+> transmittance again on top of the survival probability. Fix: the four non-HWSS
+> no-scatter sites now apply `Tr / PTTrReduced(Tr)` via a `PTSurvivalWeight<Tag>` helper
+> (the same chromatic ratio the scatter branch uses; = 1 for NM/monochrome, preserves
+> per-channel colour for RGB — verified the colored case stays colored, *not*
+> desaturated). New `tests/VolumeAbsorptionAttenuationTest.cpp` (gray RGB / colored RGB
+> / NM) asserts exp(−σ_a·d); fails on the old tree, passes now; full suite 142/142,
+> clean build. The **HWSS twin** (the `SampledWavelengths::N` escapeTr block) carries
+> the same double-count and is **deliberately deferred to G1** (fixed *with* the hero-
+> wavelength spectral reweighting; the hero renders non-HWSS NM, so HWSS is not on the
+> render path). The deterministic post-scatter env evals (`TrEsc`) are **not** part of
+> this bug — they are one-shot directional evaluations where the full transmittance is
+> correct (verified, left untouched).
+
 ### 10.4 Units & scene-scale for σ — RESOLVED: inverse scene units (P2)
 **Settled by the code:** `HomogeneousMedium::EvalTransmittance` evaluates
 `exp(−σ_t · dist)` on the **raw** ray distance ([HomogeneousMedium.cpp:200](src/Library/Materials/HomogeneousMedium.cpp:200)),

@@ -946,6 +946,30 @@ namespace
 	inline RISEPel PTDivByScalar( const RISEPel& v, const Scalar d ) { return v * ( Scalar( 1 ) / d ); }
 	inline Scalar  PTDivByScalar( const Scalar  v, const Scalar d ) { return v / d; }
 
+	// Analog no-scatter survival weight.  HomogeneousMedium::SampleDistance
+	// is an ANALOG estimator: reaching the surface (or escaping) is a
+	// stochastic survival event whose probability already carries the
+	// Beer-Lambert factor exp(-sigma_t_max * d).  Multiplying throughput by
+	// Tr again would double-count attenuation (a pure absorber would render
+	// exp(-2*sigma_a*d)).  The correct weight is the per-channel chromatic
+	// ratio Tr / PTTrReduced(Tr): the survival pdf (= the max-sigma_t channel
+	// of Tr, i.e. exp(-sigma_t_max*d)) cancels, leaving 1 on that channel and
+	// >= 1 on the others to preserve a coloured medium's tint.  For
+	// monochrome/NM this reduces to 1.  Mirrors the scatter branch's
+	// chromatic ratio minus the sigma_s/sigma_t scatter factor.  Returns the
+	// value-type multiplicative identity when the survival pdf is non-positive
+	// (guarded exactly like the scatter branch).
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTSurvivalWeight(
+		const typename SpectralValueTraits<Tag>::value_type& Tr )
+	{
+		const Scalar pdf = PTTrReduced( Tr );
+		if( pdf > 0 ) {
+			return PTDivByScalar( Tr, pdf );
+		}
+		return PTValueOne<Tag>();
+	}
+
 	// Medium scattering coefficients reduced to what the throughput math
 	// needs: the value_type scattering coefficient sigma_s, plus a scalar
 	// extinction used for the gate + denominator (Pel -> max channel of
@@ -1664,20 +1688,27 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				}
 				else if( !scattered && bHit )
 				{
-					// Surface hit through medium: apply transmittance
+					// Surface hit through medium (analog no-scatter survival).
+					// SampleDistance already drew "reach the surface" with
+					// probability exp(-sigma_t_max*range); that survival event
+					// carries Beer-Lambert.  Apply only the per-channel
+					// chromatic ratio Tr/PTTrReduced(Tr) (= 1 for monochrome/NM)
+					// so we don't double-count attenuation.
 					const Value Tr = PTEvalTransmittance<Tag>(
 						pCurrentMedium, currentRay, ri.geometric.range, tag );
-					throughput = throughput * Tr;
+					throughput = throughput * PTSurvivalWeight<Tag>( Tr );
 				}
 				else if( !scattered && !bHit )
 				{
-					// Ray escapes the scene through the medium: apply the
-					// residual transmittance along the escape segment before
-					// the env radiance below multiplies into throughput
-					// (PBRT-v4 beta *= T_maj before the `if (!si)` branch).
+					// Ray escapes the scene through the medium (analog
+					// no-scatter survival).  The escape survival event already
+					// carries the Beer-Lambert factor via its probability, so
+					// apply only the per-channel chromatic ratio
+					// Tr/PTTrReduced(Tr) (= 1 for monochrome/NM) before the env
+					// radiance below multiplies into throughput — not Tr again.
 					const Value Tr = PTEvalTransmittance<Tag>(
 						pCurrentMedium, currentRay, maxDist, tag );
-					throughput = throughput * Tr;
+					throughput = throughput * PTSurvivalWeight<Tag>( Tr );
 				}
 			}
 
@@ -3255,10 +3286,13 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		}
 		else if( ri.geometric.bHit )
 		{
-			// Surface hit through medium: transmittance is applied
-			// inside IntegrateFromHit on subsequent bounces.  For the
-			// first bounce we need to note it here — but IntegrateFromHit
-			// starts with throughput=1.  We scale the result instead.
+			// Surface hit through medium (analog no-scatter survival).
+			// SampleDistance already drew "reach the surface" with probability
+			// exp(-sigma_t_max*range); that survival event carries
+			// Beer-Lambert.  IntegrateFromHit starts with throughput=1, so we
+			// scale its result by only the per-channel chromatic ratio
+			// Tr/PTTrReduced(Tr) (= 1 for monochrome/NM) rather than Tr, which
+			// would double-count attenuation.
 			const Value Tr = PTEvalTransmittance<Tag>(
 				pCurrentMedium, cameraRay, ri.geometric.range, tag );
 
@@ -3273,15 +3307,18 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				0, 0, 0, 0, 0, 0,
 				pAOV, tag );
 
-			return Tr * hitResult;
+			return PTSurvivalWeight<Tag>( Tr ) * hitResult;
 		}
 		else
 		{
 			// !scattered && !ri.geometric.bHit: the camera ray escapes the
-			// scene through the medium.  Capture the residual transmittance
-			// along the escape segment so the env radiance below is
-			// correctly attenuated (PBRT-v4 beta *= T_maj).
-			escapeTr = PTEvalTransmittance<Tag>( pCurrentMedium, cameraRay, maxDist, tag );
+			// scene through the medium (analog no-scatter survival).  The
+			// escape survival event already carries the Beer-Lambert factor via
+			// its probability, so store only the per-channel chromatic ratio
+			// Tr/PTTrReduced(Tr) (= 1 for monochrome/NM) for the env radiance
+			// below — multiplying the full Tr would double-count attenuation.
+			const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, cameraRay, maxDist, tag );
+			escapeTr = PTSurvivalWeight<Tag>( Tr );
 		}
 	}
 
@@ -4373,6 +4410,12 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 			// Ray escapes the scene through the medium: capture the
 			// per-wavelength residual transmittance along the escape
 			// segment for the env contribution below (PBRT-v4 beta *= T_maj).
+			// NOTE: this HWSS escapeTr carries the same analog-survival
+			// double-count fixed in the non-HWSS path above (it multiplies the
+			// full per-wavelength Tr rather than the survival-corrected ratio).
+			// Deliberately left as-is; fixed together with the spectral
+			// free-flight reweighting (see docs/VITREOUS_ENAMEL.md Â§10.3).  The
+			// hero renders non-HWSS NM, so HWSS is not yet on the render path.
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 				escapeTr[w] = swl.terminated[w] ? Scalar(0) :
 					pCurrentMedium->EvalTransmittanceNM(
