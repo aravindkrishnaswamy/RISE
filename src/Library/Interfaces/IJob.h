@@ -3287,6 +3287,10 @@ namespace RISE
 		//! P5 Slice 3 expansion (csg transform): commit a csg_object's translate+rotate as position+orientation
 		//! params.  Default no-op; see Job override.
 		virtual int ApplyCstObjectComponentsEdit( const char* objectName, const char* position, const char* orientation ) { return 0; }
+
+		//! P5 Slice 4: re-baseline the CST-load file identity after a successful save (re-anchor on Save-As).
+		//! Default no-op (legacy jobs use the SaveEngine's own refresh); see Job override.
+		virtual void RefreshCstLoadFileIdentity( const char* path ) {}
 	};
 
 

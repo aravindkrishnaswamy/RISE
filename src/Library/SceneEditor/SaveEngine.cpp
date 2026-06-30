@@ -865,6 +865,7 @@ SaveResult SaveEngine::Save( const std::string& filePath )
             result.status = SaveResult::Status::NoOp;
             mDirty.Clear();
             mScaleFromAnchorSet.clear();
+            mJob.RefreshCstLoadFileIdentity( filePath.c_str() );   // re-baseline (re-anchor a Save-As to the new path)
             return result;
         }
         std::string werr;
@@ -876,6 +877,10 @@ SaveResult SaveEngine::Save( const std::string& filePath )
         result.status = SaveResult::Status::Saved;
         mDirty.Clear();
         mScaleFromAnchorSet.clear();
+        // Re-baseline the file identity to the just-written file so the NEXT save isn't falsely refused (the
+        // write changed mtime/size) and a Save-As re-anchors the guard to the new target path.  Updates the
+        // ClearAll-surviving member too, so the baseline survives the next D2 re-derive.
+        mJob.RefreshCstLoadFileIdentity( filePath.c_str() );
         return result;
     }
 

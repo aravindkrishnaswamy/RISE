@@ -9410,6 +9410,33 @@ bool Job::LoadAsciiScene(
 
 // P5 (Model-B, Slice 1): load a scene by building the canonical CST and deriving the Scene from it,
 // RETAINING the Document for edit/save.  Additive + flagged -- the legacy LoadAsciiScene stays the default.
+// P5 Slice 4 (reviewer P1 + follow-up): capture/refresh the CST-loaded file's identity (path + mtime + size).
+// Stored in BOTH the span index (the save guard reads it) AND a Job member (mCstLoadFileIdentity) that SURVIVES
+// a D2 ClearAll -- InitializeContainers re-applies the member onto the recreated span index.  Called at CST-load
+// AND after a successful CST save (so the just-written file becomes the new baseline -- a second in-place save
+// isn't falsely refused, and a Save-As re-anchors the identity to the new target path).  Best-effort: a stat
+// failure leaves the prior identity (the next save fail-opens via ReadFile).
+void Job::RefreshCstLoadFileIdentity( const char* path )
+{
+	if( !path ) return;
+	struct stat fileStats = {};
+	if( ::stat( path, &fileStats ) != 0 ) return;
+	RISE::FileIdentity ident;
+	ident.filePath  = path;
+	ident.mtimeSec  = static_cast<long long>( fileStats.st_mtime );
+#if defined(__APPLE__)
+	ident.mtimeNsec = static_cast<long long>( fileStats.st_mtimespec.tv_nsec );
+#elif defined(__linux__) || defined(__unix__)
+	ident.mtimeNsec = static_cast<long long>( fileStats.st_mtim.tv_nsec );
+#else
+	ident.mtimeNsec = 0;
+#endif
+	ident.sizeBytes = static_cast<long long>( fileStats.st_size );
+	ident.captured  = true;
+	mCstLoadFileIdentity = ident;                                   // survives ClearAll (re-applied by InitializeContainers)
+	if( pSourceSpanIndex ) pSourceSpanIndex->SetFileIdentity( ident );   // the save guard reads this
+}
+
 bool Job::LoadAsciiSceneViaCst( const char* filename )
 {
 	if( !filename ) {
@@ -9462,31 +9489,10 @@ bool Job::LoadAsciiSceneViaCst( const char* filename )
 	pCstDocument = std::move( doc );    // RETAIN the canonical CST for edit/save (Slices 3-4)
 
 	// Reviewer P1 (Slice 4 follow-up): capture the loaded file's identity (path + mtime + size) so the CST save
-	// path can REFUSE an in-place save that would clobber EXTERNAL edits made to the file after load.  The legacy
-	// loader captures this for its mtime/size guard; CST-load must too (it populates no byte spans, only the
-	// identity).  Mirrors AsciiSceneParser's top-level capture.
-	if( pSourceSpanIndex ) {
-		struct stat fileStats = {};
-		if( ::stat( filename, &fileStats ) == 0 ) {
-			RISE::FileIdentity ident;
-			ident.filePath  = filename;
-			ident.mtimeSec  = static_cast<long long>( fileStats.st_mtime );
-#if defined(__APPLE__)
-			ident.mtimeNsec = static_cast<long long>( fileStats.st_mtimespec.tv_nsec );
-#elif defined(__linux__) || defined(__unix__)
-			ident.mtimeNsec = static_cast<long long>( fileStats.st_mtim.tv_nsec );
-#else
-			ident.mtimeNsec = 0;
-#endif
-			ident.sizeBytes = static_cast<long long>( fileStats.st_size );
-			ident.captured  = true;
-			pSourceSpanIndex->SetFileIdentity( ident );
-			// PRESERVE across a later D2 re-derive: ApplyCstParamEdit's D2 calls ClearAll -> InitializeContainers,
-			// which RECREATES pSourceSpanIndex (losing this identity).  Stash it in a Job member that survives
-			// ClearAll; InitializeContainers re-applies it onto the fresh span index so the save guard still sees it.
-			mCstLoadFileIdentity = ident;
-		}
-	}
+	// path can REFUSE an in-place save that would clobber EXTERNAL edits made to the file after load.  The save
+	// REFRESHES this after a successful write (RefreshCstLoadFileIdentity again), so a second save isn't falsely
+	// refused and a Save-As re-anchors to the new path.
+	RefreshCstLoadFileIdentity( filename );
 
 	PushJobFrameStoreToRasterizers();   // L6b parity with LoadAsciiScene
 	return true;

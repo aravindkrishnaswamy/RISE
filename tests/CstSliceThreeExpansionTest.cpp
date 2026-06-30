@@ -519,6 +519,50 @@ int main()
 			je->release();
 			std::remove( te );
 		}
+
+		// SV4: a SECOND in-place save in the same session is NOT falsely refused -- the first save RE-BASELINES the
+		// file identity to what it wrote (and that survives the second edit's D2).  Red-provable: drop the post-save
+		// RefreshCstLoadFileIdentity and the second save compares the just-written file against the stale load
+		// identity -> Refused.
+		{
+			const char* tr = "cst_s4_resave.RISEscene";
+			{ std::ofstream o( tr ); o << SCENE; }
+			Job* jr = new Job();
+			Check( jr->LoadAsciiSceneViaCst( tr ), "SV4: loads via CST" );
+			SceneEditController cr( *jr, 0 );
+			cr.SetSelection( Cat::Light, String( "l" ) );
+			Check( cr.SetPropertyForCategory( Cat::Light, String( "power" ), String( "8" ) ), "SV4: first edit applies" );
+			Check( cr.RequestSave( std::string( tr ) ).status == SaveResult::Status::Saved, "SV4: first in-place save Saved" );
+			Check( cr.SetPropertyForCategory( Cat::Light, String( "power" ), String( "12" ) ), "SV4: second edit applies" );
+			Check( cr.RequestSave( std::string( tr ) ).status == SaveResult::Status::Saved, "SV4: second in-place save is NOT falsely refused (identity re-baselined, survives D2)" );
+			jr->release();
+			Job* jr2 = new Job();
+			Check( jr2->LoadAsciiSceneViaCst( tr ), "SV4: reloads" );
+			Check( std::fabs( LightProp( *jr2, "l", "power" ) - 12.0 ) < 1e-6, "SV4: the second edit persisted" );
+			jr2->release();
+			std::remove( tr );
+		}
+
+		// SV5: after a Save-As, the identity RE-ANCHORS to the new target -- a re-save to it isn't refused, and an
+		// external edit to the NEW file is now guarded.
+		{
+			const char* ta = "cst_s4_srcA.RISEscene"; const char* tb = "cst_s4_dstB.RISEscene";
+			{ std::ofstream o( ta ); o << SCENE; }
+			std::remove( tb );
+			Job* ja = new Job();
+			Check( ja->LoadAsciiSceneViaCst( ta ), "SV5: loads source A via CST" );
+			SceneEditController ca( *ja, 0 );
+			ca.SetSelection( Cat::Light, String( "l" ) );
+			Check( ca.SetPropertyForCategory( Cat::Light, String( "power" ), String( "8" ) ), "SV5: edit applies" );
+			Check( ca.RequestSave( std::string( tb ) ).status == SaveResult::Status::Saved, "SV5: Save-As to a new path B Saved" );
+			Check( ca.SetPropertyForCategory( Cat::Light, String( "power" ), String( "12" ) ), "SV5: edit applies again" );
+			Check( ca.RequestSave( std::string( tb ) ).status == SaveResult::Status::Saved, "SV5: re-save to B is not refused (identity re-anchored to B)" );
+			{ std::ofstream o( tb, std::ios::app ); o << "\n/* externally appended to B */\n"; }
+			Check( ca.SetPropertyForCategory( Cat::Light, String( "power" ), String( "16" ) ), "SV5: edit applies once more" );
+			Check( ca.RequestSave( std::string( tb ) ).status == SaveResult::Status::Refused, "SV5: an external edit to the Save-As target B is now guarded (Refused)" );
+			ja->release();
+			std::remove( ta ); std::remove( tb );
+		}
 		std::remove( ts );
 	}
 

@@ -2794,6 +2794,10 @@ namespace RISE
 		//! orientation (Euler degrees) params.  Same 0/1/2/3 contract.
 		int ApplyCstObjectComponentsEdit( const char* objectName, const char* position, const char* orientation );
 
+		//! P5 Slice 4: (re)capture the CST-loaded file's identity (path/mtime/size) into the span index + a
+		//! ClearAll-surviving member.  Called at load and after a successful CST save (re-baseline / Save-As re-anchor).
+		void RefreshCstLoadFileIdentity( const char* path );
+
 		//! P5 Slice 3 expansion (camera drag): commit a camera's NET pose (rest location/lookat/up/orientation/
 		//! target_orientation) to the retained CST as the authored chunk params.  Same 0/1/2/3 contract.
 		int ApplyCstCameraPoseEdit( const char* camName, const char* location, const char* lookat, const char* up,
