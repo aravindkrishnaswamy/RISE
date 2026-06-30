@@ -986,11 +986,40 @@ ICamera* SceneEditor::ResolveEditedCamera( const SceneEdit& e )
 // serial-guard in Apply{Forward,Revert}Mutation is SKIPPED for exactly these (it would falsely trip -- they
 // apply/revert/redo BY NAME, never the stale pointer).  As the edit set expands (object/light/camera), add
 // each newly-CST-routed op HERE -- one place, both guard sites read it.
+// P5 Slice 3 expansion (object): an object BINDING op re-points a standard_object reference slot -- it maps
+// 1:1 to a standard_object param, so it routes per-op (like material/light).  TRANSFORM ops are committed to
+// the authoritative `matrix` param at the composite/edit boundary instead (see CommitPendingCstObjectTransforms).
+static inline bool IsObjectBindingOp( SceneEdit::Op op )
+{
+	return op == SceneEdit::SetObjectMaterial
+	    || op == SceneEdit::SetObjectShader
+	    || op == SceneEdit::SetObjectGeometry
+	    || op == SceneEdit::SetObjectInteriorMedium;
+}
+
+// The standard_object param role each binding op writes.
+static inline const char* ObjectBindingRole( SceneEdit::Op op )
+{
+	switch( op ) {
+	case SceneEdit::SetObjectMaterial:       return "material";
+	case SceneEdit::SetObjectShader:         return "shader";
+	case SceneEdit::SetObjectGeometry:       return "geometry";
+	case SceneEdit::SetObjectInteriorMedium: return "interior_medium";
+	default:                                 return "";
+	}
+}
+
 static inline bool IsCstRoutedOp( SceneEdit::Op op )
 {
+	// CST-routed = the entity is RE-DERIVED (not mutated in place) on a CST-loaded scene, so the remove+re-add
+	// serial guard must SKIP it (its serial legitimately changes each edit) and it applies/reverts/redoes BY
+	// NAME.  Per-op routes: material/light/camera + object bindings + object shadow flags.  (Object TRANSFORM
+	// ops join this set in Stage B once they commit to the `matrix` param.)
 	return op == SceneEdit::SetMaterialProperty
 	    || op == SceneEdit::SetLightProperty
-	    || op == SceneEdit::SetCameraProperty;
+	    || op == SceneEdit::SetCameraProperty
+	    || IsObjectBindingOp( op )
+	    || op == SceneEdit::SetObjectShadowFlags;
 }
 
 unsigned long long SceneEditor::ResolveTargetSerial( const SceneEdit& e ) const
@@ -1057,6 +1086,19 @@ bool SceneEditor::RouteCstParamEdit_( const char* entityName, const char* entity
 	const int r = mJob->ApplyCstParamEdit( entityName, entityKind, role, 0, value );
 	if( r >= 2 ) RebindToJob_();
 	return r == 1 || r == 2;
+}
+
+// P5 Slice 3 expansion (object): a shadow-flags edit maps to TWO standard_object bool params, so route both
+// (casts_shadows then receives_shadows).  `flags` bit0 = casts, bit1 = receives (the SetObjectShadowFlags
+// encoding).  Each route re-derives; RouteCstParamEdit_ rebinds on a D2, and the retained Document survives the
+// ClearAll, so the second route sees the first param already applied.  Returns false if EITHER route fails.
+bool SceneEditor::RouteObjectShadowFlagsToCst_( const String& objectName, int flags )
+{
+	const char* casts = ( flags & 1 ) ? "true" : "false";
+	const char* recvs = ( flags & 2 ) ? "true" : "false";
+	bool ok = RouteCstParamEdit_( objectName.c_str(), "object", "casts_shadows", casts );
+	ok = RouteCstParamEdit_( objectName.c_str(), "object", "receives_shadows", recvs ) && ok;
+	return ok;
 }
 
 bool SceneEditor::ApplyMaterialSlotByName( const SceneEdit& e, const String& painterName )
@@ -1434,6 +1476,35 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		IObjectPriv* obj = FindObject( edit.objectName );
 		if( !obj ) return false;
 
+		// P5 Slice 3 expansion (object): CST-route the INVERSE per-op object edit too (replays the PREV value
+		// through the same CST path), so undo stays Document-consistent.  A cleared prior binding routes "none"
+		// (the standard_object unbind sentinel the load-time parser honours: material/shader/interior "none" == 0).
+		if( mJob && mJob->HasRetainedCstDocument() ) {
+			if( IsObjectBindingOp( edit.op ) ) {
+				String val;
+				switch( edit.op ) {
+				case SceneEdit::SetObjectMaterial:
+				case SceneEdit::SetObjectShader:
+					val = edit.prevBindingWasNull ? String( "none" ) : edit.prevPropertyValue;
+					break;
+				case SceneEdit::SetObjectInteriorMedium:
+					val = ( edit.prevPropertyValue.size() <= 1 ) ? String( "none" ) : edit.prevPropertyValue;
+					break;
+				default:   // SetObjectGeometry -- prev is always a real registered name (CaptureForApply rejected otherwise)
+					val = edit.prevPropertyValue;
+					break;
+				}
+				if( !RouteCstParamEdit_( edit.objectName.c_str(), "object", ObjectBindingRole( edit.op ), val.c_str() ) ) return false;
+				mLastScope = Dirty_ObjectTransform;
+				return true;
+			}
+			if( edit.op == SceneEdit::SetObjectShadowFlags ) {
+				if( !RouteObjectShadowFlagsToCst_( edit.objectName, static_cast<int>( edit.prevShadowFlags ) ) ) return false;
+				mLastScope = Dirty_ObjectTransform;
+				return true;
+			}
+		}
+
 		// P1: a binding revert FAILS if the captured prior dependency (material /
 		// shader / geometry / medium) was removed AFTER the edit -- GetItem returns
 		// null.  Track that as `restored = false` so the caller treats the undo as
@@ -1673,6 +1744,28 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 	{
 		IObjectPriv* obj = FindObject( edit.objectName );
 		if( !obj ) return false;
+		// P5 Slice 3 expansion (object): on a CST-loaded scene, route the PER-OP object edits (reference BINDINGS +
+		// shadow flags) through the canonical CST so the Document stays complete (a later D2 re-derive can't lose
+		// them).  The re-derive rebuilds the object from the edited chunk (bbox / TLAS / light-gen included), so we
+		// route + return instead of the direct mutate.  TRANSFORM ops fall through to the direct mutate here and are
+		// committed to the authoritative `matrix` param at the composite/edit boundary (Stage B).
+		if( mJob && mJob->HasRetainedCstDocument() ) {
+			if( IsObjectBindingOp( edit.op ) ) {
+				String val = edit.propertyValue;
+				if( edit.op == SceneEdit::SetObjectInteriorMedium
+				 && ( val.size() <= 1 || val == String( "none" ) ) ) val = String( "none" );
+				if( !RouteCstParamEdit_( edit.objectName.c_str(), "object", ObjectBindingRole( edit.op ), val.c_str() ) ) return false;
+				mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );
+				mLastScope = Dirty_ObjectTransform;
+				return true;
+			}
+			if( edit.op == SceneEdit::SetObjectShadowFlags ) {
+				if( !RouteObjectShadowFlagsToCst_( edit.objectName, static_cast<int>( edit.s ) ) ) return false;
+				mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );
+				mLastScope = Dirty_ObjectTransform;
+				return true;
+			}
+		}
 		const bool fwdOk = ApplyObjectOpForward( *obj, edit );   // P1: false if a redo target vanished
 		// Property-style ops don't move geometry — symmetric with
 		// Apply()'s spatial-rebuild gate.  Pre-Phase-1 this path ran

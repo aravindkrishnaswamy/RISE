@@ -30,6 +30,10 @@
 #include "../src/Library/SceneEditor/LightIntrospection.h"
 #include "../src/Library/Interfaces/ILightManager.h"
 #include "../src/Library/Interfaces/ICamera.h"
+#include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Interfaces/IObject.h"
+#include "../src/Library/Interfaces/IMaterialManager.h"
+#include "../src/Library/Interfaces/IGeometry.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -57,6 +61,29 @@ static double CamZ( Job& j )
 	const IScene* sc = j.GetScene();
 	const ICamera* cam = sc ? sc->GetCamera() : 0;
 	return cam ? cam->GetLocation().z : -999.0;
+}
+
+// Object accessors off the LIVE scene -- compare bound dependency identity to the manager item.
+static const IObject* Obj( Job& j, const char* n )
+{
+	const IScene* sc = j.GetScene();
+	const IObjectManager* om = sc ? sc->GetObjects() : 0;
+	return om ? om->GetItem( n ) : 0;
+}
+static bool ObjMatIs( Job& j, const char* obj, const char* mat )
+{
+	const IObject* o = Obj( j, obj );
+	return o && j.GetMaterials() && o->GetMaterial() == j.GetMaterials()->GetItem( mat );
+}
+static bool ObjGeomIs( Job& j, const char* obj, const char* geom )
+{
+	const IObject* o = Obj( j, obj );
+	return o && o->GetGeometry() == j.GetGeometry( geom );
+}
+static int ObjCasts( Job& j, const char* obj )
+{
+	const IObject* o = Obj( j, obj );
+	return o ? ( o->DoesCastShadows() ? 1 : 0 ) : -1;
 }
 
 static const char* SCENE =
@@ -142,6 +169,58 @@ int main()
 		       "C1: the UNNAMED-camera edit SURVIVED the material D2 (resolve-by-position fallback + data-loss closed)" );
 		j->release();
 		std::remove( tc );
+	}
+
+	// ---- OB: object BINDING edits (material / geometry / shadow flags) are CST-routed -> take effect,
+	//      PERSIST to the Document, and SURVIVE a subsequent material-edit D2 (data-loss closure) ----
+	{
+		const char* tb = "cst_s3_objbind.RISEscene";
+		{ std::ofstream o( tb );
+		  o << "RISE ASCII SCENE 6\n"
+		       "scene_variant\n{\nname night\n}\n"
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "lambertian_material\n{\nname m2\nreflectance p2\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "sphere_geometry\n{\nname g2\nradius 2\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tb ), "OB: loads variant + 2-material/2-geom scene via CST" );
+		Check( ObjMatIs( *j, "o", "m" ), "OB: object o bound to material m initially" );
+		SceneEditController c( *j, 0 );
+		c.SetSelection( Cat::Object, String( "o" ) );
+
+		// Apply all three binding kinds (live-effect checks), then prove they reached the CST Document by
+		// surviving a MATERIAL-edit D2 (a full re-derive from the retained Document) below.  NOTE: we do NOT call
+		// j->RederiveCstWithVariant directly here -- that ClearAll's the scene WITHOUT rebinding the controller's
+		// editor (only the controller's variant-switch path rebinds it), so reusing `c` afterward would deref freed
+		// managers.  The material D2 below routes THROUGH the controller (RouteCstParamEdit_ self-rebinds), so it's
+		// the correct in-band way to force a from-Document rebuild and check persistence + the data-loss closure.
+
+		// OB1: material rebind m -> m2.
+		Check( c.SetPropertyForCategory( Cat::Object, String( "material" ), String( "m2" ) ), "OB1: object material rebind applies" );
+		Check( ObjMatIs( *j, "o", "m2" ), "OB1: object o now bound to m2" );
+
+		// OB2: geometry rebind g -> g2.
+		Check( c.SetPropertyForCategory( Cat::Object, String( "geometry" ), String( "g2" ) ), "OB2: object geometry rebind applies" );
+		Check( ObjGeomIs( *j, "o", "g2" ), "OB2: object o now uses geometry g2" );
+
+		// OB3: shadow-flags edit (casts_shadows true -> false).
+		Check( ObjCasts( *j, "o" ) == 1, "OB3: object casts shadows (default true) initially" );
+		Check( c.SetPropertyForCategory( Cat::Object, String( "casts_shadows" ), String( "false" ) ), "OB3: shadow-flags edit applies" );
+		Check( ObjCasts( *j, "o" ) == 0, "OB3: object now casts no shadows" );
+
+		// OB4: the data-loss closure + persistence proof -- ALL object binding edits SURVIVE a subsequent
+		// MATERIAL-edit D2 (red-provable: disable the forward binding route and the D2 reverts them to the authored
+		// chunk -> these checks fail).
+		c.SetSelection( Cat::Material, String( "m2" ) );
+		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p1" ) ), "OB4: material edit applies (D2)" );
+		Check( ObjMatIs( *j, "o", "m2" ), "OB4: object material rebind SURVIVED the material D2 (data-loss closed)" );
+		Check( ObjGeomIs( *j, "o", "g2" ), "OB4: object geometry rebind SURVIVED the material D2" );
+		Check( ObjCasts( *j, "o" ) == 0, "OB4: object shadow-flags edit SURVIVED the material D2" );
+		j->release();
+		std::remove( tb );
 	}
 
 	std::remove( tmp );

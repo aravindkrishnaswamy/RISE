@@ -367,6 +367,10 @@ namespace RISE
 		//! (0) or a diagnosed re-derive (3).  Shared by the material/light/... CST branches.
 		bool RouteCstParamEdit_( const char* entityName, const char* entityKind, const char* role, const char* value );
 
+		//! P5 Slice 3 expansion (object): route a SetObjectShadowFlags edit to the standard_object
+		//! casts_shadows / receives_shadows bool params (bit0 = casts, bit1 = receives).  Two CST re-derives.
+		bool RouteObjectShadowFlagsToCst_( const String& objectName, int flags );
+
 		//! H2 (P-WALK): the SINGLE per-op forward + revert dispatchers.  Each
 		//! IS the single-edit body; the composite walk-loops call them per
 		//! inner edit so the single and composite paths can NEVER drift (the
