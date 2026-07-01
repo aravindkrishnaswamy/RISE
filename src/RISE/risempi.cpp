@@ -335,7 +335,7 @@ int main( int argc, char** argv )
 	if( rank == 0 ) {
 		std::cout << "Loading ascii scene file: " << argv[1] << std::endl;
 	}
-	pJob->LoadAsciiScene( argv[1] );
+	pJob->LoadAsciiSceneAuto( argv[1] );   // Slice 6a: route via Auto (native-v7 -> CST, else legacy) so 6c can delete LoadAsciiScene
 	
 	if( argv[2][0] == 'S' ) {
 		DoStill( rank, size, pJob );

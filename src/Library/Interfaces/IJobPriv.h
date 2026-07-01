@@ -39,6 +39,7 @@ namespace RISE
 	class SourceSpanIndex;
 	class TransformSnapshot;
 	class OverrideSpanIndex;
+	struct FileIdentity;   // Model-B P5 Slice 6a: CST-save external-mod guard reads this via GetCstLoadFileIdentity()
 
 	//! IJobPriv - Priviledged interface with getters
 	class IJobPriv : public virtual IJob
@@ -86,6 +87,12 @@ namespace RISE
 		// scene file, with managed/unmanaged classification.
 		virtual OverrideSpanIndex*			GetOverrideSpanIndexMutable() = 0;
 		virtual const OverrideSpanIndex*	GetOverrideSpanIndex() const = 0;
+
+		// Model-B P5 Slice 6a: the CST-load file identity (path + mtime + size) captured by
+		// Job::RefreshCstLoadFileIdentity.  The CST-save external-modification guard reads THIS
+		// instead of the SourceSpanIndex's identity so the guard no longer depends on the legacy
+		// span index (slated for deletion in a later sub-slice).  Job is the sole implementer.
+		virtual const FileIdentity&			GetCstLoadFileIdentity() const = 0;
 	};
 
 

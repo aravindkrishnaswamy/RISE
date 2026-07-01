@@ -834,7 +834,11 @@ SaveResult SaveEngine::Save( const std::string& filePath )
         // file's on-disk state is irrelevant; only guard when writing back to the loaded path.  (CST-load now
         // captures the FileIdentity; before that this guard was both bypassed AND unavailable -- reviewer P1.)
         {
-            const FileIdentity& cstLoadIdent = mSpans.GetFileIdentity();
+            // Slice 6a: read the identity from the Job member (RefreshCstLoadFileIdentity writes it) instead of
+            // mSpans.GetFileIdentity() -- the CST path never populates the span index, and this decouples the guard
+            // from the legacy SourceSpanIndex (slated for deletion in a later sub-slice).  The legacy byte-splice
+            // branch below still reads mSpans (its identity comes from the legacy parser, not RefreshCst...).
+            const FileIdentity& cstLoadIdent = mJob.GetCstLoadFileIdentity();
             if( cstLoadIdent.captured && cstLoadIdent.filePath == filePath ) {
                 struct ::stat cur = {};
                 if( ::stat( filePath.c_str(), &cur ) == 0 ) {

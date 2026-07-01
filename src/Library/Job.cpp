@@ -344,10 +344,11 @@ void Job::InitializeContainers()
 	// for the Job's lifetime.  AsciiSceneParser clears + repopulates
 	// them on each ParseAndLoadScene call.
 	pSourceSpanIndex.reset(  new SourceSpanIndex() );
-	// P5 Slice 4 (reviewer P1): re-apply the CST-load file identity preserved across this ClearAll, so the
-	// external-modification save guard survives a D2 re-derive (which recreates the span index above).  No-op at
-	// construction (uncaptured) and for legacy-loaded scenes.
-	if( mCstLoadFileIdentity.captured ) pSourceSpanIndex->SetFileIdentity( mCstLoadFileIdentity );
+	// P5 Slice 6a: mCstLoadFileIdentity (the Job member) already survives ClearAll on its own, and the CST-save
+	// external-mod guard now reads it directly via GetCstLoadFileIdentity -- no longer through the span index.
+	// The former re-apply of the identity onto the recreated span index here was thus dead and has been dropped
+	// (a step toward the 6d span-index deletion).  The legacy save branch's span-index identity is populated by
+	// the legacy parser, independent of this path.
 	pBaseTransforms.reset(   new TransformSnapshot() );
 	pLoadedTransforms.reset( new TransformSnapshot() );
 	pOverrideSpans.reset(    new OverrideSpanIndex() );
@@ -9509,11 +9510,14 @@ bool Job::LoadAsciiSceneAuto(
 // P5 (Model-B, Slice 1): load a scene by building the canonical CST and deriving the Scene from it,
 // RETAINING the Document for edit/save.  Additive + flagged -- the legacy LoadAsciiScene stays the default.
 // P5 Slice 4 (reviewer P1 + follow-up): capture/refresh the CST-loaded file's identity (path + mtime + size).
-// Stored in BOTH the span index (the save guard reads it) AND a Job member (mCstLoadFileIdentity) that SURVIVES
-// a D2 ClearAll -- InitializeContainers re-applies the member onto the recreated span index.  Called at CST-load
-// AND after a successful CST save (so the just-written file becomes the new baseline -- a second in-place save
-// isn't falsely refused, and a Save-As re-anchors the identity to the new target path).  Best-effort: a stat
-// failure leaves the prior identity (the next save fail-opens via ReadFile).
+// Slice 6a: stored ONLY in the Job member (mCstLoadFileIdentity); the SaveEngine CST-save external-mod guard now
+// reads it directly via Job::GetCstLoadFileIdentity (IJobPriv), so the guard no longer depends on the legacy
+// SourceSpanIndex.  The former span-index write (pSourceSpanIndex->SetFileIdentity) was dead once the guard moved
+// off mSpans -- dropped here AND in InitializeContainers' re-apply -- a step toward the 6d span-index deletion.
+// The legacy byte-splice save branch still uses the span-index identity, but that value is populated by the LEGACY
+// parser, never by this function.  Called at CST-load AND after a successful CST save (so the just-written file
+// becomes the new baseline -- a second in-place save isn't falsely refused, and a Save-As re-anchors the identity
+// to the new target path).  Best-effort: a stat failure leaves the prior identity (the next save fail-opens).
 void Job::RefreshCstLoadFileIdentity( const char* path )
 {
 	if( !path ) return;
@@ -9531,8 +9535,7 @@ void Job::RefreshCstLoadFileIdentity( const char* path )
 #endif
 	ident.sizeBytes = static_cast<long long>( fileStats.st_size );
 	ident.captured  = true;
-	mCstLoadFileIdentity = ident;                                   // survives ClearAll (re-applied by InitializeContainers)
-	if( pSourceSpanIndex ) pSourceSpanIndex->SetFileIdentity( ident );   // the save guard reads this
+	mCstLoadFileIdentity = ident;                                   // survives ClearAll; the CST-save guard reads it via GetCstLoadFileIdentity
 }
 
 bool Job::LoadAsciiSceneViaCst( const char* filename )

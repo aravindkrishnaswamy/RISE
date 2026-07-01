@@ -364,6 +364,10 @@ namespace RISE
 		const TransformSnapshot*	GetLoadedTransformSnapshot() const	{ return pLoadedTransforms.get(); }
 		OverrideSpanIndex*			GetOverrideSpanIndexMutable()		{ return pOverrideSpans.get(); }
 		const OverrideSpanIndex*	GetOverrideSpanIndex() const		{ return pOverrideSpans.get(); }
+		// Model-B P5 Slice 6a: the CST-load file identity, read by the SaveEngine CST-save external-mod
+		// guard directly off the Job member (decoupled from pSourceSpanIndex).  Inline, no-`override`
+		// convention like the other getters.
+		const RISE::FileIdentity&	GetCstLoadFileIdentity() const		{ return mCstLoadFileIdentity; }
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.

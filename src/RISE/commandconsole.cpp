@@ -63,7 +63,7 @@ double DoPerformanceRating()
 {
 	IJobPriv* pJob = 0;
 	RISE_CreateJobPriv( &pJob );
-	pJob->LoadAsciiScene( "scenes/pr.RISEscene" );
+	pJob->LoadAsciiSceneAuto( "scenes/pr.RISEscene" );   // Slice 6a: via Auto (native-v7 -> CST, else legacy) so 6c can delete LoadAsciiScene
 
 	unsigned int		actual_time = 1;
 	pJob->PredictRasterizationTime( 10000, 0, &actual_time );
