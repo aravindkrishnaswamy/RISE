@@ -438,8 +438,9 @@ namespace RISE
 		}
 
 		//! P5 (Model-B, Slice 6c-2): default scene-load entry -- routes a native-v7 scene to the CST
-		//! path (retains the Document for edit/save/variant) and an un-migrated scene to the legacy
-		//! loader.  Mirrors the LoadAsciiScene passthrough above; call this instead of LoadAsciiScene.
+		//! path (retains the Document for edit/save/variant).  As of Slice 6c-3a an un-migrated scene
+		//! HARD-FAILS (returns false + a migrator pointer in the log); there is NO legacy fallback.
+		//! Call this instead of LoadAsciiScene.
 		/// \return TRUE if successful, FALSE otherwise
 		bool LoadAsciiSceneAuto(
 			System::String& filename							///< [in] Name of the file containing the scene
