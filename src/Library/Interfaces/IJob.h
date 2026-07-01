@@ -3300,6 +3300,15 @@ namespace RISE
 		//! ApplyCstInsertCameraChunk).  Document-only; 1 = removed, 0 = failure.  Default no-op; see Job override.
 		virtual int ApplyCstRemoveCameraChunk( const char* camName ) { return 0; }
 
+		//! Model-B P5 (Phase-4 RemoveCamera): SAFELY delete ANY camera chunk named `camName` from the retained CST
+		//! -- file-authored OR clone-inserted -- via the trivia-preserving Cst::DocEraseChunkTidy (keeps the
+		//! Document well-formed: NO `}<keyword>` glue; collapses ONE adjacent blank-line separator).  This is the
+		//! general erase a future arbitrary-camera-delete op MUST use; do NOT reuse the CLONE-UNDO-ONLY
+		//! ApplyCstRemoveCameraChunk on a file-authored camera (its idx-1 unconditional drop glues the prior chunk).
+		//! Document-only (no re-derive); 1 = removed, 0 = failure (no Document / not found / ambiguous).  Default
+		//! no-op (legacy jobs have no retained CST); see Job override.
+		virtual int ApplyCstDeleteCameraChunk( const char* camName ) { return 0; }
+
 		//! Model-B P5 Slice 3 expansion (FILM edit/preset): record a Film dim edit in the retained CST so a SAVE
 		//! (SerializeCst) and a future D2 re-derive preserve it -- the live SetFilm already mutated the scene, this
 		//! only PATCHES the singleton unnamed `film` chunk.  Each of width/height/pixelAR is OPTIONAL (nullptr =

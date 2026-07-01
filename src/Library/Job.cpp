@@ -9946,6 +9946,39 @@ int Job::ApplyCstRemoveCameraChunk( const char* camName )
 	return 1;
 }
 
+// Model-B P5 (Phase-4 RemoveCamera): SAFELY delete ANY camera chunk named `camName` from the retained Document.
+//
+// This is the GENERAL, trivia-preserving erase -- the SAFE counterpart to the CLONE-UNDO-ONLY
+// ApplyCstRemoveCameraChunk above.  That method drops the item at `idx-1` UNCONDITIONALLY, which is correct ONLY
+// for the synthetic [leadSep][chunk][trailSep] triple a clone-insert always produces; on a FILE-AUTHORED camera
+// its `idx-1` is the PREVIOUS chunk's real trailing newline, and dropping it GLUES the prior chunk's `}` onto the
+// next chunk's keyword (`}pinhole_camera` on one line) -- a grammar-violating, round-trip-corrupting Document.  A
+// future arbitrary-camera-delete op MUST route through HERE, never through the clone-undo inverse.
+//
+// Resolution mirrors the clone-undo method (DocFindByNameAnyRole with the "camera" kind suffix + uniqueFallback,
+// so the sole unnamed camera resolves by position) -> DocIndexOfNodeId -> Cst::DocEraseChunkTidy, which removes
+// the chunk and collapses at most ONE adjacent separator, evaluating the ACTUAL glue condition (the bytes at the
+// gap end in `\n`, or the chunk was at document start) so the result is always well-formed and minimal.
+// DOCUMENT-ONLY: no re-derive (the live camera is removed by the caller's own path).  Returns 1 on success, 0 on
+// any failure (no Document / null name / not found / ambiguous), leaving the Document intact.
+int Job::ApplyCstDeleteCameraChunk( const char* camName )
+{
+	if( !pCstDocument || !camName ) return 0;
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, camName, nullptr, "camera", true );
+	if( id == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstDeleteCameraChunk:: `%s` not found or ambiguous in the CST Document; delete rejected", camName );
+		return 0;
+	}
+	const int idx = RISE::Cst::DocIndexOfNodeId( *pCstDocument, id, nullptr );
+	if( idx < 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstDeleteCameraChunk:: `%s` resolved no top-level index; delete rejected", camName );
+		return 0;
+	}
+	RISE::Cst::Document d1 = RISE::Cst::DocEraseChunkTidy( *pCstDocument, idx );
+	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
+	return 1;
+}
+
 // Model-B P5 Slice 3 expansion (FILM edit/preset): record a Film dim edit in the retained CST.  The live
 // Job::SetFilm has ALREADY fully mutated the scene (replaced IFilm, resynced cameras, reallocated FrameStore);
 // this only PATCHES the singleton unnamed `film` chunk so a SAVE (SerializeCst serializes the retained Document)

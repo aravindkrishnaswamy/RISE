@@ -3001,6 +3001,94 @@ Document DocRemoveItem( const Document& doc, int index, int* visits )
 	return DocEraseItem( doc, index, visits, nullptr );
 }
 
+//! True iff the top-level item at `index` in `doc` serializes to bytes whose LAST
+//! byte is a newline (`\n`) -- the glue-safety predicate. Serializes exactly ONE
+//! item (O(item bytes)); an out-of-range/absent/empty item is NOT newline-terminated.
+static bool ItemEndsInNewline( const Document& doc, int index )
+{
+	if( index < 0 || index >= SeqCount( doc.items ) ) return false;
+	const NodeRef it = SeqItemAt( doc.items, index );
+	if( !it ) return false;
+	std::string s;
+	Serialize( it, s );
+	return !s.empty() && s.back() == '\n';
+}
+
+//! True iff the item is a PURE whitespace/newline Trivia leaf (a separator we may
+//! collapse). Anything with a non-whitespace byte, or any non-Trivia node, is NOT.
+static bool IsPureWhitespaceTrivia( const NodeRef& it )
+{
+	return it && it->kind == NodeKind::Trivia
+	    && it->text.find_first_not_of( " \t\r\n" ) == std::string::npos;
+}
+
+//==============================================================
+// GENERAL trivia-preserving chunk erase (Model-B P5): safely remove ANY top-level
+// chunk (file-authored OR clone-inserted), keeping the Document well-formed and
+// minimal. This is the SAFE, chunk-agnostic counterpart to the CLONE-UNDO-ONLY
+// removal Job::ApplyCstRemoveCameraChunk performs (which drops the item at idx-1
+// UNCONDITIONALLY -- correct only for the synthetic [leadSep][chunk][trailSep]
+// triple a clone-insert always produces, a LANDMINE on a file-authored chunk
+// whose idx-1 is the PREVIOUS chunk's real trailing newline).
+//==============================================================
+Document DocEraseChunkTidy( const Document& doc, int index, int* visits )
+{
+	if( visits ) *visits = 0;
+	if( index < 0 || index >= SeqCount( doc.items ) ) return doc;   // out of range: no-op
+
+	// (1) Remove the chunk itself.  The remaining tidy is a PURELY structural, glue-safe
+	// collapse of ONE adjacent separator -- never enough to make the result ill-formed.
+	int v0 = 0;
+	Document d = DocRemoveItem( doc, index, &v0 );
+
+	// (2) The item now AT `index` is the removed chunk's OLD TRAILING separator (the
+	// inter-chunk trivia that followed it -- the probe showed the separator is a single
+	// pure-newline `"\n\n"` Trivia leaf, distinct from the chunk, whose `}` is NOT
+	// newline-terminated on its own).  Collapse that one separator so removing a chunk
+	// does not accumulate a blank line -- but ONLY when it cannot cause `}<keyword>`
+	// glue.  Evaluate the REAL glue condition (precision-fix style: the actual bytes at
+	// the gap, not a "clone-insert always did X" assumption):
+	//
+	//   * `index == 0`  -- the item now at 0 is LEADING trivia (the chunk was the very
+	//     first top-level item, so its trailing separator is now the document head).
+	//     Dropping leading blank lines is harmless at document start: there is NO
+	//     preceding chunk to glue onto.  Drop it if pure-whitespace.  (In a real
+	//     RISE scene the `RISE ASCII SCENE` header strays precede every chunk, so a
+	//     chunk is rarely index 0; the branch is the principled document-start case.)
+	//
+	//   * index > 0  -- there IS a preceding item (index-1).  Dropping the separator
+	//     glues the neighbours' bytes together; that is glue-SAFE iff the preceding
+	//     item's serialized bytes already end in `\n` (so the previous chunk's `}` stays
+	//     line-terminated and the NEXT item begins on a fresh line).  A blank-line
+	//     separator `"\n\n"` sits between two chunks each ending in `}` (NOT newline-
+	//     terminated), but the item BEFORE the removed chunk is itself a separator that
+	//     DOES end in `\n` (the probe: chunk, `"\n\n"`, chunk, `"\n\n"`, chunk...), so a
+	//     MIDDLE removal collapses the trailing `"\n\n"` and leaves exactly the ONE
+	//     leading `"\n\n"` that was already there -- neighbours keep a single separator,
+	//     no glue.  If the preceding bytes do NOT end in `\n` (e.g. a hand-authored file
+	//     with a chunk glued directly after a `}` on the same line, or trivia we cannot
+	//     prove safe), we DO NOT drop the separator -- correctness (no glue) beats
+	//     minimality (one extra blank line).
+	//
+	// LAST-chunk (index == old last): after the chunk drop there is NO item at `index`
+	// (SeqCount dropped by 1), so the range guard below skips the collapse -- the
+	// document's own final trailing newline stays, and no glue is possible.
+	const int nAfter = SeqCount( d.items );
+	if( index < nAfter ) {
+		const NodeRef sep = SeqItemAt( d.items, index );
+		if( IsPureWhitespaceTrivia( sep ) ) {
+			const bool glueSafe = ( index == 0 ) || ItemEndsInNewline( d, index - 1 );
+			if( glueSafe ) {
+				int v1 = 0;
+				d = DocRemoveItem( d, index, &v1 );
+				v0 += v1;
+			}
+		}
+	}
+	if( visits ) *visits = v0;
+	return d;
+}
+
 //---- item 4: identity + name-path lookups ----
 
 NodeId DocNodeIdAt( const Document& doc, int index, int* visits )

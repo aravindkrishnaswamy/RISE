@@ -449,6 +449,27 @@ namespace RISE
 		//! also need the dropped param NodeIds.
 		Document DocRemoveItem( const Document& doc, int index, int* visits = nullptr );
 
+		//! GENERAL trivia-preserving chunk erase (Model-B P5): remove the top-level item
+		//! at `index` and collapse EXACTLY ONE adjacent separator so the result stays
+		//! WELL-FORMED (never `}<keyword>` glue) and MINIMAL (removing a chunk does not
+		//! accumulate blank lines).  Unlike Job::ApplyCstRemoveCameraChunk -- the
+		//! CLONE-UNDO-ONLY inverse that drops the item at idx-1 UNCONDITIONALLY (correct
+		//! only for the synthetic [leadSep][chunk][trailSep] triple a clone-insert always
+		//! produces; a LANDMINE on a file-authored chunk whose idx-1 is the PREVIOUS
+		//! chunk's real trailing newline) -- this is SAFE for ANY chunk (file-authored OR
+		//! clone-inserted) and chunk-agnostic (reusable by a future RemoveObject /
+		//! RemoveLight).  It removes the chunk, then drops the OLD TRAILING separator
+		//! (the item now AT `index`) ONLY IF it is pure-whitespace Trivia AND the collapse
+		//! cannot glue: the serialized bytes just BEFORE the gap end in `\n` (so the
+		//! preceding chunk's `}` stays line-terminated), OR `index == 0` (document start --
+		//! leading blank lines are harmless to drop).  If the tidy cannot be proven
+		//! glue-safe it leaves BOTH separators (well-formed, one extra blank line):
+		//! correctness beats minimality.  LAST-chunk removal (index == last) tidies
+		//! nothing -- there is no item at `index` afterward -- so the file keeps its final
+		//! newline.  Out-of-range `index` is a no-op.  `*visits` (if non-null) receives the
+		//! total rope rebuilt-node count (chunk drop + any separator collapse).
+		Document DocEraseChunkTidy( const Document& doc, int index, int* visits = nullptr );
+
 		//==============================================================
 		// Item 4 -- NodeId identity + name-path addressing (the name-path half of
 		// the counted lookup; the byte-offset half is item 3). Identity lives in a

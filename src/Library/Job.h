@@ -2820,6 +2820,11 @@ namespace RISE
 		//! ApplyCstInsertCameraChunk).  Document-only -> 1 on success / 0 on failure; no rebind needed.
 		int ApplyCstRemoveCameraChunk( const char* camName );
 
+		//! Model-B P5 (Phase-4 RemoveCamera): SAFELY delete ANY camera chunk (file-authored OR clone-inserted) via
+		//! the trivia-preserving Cst::DocEraseChunkTidy.  The general erase; NOT the clone-undo-only inverse above.
+		//! Document-only -> 1 on success / 0 on failure (no Document / not found / ambiguous), Document intact.
+		int ApplyCstDeleteCameraChunk( const char* camName );
+
 		//! Model-B P5 Slice 3 expansion (FILM edit/preset): PATCH the singleton unnamed `film` chunk in the retained
 		//! Document so a SAVE / future D2 preserves a Film dim edit the live SetFilm already applied.  width/height/
 		//! pixelAR are each OPTIONAL (nullptr = leave that param untouched -> minimal diff; pixelAR may need INSERTing
