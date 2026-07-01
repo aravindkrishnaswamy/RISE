@@ -5974,8 +5974,11 @@ namespace RISE
 					// Optional per-wavelength coefficient curves (G1,
 					// vitreous enamel): names of registered IFunction1D
 					// (e.g. piecewise_linear_function) curves for the
-					// spectral (NM) path.  Empty => RGB-only (luminance
-					// fallback), byte-identical to pre-G1.
+					// spectral (NM) path.  BOTH empty => RGB-only (luminance
+					// fallback), byte-identical to pre-G1.  If EITHER is
+					// bound the NM path is curve-driven (an unbound
+					// coefficient is zero in NM; Job warns on a non-zero
+					// RGB sibling).
 					std::string absorption_spectral = bag.GetString( "absorption_spectral", "" );
 					std::string scattering_spectral = bag.GetString( "scattering_spectral", "" );
 
@@ -6010,8 +6013,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::DoubleVec3; p.description = "Absorption coefficient (R G B), RGB/preview path"; p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::DoubleVec3; p.description = "Scattering coefficient (R G B), RGB/preview path"; p.defaultValueHint = "0 0 0"; }
-						{ auto& p = P(); p.name = "absorption_spectral"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Name of a sigma_a(lambda) IFunction1D curve (e.g. piecewise_linear_function) for the spectral NM path; empty => RGB luminance fallback"; }
-						{ auto& p = P(); p.name = "scattering_spectral"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Name of a sigma_s(lambda) IFunction1D curve for the spectral NM path; empty => RGB luminance fallback"; }
+						{ auto& p = P(); p.name = "absorption_spectral"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Name of a sigma_a(lambda) IFunction1D curve (e.g. piecewise_linear_function) for the spectral NM path.  Once EITHER spectral curve is bound the NM path is curve-driven: an unbound coefficient is ZERO in NM (bind both curves, or accept zero).  Only when BOTH are empty does NM fall back to RGB luminance"; }
+						{ auto& p = P(); p.name = "scattering_spectral"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Name of a sigma_s(lambda) IFunction1D curve for the spectral NM path.  Once EITHER spectral curve is bound the NM path is curve-driven: an unbound coefficient is ZERO in NM (bind both curves, or accept zero).  Only when BOTH are empty does NM fall back to RGB luminance"; }
 						{ auto& p = P(); p.name = "phase";      p.kind = ValueKind::String;     p.description = "Phase function: either `isotropic` or `hg <g>` (Henyey-Greenstein with asymmetry g)"; p.tupleKinds = {ValueKind::Enum, ValueKind::Double}; p.enumValues = {"isotropic","hg"}; p.defaultValueHint = "isotropic"; }
 						return cd;
 					}();

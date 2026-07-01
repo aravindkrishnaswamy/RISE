@@ -1027,7 +1027,7 @@ approximation, which the principle rejects.)
 >   degenerate convention), silently yielding a `σ=1.0/unit` medium. Homogeneous ⇒ position ignored,
 >   so the hero's thickness gradient stays *geometry* (the domed substrate, §2.1), authored once
 >   as a position-independent `σ(λ)`.
-> - **G1-b — authoring path (parser + `IJob`/`Job`) — DONE (commit pending).** The
+> - **G1-b — authoring path (parser + `IJob`/`Job`) — DONE (commit `58a6e4c0`).** The
 >   `homogeneous_medium` chunk gains optional `absorption_spectral`/`scattering_spectral`
 >   reference params (named `IFunction1D` curves, e.g. `piecewise_linear_function`), routed to a
 >   new `IJob::AddHomogeneousMediumSpectral` → `Job` resolves the names via
@@ -1036,11 +1036,16 @@ approximation, which the principle rejects.)
 >   existing `AddHomogeneousMedium` path (byte-identical for every current scene). The chunk is
 >   descriptor-driven so the syntax highlighter/suggestion engine auto-sync; `MediaIntrospection`
 >   gains a read-only disclosure row noting the RGB absorption/scattering rows are preview-only
->   when a σ(λ) curve is bound. Sibling audit: only `Job` implements `IJob`; `SaveEngine` does not
->   serialize media; CST is not in this branch; the glTF importer keeps the RGB path. End-to-end
->   test: `VolumeAbsorptionAttenuationTest` cases S/T/U/V (red curve → r/b≈22× red; flat curve →
->   gray; unknown ref → load fails; no curve → gray — the direct luminance-collapse-vs-spectral
->   contrast, authored through the parser).
+>   when a σ(λ) curve is bound (and `Job` warns when exactly one spectral curve is bound alongside
+>   a non-zero RGB sibling — the unbound coefficient is zero in NM, an easy silent-no-op foot-gun).
+>   Sibling audit: only `Job` implements `IJob`; `SaveEngine` serializes medium *property edits* by
+>   targeted line-splice but SKIPS read-only rows, and the spectral curve refs surface only as a
+>   read-only disclosure row — so they never round-trip-lose (and media are never whole-chunk
+>   re-emitted: that path is camera-only); CST is not in this branch; the glTF importer keeps the
+>   RGB path. End-to-end test: `VolumeAbsorptionAttenuationTest` cases S/T/U/V (red curve →
+>   red-dominant, asserts `r > 3·b`, physical r/b ≈ 21–23×; flat curve → gray; unknown ref → load
+>   fails; no curve → gray — the direct luminance-collapse-vs-spectral contrast, authored through
+>   the parser).
 > - **G1-c — HWSS free-flight reweighting.** The 4 HWSS no-scatter sites (`throughputComp[w] *= Tr`,
 >   `PathTracingIntegrator.cpp` ~3778/3796/4442/4464) still carry the analog double-count deferred
 >   from the §10.12 family — with wavelength-dependent σ they need the **hero/sampling-channel

@@ -5410,12 +5410,16 @@ bool Job::AddHomogeneousMediumSpectral(
 	)
 {
 	// Resolve the optional spectral coefficient curves by name.  A null /
-	// empty / "none" reference means "no curve" for that coefficient
-	// (the NM path then falls back to the RGB triple's luminance, per
-	// HomogeneousMedium).  GetItem returns a BORROWED reference; the
-	// medium ctor addrefs it, so we must not release it here.  A name
-	// that is given but not found is author error and fails the add
-	// (do NOT silently drop the intended spectral behaviour).
+	// empty / "none" reference means "no curve" for that coefficient.
+	// Per HomogeneousMedium::GetCoefficientsNM, once EITHER curve is bound
+	// the NM path is curve-driven and a null sibling contributes ZERO for
+	// its coefficient (NOT the RGB triple's luminance — that whole-chunk
+	// fallback only fires when BOTH curves are null, a state this adder is
+	// never called in since the parser routes here only when at least one
+	// ref is present).  GetItem returns a BORROWED reference; the medium
+	// ctor addrefs it, so we must not release it here.  A name that is
+	// given but not found is author error and fails the add (do NOT
+	// silently drop the intended spectral behaviour).
 	bool refError = false;
 	auto resolveCurve = [&]( const char* ref ) -> IFunction1D* {
 		if( !ref || ref[0] == '\0' || strcmp( ref, "none" ) == 0 ) {
@@ -5433,6 +5437,31 @@ bool Job::AddHomogeneousMediumSpectral(
 	IFunction1D* pScaSpectral = resolveCurve( scattering_spectral );
 	if( refError ) {
 		return false;
+	}
+
+	// Partial-binding ergonomic guard: if exactly ONE spectral curve is
+	// bound while the OTHER coefficient's RGB triple is non-zero, that
+	// non-zero RGB value is silently ZERO in the spectral (NM) render
+	// (curve-driven path, null sibling => 0).  That is a silent no-op
+	// foot-gun for an author who expected the RGB value to keep absorbing
+	// / scattering in spectral mode.  Warn (non-fatal) rather than accept
+	// the surprise; the intended fix is to bind both curves.
+	auto anyNonZero = [&]( const double c[3] ) {
+		return c[0] != 0.0 || c[1] != 0.0 || c[2] != 0.0;
+	};
+	if( pAbsSpectral && !pScaSpectral && anyNonZero( sigma_s ) ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddHomogeneousMediumSpectral:: medium `%s` binds absorption_spectral but not "
+			"scattering_spectral; its RGB scattering (%g %g %g) is ZERO in the spectral (NM) "
+			"render.  Bind scattering_spectral (or set scattering 0 0 0) to silence this.",
+			name, sigma_s[0], sigma_s[1], sigma_s[2] );
+	}
+	if( pScaSpectral && !pAbsSpectral && anyNonZero( sigma_a ) ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddHomogeneousMediumSpectral:: medium `%s` binds scattering_spectral but not "
+			"absorption_spectral; its RGB absorption (%g %g %g) is ZERO in the spectral (NM) "
+			"render.  Bind absorption_spectral (or set absorption 0 0 0) to silence this.",
+			name, sigma_a[0], sigma_a[1], sigma_a[2] );
 	}
 
 	// Create the phase function

@@ -99,11 +99,14 @@ std::vector<CameraProperty> MediaIntrospection::Inspect(
 		rows.push_back( MakeVec3Row( "absorption", hom->GetAbsorption(),
 			"Absorption coefficient σ_a per channel [1/m].  Updates the cached extinction "
 			"σ_t = σ_a + σ_s and the channel-max majorant used by free-flight sampling.  "
-			"RGB/preview path — a bound σ_a(λ) curve overrides this in spectral (NM) mode.",
+			"RGB/preview path only when a spectral σ(λ) curve is bound: the NM render then "
+			"uses the σ_a(λ) curve (or ZERO if only the σ_s(λ) curve is bound).",
 			true ) );
 		rows.push_back( MakeVec3Row( "scattering", hom->GetScattering(),
 			"Scattering coefficient σ_s per channel [1/m].  Together with absorption, drives "
-			"Beer-Lambert transmittance and exponential free-flight sampling.",
+			"Beer-Lambert transmittance and exponential free-flight sampling.  "
+			"RGB/preview path only when a spectral σ(λ) curve is bound: the NM render then "
+			"uses the σ_s(λ) curve (or ZERO if only the σ_a(λ) curve is bound).",
 			true ) );
 		rows.push_back( MakeVec3Row( "emission", hom->GetEmission(),
 			"Volumetric emission per channel.  Contributes radiance independent of σ_t — "
