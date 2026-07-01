@@ -139,7 +139,7 @@ still renders at a reasonable test-scene size.
    construction.  If a scene declares multiple `film` chunks, the
    last-declared wins (each one resyncs every previously-added
    camera's Frame to the new dims).  Old v5 scenes are migrated via
-   `python tools/migrate_scenes_v5_to_v6.py`.
+   `python tools/migrate_scenes_v5_to_v7.py`.
 
 2. CLI override (`bin/RISE-CLI`):
    ```

@@ -98,24 +98,26 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 
 | Family | Count | Examples |
 |--------|-------|----------|
-| Painters | 30 | `uniformcolor_painter`, `png_painter`, `voronoi3d_painter`, `iridescent_painter`, `channel_painter` |
-| Functions | 2 | `piecewise_linear_function`, `piecewise_linear_function2d` |
+| Painters | 35 | `uniformcolor_painter`, `png_painter`, `voronoi3d_painter`, `iridescent_painter`, `channel_painter`, `function2d_painter` (the `*_function2d_painter` painters live here, not under Functions) |
+| Functions | 3 | `piecewise_linear_function`, `piecewise_linear_function2d`, `expression_function2d` |
 | Materials | 25 | `lambertian_material`, `dielectric_material`, `ggx_material`, `pbr_metallic_roughness_material`, `sheen_material`, `composite_material` |
-| Cameras | 7 | `scene_options`, `camera_defaults` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
-| Geometry | 18 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry` |
+| Cameras | 8 | `scene_options`, `camera_defaults`, `film` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
+| Geometry | 22 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `path_instances_geometry` |
 | Modifiers | 2 | `bumpmap_modifier`, `normal_map_modifier` |
-| Media | 3 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium` |
-| Objects | 2 | `standard_object`, `csg_object` |
+| Media | 4 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium`, `global_medium` |
+| Objects | 3 | `standard_object`, `csg_object`, `override_object` |
 | Shader ops | 13 | `pathtracing_shaderop`, `mis_pathtracing_shaderop` (legacy alias), `finalgather_shaderop`, `directlighting_shaderop`, `arealight_shaderop`, `alpha_test_shaderop` |
 | Shaders | 4 | `standard_shader`, `advanced_shader`, `directvolumerendering_shader`, `spectraldirectvolumerendering_shader` |
-| Rasterizers | 10 | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `vcm_pel_rasterizer`, `mlt_spectral_rasterizer` |
+| Rasterizers | 12 | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `vcm_pel_rasterizer`, `mlt_spectral_rasterizer`, `auto_rasterizer`, `auto_spectral_rasterizer` |
 | Rasterizer outputs | 1 | `file_rasterizeroutput` |
-| Lights | 4 | `ambient_light`, `omni_light`, `spot_light`, `directional_light` |
+| Lights | 5 | `ambient_light`, `omni_light`, `spot_light`, `directional_light`, `hosek_wilkie_skylight` |
 | Photon maps | 12 | 6 generate + 6 gather (caustic / global / shadow / translucent — Pel and spectral) |
 | Irradiance cache | 1 | `irradiance_cache` |
 | Animation | 4 | `keyframe`, `timeline`, `animation_options`, `animation` |
+| Scene variants | 2 | `scene_variant`, `active_scene_variant` (the CST named-overlay feature) |
+| Global config | 1 | `light_rr_threshold` (standalone RR-threshold chunk, mirrors `global_medium`) |
 
-**Total: 138 unique chunk keywords** (the per-family counts above sum to 138; `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` but is its own keyword). Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list — this table is a summary, not the source of truth.
+**Total: 157 unique chunk keywords** (the per-family counts above sum to 157; `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` but is its own keyword). Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list — this table is a summary, not the source of truth.
 
 `realistic_camera` is intentionally **not** registered — the keyword is reserved for the future multi-element lens-system camera (see [docs/CAMERAS_ROADMAP.md](../../../docs/CAMERAS_ROADMAP.md) Phase 4). Until that lands, scenes that want photographic depth-of-field use `thinlens_camera`.
 

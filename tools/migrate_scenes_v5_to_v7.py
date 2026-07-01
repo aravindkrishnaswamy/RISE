@@ -15,7 +15,7 @@ parser's last-wins SetFilm semantics so renders are bit-equivalent
 post-migration).
 
 Usage:
-    python tools/migrate_scenes_v5_to_v6.py [path-or-dir]
+    python tools/migrate_scenes_v5_to_v7.py [path-or-dir]
 
 If no argument, defaults to `scenes/`.  Recurses; modifies in place.
 Files without `RISE ASCII SCENE 5` header are left alone.

@@ -267,7 +267,7 @@ the active Film at construction.  v5 scenes that authored
 `width`/`height` inside camera chunks must be migrated:
 
 ```sh
-python tools/migrate_scenes_v5_to_v6.py [path-or-dir]
+python tools/migrate_scenes_v5_to_v7.py [path-or-dir]
 ```
 
 The script is idempotent — running it on a v6 scene is a no-op.

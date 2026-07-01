@@ -132,13 +132,13 @@ camera) chunk, run the migration tool:
 
 ```sh
 # One file
-python tools/migrate_scenes_v5_to_v6.py path/to/scene.RISEscene
+python tools/migrate_scenes_v5_to_v7.py path/to/scene.RISEscene
 
 # A whole directory (recursive; modifies in place)
-python tools/migrate_scenes_v5_to_v6.py path/to/dir/
+python tools/migrate_scenes_v5_to_v7.py path/to/dir/
 
 # Default: migrate every scene under scenes/
-python tools/migrate_scenes_v5_to_v6.py
+python tools/migrate_scenes_v5_to_v7.py
 ```
 
 What the script does to each v5 file:

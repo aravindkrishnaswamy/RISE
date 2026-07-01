@@ -1029,7 +1029,7 @@ entry); the expanded sub-scene is a derivation product, not CST content. (This m
 | Embedded `>` command parsing — `> set` (accelerator / global-medium / `light_rr_threshold`); `> modify <entity>` (active corpus count = **0** — the seven in `watch_dial` are inside a `/* */` block, D37) | **Delete from v7; migrate or fold (D19/D27/D37)** | v7 has **no `Command` node kind and no `> ` syntax** (D19/D27). The migrator rewrites `> set` structural forms into descriptor-driven chunks (`acceleration { … }`, `global_medium { … }`); rewrites `> set <render-setting>` (e.g. `light_rr_threshold`) into a **declarative parameter** on the relevant rasterizer/integrator chunk; and **retires `> modify`** by **folding any *active* one into the target entity chunk's final authored values** (no runtime modify) — moot for the current corpus, which has **zero active `> modify`** (D37). All `>` parsing survives only inside the one-shot v6→v7 migrator (alongside `> load`/`> run` flattening, D7). **The migrator is comment/token-aware** — it operates on the parsed token stream / CST, **never a raw line grep**, preserving `/* */` blocks verbatim as CST comment nodes and never activating a commented-out command (D37) — and **hard-fails on any unhandled active `>` form**. |
 | `AllocateCameraName` auto-naming (`:601`) | **Evolve → CST synthesized identity** (§2.5) | Generalized to all unnamed chunks; synthesized name (with its side-map `NodeId`, D15) persisted in CST, materialized to text on first edit. |
 | [`SaveEngine`](../../src/Library/SceneEditor/SaveEngine.cpp) Mode-A/Mode-B byte-splice + managed-override-block machinery | **Delete (this facet's contribution to the deletion)** | Replaced by `SerializeCst(Cst)` — pretty-printing the canonical tree, verbatim for untouched nodes, re-rendered for edited nodes. The whole Mode-A-vs-Mode-B duality, the sentinel-bracketed managed block, `OverrideSpanIndex`, `override_object`, the load-time `FileIdentity` external-mod guard's *splice* rationale, and `loadedPropertyValues` diffing exist **only** because the text wasn't retained. With a retained CST they vanish. **Note (D6, superseded by D17):** the external-mod guard's *intent* is **not** deleted — it is retained as the load/flush content-fingerprint + **atomic save** contract (temp-write → fsync → revalidate content-hash → atomic rename, **D17**, replacing D6's TOCTOU-prone compare-and-swap; Facet 3 owns it); only its byte-*splice* mechanism goes away here. (Facet 3/6 own the full SaveEngine deletion inventory; this facet supplies the replacement: CST serialization.) |
-| `tools/migrate_scenes_v5_to_v6.py` (and the v5→v6 hard-fail message) | **Reuse pattern** | The v6→v7 migrator (§6) follows this established idempotent-script pattern. |
+| `tools/migrate_scenes_v5_to_v7.py` (and the v5→v6 hard-fail message) | **Reuse pattern** | The v6→v7 migrator (§6) follows this established idempotent-script pattern. |
 
 **Net:** the parser stops being a fire-and-forget emitter and becomes a faithful `bytes ⇄
 CST` codec; the descriptor stays the schema; the engine-construction code is reused via Facet
@@ -1211,7 +1211,7 @@ CST` codec; the descriptor stays the schema; the engine-construction code is reu
   resolve refs → typecheck) before accepting it. After the corpus is
   migrated and the gate is green, the v6 reader is **deleted** (no indefinite coexistence). Facet 6
   owns the corpus migration tool and risk register. The migrator follows the
-  `migrate_scenes_v5_to_v6.py` pattern.
+  `migrate_scenes_v5_to_v7.py` pattern.
 
 **No conflicts with Locked decisions or the decisions (D1–D44).** I design *to* L1–L7 (**as
 corrected by D44** — `NodeId` is the lineage identity, name-path is addressing; INV-5 corrected to
@@ -1265,7 +1265,7 @@ indefinite coexistence):**
   corpus; folding them would have flipped the day scene to night and broken render equivalence (D37,
   correcting D27's "seven" census, which used a naive non-comment-aware line grep). It also reads the
   v6 include graph (the **only** place `FileId`/multi-file reading survives, D7). Mirrors the
-  `migrate_scenes_v5_to_v6.py` idiom (idempotent, in-place, with a **hard-fail** message on
+  `migrate_scenes_v5_to_v7.py` idiom (idempotent, in-place, with a **hard-fail** message on
   un-migratable constructs — including any unhandled **active** `>` form — for hand review). The
   migrator is a **build/CI gate over `scenes/`**; once green across the corpus, the v6 reader is
   dropped — migration is the one-time path to the single runtime format, not an opt-in convenience.
