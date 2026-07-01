@@ -19,10 +19,13 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
+#include <fstream>
 #include <mutex>
 #include <thread>
 #include <vector>
 #include "../Library/RISE_API.h"
+#include "../Library/Utilities/Log/StreamPrinter.h"
 #include "../Library/Agent/AgentSession.h"
 #include "../Library/Agent/AgentRpc.h"
 #include "../Library/Interfaces/ILogPriv.h"
@@ -202,18 +205,34 @@ static int RunAgentStdio( const char* sceneArg )
 
 int main( int argc, char** argv )
 {
+	// Facet 5 slice 0c: pre-scan argv for `--agent-stdio` BEFORE anything is
+	// written to stdout.  In agent mode stdout is a line-delimited JSON-RPC
+	// transport and MUST carry protocol frames ONLY -- so the ASCII banner,
+	// the RISE_MEDIA_PATH warning, and (below) the GlobalLog console sink are
+	// all gated / redirected off stdout.  The authoritative flag parse still
+	// happens later; this early scan only decides "is stdout a protocol pipe".
+	bool agentMode = false;
+	for( int ai = 1; ai < argc; ai++ ) {
+		if( strcmp( argv[ai], "--agent-stdio" ) == 0 ) { agentMode = true; break; }
+	}
+
 	// Setup the media path locator
 	const char* szmediapath = getenv( "RISE_MEDIA_PATH" );
 
 	if( szmediapath ) {
 		GlobalMediaPathLocator().AddPath( szmediapath );
-	} else {
+	} else if( !agentMode ) {
 		std::cout << std::endl;
 		std::cout << "Warning! the 'RISE_MEDIA_PATH' environment variable is not set." << std::endl;
 		std::cout << "unless you have been very carefull with explicit media pathing," << std::endl;
 		std::cout << "certain resources may not load.  See the README for information" << std::endl;
 		std::cout << "on setting this path." << std::endl;
 		std::cout << std::endl;
+	} else {
+		// Agent mode: keep stdout clean, but the guidance is still useful --
+		// route it to stderr so a caller diagnosing missing resources sees it.
+		std::cerr << "rise --agent-stdio: 'RISE_MEDIA_PATH' is not set; "
+		             "some resources may not load unless explicitly pathed.\n";
 	}
 
 	SetGlobalLogFileName( "RISE_Log.txt" );
@@ -247,19 +266,50 @@ int main( int argc, char** argv )
 
 	RISE_API_GetVersion( &major, &minor, &revision, &build, &isdebug );
 
-	std::cout << "===============================================" << std::endl;
-	std::cout << "                                               " << std::endl;
-	std::cout << "  R.I.S.E - Realistic Image Synthesis Engine   " << std::endl;
-	std::cout << "              v." << major  << "." << minor << "." << revision << " build " << build << std::endl;
-	std::cout << "      built on " << __DATE__ << " at " << __TIME__ << std::endl;
-	if( isdebug ) {
-		std::cout <<  
-			     "             DEBUG version" << std::endl;
+	// Banner is a stdout write -- suppress it in agent mode (stdout is the
+	// JSON-RPC protocol pipe; the first stdout line MUST be a response frame).
+	if( !agentMode ) {
+		std::cout << "===============================================" << std::endl;
+		std::cout << "                                               " << std::endl;
+		std::cout << "  R.I.S.E - Realistic Image Synthesis Engine   " << std::endl;
+		std::cout << "              v." << major  << "." << minor << "." << revision << " build " << build << std::endl;
+		std::cout << "      built on " << __DATE__ << " at " << __TIME__ << std::endl;
+		if( isdebug ) {
+			std::cout <<
+				     "             DEBUG version" << std::endl;
+		}
+		std::cout << "     (c) 2001-2006 Aravind Krishnaswamy        " << std::endl;
+		std::cout << "                                               " << std::endl;
+		std::cout << "===============================================" << std::endl;
 	}
-	std::cout << "     (c) 2001-2006 Aravind Krishnaswamy        " << std::endl;
-	std::cout << "                                               " << std::endl;
-	std::cout << "===============================================" << std::endl;
-	
+
+	// Agent mode: detach the GlobalLog stdout console sink so no
+	// PrintEasyEvent / PrintEx(eLog_Event,...) from scene-load or render
+	// interleaves with JSON-RPC responses on stdout.  GlobalLogPriv()->
+	// RemoveAllPrinters() drops BOTH default printers (the eLog_Console
+	// std::cout StreamPrinter AND the RISE_Log.txt file printer), so we
+	// re-install the file printer + a std::cerr console printer.  Net
+	// effect: file logging unchanged (RISE_Log.txt), warnings/errors/events
+	// go to stderr, and stdout carries protocol frames ONLY.  Non-agent
+	// logging is untouched.
+	if( agentMode ) {
+		GlobalLogPriv()->RemoveAllPrinters();
+		{
+			std::ofstream* fs = new std::ofstream( "RISE_Log.txt" );
+			Implementation::StreamPrinter* pFile =
+				new Implementation::StreamPrinter( fs, true, true );
+			GlobalLog()->PrintNew( pFile, __FILE__, __LINE__, "agent-mode file printer" );
+			GlobalLogPriv()->AddPrinter( pFile );
+			safe_release( pFile );
+
+			Implementation::StreamPrinter* pErr =
+				new Implementation::StreamPrinter( &std::cerr, true, eLog_Console, false );
+			GlobalLog()->PrintNew( pErr, __FILE__, __LINE__, "agent-mode stderr console printer" );
+			GlobalLogPriv()->AddPrinter( pErr );
+			safe_release( pErr );
+		}
+	}
+
 	// Lets get this job rolling
 	IJobPriv* pJob = 0;
 	RISE_CreateJobPriv( &pJob );

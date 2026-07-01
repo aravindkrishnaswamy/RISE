@@ -20,7 +20,7 @@
 //      validate     {text}               -> {diagnostics:[{severity,code,message,offset,length}]}
 //      propose_patch{target,kind?,param,value} -> {applied,rawCode,message}
 //      render       {samples?}           -> {ok,width,height,meanR,meanG,meanB,message}
-//      read_image                        -> {png_base64:string,width,height}
+//      read_image                        -> {png_base64:string, byteLength:number}
 //
 //    Standard JSON-RPC error codes are honoured: -32700 parse error,
 //    -32600 invalid request, -32601 method not found, -32602 invalid

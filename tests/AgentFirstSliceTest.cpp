@@ -341,6 +341,28 @@ int main()
 		Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
 		       "missing required param -> error.code == -32602" );
 	}
+	{
+		// Envelope missing "method" but with a determinable id -> -32600
+		// Invalid Request, and the id is ECHOED (the spec: on an Invalid
+		// Request whose id is recoverable, echo it rather than nulling it).
+		const std::string resp = rpc.HandleLine( "{\"jsonrpc\":\"2.0\",\"id\":5}" );
+		JsonValue env; std::string err;
+		Check( JsonParse( resp, env, err ), "the -32600 (missing method) response is itself valid JSON" );
+		Check( env.get( "error" ).get( "code" ).asNumber() == -32600.0,
+		       "missing 'method' -> error.code == -32600 (Invalid Request)" );
+		Check( env.get( "id" ).asNumber( -999 ) == 5.0,
+		       "missing 'method' -> id is echoed (id:5, determinable)" );
+	}
+	{
+		// A non-object envelope (a JSON array) -> -32600 Invalid Request with
+		// id:null (no id is determinable from a non-object).
+		const std::string resp = rpc.HandleLine( "[1,2,3]" );
+		JsonValue env; std::string err;
+		Check( JsonParse( resp, env, err ), "the -32600 (non-object) response is itself valid JSON" );
+		Check( env.get( "error" ).get( "code" ).asNumber() == -32600.0,
+		       "non-object envelope -> error.code == -32600 (Invalid Request)" );
+		Check( env.get( "id" ).isNull(), "non-object envelope -> id is null (un-attributable)" );
+	}
 
 	std::printf( "=== AgentFirstSliceTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

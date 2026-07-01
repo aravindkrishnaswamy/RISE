@@ -19,6 +19,7 @@
 #include "Json.h"
 #include "SchemaGen.h"
 
+#include <cmath>
 #include <exception>
 #include <string>
 #include <vector>
@@ -234,7 +235,14 @@ namespace RISE
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
 					int samples = -1;
 					if( const JsonValue* sm = params.find( "samples" ) ) {
-						if( sm->isNumber() ) samples = static_cast<int>( sm->asNumber() );
+						if( sm->isNumber() ) {
+							// Guard the cast: static_cast<int>(inf/nan) is UB.  A
+							// hostile {"samples":1e999} parses to +inf -- reject it
+							// as invalid params rather than invoking the cast.
+							if( !std::isfinite( sm->asNumber() ) )
+								return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a finite number" );
+							samples = static_cast<int>( sm->asNumber() );
+						}
 						else if( !sm->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a number" );
 					}
@@ -251,7 +259,7 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// read_image -> {png_base64:string,width,height}
+				// read_image -> {png_base64:string, byteLength:number}
 				//   Reads the LAST successful render's cached PNG bytes and
 				//   base64-encodes them so the binary travels in JSON.
 				//--------------------------------------------------------------
