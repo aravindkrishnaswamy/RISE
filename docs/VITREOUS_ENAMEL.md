@@ -701,12 +701,27 @@ spectral-bundle-bias notes in CLAUDE.md.)
 > per-channel colour for RGB — verified the colored case stays colored, *not*
 > desaturated). New `tests/VolumeAbsorptionAttenuationTest.cpp` (gray RGB / colored RGB
 > / NM) asserts exp(−σ_a·d); fails on the old tree, passes now; full suite 142/142,
-> clean build. The **HWSS twin** (the `SampledWavelengths::N` escapeTr block) carries
-> the same double-count and is **deliberately deferred to G1** (fixed *with* the hero-
-> wavelength spectral reweighting; the hero renders non-HWSS NM, so HWSS is not on the
-> render path). The deterministic post-scatter env evals (`TrEsc`) are **not** part of
-> this bug — they are one-shot directional evaluations where the full transmittance is
-> correct (verified, left untouched).
+> clean build. The deterministic post-scatter env evals (`TrEsc`, ~3269/~4365) are
+> **not** part of this bug — one-shot directional evaluations where the full
+> transmittance is correct (3 fresh reviewers independently confirmed; left untouched).
+>
+> **Review-loop findings (3 fresh reviewers, all zero-P1 on the committed fix):**
+> - **HWSS: 4 sites, latent-but-reachable.** The same double-count is at **four** HWSS
+>   sites (`IntegrateFromHitHWSS` surface-hit + escape; `IntegrateRayHWSS` camera
+>   surface-hit ~4404 + escape ~4419), not one. **Deferred to G1** because the correct
+>   HWSS weight needs the **hero/sampling-channel survival pdf** (not `PTTrReduced` of a
+>   per-wavelength scalar, which is identity) — that's the spectral free-flight
+>   reweighting G1 builds. *Correction:* HWSS **is** reachable in production via the
+>   `useHWSS` flag, so this is latent-but-reachable, not "off the render path"; the hero
+>   simply renders non-HWSS NM. All four sites are now marked in code.
+> - **Blast radius — same analog no-scatter double-count in sibling integrators**
+>   (verified): **BDPT** generators (`beta = beta * Tr` at BDPTIntegrator.cpp ~1800
+>   eye-subpath, ~5208 light-subpath), inherited transitively by **VCM and MLT-spectral**
+>   (shared `GenerateEye/LightSubpath`); and **RayCaster** (RGB ~801/814/860, NM
+>   ~1324/1336/1381). Same `Tr/PTTrReduced(Tr)` shape of fix, but BDPT touches the
+>   dVCM/dVC MIS machinery → its own careful increment. **Scheduled: Increment 1b
+>   (BDPT/VCM/MLT) and Increment 1c (RayCaster); HWSS folded into G1.** Per the project
+>   principle these are fixed, not left.
 
 ### 10.4 Units & scene-scale for σ — RESOLVED: inverse scene units (P2)
 **Settled by the code:** `HomogeneousMedium::EvalTransmittance` evaluates
