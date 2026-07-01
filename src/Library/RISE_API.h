@@ -64,6 +64,7 @@
 #include "Interfaces/IShaderOpManager.h"
 #include "Interfaces/IPhaseFunction.h"
 #include "Interfaces/IMedium.h"
+#include "Interfaces/IFunction1D.h"
 #include "Interfaces/ITriangleMeshGeometry.h"
 #include "Interfaces/ITriangleMeshLoader.h"
 #include "Interfaces/ITwoColorOperator.h"
@@ -3227,6 +3228,23 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const RISEPel& sigma_a,				///< [in] Absorption coefficient
 								const RISEPel& sigma_s,				///< [in] Scattering coefficient
 								const RISEPel& emission,			///< [in] Volumetric emission
+								const IPhaseFunction& phase			///< [in] Phase function for scattering
+								);
+
+	//! Creates a homogeneous participating medium with optional
+	//! per-wavelength coefficient curves for the spectral (NM) path
+	//! (G1, vitreous enamel).  \a sigma_a_spectral / \a sigma_s_spectral
+	//! may be null; when both are null the medium is byte-identical to
+	//! RISE_API_CreateHomogeneousMediumWithEmission.  The RGB triples
+	//! drive the RGB/preview path; the curves drive the spectral path.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHomogeneousMediumSpectral(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& sigma_a,				///< [in] Absorption coefficient (RGB preview)
+								const RISEPel& sigma_s,				///< [in] Scattering coefficient (RGB preview)
+								const RISEPel& emission,			///< [in] Volumetric emission
+								const IFunction1D* sigma_a_spectral,///< [in] sigma_a(lambda) curve, or null
+								const IFunction1D* sigma_s_spectral,///< [in] sigma_s(lambda) curve, or null
 								const IPhaseFunction& phase			///< [in] Phase function for scattering
 								);
 

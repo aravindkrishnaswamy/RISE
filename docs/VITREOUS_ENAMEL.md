@@ -993,6 +993,52 @@ approximation, which the principle rejects.)
 > reviewers zero-P1. (P2: case P (NM gray) is a no-regression check, not a discriminator —
 > case O carries the discrimination.)
 
+### 10.13 G1 spectral medium — storage/eval design, authored via named `IFunction1D` curves (LOCKED; G1-a DONE)
+> **Design locked 2026-07-01; G1-a increment DONE.** The spectral-medium build (G1) is
+> decomposed into four independently-reviewed increments:
+> - **G1-a — spectral storage + evaluation in `HomogeneousMedium` (DONE).** The medium gains
+>   two optional `const IFunction1D*` coefficient curves — `m_sigma_a_spectral`,
+>   `m_sigma_s_spectral` (nullable, ref-counted). When either is non-null, `GetCoefficientsNM`
+>   evaluates genuine `σ_a(λ)`/`σ_s(λ)` (a null sibling contributes 0 for that coefficient —
+>   a pure-absorber colorant leaves the scattering curve null). `SampleDistanceNM` and
+>   `EvalTransmittanceNM` were re-routed through `GetCoefficientsNM(ray.origin, nm).sigma_t`
+>   so sampling / transmittance / distance-pdf can never drift; the inherited IMedium
+>   `SampleDistanceWithPdfNM` / `EvalDistancePdfNM` already route through `GetCoefficientsNM`
+>   so they became spectral for free. **When both curves are null the NM path is
+>   byte-identical to pre-G1** (`GetCoefficientsNM` returns `Luminance(m_sigma_t)` exactly as
+>   before; the whole suite stays green as the proof). The **RGB path**
+>   (`GetCoefficients`/`EvalTransmittance`/`SampleDistance`) is **untouched** — the RGB
+>   triples remain the interactive/preview representation; the curves drive only the spectral
+>   path. New factory `RISE_API_CreateHomogeneousMediumSpectral`. Unit test
+>   `VolumeSpectralCoefficientsTest` (17 assertions): curve-driven coefficients, chromatic
+>   `Tr(650) ≫ Tr(550)`, pure-absorber `σ_s=0`, wavelength-independent luminance fallback,
+>   and a 400k-sample `SampleDistanceNM` scatter-probability match to `1−exp(−σ_t(λ)·maxDist)`.
+> - **The authoring primitive is the existing named `IFunction1D`** (the §10.7 "coordinate-free
+>   spectral curve", `λ→value`, exactly what `Function1DSpectralPainter` already wraps) — **not**
+>   a surface `IScalarPainter` (queried at a surface hit, wrong measure for a volume event) and
+>   **not** a new type. A measured transmittance curve becomes `σ_a(λ) = −ln T(λ)/d` (§10.4
+>   inverse scene units) authored as control points; `PiecewiseLinearFunction::Evaluate`
+>   clamps to endpoint values outside the sampled range, so a finite measured curve is safe at
+>   the 360–830 nm sampler extremes (no extrapolation blow-up). Homogeneous ⇒ position ignored,
+>   so the hero's thickness gradient stays *geometry* (the domed substrate, §2.1), authored once
+>   as a position-independent `σ(λ)`.
+> - **G1-b — authoring path (parser + `IJob`/`Job`).** `homogeneous_medium` chunk gains optional
+>   `sigma_a_spectral`/`sigma_s_spectral` reference params (resolved via `GetFunction1Ds()->GetItem`,
+>   mirroring `scalar_painter`'s `function1d` form) → new `Job`/`IJob` adder → the new factory.
+> - **G1-c — HWSS free-flight reweighting.** The 4 HWSS no-scatter sites (`throughputComp[w] *= Tr`,
+>   `PathTracingIntegrator.cpp` ~3778/3796/4442/4464) still carry the analog double-count deferred
+>   from the §10.12 family — with wavelength-dependent σ they need the **hero/sampling-channel
+>   survival pdf** as the denominator (not `PTTrReduced` of a scalar, which is identity). Off the
+>   hero's render path (hero renders non-HWSS NM) but a real bug closed for completeness.
+> - **G1-d — measured gold-ruby `σ_a(λ)` + analytic-slab gate + hero scene.** Extends the §10.3
+>   analytic Beer slab into a spectral discriminator (a wavelength-selective curve must reproduce
+>   `exp(−σ_a(λ)·d)` per wavelength) and lands the first real colorant curve.
+> **RGB-preview honesty (not a cut corner):** spectral→RGB downsampling of a Beer medium is
+> nonlinear (`⟨exp(−σd)⟩ ≠ exp(−⟨σ⟩d)`), so the RGB triples stay an author-set *preview*
+> approximation rather than an auto-integrated value; the fidelity deliverable is the spectral
+> path, which is exact. Auto-deriving a preview RGB from the curve (via `SpectralPacket::GetXYZ`)
+> is a possible later polish, tracked but not gating the hero.
+
 ---
 
 ## 11. Re-examination against the project principle (2026-06-30)

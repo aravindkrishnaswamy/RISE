@@ -7154,6 +7154,26 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_CreateHomogeneousMediumSpectral(
+								IMedium** ppi,
+								const RISEPel& sigma_a,
+								const RISEPel& sigma_s,
+								const RISEPel& emission,
+								const IFunction1D* sigma_a_spectral,
+								const IFunction1D* sigma_s_spectral,
+								const IPhaseFunction& phase
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new HomogeneousMedium( sigma_a, sigma_s, emission,
+			sigma_a_spectral, sigma_s_spectral, phase );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "homogeneous medium (spectral)" );
+		return true;
+	}
+
 	/// Helper to create a volume accessor from a type character
 	static IVolumeAccessor* MediumVolumeAccessorFromChar( const char accessor )
 	{
