@@ -987,6 +987,9 @@
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiSceneParser.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Parsers\ChunkParserRegistry.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiScriptParser.cpp">
       <Filter>Parser</Filter>
     </ClCompile>

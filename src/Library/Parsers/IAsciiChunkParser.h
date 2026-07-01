@@ -19,6 +19,7 @@
 #define IASCII_CHUNKPARSER_
 
 #include <vector>
+#include <string>
 
 #include "ChunkDescriptor.h"
 #include "../Utilities/RString.h"
@@ -97,7 +98,24 @@ namespace RISE
 	// same thread) -- the redesign's edit -> re-derive loop runs DeriveToJob
 	// repeatedly. Without it, deriving scene A then scene B can give B a Job that
 	// a fresh parse of B would not (e.g. spurious energy-auto-scaled painters).
-	void ClearChunkParserState();
+	//
+	// `resetTopLevelState` mirrors the private ClearParseState(bool): the legacy
+	// streaming loader passes `false` on a recursive `> load` / `> run` parse so
+	// the camera-name dedup set + the QMC `hal()` sequence survive across the
+	// nested file, and the default `true` (used by the CST derive path and every
+	// top-level parse) resets them.  Splitting the shared registry into its own
+	// translation unit moved the private ClearParseState out of
+	// AsciiSceneParser.cpp's reach, so the streaming loader now routes its
+	// recursive-parse reset through this wrapper.
+	void ClearChunkParserState( bool resetTopLevelState = true );
+
+	// Returns the camera name the most recent camera-chunk Finalize allocated
+	// (the private ChunkParsers::LastAllocatedCameraName).  The streaming
+	// loader's OnEntityChunkFinalized reads it to key an unnamed camera's source
+	// span under the same auto-allocated name the runtime scene uses.  Exposed
+	// here because splitting the shared registry into its own translation unit
+	// put the private accessor out of AsciiSceneParser.cpp's reach.
+	const std::string& LastAllocatedCameraName();
 }
 
 #endif

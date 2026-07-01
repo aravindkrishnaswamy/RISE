@@ -290,6 +290,7 @@
     <ClCompile Include="..\..\..\src\Library\Painters\Voronoi3DPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiCommandParser.cpp" />
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiSceneParser.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Parsers\ChunkParserRegistry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiScriptParser.cpp" />
     <ClCompile Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.cpp" />
     <ClCompile Include="..\..\..\src\Library\Parsers\RawTokenCapture.cpp" />

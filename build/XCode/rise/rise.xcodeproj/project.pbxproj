@@ -451,6 +451,7 @@
 		F24B733C2F52A632008304C4 /* AsciiCommandParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0950069C42900069C9E5 /* AsciiCommandParser.cpp */; };
 		F24B733D2F52A632008304C4 /* AsciiCommandParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0951069C42900069C9E5 /* AsciiCommandParser.h */; };
 		F24B733E2F52A632008304C4 /* AsciiSceneParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0952069C42900069C9E5 /* AsciiSceneParser.cpp */; };
+		F24B733E2F52A632008304FFF /* ChunkParserRegistry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0952069C42900069CFFF /* ChunkParserRegistry.cpp */; };
 		F24B733F2F52A632008304C4 /* AsciiSceneParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0953069C42900069C9E5 /* AsciiSceneParser.h */; };
 		F24B73402F52A632008304C4 /* AsciiScriptParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0954069C42900069C9E5 /* AsciiScriptParser.cpp */; };
 		F24B73412F52A632008304C4 /* AsciiScriptParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0955069C42900069C9E5 /* AsciiScriptParser.h */; };
@@ -1163,6 +1164,7 @@
 		F27F0BB3069C42910069C9E5 /* AsciiCommandParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0950069C42900069C9E5 /* AsciiCommandParser.cpp */; };
 		F27F0BB4069C42910069C9E5 /* AsciiCommandParser.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0951069C42900069C9E5 /* AsciiCommandParser.h */; };
 		F27F0BB5069C42910069C9E5 /* AsciiSceneParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0952069C42900069C9E5 /* AsciiSceneParser.cpp */; };
+		F27F0BB5069C42910069CFFF /* ChunkParserRegistry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0952069C42900069CFFF /* ChunkParserRegistry.cpp */; };
 		F27F0BB6069C42910069C9E5 /* AsciiSceneParser.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0953069C42900069C9E5 /* AsciiSceneParser.h */; };
 		F27F0BB7069C42910069C9E5 /* AsciiScriptParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0954069C42900069C9E5 /* AsciiScriptParser.cpp */; };
 		F27F0BB8069C42910069C9E5 /* AsciiScriptParser.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0955069C42900069C9E5 /* AsciiScriptParser.h */; };
@@ -2321,6 +2323,7 @@
 		F27F0950069C42900069C9E5 /* AsciiCommandParser.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AsciiCommandParser.cpp; sourceTree = "<group>"; };
 		F27F0951069C42900069C9E5 /* AsciiCommandParser.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AsciiCommandParser.h; sourceTree = "<group>"; };
 		F27F0952069C42900069C9E5 /* AsciiSceneParser.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AsciiSceneParser.cpp; sourceTree = "<group>"; };
+		F27F0952069C42900069CFFF /* ChunkParserRegistry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ChunkParserRegistry.cpp; sourceTree = "<group>"; };
 		F27F0953069C42900069C9E5 /* AsciiSceneParser.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AsciiSceneParser.h; sourceTree = "<group>"; };
 		F27F0954069C42900069C9E5 /* AsciiScriptParser.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AsciiScriptParser.cpp; sourceTree = "<group>"; };
 		F27F0955069C42900069C9E5 /* AsciiScriptParser.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AsciiScriptParser.h; sourceTree = "<group>"; };
@@ -3549,6 +3552,7 @@
 				F27F0950069C42900069C9E5 /* AsciiCommandParser.cpp */,
 				F27F0951069C42900069C9E5 /* AsciiCommandParser.h */,
 				F27F0952069C42900069C9E5 /* AsciiSceneParser.cpp */,
+				F27F0952069C42900069CFFF /* ChunkParserRegistry.cpp */,
 				F27F0953069C42900069C9E5 /* AsciiSceneParser.h */,
 				F27F0954069C42900069C9E5 /* AsciiScriptParser.cpp */,
 				F27F0955069C42900069C9E5 /* AsciiScriptParser.h */,
@@ -5057,6 +5061,7 @@
 				F2C5D58F2F6ED30E00546C97 /* SubSurfaceScatteringSPF.cpp in Sources */,
 				F27F0BB3069C42910069C9E5 /* AsciiCommandParser.cpp in Sources */,
 				F27F0BB5069C42910069C9E5 /* AsciiSceneParser.cpp in Sources */,
+				F27F0BB5069C42910069CFFF /* ChunkParserRegistry.cpp in Sources */,
 				F27F0BB7069C42910069C9E5 /* AsciiScriptParser.cpp in Sources */,
 				F27F0BB9069C42910069C9E5 /* MathExpressionEvaluator.cpp in Sources */,
 				FECC0001000000000000F005 /* RawTokenCapture.cpp in Sources */,
@@ -5681,6 +5686,7 @@
 				F24B733C2F52A632008304C4 /* AsciiCommandParser.cpp in Sources */,
 				F24B733D2F52A632008304C4 /* AsciiCommandParser.h in Sources */,
 				F24B733E2F52A632008304C4 /* AsciiSceneParser.cpp in Sources */,
+				F24B733E2F52A632008304FFF /* ChunkParserRegistry.cpp in Sources */,
 				F24B733F2F52A632008304C4 /* AsciiSceneParser.h in Sources */,
 				F24B73402F52A632008304C4 /* AsciiScriptParser.cpp in Sources */,
 				F24B73412F52A632008304C4 /* AsciiScriptParser.h in Sources */,
