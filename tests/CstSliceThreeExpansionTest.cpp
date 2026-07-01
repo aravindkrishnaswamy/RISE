@@ -42,6 +42,8 @@
 #include "../src/Library/Interfaces/IGeometry.h"
 #include "../src/Library/SceneEditor/MediaIntrospection.h"
 #include "../src/Library/Interfaces/IFilm.h"
+#include "../src/Library/Interfaces/IRasterizer.h"
+#include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/Cst/Cst.h"
 
 using namespace RISE;
@@ -150,6 +152,16 @@ static bool Mat16Eq( const double a[16], const double b[16] )
 static unsigned int FilmW( Job& j )  { const IScene* s = j.GetScene(); const IFilm* f = s ? s->GetFilm() : 0; return f ? f->GetWidth()  : 0u; }
 static unsigned int FilmH( Job& j )  { const IScene* s = j.GetScene(); const IFilm* f = s ? s->GetFilm() : 0; return f ? f->GetHeight() : 0u; }
 static double       FilmPAR( Job& j ){ const IScene* s = j.GetScene(); const IFilm* f = s ? s->GetFilm() : 0; return f ? (double)f->GetPixelAR() : -999.0; }
+
+// The ACTIVE rasterizer's canonical FrameStore width -- the actual user-visible "how many pixels does the
+// interactive preview burn" property (SetViewportFit shrinks the film, which shrinks the pushed FrameStore).
+// 0 if there's no active rasterizer or it has no FrameStore.
+static unsigned int RasterFrameStoreW( Job& j )
+{
+	IRasterizer* r = j.GetRasterizer();
+	const Implementation::FrameStore* fs = r ? r->GetFrameStore() : 0;
+	return fs ? (unsigned int)fs->Width() : 0u;
+}
 
 // The serialized retained Document as a string ("" if none).
 static std::string DocText( Job& j )
@@ -1244,7 +1256,11 @@ int main()
 		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
 		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
 		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
-		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"
+		       // A shader + rasterizer chunk so GetRasterizer() is non-null and owns a canonical FrameStore -- lets us
+		       // assert the FrameStore (not just the film) is re-fit after a D2 (the real "burns full-res pixels" prop).
+		       "standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n"
+		       "pathtracing_pel_rasterizer\n{\nsamples 1\npixel_filter box\noidn_denoise false\n}\n"; }
 
 		Job* j = new Job();
 		Check( j->LoadAsciiSceneViaCst( tvf ), "VFIT: loads large (1920x1080) variant scene via CST" );
@@ -1254,6 +1270,8 @@ int main()
 		Check( j->SetViewportFit( 800, 450, 800 ), "VFIT: SetViewportFit(800,450,800) succeeds" );
 		Check( FilmW( *j ) == 800u, "VFIT: the LIVE film is now screen-FIT (width 800, not 1920)" );
 		Check( FilmW( *j ) < 1920u, "VFIT: fit width is strictly below authored 1920" );
+		// The ACTIVE rasterizer's canonical FrameStore -- the actual pixel budget the preview burns -- is fit-sized too.
+		Check( RasterFrameStoreW( *j ) == 800u, "VFIT: the active rasterizer's FrameStore is screen-FIT (width 800) after the initial fit" );
 
 		// D2 via a MATERIAL edit (variant scene -> full re-derive).  Route through the controller (self-rebinds).
 		SceneEditController c( *j, 0 );
@@ -1261,11 +1279,16 @@ int main()
 		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "VFIT: material edit applies (D2)" );
 		Check( FilmW( *j ) < 1920u, "VFIT: the film is STILL screen-FIT after the material D2 (re-fit re-applied, not reverted to 1920)" );
 		Check( FilmW( *j ) == 800u, "VFIT: post-D2 film is exactly the 800-wide fit" );
+		// The active rasterizer's FrameStore -- the real user-visible pixel budget -- must ALSO stay fit (800), not the
+		// authored 1920.  This LOCKS the property the film-only asserts above only proxy.  RED-PROVE: disable the
+		// D2-tail re-fit in Job.cpp (`if( false && mHasViewportFit )`) -> the FrameStore reverts to 1920 and this fails.
+		Check( RasterFrameStoreW( *j ) == 800u, "VFIT: the active rasterizer's FrameStore is STILL fit (width 800, not 1920) after the material D2" );
 
 		// D2 via a VARIANT SWITCH (RederiveCstWithVariant).  Same re-fit tail.
 		Check( j->RederiveCstWithVariant( "none" ), "VFIT: variant switch re-derive succeeds" );
 		Check( FilmW( *j ) < 1920u, "VFIT: the film is STILL screen-FIT after the variant-switch D2" );
 		Check( FilmW( *j ) == 800u, "VFIT: post-variant-switch film is exactly the 800-wide fit" );
+		Check( RasterFrameStoreW( *j ) == 800u, "VFIT: the active rasterizer's FrameStore is STILL fit (width 800, not 1920) after the variant-switch D2" );
 
 		// DOCUMENT-UNCHANGED: the retained CST Document must STILL declare the AUTHORED 1920x1080 -- the viewport
 		// fit is LIVE-ONLY and must NOT leak into the Document (save-correctness).
