@@ -333,6 +333,15 @@ bool RayCaster::CastRay(
 	const IObject* pMediumObject = 0;
 	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
 
+	// G6: stamp the ambient (incident-medium) IOR so a GGX conductor shaded via
+	// the RayCaster shader path sees the surrounding medium's IOR rather than
+	// hardcoded air.  Read before SetCurrentObject (which does not push).  Guard
+	// to air (1.0).
+	{
+		const Scalar ambIOR = ior_stack.top();
+		ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+	}
+
 	if( pMedium )
 	{
 		const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
@@ -981,6 +990,15 @@ bool RayCaster::CastRayNM(
 	// Medium transport (spectral variant)
 	const IObject* pMediumObject = 0;
 	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
+
+	// G6: stamp the ambient (incident-medium) IOR (per-wavelength n(λ) in NM) so
+	// a GGX conductor shaded via the RayCaster spectral shader path uses the
+	// surrounding medium's IOR rather than hardcoded air.  Read before
+	// SetCurrentObject (which does not push).  Guard to air (1.0).
+	{
+		const Scalar ambIOR = ior_stack.top();
+		ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+	}
 
 	if( pMedium )
 	{

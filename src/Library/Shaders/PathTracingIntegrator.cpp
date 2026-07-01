@@ -1792,6 +1792,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
 			iorStack, &scene, pMediumObject );
 
+		// G6: stamp the ambient (incident-medium) IOR from the stack so the GGX
+		// conductor Fresnel evaluated in BOTH SPF::Scatter and BRDF::value sees
+		// the surrounding medium (e.g. enamel glass) rather than hardcoded air.
+		// Read BEFORE SetCurrentObject so top() is the medium the ray was
+		// travelling through.  Guard a non-positive stack top to air (1.0).
+		{
+			const Scalar ambIOR = iorStack.top();
+			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+		}
+
 		// Apply intersection modifier (bump maps etc.)
 		if( ri.pModifier ) {
 			ri.pModifier->Modify( ri.geometric );
@@ -3792,6 +3802,15 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		const IObject* pMediumObject = 0;
 		const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
 			iorStack, &scene, pMediumObject );
+
+		// G6 (HWSS): stamp the ambient (incident-medium) IOR from the stack
+		// (per-wavelength n(λ) in the spectral path) so the GGX conductor Fresnel
+		// in SPF::ScatterNM and BRDF::valueNM sees the surrounding medium rather
+		// than hardcoded air.  Read BEFORE SetCurrentObject; guard to air (1.0).
+		{
+			const Scalar ambIOR = iorStack.top();
+			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+		}
 
 		if( ri.pModifier ) {
 			ri.pModifier->Modify( ri.geometric );

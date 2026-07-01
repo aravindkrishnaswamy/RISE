@@ -1611,6 +1611,16 @@ namespace {
 				pMedObj_eye = pMedObj;
 				pMed_eye = pMed;
 
+				// G6: stamp the ambient (incident-medium) IOR so the conductor
+				// Fresnel in ScatterSPF (trace-time sampling below) uses the
+				// surrounding medium rather than hardcoded air.  IORStack::top()
+				// here is the medium the ray was travelling through (read before
+				// SetCurrentObject, which does not push).  Guard to air (1.0).
+				{
+					const Scalar ambIOR = iorStack.top();
+					ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+				}
+
 				if( pMed )
 				{
 					const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
@@ -5071,6 +5081,16 @@ unsigned int GenerateLightSubpathImpl(
 				iorStack, &scene, pMedObj );
 			pMedObj_light = pMedObj;
 			pMed_light = pMed;
+
+			// G6: stamp the ambient (incident-medium) IOR so the conductor
+			// Fresnel in ScatterSPF (light-subpath trace-time sampling) uses the
+			// surrounding medium rather than hardcoded air.  IORStack::top() here
+			// is the medium the ray was travelling through (read before
+			// SetCurrentObject, which does not push).  Guard to air (1.0).
+			{
+				const Scalar ambIOR = iorStack.top();
+				ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+			}
 
 			if( pMed )
 			{
