@@ -51,6 +51,32 @@ static const RISE::Scalar RC_RR_THRESHOLD = 0.01;
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	// Analog no-scatter survival weight (mirrors PathTracingIntegrator's
+	// PTSurvivalWeight).  HomogeneousMedium::SampleDistance{,NM} is an ANALOG
+	// estimator: reaching the surface / escaping WITHOUT a scatter event is a
+	// stochastic SURVIVAL outcome whose probability exp(-sigma_t_max * d)
+	// already carries the Beer-Lambert factor.  Distance sampling uses
+	// m_sigma_t_max = ColorMath::MaxValue(sigma_t), so the survival pdf is the
+	// MIN transmittance channel, MinValue(Tr) = exp(-sigma_t_max * d).
+	// Multiplying throughput by the full per-channel Tr again would
+	// double-count attenuation (a pure absorber would render exp(-2*sigma_a*d),
+	// ~2x too thick).  The correct weight is the chromatic ratio
+	// Tr / MinValue(Tr): the survival pdf cancels on the max-sigma_t channel
+	// (leaving 1 there) and >= 1 on the others so a COLOURED medium keeps its
+	// tint.  Deleting the `* Tr` entirely would be wrong (it desaturates).  A
+	// non-positive survival pdf means "no attenuation to apply" -> identity.
+	inline RISE::RISEPel RayCasterSurvivalWeight( const RISE::RISEPel& Tr )
+	{
+		const RISE::Scalar pdf = RISE::ColorMath::MinValue( Tr );
+		if( pdf > 0 ) {
+			return Tr * ( RISE::Scalar( 1 ) / pdf );
+		}
+		return RISE::RISEPel( 1, 1, 1 );
+	}
+}
+
 RayCaster::RayCaster(
 	const bool seeRadianceMap,
 	const unsigned int maxR,
@@ -796,9 +822,13 @@ bool RayCaster::CastRay(
 		// Apply shade by calling the appropriate shader
 		SelectShader( ri ).Shade( rc, ri, *this, rs, c, ior_stack );
 
-		// Apply medium transmittance to surface shading result
+		// Analog no-scatter survival weight (see RayCasterSurvivalWeight):
+		// reaching this surface without a scatter event is a survival outcome
+		// whose probability already carries Beer-Lambert, so weight by the
+		// chromatic ratio Tr/MinValue(Tr), NOT the full Tr (which would
+		// double-count attenuation).
 		if( pMedium ) {
-			c = c * pMedium->EvalTransmittance( ray, ri.geometric.range );
+			c = c * RayCasterSurvivalWeight( pMedium->EvalTransmittance( ray, ri.geometric.range ) );
 		}
 
 		if( distance ) {
@@ -809,9 +839,10 @@ bool RayCaster::CastRay(
 	} else if( pRadianceMap ) {
 		c = pRadianceMap->GetRadiance( ray, rast );
 
-		// Apply medium transmittance for background
+		// Analog no-scatter survival weight for the escape-to-background path
+		// (chromatic ratio Tr/MinValue(Tr), not full Tr — see above).
 		if( pMedium ) {
-			c = c * pMedium->EvalTransmittance( ray, RISE_INFINITY );
+			c = c * RayCasterSurvivalWeight( pMedium->EvalTransmittance( ray, RISE_INFINITY ) );
 		}
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadiance( ray, rast );
@@ -855,9 +886,10 @@ bool RayCaster::CastRay(
 			}
 		}
 
-		// Apply medium transmittance for environment
+		// Analog no-scatter survival weight for the escape-to-environment path
+		// (chromatic ratio Tr/MinValue(Tr), not full Tr — see above).
 		if( pMedium ) {
-			c = c * pMedium->EvalTransmittance( ray, RISE_INFINITY );
+			c = c * RayCasterSurvivalWeight( pMedium->EvalTransmittance( ray, RISE_INFINITY ) );
 		}
 
 		if( distance && bConsiderRMapAsBackground ) {
@@ -1319,10 +1351,13 @@ bool RayCaster::CastRayNM(
 		// Apply shade by calling the appropriate shader
 		c = SelectShader( ri ).ShadeNM( rc, ri, *this, rs, nm, ior_stack );
 
-		// Apply medium transmittance to surface shading result
-		if( pMedium ) {
-			c *= pMedium->EvalTransmittanceNM( ray, ri.geometric.range, nm );
-		}
+		// Analog no-scatter survival: reaching this surface without a scatter
+		// event is a survival outcome whose probability exp(-sigma_t*d) already
+		// carries Beer-Lambert.  For a single-wavelength (NM) sample the survival
+		// pdf IS the transmittance on that channel, so the survival weight
+		// Tr/PTTrReduced(Tr) == Tr/Tr == 1.  Multiplying by EvalTransmittanceNM
+		// here would double-count attenuation (render exp(-2*sigma_a*d)); the
+		// correct weight is unity, so no transmittance is applied.
 
 		if( distance ) {
 			*distance = ri.geometric.range;
@@ -1332,9 +1367,9 @@ bool RayCaster::CastRayNM(
 	} else if( pRadianceMap ) {
 		c = pRadianceMap->GetRadianceNM( ray, rast, nm );
 
-		if( pMedium ) {
-			c *= pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
-		}
+		// Analog no-scatter survival weight == 1 for a single NM channel — the
+		// escape survival pdf already carries Beer-Lambert (see above); do NOT
+		// re-apply EvalTransmittanceNM (that would double-count).
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadianceNM( ray, rast, nm );
 
@@ -1377,9 +1412,9 @@ bool RayCaster::CastRayNM(
 			}
 		}
 
-		if( pMedium ) {
-			c *= pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
-		}
+		// Analog no-scatter survival weight == 1 for a single NM channel — the
+		// escape-to-environment survival pdf already carries Beer-Lambert (see
+		// above); do NOT re-apply EvalTransmittanceNM (that would double-count).
 
 		if( distance && bConsiderRMapAsBackground ) {
 			*distance = RISE_INFINITY;
