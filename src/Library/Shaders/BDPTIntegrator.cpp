@@ -980,41 +980,68 @@ namespace {
 	/// surface (or escapes) WITHOUT a medium scatter event.  Mirrors
 	/// PathTracingIntegrator's PTSurvivalWeight exactly.
 	///
-	/// HomogeneousMedium::SampleDistance is an ANALOG estimator:
-	/// sampling a free-flight distance PAST the surface (i.e. "no
-	/// scatter") is a stochastic SURVIVAL outcome whose probability is
-	/// exp(-sigma_t_max * d) -- that probability already carries the
-	/// Beer-Lambert factor.  Multiplying beta by the full transmittance
-	/// Tr = exp(-sigma_t * d) AGAIN double-counts attenuation (a pure
-	/// absorber would render exp(-2*sigma_a*d), the slab ~2x too thick).
-	/// The correct weight is the per-channel chromatic ratio
-	///   Tr / MinValue(Tr):
-	/// the survival pdf (= the max-sigma_t channel of Tr, i.e.
-	/// exp(-sigma_t_max*d)) cancels, leaving 1 on that channel and >= 1 on
-	/// the others so a COLOURED medium keeps its tint.  For monochrome/NM
-	/// (single wavelength, where Tr is scalar and MinValue is the identity)
-	/// this reduces to exactly 1 -- the survival event carries all the
-	/// attenuation and no throughput factor is applied.  This is the SAME
-	/// analog convention BDPT already uses in ComputeMediumScatterWeight
-	/// (Tr * sigma_s / (max(sigma_t) * MinValue(Tr))), minus the
-	/// sigma_s/sigma_t scatter factor.
+	/// SampleDistance is an ANALOG estimator: sampling a free-flight
+	/// distance PAST the surface (i.e. "no scatter") is a stochastic
+	/// SURVIVAL outcome whose probability already carries the Beer-Lambert
+	/// factor.  Multiplying beta by the full transmittance Tr AGAIN
+	/// double-counts attenuation (a pure absorber would render
+	/// exp(-2*sigma_a*d), the slab ~2x too thick).  The correct weight is
+	/// Tr / pSurvival, where pSurvival is the DETERMINISTIC no-scatter
+	/// survival pdf from IMedium::EvalDistancePdf[NM]( ray, dist,
+	/// /*scattered=*/false, dist ).
 	///
-	/// Guard: the Pel overload divides by MinValue(Tr) only when it is
-	/// > 0 (matching the scatter branch's Tr_scalar > 0 guard); a
-	/// non-positive survival pdf means "no attenuation to apply", so
-	/// return the value-type multiplicative identity.  NM: the scalar
-	/// overload is unconditionally the identity 1.
-	inline RISEPel BDPTSurvivalWeight( const RISEPel& Tr )
+	/// Why the deterministic pdf and NOT MinValue(EvalTransmittance): for a
+	/// HomogeneousMedium the two are identical -- EvalDistancePdf(false)
+	/// returns exp(-sigma_t_max*d) = MinValue(Tr) (Pel), and
+	/// EvalDistancePdfNM(false) returns exp(-sigma_t(nm)*d) =
+	/// EvalTransmittanceNM (so the NM weight is exactly 1, byte-identical to
+	/// the previous unconditional identity).  For a HeterogeneousMedium,
+	/// EvalTransmittance is a STOCHASTIC ratio-tracking estimate, so
+	/// MinValue(EvalTransmittance) would be a random denominator (a biased
+	/// ratio-of-random-estimates); HeterogeneousMedium overrides
+	/// EvalDistancePdf[NM] with a deterministic Simpson optical depth, so
+	/// Tr / pSurvival is the correct unbiased no-scatter weight there.
+	///
+	/// Guard: divide only when pSurvival > 0 (a non-positive survival pdf
+	/// means "no attenuation to apply"); otherwise return the value-type
+	/// multiplicative identity.
+	inline RISEPel BDPTSurvivalWeight( const RISEPel& Tr, const Scalar pSurvival )
 	{
-		const Scalar pdf = ColorMath::MinValue( Tr );
-		if( pdf > 0 ) {
-			return Tr * ( Scalar( 1 ) / pdf );
+		if( pSurvival > 0 ) {
+			return Tr * ( Scalar( 1 ) / pSurvival );
 		}
 		return RISEPel( 1, 1, 1 );
 	}
-	inline Scalar BDPTSurvivalWeight( const Scalar /*Tr*/ )
+	inline Scalar BDPTSurvivalWeight( const Scalar Tr, const Scalar pSurvival )
 	{
+		if( pSurvival > 0 ) {
+			return Tr / pSurvival;
+		}
 		return Scalar( 1 );
+	}
+
+	/// Deterministic no-scatter survival pdf: the denominator of
+	/// BDPTSurvivalWeight.  Pel routes to EvalDistancePdf, NM to
+	/// EvalDistancePdfNM.  For HomogeneousMedium this equals MinValue(Tr)
+	/// (Pel) / EvalTransmittanceNM (NM); for HeterogeneousMedium it is the
+	/// deterministic Simpson optical depth (NOT the stochastic
+	/// EvalTransmittance).
+	template<class Tag>
+	inline Scalar EvalNoScatterSurvivalPdf(
+		const IMedium& medium, const Ray& ray, const Scalar dist, const Tag& tag );
+
+	template<>
+	inline Scalar EvalNoScatterSurvivalPdf<PelTag>(
+		const IMedium& medium, const Ray& ray, const Scalar dist, const PelTag& )
+	{
+		return medium.EvalDistancePdf( ray, dist, /*scattered=*/false, dist );
+	}
+
+	template<>
+	inline Scalar EvalNoScatterSurvivalPdf<NMTag>(
+		const IMedium& medium, const Ray& ray, const Scalar dist, const NMTag& tag )
+	{
+		return medium.EvalDistancePdfNM( ray, dist, /*scattered=*/false, dist, tag.nm );
 	}
 
 	/// Scalar magnitude for the "transmittance effectively zero" early
@@ -1849,13 +1876,14 @@ namespace {
 						// surface WITHOUT a medium scatter event.  Under the
 						// analog estimator that "no scatter" outcome is itself
 						// a stochastic survival whose probability already
-						// carries Beer-Lambert (exp(-sigma_t_max*range));
+						// carries Beer-Lambert (via the analog survival pdf);
 						// multiplying beta by the full Tr again would
-						// double-count.  Apply the chromatic survival ratio
-						// Tr/MinValue(Tr) (= 1 for monochrome/NM) so a coloured
-						// medium keeps its tint without re-attenuating.
+						// double-count.  Apply the survival weight
+						// Tr / pSurvival (deterministic no-scatter survival pdf;
+						// = 1 for monochrome/NM homogeneous, correct for hetero).
 						const V Tr = EvalMediumTransmittance<Tag>( *pMed, currentRay, ri.geometric.range, tag );
-						beta = beta * BDPTSurvivalWeight( Tr );
+						const Scalar pSurvival = EvalNoScatterSurvivalPdf<Tag>( *pMed, currentRay, ri.geometric.range, tag );
+						beta = beta * BDPTSurvivalWeight( Tr, pSurvival );
 					}
 				}
 			}
@@ -1967,9 +1995,9 @@ namespace {
 					// This is a no-scatter SURVIVAL escape: the eye ray left the
 					// scene through the medium WITHOUT a scatter event, so under
 					// the analog estimator its survival probability already
-					// carries Beer-Lambert.  Apply the chromatic survival ratio
-					// Tr/MinValue(Tr) (= 1 for monochrome/NM) via BDPTSurvivalWeight
-					// rather than the full Tr, mirroring the surface-hit branch
+					// carries Beer-Lambert.  Apply the survival weight Tr /
+					// pSurvival (deterministic no-scatter survival pdf; = 1 for
+					// monochrome/NM homogeneous) rather than the full Tr, mirroring
 					// above and the PT escape fix (PTSurvivalWeight).  maxDist =
 					// RISE_INFINITY matches PT and the env-NEE convention (see
 					// ConnectAndEvaluate s=1 comment ~line 3520) exactly so a global
@@ -1984,7 +2012,8 @@ namespace {
 					V betaEsc = beta;
 					if( pMed_eye ) {
 						const V Tr = EvalMediumTransmittance<Tag>( *pMed_eye, currentRay, RISE_INFINITY, tag );
-						betaEsc = betaEsc * BDPTSurvivalWeight( Tr );
+						const Scalar pSurvival = EvalNoScatterSurvivalPdf<Tag>( *pMed_eye, currentRay, RISE_INFINITY, tag );
+						betaEsc = betaEsc * BDPTSurvivalWeight( Tr, pSurvival );
 					}
 					StoreThroughput<Tag>( vEnv, betaEsc );
 					if constexpr( Traits::is_nm ) {
@@ -5279,14 +5308,15 @@ unsigned int GenerateLightSubpathImpl(
 					// No-scatter SURVIVAL: the light subpath reached the surface
 					// WITHOUT a medium scatter event.  Same analog convention as
 					// the eye-subpath surface-hit branch -- the survival
-					// probability exp(-sigma_t_max*range) already carries
-					// Beer-Lambert, so apply the chromatic ratio Tr/MinValue(Tr)
-					// (= 1 for monochrome/NM), NOT the full Tr, or the medium
-					// reads ~2x too thick.  Must match the eye side so BDPT
-					// connections stay unbiased.
+					// probability already carries the analog
+					// Beer-Lambert, so apply the weight Tr / pSurvival (the
+					// deterministic no-scatter survival pdf), NOT the full Tr,
+					// or the medium reads ~2x too thick.  Must match the eye
+					// side so BDPT connections stay unbiased.
 					const V Tr = EvalMediumTransmittance<Tag>(
 						*pMed, currentRay, ri.geometric.range, tag );
-					beta = beta * BDPTSurvivalWeight( Tr );
+					const Scalar pSurvival = EvalNoScatterSurvivalPdf<Tag>( *pMed, currentRay, ri.geometric.range, tag );
+					beta = beta * BDPTSurvivalWeight( Tr, pSurvival );
 				}
 			}
 		}

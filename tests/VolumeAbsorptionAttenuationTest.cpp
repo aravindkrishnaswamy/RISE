@@ -594,6 +594,116 @@ static std::string BuildRGBSlabScene(
 	return ss.str();
 }
 
+//////////////////////////////////////////////////////////////////////
+// Heterogeneous interior-slab scene (cases O/P).  IDENTICAL slab geometry
+// / camera / env as BuildRGBScene, but the interior medium is a
+// painter_heterogeneous_medium with a CONSTANT (uniform) density field of
+// 1.0 over an AABB that exactly encloses the slab.  A constant density=1
+// reduces the heterogeneous medium to sigma_t(pt) = absorption (per
+// channel), so the analytic reference is the SAME Beer-Lambert
+// exp(-sigma_a[c]*d) as the homogeneous cases.
+//
+// The DISCRIMINATOR: HeterogeneousMedium::EvalTransmittance is STOCHASTIC
+// ratio tracking, so the OLD survival denominator MinValue(EvalTransmittance)
+// was a random estimate -> biased/noisy no-scatter weight.  The FIX uses the
+// DETERMINISTIC EvalDistancePdf(false) survival pdf, so the render converges
+// to the clean per-channel exp(-sigma_a[c]*d) with low variance.
+// REVERT-PROOF: temporarily restoring the MinValue(EvalTransmittance)
+// denominator makes THIS case bias/desaturate while cases A/B (homogeneous)
+// stay green (homogeneous EvalTransmittance is deterministic).
+//////////////////////////////////////////////////////////////////////
+
+static std::string BuildHeterogeneousSlabScene(
+	const std::string& rasterizerChunk,
+	double sa_r, double sa_g, double sa_b )
+{
+	std::ostringstream ss;
+	ss <<
+		"RISE ASCII SCENE 6\n"
+		"\n"
+		"uniformcolor_painter\n"
+		"{\n"
+		"\tname pnt_env\n"
+		"\tcolor 1.0 1.0 1.0\n"
+		"}\n"
+		"\n"
+		// Constant density field = 1.0 everywhere (luminance of white = 1).
+		"uniformcolor_painter\n"
+		"{\n"
+		"\tname dens_one\n"
+		"\tcolor 1.0 1.0 1.0\n"
+		"}\n"
+		"\n"
+		"standard_shader\n"
+		"{\n"
+		"\tname global\n"
+		"\tshaderop DefaultDirectLighting\n"
+		"}\n"
+		"\n"
+		<< rasterizerChunk <<
+		"\n"
+		"file_rasterizeroutput\n"
+		"{\n"
+		"\tpattern /tmp/volume_absorption_het_unused\n"
+		"\ttype PNG\n"
+		"\tbpp 8\n"
+		"\tcolor_space sRGB\n"
+		"}\n"
+		"\n"
+		"film\n"
+		"{\n"
+		"\twidth 16\n"
+		"\theight 16\n"
+		"}\n"
+		"\n"
+		"pinhole_camera\n"
+		"{\n"
+		"\tlocation 0 0 -5\n"
+		"\tlookat 0 0 0\n"
+		"\tup 0 1 0\n"
+		"\tfov 10.0\n"
+		"}\n"
+		"\n"
+		// AABB exactly encloses the 4x4x2 slab centred at origin.
+		"painter_heterogeneous_medium\n"
+		"{\n"
+		"\tname slab_abs\n"
+		"\tabsorption " << sa_r << " " << sa_g << " " << sa_b << "\n"
+		"\tscattering 0.0 0.0 0.0\n"
+		"\tphase isotropic\n"
+		"\tdensity_painter dens_one\n"
+		"\tresolution 8\n"
+		"\tcolor_to_scalar luminance\n"
+		"\tbbox_min -2.0 -2.0 -1.0\n"
+		"\tbbox_max 2.0 2.0 1.0\n"
+		"}\n"
+		"\n"
+		"perfectrefractor_material\n"
+		"{\n"
+		"\tname clear\n"
+		"\trefractance pnt_env\n"
+		"\tior 1.0\n"
+		"}\n"
+		"\n"
+		"box_geometry\n"
+		"{\n"
+		"\tname slabgeom\n"
+		"\twidth 4.0\n"
+		"\theight 4.0\n"
+		"\tdepth " << kSlabDepth << "\n"
+		"}\n"
+		"\n"
+		"standard_object\n"
+		"{\n"
+		"\tname slab\n"
+		"\tgeometry slabgeom\n"
+		"\tposition 0 0 0\n"
+		"\tmaterial clear\n"
+		"\tinterior_medium slab_abs\n"
+		"}\n";
+	return ss.str();
+}
+
 // Rasterizer-chunk factories for the interior-slab scene.  All author
 // radiance_map / radiance_background + box pixel filter so the reference
 // is identical to the PT cases A/B/C.
@@ -1423,6 +1533,88 @@ static void TestBDPTLightSubpathSlab()
 }
 
 
+//////////////////////////////////////////////////////////////////////
+// Heterogeneous-medium cases O/P.  Same interior slab as A/B but the
+// interior medium is a painter_heterogeneous_medium with constant density
+// 1.0, so the analytic reference is the SAME Beer-Lambert exp(-sigma_a*d).
+// These exercise the DETERMINISTIC EvalDistancePdf survival denominator on
+// the heterogeneous path (where EvalTransmittance is stochastic ratio
+// tracking, so the old MinValue(EvalTransmittance) denominator was biased).
+//////////////////////////////////////////////////////////////////////
+
+static std::string PTPelHetRasterizerChunk( int samples )
+{
+	std::ostringstream ss;
+	ss << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+	   << "\n\tmax_volume_bounce 16\n\tpixel_filter box\n"
+	      "\tradiance_map pnt_env\n\tradiance_scale 1.0\n"
+	      "\tradiance_background TRUE\n}\n";
+	return ss.str();
+}
+
+static std::string PTSpectralHetRasterizerChunk( int samples )
+{
+	std::ostringstream ss;
+	ss << "pathtracing_spectral_rasterizer\n{\n\tsamples " << samples
+	   << "\n\tmax_volume_bounce 16\n\tpixel_filter box\n"
+	      "\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n"
+	      "\tspectral_samples 1\n\thwss false\n\tmax_diffuse_bounce 3\n"
+	      "\tradiance_map pnt_env\n\tradiance_scale 1.0\n"
+	      "\tradiance_background TRUE\n}\n";
+	return ss.str();
+}
+
+static void TestHeterogeneousColored()
+{
+	std::cout << "[O] HETEROGENEOUS (constant-density) RGB coloured absorber "
+		<< "(sigma_a = 0.2/0.6/1.2, d = " << kSlabDepth
+		<< ") — deterministic EvalDistancePdf survival denominator" << std::endl;
+	const double sar = 0.2, sag = 0.6, sab = 1.2;
+	// 4096 spp: the stochastic ratio-tracking transmittance NUMERATOR is
+	// noisier than the analytic homogeneous Tr, so more samples are needed to
+	// bring the MEAN inside the 8% band; the DENOMINATOR is now deterministic
+	// (that is the fix) so the estimator is unbiased and DOES converge.
+	const PixelRGB px = RenderCentralBlock(
+		BuildHeterogeneousSlabScene( PTPelHetRasterizerChunk( 4096 ), sar, sag, sab ),
+		"het_col" );
+	Check( px.valid, "O: render produced a frame" );
+	if( !px.valid ) return;
+	const double er = Expected( sar ), eg = Expected( sag ), eb = Expected( sab );
+	std::cout << "    measured (" << px.r << ", " << px.g << ", " << px.b
+		<< ")  expected (" << er << ", " << eg << ", " << eb << ")" << std::endl;
+	Check( ChannelOk( px.r, er, "O.r" ), "O: het red   == exp(-0.2*d)" );
+	Check( ChannelOk( px.g, eg, "O.g" ), "O: het green == exp(-0.6*d)" );
+	Check( ChannelOk( px.b, eb, "O.b" ), "O: het blue  == exp(-1.2*d)" );
+	// Desaturation guard: the old MinValue(EvalTransmittance) denominator would
+	// randomize/collapse the chromatic ratio; the deterministic pdf keeps it.
+	Check( px.r > px.g * 1.2 && px.g > px.b * 1.2,
+		"O: het medium stays coloured (r > g > b, not desaturated)" );
+}
+
+static void TestHeterogeneousSpectral()
+{
+	std::cout << "[P] HETEROGENEOUS (constant-density) NM/spectral gray absorber "
+		<< "(sigma_a = 0.5, d = " << kSlabDepth
+		<< ", hwss off) — deterministic EvalDistancePdfNM survival denominator" << std::endl;
+	const double sa = 0.5;
+	const PixelRGB px = RenderCentralBlock(
+		BuildHeterogeneousSlabScene( PTSpectralHetRasterizerChunk( 2048 ), sa, sa, sa ),
+		"het_nm" );
+	Check( px.valid, "P: render produced a frame" );
+	if( !px.valid ) return;
+	const double exp = Expected( sa );
+	const double band = 0.30;   // resolve band, as case C/K
+	std::cout << "    measured (" << px.r << ", " << px.g << ", " << px.b
+		<< ")  expected " << exp << " each (resolve band " << band << ")" << std::endl;
+	auto nmOk = [&]( double m ) -> bool {
+		return std::fabs( m - exp ) / std::fmax( exp, 1e-4 ) <= band;
+	};
+	Check( nmOk( px.r ), "P: het spectral red   ~ exp(-sigma_a*d)" );
+	Check( nmOk( px.g ), "P: het spectral green ~ exp(-sigma_a*d)" );
+	Check( nmOk( px.b ), "P: het spectral blue  ~ exp(-sigma_a*d)" );
+}
+
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "VolumeAbsorptionAttenuationTest — Beer-Lambert single-count "
@@ -1451,6 +1643,12 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestVCMSpectral();
 	TestPTvsBDPTAgreement();
 	TestBDPTLightSubpathSlab();
+
+	// Cases O/P: HETEROGENEOUS (constant-density) slab — exercises the
+	// deterministic EvalDistancePdf[NM] survival denominator (the fix) on the
+	// stochastic ratio-tracking transmittance path.
+	TestHeterogeneousColored();
+	TestHeterogeneousSpectral();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

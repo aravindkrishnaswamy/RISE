@@ -946,30 +946,37 @@ namespace
 	inline RISEPel PTDivByScalar( const RISEPel& v, const Scalar d ) { return v * ( Scalar( 1 ) / d ); }
 	inline Scalar  PTDivByScalar( const Scalar  v, const Scalar d ) { return v / d; }
 
-	// Analog no-scatter survival weight.  HomogeneousMedium::SampleDistance
-	// is an ANALOG estimator: reaching the surface (or escaping) is a
+	// Analog no-scatter survival weight.  SampleDistance is an ANALOG
+	// estimator: reaching the surface (or escaping) WITHOUT scattering is a
 	// stochastic survival event whose probability already carries the
-	// Beer-Lambert factor exp(-sigma_t_max * d).  Multiplying throughput by
-	// Tr again would double-count attenuation (a pure absorber would render
-	// exp(-2*sigma_a*d)).  The correct weight is the per-channel chromatic
-	// ratio Tr / PTTrReduced(Tr): the survival pdf (= the max-sigma_t channel
-	// of Tr, i.e. exp(-sigma_t_max*d)) cancels, leaving 1 on that channel and
-	// >= 1 on the others to preserve a coloured medium's tint.  For
-	// monochrome/NM this reduces to 1.  Mirrors the scatter branch's
-	// chromatic ratio minus the sigma_s/sigma_t scatter factor.  Uses the
-	// SAME guard CONDITION as the scatter branch (survival pdf > 0) but a
-	// DIFFERENT fallback: the scatter branch terminates (weight zero / break)
-	// when its pdf is non-positive, whereas here a non-positive survival pdf
-	// means "no attenuation to apply", so we return the value-type
-	// multiplicative identity (1).  Both fallbacks are individually correct
-	// for their branch; only the guarded condition is shared.
+	// Beer-Lambert factor.  Multiplying throughput by Tr again would
+	// double-count attenuation (a pure absorber would render exp(-2*sigma_a*d)).
+	// The correct weight is Tr / pSurvival, where pSurvival is the
+	// DETERMINISTIC no-scatter survival pdf obtained from
+	// IMedium::EvalDistancePdf[NM]( ray, dist, /*scattered=*/false, dist ).
+	//
+	// Why the deterministic pdf and NOT MinValue(EvalTransmittance): for a
+	// HomogeneousMedium the two are identical -- EvalDistancePdf(false) returns
+	// exp(-sigma_t_max*d) = MinValue(Tr) (Pel) and EvalDistancePdfNM(false)
+	// returns exp(-sigma_t(lambda)*d) = EvalTransmittanceNM (so the NM weight is
+	// exactly 1).  For a HeterogeneousMedium, however, EvalTransmittance is a
+	// STOCHASTIC ratio-tracking estimate, so MinValue(EvalTransmittance) would
+	// be a random denominator (a biased ratio-of-random-estimates).
+	// HeterogeneousMedium overrides EvalDistancePdf[NM] with a deterministic
+	// Simpson-quadrature optical depth, so pSurvival is deterministic there too
+	// and the weight Tr / pSurvival is the correct unbiased no-scatter weight.
+	// The numerator stays the per-channel unbiased transmittance estimate Tr.
+	//
+	// Guard: divide only when pSurvival > 0 (a non-positive survival pdf means
+	// "no attenuation to apply"); otherwise return the value-type multiplicative
+	// identity (1).
 	template<class Tag>
 	inline typename SpectralValueTraits<Tag>::value_type PTSurvivalWeight(
-		const typename SpectralValueTraits<Tag>::value_type& Tr )
+		const typename SpectralValueTraits<Tag>::value_type& Tr,
+		const Scalar pSurvival )
 	{
-		const Scalar pdf = PTTrReduced( Tr );
-		if( pdf > 0 ) {
-			return PTDivByScalar( Tr, pdf );
+		if( pSurvival > 0 ) {
+			return PTDivByScalar( Tr, pSurvival );
 		}
 		return PTValueOne<Tag>();
 	}
@@ -1019,6 +1026,25 @@ namespace
 	inline Scalar PTEvalTransmittance<NMTag>(
 		const IMedium* pMedium, const Ray& ray, const Scalar dist, const NMTag& tag )
 	{ return pMedium->EvalTransmittanceNM( ray, dist, tag.nm ); }
+
+	// Deterministic no-scatter survival pdf along a ray segment: the
+	// denominator of PTSurvivalWeight.  Pel routes to EvalDistancePdf, NM to
+	// EvalDistancePdfNM.  For HomogeneousMedium this equals MinValue(Tr) (Pel)
+	// / EvalTransmittanceNM (NM); for HeterogeneousMedium it is the deterministic
+	// Simpson optical depth (NOT the stochastic EvalTransmittance).
+	template<class Tag>
+	inline Scalar PTEvalNoScatterSurvivalPdf(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist, const Tag& tag );
+
+	template<>
+	inline Scalar PTEvalNoScatterSurvivalPdf<PelTag>(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist, const PelTag& )
+	{ return pMedium->EvalDistancePdf( ray, dist, /*scattered=*/false, dist ); }
+
+	template<>
+	inline Scalar PTEvalNoScatterSurvivalPdf<NMTag>(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist, const NMTag& tag )
+	{ return pMedium->EvalDistancePdfNM( ray, dist, /*scattered=*/false, dist, tag.nm ); }
 
 	// Volume distance sampling with optional equiangular MIS.
 	template<class Tag>
@@ -1693,26 +1719,31 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				else if( !scattered && bHit )
 				{
 					// Surface hit through medium (analog no-scatter survival).
-					// SampleDistance already drew "reach the surface" with
-					// probability exp(-sigma_t_max*range); that survival event
-					// carries Beer-Lambert.  Apply only the per-channel
-					// chromatic ratio Tr/PTTrReduced(Tr) (= 1 for monochrome/NM)
-					// so we don't double-count attenuation.
+					// SampleDistance already drew "reach the surface"; that
+					// survival event carries Beer-Lambert.  Apply only the
+					// per-channel weight Tr / pSurvival (deterministic no-scatter
+					// survival pdf; = 1 for monochrome/NM homogeneous) so we don't
+					// double-count attenuation.
 					const Value Tr = PTEvalTransmittance<Tag>(
 						pCurrentMedium, currentRay, ri.geometric.range, tag );
-					throughput = throughput * PTSurvivalWeight<Tag>( Tr );
+					const Scalar pSurvival = PTEvalNoScatterSurvivalPdf<Tag>(
+						pCurrentMedium, currentRay, ri.geometric.range, tag );
+					throughput = throughput * PTSurvivalWeight<Tag>( Tr, pSurvival );
 				}
 				else if( !scattered && !bHit )
 				{
 					// Ray escapes the scene through the medium (analog
 					// no-scatter survival).  The escape survival event already
 					// carries the Beer-Lambert factor via its probability, so
-					// apply only the per-channel chromatic ratio
-					// Tr/PTTrReduced(Tr) (= 1 for monochrome/NM) before the env
-					// radiance below multiplies into throughput — not Tr again.
+					// apply only the per-channel weight Tr / pSurvival
+					// (deterministic no-scatter survival pdf; = 1 for
+					// monochrome/NM homogeneous) before the env radiance below
+					// multiplies into throughput — not Tr again.
 					const Value Tr = PTEvalTransmittance<Tag>(
 						pCurrentMedium, currentRay, maxDist, tag );
-					throughput = throughput * PTSurvivalWeight<Tag>( Tr );
+					const Scalar pSurvival = PTEvalNoScatterSurvivalPdf<Tag>(
+						pCurrentMedium, currentRay, maxDist, tag );
+					throughput = throughput * PTSurvivalWeight<Tag>( Tr, pSurvival );
 				}
 			}
 
@@ -3301,13 +3332,15 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		else if( ri.geometric.bHit )
 		{
 			// Surface hit through medium (analog no-scatter survival).
-			// SampleDistance already drew "reach the surface" with probability
-			// exp(-sigma_t_max*range); that survival event carries
-			// Beer-Lambert.  IntegrateFromHit starts with throughput=1, so we
-			// scale its result by only the per-channel chromatic ratio
-			// Tr/PTTrReduced(Tr) (= 1 for monochrome/NM) rather than Tr, which
-			// would double-count attenuation.
+			// SampleDistance already drew "reach the surface"; that survival
+			// event carries Beer-Lambert.  IntegrateFromHit starts with
+			// throughput=1, so we scale its result by only the per-channel weight
+			// Tr / pSurvival (deterministic no-scatter survival pdf; = 1 for
+			// monochrome/NM homogeneous) rather than Tr, which would double-count
+			// attenuation.
 			const Value Tr = PTEvalTransmittance<Tag>(
+				pCurrentMedium, cameraRay, ri.geometric.range, tag );
+			const Scalar pSurvival = PTEvalNoScatterSurvivalPdf<Tag>(
 				pCurrentMedium, cameraRay, ri.geometric.range, tag );
 
 			if( !ri.geometric.bHit ) {
@@ -3321,18 +3354,21 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				0, 0, 0, 0, 0, 0,
 				pAOV, tag );
 
-			return PTSurvivalWeight<Tag>( Tr ) * hitResult;
+			return PTSurvivalWeight<Tag>( Tr, pSurvival ) * hitResult;
 		}
 		else
 		{
 			// !scattered && !ri.geometric.bHit: the camera ray escapes the
 			// scene through the medium (analog no-scatter survival).  The
 			// escape survival event already carries the Beer-Lambert factor via
-			// its probability, so store only the per-channel chromatic ratio
-			// Tr/PTTrReduced(Tr) (= 1 for monochrome/NM) for the env radiance
-			// below — multiplying the full Tr would double-count attenuation.
+			// its probability, so store only the per-channel weight Tr /
+			// pSurvival (deterministic no-scatter survival pdf; = 1 for
+			// monochrome/NM homogeneous) for the env radiance below —
+			// multiplying the full Tr would double-count attenuation.
 			const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, cameraRay, maxDist, tag );
-			escapeTr = PTSurvivalWeight<Tag>( Tr );
+			const Scalar pSurvival = PTEvalNoScatterSurvivalPdf<Tag>(
+				pCurrentMedium, cameraRay, maxDist, tag );
+			escapeTr = PTSurvivalWeight<Tag>( Tr, pSurvival );
 		}
 	}
 
