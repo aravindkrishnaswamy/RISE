@@ -707,8 +707,8 @@ spectral-bundle-bias notes in CLAUDE.md.)
 >
 > **Review-loop findings (3 fresh reviewers, all zero-P1 on the committed fix):**
 > - **HWSS: 4 sites, latent-but-reachable.** The same double-count is at **four** HWSS
->   sites (`IntegrateFromHitHWSS` surface-hit + escape; `IntegrateRayHWSS` camera
->   surface-hit ~4404 + escape ~4419), not one. **Deferred to G1** because the correct
+>   sites (`IntegrateFromHitHWSS` surface-hit ~3715 + escape ~3733; `IntegrateRayHWSS`
+>   camera surface-hit ~4442 + escape ~4464), not one. **Deferred to G1** because the correct
 >   HWSS weight needs the **hero/sampling-channel survival pdf** (not `PTTrReduced` of a
 >   per-wavelength scalar, which is identity) — that's the spectral free-flight
 >   reweighting G1 builds. *Correction:* HWSS **is** reachable in production via the
