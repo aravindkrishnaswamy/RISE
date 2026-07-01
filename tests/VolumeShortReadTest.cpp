@@ -32,6 +32,8 @@
 #include <string>
 #include <vector>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <cmath>
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"   // Scalar (double)
@@ -66,6 +68,22 @@ static void WriteBytes( const std::string& path, unsigned char value, int count 
 	f.close();
 }
 
+// Dirty the heap with 0xFF so that a subsequent `new[]` which the
+// allocator recycles from this region reads back non-zero if it were left
+// uninitialised.  This makes the "unread region == 0" assertions a
+// RELIABLE discriminator against the pre-fix code (fresh zero-pages could
+// otherwise let a buggy uninitialised read spuriously pass).  Best-effort:
+// allocations of the same size class are the most likely to be recycled.
+static void DirtyHeap( size_t nbytes )
+{
+	std::vector<void*> blocks;
+	for( int i = 0; i < 64; ++i ) {
+		void* p = std::malloc( nbytes );
+		if( p ) { std::memset( p, 0xFF, nbytes ); blocks.push_back( p ); }
+	}
+	for( void* p : blocks ) std::free( p );
+}
+
 // GetValue returns byte/255 for T=unsigned char; recover the raw byte.
 static double ByteAt( const Volume<unsigned char>* v, int x, int y, int z )
 {
@@ -91,6 +109,12 @@ static void TestVolumeSlices()
 	std::remove( s2.c_str() );          // ensure slice 2 is absent
 	WriteBytes( s0, 200, 16 );          // full slice
 	WriteBytes( s1, 100, 8 );           // truncated: 8 of 16 bytes
+
+	// Dirty the heap so the volume's internal buffer, if it were left
+	// uninitialised (the pre-fix bug), would read back 0xFF — making the
+	// "unread == 0" assertions below a reliable regression discriminator.
+	// 3 slices * 4*4 voxels = 48 bytes.
+	DirtyHeap( 3 * 4 * 4 );
 
 	const std::string pattern = base + "%d.raw";
 	Volume<unsigned char>* v = new Volume<unsigned char>( pattern.c_str(), 4, 4, 0, 2 );
@@ -131,6 +155,41 @@ static void TestMemoryBufferMissingFile()
 	mb->release();
 }
 
+//----------------------------------------------------------------------
+// C: MemoryBuffer::getBytes over-read — a caller asking for more bytes
+// than remain (a malformed/truncated file whose header lies about a chunk
+// size) must NOT read out-of-bounds past the heap buffer.  The guard
+// (formerly _DEBUG-only) returns the available bytes, zero-fills the rest,
+// and signals failure.
+//----------------------------------------------------------------------
+static void TestMemoryBufferGetBytesOverread()
+{
+	std::cout << "C: MemoryBuffer::getBytes over-read is bounded (no OOB heap read)" << std::endl;
+
+	const std::string path = TmpDir() + "rise_membuf_small.bin";
+	WriteBytes( path, 0xAB, 8 );        // an 8-byte file
+
+	MemoryBuffer* mb = new MemoryBuffer( path.c_str() );
+	mb->addref();
+	Check( mb->Size() == 8, "C: 8-byte file loaded" );
+
+	// Ask for 32 bytes from an 8-byte buffer.
+	unsigned char dest[32];
+	std::memset( dest, 0x11, sizeof( dest ) );   // pre-dirty the destination
+	const bool ok = mb->getBytes( dest, 32 );
+
+	Check( !ok, "C: over-read returns false" );
+	bool firstEight = true;
+	for( int i = 0; i < 8; ++i ) if( dest[i] != 0xAB ) firstEight = false;
+	Check( firstEight, "C: available 8 bytes copied (0xAB)" );
+	bool tailZeroed = true;
+	for( int i = 8; i < 32; ++i ) if( dest[i] != 0 ) tailZeroed = false;
+	Check( tailZeroed, "C: over-read tail zero-filled (not OOB garbage / not left 0x11)" );
+
+	mb->release();
+	std::remove( path.c_str() );
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "VolumeShortReadTest — missing/truncated binary reads zero, never uninitialised"
@@ -138,6 +197,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 
 	TestVolumeSlices();
 	TestMemoryBufferMissingFile();
+	TestMemoryBufferGetBytesOverread();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

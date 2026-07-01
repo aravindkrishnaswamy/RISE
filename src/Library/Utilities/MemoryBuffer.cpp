@@ -446,13 +446,24 @@ double MemoryBuffer::getDouble()
 
 bool MemoryBuffer::getBytes( void* pDest, unsigned int amount )
 {
-#ifdef _DEBUG
-	if( nCursor+amount > nSize ) {
-		GlobalLog()->PrintEx( eLog_Error, "MemoryBuffer::getBytes:: Attempted read past end of buffer, read %d bytes, cursor at %d bytes", amount, nCursor );
+	if( !pDest ) {
 		return false;
 	}
-#endif
-	if( !pDest ) {
+
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a malformed / truncated
+	// file whose header claims more bytes than remain would otherwise drive
+	// an OUT-OF-BOUNDS heap read in the memcpy below.  Overflow-safe form:
+	// nCursor <= nSize is the invariant, so `amount > nSize - nCursor` cannot
+	// underflow.  On overrun, copy what is available and zero the rest (never
+	// read OOB, never leave pDest uninitialised) and signal failure.
+	if( nCursor > nSize || amount > nSize - nCursor ) {
+		const unsigned int avail = ( nCursor <= nSize ) ? ( nSize - nCursor ) : 0;
+		GlobalLog()->PrintEx( eLog_Error, "MemoryBuffer::getBytes:: read past end of buffer (want %u at cursor %u of %u); returning %u available, rest zeroed", amount, nCursor, nSize, avail );
+		if( avail ) {
+			memcpy( pDest, &pBuffer[nCursor], avail );
+		}
+		memset( static_cast<char*>(pDest) + avail, 0, amount - avail );
+		nCursor = nSize;
 		return false;
 	}
 

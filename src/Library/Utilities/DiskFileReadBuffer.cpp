@@ -209,17 +209,28 @@ double DiskFileReadBuffer::getDouble()
 
 bool DiskFileReadBuffer::getBytes( void* pDest, unsigned int amount )
 {
-#ifdef _DEBUG
-	if( getCurPos()+amount > nSize ) {
-		GlobalLog()->PrintEx( eLog_Error, "DiskFileReadBuffer::getBytes:: Attempted read past end of buffer, read %d bytes, cursor at %d bytes", amount, getCurPos() );
-		return false;
-	}
-#endif
 	if( !pDest ) {
 		return false;
 	}
 
-	fread( pDest, amount, 1, hFile );
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only) and CHECK the fread
+	// count: a truncated file must not leave the caller's buffer tail
+	// uninitialised.  getCurPos() <= nSize is the invariant, so the
+	// subtraction cannot underflow.
+	const unsigned int cur    = getCurPos();
+	const unsigned int avail  = ( cur <= nSize ) ? ( nSize - cur ) : 0;
+	const unsigned int toRead = ( amount <= avail ) ? amount : avail;
+
+	size_t got = 0;
+	if( toRead ) {
+		got = fread( pDest, 1, toRead, hFile );
+	}
+	if( got < amount ) {
+		// Short read (truncation / EOF): zero the tail and signal failure.
+		memset( static_cast<char*>(pDest) + got, 0, amount - got );
+		GlobalLog()->PrintEx( eLog_Error, "DiskFileReadBuffer::getBytes:: short read (want %u at cursor %u of %u, got %u); rest zeroed", amount, cur, nSize, static_cast<unsigned>(got) );
+		return false;
+	}
 	return true;
 }
 
