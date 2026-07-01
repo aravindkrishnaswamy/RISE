@@ -57,11 +57,19 @@ namespace RISE
 		};
 
 		//! The structured result of ProposePatch.  `applied` folds
-		//! ApplyCstParamEdit's 0/1/2/3 return: 1/2/3 -> applied=true (the
-		//! Document was mutated + the live Job re-derived), 0 -> applied=false
-		//! (edit rejected; the head is byte-identical).  `rawCode` preserves
-		//! the underlying contract value; `message` is a human explanation
-		//! (rebind codes 2/3 note the full re-derive).
+		//! ApplyCstParamEdit's 0/1/2/3 return:
+		//!   * 1/2 -> applied=true: the Document was mutated + the live Job
+		//!            re-derived cleanly (1 incremental / 2 full re-derive).
+		//!   * 3   -> applied=true, but the full re-derive EMITTED DIAGNOSTICS.
+		//!            The source contract (Job.cpp DeriveEditedCstDocument_)
+		//!            treats 3 as failure; slice 0b still folds it to
+		//!            applied=true (the Document WAS mutated and the managers
+		//!            WERE replaced) and surfaces it as applied-with-warning --
+		//!            `rawCode` preserves the distinction so a caller can tell
+		//!            a clean apply (1/2) from a diagnosed one (3).
+		//!   * 0   -> applied=false: edit rejected; the head is byte-identical.
+		//! `rawCode` preserves the underlying contract value; `message` is a
+		//! human explanation (rebind codes 2/3 note the full re-derive).
 		struct AgentPatchResult
 		{
 			bool        applied = false;
@@ -72,12 +80,26 @@ namespace RISE
 		//! The structured result of Render: the rendered head as PNG bytes
 		//! plus the film dims.  `ok` is false (and `png` empty) when no head
 		//! is loaded or the render failed.
+		//!
+		//! `meanR/meanG/meanB` are the LINEAR (pre-sRGB, pre-quantization)
+		//! per-channel means over all pixels -- a stable, order-independent
+		//! image signature.  RISE's PT sampler draws from a per-worker RNG
+		//! whose state depends on thread scheduling, so two renders of the
+		//! same head are NOT byte-identical (the PNG stream diverges
+		//! wholesale on a sub-LSB pixel change); the linear channel means, by
+		//! contrast, differ only by the tiny MC noise floor between runs and
+		//! shift measurably under a visible edit.  Callers wanting to compare
+		//! images robustly (edit-changed-the-render, not-all-black) should use
+		//! these, not raw PNG bytes.
 		struct AgentRenderResult
 		{
 			bool                       ok = false;
 			unsigned int               width = 0;
 			unsigned int               height = 0;
 			std::vector<unsigned char> png;   //!< 8-bit sRGB PNG bytes of the final image
+			double                     meanR = 0.0;   //!< linear per-channel mean (order-independent image signature)
+			double                     meanG = 0.0;
+			double                     meanB = 0.0;
 			std::string                message;
 		};
 
@@ -140,11 +162,16 @@ namespace RISE
 
 			//! render + read_image (slice 0b): render the current head into an
 			//! in-memory sRGB PNG and return the bytes + film dims.  Headless
-			//! (no window).  `samplesOverride > 0` best-effort edits the active
-			//! rasterizer's `samples` param through the SAME CST edit pathway
-			//! before rendering (falls back to the authored sample count when
-			//! the active rasterizer is not name-addressable).  The bytes are
-			//! also cached for ReadImage().
+			//! (no window).  A render NEVER mutates the retained Document --
+			//! ReadDocument() is byte-identical across a Render call.
+			//! `samplesOverride` is currently IGNORED (retained for API
+			//! stability): a render-scoped sample override cannot be applied
+			//! without either mutating the CST or a transient IRasterizer
+			//! sample-count setter that does not exist in slice 0b, so it is
+			//! deferred to the EffectiveRenderConfig layer
+			//! (docs/agentic-redesign/50-agentic-surface.md §2.2.5); the render
+			//! uses the AUTHORED sample count.  The bytes of a SUCCESSFUL
+			//! render are cached for ReadImage().
 			AgentRenderResult Render( int samplesOverride = -1 );
 
 			//! The PNG bytes of the LAST successful Render (empty before the

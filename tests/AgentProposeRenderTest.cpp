@@ -16,8 +16,14 @@
 //
 //    * Render + ReadImage — render the current head into an in-memory
 //      sRGB PNG.  Asserted: non-empty PNG bytes, valid \x89PNG signature,
-//      IHDR dims match the film, and the image is NOT all-black (a lit
-//      sphere).
+//      IHDR dims match the film; a render is SIDE-EFFECT-FREE on the
+//      Document (ReadDocument() byte-identical across the Render call); and
+//      a NOISE FLOOR is measured by re-rendering the SAME head — RISE's PT
+//      sampler is not bit-deterministic (per-worker RNG state depends on
+//      thread order, so the DEFLATE stream diverges wholesale), but the
+//      LINEAR channel means agree within a tiny MC noise floor.  The
+//      edit-changes-render "money assertion" below is measured AGAINST that
+//      floor so it cannot ride on render nondeterminism.
 //
 //    * Edit-then-render coherence (the money assertion): a VISIBLE edit
 //      (recolour the sphere's albedo painter) then a second Render yields
@@ -33,6 +39,7 @@
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Cst/Cst.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -171,7 +178,13 @@ int main()
 	//----------------------------------------------------------------------
 	std::printf( "[render] head -> in-memory sRGB PNG\n" );
 	std::vector<unsigned char> firstPng;
+	double firstMeanR = 0.0, firstMeanG = 0.0, firstMeanB = 0.0;
+	double noiseFloor = 0.0;
 	{
+		// A render must NOT mutate the retained Document -- capture the head
+		// before rendering so we can prove it is byte-identical afterward.
+		const std::string docBeforeRender = session->ReadDocument();
+
 		AgentRenderResult rr = session->Render( /*samplesOverride=*/-1 );
 		Check( rr.ok, "Render() succeeded" );
 		Check( rr.width == 24 && rr.height == 24, "render dims match the film (24x24)" );
@@ -182,30 +195,88 @@ int main()
 		Check( ReadPngDims( rr.png, w, h ), "PNG IHDR is present" );
 		Check( w == 24 && h == 24, "PNG IHDR dims match the film (24x24)" );
 
+		// A render is side-effect-free on the Document: ReadDocument() is
+		// byte-identical across the Render call (proves samplesOverride and
+		// the sink swap never touch the retained CST).
+		Check( session->ReadDocument() == docBeforeRender,
+		       "ReadDocument() is byte-identical after a Render (render does not mutate the Document)" );
+
 		// ReadImage() returns the cached bytes of the last render.
 		std::vector<unsigned char> cached = session->ReadImage();
 		Check( cached == rr.png, "ReadImage() returns the last render's PNG bytes" );
 
-		firstPng = rr.png;
+		firstPng     = rr.png;
+		firstMeanR   = rr.meanR;
+		firstMeanG   = rr.meanG;
+		firstMeanB   = rr.meanB;
+	}
+
+	//----------------------------------------------------------------------
+	// render noise floor — re-render the SAME head (no edit between) to
+	// MEASURE the run-to-run difference.  RISE's PT sampler draws from a
+	// per-worker RNG whose state depends on thread scheduling, so two
+	// renders are NOT byte-identical (the DEFLATE stream diverges wholesale
+	// on any sub-LSB pixel change).  We therefore establish determinism in
+	// the STABLE, order-independent LINEAR channel-mean signature: the same
+	// head re-renders to means within a tiny MC noise floor.  This bounds
+	// the noise BEFORE the edit-changes-render assertion below, so a mean
+	// shift under an edit cannot be attributed to render nondeterminism.
+	//----------------------------------------------------------------------
+	std::printf( "[noise floor] re-render the same head: channel means stable within MC noise\n" );
+	{
+		AgentRenderResult rr = session->Render( -1 );
+		Check( rr.ok && !rr.png.empty(), "second Render() of the unchanged head produced PNG bytes" );
+		const double dR = std::fabs( rr.meanR - firstMeanR );
+		const double dG = std::fabs( rr.meanG - firstMeanG );
+		const double dB = std::fabs( rr.meanB - firstMeanB );
+		noiseFloor = dR + dG + dB;
+		std::printf( "  same-head mean drift: dR=%.5f dG=%.5f dB=%.5f (sum=%.5f)\n", dR, dG, dB, noiseFloor );
+		// Same head, same sample count: the linear means agree within a small
+		// MC noise floor (empirically << 0.02 at 8 spp on this scene).
+		Check( noiseFloor < 0.05,
+		       "re-rendering the SAME head yields channel means within the MC noise floor (deterministic in mean)" );
 	}
 
 	//----------------------------------------------------------------------
 	// edit-then-render coherence — the money assertion.  A VISIBLE recolour
-	// (green sphere) then a re-render must yield DIFFERENT PNG bytes.
+	// (grey -> saturated red sphere) then a re-render must shift the rendered
+	// image FAR BEYOND the run-to-run noise floor measured above.  We compare
+	// in the stable LINEAR channel-mean signature (not raw PNG bytes, which
+	// diverge on every render): the red channel mean jumps and the green/blue
+	// means drop, a change orders of magnitude larger than `noiseFloor`.  That
+	// the shift exceeds the noise floor is what proves the EDIT (not render
+	// nondeterminism) drove it — the edit flowed Document -> derive -> render.
 	//----------------------------------------------------------------------
-	std::printf( "[coherence] visible edit changes the rendered image\n" );
+	std::printf( "[coherence] visible edit changes the rendered image (beyond the noise floor)\n" );
 	{
 		AgentSetPatch sp;
 		sp.target = "pnt_albedo";
 		sp.param  = "color";
-		sp.value  = "0.1 0.9 0.1";
+		sp.value  = "0.9 0.05 0.05";   // grey -> saturated red: a large, obvious shift
 		AgentPatchResult r = session->ProposePatch( sp );
-		Check( r.applied, "ProposePatch(recolour sphere green) applied" );
+		Check( r.applied, "ProposePatch(recolour sphere red) applied" );
 
 		AgentRenderResult rr = session->Render( -1 );
 		Check( rr.ok && !rr.png.empty(), "post-edit Render() produced PNG bytes" );
-		Check( rr.png != firstPng,
-		       "post-edit PNG bytes DIFFER from the pre-edit render (edit flowed Document->derive->render)" );
+
+		const double editShift =
+			std::fabs( rr.meanR - firstMeanR ) +
+			std::fabs( rr.meanG - firstMeanG ) +
+			std::fabs( rr.meanB - firstMeanB );
+		std::printf( "  post-edit mean shift=%.5f  (noise floor=%.5f)\n", editShift, noiseFloor );
+		// The visible recolour must move the image by MUCH more than the
+		// same-head noise floor (guard against a false positive from MC noise).
+		// Empirically the edit shifts the mean ~0.011 vs a ~0.0001 noise floor
+		// (~100x); require a comfortable margin over BOTH the measured floor
+		// (10x) and a small absolute threshold that still sits well under the
+		// edit shift (most of the 24x24 frame is background/emitter, so the
+		// lit-sphere recolour moves the whole-frame mean only modestly).
+		Check( editShift > 10.0 * noiseFloor + 0.002,
+		       "post-edit channel means shift FAR beyond the render noise floor (edit flowed Document->derive->render)" );
+		// The PNG bytes also differ (necessary but not sufficient on its own,
+		// since two renders of the SAME head already differ); kept as a cheap
+		// sanity check alongside the mean-shift money assertion.
+		Check( rr.png != firstPng, "post-edit PNG bytes differ from the pre-edit render" );
 	}
 
 	std::printf( "=== AgentProposeRenderTest: %d passed, %d failed ===\n", g_pass, g_fail );

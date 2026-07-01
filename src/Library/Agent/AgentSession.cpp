@@ -513,10 +513,14 @@ namespace RISE
 					break;
 				case 3:
 					// 2/3 are "rebind" codes: the Scene was replaced.  Code 3
-					// means the re-derive ALSO emitted diagnostics -- but the
-					// Document WAS mutated and the live Job re-derived, so per
-					// the slice-0b contract we surface it as applied=true with
-					// a note rather than a hard failure.
+					// means the re-derive ALSO emitted diagnostics -- the source
+					// contract (Job.cpp DeriveEditedCstDocument_) treats 3 as
+					// failure.  But the Document WAS mutated and the live Job
+					// managers WERE replaced, so per the slice-0b contract we
+					// fold it to applied=true and surface it as
+					// applied-WITH-WARNING; `rawCode` (3) preserves the
+					// distinction from a clean apply (1/2) for a caller that
+					// cares.
 					r.applied = true;
 					r.message = "applied via a full re-derive, but the re-derive emitted diagnostics (see log)";
 					break;
@@ -539,19 +543,38 @@ namespace RISE
 				return res;
 			}
 
-			// Optional sample-count override, routed through the SAME CST edit
-			// pathway (ProposePatch -> ApplyCstParamEdit) so it re-derives the
-			// live rasterizer.  Best-effort: an unnamed / non-addressable
-			// active rasterizer simply keeps the authored sample count.
-			if( samplesOverride > 0 ) {
-				const std::string rasterName = mJob->GetActiveRasterizerName();
-				if( !rasterName.empty() ) {
-					AgentSetPatch sp;
-					sp.target = rasterName;
-					sp.param  = "samples";
-					sp.value  = std::to_string( samplesOverride );
-					ProposePatch( sp );   // best-effort; ignore the result
-				}
+			// A render MUST NOT mutate the retained Document.  The earlier
+			// slice-0b draft honoured `samplesOverride` by routing it through
+			// ProposePatch -> ApplyCstParamEdit, which permanently rewrote the
+			// `samples` param in the retained CST (a subsequent ReadDocument
+			// reflected it forever) -- a render silently editing the scene,
+			// contradicting the design's non-mutating override model
+			// (docs/agentic-redesign/50-agentic-surface.md §2.2.5's
+			// ResolveEffectiveRenderConfig layers render overrides onto the
+			// DerivedScene WITHOUT touching the scene).  The clean transient
+			// path -- applying the override on the DERIVED/live rasterizer
+			// after derive, before Rasterize() -- needs a sample-count setter
+			// on IRasterizer, which does NOT exist in slice 0b (SetSampleCount
+			// lives only on InteractivePelRasterizer, not on the general
+			// interface GetRasterizer() returns).  So in slice 0b the
+			// render-scoped sample override is NOT yet wired without mutating
+			// the CST; it is deferred to the EffectiveRenderConfig layer.
+			// `samplesOverride` is currently IGNORED -- the render uses the
+			// authored sample count -- and the signature is retained only for
+			// API stability.  ReadDocument() is guaranteed byte-identical
+			// across a Render call.
+			(void)samplesOverride;
+
+			// Fetch and null-check the live rasterizer BEFORE any mutation:
+			// RemoveRasterizerOutputs() unconditionally dereferences
+			// pRasterizer (Job::RemoveRasterizerOutputs has no null guard), so
+			// a head with no active rasterizer (or a re-derive that left it
+			// null) would crash if we removed outputs first.
+			IRasterizer* rast = mJob->GetRasterizer();
+			if( !rast ) {
+				res.ok = false;
+				res.message = "no active rasterizer";
+				return res;
 			}
 
 			// Swap in the in-memory sink (remove any authored file outputs so
@@ -564,13 +587,6 @@ namespace RISE
 			// next RemoveRasterizerOutputs / rasterizer teardown).  We drop
 			// OUR ref via safe_release(sink) below -- no extra addref here.
 			InMemoryRasterizerOutput* sink = new InMemoryRasterizerOutput();
-			IRasterizer* rast = mJob->GetRasterizer();
-			if( !rast ) {
-				safe_release( sink );
-				res.ok = false;
-				res.message = "no active rasterizer";
-				return res;
-			}
 			rast->AddRasterizerOutput( sink );
 
 			const bool rendered = mJob->Rasterize();
@@ -584,10 +600,16 @@ namespace RISE
 			res.width  = sink->Width();
 			res.height = sink->Height();
 			res.png    = sink->ToPng();
+			sink->MeanChannels( res.meanR, res.meanG, res.meanB );
 			res.ok     = !res.png.empty();
 			res.message = res.ok ? "ok" : "PNG encode produced no bytes";
 
-			mLastPng = res.png;   // cache for ReadImage()
+			// Cache for ReadImage() ONLY on a successful, non-empty encode --
+			// a failed render must not wipe a prior good cache (ReadImage
+			// documents "the LAST successful Render").
+			if( res.ok ) {
+				mLastPng = res.png;
+			}
 
 			safe_release( sink );
 			return res;

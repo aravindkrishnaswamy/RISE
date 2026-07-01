@@ -47,6 +47,24 @@ void InMemoryRasterizerOutput::OutputImage( const IRasterImage& pImage, const Re
 	mHasImage = true;
 }
 
+void InMemoryRasterizerOutput::MeanChannels( double& r, double& g, double& b ) const
+{
+	r = g = b = 0.0;
+	if( !mHasImage || mPixels.empty() ) {
+		return;
+	}
+	double sr = 0.0, sg = 0.0, sb = 0.0;
+	for( const RISEColor& c : mPixels ) {
+		sr += static_cast<double>( c.base.r );
+		sg += static_cast<double>( c.base.g );
+		sb += static_cast<double>( c.base.b );
+	}
+	const double n = static_cast<double>( mPixels.size() );
+	r = sr / n;
+	g = sg / n;
+	b = sb / n;
+}
+
 std::vector<unsigned char> InMemoryRasterizerOutput::ToPng() const
 {
 	std::vector<unsigned char> out;

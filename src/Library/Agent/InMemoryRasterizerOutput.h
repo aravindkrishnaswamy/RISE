@@ -6,8 +6,11 @@
 //
 //    The agent's `render` / `read_image` verbs need the head's rendered
 //    image WITHOUT touching the filesystem: no `file_rasterizeroutput`,
-//    no RISE_MEDIA_PATH, no temp file to read back.  This sink holds the
-//    last full `OutputImage` in memory as RISEColor pixels and, on
+//    no RISE_MEDIA_PATH, no temp file to read back.  It captures the FINAL
+//    image (the denoised final when OIDN is on: OutputDenoisedImage's
+//    default forwards to OutputImage, so the denoised frame is what lands
+//    here).  This sink holds the last full `OutputImage` in memory as
+//    RISEColor pixels and, on
 //    demand, encodes them to PNG bytes REUSING the tree's existing
 //    encode path -- `PNGWriter` (which does the sRGB `Integerize` gamma
 //    encode + libpng container) writing into an in-memory `MemoryBuffer`
@@ -68,6 +71,15 @@ namespace RISE
 
 			unsigned int Width()  const { return mWidth; }
 			unsigned int Height() const { return mHeight; }
+
+			//! The LINEAR per-channel means over all captured pixels (0 when
+			//! no frame is captured).  A stable, thread-order-independent
+			//! image signature: unlike the encoded PNG bytes (which diverge
+			//! wholesale on a sub-LSB pixel change), the means differ only by
+			//! the tiny MC noise floor between two renders of the same head
+			//! and shift measurably under a visible edit.  Computed in linear
+			//! space (before ToPng's sRGB Integerize) to avoid quantization.
+			void MeanChannels( double& r, double& g, double& b ) const;
 
 			//! Serialize the captured frame to 8-bit sRGB PNG bytes, reusing
 			//! the tree's `PNGWriter` (sRGB Integerize + libpng) targeting a
