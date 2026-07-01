@@ -1605,6 +1605,21 @@ namespace RISE
 			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
 			);
 
+		//! Adds a homogeneous participating medium with optional
+		//! per-wavelength spectral coefficient curves (G1).  Not marked
+		//! 'override' — Job's IJob overrides are intentionally
+		//! unannotated (house style; see CLAUDE.md).
+		bool AddHomogeneousMediumSpectral(
+			const char* name,										///< [in] Name of the medium
+			const double sigma_a[3],								///< [in] Absorption coefficient (RGB preview)
+			const double sigma_s[3],								///< [in] Scattering coefficient (RGB preview)
+			const double emission[3],								///< [in] Volumetric emission (RGB)
+			const char* absorption_spectral,						///< [in] Name of sigma_a(lambda) IFunction1D, or null/""
+			const char* scattering_spectral,						///< [in] Name of sigma_s(lambda) IFunction1D, or null/""
+			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
+			);
+
 		//! Adds a heterogeneous participating medium driven by volume data
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddHeterogeneousMedium(

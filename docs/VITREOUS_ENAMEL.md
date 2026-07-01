@@ -1027,9 +1027,20 @@ approximation, which the principle rejects.)
 >   degenerate convention), silently yielding a `σ=1.0/unit` medium. Homogeneous ⇒ position ignored,
 >   so the hero's thickness gradient stays *geometry* (the domed substrate, §2.1), authored once
 >   as a position-independent `σ(λ)`.
-> - **G1-b — authoring path (parser + `IJob`/`Job`).** `homogeneous_medium` chunk gains optional
->   `sigma_a_spectral`/`sigma_s_spectral` reference params (resolved via `GetFunction1Ds()->GetItem`,
->   mirroring `scalar_painter`'s `function1d` form) → new `Job`/`IJob` adder → the new factory.
+> - **G1-b — authoring path (parser + `IJob`/`Job`) — DONE (commit pending).** The
+>   `homogeneous_medium` chunk gains optional `absorption_spectral`/`scattering_spectral`
+>   reference params (named `IFunction1D` curves, e.g. `piecewise_linear_function`), routed to a
+>   new `IJob::AddHomogeneousMediumSpectral` → `Job` resolves the names via
+>   `pFunc1DManager->GetItem` (borrowed ref; the medium ctor addrefs) → the G1-a factory. A
+>   given-but-unknown curve name fails the add loudly (no silent RGB fallback). Empty refs ⇒ the
+>   existing `AddHomogeneousMedium` path (byte-identical for every current scene). The chunk is
+>   descriptor-driven so the syntax highlighter/suggestion engine auto-sync; `MediaIntrospection`
+>   gains a read-only disclosure row noting the RGB absorption/scattering rows are preview-only
+>   when a σ(λ) curve is bound. Sibling audit: only `Job` implements `IJob`; `SaveEngine` does not
+>   serialize media; CST is not in this branch; the glTF importer keeps the RGB path. End-to-end
+>   test: `VolumeAbsorptionAttenuationTest` cases S/T/U/V (red curve → r/b≈22× red; flat curve →
+>   gray; unknown ref → load fails; no curve → gray — the direct luminance-collapse-vs-spectral
+>   contrast, authored through the parser).
 > - **G1-c — HWSS free-flight reweighting.** The 4 HWSS no-scatter sites (`throughputComp[w] *= Tr`,
 >   `PathTracingIntegrator.cpp` ~3778/3796/4442/4464) still carry the analog double-count deferred
 >   from the §10.12 family — with wavelength-dependent σ they need the **hero/sampling-channel

@@ -3,8 +3,11 @@
 //  MediaIntrospection.cpp - Per-type panel row builder + slot
 //    get/set dispatch for participating media.
 //
-//    HomogeneousMedium is fully editable (absorption / scattering /
-//    emission as vec3 rows).  HeterogeneousMedium is surfaced
+//    HomogeneousMedium exposes editable absorption / scattering vec3
+//    rows; emission is read-only (the chunk can't author it) and, for a
+//    spectral (G1) medium, a disclosure row notes that the RGB rows are
+//    preview-only because the per-wavelength σ(λ) curves drive the NM
+//    render.  HeterogeneousMedium is surfaced
 //    read-only with an explanatory note: changing its max-coefficient
 //    bounds without rebuilding the majorant grid would desync delta
 //    tracking, and the volume data + bbox were baked at construction.
@@ -78,9 +81,25 @@ std::vector<CameraProperty> MediaIntrospection::Inspect(
 		"Concrete medium kind.  Each kind has its own set of editable / frozen fields." ) );
 
 	if( const HomogeneousMedium* hom = dynamic_cast<const HomogeneousMedium*>( &medium ) ) {
+		const bool hasSpectral =
+			( hom->GetAbsorptionSpectral() != nullptr ) || ( hom->GetScatteringSpectral() != nullptr );
+		if( hasSpectral ) {
+			// Disclosure: for a spectral (G1) medium the RGB absorption /
+			// scattering rows below drive ONLY the RGB/preview path.  The
+			// per-wavelength σ_a(λ)/σ_s(λ) curves drive the spectral (NM)
+			// render, so editing the RGB rows does not change an NM render.
+			rows.push_back( MakeReadOnlyRow(
+				"spectral σ(λ)", String( "curve-driven (NM path)" ),
+				"This medium carries per-wavelength σ_a(λ)/σ_s(λ) curves (authored as "
+				"IFunction1D chunks) that drive the spectral (NM) render.  The absorption / "
+				"scattering rows below are the RGB/preview-path values ONLY — editing them "
+				"changes the RGB preview, not the spectral render.  Rebinding the λ-curves "
+				"from the panel is out of scope; recreate the medium chunk to change them." ) );
+		}
 		rows.push_back( MakeVec3Row( "absorption", hom->GetAbsorption(),
 			"Absorption coefficient σ_a per channel [1/m].  Updates the cached extinction "
-			"σ_t = σ_a + σ_s and the channel-max majorant used by free-flight sampling.",
+			"σ_t = σ_a + σ_s and the channel-max majorant used by free-flight sampling.  "
+			"RGB/preview path — a bound σ_a(λ) curve overrides this in spectral (NM) mode.",
 			true ) );
 		rows.push_back( MakeVec3Row( "scattering", hom->GetScattering(),
 			"Scattering coefficient σ_s per channel [1/m].  Together with absorption, drives "

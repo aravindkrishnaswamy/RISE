@@ -5398,6 +5398,78 @@ bool Job::AddHomogeneousMedium(
 	return true;
 }
 
+bool Job::AddHomogeneousMediumSpectral(
+	const char* name,										///< [in] Name of the medium
+	const double sigma_a[3],								///< [in] Absorption coefficient (RGB preview)
+	const double sigma_s[3],								///< [in] Scattering coefficient (RGB preview)
+	const double emission[3],								///< [in] Volumetric emission (RGB)
+	const char* absorption_spectral,						///< [in] Name of sigma_a(lambda) IFunction1D, or null/""
+	const char* scattering_spectral,						///< [in] Name of sigma_s(lambda) IFunction1D, or null/""
+	const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+	const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
+	)
+{
+	// Resolve the optional spectral coefficient curves by name.  A null /
+	// empty / "none" reference means "no curve" for that coefficient
+	// (the NM path then falls back to the RGB triple's luminance, per
+	// HomogeneousMedium).  GetItem returns a BORROWED reference; the
+	// medium ctor addrefs it, so we must not release it here.  A name
+	// that is given but not found is author error and fails the add
+	// (do NOT silently drop the intended spectral behaviour).
+	bool refError = false;
+	auto resolveCurve = [&]( const char* ref ) -> IFunction1D* {
+		if( !ref || ref[0] == '\0' || strcmp( ref, "none" ) == 0 ) {
+			return 0;
+		}
+		IFunction1D* f = pFunc1DManager->GetItem( ref );
+		if( !f ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddHomogeneousMediumSpectral:: spectral curve `%s` not found", ref );
+			refError = true;
+		}
+		return f;
+	};
+	IFunction1D* pAbsSpectral = resolveCurve( absorption_spectral );
+	IFunction1D* pScaSpectral = resolveCurve( scattering_spectral );
+	if( refError ) {
+		return false;
+	}
+
+	// Create the phase function
+	IPhaseFunction* pPhase = 0;
+
+	if( strcmp( phase_type, "isotropic" ) == 0 ) {
+		RISE_API_CreateIsotropicPhaseFunction( &pPhase );
+	} else if( strcmp( phase_type, "hg" ) == 0 ) {
+		RISE_API_CreateHenyeyGreensteinPhaseFunction( &pPhase, phase_g );
+	} else {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddHomogeneousMediumSpectral:: Unknown phase function type `%s`", phase_type );
+		return false;
+	}
+
+	// Create the medium
+	IMedium* pMedium = 0;
+	RISE_API_CreateHomogeneousMediumSpectral( &pMedium,
+		RISEPel( sigma_a[0], sigma_a[1], sigma_a[2] ),
+		RISEPel( sigma_s[0], sigma_s[1], sigma_s[2] ),
+		RISEPel( emission[0], emission[1], emission[2] ),
+		pAbsSpectral, pScaSpectral,
+		*pPhase );
+
+	safe_release( pPhase );
+
+	// Store in our map
+	MediumMap::iterator existing = mediaMap.find( name );
+	if( existing != mediaMap.end() ) {
+		safe_release( existing->second );
+		existing->second = pMedium;
+	} else {
+		mediaMap[name] = pMedium;
+	}
+
+	return true;
+}
+
 bool Job::AddHeterogeneousMedium(
 	const char* name,
 	const double max_sigma_a[3],

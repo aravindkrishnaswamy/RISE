@@ -5971,6 +5971,14 @@ namespace RISE
 					bag.GetVec3( "absorption", sigma_a );
 					bag.GetVec3( "scattering", sigma_s );
 
+					// Optional per-wavelength coefficient curves (G1,
+					// vitreous enamel): names of registered IFunction1D
+					// (e.g. piecewise_linear_function) curves for the
+					// spectral (NM) path.  Empty => RGB-only (luminance
+					// fallback), byte-identical to pre-G1.
+					std::string absorption_spectral = bag.GetString( "absorption_spectral", "" );
+					std::string scattering_spectral = bag.GetString( "scattering_spectral", "" );
+
 					// Composite phase token: "isotropic" or "hg <g>".
 					std::string phase_type = "isotropic";
 					double      phase_g    = 0.0;
@@ -5983,6 +5991,13 @@ namespace RISE
 						if( n >= 2 ) phase_g    = g;
 					}
 
+					if( !absorption_spectral.empty() || !scattering_spectral.empty() ) {
+						const double emission[3] = { 0, 0, 0 };
+						return pJob.AddHomogeneousMediumSpectral( name.c_str(), sigma_a, sigma_s, emission,
+							absorption_spectral.c_str(), scattering_spectral.c_str(),
+							phase_type.c_str(), phase_g );
+					}
+
 					return pJob.AddHomogeneousMedium( name.c_str(), sigma_a, sigma_s, phase_type.c_str(), phase_g );
 				}
 
@@ -5993,8 +6008,10 @@ namespace RISE
 						cd.description = "Uniform participating medium.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::DoubleVec3; p.description = "Absorption coefficient (R G B)"; p.defaultValueHint = "0 0 0"; }
-						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::DoubleVec3; p.description = "Scattering coefficient (R G B)"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::DoubleVec3; p.description = "Absorption coefficient (R G B), RGB/preview path"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::DoubleVec3; p.description = "Scattering coefficient (R G B), RGB/preview path"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "absorption_spectral"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Name of a sigma_a(lambda) IFunction1D curve (e.g. piecewise_linear_function) for the spectral NM path; empty => RGB luminance fallback"; }
+						{ auto& p = P(); p.name = "scattering_spectral"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Name of a sigma_s(lambda) IFunction1D curve for the spectral NM path; empty => RGB luminance fallback"; }
 						{ auto& p = P(); p.name = "phase";      p.kind = ValueKind::String;     p.description = "Phase function: either `isotropic` or `hg <g>` (Henyey-Greenstein with asymmetry g)"; p.tupleKinds = {ValueKind::Enum, ValueKind::Double}; p.enumValues = {"isotropic","hg"}; p.defaultValueHint = "isotropic"; }
 						return cd;
 					}();

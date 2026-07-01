@@ -1193,6 +1193,64 @@ static double ObservedTau( double measured )
 }
 
 //////////////////////////////////////////////////////////////////////
+// G1 (vitreous enamel) — spectral homogeneous medium via a bound
+// sigma_a(lambda) curve, authored END-TO-END through the parser
+// (piecewise_linear_function + homogeneous_medium absorption_spectral).
+//
+// A green/blue-absorbing, red-transmitting curve must make the
+// transmitted flat-white env read RED under a spectral rasterizer.  The
+// RGB absorption triple alone (luminance-collapsed in the NM fallback)
+// could only make it gray — so a red result proves the curve drives the
+// spectral path through the full parser -> Job -> RISE_API -> medium
+// chain (cases S/T/U/V below).
+//////////////////////////////////////////////////////////////////////
+
+static std::string BuildSpectralCurveScene(
+	const std::string& curveName,		// name of the piecewise_linear_function chunk
+	const std::string& curveCps,		// repeated "\tcp <x> <y>\n" control-point lines
+	const std::string& absSpectralRef,	// name bound to absorption_spectral, or "" to omit
+	double sa_rgb )						// RGB-preview absorption (gray fallback triple)
+{
+	std::ostringstream ss;
+	ss <<
+		"RISE ASCII SCENE 6\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
+		"piecewise_linear_function\n{\n\tname " << curveName << "\n" << curveCps << "}\n\n"
+		"pathtracing_spectral_rasterizer\n{\n"
+		"\tsamples 256\n\tmax_volume_bounce 16\n\tpixel_filter box\n"
+		"\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n\thwss false\n"
+		"\tmax_diffuse_bounce 3\n\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n}\n\n"
+		"file_rasterizeroutput\n{\n\tpattern /tmp/volume_spectral_curve_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n"
+		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 -5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 10.0\n}\n\n"
+		"homogeneous_medium\n{\n\tname slab_abs\n"
+		"\tabsorption " << sa_rgb << " " << sa_rgb << " " << sa_rgb << "\n"
+		"\tscattering 0.0 0.0 0.0\n";
+	if( !absSpectralRef.empty() ) {
+		ss << "\tabsorption_spectral " << absSpectralRef << "\n";
+	}
+	ss <<
+		"\tphase isotropic\n}\n\n"
+		"perfectrefractor_material\n{\n\tname clear\n\trefractance pnt_env\n\tior 1.0\n}\n\n"
+		"box_geometry\n{\n\tname slabgeom\n\twidth 4.0\n\theight 4.0\n\tdepth " << kSlabDepth << "\n}\n\n"
+		"standard_object\n{\n\tname slab\n\tgeometry slabgeom\n\tposition 0 0 0\n\tmaterial clear\n\tinterior_medium slab_abs\n}\n";
+	return ss.str();
+}
+
+// Green/blue-absorbing, red-transmitting curve (gold-ruby-like): high
+// sigma_a below ~600nm, low above.  Over the d=2 slab this transmits red
+// (Tr(700)=exp(-0.1*2)=0.82) and kills green/blue (Tr(<=550)=exp(-5*2)~0).
+static const char* kRedAbsorberCps =
+	"\tcp 400 5.0\n\tcp 500 5.0\n\tcp 550 5.0\n\tcp 600 1.5\n\tcp 650 0.3\n\tcp 700 0.1\n";
+// Flat curve: same value at every wavelength -> gray attenuation.  Kept
+// weak (0.5) so Tr=exp(-1)~0.37 is a BRIGHT, low-noise gray (a strong
+// absorber would render near-black where MC/spectral noise dominates the
+// max/min chromaticity ratio).
+static const char* kFlatAbsorberCps =
+	"\tcp 400 0.5\n\tcp 700 0.5\n";
+
+//////////////////////////////////////////////////////////////////////
 // Tests
 //////////////////////////////////////////////////////////////////////
 
@@ -1824,6 +1882,75 @@ static void TestPositionalLightColored()
 		"R: omni medium stays coloured (r > g > b, not desaturated)" );
 }
 
+// [S] Red-transmitting sigma_a(lambda) curve => the transmitted white env
+// reads RED under the spectral rasterizer.  End-to-end proof of the G1-b
+// parser -> Job -> RISE_API -> HomogeneousMedium spectral authoring path.
+static void TestSpectralCurveChromatic()
+{
+	std::cout << "[S] spectral sigma_a(lambda) curve (green/blue-absorbing) "
+		<< "=> transmitted env reads RED (G1 end-to-end)" << std::endl;
+	const PixelRGB px = RenderCentralBlock(
+		BuildSpectralCurveScene( "abs_curve", kRedAbsorberCps, "abs_curve", 2.0 ),
+		"spec_red" );
+	Check( px.valid, "S: render produced a frame" );
+	if( !px.valid ) return;
+	std::cout << "    measured (" << px.r << ", " << px.g << ", " << px.b << ")" << std::endl;
+	// Red must dominate: green/blue are absorbed (Tr(<=550nm)~exp(-10)~0),
+	// red passes (Tr(700nm)=exp(-0.2)~0.82).  A luminance-collapsed medium
+	// would render gray, failing r >> b.
+	Check( px.r > px.g && px.r > px.b, "S: red is the dominant channel" );
+	Check( px.r > px.b * 3.0, "S: strong chromaticity (r > 3*b), not gray" );
+}
+
+// [T] Flat sigma_a(lambda) curve => gray attenuation.  Control proving the
+// chromaticity in [S] comes from the CURVE SHAPE, not merely from routing
+// through the spectral path.
+static void TestSpectralCurveFlatControl()
+{
+	std::cout << "[T] flat spectral sigma_a(lambda) curve => gray (control)" << std::endl;
+	const PixelRGB px = RenderCentralBlock(
+		BuildSpectralCurveScene( "abs_curve", kFlatAbsorberCps, "abs_curve", 2.0 ),
+		"spec_flat" );
+	Check( px.valid, "T: render produced a frame" );
+	if( !px.valid ) return;
+	std::cout << "    measured (" << px.r << ", " << px.g << ", " << px.b << ")" << std::endl;
+	const double mx = std::fmax( px.r, std::fmax( px.g, px.b ) );
+	const double mn = std::fmin( px.r, std::fmin( px.g, px.b ) );
+	// Near-gray: the max/min channel spread is small (flat curve => equal
+	// per-wavelength attenuation).  Loose bound absorbs MC + spectral-to-RGB
+	// noise; the point is it is NOT the strongly-red [S] result.
+	Check( mx < mn * 1.5 + 1e-4, "T: flat curve renders near-gray (max < 1.5*min)" );
+}
+
+// [U] A bound-but-missing curve name is author error: the medium add fails,
+// the scene fails to load, and the render returns no frame (fails loudly
+// rather than silently dropping the intended spectral behaviour).
+static void TestSpectralCurveMissingRef()
+{
+	std::cout << "[U] unknown absorption_spectral reference => scene load fails (loud)" << std::endl;
+	const PixelRGB px = RenderCentralBlock(
+		BuildSpectralCurveScene( "abs_curve", kRedAbsorberCps, "missing_curve", 2.0 ),
+		"spec_badref" );
+	Check( !px.valid, "U: scene with unknown curve ref does not produce a frame" );
+}
+
+// [V] Discriminator: the SAME slab WITHOUT a curve (RGB absorption only)
+// renders gray in spectral mode, while [S] (with the red curve) renders
+// red.  This is the direct luminance-collapse-vs-spectral contrast.
+static void TestSpectralNoCurveBaselineGray()
+{
+	std::cout << "[V] no curve (RGB-only) => gray in spectral mode (vs [S] red)" << std::endl;
+	const PixelRGB px = RenderCentralBlock(
+		BuildSpectralCurveScene( "abs_curve", kRedAbsorberCps, /*ref=*/"", 1.0 ),
+		"spec_nocurve" );
+	Check( px.valid, "V: render produced a frame" );
+	if( !px.valid ) return;
+	std::cout << "    measured (" << px.r << ", " << px.g << ", " << px.b << ")" << std::endl;
+	const double mx = std::fmax( px.r, std::fmax( px.g, px.b ) );
+	const double mn = std::fmin( px.r, std::fmin( px.g, px.b ) );
+	Check( mx < mn * 1.5 + 1e-4, "V: RGB-only medium renders near-gray in spectral mode" );
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "VolumeAbsorptionAttenuationTest — Beer-Lambert single-count "
@@ -1867,6 +1994,18 @@ int main( int /*argc*/, char* /*argv*/[] )
 	// no-omni (analog) render, confirming the no-positional path is unchanged.
 	TestPositionalLightGray();
 	TestPositionalLightColored();
+
+	// Cases S/T/U/V: G1 spectral homogeneous medium authored end-to-end
+	// through the parser (piecewise_linear_function + homogeneous_medium
+	// absorption_spectral).  A red-transmitting sigma_a(lambda) curve reads
+	// RED under the spectral rasterizer (S); a flat curve reads gray (T);
+	// an unknown curve reference fails the load loudly (U); and the same
+	// slab with no curve reads gray in spectral mode (V) — the direct
+	// luminance-collapse-vs-spectral contrast.
+	TestSpectralCurveChromatic();
+	TestSpectralCurveFlatControl();
+	TestSpectralCurveMissingRef();
+	TestSpectralNoCurveBaselineGray();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

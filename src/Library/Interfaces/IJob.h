@@ -1455,6 +1455,25 @@ namespace RISE
 			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
 			) = 0;
 
+		//! Adds a homogeneous participating medium with optional
+		//! per-wavelength coefficient curves for the spectral (NM) path
+		//! (G1, vitreous enamel).  \a absorption_spectral /
+		//! \a scattering_spectral are names of registered IFunction1D
+		//! curves (lambda->value), or null/"" for none.  When both are
+		//! absent the medium matches AddHomogeneousMedium (plus the
+		//! emission term).  The RGB triples drive the RGB/preview path.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddHomogeneousMediumSpectral(
+			const char* name,										///< [in] Name of the medium
+			const double sigma_a[3],								///< [in] Absorption coefficient (RGB preview)
+			const double sigma_s[3],								///< [in] Scattering coefficient (RGB preview)
+			const double emission[3],								///< [in] Volumetric emission (RGB)
+			const char* absorption_spectral,						///< [in] Name of sigma_a(lambda) IFunction1D, or null/""
+			const char* scattering_spectral,						///< [in] Name of sigma_s(lambda) IFunction1D, or null/""
+			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
+			) = 0;
+
 		//! Adds a heterogeneous participating medium driven by volume data
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddHeterogeneousMedium(
