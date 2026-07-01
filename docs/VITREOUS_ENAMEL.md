@@ -696,10 +696,13 @@ spectral-bundle-bias notes in CLAUDE.md.)
 > test.** Empirically confirmed the bug: a pure-absorber slab read **τ ≈ 2× authored**
 > (measured exp(−2σ_a·d)) because the analog no-scatter branches multiplied Beer
 > transmittance again on top of the survival probability. Fix: the four non-HWSS
-> no-scatter sites now apply `Tr / PTTrReduced(Tr)` via a `PTSurvivalWeight<Tag>` helper
-> (the same chromatic ratio the scatter branch uses; = 1 for NM/monochrome, preserves
-> per-channel colour for RGB — verified the colored case stays colored, *not*
-> desaturated). New `tests/VolumeAbsorptionAttenuationTest.cpp` (gray RGB / colored RGB
+> no-scatter sites apply the survival weight `Tr / pSurvival` via a `PTSurvivalWeight`
+> helper (= 1 for NM/monochrome, preserves per-channel colour for RGB — verified the
+> colored case stays colored, *not* desaturated). **[Superseded 2026-07-01, commit
+> ad739554]** — `pSurvival` was originally `MinValue(Tr) = PTTrReduced(Tr)`; it is now the
+> **deterministic `IMedium::EvalDistancePdf[NM](scattered=false)`** (byte-identical for
+> homogeneous, correct for *heterogeneous* media where `EvalTransmittance` is stochastic
+> ratio tracking and `MinValue(EvalTransmittance)` was a biased random denominator). §10.12. New `tests/VolumeAbsorptionAttenuationTest.cpp` (gray RGB / colored RGB
 > / NM) asserts exp(−σ_a·d); fails on the old tree, passes now; full suite 142/142,
 > clean build. The deterministic post-scatter env evals (`TrEsc`, ~3269/~4365) are
 > **not** part of this bug — one-shot directional evaluations where the full
@@ -967,6 +970,28 @@ re-enabling straight-through shadow rays. (The guilloché watch used
 `transparent_shadows true` for its crystal; for enamel we do **not** inherit that, even
 for the hero beauty shot — a "spot-check says it's close" is still accepting a known
 approximation, which the principle rejects.)
+
+### 10.12 No-scatter survival denominator — deterministic pdf, not MinValue (P1, DONE)
+> **DONE (2026-07-01, commit ad739554).** Review of the double-count family found the
+> survival weight's *denominator* was `MinValue(EvalTransmittance)`. Exact for
+> `HomogeneousMedium`, but `HeterogeneousMedium::EvalTransmittance` is **stochastic ratio
+> tracking**, so `MinValue(EvalTransmittance)` is a random denominator → a biased
+> ratio-of-random-estimates for heterogeneous media. `HeterogeneousMedium::EvalDistancePdf`
+> is **deterministic** (Simpson-quadrature optical depth) and its own comment warns
+> against the `EvalTransmittance` path. **Fix:** the survival weight is `Tr / pSurvival`
+> with `pSurvival = IMedium::EvalDistancePdf[NM](ray, dist, false, dist)` (numerator stays
+> the per-channel unbiased `Tr`). Byte-identical for homogeneous (the IMedium default
+> returns `exp(-σ_t_max·d) = MinValue(Tr)`; NM default = `EvalTransmittanceNM`, weight
+> exactly 1 — the RayCaster NM sites removed as "=1" are restored as `Tr/EvalDistancePdfNM`).
+> Scatter weights untouched. Test: `VolumeAbsorptionAttenuationTest` cases O/P (constant-
+> density `painter_heterogeneous_medium`) — `IsHomogeneous()` returns false so the
+> stochastic path runs even at uniform density. **Revert-proof (decisive):** with the old
+> denominator case O's low-extinction channels read **46× / 13× too high** (random
+> `MinValue` inflates them; the max-extinction channel it picks stays ~correct); the fix
+> gives the correct per-channel `exp(-σ_a·d)`. Applied to PT / RayCaster / BDPT (VCM/MLT
+> inherit via the shared generators). Suite 144/144, byte-identical for homogeneous. Two
+> reviewers zero-P1. (P2: case P (NM gray) is a no-regression check, not a discriminator —
+> case O carries the discrimination.)
 
 ---
 
