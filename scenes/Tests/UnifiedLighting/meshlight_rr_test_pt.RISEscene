@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 #############################################################################################################
 #   Test scene for light-sample Russian roulette (Stage 1D).                                                #
 #   A Cornell box with a single mesh light ceiling panel.  Rendered with light_rr_threshold = 0.5            #

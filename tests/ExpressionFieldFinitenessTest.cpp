@@ -275,7 +275,7 @@ namespace {
 	// the load verdict (Job is Reference-counted: heap + release).
 	bool ParseBody( const std::string& tag, const std::string& body )
 	{
-		const std::string path = WriteTempScene( tag, "RISE ASCII SCENE 6\n" + body );
+		const std::string path = WriteTempScene( tag, "RISE ASCII SCENE 7\n" + body );
 		Job* job = new Job();
 		job->addref();
 		// Model-B P5 Slice 6c-3b: load via the canonical CST path (native-v7).

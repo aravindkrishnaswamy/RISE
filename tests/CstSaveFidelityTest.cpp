@@ -81,14 +81,14 @@ int main()
 	//    here on a comment+blank-line+tab scene so the edit cases below build on a proven baseline).
 	{
 		const std::string t =
-			"RISE ASCII SCENE 6\n# header comment\nsphere_geometry\n{\n\tradius 1\n\n\tname s   # trailing\n}\n";
+			"RISE ASCII SCENE 7\n# header comment\nsphere_geometry\n{\n\tradius 1\n\n\tname s   # trailing\n}\n";
 		Check( SerializeCst( ParseToCst( t ) ) == t, "A: unedited round-trip is byte-exact (comments/tabs/blank lines preserved)" );
 	}
 
 	// B. A scalar edit changes ONLY the edited value -- a leading comment, other params, and the
 	//    surrounding structure are byte-identical.
 	{
-		const std::string t   = "RISE ASCII SCENE 6\nsphere_geometry\n{\n# a sphere\nradius 1\nname s\n}\n";
+		const std::string t   = "RISE ASCII SCENE 7\nsphere_geometry\n{\n# a sphere\nradius 1\nname s\n}\n";
 		const std::string exp = Replace1( t, "radius 1", "radius 2" );
 		const std::string got = EditOne( t, "sphere_geometry/s", "radius", 0, "2" );
 		Check( got == exp, "B: scalar edit is minimal-diff (only the edited value's bytes change)" );
@@ -98,7 +98,7 @@ int main()
 	// C. A TRAILING COMMENT on the edited line survives the edit (the comment is sibling trivia, not
 	//    part of the replaced value).
 	{
-		const std::string t   = "RISE ASCII SCENE 6\nsphere_geometry\n{\nradius 1   # the radius\nname s\n}\n";
+		const std::string t   = "RISE ASCII SCENE 7\nsphere_geometry\n{\nradius 1   # the radius\nname s\n}\n";
 		const std::string exp = Replace1( t, "radius 1", "radius 2" );   // -> "radius 2   # the radius"
 		const std::string got = EditOne( t, "sphere_geometry/s", "radius", 0, "2" );
 		Check( got == exp, "C: trailing comment on the edited line is preserved verbatim" );
@@ -107,7 +107,7 @@ int main()
 
 	// D. Leading indentation (a TAB) and an adjacent BLANK LINE are preserved across the edit.
 	{
-		const std::string t   = "RISE ASCII SCENE 6\nsphere_geometry\n{\n\tradius 1\n\n\tname s\n}\n";
+		const std::string t   = "RISE ASCII SCENE 7\nsphere_geometry\n{\n\tradius 1\n\n\tname s\n}\n";
 		const std::string exp = Replace1( t, "radius 1", "radius 2" );
 		const std::string got = EditOne( t, "sphere_geometry/s", "radius", 0, "2" );
 		Check( got == exp, "D: tab indent + adjacent blank line preserved across the edit" );
@@ -115,7 +115,7 @@ int main()
 
 	// E. A MULTI-TOKEN value edit changes only that value's line; everything else is verbatim.
 	{
-		const std::string t   = "RISE ASCII SCENE 6\nuniformcolor_painter\n{\nname p\ncolor 1 0 0\n}\n";
+		const std::string t   = "RISE ASCII SCENE 7\nuniformcolor_painter\n{\nname p\ncolor 1 0 0\n}\n";
 		const std::string exp = Replace1( t, "color 1 0 0", "color 0.9 0.1 0.1" );
 		const std::string got = EditOne( t, "uniformcolor_painter/p", "color", 0, "0.9 0.1 0.1" );
 		Check( got == exp, "E: multi-token value edit is minimal-diff" );
@@ -125,7 +125,7 @@ int main()
 	//    so custom internal alignment in the EDITED value collapses -- and nothing else moves.  Here
 	//    the value is re-set to the same logical "1 0 0"; the 3-space gaps normalize to single spaces.
 	{
-		const std::string t   = "RISE ASCII SCENE 6\nuniformcolor_painter\n{\nname p\ncolor 1   0   0\n}\n";
+		const std::string t   = "RISE ASCII SCENE 7\nuniformcolor_painter\n{\nname p\ncolor 1   0   0\n}\n";
 		const std::string exp = Replace1( t, "color 1   0   0", "color 1 0 0" );
 		const std::string got = EditOne( t, "uniformcolor_painter/p", "color", 0, "1 0 0" );
 		Check( got == exp, "F: editing a multi-token value normalizes ITS internal spacing (single-spaced), nothing else" );
@@ -139,7 +139,7 @@ int main()
 	//    insert/remove pair is an exact no-op on the serialized bytes.
 	{
 		const std::string t =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"sphere_geometry\n{\nname a\nradius 1\n}\n"
 			"sphere_geometry\n{\nname b\nradius 2\n}\n";
 		Document d0  = ParseToCst( t );
@@ -154,10 +154,10 @@ int main()
 	// H. SIBLING IDENTITY PRESERVED: removing a MIDDLE item leaves every OTHER item's
 	//    NodeId UNCHANGED (only the removed item's id disappears).  Chunks are addressed
 	//    by name (DocFindByName -> DocIndexOfNodeId), since the magic header "RISE ASCII
-	//    SCENE 6" tokenizes into leading stray leaf items ahead of the chunks.
+	//    SCENE 7" tokenizes into leading stray leaf items ahead of the chunks.
 	{
 		const std::string t =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"sphere_geometry\n{\nname a\nradius 1\n}\n"
 			"sphere_geometry\n{\nname b\nradius 2\n}\n"
 			"sphere_geometry\n{\nname c\nradius 3\n}\n";
@@ -188,7 +188,7 @@ int main()
 	{
 		const std::string chunkBytes = "lambertian_material\n{\nname m\nreflectance p\n}";
 		const std::string t =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			+ chunkBytes + "\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n";
@@ -206,7 +206,7 @@ int main()
 
 	// J. Out-of-range index is a no-op (mirrors DocInsertItem's bounds clamp).
 	{
-		const std::string t = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname a\nradius 1\n}\n";
+		const std::string t = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname a\nradius 1\n}\n";
 		Document d = ParseToCst( t );
 		Check( SerializeCst( DocRemoveItem( d, -1 ) ) == t, "J: DocRemoveItem at index<0 is a no-op" );
 		Check( SerializeCst( DocRemoveItem( d, DocItemCount(d) ) ) == t, "J: DocRemoveItem past the end is a no-op" );

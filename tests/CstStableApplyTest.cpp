@@ -47,7 +47,7 @@ static bool bbeq( const BoundingBox& a, const BoundingBox& b )
 }
 
 static const char* BASE =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 	"uniformcolor_painter\n{\nname p2\ncolor 0.2 0.2 0.2\n}\n"
 	"lambertian_material\n{\nname m\nreflectance p\n}\n"
@@ -96,7 +96,7 @@ int main()
 	//      emits -- a post-only check would MISS it; red-proven by the wasEmissive fix).
 	{
 		const std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 1 1 1\n}\n"
 			"lambertian_material\n{\nname base\nreflectance p\n}\n"
 			"lambertian_luminaire_material\n{\nname lum\nexitance p\n}\n"
@@ -130,7 +130,7 @@ int main()
 	//      wasEmissive snapshot fires the bump (a removal a post-only check would miss).
 	{
 		const std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 1 1 1\n}\n"
 			"lambertian_luminaire_material\n{\nname lum\nexitance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -230,7 +230,7 @@ int main()
 	//      REFERENCE change (obja/objb -> a different object) is REFUSED (re-binding would un-hide a
 	//      possibly-shared dropped operand).  The cases below cover the applied edits + the refusals.
 	const std::string csgScene =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 		"uniformcolor_painter\n{\nname p2\ncolor 0.1 0.2 0.3\n}\n"
 		"lambertian_material\n{\nname m\nreflectance p\n}\n"
@@ -283,7 +283,7 @@ int main()
 		//   operand o2; dropping it from c (objb o2 -> o3) would un-hide o2 even though c2 still uses
 		//   it (a full derive keeps it hidden).  The operand-ref refusal protects this -> full derive.
 		const std::string shared =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"

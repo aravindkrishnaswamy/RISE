@@ -79,7 +79,7 @@ namespace {
 	// (Job is Reference-counted with a protected dtor -- heap + release.)
 	bool ParseBody( const std::string& tag, const std::string& body, Job& job )
 	{
-		const std::string path = WriteTempScene( tag, "RISE ASCII SCENE 6\n" + body );
+		const std::string path = WriteTempScene( tag, "RISE ASCII SCENE 7\n" + body );
 		const bool ok = ParseSceneFile( path, job );
 		remove( path.c_str() );
 		return ok;

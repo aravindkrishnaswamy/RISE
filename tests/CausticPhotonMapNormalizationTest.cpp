@@ -249,8 +249,8 @@ static void RunCausticCalibrationTest()
 {
 	std::cout << "Testing caustic-photon-map vs BDPT: refractive caustic (ior 1.33)" << std::endl;
 
-	const std::string pmScene   = std::string("RISE ASCII SCENE 6\n") + kRasterizerPhotonMap + kSceneCommon;
-	const std::string bdptScene = std::string("RISE ASCII SCENE 6\n") + kRasterizerBDPT       + kSceneCommon;
+	const std::string pmScene   = std::string("RISE ASCII SCENE 7\n") + kRasterizerPhotonMap + kSceneCommon;
+	const std::string bdptScene = std::string("RISE ASCII SCENE 7\n") + kRasterizerBDPT       + kSceneCommon;
 
 	const std::string pmPath   = WriteSceneToTempFile( pmScene.c_str(),   "pm"   );
 	const std::string bdptPath = WriteSceneToTempFile( bdptScene.c_str(), "bdpt" );

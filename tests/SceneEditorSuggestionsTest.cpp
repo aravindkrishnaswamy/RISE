@@ -106,7 +106,7 @@ void TestGrammarCoverage()
 void TestContextSceneRoot()
 {
 	std::cout << "ContextSceneRoot\n";
-	const std::string buf = "RISE ASCII SCENE 6\n\npng_pain";
+	const std::string buf = "RISE ASCII SCENE 7\n\npng_pain";
 	CompletionContext c = ResolveCompletionContext( buf, buf.size() );
 	EXPECT( c.scope == Scope::SceneRoot );
 	EXPECT( c.partialToken == "png_pain" );
@@ -116,7 +116,7 @@ void TestContextInBlockParamName()
 {
 	std::cout << "ContextInBlockParamName\n";
 	const std::string buf =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"ambient_light\n"
 		"{\n"
 		"\tpow";
@@ -130,7 +130,7 @@ void TestContextInBlockParamValue()
 {
 	std::cout << "ContextInBlockParamValue\n";
 	const std::string buf =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"ambient_light\n"
 		"{\n"
 		"\tpower 1";
@@ -144,7 +144,7 @@ void TestContextInComment()
 {
 	std::cout << "ContextInComment\n";
 	const std::string buf =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"# ambient_lig";
 	CompletionContext c = ResolveCompletionContext( buf, buf.size() );
 	EXPECT( c.scope == Scope::InComment );
@@ -154,7 +154,7 @@ void TestSuggestChunkKeywordsAtRoot()
 {
 	std::cout << "SuggestChunkKeywordsAtRoot\n";
 	SuggestionEngine engine;
-	const std::string buf = "RISE ASCII SCENE 6\n\n";
+	const std::string buf = "RISE ASCII SCENE 7\n\n";
 	auto sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
 	EXPECT( sugs.size() == 157 );	// 2026-05 Camera/Film/Output split: + `film`; 2026-05 painters: + composite_function2d_painter + polynomial_function2d_painter; 2026-05 IScalarPainter refactor: + scalar_painter; Phase 6.2 round-trip save: + override_object; 2026-06 auto-rasterizer dispatcher: + auto_rasterizer (Phase 1); 2026-06 auto-rasterizer Phase 1b: + auto_spectral_rasterizer; 2026-06 SDF geometry: + sdf_geometry; 2026-06 procedural general sweeps: + sweep_geometry + path_instances_geometry; 2026-06 temper-comparison: + function2d_painter; 2026-06 general patterning: + expression_function2d + cartesian_disk_geometry (retired guilloche_disk_geometry AND guilloche_oxide_painter: dials are an expression_function2d displaced onto cartesian_disk_geometry, and the oxide heat-tint is in-scene expression_function2d math); 2026-06 named animation paths: + animation (the named-animation grouping chunk); 2026-06 CST v6->v7 migrator: + global_medium (the v7 form of `> set global_medium`); 2026-06 scene variants: + scene_variant + active_scene_variant; 2026-06 CST v6->v7 cutover: + light_rr_threshold
 	bool found_ambient = false;
@@ -169,7 +169,7 @@ void TestSuggestParametersInAmbientLight()
 	std::cout << "SuggestParametersInAmbientLight\n";
 	SuggestionEngine engine;
 	const std::string buf =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"ambient_light\n"
 		"{\n"
 		"\t";
@@ -196,7 +196,7 @@ void TestNonRepeatableParameterFilteredAfterUse()
 	// `name` is already present — should be suppressed from the suggestions
 	// at the next line's start (not currently being typed).
 	const std::string buf =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"ambient_light\n"
 		"{\n"
 		"\tname my_light\n"
@@ -221,7 +221,7 @@ void TestInlineCompletionShowsAuthoredNonRepeatable()
 	// hiding the only `s*` ExactPrefix candidate while the user is
 	// spelling it out makes the parameter impossible to type.
 	const std::string buf =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"pixelpel_rasterizer\n"
 		"{\n"
 		"\tsamples\t4\n"
@@ -246,7 +246,7 @@ void TestNameIndexSkipsCommentedOutNames()
 {
 	std::cout << "NameIndexSkipsCommentedOutNames\n";
 	const std::string buf =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"lambertian_material\n"
 		"{\n"
 		"\tname real_mat\n"
@@ -277,7 +277,7 @@ void TestAliasShowsAsItsOwnSuggestion()
 {
 	std::cout << "AliasShowsAsItsOwnSuggestion\n";
 	SuggestionEngine engine;
-	const std::string buf = "RISE ASCII SCENE 6\n\n";
+	const std::string buf = "RISE ASCII SCENE 7\n\n";
 	auto sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
 	std::size_t pathtracing = 0, alias = 0;
 	for( const Suggestion& s : sugs ) {
@@ -295,7 +295,7 @@ void TestParameterContextMenuIncludesValuePlaceholder()
 	std::cout << "ParameterContextMenuIncludesValuePlaceholder\n";
 	SuggestionEngine engine;
 	const std::string buf =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"ambient_light\n"
 		"{\n"
 		"\t";
@@ -329,7 +329,7 @@ void TestUnambiguousCompletionMarked()
 	// parameter (lum_samples) by prefix, so that candidate should
 	// be marked as the unambiguous ghost-text completion.
 	const std::string buf =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"pixelpel_rasterizer\n"
 		"{\n"
 		"\tlum_sa";

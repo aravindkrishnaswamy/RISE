@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # SDF + refractive-caustic test.  A glass SDF torus sits above a white floor with
 # an overhead area light.  Light passes through the ring's hole AND refracts
 # through the glass band -> a ring caustic focused on the floor.  Photons are

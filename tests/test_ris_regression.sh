@@ -29,7 +29,7 @@ SCENE_BASE="${TMPDIR}/base.RISEscene"
 # Generate a minimal Cornell box scene template
 # -------------------------------------------------------------------
 cat > "${SCENE_BASE}" <<'SCENE'
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 
 > set accelerator B 10 8
 

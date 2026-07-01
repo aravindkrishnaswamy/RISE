@@ -36,7 +36,7 @@ using namespace risequiv;
 static int g_pass = 0, g_fail = 0;
 static void Check( bool c, const char* w ) { if( c ) ++g_pass; else { ++g_fail; std::printf( "  FAIL: %s\n", w ); } }
 
-static const std::string HDR = "RISE ASCII SCENE 6\n";
+static const std::string HDR = "RISE ASCII SCENE 7\n";
 
 // Load a scene string into a fresh Job via the canonical CST path; returns the
 // load bool.  Hermetic: writes a temp file, loads it, removes it.

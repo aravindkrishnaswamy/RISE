@@ -131,7 +131,7 @@ namespace
 	std::string PngPainterScene( const std::string& pngPath, const std::string& value )
 	{
 		std::string s;
-		s += "RISE ASCII SCENE 6\n";
+		s += "RISE ASCII SCENE 7\n";
 		s += "png_painter\n{\nname tex\nfile " + pngPath + "\ncolor_space Rec709RGB_Linear\n";
 		if( !value.empty() ) {
 			s += "filter_type " + value + "\n";

@@ -258,7 +258,7 @@ static void TestFilmChunkAfterCamera()
 	std::cout << "Testing parsing `film` chunk AFTER `pinhole_camera` chunk..." << std::endl;
 
 	const char* sceneText =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"\n"
 		"film\n"
 		"{\n"

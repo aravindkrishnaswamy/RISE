@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # Displaced tessellated sphere SMS test.  Same scene as sms_k2_glasssphere_tess
 # but with an actual non-zero displacement applied to the sphere via a perlin
 # noise painter.  This exercises the FULL displaced-geometry pipeline:

@@ -110,8 +110,16 @@ int main()
 {
 	std::printf( "=== CstLoadViaCstTest (P5 Slice 1: load via the canonical CST) ===\n" );
 
+	// Slice 6e header-bump back-compat pair: the reader accepts BOTH the post-cutover `7` header and the
+	// transitional `6` header (the CST is version-agnostic).  Prove both load so a re-header can't break
+	// un-migrated user scenes, and so a re-headered corpus scene keeps loading.
+	Case( "back-compat: SCENE 7 header loads (post-cutover default)", "/tmp/cst_loadvia_v7.RISEscene",
+		"RISE ASCII SCENE 7\nsphere_geometry\n{\nname sg7\nradius 1\n}\n" );
+	Case( "back-compat: SCENE 6 header still loads (transitional)", "/tmp/cst_loadvia_v6.RISEscene",
+		"RISE ASCII SCENE 6\nsphere_geometry\n{\nname sg6\nradius 1\n}\n" );
+
 	Case( "painter+material+geom+object+lights", "/tmp/cst_loadvia_1.RISEscene",
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"uniformcolor_painter\n{\nname p\ncolor 0.8 0.2 0.2\n}\n"
 		"lambertian_material\n{\nname m\nreflectance p\n}\n"
 		"sphere_geometry\n{\nname g\nradius 1.5\n}\n"

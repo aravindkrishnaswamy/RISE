@@ -33,7 +33,7 @@ int main()
 	std::printf( "CstRenameTest -- slice 2 (atomic rename: rewrite-all / collision / validation / animation)\n" );
 
 	const std::string twoRef =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 		"lambertian_material\n{\nname m1\nreflectance p\n}\n"
 		"lambertian_material\n{\nname m2\nreflectance p\n}\n";
@@ -55,7 +55,7 @@ int main()
 
 	// [collision vs runtime default] rename a material to `none` -> REFUSED, unchanged.
 	{
-		Document d = ParseToCst( "RISE ASCII SCENE 6\nlambertian_material\n{\nname m\nreflectance none\n}\n" );
+		Document d = ParseToCst( "RISE ASCII SCENE 7\nlambertian_material\n{\nname m\nreflectance none\n}\n" );
 		const std::string before = SerializeCst( d );
 		const NodeId m = DocFindByName( d, "lambertian_material/m" );
 		std::vector<std::string> diags;
@@ -75,7 +75,7 @@ int main()
 
 	// [validation] empty new name -> refused; no-op rename -> unchanged, no diag.
 	{
-		Document d = ParseToCst( "RISE ASCII SCENE 6\nlambertian_material\n{\nname m\nreflectance none\n}\n" );
+		Document d = ParseToCst( "RISE ASCII SCENE 7\nlambertian_material\n{\nname m\nreflectance none\n}\n" );
 		const std::string before = SerializeCst( d );
 		const NodeId m = DocFindByName( d, "lambertian_material/m" );
 		std::vector<std::string> de;
@@ -89,7 +89,7 @@ int main()
 	// [animation guard] rename refused when the document has an animation chunk.
 	{
 		Document d = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"lambertian_material\n{\nname m\nreflectance none\n}\n"
 			"animation\n{\nname anim\n}\n" );
 		const std::string before = SerializeCst( d );
@@ -103,7 +103,7 @@ int main()
 	// (its String target reference cannot be rewritten -> would dangle).
 	{
 		Document d = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
 			"standard_object\n{\nname o\ngeometry g\nposition 0 0 0\n}\n"
 			"override_object\n{\nname o\nposition 5 0 0\n}\n" );
@@ -118,7 +118,7 @@ int main()
 	// colour and scalar managers is refused (the (category,name) graph cannot disambiguate).
 	{
 		Document d = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"scalar_painter\n{\nname p\nfile noise.dat\n}\n" );
 		const std::string before = SerializeCst( d );
@@ -134,7 +134,7 @@ int main()
 	// Reference params, so the rename cannot substitute the new name -> refuse.
 	{
 		Document d = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
 			"piecewise_linear_function2d\n{\nname f2\n}\n" );
 		const std::string before = SerializeCst( d );
@@ -148,7 +148,7 @@ int main()
 	// has another Function-namespace producer (a 1D + 2D pair).
 	{
 		Document d = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function\n{\nname fx\n}\n"
 			"piecewise_linear_function2d\n{\nname fx\n}\n" );
 		const std::string before = SerializeCst( d );
@@ -163,7 +163,7 @@ int main()
 	// traced edge, so renaming it REWRITES the referrer (no dangling, no false refusal).
 	{
 		Document d = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function\n{\nname fx\ncp 0 0\ncp 1 1\n}\n"
 			"lambertian_material\n{\nname m\nreflectance fx\n}\n" );
 		const NodeId fx = DocFindByName( d, "piecewise_linear_function/fx" );
@@ -178,7 +178,7 @@ int main()
 	// guard counts both, since a colour painter is itself a Function-namespace producer).
 	{
 		Document d = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function\n{\nname x\ncp 0 0\ncp 1 1\n}\n"
 			"uniformcolor_painter\n{\nname x\ncolor 0.5 0.5 0.5\n}\n" );
 		const std::string before = SerializeCst( d );

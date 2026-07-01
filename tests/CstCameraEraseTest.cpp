@@ -105,7 +105,7 @@ int main()
 	// ---- CDEL-A: delete the FIRST chunk (camera first, before film + object) ----
 	{
 		const std::string scene =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"\n"
 			"pinhole_camera\n{\n\tname camA\n\tlocation 0 0 3\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30\n}\n"
 			"\n"
@@ -135,7 +135,7 @@ int main()
 	// ---- CDEL-B: delete a MIDDLE chunk (camera between film and object) ----
 	{
 		const std::string scene =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"\n"
 			"film\n{\n\twidth 64\n\theight 64\n}\n"
 			"\n"
@@ -147,7 +147,7 @@ int main()
 		if( j ) {
 			// Minimality reference: the SAME scene authored WITHOUT camB (one separator, no blank-line accumulation).
 			const std::string sceneNoCam =
-				"RISE ASCII SCENE 6\n"
+				"RISE ASCII SCENE 7\n"
 				"\n"
 				"film\n{\n\twidth 64\n\theight 64\n}\n"
 				"\n"
@@ -174,7 +174,7 @@ int main()
 	// ---- CDEL-C: delete the LAST chunk (camera is the last chunk) ----
 	{
 		const std::string scene =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"\n"
 			"film\n{\n\twidth 64\n\theight 64\n}\n"
 			"\n"
@@ -204,7 +204,7 @@ int main()
 	// ---- CDEL-D: NO-TRAILING-NEWLINE doc: delete a camera, assert no glue ----
 	{
 		const std::string scene =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"\n"
 			"film\n{\n\twidth 64\n\theight 64\n}\n"
 			"\n"
@@ -230,7 +230,7 @@ int main()
 	// ---- CDEL-E: TWO named cameras: delete one, the other survives ----
 	{
 		const std::string scene =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"\n"
 			"film\n{\n\twidth 64\n\theight 64\n}\n"
 			"\n"

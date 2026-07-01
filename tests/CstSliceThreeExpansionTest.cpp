@@ -189,7 +189,7 @@ static double MedAbsR( Job& j, const char* med )
 }
 
 static const char* SCENE =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"scene_variant\n{\nname night\n}\n"                       // declares a variant -> material edits take D2
 	"omni_light\n{\nname l\npower 4\ncolor 1 1 1\nposition 0 0 5\n}\n"
 	"uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
@@ -250,7 +250,7 @@ int main()
 	{
 		const char* tc = "cst_s3_cam.RISEscene";
 		{ std::ofstream o( tc );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "scene_variant\n{\nname night\n}\n"
 		       "film\n{\nwidth 64\nheight 64\n}\n"
 		       "pinhole_camera\n{\nlocation 0 0 3\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"   // UNNAMED
@@ -279,7 +279,7 @@ int main()
 	{
 		const char* tb = "cst_s3_objbind.RISEscene";
 		{ std::ofstream o( tb );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "scene_variant\n{\nname night\n}\n"
 		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
 		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
@@ -332,7 +332,7 @@ int main()
 	{
 		const char* tx = "cst_s3_objxform.RISEscene";
 		{ std::ofstream o( tx );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "scene_variant\n{\nname night\n}\n"
 		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
 		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
@@ -376,7 +376,7 @@ int main()
 	{
 		const char* tv = "cst_s3_objoverride.RISEscene";
 		{ std::ofstream o( tv );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "scene_variant\n{\nname night\n}\n"
 		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
 		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
@@ -407,7 +407,7 @@ int main()
 	{
 		const char* tm = "cst_s3_medium.RISEscene";
 		{ std::ofstream o( tm );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "scene_variant\n{\nname night\n}\n"
 		       "homogeneous_medium\n{\nname fog\nabsorption 0.1 0.1 0.1\nscattering 0.2 0.2 0.2\n}\n"
 		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
@@ -434,7 +434,7 @@ int main()
 	{
 		const char* tc = "cst_s3_camdrag.RISEscene";
 		{ std::ofstream o( tc );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "scene_variant\n{\nname night\n}\n"
 		       "film\n{\nwidth 64\nheight 64\n}\n"
 		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
@@ -470,7 +470,7 @@ int main()
 	{
 		const char* tk = "cst_s3_camclone.RISEscene";
 		{ std::ofstream o( tk );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "scene_variant\n{\nname night\n}\n"                                    // declares a variant -> material edits take D2
 		       "film\n{\nwidth 64\nheight 64\n}\n"
 		       "pinhole_camera\n{\nname cam\nlocation 0 0 7\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"   // NAMED + clonable
@@ -517,7 +517,7 @@ int main()
 		{
 			const char* tk2 = "cst_s3_camclone2.RISEscene";
 			{ std::ofstream o( tk2 );
-			  o << "RISE ASCII SCENE 6\n"
+			  o << "RISE ASCII SCENE 7\n"
 			       "scene_variant\n{\nname night\n}\n"
 			       "film\n{\nwidth 64\nheight 64\n}\n"
 			       "pinhole_camera\n{\nname cam\nlocation 0 0 7\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
@@ -554,7 +554,7 @@ int main()
 		{
 			const char* tk3 = "cst_s3_camclone3.RISEscene";
 			{ std::ofstream o( tk3 );
-			  o << "RISE ASCII SCENE 6\n"
+			  o << "RISE ASCII SCENE 7\n"
 			       "scene_variant\n{\nname night\n}\n"
 			       "film\n{\nwidth 64\nheight 64\n}\n"
 			       "pinhole_camera\n{\nname cam\nlocation 0 0 7\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
@@ -597,7 +597,7 @@ int main()
 	{
 		const char* tk = "cst_s3_caminsmid.RISEscene";
 		{ std::ofstream o( tk );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "film\n{\nwidth 64\nheight 64\n}\n"
 		       "pinhole_camera\n{\nname cam\nlocation 0 0 7\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
 		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
@@ -651,7 +651,7 @@ int main()
 	{
 		const char* tg = "cst_s3_csg.RISEscene";
 		{ std::ofstream o( tg );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "scene_variant\n{\nname night\n}\n"
 		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
 		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
@@ -834,7 +834,7 @@ int main()
 		const char* tn = "cst_s5_noeol.RISEscene";
 		// Write the scene with NO trailing newline (the last byte is the closing `}` of the last chunk).
 		{ std::ofstream o( tn, std::ios::binary );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "film\n{\nwidth 64\nheight 64\n}\n"
 		       "pinhole_camera\n{\nname cam\nlocation 0 0 7\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
 		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
@@ -879,7 +879,7 @@ int main()
 		const char* tn = "cst_s5_eol.RISEscene";
 		// Write the scene WITH a trailing newline (the last byte is `\n`).
 		{ std::ofstream o( tn, std::ios::binary );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "film\n{\nwidth 64\nheight 64\n}\n"
 		       "pinhole_camera\n{\nname cam\nlocation 0 0 7\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
 		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
@@ -919,14 +919,14 @@ int main()
 		const char* sa = "cst_s5_reopenA.RISEscene";
 		const char* sb = "cst_s5_reopenB.RISEscene";
 		{ std::ofstream o( sa );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "film\n{\nwidth 64\nheight 64\n}\n"
 		       "uniformcolor_painter\n{\nname pa\ncolor 1 0 0\n}\n"
 		       "lambertian_material\n{\nname ma\nreflectance pa\n}\n"
 		       "sphere_geometry\n{\nname ga\nradius 1\n}\n"
 		       "standard_object\n{\nname oa\ngeometry ga\nmaterial ma\n}\n"; }
 		{ std::ofstream o( sb );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "film\n{\nwidth 64\nheight 64\n}\n"
 		       "uniformcolor_painter\n{\nname pb\ncolor 0 1 0\n}\n"
 		       "lambertian_material\n{\nname mb_distinct\nreflectance pb\n}\n"
@@ -960,7 +960,7 @@ int main()
 		// FILM1 -- a WIDTH edit: live SetFilm + ApplyCstFilmEdit records the new width; it SURVIVES a material D2.
 		const char* tf = "cst_film1.RISEscene";
 		{ std::ofstream o( tf );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "scene_variant\n{\nname night\n}\n"                                   // variant -> material edits take D2
 		       "film\n{\nwidth 800\nheight 600\n}\n"
 		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
@@ -996,7 +996,7 @@ int main()
 		// own line (no brace-glue), and survive a D2 + a save->reload.
 		const char* tf = "cst_film2.RISEscene";
 		{ std::ofstream o( tf );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "scene_variant\n{\nname night\n}\n"
 		       "film\n{\nwidth 640\nheight 480\n}\n"                                  // NO pixelAR (defaults to 1.0)
 		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
@@ -1039,7 +1039,7 @@ int main()
 		// FILM3 -- a resolution PRESET (width+height together, pixelAR unchanged -> nullptr): survives a save->reload.
 		const char* tf = "cst_film3.RISEscene";
 		{ std::ofstream o( tf );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "film\n{\nwidth 800\nheight 600\n}\n"
 		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
 		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
@@ -1083,7 +1083,7 @@ int main()
 		// RED-PROVE: change the snprintf below to "%.6g" -> the reloaded pixelAR is 1.77778, the < 1e-7 assertion fails.
 		const char* tf = "cst_film5.RISEscene";
 		{ std::ofstream o( tf );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "film\n{\nwidth 640\nheight 480\n}\n"                                  // NO pixelAR (defaults to 1.0)
 		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
 		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
@@ -1121,7 +1121,7 @@ int main()
 		// returns 0, the D2 reverts to the default dims, and the "DocText contains film" / D2-survival assertions fail.
 		const char* tf = "cst_film6.RISEscene";
 		{ std::ofstream o( tf );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "scene_variant\n{\nname night\n}\n"                                   // variant -> material edit takes D2
 		       // NO `film` chunk at all -> renders on the built-in default
 		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
@@ -1169,7 +1169,7 @@ int main()
 		// -> the "height 1080" assertion fails (the width edit alone would still pass).
 		const char* tf = "cst_film7.RISEscene";
 		{ std::ofstream o( tf );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "film\n{\nwidth 800\nheight 600\n}\n"
 		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
 		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
@@ -1211,7 +1211,7 @@ int main()
 		// the second/third calls double-insert -> "exactly one film chunk" fails AND the singleton resolver would brick.
 		const char* tf = "cst_film8.RISEscene";
 		{ std::ofstream o( tf );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       // NO `film` chunk at all -> renders on the built-in default; the first ApplyCstFilmEdit INSERTs one.
 		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
 		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
@@ -1264,7 +1264,7 @@ int main()
 	{
 		const char* tvf = "cst_s3_vfit.RISEscene";
 		{ std::ofstream o( tvf );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "scene_variant\n{\nname night\n}\n"                       // variant -> material edits take D2 + enables RederiveCstWithVariant
 		       "film\n{\nwidth 1920\nheight 1080\n}\n"                    // LARGE authored film
 		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"

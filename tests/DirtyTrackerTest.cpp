@@ -64,7 +64,7 @@ static IJobPriv* LoadTwoObjectScene( const char* tag )
         "/tmp/dirty_tracker_test_%s_%d.RISEscene", tag, (int)::getpid() );
     std::ofstream ofs( path );
     if( !ofs.is_open() ) return nullptr;
-    ofs << "RISE ASCII SCENE 6\n"
+    ofs << "RISE ASCII SCENE 7\n"
         << "sphere_geometry\n{\n    name sph\n    radius 1.0\n}\n"
         << "standard_object\n{\n    name objA\n    geometry sph\n    position 0 0 0\n}\n"
         << "standard_object\n{\n    name objB\n    geometry sph\n    position 5 0 0\n}\n";

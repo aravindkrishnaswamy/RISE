@@ -65,7 +65,7 @@ int main()
 	std::printf( "CstReferenceTraceTest -- transfer-gate item 6 (reference tracing)\n" );
 
 	const std::string scene =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"uniformcolor_painter\n{\nname red\ncolor 0.2 0.4 0.6\n}\n"
 		"lambertian_material\n{\nname redmat\nreflectance red\n}\n"
 		"sphere_geometry\n{\nname ball\nradius 0.25\n}\n"
@@ -128,7 +128,7 @@ int main()
 		// advanced_shader.shaderop is `<ref> <min> <max> <op>` -- the reference is
 		// the FIRST token of a tuple-typed (declared String) param. Two occurrences.
 		const std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"directlighting_shaderop\n{\nname dl\n}\n"
 			"pathtracing_shaderop\n{\nname pt\n}\n"
 			"advanced_shader\n{\nname sh\nshaderop dl 0 1 +\nshaderop pt 1 10 +\n}\n";
@@ -154,7 +154,7 @@ int main()
 		// `multiply a b` carries TWO scalar-painter references in one param --
 		// both resolve, both with the same (param) source NodeId.
 		const std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"scalar_painter\n{\nname sa\nvalue 2\n}\n"
 			"scalar_painter\n{\nname sb\nvalue 3\n}\n"
 			"scalar_painter\n{\nname prod\nmultiply sa sb\n}\n";
@@ -176,7 +176,7 @@ int main()
 	std::printf( "[dangling] an unresolved reference is flagged, not a silent edge\n" );
 	{
 		const std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"sphere_geometry\n{\nname ball\nradius 1\n}\n"
 			"standard_object\n{\nname obj\ngeometry ball\nmaterial ghost\n}\n";
 		Document d2 = ParseToCst( s );
@@ -196,7 +196,7 @@ int main()
 	std::printf( "[none] an explicit 'none' reference is not an edge\n" );
 	{
 		const std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"sphere_geometry\n{\nname ball\nradius 1\n}\n"
 			"standard_object\n{\nname obj\ngeometry ball\nmaterial none\n}\n";
 		Document d3 = ParseToCst( s );

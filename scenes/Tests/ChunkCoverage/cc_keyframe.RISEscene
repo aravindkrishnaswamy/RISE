@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # Coverage: keyframe (single object-parameter keyframe).
 # Legacy quirks preserved by the parser: (1) the target object must be named `object` (the
 # element name is ignored; element_type doubles as the element name); (2) `element_type` is

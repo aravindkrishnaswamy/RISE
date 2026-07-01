@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # Tessellated-sphere SMS test.  Identical scene to sms_k2_glasssphere_boxfilter
 # except the glass_ball uses displaced_geometry(sphere, disp_scale=0) so we
 # force a triangle-mesh representation of a PERFECTLY closed sphere — no

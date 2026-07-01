@@ -38,7 +38,7 @@ static int CeilLog2( int n ) { int b = 0; while( (1 << b) < n ) ++b; return b; }
 // cost test: items are [RISE, ASCII, SCENE, 6, chunk s0, ... chunk s(N-1)].
 static std::string SceneN( int n )
 {
-	std::string s = "RISE ASCII SCENE 6\n";
+	std::string s = "RISE ASCII SCENE 7\n";
 	for( int i = 0; i < n; ++i )
 		s += "sphere_geometry\n{\nname s" + std::to_string(i) + "\nradius 0." + std::to_string(100 + i) + "\n}\n";
 	return s;
@@ -189,7 +189,7 @@ int main()
 	// [within-chunk] resolve a byte offset to the innermost Param-in-chunk.
 	// ============================================================
 	{
-		const std::string scene = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.6\n}\n";
+		const std::string scene = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname s\nradius 0.6\n}\n";
 		Cst::Document doc = Cst::ParseToCst( scene );
 		Cst::NodeRef chunk; int v = 0;
 
@@ -211,13 +211,13 @@ int main()
 	// [reparse] free-form reparse re-matches identity by content-key.
 	// ============================================================
 	{
-		const std::string base = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.6\n}\n";
+		const std::string base = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname s\nradius 0.6\n}\n";
 		Cst::Document old = Cst::ParseToCst( base );
 		Cst::NodeId idS = Cst::DocFindByName( old, "sphere_geometry/s" );
 		Check( idS != 0, "[reparse] baseline name resolves" );
 
 		// value edit via reparse: id persists, nothing invalidated, bytes updated
-		const std::string edited = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.66\n}\n";
+		const std::string edited = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname s\nradius 0.66\n}\n";
 		std::vector<Cst::NodeId> inv;
 		Cst::Document neu = Cst::DocReparse( old, edited, &inv );
 		Check( Cst::DocFindByName( neu, "sphere_geometry/s" ) == idS, "[reparse] value edit: the chunk keeps its NodeId" );
@@ -226,7 +226,7 @@ int main()
 
 		// rename via reparse: lineage SURVIVES (D9/D44 best-effort) -- the unique
 		// chunk keeps its id; only the name-path key moves.
-		const std::string renamed = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s2\nradius 0.6\n}\n";
+		const std::string renamed = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname s2\nradius 0.6\n}\n";
 		std::vector<Cst::NodeId> inv2;
 		Cst::Document neu2 = Cst::DocReparse( old, renamed, &inv2 );
 		Check( Cst::DocFindByName( neu2, "sphere_geometry/s" ) == 0, "[reparse] rename: the old name no longer resolves" );
@@ -235,8 +235,8 @@ int main()
 		Check( Cst::DocResolveNodeId( neu2, idS ) != nullptr, "[reparse] rename: the carried id resolves to the renamed node" );
 
 		// reorder of distinct chunks via reparse: ids carried by content-key, not position
-		const std::string two     = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname a\nradius 0.1\n}\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
-		const std::string swapped = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname b\nradius 0.2\n}\nsphere_geometry\n{\nname a\nradius 0.1\n}\n";
+		const std::string two     = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname a\nradius 0.1\n}\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
+		const std::string swapped = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname b\nradius 0.2\n}\nsphere_geometry\n{\nname a\nradius 0.1\n}\n";
 		Cst::Document od = Cst::ParseToCst( two );
 		Cst::NodeId idA = Cst::DocFindByName( od, "sphere_geometry/a" );
 		Cst::NodeId idB = Cst::DocFindByName( od, "sphere_geometry/b" );
@@ -252,7 +252,7 @@ int main()
 	// (a degenerate scene the derive layer rejects, but the CST holds losslessly).
 	// ============================================================
 	{
-		const std::string scene = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.1\n}\nsphere_geometry\n{\nname s\nradius 0.2\n}\n";
+		const std::string scene = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname s\nradius 0.1\n}\nsphere_geometry\n{\nname s\nradius 0.2\n}\n";
 		Cst::Document doc = Cst::ParseToCst( scene );
 		const int iA = ChunkIndexAt( doc, scene, "0.1" );
 		const int iB = ChunkIndexAt( doc, scene, "0.2" );
@@ -274,7 +274,7 @@ int main()
 	}
 	{
 		// rename INTO an existing name must not hijack the original's binding
-		const std::string scene = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname a\nradius 0.1\n}\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
+		const std::string scene = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname a\nradius 0.1\n}\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
 		Cst::Document doc = Cst::ParseToCst( scene );
 		const int iA = ChunkIndexAt( doc, scene, "0.1" );
 		Cst::NodeId idB = Cst::DocFindByName( doc, "sphere_geometry/b" );
@@ -291,8 +291,8 @@ int main()
 	// INVALIDATED, never position-remapped onto an unrelated row.
 	// ============================================================
 	{
-		const std::string two     = "RISE ASCII SCENE 6\nsphere_geometry\n{\nradius 0.1\n}\nsphere_geometry\n{\nradius 0.2\n}\n";
-		const std::string swapped = "RISE ASCII SCENE 6\nsphere_geometry\n{\nradius 0.2\n}\nsphere_geometry\n{\nradius 0.1\n}\n";
+		const std::string two     = "RISE ASCII SCENE 7\nsphere_geometry\n{\nradius 0.1\n}\nsphere_geometry\n{\nradius 0.2\n}\n";
+		const std::string swapped = "RISE ASCII SCENE 7\nsphere_geometry\n{\nradius 0.2\n}\nsphere_geometry\n{\nradius 0.1\n}\n";
 		Cst::Document od = Cst::ParseToCst( two );
 		Cst::NodeId id01 = Cst::DocNodeIdAt( od, ChunkIndexAt( od, two, "0.1" ) );
 		Cst::NodeId id02 = Cst::DocNodeIdAt( od, ChunkIndexAt( od, two, "0.2" ) );
@@ -302,7 +302,7 @@ int main()
 		Check( Cst::DocNodeIdAt( rd, ChunkIndexAt( rd, swapped, "0.2" ) ) == id02, "[reparse-ambig] unnamed reorder: id follows the 0.2 content" );
 		Check( inv.empty(), "[reparse-ambig] unnamed distinct-content reorder: nothing invalidated" );
 
-		const std::string bothEdited = "RISE ASCII SCENE 6\nsphere_geometry\n{\nradius 0.11\n}\nsphere_geometry\n{\nradius 0.22\n}\n";
+		const std::string bothEdited = "RISE ASCII SCENE 7\nsphere_geometry\n{\nradius 0.11\n}\nsphere_geometry\n{\nradius 0.22\n}\n";
 		std::vector<Cst::NodeId> inv2;
 		Cst::Document rd2 = Cst::DocReparse( od, bothEdited, &inv2 );
 		bool inv01 = std::find( inv2.begin(), inv2.end(), id01 ) != inv2.end();
@@ -313,8 +313,8 @@ int main()
 	}
 	{
 		// mixed named reparse: one value-edited (unique-key pass), one unchanged (full pass)
-		const std::string two    = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname a\nradius 0.1\n}\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
-		const std::string edited = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname a\nradius 0.99\n}\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
+		const std::string two    = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname a\nradius 0.1\n}\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
+		const std::string edited = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname a\nradius 0.99\n}\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
 		Cst::Document od = Cst::ParseToCst( two );
 		Cst::NodeId idA = Cst::DocFindByName( od, "sphere_geometry/a" );
 		Cst::NodeId idB = Cst::DocFindByName( od, "sphere_geometry/b" );
@@ -352,7 +352,7 @@ int main()
 	// BOTH (no silent id swap among indistinguishable rows) -- P1-3.
 	// ============================================================
 	{
-		const std::string two    = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.1\n}\nsphere_geometry\n{\nname s\nradius 0.1\n}\n";
+		const std::string two    = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname s\nradius 0.1\n}\nsphere_geometry\n{\nname s\nradius 0.1\n}\n";
 		Cst::Document od = Cst::ParseToCst( two );
 		Cst::NodeRef it; size_t st = 0; int vv = 0;
 		const int iFirst  = Cst::DocItemAtByteOffset( od, two.find ( "sphere_geometry" ), &it, &st, &vv );
@@ -361,7 +361,7 @@ int main()
 		Cst::NodeId idS2 = Cst::DocNodeIdAt( od, iSecond );
 		Check( idF != 0 && idS2 != 0 && idF != idS2, "[reparse-swap] the two identical chunks have distinct ids" );
 		// edit ONLY the first chunk (0.1 -> 0.2); the second is unchanged
-		const std::string edited = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.2\n}\nsphere_geometry\n{\nname s\nradius 0.1\n}\n";
+		const std::string edited = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname s\nradius 0.2\n}\nsphere_geometry\n{\nname s\nradius 0.1\n}\n";
 		std::vector<Cst::NodeId> inv;
 		Cst::Document rd = Cst::DocReparse( od, edited, &inv );
 		bool invF = std::find( inv.begin(), inv.end(), idF ) != inv.end();
@@ -399,7 +399,7 @@ int main()
 	// reverse index, stable across a value edit, dropped on erase.
 	// ============================================================
 	{
-		const std::string scene = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.6\n}\n";
+		const std::string scene = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname s\nradius 0.6\n}\n";
 		Cst::Document doc = Cst::ParseToCst( scene );
 		Cst::NodeId chunkId = 0, radiusId = 0; Cst::NodeRef chunk; int v = 0;
 		Cst::NodeRef pr = Cst::DocParamAtByteOffset( doc, scene.find("0.6"), &chunk, &v, &radiusId, &chunkId );
@@ -422,8 +422,8 @@ int main()
 	}
 	{
 		// param ids survive a reparse value edit (carried with their chunk)
-		const std::string base   = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.6\n}\n";
-		const std::string edited = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.66\n}\n";
+		const std::string base   = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname s\nradius 0.6\n}\n";
+		const std::string edited = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname s\nradius 0.66\n}\n";
 		Cst::Document doc = Cst::ParseToCst( base );
 		Cst::NodeId chunkId = 0, radiusId = 0; Cst::NodeRef chunk; int v = 0;
 		Cst::DocParamAtByteOffset( doc, base.find("0.6"), &chunk, &v, &radiusId, &chunkId );
@@ -476,7 +476,7 @@ int main()
 	}
 	{
 		// many same-spot inserts exhaust a label gap -> reflow; id<->position stays correct.
-		Cst::Document doc = Cst::ParseToCst( "RISE ASCII SCENE 6\nsphere_geometry\n{\nname a\nradius 0.1\n}\n" );
+		Cst::Document doc = Cst::ParseToCst( "RISE ASCII SCENE 7\nsphere_geometry\n{\nname a\nradius 0.1\n}\n" );
 		std::vector<Cst::NodeId> ids;
 		for( int k = 0; k < 80; ++k ) { doc = Cst::DocInsertItem( doc, 1, MakeSphere( "x" + std::to_string(k), "0.5" ) ); ids.push_back( Cst::DocNodeIdAt( doc, 1 ) ); }
 		bool ok = true;
@@ -489,7 +489,7 @@ int main()
 	// and erase cleans them all -- no overwrite/orphan (P1-B).
 	// ============================================================
 	{
-		const std::string scene = "RISE ASCII SCENE 6\nsdf_geometry\n{\nname d\npart aaa\npart bbb\n}\n";
+		const std::string scene = "RISE ASCII SCENE 7\nsdf_geometry\n{\nname d\npart aaa\npart bbb\n}\n";
 		Cst::Document doc = Cst::ParseToCst( scene );
 		Cst::NodeId chunkId = 0, p0 = 0, p1 = 0; Cst::NodeRef chunk; int v = 0;
 		Cst::DocParamAtByteOffset( doc, scene.find("aaa"), &chunk, &v, &p0, &chunkId );
@@ -506,13 +506,13 @@ int main()
 	// [param-invalidate] reparse reports PARAM ids that died, not just chunk ids (P1-C).
 	// ============================================================
 	{
-		const std::string two = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname a\nradius 0.1\n}\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
+		const std::string two = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname a\nradius 0.1\n}\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
 		Cst::Document doc = Cst::ParseToCst( two );
 		Cst::NodeId aChunk = 0, aRadius = 0; Cst::NodeRef chunk; int v = 0;
 		Cst::DocParamAtByteOffset( doc, two.find("0.1"), &chunk, &v, &aRadius, &aChunk );
 		Cst::NodeId aName = Cst::DocParamId( doc, aChunk, "name" );
 		Check( aRadius != 0 && aName != 0, "[param-invalidate] chunk a params have ids" );
-		const std::string justB = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
+		const std::string justB = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
 		std::vector<Cst::NodeId> inv;
 		Cst::Document rd = Cst::DocReparse( doc, justB, &inv );
 		bool invR = std::find( inv.begin(), inv.end(), aRadius ) != inv.end();
@@ -522,11 +522,11 @@ int main()
 	}
 	{
 		// removing ONE param from a CARRIED chunk invalidates just that param id
-		const std::string base = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.6\n}\n";
+		const std::string base = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname s\nradius 0.6\n}\n";
 		Cst::Document doc = Cst::ParseToCst( base );
 		Cst::NodeId sChunk = 0, sRadius = 0; Cst::NodeRef chunk; int v = 0;
 		Cst::DocParamAtByteOffset( doc, base.find("0.6"), &chunk, &v, &sRadius, &sChunk );
-		const std::string noRadius = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\n}\n";
+		const std::string noRadius = "RISE ASCII SCENE 7\nsphere_geometry\n{\nname s\n}\n";
 		std::vector<Cst::NodeId> inv;
 		Cst::Document rd = Cst::DocReparse( doc, noRadius, &inv );
 		Check( Cst::DocFindByName( rd, "sphere_geometry/s" ) != 0, "[param-invalidate] the chunk itself is carried" );
@@ -584,7 +584,7 @@ int main()
 	// (P1-C: content-matched, never position-remapped onto an unrelated value).
 	// ============================================================
 	{
-		const std::string scene = "RISE ASCII SCENE 6\nsdf_geometry\n{\nname d\npart aaa\npart bbb\n}\n";
+		const std::string scene = "RISE ASCII SCENE 7\nsdf_geometry\n{\nname d\npart aaa\npart bbb\n}\n";
 		Cst::Document doc = Cst::ParseToCst( scene );
 		Cst::NodeId chunkId = 0, idA = 0, idB = 0; Cst::NodeRef chunk; int v = 0;
 		Cst::DocParamAtByteOffset( doc, scene.find("aaa"), &chunk, &v, &idA, &chunkId );
@@ -607,7 +607,7 @@ int main()
 
 		// same insert-before via REPARSE: lineage preserved by content match
 		std::vector<Cst::NodeId> inv3;
-		Cst::Document rp = Cst::DocReparse( doc, "RISE ASCII SCENE 6\nsdf_geometry\n{\nname d\npart ccc\npart aaa\npart bbb\n}\n", &inv3 );
+		Cst::Document rp = Cst::DocReparse( doc, "RISE ASCII SCENE 7\nsdf_geometry\n{\nname d\npart ccc\npart aaa\npart bbb\n}\n", &inv3 );
 		Check( Cst::DocParamId( rp, chunkId, "part", 1 ) == idA && Cst::DocParamId( rp, chunkId, "part", 2 ) == idB, "[param-shift] reparse insert-before keeps aaa/bbb ids by content" );
 		Check( inv3.empty(), "[param-shift] reparse insert-before invalidates nothing" );
 	}
@@ -617,7 +617,7 @@ int main()
 	// count-changing edit invalidates them rather than guessing which survived (P1-B).
 	// ============================================================
 	{
-		const std::string scene = "RISE ASCII SCENE 6\nsdf_geometry\n{\nname d\npart aaa\npart aaa\n}\n";
+		const std::string scene = "RISE ASCII SCENE 7\nsdf_geometry\n{\nname d\npart aaa\npart aaa\n}\n";
 		Cst::Document doc = Cst::ParseToCst( scene );
 		const int ci = ChunkIndexAt( doc, scene, "name d" );
 		Cst::NodeId chunkId = Cst::DocNodeIdAt( doc, ci );
@@ -640,7 +640,7 @@ int main()
 			std::string chunkSrc = "sdf_geometry\n{\nname d\n";
 			for( int k = 0; k < P; ++k ) chunkSrc += "cp v" + std::to_string(k) + "\n";
 			chunkSrc += "}\n";
-			const std::string scene = "RISE ASCII SCENE 6\n" + chunkSrc;
+			const std::string scene = "RISE ASCII SCENE 7\n" + chunkSrc;
 			Cst::Document doc = Cst::ParseToCst( scene );
 			const int ci = ChunkIndexAt( doc, scene, "name d" );
 			std::string editedSrc = "sdf_geometry\n{\nname d\n";

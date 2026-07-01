@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-Phase B2 scene-format migration: RISE ASCII SCENE 5 → 6.
+Phase B2 scene-format migration: RISE ASCII SCENE 5 → 7.
+
+(Originally 5→6; since the Model-B CST cutover the post-cutover header
+is `RISE ASCII SCENE 7`, so a fresh conversion lands directly at 7.
+The reader still accepts a `6` header for back-compat.)
 
 Moves width/height/pixelAR lines OUT of <camera_type>_camera chunks
 INTO a new `film` chunk inserted before the first camera chunk.
@@ -18,7 +22,7 @@ Files without `RISE ASCII SCENE 5` header are left alone.
 
 Round-trip:
 - `git diff --shortstat` after running gives you the blast radius.
-- Each migrated file: header bumped 5→6; if any camera authored
+- Each migrated file: header bumped 5→7; if any camera authored
   width/height/pixelAR, a `film` chunk appears before the first
   camera chunk and the dim lines are removed from camera chunks.
 - Files with no camera-authored dims (the rare default-defaults
@@ -82,7 +86,7 @@ def migrate_text(content):
     # parser fails on anything else.
     for i, line in enumerate(lines):
         if line.strip().startswith("RISE ASCII SCENE"):
-            lines[i] = line.replace("RISE ASCII SCENE 5", "RISE ASCII SCENE 6", 1)
+            lines[i] = line.replace("RISE ASCII SCENE 5", "RISE ASCII SCENE 7", 1)
             break
 
     out_lines = []

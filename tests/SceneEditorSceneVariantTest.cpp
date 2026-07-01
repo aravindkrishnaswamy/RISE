@@ -46,7 +46,7 @@ int main()
 	// Base scene: `lum` (scale 5) + a `night` override of `lum` (scale 0), an object bound to `lum`, and the
 	// `night` scene_variant declared (no active_scene_variant => base is the default).
 	const char* scene =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
 		"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
 		"lambertian_luminaire_material\n{\nname lum\nvariant night\nexitance white\nscale 0.0\nmaterial none\n}\n"

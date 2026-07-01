@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # k=2 SMS debug: glass block simulated as TWO parallel displaced planes.
 # Top plane is the entry surface, bottom plane is the exit surface.
 # Between them is "glass" (IOR 2.2).  If SMS works on smoothly-displaced

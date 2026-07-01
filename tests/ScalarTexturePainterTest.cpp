@@ -186,7 +186,7 @@ static void TestTextureFormParsesAndBinds()
 	const std::string png = WriteTempPNG( "dial_oxide", 0.5, 0.25, 0.75 );
 
 	std::string s;
-	s += "RISE ASCII SCENE 6\n";
+	s += "RISE ASCII SCENE 7\n";
 	s += "uniformcolor_painter\n{\nname rd\ncolor 0.0 0.0 0.0\n}\n";
 	s += "uniformcolor_painter\n{\nname rs\ncolor 1.0 1.0 1.0\n}\n";
 	s += std::string("png_painter\n{\nname dial_oxide_png\nfile ") + png + "\ncolor_space Rec709RGB_Linear\n}\n";
@@ -305,7 +305,7 @@ static void TestDiagnostics()
 	// (a) texture names a painter that doesn't exist.
 	{
 		std::string s;
-		s += "RISE ASCII SCENE 6\n";
+		s += "RISE ASCII SCENE 7\n";
 		s += "scalar_painter\n{\nname bad\ntexture nonexistent_png\nchannel R\n}\n";
 		const std::string path = WriteTempScene( "bad_missing", s );
 		Job* job = new Job(); job->addref();
@@ -321,7 +321,7 @@ static void TestDiagnostics()
 	//     raster accessor -> not spatially samplable).
 	{
 		std::string s;
-		s += "RISE ASCII SCENE 6\n";
+		s += "RISE ASCII SCENE 7\n";
 		s += "uniformcolor_painter\n{\nname flat\ncolor 0.5 0.5 0.5\n}\n";
 		s += "scalar_painter\n{\nname bad2\ntexture flat\nchannel R\n}\n";
 		const std::string path = WriteTempScene( "bad_nonimage", s );
@@ -344,7 +344,7 @@ static void TestExistingFormsStillParse()
 	std::cout << "\n[5] the existing scalar_painter forms still parse\n";
 
 	std::string s;
-	s += "RISE ASCII SCENE 6\n";
+	s += "RISE ASCII SCENE 7\n";
 	s += "scalar_painter\n{\nname f_value\nvalue 1.5\n}\n";
 	s += "scalar_painter\n{\nname f_values\nvalues 1.3 1.5 2.0\n}\n";
 	s += "scalar_painter\n{\nname f_sellmeier\nsellmeier 1.03961212 0.231792344 1.01046945 0.00600069867 0.0200179144 103.560653\n}\n";

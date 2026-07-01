@@ -105,7 +105,7 @@ static void CheckClose( double got, double want, double tol, const char* testNam
 // Rasterize() in this test.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneText =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"\n"
 	"film\n"
 	"{\n"

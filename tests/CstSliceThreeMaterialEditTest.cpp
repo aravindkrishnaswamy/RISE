@@ -44,7 +44,7 @@ static const IPainter* SlotPainter( Job& j, const char* mat, const char* slot )
 }
 
 static const char* SCENE =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
 	"uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
 	"lambertian_material\n{\nname m\nreflectance p1\n}\n"
@@ -117,7 +117,7 @@ int main()
 	{
 		const char* te = "cst_s3_defaulted.RISEscene";
 		{ std::ofstream o( te );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
 		       "lambertian_material\n{\nname md\n}\n"            // reflectance OMITTED -> defaulted
 		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -144,7 +144,7 @@ int main()
 	{
 		const char* tf = "cst_s3_collision.RISEscene";
 		{ std::ofstream o( tf );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
 		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
 		       "lambertian_material\n{\nname shared\nreflectance p1\n}\n"   // material named "shared"
@@ -170,7 +170,7 @@ int main()
 	{
 		const char* tg = "cst_s3_variant.RISEscene";
 		{ std::ofstream o( tg );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "scene_variant\n{\nname night\n}\n"               // declares a variant -> HasSceneVariants()
 		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
 		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
@@ -225,7 +225,7 @@ int main()
 		// variant scene -> D2 full re-derive (2)
 		const char* ti = "cst_s3_rc.RISEscene";
 		{ std::ofstream o( ti );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "scene_variant\n{\nname night\n}\n"
 		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
 		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
@@ -247,7 +247,7 @@ int main()
 	{
 		const char* tk = "cst_s3_camkeep.RISEscene";
 		{ std::ofstream o( tk );
-		  o << "RISE ASCII SCENE 6\n"
+		  o << "RISE ASCII SCENE 7\n"
 		       "scene_variant\n{\nname night\n}\n"
 		       "film\n{\nwidth 64\nheight 64\n}\n"
 		       "pinhole_camera\n{\nname cam1\nlocation 0 0 3\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"

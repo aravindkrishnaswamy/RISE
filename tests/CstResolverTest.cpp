@@ -50,7 +50,7 @@ int main()
 	std::printf( "CstResolverTest -- slice 1 (shared resolver: consistency / stamp / namespace / ref-or-literal)\n" );
 
 	const std::string scene =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 		"lambertian_material\n{\nname m\nreflectance p\n}\n"
 		"lambertian_material\n{\nname m2\nreflectance p\n}\n"
@@ -97,7 +97,7 @@ int main()
 	//----------------------------------------------------------------------
 	{
 		const std::string s2 =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m1\nreflectance p\n}\n"
 			"lambertian_material\n{\nname m2\nreflectance p\n}\n"
@@ -155,7 +155,7 @@ int main()
 	// [namespace] the runtime defaults are in the engine's namespace + in sync.
 	//----------------------------------------------------------------------
 	{
-		Document doc = ParseToCst( "RISE ASCII SCENE 6\n" );   // empty scene: only the engine defaults
+		Document doc = ParseToCst( "RISE ASCII SCENE 7\n" );   // empty scene: only the engine defaults
 		Job* j = new Job(); std::vector<std::string> dd; DeriveToJob( doc, *j, &dd );
 		Check( j->GetMaterials() && j->GetMaterials()->GetItem( "none" ) != 0, "runtime default present: material 'none' (resolver namespace in sync)" );
 		Check( j->GetPainters()  && j->GetPainters()->GetItem( "none" )  != 0, "runtime default present: painter 'none' (resolver namespace in sync)" );
@@ -181,7 +181,7 @@ int main()
 		// pbr_metallic_roughness_material.roughness is ValueKind::Reference but "can be
 		// a painter ref OR a scalar string"; `roughness 0.5` is a literal, not a
 		// dangling reference.
-		Document doc = ParseToCst( "RISE ASCII SCENE 6\npbr_metallic_roughness_material\n{\nname gx\nroughness 0.5\n}\n" );
+		Document doc = ParseToCst( "RISE ASCII SCENE 7\npbr_metallic_roughness_material\n{\nname gx\nroughness 0.5\n}\n" );
 		std::vector<std::string> diags;
 		ReferenceGraph gph = BuildReferenceGraph( doc, &diags );
 		Check( !DiagsMention( diags, "roughness" ) && !DiagsMention( diags, "0.5" ), "ref-or-literal: numeric `roughness 0.5` is NOT a false dangling reference" );
@@ -192,7 +192,7 @@ int main()
 
 		// control: a NON-numeric unresolved reference IS a dangling diagnostic (a name
 		// pointing at nothing) -- in a ref-or-literal slot too.
-		Document doc2 = ParseToCst( "RISE ASCII SCENE 6\npbr_metallic_roughness_material\n{\nname gx\nroughness nosuchpainter\n}\n" );
+		Document doc2 = ParseToCst( "RISE ASCII SCENE 7\npbr_metallic_roughness_material\n{\nname gx\nroughness nosuchpainter\n}\n" );
 		std::vector<std::string> diags2;
 		BuildReferenceGraph( doc2, &diags2 );
 		Check( DiagsMention( diags2, "nosuchpainter" ), "control: a non-numeric unresolved reference (a name) IS diagnosed dangling" );
@@ -201,7 +201,7 @@ int main()
 		// scalar slots accept) is also a literal -- entirely numeric tokens -> NOT a
 		// dangling reference. (This is why LooksNumeric checks every token, not just
 		// the first -- a per-slot ref-or-literal flag could not have covered it.)
-		Document doc4 = ParseToCst( "RISE ASCII SCENE 6\ntranslucent_material\n{\nname tm\nscattering 1 2 3\n}\n" );
+		Document doc4 = ParseToCst( "RISE ASCII SCENE 7\ntranslucent_material\n{\nname tm\nscattering 1 2 3\n}\n" );
 		std::vector<std::string> diags4;
 		BuildReferenceGraph( doc4, &diags4 );
 		Check( !DiagsMention( diags4, "scattering" ), "ref-or-literal: inline `scattering 1 2 3` is NOT a false dangling reference" );
@@ -211,7 +211,7 @@ int main()
 		// DeriveToJob refuses at apply time (verified below); the static reference-graph
 		// pass deliberately does not double-report it. (This replaced the fragile
 		// per-slot ref-or-literal flag, which under-flagged ~30 real scalar slots.)
-		Document doc3 = ParseToCst( "RISE ASCII SCENE 6\nlambertian_material\n{\nname m\nreflectance 0.5\n}\n" );
+		Document doc3 = ParseToCst( "RISE ASCII SCENE 7\nlambertian_material\n{\nname m\nreflectance 0.5\n}\n" );
 		std::vector<std::string> diags3;
 		BuildReferenceGraph( doc3, &diags3 );
 		Check( !DiagsMention( diags3, "reflectance" ), "numeric `reflectance 0.5` is NOT a dangling reference (a number is not a name)" );
@@ -227,7 +227,7 @@ int main()
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"scalar_painter\n{\nname p\nfile noise.dat\n}\n" );
 		std::vector<std::string> diags;
@@ -236,7 +236,7 @@ int main()
 
 		// control: distinct painter names -> NO conflation diagnostic.
 		Document docOk = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname pc\ncolor 0.5 0.5 0.5\n}\n"
 			"scalar_painter\n{\nname ps\nfile noise.dat\n}\n" );
 		std::vector<std::string> diagsOk;
@@ -253,7 +253,7 @@ int main()
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"expression_function2d\n{\nname noise\nexpr u*v\n}\n"
 			"scalar_painter\n{\nname disp\nfunction2d noise\n}\n" );
 		std::vector<std::string> diags;
@@ -271,7 +271,7 @@ int main()
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function\n{\nname fx\n}\n"
 			"piecewise_linear_function2d\n{\nname fx\n}\n" );
 		std::vector<std::string> diags;
@@ -286,7 +286,7 @@ int main()
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function\n{\nname fx\ncp 0 0\ncp 1 1\n}\n"
 			"lambertian_material\n{\nname m\nreflectance fx\n}\n" );
 		std::vector<std::string> diags;
@@ -302,7 +302,7 @@ int main()
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function\n{\nname x\ncp 0 0\ncp 1 1\n}\n"
 			"uniformcolor_painter\n{\nname x\ncolor 0.5 0.5 0.5\n}\n" );
 		std::vector<std::string> diags;
@@ -316,7 +316,7 @@ int main()
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function\n{\nname x\ncp 0 0\ncp 1 1\n}\n"
 			"piecewise_linear_function2d\n{\nname x\n}\n"
 			"scalar_painter\n{\nname sp\nfunction1d x\n}\n" );
@@ -338,7 +338,7 @@ int main()
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function\n{\nname f1\ncp 0 0\ncp 1 1\n}\n"
 			"piecewise_linear_function2d\n{\nname f2\ncp 0.0 f1\ncp 1.0 f1\n}\n" );
 		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
@@ -357,7 +357,7 @@ int main()
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname x\ncolor 0.5 0.5 0.5\n}\n"
 			"scalar_painter\n{\nname x\nvalue 0.3\n}\n"
 			"scalar_painter\n{\nname sp\nbase x\n}\n" );
@@ -377,7 +377,7 @@ int main()
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname t\ncolor 1 0 0\n}\n"
 			"piecewise_linear_function\n{\nname t\ncp 0 0\ncp 1 1\n}\n"
 			"directvolumerendering_shader\n{\nname dvr\ntransfer_red t\n}\n" );
@@ -397,7 +397,7 @@ int main()
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function\n{\nname s\ncp 0 0\ncp 1 1\n}\n"
 			"piecewise_linear_function2d\n{\nname s\n}\n"
 			"spectraldirectvolumerendering_shader\n{\nname sdvr\ntransfer_spectral s\n}\n" );
@@ -419,7 +419,7 @@ int main()
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function2d\n{\nname d2\n}\n"
 			"sphere_geometry\n{\nname base\nradius 1\n}\n"
 			"displaced_geometry\n{\nname disp\nbase_geometry base\ndisplacement d2\n}\n"
@@ -448,7 +448,7 @@ int main()
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function2d\n{\nname f\n}\n"   // Function-category, not a colour painter
 			"ggx_material\n{\nname m\nior f\n}\n" );
 		const NodeId fid  = DocFindByName( doc, "piecewise_linear_function2d/f" );

@@ -53,7 +53,7 @@ int main()
 	// ACCEPTED and applies the whole closure.
 	{
 		std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -65,7 +65,7 @@ int main()
 	// Painter closure -> REFUSED (func2d dual-registration).
 	{
 		std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -78,7 +78,7 @@ int main()
 	// translucent_material closure -> REFUSED (reads ambient painter-colour cache).
 	{
 		std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"translucent_material\n{\nname tm\nref p\ntau p\n}\n";
 		Document doc = ParseToCst( s );
@@ -101,7 +101,7 @@ int main()
 	// point verified here is it never half-drops.
 	{
 		std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"gltf_import\n{\nfile nonexistent.gltf\n}\n";
 		Document doc = ParseToCst( s );
 		NodeId id = 0;
@@ -123,7 +123,7 @@ int main()
 	// static graph cannot trace timeline String references).
 	{
 		std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -149,7 +149,7 @@ int main()
 	// the new name finds nothing -> ABORT (return 0 + diagnostic), no silent re-add.
 	{
 		std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -173,7 +173,7 @@ int main()
 	// invisible to the static graph, so editing the target would erase the override; P1.3).
 	{
 		std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -194,7 +194,7 @@ int main()
 	// preflight; nothing mutated -- review P1.7).
 	{
 		std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -221,7 +221,7 @@ int main()
 	// all-categories preflight loop (Cst.cpp ~1335) still stands for any future multi-cat slot.
 	{
 		std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"perfectrefractor_material\n{\nname glass\nrefractance p\nior 1.5\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -250,7 +250,7 @@ int main()
 	// it, the captured original is restored and DumpJob is byte-identical to pre-edit.
 	{
 		std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -280,7 +280,7 @@ int main()
 	// and (later) luminaire material `lum`; closure(base) = [base, o, lum], applied entities-first.
 	{
 		std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname base\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -304,7 +304,7 @@ int main()
 	// would pass for any successful apply; this pins the actual result to the ground truth).
 	{
 		std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"uniformcolor_painter\n{\nname p2\ncolor 0.1 0.2 0.3\n}\n"
 			"lambertian_material\n{\nname base\nreflectance p\n}\n"
@@ -328,7 +328,7 @@ int main()
 	// so a base/lum failure leaves `o` untouched (the exact reason the refusal could be removed).
 	{
 		std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname base\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -352,7 +352,7 @@ int main()
 	// be half-mutated + the TLAS left stale. The preflight now REFUSES it atomically.
 	{
 		std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"homogeneous_medium\n{\nname med\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
 			"standard_object\n{\nname o\ngeometry g\ninterior_medium med\nposition 0 0 0\n}\n";
@@ -374,7 +374,7 @@ int main()
 	// place and matches a FULL derive of the edited doc (a fresh object has the slot unset).
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -396,7 +396,7 @@ int main()
 	// place and matches a FULL derive of the edited doc (a fresh object has the slot unset).
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"bumpmap_modifier\n{\nname bm\nfunction p\n}\n"
@@ -419,7 +419,7 @@ int main()
 	// place and matches a FULL derive of the edited doc (a fresh object has the slot unset).
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"homogeneous_medium\n{\nname med\n}\n"

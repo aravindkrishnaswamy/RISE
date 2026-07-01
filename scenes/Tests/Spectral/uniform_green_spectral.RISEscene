@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # Diagnostic: uniform-green sphere through the spectral integrator.
 # If this renders green, the spectral pipeline is sound and the
 # avocado_spectral monochrome issue is texture-specific.

@@ -30,7 +30,7 @@ static int CeilLog2( int n ) { int b = 0; while( (1 << b) < n ) ++b; return b; }
 // An N-sphere scene (each chunk has a unique name + radius).
 static std::string SceneN( int n )
 {
-	std::string s = "RISE ASCII SCENE 6\n";
+	std::string s = "RISE ASCII SCENE 7\n";
 	for( int i = 0; i < n; ++i )
 		s += "sphere_geometry\n{\nname s" + std::to_string(i) + "\nradius 0." + std::to_string(100 + i) + "\n}\n";
 	return s;
@@ -205,7 +205,7 @@ int main()
 	for( int N : { 8, 512 } ) {
 		// every OTHER item is huge; a spine re-scan would show up as extra walks
 		const std::string pad( 2000, 'q' );
-		std::string scene = "RISE ASCII SCENE 6\n";
+		std::string scene = "RISE ASCII SCENE 7\n";
 		for( int i = 0; i < N; ++i ) scene += "sphere_geometry\n{\nname s" + std::to_string(i) + pad + "\nradius 0.5\n}\n";
 		Cst::Document doc = Cst::ParseToCst( scene );
 		Cst::NodeRef it; size_t st; int fv;
@@ -236,7 +236,7 @@ int main()
 		auto realNL = []( const std::string& s ){ int n = 0; for( char c : s ) if( c == '\n' ) ++n; return n; };
 		const std::string scenes2[] = {
 			SceneN( 6 ),
-			std::string( "RISE ASCII SCENE 6\r\nsphere_geometry\r\n{\r\nname s\r\nradius 0.6\r\n}\r\nsphere_geometry\r\n{\r\nname t\r\nradius 0.7\r\n}\r\n" ),
+			std::string( "RISE ASCII SCENE 7\r\nsphere_geometry\r\n{\r\nname s\r\nradius 0.6\r\n}\r\nsphere_geometry\r\n{\r\nname t\r\nradius 0.7\r\n}\r\n" ),
 		};
 		for( const std::string& scene : scenes2 ) {
 			Cst::Document doc = Cst::ParseToCst( scene );

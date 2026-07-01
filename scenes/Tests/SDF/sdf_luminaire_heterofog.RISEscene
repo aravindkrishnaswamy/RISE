@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # SDF media stress #2: the glowing blobby SDF inside a HETEROGENEOUS
 # (perlin-worley painter-driven) fog, with an analytic box occluder so the
 # emitter casts volumetric light shafts through the density variations.

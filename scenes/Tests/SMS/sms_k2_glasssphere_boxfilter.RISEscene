@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # k=2 SMS test: single closed GLASS SPHERE with BOX reconstruction filter.
 # Box filter has no negative lobes, so bright/dim pixel ringing from
 # Mitchell-Netravali cannot appear.  Used to isolate whether far-from-caustic

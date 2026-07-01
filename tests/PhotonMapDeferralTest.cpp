@@ -100,7 +100,7 @@ static std::string WriteSceneToTempFile( const char* sceneText )
 // A caustic photon map (pending shoot) + a pixelpel rasterizer whose
 // advanced_shader consumes it.  The bdpt_pel_rasterizer is lazy-built by name.
 static const char* kSceneText =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"\n"
 	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 -8\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
@@ -179,7 +179,7 @@ static void TestPhotonShootGatedOnConsumer()
 // scenes/Tests/Spectral/spectral_dispersive_caustic.RISEscene would render the
 // dispersive caustic black because the deferred shoot was skipped).
 static const char* kSpectralSceneText =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"\n"
 	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 -8\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"

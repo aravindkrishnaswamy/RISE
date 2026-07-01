@@ -34,7 +34,7 @@ int main()
 
 	// A repeatable-param chunk: piecewise_linear_function with 3 `cp` rows + an interleaved blank line.
 	const std::string scene =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"piecewise_linear_function\n"
 		"{\n"
 		"name f\n"

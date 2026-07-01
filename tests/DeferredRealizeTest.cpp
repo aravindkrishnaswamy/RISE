@@ -132,7 +132,7 @@ static std::string WriteSceneToTempFile( const char* sceneText, const char* tag 
 // obj_plain / obj_single / obj_nested are bound to objects; disp_unbound and
 // (used only as a base) disp_inner are NOT bound directly.
 static const char* kSceneText =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"\n"
 	"film\n"
 	"{\n"
@@ -364,7 +364,7 @@ static void TestIdempotentReRender()
 // realize pass (visible-objects-only) reaches disp_csg ONLY through the CSG
 // cascade.  plain_sphere (csg_opB) is the non-displaced operand.
 static const char* kCSGSceneText =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"\n"
 	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 -8\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60.0\n}\n\n"
@@ -466,7 +466,7 @@ static void TestPrepareForRenderingRealizes()
 // pre-fix this scene failed at parse.  The factory now Realize()s the template
 // first (a template that is instanced IS used), so it bakes at parse.
 static const char* kPathInstanceSceneText =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"\n"
 	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 -8\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60.0\n}\n\n"

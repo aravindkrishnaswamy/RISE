@@ -1,8 +1,9 @@
 #ifndef RISE_CST_MIGRATOR_H
 #define RISE_CST_MIGRATOR_H
 // Shared v6->v7 scene migrator (text -> text): flatten includes (D7) + the legacy macro / $() / FOR / hal
-// surface, folded to the v7 declarative form -- BODY ONLY: the scene-version header line stays
-// `RISE ASCII SCENE 6` until Phase C bumps it to 7.  Extracted from CstCorpusEquivalenceTest so the equivalence
+// surface, folded to the v7 declarative form.  Migrate() is BODY ONLY (the shared golden oracle, header-blind);
+// BumpSceneHeader() is the Phase-C header stamp (`RISE ASCII SCENE 6` -> `... 7`) the first-class tool applies
+// on top of Migrate().  Extracted from CstCorpusEquivalenceTest so the equivalence
 // GATE and the migration TOOL (tools/MigrateScenesV6toV7) share ONE migrator -- byte-identical by
 // construction.  Phase A of docs/agentic-redesign/61-v6v7-parser-cutover-execution-plan.md.
 //
@@ -310,7 +311,10 @@ static std::string PruneDeadColorPainters( const std::string& text )
 	return out;
 }
 
-// The offline v6->v7 migrator transform (text -> text).  Grows per slice.
+// The offline v6->v7 migrator BODY transform (text -> text).  Grows per slice.  BODY ONLY: the
+// scene-version header line is left as-is here so this transform stays the shared oracle for the
+// CST-derive golden (whose digest is header-blind); the header bump is a separate step -- BumpSceneHeader
+// below -- that the first-class migrator TOOL applies after this fold.
 static std::string Migrate( const std::string& text )
 {
 	g_migratorHalton.Reset();   // per top-level scene: fold hal() from a FRESH sequence (standalone-equivalent
@@ -322,6 +326,21 @@ static std::string Migrate( const std::string& text )
 	// color-library bloat).  No-include scenes -- already-native scenes AND the library files -- keep
 	// their hand-authored inline painters, so their (unconverted-on-disk) text still matches CST(Migrate).
 	return didInline ? PruneDeadColorPainters( processed ) : processed;
+}
+
+// Phase C header bump: rewrite ONLY a leading `RISE ASCII SCENE 6` header line to `... 7` (the post-cutover
+// version NEW output carries).  Touches the FIRST line only, and only when it is exactly the v6 header --
+// every other `6` in the body (and an already-`7` header) is left byte-for-byte untouched, so the transform
+// is idempotent.  The reader accepts BOTH 6 and 7, so this is a cosmetic version stamp, not a load gate.
+static std::string BumpSceneHeader( const std::string& text )
+{
+	const std::string v6 = "RISE ASCII SCENE 6";
+	// The header must be the first bytes of the file (optionally the whole first line).
+	if( text.compare( 0, v6.size(), v6 ) != 0 ) return text;
+	// Guard against a false match on a longer token (e.g. "RISE ASCII SCENE 60"): the next char must end the line.
+	const char after = ( text.size() > v6.size() ) ? text[v6.size()] : '\n';
+	if( after != '\n' && after != '\r' && after != ' ' && after != '\t' ) return text;
+	return "RISE ASCII SCENE 7" + text.substr( v6.size() );
 }
 
 #endif // RISE_CST_MIGRATOR_H

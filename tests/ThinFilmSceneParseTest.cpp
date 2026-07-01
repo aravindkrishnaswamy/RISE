@@ -120,7 +120,7 @@ namespace
 	std::string ThinFilmGGXScene( double thickness, bool includeThickness )
 	{
 		std::string s;
-		s += "RISE ASCII SCENE 6\n";
+		s += "RISE ASCII SCENE 7\n";
 		s += "uniformcolor_painter\n{\nname rd\ncolor 0.0 0.0 0.0\n}\n";
 		s += "uniformcolor_painter\n{\nname rs\ncolor 1.0 1.0 1.0\n}\n";
 		s += "scalar_painter\n{\nname sub_n\nvalue 0.5\n}\n";			// Ti-ish substrate n
@@ -218,7 +218,7 @@ static void TestCookTorranceThinFilmRejected()
 	std::cout << "\n[2a] cooktorrance_material + fresnel_mode thinfilm is rejected\n";
 
 	std::string s;
-	s += "RISE ASCII SCENE 6\n";
+	s += "RISE ASCII SCENE 7\n";
 	s += "uniformcolor_painter\n{\nname rd\ncolor 0.2 0.2 0.2\n}\n";
 	s += "uniformcolor_painter\n{\nname rs\ncolor 0.8 0.8 0.8\n}\n";
 	s += "scalar_painter\n{\nname facets\nvalue 0.15\n}\n";

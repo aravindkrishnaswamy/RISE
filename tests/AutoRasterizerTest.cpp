@@ -456,7 +456,7 @@ static const double kAbsFloor = 1e-6;
 
 static ImageStats RenderVariant( const char* rasterChunk, const char* tag )
 {
-	const std::string scene = std::string("RISE ASCII SCENE 6\n") + kShader + rasterChunk + kSceneCommon;
+	const std::string scene = std::string("RISE ASCII SCENE 7\n") + kShader + rasterChunk + kSceneCommon;
 	const std::string p = WriteSceneToTempFile( scene.c_str(), tag );
 	if( p.empty() ) {
 		ImageStats s{}; return s;
@@ -535,7 +535,7 @@ static void CheckDelegation(
 //////////////////////////////////////////////////////////////////////
 static ImageStats RenderSceneBody( const char* rasterChunk, const std::string& body, const char* tag )
 {
-	const std::string scene = std::string("RISE ASCII SCENE 6\n") + kShader + rasterChunk + body;
+	const std::string scene = std::string("RISE ASCII SCENE 7\n") + kShader + rasterChunk + body;
 	const std::string p = WriteSceneToTempFile( scene.c_str(), tag );
 	if( p.empty() ) {
 		ImageStats s{}; return s;
@@ -863,7 +863,7 @@ static void TestDelegateStateForwarding()
 	std::cout << "Testing " << label << std::endl;
 
 	const std::string scene =
-		std::string("RISE ASCII SCENE 6\n") + kShader + kAutoPT + kSceneCommon;
+		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoPT + kSceneCommon;
 	const std::string p = WriteSceneToTempFile( scene.c_str(), "fwd" );
 	if( p.empty() ) { Check( false, "temp scene written: " + label ); return; }
 
@@ -949,7 +949,7 @@ static void TestAutoParamPassThrough()
 	std::cout << "Testing " << label << std::endl;
 
 	const std::string scene =
-		std::string("RISE ASCII SCENE 6\n") + kShader + kAutoAuto + kSceneCommon;
+		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoAuto + kSceneCommon;
 	const std::string p = WriteSceneToTempFile( scene.c_str(), "autoparam" );
 	if( p.empty() ) { Check( false, "temp scene written: " + label ); return; }
 

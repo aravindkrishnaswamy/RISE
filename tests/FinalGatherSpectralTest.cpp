@@ -280,7 +280,7 @@ static ImageStats RenderAndComputeStats( const std::string& sceneText, const cha
 static std::string BuildScene( bool spectral )
 {
 	std::string s =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"\n"
 		"finalgather_shaderop\n"
 		"{\n"

@@ -903,8 +903,9 @@ namespace RISE { namespace Cst {
 // SILENTLY SKIPS every top-level `>` directive (v7 has no `>` command layer), so the ONLY `>` lines safe to
 // accept are ones whose effect is RENDER-NEUTRAL when dropped.  DumpJob is blind to render state, so
 // "render-neutral" -- NOT "DumpJob-MATCH" -- is the bar.  ACCEPTED top-level content:
-//   * the `RISE ASCII SCENE <n>` header (required; version NUMBER not checked -- the CST is version-agnostic;
-//     a true skew is caught downstream by DeriveToJob's descriptor validation)
+//   * the `RISE ASCII SCENE <n>` header (required; version NUMBER not checked -- the CST is version-agnostic,
+//     so both the post-cutover `7` and the transitional `6` load; a true skew is caught downstream by
+//     DeriveToJob's descriptor validation)
 //   * any chunk
 //   * `> echo ...`            -- logging only
 //   * `> set accelerator ...` -- an image-identical TLAS choice (vs the default BVH4)
@@ -930,7 +931,7 @@ bool IsNativeV7Document( const Document& doc )
 	std::vector<std::string> line;
 	auto classify = [&]( const std::vector<std::string>& ln ) -> bool {   // true = native-v7 OK; false = reject
 		if( ln.empty() ) return true;
-		if( ln[0] == "RISE" ) {   // the version-header line
+		if( ln[0] == "RISE" ) {   // the version-header line -- `7` post-cutover, `6` still accepted (back-compat)
 			sawHeader = ( ln.size() >= 4 && ln[1] == "ASCII" && ln[2] == "SCENE" &&
 				!ln[3].empty() && ln[3].find_first_not_of( "0123456789" ) == std::string::npos );
 			return sawHeader;
@@ -961,7 +962,7 @@ Document ParseToCst( const std::string& bytes )
 	while( i < t.size() ) {
 		if( t[i].trivia ) { items.push_back( Leaf(NodeKind::Trivia, t[i++].text, "") ); continue; }
 		// A chunk is `keyword {` (brace may be on the next line). A bare word not
-		// followed by `{` -- e.g. each token of the `RISE ASCII SCENE 6` header --
+		// followed by `{` -- e.g. each token of the `RISE ASCII SCENE 7` header --
 		// is preserved losslessly as a stray Token, NOT swallowed as a never-closed
 		// chunk. (A dedicated version-header node is a later item.)
 		size_t j = i + 1;

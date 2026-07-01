@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # SDF media stress: a glowing BLOBBY SDF (smin peanut) acting as a true area
 # light INSIDE a global homogeneous scattering fog, alongside a glass SDF whose
 # interior holds a second, denser tinted medium, plus an analytic diffuse

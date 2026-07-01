@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # BDPT version of Veach's sealed glass egg scene
 # Same geometry/materials as mlt_veach_egg.RISEscene, with the MLT rasterizer
 # swapped for BDPT so we can compare convergence on the same SDS-heavy paths.

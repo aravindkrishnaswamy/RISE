@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # 3x3 grid of Reaction-Diffusion fog volumes.
 # Row 1: Vary FEED/KILL (spots / mixed / stripes)
 # Row 2: Vary ITERATIONS (less evolved / medium / well evolved)

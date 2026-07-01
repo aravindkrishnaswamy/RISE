@@ -100,7 +100,7 @@ template<class F> static double MedianMicros( int trials, F&& f )
 // `shared`: one painter+material that all N objects reference.
 static std::string SceneN( int n, bool shared )
 {
-	std::string s = "RISE ASCII SCENE 6\n";
+	std::string s = "RISE ASCII SCENE 7\n";
 	if( shared ) {
 		s += "uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n";
 		s += "lambertian_material\n{\nname m\nreflectance p\n}\n";

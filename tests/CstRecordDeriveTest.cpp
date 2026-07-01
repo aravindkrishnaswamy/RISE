@@ -78,7 +78,7 @@ int main()
 	// painter-alias edge -- so recorded carries no spurious edge over static.
 	{
 		Pair r = Run(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -94,12 +94,12 @@ int main()
 	{
 		const char* scenes[] = {
 			// displacement: {Painter}-declared, engine binds Function2D -> the recently-fixed case
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function2d\n{\nname d2\n}\n"
 			"sphere_geometry\n{\nname base\nradius 1\n}\n"
 			"displaced_geometry\n{\nname disp\nbase_geometry base\ndisplacement d2\n}\n",
 			// glass: refractance is a colour painter, ior 1.5 is a numeric literal (no edge)
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 1 1 1\n}\n"
 			"perfectrefractor_material\n{\nname glass\nrefractance p\nior 1.5\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -111,14 +111,14 @@ int main()
 			// GenericManager chokepoint) -- slice 2 hooks Add*Medium/SetObjectInteriorMedium so
 			// the (medium -> object) edge IS recorded; this scene would have failed `subset`
 			// before that hook (see 21-*.md §8).
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"homogeneous_medium\n{\nname med\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
 			"standard_object\n{\nname o\ngeometry g\nmaterial m\ninterior_medium med\n}\n",
 			// two objects sharing one geometry + two materials sharing one painter
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m1\nreflectance p\n}\n"
 			"lambertian_material\n{\nname m2\nreflectance p\n}\n"
@@ -128,17 +128,17 @@ int main()
 			// scalar-painter chain: exercises the SCALAR painter manager (a distinct
 			// GenericManager from the colour one) -- scalar_painter.base resolves via
 			// GetScalarPainters, so a non-conflated `s` records the same edge static computes.
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"scalar_painter\n{\nname base_s\nvalue 0.3\n}\n"
 			"scalar_painter\n{\nname sp\nbase base_s\n}\n",
 			// function1d: scalar_painter.function1d resolves via the Function-1D manager
 			// (dimension-precise, distinct from Function-2D).
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function\n{\nname f1\ncp 0 0\ncp 1 1\n}\n"
 			"scalar_painter\n{\nname sp1\nfunction1d f1\n}\n",
 			// modifier: exercises the MODIFIER manager + the {Painter}-declared-but-Function2D
 			// `bumpmap_modifier.function` slot (the modifier twin of displaced_geometry).
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function2d\n{\nname d2\n}\n"
 			"bumpmap_modifier\n{\nname bm\nfunction d2\n}\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
@@ -163,7 +163,7 @@ int main()
 	// on the static/param-level path by design).
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m1\nreflectance p\n}\n"
 			"lambertian_material\n{\nname m2\nreflectance p\n}\n"
@@ -185,13 +185,13 @@ int main()
 	// recorder only APPENDS; without the entry reset a reused/replaced graph would mix A + B.)
 	{
 		Document docA = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
 			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n" );
 		Document docB = ParseToCst(   // unrelated
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"scalar_painter\n{\nname base_s\nvalue 0.3\n}\n"
 			"scalar_painter\n{\nname sp\nbase base_s\n}\n" );
 		ReferenceGraph g;
@@ -208,7 +208,7 @@ int main()
 	// rather than leaving the caller's prior (stale) graph untouched.
 	{
 		Document docA = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -216,7 +216,7 @@ int main()
 		ReferenceGraph g;
 		Job* jA = new Job(); std::vector<std::string> dA; DeriveToJob( docA, *jA, &dA, &g ); jA->release();
 		Check( !DepSet( g ).empty(), "reset-on-failure: precondition -- A recorded edges" );
-		Document docBad = ParseToCst( "RISE ASCII SCENE 6\nsphere_geometry\n{\nname g\nradius xyz\n}\n" );   // non-numeric radius -> PASS-1 validation failure
+		Document docBad = ParseToCst( "RISE ASCII SCENE 7\nsphere_geometry\n{\nname g\nradius xyz\n}\n" );   // non-numeric radius -> PASS-1 validation failure
 		Job* jBad = new Job(); std::vector<std::string> dBad;
 		int applied = DeriveToJob( docBad, *jBad, &dBad, &g ); jBad->release();   // REUSE g; fails validation
 		Check( applied == 0 && !dBad.empty(), "reset-on-failure: malformed doc refused" );

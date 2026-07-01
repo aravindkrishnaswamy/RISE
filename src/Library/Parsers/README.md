@@ -18,8 +18,12 @@ This directory defines the chunk-parser registry, script, command, and options p
 The current parser expects scene files to begin with:
 
 ```text
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 ```
+
+`7` is the post-CST-cutover header that new output (save + the migrator) emits. The
+CST loader is version-agnostic, so the transitional `6` header is still accepted on
+read — un-migrated scenes keep loading.
 
 Chunk syntax rules:
 

@@ -130,7 +130,7 @@ struct RenderResult
 };
 
 static const char* kScene =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"\n"
 	"standard_shader\n{\n\tname sss_irrad\n\tshaderop DefaultDirectLighting\n}\n"
 	"simple_sss_shaderop\n{\n\tname sss_op\n\tnumpoints 2000\n\tirrad_scale 6.0\n\tgeometric_scale 1.0\n\tshader sss_irrad\n}\n"

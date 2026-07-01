@@ -49,7 +49,7 @@ static void Check( bool c, const char* w ) { if( c ) ++g_pass; else { ++g_fail; 
 static std::string Scene()
 {
 	return
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"uniformcolor_painter\n{\nname red\ncolor 0.2 0.4 0.6\n}\n"
 		"lambertian_material\n{\nname redmat\nreflectance red\n}\n"
 		"sphere_geometry\n{\nname ball\nradius 0.6\n}\n"
@@ -165,7 +165,7 @@ int main()
 		// unenforced convention).  Inserting reflectance must put it on its OWN line, else the relexer
 		// would swallow `reflectance grn` into name's value list -> save+reload derives a different scene.
 		const char* S =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter { name grn color 0 1 0 }\n"
 			"lambertian_material\n{\nname m }\n"            // brace shares name's line; reflectance defaulted
 			"sphere_geometry { name s radius 1 }\n"
@@ -226,7 +226,7 @@ int main()
 		// (dl -> dl2) while leaving the other tuple tokens (0 1 +) intact -- a complete
 		// rename (no partial / dangling referrer), no diagnostic.
 		const std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"directlighting_shaderop\n{\nname dl\n}\n"
 			"advanced_shader\n{\nname sh\nshaderop dl 0 1 +\n}\n";
 		Document d = ParseToCst( s );
@@ -244,7 +244,7 @@ int main()
 	std::printf( "[rename-collision] renaming to an existing same-category name is refused atomically\n" );
 	{
 		const std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname a\ncolor 1 0 0\n}\n"
 			"uniformcolor_painter\n{\nname b\ncolor 0 1 0\n}\n"
 			"lambertian_material\n{\nname m\nreflectance b\n}\n";
@@ -262,7 +262,7 @@ int main()
 		    && SerializeCst( d3 ).find( "reflectance green" ) != std::string::npos,
 		       "a non-colliding rename of the same chunk succeeds + rewrites the referrer" );
 		// renaming a chunk with NO name param is a DIAGNOSED no-op (not silent)
-		Document dn = ParseToCst( "RISE ASCII SCENE 6\nsphere_geometry\n{\nradius 1\n}\n" );
+		Document dn = ParseToCst( "RISE ASCII SCENE 7\nsphere_geometry\n{\nradius 1\n}\n" );
 		NodeId unnamed = 0;
 		for( int i = 0; i < DocItemCount( dn ); ++i ) {
 			NodeRef it = DocResolveNodeId( dn, DocNodeIdAt( dn, i ) );

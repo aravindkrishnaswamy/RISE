@@ -48,7 +48,7 @@ namespace
 	std::string SceneWithActive( const char* active )
 	{
 		std::string s =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
 			"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
 			"lambertian_luminaire_material\n{\nname lum\nvariant night\nexitance white\nscale 0.0\nmaterial none\n}\n"
@@ -121,7 +121,7 @@ int main()
 	// 5. A scene_variant with no name is refused (DeclareSceneVariant returns false -> apply diagnostic).
 	{
 		Job* j = new Job();
-		Document doc = ParseToCst( "RISE ASCII SCENE 6\nscene_variant\n{\n}\n" );
+		Document doc = ParseToCst( "RISE ASCII SCENE 7\nscene_variant\n{\n}\n" );
 		std::vector<std::string> diags;
 		DeriveToJob( doc, *j, &diags );
 		Check( !diags.empty(), "scene_variant without a name is refused (diagnostic)" );
@@ -136,7 +136,7 @@ int main()
 		Job* j = new Job();
 		{ Document a = ParseToCst( SceneWithActive( "night" ) ); std::vector<std::string> d; DeriveToJob( a, *j, &d ); }
 		Check( j->HasSceneVariants(), "after deriving a variant scene, the Job reports variants" );
-		{ Document b = ParseToCst( "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s2\nradius 1\n}\n" ); std::vector<std::string> d; DeriveToJob( b, *j, &d ); }
+		{ Document b = ParseToCst( "RISE ASCII SCENE 7\nsphere_geometry\n{\nname s2\nradius 1\n}\n" ); std::vector<std::string> d; DeriveToJob( b, *j, &d ); }
 		Check( !j->HasSceneVariants(), "re-deriving a non-variant scene on the same Job clears prior variant state (ClearSceneVariants)" );
 		j->release();
 	}
@@ -146,7 +146,7 @@ int main()
 	{
 		Job* j = new Job();
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
 			"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
 			"lambertian_luminaire_material\n{\nname lumX\nvariant night\nexitance white\nscale 0.0\nmaterial none\n}\n"
@@ -163,7 +163,7 @@ int main()
 	{
 		Job* j = new Job();
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"scene_variant\n{\nname night\nactive_camera ghostcam\n}\n"
 			"active_scene_variant\n{\nname night\n}\n" );
 		std::vector<std::string> diags;
@@ -176,7 +176,7 @@ int main()
 	{
 		Job* j = new Job();
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
 			"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
 			"scene_variant\n{\nname quiet\n}\n"
@@ -191,7 +191,7 @@ int main()
 	{
 		Job* j = new Job();
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
 			"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
 			"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 6.0\nmaterial none\n}\n"
@@ -207,7 +207,7 @@ int main()
 	{
 		Job* j = new Job();
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
 			"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
 			"lambertian_luminaire_material\n{\nname lum\nvariant night\nexitance white\nscale 0.0\nmaterial none\n}\n"
@@ -225,7 +225,7 @@ int main()
 	{
 		Job* j = new Job();
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
 			"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"   // base
 			"sphere_geometry\n{\nname s\nradius 1\n}\n"
@@ -246,7 +246,7 @@ int main()
 	{
 		Job* j = new Job();
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
 			"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
 			"lambertian_luminaire_material\n{\nname lum\nvariant night\nexitance white\nscale 0.0\nmaterial none\n}\n"
@@ -263,7 +263,7 @@ int main()
 	//     path half was retired with the legacy reader; the CST path is the ground truth.)
 	{
 		Job* j; DeriveText(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
 			"lambertian_luminaire_material\n{\nname lum\nvariant none\nexitance white\nscale 5.0\nmaterial none\n}\n", j );
 		Check( LumExitanceR( j, "lum" ) > 1.0, "`variant none` material is registered as a base (CST path)" );
@@ -313,14 +313,14 @@ int main()
 	//     REFUSED at declaration -- a variant so named would be unreachable (the switch routes both to the base).
 	{
 		Job* j = new Job();
-		Document doc = ParseToCst( "RISE ASCII SCENE 6\nscene_variant\n{\nname none\n}\n" );
+		Document doc = ParseToCst( "RISE ASCII SCENE 7\nscene_variant\n{\nname none\n}\n" );
 		std::vector<std::string> diags; DeriveToJob( doc, *j, &diags );
 		Check( !diags.empty(), "scene_variant named `none` (reserved sentinel) is refused" );
 		j->release();
 	}
 	{
 		Job* j = new Job();
-		Document doc = ParseToCst( "RISE ASCII SCENE 6\nscene_variant\n{\nname (base)\n}\n" );
+		Document doc = ParseToCst( "RISE ASCII SCENE 7\nscene_variant\n{\nname (base)\n}\n" );
 		std::vector<std::string> diags; DeriveToJob( doc, *j, &diags );
 		Check( !diags.empty(), "scene_variant named `(base)` (reserved GUI label) is refused" );
 		j->release();

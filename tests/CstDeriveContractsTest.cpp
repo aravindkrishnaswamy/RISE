@@ -74,7 +74,7 @@ static std::string DumpCst( const std::string& scene )
 	return s;
 }
 
-static const std::string HDR = "RISE ASCII SCENE 6\n";
+static const std::string HDR = "RISE ASCII SCENE 7\n";
 
 int main()
 {

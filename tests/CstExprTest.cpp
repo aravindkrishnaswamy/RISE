@@ -26,7 +26,7 @@ using namespace risequiv;
 static int g_pass = 0, g_fail = 0;
 static void Check( bool c, const char* w ) { if( c ) ++g_pass; else { ++g_fail; std::printf( "  FAIL: %s\n", w ); } }
 
-static const std::string HDR = "RISE ASCII SCENE 6\n";
+static const std::string HDR = "RISE ASCII SCENE 7\n";
 
 // Derive a scene through the CST path (fresh Job each call); DumpJob + optional diagnostics.
 static std::string DumpCst( const std::string& scene, std::vector<std::string>* outDiags = nullptr )

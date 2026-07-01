@@ -58,7 +58,7 @@ int main()
 
 	// painter p -> material m (+ m2) -> geometry g -> object o; o2 also -> m (shared).
 	const std::string scene =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 		"lambertian_material\n{\nname m\nreflectance p\n}\n"
 		"lambertian_material\n{\nname m2\nreflectance p\n}\n"
@@ -93,7 +93,7 @@ int main()
 	// must match.
 	{
 		Document doc = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"scalar_painter\n{\nname s\nfile noise.dat\nmultiply s s\n}\n" );
 		const ReferenceGraph g = BuildReferenceGraph( doc );
 		const NodeId sid = DocFindByName( doc, "scalar_painter/s" );
@@ -191,7 +191,7 @@ int main()
 	// update INCREMENTALLY on it (cp is a traced Function1D ref; #4b) and the closure must reflect it.
 	{
 		Document d = ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function\n{\nname f1\ncp 0 0\ncp 1 1\n}\n"
 			"piecewise_linear_function\n{\nname f2\ncp 0 0\ncp 1 1\n}\n"
 			"piecewise_linear_function2d\n{\nname p2\ncp 0.0 f1\n}\n" );
@@ -219,14 +219,14 @@ int main()
 			return 0;
 		};
 		const std::string s1 =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
 			"sphere_geometry\n{\nname g\nradius 2\n}\n"
 			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
 		const std::string s2 =   // the two same-named producers SWAPPED (radius 2 first)
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 2\n}\n"
@@ -253,12 +253,12 @@ int main()
 	// reorder (two independent parses would differ trivially by NodeId).
 	{
 		const std::string sA =
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"scalar_painter\n{\nname q\nfile noise.dat\n}\n"
 			"uniformcolor_painter\n{\nname q\ncolor 0.5 0.5 0.5\n}\n"
 			"uniformcolor_painter\n{\nname q\ncolor 0.7 0.7 0.7\n}\n";
 		const std::string sB =   // the scalar moved AFTER the first colour (reorder; SAME chunk set)
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname q\ncolor 0.5 0.5 0.5\n}\n"
 			"scalar_painter\n{\nname q\nfile noise.dat\n}\n"
 			"uniformcolor_painter\n{\nname q\ncolor 0.7 0.7 0.7\n}\n";
@@ -284,7 +284,7 @@ int main()
 	// the incremental edit does EXACTLY 1 ComputeChunkRefs call (vs N for a rebuild); that one call is O(this chunk's refs . log N).
 	{
 		MaintainedReferenceGraph mg( ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p1\ncolor 0.1 0.1 0.1\n}\n"
 			"uniformcolor_painter\n{\nname p2\ncolor 0.2 0.2 0.2\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p1\n}\n"
@@ -316,7 +316,7 @@ int main()
 	// proof the maintained reference edit is O(this chunk's refs . log N), not O(N).
 	{
 		auto sceneOfN = []( int extra ) {
-			std::string sc = "RISE ASCII SCENE 6\n"
+			std::string sc = "RISE ASCII SCENE 7\n"
 				"uniformcolor_painter\n{\nname p1\ncolor 0.1 0.1 0.1\n}\n"
 				"uniformcolor_painter\n{\nname p2\ncolor 0.2 0.2 0.2\n}\n"
 				"lambertian_material\n{\nname m\nreflectance p1\n}\n";
@@ -342,7 +342,7 @@ int main()
 	// painter same-name alias and can't be incrementally distinguished -- and the rebuild is correct.
 	{
 		MaintainedReferenceGraph mg( ParseToCst(
-			"RISE ASCII SCENE 6\n"
+			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname base\ncolor 0.3 0.3 0.3\n}\n"
 			"uniformcolor_painter\n{\nname base2\ncolor 0.7 0.7 0.7\n}\n"
 			"function2d_painter\n{\nname x\nfunction2d base\n}\n"

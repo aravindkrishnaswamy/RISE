@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # k=1 SMS debug: single refractive plane with smooth displacement.
 # Light above plane, floor below plane.  Light refracts through plane
 # and produces a caustic on the floor.  If SMS can't render this, the

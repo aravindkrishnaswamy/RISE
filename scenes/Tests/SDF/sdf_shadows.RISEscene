@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # SDF interop test: an SDF melded blob alongside an analytic sphere + box on a
 # ground plane, a directional light -> mutual shadows + correct ground contact.
 # Validates that sphere-traced SDF geometry participates in the same ray /

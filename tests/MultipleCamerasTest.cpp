@@ -249,7 +249,7 @@ static std::string MakeTempScenePath( const char* tag )
 // lines (parser requirement, see CLAUDE.md).  All test fixtures here
 // follow that.
 static const char* kSceneShell =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"standard_shader\n"
 	"{\n"
 	"\tname global\n"
