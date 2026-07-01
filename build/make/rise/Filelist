@@ -35,8 +35,11 @@ SRCDRISE =\
 
 # Utilities
 SRCLIBUTILITIES =\
+	$(PATHLIBRARY)Agent/AgentRpc.cpp			\
 	$(PATHLIBRARY)Agent/AgentSession.cpp		\
+	$(PATHLIBRARY)Agent/Base64.cpp				\
 	$(PATHLIBRARY)Agent/InMemoryRasterizerOutput.cpp	\
+	$(PATHLIBRARY)Agent/Json.cpp				\
 	$(PATHLIBRARY)Agent/SchemaGen.cpp			\
 	$(PATHLIBRARY)Cst/Cst.cpp					\
 	$(PATHLIBRARY)Utilities/Color/Color.cpp						\

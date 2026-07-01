@@ -543,10 +543,19 @@
     <ClCompile Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.cpp">
       <Filter>Geometry</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\AgentRpc.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Agent\AgentSession.cpp">
       <Filter>Agent</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\Base64.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Agent\InMemoryRasterizerOutput.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\Json.cpp">
       <Filter>Agent</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Agent\SchemaGen.cpp">
@@ -1719,10 +1728,19 @@
     <ClInclude Include="..\..\..\src\Library\Agent\AgentDiagnostic.h">
       <Filter>Agent</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\AgentRpc.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Agent\AgentSession.h">
       <Filter>Agent</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\Base64.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Agent\InMemoryRasterizerOutput.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\Json.h">
       <Filter>Agent</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Agent\SchemaGen.h">

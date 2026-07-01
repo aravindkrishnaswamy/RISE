@@ -23,6 +23,8 @@
 #include <thread>
 #include <vector>
 #include "../Library/RISE_API.h"
+#include "../Library/Agent/AgentSession.h"
+#include "../Library/Agent/AgentRpc.h"
 #include "../Library/Interfaces/ILogPriv.h"
 #include "../Library/Interfaces/IOptions.h"
 #include "../Library/Interfaces/IJobPriv.h"
@@ -154,6 +156,50 @@ double DoHighIntensityPerformanceRating2( double* pStdDev )
 	return mean;
 }
 
+// Facet 5 (agentic surface) slice 0c: the `--agent-stdio` read-eval-print
+// loop.  INSTEAD of the interactive `render`/`quit` console, RISE reads
+// LINE-DELIMITED JSON-RPC 2.0 requests from stdin, dispatches each through
+// the SAME AgentRpcDispatcher the end-to-end test drives, and writes one
+// response line to stdout (flushed per line).  EOF on stdin -> clean
+// exit 0.  An optional scene-file positional arg loads an initial head
+// (read+validate+propose+render then operate on it); with no scene the
+// dispatcher still speaks valid JSON-RPC and every session-backed method
+// returns a "no session" internal error.
+//
+// The trust boundary is the OS process (design §7.2); slice 0c adds NO
+// auth token and NO networking -- stdin/stdout only.
+static int RunAgentStdio( const char* sceneArg )
+{
+	std::unique_ptr<RISE::Agent::AgentSession> session;
+	if( sceneArg && sceneArg[0] ) {
+		session = RISE::Agent::AgentSession::LoadFromFile( sceneArg );
+		// A failed load is NOT fatal: report it on stderr and continue with a
+		// null session (read_schema-less methods still error cleanly) so a CI
+		// caller gets structured errors rather than a silent process death.
+		if( !session ) {
+			std::cerr << "rise --agent-stdio: could not load scene '" << sceneArg
+			          << "' (not native-v7, or a derive error); continuing with no head.\n";
+		}
+	}
+
+	RISE::Agent::AgentRpcDispatcher dispatcher( std::move( session ) );
+
+	std::string line;
+	while( std::getline( std::cin, line ) ) {
+		// Skip blank lines (a bare newline is not a JSON-RPC request); this
+		// keeps the loop robust to a client that pads with newlines.
+		bool allWs = true;
+		for( char c : line ) { if( c != ' ' && c != '\t' && c != '\r' ) { allWs = false; break; } }
+		if( allWs ) continue;
+
+		const std::string response = dispatcher.HandleLine( line );
+		std::cout << response << "\n";
+		std::cout.flush();   // one response per line, flushed so a spawner sees it immediately
+	}
+	// EOF on stdin -> clean exit.
+	return 0;
+}
+
 int main( int argc, char** argv )
 {
 	// Setup the media path locator
@@ -236,6 +282,7 @@ int main( int argc, char** argv )
 	int  cliFilmHeight  = 0;
 	double cliFilmPixelAR = 0.0;
 	bool cliArgError = false;
+	bool cliAgentStdio = false;	// Facet 5 slice 0c: JSON-RPC stdio transport
 	const char* sceneArg = 0;
 	for( int ai = 1; ai < argc; ai++ ) {
 		const char* a = argv[ai];
@@ -266,7 +313,9 @@ int main( int argc, char** argv )
 			dst = v; ++ai; return true;
 		};
 
-		if( strcmp(a, "--width") == 0 ) {
+		if( strcmp(a, "--agent-stdio") == 0 ) {
+			cliAgentStdio = true;
+		} else if( strcmp(a, "--width") == 0 ) {
 			consumeIntFlag( "--width", cliFilmWidth );
 		} else if( strcmp(a, "--height") == 0 ) {
 			consumeIntFlag( "--height", cliFilmHeight );
@@ -278,6 +327,19 @@ int main( int argc, char** argv )
 	}
 	if( cliArgError ) {
 		return 1;	// Fail fast — don't render with a malformed override.
+	}
+
+	// Facet 5 slice 0c: `--agent-stdio` replaces the interactive `render`/
+	// `quit` console with a JSON-RPC 2.0 read-eval-print loop over stdin/
+	// stdout.  It builds its OWN AgentSession from the positional scene arg
+	// (LoadFromFile), so it does not use the `pJob` created above -- release
+	// that here and hand control to the stdio loop, which owns its lifetime.
+	// EOF on stdin -> clean exit 0.
+	if( cliAgentStdio ) {
+		safe_release( pJob );
+		const int rc = RunAgentStdio( sceneArg );
+		GlobalLogCleanupAndShutdown();
+		return rc;
 	}
 	const bool haveCliFilmOverride =
 		( cliFilmWidth > 0 ) || ( cliFilmHeight > 0 ) || ( cliFilmPixelAR > 0.0 );

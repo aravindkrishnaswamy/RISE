@@ -17,6 +17,7 @@
 
 #include "SchemaGen.h"
 
+#include "Json.h"
 #include "../SceneEditor/ChunkDescriptorRegistry.h"
 #include "../SceneEditorSuggestions/SceneGrammar.h"
 #include "../Parsers/ChunkDescriptor.h"
@@ -28,37 +29,14 @@ namespace RISE
 	{
 		namespace
 		{
-			//! Append `s` as a JSON string literal (quotes included), escaping
-			//! quotes, backslashes, and control characters per RFC 8259.  Kept
-			//! deliberately small + correct; slice 0c replaces this with the
-			//! shared JSON codec.
+			//! Append `s` as a JSON string literal (quotes included).  Slice
+			//! 0c FACTORED the escaper into the shared JSON codec
+			//! (JsonAppendEscapedString) -- this is now a thin forwarder so
+			//! SchemaGen and the JSON-RPC transport share ONE correct RFC-8259
+			//! escaper (no drift possible).
 			void AppendJsonString( std::string& out, const std::string& s )
 			{
-				out += '"';
-				for( char c : s ) {
-					unsigned char uc = static_cast<unsigned char>( c );
-					switch( c ) {
-						case '"':  out += "\\\""; break;
-						case '\\': out += "\\\\"; break;
-						case '\b': out += "\\b";  break;
-						case '\f': out += "\\f";  break;
-						case '\n': out += "\\n";  break;
-						case '\r': out += "\\r";  break;
-						case '\t': out += "\\t";  break;
-						default:
-							if( uc < 0x20 ) {
-								// Other control characters -> \u00XX.
-								static const char* const kHex = "0123456789abcdef";
-								out += "\\u00";
-								out += kHex[ ( uc >> 4 ) & 0xF ];
-								out += kHex[ uc & 0xF ];
-							} else {
-								out += c;
-							}
-							break;
-					}
-				}
-				out += '"';
+				JsonAppendEscapedString( out, s );
 			}
 
 			//! The JSON-Schema-ish "type" token for a ValueKind.
