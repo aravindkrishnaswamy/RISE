@@ -9409,8 +9409,9 @@ bool Job::ClearAll(
 	// LoadAsciiSceneViaCst's load-once guard (a non-null pCstDocument) would falsely refuse the second native-v7
 	// open.  The variant/edit re-derive paths (RederiveCstWithVariant, DeriveEditedCstDocument_) do NOT rely on the
 	// member surviving ClearAll -- each std::move's the Document into a LOCAL before ClearAll and re-retains from
-	// that local after, so this reset is a no-op for them.  mCstLoadFileIdentity is preserved across ClearAll by
-	// InitializeContainers (re-applied) and overwritten on a reopen via RefreshCstLoadFileIdentity.
+	// that local after, so this reset is a no-op for them.  mCstLoadFileIdentity SURVIVES ClearAll because
+	// DestroyContainers/InitializeContainers do NOT touch it (the Slice-4 span-index re-apply was dropped in 6a);
+	// it is overwritten on a reopen via RefreshCstLoadFileIdentity.
 	pCstDocument.reset();
 	DestroyContainers();
 	InitializeContainers();

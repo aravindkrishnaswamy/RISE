@@ -240,7 +240,7 @@ int RiseRenderer::RenderImage( RiseRendererParams& rp, TimeValue t, Bitmap* tobm
 			RISE::PathGuidingConfig(), RISE::AdaptiveSamplingConfig(), RISE::StabilityConfig() );
 	} else {
 		prog->SetTitle( "Loading renderer settings and materials" );
-		if( !pJob->LoadAsciiSceneAuto( szRenderSettingsFile ) ) {   // Slice 6a: via Auto (settings files aren't native-v7 -> legacy fallback, same behavior)
+		if( !pJob->LoadAsciiScene( szRenderSettingsFile ) ) {
 			MessageBox( hwnd, "Failed to properly load the renderer/material settings file, aborting render", GetString(IDS_RENDRISETITLE), MB_OK );
 			safe_release( pJob );
 			return 0;
@@ -499,7 +499,7 @@ int RiseRenderer::RenderImage( RiseRendererParams& rp, TimeValue t, Bitmap* tobm
 	// Load the supplementary file
 	if( _access( this->szSupplementarySettingsFile, 0 ) == 0 ) {
 		prog->SetTitle( "Loading supplementary scene file" );
-		if( !pJob->LoadAsciiSceneAuto( this->szSupplementarySettingsFile ) ) {   // Slice 6a: via Auto (settings files aren't native-v7 -> legacy fallback, same behavior)
+		if( !pJob->LoadAsciiScene( this->szSupplementarySettingsFile ) ) {
 			MessageBox( hwnd, "Failed to properly load the supplementary settings file, aborting render", GetString(IDS_RENDRISETITLE), MB_OK );
 			safe_release( pJob );
 			return 0;
