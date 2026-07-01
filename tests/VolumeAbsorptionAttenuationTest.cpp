@@ -411,6 +411,137 @@ static std::string BuildRGBScene(
 	return ss.str();
 }
 
+//////////////////////////////////////////////////////////////////////
+// Interior-slab scene WITH a positional (omni / point) light present —
+// cases Q/R, the equiangular-MIS no-scatter selection-weight fix (site S1).
+//
+// IDENTICAL slab geometry / medium / camera / white env as BuildRGBScene,
+// but with an `omni_light` added.  A positional light flips the volume
+// distance sampler in PathTracingIntegrator (and RayCaster) from the pure
+// analog delta-tracking path into the one-sample equiangular-MIS mixture:
+//   with prob 0.5 -> delta tracking, with prob 0.5 -> equiangular toward
+//   the light.  The equiangular strategy can ONLY propose SCATTER events;
+//   it never yields a no-scatter (transmission) outcome.  So the ONLY way
+//   to reach the transmitted-env-behind-the-slab outcome is the DT strategy,
+//   selected with prob 0.5 — its true mixture probability is 0.5*pSurvival.
+//   The no-scatter survival weight must therefore be Tr/(0.5*pSurvival),
+//   i.e. carry a 1/0.5 = 2x strategy-selection factor.  Without that factor
+//   the transmitted env reads exactly HALF (2x too dark).
+//
+// The slab face is a perfectrefractor (clear, IOR 1.0) — a DELTA BSDF — so
+// the omni light contributes NOTHING to the central-block view via NEE
+// (delta surfaces reject explicit light connections).  The measured
+// radiance is purely the transmitted flat-white env, so the reference is
+// the same clean per-channel exp(-sigma_a*d) as case A/B.  The light is
+// placed off to the side (outside the slab) so it only toggles the EQ-MIS
+// regime; it does not add radiance to the measured path.
+//
+// REVERT-PROOF: forcing noScatterPdfScale back to 1.0 at the survival sites
+// (i.e. dropping the 2x selection factor) makes Q/R read ~half the correct
+// value; the fix restores exp(-sigma_a*d).  Meanwhile case A (the SAME slab
+// WITHOUT the omni light -> pure analog sampler, no 0.5 split) stays
+// byte-identical, confirming the fix does not touch the no-positional-light
+// path.
+//////////////////////////////////////////////////////////////////////
+
+static std::string BuildRGBSceneWithOmni(
+	int samples,
+	double sa_r, double sa_g, double sa_b )
+{
+	std::ostringstream ss;
+	ss <<
+		"RISE ASCII SCENE 6\n"
+		"\n"
+		"uniformcolor_painter\n"
+		"{\n"
+		"\tname pnt_env\n"
+		"\tcolor 1.0 1.0 1.0\n"
+		"}\n"
+		"\n"
+		"standard_shader\n"
+		"{\n"
+		"\tname global\n"
+		"\tshaderop DefaultDirectLighting\n"
+		"}\n"
+		"\n"
+		"pathtracing_pel_rasterizer\n"
+		"{\n"
+		"\tsamples " << samples << "\n"
+		"\tmax_volume_bounce 16\n"
+		"\tpixel_filter box\n"
+		"\tradiance_map pnt_env\n"
+		"\tradiance_scale 1.0\n"
+		"\tradiance_background TRUE\n"
+		"}\n"
+		"\n"
+		"file_rasterizeroutput\n"
+		"{\n"
+		"\tpattern /tmp/volume_absorption_omni_unused\n"
+		"\ttype PNG\n"
+		"\tbpp 8\n"
+		"\tcolor_space sRGB\n"
+		"}\n"
+		"\n"
+		"film\n"
+		"{\n"
+		"\twidth 16\n"
+		"\theight 16\n"
+		"}\n"
+		"\n"
+		"pinhole_camera\n"
+		"{\n"
+		"\tlocation 0 0 -5\n"
+		"\tlookat 0 0 0\n"
+		"\tup 0 1 0\n"
+		"\tfov 10.0\n"
+		"}\n"
+		"\n"
+		// Positional light: its only role is to switch the volume distance
+		// sampler into the equiangular-MIS regime.  Placed off to the side
+		// (outside the slab), and the slab face is a delta refractor so this
+		// light adds no radiance to the measured (transmitted-env) path.
+		"omni_light\n"
+		"{\n"
+		"\tname omni0\n"
+		"\tpower 1.0\n"
+		"\tposition 5 0 0\n"
+		"\tcolor 1.0 1.0 1.0\n"
+		"}\n"
+		"\n"
+		"homogeneous_medium\n"
+		"{\n"
+		"\tname slab_abs\n"
+		"\tabsorption " << sa_r << " " << sa_g << " " << sa_b << "\n"
+		"\tscattering 0.0 0.0 0.0\n"
+		"\tphase isotropic\n"
+		"}\n"
+		"\n"
+		"perfectrefractor_material\n"
+		"{\n"
+		"\tname clear\n"
+		"\trefractance pnt_env\n"
+		"\tior 1.0\n"
+		"}\n"
+		"\n"
+		"box_geometry\n"
+		"{\n"
+		"\tname slabgeom\n"
+		"\twidth 4.0\n"
+		"\theight 4.0\n"
+		"\tdepth " << kSlabDepth << "\n"
+		"}\n"
+		"\n"
+		"standard_object\n"
+		"{\n"
+		"\tname slab\n"
+		"\tgeometry slabgeom\n"
+		"\tposition 0 0 0\n"
+		"\tmaterial clear\n"
+		"\tinterior_medium slab_abs\n"
+		"}\n";
+	return ss.str();
+}
+
 static std::string BuildSpectralScene( double sa )
 {
 	std::ostringstream ss;
@@ -1615,6 +1746,84 @@ static void TestHeterogeneousSpectral()
 }
 
 
+//////////////////////////////////////////////////////////////////////
+// Cases Q/R — POSITIONAL-LIGHT equiangular-MIS no-scatter selection-weight
+// fix.  The SAME absorbing slab as A/B but WITH an omni_light present, which
+// switches the volume distance sampler into the one-sample delta-tracking /
+// equiangular mixture.  A no-scatter (transmitted-env) outcome is reachable
+// ONLY via the delta-tracking strategy (prob 0.5), so its survival weight
+// must carry a 2x (1/0.5) strategy-selection factor; without it the
+// transmitted env reads exactly HALF (2x too dark).  See the builder header.
+//////////////////////////////////////////////////////////////////////
+
+static void TestPositionalLightGray()
+{
+	std::cout << "[Q] RGB gray absorber WITH omni light (equiangular-MIS regime) "
+		<< "(sigma_a = 0.5, d = " << kSlabDepth
+		<< ") — no-scatter selection-weight fix (site S1)" << std::endl;
+	const double sa = 0.5;
+
+	// With the positional light -> EQ-MIS regime (the path under test).
+	const PixelRGB px = RenderCentralBlock(
+		BuildRGBSceneWithOmni( 1024, sa, sa, sa ), "omni_gray" );
+	// The SAME slab WITHOUT the omni light -> pure analog sampler (no 0.5
+	// split), which must stay byte-identical to its historical behaviour.
+	const PixelRGB noOmni = RenderCentralBlock(
+		BuildRGBScene( 1024, sa, sa, sa ), "omni_gray_noomni" );
+
+	Check( px.valid && noOmni.valid, "Q: renders produced frames" );
+	if( !px.valid || !noOmni.valid ) return;
+
+	const double exp = Expected( sa );
+	std::cout << "    with-omni (" << px.r << ", " << px.g << ", " << px.b
+		<< ")  no-omni (" << noOmni.r << ", " << noOmni.g << ", " << noOmni.b
+		<< ")  expected " << exp << " each" << std::endl;
+	std::cout << "    (buggy no-scatter selection weight -> ~half: "
+		<< exp * 0.5 << ")" << std::endl;
+
+	// With the positional light present, the transmitted env must STILL read
+	// single-count Beer-Lambert.  Missing the 2x selection factor halves it.
+	Check( ChannelOk( px.r, exp, "Q.r" ), "Q: omni red   == exp(-sigma_a*d) (not 2x dark)" );
+	Check( ChannelOk( px.g, exp, "Q.g" ), "Q: omni green == exp(-sigma_a*d) (not 2x dark)" );
+	Check( ChannelOk( px.b, exp, "Q.b" ), "Q: omni blue  == exp(-sigma_a*d) (not 2x dark)" );
+
+	// The with-omni and no-omni renders must agree within MC noise: the fix
+	// makes the EQ-MIS regime match the analog regime, and the no-positional
+	// path is unchanged.  (A revert-to-1.0 halves the with-omni value only,
+	// breaking this equality.)
+	auto agree = [&]( double a, double b, const char* nm ) -> bool {
+		const double denom = std::fmax( std::fmax( std::fabs(a), std::fabs(b) ), 1e-4 );
+		const double rel = std::fabs( a - b ) / denom;
+		const bool ok = rel <= 0.10;
+		if( !ok ) std::cout << "    " << nm << " omni=" << a << " noomni=" << b
+			<< " rel=" << rel << std::endl;
+		return ok;
+	};
+	Check( agree( px.r, noOmni.r, "Q.agree.r" ), "Q: omni.r ~ no-omni.r (EQ-MIS matches analog)" );
+	Check( agree( px.g, noOmni.g, "Q.agree.g" ), "Q: omni.g ~ no-omni.g (EQ-MIS matches analog)" );
+	Check( agree( px.b, noOmni.b, "Q.agree.b" ), "Q: omni.b ~ no-omni.b (EQ-MIS matches analog)" );
+}
+
+static void TestPositionalLightColored()
+{
+	std::cout << "[R] RGB coloured absorber WITH omni light (equiangular-MIS regime) "
+		<< "(sigma_a = 0.2/0.6/1.2, d = " << kSlabDepth
+		<< ") — selection-weight + desaturation discriminator" << std::endl;
+	const double sar = 0.2, sag = 0.6, sab = 1.2;
+	const PixelRGB px = RenderCentralBlock(
+		BuildRGBSceneWithOmni( 1024, sar, sag, sab ), "omni_col" );
+	Check( px.valid, "R: render produced a frame" );
+	if( !px.valid ) return;
+	const double er = Expected( sar ), eg = Expected( sag ), eb = Expected( sab );
+	std::cout << "    measured (" << px.r << ", " << px.g << ", " << px.b
+		<< ")  expected (" << er << ", " << eg << ", " << eb << ")" << std::endl;
+	Check( ChannelOk( px.r, er, "R.r" ), "R: omni red   == exp(-0.2*d)" );
+	Check( ChannelOk( px.g, eg, "R.g" ), "R: omni green == exp(-0.6*d)" );
+	Check( ChannelOk( px.b, eb, "R.b" ), "R: omni blue  == exp(-1.2*d)" );
+	Check( px.r > px.g * 1.2 && px.g > px.b * 1.2,
+		"R: omni medium stays coloured (r > g > b, not desaturated)" );
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "VolumeAbsorptionAttenuationTest — Beer-Lambert single-count "
@@ -1649,6 +1858,15 @@ int main( int /*argc*/, char* /*argv*/[] )
 	// stochastic ratio-tracking transmittance path.
 	TestHeterogeneousColored();
 	TestHeterogeneousSpectral();
+
+	// Cases Q/R: the SAME slab WITH a positional (omni) light present, which
+	// activates the equiangular-MIS volume distance sampler.  The transmitted
+	// env must still read single-count Beer-Lambert (the no-scatter outcome
+	// carries the 1/0.5 = 2x strategy-selection factor); missing the factor
+	// reads 2x too dark.  Q also asserts the with-omni render matches the
+	// no-omni (analog) render, confirming the no-positional path is unchanged.
+	TestPositionalLightGray();
+	TestPositionalLightColored();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

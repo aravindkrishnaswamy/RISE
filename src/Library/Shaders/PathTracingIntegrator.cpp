@@ -138,6 +138,7 @@ namespace
 		Scalar	combinedPdf;			///< MIS-combined PDF (0 unless useExplicitThroughput)
 		bool	useExplicitThroughput;	///< true => medWeight = Tr * sigma_s / combinedPdf
 		bool	zeroContrib;			///< true => equiangular landed at zero-density; no surface fallthrough
+		Scalar	noScatterPdfScale;		///< strategy-selection factor for the no-scatter outcome: 0.5 in the equiangular-MIS regime (a no-scatter outcome can only arise from the DT strategy, chosen with prob 0.5, so its true mixture probability is 0.5*pSurvival), 1.0 in the pure-DT / analog / no-positional-light regime. Consumed at the no-scatter survival sites as Tr / (noScatterPdfScale * pSurvival).
 	};
 
 	//
@@ -163,6 +164,7 @@ namespace
 		out.combinedPdf = 0;
 		out.useExplicitThroughput = false;
 		out.zeroContrib = false;
+		out.noScatterPdfScale = 1.0;
 
 		const bool useEquiangularMIS = (pLS && pLS->GetPositionalLightCount() > 0);
 		if( !useEquiangularMIS )
@@ -268,7 +270,15 @@ namespace
 				out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 				out.useExplicitThroughput = true;
 			}
-			// If not scattered: transmission has no equiangular counterpart; weight = 1.
+			else
+			{
+				// No-scatter outcome under equiangular MIS.  Equiangular ONLY
+				// proposes scatter events, so a no-scatter outcome can arise
+				// ONLY from this delta-tracking strategy, which is chosen with
+				// prob 0.5.  Its true mixture probability is 0.5*pSurvival, so
+				// the no-scatter survival sites must divide by that extra 0.5.
+				out.noScatterPdfScale = 0.5;
+			}
 		}
 		else
 		{
@@ -338,6 +348,7 @@ namespace
 		out.combinedPdf = 0;
 		out.useExplicitThroughput = false;
 		out.zeroContrib = false;
+		out.noScatterPdfScale = 1.0;
 
 		const bool useEquiangularMIS = (pLS && pLS->GetPositionalLightCount() > 0);
 		if( !useEquiangularMIS )
@@ -437,6 +448,14 @@ namespace
 				}
 				out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 				out.useExplicitThroughput = true;
+			}
+			else
+			{
+				// No-scatter outcome under equiangular MIS: reachable only via
+				// this delta-tracking strategy (chosen with prob 0.5).  See the
+				// RGB variant for the rationale — the survival sites divide by
+				// the extra 0.5.
+				out.noScatterPdfScale = 0.5;
 			}
 		}
 		else
@@ -1726,7 +1745,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// double-count attenuation.
 					const Value Tr = PTEvalTransmittance<Tag>(
 						pCurrentMedium, currentRay, ri.geometric.range, tag );
-					const Scalar pSurvival = PTEvalNoScatterSurvivalPdf<Tag>(
+					const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
 						pCurrentMedium, currentRay, ri.geometric.range, tag );
 					throughput = throughput * PTSurvivalWeight<Tag>( Tr, pSurvival );
 				}
@@ -1741,7 +1760,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// multiplies into throughput — not Tr again.
 					const Value Tr = PTEvalTransmittance<Tag>(
 						pCurrentMedium, currentRay, maxDist, tag );
-					const Scalar pSurvival = PTEvalNoScatterSurvivalPdf<Tag>(
+					const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
 						pCurrentMedium, currentRay, maxDist, tag );
 					throughput = throughput * PTSurvivalWeight<Tag>( Tr, pSurvival );
 				}
@@ -3340,7 +3359,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// attenuation.
 			const Value Tr = PTEvalTransmittance<Tag>(
 				pCurrentMedium, cameraRay, ri.geometric.range, tag );
-			const Scalar pSurvival = PTEvalNoScatterSurvivalPdf<Tag>(
+			const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
 				pCurrentMedium, cameraRay, ri.geometric.range, tag );
 
 			if( !ri.geometric.bHit ) {
@@ -3366,7 +3385,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// monochrome/NM homogeneous) for the env radiance below —
 			// multiplying the full Tr would double-count attenuation.
 			const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, cameraRay, maxDist, tag );
-			const Scalar pSurvival = PTEvalNoScatterSurvivalPdf<Tag>(
+			const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
 				pCurrentMedium, cameraRay, maxDist, tag );
 			escapeTr = PTSurvivalWeight<Tag>( Tr, pSurvival );
 		}

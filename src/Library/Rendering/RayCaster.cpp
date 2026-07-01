@@ -346,6 +346,12 @@ bool RayCaster::CastRay(
 		ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
 	}
 
+	// Strategy-selection factor for a no-scatter outcome (see the EQ-MIS block
+	// below).  Declared in the outer scope because the survival sites that
+	// consume it (surface-hit / escape) live outside the if(pMedium) block.
+	// 0.5 only in the DT no-scatter branch under equiangular MIS; 1.0 otherwise.
+	Scalar noScatterPdfScale = 1.0;
+
 	if( pMedium )
 	{
 		const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
@@ -485,7 +491,13 @@ bool RayCaster::CastRay(
 						combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 						useExplicitThroughput = true;
 					}
-					// If not scattered: no equiangular counterpart, weight = 1
+					else
+					{
+						// No-scatter outcome under equiangular MIS: reachable only
+						// via this delta-tracking strategy (chosen with prob 0.5).
+						// The survival sites divide by the extra 0.5.
+						noScatterPdfScale = 0.5;
+					}
 				}
 				else
 				{
@@ -843,7 +855,7 @@ bool RayCaster::CastRay(
 		if( pMedium ) {
 			c = c * RayCasterSurvivalWeight(
 				pMedium->EvalTransmittance( ray, ri.geometric.range ),
-				pMedium->EvalDistancePdf( ray, ri.geometric.range, false, ri.geometric.range ) );
+				noScatterPdfScale * pMedium->EvalDistancePdf( ray, ri.geometric.range, false, ri.geometric.range ) );
 		}
 
 		if( distance ) {
@@ -859,7 +871,7 @@ bool RayCaster::CastRay(
 		if( pMedium ) {
 			c = c * RayCasterSurvivalWeight(
 				pMedium->EvalTransmittance( ray, RISE_INFINITY ),
-				pMedium->EvalDistancePdf( ray, RISE_INFINITY, false, RISE_INFINITY ) );
+				noScatterPdfScale * pMedium->EvalDistancePdf( ray, RISE_INFINITY, false, RISE_INFINITY ) );
 		}
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadiance( ray, rast );
@@ -908,7 +920,7 @@ bool RayCaster::CastRay(
 		if( pMedium ) {
 			c = c * RayCasterSurvivalWeight(
 				pMedium->EvalTransmittance( ray, RISE_INFINITY ),
-				pMedium->EvalDistancePdf( ray, RISE_INFINITY, false, RISE_INFINITY ) );
+				noScatterPdfScale * pMedium->EvalDistancePdf( ray, RISE_INFINITY, false, RISE_INFINITY ) );
 		}
 
 		if( distance && bConsiderRMapAsBackground ) {
@@ -1009,6 +1021,12 @@ bool RayCaster::CastRayNM(
 		const Scalar ambIOR = ior_stack.top();
 		ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
 	}
+
+	// Strategy-selection factor for a no-scatter outcome (see the EQ-MIS block
+	// below).  Declared in the outer scope because the survival sites that
+	// consume it (surface-hit / escape) live outside the if(pMedium) block.
+	// 0.5 only in the DT no-scatter branch under equiangular MIS; 1.0 otherwise.
+	Scalar noScatterPdfScale_NM = 1.0;
 
 	if( pMedium )
 	{
@@ -1113,6 +1131,12 @@ bool RayCaster::CastRayNM(
 						}
 						combinedPdf_NM = 0.5 * pdf_dt + 0.5 * pdf_eq;
 						useExplicitThroughput_NM = true;
+					}
+					else
+					{
+						// No-scatter outcome under equiangular MIS: reachable only
+						// via this delta-tracking strategy (chosen with prob 0.5).
+						noScatterPdfScale_NM = 0.5;
 					}
 				}
 				else
@@ -1390,7 +1414,7 @@ bool RayCaster::CastRayNM(
 		// depth, so the ratio is the correct unbiased weight (NOT unity).
 		if( pMedium ) {
 			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, ri.geometric.range, nm );
-			const Scalar pSurvival = pMedium->EvalDistancePdfNM(
+			const Scalar pSurvival = noScatterPdfScale_NM * pMedium->EvalDistancePdfNM(
 				ray, ri.geometric.range, false, ri.geometric.range, nm );
 			if( pSurvival > 0 ) {
 				c = c * ( Tr / pSurvival );
@@ -1410,7 +1434,7 @@ bool RayCaster::CastRayNM(
 		// homogeneous, correct for heterogeneous — see the surface-hit case).
 		if( pMedium ) {
 			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
-			const Scalar pSurvival = pMedium->EvalDistancePdfNM(
+			const Scalar pSurvival = noScatterPdfScale_NM * pMedium->EvalDistancePdfNM(
 				ray, RISE_INFINITY, false, RISE_INFINITY, nm );
 			if( pSurvival > 0 ) {
 				c = c * ( Tr / pSurvival );
@@ -1463,7 +1487,7 @@ bool RayCaster::CastRayNM(
 		// homogeneous, correct for heterogeneous — see the surface-hit case).
 		if( pMedium ) {
 			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
-			const Scalar pSurvival = pMedium->EvalDistancePdfNM(
+			const Scalar pSurvival = noScatterPdfScale_NM * pMedium->EvalDistancePdfNM(
 				ray, RISE_INFINITY, false, RISE_INFINITY, nm );
 			if( pSurvival > 0 ) {
 				c = c * ( Tr / pSurvival );
