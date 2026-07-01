@@ -45,11 +45,11 @@
 
 using namespace RISE;
 
-// P5 (Model-B, Slice 5): CST-load is now the DEFAULT.  LoadAsciiSceneAuto classifies the scene (native-v7 ->
-// canonical CST path, retaining the Document so scene_variant switching + CST edit/save work WITHOUT any env
-// var; un-migrated -> the legacy streaming parser).  A derive error on the native-v7 branch is a REAL, visible
-// failure (returns false) -- it is NOT masked by a legacy retry.  The escape hatch RISE_FORCE_LEGACY_LOAD (read
-// inside LoadAsciiSceneAuto) forces the legacy path for diagnostics.  The old opt-in RISE_LOAD_VIA_CST is gone.
+// P5 (Model-B, Slice 6c-3a): scene load is now CST-ONLY.  LoadAsciiSceneAuto classifies the scene (native-v7 ->
+// canonical CST path, retaining the Document so scene_variant switching + CST edit/save work; un-migrated ->
+// HARD FAIL with a migrator pointer -- the legacy streaming parser was retired).  A derive error on the
+// native-v7 branch is a REAL, visible failure (returns false) -- it is NOT masked by a legacy retry.  There is
+// no env escape hatch (RISE_FORCE_LEGACY_LOAD and the old opt-in RISE_LOAD_VIA_CST are both gone).
 static bool LoadScenePerEnv( IJobPriv* pJob, const char* sceneArg )
 {
 	return pJob->LoadAsciiSceneAuto( sceneArg );
@@ -63,7 +63,7 @@ double DoPerformanceRating()
 {
 	IJobPriv* pJob = 0;
 	RISE_CreateJobPriv( &pJob );
-	pJob->LoadAsciiSceneAuto( "scenes/pr.RISEscene" );   // Slice 6a: via Auto (native-v7 -> CST, else legacy) so 6c can delete LoadAsciiScene
+	pJob->LoadAsciiSceneAuto( "scenes/pr.RISEscene" );   // Slice 6c-3a: via Auto (CST-only -- native-v7 -> CST, else hard-fail)
 
 	unsigned int		actual_time = 1;
 	pJob->PredictRasterizationTime( 10000, 0, &actual_time );

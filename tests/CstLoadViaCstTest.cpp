@@ -141,6 +141,37 @@ int main()
 	AcceptCase( "> echo accepted", "/tmp/cst_loadvia_echo.RISEscene",
 		"RISE ASCII SCENE 6\n> echo loading the scene\nsphere_geometry\n{\nname s\nradius 1\n}\n" );
 
+	// Slice 6c-3a: LoadAsciiSceneAuto is now CST-ONLY.  A native-v7 scene loads via the CST path and RETAINS
+	// the canonical Document; a non-native (un-migrated) scene HARD-FAILS (returns false, NO Document) instead
+	// of falling back to the legacy loader.  RED-PROVE: before this change Auto fell back to legacy on the
+	// non-native branch, so the FOR-loop scene below would have legacy-loaded and returned TRUE -- the
+	// `Check( !okAutoBad, ... )` assertion would flip to a FAIL.  (Restore the legacy fallback in
+	// LoadAsciiSceneAuto and this assertion fails; that is the proof it exercises the new hard-fail.)
+	{
+		const char* pOk  = "/tmp/cst_auto_native.RISEscene";
+		const char* pBad = "/tmp/cst_auto_nonnative.RISEscene";
+
+		// Native-v7 -> Auto succeeds + retains the CST Document.
+		if( WriteTmp( pOk, "RISE ASCII SCENE 6\nsphere_geometry\n{\nname sg\nradius 1\n}\n" ) ) {
+			Job* j = new Job();
+			const bool okAuto = j->LoadAsciiSceneAuto( pOk );
+			Check( okAuto, "Auto CST-only: native-v7 scene loads via Auto (returns true)" );
+			Check( j->HasRetainedCstDocument(), "Auto CST-only: native-v7 Auto-load RETAINS the CST Document" );
+			j->release();
+			std::remove( pOk );
+		}
+
+		// Non-native (un-migrated FOR/ENDFOR) -> Auto HARD-FAILS, retains NO Document, does NOT legacy-fall-back.
+		if( WriteTmp( pBad, "RISE ASCII SCENE 6\nFOR i 0 1 2\nsphere_geometry\n{\nname s\nradius 1\n}\nENDFOR\n" ) ) {
+			Job* j = new Job();
+			const bool okAutoBad = j->LoadAsciiSceneAuto( pBad );
+			Check( !okAutoBad, "Auto CST-only: non-native scene HARD-FAILS via Auto (returns false, no legacy fallback)" );
+			Check( !j->HasRetainedCstDocument(), "Auto CST-only: non-native Auto-fail retains NO Document" );
+			j->release();
+			std::remove( pBad );
+		}
+	}
+
 	// P2 fix: load-once -- re-loading into a live Job is refused (Document/Scene desync otherwise).
 	// Use a DIFFERENT, otherwise-valid 2nd scene (distinct name) so ONLY the load-once guard can refuse it --
 	// loading the same file twice would mask a neutered guard behind the duplicate-name hard error.

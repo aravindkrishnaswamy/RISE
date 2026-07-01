@@ -2802,10 +2802,11 @@ namespace RISE
 			const char* filename
 			);
 
-		//! P5 Slice 5: DEFAULT scene-load entry point -- routes a NATIVE-v7 scene to the CST path
-		//! (LoadAsciiSceneViaCst; retains the Document for edit/save/variant) and an un-migrated scene to the
-		//! legacy LoadAsciiScene.  No env var needed for the CST default; RISE_FORCE_LEGACY_LOAD forces legacy.
-		//! A derive error on the native-v7 branch is a REAL failure (returns false), NOT masked by a legacy retry.
+		//! P5 Slice 6c-3a: DEFAULT scene-load entry point -- CST-ONLY.  Routes a NATIVE-v7 scene to the CST path
+		//! (LoadAsciiSceneViaCst; retains the Document for edit/save/variant).  A non-native (un-migrated) scene
+		//! HARD-FAILS with an actionable diagnostic pointing at the offline migrator -- the legacy LoadAsciiScene
+		//! is no longer called (no fallback, no env escape hatch).  A derive error on the native-v7 branch is a
+		//! REAL failure (returns false), NOT masked by a legacy retry.
 		bool LoadAsciiSceneAuto(
 			const char* filename
 			);

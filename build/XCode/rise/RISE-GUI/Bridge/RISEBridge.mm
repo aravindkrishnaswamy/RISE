@@ -688,12 +688,12 @@ public:
 - (BOOL)loadAsciiScene:(NSString *)filePath {
     if (!_job) return NO;
     const char* path = [filePath UTF8String];
-    // P5 (Model-B, Slice 5): CST-load is now the DEFAULT.  LoadAsciiSceneAuto classifies the scene -- a
+    // P5 (Model-B, Slice 6c-3a): scene load is now CST-ONLY.  LoadAsciiSceneAuto classifies the scene -- a
     // native-v7 scene loads via the canonical CST path (retains the CST Document so scene_variant switching +
-    // CST edit/save work WITHOUT any env var); an un-migrated scene loads via the legacy streaming parser.  A
-    // derive error on the native-v7 branch is a REAL, visible failure (returns NO) -- it is NOT masked by a
-    // legacy retry.  The escape hatch RISE_FORCE_LEGACY_LOAD (read inside LoadAsciiSceneAuto) forces legacy for
-    // diagnostics.  The old opt-in RISE_LOAD_VIA_CST is gone.
+    // CST edit/save work); an un-migrated scene HARD-FAILS (returns NO) with a migrator pointer -- the legacy
+    // streaming parser was retired.  A derive error on the native-v7 branch is a REAL, visible failure
+    // (returns NO) -- it is NOT masked by a legacy retry.  There is no env escape hatch (RISE_FORCE_LEGACY_LOAD
+    // and the old opt-in RISE_LOAD_VIA_CST are both gone).
     return _job->LoadAsciiSceneAuto(path) ? YES : NO;
 }
 
