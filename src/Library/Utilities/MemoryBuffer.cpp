@@ -106,16 +106,30 @@ MemoryBuffer::MemoryBuffer( const char * szFileName ) :
 		String s = GlobalMediaPathLocator().Find( szFileName );
 
 		struct stat file_stats = {0};
-		stat( s.c_str(), &file_stats );
+		if( stat( s.c_str(), &file_stats ) != 0 ) {
+			// Cannot size the file — leave the buffer empty (nSize/pBuffer
+			// stay 0 from the init list) rather than proceeding with a
+			// bogus size.
+			GlobalLog()->PrintEx( eLog_Error, "MemoryBuffer:: Failed to stat file: %s", szFileName );
+			return;
+		}
 		nSize = static_cast<unsigned int>(file_stats.st_size);
 		pBuffer = new char[ nSize ];
 		GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
-		
+
 		FILE* f = fopen( s.c_str(), "rb" );
 		if( f ) {
-			fread( pBuffer, nSize, 1, f );
+			// Read byte-granular and CHECK the count: a short read (file
+			// truncated, or the size changed after stat) must not leave the
+			// tail uninitialised.
+			const size_t bytesRead = fread( pBuffer, 1, nSize, f );
 			fclose( f );
-			GlobalLog()->PrintEx( eLog_Info, "MemoryBuffer:: Read file \'%s\' of size %d bytes", szFileName, nSize );
+			if( bytesRead < nSize ) {
+				memset( pBuffer + bytesRead, 0, nSize - bytesRead );
+				GlobalLog()->PrintEx( eLog_Error, "MemoryBuffer:: Short read on \'%s\': got %u of %u bytes (tail zeroed)", szFileName, static_cast<unsigned>(bytesRead), nSize );
+			} else {
+				GlobalLog()->PrintEx( eLog_Info, "MemoryBuffer:: Read file \'%s\' of size %d bytes", szFileName, nSize );
+			}
 		} else {
 			GlobalLog()->PrintEx( eLog_Error, "MemoryBuffer:: Failed to open file: %s", szFileName );
 		}

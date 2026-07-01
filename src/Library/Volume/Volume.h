@@ -15,6 +15,7 @@
 #define VOLUME_
 
 #include "../Interfaces/IVolume.h"
+#include "../Interfaces/ILog.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/MediaPathLocator.h"
 
@@ -75,7 +76,10 @@ namespace RISE
 		{
 			m_OVMaxValue = 1.0 / ( Scalar( 1 << (sizeof( T )*8) ) - 1.0 );
 
-			m_pData = new T[m_nDepth*m_nHeight*m_nWidth];
+			// Value-initialise to zero: any slice whose file is missing or
+			// short-reads then stays ZERO rather than exposing
+			// uninitialised voxels (garbage from new[]).
+			m_pData = new T[m_nDepth*m_nHeight*m_nWidth]();
 
 			for( unsigned int i=zstart, cnt=0; i<=zend; i++, cnt++ )
 			{
@@ -86,8 +90,19 @@ namespace RISE
 				FILE* f = fopen( GlobalMediaPathLocator().Find(buffer).c_str(), "rb" );
 
 				if( f ) {
-					fread( &m_pData[cnt*width*height], sizeof( T ), m_nWidth*m_nHeight, f );
+					const size_t want = static_cast<size_t>(m_nWidth) * static_cast<size_t>(m_nHeight);
+					const size_t got  = fread( &m_pData[cnt*width*height], sizeof( T ), want, f );
 					fclose( f );
+					if( got < want ) {
+						// Truncated slice: the unread remainder is already
+						// zero from the value-init above.
+						GlobalLog()->PrintEx( eLog_Error,
+							"Volume:: Short read on slice `%s`: got %u of %u voxels (remainder zeroed)",
+							buffer, static_cast<unsigned>(got), static_cast<unsigned>(want) );
+					}
+				} else {
+					GlobalLog()->PrintEx( eLog_Error,
+						"Volume:: Failed to open slice file `%s` (slice zeroed)", buffer );
 				}
 			}
 
