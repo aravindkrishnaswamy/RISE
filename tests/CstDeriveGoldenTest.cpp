@@ -59,7 +59,16 @@
 //      export RISE_MEDIA_PATH="$(pwd)/"
 //      ./bin/tests/CstDeriveGoldenTest                   # re-derives each golden scene, asserts digest ==
 //  A mismatch fails naming the SCENE PATH so a future CST-derive regression is
-//  caught + localized.
+//  caught + localized.  VERIFY ALSO asserts COVERAGE COMPLETENESS against the live
+//  tracked corpus (mirroring what the legacy oracle did by enumerating the corpus):
+//    - UNCOVERED: a corpus scene that CST-derives CLEANLY but is missing from the
+//      golden fails (a new mis-deriving scene can't slip in silently).  The known
+//      legacy-fails (media-missing / negative / non-native) derive empty or emit a
+//      diagnostic, so they auto-skip -- no hardcoded skip list.
+//    - STALE: a manifest entry for a scene no longer in the corpus fails (the
+//      manifest can't rot).
+//  So adding / removing a scene, or a scene's derive-status flipping, all force a
+//  golden regenerate.
 //
 //  SUITE BEHAVIOUR (run_all_tests.sh runs this bare, with NO RISE_MEDIA_PATH)
 //  -------------------------------------------------------------------------
@@ -76,11 +85,13 @@
 #include "../src/Library/Cst/Cst.h"        // ParseToCst / DeriveToJob
 #include "../tools/CstMigrator.h"          // Migrate / ReadFile (the oracle's CST-side pipeline)
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -178,10 +189,17 @@ std::string Sha256Hex( const std::string& s ) {
 // *.RISEscene, sorted by path.  Uses `git ls-files` so the golden covers exactly
 // the committed corpus (the equivalence oracle's raw `find` would also pick up
 // the gitignored Internal scenes + any untracked scratch scene).
+//
+// FIX 2 (deterministic order): the paths are sorted IN-PROCESS with std::sort
+// (byte / std::string ordering), NOT by a shell `sort` inside popen -- a shell
+// `sort` is LC_COLLATE-dependent, so a differently-collated machine reorders the
+// generated manifest lines (a spurious git diff that reads like drift; digests
+// are unaffected).  std::string's operator< is a locale-independent byte compare,
+// which matches `LC_ALL=C sort` -- the order the committed golden was written in.
 //////////////////////////////////////////////////////////////////////
 std::vector<std::string> EnumerateCorpus() {
 	std::vector<std::string> paths;
-	FILE* pp = popen( "git ls-files 'scenes/*.RISEscene' | grep -v '^scenes/Internal/' | sort", "r" );
+	FILE* pp = popen( "git ls-files 'scenes/*.RISEscene' | grep -v '^scenes/Internal/'", "r" );
 	if( !pp ) return paths;
 	char line[8192];
 	while( std::fgets( line, sizeof(line), pp ) ) {
@@ -190,6 +208,7 @@ std::vector<std::string> EnumerateCorpus() {
 		if( !s.empty() ) paths.push_back( s );
 	}
 	pclose( pp );
+	std::sort( paths.begin(), paths.end() );   // locale-independent byte order (== LC_ALL=C)
 	return paths;
 }
 
@@ -311,6 +330,11 @@ int Verify() {
 		}
 	}
 
+	// Index the manifest by path for the completeness cross-check (FIX 1) and to
+	// keep the existing per-scene DRIFT check.
+	std::set<std::string> goldenPaths;
+	for( const GoldenEntry& e : golden ) goldenPaths.insert( e.path );
+
 	int ok = 0, fail = 0;
 	for( const GoldenEntry& e : golden ) {
 		const std::string dump = DeriveDump( e.path );
@@ -324,8 +348,51 @@ int Verify() {
 		std::fflush( stdout );
 	}
 
-	std::printf( "\n=== CstDeriveGoldenTest: %d MATCH, %d DRIFT (of %zu golden scenes) ===\n", ok, fail, golden.size() );
-	if( fail ) std::printf( "  A DRIFT is a CST-derive regression.  If INTENTIONAL, review + regenerate: ./bin/tests/CstDeriveGoldenTest --generate\n" );
+	//////////////////////////////////////////////////////////////////////
+	// FIX 1 -- COVERAGE COMPLETENESS.  ReadGolden() only enumerates the MANIFEST,
+	// so a scene ADDED to the tracked corpus after this commit -- even one that
+	// CST-derives WRONG -- escapes the digest loop (it is not in the golden, stays
+	// green).  Once the legacy oracle (which enumerated the LIVE corpus) is deleted,
+	// nothing catches such a new mis-deriving scene.  Close it by ALSO enumerating
+	// the live tracked corpus (the SAME way the generator does) and asserting:
+	//   (a) UNCOVERED: every scene that CST-derives CLEANLY (non-empty, no derive
+	//       diagnostic -- i.e. would be captured by --generate) MUST be present in
+	//       the golden.  The 7 known legacy-fails (media-missing / negative /
+	//       non-native) derive empty or emit a diagnostic and are skipped here --
+	//       exactly as they are excluded from the golden -- with NO hardcoded skip
+	//       list; the derive status auto-classifies them.
+	//   (b) STALE: every manifest entry must correspond to a scene STILL tracked in
+	//       the corpus, so a removed scene forces a golden update (the manifest
+	//       can't rot).
+	// Net: adding a scene, removing a scene, or a scene's derive-status flipping all
+	// force a golden regenerate.
+	//////////////////////////////////////////////////////////////////////
+	int uncovered = 0, stale = 0;
+	std::vector<std::string> corpus = EnumerateCorpus();
+	std::set<std::string> corpusSet( corpus.begin(), corpus.end() );
+
+	// (a) UNCOVERED -- a cleanly-deriving corpus scene missing from the manifest.
+	for( const std::string& path : corpus ) {
+		if( goldenPaths.count( path ) ) continue;   // already covered (digest-checked above)
+		size_t diagCount = 0;
+		const std::string dump = DeriveDump( path, &diagCount );
+		if( diagCount > 0 || dump == EmptyDump() ) continue;   // legacy-fail: excluded from golden, correctly skipped
+		++uncovered; ++fail;
+		std::printf( "UNCOVERED %s -- a scene that CST-derives is not in the golden; regenerate after verifying its derive is correct\n", path.c_str() );
+		std::fflush( stdout );
+	}
+
+	// (b) STALE -- a manifest entry for a scene no longer in the corpus.
+	for( const std::string& path : goldenPaths ) {
+		if( corpusSet.count( path ) ) continue;
+		++stale; ++fail;
+		std::printf( "STALE %s -- golden entry for a scene no longer in the corpus\n", path.c_str() );
+		std::fflush( stdout );
+	}
+
+	std::printf( "\n=== CstDeriveGoldenTest: %d MATCH, %d DRIFT (of %zu golden scenes); coverage: %zu corpus scenes, %d UNCOVERED, %d STALE ===\n",
+		ok, fail - uncovered - stale, golden.size(), corpus.size(), uncovered, stale );
+	if( fail ) std::printf( "  A DRIFT/UNCOVERED/STALE is a CST-derive or coverage regression.  If INTENTIONAL, review + regenerate: ./bin/tests/CstDeriveGoldenTest --generate\n" );
 	return fail ? 1 : 0;
 }
 
