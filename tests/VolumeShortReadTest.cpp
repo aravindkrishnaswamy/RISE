@@ -93,45 +93,59 @@ static double ByteAt( const Volume<unsigned char>* v, int x, int y, int z )
 //----------------------------------------------------------------------
 // Volume: present / truncated / missing slices.
 //   w=h=4, slices z=0,1,2 (centered coords: z=-1 -> slice0, 0 -> slice1,
-//   +1 -> slice2; x,y in [-2,1]).
-//   slice0: full 16 bytes of 200 (present)
-//   slice1: only 8 of 16 bytes of 100 (TRUNCATED -> tail must be 0)
+//   +1 -> slice2; x,y in [-32,31]).
+//   slice0: full 4096 bytes of 200 (present)
+//   slice1: only 2048 of 4096 bytes of 100 (TRUNCATED -> tail rows must be 0)
 //   slice2: file absent (MISSING -> whole slice must be 0)
+//
+// Dimensions are 64x64 DELIBERATELY: a small (<=~256 B) buffer lands in
+// macOS's `nano` malloc zone, which ALWAYS hands back zeroed memory, so a
+// tiny volume's "unread == 0" assertions would pass even against the
+// pre-fix (uninitialised-read) code — a green-on-both non-test.  At 64x64
+// (12 KB) the buffer escapes the nano zone into the recycling scalable
+// zone, so the DirtyHeap poisoning below makes an uninitialised read come
+// back as 0xFF garbage — i.e. these assertions genuinely FAIL against the
+// buggy code and PASS only with the value-init fix.
 //----------------------------------------------------------------------
 static void TestVolumeSlices()
 {
 	std::cout << "A: Volume present / truncated / missing slices read back zero (not garbage)" << std::endl;
 
+	static const int W = 64, H = 64;
+	static const int SLICE = W * H;           // 4096 bytes/slice
+	static const int TOTAL = SLICE * 3;       // 12288 bytes (escapes nano zone)
+
 	const std::string base = TmpDir() + "rise_voltest_slice_";
 	const std::string s0 = base + "0.raw";
 	const std::string s1 = base + "1.raw";
 	const std::string s2 = base + "2.raw";
-	std::remove( s2.c_str() );          // ensure slice 2 is absent
-	WriteBytes( s0, 200, 16 );          // full slice
-	WriteBytes( s1, 100, 8 );           // truncated: 8 of 16 bytes
+	std::remove( s2.c_str() );                // ensure slice 2 is absent
+	WriteBytes( s0, 200, SLICE );             // full slice
+	WriteBytes( s1, 100, SLICE / 2 );         // truncated: first half of the slice
 
-	// Dirty the heap so the volume's internal buffer, if it were left
-	// uninitialised (the pre-fix bug), would read back 0xFF — making the
-	// "unread == 0" assertions below a reliable regression discriminator.
-	// 3 slices * 4*4 voxels = 48 bytes.
-	DirtyHeap( 3 * 4 * 4 );
+	// Poison the heap (same size class) so an uninitialised buffer would
+	// read back 0xFF, making the "unread == 0" assertions a reliable
+	// regression discriminator rather than a green-on-both no-test.
+	DirtyHeap( TOTAL );
 
 	const std::string pattern = base + "%d.raw";
-	Volume<unsigned char>* v = new Volume<unsigned char>( pattern.c_str(), 4, 4, 0, 2 );
+	Volume<unsigned char>* v = new Volume<unsigned char>( pattern.c_str(), W, H, 0, 2 );
 	v->addref();
 
 	// slice0 (z=-1): fully present -> 200 everywhere.
-	Check( std::fabs( ByteAt( v, -2, -2, -1 ) - 200.0 ) < 1.5, "A: slice0 corner == 200 (present)" );
-	Check( std::fabs( ByteAt( v,  1,  1, -1 ) - 200.0 ) < 1.5, "A: slice0 far corner == 200 (present)" );
+	Check( std::fabs( ByteAt( v, -32, -32, -1 ) - 200.0 ) < 1.5, "A: slice0 corner == 200 (present)" );
+	Check( std::fabs( ByteAt( v,  31,  31, -1 ) - 200.0 ) < 1.5, "A: slice0 far corner == 200 (present)" );
 
-	// slice1 (z=0): first 8 bytes (rows y=-2,-1) == 100; tail (rows y=0,1) zeroed.
-	Check( std::fabs( ByteAt( v, -2, -2, 0 ) - 100.0 ) < 1.5, "A: slice1 read region == 100" );
-	Check( std::fabs( ByteAt( v, -2,  0, 0 ) - 0.0   ) < 1.5, "A: slice1 truncated tail == 0 (not garbage)" );
-	Check( std::fabs( ByteAt( v,  1,  1, 0 ) - 0.0   ) < 1.5, "A: slice1 far truncated tail == 0" );
+	// slice1 (z=0): first SLICE/2 bytes = rows y in [-32,-1] (== 100); the
+	// truncated tail rows y in [0,31] must be zeroed (index >= SLICE/2).
+	Check( std::fabs( ByteAt( v, -32, -32, 0 ) - 100.0 ) < 1.5, "A: slice1 read region == 100" );
+	Check( std::fabs( ByteAt( v,   0,  -1, 0 ) - 100.0 ) < 1.5, "A: slice1 last read row == 100" );
+	Check( std::fabs( ByteAt( v,   0,   0, 0 ) - 0.0   ) < 1.5, "A: slice1 truncated tail == 0 (not garbage)" );
+	Check( std::fabs( ByteAt( v,  31,  31, 0 ) - 0.0   ) < 1.5, "A: slice1 far truncated tail == 0" );
 
 	// slice2 (z=+1): file missing -> entirely zero.
-	Check( std::fabs( ByteAt( v, -2, -2, 1 ) - 0.0 ) < 1.5, "A: missing slice2 corner == 0 (not garbage)" );
-	Check( std::fabs( ByteAt( v,  1,  1, 1 ) - 0.0 ) < 1.5, "A: missing slice2 far corner == 0" );
+	Check( std::fabs( ByteAt( v, -32, -32, 1 ) - 0.0 ) < 1.5, "A: missing slice2 corner == 0 (not garbage)" );
+	Check( std::fabs( ByteAt( v,  31,  31, 1 ) - 0.0 ) < 1.5, "A: missing slice2 far corner == 0" );
 
 	v->release();
 	std::remove( s0.c_str() );
