@@ -79,8 +79,9 @@ static void WatchdogFired( int )
 {
 	const char* msg = "FunctionFileParseTest: WATCHDOG FIRED — a file loader HUNG "
 		"(the `while(!feof)`+fscanf regression is back).\n";
-	// write() is async-signal-safe; std::cout is not.
-	ssize_t n = write( 2, msg, (unsigned)std::char_traits<char>::length( msg ) );
+	// write() is async-signal-safe; std::cout is not.  length() returns
+	// size_t, matching write()'s count parameter (no narrowing cast).
+	ssize_t n = write( 2, msg, std::char_traits<char>::length( msg ) );
 	(void)n;
 	_exit( 2 );
 }
