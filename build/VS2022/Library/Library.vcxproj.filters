@@ -546,6 +546,9 @@
     <ClCompile Include="..\..\..\src\Library\Agent\AgentSession.cpp">
       <Filter>Agent</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\InMemoryRasterizerOutput.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Agent\SchemaGen.cpp">
       <Filter>Agent</Filter>
     </ClCompile>
@@ -1717,6 +1720,9 @@
       <Filter>Agent</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Agent\AgentSession.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\InMemoryRasterizerOutput.h">
       <Filter>Agent</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Agent\SchemaGen.h">

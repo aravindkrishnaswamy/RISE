@@ -40,10 +40,12 @@
 
 #include "AgentSession.h"
 #include "SchemaGen.h"
+#include "InMemoryRasterizerOutput.h"
 
 #include "../Cst/Cst.h"
 #include "../Interfaces/IJobPriv.h"
 #include "../Interfaces/IJob.h"
+#include "../Interfaces/IRasterizer.h"
 #include "../RISE_API.h"
 #include "../SceneEditor/ChunkDescriptorRegistry.h"
 #include "../Parsers/ChunkDescriptor.h"
@@ -463,6 +465,137 @@ namespace RISE
 			}
 
 			return out;
+		}
+
+		AgentPatchResult AgentSession::ProposePatch( const AgentSetPatch& patch )
+		{
+			AgentPatchResult r;
+
+			// Guard: a Job not loaded via the CST path retains no Document, so
+			// there is nothing to edit -- reject clearly rather than silently.
+			if( !mJob || !mJob->HasRetainedCstDocument() ) {
+				r.applied = false;
+				r.rawCode = 0;
+				r.message = "no retained CST Document -- ProposePatch needs a CST-loaded head";
+				return r;
+			}
+			if( patch.target.empty() || patch.param.empty() || patch.value.empty() ) {
+				r.applied = false;
+				r.rawCode = 0;
+				r.message = "target, param, and value must all be non-empty";
+				return r;
+			}
+
+			// Route through the SAME call the GUI property panel makes.  It
+			// mutates the retained Document (DocSetOrAddParamValue) and
+			// re-derives the LIVE Job itself -- incremental fast path, or the
+			// D2 full re-derive fallback -- so the head's derived Scene is
+			// consistent with the mutated Document afterward.  We add NO extra
+			// re-derive: ApplyCstParamEdit owns that (see Job.cpp
+			// DeriveEditedCstDocument_).  `occ = 0` = the first (typically
+			// only) occurrence of the param on that entity.
+			const int code = mJob->ApplyCstParamEdit(
+				patch.target.c_str(),
+				patch.kind.empty() ? nullptr : patch.kind.c_str(),
+				patch.param.c_str(),
+				/*occ=*/0,
+				patch.value.c_str() );
+
+			r.rawCode = code;
+			switch( code ) {
+				case 1:
+					r.applied = true;
+					r.message = "applied incrementally (managers untouched)";
+					break;
+				case 2:
+					r.applied = true;
+					r.message = "applied via a full re-derive (Scene + managers were replaced)";
+					break;
+				case 3:
+					// 2/3 are "rebind" codes: the Scene was replaced.  Code 3
+					// means the re-derive ALSO emitted diagnostics -- but the
+					// Document WAS mutated and the live Job re-derived, so per
+					// the slice-0b contract we surface it as applied=true with
+					// a note rather than a hard failure.
+					r.applied = true;
+					r.message = "applied via a full re-derive, but the re-derive emitted diagnostics (see log)";
+					break;
+				case 0:
+				default:
+					r.applied = false;
+					r.message = "edit rejected (entity/param not found or the edit would not derive) -- head unchanged";
+					break;
+			}
+			return r;
+		}
+
+		AgentRenderResult AgentSession::Render( int samplesOverride )
+		{
+			AgentRenderResult res;
+
+			if( !mJob ) {
+				res.ok = false;
+				res.message = "no head loaded";
+				return res;
+			}
+
+			// Optional sample-count override, routed through the SAME CST edit
+			// pathway (ProposePatch -> ApplyCstParamEdit) so it re-derives the
+			// live rasterizer.  Best-effort: an unnamed / non-addressable
+			// active rasterizer simply keeps the authored sample count.
+			if( samplesOverride > 0 ) {
+				const std::string rasterName = mJob->GetActiveRasterizerName();
+				if( !rasterName.empty() ) {
+					AgentSetPatch sp;
+					sp.target = rasterName;
+					sp.param  = "samples";
+					sp.value  = std::to_string( samplesOverride );
+					ProposePatch( sp );   // best-effort; ignore the result
+				}
+			}
+
+			// Swap in the in-memory sink (remove any authored file outputs so
+			// a headless render does not touch the filesystem), render, read
+			// the PNG bytes back, then release the sink.
+			mJob->RemoveRasterizerOutputs();
+
+			// `new` yields refcount 1 (our owning ref); AddRasterizerOutput
+			// addrefs it (the rasterizer's `outs` keeps that ref until the
+			// next RemoveRasterizerOutputs / rasterizer teardown).  We drop
+			// OUR ref via safe_release(sink) below -- no extra addref here.
+			InMemoryRasterizerOutput* sink = new InMemoryRasterizerOutput();
+			IRasterizer* rast = mJob->GetRasterizer();
+			if( !rast ) {
+				safe_release( sink );
+				res.ok = false;
+				res.message = "no active rasterizer";
+				return res;
+			}
+			rast->AddRasterizerOutput( sink );
+
+			const bool rendered = mJob->Rasterize();
+			if( !rendered || !sink->HasImage() ) {
+				safe_release( sink );
+				res.ok = false;
+				res.message = rendered ? "render produced no image" : "render failed";
+				return res;
+			}
+
+			res.width  = sink->Width();
+			res.height = sink->Height();
+			res.png    = sink->ToPng();
+			res.ok     = !res.png.empty();
+			res.message = res.ok ? "ok" : "PNG encode produced no bytes";
+
+			mLastPng = res.png;   // cache for ReadImage()
+
+			safe_release( sink );
+			return res;
+		}
+
+		std::vector<unsigned char> AgentSession::ReadImage() const
+		{
+			return mLastPng;
 		}
 	}
 }

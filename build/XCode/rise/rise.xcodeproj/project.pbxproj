@@ -187,6 +187,10 @@
 		A6E7B014000000000000C0DE /* AgentSession.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E012000000000000C0DE /* AgentSession.h */; };
 		A6E7B015000000000000C0DE /* SchemaGen.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E013000000000000C0DE /* SchemaGen.h */; };
 		A6E7B016000000000000C0DE /* SchemaGen.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E013000000000000C0DE /* SchemaGen.h */; };
+		A6E7B021000000000000C0DE /* InMemoryRasterizerOutput.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */; };
+		A6E7B022000000000000C0DE /* InMemoryRasterizerOutput.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */; };
+		A6E7B023000000000000C0DE /* InMemoryRasterizerOutput.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E022000000000000C0DE /* InMemoryRasterizerOutput.h */; };
+		A6E7B024000000000000C0DE /* InMemoryRasterizerOutput.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E022000000000000C0DE /* InMemoryRasterizerOutput.h */; };
 		F24B722E2F52A632008304C4 /* SphereGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0839069C428F0069C9E5 /* SphereGeometry.cpp */; };
 		F24B722F2F52A632008304C4 /* SphereGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F083A069C428F0069C9E5 /* SphereGeometry.h */; };
 		F24B72302F52A632008304C4 /* SphericalUVGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F083B069C428F0069C9E5 /* SphericalUVGenerator.cpp */; };
@@ -2055,6 +2059,8 @@
 		A6E7E011000000000000C0DE /* AgentDiagnostic.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentDiagnostic.h; sourceTree = "<group>"; };
 		A6E7E012000000000000C0DE /* AgentSession.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentSession.h; sourceTree = "<group>"; };
 		A6E7E013000000000000C0DE /* SchemaGen.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SchemaGen.h; sourceTree = "<group>"; };
+		A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = InMemoryRasterizerOutput.cpp; sourceTree = "<group>"; };
+		A6E7E022000000000000C0DE /* InMemoryRasterizerOutput.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = InMemoryRasterizerOutput.h; sourceTree = "<group>"; };
 		F27F0839069C428F0069C9E5 /* SphereGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SphereGeometry.cpp; sourceTree = "<group>"; };
 		F27F083A069C428F0069C9E5 /* SphereGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SphereGeometry.h; sourceTree = "<group>"; };
 		F27F083B069C428F0069C9E5 /* SphericalUVGenerator.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SphericalUVGenerator.cpp; sourceTree = "<group>"; };
@@ -3070,6 +3076,8 @@
 				A6E7E001000000000000C0DE /* AgentSession.cpp */,
 				A6E7E012000000000000C0DE /* AgentSession.h */,
 				A6E7E011000000000000C0DE /* AgentDiagnostic.h */,
+				A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */,
+				A6E7E022000000000000C0DE /* InMemoryRasterizerOutput.h */,
 				A6E7E002000000000000C0DE /* SchemaGen.cpp */,
 				A6E7E013000000000000C0DE /* SchemaGen.h */,
 			);
@@ -4238,6 +4246,7 @@
 				5C57B004000000000000C0DE /* Cst.h in Headers */,
 				A6E7B011000000000000C0DE /* AgentDiagnostic.h in Headers */,
 				A6E7B013000000000000C0DE /* AgentSession.h in Headers */,
+				A6E7B023000000000000C0DE /* InMemoryRasterizerOutput.h in Headers */,
 				A6E7B015000000000000C0DE /* SchemaGen.h in Headers */,
 				F27F0AA7069C42910069C9E5 /* SphereGeometry.h in Headers */,
 				F27F0AA9069C42910069C9E5 /* SphericalUVGenerator.h in Headers */,
@@ -4947,6 +4956,7 @@
 				5DF0B003000000000000C0DE /* SDFGeometry.cpp in Sources */,
 				5C57B003000000000000C0DE /* Cst.cpp in Sources */,
 				A6E7B001000000000000C0DE /* AgentSession.cpp in Sources */,
+				A6E7B021000000000000C0DE /* InMemoryRasterizerOutput.cpp in Sources */,
 				A6E7B003000000000000C0DE /* SchemaGen.cpp in Sources */,
 				F27F0AA6069C42910069C9E5 /* SphereGeometry.cpp in Sources */,
 				F27F0AA8069C42910069C9E5 /* SphericalUVGenerator.cpp in Sources */,
@@ -5346,9 +5356,11 @@
 				5C57B001000000000000C0DE /* Cst.cpp in Sources */,
 				5C57B002000000000000C0DE /* Cst.h in Sources */,
 				A6E7B002000000000000C0DE /* AgentSession.cpp in Sources */,
+				A6E7B022000000000000C0DE /* InMemoryRasterizerOutput.cpp in Sources */,
 				A6E7B004000000000000C0DE /* SchemaGen.cpp in Sources */,
 				A6E7B012000000000000C0DE /* AgentDiagnostic.h in Sources */,
 				A6E7B014000000000000C0DE /* AgentSession.h in Sources */,
+				A6E7B024000000000000C0DE /* InMemoryRasterizerOutput.h in Sources */,
 				A6E7B016000000000000C0DE /* SchemaGen.h in Sources */,
 				F24B722E2F52A632008304C4 /* SphereGeometry.cpp in Sources */,
 				F24B722F2F52A632008304C4 /* SphereGeometry.h in Sources */,

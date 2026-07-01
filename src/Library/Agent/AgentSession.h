@@ -42,6 +42,45 @@ namespace RISE
 
 	namespace Agent
 	{
+		//! A STRUCTURED set-param patch (slice 0b: set only -- no text-patch,
+		//! no add/remove chunk; those are later slices).  Locates a named
+		//! entity in the retained CST Document and sets one of its params to a
+		//! new value string, routed through Job::ApplyCstParamEdit -- the SAME
+		//! pathway the GUI property panel uses (L2: the agent is just another
+		//! client of the edit surface).
+		struct AgentSetPatch
+		{
+			std::string target;   //!< the entity NAME to edit (a chunk `name`; unnamed cameras resolve by kind)
+			std::string kind;     //!< the entity KIND keyword (e.g. "material", "sphere_geometry", "camera") -- disambiguates a cross-category name clash; "" = any
+			std::string param;    //!< the parameter role to set (e.g. "radius", "reflectance", "location")
+			std::string value;    //!< the new value string (parsed by the derive layer per the param's declared kind)
+		};
+
+		//! The structured result of ProposePatch.  `applied` folds
+		//! ApplyCstParamEdit's 0/1/2/3 return: 1/2/3 -> applied=true (the
+		//! Document was mutated + the live Job re-derived), 0 -> applied=false
+		//! (edit rejected; the head is byte-identical).  `rawCode` preserves
+		//! the underlying contract value; `message` is a human explanation
+		//! (rebind codes 2/3 note the full re-derive).
+		struct AgentPatchResult
+		{
+			bool        applied = false;
+			int         rawCode = 0;      //!< 0 reject / 1 incremental / 2 D2 full re-derive / 3 replaced-but-diagnosed
+			std::string message;
+		};
+
+		//! The structured result of Render: the rendered head as PNG bytes
+		//! plus the film dims.  `ok` is false (and `png` empty) when no head
+		//! is loaded or the render failed.
+		struct AgentRenderResult
+		{
+			bool                       ok = false;
+			unsigned int               width = 0;
+			unsigned int               height = 0;
+			std::vector<unsigned char> png;   //!< 8-bit sRGB PNG bytes of the final image
+			std::string                message;
+		};
+
 		//! A headless, single-threaded read/validate session over a Job.
 		//! NOT thread-safe (slice 0a is deliberately single-threaded -- no
 		//! mutex).  Owns the Job iff it created it (LoadFromFile); a wrapped
@@ -88,6 +127,30 @@ namespace RISE
 			//! phase this slice covers).
 			std::vector<AgentDiagnostic> Validate( const std::string& candidateText ) const;
 
+			//! propose_patch (slice 0b: STRUCTURED set only).  Apply one
+			//! param-value edit to the retained CST Document via
+			//! Job::ApplyCstParamEdit -- the SAME call the GUI property panel
+			//! makes -- then let that call re-derive the live Job (incremental
+			//! or D2 full re-derive) so the head's derived Scene stays
+			//! consistent with the mutated Document, EXACTLY as the GUI does.
+			//! No retained Document -> applied=false with a clear message.
+			//! Single-threaded headless: no revision / DocumentId precondition
+			//! (that gating is slice 1).
+			AgentPatchResult ProposePatch( const AgentSetPatch& patch );
+
+			//! render + read_image (slice 0b): render the current head into an
+			//! in-memory sRGB PNG and return the bytes + film dims.  Headless
+			//! (no window).  `samplesOverride > 0` best-effort edits the active
+			//! rasterizer's `samples` param through the SAME CST edit pathway
+			//! before rendering (falls back to the authored sample count when
+			//! the active rasterizer is not name-addressable).  The bytes are
+			//! also cached for ReadImage().
+			AgentRenderResult Render( int samplesOverride = -1 );
+
+			//! The PNG bytes of the LAST successful Render (empty before the
+			//! first render).  A convenience read of the cached result.
+			std::vector<unsigned char> ReadImage() const;
+
 		private:
 			AgentSession( IJobPriv* job, bool owns );
 			AgentSession( const AgentSession& );             // deleted
@@ -95,6 +158,8 @@ namespace RISE
 
 			IJobPriv* mJob;    //!< the wrapped Job (owned iff mOwnsJob)
 			bool      mOwnsJob;
+
+			std::vector<unsigned char> mLastPng;   //!< cached PNG bytes of the last Render (for ReadImage)
 		};
 	}
 }

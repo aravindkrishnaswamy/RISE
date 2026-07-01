@@ -228,6 +228,7 @@ set(RISE_LIB_SOURCES
 
     # SRCLIBCAMERA
     "${RISE_LIB}/Agent/AgentSession.cpp"
+    "${RISE_LIB}/Agent/InMemoryRasterizerOutput.cpp"
     "${RISE_LIB}/Agent/SchemaGen.cpp"
     "${RISE_LIB}/Cst/Cst.cpp"
     "${RISE_LIB}/Cameras/CameraCommon.cpp"
