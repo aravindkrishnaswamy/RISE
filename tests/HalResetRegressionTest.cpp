@@ -23,6 +23,19 @@
 //  EQUALS the first's (both fresh).  Pre-fix it FAILS (0.333 != 0.0);
 //  post-fix both are 0.0.
 //
+//  NESTED-INCLUDE CONTINUITY (Slice 6b): the reset above is gated on
+//  `depthGuard.isTopLevel` (AsciiSceneParser.cpp:987-989).  A nested
+//  `> load child.RISEscene` re-enters ParseAndLoadScene with
+//  isTopLevel == false, so the child does NOT reset -- its hal()
+//  CONTINUES the parent's sequence.  This test loads a parent whose
+//  camera location.x is hal(1) (the FIRST draw => 0.0), then `> load`s a
+//  child whose camera location.x is ALSO hal(1) (the SECOND draw =>
+//  0.333...), and asserts the child CONTINUES (0.333, NOT a fresh 0.0).
+//  This guards against a future change dropping the isTopLevel gate
+//  (unconditional reset): that would still pass the standalone case
+//  above but would reset the child to 0.0 here, silently breaking
+//  nested-include QMC continuity.
+//
 //////////////////////////////////////////////////////////////////////
 
 #include <cassert>
@@ -86,6 +99,85 @@ static bool WriteScene( const std::string& path )
 	return out.good();
 }
 
+// Nested-include parent scene.  Its camera ("parentcam") location.x is
+// hal(1) -- the FIRST draw of the freshly-reset (top-level) sequence,
+// == 0.0.  It then `> load`s a child scene mid-parse via the streaming
+// path; the childpath is spliced in by WriteNestedParentScene.  The
+// child is a NESTED parse (isTopLevel == false) so it does NOT reset
+// hal() -- the child's hal(1) is the SECOND draw, == 0.333...  Both
+// cameras are explicitly named so the camera manager retains BOTH after
+// the load (the child does not clobber the parent).
+static const char* kNestedParentShellPrefix =
+	"RISE ASCII SCENE 6\n"
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultDirectLighting\n"
+	"}\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tname parentcam\n"
+	"\tlocation $(hal(1)) 0 20\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 30\n"
+	"}\n"
+	"> load ";  // childpath appended, then newline
+
+static const char* kNestedChildShell =
+	"RISE ASCII SCENE 6\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tname childcam\n"
+	"\tlocation $(hal(1)) 0 20\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 30\n"
+	"}\n"
+	"\n";
+
+static bool WriteNestedParentScene( const std::string& parentPath, const std::string& childPath )
+{
+	std::ofstream out( parentPath.c_str() );
+	if( !out.is_open() ) return false;
+	out << kNestedParentShellPrefix << childPath << "\n";
+	return out.good();
+}
+
+static bool WriteNestedChildScene( const std::string& path )
+{
+	std::ofstream out( path.c_str() );
+	if( !out.is_open() ) return false;
+	out << kNestedChildShell;
+	return out.good();
+}
+
+// Legacy-load the parent scene (which `> load`s the child mid-parse) and
+// read back BOTH cameras' location.x by name from the camera manager.
+// On success sets outParentX / outChildX and returns true; on any load /
+// camera-lookup failure leaves the two at their poison and returns false.
+static bool LoadAndReadNestedHal( const std::string& parentPath,
+                                  Scalar& outParentX, Scalar& outChildX )
+{
+	outParentX = kPoison;
+	outChildX  = kPoison;
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiScene( parentPath.c_str() ) ) {
+		pJob->release();
+		return false;
+	}
+	const ICameraManager* cams = pJob->GetScene()->GetCameras();
+	const ICamera* parentCam = cams ? cams->GetItem( "parentcam" ) : nullptr;
+	const ICamera* childCam  = cams ? cams->GetItem( "childcam" )  : nullptr;
+	const bool ok = ( parentCam != nullptr && childCam != nullptr );
+	if( ok ) {
+		outParentX = parentCam->GetLocation().x;
+		outChildX  = childCam->GetLocation().x;
+	}
+	pJob->release();
+	return ok;
+}
+
 // Legacy-load the scene; on success set `outX` to the active camera's
 // location.x (the resolved hal(1) value) and return true.  On any load /
 // camera failure leaves `outX` at its poison and returns false.
@@ -137,6 +229,43 @@ int main( int /*argc*/, char* /*argv*/[] )
 	       "load#2 hal(1) EQUALS load#1 (no cross-load QMC leak)" );
 
 	std::remove( path.c_str() );
+
+	// ---------------------------------------------------------------
+	// NESTED-INCLUDE CONTINUITY: a parent that `> load`s a child, both
+	// using hal(1).  The reset fires for the top-level parent parse
+	// (parent hal(1) == 0.0) but is SKIPPED for the nested child parse
+	// (isTopLevel == false), so the child's hal(1) CONTINUES the
+	// sequence (== 0.333..., the second draw), NOT a fresh 0.0.
+	// ---------------------------------------------------------------
+	const std::string childPath  = "/tmp/rise_hal_reset_nested_child.RISEscene";
+	const std::string parentPath = "/tmp/rise_hal_reset_nested_parent.RISEscene";
+	Check( WriteNestedChildScene( childPath ),  "wrote nested child scene" );
+	Check( WriteNestedParentScene( parentPath, childPath ), "wrote nested parent scene" );
+
+	Scalar parentX = kPoison;
+	Scalar childX  = kPoison;
+	const bool okN = LoadAndReadNestedHal( parentPath, parentX, childX );
+
+	std::cout << "  nested parent hal(1) resolved location.x = " << parentX << std::endl;
+	std::cout << "  nested child  hal(1) resolved location.x = " << childX  << std::endl;
+
+	Check( okN, "nested load succeeded + both cameras present" );
+
+	// Parent is the top-level parse => fresh sequence => first draw == 0.0.
+	Check( std::fabs( parentX ) < 1e-9,
+	       "nested parent hal(1) == 0.0 (fresh top-level sequence)" );
+
+	// THE NESTED-CONTINUITY ASSERTION: the child is a NESTED parse, so
+	// the isTopLevel-gated reset is SKIPPED and hal() continues -- the
+	// child's hal(1) is the SECOND draw, halton(1,1) == 1/3 == 0.333...,
+	// NOT a fresh 0.0.  If a future change drops the isTopLevel gate
+	// (unconditional reset), the child would reset to 0.0 and this
+	// FAILS while the standalone case above still passes.
+	Check( std::fabs( childX - Scalar( 1.0 / 3.0 ) ) < 1e-5,
+	       "nested child hal(1) CONTINUES parent (== 0.333, not reset to 0.0)" );
+
+	std::remove( childPath.c_str() );
+	std::remove( parentPath.c_str() );
 
 	std::cout << "Passed: " << passCount << "  Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
