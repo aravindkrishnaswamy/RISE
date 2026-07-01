@@ -417,9 +417,7 @@ SRCLIBSCENEEDITOR =\
 	$(PATHLIBRARY)SceneEditor/MaterialIntrospection.cpp				\
 	$(PATHLIBRARY)SceneEditor/MediaIntrospection.cpp				\
 	$(PATHLIBRARY)SceneEditor/ChunkDescriptorRegistry.cpp			\
-	$(PATHLIBRARY)SceneEditor/SourceSpanIndex.cpp					\
 	$(PATHLIBRARY)SceneEditor/TransformSnapshot.cpp					\
-	$(PATHLIBRARY)SceneEditor/OverrideSpanIndex.cpp					\
 	$(PATHLIBRARY)SceneEditor/DirtyTracker.cpp						\
 	$(PATHLIBRARY)SceneEditor/SaveEngine.cpp
 

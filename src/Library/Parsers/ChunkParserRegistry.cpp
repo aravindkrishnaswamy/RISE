@@ -54,14 +54,9 @@
 #include "../Interfaces/IModifierManager.h"	// bumpmap_modifier normalize_gradient path (via IJobPriv::GetModifiers)
 #include "../Painters/RGBScalarPainter.h"		// for ScalarTriple::IsUniform et al
 #include "../Painters/TexturePainter.h"		// for resolving a named image painter -> raster accessor (scalar_painter texture form)
-// Phase 6.1: SourceSpanIndex + TransformSnapshot live behind IJobPriv
-// (forward-declared in IJobPriv.h), full defs needed for population calls.
 #include "../Interfaces/IJobPriv.h"
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IObjectPriv.h"
-#include "../SceneEditor/SourceSpanIndex.h"
-#include "../SceneEditor/TransformSnapshot.h"
-#include "../SceneEditor/OverrideSpanIndex.h"
 // Phase B: descriptor-driven introspection used by
 // PopulateLoadedPropertySnapshot to capture loaded parameter values.
 #include "../SceneEditor/CameraIntrospection.h"

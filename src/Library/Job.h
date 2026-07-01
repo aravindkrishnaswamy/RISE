@@ -37,8 +37,7 @@
 #include "Interfaces/IFunction1DManager.h"
 #include "Interfaces/IFunction2DManager.h"
 #include "Interfaces/IMedium.h"
-#include "SceneEditor/OverrideSpanIndex.h"
-#include "SceneEditor/SourceSpanIndex.h"
+#include "SceneEditor/FileIdentity.h"
 #include "SceneEditor/TransformSnapshot.h"
 #include "Utilities/Reference.h"
 #include "Utilities/RString.h"
@@ -108,20 +107,15 @@ namespace RISE
 		// command-line behaviour is byte-identical to legacy.
 		bool										m_suppressFileRasterizerOutputs = false;
 
-		// Phase 6.1 (docs/ROUND_TRIP_SAVE_PLAN.md §6.3 + §7.4).
-		// Per-entity source-file metadata + two transform snapshots
-		// captured at scene-load time, owned by Job for its lifetime.
-		// Populated by AsciiSceneParser; consumed by the save engine
-		// (Phase 6.4).  Held by unique_ptr so they're cheap to swap
-		// out on rescene if/when we add that path; raw pointers
+		// Two transform snapshots captured at scene-load time, owned by
+		// Job for its lifetime.  Held by unique_ptr so raw pointers
 		// returned by the IJobPriv getters remain stable across the
-		// scene's lifetime.
-		std::unique_ptr<SourceSpanIndex>			pSourceSpanIndex;
+		// scene's lifetime.  (The legacy SourceSpanIndex /
+		// OverrideSpanIndex byte-splice metadata was deleted in Model-B
+		// P5 Slice 6d — CST-only loading never populated them.)
 		RISE::FileIdentity						mCstLoadFileIdentity;   // P5 Slice 4: CST-load file identity, preserved across ClearAll for the save external-mod guard
 		std::unique_ptr<TransformSnapshot>			pBaseTransforms;
 		std::unique_ptr<TransformSnapshot>			pLoadedTransforms;
-		// Phase 6.2 (§6.8): per-`override_object` chunk catalog.
-		std::unique_ptr<OverrideSpanIndex>			pOverrideSpans;
 
 		// P5 (save-as-CST, Slice 1): the retained canonical CST when the scene was loaded via
 		// LoadAsciiSceneViaCst (Model-B: Scene = derive(CST)); null when no CST-load has occurred yet.  Slices 3-4
@@ -356,14 +350,10 @@ namespace RISE
 		// InitializeContainers and never reseated).  Inline like the
 		// other manager getters; matches Job's no-`override` convention
 		// (see SetSuppressFileRasterizerOutputs comment).
-		SourceSpanIndex*			GetSourceSpanIndexMutable()			{ return pSourceSpanIndex.get(); }
-		const SourceSpanIndex*		GetSourceSpanIndex() const			{ return pSourceSpanIndex.get(); }
 		TransformSnapshot*			GetBaseTransformSnapshotMutable()	{ return pBaseTransforms.get(); }
 		const TransformSnapshot*	GetBaseTransformSnapshot() const	{ return pBaseTransforms.get(); }
 		TransformSnapshot*			GetLoadedTransformSnapshotMutable()	{ return pLoadedTransforms.get(); }
 		const TransformSnapshot*	GetLoadedTransformSnapshot() const	{ return pLoadedTransforms.get(); }
-		OverrideSpanIndex*			GetOverrideSpanIndexMutable()		{ return pOverrideSpans.get(); }
-		const OverrideSpanIndex*	GetOverrideSpanIndex() const		{ return pOverrideSpans.get(); }
 		// Model-B P5 Slice 6a: the CST-load file identity, read by the SaveEngine CST-save external-mod
 		// guard directly off the Job member (decoupled from pSourceSpanIndex).  Inline, no-`override`
 		// convention like the other getters.

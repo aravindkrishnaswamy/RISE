@@ -396,9 +396,7 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\MaterialIntrospection.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\MediaIntrospection.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.cpp" />
-    <ClCompile Include="..\..\..\src\Library\SceneEditor\SourceSpanIndex.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\TransformSnapshot.cpp" />
-    <ClCompile Include="..\..\..\src\Library\SceneEditor\OverrideSpanIndex.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\DirtyTracker.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\SaveEngine.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.cpp" />
@@ -884,9 +882,8 @@
     <ClInclude Include="..\..\..\src\Library\SceneEditor\MaterialIntrospection.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\MediaIntrospection.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.h" />
-    <ClInclude Include="..\..\..\src\Library\SceneEditor\SourceSpanIndex.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\FileIdentity.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\TransformSnapshot.h" />
-    <ClInclude Include="..\..\..\src\Library\SceneEditor\OverrideSpanIndex.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\DirtyTracker.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\SaveEngine.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.h" />

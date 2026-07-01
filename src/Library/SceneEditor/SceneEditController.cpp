@@ -2814,10 +2814,6 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 	std::unordered_set<std::string> sfaCopy = mEditor.ScaleFromAnchorSet();
 	SaveEngine engine(
 		mJob,
-		*mJob.GetSourceSpanIndex(),
-		*mJob.GetOverrideSpanIndex(),
-		*mJob.GetBaseTransformSnapshot(),
-		*mJob.GetLoadedTransformSnapshot(),
 		mEditor.Dirty(),
 		sfaCopy );
 	SaveResult result = engine.Save( filePath );

@@ -774,13 +774,7 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\SceneEditor\SourceSpanIndex.cpp">
-      <Filter>Scene Editor (3D Viewport)</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\SceneEditor\TransformSnapshot.cpp">
-      <Filter>Scene Editor (3D Viewport)</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\SceneEditor\OverrideSpanIndex.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\SceneEditor\DirtyTracker.cpp">
@@ -1998,13 +1992,10 @@
     <ClInclude Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.h">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\SceneEditor\SourceSpanIndex.h">
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\FileIdentity.h">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditor\TransformSnapshot.h">
-      <Filter>Scene Editor (3D Viewport)</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\SceneEditor\OverrideSpanIndex.h">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditor\DirtyTracker.h">

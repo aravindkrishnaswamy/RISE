@@ -798,6 +798,29 @@ int main()
 			ja->release();
 			std::remove( ta ); std::remove( tb );
 		}
+
+		// SV6 (6c-3b review P3 restore): a save to a bad/un-writable target reports Failed, populates
+		// LastSaveError, and RETAINS the dirty state (the edit is not lost).  Since the CST cutover this is the
+		// AtomicWrite-open-failure path (the target's directory does not exist -> ofstream open fails).  Red-provable:
+		// have SaveEngine report Saved/clear dirty on a failed write and this check flips.
+		{
+			const char* tf = "cst_s4_failpath.RISEscene";
+			{ std::ofstream o( tf ); o << SCENE; }
+			Job* jf = new Job();
+			Check( jf->LoadAsciiSceneViaCst( tf ), "SV6: loads via CST" );
+			SceneEditController cf( *jf, 0 );
+			cf.SetSelection( Cat::Light, String( "l" ) );
+			Check( cf.SetPropertyForCategory( Cat::Light, String( "power" ), String( "8" ) ), "SV6: edit applies" );
+			Check( cf.HasUnsavedChanges(), "SV6: edit marks the scene dirty" );
+			// A target inside a directory that does not exist: AtomicWrite's ofstream open fails -> Failed.
+			const std::string badTarget = "cst_s4_no_such_dir_xyz/out.RISEscene";
+			const SaveResult resf = cf.RequestSave( badTarget );
+			Check( resf.status == SaveResult::Status::Failed, "SV6: save to a bad path reports Failed" );
+			Check( !cf.LastSaveError().empty(), "SV6: LastSaveError is populated on Failed" );
+			Check( cf.HasUnsavedChanges(), "SV6: the dirty state is RETAINED after a Failed save (edit not lost)" );
+			jf->release();
+			std::remove( tf );
+		}
 		std::remove( ts );
 	}
 

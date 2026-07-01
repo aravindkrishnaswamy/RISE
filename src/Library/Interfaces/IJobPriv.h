@@ -32,14 +32,12 @@
 
 namespace RISE
 {
-	// Phase 6.1 + 6.2 forward declarations — these types live in
+	// Forward declarations — these types live in
 	// `src/Library/SceneEditor/` so we keep the include light.  The
 	// getters return raw pointers so this header doesn't have to
 	// pull in unordered_map / Matrix4 / etc.
-	class SourceSpanIndex;
 	class TransformSnapshot;
-	class OverrideSpanIndex;
-	struct FileIdentity;   // Model-B P5 Slice 6a: CST-save external-mod guard reads this via GetCstLoadFileIdentity()
+	struct FileIdentity;   // defined in SceneEditor/FileIdentity.h; CST-save external-mod guard reads it via GetCstLoadFileIdentity()
 
 	//! IJobPriv - Priviledged interface with getters
 	class IJobPriv : public virtual IJob
@@ -68,30 +66,20 @@ namespace RISE
 		virtual IShaderManager*				GetShaders() = 0;
 		virtual IShaderOpManager*			GetShaderOps() = 0;
 
-		// Phase 6.1 (docs/ROUND_TRIP_SAVE_PLAN.md §6.3 + §7.4).
-		// Per-entity source-file metadata + transform snapshots captured
-		// at scene-load time.  Read-only after parse completes; mutable
-		// access is only via AsciiSceneParser during the load pass.
-		// Returns non-null for any Job constructed via the standard
-		// factories (all three are owned by Job and live for its lifetime);
-		// null is reserved for future "lightweight" job types.
-		virtual SourceSpanIndex*			GetSourceSpanIndexMutable() = 0;
-		virtual const SourceSpanIndex*		GetSourceSpanIndex() const = 0;
+		// Two transform snapshots captured at scene-load time.  Read-only
+		// after parse completes; mutable access is only during the load
+		// pass.  Owned by Job and live for its lifetime.  (The legacy
+		// SourceSpanIndex / OverrideSpanIndex byte-splice metadata was
+		// deleted in Model-B P5 Slice 6d — CST-only loading never
+		// populated them.)
 		virtual TransformSnapshot*			GetBaseTransformSnapshotMutable() = 0;
 		virtual const TransformSnapshot*	GetBaseTransformSnapshot() const = 0;
 		virtual TransformSnapshot*			GetLoadedTransformSnapshotMutable() = 0;
 		virtual const TransformSnapshot*	GetLoadedTransformSnapshot() const = 0;
 
-		// Phase 6.2 (docs/ROUND_TRIP_SAVE_PLAN.md §6.8 + pinned 2.16).
-		// Catalog of every `override_object` chunk parsed from the
-		// scene file, with managed/unmanaged classification.
-		virtual OverrideSpanIndex*			GetOverrideSpanIndexMutable() = 0;
-		virtual const OverrideSpanIndex*	GetOverrideSpanIndex() const = 0;
-
 		// Model-B P5 Slice 6a: the CST-load file identity (path + mtime + size) captured by
 		// Job::RefreshCstLoadFileIdentity.  The CST-save external-modification guard reads THIS
-		// instead of the SourceSpanIndex's identity so the guard no longer depends on the legacy
-		// span index (slated for deletion in a later sub-slice).  Job is the sole implementer.
+		// so the guard has no dependency on any legacy load-time span index.  Job is the sole implementer.
 		virtual const FileIdentity&			GetCstLoadFileIdentity() const = 0;
 	};
 

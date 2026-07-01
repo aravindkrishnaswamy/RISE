@@ -1,21 +1,22 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  SaveEngine.h - Phase 6.4 of the round-trip-save pipeline.
+//  SaveEngine.h - the scene-save side of the Model-B CST cutover.
 //
-//  Implements the two-mode save algorithm pinned in
-//  docs/ROUND_TRIP_SAVE_PLAN.md §9:
+//  Since Slice 6c-3a every scene loads CST-only (Job retains a
+//  canonical CST Document), so Save() SERIALIZEs that retained Document
+//  directly (Cst::SerializeCst — byte-exact on an unedited round-trip,
+//  minimal-diff on edits) and writes it atomically.
 //
-//    Mode A — in-place line rewrite for direct, Euler-authored,
-//      single-visit, non-shadowed, decomposable parameter lines.
-//      Splices the new value into the source file's bytes.
+//  An external-modification guard refuses an IN-PLACE save when the
+//  loaded file changed on disk after load (mtime/size mismatch) —
+//  overwriting it with the in-memory scene would silently clobber those
+//  external edits (docs/ROUND_TRIP_SAVE_PLAN.md §11.6).  The guard reads
+//  the CST-load FileIdentity via IJobPriv::GetCstLoadFileIdentity().
 //
-//    Mode B — managed override_object block for entities the source
-//      file can't represent in-place (FOR-generated, matrix/quaternion
-//      authored, shadowed by unmanaged overrides, ScaleObjectFromAnchor-
-//      touched, etc.).  The block lives at a sentinel-bracketed
-//      offset; placement is determined by the BARRIER `>` command
-//      classification (§9.6.x) and refuses cross-file / barrier-
-//      conflict / destructive-target cases.
+//  (The legacy two-mode byte-splice save — Mode A in-place line rewrite
+//  + Mode B managed override block, driven by SourceSpanIndex /
+//  OverrideSpanIndex — was deleted in Model-B P5 Slice 6d: it only ran
+//  for a non-CST Job, which no longer exists.)
 //
 //  Inputs are borrowed references; outputs are a SaveResult value.
 //  Caller is responsible for the cancel-and-park dance against the
@@ -33,9 +34,6 @@
 namespace RISE
 {
     class IJobPriv;
-    class SourceSpanIndex;
-    class OverrideSpanIndex;
-    class TransformSnapshot;
     class DirtyTracker;
 
     /// Outcome of a Save() call.  Status discriminates UI messaging.
@@ -73,7 +71,9 @@ namespace RISE
             || s == SaveResult::Status::NoOp;
     }
 
-    /// Two-mode save engine.  See §9 for the full algorithm.
+    /// CST-Document save engine.  Serializes the Job's retained CST
+    /// Document; refuses an in-place save when the loaded file changed
+    /// externally.
     ///
     /// Concurrency: the engine itself takes no locks and does no
     /// thread coordination.  The CALLER is responsible for parking
@@ -88,10 +88,6 @@ namespace RISE
         /// Save() clears it on a successful (Saved or NoOp) outcome.
         SaveEngine(
             IJobPriv&                              job,
-            const SourceSpanIndex&                 spans,
-            const OverrideSpanIndex&               overrideSpans,
-            const TransformSnapshot&               base,
-            const TransformSnapshot&               loaded,
             DirtyTracker&                          dirty,
             std::unordered_set<std::string>&       scaleFromAnchorSet );
 
@@ -99,10 +95,6 @@ namespace RISE
 
     private:
         IJobPriv&                              mJob;
-        const SourceSpanIndex&                 mSpans;
-        const OverrideSpanIndex&               mOverrideSpans;
-        const TransformSnapshot&               mBase;
-        const TransformSnapshot&               mLoaded;
         DirtyTracker&                          mDirty;
         std::unordered_set<std::string>&       mScaleFromAnchorSet;
     };

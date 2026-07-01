@@ -1806,18 +1806,12 @@
 		FECC0001000000000000F004 /* RawTokenCapture.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0001000000000000F002 /* RawTokenCapture.h */; };
 		FECC0001000000000000F005 /* RawTokenCapture.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0001000000000000F001 /* RawTokenCapture.cpp */; };
 		FECC0001000000000000F006 /* RawTokenCapture.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0001000000000000F002 /* RawTokenCapture.h */; };
-		FECC0002000000000000F103 /* SourceSpanIndex.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F101 /* SourceSpanIndex.h */; };
-		FECC0002000000000000F104 /* SourceSpanIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F102 /* SourceSpanIndex.cpp */; };
-		FECC0002000000000000F105 /* SourceSpanIndex.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F101 /* SourceSpanIndex.h */; };
-		FECC0002000000000000F106 /* SourceSpanIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F102 /* SourceSpanIndex.cpp */; };
+		FECC0006000000000000F603 /* FileIdentity.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0006000000000000F601 /* FileIdentity.h */; };
+		FECC0006000000000000F605 /* FileIdentity.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0006000000000000F601 /* FileIdentity.h */; };
 		FECC0002000000000000F203 /* TransformSnapshot.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F201 /* TransformSnapshot.h */; };
 		FECC0002000000000000F204 /* TransformSnapshot.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F202 /* TransformSnapshot.cpp */; };
 		FECC0002000000000000F205 /* TransformSnapshot.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F201 /* TransformSnapshot.h */; };
 		FECC0002000000000000F206 /* TransformSnapshot.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F202 /* TransformSnapshot.cpp */; };
-		FECC0003000000000000F303 /* OverrideSpanIndex.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0003000000000000F301 /* OverrideSpanIndex.h */; };
-		FECC0003000000000000F304 /* OverrideSpanIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0003000000000000F302 /* OverrideSpanIndex.cpp */; };
-		FECC0003000000000000F305 /* OverrideSpanIndex.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0003000000000000F301 /* OverrideSpanIndex.h */; };
-		FECC0003000000000000F306 /* OverrideSpanIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0003000000000000F302 /* OverrideSpanIndex.cpp */; };
 		FECC0004000000000000F403 /* DirtyTracker.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0004000000000000F401 /* DirtyTracker.h */; };
 		FECC0004000000000000F404 /* DirtyTracker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0004000000000000F402 /* DirtyTracker.cpp */; };
 		FECC0004000000000000F405 /* DirtyTracker.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0004000000000000F401 /* DirtyTracker.h */; };
@@ -2809,12 +2803,9 @@
 		FCA01000000000000000A006 /* CameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CameraManager.h; sourceTree = "<group>"; };
 		FECC0001000000000000F001 /* RawTokenCapture.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RawTokenCapture.cpp; sourceTree = "<group>"; };
 		FECC0001000000000000F002 /* RawTokenCapture.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RawTokenCapture.h; sourceTree = "<group>"; };
-		FECC0002000000000000F101 /* SourceSpanIndex.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SourceSpanIndex.h; sourceTree = "<group>"; };
-		FECC0002000000000000F102 /* SourceSpanIndex.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SourceSpanIndex.cpp; sourceTree = "<group>"; };
+		FECC0006000000000000F601 /* FileIdentity.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FileIdentity.h; sourceTree = "<group>"; };
 		FECC0002000000000000F201 /* TransformSnapshot.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TransformSnapshot.h; sourceTree = "<group>"; };
 		FECC0002000000000000F202 /* TransformSnapshot.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TransformSnapshot.cpp; sourceTree = "<group>"; };
-		FECC0003000000000000F301 /* OverrideSpanIndex.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = OverrideSpanIndex.h; sourceTree = "<group>"; };
-		FECC0003000000000000F302 /* OverrideSpanIndex.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = OverrideSpanIndex.cpp; sourceTree = "<group>"; };
 		FECC0004000000000000F401 /* DirtyTracker.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DirtyTracker.h; sourceTree = "<group>"; };
 		FECC0004000000000000F402 /* DirtyTracker.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DirtyTracker.cpp; sourceTree = "<group>"; };
 		FECC0005000000000000F501 /* SaveEngine.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SaveEngine.h; sourceTree = "<group>"; };
@@ -4143,12 +4134,9 @@
 				F2EE001900000000000000A1 /* RasterizerIntrospection.cpp */,
 				F2EE002000000000000000A1 /* ChunkDescriptorRegistry.h */,
 				F2EE002100000000000000A1 /* ChunkDescriptorRegistry.cpp */,
-				FECC0002000000000000F101 /* SourceSpanIndex.h */,
-				FECC0002000000000000F102 /* SourceSpanIndex.cpp */,
+				FECC0006000000000000F601 /* FileIdentity.h */,
 				FECC0002000000000000F201 /* TransformSnapshot.h */,
 				FECC0002000000000000F202 /* TransformSnapshot.cpp */,
-				FECC0003000000000000F301 /* OverrideSpanIndex.h */,
-				FECC0003000000000000F302 /* OverrideSpanIndex.cpp */,
 				FECC0004000000000000F401 /* DirtyTracker.h */,
 				FECC0004000000000000F402 /* DirtyTracker.cpp */,
 				FECC0005000000000000F501 /* SaveEngine.h */,
@@ -4520,9 +4508,8 @@
 				F2EE001600000000000000C1 /* LightIntrospection.h in Headers */,
 				F2EE001800000000000000C1 /* RasterizerIntrospection.h in Headers */,
 				F2EE002000000000000000C1 /* ChunkDescriptorRegistry.h in Headers */,
-				FECC0002000000000000F105 /* SourceSpanIndex.h in Headers */,
+				FECC0006000000000000F603 /* FileIdentity.h in Headers */,
 				FECC0002000000000000F205 /* TransformSnapshot.h in Headers */,
-				FECC0003000000000000F305 /* OverrideSpanIndex.h in Headers */,
 				FECC0004000000000000F405 /* DirtyTracker.h in Headers */,
 				FECC0005000000000000F505 /* SaveEngine.h in Headers */,
 				F2EE002200000000000000C1 /* FilmIntrospection.h in Headers */,
@@ -5068,9 +5055,7 @@
 				F2EE001700000000000000C1 /* LightIntrospection.cpp in Sources */,
 				F2EE001900000000000000C1 /* RasterizerIntrospection.cpp in Sources */,
 				F2EE002100000000000000C1 /* ChunkDescriptorRegistry.cpp in Sources */,
-				FECC0002000000000000F106 /* SourceSpanIndex.cpp in Sources */,
 				FECC0002000000000000F206 /* TransformSnapshot.cpp in Sources */,
-				FECC0003000000000000F306 /* OverrideSpanIndex.cpp in Sources */,
 				FECC0004000000000000F406 /* DirtyTracker.cpp in Sources */,
 				FECC0005000000000000F506 /* SaveEngine.cpp in Sources */,
 				F2EE002300000000000000C1 /* FilmIntrospection.cpp in Sources */,
@@ -5713,12 +5698,9 @@
 				F2EE001900000000000000B1 /* RasterizerIntrospection.cpp in Sources */,
 				F2EE002000000000000000B1 /* ChunkDescriptorRegistry.h in Sources */,
 				F2EE002100000000000000B1 /* ChunkDescriptorRegistry.cpp in Sources */,
-				FECC0002000000000000F103 /* SourceSpanIndex.h in Sources */,
-				FECC0002000000000000F104 /* SourceSpanIndex.cpp in Sources */,
+				FECC0006000000000000F605 /* FileIdentity.h in Sources */,
 				FECC0002000000000000F203 /* TransformSnapshot.h in Sources */,
 				FECC0002000000000000F204 /* TransformSnapshot.cpp in Sources */,
-				FECC0003000000000000F303 /* OverrideSpanIndex.h in Sources */,
-				FECC0003000000000000F304 /* OverrideSpanIndex.cpp in Sources */,
 				FECC0004000000000000F403 /* DirtyTracker.h in Sources */,
 				FECC0004000000000000F404 /* DirtyTracker.cpp in Sources */,
 				FECC0005000000000000F503 /* SaveEngine.h in Sources */,
