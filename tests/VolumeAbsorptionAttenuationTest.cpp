@@ -1529,7 +1529,7 @@ static void TestGlobalMediumSpectralHWSS()
 {
 	std::cout << "[F2] camera INSIDE global medium, NM/spectral gray absorber "
 		<< "(sigma_a = 0.5, d = " << kBackWallDepth
-		<< ", hwss ON) — G1-c HWSS free-flight reweighting (sites 1-4)" << std::endl;
+		<< ", hwss ON) — G1-c HWSS free-flight reweighting (discriminates site S3)" << std::endl;
 	const double sa = 0.5;
 
 	const PixelRGB base = RenderCentralBlock(
