@@ -795,6 +795,23 @@ absorption-dominated) but **load-bearing for opaque/white** enamel — sequenced
 the hero, built properly (real Mie + a real authoring path, not a fitted `g`) per §11.
 
 ### 10.6 G6 — conductor Fresnel must use the IOR stack as the ambient index (P1)
+
+> **DESIGN IMPROVEMENT (impl, 2026-06-30) — carry the ambient IOR in
+> `RayIntersectionGeometric`, NOT a `value()` signature change.** Mapping the blast
+> radius showed the value()-signature route touches ~15 `IBSDF` subclasses + ~12 call
+> sites (a heavy vtable ABI event). Instead, add a `Scalar ambientIOR` field (default
+> **1.0** = air) to `RayIntersectionGeometric` — the hit-context struct that *already*
+> accretes fields this way and already flows to **both** `SPF::Scatter` and
+> `BRDF::value()`. The integrator/caster stamps `ri.ambientIOR = ior_stack.top()` at
+> hit production (where the IOR stack is known); GGXSPF and GGXBRDF both read
+> `ri.ambientIOR` for the conductor Fresnel + Kulla-Conty `F_avg`. Consistency between
+> sampling and eval is automatic (same field). **No vtable change, no touching the 15
+> subclasses / 12 call sites, byte-identical for existing scenes** (default 1.0 → air →
+> `MinValue`/`Ni` unchanged). Dispersion-correct for free: `DielectricSPF` pushes the
+> per-wavelength IOR, so in NM the stamped `ambientIOR = n_enamel(λ)`. The `incident_ior`
+> scene override is unnecessary (the stack supplies it). This supersedes the
+> value()-signature plan below.
+
 RISE's GGX conductor Fresnel hardcodes the incident medium as air: `Ni =
 RISEPel(1,1,1)` ([GGXSPF.cpp:266](src/Library/Materials/GGXSPF.cpp:266)), `1.0` in
 the NM path ([GGXSPF.cpp:509](src/Library/Materials/GGXSPF.cpp:509)), and the same
