@@ -976,6 +976,47 @@ namespace {
 		return medium.EvalTransmittanceNM( ray, dist, tag.nm );
 	}
 
+	/// Analog no-scatter SURVIVAL weight for a subpath that reaches a
+	/// surface (or escapes) WITHOUT a medium scatter event.  Mirrors
+	/// PathTracingIntegrator's PTSurvivalWeight exactly.
+	///
+	/// HomogeneousMedium::SampleDistance is an ANALOG estimator:
+	/// sampling a free-flight distance PAST the surface (i.e. "no
+	/// scatter") is a stochastic SURVIVAL outcome whose probability is
+	/// exp(-sigma_t_max * d) -- that probability already carries the
+	/// Beer-Lambert factor.  Multiplying beta by the full transmittance
+	/// Tr = exp(-sigma_t * d) AGAIN double-counts attenuation (a pure
+	/// absorber would render exp(-2*sigma_a*d), the slab ~2x too thick).
+	/// The correct weight is the per-channel chromatic ratio
+	///   Tr / MinValue(Tr):
+	/// the survival pdf (= the max-sigma_t channel of Tr, i.e.
+	/// exp(-sigma_t_max*d)) cancels, leaving 1 on that channel and >= 1 on
+	/// the others so a COLOURED medium keeps its tint.  For monochrome/NM
+	/// (single wavelength, where Tr is scalar and MinValue is the identity)
+	/// this reduces to exactly 1 -- the survival event carries all the
+	/// attenuation and no throughput factor is applied.  This is the SAME
+	/// analog convention BDPT already uses in ComputeMediumScatterWeight
+	/// (Tr * sigma_s / (max(sigma_t) * MinValue(Tr))), minus the
+	/// sigma_s/sigma_t scatter factor.
+	///
+	/// Guard: the Pel overload divides by MinValue(Tr) only when it is
+	/// > 0 (matching the scatter branch's Tr_scalar > 0 guard); a
+	/// non-positive survival pdf means "no attenuation to apply", so
+	/// return the value-type multiplicative identity.  NM: the scalar
+	/// overload is unconditionally the identity 1.
+	inline RISEPel BDPTSurvivalWeight( const RISEPel& Tr )
+	{
+		const Scalar pdf = ColorMath::MinValue( Tr );
+		if( pdf > 0 ) {
+			return Tr * ( Scalar( 1 ) / pdf );
+		}
+		return RISEPel( 1, 1, 1 );
+	}
+	inline Scalar BDPTSurvivalWeight( const Scalar /*Tr*/ )
+	{
+		return Scalar( 1 );
+	}
+
 	/// Scalar magnitude for the "transmittance effectively zero" early
 	/// out (< 1e-6).  Pel: max channel (ColorMath::MaxValue, the RGB
 	/// original).  NM: the bare scalar (the NM original tested Tr < 1e-6
@@ -1804,10 +1845,17 @@ namespace {
 					}
 					else if( ri.geometric.bHit )
 					{
-						// No scatter event: apply transmittance to throughput.
-						// The ray passes through the medium to the surface.
+						// No-scatter SURVIVAL: the eye subpath reached the
+						// surface WITHOUT a medium scatter event.  Under the
+						// analog estimator that "no scatter" outcome is itself
+						// a stochastic survival whose probability already
+						// carries Beer-Lambert (exp(-sigma_t_max*range));
+						// multiplying beta by the full Tr again would
+						// double-count.  Apply the chromatic survival ratio
+						// Tr/MinValue(Tr) (= 1 for monochrome/NM) so a coloured
+						// medium keeps its tint without re-attenuating.
 						const V Tr = EvalMediumTransmittance<Tag>( *pMed, currentRay, ri.geometric.range, tag );
-						beta = beta * Tr;
+						beta = beta * BDPTSurvivalWeight( Tr );
 					}
 				}
 			}
@@ -1914,24 +1962,29 @@ namespace {
 					const Scalar distSqToExit = tExit * tExit;
 					vEnv.pdfFwd = BDPTUtilities::SolidAngleToArea(
 						pdfFwdPrev, Scalar( 1.0 ), distSqToExit );
-					// Apply the residual medium transmittance along the escape
-					// segment before the synthetic env vertex stores beta —
-					// mirrors the surface-hit branch above (line ~2655) and the
-					// PT escape fix (PBRT-v4 beta *= T_maj before the
-					// infinite-light contribution).  maxDist = RISE_INFINITY
-					// matches PT and the env-NEE convention (see ConnectAndEvaluate
-					// s=1 comment ~line 3520) exactly so a global medium evaporates
-					// identically across integrators: for an UNBOUNDED medium with
-					// tiny σ_t a finite cap like 1e10 leaves exp(-σ_t·1e10) ≈ 1
-					// (env leaks through where it must be fully attenuated), whereas
-					// exp(-σ_t·∞) → 0 for any σ_t > 0.  A bounded (AABB) medium
-					// clips internally to a finite Tr regardless of the cap.  VCM's
-					// s=0 env-escape consumes this same throughput via the shared
-					// generator, so this is the single fix point for PT-reference /
-					// BDPT / VCM s=0 consistency.
+					// Apply the residual medium attenuation along the escape
+					// segment before the synthetic env vertex stores beta.
+					// This is a no-scatter SURVIVAL escape: the eye ray left the
+					// scene through the medium WITHOUT a scatter event, so under
+					// the analog estimator its survival probability already
+					// carries Beer-Lambert.  Apply the chromatic survival ratio
+					// Tr/MinValue(Tr) (= 1 for monochrome/NM) via BDPTSurvivalWeight
+					// rather than the full Tr, mirroring the surface-hit branch
+					// above and the PT escape fix (PTSurvivalWeight).  maxDist =
+					// RISE_INFINITY matches PT and the env-NEE convention (see
+					// ConnectAndEvaluate s=1 comment ~line 3520) exactly so a global
+					// medium evaporates identically across integrators: for an
+					// UNBOUNDED medium with tiny sigma_t a finite cap like 1e10
+					// leaves exp(-sigma_t*1e10) ~ 1 (env leaks through where it must
+					// be fully attenuated), whereas exp(-sigma_t*inf) -> 0 for any
+					// sigma_t > 0.  A bounded (AABB) medium clips internally to a
+					// finite Tr regardless of the cap.  VCM's s=0 env-escape consumes
+					// this same throughput via the shared generator, so this is the
+					// single fix point for PT-reference / BDPT / VCM s=0 consistency.
 					V betaEsc = beta;
 					if( pMed_eye ) {
-						betaEsc = betaEsc * EvalMediumTransmittance<Tag>( *pMed_eye, currentRay, RISE_INFINITY, tag );
+						const V Tr = EvalMediumTransmittance<Tag>( *pMed_eye, currentRay, RISE_INFINITY, tag );
+						betaEsc = betaEsc * BDPTSurvivalWeight( Tr );
 					}
 					StoreThroughput<Tag>( vEnv, betaEsc );
 					if constexpr( Traits::is_nm ) {
@@ -5223,9 +5276,17 @@ unsigned int GenerateLightSubpathImpl(
 				}
 				else if( ri.geometric.bHit )
 				{
+					// No-scatter SURVIVAL: the light subpath reached the surface
+					// WITHOUT a medium scatter event.  Same analog convention as
+					// the eye-subpath surface-hit branch -- the survival
+					// probability exp(-sigma_t_max*range) already carries
+					// Beer-Lambert, so apply the chromatic ratio Tr/MinValue(Tr)
+					// (= 1 for monochrome/NM), NOT the full Tr, or the medium
+					// reads ~2x too thick.  Must match the eye side so BDPT
+					// connections stay unbiased.
 					const V Tr = EvalMediumTransmittance<Tag>(
 						*pMed, currentRay, ri.geometric.range, tag );
-					beta = beta * Tr;
+					beta = beta * BDPTSurvivalWeight( Tr );
 				}
 			}
 		}
