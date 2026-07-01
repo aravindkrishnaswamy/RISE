@@ -3328,6 +3328,18 @@ namespace RISE
 		//! P5 Slice 4: re-baseline the CST-load file identity after a successful save (re-anchor on Save-As).
 		//! Default no-op (legacy jobs use the SaveEngine's own refresh); see Job override.
 		virtual void RefreshCstLoadFileIdentity( const char* path ) {}
+
+		//! Model-B P5: cache the interactive viewport screen-fit params on the Job AND apply the fit immediately
+		//! (delegates to ScaleFilmToFit -- same never-upscale, aspect-preserving, no-op-if-already-fit semantics,
+		//! same zero-argument rejection).  The GUI bridges call THIS instead of ScaleFilmToFit at scene-load (and
+		//! on viewport resize) so the fit params are cached; a subsequent D2 full re-derive (variant switch / CST
+		//! edit) -- which re-derives the LIVE film to the Document's AUTHORED dims -- then RE-APPLIES the cached fit
+		//! at its tail, keeping the preview at a screen-appropriate resolution instead of jumping to full-res.
+		//! Live-only: never touches the retained CST Document, so save reproduces the AUTHORED dims.  The headless
+		//! CLI never calls this, so the cache stays unset and every D2 tail skips the re-fit (CLI = authored full-res).
+		//! Returns ScaleFilmToFit's bool.  Default no-op returning false (legacy / non-Job); see Job override.
+		//! NB: appended at the IJob tail per the append-only ABI convention (preserves every prior vtable slot).
+		virtual bool SetViewportFit( const unsigned int surfaceW, const unsigned int surfaceH, const unsigned int maxLongEdge ) { return false; }
 	};
 
 

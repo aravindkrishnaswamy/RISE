@@ -641,6 +641,35 @@ bool Job::ScaleFilmToFit(
 	return SetFilm( newW, newH, origPAR );
 }
 
+// P5 (Model-B): cache the interactive viewport screen-fit params THEN apply the fit.  The GUI bridges call this
+// (instead of ScaleFilmToFit directly) at scene-load and on viewport resize so the cache always reflects the real
+// current viewport size.  With the cache populated, a D2 full re-derive (RederiveCstWithVariant /
+// DeriveEditedCstDocument_) can re-apply the SAME fit at its tail -- otherwise the re-derive would revert the live
+// film to the Document's AUTHORED (full) dims and the preview would jump from screen-fit to full-res.  The cache is
+// live-only: it NEVER patches the retained CST Document, so a save still reproduces the authored dims.  Headless CLI
+// never calls this -> mHasViewportFit stays false -> the D2 tails skip the re-fit -> CLI renders authored full-res.
+bool Job::SetViewportFit(
+	const unsigned int surfaceW,
+	const unsigned int surfaceH,
+	const unsigned int maxLongEdge
+	)
+{
+	// Reject zero args exactly as ScaleFilmToFit does, and do NOT cache a zero fit (a cached zero would make the
+	// D2 re-fit call ScaleFilmToFit with a zero arg, which it rejects anyway -- but leaving mHasViewportFit false
+	// keeps the "unset -> skip" headless contract crisp).
+	if( surfaceW == 0 || surfaceH == 0 || maxLongEdge == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetViewportFit: zero argument rejected (surface=%ux%u, longEdge=%u).",
+			surfaceW, surfaceH, maxLongEdge );
+		return false;
+	}
+	mViewportFitSurfaceW = surfaceW;
+	mViewportFitSurfaceH = surfaceH;
+	mViewportFitLongEdge = maxLongEdge;
+	mHasViewportFit      = true;
+	return ScaleFilmToFit( surfaceW, surfaceH, maxLongEdge );
+}
+
 
 //
 // Cameras
@@ -9613,6 +9642,13 @@ bool Job::RederiveCstWithVariant( const char* variantName )
 		}
 		return false;
 	}
+	// P5 (Model-B): the re-derive rebuilt the LIVE film at the Document's AUTHORED dims -- re-apply the cached
+	// viewport screen-fit so the preview stays screen-sized (not full-res) after a variant switch.  BEFORE the
+	// framestore push so the fit dims propagate: ScaleFilmToFit->SetFilm pushes on a real resize, but the push
+	// below covers the no-op-fit case (film already at fit dims) too.  Skipped when unset (headless CLI).
+	if( mHasViewportFit ) {
+		ScaleFilmToFit( mViewportFitSurfaceW, mViewportFitSurfaceH, mViewportFitLongEdge );
+	}
 	PushJobFrameStoreToRasterizers();
 	return true;
 }
@@ -9704,6 +9740,13 @@ int Job::DeriveEditedCstDocument_( RISE::Cst::Document&& d1in, RISE::Cst::NodeId
 	if( !keepCamera.empty()     ) SetActiveCamera( keepCamera.c_str() );
 	if( !keepRasterizer.empty() ) SetActiveRasterizer( keepRasterizer.c_str() );
 	if( keepAnim[0]             ) SetActiveAnimation( keepAnim );
+	// P5 (Model-B): the full re-derive rebuilt the LIVE film at the Document's AUTHORED dims -- re-apply the cached
+	// viewport screen-fit so an edit-triggered D2 doesn't jump the preview from screen-fit to full-res.  BEFORE the
+	// framestore push (and after the camera/rasterizer restore, so ScaleFilmToFit->SetFilm's push targets the
+	// restored active rasterizer).  Skipped when unset (headless CLI -> authored full-res).
+	if( mHasViewportFit ) {
+		ScaleFilmToFit( mViewportFitSurfaceW, mViewportFitSurfaceH, mViewportFitLongEdge );
+	}
 	PushJobFrameStoreToRasterizers();
 	// 2 = replaced + clean; 3 = replaced but the re-derive diagnosed (still rebind to avoid UAF, but it FAILED).
 	return fdiags.empty() ? 2 : 3;

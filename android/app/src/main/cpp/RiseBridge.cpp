@@ -979,7 +979,10 @@ bool RiseBridge::scaleFilmToFit(unsigned int maxSurfaceW,
                                 unsigned int maxLongEdge) {
     if (!m_job) return false;
     if (maxSurfaceW == 0 || maxSurfaceH == 0 || maxLongEdge == 0) return false;
-    return m_job->ScaleFilmToFit(maxSurfaceW, maxSurfaceH, maxLongEdge);
+    // Route through SetViewportFit (NOT ScaleFilmToFit directly) so the Job caches the CURRENT viewport size
+    // (this wrapper is the single chokepoint for both load-time and resize-time fits) -- a subsequent D2 full
+    // re-derive then re-applies the same fit instead of reverting the preview to the authored full-res dims.
+    return m_job->SetViewportFit(maxSurfaceW, maxSurfaceH, maxLongEdge);
 }
 
 bool RiseBridge::startViewport(bool suppressFirstFrame) {

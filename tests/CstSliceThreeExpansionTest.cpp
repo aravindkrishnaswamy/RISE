@@ -1228,6 +1228,66 @@ int main()
 		std::remove( tf );
 	}
 
+	// ---- VFIT: the interactive viewport screen-fit must SURVIVE a D2 full re-derive (variant switch / material
+	//      edit) -- the fix for the CST-default cutover UX regression.  A D2 re-derives the LIVE film to the
+	//      Document's AUTHORED (full) dims; SetViewportFit caches the viewport params so the D2 tail re-applies
+	//      the fit, keeping the preview screen-sized instead of jumping to full-res.  RED-PROVE: comment the
+	//      `if( mHasViewportFit ) ScaleFilmToFit(...)` re-apply at the two D2 tails in Job.cpp and the two
+	//      "STILL FIT after D2" asserts below revert to 1920 and FAIL.
+	{
+		const char* tvf = "cst_s3_vfit.RISEscene";
+		{ std::ofstream o( tvf );
+		  o << "RISE ASCII SCENE 6\n"
+		       "scene_variant\n{\nname night\n}\n"                       // variant -> material edits take D2 + enables RederiveCstWithVariant
+		       "film\n{\nwidth 1920\nheight 1080\n}\n"                    // LARGE authored film
+		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+		       "uniformcolor_painter\n{\nname p2\ncolor 0 1 0\n}\n"
+		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
+		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
+		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( tvf ), "VFIT: loads large (1920x1080) variant scene via CST" );
+		Check( FilmW( *j ) == 1920u && FilmH( *j ) == 1080u, "VFIT: authored film is 1920x1080 at load" );
+
+		// Fit into an 800x450 viewport, long-edge cap 800.  16:9 authored -> 800x450 fit (long edge 1920->800).
+		Check( j->SetViewportFit( 800, 450, 800 ), "VFIT: SetViewportFit(800,450,800) succeeds" );
+		Check( FilmW( *j ) == 800u, "VFIT: the LIVE film is now screen-FIT (width 800, not 1920)" );
+		Check( FilmW( *j ) < 1920u, "VFIT: fit width is strictly below authored 1920" );
+
+		// D2 via a MATERIAL edit (variant scene -> full re-derive).  Route through the controller (self-rebinds).
+		SceneEditController c( *j, 0 );
+		c.SetSelection( Cat::Material, String( "m" ) );
+		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "VFIT: material edit applies (D2)" );
+		Check( FilmW( *j ) < 1920u, "VFIT: the film is STILL screen-FIT after the material D2 (re-fit re-applied, not reverted to 1920)" );
+		Check( FilmW( *j ) == 800u, "VFIT: post-D2 film is exactly the 800-wide fit" );
+
+		// D2 via a VARIANT SWITCH (RederiveCstWithVariant).  Same re-fit tail.
+		Check( j->RederiveCstWithVariant( "none" ), "VFIT: variant switch re-derive succeeds" );
+		Check( FilmW( *j ) < 1920u, "VFIT: the film is STILL screen-FIT after the variant-switch D2" );
+		Check( FilmW( *j ) == 800u, "VFIT: post-variant-switch film is exactly the 800-wide fit" );
+
+		// DOCUMENT-UNCHANGED: the retained CST Document must STILL declare the AUTHORED 1920x1080 -- the viewport
+		// fit is LIVE-ONLY and must NOT leak into the Document (save-correctness).
+		{ const std::string s = DocText( *j );
+		  Check( s.find( "width 1920" )  != std::string::npos, "VFIT: the CST Document STILL declares authored width 1920 (fit did not leak)" );
+		  Check( s.find( "height 1080" ) != std::string::npos, "VFIT: the CST Document STILL declares authored height 1080 (fit did not leak)" );
+		  Check( s.find( "width 800" )   == std::string::npos,  "VFIT: the fit width 800 did NOT leak into the CST Document" ); }
+		j->release();
+
+		// HEADLESS: a Job that NEVER calls SetViewportFit renders AUTHORED full-res after a D2 (the re-fit correctly
+		// does nothing when unset -- proves the CLI/headless contract).
+		Job* jh = new Job();
+		Check( jh->LoadAsciiSceneViaCst( tvf ), "VFIT: (headless) loads the large variant scene via CST" );
+		Check( FilmW( *jh ) == 1920u, "VFIT: (headless) authored film is 1920 at load (no fit called)" );
+		SceneEditController ch( *jh, 0 );
+		ch.SetSelection( Cat::Material, String( "m" ) );
+		Check( ch.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "VFIT: (headless) material edit applies (D2)" );
+		Check( FilmW( *jh ) == 1920u, "VFIT: (headless) film is STILL authored full-res 1920 after the D2 (re-fit skipped when unset)" );
+		jh->release();
+		std::remove( tvf );
+	}
+
 	std::remove( tmp );
 	std::cout << passCount << " passed, " << failCount << " failed." << std::endl;
 	return failCount == 0 ? 0 : 1;

@@ -464,7 +464,10 @@ private:
     void* jobOpaque = [_host opaqueJobHandle];
     if (!jobOpaque) return;
     IJobPriv* pJob = static_cast<IJobPriv*>(jobOpaque);
-    pJob->ScaleFilmToFit(
+    // Route through SetViewportFit (NOT ScaleFilmToFit directly) so the Job caches the CURRENT viewport size
+    // (this wrapper is the single chokepoint for both load-time and resize-time fits) -- a subsequent D2 full
+    // re-derive then re-applies the same fit instead of reverting the preview to the authored full-res dims.
+    pJob->SetViewportFit(
         static_cast<unsigned int>(surfaceW),
         static_cast<unsigned int>(surfaceH),
         static_cast<unsigned int>(maxLongEdge));

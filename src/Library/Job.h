@@ -128,6 +128,21 @@ namespace RISE
 		// (edit/save) patch + serialize this.  unique_ptr<fwd-decl> is safe -- Job::~Job is out-of-line (Job.cpp).
 		std::unique_ptr<RISE::Cst::Document>		pCstDocument;
 
+		// P5 (Model-B): cached viewport screen-fit params so a D2 full
+		// re-derive (variant switch / CST edit) — which re-derives the
+		// LIVE film to the Document's AUTHORED dims — can RE-APPLY the
+		// interactive viewport's screen-fit afterward, keeping the
+		// preview at a screen-appropriate resolution instead of jumping
+		// to full-res.  Populated by SetViewportFit (the GUI bridges call
+		// it at load + on resize); the headless CLI never calls it, so
+		// mHasViewportFit stays false and the D2 tails skip the re-fit
+		// (CLI renders at authored full-res).  Live-only: never touches
+		// the retained CST Document, so save-correctness is preserved.
+		bool										mHasViewportFit = false;
+		unsigned int								mViewportFitSurfaceW = 0;
+		unsigned int								mViewportFitSurfaceH = 0;
+		unsigned int								mViewportFitLongEdge = 0;
+
 		// L6b — canonical FrameStore allocated at the active camera's
 		// dims and threaded into every rasterizer factory.  Per
 		// docs/FRAMESTORE_DESIGN.md §7.5 the FrameStore SURVIVES
@@ -398,6 +413,16 @@ namespace RISE
 		bool ScaleFilmToFit(
 			const unsigned int maxSurfaceW,
 			const unsigned int maxSurfaceH,
+			const unsigned int maxLongEdge
+			);
+
+		//! Cache the interactive viewport screen-fit params on the Job
+		//! AND apply the fit immediately (via ScaleFilmToFit).  See IJob.h
+		//! for semantics — the cache lets a D2 full re-derive re-apply the
+		//! fit so the preview stays screen-sized.
+		bool SetViewportFit(
+			const unsigned int surfaceW,
+			const unsigned int surfaceH,
 			const unsigned int maxLongEdge
 			);
 
