@@ -142,7 +142,7 @@ bool DoWorkerJob_Image( IMemoryBuffer* pBuffer, IMemoryBuffer*& pCompletedTaskBu
 
 		StdOutProgress progress( "Parsing scene: " );
 		pJob->SetProgress( &progress );
-		if( !pJob->LoadAsciiScene( szFileName ) ) {
+		if( !pJob->LoadAsciiSceneAuto( szFileName ) ) {   // Slice 6c-2: via Auto (fresh Job -> load-once guard satisfied; non-native falls back to legacy, same behavior)
 			GlobalLog()->PrintEasyError( "ERROR! Given scene file doesn't exist on this machine, aborting" );
 			safe_release( pJob );
 			return false;
@@ -226,7 +226,7 @@ bool DoWorkerJob_Animation( IMemoryBuffer* pBuffer, IMemoryBuffer*& pCompletedTa
 
 		StdOutProgress progress( "Parsing scene: " );
 		pJob->SetProgress( &progress );
-		if( !pJob->LoadAsciiScene( szFileName ) ) {
+		if( !pJob->LoadAsciiSceneAuto( szFileName ) ) {   // Slice 6c-2: via Auto (fresh Job -> load-once guard satisfied; non-native falls back to legacy, same behavior)
 			GlobalLog()->PrintEasyError( "ERROR! Given scene file doesn't exist on this machine, aborting" );
 			safe_release( pJob );
 			return false;
