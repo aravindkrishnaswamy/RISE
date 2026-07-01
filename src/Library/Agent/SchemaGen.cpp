@@ -214,10 +214,11 @@ namespace RISE
 
 		std::string SchemaGenAll()
 		{
-			// Same process-lifetime descriptor set that DescriptorForKeyword
-			// resolves against (the SceneGrammar singleton) -- the two entry
-			// points share one registry, so per-chunk and whole-grammar schemas
-			// cannot drift.
+			// SchemaGenAll enumerates via the SceneGrammar singleton;
+			// SchemaGenForChunk resolves via DescriptorForKeyword (a separate
+			// process-lifetime static).  Both derive from the same
+			// CreateAllChunkParsers() factory output, so per-chunk and
+			// whole-grammar schemas cannot drift.
 			const SceneEditorSuggestions::SceneGrammar& g = SceneEditorSuggestions::SceneGrammar::Instance();
 			const std::vector<const ChunkDescriptor*>& all = g.AllChunks();
 
