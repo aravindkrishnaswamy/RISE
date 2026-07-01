@@ -158,6 +158,36 @@ using namespace RISE::Implementation;
 // std_string_npos no longer needed - using std::string::npos directly
 static MultiHalton mh;
 
+// Read a data file into its meaningful lines, tolerant of comments and
+// blank lines.  Skips blank / whitespace-only lines and lines whose first
+// non-blank character is '#'.  Returns false (the caller logs) if the file
+// cannot be opened.  Each returned line still contains its trailing
+// newline; callers sscanf their own column format from it and validate the
+// conversion count, so a malformed or non-numeric line is skipped rather
+// than — as the historical `while( !feof(f) ) { fscanf(...); push; }` loops
+// did — spinning forever on a comment line (fscanf matches nothing and does
+// not advance) or pushing uninitialized / duplicated values at EOF.
+static bool ReadDataFileLines( const String& filename, std::vector<std::string>& outLines )
+{
+	FILE* f = fopen( GlobalMediaPathLocator().Find( filename ).c_str(), "r" );
+	if( !f ) {
+		return false;
+	}
+	char buf[MAX_CHARS_PER_LINE];
+	while( fgets( buf, sizeof( buf ), f ) ) {
+		const char* p = buf;
+		while( *p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' ) {
+			++p;
+		}
+		if( *p == '\0' || *p == '#' ) {
+			continue;   // blank / whitespace-only / comment line
+		}
+		outLines.push_back( std::string( buf ) );
+	}
+	fclose( f );
+	return true;
+}
+
 inline bool string_split( const String& s, String& first, String& second, const char ch )
 {
 	String::const_iterator it = std::find( s.begin(), s.end(), ch );
@@ -1157,18 +1187,19 @@ namespace RISE
 					// Optional file-loaded spectrum (pairs)
 					if( bag.Has( "file" ) ) {
 						std::string fname = bag.GetString( "file" );
-						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
-						if( f ) {
-							while( !feof( f ) ) {
-								double nm, amp;
-								fscanf( f, "%lf %lf", &nm, &amp );
-								wavelengths.push_back( nm );
-								amplitudes.push_back( amp );
-							}
-							fclose( f );
-						} else {
+						std::vector<std::string> fileLines;
+						if( !ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
 							return false;
+						}
+						for( const std::string& ln : fileLines ) {
+							double nm = 0.0, amp = 0.0;
+							if( sscanf( ln.c_str(), "%lf %lf", &nm, &amp ) == 2 ) {
+								wavelengths.push_back( nm );
+								amplitudes.push_back( amp );
+							} else {
+								GlobalLog()->PrintEx( eLog_Warning, "spectral file:: skipping malformed line in `%s`", fname.c_str() );
+							}
 						}
 					}
 
@@ -1177,10 +1208,13 @@ namespace RISE
 						std::string fname = bag.GetString( "nmfile" );
 						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
 						if( f ) {
-							while( !feof( f ) ) {
-								double nm;
-								fscanf( f, "%lf", &nm );
-								wavelengths.push_back( nm );
+							char nmbuf[MAX_CHARS_PER_LINE];
+							while( fgets( nmbuf, sizeof( nmbuf ), f ) ) {
+								const char* q = nmbuf;
+								while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
+								if( *q == '\0' || *q == '#' ) continue;
+								double nm = 0.0;
+								if( sscanf( nmbuf, "%lf", &nm ) == 1 ) wavelengths.push_back( nm );
 							}
 							fclose( f );
 						} else {
@@ -1194,10 +1228,13 @@ namespace RISE
 						std::string fname = bag.GetString( "ampfile" );
 						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
 						if( f ) {
-							while( !feof( f ) ) {
-								double amp;
-								fscanf( f, "%lf", &amp );
-								amplitudes.push_back( amp );
+							char ampbuf[MAX_CHARS_PER_LINE];
+							while( fgets( ampbuf, sizeof( ampbuf ), f ) ) {
+								const char* q = ampbuf;
+								while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
+								if( *q == '\0' || *q == '#' ) continue;
+								double amp = 0.0;
+								if( sscanf( ampbuf, "%lf", &amp ) == 1 ) amplitudes.push_back( amp );
 							}
 							fclose( f );
 						} else {
@@ -1323,12 +1360,14 @@ namespace RISE
 							return false;
 						}
 						std::vector<std::pair<Scalar, Scalar>> samples;
-						while( !feof( f ) ) {
+						char spbuf[MAX_CHARS_PER_LINE];
+						while( fgets( spbuf, sizeof( spbuf ), f ) ) {
+							const char* q = spbuf;
+							while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
+							if( *q == '\0' || *q == '#' ) continue;
 							double nm = 0.0, val = 0.0;
-							if( fscanf( f, "%lf %lf", &nm, &val ) == 2 ) {
+							if( sscanf( spbuf, "%lf %lf", &nm, &val ) == 2 ) {
 								samples.emplace_back( Scalar( nm ), Scalar( val ) );
-							} else {
-								break;
 							}
 						}
 						fclose( f );
@@ -2731,17 +2770,17 @@ namespace RISE
 					// Optional file-loaded generators
 					if( bag.Has( "file" ) ) {
 						std::string fname = bag.GetString( "file" );
-						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
-						if( f ) {
-							while( !feof( f ) ) {
-								double x, y;
+						std::vector<std::string> fileLines;
+						if( ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
+							for( const std::string& ln : fileLines ) {
+								double x = 0.0, y = 0.0;
 								char painter[256] = {0};
-								fscanf( f, "%lf %lf %255s", &x, &y, painter );
-								ptx.push_back( x );
-								pty.push_back( y );
-								painters.push_back( painter );
+								if( sscanf( ln.c_str(), "%lf %lf %255s", &x, &y, painter ) == 3 ) {
+									ptx.push_back( x );
+									pty.push_back( y );
+									painters.push_back( painter );
+								}
 							}
-							fclose( f );
 						}
 					}
 
@@ -2808,20 +2847,20 @@ namespace RISE
 					// Optional file-loaded generators (count-prefixed)
 					if( bag.Has( "file" ) ) {
 						std::string fname = bag.GetString( "file" );
-						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
-						if( f ) {
-							int num=0;
-							fscanf( f, "%d", &num );
-							for( int i=0; i<num; i++ ) {
-								double x, y, z;
+						std::vector<std::string> fileLines;
+						if( ReadDataFileLines( String( fname.c_str() ), fileLines ) && !fileLines.empty() ) {
+							int num = 0;
+							sscanf( fileLines[0].c_str(), "%d", &num );
+							for( int i = 1; i <= num && i < (int)fileLines.size(); ++i ) {
+								double x = 0.0, y = 0.0, z = 0.0;
 								char painter[256] = {0};
-								fscanf( f, "%lf %lf %lf %255s", &x, &y, &z, painter );
-								ptx.push_back( x );
-								pty.push_back( y );
-								ptz.push_back( z );
-								painters.push_back( painter );
+								if( sscanf( fileLines[i].c_str(), "%lf %lf %lf %255s", &x, &y, &z, painter ) == 4 ) {
+									ptx.push_back( x );
+									pty.push_back( y );
+									ptz.push_back( z );
+									painters.push_back( painter );
+								}
 							}
-							fclose( f );
 						}
 					}
 
@@ -3024,18 +3063,19 @@ namespace RISE
 					// Optional file-loaded function (pairs)
 					if( bag.Has( "file" ) ) {
 						std::string fname = bag.GetString( "file" );
-						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
-						if( f ) {
-							while( !feof( f ) ) {
-								double x, y;
-								fscanf( f, "%lf %lf", &x, &y );
-								cp_x.push_back( x );
-								cp_y.push_back( y );
-							}
-							fclose( f );
-						} else {
+						std::vector<std::string> fileLines;
+						if( !ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
 							return false;
+						}
+						for( const std::string& ln : fileLines ) {
+							double x = 0.0, y = 0.0;
+							if( sscanf( ln.c_str(), "%lf %lf", &x, &y ) == 2 ) {
+								cp_x.push_back( x );
+								cp_y.push_back( y );
+							} else {
+								GlobalLog()->PrintEx( eLog_Warning, "piecewise_linear_function:: skipping malformed line in `%s`", fname.c_str() );
+							}
 						}
 					}
 
@@ -7634,10 +7674,13 @@ namespace RISE
 						GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", filename.c_str() );
 						return false;
 					}
-					while( !feof( f ) ) {
-						double v;
-						fscanf( f, "%lf", &v );
-						out.push_back( v );
+					char lcbuf[MAX_CHARS_PER_LINE];
+					while( fgets( lcbuf, sizeof( lcbuf ), f ) ) {
+						const char* q = lcbuf;
+						while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
+						if( *q == '\0' || *q == '#' ) continue;
+						double v = 0.0;
+						if( sscanf( lcbuf, "%lf", &v ) == 1 ) out.push_back( v );
 					}
 					fclose( f );
 					return true;
@@ -7697,13 +7740,18 @@ namespace RISE
 						const std::string filename = bag.GetString("rgb_spd");
 						FILE* f = fopen( GlobalMediaPathLocator().Find(String(filename.c_str())).c_str(), "r" );
 						if( f ) {
-							while( !feof( f ) ) {
-								double nm, r, g, b;
-								fscanf( f, "%lf %lf %lf %lf", &nm, &r, &g, &b );
-								spd_wavelengths.push_back( nm );
-								spd_r.push_back( r );
-								spd_g.push_back( g );
-								spd_b.push_back( b );
+							char rgbbuf[MAX_CHARS_PER_LINE];
+							while( fgets( rgbbuf, sizeof( rgbbuf ), f ) ) {
+								const char* q = rgbbuf;
+								while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
+								if( *q == '\0' || *q == '#' ) continue;
+								double nm = 0.0, r = 0.0, g = 0.0, b = 0.0;
+								if( sscanf( rgbbuf, "%lf %lf %lf %lf", &nm, &r, &g, &b ) == 4 ) {
+									spd_wavelengths.push_back( nm );
+									spd_r.push_back( r );
+									spd_g.push_back( g );
+									spd_b.push_back( b );
+								}
 							}
 							fclose( f );
 						} else {
