@@ -298,6 +298,55 @@ static void TestNegativeClamp()
 	safe_release( absCurve );
 }
 
+//----------------------------------------------------------------------
+// H: the REAL gold-ruby colorant curve (G1-d).  Locks the physical ruby
+// transmission window: a colloidal-gold sigma_a(lambda) with a plasmon
+// peak at ~515nm and a blue inter-band shoulder must ABSORB green
+// (Tr(515,d=1) ~ 0.011) and TRANSMIT red (Tr(650,d=1) ~ 0.70) -> a
+// gold-ruby / oxblood medium.  Control points mirror
+// scenes/FeatureBased/EnamelWatch/goldruby_sigma_a.txt (kept in sync).
+//----------------------------------------------------------------------
+static void TestGoldRubyColorant()
+{
+	std::cout << "H: gold-ruby colorant sigma_a(lambda) — ruby transmission window (G1-d)" << std::endl;
+
+	std::vector<double> x = { 400, 420, 440, 460, 480, 500, 515, 530, 550,
+	                          570, 590, 610, 630, 650, 680, 700, 720 };
+	std::vector<double> y = { 2.48, 2.61, 2.79, 3.15, 3.69, 4.23, 4.50, 4.37, 3.83,
+	                          2.79, 1.80, 1.08, 0.63, 0.36, 0.23, 0.16, 0.14 };
+	IFunction1D* absCurve = MakeCurve( x, y );
+	IPhaseFunction* phase = 0;
+	RISE_API_CreateIsotropicPhaseFunction( &phase );
+
+	IMedium* medium = 0;
+	RISE_API_CreateHomogeneousMediumSpectral( &medium,
+		RISEPel( 3.0, 3.5, 0.4 ), RISEPel( 0.0, 0.0, 0.0 ), RISEPel( 0.0, 0.0, 0.0 ),
+		absCurve, /*sigma_s_spectral=*/nullptr, *phase );
+
+	const Point3 p( 0, 0, 0 );
+	const Ray ray( p, Vector3( 0, 0, 1 ) );
+	const double d = 1.0;
+
+	// Peak absorption sits at the plasmon resonance (~515nm), not in the red.
+	const double sa515 = medium->GetCoefficientsNM( p, 515.0 ).sigma_t;
+	const double sa650 = medium->GetCoefficientsNM( p, 650.0 ).sigma_t;
+	Check( sa515 > sa650 * 5.0, "  sigma_a peaks at the plasmon band (515nm >> 650nm)" );
+
+	const double trGreen = medium->EvalTransmittanceNM( ray, d, 515.0 );
+	const double trRed   = medium->EvalTransmittanceNM( ray, d, 650.0 );
+	std::cout << "    Tr(515nm)=" << trGreen << "  Tr(650nm)=" << trRed << std::endl;
+	Check( Close( trGreen, std::exp( -4.50 * d ), 1e-3 ), "  Tr(515nm) == exp(-4.50*d) (green absorbed)" );
+	Check( Close( trRed,   std::exp( -0.36 * d ), 1e-3 ), "  Tr(650nm) == exp(-0.36*d) (red transmitted)" );
+	Check( trRed > trGreen * 40.0, "  ruby window: red passes >> green (Tr(650) >> Tr(515))" );
+	// Blue is partly absorbed too (inter-band) -> not magenta; a red-dominant ruby.
+	const double trBlue = medium->EvalTransmittanceNM( ray, d, 440.0 );
+	Check( trBlue < trRed, "  blue is absorbed more than red (ruby, not magenta)" );
+
+	safe_release( medium );
+	safe_release( phase );
+	safe_release( absCurve );
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "VolumeSpectralCoefficientsTest — G1 per-wavelength "
@@ -308,6 +357,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestLuminanceFallback();
 	TestSamplingConsistency();
 	TestNegativeClamp();
+	TestGoldRubyColorant();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
