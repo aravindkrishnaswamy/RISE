@@ -451,7 +451,7 @@
 		F24B733C2F52A632008304C4 /* AsciiCommandParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0950069C42900069C9E5 /* AsciiCommandParser.cpp */; };
 		F24B733D2F52A632008304C4 /* AsciiCommandParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0951069C42900069C9E5 /* AsciiCommandParser.h */; };
 		F24B733E2F52A632008304C4 /* AsciiSceneParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0952069C42900069C9E5 /* AsciiSceneParser.cpp */; };
-		F24B733E2F52A632008304FFF /* ChunkParserRegistry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0952069C42900069CFFF /* ChunkParserRegistry.cpp */; };
+		F24B733E2F52A632008304FF /* ChunkParserRegistry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0952069C42900069CFFF /* ChunkParserRegistry.cpp */; };
 		F24B733F2F52A632008304C4 /* AsciiSceneParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0953069C42900069C9E5 /* AsciiSceneParser.h */; };
 		F24B73402F52A632008304C4 /* AsciiScriptParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0954069C42900069C9E5 /* AsciiScriptParser.cpp */; };
 		F24B73412F52A632008304C4 /* AsciiScriptParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0955069C42900069C9E5 /* AsciiScriptParser.h */; };
@@ -5686,7 +5686,7 @@
 				F24B733C2F52A632008304C4 /* AsciiCommandParser.cpp in Sources */,
 				F24B733D2F52A632008304C4 /* AsciiCommandParser.h in Sources */,
 				F24B733E2F52A632008304C4 /* AsciiSceneParser.cpp in Sources */,
-				F24B733E2F52A632008304FFF /* ChunkParserRegistry.cpp in Sources */,
+				F24B733E2F52A632008304FF /* ChunkParserRegistry.cpp in Sources */,
 				F24B733F2F52A632008304C4 /* AsciiSceneParser.h in Sources */,
 				F24B73402F52A632008304C4 /* AsciiScriptParser.cpp in Sources */,
 				F24B73412F52A632008304C4 /* AsciiScriptParser.h in Sources */,

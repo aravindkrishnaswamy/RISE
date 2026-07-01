@@ -156,9 +156,12 @@ using namespace RISE::Implementation;
 #define CURRENT_SCENE_VERSION	6
 
 // std_string_npos no longer needed - using std::string::npos directly
-// `mh` drives the `hal(d)` QMC dimension in evaluate_first_function_in_expression
-// below; ChunkParserRegistry.cpp keeps its own copy for ClearParseState (both are
-// internal-linkage statics, so there is no ODR conflict across the two TUs).
+// `mh` is the LIVE hal(d) QMC consumer: evaluate_first_function_in_expression
+// below advances it via next_halton().  It is Reset() per TOP-LEVEL parse in
+// ParseAndLoadScene (see the isTopLevel-gated mh.Reset() there), so each
+// standalone LoadAsciiScene evaluates hal() from a fresh sequence and sample
+// state does not leak across top-level loads in one process.  This is the ONLY
+// MultiHalton in the parser code; ChunkParserRegistry.cpp does NOT keep a copy.
 static MultiHalton mh;
 
 inline bool string_split( const String& s, String& first, String& second, const char ch )
@@ -971,6 +974,19 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	// 2.25 cross-file-refusal check relies on that.
 	ParseDepthGuard depthGuard;
 	RISE::ClearChunkParserState( depthGuard.isTopLevel );
+
+	// Restart the legacy hal() QMC sequence per TOP-LEVEL parse.  `mh`
+	// (declared file-scope in THIS streaming TU) is the live consumer that
+	// evaluate_first_function_in_expression advances via next_halton(); it
+	// must evaluate hal() from a FRESH sequence per standalone LoadAsciiScene
+	// (standalone-equivalent + order-independent) and NOT leak sample state
+	// across top-level loads in one process.  A nested `> load` / `> run`
+	// parse passes isTopLevel == false, so the sequence stays CONTINUOUS
+	// across a scene's includes.  Reset here -- before the parse body below
+	// consumes any hal() -- matching the pre-Slice-6b reset point.
+	if( depthGuard.isTopLevel ) {
+		mh.Reset();
+	}
 
 	// Phase 0 (docs/ROUND_TRIP_SAVE_PLAN.md §6.2): begin recording raw
 	// per-line byte spans + tokens.  Parser-local state — always

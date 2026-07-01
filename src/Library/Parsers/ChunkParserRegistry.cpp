@@ -44,7 +44,6 @@
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/MediaPathLocator.h"
-#include "../Sampling/HaltonPoints.h"
 #include "MathExpressionEvaluator.h"
 #include "../Utilities/RasterizerDefaults.h"
 #include "../Rendering/Film.h"		// kDefaultFilm* constants for `film` chunk
@@ -84,10 +83,10 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-// Shared file-scope helpers/state used by the chunk-parser registry
-// (duplicated across this TU and AsciiSceneParser.cpp where noted --
-// both are internal-linkage, so there is no ODR conflict).
-static MultiHalton mh;
+// Shared file-scope helpers used by the chunk-parser registry.  (The
+// legacy hal() QMC sequence `mh` lives ONLY in AsciiSceneParser.cpp, the
+// streaming TU that actually consumes it -- see the per-top-level reset
+// there; this TU does not touch MultiHalton.)
 
 inline bool string_split( const String& s, String& first, String& second, const char ch )
 {
@@ -412,11 +411,10 @@ namespace RISE
 			// resetTopLevelState gates the reset of state that accumulates ACROSS a top-level build to TOP-LEVEL
 			// parses only.  Camera auto-naming must stay unique manager-wide ACROSS includes, so a nested parse
 			// must NOT wipe the outer scene's allocated names (else a child's unnamed camera re-allocates
-			// "default" and Scene::AddCamera rejects the duplicate, failing the include).  The Halton sequence
-			// `mh` is the same kind of state: Reset() it per TOP-LEVEL parse so each scene's hal() QMC starts at
-			// index 0 (standalone-equivalent + order-independent), but persist it across a scene's includes (a
-			// nested parse passes false).  The other caches reset on every parse (incl. nested), matching the
-			// legacy per-sub-parse semantics.
+			// "default" and Scene::AddCamera rejects the duplicate, failing the include).  The other caches reset
+			// on every parse (incl. nested), matching the legacy per-sub-parse semantics.  NOTE: the legacy hal()
+			// QMC sequence is NOT reset here -- its `mh` lives in the streaming TU (AsciiSceneParser.cpp) which is
+			// the sole consumer, and ParseAndLoadScene resets it per top-level parse directly (isTopLevel gate).
 			static void ClearParseState( bool resetTopLevelState = true ) {
 				s_painterColors.clear();
 				s_cameraDefaults = CameraDefaultsState();
@@ -424,7 +422,6 @@ namespace RISE
 				if( resetTopLevelState ) {
 					s_cameraNamesUsed.clear();
 					s_lastAllocatedCameraName.clear();
-					mh.Reset();   // each top-level scene's hal() QMC sequence starts fresh (see above)
 				}
 			}
 
@@ -9810,8 +9807,10 @@ namespace RISE
 	// start -- preventing parse state from leaking between successive derives.
 	// The `resetTopLevelState` argument forwards to the private ClearParseState:
 	// the streaming loader passes `false` on a recursive `> load` / `> run` so
-	// the camera-name dedup + QMC `hal()` sequence survive the nested parse;
-	// the CST derive path and every top-level parse take the default `true`.
+	// the camera-name dedup survives the nested parse; the CST derive path and
+	// every top-level parse take the default `true`.  (The legacy hal() QMC
+	// sequence is NOT reset through here -- ParseAndLoadScene resets its own
+	// `mh` directly per top-level parse; see the isTopLevel gate there.)
 	void ClearChunkParserState( bool resetTopLevelState )
 	{
 		Implementation::ChunkParsers::ClearParseState( resetTopLevelState );
