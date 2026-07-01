@@ -6960,27 +6960,12 @@ namespace RISE
 // Parsers
 //////////////////////////////////////////////////////////
 
-#include "Parsers/AsciiSceneParser.h"
 #include "Parsers/AsciiScriptParser.h"
 #include "Parsers/AsciiCommandParser.h"
 #include "Options.h"
 
 namespace RISE
 {
-	bool RISE_API_CreateAsciiSceneParser(
-								ISceneParser** ppi,					///< [out] Pointer to recieve the parser
-								const char* name					///< [in] Name of the file to load
-								)
-	{
-		if( !ppi ) {
-			return false;
-		}
-
-		(*ppi) = new AsciiSceneParser( name );
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ascii scene parser" );
-		return true;
-	}
-
 	//! Creates a parser capable of processing a script from a text file
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateAsciiScriptParser(

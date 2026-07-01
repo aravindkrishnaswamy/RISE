@@ -390,7 +390,6 @@ SRCLIBANIMATION =\
 # Parsers
 SRCLIBPARSERS =\
 	$(PATHLIBRARY)Parsers/AsciiCommandParser.cpp				\
-	$(PATHLIBRARY)Parsers/AsciiSceneParser.cpp					\
 	$(PATHLIBRARY)Parsers/ChunkParserRegistry.cpp				\
 	$(PATHLIBRARY)Parsers/AsciiScriptParser.cpp					\
 	$(PATHLIBRARY)Parsers/MathExpressionEvaluator.cpp			\

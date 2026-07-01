@@ -36,7 +36,6 @@
 #include <cstdio>    // Phase 6.2: sscanf in OnOverrideObjectFinalized
 #include <sys/types.h>
 #include <sys/stat.h>
-#include "AsciiSceneParser.h"
 #include "AsciiCommandParser.h"
 #include "IAsciiChunkParser.h"
 #include "ChunkParserRegistry.h"

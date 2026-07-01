@@ -9420,33 +9420,6 @@ bool Job::ClearAll(
 }
 
 
-//! Loading an ascii scene description
-/// \return TRUE if successful, FALSE otherwise
-bool Job::LoadAsciiScene(
-	const char* filename							///< [in] Name of the file containing the scene
-	)
-{
-	if( !filename ) {
-		return false;
-	}
-
-	ISceneParser* sceneParser = 0;
-	RISE_API_CreateAsciiSceneParser( &sceneParser, filename );
-	bool bRet = sceneParser->ParseAndLoadScene( *this );
-	safe_release( sceneParser );
-
-	// L6b — push the canonical FrameStore to every rasterizer in the
-	// registry now that scene load is complete and the active camera's
-	// dims are finally known.  Most scene files declare the rasterizer
-	// chunk BEFORE the camera chunk, so at rasterizer-construction time
-	// the ResolveJobFrameStoreForActiveCamera() call returned nullptr.
-	// Re-resolve here and SetFrameStore on each registry entry.
-	if( bRet ) {
-		PushJobFrameStoreToRasterizers();
-	}
-	return bRet;
-}
-
 // P5 (Model-B, Slice 6c-3a): the DEFAULT scene-load entry point -- CST-ONLY.  Routes every USER scene through
 // the canonical CST path (so scene_variant switching + all CST edit/save features are always available).  This
 // is the ONE place the load-path decision lives; every front-end (CLI, Mac/Windows/Android GUI, Blender bridge)
@@ -9458,8 +9431,8 @@ bool Job::LoadAsciiScene(
 //   2. NATIVE-v7  -> LoadAsciiSceneViaCst (which re-parses + re-checks + DERIVES).  A derive ERROR there is a
 //      REAL, visible failure (returns false) -- we do NOT mask a genuine problem in a migrated scene.
 //   3. NOT native-v7 (un-migrated FOR/ENDFOR, > run/> load, render-affecting > directive, or no header) ->
-//      HARD-FAIL with an actionable diagnostic pointing at the offline migrator.  The legacy LoadAsciiScene is
-//      NO LONGER called from here (it still exists, unreferenced by production, pending its 6c-3c deletion).
+//      HARD-FAIL with an actionable diagnostic pointing at the offline migrator.  The legacy streaming loader
+//      was DELETED in Slice 6c-3c -- there is no legacy path to fall back to.
 //
 // There is NO env escape hatch (the former RISE_FORCE_LEGACY_LOAD is gone) -- there's no legacy path to force.
 //
@@ -9507,7 +9480,8 @@ bool Job::LoadAsciiSceneAuto(
 }
 
 // P5 (Model-B, Slice 1): load a scene by building the canonical CST and deriving the Scene from it,
-// RETAINING the Document for edit/save.  Additive + flagged -- the legacy LoadAsciiScene stays the default.
+// RETAINING the Document for edit/save.  Since Slice 6c-3c this is the ONLY scene-load path (the legacy
+// streaming loader was deleted); LoadAsciiSceneAuto routes every native-v7 scene here.
 // P5 Slice 4 (reviewer P1 + follow-up): capture/refresh the CST-loaded file's identity (path + mtime + size).
 // Slice 6a: stored ONLY in the Job member (mCstLoadFileIdentity); the SaveEngine CST-save external-mod guard now
 // reads it directly via Job::GetCstLoadFileIdentity (IJobPriv), so the guard no longer depends on the legacy

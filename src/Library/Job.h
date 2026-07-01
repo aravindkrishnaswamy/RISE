@@ -124,7 +124,7 @@ namespace RISE
 		std::unique_ptr<OverrideSpanIndex>			pOverrideSpans;
 
 		// P5 (save-as-CST, Slice 1): the retained canonical CST when the scene was loaded via
-		// LoadAsciiSceneViaCst (Model-B: Scene = derive(CST)); null for a legacy LoadAsciiScene.  Slices 3-4
+		// LoadAsciiSceneViaCst (Model-B: Scene = derive(CST)); null when no CST-load has occurred yet.  Slices 3-4
 		// (edit/save) patch + serialize this.  unique_ptr<fwd-decl> is safe -- Job::~Job is out-of-line (Job.cpp).
 		std::unique_ptr<RISE::Cst::Document>		pCstDocument;
 
@@ -2782,15 +2782,9 @@ namespace RISE
 			);
 
 
-		//! Loading an ascii scene description
-		/// \return TRUE if successful, FALSE otherwise
-		bool LoadAsciiScene(
-			const char* filename							///< [in] Name of the file containing the scene
-			);
-
 		//! P5 Slice 1: load a scene by building the canonical CST (ParseToCst) and deriving the Scene from
-		//! it (DeriveToJob), RETAINING the Document for edit/save (Model-B "Scene = derive(CST)").  Additive +
-		//! flagged -- the legacy LoadAsciiScene above stays the default.  Input must be NATIVE v7-form
+		//! it (DeriveToJob), RETAINING the Document for edit/save (Model-B "Scene = derive(CST)").  Since Slice
+		//! 6c-3c this is the ONLY scene-load path (the legacy streaming loader was deleted).  Input must be NATIVE v7-form
 		//! (macro/expr/directive-free) -- ENFORCED via Cst::IsNativeV7Document: an UN-migrated top-level construct
 		//! (a `FOR`/`ENDFOR` loop, a `> run`/`> load` include, or a render-AFFECTING `>` directive -- `> modify`,
 		//! `> set <other>`) or a missing `RISE ASCII SCENE` header is REFUSED (returns false), NOT silently
@@ -2804,8 +2798,8 @@ namespace RISE
 
 		//! P5 Slice 6c-3a: DEFAULT scene-load entry point -- CST-ONLY.  Routes a NATIVE-v7 scene to the CST path
 		//! (LoadAsciiSceneViaCst; retains the Document for edit/save/variant).  A non-native (un-migrated) scene
-		//! HARD-FAILS with an actionable diagnostic pointing at the offline migrator -- the legacy LoadAsciiScene
-		//! is no longer called (no fallback, no env escape hatch).  A derive error on the native-v7 branch is a
+		//! HARD-FAILS with an actionable diagnostic pointing at the offline migrator -- the legacy streaming loader
+		//! was deleted (no fallback, no env escape hatch).  A derive error on the native-v7 branch is a
 		//! REAL failure (returns false), NOT masked by a legacy retry.
 		bool LoadAsciiSceneAuto(
 			const char* filename

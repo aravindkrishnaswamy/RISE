@@ -3165,13 +3165,6 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	// Parsers
 	//////////////////////////////////////////////////////////
 
-	//! Creates a parser capable of loading a job from a text file
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateAsciiSceneParser(
-								ISceneParser** ppi,					///< [out] Pointer to recieve the parser
-								const char* name					///< [in] Name of the file to load
-								);
-
 	//! Creates a parser capable of processing a script from a text file
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateAsciiScriptParser(

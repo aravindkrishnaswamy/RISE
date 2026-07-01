@@ -14,7 +14,6 @@
 #include "pch.h"
 #include "WorkerRenderer.h"
 #include "../Interfaces/ILog.h"
-#include "../AsciiSceneParser.h"
 #include "../PRISE/PRISEMeshGeometry.h"
 #include "../Objects/Object.h"
 #include "../Materials/MaterialContainer.h"
@@ -35,10 +34,11 @@ WorkerRenderer::WorkerRenderer( const char * szScene, const std::deque<MODEL_INF
 
 	pRise = new RISE();
 
-	ISceneParser* sceneParser = new Implementation::AsciiSceneParser( szScene );
-	if( !sceneParser->ParseAndLoadScene( pRise ) ) {
+	// Slice 6c-3c: the legacy streaming AsciiSceneParser was deleted; scene loading is CST-only via
+	// Job::LoadAsciiSceneAuto (native-v7 -> CST derive).  (This PRISE worker is legacy and not part of
+	// any current build project, but is kept self-consistent with the CST-only load path.)
+	if( !pRise->GetJob()->LoadAsciiSceneAuto( szScene ) ) {
 		GlobalLog()->PrintEasyError( "WorkerRenderer:: Given scene file doesn't exist on this machine, aborting" );
-		sceneParser->RemoveRef();
 	} else {
 
 		Job*	pJob = pRise->GetJob();

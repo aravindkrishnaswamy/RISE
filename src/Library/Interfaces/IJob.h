@@ -2709,12 +2709,6 @@ namespace RISE
 		virtual bool RemoveRasterizerOutputs(
 			) = 0;
 
-		//! Loading an ascii scene description
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool LoadAsciiScene(
-			const char* filename							///< [in] Name of the file containing the scene
-			) = 0;
-
 		//! P5 (Model-B): load via the canonical CST path (Scene = derive(CST)) instead of the legacy
 		//! streaming parser.  Refuses non-native-v7 documents and derive-error scenes.  Default returns
 		//! FALSE (only Job overrides this -- it retains the CST Document).  Reached via LoadAsciiSceneAuto's
@@ -2729,11 +2723,12 @@ namespace RISE
 		//! edit/save/scene_variant); an un-migrated scene HARD-FAILS with an actionable diagnostic pointing at
 		//! the offline migrator (the legacy loader was retired -- no fallback, no env escape hatch).  A derive
 		//! error on the native-v7 branch is a REAL, visible failure (returns false) -- it is NOT masked by a
-		//! legacy retry.  Default (non-Job implementers) just delegates to the legacy LoadAsciiScene.
+		//! legacy retry.  Default (non-Job implementers) is a safe no-op returning false -- the legacy streaming
+		//! loader was deleted in Slice 6c-3c, so there is nothing to delegate to; only Job overrides this.
 		/// \return TRUE iff the scene loaded successfully
 		virtual bool LoadAsciiSceneAuto(
 			const char* filename							///< [in] Name of the file containing the scene
-			) { return LoadAsciiScene( filename ); }
+			) { return false; }
 
 		//! P5 (Model-B): re-derive the RETAINED CST Document with a FORCED active scene_variant ("none"/"" =
 		//! base), re-baking the materials -- the GUI variant switch.  Resets the managers first (ClearAll), so the

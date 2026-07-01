@@ -984,9 +984,6 @@
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiCommandParser.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Parsers\AsciiSceneParser.cpp">
-      <Filter>Parser</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Parsers\ChunkParserRegistry.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
@@ -2524,9 +2521,6 @@
       <Filter>Functions</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Parsers\AsciiCommandParser.h">
-      <Filter>Parser</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Parsers\AsciiSceneParser.h">
       <Filter>Parser</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Parsers\AsciiScriptParser.h">
