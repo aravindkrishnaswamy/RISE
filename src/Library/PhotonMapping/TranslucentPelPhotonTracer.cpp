@@ -93,6 +93,16 @@ void TranslucentPelPhotonTracer::TracePhoton(
 			ri.pModifier->Modify( ri.geometric );
 		}
 
+		// G6: stamp the ambient (incident-medium) IOR from the stack so the
+		// GGX conductor Fresnel evaluated in SPF::Scatter sees the surrounding
+		// medium (e.g. enamel glass) rather than hardcoded air.  Read BEFORE
+		// SetCurrentObject so top() is the medium the photon was travelling
+		// through.  Guard a non-positive stack top to air (1.0).
+		{
+			const Scalar ambIOR = ior_stack.top();
+			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+		}
+
 		// Set the current object on the IOR stack
 		ior_stack.SetCurrentObject( ri.pObject );
 
