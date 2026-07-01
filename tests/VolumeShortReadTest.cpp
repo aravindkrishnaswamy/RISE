@@ -309,6 +309,11 @@ static void TestDiskFileReadBufferMissingFile()
 	std::memset( dest, 0x33, sizeof( dest ) );
 	Check( !db->getBytes( dest, 8 ), "F: getBytes on null-hFile returns false (no crash)" );
 
+	// Base DiskBuffer methods (seek-first readers like TIFF call these
+	// before any getter): must also be null-safe (was fseek(NULL)/ftell(NULL)).
+	Check( db->getCurPos() == 0, "F: getCurPos on null-hFile returns 0 (no crash)" );
+	Check( !db->seek( IBuffer::START, 0 ), "F: seek on null-hFile returns false (no crash)" );
+
 	db->release();
 }
 
