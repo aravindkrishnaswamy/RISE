@@ -1046,7 +1046,7 @@ approximation, which the principle rejects.)
 >   red-dominant, asserts `r > 3·b`, physical r/b ≈ 21–23×; flat curve → gray; unknown ref → load
 >   fails; no curve → gray — the direct luminance-collapse-vs-spectral contrast, authored through
 >   the parser).
-> - **G1-c — HWSS free-flight reweighting — DONE (commit pending).** The 4 HWSS no-scatter sites
+> - **G1-c — HWSS free-flight reweighting — DONE (commit `d6dd5e6b` + coverage follow-up).** The 4 HWSS no-scatter sites
 >   (`PathTracingIntegrator.cpp` bounce-loop surface-hit/escape + `IntegrateRayHWSS` camera-first
 >   surface-hit/escape) carried the analog double-count deferred from the §10.12 family: they did
 >   `throughput[w] *= Tr_w` on top of the survival probability, reading `exp(−2·σ·d)` under HWSS.
@@ -1055,14 +1055,25 @@ approximation, which the principle rejects.)
 >   sampled once at the hero wavelength) and `noScatterPdfScale` is the equiangular-MIS 0.5/1.0
 >   selection factor already in `MediumSampleOutcome`. For a gray bundle `Tr_w == pSurvivalHero` so
 >   the weight is exactly 1 — mirrors the non-HWSS `PTSurvivalWeight` scalar sites (~3376/3390).
->   **Test scoping lesson (caught by revert-proof):** the interior-slab scene (case C) does NOT
->   reach these sites — its through-medium transmittance runs in `IntegrateFromHitHWSS`; the sites
->   fire only when the **camera is INSIDE the medium**. So the discriminator is a camera-inside-
->   global-medium HWSS scene (`VolumeAbsorptionAttenuationTest` case **F2**): fix reads
->   single-count `L0·exp(−σ·d)`, forced double-count reads `L0·exp(−2σ·d)≈0.041` and FAILS
->   (revert-proven in-process). The separate PT HWSS emission bias (`L0≈0.30` not 1.0) cancels in
->   the base-vs-absorber ratio. Off the hero's render path (hero renders non-HWSS NM) but a real
->   bug closed for completeness.
+>   **Test scoping + coverage (two review-loop lessons, both from revert-proofs):**
+>   (1) The interior-slab scene (case C) does NOT reach any of these sites — its through-medium
+>   transmittance runs inside `IntegrateFromHitHWSS`'s per-wavelength internals; the sites fire only
+>   with the **camera INSIDE the medium**. My first HWSS test was a *hollow green* (forcing the
+>   double-count didn't change it — it didn't touch the fixed sites).
+>   (2) **Instrumented per-site fire counts** (atomic counters across the whole suite): **S3
+>   (camera-first surface-hit) fires ~783k; S2 (bounce-loop escape) fires 262k; S1 (bounce-loop
+>   surface-hit) and S4 (camera-first escape) fire ZERO.** The bounce-loop routes specular/refractive
+>   continuations through the same `IntegrateFromHitHWSS` internals as the slab, and diffuse bounces
+>   in an unbounded medium escape (S2, a `maxDist=∞` no-op) — so S1/S4 are unreached by available
+>   transports. **S3 is discriminated two ways** (an S3-only forced double-count fails both):
+>   case **F2** (direct camera→emissive view; fix reads single-count `L0·exp(−σ·d)`, forced
+>   double-count `L0·exp(−2σ·d)≈0.041` FAILS) and case **F3** (specular mirror bounce through the
+>   medium — a distinct specular+medium+HWSS transport). The separate pre-existing PT HWSS emission
+>   bias (`L0≈0.30` not 1.0) cancels in the base-vs-absorber ratio. **S1/S4 coverage:** the reweight
+>   is textually uniform across all four sites and verified at the unreached sites by code review
+>   (a forced double-count raises exactly four `-Wunused-variable` warnings, one per site, confirming
+>   each consumes `pSurvivalHero`). Off the hero's render path (hero renders non-HWSS NM) but a real,
+>   `useHWSS`-reachable bug closed for completeness.
 > - **G1-d — measured gold-ruby `σ_a(λ)` + analytic-slab gate + hero scene.** Extends the §10.3
 >   analytic Beer slab into a spectral discriminator (a wavelength-selective curve must reproduce
 >   `exp(−σ_a(λ)·d)` per wavelength) and lands the first real colorant curve.

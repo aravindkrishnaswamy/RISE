@@ -4503,20 +4503,20 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 		}
 		else
 		{
-				// HWSS-4 camera-first-bounce escape: no-scatter survival reweight
-				// (G1-c).  The escape survival event carries the hero survival pdf, so
-				// escapeTr holds Tr_w / (noScatterPdfScale * pSurvivalHero) for the env
-				// contribution below -- not the full Tr_w (which double-counts
-				// Beer-Lambert).  HWSS twin of the non-HWSS camera escape at ~3390.
-				const Scalar pSurvivalHero = mso.noScatterPdfScale *
-					pCurrentMedium->EvalDistancePdfNM(
-						cameraRay, maxDist, /*scattered=*/false, maxDist, heroNM );
-				for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
-					const Scalar Tr = swl.terminated[w] ? Scalar(0) :
-						pCurrentMedium->EvalTransmittanceNM(
-							cameraRay, maxDist, swl.lambda[w] );
-					escapeTr[w] = ( pSurvivalHero > 0.0 ) ? ( Tr / pSurvivalHero ) : Tr;
-				}
+			// HWSS-4 camera-first-bounce escape: no-scatter survival reweight
+			// (G1-c).  The escape survival event carries the hero survival pdf, so
+			// escapeTr holds Tr_w / (noScatterPdfScale * pSurvivalHero) for the env
+			// contribution below -- not the full Tr_w (which double-counts
+			// Beer-Lambert).  HWSS twin of the non-HWSS camera escape at ~3390.
+			const Scalar pSurvivalHero = mso.noScatterPdfScale *
+				pCurrentMedium->EvalDistancePdfNM(
+					cameraRay, maxDist, /*scattered=*/false, maxDist, heroNM );
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+				const Scalar Tr = swl.terminated[w] ? Scalar(0) :
+					pCurrentMedium->EvalTransmittanceNM(
+						cameraRay, maxDist, swl.lambda[w] );
+				escapeTr[w] = ( pSurvivalHero > 0.0 ) ? ( Tr / pSurvivalHero ) : Tr;
+			}
 		}
 	}
 

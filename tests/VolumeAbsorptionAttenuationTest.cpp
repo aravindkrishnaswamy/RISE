@@ -1504,22 +1504,27 @@ static void TestGlobalMediumSpectral()
 		"F: spectral measured == single-count Beer-Lambert (S3 NMTag)" );
 }
 
-// [F2] The SAME camera-inside-global-medium scene under HWSS (hwss=true).
-// This is the scene that actually exercises the FOUR HWSS no-scatter sites
-// fixed in G1-c: with the camera INSIDE the medium, IntegrateRayHWSS's
-// camera-first surface-hit/escape (sites 3/4) and the bounce-loop
-// (sites 1/2) apply the free-flight survival weight.  (The interior-slab
-// scene C does NOT reach these sites — its through-medium transmittance
-// runs in IntegrateFromHitHWSS — so this global-medium scene is the correct
-// discriminator.)  Before G1-c the sites multiplied the full per-wavelength
-// Tr on top of the survival probability, reading exp(-2*sigma_a*d); after
-// the fix each channel reads single-count exp(-sigma_a*d), matching case F.
+// [F2] Camera-inside-global-medium under HWSS (hwss=true).  This scene
+// DISCRIMINATES the camera-first surface-hit site (S3, IntegrateRayHWSS):
+// the camera ray, inside the medium, hits the emissive back wall through
+// the medium, so S3 applies the free-flight survival weight.  (Instrumented
+// per-site fire counts, 2026-07-01: this scene fires S3 heavily and the
+// bounce-loop escape S2 negligibly; S1/S4 do not fire here — the wall fills
+// the FOV so no camera ray escapes [S4=0], and the unbounded medium means
+// secondary bounces escape rather than hit a surface [S1=0].  S1 is
+// discriminated separately by the mirror scene F3.)  The interior-slab
+// scene C does NOT reach any of these sites — its through-medium
+// transmittance runs inside IntegrateFromHitHWSS's per-wavelength internals.
 //
-// REVERT-PROOF (in-process): forcing pSurvivalHero out of the four sites
-// (throughputComp/result *= Tr, escapeTr = Tr) makes this read
-// L0*exp(-2*sigma_a*d) ~ 0.043*L0 (measured/L0 ~ 0.135), far outside the 8%
-// band; the fix gives measured/L0 = exp(-sigma_a*d) ~ 0.368.  Confirmed by
-// temporarily forcing the double-count and re-running.
+// Before G1-c, S3 multiplied the full per-wavelength Tr on top of the
+// survival probability, reading exp(-2*sigma_a*d); the fix reads
+// single-count exp(-sigma_a*d), matching case F.
+//
+// REVERT-PROOF (in-process): forcing pSurvivalHero out of S3 (result[w] *=
+// Tr[w]) makes this read L0*exp(-2*sigma_a*d) (measured/L0 ~ 0.135), far
+// outside the 8% band; the fix gives measured/L0 = exp(-sigma_a*d) ~ 0.368.
+// Confirmed by temporarily forcing the double-count and re-running (a
+// single-site S3 revert reproduces the whole failure).
 static void TestGlobalMediumSpectralHWSS()
 {
 	std::cout << "[F2] camera INSIDE global medium, NM/spectral gray absorber "
@@ -1544,7 +1549,103 @@ static void TestGlobalMediumSpectralHWSS()
 		<< std::endl;
 
 	Check( ChannelOk( m, expected, "F2.mean" ),
-		"F2: HWSS spectral == single-count Beer-Lambert (G1-c sites 1-4, not 2x)" );
+		"F2: HWSS spectral == single-count Beer-Lambert (G1-c site S3 camera-first, not 2x)" );
+}
+
+// [F3] S3 discriminator via a SPECULAR mirror bounce through the medium — a
+// distinct transport from F2's direct emissive view (specular reflection +
+// participating medium + HWSS).  The camera, inside the global medium, sees
+// the emissive wall reflected in a mirror:
+//
+//   camera(0, inside global medium) --0.95--> mirror(+1)  [S3, camera-first]
+//   mirror reflects -Z            --2.85--> emissive wall(-2)  [handled by
+//                                            IntegrateFromHitHWSS internals]
+//
+// A specular BSDF has no NEE term, so the wall's contribution reaches the
+// camera purely through the mirror bounce.  Single-count ratio =
+// exp(-sigma*(0.95+2.85)) = exp(-3.8*sigma); an S3 double-count of the
+// camera->mirror segment reads dimmer, outside the 8% band.
+//
+// COVERAGE NOTE (instrumented 2026-07-01): this scene discriminates **S3**
+// (an S3-only forced double-count fails BOTH F2 and F3).  It does NOT reach
+// S1 (bounce-loop surface-hit): across F2 + F3 + the whole suite, S1 and S4
+// fire ZERO times, S2 fires only as an escape (immaterial), S3 fires ~783k.
+// The mirror->wall segment's transmittance is applied by
+// IntegrateFromHitHWSS's internal per-wavelength handling, not the site-1
+// no-scatter block — the same internal path that carries the interior-slab
+// (case C) transmittance.  S1/S4 are unreached by available transports; the
+// G1-c reweight is textually uniform across all four sites and is verified
+// at the unreached sites by code review (and by the four -Wunused-variable
+// warnings a forced double-count raises, one per site).
+static std::string BuildGlobalMediumMirrorScene( int samples, double sa, bool hwss )
+{
+	std::ostringstream ss;
+	ss <<
+		"RISE ASCII SCENE 6\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_white\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_black\n\tcolor 0.0 0.0 0.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 3.14159265 3.14159265 3.14159265\n}\n\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
+		"pathtracing_spectral_rasterizer\n{\n"
+		"\tsamples " << samples << "\n\tmax_volume_bounce 16\n\tpixel_filter box\n"
+		"\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n"
+	 << "\thwss " << ( hwss ? "TRUE" : "false" ) << "\n" <<
+		"\tmax_diffuse_bounce 3\n}\n\n"
+		"file_rasterizeroutput\n{\n\tpattern /tmp/volume_gmed_mirror_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n"
+		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+		// Camera at origin looking +Z at the mirror; the emissive wall sits
+		// behind the camera (-Z) so it is only seen via the mirror bounce.
+		"pinhole_camera\n{\n\tlocation 0 0 0\n\tlookat 0 0 1\n\tup 0 1 0\n\tfov 10.0\n}\n\n"
+		"homogeneous_medium\n{\n\tname gmed\n"
+		"\tabsorption " << sa << " " << sa << " " << sa << "\n"
+		"\tscattering 0.0 0.0 0.0\n\tphase isotropic\n}\n\n"
+		"perfectreflector_material\n{\n\tname mirror\n\treflectance pnt_white\n}\n\n"
+		// Base reflectance BLACK so the emissive wall is a pure emitter:
+		// no reflective bounce tail off the luminaire (a non-zero base would
+		// add long multi-bounce-through-medium paths that lengthen the
+		// effective optical depth and blur the single-vs-double discriminator).
+		"lambertian_material\n{\n\tname basemat\n\treflectance pnt_black\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname emitwall\n\texitance pnt_emit\n\tmaterial basemat\n\tscale 1.0\n}\n\n"
+		"box_geometry\n{\n\tname mirrorgeom\n\twidth 10.0\n\theight 10.0\n\tdepth 0.1\n}\n\n"
+		"box_geometry\n{\n\tname wallgeom\n\twidth 10.0\n\theight 10.0\n\tdepth 0.2\n}\n\n"
+		// Mirror at +Z (camera-first hit); emissive wall at -Z (seen only in
+		// the mirror).  Reflected path length mirror->wall = 3.
+		"standard_object\n{\n\tname themirror\n\tgeometry mirrorgeom\n\tposition 0 0 1\n\tmaterial mirror\n}\n\n"
+		"standard_object\n{\n\tname backwall\n\tgeometry wallgeom\n\tposition 0 0 -2\n\tmaterial emitwall\n}\n\n"
+		"> set global_medium gmed\n";
+	return ss.str();
+}
+
+static void TestGlobalMediumMirrorHWSS()
+{
+	std::cout << "[F3] camera INSIDE global medium, specular mirror bounce to emissive wall, HWSS "
+		<< "(sigma_a = 0.5) — G1-c site S3 via a specular-through-medium transport" << std::endl;
+	const double sa = 0.5;
+
+	const PixelRGB base = RenderCentralBlock(
+		BuildGlobalMediumMirrorScene( 1024, 0.0, /*hwss=*/true ), "gmed_mirror_base" );
+	const PixelRGB px = RenderCentralBlock(
+		BuildGlobalMediumMirrorScene( 1024, sa, /*hwss=*/true ), "gmed_mirror" );
+
+	Check( base.valid && px.valid, "F3: renders produced frames" );
+	if( !base.valid || !px.valid ) return;
+
+	const double L0 = ( base.r + base.g + base.b ) / 3.0;
+	const double m  = ( px.r + px.g + px.b ) / 3.0;
+	// Precise geometric path at normal incidence: camera(0) -> mirror front
+	// face (box at z=1, depth 0.1 -> face z=0.95) = 0.95; reflect -Z ->
+	// emissive wall front face (box at z=-2, depth 0.2 -> face z=-1.9) =
+	// 0.95-(-1.9) = 2.85.  Total = 3.8.
+	const double totalPath = 0.95 + 2.85;
+	const double expected = L0 * std::exp( -sa * totalPath );
+	std::cout << "    L0(zero-abs)=" << L0 << "  measured=" << m
+		<< "  expected single-count=" << expected
+		<< "  (S3 double-count would be ~" << L0 * std::exp( -sa * ( 2.0 * 0.95 + 2.85 ) ) << ")"
+		<< std::endl;
+
+	Check( base.valid && L0 > 1e-3, "F3: mirror actually shows the emissive wall (L0 > 0)" );
+	Check( ChannelOk( m, expected, "F3.mean" ),
+		"F3: HWSS specular-through-medium == single-count exp(-sigma*3.8) (S3, not 2x)" );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2013,6 +2114,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestGlobalMediumColored();
 	TestGlobalMediumSpectral();
 	TestGlobalMediumSpectralHWSS();
+	TestGlobalMediumMirrorHWSS();
 
 	// Cases G..M: the SAME interior slab under BDPT / VCM (RGB + spectral),
 	// proving the analog no-scatter survival fix now makes BDPT/VCM match
