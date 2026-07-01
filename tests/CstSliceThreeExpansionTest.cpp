@@ -1040,25 +1040,17 @@ int main()
 	}
 
 	{
-		// FILM4 -- legacy no-op: a Job with NO retained Document (loaded NOT via CST) -> ApplyCstFilmEdit returns 0,
-		// does not crash, and leaves the live film untouched (the live SetFilm path is unaffected).
-		const char* tf = "cst_film4.RISEscene";
-		{ std::ofstream o( tf );
-		  o << "RISE ASCII SCENE 6\n"
-		       "film\n{\nwidth 320\nheight 240\n}\n"
-		       "pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 30\n}\n"
-		       "uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
-		       "lambertian_material\n{\nname m\nreflectance p1\n}\n"
-		       "sphere_geometry\n{\nname g\nradius 1\n}\n"
-		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
+		// FILM4 -- no-Document no-op: a Job that was NEVER loaded via the CST path (bare `new Job()`, so no
+		// retained Document) -> ApplyCstFilmEdit returns 0, does not crash, and leaves the live film untouched
+		// (the live SetFilm path is unaffected).  (Slice 6c-3b: this used to build the no-Document Job via the
+		// legacy loader; post-cutover a never-loaded Job is the natural no-Document case, and the defensive
+		// no-op contract is identical.)
 		Job* j = new Job();
-		Check( j->LoadAsciiScene( tf ), "FILM4: loads via the LEGACY (non-CST) path" );
-		Check( !j->HasRetainedCstDocument(), "FILM4: the legacy load retains NO CST Document" );
-		Check( j->SetFilm( 512, 512, FilmPAR( *j ) ), "FILM4: live SetFilm still works on a legacy scene" );
+		Check( !j->HasRetainedCstDocument(), "FILM4: a never-CST-loaded Job retains NO CST Document" );
+		Check( j->SetFilm( 512, 512, 1.0 ), "FILM4: live SetFilm works with no Document" );
 		Check( j->ApplyCstFilmEdit( "512", "512", nullptr ) == 0, "FILM4: ApplyCstFilmEdit is a clean no-op (returns 0) with no Document" );
 		Check( FilmW( *j ) == 512u, "FILM4: the live film width is unaffected by the no-op route" );
 		j->release();
-		std::remove( tf );
 	}
 
 	{

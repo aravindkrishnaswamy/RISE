@@ -211,7 +211,7 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 	IJobPriv* pJob = nullptr;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) return result;
 
-	if( !pJob->LoadAsciiScene( scenePath ) ) {
+	if( !pJob->LoadAsciiSceneViaCst( scenePath ) ) {
 		safe_release( pJob );
 		return result;
 	}

@@ -19,7 +19,7 @@
 //
 //    DisplacedGeometry::GetBuildMeshCount() is the instrumentation: it
 //    counts every actual tessellate+bake.  We assert:
-//      - after PARSE (LoadAsciiScene) the count is 0 — nothing baked at
+//      - after PARSE (LoadAsciiSceneViaCst) the count is 0 — nothing baked at
 //        parse time (the whole point of deferral);
 //      - after RENDER the count is exactly 3 — the bound single (1) plus
 //        the nested outer + its cascaded inner (2); the UNBOUND one
@@ -283,7 +283,7 @@ static void TestDeferralAndCascade()
 	Check( created, "Job created" );
 	if( !created ) return;
 
-	const bool loaded = pJob->LoadAsciiScene( scenePath.c_str() );
+	const bool loaded = pJob->LoadAsciiSceneViaCst( scenePath.c_str() );
 	Check( loaded, "scene loaded (parse)" );
 
 	// PROOF OF DEFERRAL: parse must bake NOTHING.  Pre-change, all four
@@ -337,7 +337,7 @@ static void TestIdempotentReRender()
 
 	IJobPriv* pJob = 0;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { Check( false, "Job created" ); return; }
-	if( !pJob->LoadAsciiScene( scenePath.c_str() ) ) { Check( false, "scene loaded" ); safe_release( pJob ); return; }
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { Check( false, "scene loaded" ); safe_release( pJob ); return; }
 
 	pJob->RemoveRasterizerOutputs();
 	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
@@ -399,7 +399,7 @@ static void TestCSGOperandRealized()
 
 	IJobPriv* pJob = 0;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { Check( false, "Job created" ); return; }
-	const bool loaded = pJob->LoadAsciiScene( scenePath.c_str() );
+	const bool loaded = pJob->LoadAsciiSceneViaCst( scenePath.c_str() );
 	Check( loaded, "csg scene loaded (parse)" );
 	if( !loaded ) { safe_release( pJob ); return; }
 
@@ -446,7 +446,7 @@ static void TestPrepareForRenderingRealizes()
 
 	IJobPriv* pJob = 0;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { Check( false, "Job created" ); return; }
-	if( !pJob->LoadAsciiScene( scenePath.c_str() ) ) { Check( false, "scene loaded" ); safe_release( pJob ); return; }
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { Check( false, "scene loaded" ); safe_release( pJob ); return; }
 	Check( DisplacedGeometry::GetBuildMeshCount() == 0, "parse bakes nothing" );
 
 	// The editor scenario: build the TLAS DIRECTLY, with no render / AttachScene.
@@ -498,7 +498,7 @@ static void TestPathInstanceOfDisplaced()
 
 	IJobPriv* pJob = 0;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { Check( false, "Job created" ); return; }
-	const bool loaded = pJob->LoadAsciiScene( scenePath.c_str() );
+	const bool loaded = pJob->LoadAsciiSceneViaCst( scenePath.c_str() );
 	Check( loaded, "scene with displaced path-instance template parses (was a parse failure pre-fix)" );
 	if( !loaded ) { safe_release( pJob ); return; }
 

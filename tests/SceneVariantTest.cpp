@@ -128,15 +128,8 @@ int main()
 		j->release();
 	}
 
-	// 6. Legacy path renders the BASE: scene_variant is CST-native, so the legacy reader skips the variant-tagged
-	//    material (no dup-name collision) and does not bake active_scene_variant.
-	{
-		Job* j = new Job();
-		const bool ok = risequiv::ParseLegacy( SceneWithActive( "night" ), *j );
-		Check( ok, "legacy parses a scene_variant scene (variant material skipped -> no dup-name collision)" );
-		Check( LumExitanceR( j, "lum" ) > 1.0, "legacy renders the base: `lum` scale 5 (variant override skipped, not baked)" );
-		j->release();
-	}
+	// 6. [retired -- Slice 6c-3b] The legacy-parser "renders the BASE for a scene_variant scene" case was removed
+	//    with the legacy reader; the CST path's variant behaviour is covered by cases 1-5, 7-18 above/below.
 
 	// 7. ClearSceneVariants: re-deriving on the same Job clears prior variant state (no cross-derive leak).
 	{
@@ -266,7 +259,8 @@ int main()
 	}
 
 	// 15. `variant none` is the no-variant sentinel -> the material is an ORDINARY BASE (registered, not dropped
-	//     as a variant tag); CST and legacy agree.  (Mirrors `material none` / `active_scene_variant none`.)
+	//     as a variant tag).  (Mirrors `material none` / `active_scene_variant none`.)  (Slice 6c-3b: the legacy-
+	//     path half was retired with the legacy reader; the CST path is the ground truth.)
 	{
 		Job* j; DeriveText(
 			"RISE ASCII SCENE 6\n"
@@ -274,13 +268,6 @@ int main()
 			"lambertian_luminaire_material\n{\nname lum\nvariant none\nexitance white\nscale 5.0\nmaterial none\n}\n", j );
 		Check( LumExitanceR( j, "lum" ) > 1.0, "`variant none` material is registered as a base (CST path)" );
 		j->release();
-		Job* jl = new Job();
-		risequiv::ParseLegacy(
-			"RISE ASCII SCENE 6\n"
-			"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
-			"lambertian_luminaire_material\n{\nname lum\nvariant none\nexitance white\nscale 5.0\nmaterial none\n}\n", *jl );
-		Check( LumExitanceR( jl, "lum" ) > 1.0, "`variant none` material is registered as a base (legacy path)" );
-		jl->release();
 	}
 
 	// 16. DeriveToJob's activeVariantOverride FORCES a variant, winning over the active_scene_variant chunk (the

@@ -253,7 +253,7 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 		return result;
 	}
 
-	if( !pJob->LoadAsciiScene( scenePath ) ) {
+	if( !pJob->LoadAsciiSceneViaCst( scenePath ) ) {
 		safe_release( pJob );
 		return result;
 	}

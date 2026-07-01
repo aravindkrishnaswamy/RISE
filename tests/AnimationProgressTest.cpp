@@ -214,7 +214,7 @@ static void RunAnimationCase( const char* label, const char* rasterizerChunk,
 		return;
 	}
 
-	bool loaded = pJob->LoadAsciiScene( path.c_str() );
+	bool loaded = pJob->LoadAsciiSceneViaCst( path.c_str() );
 	Check( loaded, std::string(label) + ": scene loaded" );
 	if( !loaded ) { safe_release( pJob ); return; }
 
@@ -277,7 +277,7 @@ static void RunSingleFrameCase( const char* label, const char* rasterizerChunk,
 		Check( false, std::string(label) + ": job created" );
 		return;
 	}
-	if( !pJob->LoadAsciiScene( path.c_str() ) ) {
+	if( !pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
 		Check( false, std::string(label) + ": scene loaded" );
 		safe_release( pJob );
 		return;

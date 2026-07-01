@@ -5,9 +5,14 @@
 //  Job::LoadAsciiSceneViaCst loads a scene by building the canonical CST
 //  (ParseToCst), deriving the Scene from it (DeriveToJob), and RETAINING the
 //  Document for later edit/save (Model-B: "Scene = derive(CST)").  This test
-//  proves the new load path produces a Scene byte-equivalent (DumpJob) to the
-//  legacy Job::LoadAsciiScene, and that the Document is retained (and is NOT
-//  retained by the legacy path).
+//  proves the CST load path derives a non-trivial Scene and retains the
+//  Document, and pins the loader's ACCEPT / REFUSE contract (native-v7 accepted,
+//  render-neutral `>` directives accepted, render-affecting directives + FOR /
+//  `> run` refused).
+//
+//  Slice 6c-3b: the original legacy-vs-CST DumpJob equivalence arm was retired
+//  with the rest of the legacy-parser oracle -- CstDeriveGoldenTest is the
+//  standing CST-derive correctness net over the whole corpus.
 //
 //  Suite-safe: the scenes are synthetic NATIVE-v7 forms (flat -- no
 //  $()/DEFINE/FOR/`> run`) with no external media, so the CST path (which does
@@ -37,6 +42,14 @@ namespace
 	int s_pass = 0, s_fail = 0;
 	void Check( bool ok, const std::string& what ) { if( ok ) ++s_pass; else { ++s_fail; std::printf( "  FAIL: %s\n", what.c_str() ); } }
 
+	// DumpJob of a fresh, empty Job -- the "derived nothing" sentinel.  A successful
+	// native-v7 load must produce a dump that differs from this.
+	const std::string& EmptyJobDump()
+	{
+		static const std::string e = []{ Job* j = new Job(); std::string s = DumpJob( *j ); j->release(); return s; }();
+		return e;
+	}
+
 	bool WriteTmp( const char* path, const std::string& text )
 	{
 		std::ofstream f( path );
@@ -45,25 +58,23 @@ namespace
 		return f.good();
 	}
 
-	// Load `v7scene` (written to `path`) via BOTH the legacy parser and the CST path; assert the derived
-	// Jobs are DumpJob-equivalent and that only the CST path retains the canonical Document.
+	// Load `v7scene` (written to `path`) via the CST path; assert it derives a non-trivial Scene
+	// (DumpJob != the empty-Job dump) and RETAINS the canonical Document.  (Slice 6c-3b: the legacy-
+	// parser arm that this originally compared against was retired -- CstDeriveGoldenTest is now the
+	// CST-derive correctness net for the whole corpus, so the per-inline-scene legacy oracle here is
+	// subsumed.  What stays UNIQUE to this test is the CST loader's ACCEPT/REFUSE contract below.)
 	void Case( const char* label, const char* path, const std::string& v7scene )
 	{
 		if( !WriteTmp( path, v7scene ) ) { Check( false, std::string( label ) + ": write temp scene" ); return; }
 
-		Job* jL = new Job();
-		const bool okL = jL->LoadAsciiScene( path );
 		Job* jC = new Job();
 		const bool okC = jC->LoadAsciiSceneViaCst( path );
 
-		Check( okL, std::string( label ) + ": legacy LoadAsciiScene succeeds" );
 		Check( okC, std::string( label ) + ": LoadAsciiSceneViaCst succeeds" );
-		if( okL && okC )
-			Check( DumpJob( *jL ) == DumpJob( *jC ), std::string( label ) + ": CST-load Scene == legacy-load Scene (DumpJob)" );
+		if( okC )
+			Check( DumpJob( *jC ) != EmptyJobDump(), std::string( label ) + ": CST load derives a non-trivial Scene" );
 		Check( jC->GetCstDocument() != nullptr, std::string( label ) + ": CST load RETAINS the canonical Document" );
-		Check( jL->GetCstDocument() == nullptr, std::string( label ) + ": legacy load retains NO Document" );
 
-		jL->release();
 		jC->release();
 		std::remove( path );
 	}

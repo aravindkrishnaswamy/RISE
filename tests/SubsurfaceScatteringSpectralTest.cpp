@@ -246,12 +246,12 @@ static ImageStats RenderAndComputeStats( const std::string& sceneText, const cha
 		return result;
 	}
 
-	const bool bLoaded = pJob->LoadAsciiScene( scenePath.c_str() );
+	const bool bLoaded = pJob->LoadAsciiSceneViaCst( scenePath.c_str() );
 	// The parser has consumed the file; remove it now so it is cleaned up on
 	// every exit path (success, render failure, or early return below).
 	std::remove( scenePath.c_str() );
 	if( !bLoaded ) {
-		std::cout << "  (LoadAsciiScene failed for " << tag << ")" << std::endl;
+		std::cout << "  (LoadAsciiSceneViaCst failed for " << tag << ")" << std::endl;
 		safe_release( pJob );
 		return result;
 	}

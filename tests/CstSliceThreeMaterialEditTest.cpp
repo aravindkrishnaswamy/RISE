@@ -25,7 +25,7 @@
 #include <fstream>
 #include <cstdio>
 
-#include "CstRenderEquivalence.h"          // Job + manager accessors + risequiv::ParseLegacy
+#include "CstRenderEquivalence.h"          // Job + manager accessors
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/SceneEditor/MaterialIntrospection.h"
 
@@ -95,18 +95,9 @@ int main()
 		j->release();
 	}
 
-	// ---- C: legacy-loaded scene (no retained Document) edits via the DIRECT fallback ----
-	{
-		Job* j = new Job();
-		Check( risequiv::ParseLegacy( SCENE, *j ), "C: parses via the legacy path" );
-		Check( !j->HasRetainedCstDocument(), "C: legacy load retains NO Document (CST path gated off)" );
-		SceneEditController c( *j, 0 );
-		c.SetSelection( Cat::Material, String( "m" ) );
-		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "C: edit applies (direct fallback)" );
-		Check( SlotPainter( *j, "m", "reflectance" ) == j->GetPainters()->GetItem( "p2" ),
-		       "C: direct fallback still re-points m.reflectance to p2" );
-		j->release();
-	}
+	// ---- C: [retired -- Slice 6c-3b] the legacy-loaded (no-retained-Document) DIRECT-fallback edit case was
+	//      removed with the legacy reader.  Post-cutover every scene load retains a CST Document, so the
+	//      no-Document state this exercised is unreachable; the incremental CST edit path is covered by D/E below. ----
 
 	// ---- D: SEQUENTIAL incremental edits on one CST-loaded Job (isolates whether a 2nd incremental works) ----
 	{

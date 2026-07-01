@@ -246,7 +246,7 @@ int main()
 		std::remove( scenePath.c_str() );
 		return 1;
 	}
-	if( !pJob->LoadAsciiScene( scenePath.c_str() ) ) {
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) {
 		std::cout << "  FAIL: scene load" << std::endl;
 		safe_release( pJob );
 		std::remove( scenePath.c_str() );

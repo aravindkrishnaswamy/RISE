@@ -47,7 +47,6 @@
 #include "../src/Library/Painters/ExpressionEval.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Job.h"
-#include "../src/Library/Interfaces/ISceneParser.h"
 #include "../src/Library/Interfaces/IPainter.h"
 #include "../src/Library/Interfaces/IFunction2D.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
@@ -272,20 +271,17 @@ namespace {
 		return path;
 	}
 
-	// Parse an inline scene body through the REAL AsciiSceneParser; returns
-	// ParseAndLoadScene's verdict (Job is Reference-counted: heap + release).
+	// Load an inline scene body through the CST path (LoadAsciiSceneViaCst); returns
+	// the load verdict (Job is Reference-counted: heap + release).
 	bool ParseBody( const std::string& tag, const std::string& body )
 	{
 		const std::string path = WriteTempScene( tag, "RISE ASCII SCENE 6\n" + body );
 		Job* job = new Job();
 		job->addref();
-		ISceneParser* parser = 0;
-		bool ok = false;
-		if( RISE_API_CreateAsciiSceneParser( &parser, path.c_str() ) && parser ) {
-			parser->addref();
-			ok = parser->ParseAndLoadScene( *job );
-			parser->release();
-		}
+		// Model-B P5 Slice 6c-3b: load via the canonical CST path (native-v7).
+		// The finiteness guard (non-finite param -> refuse) fires in DeriveToJob's
+		// descriptor validation exactly as it did in the legacy parser.
+		const bool ok = job->LoadAsciiSceneViaCst( path.c_str() );
 		job->release();
 		remove( path.c_str() );
 		return ok;
@@ -296,7 +292,7 @@ static void TestParserGuards()
 {
 	std::cout << "Test 4: parser rejects non-finite param / disp_scale (errors below are EXPECTED)" << std::endl;
 
-	// expression_function2d `param` -- the AsciiSceneParser finite check that was
+	// expression_function2d `param` -- the descriptor finite check that was
 	// previously dead under -ffast-math.  A non-finite literal must be refused.
 	Check( !ParseBody( "param_inf",
 		"expression_function2d\n{\nname f\nparam k inf\nexpr u + k\n}\n" ),

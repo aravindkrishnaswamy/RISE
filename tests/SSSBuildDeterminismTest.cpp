@@ -162,7 +162,7 @@ static RenderResult RenderOnce()
 
 	IJobPriv* pJob = nullptr;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { std::remove( path ); return result; }
-	const bool bLoaded = pJob->LoadAsciiScene( path );
+	const bool bLoaded = pJob->LoadAsciiSceneViaCst( path );
 	std::remove( path );
 	if( !bLoaded ) { safe_release( pJob ); return result; }
 

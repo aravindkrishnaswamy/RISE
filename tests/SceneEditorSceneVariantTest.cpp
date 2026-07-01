@@ -98,17 +98,9 @@ int main()
 	pJob->release();
 	std::remove( tmp );
 
-	// Legacy-load gate (reviewer-found P2): the legacy reader DECLARES the variants (record-only), but with no
-	// retained CST Document the switch cannot re-derive -- so the controller reports 0 variant entries (the GUI
-	// shows no pickable rows that would silently no-op), even though GetSceneVariantCount() > 0.
-	{
-		Job* pLegacy = new Job();
-		Check( risequiv::ParseLegacy( scene, *pLegacy ), "scene parses via the legacy path" );
-		Check( pLegacy->GetSceneVariantCount() > 0, "legacy DOES declare the variants (record-only)" );
-		SceneEditController lc( *pLegacy, 0 );
-		Check( lc.CategoryEntityCount( Cat::SceneVariant ) == 0, "legacy-loaded (no CST Document) -> 0 variant entries (switch gated off)" );
-		pLegacy->release();
-	}
+	// [retired -- Slice 6c-3b] The legacy-load gate case (legacy reader declares variants record-only but,
+	// lacking a retained CST Document, the controller shows 0 pickable variant rows) was removed with the
+	// legacy reader.  Post-cutover every load retains a CST Document, so the no-Document state is unreachable.
 
 	std::cout << passCount << " passed, " << failCount << " failed." << std::endl;
 	return failCount == 0 ? 0 : 1;

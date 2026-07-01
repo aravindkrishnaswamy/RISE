@@ -14,11 +14,15 @@
 //  This test pins all three layers:
 //    A. Job API direct -- a second Add* under an existing name returns false,
 //       and the FIRST definition survives intact (first-wins preserved).
-//    B. Legacy parser -- a scene with a real intra-manager duplicate fails to
-//       load (return false); the same scene with a unique name loads (true).
-//    C. CST derive -- a duplicate-name document is refused (diagnostics emitted)
-//       and, because BOTH paths refuse identically, the derived Job still
-//       matches the legacy parse (the differential gate stays green even here).
+//    B. Scene load (LoadAsciiSceneViaCst) -- a scene with a real intra-manager
+//       duplicate fails to load (return false); the same scene with a unique
+//       name loads (true).
+//    C. CST derive (DeriveToJob direct) -- a duplicate-name document is refused
+//       (diagnostics emitted; exactly the first chunk applied).
+//
+//  (Slice 6c-3b: layer B was the legacy parser + a legacy-vs-CST DumpJob tail;
+//  both were retired with the legacy reader.  The load is now the CST path and
+//  the duplicate-refusal contract is asserted directly, no legacy oracle.)
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -34,12 +38,16 @@ static void Check( bool c, const char* w ) { if( c ) ++g_pass; else { ++g_fail; 
 
 static const std::string HDR = "RISE ASCII SCENE 6\n";
 
-// Legacy parse a scene string into a fresh Job; returns ParseAndLoadScene's bool.
-static bool LegacyLoads( const std::string& body )
+// Load a scene string into a fresh Job via the canonical CST path; returns the
+// load bool.  Hermetic: writes a temp file, loads it, removes it.
+static bool CstLoads( const std::string& body )
 {
+	const char* tmp = "dup_name_tmp.RISEscene";
+	{ std::ofstream f( tmp, std::ios::binary | std::ios::trunc ); f << ( HDR + body ); }
 	Job* j = new Job();
-	const bool ok = ParseLegacy( HDR + body, *j );
+	const bool ok = j->LoadAsciiSceneViaCst( tmp );
 	j->release();
+	std::remove( tmp );
 	return ok;
 }
 
@@ -49,8 +57,8 @@ static bool LegacyLoads( const std::string& body )
 // any unrelated parse requirement), so the only difference is the duplicate name.
 static void ParserRejectsDup( const std::string& dupBody, const std::string& uniqueBody, const char* kind )
 {
-	Check( LegacyLoads( uniqueBody ), kind );          // control: unique names load
-	Check( !LegacyLoads( dupBody ),   kind );          // duplicate name -> hard scene-load failure
+	Check( CstLoads( uniqueBody ), kind );          // control: unique names load
+	Check( !CstLoads( dupBody ),   kind );          // duplicate name -> hard scene-load failure
 }
 
 int main()
@@ -95,7 +103,7 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
-	std::printf( "[B] Legacy parser: a real intra-manager duplicate fails the whole load\n" );
+	std::printf( "[B] Scene load (CST): a real intra-manager duplicate fails the whole load\n" );
 	//----------------------------------------------------------------------
 	ParserRejectsDup(
 		"sphere_geometry\n{\nname g\nradius 1\n}\n" "sphere_geometry\n{\nname g\nradius 2\n}\n",
@@ -129,7 +137,7 @@ int main()
 		"medium duplicate" );
 
 	//----------------------------------------------------------------------
-	std::printf( "[C] CST derive: duplicate-name document refused; differential stays green\n" );
+	std::printf( "[C] CST derive: duplicate-name document refused (diagnosed, first-wins)\n" );
 	//----------------------------------------------------------------------
 	{
 		const std::string dup = HDR +
@@ -143,16 +151,11 @@ int main()
 		Check( !diags.empty(), "CST derive: duplicate diagnosed (not silently applied)" );
 		Check( applied == 1, "CST derive: exactly the first chunk applied (count not inflated)" );
 		Check( jc->GetGeometries()->getItemCount() == 1, "CST derive: only the first geometry registered" );
-		std::string dc = DumpJob( *jc );
+		// first-wins: the surviving geometry is the FIRST definition (radius 1, not 2).
+		IGeometry* g = jc->GetGeometries()->GetItem( "g" );
+		Point3 c; Scalar r = 0; if( g ) g->GenerateBoundingSphere( c, r );
+		Check( g && r == (Scalar)1.0, "CST derive: the FIRST 'g' survives (radius 1, not 2)" );
 		jc->release();
-
-		// Legacy parse refuses identically -> the two Jobs still match (gate green).
-		Job* jl = new Job();
-		ParseLegacy( dup, *jl );
-		std::string dl = DumpJob( *jl );
-		jl->release();
-		Check( dc == dl, "CST==legacy on a duplicate scene (both refuse the second, keep the first)" );
-		if( dc != dl ) std::printf( "    legacy=[%s]\n    cst   =[%s]\n", dl.c_str(), dc.c_str() );
 	}
 
 	//----------------------------------------------------------------------

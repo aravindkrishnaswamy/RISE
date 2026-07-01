@@ -79,7 +79,7 @@ static IJobPriv* LoadScene( const char* body, const char* tag )
 		std::remove( path );
 		return nullptr;
 	}
-	const bool ok = pJob->LoadAsciiScene( path );
+	const bool ok = pJob->LoadAsciiSceneViaCst( path );
 	std::remove( path );
 	if( !ok ) {
 		safe_release( pJob );

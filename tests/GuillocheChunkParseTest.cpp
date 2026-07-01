@@ -19,7 +19,7 @@
 //    1. A minimal scene using these chunks + the scalar_painter function2d
 //       affine form PARSES, and the named items land in the right managers
 //       (geometry / function2d / scalar painter).
-//    2. The rejection paths reject (ParseAndLoadScene == FALSE): too few
+//    2. The rejection paths reject (load == FALSE): too few
 //       profile/path points, malformed point lines, degenerate pitch,
 //       missing instancer templates, a function2d reference to a missing
 //       function, and malformed/under-specified expressions.  (The
@@ -69,17 +69,13 @@ namespace {
 
 	bool ParseSceneFile( const std::string& path, Job& job )
 	{
-		ISceneParser* parser = 0;
-		if( !RISE_API_CreateAsciiSceneParser( &parser, path.c_str() ) || !parser ) {
-			return false;
-		}
-		parser->addref();
-		const bool ok = parser->ParseAndLoadScene( job );
-		parser->release();
-		return ok;
+		// Model-B P5 Slice 6c-3b: load via the canonical CST path (native-v7).
+		// The rejection paths (too-few points etc. -> false) hold: DeriveToJob
+		// refuses-all on a chunk whose descriptor validation fails.
+		return job.LoadAsciiSceneViaCst( path.c_str() );
 	}
 
-	// Parse an inline scene body; returns ParseAndLoadScene's verdict.
+	// Parse an inline scene body; returns the load verdict.
 	// (Job is Reference-counted with a protected dtor -- heap + release.)
 	bool ParseBody( const std::string& tag, const std::string& body, Job& job )
 	{

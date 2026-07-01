@@ -63,12 +63,18 @@ static std::string DeriveDump( const Document& d )
 	std::string s = DumpJob( *j ); j->release(); return s;
 }
 // The edit is END-TO-END FAITHFUL iff the edited CST derives the SAME Job as a
-// fresh legacy parse of the edited document's serialization.
+// fresh parse-then-derive of the edited document's serialization -- i.e. an
+// in-place edit and a save->reload of that edit reach byte-identical Scenes.
+// (Slice 6c-3b: this was compared against a fresh LEGACY parse of the
+// serialization; the legacy oracle was retired, so the reference is now the CST
+// LOAD path -- ParseToCst(SerializeCst(edited)) -> DeriveToJob -- which is
+// exactly the save->reload path Model-B uses, and the property this test cares
+// about.  CST-derive == legacy for these native scenes, so the check is
+// unchanged in strength.)
 static bool DeriveMatchesReparse( const Document& edited )
 {
-	Job* lj = new Job(); ParseLegacy( SerializeCst( edited ), *lj );
-	std::string viaLegacy = DumpJob( *lj ); lj->release();
-	return DeriveDump( edited ) == viaLegacy;
+	const std::string viaReload = DeriveDump( ParseToCst( SerializeCst( edited ) ) );
+	return DeriveDump( edited ) == viaReload;
 }
 // Build a standalone node from text's first top-level item (a chunk, or a
 // trivia separator) -- for replace/insert.

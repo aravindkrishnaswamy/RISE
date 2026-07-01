@@ -10,11 +10,17 @@
 //  canonical string, and compare. (Image equivalence adds RNG noise and catches
 //  nothing the migration changes beyond what the Job already determines.)
 //
-//  This header is the reusable primitive: `ParseLegacy(text, job)` drives the
-//  real legacy parser; `DumpJob(job)` is the canonical equivalence metric. The
-//  oracle test (CstRenderEquivalenceTest) proves the metric is STABLE (a legacy
-//  parse is deterministic) before any CST node exists; the in-tree CST slices
-//  will compare `DumpJob(cstJob) == DumpJob(legacyJob)` against it.
+//  This header is the reusable primitive: `DumpJob(job)` is the canonical
+//  structural equivalence metric.  Two parse/derive paths that yield the same
+//  dump produce the same scene (hence the same render).  The surviving CST
+//  tests use it to pin CST-derive state (against the committed golden, and
+//  against a CST re-derive of an edited/serialized Document).
+//
+//  NOTE (Model-B P5 Slice 6c-3b): the legacy `ParseLegacy(text, job)` entry
+//  point was REMOVED when the legacy-vs-CST equivalence oracle was retired --
+//  the golden (CstDeriveGoldenTest) is now the CST-derive safety net.  Do not
+//  reintroduce a legacy-parser call here; the legacy streaming parser
+//  (AsciiSceneParser::ParseAndLoadScene) is being deleted (6c-3c).
 //
 //////////////////////////////////////////////////////////////////////
 #ifndef RISE_TESTS_CST_RENDER_EQUIVALENCE_H
@@ -29,7 +35,6 @@
 
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
-#include "../src/Library/Interfaces/ISceneParser.h"
 #include "../src/Library/Interfaces/IGeometry.h"
 #include "../src/Library/Interfaces/IGeometryManager.h"
 #include "../src/Library/Interfaces/IMaterial.h"
@@ -82,19 +87,6 @@ inline std::string ReverseName( Mgr* m, const Item* ptr )
 	for( const auto& n : c.names )
 		if( static_cast<const Item*>( m->GetItem( n.c_str() ) ) == ptr ) return n;
 	return "(unknown)";
-}
-
-// Parse a scene string via the LEGACY AsciiSceneParser into `job`. Returns
-// ParseAndLoadScene's result. Hermetic: writes a temp file, parses, removes it.
-inline bool ParseLegacy( const std::string& sceneText, Job& job, const char* tmpPath = "cst_equiv_tmp.RISEscene" )
-{
-	{ std::ofstream f( tmpPath, std::ios::binary | std::ios::trunc ); f << sceneText; }
-	ISceneParser* parser = 0;
-	if( !RISE_API_CreateAsciiSceneParser( &parser, tmpPath ) || !parser ) { std::remove( tmpPath ); return false; }
-	const bool ok = parser->ParseAndLoadScene( job );
-	parser->release();
-	std::remove( tmpPath );
-	return ok;
 }
 
 // Dump a medium's discriminating, cheaply-readable state: coefficients sampled at the bbox CENTRE for a

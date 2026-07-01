@@ -258,7 +258,7 @@ static CapturingRasterizerOutput* RenderAndCapture( const char* scenePath )
 		return nullptr;
 	}
 
-	if( !pJob->LoadAsciiScene( scenePath ) ) {
+	if( !pJob->LoadAsciiSceneViaCst( scenePath ) ) {
 		safe_release( pJob );
 		return nullptr;
 	}
@@ -365,7 +365,7 @@ static void RunUnitTests()
 		std::remove( scenePath.c_str() );
 		return;
 	}
-	if( !pJob->LoadAsciiScene( scenePath.c_str() ) ) {
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) {
 		Check( false, "unit scene load" );
 		safe_release( pJob );
 		std::remove( scenePath.c_str() );

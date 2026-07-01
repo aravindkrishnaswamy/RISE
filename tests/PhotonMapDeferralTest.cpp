@@ -137,7 +137,7 @@ static void TestPhotonShootGatedOnConsumer()
 
 	IJobPriv* pJob = 0;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { Check( false, "Job created" ); return; }
-	Check( pJob->LoadAsciiScene( scenePath.c_str() ), "scene loaded (defines caustic map + pixelpel)" );
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "scene loaded (defines caustic map + pixelpel)" );
 
 	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "photon-deferral test capture" );
@@ -206,7 +206,7 @@ static void TestSpectralConsumerShoots()
 
 	IJobPriv* pJob = 0;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { Check( false, "Job created" ); return; }
-	Check( pJob->LoadAsciiScene( scenePath.c_str() ), "spectral scene loaded (caustic_spectral map + pixelintegratingspectral)" );
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "spectral scene loaded (caustic_spectral map + pixelintegratingspectral)" );
 
 	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "spectral photon-deferral capture" );
