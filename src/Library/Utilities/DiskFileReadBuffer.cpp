@@ -53,6 +53,11 @@ DiskFileReadBuffer::~DiskFileReadBuffer( )
 
 char DiskFileReadBuffer::getChar()
 {
+	// No file handle (open failed): degrade gracefully instead of
+	// ftell(NULL)/fread(NULL) UB.
+	if( !hFile ) {
+		return 0;
+	}
 	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
 	// the buffer end otherwise partial-reads into the local (a
 	// truncated file yields a corrupt value).  Return 0 on exhaustion.
@@ -70,6 +75,11 @@ char DiskFileReadBuffer::getChar()
 
 unsigned char DiskFileReadBuffer::getUChar()
 {
+	// No file handle (open failed): degrade gracefully instead of
+	// ftell(NULL)/fread(NULL) UB.
+	if( !hFile ) {
+		return 0;
+	}
 	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
 	// the buffer end otherwise partial-reads into the local (a
 	// truncated file yields a corrupt value).  Return 0 on exhaustion.
@@ -88,6 +98,11 @@ unsigned char DiskFileReadBuffer::getUChar()
 
 short DiskFileReadBuffer::getWord()
 {
+	// No file handle (open failed): degrade gracefully instead of
+	// ftell(NULL)/fread(NULL) UB.
+	if( !hFile ) {
+		return 0;
+	}
 	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
 	// the buffer end otherwise partial-reads into the local (a
 	// truncated file yields a corrupt value).  Return 0 on exhaustion.
@@ -113,6 +128,11 @@ short DiskFileReadBuffer::getWord()
 
 unsigned short DiskFileReadBuffer::getUWord()
 {
+	// No file handle (open failed): degrade gracefully instead of
+	// ftell(NULL)/fread(NULL) UB.
+	if( !hFile ) {
+		return 0;
+	}
 	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
 	// the buffer end otherwise partial-reads into the local (a
 	// truncated file yields a corrupt value).  Return 0 on exhaustion.
@@ -137,6 +157,11 @@ unsigned short DiskFileReadBuffer::getUWord()
 
 int DiskFileReadBuffer::getInt()
 {
+	// No file handle (open failed): degrade gracefully instead of
+	// ftell(NULL)/fread(NULL) UB.
+	if( !hFile ) {
+		return 0;
+	}
 	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
 	// the buffer end otherwise partial-reads into the local (a
 	// truncated file yields a corrupt value).  Return 0 on exhaustion.
@@ -161,6 +186,11 @@ int DiskFileReadBuffer::getInt()
 
 unsigned int DiskFileReadBuffer::getUInt()
 {
+	// No file handle (open failed): degrade gracefully instead of
+	// ftell(NULL)/fread(NULL) UB.
+	if( !hFile ) {
+		return 0;
+	}
 	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
 	// the buffer end otherwise partial-reads into the local (a
 	// truncated file yields a corrupt value).  Return 0 on exhaustion.
@@ -185,6 +215,11 @@ unsigned int DiskFileReadBuffer::getUInt()
 
 float DiskFileReadBuffer::getFloat()
 {
+	// No file handle (open failed): degrade gracefully instead of
+	// ftell(NULL)/fread(NULL) UB.
+	if( !hFile ) {
+		return 0;
+	}
 	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
 	// the buffer end otherwise partial-reads into the local (a
 	// truncated file yields a corrupt value).  Return 0 on exhaustion.
@@ -210,6 +245,11 @@ float DiskFileReadBuffer::getFloat()
 
 double DiskFileReadBuffer::getDouble()
 {
+	// No file handle (open failed): degrade gracefully instead of
+	// ftell(NULL)/fread(NULL) UB.
+	if( !hFile ) {
+		return 0;
+	}
 	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
 	// the buffer end otherwise partial-reads into the local (a
 	// truncated file yields a corrupt value).  Return 0 on exhaustion.
@@ -241,7 +281,7 @@ double DiskFileReadBuffer::getDouble()
 
 bool DiskFileReadBuffer::getBytes( void* pDest, unsigned int amount )
 {
-	if( !pDest ) {
+	if( !pDest || !hFile ) {
 		return false;
 	}
 
@@ -268,7 +308,7 @@ bool DiskFileReadBuffer::getBytes( void* pDest, unsigned int amount )
 
 int DiskFileReadBuffer::getLine( char* pDest, unsigned int max )
 {
-	if( !pDest ) {
+	if( !pDest || !hFile ) {
 		return false;
 	}
 

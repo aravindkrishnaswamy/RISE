@@ -39,6 +39,7 @@
 #include "../src/Library/Utilities/Math3D/Math3D.h"   // Scalar (double)
 #include "../src/Library/Volume/Volume.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
+#include "../src/Library/Utilities/DiskFileReadBuffer.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -253,6 +254,64 @@ static void TestMemoryBufferScalarOverread()
 	std::remove( path2.c_str() );
 }
 
+//----------------------------------------------------------------------
+// E: DiskFileReadBuffer::getBytes over-read (the FILE-backed reader).
+// Mirrors case C; also asserts the cursor lands at EOF afterward, locking
+// the ftell(hFile)-backed cursor-consistency invariant.
+//----------------------------------------------------------------------
+static void TestDiskFileReadBufferGetBytesOverread()
+{
+	std::cout << "E: DiskFileReadBuffer::getBytes over-read is bounded + cursor at EOF" << std::endl;
+
+	const std::string path = TmpDir() + "rise_diskbuf_small.bin";
+	WriteBytes( path, 0xBE, 8 );
+
+	DiskFileReadBuffer* db = new DiskFileReadBuffer( path.c_str() );
+	db->addref();
+
+	unsigned char dest[32];
+	std::memset( dest, 0x22, sizeof( dest ) );
+	const bool ok = db->getBytes( dest, 32 );
+
+	Check( !ok, "E: over-read returns false" );
+	bool firstEight = true;
+	for( int i = 0; i < 8; ++i ) if( dest[i] != 0xBE ) firstEight = false;
+	Check( firstEight, "E: available 8 bytes read (0xBE)" );
+	bool tailZeroed = true;
+	for( int i = 8; i < 32; ++i ) if( dest[i] != 0 ) tailZeroed = false;
+	Check( tailZeroed, "E: over-read tail zero-filled (not truncated garbage / not 0x22)" );
+	Check( db->getCurPos() == 8, "E: cursor left at EOF (8) after over-read" );
+
+	db->release();
+	std::remove( path.c_str() );
+}
+
+//----------------------------------------------------------------------
+// F: DiskFileReadBuffer on a NONEXISTENT file (hFile == NULL) must not
+// crash — the scalar getters previously went straight to ftell(NULL) /
+// fread(NULL) (UB / SIGSEGV) reachable from the .3ds loader on a missing
+// asset.  The null-hFile entry guard degrades to 0 / false.
+//----------------------------------------------------------------------
+static void TestDiskFileReadBufferMissingFile()
+{
+	std::cout << "F: DiskFileReadBuffer on a missing file degrades gracefully (no ftell(NULL) crash)" << std::endl;
+
+	const std::string missing = TmpDir() + "rise_diskbuf_definitely_absent_xyz.bin";
+	std::remove( missing.c_str() );
+
+	DiskFileReadBuffer* db = new DiskFileReadBuffer( missing.c_str() );
+	db->addref();
+
+	// Each of these would ftell(NULL)/fread(NULL) crash pre-guard.
+	Check( db->getUInt() == 0,   "F: getUInt on null-hFile returns 0 (no crash)" );
+	Check( db->getDouble() == 0.0, "F: getDouble on null-hFile returns 0 (no crash)" );
+	unsigned char dest[8];
+	std::memset( dest, 0x33, sizeof( dest ) );
+	Check( !db->getBytes( dest, 8 ), "F: getBytes on null-hFile returns false (no crash)" );
+
+	db->release();
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "VolumeShortReadTest — missing/truncated binary reads zero, never uninitialised"
@@ -262,6 +321,8 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestMemoryBufferMissingFile();
 	TestMemoryBufferGetBytesOverread();
 	TestMemoryBufferScalarOverread();
+	TestDiskFileReadBufferGetBytesOverread();
+	TestDiskFileReadBufferMissingFile();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
