@@ -1243,6 +1243,10 @@ namespace RISE
 						}
 					}
 
+					if( amplitudes.empty() || wavelengths.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: no samples (empty / all-comment file, no inline cp)", name.c_str() );
+						return false;
+					}
 					return pJob.AddSpectralColorPainter( name.c_str(), &amplitudes[0], &wavelengths[0], nmbegin, nmend, static_cast<unsigned int>(amplitudes.size()), scale );
 				}
 
@@ -3079,6 +3083,10 @@ namespace RISE
 						}
 					}
 
+					if( cp_x.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error, "piecewise_linear_function `%s`: no control points (empty / all-comment file, no inline cp)", name.c_str() );
+						return false;
+					}
 					return pJob.AddPiecewiseLinearFunction( name.c_str(), &cp_x[0], &cp_y[0], static_cast<unsigned int>(cp_x.size()), bUseLUTs, lutsize );
 				}
 
@@ -3116,6 +3124,11 @@ namespace RISE
 						sscanf( cps[k].c_str(), "%lf %s", &x, y );
 						cp_x.push_back( x );
 						cp_y.push_back( String(y) );
+					}
+
+					if( cp_x.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error, "piecewise_linear_function2d `%s`: no control points", name.c_str() );
+						return false;
 					}
 
 					// Setup the array of strings

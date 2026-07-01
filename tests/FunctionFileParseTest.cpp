@@ -40,7 +40,12 @@
 #include <fstream>
 #include <string>
 #include <cstdio>
+#include <cstdlib>
 #include <cmath>
+#if !defined( _WIN32 )
+	#include <csignal>
+	#include <unistd.h>
+#endif
 
 #include "../src/Library/Job.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
@@ -62,6 +67,31 @@ static bool Close( double a, double b, double eps = 1e-6 )
 {
 	return std::fabs( a - b ) <= eps * std::fmax( 1.0, std::fmax( std::fabs(a), std::fabs(b) ) );
 }
+
+// Self-reporting watchdog: this test exists to prove the loaders DON'T
+// hang on a comment-laden file.  If a regression reintroduces the
+// `while(!feof)` spin, the process would otherwise wedge indefinitely and
+// rely on an external CI timeout.  A SIGALRM watchdog turns that silent
+// hang into a loud, diagnostic failure exit.  (POSIX only; on Windows the
+// harness/CI timeout is the backstop.)
+#if !defined( _WIN32 )
+static void WatchdogFired( int )
+{
+	const char* msg = "FunctionFileParseTest: WATCHDOG FIRED — a file loader HUNG "
+		"(the `while(!feof)`+fscanf regression is back).\n";
+	// write() is async-signal-safe; std::cout is not.
+	ssize_t n = write( 2, msg, (unsigned)std::char_traits<char>::length( msg ) );
+	(void)n;
+	_exit( 2 );
+}
+static void ArmWatchdog( unsigned int seconds )
+{
+	signal( SIGALRM, WatchdogFired );
+	alarm( seconds );
+}
+#else
+static void ArmWatchdog( unsigned int ) {}
+#endif
 
 static std::string TmpDir()
 {
@@ -184,8 +214,100 @@ static void TestScalarPainterFile( const std::string& dataPath )
 	job->release();
 }
 
+// Write a comment-laden single-column data file (one value per line).
+static std::string WriteSingleColumnFile( const char* tag, const double* vals, int n )
+{
+	const std::string path = TmpDir() + "rise_funcfile_" + tag + ".txt";
+	std::ofstream f( path.c_str(), std::ios::trunc );
+	f << "# single-column data (comment header)\n\n";
+	for( int i = 0; i < n; ++i ) {
+		f << vals[i] << "\n";
+		if( i == 1 ) f << "   # midway comment\n";
+	}
+	f.close();
+	return path;
+}
+
+//----------------------------------------------------------------------
+// C: spectral_painter { nmfile ampfile } — exercises the INLINE (not
+// ReadDataFileLines) 1-column loops, which carry their own copy of the
+// comment-skip + checked-sscanf logic.  Proves those duplicated loops are
+// also comment-tolerant and non-hanging.
+//----------------------------------------------------------------------
+static void TestSpectralNmAmpFiles()
+{
+	std::cout << "C: spectral_painter { nmfile / ampfile } inline 1-col loops (comment-laden)" << std::endl;
+
+	const double nm[]  = { 400.0, 500.0, 600.0, 700.0 };
+	const double amp[] = { 0.1, 0.4, 0.7, 0.9 };
+	const std::string nmPath  = WriteSingleColumnFile( "nm",  nm,  4 );
+	const std::string ampPath = WriteSingleColumnFile( "amp", amp, 4 );
+
+	std::string body =
+		"spectral_painter\n{\n"
+		"\tname testspec\n"
+		"\tnmfile " + nmPath + "\n"
+		"\tampfile " + ampPath + "\n"
+		"}\n";
+	const std::string scenePath = WriteScene( "spec", body );
+
+	Job* job = new Job();
+	job->addref();
+	const bool ok = ParseSceneFile( scenePath, *job );   // completing == no hang
+	remove( scenePath.c_str() );
+	remove( nmPath.c_str() );
+	remove( ampPath.c_str() );
+
+	Check( ok, "C: spectral_painter with nmfile/ampfile parses (no hang)" );
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+	if( priv ) {
+		Check( priv->GetPainters()->GetItem( "testspec" ) != 0,
+			"C: spectral_painter 'testspec' registered (both 1-col files ingested)" );
+	}
+	job->release();
+}
+
+//----------------------------------------------------------------------
+// D: an all-comment / empty file must FAIL the load gracefully — not hang
+// and not deref an empty vector (the &vec[0] UB the loaders' empty guard
+// prevents).  Regression guard for the empty-file path.
+//----------------------------------------------------------------------
+static void TestEmptyFileGuard()
+{
+	std::cout << "D: all-comment (zero-data) file fails the load gracefully (no hang, no UB)" << std::endl;
+
+	const std::string path = TmpDir() + "rise_funcfile_allcomment.txt";
+	{
+		std::ofstream f( path.c_str(), std::ios::trunc );
+		f << "# only comments here\n# no data at all\n\n   # indented\n";
+		f.close();
+	}
+
+	std::string body =
+		"piecewise_linear_function\n{\n"
+		"\tname emptycurve\n"
+		"\tfile " + path + "\n"
+		"}\n";
+	const std::string scenePath = WriteScene( "empty", body );
+
+	Job* job = new Job();
+	job->addref();
+	const bool ok = ParseSceneFile( scenePath, *job );   // completing == no hang
+	remove( scenePath.c_str() );
+	remove( path.c_str() );
+
+	// The load must REJECT (return false) rather than build a curve from an
+	// empty control-point vector.
+	Check( !ok, "D: all-comment file rejected (empty-guard fires, no &vec[0] UB)" );
+	job->release();
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
+	// If any loader regresses to the hanging `while(!feof)` idiom, this
+	// watchdog turns the silent hang into a loud failure exit.
+	ArmWatchdog( 30 );
+
 	std::cout << "FunctionFileParseTest — comment-tolerant, non-hanging file-backed curve loaders"
 		<< std::endl;
 
@@ -193,6 +315,8 @@ int main( int /*argc*/, char* /*argv*/[] )
 
 	TestPiecewiseLinearFunctionFile( dataPath );
 	TestScalarPainterFile( dataPath );
+	TestSpectralNmAmpFiles();
+	TestEmptyFileGuard();
 
 	remove( dataPath.c_str() );
 
