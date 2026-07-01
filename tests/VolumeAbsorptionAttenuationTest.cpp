@@ -1063,7 +1063,8 @@ static const double kBackWallDepth = kBackWallZ - 0.1;   // front face = eye pat
 static std::string BuildGlobalMediumScene(
 	int samples,
 	bool spectral,
-	double sa_r, double sa_g, double sa_b )
+	double sa_r, double sa_g, double sa_b,
+	bool hwss = false )
 {
 	std::ostringstream ss;
 	ss <<
@@ -1095,7 +1096,7 @@ static std::string BuildGlobalMediumScene(
 			"\tnmend 720\n"
 			"\tnum_wavelengths 8\n"
 			"\tspectral_samples 1\n"
-			"\thwss false\n"
+		 << "\thwss " << ( hwss ? "TRUE" : "false" ) << "\n" <<
 			"\tmax_diffuse_bounce 3\n"
 			"}\n";
 	} else {
@@ -1393,6 +1394,7 @@ static void TestNMSpectral()
 		"C: channels stay near-gray (resolve spread bounded, no per-channel bias)" );
 }
 
+
 //////////////////////////////////////////////////////////////////////
 // Camera-in-medium (site S3) cases D/E.  See file header for the
 // floor-discriminator rationale.
@@ -1500,6 +1502,49 @@ static void TestGlobalMediumSpectral()
 	// would apply an extra exp(-sigma_a*d) (measured -> ~0.043, outside band).
 	Check( ChannelOk( m, expected, "F.mean" ),
 		"F: spectral measured == single-count Beer-Lambert (S3 NMTag)" );
+}
+
+// [F2] The SAME camera-inside-global-medium scene under HWSS (hwss=true).
+// This is the scene that actually exercises the FOUR HWSS no-scatter sites
+// fixed in G1-c: with the camera INSIDE the medium, IntegrateRayHWSS's
+// camera-first surface-hit/escape (sites 3/4) and the bounce-loop
+// (sites 1/2) apply the free-flight survival weight.  (The interior-slab
+// scene C does NOT reach these sites — its through-medium transmittance
+// runs in IntegrateFromHitHWSS — so this global-medium scene is the correct
+// discriminator.)  Before G1-c the sites multiplied the full per-wavelength
+// Tr on top of the survival probability, reading exp(-2*sigma_a*d); after
+// the fix each channel reads single-count exp(-sigma_a*d), matching case F.
+//
+// REVERT-PROOF (in-process): forcing pSurvivalHero out of the four sites
+// (throughputComp/result *= Tr, escapeTr = Tr) makes this read
+// L0*exp(-2*sigma_a*d) ~ 0.043*L0 (measured/L0 ~ 0.135), far outside the 8%
+// band; the fix gives measured/L0 = exp(-sigma_a*d) ~ 0.368.  Confirmed by
+// temporarily forcing the double-count and re-running.
+static void TestGlobalMediumSpectralHWSS()
+{
+	std::cout << "[F2] camera INSIDE global medium, NM/spectral gray absorber "
+		<< "(sigma_a = 0.5, d = " << kBackWallDepth
+		<< ", hwss ON) — G1-c HWSS free-flight reweighting (sites 1-4)" << std::endl;
+	const double sa = 0.5;
+
+	const PixelRGB base = RenderCentralBlock(
+		BuildGlobalMediumScene( 1024, true, 0.0, 0.0, 0.0, /*hwss=*/true ), "gmed_hwss_base" );
+	const PixelRGB px = RenderCentralBlock(
+		BuildGlobalMediumScene( 1024, true, sa, sa, sa, /*hwss=*/true ), "gmed_hwss" );
+
+	Check( base.valid && px.valid, "F2: renders produced frames" );
+	if( !base.valid || !px.valid ) return;
+
+	const double L0 = ( base.r + base.g + base.b ) / 3.0;
+	const double m  = ( px.r + px.g + px.b ) / 3.0;
+	const double expected = L0 * std::exp( -sa * kBackWallDepth );
+	std::cout << "    L0(zero-abs)=" << L0 << "  measured=" << m
+		<< "  expected single-count=" << expected
+		<< "  (double-count would be ~" << L0 * std::exp( -2.0 * sa * kBackWallDepth ) << ")"
+		<< std::endl;
+
+	Check( ChannelOk( m, expected, "F2.mean" ),
+		"F2: HWSS spectral == single-count Beer-Lambert (G1-c sites 1-4, not 2x)" );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1967,6 +2012,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestGlobalMediumGray();
 	TestGlobalMediumColored();
 	TestGlobalMediumSpectral();
+	TestGlobalMediumSpectralHWSS();
 
 	// Cases G..M: the SAME interior slab under BDPT / VCM (RGB + spectral),
 	// proving the analog no-scatter survival fix now makes BDPT/VCM match

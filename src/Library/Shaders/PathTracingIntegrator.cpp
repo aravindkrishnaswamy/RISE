@@ -3751,25 +3751,16 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				}
 				else if( !scattered && bHit )
 				{
-					// HWSS analog no-scatter double-count — DEFERRAL NOTE.
-					// The SAME Beer-Lambert double-count that the non-HWSS
-					// path fixes via PTSurvivalWeight<Tag>() exists at FOUR
-					// HWSS sites (this is the first):
-					//   HWSS-1 (~3715) bounce-loop surface-hit  throughputComp[w] *= Tr
-					//   HWSS-2 (~3733) bounce-loop escape       throughputComp[w] *= Tr
-					//   HWSS-3 (~4442, IntegrateRayHWSS) camera-first surface-hit  result[w] *= Tr[w]
-					//   HWSS-4 (~4464, IntegrateRayHWSS) camera-first escape       escapeTr[w] = Tr
-					// All four multiply the full per-wavelength Tr, so the
-					// analog survival event's exp(-sigma_t*d) is counted twice.
-					// Deferred to the G1 hero-wavelength spectral free-flight
-					// reweighting (docs/VITREOUS_ENAMEL.md §10.3): the correct
-					// HWSS weight needs the HERO / sampling-channel survival
-					// pdf, NOT PTTrReduced() of the per-wavelength scalar Tr
-					// (which is the identity for a single Scalar and so gives
-					// no correction).  This is LATENT-BUT-REACHABLE, not
-					// unreachable: HWSS runs in production whenever the useHWSS
-					// flag / hwss=true is set.  Left as-is here; do NOT change
-					// the HWSS math without the spectral survival-pdf plumbing.
+					// HWSS no-scatter survival reweight (G1-c): the free-flight distance
+					// was sampled once at the HERO wavelength, so the no-scatter (survival)
+					// event carries the hero survival pdf.  Each bundle wavelength's Tr_w
+					// is reweighted by Tr_w / (noScatterPdfScale * pSurvivalHero) -- NOT
+					// multiplied by Tr_w, which double-counts Beer-Lambert (the survival
+					// probability already encodes the attenuation).  = 1 for a gray bundle;
+					// mirrors the non-HWSS PTSurvivalWeight scalar sites (~3376).
+					const Scalar pSurvivalHero = mso.noScatterPdfScale *
+						pCurrentMedium->EvalDistancePdfNM(
+							currentRay, ri.geometric.range, /*scattered=*/false, ri.geometric.range, heroNM );
 					for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 					{
 						if( swl.terminated[w] ) {
@@ -3777,17 +3768,17 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						}
 						const Scalar Tr = pCurrentMedium->EvalTransmittanceNM(
 							currentRay, ri.geometric.range, swl.lambda[w] );
-						throughputComp[w] *= Tr;
+						throughputComp[w] *= ( pSurvivalHero > 0.0 ) ? ( Tr / pSurvivalHero ) : Tr;
 					}
 				}
 				else if( !scattered && !bHit )
 				{
-					// HWSS-2: bounce-loop escape.  Same analog no-scatter
-					// double-count as HWSS-1 above; deferred to the G1 hero
-					// spectral free-flight reweighting (see the HWSS-1 block).
-					// Ray escapes the scene through the medium: applies the
-					// per-wavelength residual transmittance before the env
-					// contribution below (PBRT-v4 beta *= T_maj).
+					// HWSS-2 bounce-loop escape: no-scatter survival reweight (G1-c),
+					// same as HWSS-1 but the segment is the full escape distance maxDist
+					// (PBRT-v4 beta *= T_maj, now survival-corrected per wavelength).
+					const Scalar pSurvivalHero = mso.noScatterPdfScale *
+						pCurrentMedium->EvalDistancePdfNM(
+							currentRay, maxDist, /*scattered=*/false, maxDist, heroNM );
 					for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 					{
 						if( swl.terminated[w] ) {
@@ -3795,7 +3786,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						}
 						const Scalar Tr = pCurrentMedium->EvalTransmittanceNM(
 							currentRay, maxDist, swl.lambda[w] );
-						throughputComp[w] *= Tr;
+						throughputComp[w] *= ( pSurvivalHero > 0.0 ) ? ( Tr / pSurvivalHero ) : Tr;
 					}
 				}
 			}
@@ -4483,22 +4474,15 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 		}
 		else if( ri.geometric.bHit )
 		{
-			// HWSS-3: camera-first-bounce surface-hit.  Same analog
-			// no-scatter Beer-Lambert double-count as HWSS-1/2 in
-			// IntegrateFromHitHWSS (result[w] *= Tr[w] multiplies the full
-			// per-wavelength Tr, so the survival event's exp(-sigma_t*d) is
-			// counted twice).  This is the HWSS twin of the non-HWSS camera
-			// site fixed via PTSurvivalWeight<Tag>() at ~3310.  Deferred to
-			// the G1 hero spectral free-flight reweighting
-			// (docs/VITREOUS_ENAMEL.md §10.3) because the correct HWSS weight
-			// needs the HERO / sampling-channel survival pdf, not PTTrReduced
-			// of the per-wavelength scalar (which is the identity).
-			// LATENT-BUT-REACHABLE: HWSS runs in production under the useHWSS
-			// flag / hwss=true.  Do NOT change the HWSS math here.
-			//
-			// Surface hit through medium: IntegrateFromHitHWSS handles
-			// per-wavelength transmittance internally.  For the first
-			// bounce, apply transmittance here and scale results.
+			// HWSS-3 camera-first-bounce surface-hit: no-scatter survival reweight
+			// (G1-c).  IntegrateFromHitHWSS fills result[w] from throughput=1; we
+			// then scale by Tr_w / (noScatterPdfScale * pSurvivalHero) -- the HERO
+			// survival pdf, since the free-flight was sampled at heroNM -- NOT the
+			// full Tr_w (which double-counts Beer-Lambert).  HWSS twin of the
+			// non-HWSS camera surface site at ~3376.
+			const Scalar pSurvivalHero = mso.noScatterPdfScale *
+				pCurrentMedium->EvalDistancePdfNM(
+					cameraRay, ri.geometric.range, /*scattered=*/false, ri.geometric.range, heroNM );
 			Scalar Tr[SampledWavelengths::N];
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 			{
@@ -4513,32 +4497,26 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 				0, 0, 0, 0, 0, 0, result, pAOV );
 
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
-				result[w] *= Tr[w];
+				result[w] *= ( pSurvivalHero > 0.0 ) ? ( Tr[w] / pSurvivalHero ) : Tr[w];
 			}
 			return;
 		}
 		else
 		{
-			// HWSS-4: camera-first-bounce escape.  Same analog no-scatter
-			// Beer-Lambert double-count as HWSS-1/2/3 (this escapeTr
-			// multiplies the full per-wavelength Tr rather than the
-			// survival-corrected ratio; it is the HWSS twin of the non-HWSS
-			// camera escape fixed via PTSurvivalWeight<Tag>() at ~3321).
-			// Deferred to the G1 hero spectral free-flight reweighting
-			// (docs/VITREOUS_ENAMEL.md §10.3) because the correct HWSS weight
-			// needs the HERO / sampling-channel survival pdf, not PTTrReduced
-			// of the per-wavelength scalar (the identity).  LATENT-BUT-
-			// REACHABLE: HWSS runs in production under the useHWSS flag /
-			// hwss=true.  Do NOT change the HWSS math here.
-			//
-			// Ray escapes the scene through the medium: capture the
-			// per-wavelength residual transmittance along the escape
-			// segment for the env contribution below (PBRT-v4 beta *= T_maj).
-			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
-				escapeTr[w] = swl.terminated[w] ? Scalar(0) :
-					pCurrentMedium->EvalTransmittanceNM(
-						cameraRay, maxDist, swl.lambda[w] );
-			}
+				// HWSS-4 camera-first-bounce escape: no-scatter survival reweight
+				// (G1-c).  The escape survival event carries the hero survival pdf, so
+				// escapeTr holds Tr_w / (noScatterPdfScale * pSurvivalHero) for the env
+				// contribution below -- not the full Tr_w (which double-counts
+				// Beer-Lambert).  HWSS twin of the non-HWSS camera escape at ~3390.
+				const Scalar pSurvivalHero = mso.noScatterPdfScale *
+					pCurrentMedium->EvalDistancePdfNM(
+						cameraRay, maxDist, /*scattered=*/false, maxDist, heroNM );
+				for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+					const Scalar Tr = swl.terminated[w] ? Scalar(0) :
+						pCurrentMedium->EvalTransmittanceNM(
+							cameraRay, maxDist, swl.lambda[w] );
+					escapeTr[w] = ( pSurvivalHero > 0.0 ) ? ( Tr / pSurvivalHero ) : Tr;
+				}
 		}
 	}
 

@@ -709,14 +709,14 @@ spectral-bundle-bias notes in CLAUDE.md.)
 > transmittance is correct (3 fresh reviewers independently confirmed; left untouched).
 >
 > **Review-loop findings (3 fresh reviewers, all zero-P1 on the committed fix):**
-> - **HWSS: 4 sites, latent-but-reachable.** The same double-count is at **four** HWSS
->   sites (`IntegrateFromHitHWSS` surface-hit ~3715 + escape ~3733; `IntegrateRayHWSS`
->   camera surface-hit ~4442 + escape ~4464), not one. **Deferred to G1** because the correct
->   HWSS weight needs the **hero/sampling-channel survival pdf** (not `PTTrReduced` of a
->   per-wavelength scalar, which is identity) — that's the spectral free-flight
->   reweighting G1 builds. *Correction:* HWSS **is** reachable in production via the
->   `useHWSS` flag, so this is latent-but-reachable, not "off the render path"; the hero
->   simply renders non-HWSS NM. All four sites are now marked in code.
+> - **HWSS: 4 sites — NOW FIXED in G1-c.** The same double-count was at **four** HWSS
+>   sites (bounce-loop surface-hit + escape; `IntegrateRayHWSS` camera surface-hit + escape),
+>   not one. Each now divides the per-wavelength `Tr_w` by the **hero survival pdf**
+>   (`noScatterPdfScale · EvalDistancePdfNM(ray, dist, false, dist, heroNM)`) instead of
+>   multiplying `Tr_w` — see §10.13 **G1-c**. HWSS **is** reachable in production via the
+>   `useHWSS` flag, so this was latent-but-reachable, not "off the render path"; the hero
+>   simply renders non-HWSS NM. Discriminator: case F2 (camera-inside-global-medium HWSS),
+>   revert-proven.
 > - **Blast radius — same analog no-scatter double-count in sibling integrators**
 >   (verified): **BDPT** generators (`beta = beta * Tr` at BDPTIntegrator.cpp ~1800
 >   eye-subpath, ~5208 light-subpath), inherited transitively by **VCM and MLT-spectral**
@@ -1046,11 +1046,23 @@ approximation, which the principle rejects.)
 >   red-dominant, asserts `r > 3·b`, physical r/b ≈ 21–23×; flat curve → gray; unknown ref → load
 >   fails; no curve → gray — the direct luminance-collapse-vs-spectral contrast, authored through
 >   the parser).
-> - **G1-c — HWSS free-flight reweighting.** The 4 HWSS no-scatter sites (`throughputComp[w] *= Tr`,
->   `PathTracingIntegrator.cpp` ~3778/3796/4442/4464) still carry the analog double-count deferred
->   from the §10.12 family — with wavelength-dependent σ they need the **hero/sampling-channel
->   survival pdf** as the denominator (not `PTTrReduced` of a scalar, which is identity). Off the
->   hero's render path (hero renders non-HWSS NM) but a real bug closed for completeness.
+> - **G1-c — HWSS free-flight reweighting — DONE (commit pending).** The 4 HWSS no-scatter sites
+>   (`PathTracingIntegrator.cpp` bounce-loop surface-hit/escape + `IntegrateRayHWSS` camera-first
+>   surface-hit/escape) carried the analog double-count deferred from the §10.12 family: they did
+>   `throughput[w] *= Tr_w` on top of the survival probability, reading `exp(−2·σ·d)` under HWSS.
+>   **Fix:** each is now `*= Tr_w / (mso.noScatterPdfScale · pSurvivalHero)`, where `pSurvivalHero =
+>   EvalDistancePdfNM(ray, dist, false, dist, heroNM)` is the HERO survival pdf (the free-flight is
+>   sampled once at the hero wavelength) and `noScatterPdfScale` is the equiangular-MIS 0.5/1.0
+>   selection factor already in `MediumSampleOutcome`. For a gray bundle `Tr_w == pSurvivalHero` so
+>   the weight is exactly 1 — mirrors the non-HWSS `PTSurvivalWeight` scalar sites (~3376/3390).
+>   **Test scoping lesson (caught by revert-proof):** the interior-slab scene (case C) does NOT
+>   reach these sites — its through-medium transmittance runs in `IntegrateFromHitHWSS`; the sites
+>   fire only when the **camera is INSIDE the medium**. So the discriminator is a camera-inside-
+>   global-medium HWSS scene (`VolumeAbsorptionAttenuationTest` case **F2**): fix reads
+>   single-count `L0·exp(−σ·d)`, forced double-count reads `L0·exp(−2σ·d)≈0.041` and FAILS
+>   (revert-proven in-process). The separate PT HWSS emission bias (`L0≈0.30` not 1.0) cancels in
+>   the base-vs-absorber ratio. Off the hero's render path (hero renders non-HWSS NM) but a real
+>   bug closed for completeness.
 > - **G1-d — measured gold-ruby `σ_a(λ)` + analytic-slab gate + hero scene.** Extends the §10.3
 >   analytic Beer slab into a spectral discriminator (a wavelength-selective curve must reproduce
 >   `exp(−σ_a(λ)·d)` per wavelength) and lands the first real colorant curve.
@@ -1075,7 +1087,7 @@ a genuinely separate feature legitimately out of this material's scope.
 |---|---|---|
 | G1: medium gray in spectral mode | **F** | Build genuine σ_a(λ)/σ_s(λ) — **G1-a done (storage + eval, commit `7b77082a`); G1-b/c/d sequenced** (§10.13). |
 | **Medium pure-absorber double-attenuation** (§10.3) | **F** | **Fix the estimator** so non-HWSS NM matches the analytic Beer slab; do not validate against a biased reference. |
-| **HWSS "fall back to NM"** (§10.3) | **F** | **Fix HWSS free-flight reweighting** for wavelength-dependent σ (spectral-MIS / residual ratio). NM is the reference *while* fixing, not the permanent answer. |
+| **HWSS "fall back to NM"** (§10.3) | **F** | **DONE (G1-c):** HWSS free-flight reweighting fixed — the 4 no-scatter sites divide per-λ `Tr_w` by the hero survival pdf (was `*= Tr_w`, a double-count). Revert-proven via case F2. NM is no longer the only reference. |
 | **G6 "scene-authored fixed `incident_ior`, interface change out of scope"** (§10.6) | **F** | **Read the IOR stack** (`ior_stack.top()` = `n_enamel(λ)`, automatic + dispersion-correct). SPF/Pdf already have the stack (zero-interface); thread the ambient IOR into `IBSDF::value()` (the one ABI event). Cover SPF + BRDF-value + Kulla-Conty `F_avg` + AOV. `incident_ior` demoted to optional override. |
 | **Buried thin-film "excluded"** (§10.8) | **F** | **The G6 fix extends to the thin-film Airy stack** — buried oxide accents become correct; merely *sequenced* after the bare-conductor path. |
 | **Spatial×spectral medium "deferred"** (§10.7) | **F** | **Build the spatial medium properly: volume-coordinate mapping + fix `HeterogeneousMedium`'s luminance collapse** (coefficients, tracking majorants, distance PDFs — §10.7) + spectral transmittance validation. Coordinate mapping alone leaves it gray. Sequenced after the homogeneous hero, not abandoned. |
