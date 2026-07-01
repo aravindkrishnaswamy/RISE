@@ -346,7 +346,6 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Parsers/ChunkParserRegistry.cpp"
     "${RISE_LIB}/Parsers/AsciiScriptParser.cpp"
     "${RISE_LIB}/Parsers/MathExpressionEvaluator.cpp"
-    "${RISE_LIB}/Parsers/RawTokenCapture.cpp"
     "${RISE_LIB}/Options.cpp"
 
     # SRCLIBSCENEEDITORSUGGESTIONS

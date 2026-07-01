@@ -51,16 +51,6 @@ namespace RISE
         Status      status = Status::Failed;
         std::string filePath;
         std::string errorMessage;          ///< populated on Refused / Failed
-
-        // Diagnostic counters (§9.2 step 4 / pinned 2.23).  Count work
-        // attempted INSIDE the DirtyTracker.Snapshot() loop — they are
-        // NOT totals of all objects in the file.  On a zero-edits save
-        // all four stay zero; the correctness signal is byte-identity,
-        // not a counter value.
-        unsigned int noOpCount            = 0;  ///< dirty but Mfinal == Mloaded
-        unsigned int directRewriteCount   = 0;  ///< Mode A lines written
-        unsigned int overrideRewriteCount = 0;  ///< Mode B per-field entries
-        unsigned int matrixFallbackCount  = 0;  ///< force-matrix-override entries
     };
 
     /// True iff the status indicates a successful (file-state-coherent)

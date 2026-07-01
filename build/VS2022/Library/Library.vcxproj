@@ -292,7 +292,6 @@
     <ClCompile Include="..\..\..\src\Library\Parsers\ChunkParserRegistry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiScriptParser.cpp" />
     <ClCompile Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Parsers\RawTokenCapture.cpp" />
     <ClCompile Include="..\..\..\src\Library\pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
@@ -779,7 +778,6 @@
     <ClInclude Include="..\..\..\src\Library\Parsers\ChunkParserRegistry.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\IAsciiChunkParser.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.h" />
-    <ClInclude Include="..\..\..\src\Library\Parsers\RawTokenCapture.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\StdOutProgress.h" />
     <ClInclude Include="..\..\..\src\Library\pch.h" />
     <ClInclude Include="..\..\..\src\Library\PhotonMapping\CausticPelPhotonMap.h" />
