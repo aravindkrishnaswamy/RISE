@@ -1,0 +1,404 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  AgentSession.cpp - the headless read/validate surface (see AgentSession.h).
+//
+//  VALIDATE localization -- honest slice-0 note
+//  --------------------------------------------
+//  DeriveToJob (src/Library/Cst/Cst.cpp) reports its refuse-all failures
+//  as a `std::vector<std::string>` of COARSE messages:
+//     * "unknown chunk type '<kw>'"                  (localizable: the chunk keyword)
+//     * "<kw>: value-less parameter '<name>'"        (localizable: the param name)
+//     * "<kw>: invalid parameter(s) (see log)"       (COARSE -- the offending
+//                                                     parameter NAME is written to
+//                                                     the LOG, not the diag string)
+//     * other apply-time messages                    (kept as DERIVE_ERROR)
+//  So for the "invalid parameter(s)" case we RE-DERIVE the classification
+//  ourselves against the live descriptor: for the named chunk we walk its
+//  Param nodes and find the first param whose name is not declared on the
+//  chunk's ChunkDescriptor (-> UNKNOWN_PARAMETER) and compute that name
+//  token's byte span; if every name is declared it is an ill-typed VALUE
+//  (-> INVALID_VALUE) and we localize the first numeric-kind param whose
+//  value is non-finite / non-numeric.  When we cannot pin a span we return
+//  offset=length=0 with the message intact.  This is a best-effort
+//  reconstruction -- structured, node-localized diagnostics emitted BY
+//  DeriveToJob itself are a later refinement (design §2.5 `nodePath`).
+//
+//////////////////////////////////////////////////////////////////////
+
+#include "AgentSession.h"
+#include "SchemaGen.h"
+
+#include "../Cst/Cst.h"
+#include "../Interfaces/IJobPriv.h"
+#include "../Interfaces/IJob.h"
+#include "../RISE_API.h"
+#include "../SceneEditor/ChunkDescriptorRegistry.h"
+#include "../Parsers/ChunkDescriptor.h"
+#include "../Parsers/IAsciiChunkParser.h"
+#include "../Utilities/RString.h"
+
+#include <cctype>
+#include <cmath>
+
+namespace RISE
+{
+	namespace Agent
+	{
+		namespace
+		{
+			using RISE::Cst::Node;
+			using RISE::Cst::NodeRef;
+			using RISE::Cst::NodeKind;
+			using RISE::Cst::Document;
+
+			//! Serialize a green node's bytes (leaves carry text; internal
+			//! nodes are the concatenation of their kids -- the same
+			//! contract as Cst.cpp's internal Serialize, re-expressed here
+			//! because that helper is not exported).
+			void SerializeNode( const NodeRef& n, std::string& out )
+			{
+				if( !n ) return;
+				if( n->kids.empty() ) out += n->text;
+				else for( const auto& k : n->kids ) SerializeNode( k, out );
+			}
+
+			//! Byte width of a node's serialization.
+			std::size_t NodeBytes( const NodeRef& n )
+			{
+				std::string s;
+				SerializeNode( n, s );
+				return s.size();
+			}
+
+			//! Is `s` a purely-numeric token (an int / float, optionally
+			//! signed, with a decimal point / exponent)?  A NON-numeric
+			//! token in a numeric slot is what makes a value INVALID_VALUE.
+			bool LooksNumeric( const std::string& s )
+			{
+				if( s.empty() ) return false;
+				char* end = nullptr;
+				std::strtod( s.c_str(), &end );
+				return end != nullptr && *end == '\0';
+			}
+
+			//! Is a numeric-kind ValueKind (one that the derive validator
+			//! type-checks token-by-token)?
+			bool IsNumericKind( ValueKind k )
+			{
+				switch( k ) {
+					case ValueKind::UInt:
+					case ValueKind::Double:
+					case ValueKind::DoubleVec3:
+					case ValueKind::DoubleVec4:
+					case ValueKind::DoubleMat4:
+						return true;
+					default:
+						return false;
+				}
+			}
+
+			//! Look up a ParameterDescriptor by name on a chunk descriptor
+			//! (null if not declared).
+			const ParameterDescriptor* FindParam( const ChunkDescriptor& d, const std::string& name )
+			{
+				for( const auto& p : d.parameters )
+					if( p.name == name ) return &p;
+				return nullptr;
+			}
+
+			//! The keyword prefix of a "<kw>: ..." derive diagnostic (empty
+			//! if the message has no "<kw>:" prefix).
+			std::string KeywordPrefix( const std::string& msg )
+			{
+				std::size_t colon = msg.find( ':' );
+				if( colon == std::string::npos ) return std::string();
+				// The prefix must be a single token (a chunk keyword), so
+				// reject a message whose pre-colon text contains a space
+				// (those are free-form messages, not "<kw>: ...").
+				std::string pre = msg.substr( 0, colon );
+				if( pre.find( ' ' ) != std::string::npos ) return std::string();
+				return pre;
+			}
+
+			//! Extract the single-quoted token from a message like
+			//! "unknown chunk type 'foo'" or "...value-less parameter 'bar'"
+			//! (empty if none).
+			std::string QuotedToken( const std::string& msg )
+			{
+				std::size_t a = msg.find( '\'' );
+				if( a == std::string::npos ) return std::string();
+				std::size_t b = msg.find( '\'', a + 1 );
+				if( b == std::string::npos ) return std::string();
+				return msg.substr( a + 1, b - a - 1 );
+			}
+
+			//! Walk the document computing the ABSOLUTE byte offset at which
+			//! each top-level item starts (so we can localize inside a chunk).
+			//! Returns the items in order plus their start offsets.
+			void CollectItems( const Document& doc,
+			                   std::vector<NodeRef>& outItems,
+			                   std::vector<std::size_t>& outStarts )
+			{
+				// Each item's absolute start is the running total of the
+				// preceding items' serialized widths (the CST is lossless, so
+				// the concatenation of item bytes IS the document text).  The
+				// i-th item resolves via its NodeId position.
+				const int n = RISE::Cst::DocItemCount( doc );
+				std::size_t running = 0;
+				for( int i = 0; i < n; ++i ) {
+					RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( doc, i );
+					NodeRef node;
+					if( id ) node = RISE::Cst::DocResolveNodeId( doc, id );
+					outItems.push_back( node );
+					outStarts.push_back( running );
+					running += node ? NodeBytes( node ) : 0;
+				}
+			}
+
+			//! Compute the absolute byte offset of the FIRST Token child with
+			//! role `role` whose text == `text`, inside `chunk` which begins
+			//! at absolute offset `chunkStart`.  Returns true + fills
+			//! outOffset/outLength on a hit.
+			bool OffsetOfParamName( const NodeRef& chunk, std::size_t chunkStart,
+			                        const std::string& pname,
+			                        std::size_t& outOffset, std::size_t& outLength )
+			{
+				if( !chunk ) return false;
+				std::size_t running = chunkStart;
+				for( const auto& kid : chunk->kids ) {
+					if( kid->kind == NodeKind::Param ) {
+						// A Param's first Token child (role "pname") is the name.
+						std::size_t inner = running;
+						for( const auto& tk : kid->kids ) {
+							if( tk->kind == NodeKind::Token && tk->role == "pname" ) {
+								if( tk->text == pname ) {
+									outOffset = inner;
+									outLength = tk->text.size();
+									return true;
+								}
+								break;   // only the first token is the pname
+							}
+							inner += NodeBytes( tk );
+						}
+					}
+					running += NodeBytes( kid );
+				}
+				return false;
+			}
+
+			//! Locate the unknown / ill-typed parameter inside a chunk named
+			//! `keyword`.  Sets `outCode` to UNKNOWN_PARAMETER (an undeclared
+			//! name) or INVALID_VALUE (a declared but ill-typed value), and
+			//! fills the byte span when found.  Returns false when the chunk
+			//! is absent or nothing could be pinned (caller keeps offset 0).
+			bool LocalizeInvalidParam( const Document& doc, const std::string& keyword,
+			                           std::string& outCode,
+			                           std::size_t& outOffset, std::size_t& outLength )
+			{
+				const ChunkDescriptor* d = DescriptorForKeyword( String( keyword.c_str() ) );
+				if( !d ) return false;
+
+				std::vector<NodeRef> items;
+				std::vector<std::size_t> starts;
+				CollectItems( doc, items, starts );
+
+				for( std::size_t i = 0; i < items.size(); ++i ) {
+					const NodeRef& item = items[i];
+					if( !item || item->kind != NodeKind::Chunk || item->role != keyword ) continue;
+
+					// PASS 1: the first UNDECLARED parameter name.
+					for( const auto& kid : item->kids ) {
+						if( kid->kind != NodeKind::Param ) continue;
+						std::string pname;
+						for( const auto& tk : kid->kids )
+							if( tk->kind == NodeKind::Token && tk->role == "pname" ) { pname = tk->text; break; }
+						if( pname.empty() ) continue;
+						if( !FindParam( *d, pname ) ) {
+							outCode = AgentDiagnosticCode::UNKNOWN_PARAMETER;
+							if( !OffsetOfParamName( item, starts[i], pname, outOffset, outLength ) ) {
+								outOffset = 0; outLength = 0;
+							}
+							return true;
+						}
+					}
+
+					// PASS 2: a DECLARED but ill-typed numeric value.
+					for( const auto& kid : item->kids ) {
+						if( kid->kind != NodeKind::Param ) continue;
+						std::string pname;
+						std::vector<std::string> values;
+						for( const auto& tk : kid->kids ) {
+							if( tk->kind != NodeKind::Token ) continue;
+							if( tk->role == "pname" ) pname = tk->text;
+							else if( tk->role == "pvalue" ) values.push_back( tk->text );
+						}
+						const ParameterDescriptor* p = pname.empty() ? nullptr : FindParam( *d, pname );
+						if( !p || !IsNumericKind( p->kind ) ) continue;
+						bool bad = values.empty();   // a numeric param needs a value
+						for( const std::string& v : values ) {
+							if( !LooksNumeric( v ) || !std::isfinite( std::strtod( v.c_str(), nullptr ) ) ) { bad = true; break; }
+						}
+						if( bad ) {
+							outCode = AgentDiagnosticCode::INVALID_VALUE;
+							if( !OffsetOfParamName( item, starts[i], pname, outOffset, outLength ) ) {
+								outOffset = 0; outLength = 0;
+							}
+							return true;
+						}
+					}
+				}
+				return false;
+			}
+		}
+
+		AgentSession::AgentSession( IJobPriv* job, bool owns )
+			: mJob( job ), mOwnsJob( owns )
+		{
+		}
+
+		AgentSession::~AgentSession()
+		{
+			if( mOwnsJob && mJob ) mJob->release();
+			mJob = nullptr;
+		}
+
+		std::unique_ptr<AgentSession> AgentSession::LoadFromFile( const std::string& path )
+		{
+			IJobPriv* job = nullptr;
+			if( !RISE_CreateJobPriv( &job ) || !job ) return nullptr;
+			if( !job->LoadAsciiSceneViaCst( path.c_str() ) ) {
+				job->release();
+				return nullptr;
+			}
+			return std::unique_ptr<AgentSession>( new AgentSession( job, /*owns=*/true ) );
+		}
+
+		std::unique_ptr<AgentSession> AgentSession::WrapJob( IJobPriv* job )
+		{
+			if( !job ) return nullptr;
+			return std::unique_ptr<AgentSession>( new AgentSession( job, /*owns=*/false ) );
+		}
+
+		bool AgentSession::HasDocument() const
+		{
+			return mJob && mJob->HasRetainedCstDocument();
+		}
+
+		std::string AgentSession::ReadDocument() const
+		{
+			if( !mJob ) return std::string();
+			const RISE::Cst::Document* doc = mJob->GetCstDocument();
+			if( !doc ) return std::string();
+			return RISE::Cst::SerializeCst( *doc );
+		}
+
+		std::string AgentSession::ReadSchema( const std::string& keyword ) const
+		{
+			if( keyword.empty() ) return SchemaGenAll();
+			return SchemaGenForChunk( keyword );
+		}
+
+		std::vector<AgentDiagnostic> AgentSession::Validate( const std::string& candidateText ) const
+		{
+			std::vector<AgentDiagnostic> out;
+
+			// (a) bytes -> CST.  ParseToCst is LOSSLESS and structurally
+			// total (malformed bytes land as stray leaves, never a throw),
+			// so a genuine PARSE_ERROR here is a round-trip failure -- a
+			// defensive check that should never fire, but reported as
+			// PARSE_ERROR if it ever does.
+			Document candidateDoc = RISE::Cst::ParseToCst( candidateText );
+			if( RISE::Cst::SerializeCst( candidateDoc ) != candidateText ) {
+				AgentDiagnostic d;
+				d.severity = AgentDiagnostic::Severity::Error;
+				d.code     = AgentDiagnosticCode::PARSE_ERROR;
+				d.message  = "candidate text did not round-trip through the CST parser (malformed structure)";
+				out.push_back( d );
+				return out;
+			}
+
+			// (b) derive into a THROWAWAY Job -- NEVER this session's mJob
+			// (Validate has no side effects on the head).
+			IJobPriv* throwaway = nullptr;
+			if( !RISE_CreateJobPriv( &throwaway ) || !throwaway ) {
+				AgentDiagnostic d;
+				d.severity = AgentDiagnostic::Severity::Error;
+				d.code     = AgentDiagnosticCode::DERIVE_ERROR;
+				d.message  = "internal: could not create a throwaway Job for validation";
+				out.push_back( d );
+				return out;
+			}
+
+			std::vector<std::string> diags;
+			RISE::Cst::DeriveToJob( candidateDoc, *throwaway, &diags );
+			throwaway->release();
+			throwaway = nullptr;
+
+			// (c) map each coarse derive message -> a structured diagnostic
+			// with best-effort byte-offset localization (see file header).
+			for( const std::string& msg : diags ) {
+				AgentDiagnostic d;
+				d.severity = AgentDiagnostic::Severity::Error;
+				d.message  = msg;
+				d.offset   = 0;
+				d.length   = 0;
+
+				if( msg.rfind( "unknown chunk type", 0 ) == 0 ) {
+					d.code = AgentDiagnosticCode::UNKNOWN_CHUNK;
+					const std::string kw = QuotedToken( msg );
+					// Localize the chunk keyword token.
+					if( !kw.empty() ) {
+						std::size_t p = candidateText.find( kw );
+						if( p != std::string::npos ) { d.offset = p; d.length = kw.size(); }
+					}
+				}
+				else if( msg.find( "value-less parameter" ) != std::string::npos ) {
+					d.code = AgentDiagnosticCode::INVALID_VALUE;
+					const std::string kw    = KeywordPrefix( msg );
+					const std::string pname = QuotedToken( msg );
+					std::string code2;
+					std::size_t off = 0, len = 0;
+					// Reuse the chunk-scoped localizer to pin the param name.
+					if( !kw.empty() && !pname.empty() ) {
+						std::vector<NodeRef> items;
+						std::vector<std::size_t> starts;
+						CollectItems( candidateDoc, items, starts );
+						for( std::size_t i = 0; i < items.size(); ++i ) {
+							if( items[i] && items[i]->kind == NodeKind::Chunk && items[i]->role == kw ) {
+								if( OffsetOfParamName( items[i], starts[i], pname, off, len ) ) {
+									d.offset = off; d.length = len; break;
+								}
+							}
+						}
+					}
+					(void)code2;
+				}
+				else if( msg.find( "invalid parameter(s)" ) != std::string::npos ) {
+					// The offending name is in the LOG, not the message -- so
+					// re-derive the classification (UNKNOWN_PARAMETER vs an
+					// ill-typed INVALID_VALUE) + its span ourselves.
+					const std::string kw = KeywordPrefix( msg );
+					std::string code = AgentDiagnosticCode::DERIVE_ERROR;
+					std::size_t off = 0, len = 0;
+					if( !kw.empty() && LocalizeInvalidParam( candidateDoc, kw, code, off, len ) ) {
+						d.code   = code;
+						d.offset = off;
+						d.length = len;
+					} else {
+						d.code = AgentDiagnosticCode::DERIVE_ERROR;
+					}
+				}
+				else {
+					// Any other apply-time message (unresolved reference, a
+					// scene_variant / let / instance_array error, ...) is kept
+					// verbatim under the generic DERIVE_ERROR code.
+					d.code = AgentDiagnosticCode::DERIVE_ERROR;
+				}
+
+				out.push_back( d );
+			}
+
+			return out;
+		}
+	}
+}

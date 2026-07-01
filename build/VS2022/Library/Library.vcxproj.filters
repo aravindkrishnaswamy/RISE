@@ -64,6 +64,9 @@
     <Filter Include="Camera">
       <UniqueIdentifier>{25af0af4-21a6-4e0f-ab2a-1c48887de7cf}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Agent">
+      <UniqueIdentifier>{a6e70000-0000-4000-8000-0000000000de}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Cst">
       <UniqueIdentifier>{c57c5700-0000-4000-8000-0000000000de}</UniqueIdentifier>
     </Filter>
@@ -539,6 +542,12 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.cpp">
       <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\AgentSession.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\SchemaGen.cpp">
+      <Filter>Agent</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Cst\Cst.cpp">
       <Filter>Cst</Filter>
@@ -1703,6 +1712,15 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\SDFGeometry.h">
       <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\AgentDiagnostic.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\AgentSession.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\SchemaGen.h">
+      <Filter>Agent</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Cst\Cst.h">
       <Filter>Cst</Filter>

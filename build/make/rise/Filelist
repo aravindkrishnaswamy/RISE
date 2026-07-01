@@ -35,6 +35,8 @@ SRCDRISE =\
 
 # Utilities
 SRCLIBUTILITIES =\
+	$(PATHLIBRARY)Agent/AgentSession.cpp		\
+	$(PATHLIBRARY)Agent/SchemaGen.cpp			\
 	$(PATHLIBRARY)Cst/Cst.cpp					\
 	$(PATHLIBRARY)Utilities/Color/Color.cpp						\
 	$(PATHLIBRARY)Utilities/Color/ColorUtils.cpp				\
