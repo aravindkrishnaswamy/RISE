@@ -33,8 +33,8 @@ final class RISESceneSyntaxHighlighter: NSObject, NSTextStorageDelegate {
     // MARK: - Block Type Keywords
     //
     // Populated on first access from the library's SceneGrammar via
-    // RISESceneEditorBridge.  The parser's chunk registry is the single
-    // source of truth — adding a new chunk type in AsciiSceneParser.cpp
+    // RISESceneEditorBridge.  The chunk-parser registry is the single
+    // source of truth — adding a new chunk type in ChunkParserRegistry.cpp
     // automatically makes it a recognized block keyword here with no
     // changes to this file.
 
