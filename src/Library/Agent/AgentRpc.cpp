@@ -19,7 +19,6 @@
 #include "Json.h"
 #include "SchemaGen.h"
 
-#include <cmath>
 #include <exception>
 #include <string>
 #include <vector>
@@ -237,11 +236,22 @@ namespace RISE
 					if( const JsonValue* sm = params.find( "samples" ) ) {
 						if( sm->isNumber() ) {
 							// Guard the cast: static_cast<int>(inf/nan) is UB.  A
-							// hostile {"samples":1e999} parses to +inf -- reject it
-							// as invalid params rather than invoking the cast.
-							if( !std::isfinite( sm->asNumber() ) )
-								return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a finite number" );
-							samples = static_cast<int>( sm->asNumber() );
+							// hostile {"samples":1e999} parses to +inf.  We do NOT
+							// use std::isfinite here: the production build compiles
+							// with -ffast-math (-> -ffinite-math-only), under which
+							// clang constant-folds std::isfinite(x) to true and the
+							// guard becomes dead code stripped by the optimizer.  An
+							// explicit range comparison against the int32 bounds
+							// survives -ffinite-math-only (a plain >=/<= on the
+							// double is not folded away) and rejects NaN and +/-inf
+							// alike before the narrowing cast: NaN fails both
+							// comparisons, +/-inf fails the finite bound.  The
+							// bounds are exactly representable as double
+							// (2^31-1 and -2^31).
+							const double sv = sm->asNumber();
+							if( !( sv >= -2147483648.0 && sv <= 2147483647.0 ) )
+								return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a finite, in-range number" );
+							samples = static_cast<int>( sv );
 						}
 						else if( !sm->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a number" );

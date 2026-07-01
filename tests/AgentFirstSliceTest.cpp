@@ -364,6 +364,55 @@ int main()
 		Check( env.get( "id" ).isNull(), "non-object envelope -> id is null (un-attributable)" );
 	}
 
+	//----------------------------------------------------------------------
+	// render samples guard — a hostile {"samples":1e999} parses to +inf,
+	// {"samples":1e999... via a NaN-producing huge literal} likewise; both
+	// MUST be rejected as -32602 BEFORE the narrowing static_cast<int>(inf)
+	// (which is UB).  The guard is an explicit int32-range comparison rather
+	// than std::isfinite precisely so it survives the production -ffast-math
+	// (-ffinite-math-only) build, under which the isfinite intrinsic folds to
+	// `true` and the guard would be stripped as dead code.  We drive the raw
+	// JSON line (not Req(), whose MakeNumber takes a finite double) so the
+	// dispatcher's OWN parser produces the infinity.  A normal {"samples":2}
+	// must still render ok (the guard is not over-broad).
+	std::printf( "[render samples guard] 1e999 -> -32602; normal samples still ok\n" );
+	{
+		// +inf via an out-of-double-range literal.
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"render\",\"params\":{\"samples\":1e999}}" );
+		JsonValue env = ParseResponse( resp, 14 );
+		Check( env.has( "error" ), "render(samples:1e999) returns an error (not a success result)" );
+		Check( !env.has( "result" ), "render(samples:1e999) has NO result field" );
+		Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
+		       "render(samples:1e999) -> error.code == -32602 (rejected before UB cast; survives -ffast-math)" );
+	}
+	{
+		// -inf sibling: a huge NEGATIVE literal also overflows double to -inf.
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"render\",\"params\":{\"samples\":-1e999}}" );
+		JsonValue env = ParseResponse( resp, 15 );
+		Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
+		       "render(samples:-1e999) -> error.code == -32602 (negative-infinity sibling)" );
+	}
+	{
+		// A finite-but-out-of-int32-range literal is ALSO rejected (the cast
+		// would truncate/overflow) -- proves the range bound, not just finiteness.
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"render\",\"params\":{\"samples\":1e18}}" );
+		JsonValue env = ParseResponse( resp, 16 );
+		Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
+		       "render(samples:1e18) -> error.code == -32602 (out-of-int32-range rejected)" );
+	}
+	{
+		// Not over-broad: a normal in-range {"samples":2} still renders ok.
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "samples", JsonValue::MakeNumber( 2.0 ) );
+		const std::string resp = rpc.HandleLine( Req( 17, "render", params ) );
+		JsonValue env = ParseResponse( resp, 17 );
+		Check( env.has( "result" ), "render(samples:2) returns a success result (guard not over-broad)" );
+		Check( env.get( "result" ).get( "ok" ).asBool(), "render(samples:2) ok==true" );
+	}
+
 	std::printf( "=== AgentFirstSliceTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }
