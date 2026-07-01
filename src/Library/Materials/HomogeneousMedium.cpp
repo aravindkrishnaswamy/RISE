@@ -122,9 +122,14 @@ MediumCoefficientsNM HomogeneousMedium::GetCoefficientsNM(
 		// G1: genuine per-wavelength coefficients.  A null curve
 		// contributes zero for that coefficient (a pure-absorber
 		// colorant leaves the scattering curve null).  Homogeneous:
-		// position is ignored.
-		const Scalar sa = m_sigma_a_spectral ? m_sigma_a_spectral->Evaluate( nm ) : 0.0;
-		const Scalar ss = m_sigma_s_spectral ? m_sigma_s_spectral->Evaluate( nm ) : 0.0;
+		// position is ignored.  Clamp to physical non-negativity: a
+		// curve authored with a negative control point would otherwise
+		// give sigma_t < 0, so EvalTransmittanceNM = exp(-sigma_t*d) > 1
+		// (unphysical energy gain) while SampleDistanceNM treats it as
+		// non-scattering — an inconsistency.  Author error, guarded here
+		// so both NM paths agree.
+		const Scalar sa = m_sigma_a_spectral ? fmax( m_sigma_a_spectral->Evaluate( nm ), 0.0 ) : 0.0;
+		const Scalar ss = m_sigma_s_spectral ? fmax( m_sigma_s_spectral->Evaluate( nm ), 0.0 ) : 0.0;
 		c.sigma_s = ss;
 		c.sigma_t = sa + ss;
 	} else {

@@ -19,8 +19,13 @@
 //      T(t) = exp(-sigma_t * t)   (per-channel Beer-Lambert)
 //
 //  SPECTRAL MODE:
-//    In spectral (NM) mode, extinction at the given wavelength is
-//    used directly — no channel selection needed.
+//    In spectral (NM) mode, GetCoefficientsNM evaluates genuine
+//    per-wavelength sigma_a(lambda)/sigma_s(lambda) from the optional
+//    m_sigma_*_spectral IFunction1D curves when either is bound (G1,
+//    vitreous enamel); with neither bound it falls back to the
+//    luminance of the RGB triples (byte-identical to pre-G1).  The
+//    distance sampler and transmittance both read sigma_t(lambda)
+//    through GetCoefficientsNM so the two paths cannot drift.
 //
 //  Aligned with Blender/Cycles homogeneous volume integration in
 //  volume_integrate_homogeneous()

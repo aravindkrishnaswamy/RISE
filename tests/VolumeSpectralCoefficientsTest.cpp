@@ -18,9 +18,11 @@
 //       red in spectral mode (the whole point of G1).
 //    C. Pure absorber: a null scattering curve => sigma_s == 0 in NM,
 //       sigma_t == sigma_a(nm) (the enamel colorant case).
-//    D. Byte-identical fallback: a medium built WITHOUT curves returns a
-//       wavelength-INDEPENDENT luminance (proving the fallback is
-//       unchanged and distinct from the spectral path).
+//    D. Luminance fallback: a medium built WITHOUT curves returns a
+//       wavelength-INDEPENDENT luminance-weighted blend — the fallback
+//       is distinct from the spectral path.  (The numeric byte-identity
+//       to pre-G1 is proven by the full suite staying green, not by this
+//       case, which only checks the fallback's wavelength-flat shape.)
 //    E. Sampling consistency: SampleDistanceNM's scatter probability
 //       matches 1 - exp(-sigma_t(nm) * maxDist) at the queried
 //       wavelength (i.e. it shares sigma_t(nm) with GetCoefficientsNM).
@@ -263,6 +265,39 @@ static void TestSamplingConsistency()
 	safe_release( scaCurve );
 }
 
+//----------------------------------------------------------------------
+// G: non-negativity clamp — a curve with a negative control point must
+//    not produce sigma_t < 0 (which would give Tr = exp(-sigma_t*d) > 1,
+//    unphysical energy gain).  Guards author error.
+//----------------------------------------------------------------------
+static void TestNegativeClamp()
+{
+	std::cout << "G: negative curve values clamp to non-negative (no Tr > 1)" << std::endl;
+
+	// Absorption curve dips negative around 600nm (author error).
+	std::vector<double> x = { 400, 550, 600, 650, 700 };
+	std::vector<double> y = { 1.0, 0.5, -2.0, 0.4, 0.3 };
+	IFunction1D* absCurve = MakeCurve( x, y );
+	IPhaseFunction* phase = 0;
+	RISE_API_CreateIsotropicPhaseFunction( &phase );
+
+	IMedium* medium = 0;
+	RISE_API_CreateHomogeneousMediumSpectral( &medium,
+		RISEPel( 1.0, 1.0, 1.0 ), RISEPel( 0.0, 0.0, 0.0 ), RISEPel( 0.0, 0.0, 0.0 ),
+		absCurve, /*sigma_s_spectral=*/nullptr, *phase );
+
+	const Point3 p( 0, 0, 0 );
+	const Ray ray( p, Vector3( 0, 0, 1 ) );
+	MediumCoefficientsNM c = medium->GetCoefficientsNM( p, 600.0 );
+	Check( c.sigma_t >= 0.0, "  sigma_t(600nm) clamped to >= 0 despite negative curve value" );
+	const double tr = medium->EvalTransmittanceNM( ray, 1.0, 600.0 );
+	Check( tr <= 1.0 + 1e-9, "  Tr(600nm) <= 1 (no unphysical energy gain)" );
+
+	safe_release( medium );
+	safe_release( phase );
+	safe_release( absCurve );
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "VolumeSpectralCoefficientsTest — G1 per-wavelength "
@@ -272,6 +307,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestPureAbsorber();
 	TestLuminanceFallback();
 	TestSamplingConsistency();
+	TestNegativeClamp();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

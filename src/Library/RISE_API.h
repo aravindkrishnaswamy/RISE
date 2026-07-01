@@ -3237,6 +3237,11 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! may be null; when both are null the medium is byte-identical to
 	//! RISE_API_CreateHomogeneousMediumWithEmission.  The RGB triples
 	//! drive the RGB/preview path; the curves drive the spectral path.
+	//! Curve output is clamped to non-negative in the spectral path.
+	//! NOTE: give each curve at least two control points — a
+	//! single-point IFunction1D evaluates to 1.0 everywhere (the
+	//! PiecewiseLinearFunction degenerate convention), silently giving a
+	//! sigma=1.0/unit medium rather than the intended value.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateHomogeneousMediumSpectral(
 								IMedium** ppi,						///< [out] Pointer to recieve the medium
