@@ -204,6 +204,55 @@ static void TestMemoryBufferGetBytesOverread()
 	std::remove( path.c_str() );
 }
 
+//----------------------------------------------------------------------
+// D: MemoryBuffer scalar getters (getUInt/getDouble) past EOF return 0
+// instead of OOB-reading the heap.  A malformed/truncated file whose
+// header drives a count-then-scalar-loop (e.g. .risemesh numpts ->
+// getDouble) would otherwise walk off the buffer.  The guard (formerly
+// _DEBUG-only) returns 0 and consumes to end so a loop-until-cursor
+// caller terminates.
+//----------------------------------------------------------------------
+static void TestMemoryBufferScalarOverread()
+{
+	std::cout << "D: MemoryBuffer scalar getters past EOF return 0 (no OOB heap read)" << std::endl;
+
+	// An 8-byte file = exactly two uint32.
+	const std::string path = TmpDir() + "rise_membuf_scalar.bin";
+	{
+		std::ofstream f( path.c_str(), std::ios::binary | std::ios::trunc );
+		unsigned int a = 0x11223344u, b = 0x55667788u;
+		f.write( reinterpret_cast<const char*>( &a ), 4 );
+		f.write( reinterpret_cast<const char*>( &b ), 4 );
+		f.close();
+	}
+
+	MemoryBuffer* mb = new MemoryBuffer( path.c_str() );
+	mb->addref();
+	Check( mb->Size() == 8, "D: 8-byte scalar file loaded" );
+
+	const unsigned int v0 = mb->getUInt();   // bytes 0..3
+	const unsigned int v1 = mb->getUInt();   // bytes 4..7 (now at EOF)
+	Check( v0 == 0x11223344u && v1 == 0x55667788u, "D: two in-range getUInt read correctly" );
+
+	// Now at EOF: further scalar reads must return 0, not OOB.
+	const unsigned int over = mb->getUInt();
+	Check( over == 0, "D: getUInt past EOF returns 0 (guarded, not OOB)" );
+
+	mb->release();
+
+	// A 4-byte buffer + getDouble (needs 8) -> over-read -> 0.
+	const std::string path2 = TmpDir() + "rise_membuf_scalar2.bin";
+	WriteBytes( path2, 0xCD, 4 );
+	MemoryBuffer* mb2 = new MemoryBuffer( path2.c_str() );
+	mb2->addref();
+	const double d = mb2->getDouble();       // only 4 of 8 bytes available
+	Check( d == 0.0, "D: getDouble with < 8 bytes returns 0 (guarded, not partial/OOB)" );
+	mb2->release();
+
+	std::remove( path.c_str() );
+	std::remove( path2.c_str() );
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "VolumeShortReadTest — missing/truncated binary reads zero, never uninitialised"
@@ -212,6 +261,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestVolumeSlices();
 	TestMemoryBufferMissingFile();
 	TestMemoryBufferGetBytesOverread();
+	TestMemoryBufferScalarOverread();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

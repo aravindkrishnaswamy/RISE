@@ -290,35 +290,47 @@ bool MemoryBuffer::DumpToFileToCursor( const char * szFileName )
 
 char MemoryBuffer::getChar()
 {
-#ifdef _DEBUG
-	if( nCursor==nSize ) {
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): reading a
+	// scalar past the buffer end otherwise OOB-reads the heap on a
+	// malformed / truncated file.  Overflow-safe; returns 0 on exhaustion.
+	if( nCursor >= nSize ) {
+	#ifdef _DEBUG
 		GlobalLog()->PrintSourceError( "MemoryBuffer::getChar:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	#endif
+		nCursor = nSize;   // consume to end so loop-until-cursor callers terminate
 		return 0;
 	}
-#endif
 	return (char)pBuffer[nCursor++];
 }
 
 unsigned char MemoryBuffer::getUChar()
 {
-#ifdef _DEBUG
-	if( nCursor==nSize ) {
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): reading a
+	// scalar past the buffer end otherwise OOB-reads the heap on a
+	// malformed / truncated file.  Overflow-safe; returns 0 on exhaustion.
+	if( nCursor >= nSize ) {
+	#ifdef _DEBUG
 		GlobalLog()->PrintSourceError( "MemoryBuffer::getUChar:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	#endif
+		nCursor = nSize;   // consume to end so loop-until-cursor callers terminate
 		return 0;
 	}
-#endif
 
 	return pBuffer[nCursor++];
 }
 
 short MemoryBuffer::getWord()
 {
-#ifdef _DEBUG
-	if( nCursor+sizeof(short) > nSize ) {
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): reading a
+	// scalar past the buffer end otherwise OOB-reads the heap on a
+	// malformed / truncated file.  Overflow-safe; returns 0 on exhaustion.
+	if( nCursor > nSize || sizeof(short) > nSize - nCursor ) {
+	#ifdef _DEBUG
 		GlobalLog()->PrintSourceError( "MemoryBuffer::getWord:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	#endif
+		nCursor = nSize;   // consume to end so loop-until-cursor callers terminate
 		return 0;
 	}
-#endif
 
 #ifdef RISE_BIG_ENDIAN
 	short Low = getUChar();
@@ -335,12 +347,16 @@ short MemoryBuffer::getWord()
 
 unsigned short MemoryBuffer::getUWord()
 {
-#ifdef _DEBUG
-	if( nCursor+sizeof(unsigned short) > nSize ) {
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): reading a
+	// scalar past the buffer end otherwise OOB-reads the heap on a
+	// malformed / truncated file.  Overflow-safe; returns 0 on exhaustion.
+	if( nCursor > nSize || sizeof(unsigned short) > nSize - nCursor ) {
+	#ifdef _DEBUG
 		GlobalLog()->PrintSourceError( "MemoryBuffer::getUWord:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	#endif
+		nCursor = nSize;   // consume to end so loop-until-cursor callers terminate
 		return 0;
 	}
-#endif
 
 #ifdef RISE_BIG_ENDIAN
 	unsigned short Low = getUChar();
@@ -356,12 +372,16 @@ unsigned short MemoryBuffer::getUWord()
 
 int MemoryBuffer::getInt()
 {
-#ifdef _DEBUG
-	if( nCursor+sizeof(int) > nSize ) {
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): reading a
+	// scalar past the buffer end otherwise OOB-reads the heap on a
+	// malformed / truncated file.  Overflow-safe; returns 0 on exhaustion.
+	if( nCursor > nSize || sizeof(int) > nSize - nCursor ) {
+	#ifdef _DEBUG
 		GlobalLog()->PrintSourceError( "MemoryBuffer::getInt:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	#endif
+		nCursor = nSize;   // consume to end so loop-until-cursor callers terminate
 		return 0;
 	}
-#endif
 
 #ifdef RISE_BIG_ENDIAN
 	int Low = getUWord();
@@ -377,12 +397,16 @@ int MemoryBuffer::getInt()
 
 unsigned int MemoryBuffer::getUInt()
 {
-#ifdef _DEBUG
-	if( nCursor+sizeof(unsigned int) > nSize ) {
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): reading a
+	// scalar past the buffer end otherwise OOB-reads the heap on a
+	// malformed / truncated file.  Overflow-safe; returns 0 on exhaustion.
+	if( nCursor > nSize || sizeof(unsigned int) > nSize - nCursor ) {
+	#ifdef _DEBUG
 		GlobalLog()->PrintSourceError( "MemoryBuffer::getUInt:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	#endif
+		nCursor = nSize;   // consume to end so loop-until-cursor callers terminate
 		return 0;
 	}
-#endif
 
 #ifdef RISE_BIG_ENDIAN
 	unsigned int Low = getUWord();
@@ -398,12 +422,16 @@ unsigned int MemoryBuffer::getUInt()
 
 float MemoryBuffer::getFloat()
 {
-#ifdef _DEBUG
-	if( nCursor+sizeof(float) > nSize ) {
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): reading a
+	// scalar past the buffer end otherwise OOB-reads the heap on a
+	// malformed / truncated file.  Overflow-safe; returns 0 on exhaustion.
+	if( nCursor > nSize || sizeof(float) > nSize - nCursor ) {
+	#ifdef _DEBUG
 		GlobalLog()->PrintSourceError( "MemoryBuffer::getFloat:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	#endif
+		nCursor = nSize;   // consume to end so loop-until-cursor callers terminate
 		return 0;
 	}
-#endif
 
 #ifdef RISE_BIG_ENDIAN
 	float f = 0;
@@ -420,12 +448,16 @@ float MemoryBuffer::getFloat()
 
 double MemoryBuffer::getDouble()
 {
-#ifdef _DEBUG
-	if( nCursor+sizeof(double) > nSize ) {
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): reading a
+	// scalar past the buffer end otherwise OOB-reads the heap on a
+	// malformed / truncated file.  Overflow-safe; returns 0 on exhaustion.
+	if( nCursor > nSize || sizeof(double) > nSize - nCursor ) {
+	#ifdef _DEBUG
 		GlobalLog()->PrintSourceError( "MemoryBuffer::getDouble:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	#endif
+		nCursor = nSize;   // consume to end so loop-until-cursor callers terminate
 		return 0;
 	}
-#endif
 
 #ifdef RISE_BIG_ENDIAN
 	unsigned int Low = getUInt();
