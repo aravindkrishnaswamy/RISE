@@ -66,6 +66,30 @@ static const std::string kBadScene =
 	"\tbogus 5\n"
 	"}\n";
 
+// The value-less scene: `radius` sits ALONE on its own line (no same-line
+// value), which ParseChunk flattens into a bare pname Token (a direct child
+// of the Chunk) and DeriveToJob reports as
+// "sphere_geometry: value-less parameter 'radius'".  The localizer must land
+// the diagnostic's byte span ON that bare `radius` token.
+static const std::string kValuelessScene =
+	std::string( "RISE ASCII SCENE 7\n" ) +
+	"sphere_geometry\n"
+	"{\n"
+	"\tname s\n"
+	"\tradius\n"
+	"}\n";
+
+// The value-HAVING twin of kValuelessScene (identical but for `radius 0.6`):
+// derives cleanly and yields NO value-less diagnostic -- the red-prove that
+// the value-less localization is REAL, not an artifact of the scene shape.
+static const std::string kValuedScene =
+	std::string( "RISE ASCII SCENE 7\n" ) +
+	"sphere_geometry\n"
+	"{\n"
+	"\tname s\n"
+	"\tradius 0.6\n"
+	"}\n";
+
 // Write `text` to a temp file and return its path (or "" on failure).
 static std::string WriteTemp( const char* name, const std::string& text )
 {
@@ -185,6 +209,52 @@ int main()
 		for( const AgentDiagnostic& d : diags )
 			if( d.code == AgentDiagnosticCode::UNKNOWN_PARAMETER ) anyUnknown = true;
 		Check( !anyUnknown, "the good scene yields NO UNKNOWN_PARAMETER (localization is real)" );
+	}
+
+	//----------------------------------------------------------------------
+	// Validate -- value-less parameter is localized to the BARE pname token.
+	// (Fix 1: a value-less line flattens into a bare pname Token that is a
+	// direct child of the Chunk, which OffsetOfParamName cannot see; the
+	// value-less path now scans the chunk's direct kids for it.)
+	//----------------------------------------------------------------------
+	std::printf( "[validate] value-less param -> localized INVALID_VALUE\n" );
+	bool sawValueless = false;
+	{
+		std::vector<AgentDiagnostic> diags = session->Validate( kValuelessScene );
+		// The lone `radius` token's byte span in the value-less scene text.
+		// Anchor on the tab-prefixed line so we find the bare occurrence, not
+		// the substring inside some other token.
+		const std::size_t radiusLine = kValuelessScene.find( "\tradius\n" );
+		Check( radiusLine != std::string::npos, "test fixture actually has a value-less `radius` line" );
+		const std::size_t radiusPos = radiusLine + 1;   // skip the leading tab
+
+		for( const AgentDiagnostic& d : diags ) {
+			if( d.code == AgentDiagnosticCode::INVALID_VALUE &&
+			    d.message.find( "value-less parameter" ) != std::string::npos ) {
+				sawValueless = true;
+				// The offset must land ON the bare `radius` token -- NOT 0/0.
+				Check( d.offset != 0 || d.length != 0,
+				       "value-less INVALID_VALUE is localized (not 0/0)" );
+				Check( d.offset == radiusPos,
+				       "value-less offset lands exactly on the bare `radius` token" );
+				Check( d.length == 6, "value-less length spans `radius` (6 bytes)" );
+				// A firmer invariant: the span's bytes ARE `radius`.
+				Check( d.offset < kValuelessScene.size() &&
+				       kValuelessScene.compare( d.offset, 6, "radius" ) == 0,
+				       "the localized span's bytes ARE `radius`" );
+			}
+		}
+		Check( sawValueless, "Validate(valuelessText) reports a value-less INVALID_VALUE diagnostic" );
+	}
+
+	// RED-PROVE: the value-HAVING twin yields NO value-less diagnostic.
+	std::printf( "[validate] red-prove: value-having twin has NO value-less diag\n" );
+	{
+		std::vector<AgentDiagnostic> diags = session->Validate( kValuedScene );
+		bool anyValueless = false;
+		for( const AgentDiagnostic& d : diags )
+			if( d.message.find( "value-less parameter" ) != std::string::npos ) anyValueless = true;
+		Check( !anyValueless, "the value-having twin yields NO value-less diagnostic (localization is real)" );
 	}
 
 	//----------------------------------------------------------------------

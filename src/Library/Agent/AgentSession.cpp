@@ -6,8 +6,20 @@
 //  --------------------------------------------
 //  DeriveToJob (src/Library/Cst/Cst.cpp) reports its refuse-all failures
 //  as a `std::vector<std::string>` of COARSE messages:
-//     * "unknown chunk type '<kw>'"                  (localizable: the chunk keyword)
-//     * "<kw>: value-less parameter '<name>'"        (localizable: the param name)
+//     * "unknown chunk type '<kw>'"                  (localizable: the chunk keyword,
+//                                                     by item-walking to the Chunk
+//                                                     whose role == <kw> -- its item
+//                                                     start IS the keyword offset --
+//                                                     then falling back to a
+//                                                     candidateText string-search)
+//     * "<kw>: value-less parameter '<name>'"        (localizable: the param name --
+//                                                     a value-less line flattens into
+//                                                     a BARE pname Token that is a
+//                                                     DIRECT child of the Chunk, so we
+//                                                     item-walk to the chunk base then
+//                                                     scan its direct kids for that
+//                                                     bare token -- OffsetOfBarePname,
+//                                                     NOT OffsetOfParamName)
 //     * "<kw>: invalid parameter(s) (see log)"       (COARSE -- the offending
 //                                                     parameter NAME is written to
 //                                                     the LOG, not the diag string)
@@ -16,12 +28,13 @@
 //  ourselves against the live descriptor: for the named chunk we walk its
 //  Param nodes and find the first param whose name is not declared on the
 //  chunk's ChunkDescriptor (-> UNKNOWN_PARAMETER) and compute that name
-//  token's byte span; if every name is declared it is an ill-typed VALUE
-//  (-> INVALID_VALUE) and we localize the first numeric-kind param whose
-//  value is non-finite / non-numeric.  When we cannot pin a span we return
-//  offset=length=0 with the message intact.  This is a best-effort
-//  reconstruction -- structured, node-localized diagnostics emitted BY
-//  DeriveToJob itself are a later refinement (design §2.5 `nodePath`).
+//  token's byte span (OffsetOfParamName, which descends into Param kids);
+//  if every name is declared it is an ill-typed VALUE (-> INVALID_VALUE)
+//  and we localize the first numeric-kind param whose value is non-finite /
+//  non-numeric.  When we cannot pin a span we return offset=length=0 with
+//  the message intact.  This is a best-effort reconstruction -- structured,
+//  node-localized diagnostics emitted BY DeriveToJob itself are a later
+//  refinement (design §2.5 `nodePath`).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -180,6 +193,33 @@ namespace RISE
 							}
 							inner += NodeBytes( tk );
 						}
+					}
+					running += NodeBytes( kid );
+				}
+				return false;
+			}
+
+			//! Compute the absolute byte offset of a value-less parameter's
+			//! bare pname token inside `chunk` (which begins at absolute offset
+			//! `chunkStart`).  A value-less line is flattened by ParseChunk into
+			//! a BARE `NodeKind::Token` (role "pname") that is a DIRECT child of
+			//! the Chunk -- NOT wrapped in a `NodeKind::Param` -- so
+			//! OffsetOfParamName (which only descends into Param kids) can never
+			//! see it.  We scan the chunk's direct kids for the first
+			//! `kind==Token, role=="pname"` whose text == `pname`, accumulating
+			//! the same serialized byte widths as OffsetOfParamName.  Returns
+			//! true + fills outOffset/outLength on a hit.
+			bool OffsetOfBarePname( const NodeRef& chunk, std::size_t chunkStart,
+			                        const std::string& pname,
+			                        std::size_t& outOffset, std::size_t& outLength )
+			{
+				if( !chunk ) return false;
+				std::size_t running = chunkStart;
+				for( const auto& kid : chunk->kids ) {
+					if( kid->kind == NodeKind::Token && kid->role == "pname" && kid->text == pname ) {
+						outOffset = running;
+						outLength = kid->text.size();
+						return true;
 					}
 					running += NodeBytes( kid );
 				}
@@ -346,32 +386,56 @@ namespace RISE
 				if( msg.rfind( "unknown chunk type", 0 ) == 0 ) {
 					d.code = AgentDiagnosticCode::UNKNOWN_CHUNK;
 					const std::string kw = QuotedToken( msg );
-					// Localize the chunk keyword token.
+					// Localize the chunk keyword token.  A top-level item begins
+					// exactly at its keyword (inter-item trivia is a SEPARATE
+					// item), and a Chunk's first kid is the `kw` Token -- so the
+					// item-walk gives the keyword's absolute offset directly,
+					// avoiding candidateText.find(kw)'s substring-mislocalization
+					// (kw appearing earlier as a substring, e.g. inside a name).
+					// Fall back to the string-search only if the item-walk misses.
 					if( !kw.empty() ) {
-						std::size_t p = candidateText.find( kw );
-						if( p != std::string::npos ) { d.offset = p; d.length = kw.size(); }
+						std::vector<NodeRef> items;
+						std::vector<std::size_t> starts;
+						CollectItems( candidateDoc, items, starts );
+						bool anchored = false;
+						for( std::size_t i = 0; i < items.size(); ++i ) {
+							if( items[i] && items[i]->kind == NodeKind::Chunk && items[i]->role == kw ) {
+								d.offset = starts[i];
+								d.length = ( !items[i]->kids.empty() && items[i]->kids.front() )
+								           ? items[i]->kids.front()->text.size() : kw.size();
+								anchored = true;
+								break;
+							}
+						}
+						if( !anchored ) {
+							std::size_t p = candidateText.find( kw );
+							if( p != std::string::npos ) { d.offset = p; d.length = kw.size(); }
+						}
 					}
 				}
 				else if( msg.find( "value-less parameter" ) != std::string::npos ) {
 					d.code = AgentDiagnosticCode::INVALID_VALUE;
 					const std::string kw    = KeywordPrefix( msg );
 					const std::string pname = QuotedToken( msg );
-					std::string code2;
 					std::size_t off = 0, len = 0;
-					// Reuse the chunk-scoped localizer to pin the param name.
+					// A value-less line is flattened into a BARE pname Token that
+					// is a DIRECT child of the Chunk (not a Param), so we item-walk
+					// to the offending chunk's absolute base offset and then scan
+					// its direct kids for that bare pname (OffsetOfBarePname) --
+					// OffsetOfParamName only descends into Param kids and would
+					// never see it.  Genuine miss keeps the honest 0/0 fallback.
 					if( !kw.empty() && !pname.empty() ) {
 						std::vector<NodeRef> items;
 						std::vector<std::size_t> starts;
 						CollectItems( candidateDoc, items, starts );
 						for( std::size_t i = 0; i < items.size(); ++i ) {
 							if( items[i] && items[i]->kind == NodeKind::Chunk && items[i]->role == kw ) {
-								if( OffsetOfParamName( items[i], starts[i], pname, off, len ) ) {
+								if( OffsetOfBarePname( items[i], starts[i], pname, off, len ) ) {
 									d.offset = off; d.length = len; break;
 								}
 							}
 						}
 					}
-					(void)code2;
 				}
 				else if( msg.find( "invalid parameter(s)" ) != std::string::npos ) {
 					// The offending name is in the LOG, not the message -- so
