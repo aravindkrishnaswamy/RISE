@@ -54,6 +54,7 @@
 #include "Intersection/RayIntersectionGeometric.h"
 #include <cctype>
 #include <cstdlib>
+#include <atomic>   // Facet 5 slice 1a: process-global CST head-uuid mint (NextCstHeadUuid)
 
 using namespace RISE;
 
@@ -9410,6 +9411,11 @@ bool Job::ClearAll(
 	// DestroyContainers/InitializeContainers do NOT touch it (the Slice-4 span-index re-apply was dropped in 6a);
 	// it is overwritten on a reopen via RefreshCstLoadFileIdentity.
 	pCstDocument.reset();
+	// Facet 5 slice 1a: a ClearAll leaves NO retained head, so reset the head-version to the {0,0} sentinel.
+	// The edit re-derive paths (DeriveEditedCstDocument_ / RederiveCstWithVariant) std::move the Document into a
+	// LOCAL before ClearAll and re-retain it after WITHOUT re-minting -- so they explicitly do NOT rely on this
+	// reset surviving (the uuid they carry is the load-time uuid; only revision bumps on a content-changing edit).
+	mCstHeadVersion = RISE::Cst::CstHeadVersion{};
 	DestroyContainers();
 	InitializeContainers();
 
@@ -9506,6 +9512,18 @@ void Job::RefreshCstLoadFileIdentity( const char* path )
 	mCstLoadFileIdentity = ident;                                   // survives ClearAll; the CST-save guard reads it via GetCstLoadFileIdentity
 }
 
+// Facet 5 (live co-edit) slice 1a: mint a fresh, process-global, never-zero CST head uuid.  Mirrors the
+// SceneEditController NextEpoch() pattern (a file-static std::atomic<uint64_t>, fetch_add), so every load --
+// across every Job in the process, and including a reload of the SAME file -- gets a distinct uuid.  The `+ 1`
+// keeps the very first minted value at 1 (never the 0 "no-head" sentinel), and the counter is monotone from
+// there.  Atomic so concurrent Job loads on different threads don't collide.  Wrapped in a function-local
+// static so it is initialized on first use (no static-init-order concern).
+static std::uint64_t NextCstHeadUuid()
+{
+	static std::atomic<std::uint64_t> s_next( 0 );
+	return s_next.fetch_add( 1, std::memory_order_relaxed ) + 1;   // 1, 2, 3, ... -- never 0
+}
+
 bool Job::LoadAsciiSceneViaCst( const char* filename )
 {
 	if( !filename ) {
@@ -9559,6 +9577,13 @@ bool Job::LoadAsciiSceneViaCst( const char* filename )
 
 	pCstDocument = std::move( doc );    // RETAIN the canonical CST for edit/save (Slices 3-4)
 
+	// Facet 5 (live co-edit) slice 1a: MINT a fresh optimistic-concurrency identity for this newly-retained
+	// head -- {fresh uuid, revision 1}.  NextCstHeadUuid() (file-static atomic, fetch_add) is minted per LOAD,
+	// so a reload of the SAME file gets a DIFFERENT uuid: a stale patch built against the previous load's head
+	// can never match even if the revision numbers coincide (the reload-collision guard).  ClearAll resets this
+	// to {0,0} (no head).  This is the ONLY mint site (LoadAsciiSceneViaCst is the sole head-retain path).
+	mCstHeadVersion = RISE::Cst::CstHeadVersion{ NextCstHeadUuid(), 1 };
+
 	// Reviewer P1 (Slice 4 follow-up): capture the loaded file's identity (path + mtime + size) so the CST save
 	// path can REFUSE an in-place save that would clobber EXTERNAL edits made to the file after load.  The save
 	// REFRESHES this after a successful write (RefreshCstLoadFileIdentity again), so a second save isn't falsely
@@ -9602,11 +9627,16 @@ bool Job::RederiveCstWithVariant( const char* variantName )
 		}
 	}
 	std::unique_ptr<RISE::Cst::Document> doc = std::move( pCstDocument );   // preserve across the container reset
+	// Facet 5 slice 1a: a variant SWITCH re-derives the SAME retained Document bytes -- the CONTENT does not
+	// change, so the head-version must be PRESERVED WHOLE (uuid AND revision), NOT bumped.  ClearAll zeroed it;
+	// capture the full version across the reset and restore it verbatim after re-retaining the (unchanged) doc.
+	const RISE::Cst::CstHeadVersion keepHeadVersion = mCstHeadVersion;
 	ClearAll();                                                            // DestroyContainers + InitializeContainers (fresh slate)
 	std::vector<std::string> diags;
 	// activeVariantOverride is non-null -> the bake FORCES this variant, bypassing the active_scene_variant chunk.
 	RISE::Cst::DeriveToJob( *doc, *this, &diags, nullptr, variantName ? variantName : "none" );
 	pCstDocument = std::move( doc );                                       // re-retain (intact even if the re-derive erred)
+	mCstHeadVersion = keepHeadVersion;                                     // restore verbatim: a variant switch does not change Document content
 	if( !diags.empty() ) {
 		for( size_t i = 0; i < diags.size() && i < 8u; ++i ) {
 			GlobalLog()->PrintEx( eLog_Error, "Job::RederiveCstWithVariant:: derive diagnostic: %s", diags[i].c_str() );
@@ -9674,6 +9704,7 @@ int Job::DeriveEditedCstDocument_( RISE::Cst::Document&& d1in, RISE::Cst::NodeId
 	const int applied = RISE::Cst::DeriveToJobIncremental( d1, *this, closure, &idiags );
 	if( applied == (int)closure.size() && idiags.empty() ) {
 		pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit
+		BumpCstHeadRevision();   // Facet 5 slice 1a: the retained Document content changed -> bump revision (uuid unchanged)
 		return 1;
 	}
 
@@ -9700,10 +9731,17 @@ int Job::DeriveEditedCstDocument_( RISE::Cst::Document&& d1in, RISE::Cst::NodeId
 	const std::string keepCamera     = GetActiveCameraName();
 	const std::string keepRasterizer = GetActiveRasterizerName();
 	char keepAnim[256]; keepAnim[0] = '\0'; GetActiveAnimationName( keepAnim, sizeof( keepAnim ) );
+	// Facet 5 slice 1a: ClearAll resets mCstHeadVersion to {0,0}, but a D2 EDIT re-retains the SAME head
+	// (same uuid) with mutated content -- capture the uuid across the reset so we restore it, then bump the
+	// revision (content changed).  (A variant SWITCH goes through RederiveCstWithVariant, not here, and it
+	// intentionally does NOT bump -- the retained Document bytes are unchanged by a switch.)
+	const RISE::Cst::CstHeadVersion keepHeadVersion = mCstHeadVersion;
 	ClearAll();
 	std::vector<std::string> fdiags;
 	RISE::Cst::DeriveToJob( d1, *this, &fdiags, nullptr, activeVariant );
 	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // re-retain (intact even if the re-derive erred)
+	mCstHeadVersion = keepHeadVersion;   // restore the load-time uuid (ClearAll had zeroed it)
+	BumpCstHeadRevision();               // the retained Document content changed (edit committed) -> bump revision
 	for( size_t i = 0; i < fdiags.size() && i < 8u; ++i )
 		GlobalLog()->PrintEx( eLog_Error, "Job::DeriveEditedCstDocument_:: full re-derive diagnostic: %s", fdiags[i].c_str() );
 	// Restore the activations the full re-derive reset to document defaults (best-effort; before the framestore
@@ -9895,6 +9933,7 @@ int Job::ApplyCstInsertCameraChunk( const char* chunkText )
 	d1 = RISE::Cst::DocInsertItem( d1, at + 1, chunkItem );
 	d1 = RISE::Cst::DocInsertItem( d1, at + 2, sepItem );
 	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
+	BumpCstHeadRevision();   // Facet 5 slice 1a: the retained Document content changed -> bump revision
 	return 1;
 }
 
@@ -9957,6 +9996,7 @@ int Job::ApplyCstRemoveCameraChunk( const char* camName )
 			d1 = RISE::Cst::DocRemoveItem( d1, idx - 1 );
 	}
 	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
+	BumpCstHeadRevision();   // Facet 5 slice 1a: the retained Document content changed -> bump revision
 	return 1;
 }
 
@@ -9990,6 +10030,7 @@ int Job::ApplyCstDeleteCameraChunk( const char* camName )
 	}
 	RISE::Cst::Document d1 = RISE::Cst::DocEraseChunkTidy( *pCstDocument, idx );
 	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
+	BumpCstHeadRevision();   // Facet 5 slice 1a: the retained Document content changed -> bump revision
 	return 1;
 }
 
@@ -10082,6 +10123,7 @@ int Job::ApplyCstFilmEdit( const char* width, const char* height, const char* pi
 		d1 = RISE::Cst::DocInsertItem( d1, at + 1, chunkItem );
 		d1 = RISE::Cst::DocInsertItem( d1, at + 2, trailItem );
 		pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
+		BumpCstHeadRevision();   // Facet 5 slice 1a: the retained Document content changed (film chunk inserted) -> bump revision
 		return 1;
 	}
 
@@ -10090,6 +10132,7 @@ int Job::ApplyCstFilmEdit( const char* width, const char* height, const char* pi
 	if( height )  d1 = RISE::Cst::DocSetOrAddParamValue( d1, filmId, "height",  0, height );
 	if( pixelAR ) d1 = RISE::Cst::DocSetOrAddParamValue( d1, filmId, "pixelAR", 0, pixelAR );
 	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit ONCE (Document-only; no re-derive)
+	BumpCstHeadRevision();   // Facet 5 slice 1a: the retained Document content changed (film dims patched) -> bump revision
 	return 1;
 }
 

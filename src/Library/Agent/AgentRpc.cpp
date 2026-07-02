@@ -19,6 +19,7 @@
 #include "Json.h"
 #include "SchemaGen.h"
 
+#include <cstdint>
 #include <exception>
 #include <string>
 #include <vector>
@@ -71,6 +72,19 @@ namespace RISE
 				env.set( "id", id );
 				env.set( "error", err );
 				return JsonSerialize( env );
+			}
+
+			//! Facet 5 slice 1a: a head-version as a nested JSON object
+			//! {uuid:number, revision:number}.  JSON numbers are doubles, but a
+			//! monotonic counter starting at 1 stays well under 2^53, so both
+			//! fields are exactly representable -- emitting them as numbers is
+			//! lossless (documented in the AgentRpc.h method index).
+			JsonValue HeadVersionJson( const RISE::Cst::CstHeadVersion& hv )
+			{
+				JsonValue o = JsonValue::MakeObject();
+				o.set( "uuid",     JsonValue::MakeNumber( static_cast<double>( hv.uuid ) ) );
+				o.set( "revision", JsonValue::MakeNumber( static_cast<double>( hv.revision ) ) );
+				return o;
 			}
 
 			//! Parse a schema JSON STRING (from SchemaGen) into a JsonValue so
@@ -142,21 +156,25 @@ namespace RISE
 				AgentSession* s = mSession.get();
 
 				//--------------------------------------------------------------
-				// read_document -> {document:string, hasDocument:bool}
+				// read_document -> {document:string, hasDocument:bool, headVersion:{uuid,revision}}
 				//   No session (no-head bootstrap): an agent starting FRESH
 				//   calls read_document first -- an error there is hostile.
 				//   Return the honest, useful signal: an empty document with
-				//   hasDocument=false (there is genuinely no head yet).
+				//   hasDocument=false + headVersion {0,0} (there is genuinely no
+				//   head yet).  Facet 5 slice 1a: an agent reads headVersion here
+				//   and passes it back as a patch's baseHeadVersion.
 				//--------------------------------------------------------------
 				if( m == "read_document" ) {
 					JsonValue result = JsonValue::MakeObject();
 					if( !s ) {
 						result.set( "document", JsonValue::MakeString( "" ) );
 						result.set( "hasDocument", JsonValue::MakeBool( false ) );
+						result.set( "headVersion", HeadVersionJson( RISE::Cst::CstHeadVersion{} ) );
 						return MakeSuccess( idValue, result );
 					}
 					result.set( "document", JsonValue::MakeString( s->ReadDocument() ) );
 					result.set( "hasDocument", JsonValue::MakeBool( s->HasDocument() ) );
+					result.set( "headVersion", HeadVersionJson( s->HeadVersion() ) );
 					return MakeSuccess( idValue, result );
 				}
 
@@ -213,12 +231,21 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// propose_patch {target,kind?,param,value} -> {applied,rawCode,status,message}
-				//   `applied` is CLEAN success only; `status` is the tri-state
-				//   gate {"applied","rejected","diagnosed"} (a rawCode-3
+				// propose_patch {target,kind?,param,value,baseHeadVersion?}
+				//   -> {applied,rawCode,status,headVersion,message}
+				//   `applied` is CLEAN success only; `status` is the four-state
+				//   gate {"applied","rejected","diagnosed","conflict"} (a rawCode-3
 				//   re-derive is applied=false/status="diagnosed": mutated but
-				//   the re-derive diagnosed -- NOT a clean apply).  REQUIRES a
-				//   head (it edits the retained Document): no session -> error.
+				//   the re-derive diagnosed -- NOT a clean apply; a stale
+				//   baseHeadVersion is applied=false/status="conflict", head
+				//   untouched).  REQUIRES a head (it edits the retained Document):
+				//   no session -> error.  Facet 5 slice 1a: the OPTIONAL
+				//   `baseHeadVersion` object {uuid:number,revision:number} is the
+				//   optimistic-concurrency precondition -- when present, a mismatch
+				//   with the current head returns status="conflict" WITHOUT
+				//   mutating; absent -> unconditional (back-compat).  The result's
+				//   `headVersion` is the head AFTER the call (post-commit on a
+				//   clean apply; current head otherwise).
 				//--------------------------------------------------------------
 				if( m == "propose_patch" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
@@ -240,11 +267,28 @@ namespace RISE
 						else if( !kind->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'kind' must be a string" );
 					}
+					// OPTIONAL baseHeadVersion: when present it MUST be an object
+					// with numeric `uuid` + `revision` (else -32602).  A null value
+					// is treated as absent (unconditional edit).
+					if( const JsonValue* bhv = params.find( "baseHeadVersion" ) ) {
+						if( !bhv->isNull() ) {
+							if( !bhv->isObject() )
+								return MakeError( idValue, kInvalidParams, "Invalid params: 'baseHeadVersion' must be an object {uuid,revision}" );
+							const JsonValue* u = bhv->find( "uuid" );
+							const JsonValue* rv = bhv->find( "revision" );
+							if( !u || !u->isNumber() || !rv || !rv->isNumber() )
+								return MakeError( idValue, kInvalidParams, "Invalid params: 'baseHeadVersion' needs numeric 'uuid' and 'revision'" );
+							sp.hasBaseVersion    = true;
+							sp.baseVersion.uuid     = static_cast<std::uint64_t>( u->asNumber() );
+							sp.baseVersion.revision = static_cast<std::uint64_t>( rv->asNumber() );
+						}
+					}
 					const AgentPatchResult pr = s->ProposePatch( sp );
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "applied", JsonValue::MakeBool( pr.applied ) );
 					result.set( "rawCode", JsonValue::MakeNumber( static_cast<double>( pr.rawCode ) ) );
 					result.set( "status",  JsonValue::MakeString( pr.status ) );
+					result.set( "headVersion", HeadVersionJson( pr.headVersion ) );
 					result.set( "message", JsonValue::MakeString( pr.message ) );
 					return MakeSuccess( idValue, result );
 				}

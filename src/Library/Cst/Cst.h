@@ -184,6 +184,37 @@ namespace RISE
 			int         instanceArrayCount = 0;  //!< # of instance_array generators -- the O(1) signal DeriveToJobIncremental uses to refuse globally (their input edges are not yet traced; P1-A). Maintained on parse/replace/insert/erase/reparse (replace adjusts +new-old on a role flip, nets 0 for a same-role value/name edit; insert +1; erase -1; reparse = fresh's); carried by the O(1) Document copy on a label-only ReflowWindow.
 		};
 
+		//! Optimistic-concurrency identity of a Job's RETAINED CST head (Facet 5,
+		//! live co-edit -- slice 1a).  `(uuid, revision)` is the document-identity
+		//! pair of docs/gui/TRANSACTION_MODEL.md §3.4: `uuid` names the retained
+		//! head (a fresh value is minted on EVERY load, incl. a reload of the same
+		//! file, so a stale reference from a prior load can never collide with a
+		//! new one -- the reload-collision guard); `revision` bumps IFF the retained
+		//! Document CONTENT changes.  `uuid == 0` is the sentinel "no retained head"
+		//! (a Job that never CST-loaded, or one after ClearAll).  A base precondition
+		//! matches ONLY when BOTH fields are equal, so a stale patch (built against an
+		//! older revision, or against a previous load's uuid) is REJECTED with a
+		//! CONFLICT rather than silently clobbering the head
+		//! (docs/agentic-redesign/50-agentic-surface.md §2.2.2 / §2.4).
+		//!
+		//! Trivial POD (two 64-bit counters) so it travels by value across the
+		//! IJobPriv virtual boundary and the AgentSession surface.  A monotonic
+		//! counter starting at 1 stays well under 2^53, so it is exactly
+		//! representable as a JSON number when the RPC layer emits it.
+		struct CstHeadVersion
+		{
+			std::uint64_t uuid     = 0;   //!< names the retained head; 0 = none; fresh per load
+			std::uint64_t revision = 0;   //!< bumps IFF the retained Document content changed
+		};
+		inline bool operator==( const CstHeadVersion& a, const CstHeadVersion& b )
+		{
+			return a.uuid == b.uuid && a.revision == b.revision;
+		}
+		inline bool operator!=( const CstHeadVersion& a, const CstHeadVersion& b )
+		{
+			return !( a == b );
+		}
+
 		//! bytes -> CST. Lossless: every input byte lands in exactly one leaf,
 		//! leaves in document order. Multi-chunk, brace-nested, bounds-safe.
 		Document ParseToCst( const std::string& bytes );

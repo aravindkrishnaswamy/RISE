@@ -15,21 +15,31 @@
 //      error   : {"jsonrpc":"2.0","id":<id>,"error":{"code":<n>,"message":<s>}}
 //
 //    Methods (mapped to AgentSession):
-//      read_document                     -> {document:string, hasDocument:bool}
+//      read_document                     -> {document:string, hasDocument:bool, headVersion:{uuid,revision}}
 //      read_schema  {keyword?}           -> the schema JSON (as a nested object)
 //      validate     {text}               -> {diagnostics:[{severity,code,message,offset,length}]}
-//      propose_patch{target,kind?,param,value} -> {applied,rawCode,status,message}
+//      propose_patch{target,kind?,param,value,baseHeadVersion?:{uuid,revision}}
+//                                        -> {applied,rawCode,status,headVersion:{uuid,revision},message}
 //      render       {samples?}           -> {ok,width,height,meanR,meanG,meanB,message}
 //      read_image                        -> {png_base64:string, byteLength:number}
+//
+//    Facet 5 slice 1a (optimistic concurrency): read_document now carries the
+//    retained CST head's (uuid,revision) identity; propose_patch accepts an
+//    OPTIONAL baseHeadVersion precondition and, if it is stale (!= the current
+//    head), returns status="conflict" WITHOUT mutating -- so a stale agent edit
+//    is rejected instead of clobbering a newer head.  Its result always carries
+//    the post-call headVersion.  uuid/revision are monotonic counters starting
+//    at 1, well under 2^53, so they are emitted as exactly-representable JSON
+//    numbers.
 //
 //    Standard JSON-RPC error codes are honoured: -32700 parse error,
 //    -32600 invalid request, -32601 method not found, -32602 invalid
 //    params, -32603 internal error.  HandleLine NEVER throws or lets an
 //    exception escape -- any thrown exception becomes a -32603 response.
 //
-//    Single-threaded + headless (slice 0c): no revision/DocumentId
-//    concurrency gate, no auth token, no networking beyond the stdin/
-//    stdout pipe the CLI wires -- those are slice 1+.
+//    Single-threaded + headless: the (uuid,revision) baseHeadVersion
+//    optimistic-concurrency gate landed in slice 1a (above); an auth token
+//    and networking beyond the stdin/stdout pipe the CLI wires remain slice 1b+.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4

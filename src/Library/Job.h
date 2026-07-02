@@ -122,6 +122,15 @@ namespace RISE
 		// (edit/save) patch + serialize this.  unique_ptr<fwd-decl> is safe -- Job::~Job is out-of-line (Job.cpp).
 		std::unique_ptr<RISE::Cst::Document>		pCstDocument;
 
+		// Facet 5 (live co-edit) slice 1a: the optimistic-concurrency identity of the retained CST head.
+		// MINTED on every LoadAsciiSceneViaCst that retains a head ({fresh uuid, 1}); RESET to {0,0} by
+		// ClearAll (no head); revision BUMPED by BumpCstHeadRevision() at every site that successfully
+		// mutates the retained pCstDocument content.  The invariant: `revision` changes IFF the retained
+		// Document content changed.  Read via GetCstHeadVersion (IJobPriv) for the baseHeadVersion conflict
+		// precondition.  A plain value member -- CstHeadVersion is a trivial POD (full defn via Cst.h,
+		// pulled in through Interfaces/IJobPriv.h).
+		RISE::Cst::CstHeadVersion					mCstHeadVersion;
+
 		// P5 (Model-B): cached viewport screen-fit params so a D2 full
 		// re-derive (variant switch / CST edit) — which re-derives the
 		// LIVE film to the Document's AUTHORED dims — can RE-APPLY the
@@ -358,6 +367,9 @@ namespace RISE
 		// guard directly off the Job member (decoupled from pSourceSpanIndex).  Inline, no-`override`
 		// convention like the other getters.
 		const RISE::FileIdentity&	GetCstLoadFileIdentity() const		{ return mCstLoadFileIdentity; }
+		// Facet 5 slice 1a: the retained CST head's (uuid,revision) identity.  Inline, no-`override`
+		// convention like the other getters.
+		RISE::Cst::CstHeadVersion	GetCstHeadVersion() const			{ return mCstHeadVersion; }
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.
@@ -3007,6 +3019,10 @@ namespace RISE
 		//! (closure anchored at `closureAnchorId`).  Activation-preserving D2 fallback.  Returns the 0/1/2/3
 		//! contract.  `entityName`/`role` are diagnostic-only.  Used by ApplyCstParamEdit + ApplyCstObjectMatrixEdit.
 		int DeriveEditedCstDocument_( RISE::Cst::Document&& editedDoc, RISE::Cst::NodeId closureAnchorId, const char* entityName, const char* role );
+		//! Facet 5 slice 1a: bump the retained CST head's revision (leaving uuid), called at EVERY site that
+		//! successfully mutates the retained pCstDocument content.  The invariant: revision changes IFF the
+		//! retained Document content changed -- so a NO-CHANGE code path (a rejected edit) must NOT call this.
+		void BumpCstHeadRevision() { ++mCstHeadVersion.revision; }
 		//! Lazy-build a rasterizer of the given chunk-name with
 		//! sensible defaults and a shader picked from the scene's
 		//! shader manager (first registered name).  Returns false if

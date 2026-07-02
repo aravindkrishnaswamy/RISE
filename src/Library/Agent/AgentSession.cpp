@@ -54,6 +54,7 @@
 
 #include <cctype>
 #include <cmath>
+#include <cstdio>   // Facet 5 slice 1a: std::snprintf for the conflict message
 
 namespace RISE
 {
@@ -326,6 +327,12 @@ namespace RISE
 			return mJob && mJob->HasRetainedCstDocument();
 		}
 
+		RISE::Cst::CstHeadVersion AgentSession::HeadVersion() const
+		{
+			// {0,0} when there is no wrapped Job -- the "no retained head" sentinel.
+			return mJob ? mJob->GetCstHeadVersion() : RISE::Cst::CstHeadVersion{};
+		}
+
 		std::string AgentSession::ReadDocument() const
 		{
 			if( !mJob ) return std::string();
@@ -485,6 +492,7 @@ namespace RISE
 				r.applied = false;
 				r.rawCode = 0;
 				r.status  = "rejected";
+				r.headVersion = HeadVersion();
 				r.message = "no retained CST Document -- ProposePatch needs a CST-loaded head";
 				return r;
 			}
@@ -492,8 +500,32 @@ namespace RISE
 				r.applied = false;
 				r.rawCode = 0;
 				r.status  = "rejected";
+				r.headVersion = mJob->GetCstHeadVersion();
 				r.message = "target, param, and value must all be non-empty";
 				return r;
+			}
+
+			// Facet 5 slice 1a: the optimistic-concurrency CONFLICT precondition.
+			// This runs BEFORE any mutation -- a stale patch must NEVER touch the
+			// Document.  When the patch carries a base head-version and it does NOT
+			// equal the Job's CURRENT head, the head moved since the agent read it,
+			// so REJECT with a CONFLICT (head byte-identical) and hand back the
+			// current head so the caller can re-read + re-propose.  Absent
+			// baseVersion -> unconditional (slice-0 back-compat).
+			if( patch.hasBaseVersion ) {
+				const RISE::Cst::CstHeadVersion cur = mJob->GetCstHeadVersion();
+				if( patch.baseVersion != cur ) {
+					r.applied     = false;
+					r.rawCode     = 0;
+					r.status      = "conflict";
+					r.headVersion = cur;
+					char buf[160];
+					std::snprintf( buf, sizeof( buf ),
+						"stale baseHeadVersion: head moved to revision %llu (re-read and re-propose)",
+						static_cast<unsigned long long>( cur.revision ) );
+					r.message = buf;
+					return r;
+				}
 			}
 
 			// Route through the SAME call the GUI property panel makes.  It
@@ -552,6 +584,10 @@ namespace RISE
 					r.message = "edit rejected (entity/param not found or the edit would not derive) -- head unchanged";
 					break;
 			}
+			// Facet 5 slice 1a: carry the head-version AFTER the ApplyCstParamEdit -- the POST-COMMIT head on a
+			// clean apply (its revision bumped by the Job's commit path), and the UNCHANGED current head on a
+			// reject (code 0) / diagnosed (code 3, where the Document WAS mutated so its revision also bumped).
+			r.headVersion = mJob->GetCstHeadVersion();
 			return r;
 		}
 

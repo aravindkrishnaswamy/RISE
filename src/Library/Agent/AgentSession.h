@@ -36,6 +36,8 @@
 
 #include "AgentDiagnostic.h"
 
+#include "../Cst/Cst.h"   // Facet 5 slice 1a: RISE::Cst::CstHeadVersion (the (uuid,revision) optimistic-concurrency identity)
+
 namespace RISE
 {
 	class IJobPriv;
@@ -54,6 +56,15 @@ namespace RISE
 			std::string kind;     //!< the entity KIND keyword (e.g. "material", "sphere_geometry", "camera") -- disambiguates a cross-category name clash; "" = any
 			std::string param;    //!< the parameter role to set (e.g. "radius", "reflectance", "location")
 			std::string value;    //!< the new value string (parsed by the derive layer per the param's declared kind)
+
+			//! Facet 5 slice 1a: OPTIONAL optimistic-concurrency precondition.  When `hasBaseVersion` is
+			//! true, ProposePatch REJECTS the patch with a CONFLICT (WITHOUT mutating) unless `baseVersion`
+			//! equals the Job's CURRENT retained head-version -- so a patch built against a stale head (the
+			//! head moved since the agent last read it) is rejected rather than silently clobbering the newer
+			//! head (docs/agentic-redesign/50-agentic-surface.md §2.2.2 baseHeadVersion precondition).  When
+			//! false (the default), the edit is UNCONDITIONAL (slice-0 back-compat: no gating).
+			bool                     hasBaseVersion = false;
+			RISE::Cst::CstHeadVersion baseVersion;   //!< the head-version the patch was built against (checked iff hasBaseVersion)
 		};
 
 		//! The structured result of ProposePatch.  `applied` means CLEAN
@@ -77,17 +88,34 @@ namespace RISE
 		//!            is byte-identical (nothing changed).  The pre-flight
 		//!            guards (no Document / empty target/param/value) map here
 		//!            too -- they are refusals with an unchanged head.
+		//! Facet 5 slice 1a adds a FOURTH status, the optimistic-concurrency
+		//! CONFLICT: when the patch carries `hasBaseVersion` and its `baseVersion`
+		//! does NOT equal the Job's CURRENT head-version, ProposePatch returns
+		//!   * CONFLICT -> applied=FALSE, status="conflict", rawCode=0: the base
+		//!            precondition failed, so the patch was REJECTED WITHOUT
+		//!            touching the Document (the head is byte-identical -- a stale
+		//!            patch must never mutate).  Distinct from "rejected": the
+		//!            entity/param may be perfectly valid; the patch is just stale.
+		//!            The caller should re-read the head and re-propose against the
+		//!            new `headVersion` this result carries.
 		//! `rawCode` preserves the underlying contract value (0/1/2/3) for a
-		//! caller that wants the raw code; `status` is the recommended gate:
+		//! caller that wants the raw code (0 for a conflict, since nothing was
+		//! applied); `status` is the recommended gate:
 		//!   applied  <=> a CLEAN apply (rawCode 1 or 2);
-		//!   status   in {"applied","rejected","diagnosed"}.
+		//!   status   in {"applied","rejected","diagnosed","conflict"}.
+		//! `headVersion` is the Job's head-version AFTER the call: the POST-COMMIT
+		//! head on a clean apply (its revision bumped), and the CURRENT (unchanged)
+		//! head on a reject / diagnosed / conflict.  A caller keying on optimistic
+		//! concurrency reads it to learn where the head now is.
 		//! `message` is a human explanation (rebind codes 2/3 note the full
-		//! re-derive; the code-3 message spells out mutated-but-diagnosed).
+		//! re-derive; the code-3 message spells out mutated-but-diagnosed; the
+		//! conflict message reports the revision the head moved to).
 		struct AgentPatchResult
 		{
 			bool        applied = false;
-			int         rawCode = 0;         //!< 0 reject / 1 incremental / 2 D2 full re-derive / 3 replaced-but-diagnosed
-			std::string status;              //!< "applied" (clean) / "rejected" (head intact) / "diagnosed" (mutated but re-derive diagnosed)
+			int         rawCode = 0;         //!< 0 reject/conflict / 1 incremental / 2 D2 full re-derive / 3 replaced-but-diagnosed
+			std::string status;              //!< "applied" (clean) / "rejected" (head intact) / "diagnosed" (mutated but re-derive diagnosed) / "conflict" (stale baseVersion, head intact)
+			RISE::Cst::CstHeadVersion headVersion;   //!< the head-version AFTER the call (post-commit on success; current head on reject/diagnosed/conflict)
 			std::string message;
 		};
 
@@ -149,6 +177,13 @@ namespace RISE
 			//! ReadDocument / the head is meaningful).
 			bool HasDocument() const;
 
+			//! Facet 5 slice 1a: the retained CST head's (uuid,revision)
+			//! optimistic-concurrency identity (see RISE::Cst::CstHeadVersion).
+			//! {0,0} when there is no wrapped Job (or the Job retains no head).
+			//! An agent reads this alongside ReadDocument, then passes it back as
+			//! a patch's baseVersion so a stale edit is rejected with a CONFLICT.
+			RISE::Cst::CstHeadVersion HeadVersion() const;
+
 			//! The descriptor-generated JSON schema (charter L6): one chunk
 			//! when `keyword` is non-empty, else the whole grammar.
 			std::string ReadSchema( const std::string& keyword = std::string() ) const;
@@ -187,8 +222,14 @@ namespace RISE
 			//! 3 as a failure, so this surface does NOT report it as a success.
 			//! No retained Document (or an empty target/param/value) ->
 			//! applied=false, status="rejected", head byte-identical.
-			//! Single-threaded headless: no revision / DocumentId precondition
-			//! (that gating is slice 1).
+			//! Facet 5 slice 1a: optimistic concurrency.  When `patch.hasBaseVersion`
+			//! is set, the base precondition is checked FIRST, BEFORE any mutation:
+			//! if `patch.baseVersion` != the Job's current head-version the patch is
+			//! REJECTED with status="conflict" (applied=false, head byte-identical) --
+			//! a stale patch never touches the Document.  On every path the result's
+			//! `headVersion` is populated (post-commit on a clean apply; the current
+			//! head on reject/diagnosed/conflict).  Absent baseVersion -> the edit is
+			//! UNCONDITIONAL (slice-0 back-compat).
 			AgentPatchResult ProposePatch( const AgentSetPatch& patch );
 
 			//! render + read_image (slice 0b): render the current head into an

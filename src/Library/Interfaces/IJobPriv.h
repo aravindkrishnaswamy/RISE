@@ -30,6 +30,8 @@
 #include "IShaderOpManager.h"
 #include "IRasterizer.h"
 
+#include "../Cst/Cst.h"   // Facet 5 slice 1a: CstHeadVersion (a trivial POD returned by value below; Cst.h is std-lib-only weight)
+
 namespace RISE
 {
 	// Forward declarations — these types live in
@@ -81,6 +83,14 @@ namespace RISE
 		// Job::RefreshCstLoadFileIdentity.  The CST-save external-modification guard reads THIS
 		// so the guard has no dependency on any legacy load-time span index.  Job is the sole implementer.
 		virtual const FileIdentity&			GetCstLoadFileIdentity() const = 0;
+
+		// Facet 5 (live co-edit) slice 1a: the optimistic-concurrency identity of the retained CST
+		// head -- (uuid, revision), see RISE::Cst::CstHeadVersion.  `uuid` is minted fresh on EVERY
+		// load (incl. a reload of the same file) and is 0 when no CST head is retained; `revision`
+		// bumps IFF the retained Document content changes.  The AgentSession baseHeadVersion conflict
+		// precondition reads this to reject a stale patch.  Job is the sole implementer.
+		// APPENDED AT THE TRUE END OF THE VIRTUAL TAIL (append-only ABI convention -- do NOT insert mid-tail).
+		virtual RISE::Cst::CstHeadVersion	GetCstHeadVersion() const = 0;
 	};
 
 
