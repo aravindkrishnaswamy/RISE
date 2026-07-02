@@ -15,10 +15,10 @@
 //      error   : {"jsonrpc":"2.0","id":<id>,"error":{"code":<n>,"message":<s>}}
 //
 //    Methods (mapped to AgentSession):
-//      read_document                     -> {document:string}
+//      read_document                     -> {document:string, hasDocument:bool}
 //      read_schema  {keyword?}           -> the schema JSON (as a nested object)
 //      validate     {text}               -> {diagnostics:[{severity,code,message,offset,length}]}
-//      propose_patch{target,kind?,param,value} -> {applied,rawCode,message}
+//      propose_patch{target,kind?,param,value} -> {applied,rawCode,status,message}
 //      render       {samples?}           -> {ok,width,height,meanR,meanG,meanB,message}
 //      read_image                        -> {png_base64:string, byteLength:number}
 //
