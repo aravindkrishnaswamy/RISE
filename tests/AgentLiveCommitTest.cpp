@@ -756,6 +756,20 @@ static void TestAgentEditMarksDirty()
 		}
 		std::remove( saveAs );
 
+		//------------------------------------------------------------------
+		// Round-2 hardening (defensive): MarkCstHeadDirty must flip dirty
+		// even for a KNOWN kind with an EMPTY name.  The mapped
+		// MarkEntityDirty channel SILENTLY NO-OPS on an empty name, so an
+		// empty name must route to the sentinel REGARDLESS of kind.  The
+		// agent caller pre-rejects empty names today, but this guards a
+		// future 1c caller from re-opening the data-loss.  State is CLEAN
+		// here (the save above cleared it).  Red-prove: against the pre-
+		// hardening code, MarkEntityDirty(Object,"") no-ops -> stays clean.
+		Check( !c.HasUnsavedChanges(), "clean before the empty-name mark probe" );
+		c.Editor().MarkCstHeadDirty( "", "standard_object" );
+		Check( c.HasUnsavedChanges(),
+		       "MarkCstHeadDirty(empty name, KNOWN kind) still flips dirty via the sentinel (no silent no-op)" );
+
 		c.Stop();
 	}
 	pJob->release();

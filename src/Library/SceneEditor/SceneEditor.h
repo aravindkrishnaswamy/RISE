@@ -232,8 +232,9 @@ namespace RISE
 		//! listener runs on the clean→dirty transition.  The listener
 		//! runs on the CALLING thread (a future background-transport
 		//! agent must marshal it to the UI dispatch queue — a 1c
-		//! concern, not this fix).  `entityName` empty is tolerated
-		//! (still flips a channel via the fallback / category default).
+		//! concern, not this fix).  An empty `entityName` is tolerated:
+		//! it routes to the generic sentinel so HasAnyDirty() ALWAYS
+		//! flips (this is a data-loss guard — the mark must never no-op).
 		void MarkCstHeadDirty( const char* entityName, const char* entityKind )
 		{
 			const std::string name = entityName ? entityName : std::string();
@@ -250,7 +251,15 @@ namespace RISE
 				    && s.compare( s.size() - suf.size(), suf.size(), suf ) == 0;
 			};
 
-			if( kind == "standard_object" ) {
+			// An empty name would make MarkEntityDirty a SILENT NO-OP
+			// (DirtyTracker ignores empty names), so route it to the
+			// generic sentinel BEFORE the category dispatch regardless of
+			// kind -- the mark must always flip HasAnyDirty() (data-loss
+			// guard; the sole caller today pre-rejects empty names, but a
+			// future 1c caller must not be able to re-open the hole).
+			if( name.empty() ) {
+				mDirtyTracker.MarkDirty( std::string( "__cst_head__" ) );
+			} else if( kind == "standard_object" ) {
 				mDirtyTracker.MarkEntityDirty( EntityCategory::Object, name );
 			} else if( kind == "camera" || endsWith( kind, "_camera" ) ) {
 				mDirtyTracker.MarkEntityDirty( EntityCategory::Camera, name );
@@ -262,13 +271,10 @@ namespace RISE
 				mDirtyTracker.MarkEntityDirty( EntityCategory::Medium, name );
 			} else {
 				// UNKNOWN / uncategorized kind (painter, function,
-				// rasterizer, shader, or an empty name): use the
-				// object-transform channel as a generic "something
-				// changed" mark.  MarkDirty ignores an empty name, so
-				// fall back to a sentinel to guarantee HasAnyDirty()
-				// flips even when the agent reports no entity name.
-				mDirtyTracker.MarkDirty( !name.empty() ? name
-				    : std::string( "__cst_head__" ) );
+				// rasterizer, shader): use the object-transform channel as
+				// a generic "something changed" mark (name is non-empty
+				// here -- the empty case was handled above).
+				mDirtyTracker.MarkDirty( name );
 			}
 			FireDirtyChangedIfTransitioned();
 		}
