@@ -1,0 +1,142 @@
+RISE ASCII SCENE 6
+
+# ---------------------------------------------------------------------------
+# silver_reference.RISEscene — M1 verification artifact (quantitative).
+#
+# Two spheres under a UNIFORM white environment against a BLACK background
+# (radiance_background FALSE keeps the env for reflection but blacks the
+# camera-miss background):
+#   LEFT  = measured-silver GGX conductor (Johnson & Christy 1972 n,k),
+#   RIGHT = perfect mirror (reflectance 1.0).
+#
+# Under a uniform environment a mirror returns reflectance x env, so the
+# LEFT/RIGHT patch ratio at matching surface orientations IS silver's spectral
+# reflectance R(lambda) -> R,G,B ~ 0.95-0.99, faintly WARM (R >= G >= B,
+# silver's reflectance dips slightly toward blue).  This is revert-proof: if
+# the Ag.n/Ag.k data failed to load or were mis-scaled, the ratio would be far
+# from silver (near 0 for a black fallback, or the wrong tint).  Both spheres
+# see AIR (ior_stack top = 1.0) — the air-incidence reference for the
+# under-glass (G6) case in enamel_swatch_silver.
+# ---------------------------------------------------------------------------
+
+uniformcolor_painter
+{
+	name pnt_env
+	color 1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name pnt_white
+	color 1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name pnt_black
+	color 0.0 0.0 0.0
+}
+
+scalar_painter
+{
+	name Ag_n
+	file colors/conductors/Ag.n
+}
+
+scalar_painter
+{
+	name Ag_k
+	file colors/conductors/Ag.k
+}
+
+standard_shader
+{
+	name global
+	shaderop DefaultDirectLighting
+}
+
+pathtracing_spectral_rasterizer
+{
+	samples 400
+	max_diffuse_bounce 4
+	pixel_filter box
+	nmbegin 380
+	nmend 720
+	num_wavelengths 12
+	spectral_samples 1
+	hwss false
+	radiance_map pnt_env
+	radiance_scale 1.0
+	radiance_background FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern silver_reference
+	type PNG
+	bpp 8
+	color_space sRGB
+}
+
+file_rasterizeroutput
+{
+	pattern silver_reference_hdr
+	type EXR
+	color_space Rec709RGB_Linear
+}
+
+film
+{
+	width 256
+	height 256
+}
+
+pinhole_camera
+{
+	location 0 0 6
+	lookat 0 0 0
+	up 0 1 0
+	fov 20.0
+}
+
+# Measured silver.
+ggx_material
+{
+	name bare_silver
+	rd pnt_black
+	rs pnt_white
+	alphax 0.02
+	alphay 0.02
+	fresnel_mode conductor
+	ior Ag_n
+	extinction Ag_k
+}
+
+# Perfect mirror reference (reflectance 1.0).
+perfectreflector_material
+{
+	name perfect
+	reflectance pnt_white
+}
+
+sphere_geometry
+{
+	name ballgeom
+	radius 0.7
+}
+
+standard_object
+{
+	name silverball
+	geometry ballgeom
+	position -0.85 0 0
+	material bare_silver
+}
+
+standard_object
+{
+	name mirrorball
+	geometry ballgeom
+	position 0.85 0 0
+	material perfect
+}
