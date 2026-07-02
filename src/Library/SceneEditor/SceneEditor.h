@@ -205,6 +205,74 @@ namespace RISE
 			FireDirtyChangedIfTransitioned();
 		}
 
+		//! F5 slice 1b: mark the editor dirty for an AGENT commit that
+		//! mutated the retained CST head DIRECTLY (via
+		//! Job::ApplyCstParamEdit), bypassing SceneEditor::Apply.  The
+		//! GUI path marks dirty inside Apply (MarkEditEntityDirty); the
+		//! agent path does not, so without this call a live agent edit
+		//! leaves HasUnsavedChanges() FALSE — the Save button stays
+		//! disabled and a close-without-prompt path can silently LOSE
+		//! the edit.
+		//!
+		//! `entityKind` is the CST chunk kind of the edited entity
+		//! (e.g. "standard_object", "material", "*_light", "camera",
+		//! "*_medium").  KNOWN kinds route to their per-category dirty
+		//! channel (mirroring MarkEditEntityDirty), so the mark matches
+		//! the GUI's channel for the common cases.  UNKNOWN kinds (the
+		//! agent can edit painters / functions / rasterizer params /
+		//! shaders — kinds the tracker's categories don't cover) fall
+		//! back to the object-transform channel via
+		//! DirtyTracker::MarkDirty(entityName) so HasAnyDirty() still
+		//! flips true.  Either mark is SAFE: SaveEngine::Save is a
+		//! whole-Document SerializeCst gated only on "is anything
+		//! dirty" — it never byte-splices per entity — and both channels
+		//! are cleared by DirtyTracker::Clear() on a successful save.
+		//!
+		//! Fires FireDirtyChangedIfTransitioned() so the Save-button
+		//! listener runs on the clean→dirty transition.  The listener
+		//! runs on the CALLING thread (a future background-transport
+		//! agent must marshal it to the UI dispatch queue — a 1c
+		//! concern, not this fix).  `entityName` empty is tolerated
+		//! (still flips a channel via the fallback / category default).
+		void MarkCstHeadDirty( const char* entityName, const char* entityKind )
+		{
+			const std::string name = entityName ? entityName : std::string();
+			const std::string kind = entityKind ? entityKind : std::string();
+
+			// Map KNOWN CST chunk kinds to their per-category channel so
+			// the agent mark mirrors the GUI's MarkEditEntityDirty for
+			// the common cases.  Light / medium kinds are suffix families
+			// (e.g. "point_light", "isotropic_medium"), so match on the
+			// suffix rather than an exact string.
+			auto endsWith = []( const std::string& s, const char* suffix ) {
+				const std::string suf( suffix );
+				return s.size() >= suf.size()
+				    && s.compare( s.size() - suf.size(), suf.size(), suf ) == 0;
+			};
+
+			if( kind == "standard_object" ) {
+				mDirtyTracker.MarkEntityDirty( EntityCategory::Object, name );
+			} else if( kind == "camera" || endsWith( kind, "_camera" ) ) {
+				mDirtyTracker.MarkEntityDirty( EntityCategory::Camera, name );
+			} else if( endsWith( kind, "_light" ) ) {
+				mDirtyTracker.MarkEntityDirty( EntityCategory::Light, name );
+			} else if( kind == "material" || endsWith( kind, "_material" ) ) {
+				mDirtyTracker.MarkEntityDirty( EntityCategory::Material, name );
+			} else if( endsWith( kind, "_medium" ) ) {
+				mDirtyTracker.MarkEntityDirty( EntityCategory::Medium, name );
+			} else {
+				// UNKNOWN / uncategorized kind (painter, function,
+				// rasterizer, shader, or an empty name): use the
+				// object-transform channel as a generic "something
+				// changed" mark.  MarkDirty ignores an empty name, so
+				// fall back to a sentinel to guarantee HasAnyDirty()
+				// flips even when the agent reports no entity name.
+				mDirtyTracker.MarkDirty( !name.empty() ? name
+				    : std::string( "__cst_head__" ) );
+			}
+			FireDirtyChangedIfTransitioned();
+		}
+
 		//! True iff any edit since the last load / save would produce
 		//! a non-NoOp SaveEngine pass.  Drives the GUI's "Save" button
 		//! enable state on both platform shells.  Cheap O(1).

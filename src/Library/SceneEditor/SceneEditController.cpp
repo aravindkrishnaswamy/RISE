@@ -2910,6 +2910,25 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 	// (code 3 remains applied=false / "diagnosed"); this only decouples the render-kick from success.
 	if( code == 1 || code == 2 || code == 3 )
 	{
+		// F5 slice 1b (data-loss fix): the agent path mutated the retained
+		// CST head DIRECTLY via ApplyCstParamEdit -- it bypassed
+		// mEditor.Apply, so the GUI's per-edit dirty-mark
+		// (MarkEditEntityDirty inside Apply) never ran.  Without this the
+		// editor still believes the scene is CLEAN, the Save button stays
+		// disabled, and a close-without-prompt path silently LOSES the
+		// agent's edit.  A diagnosed code-3 ALSO mutated the Document
+		// (revision bumped), so it is genuinely unsaved and must mark too.
+		// Do it UNDER the held mMutex, BEFORE the kick's lk.unlock(), so
+		// the dirty state and the head-version move together.  NOTE: the
+		// dirty-changed LISTENER fires on THIS (the calling) thread; a
+		// future 1c background-transport agent must marshal it to the UI
+		// dispatch queue (a 1c concern, not this fix).  Code 0
+		// (reject / conflict -- head unchanged) does NOT reach here, so it
+		// never marks dirty.
+		mEditor.MarkCstHeadDirty(
+			entityName.c_str(),
+			entityKind.size() <= 1 ? nullptr : entityKind.c_str() );
+
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();
 		mCV.notify_one();

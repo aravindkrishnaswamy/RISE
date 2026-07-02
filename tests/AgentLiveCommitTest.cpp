@@ -584,6 +584,12 @@ static void TestCodeThreeRerender()
 		// not just a spurious kick.
 		Check( LumR( *pJob ) > 3.0 && LumR( *pJob ) < 4.0,
 		       "code-3 re-derive replaced the live Scene (lum scale ~3.5 reflected)" );
+		// F5 slice 1b (data-loss fix): a diagnosed code-3 MUTATED the retained
+		// Document (revision bumped) -- so it is genuinely UNSAVED and must mark
+		// the editor dirty, exactly like a clean apply.  (applied=false does NOT
+		// mean "nothing changed" for code 3.)
+		Check( c.HasUnsavedChanges(),
+		       "code-3 diagnosed edit marks the editor DIRTY (the Document WAS mutated)" );
 
 		//------------------------------------------------------------------
 		// GUI LAYER: SetProperty(Material) -> mEditor.Apply -> RouteCstParamEdit_ -> forced code 3.
@@ -618,6 +624,144 @@ static void TestCodeThreeRerender()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 7 (Model-B F5 slice 1b DATA-LOSS fix): an agent commit that mutates
+// the retained CST head DIRECTLY (via ApplyCstParamEdit, bypassing
+// mEditor.Apply) must MARK THE EDITOR DIRTY -- else the GUI still believes
+// the scene is CLEAN, the Save button stays disabled, and a close-without-
+// prompt path silently LOSES the agent's edit.
+//
+// Asserts, via the SAME GUI-facing surface the shells consult
+// (SceneEditController::HasUnsavedChanges, which forwards to
+// SceneEditor::HasUnsavedChanges):
+//   - CLEAN before any edit (RED-PROVE: false pre-edit).  Against the
+//     pre-fix code this stays false AFTER the edit too -> the applied-edit
+//     assertion below fails at parent d010c37a.
+//   - a code-1 clean apply flips HasUnsavedChanges() -> true.
+//   - the dirty-changed LISTENER fires exactly once on the clean->dirty
+//     transition (with true); a SECOND still-dirty edit does NOT re-fire.
+//   - a code-0 REJECT (bogus entity) and a CONFLICT (stale base) do NOT
+//     set dirty.
+//   - a successful Save-As (RequestSave to a fresh path) CLEARS it
+//     (proving the agent-set mark rides the existing save-clear path).
+//////////////////////////////////////////////////////////////////////
+static void TestAgentEditMarksDirty()
+{
+	std::cout << "Test 7: agent commit marks the editor dirty (data-loss fix)..." << std::endl;
+
+	const char* tmp = "agentlive_dirty.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+
+		// Install a dirty-changed listener BEFORE any edit so we observe the
+		// clean->dirty transition.  It records every callback value + count.
+		std::vector<bool> dirtyEvents;
+		std::mutex        evtMutex;
+		c.SetDirtyChangedListener( [&]( bool has ) {
+			std::lock_guard<std::mutex> lk( evtMutex );
+			dirtyEvents.push_back( has );
+		} );
+
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		// RED-PROVE: a freshly-loaded scene with no edits is CLEAN.
+		Check( !c.HasUnsavedChanges(), "scene is CLEAN before any agent edit (red-prove pre-edit false)" );
+
+		//------------------------------------------------------------------
+		// A code-0 REJECT (bogus entity) must NOT set dirty (head unchanged).
+		//------------------------------------------------------------------
+		const SceneEditController::AgentCommitResult reject =
+			c.ApplyAgentParamEdit(
+				String( "does_not_exist" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "3.0" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( !reject.applied && reject.rawCode == 0, "bogus-entity edit is a code-0 reject" );
+		Check( !c.HasUnsavedChanges(), "a code-0 REJECT does NOT mark dirty (head unchanged)" );
+
+		//------------------------------------------------------------------
+		// A CONFLICT (stale base) must NOT set dirty either.
+		//------------------------------------------------------------------
+		const RISE::Cst::CstHeadVersion cur = pJob->GetCstHeadVersion();
+		RISE::Cst::CstHeadVersion staleBase = cur;
+		staleBase.revision += 100;   // definitely not the current head
+		const SceneEditController::AgentCommitResult conflict =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "3.0" ),
+				/*baseVersionOrNull*/ &staleBase );
+		Check( conflict.conflict && !conflict.applied, "stale-base edit is a conflict (no mutation)" );
+		Check( !c.HasUnsavedChanges(), "a CONFLICT does NOT mark dirty (head unchanged)" );
+
+		// No dirty event yet -- nothing has transitioned.
+		{
+			std::lock_guard<std::mutex> lk( evtMutex );
+			Check( dirtyEvents.empty(), "no dirty-changed event fired before the first APPLIED edit" );
+		}
+
+		//------------------------------------------------------------------
+		// A clean code-1 apply flips HasUnsavedChanges() -> true.  This is
+		// the RED-PROVE assertion: at parent d010c37a it stays FALSE.
+		//------------------------------------------------------------------
+		const SceneEditController::AgentCommitResult applied =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "4.0" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( applied.applied && applied.rawCode == 1, "clean apply is a code-1 incremental" );
+		Check( c.HasUnsavedChanges(), "an APPLIED agent edit marks the editor DIRTY (the fix)" );
+
+		// The listener fired exactly once, with true (clean->dirty).
+		{
+			std::lock_guard<std::mutex> lk( evtMutex );
+			Check( dirtyEvents.size() == 1 && dirtyEvents.back() == true,
+			       "dirty-changed listener fired ONCE with true on the clean->dirty transition" );
+		}
+
+		//------------------------------------------------------------------
+		// A SECOND still-dirty apply must NOT re-fire the listener
+		// (transition-only), and HasUnsavedChanges() stays true.
+		//------------------------------------------------------------------
+		const SceneEditController::AgentCommitResult applied2 =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "5.0" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( applied2.applied, "second agent edit applies" );
+		Check( c.HasUnsavedChanges(), "editor STILL dirty after the second edit" );
+		{
+			std::lock_guard<std::mutex> lk( evtMutex );
+			Check( dirtyEvents.size() == 1,
+			       "a second still-dirty edit does NOT re-fire the listener (transition-only)" );
+		}
+
+		//------------------------------------------------------------------
+		// A successful Save-As (fresh path -> no external-mod guard) CLEARS
+		// dirty, proving the agent-set mark rides the existing save-clear
+		// path (mEditor.ClearDirtyState on success).
+		//------------------------------------------------------------------
+		const char* saveAs = "agentlive_dirty_saveas.RISEscene";
+		std::remove( saveAs );
+		const SaveResult sr = c.RequestSave( std::string( saveAs ) );
+		Check( Succeeded( sr.status ), "Save-As succeeds" );
+		Check( !c.HasUnsavedChanges(), "a successful save CLEARS the agent-set dirty (rides the clear path)" );
+		{
+			std::lock_guard<std::mutex> lk( evtMutex );
+			Check( dirtyEvents.size() == 2 && dirtyEvents.back() == false,
+			       "dirty-changed listener fired again with false on the dirty->clean save transition" );
+		}
+		std::remove( saveAs );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -628,6 +772,7 @@ int main()
 	TestRenderParkedDuringEdit();
 	TestAgentSessionLiveMode();
 	TestCodeThreeRerender();
+	TestAgentEditMarksDirty();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;
