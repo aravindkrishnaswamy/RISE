@@ -302,6 +302,42 @@ int main()
 				Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
 				       "malformed baseHeadVersion (non-numeric uuid) -> error.code == -32602" );
 			}
+
+			// Numeric-but-out-of-domain baseHeadVersion values must be
+			// rejected with -32602 BEFORE the uint64 cast -- these are the
+			// hostile inputs (inf / negative / fractional) that would trip
+			// static_cast<uint64_t>(inf) UB or spuriously match after a
+			// fractional truncation.  One case each.
+			{
+				// Feed RAW JSON-RPC wire strings, NOT JsonValue-built requests:
+				// the serializer neutralizes non-finite doubles, so `1e999` has
+				// to arrive as a literal wire token to actually parse to +inf and
+				// exercise the cast guard -- which is exactly what a hostile
+				// client sends.  (-1 and 2.5 would serialize fine, but raw
+				// strings keep all three consistent.)
+				struct BadCase { const char* label; const char* uuid; const char* revision; };
+				const BadCase bad[] = {
+					{ "uuid 1e999 (parses to +inf)", "1e999", "1"   },
+					{ "negative uuid",               "-1",    "1"   },
+					{ "fractional revision 2.5",     "1",     "2.5" },
+				};
+				int rid = 5;
+				for( const BadCase& bc : bad ) {
+					const std::string line =
+						std::string( "{\"jsonrpc\":\"2.0\",\"id\":" ) + std::to_string( rid++ ) +
+						",\"method\":\"propose_patch\",\"params\":{"
+						"\"target\":\"pnt_albedo\",\"param\":\"color\",\"value\":\"0.5 0.5 0.5\","
+						"\"baseHeadVersion\":{\"uuid\":" + bc.uuid + ",\"revision\":" + bc.revision + "}}}";
+					const std::string resp = rpc.HandleLine( line );
+					JsonValue env; std::string err;
+					Check( JsonParse( resp, env, err ),
+					       std::string( "out-of-domain base (" ) + bc.label + ") response parses" );
+					Check( env.has( "error" ),
+					       std::string( "out-of-domain base (" ) + bc.label + ") -> an error, not a result" );
+					Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
+					       std::string( "out-of-domain base (" ) + bc.label + ") -> error.code == -32602" );
+				}
+			}
 		}
 	}
 

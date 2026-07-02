@@ -19,6 +19,7 @@
 #include "Json.h"
 #include "SchemaGen.h"
 
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <string>
@@ -278,9 +279,25 @@ namespace RISE
 							const JsonValue* rv = bhv->find( "revision" );
 							if( !u || !u->isNumber() || !rv || !rv->isNumber() )
 								return MakeError( idValue, kInvalidParams, "Invalid params: 'baseHeadVersion' needs numeric 'uuid' and 'revision'" );
+							// Guard the casts: static_cast<uint64_t>(inf/nan/negative)
+							// is UB, and a fractional value would spuriously MATCH a
+							// real integer revision after truncation.  As with the
+							// render 'samples' guard below, an explicit range test is
+							// used (NOT std::isfinite, which -ffast-math /
+							// -ffinite-math-only folds to true): a plain >=/<= on the
+							// double survives the fold and rejects NaN (fails both
+							// bounds) and +/-inf (fails the 2^53 bound); the >=0 bound
+							// rejects negatives; the floor equality rejects fractions.
+							// 2^53 is the largest exactly-representable integer double;
+							// the monotonic-from-1 counters never approach it.
+							const double ud = u->asNumber();
+							const double rd = rv->asNumber();
+							if( !( ud >= 0.0 && ud <= 9007199254740992.0 && ud == std::floor( ud ) &&
+							       rd >= 0.0 && rd <= 9007199254740992.0 && rd == std::floor( rd ) ) )
+								return MakeError( idValue, kInvalidParams, "Invalid params: 'baseHeadVersion' uuid/revision must be finite non-negative integers" );
 							sp.hasBaseVersion    = true;
-							sp.baseVersion.uuid     = static_cast<std::uint64_t>( u->asNumber() );
-							sp.baseVersion.revision = static_cast<std::uint64_t>( rv->asNumber() );
+							sp.baseVersion.uuid     = static_cast<std::uint64_t>( ud );
+							sp.baseVersion.revision = static_cast<std::uint64_t>( rd );
 						}
 					}
 					const AgentPatchResult pr = s->ProposePatch( sp );
