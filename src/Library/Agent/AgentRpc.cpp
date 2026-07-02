@@ -142,11 +142,19 @@ namespace RISE
 				AgentSession* s = mSession.get();
 
 				//--------------------------------------------------------------
-				// read_document -> {document:string}
+				// read_document -> {document:string, hasDocument:bool}
+				//   No session (no-head bootstrap): an agent starting FRESH
+				//   calls read_document first -- an error there is hostile.
+				//   Return the honest, useful signal: an empty document with
+				//   hasDocument=false (there is genuinely no head yet).
 				//--------------------------------------------------------------
 				if( m == "read_document" ) {
-					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
 					JsonValue result = JsonValue::MakeObject();
+					if( !s ) {
+						result.set( "document", JsonValue::MakeString( "" ) );
+						result.set( "hasDocument", JsonValue::MakeBool( false ) );
+						return MakeSuccess( idValue, result );
+					}
 					result.set( "document", JsonValue::MakeString( s->ReadDocument() ) );
 					result.set( "hasDocument", JsonValue::MakeBool( s->HasDocument() ) );
 					return MakeSuccess( idValue, result );
@@ -154,16 +162,22 @@ namespace RISE
 
 				//--------------------------------------------------------------
 				// read_schema {keyword?} -> the schema JSON (nested object)
+				//   STATELESS: the schema is a pure descriptor-registry walk
+				//   (SchemaGenAll / SchemaGenForChunk touch NO Job), so it needs
+				//   NO loaded head -- an agent CONSTRUCTING a scene from scratch
+				//   reads the grammar first.  We call SchemaGen directly rather
+				//   than through the session so the no-head path works.
 				//--------------------------------------------------------------
 				if( m == "read_schema" ) {
-					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
 					std::string keyword;
 					if( const JsonValue* kw = params.find( "keyword" ) ) {
 						if( kw->isString() ) keyword = kw->asString();
 						else if( !kw->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'keyword' must be a string" );
 					}
-					const std::string schemaText = s->ReadSchema( keyword );
+					const std::string schemaText =
+						keyword.empty() ? RISE::Agent::SchemaGenAll()
+						                 : RISE::Agent::SchemaGenForChunk( keyword );
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "schema", SchemaAsJson( schemaText ) );
 					return MakeSuccess( idValue, result );
@@ -171,14 +185,18 @@ namespace RISE
 
 				//--------------------------------------------------------------
 				// validate {text} -> {diagnostics:[...]}
+				//   STATELESS: validation parses `text` to a CST and derives it
+				//   into a THROWAWAY Job (never a session's head), so it needs
+				//   NO loaded head -- an agent REPAIRING a scene from scratch
+				//   validates a candidate BEFORE any head exists.  We call the
+				//   static ValidateText directly so the no-head path works.
 				//--------------------------------------------------------------
 				if( m == "validate" ) {
-					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
 					const JsonValue* text = params.find( "text" );
 					if( !text || !text->isString() ) {
 						return MakeError( idValue, kInvalidParams, "Invalid params: 'text' (string) is required" );
 					}
-					const std::vector<AgentDiagnostic> diags = s->Validate( text->asString() );
+					const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( text->asString() );
 					JsonValue arr = JsonValue::MakeArray();
 					for( const AgentDiagnostic& d : diags ) {
 						JsonValue dj = JsonValue::MakeObject();
@@ -195,7 +213,12 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// propose_patch {target,kind?,param,value} -> {applied,rawCode,message}
+				// propose_patch {target,kind?,param,value} -> {applied,rawCode,status,message}
+				//   `applied` is CLEAN success only; `status` is the tri-state
+				//   gate {"applied","rejected","diagnosed"} (a rawCode-3
+				//   re-derive is applied=false/status="diagnosed": mutated but
+				//   the re-derive diagnosed -- NOT a clean apply).  REQUIRES a
+				//   head (it edits the retained Document): no session -> error.
 				//--------------------------------------------------------------
 				if( m == "propose_patch" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
@@ -221,6 +244,7 @@ namespace RISE
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "applied", JsonValue::MakeBool( pr.applied ) );
 					result.set( "rawCode", JsonValue::MakeNumber( static_cast<double>( pr.rawCode ) ) );
+					result.set( "status",  JsonValue::MakeString( pr.status ) );
 					result.set( "message", JsonValue::MakeString( pr.message ) );
 					return MakeSuccess( idValue, result );
 				}

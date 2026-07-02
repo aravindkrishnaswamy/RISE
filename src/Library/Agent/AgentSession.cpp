@@ -342,6 +342,14 @@ namespace RISE
 
 		std::vector<AgentDiagnostic> AgentSession::Validate( const std::string& candidateText ) const
 		{
+			// Thin forwarder to the stateless core: Validate references NO
+			// member state, so the transport can validate a candidate with no
+			// head loaded (no-head bootstrap) via ValidateText directly.
+			return ValidateText( candidateText );
+		}
+
+		std::vector<AgentDiagnostic> AgentSession::ValidateText( const std::string& candidateText )
+		{
 			std::vector<AgentDiagnostic> out;
 
 			// (a) bytes -> CST.  ParseToCst is LOSSLESS and structurally
@@ -476,12 +484,14 @@ namespace RISE
 			if( !mJob || !mJob->HasRetainedCstDocument() ) {
 				r.applied = false;
 				r.rawCode = 0;
+				r.status  = "rejected";
 				r.message = "no retained CST Document -- ProposePatch needs a CST-loaded head";
 				return r;
 			}
 			if( patch.target.empty() || patch.param.empty() || patch.value.empty() ) {
 				r.applied = false;
 				r.rawCode = 0;
+				r.status  = "rejected";
 				r.message = "target, param, and value must all be non-empty";
 				return r;
 			}
@@ -505,28 +515,40 @@ namespace RISE
 			switch( code ) {
 				case 1:
 					r.applied = true;
+					r.status  = "applied";
 					r.message = "applied incrementally (managers untouched)";
 					break;
 				case 2:
 					r.applied = true;
+					r.status  = "applied";
 					r.message = "applied via a full re-derive (Scene + managers were replaced)";
 					break;
 				case 3:
-					// 2/3 are "rebind" codes: the Scene was replaced.  Code 3
-					// means the re-derive ALSO emitted diagnostics -- the source
-					// contract (Job.cpp DeriveEditedCstDocument_) treats 3 as
-					// failure.  But the Document WAS mutated and the live Job
-					// managers WERE replaced, so per the slice-0b contract we
-					// fold it to applied=true and surface it as
-					// applied-WITH-WARNING; `rawCode` (3) preserves the
-					// distinction from a clean apply (1/2) for a caller that
-					// cares.
-					r.applied = true;
-					r.message = "applied via a full re-derive, but the re-derive emitted diagnostics (see log)";
+					// Code 3 is a "rebind" code (the Scene + managers WERE
+					// replaced) BUT the re-derive ALSO emitted diagnostics.  The
+					// source contract (Job.cpp DeriveEditedCstDocument_) is
+					// explicit: 3 means "the edit FAILED -- treat as failure".
+					// So `applied` is FALSE (NOT a clean success -- a caller
+					// gating on applied==true must not proceed) and `status` is
+					// "diagnosed", the tri-state's non-success-but-not-a-reject
+					// value.  Crucially this is NOT a byte-identical reject: the
+					// Document WAS mutated and the live managers WERE replaced,
+					// so the message says so plainly -- a caller must neither
+					// treat it as a clean apply NOR assume nothing changed.
+					r.applied = false;
+					r.status  = "diagnosed";
+					r.message = "edit NOT a clean success: the Document was mutated and the live managers were "
+					            "replaced, BUT the full re-derive emitted diagnostics (see log) -- do NOT treat as applied";
 					break;
 				case 0:
 				default:
+					// 0 = clean reject (head byte-identical).  Any unexpected
+					// code also lands here: pick the SAFE non-success -- reject
+					// with an unchanged head is the conservative reading (an
+					// unknown code should never claim a clean apply).  rawCode
+					// preserves whatever the underlying call returned.
 					r.applied = false;
+					r.status  = "rejected";
 					r.message = "edit rejected (entity/param not found or the edit would not derive) -- head unchanged";
 					break;
 			}

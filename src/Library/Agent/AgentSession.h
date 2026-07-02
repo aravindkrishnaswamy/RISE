@@ -56,24 +56,38 @@ namespace RISE
 			std::string value;    //!< the new value string (parsed by the derive layer per the param's declared kind)
 		};
 
-		//! The structured result of ProposePatch.  `applied` folds
-		//! ApplyCstParamEdit's 0/1/2/3 return:
-		//!   * 1/2 -> applied=true: the Document was mutated + the live Job
-		//!            re-derived cleanly (1 incremental / 2 full re-derive).
-		//!   * 3   -> applied=true, but the full re-derive EMITTED DIAGNOSTICS.
-		//!            The source contract (Job.cpp DeriveEditedCstDocument_)
-		//!            treats 3 as failure; slice 0b still folds it to
-		//!            applied=true (the Document WAS mutated and the managers
-		//!            WERE replaced) and surfaces it as applied-with-warning --
-		//!            `rawCode` preserves the distinction so a caller can tell
-		//!            a clean apply (1/2) from a diagnosed one (3).
-		//!   * 0   -> applied=false: edit rejected; the head is byte-identical.
-		//! `rawCode` preserves the underlying contract value; `message` is a
-		//! human explanation (rebind codes 2/3 note the full re-derive).
+		//! The structured result of ProposePatch.  `applied` means CLEAN
+		//! SUCCESS ONLY, and `status` is the tri-state gate a client keys on;
+		//! together they fold ApplyCstParamEdit's 0/1/2/3 return HONESTLY:
+		//!   * 1/2 -> applied=true,  status="applied": the Document was mutated
+		//!            + the live Job re-derived CLEANLY (1 incremental /
+		//!            2 full re-derive).  The ONLY clean-success codes.
+		//!   * 3   -> applied=FALSE, status="diagnosed": the Document WAS
+		//!            mutated and the live managers WERE replaced, BUT the full
+		//!            re-derive EMITTED DIAGNOSTICS.  The source contract
+		//!            (Job.cpp DeriveEditedCstDocument_) treats 3 as FAILURE
+		//!            ("the edit FAILED -- treat as failure"), so slice 0 does
+		//!            too: `applied` is false and the caller MUST NOT proceed as
+		//!            if the patch cleanly succeeded.  This is DISTINCT from a
+		//!            reject: the head is NOT byte-identical -- the Document was
+		//!            mutated and the managers replaced -- so `message` states
+		//!            that nuance plainly (a caller must not assume nothing
+		//!            changed either).
+		//!   * 0   -> applied=false, status="rejected": edit refused; the head
+		//!            is byte-identical (nothing changed).  The pre-flight
+		//!            guards (no Document / empty target/param/value) map here
+		//!            too -- they are refusals with an unchanged head.
+		//! `rawCode` preserves the underlying contract value (0/1/2/3) for a
+		//! caller that wants the raw code; `status` is the recommended gate:
+		//!   applied  <=> a CLEAN apply (rawCode 1 or 2);
+		//!   status   in {"applied","rejected","diagnosed"}.
+		//! `message` is a human explanation (rebind codes 2/3 note the full
+		//! re-derive; the code-3 message spells out mutated-but-diagnosed).
 		struct AgentPatchResult
 		{
 			bool        applied = false;
-			int         rawCode = 0;      //!< 0 reject / 1 incremental / 2 D2 full re-derive / 3 replaced-but-diagnosed
+			int         rawCode = 0;         //!< 0 reject / 1 incremental / 2 D2 full re-derive / 3 replaced-but-diagnosed
+			std::string status;              //!< "applied" (clean) / "rejected" (head intact) / "diagnosed" (mutated but re-derive diagnosed)
 			std::string message;
 		};
 
@@ -149,13 +163,30 @@ namespace RISE
 			//! phase this slice covers).
 			std::vector<AgentDiagnostic> Validate( const std::string& candidateText ) const;
 
+			//! The STATELESS validation core.  `Validate()` above is a thin
+			//! forwarder to this; the logic references NO member state (it
+			//! parses `candidateText` to a CST and derives it into a THROWAWAY
+			//! Job -- never this session's mJob), so it is exposed as a static
+			//! for the transport's no-head bootstrap: an agent CONSTRUCTING or
+			//! REPAIRING a scene from scratch (the CLI's `--agent-stdio` with
+			//! no scene loaded) must be able to `validate` a candidate BEFORE
+			//! any head exists.  Identical result to `Validate()`.
+			static std::vector<AgentDiagnostic> ValidateText( const std::string& candidateText );
+
 			//! propose_patch (slice 0b: STRUCTURED set only).  Apply one
 			//! param-value edit to the retained CST Document via
 			//! Job::ApplyCstParamEdit -- the SAME call the GUI property panel
 			//! makes -- then let that call re-derive the live Job (incremental
 			//! or D2 full re-derive) so the head's derived Scene stays
 			//! consistent with the mutated Document, EXACTLY as the GUI does.
-			//! No retained Document -> applied=false with a clear message.
+			//! The result's `applied` is TRUE only for a CLEAN apply (rawCode
+			//! 1 or 2); `status` is the tri-state gate {"applied","rejected",
+			//! "diagnosed"} (see AgentPatchResult).  A rawCode-3 re-derive
+			//! (mutated + managers replaced BUT diagnostics emitted) maps to
+			//! applied=FALSE / status="diagnosed" -- the source contract treats
+			//! 3 as a failure, so this surface does NOT report it as a success.
+			//! No retained Document (or an empty target/param/value) ->
+			//! applied=false, status="rejected", head byte-identical.
 			//! Single-threaded headless: no revision / DocumentId precondition
 			//! (that gating is slice 1).
 			AgentPatchResult ProposePatch( const AgentSetPatch& patch );

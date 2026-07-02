@@ -138,6 +138,7 @@ int main()
 		sp.value  = "0.9 0.1 0.1";
 		AgentPatchResult r = session->ProposePatch( sp );
 		Check( r.applied, "ProposePatch(pnt_albedo.color) applied" );
+		Check( r.status == "applied", "clean apply -> status==\"applied\"" );
 
 		const std::string postEdit = session->ReadDocument();
 		// The Document was mutated: it now carries the new value ...
@@ -164,6 +165,7 @@ int main()
 		AgentPatchResult r = session->ProposePatch( bad );
 		Check( !r.applied, "ProposePatch(bogus target) is NOT applied" );
 		Check( r.rawCode == 0, "bogus target maps to rawCode 0 (reject)" );
+		Check( r.status == "rejected", "bogus target -> status==\"rejected\" (head byte-identical)" );
 		const std::string after = session->ReadDocument();
 		Check( after == before, "head is unchanged after a rejected edit" );
 		Cst::Document rt = Cst::ParseToCst( after );
@@ -172,6 +174,18 @@ int main()
 
 	// A missing-Document guard is exercised implicitly via a bogus param on
 	// a real target too (defensive) — but keep the head-integrity focus above.
+	//
+	// P1 #2 code-3 mapping (mutated-but-diagnosed -> applied=false/"diagnosed"):
+	// NOT synthesizable here.  rawCode 3 fires only when Job.cpp's
+	// DeriveEditedCstDocument_ full re-derive emits diagnostics on a document
+	// whose validate-before-destroy dry-run ALREADY passed the identical
+	// derive -- the source calls this the "should-not-happen" branch.  Every
+	// authorable bad edit is caught earlier and returns 0 (reject, head
+	// intact), so a real code-3 cannot be reliably provoked from a scene edit
+	// without a fault-injection seam that does not exist in slice 0.  The
+	// mapping (rawCode 3 -> applied=false, status=="diagnosed", message states
+	// the Document WAS mutated) is therefore covered BY INSPECTION of the
+	// switch in AgentSession::ProposePatch, not by a flaky synthesized case.
 
 	//----------------------------------------------------------------------
 	// render — the current head to an in-memory sRGB PNG.

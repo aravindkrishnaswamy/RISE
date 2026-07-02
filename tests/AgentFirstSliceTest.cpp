@@ -413,6 +413,99 @@ int main()
 		Check( env.get( "result" ).get( "ok" ).asBool(), "render(samples:2) ok==true" );
 	}
 
+	//----------------------------------------------------------------------
+	// P1 #1 — NO-HEAD dispatcher: the stateless bootstrap methods work with
+	// a NULL session (mirroring `rise --agent-stdio` with no scene / a failed
+	// load).  read_schema + validate + read_document need NO head; an agent
+	// CONSTRUCTS/REPAIRS a scene from scratch through them.  propose_patch +
+	// render STILL require a head.  RED-PROVE: against the old !s-guarded
+	// dispatcher these read_schema/validate calls returned a -32603
+	// "no session loaded" error, so a SUCCESS result here is the fix.
+	//----------------------------------------------------------------------
+	std::printf( "[no-head bootstrap] stateless read_schema/validate/read_document with a NULL session\n" );
+	{
+		// Construct the dispatcher with an EMPTY session -- the exact no-head
+		// CLI path (RunAgentStdio with no scene arg).
+		std::unique_ptr<AgentSession> nullSession;   // empty -> no head
+		AgentRpcDispatcher nohead( std::move( nullSession ) );
+
+		// read_schema {keyword:"sphere_geometry"} -> SUCCESS, mentions "radius".
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "keyword", JsonValue::MakeString( "sphere_geometry" ) );
+			const std::string resp = nohead.HandleLine( Req( 20, "read_schema", params ) );
+			JsonValue env = ParseResponse( resp, 20 );
+			Check( !env.has( "error" ), "no-head read_schema returns a SUCCESS (NOT a -32603 no-session error)" );
+			Check( env.has( "result" ), "no-head read_schema has a result field" );
+			const std::string schemaStr = JsonSerialize( env.get( "result" ).get( "schema" ) );
+			Check( schemaStr.find( "radius" ) != std::string::npos,
+			       "no-head read_schema(sphere_geometry) mentions 'radius'" );
+		}
+
+		// validate {good inline scene} -> SUCCESS, zero Error diagnostics.
+		{
+			const std::string goodScene =
+				"RISE ASCII SCENE 7\n"
+				"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n";
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "text", JsonValue::MakeString( goodScene ) );
+			const std::string resp = nohead.HandleLine( Req( 21, "validate", params ) );
+			JsonValue env = ParseResponse( resp, 21 );
+			Check( !env.has( "error" ), "no-head validate(good) returns a SUCCESS (NOT a -32603 no-session error)" );
+			const JsonValue& diags = env.get( "result" ).get( "diagnostics" );
+			Check( diags.isArray(), "no-head validate(good) returns a diagnostics array" );
+			int errorCount = 0;
+			for( std::size_t i = 0; i < diags.size(); ++i )
+				if( diags.at( i ).get( "severity" ).asString() == "error" ) ++errorCount;
+			Check( errorCount == 0, "no-head validate(good scene) reports ZERO error diagnostics" );
+		}
+
+		// validate {bogus param} -> SUCCESS with an UNKNOWN_PARAMETER diagnostic.
+		{
+			const std::string badScene =
+				"RISE ASCII SCENE 7\n"
+				"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n\tnot_a_real_param 3\n}\n";
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "text", JsonValue::MakeString( badScene ) );
+			const std::string resp = nohead.HandleLine( Req( 22, "validate", params ) );
+			JsonValue env = ParseResponse( resp, 22 );
+			Check( !env.has( "error" ), "no-head validate(bad) returns a SUCCESS (NOT a -32603 no-session error)" );
+			const JsonValue& diags = env.get( "result" ).get( "diagnostics" );
+			bool foundUnknownParam = false;
+			for( std::size_t i = 0; i < diags.size(); ++i )
+				if( diags.at( i ).get( "code" ).asString() == "UNKNOWN_PARAMETER" ) foundUnknownParam = true;
+			Check( foundUnknownParam, "no-head validate(bad scene) reports an UNKNOWN_PARAMETER diagnostic" );
+		}
+
+		// read_document -> SUCCESS with {document:"", hasDocument:false}.
+		{
+			const std::string resp = nohead.HandleLine( Req( 23, "read_document", JsonValue::MakeObject() ) );
+			JsonValue env = ParseResponse( resp, 23 );
+			Check( !env.has( "error" ), "no-head read_document returns a SUCCESS (graceful bootstrap, not an error)" );
+			const JsonValue& r = env.get( "result" );
+			Check( r.get( "document" ).asString().empty(), "no-head read_document -> document==\"\"" );
+			Check( !r.get( "hasDocument" ).asBool(), "no-head read_document -> hasDocument==false" );
+		}
+
+		// propose_patch + render STILL require a head -> -32603.
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "target", JsonValue::MakeString( "sph" ) );
+			params.set( "param",  JsonValue::MakeString( "radius" ) );
+			params.set( "value",  JsonValue::MakeString( "1.0" ) );
+			const std::string resp = nohead.HandleLine( Req( 24, "propose_patch", params ) );
+			JsonValue env = ParseResponse( resp, 24 );
+			Check( env.get( "error" ).get( "code" ).asNumber() == -32603.0,
+			       "no-head propose_patch STILL errors (-32603 -- head required)" );
+		}
+		{
+			const std::string resp = nohead.HandleLine( Req( 25, "render", JsonValue::MakeObject() ) );
+			JsonValue env = ParseResponse( resp, 25 );
+			Check( env.get( "error" ).get( "code" ).asNumber() == -32603.0,
+			       "no-head render STILL errors (-32603 -- head required)" );
+		}
+	}
+
 	std::printf( "=== AgentFirstSliceTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }
