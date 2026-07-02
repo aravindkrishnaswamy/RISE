@@ -328,6 +328,17 @@ namespace RISE
 		// per gizmo drag-frame.  UI-thread-only.
 		std::string mLastNonRoutableTransformObj;
 
+		// Model-B (code-3 re-render fix): "did a CST re-derive during the LAST Apply CHANGE the live scene?", i.e.
+		// did any route helper see Job::DeriveEditedCstDocument_ return a mutating code (1 incremental / 2 replaced-
+		// clean / 3 replaced-DIAGNOSED)?  This is DECOUPLED from Apply's success bool: a code-3 re-derive REPLACED
+		// the Scene+managers (managers rebuilt from the mutated Document, best-effort) but reports FAILURE (the route
+		// helpers return false) -- yet the viewport MUST re-render to show the replaced scene, else the user sees
+		// STALE pre-edit pixels.  Reset to false ONLY at Apply's top; the route helpers OR-in true on code != 0.  The
+		// controller reads it after Apply (CstLiveSceneChangedInLastApply) and kicks the render on `ok || changed`.
+		// UI-thread-only, same discipline as mPendingCst*.  (Standalone CommitPendingCst* callers -- OnPointerUp,
+		// Undo/Redo -- kick unconditionally and don't consult this; it is meaningful only right after Apply.)
+		bool mCstLiveSceneChanged = false;
+
 		//! Phase 6.5 UI hook: GUI-installed listener fired on
 		//! `HasUnsavedChanges()` TRANSITIONS only.  Empty by default
 		//! (no callbacks fire until SetDirtyChangedListener is called).
@@ -356,6 +367,13 @@ namespace RISE
 		bool CommitPendingCstObjectTransforms();
 		bool HasPendingCstCameraPose() const { return !mPendingCstCameraName.empty(); }
 		bool CommitPendingCstCameraPose();
+
+		//! Model-B (code-3 re-render fix): did the LAST Apply's CST re-derive CHANGE the live scene (raw code
+		//! 1/2/3), decoupled from Apply's success bool?  A code-3 re-derive REPLACED the Scene+managers (so the
+		//! viewport must re-render) but Apply returns false (the edit is diagnosed/failed).  The controller kicks
+		//! the render on `ApplyResult || CstLiveSceneChangedInLastApply()` so a diagnosed edit still repaints the
+		//! replaced scene instead of leaving stale pixels.  Valid only immediately after Apply (reset at Apply top).
+		bool CstLiveSceneChangedInLastApply() const { return mCstLiveSceneChanged; }
 
 	private:
 		//! Look up an object by name on the live ObjectManager and

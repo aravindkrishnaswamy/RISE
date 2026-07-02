@@ -2900,21 +2900,22 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 	// coherent with the (possibly just-rebuilt) Job.
 	r.headVersion = mJob.GetCstHeadVersion();
 
-	// On a clean apply, kick the render so the viewport reflects the edit --
-	// the SAME mEditPending + notify the GUI edit paths do.  A reject /
-	// diagnosed edit does not kick (nothing new to show on a reject; a
-	// diagnosed re-derive already rebuilt but is treated as a failure, and
-	// the managers were replaced so a fresh pass would still be valid -- but
-	// we mirror the Agent surface's "applied-only success" contract and only
-	// kick on a clean 1/2, matching the GUI's ok-gated notify).
-	if( r.applied )
+	// Model-B (code-3 re-render fix): kick the render whenever the live Scene CHANGED (code 1/2/3), DECOUPLED from
+	// the "clean apply" success flag.  A diagnosed re-derive (code 3) ClearAll'd + rebuilt the Scene+managers from
+	// the mutated Document (best-effort, diagnostics logged) -- the viewport now shows a DIFFERENT scene than
+	// before, so a fresh pass is REQUIRED, else the user sees stale pre-edit pixels.  Codes 1 (incremental) and 2
+	// (replaced-clean) also mutated the live scene.  Only code 0 (reject / conflict / no-op -- live scene INTACT)
+	// skips the kick.  The kick fires under the SAME held mMutex the clean-apply path used (no second lock, no
+	// post-unlock kick), mirroring the GUI layer's `ok || changed` decoupling.  r.applied / r.status stay UNCHANGED
+	// (code 3 remains applied=false / "diagnosed"); this only decouples the render-kick from success.
+	if( code == 1 || code == 2 || code == 3 )
 	{
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();
 		mCV.notify_one();
 	}
-	// else: lk unlocks on scope exit; the render thread stays parked-then-idle
-	// (it will resume its prior wait; a rejected edit changed nothing).
+	// else (code 0): lk unlocks on scope exit; the render thread stays parked-then-idle
+	// (it will resume its prior wait; a rejected/conflict edit changed nothing).
 	return r;
 }
 
@@ -3752,7 +3753,11 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		}
 		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 		const bool ok = mEditor.Apply( edit );
-		if( ok ) {
+		// Model-B (code-3 re-render fix): re-render whenever the live Scene CHANGED, decoupled from clean success.
+		// A diagnosed CST re-derive (Job code 3) REPLACED the Scene+managers but Apply returns ok=false -- the
+		// viewport must still repaint the replaced scene, else the user sees stale pre-edit pixels.  Kick on
+		// `ok || changed`; `return ok` keeps the edit's failure semantics unchanged for the caller.
+		if( ok || mEditor.CstLiveSceneChangedInLastApply() ) {
 			mEditPending.store( true, std::memory_order_release );
 			lk.unlock();
 			mCV.notify_one();
@@ -3872,7 +3877,18 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
 		const bool ok = mEditor.Apply( edit );
-		if( !ok ) return false;
+		if( !ok ) {
+			// Model-B (code-3 re-render fix): a diagnosed CST re-derive (Job code 3) REPLACED the live Scene+managers
+			// but Apply reports failure (ok=false).  The viewport must still repaint the replaced scene (else stale
+			// pre-edit pixels), so kick the render under the SAME held lock the success path uses -- but SKIP the
+			// transform-commit + auto-sync follow-through (those presuppose a clean edit) and return failure.
+			if( mEditor.CstLiveSceneChangedInLastApply() ) {
+				mEditPending.store( true, std::memory_order_release );
+				lk.unlock();
+				mCV.notify_one();
+			}
+			return false;
+		}
 
 		// P5 Slice 3 expansion (object transform): a PANEL transform edit (position / orientation / scale) noted the
 		// object for a `matrix`-param commit; flush it here under the SAME park (the commit re-derives).
@@ -3936,12 +3952,15 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
 		const bool ok = mEditor.Apply( edit );
-		if( !ok ) return false;
+		// Model-B (code-3 re-render fix): re-render when the live Scene CHANGED even if Apply reports failure -- a
+		// diagnosed CST re-derive (Job code 3) replaced the Scene+managers, so the viewport must repaint the
+		// replaced scene rather than leave stale pixels.  Kick on `ok || changed`, return the unchanged success bool.
+		if( !ok && !mEditor.CstLiveSceneChangedInLastApply() ) return false;
 
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();
 		mCV.notify_one();
-		return true;
+		return ok;
 	}
 
 	case Category::Rasterizer: {
@@ -4066,12 +4085,15 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		edit.propertyValue = valueStr;
 
 		const bool ok = mEditor.Apply( edit );
-		if( !ok ) return false;
+		// Model-B (code-3 re-render fix): re-render when the live Scene CHANGED even if Apply reports failure -- a
+		// diagnosed CST re-derive (Job code 3) replaced the Scene+managers, so the viewport must repaint.  Kick on
+		// `ok || changed`, return the unchanged success bool.
+		if( !ok && !mEditor.CstLiveSceneChangedInLastApply() ) return false;
 
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();
 		mCV.notify_one();
-		return true;
+		return ok;
 	}
 
 	case Category::Medium: {
@@ -4095,12 +4117,15 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		edit.propertyValue = valueStr;
 
 		const bool ok = mEditor.Apply( edit );
-		if( !ok ) return false;
+		// Model-B (code-3 re-render fix): re-render when the live Scene CHANGED even if Apply reports failure -- a
+		// diagnosed CST re-derive (Job code 3) replaced the Scene+managers, so the viewport must repaint.  Kick on
+		// `ok || changed`, return the unchanged success bool.
+		if( !ok && !mEditor.CstLiveSceneChangedInLastApply() ) return false;
 
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();
 		mCV.notify_one();
-		return true;
+		return ok;
 	}
 
 	case Category::None:

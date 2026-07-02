@@ -1196,6 +1196,7 @@ bool SceneEditor::RouteCstParamEdit_( const char* entityName, const char* entity
 {
 	const int r = mJob->ApplyCstParamEdit( entityName, entityKind, role, 0, value );
 	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;   // code 1/2/3 all MUTATED the live scene -> the controller must re-render
 	return r == 1 || r == 2;
 }
 
@@ -1227,6 +1228,7 @@ bool SceneEditor::ApplyCstObjectMatrix_( const std::string& name, const std::str
 {
 	const int r = mJob->ApplyCstObjectMatrixEdit( name.c_str(), matrix16.c_str() );
 	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;   // code 1/2/3 all MUTATED the live scene -> the controller must re-render
 	return r == 1 || r == 2;
 }
 
@@ -1235,6 +1237,7 @@ bool SceneEditor::ApplyCstObjectComponents_( const std::string& name, const std:
 {
 	const int r = mJob->ApplyCstObjectComponentsEdit( name.c_str(), position.c_str(), orientation.c_str() );
 	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;   // code 1/2/3 all MUTATED the live scene -> the controller must re-render
 	return r == 1 || r == 2;
 }
 
@@ -1318,6 +1321,7 @@ bool SceneEditor::CommitPendingCstCameraPose()
 	const String target = CameraIntrospection::GetPropertyValue( *cam, String( "target_orientation" ) );
 	const int r = mJob->ApplyCstCameraPoseEdit( camName.c_str(), loc.c_str(), lookat.c_str(), up.c_str(), orient.c_str(), target.c_str() );
 	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;   // code 1/2/3 all MUTATED the live scene -> the controller must re-render
 	if( r == 0 || r == 3 )
 		GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: camera pose commit to the CST failed for `%s` (live edit stands, but the Document is out of sync)", camName.c_str() );
 	return r == 1 || r == 2;
@@ -1572,6 +1576,15 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 {
 	DirtyChangeNotifier _notifier( this );
 	SceneEdit edit = editIn;
+
+	// Model-B (code-3 re-render fix): clear the "live scene changed by a CST re-derive" signal for THIS Apply.
+	// The route helpers below (RouteCstParamEdit_ / ApplyCstObjectMatrix_ / ApplyCstObjectComponents_ / the camera
+	// pose commit) OR-in true when Job::DeriveEditedCstDocument_ returns a mutating code (1/2/3 -- including a
+	// DIAGNOSED code-3 that replaced the Scene but reports failure).  The controller reads it after Apply to kick
+	// the render even when Apply's success bool is false, so a diagnosed edit repaints the replaced scene rather
+	// than leaving stale pixels.  Reset ONLY here (route helpers never reset), so it reflects "any mutating derive
+	// happened during this whole Apply", surviving composite walks that route multiple params.
+	mCstLiveSceneChanged = false;
 
 	// Route property-shaped edits into the per-category dirty channel up front
 	// (transform ops + composite markers are skipped by the helper).

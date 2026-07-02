@@ -160,6 +160,41 @@ static double LumR( Job& j )
 }
 
 //////////////////////////////////////////////////////////////////////
+// A Job subclass that FORCES a code-3 ("replaced-but-diagnosed") return from
+// ApplyCstParamEdit while REALLY performing the underlying re-derive.  A genuine
+// code 3 is a should-not-happen divergence (the validate dry-run passes but the
+// real re-derive diagnoses), which cannot be synthesized from scene DATA alone.
+// So we exploit the fact that Job::ApplyCstParamEdit is a virtual on IJob: the
+// override calls the base (which does the REAL D2 ClearAll + rebuild -- the Scene
+// and managers are genuinely replaced, so the caller's rebind is exercised for
+// real, no UAF) and, when the base returns 2 (a clean D2 replace), rewrites the
+// result to 3.  This drives the EXACT decoupling under test -- the live Scene was
+// mutated (managers replaced) yet the code reports FAILURE -- through the real
+// controller/editor code paths with a real replaced Scene.  Only ApplyCstParamEdit
+// is overridden (both edit layers under test -- agent ApplyAgentParamEdit and GUI
+// SetProperty(Material) -- route through it).  Requires a VARIANT scene so the
+// edit takes the D2 path (base returns 2 -> we rewrite to 3); on a base scene the
+// incremental code 1 is left untouched.
+//////////////////////////////////////////////////////////////////////
+class CodeThreeJob : public Job
+{
+public:
+	CodeThreeJob() : Job(), mForceCodeThree( true ) {}
+	void SetForceCodeThree( bool on ) { mForceCodeThree = on; }
+	int ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue ) override
+	{
+		const int base = Job::ApplyCstParamEdit( entityName, entityKind, role, occ, newValue );
+		// Only rewrite a clean D2 replace (2) into a diagnosed replace (3): the Scene + managers
+		// WERE really replaced by the base call, so the "rebind + re-render but report failure"
+		// contract is exercised against a genuinely-replaced live Scene.
+		if( mForceCodeThree && base == 2 ) return 3;
+		return base;
+	}
+private:
+	bool mForceCodeThree;
+};
+
+//////////////////////////////////////////////////////////////////////
 // Test 1: two-client concurrency.  A "GUI" thread (SetProperty on the
 // selected material) and an "agent" thread (ApplyAgentParamEdit) hammer the
 // same controller concurrently while the render thread cycles.  Both mutate
@@ -497,6 +532,92 @@ static void TestAgentSessionLiveMode()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 6 (Model-B code-3 re-render fix): a DIAGNOSED CST re-derive (Job code 3)
+// REPLACED the live Scene + managers (best-effort, diagnostics logged) but reports
+// FAILURE.  Both edit layers must still RE-RENDER the viewport to show the replaced
+// Scene (else stale pre-edit pixels), while keeping code 3's failure semantics
+// (agent: applied=false / status="diagnosed"; GUI: SetProperty returns false).
+// Driven with CodeThreeJob, which rewrites a real D2 replace (code 2) to code 3.
+//
+// Kick observability: a kick stores mEditPending + notifies, which wakes the render
+// loop for a fresh pass -- so a re-render is observable as the render count
+// advancing.  We snapshot the count, do the code-3 edit, and assert a NEW pass
+// fires (the fix) while the result reports failure.
+//////////////////////////////////////////////////////////////////////
+static void TestCodeThreeRerender()
+{
+	std::cout << "Test 6: code-3 diagnosed re-derive still re-renders (both layers)..." << std::endl;
+
+	const char* tmp = "agentlive_code3.RISEscene";
+	// Load the VARIANT scene (any edit forces a D2 -> base returns 2 -> CodeThreeJob rewrites to 3)
+	// into a CodeThreeJob so ApplyCstParamEdit reports the forced code 3.
+	{ std::ofstream o( tmp ); o << kVariantScene; }
+	CodeThreeJob* pJob = new CodeThreeJob();
+	Check( pJob->LoadAsciiSceneViaCst( tmp ), "variant scene loads into CodeThreeJob via the CST path" );
+	if( !pJob ) { std::remove( tmp ); return; }
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		//------------------------------------------------------------------
+		// AGENT LAYER: ApplyAgentParamEdit on the variant scene -> forced code 3.
+		//------------------------------------------------------------------
+		const unsigned int before = c.ForTest_GetRenderCount();
+		const SceneEditController::AgentCommitResult r =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "3.5" ),
+				/*baseVersionOrNull*/ nullptr );
+		std::cout << "    [agent] rawCode=" << r.rawCode << " status=" << r.status.c_str() << std::endl;
+		Check( r.rawCode == 3, "agent edit took the forced code-3 (diagnosed replace) path" );
+		Check( !r.applied, "code-3 agent edit reports FAILURE (applied=false) -- semantics unchanged" );
+		Check( r.status == String( "diagnosed" ), "code-3 agent edit status is \"diagnosed\" -- semantics unchanged" );
+		// THE FIX: the viewport re-renders (a fresh pass fires) despite the failure,
+		// because the live Scene was REPLACED.  Before the fix this timed out (kick was
+		// gated on r.applied, which is false on code 3).
+		Check( c.ForTest_WaitForRenders( before + 1, 3000 ),
+		       "code-3 agent edit RE-RENDERS the viewport (kick decoupled from success)" );
+		// The edit really landed in the (rebuilt) managers -- proves the Scene was replaced,
+		// not just a spurious kick.
+		Check( LumR( *pJob ) > 3.0 && LumR( *pJob ) < 4.0,
+		       "code-3 re-derive replaced the live Scene (lum scale ~3.5 reflected)" );
+
+		//------------------------------------------------------------------
+		// GUI LAYER: SetProperty(Material) -> mEditor.Apply -> RouteCstParamEdit_ -> forced code 3.
+		//------------------------------------------------------------------
+		c.SetSelection( SceneEditController::Category::Material, String( "lum" ) );
+		const unsigned int before2 = c.ForTest_GetRenderCount();
+		const bool guiOk = c.SetPropertyForCategory(
+			SceneEditController::Category::Material, String( "exitance" ), String( "grey" ) );
+		std::cout << "    [gui] SetProperty returned " << ( guiOk ? "true" : "false" ) << std::endl;
+		Check( !guiOk, "code-3 GUI edit reports FAILURE (SetProperty returns false) -- semantics unchanged" );
+		Check( c.ForTest_WaitForRenders( before2 + 1, 3000 ),
+		       "code-3 GUI edit RE-RENDERS the viewport (kick decoupled from ok)" );
+
+		//------------------------------------------------------------------
+		// CONTROL: with the force OFF, a clean D2 (code 2) must still re-render AND report success
+		// (proves we didn't break the clean path and the code-3 path shares the same kick).
+		//------------------------------------------------------------------
+		pJob->SetForceCodeThree( false );
+		const unsigned int before3 = c.ForTest_GetRenderCount();
+		const SceneEditController::AgentCommitResult r2 =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "6.0" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( r2.rawCode == 2 && r2.applied, "control: force-off edit is a clean D2 (code 2, applied)" );
+		Check( c.ForTest_WaitForRenders( before3 + 1, 3000 ),
+		       "control: clean D2 re-renders (shared kick path intact)" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -506,6 +627,7 @@ int main()
 	TestConflictCrossPath();
 	TestRenderParkedDuringEdit();
 	TestAgentSessionLiveMode();
+	TestCodeThreeRerender();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;
