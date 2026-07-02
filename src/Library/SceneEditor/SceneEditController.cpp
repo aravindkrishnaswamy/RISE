@@ -2778,13 +2778,23 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 {
 	AgentCommitResult r;
 
-	// Pre-flight refusals that need no lock (a Job with no retained Document
-	// can never change, and an empty field can never resolve).  Report the
-	// current head so an optimistic-concurrency caller learns where it is.
-	// GetCstHeadVersion is a trivial by-value POD read; it may momentarily
-	// race the render thread only during a D2 (which does not happen without
-	// a prior successful edit through THIS parked path), and these guards do
-	// not mutate, so an unlocked read here is benign.
+	// Cancel-and-park the render thread, THEN hold mMutex across the WHOLE
+	// commit -- the pre-flight refusals, the conflict pre-check,
+	// ApplyCstParamEdit (which on a D2 ClearAll's + rebuilds the Scene and
+	// transiently zeroes the head-version to {0,0}), the RebindEditorToJob,
+	// and the post-commit head read.  Keeping EVERY mCstHeadVersion read under
+	// the lock is what the slice-1a reviewer required: no render-thread reader
+	// observes the {0,0} transient or a half-rebuilt Scene, and -- since a
+	// concurrent parked edit on ANOTHER thread is the real writer of the head
+	// -- there is no torn read of the 16-byte CstHeadVersion either.
+	std::unique_lock<std::mutex> lk( mMutex );
+	CancelAndParkRender_( lk );
+
+	// Pre-flight refusals (under the lock): a Job with no retained Document,
+	// or an empty field.  The reported current head is a stable, non-torn
+	// read.  A reject lands no edit; it cancelled the in-flight pass, but the
+	// render loop's refinement watchdog (wait_for(kRefineWakeMs)) resumes the
+	// convergence walk, so -- as on the conflict path -- no kick is needed.
 	if( !mJob.HasRetainedCstDocument() )
 	{
 		r.applied = false;
@@ -2805,15 +2815,6 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 		r.message = String( "target, param, and value must all be non-empty" );
 		return r;
 	}
-
-	// Cancel-and-park the render thread, then hold mMutex across the WHOLE
-	// commit -- the conflict pre-check, ApplyCstParamEdit (which on a D2
-	// ClearAll's + rebuilds the Scene and transiently zeroes the head-version
-	// to {0,0}), the RebindEditorToJob, and the post-commit head read -- so
-	// no render-thread reader observes the {0,0} transient or a half-rebuilt
-	// Scene (the slice-1a reviewer's non-negotiable).
-	std::unique_lock<std::mutex> lk( mMutex );
-	CancelAndParkRender_( lk );
 
 	// Optimistic-concurrency CONFLICT precondition (slice 1a), checked here
 	// UNDER THE LOCK (not before parking) so the current head we compare
