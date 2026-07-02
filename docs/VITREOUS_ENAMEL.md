@@ -1074,9 +1074,14 @@ approximation, which the principle rejects.)
 >   (a forced double-count raises exactly four `-Wunused-variable` warnings, one per site, confirming
 >   each consumes `pSurvivalHero`). Off the hero's render path (hero renders non-HWSS NM) but a real,
 >   `useHWSS`-reachable bug closed for completeness.
-> - **G1-d — measured gold-ruby `σ_a(λ)` + analytic-slab gate + hero scene.** Extends the §10.3
->   analytic Beer slab into a spectral discriminator (a wavelength-selective curve must reproduce
->   `exp(−σ_a(λ)·d)` per wavelength) and lands the first real colorant curve.
+> - **G1-d — gold-ruby `σ_a(λ)` (calibrated analytic, NOT measured) + analytic-slab gate + hero
+>   scene.** Extends the §10.3 analytic Beer slab into a spectral discriminator (a wavelength-selective
+>   curve must reproduce `exp(−σ_a(λ)·d)` per wavelength) and lands the first colorant curve.  **The
+>   curve is a physically-motivated analytic fit — a colloidal-gold plasmon Lorentzian (~515 nm) plus a
+>   blue inter-band shoulder, scaled to a target optical depth over a 1-unit path — NOT measured
+>   internal transmittance converted via `σ_a(λ) = −ln T_int(λ)/d` (§10.4).**  It is a calibrated
+>   placeholder with the correct spectral shape (green-absorbing → red/oxblood); replacing it with a
+>   Fresnel-corrected fit to real gold-ruby transmittance data is the M5 calibration upgrade.
 > **RGB-preview honesty (not a cut corner):** spectral→RGB downsampling of a Beer medium is
 > nonlinear (`⟨exp(−σd)⟩ ≠ exp(−⟨σ⟩d)`), so the RGB triples stay an author-set *preview*
 > approximation rather than an auto-integrated value; the fidelity deliverable is the spectral

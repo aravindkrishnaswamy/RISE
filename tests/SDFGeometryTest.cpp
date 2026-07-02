@@ -328,7 +328,32 @@ static void TestHeightfieldFlatTopEntry()
 	{	RayIntersectionGeometric ri = MkRI( Point3(0,0,S), Vector3(0,0,-1) );
 		g->IntersectRay( ri, true, true, false );
 		Check( !( ri.bHit && ri.ptIntersection.z > S - 1e-2 ), "heightfield: on-surface continuation ray steps off its own band (no self-hit at z=scale)" ); }
+
+	// SHADOW / visibility fast path (IntersectRay_IntersectionOnly) shares the same
+	// March, so it tunnelled the same way pre-fix -- a light around or below the
+	// dial would leak straight through the enamel top.  Existing Test 5 only covers
+	// a sphere (surface not coincident with the bbox face), so it never caught this.
+	// Lock the sibling explicitly: the flat top must OCCLUDE a ray that reaches it
+	// and NOT occlude one that stops short.
+	Check(  g->IntersectRay_IntersectionOnly( Ray( Point3(0,0,5), Vector3(0,0,-1) ), Scalar(10.0), true, true ),
+	        "heightfield: shadow path sees the top as occluding within reach (pre-fix tunnels -> not occluding)" );
+	Check( !g->IntersectRay_IntersectionOnly( Ray( Point3(0,0,5), Vector3(0,0,-1) ), Scalar(4.0),  true, true ),
+	        "heightfield: shadow path does not occlude a ray that stops short of the top (dHowFar honoured)" );
 	safe_release( g );
+
+	// Non-vacuous step-off coverage: a CLOSED part-based slab (top + bottom faces)
+	// so a continuation ray spawned ON the top going down must step off its own
+	// band AND reach the far (bottom) surface -- the "find the next surface" half of
+	// the step-off that a half-space heightfield cannot exercise.
+	{	std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimBox, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,1.5), 0,0,0, Vector3(1,1,1), 4.0, 4.0, 0.2, 0 ) );   // top z=1.7, bottom z=1.3
+		SDFGeometry* slab = new SDFGeometry( parts, 512, Scalar(5e-5) );
+		RayIntersectionGeometric ri = MkRI( Point3(0,0,1.7), Vector3(0,0,-1) );   // spawned ON the top face
+		slab->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose( ri.ptIntersection.z, 1.3, 1e-2 ),
+		       "slab: on-top continuation ray steps off and reaches the BOTTOM face z~=1.3 (not a self-hit at z=1.7)" );
+		safe_release( slab ); }
 }
 
 static void TestShadowQuery()
