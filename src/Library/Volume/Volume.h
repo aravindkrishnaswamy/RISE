@@ -76,10 +76,51 @@ namespace RISE
 		{
 			m_OVMaxValue = 1.0 / ( Scalar( 1 << (sizeof( T )*8) ) - 1.0 );
 
+			// Guard the voxel-buffer sizing against a scene-driven integer
+			// overflow: width/height/depth are scene parameters, so the 32-bit
+			// `m_nDepth*m_nHeight*m_nWidth` product (and the per-slice
+			// `width*height` fread offset, and m_nSliceSize) can wrap to a
+			// tiny allocation the slice fill loop then writes past.  On failure
+			// degrade to an EMPTY volume (all GetValue -> 0, m_pData null)
+			// rather than allocating a wrapped-small buffer.
+			//
+			// IMPORTANT: validate the RAW UNSIGNED ctor params (width/height/
+			// zstart/zend), NOT the int members m_nWidth/m_nHeight/m_nDepth --
+			// those are narrowed from the unsigned params in the init list
+			// above, so a dim >= 2^31 would be negative and `(unsigned long
+			// long)m_nWidth` would SIGN-EXTEND to ~2^64, wrapping the product
+			// back to a small value that sneaks past the guard.
+			//
+			// Two constraints: (a) the byte allocation stays under the ceiling,
+			// and (b) the voxel COUNT fits a positive signed int, because
+			// m_nSliceSize and the linear index `az*m_nSliceSize+ay*m_nWidth+ax`
+			// in GetValue() are signed int -- a count of 2^31 would wrap
+			// m_nSliceSize to INT_MIN and drive an OOB read.  Take the tighter
+			// of the two (0x7fffffff == INT_MAX).
+			static const unsigned long long kMaxVolumeBytes = 2ULL * 1024 * 1024 * 1024; // 2 GiB
+			const unsigned long long maxByBytes = kMaxVolumeBytes / sizeof( T );
+			const unsigned long long maxVoxels = maxByBytes < 0x7fffffffULL ? maxByBytes : 0x7fffffffULL;
+			const unsigned long long slice64 = (unsigned long long)width * (unsigned long long)height;
+			const bool depthValid = ( zend >= zstart );
+			const unsigned long long depth64 =
+				depthValid ? ( (unsigned long long)zend - (unsigned long long)zstart + 1ULL ) : 0ULL;
+			if( width == 0 || height == 0 || !depthValid || depth64 == 0 ||
+				slice64 > maxVoxels ||
+				slice64 * depth64 > maxVoxels ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"Volume:: Invalid or too-large volume dimensions %ux%ux(z %u..%u) (empty volume)",
+					width, height, zstart, zend );
+				m_pData = 0;
+				m_nWidth = m_nHeight = m_nDepth = 0;
+				m_nSliceSize = 0;
+				m_nWidthOV2 = m_nHeightOV2 = m_nDepthOV2 = 0;
+				return;
+			}
+
 			// Value-initialise to zero: any slice whose file is missing or
 			// short-reads then stays ZERO rather than exposing
 			// uninitialised voxels (garbage from new[]).
-			m_pData = new T[m_nDepth*m_nHeight*m_nWidth]();
+			m_pData = new T[ (size_t)( slice64 * depth64 ) ]();
 
 			for( unsigned int i=zstart, cnt=0; i<=zend; i++, cnt++ )
 			{

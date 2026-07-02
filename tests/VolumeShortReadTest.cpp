@@ -317,6 +317,45 @@ static void TestDiskFileReadBufferMissingFile()
 	db->release();
 }
 
+//----------------------------------------------------------------------
+// G: Volume with header/scene-driven overflow dimensions.  The voxel buffer
+// is sized from `depth*height*width` (a 32-bit product) — 100000*100000*1
+// wraps 32-bit and, unwrapped, exceeds the 2 GiB ceiling.  The ctor must
+// degrade to an EMPTY volume (m_pData null, dims 0, all GetValue -> 0)
+// rather than allocating a wrapped-small buffer and writing slice data past
+// it.  This is the WRITE-side (destination-sizing) twin of the read-side
+// short-read hardening above.
+//----------------------------------------------------------------------
+static void TestVolumeOverflowDims()
+{
+	std::cout << "G: Volume with overflow dimensions degrades to an empty volume (no OOB alloc)" << std::endl;
+
+	const std::string pattern = TmpDir() + "rise_vol_overflow_%d.raw";
+	Volume<unsigned char>* v = new Volume<unsigned char>( pattern.c_str(), 100000, 100000, 0, 0 );
+	v->addref();
+	Check( v->Width() == 0 && v->Height() == 0 && v->Depth() == 0,
+		"G: overflow volume reports zero dimensions (rejected before alloc)" );
+	Check( ByteAt( v, 0, 0, 0 ) == 0.0, "G: overflow volume GetValue returns 0 (no crash / no OOB)" );
+	v->release();
+
+	// A dimension >= 2^31: the int members would sign-extend to a huge (ull)
+	// and wrap the product SMALL if the guard read the members instead of the
+	// raw unsigned params.  Must still be rejected (empty volume).
+	Volume<unsigned char>* v2 = new Volume<unsigned char>( pattern.c_str(), 0xFFFFFFFFu, 0xFFFFFFFFu, 0, 0 );
+	v2->addref();
+	Check( v2->Width() == 0 && v2->Height() == 0 && v2->Depth() == 0,
+		"G: >=2^31 dimension rejected (no sign-extension bypass)" );
+	Check( ByteAt( v2, 0, 0, 0 ) == 0.0, "G: >=2^31 volume GetValue returns 0 (no OOB)" );
+	v2->release();
+
+	// Reversed Z range (zend < zstart) would underflow the unsigned depth to a
+	// huge value; must be rejected too.
+	Volume<unsigned char>* v3 = new Volume<unsigned char>( pattern.c_str(), 4, 4, 5, 2 );
+	v3->addref();
+	Check( v3->Width() == 0 && v3->Depth() == 0, "G: reversed z-range (zend<zstart) rejected" );
+	v3->release();
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "VolumeShortReadTest — missing/truncated binary reads zero, never uninitialised"
@@ -328,6 +367,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestMemoryBufferScalarOverread();
 	TestDiskFileReadBufferGetBytesOverread();
 	TestDiskFileReadBufferMissingFile();
+	TestVolumeOverflowDims();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

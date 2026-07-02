@@ -78,9 +78,29 @@ bool TIFFReader::BeginRead( unsigned int& width, unsigned int& height )
 		bufW = width;
 	}
 
-	pBuffer = new unsigned char[height*width*4];
+	// Guard the destination-buffer sizing against a header-driven integer
+	// overflow: width/height are the TIFF ImageWidth/ImageLength tags (up to
+	// ~4e9 each), so the historical 32-bit `height*width*4` product can wrap
+	// to a tiny allocation that TIFFReadRGBAImage then overruns (libtiff does
+	// NOT validate the caller's raster buffer size).  Compute in 64-bit and
+	// cap at a sane ceiling; reject (closing the TIFF) before allocating.
+	if( width == 0 || height == 0 ) {
+		GlobalLog()->Print( eLog_Error, "TIFFReader: Invalid (zero) image dimensions" );
+		TIFFClose( tiff );
+		return false;
+	}
+	static const unsigned long long kMaxImageBytes = 2ULL * 1024 * 1024 * 1024; // 2 GiB ceiling
+	const unsigned long long nBytes64 = (unsigned long long)width * (unsigned long long)height * 4ULL;
+	if( nBytes64 > kMaxImageBytes ) {
+		GlobalLog()->Print( eLog_Error, "TIFFReader: Image dimensions too large" );
+		TIFFClose( tiff );
+		return false;
+	}
+	const size_t nBytes = (size_t)nBytes64;
+
+	pBuffer = new unsigned char[nBytes];
 	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
-	memset( pBuffer, 0, width*height*4 );
+	memset( pBuffer, 0, nBytes );
 
 	TIFFReadRGBAImage( tiff, width, height, (uint32_t*)pBuffer, 0 );
 	TIFFClose( tiff );
