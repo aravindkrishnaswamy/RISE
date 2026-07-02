@@ -1,0 +1,513 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  AgentLiveCommitTest.cpp - Facet 5 slice 1b: prove the agent commit,
+//    routed through SceneEditController's cancel-and-park edit path, is
+//    SAFE against a live render thread and the D2-re-derive rebind hazard.
+//
+//  Slice 1a made ProposePatch call Job::ApplyCstParamEdit DIRECTLY -- fine
+//  HEADLESS (single-threaded), but in a live GUI the Job is driven by a
+//  SceneEditController running a RENDER THREAD.  A background agent commit
+//  that called ApplyCstParamEdit directly would (a) race the render thread
+//  reading the live Scene, and (b) on a D2 full re-derive (ClearAll +
+//  rebuild Scene/managers) leave the editor's cached pointers DANGLING.
+//
+//  Slice 1b routes the commit through SceneEditController::ApplyAgentParamEdit,
+//  which cancel-and-parks the render thread (holding mMutex across the WHOLE
+//  ApplyCstParamEdit + rebind + version-bump) and calls RebindEditorToJob on
+//  a D2 (codes 2/3).  This test drives that path with REAL threads:
+//
+//    1. Two-client concurrency  -- a "GUI" thread (SetProperty) + an "agent"
+//       thread (ApplyAgentParamEdit) hammer the same controller concurrently
+//       while the render thread cycles; assert no crash, coherent final state,
+//       render thread still alive.
+//    2. Rebind-after-D2         -- an agent commit that forces a D2 full
+//       re-derive (a material edit on a variant scene); assert the editor is
+//       USABLE afterward (a subsequent SetProperty through mEditor succeeds --
+//       proving no dangling pointer).
+//    3. Conflict cross-path     -- capture baseHeadVersion, GUI SetProperty
+//       bumps the revision, a stale agent commit -> conflict (no mutation);
+//       re-read + retry -> success.  (1a's precondition through the 1b path.)
+//    4. Render-parked during edit -- assert (via mRendering / cancel counter)
+//       that an agent edit cancel-and-parks rather than racing an in-flight
+//       render pass.
+//
+//  Self-contained: no RISE_MEDIA_PATH, an inline native-v7 scene, OIDN off
+//  (no rasterizer -- a mock DoOneRenderPass simulates render work in
+//  cancel-checked slices, so the render thread cycles fast and the CST edit
+//  path is exercised for real).
+//
+//  Author: Aravind Krishnaswamy
+//  Tabs: 4
+//
+//////////////////////////////////////////////////////////////////////
+
+#include <iostream>
+#include <string>
+#include <fstream>
+#include <cstdio>
+#include <atomic>
+#include <chrono>
+#include <thread>
+#include <vector>
+
+#include "../src/Library/Job.h"
+#include "../src/Library/RISE_API.h"
+#include "../src/Library/Interfaces/IMaterial.h"
+#include "../src/Library/Interfaces/IMaterialManager.h"
+#include "../src/Library/Interfaces/IEmitter.h"
+#include "../src/Library/SceneEditor/SceneEditController.h"
+#include "../src/Library/Agent/AgentSession.h"
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+static int passCount = 0, failCount = 0;
+static void Check( bool c, const char* n )
+{
+	if( c ) { ++passCount; }
+	else    { ++failCount; std::cout << "  FAIL: " << n << std::endl; }
+}
+
+//////////////////////////////////////////////////////////////////////
+// A SceneEditController subclass whose DoOneRenderPass simulates render
+// work in cancel-checked slices (mirrors SceneEditorCancelRestartTest).
+// This gives us a REAL render thread that HOLDS the "rendering" state for
+// an observable window and observes IsCancelRequested at slice boundaries
+// -- so an edit that cancel-and-parks is observable via the cancel counter
+// / mRendering, and a race between the edit path and the render loop would
+// surface as a crash under the repeated-iteration stress below.
+//////////////////////////////////////////////////////////////////////
+class TestController : public SceneEditController
+{
+public:
+	TestController( IJobPriv& job, unsigned int simulatedRenderMs = 20 )
+	: SceneEditController( job, /*interactiveRasterizer*/0 )
+	, mSimulatedRenderMs( simulatedRenderMs )
+	, mCompletedCount( 0 )
+	{}
+
+	unsigned int CompletedCount() const { return mCompletedCount.load(); }
+
+protected:
+	void DoOneRenderPass() override
+	{
+		const unsigned int sliceMs = 2;
+		const unsigned int slices  = ( mSimulatedRenderMs + sliceMs - 1 ) / sliceMs;
+		for( unsigned int i = 0; i < slices; ++i )
+		{
+			if( IsCancelRequested() ) return;
+			std::this_thread::sleep_for( std::chrono::milliseconds( sliceMs ) );
+		}
+		mCompletedCount.fetch_add( 1 );
+	}
+
+private:
+	unsigned int              mSimulatedRenderMs;
+	std::atomic<unsigned int> mCompletedCount;
+};
+
+// A base (variant-free) scene.  `lum` is a UNIQUELY-named luminaire so both
+// the GUI path (rebind the `exitance` painter slot between `white`/`grey`) and
+// the agent path (edit the numeric `scale` param) resolve unambiguously; each
+// edit re-derives INCREMENTALLY (code 1) -- fast, non-D2 -- for the
+// concurrency + conflict tests.  Two painters so the GUI has a distinct value
+// to flip the slot to.
+static const char* kBaseScene =
+	"RISE ASCII SCENE 7\n"
+	"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+	"uniformcolor_painter\n{\nname grey\ncolor 0.5 0.5 0.5\n}\n"
+	"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
+	"sphere_geometry\n{\nname s\nradius 1\n}\n"
+	"standard_object\n{\nname obj\ngeometry s\nmaterial lum\n}\n";
+
+// A scene that DECLARES a scene_variant, so ANY edit forces a D2 full
+// re-derive (DeriveToJobIncremental refuses WHOLESALE when the Job
+// HasSceneVariants -- the override bake is whole-document).  The variant
+// overrides a SEPARATE, `sky` material so `lum` stays UNIQUELY named -- an
+// edit on `lum` is therefore both unambiguous AND a guaranteed D2.  This is
+// the keystone rebind-after-D2 recipe.
+static const char* kVariantScene =
+	"RISE ASCII SCENE 7\n"
+	"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+	"uniformcolor_painter\n{\nname grey\ncolor 0.5 0.5 0.5\n}\n"
+	"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
+	"lambertian_luminaire_material\n{\nname sky\nexitance white\nscale 2.0\nmaterial none\n}\n"
+	"lambertian_luminaire_material\n{\nname sky\nvariant night\nexitance white\nscale 0.0\nmaterial none\n}\n"
+	"sphere_geometry\n{\nname s\nradius 1\n}\n"
+	"standard_object\n{\nname obj\ngeometry s\nmaterial lum\n}\n"
+	"scene_variant\n{\nname night\n}\n";
+
+static Job* LoadScene( const char* text, const char* tmpPath )
+{
+	{ std::ofstream o( tmpPath ); o << text; }
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( tmpPath ) ) {
+		pJob->release();
+		std::remove( tmpPath );
+		return nullptr;
+	}
+	return pJob;
+}
+
+// The luminaire's emissive scale (red channel of average radiant exitance),
+// -1 if missing -- a live read of the DERIVED scene state so we can confirm an
+// edit actually reached the managers.
+static double LumR( Job& j )
+{
+	IMaterial* x = j.GetMaterials() ? j.GetMaterials()->GetItem( "lum" ) : 0;
+	if( !x || !x->GetEmitter() ) return -1.0;
+	return (double)x->GetEmitter()->averageRadiantExitance().r;
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 1: two-client concurrency.  A "GUI" thread (SetProperty on the
+// selected material) and an "agent" thread (ApplyAgentParamEdit) hammer the
+// same controller concurrently while the render thread cycles.  Both mutate
+// the SAME `lum.scale` param through the SAME cancel-and-park path, so they
+// MUST serialize under mMutex.  Assert: no crash, the render thread keeps
+// running, a coherent final Document/derived-scene, and edits actually landed.
+//////////////////////////////////////////////////////////////////////
+static void TestTwoClientConcurrency()
+{
+	std::cout << "Test 1: two-client concurrency (GUI SetProperty || agent commit)..." << std::endl;
+
+	const char* tmp = "agentlive_concurrency.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+
+		// Select the material so the GUI SetProperty(Material) path resolves.
+		c.SetSelection( SceneEditController::Category::Material, String( "lum" ) );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const int kIters = 200;
+		std::atomic<int> guiOk( 0 ), agentApplied( 0 ), agentReject( 0 );
+
+		std::thread guiThread( [&]{
+			for( int i = 0; i < kIters; ++i ) {
+				// GUI client: rebind the `exitance` painter slot (a valid,
+				// CST-routed material edit that bumps the head), flipping
+				// between two registered painters.
+				const char* p = ( i & 1 ) ? "grey" : "white";
+				if( c.SetPropertyForCategory( SceneEditController::Category::Material,
+				                              String( "exitance" ), String( p ) ) )
+					guiOk.fetch_add( 1 );
+			}
+		} );
+
+		std::thread agentThread( [&]{
+			for( int i = 0; i < kIters; ++i ) {
+				char v[32];
+				std::snprintf( v, sizeof(v), "%.3f", 2.0 + ( i % 5 ) );
+				const SceneEditController::AgentCommitResult r =
+					c.ApplyAgentParamEdit(
+						String( "lum" ), String( "lambertian_luminaire_material" ),
+						String( "scale" ), String( v ),
+						/*baseVersionOrNull*/ nullptr );
+				if( r.applied )        agentApplied.fetch_add( 1 );
+				else if( !r.conflict ) agentReject.fetch_add( 1 );
+			}
+		} );
+
+		guiThread.join();
+		agentThread.join();
+
+		// The render thread must still be alive + cycling after the storm.
+		Check( c.IsRunning(), "render thread still running after concurrent edit storm" );
+		const unsigned int rc = c.ForTest_GetRenderCount();
+		Check( c.ForTest_WaitForRenders( rc + 1, 3000 ),
+		       "render thread still produces fresh passes after the storm" );
+
+		// Both clients made progress (the edits serialized rather than one
+		// starving) and no agent edit spuriously rejected (all targets valid).
+		std::cout << "    guiOk=" << guiOk.load()
+		          << " agentApplied=" << agentApplied.load()
+		          << " agentReject=" << agentReject.load() << std::endl;
+		Check( guiOk.load() > 0,        "GUI thread landed at least one edit" );
+		Check( agentApplied.load() > 0, "agent thread landed at least one clean apply" );
+		Check( agentReject.load() == 0, "no agent edit spuriously rejected (all valid targets)" );
+
+		// Coherent final state: the derived scene reflects SOME valid edited
+		// scale (a well-formed emissive value), i.e. the concurrent mutation
+		// did not corrupt the Document/managers into an unresolvable state.
+		const double finalR = LumR( *pJob );
+		Check( finalR >= 0.0, "final derived material is coherent (resolvable + emissive)" );
+
+		c.Stop();
+		Check( !c.IsRunning(), "controller stops + joins cleanly" );
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 2: rebind-after-D2 (the keystone).  An agent commit on a VARIANT
+// scene forces a D2 full re-derive (rawCode 2), which ClearAll's + rebuilds
+// the Scene + managers.  ApplyAgentParamEdit must RebindEditorToJob so the
+// editor's cached pointers don't dangle -- proven by a subsequent edit
+// THROUGH mEditor (SetProperty) succeeding rather than segfaulting.
+//////////////////////////////////////////////////////////////////////
+static void TestRebindAfterD2()
+{
+	std::cout << "Test 2: rebind-after-D2 (agent commit forces a full re-derive)..." << std::endl;
+
+	const char* tmp = "agentlive_d2.RISEscene";
+	Job* pJob = LoadScene( kVariantScene, tmp );
+	Check( pJob != nullptr, "variant scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		// Agent commit: edit lum.scale.  The variant closure forces a D2.
+		const SceneEditController::AgentCommitResult r =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "3.5" ),
+				/*baseVersionOrNull*/ nullptr );
+		std::cout << "    rawCode=" << r.rawCode << " status=" << r.status.c_str() << std::endl;
+		Check( r.applied, "agent commit applied cleanly" );
+		Check( r.rawCode == 2, "the edit took the D2 full-re-derive path (variant closure)" );
+
+		// The edit reached the (rebuilt) managers: scale is now ~3.5.
+		Check( LumR( *pJob ) > 3.0 && LumR( *pJob ) < 4.0,
+		       "derived scene reflects the D2 edit (lum scale ~3.5)" );
+
+		// KEYSTONE: use the editor AFTER the D2.  If RebindEditorToJob wasn't
+		// called, mEditor's cached scene/manager pointers dangle into freed
+		// storage and this SetProperty (which routes through mEditor.Apply,
+		// and itself re-derives -- another D2 on the variant scene) is a
+		// use-after-free.  `lum` is uniquely named so the slot edit resolves.
+		// Reaching + passing this proves the rebind kept mEditor valid.
+		c.SetSelection( SceneEditController::Category::Material, String( "lum" ) );
+		const bool editOk = c.SetPropertyForCategory(
+			SceneEditController::Category::Material, String( "exitance" ), String( "grey" ) );
+		Check( editOk, "SetProperty THROUGH mEditor succeeds after the D2 (editor rebound -- no UAF)" );
+
+		// A second agent D2 commit + a THIRD editor edit -- exercise the
+		// rebind repeatedly (each D2 rebuilds; each must rebind).
+		const SceneEditController::AgentCommitResult r2 =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "6.0" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( r2.applied && r2.rawCode == 2, "second agent commit is a clean D2" );
+		// LumR is scale * exitance-colour (the earlier keystone flipped exitance
+		// to `grey`=0.5), so assert coherence rather than a raw scale -- the
+		// clean rawCode-2 above already proves the edit landed.
+		Check( LumR( *pJob ) >= 0.0, "second D2 left the material coherent (resolvable + emissive)" );
+		const bool editOk2 = c.SetPropertyForCategory(
+			SceneEditController::Category::Material, String( "exitance" ), String( "white" ) );
+		Check( editOk2, "editor still usable after a second D2 rebind" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 3: conflict cross-path.  Capture baseHeadVersion, do a GUI
+// SetProperty (bumps the revision), then an agent commit with the STALE base
+// -> conflict (no mutation); re-read the head + retry -> success.  Proves
+// 1a's optimistic-concurrency precondition works THROUGH the 1b controller
+// path AND across the GUI/agent boundary.
+//////////////////////////////////////////////////////////////////////
+static void TestConflictCrossPath()
+{
+	std::cout << "Test 3: conflict cross-path (GUI bumps head, stale agent commit conflicts)..." << std::endl;
+
+	const char* tmp = "agentlive_conflict.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.SetSelection( SceneEditController::Category::Material, String( "lum" ) );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		// Capture the base head-version the agent will build against.
+		const RISE::Cst::CstHeadVersion base = pJob->GetCstHeadVersion();
+		Check( base.uuid != 0, "captured a non-sentinel base head-version" );
+
+		// GUI edit moves the head (a material slot rebind bumps the revision).
+		const bool guiOk = c.SetPropertyForCategory(
+			SceneEditController::Category::Material, String( "exitance" ), String( "grey" ) );
+		Check( guiOk, "GUI SetProperty succeeds" );
+		const RISE::Cst::CstHeadVersion afterGui = pJob->GetCstHeadVersion();
+		Check( afterGui != base, "GUI edit bumped the head-version (revision advanced)" );
+
+		// Stale agent commit (built against the pre-GUI base) -> CONFLICT, no mutation.
+		const RISE::Cst::CstHeadVersion beforeStale = pJob->GetCstHeadVersion();
+		const SceneEditController::AgentCommitResult stale =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "9.0" ),
+				/*baseVersionOrNull*/ &base );
+		Check( stale.conflict, "stale agent commit reports a conflict" );
+		Check( !stale.applied, "stale agent commit did not apply" );
+		Check( stale.status == String( "conflict" ), "status is \"conflict\"" );
+		Check( pJob->GetCstHeadVersion() == beforeStale,
+		       "conflict left the head byte-identical (no mutation)" );
+		Check( stale.headVersion == beforeStale,
+		       "conflict result carries the CURRENT head (for the caller to re-read)" );
+
+		// Re-read the head + retry with the FRESH base -> success.
+		const RISE::Cst::CstHeadVersion fresh = stale.headVersion;
+		const SceneEditController::AgentCommitResult retry =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "9.0" ),
+				/*baseVersionOrNull*/ &fresh );
+		Check( retry.applied, "re-proposed agent commit (fresh base) applies cleanly" );
+		Check( retry.headVersion != fresh, "successful retry bumped the head again" );
+		// LumR = scale * exitance-colour; the GUI flipped exitance to `grey`
+		// (0.5) above, so scale 9.0 -> ~4.5.  Assert coherence + that the value
+		// moved measurably from the pre-retry state (the edit reached the scene).
+		Check( LumR( *pJob ) > 4.0 && LumR( *pJob ) < 5.0,
+		       "the retried edit reached the scene (scale 9.0 * grey 0.5 ~= 4.5)" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 4: render-parked during edit.  A long render pass is in flight; an
+// agent commit must cancel-and-park it (not race it).  Assert the cancel
+// counter advances (the edit tripped the in-flight pass) and mRendering is
+// false at the moment the edit returns (it waited for the pass to drain).
+//////////////////////////////////////////////////////////////////////
+static void TestRenderParkedDuringEdit()
+{
+	std::cout << "Test 4: render-parked during edit (agent commit cancel-and-parks)..." << std::endl;
+
+	const char* tmp = "agentlive_park.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		// Long simulated render (300ms) so an edit reliably lands mid-pass.
+		TestController c( *pJob, /*simulatedRenderMs*/300 );
+		c.Start();
+
+		// Let a render pass get in flight, then fire an agent commit.
+		std::this_thread::sleep_for( std::chrono::milliseconds( 40 ) );
+		const unsigned int cancelsBefore = c.ForTest_GetCancelCount();
+
+		const SceneEditController::AgentCommitResult r =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "3.0" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( r.applied, "agent commit applied" );
+
+		// The commit returned only AFTER the render thread parked -- so when it
+		// mutated the scene, mRendering was false (it held mMutex across the
+		// park + the mutation).  We assert the cancel counter advanced, proving
+		// the in-flight pass was cancelled by this edit rather than raced.
+		const unsigned int cancelsAfter = c.ForTest_GetCancelCount();
+		std::cout << "    cancelsBefore=" << cancelsBefore
+		          << " cancelsAfter=" << cancelsAfter << std::endl;
+		Check( cancelsAfter > cancelsBefore,
+		       "agent commit tripped the render cancel (parked the in-flight pass)" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 5: the AgentSession live-mode attach.  ProposePatch routed through an
+// attached controller must behave identically to a direct ApplyAgentParamEdit
+// (same apply/conflict semantics), and DETACHING reverts to the direct path.
+//////////////////////////////////////////////////////////////////////
+static void TestAgentSessionLiveMode()
+{
+	std::cout << "Test 5: AgentSession live-mode attach (ProposePatch -> controller)..." << std::endl;
+
+	const char* tmp = "agentlive_session.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		// Wrap the SAME Job the controller drives, then attach the controller.
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		Check( sess != nullptr, "AgentSession wraps the live Job" );
+		Check( !sess->HasController(), "session starts un-attached (direct-Job mode)" );
+		sess->AttachController( &c );
+		Check( sess->HasController(), "session reports attached after AttachController" );
+
+		// A propose_patch now routes through the controller's render-safe path.
+		Agent::AgentSetPatch p;
+		p.target = "lum";
+		p.kind   = "lambertian_luminaire_material";
+		p.param  = "scale";
+		p.value  = "3.75";
+		Agent::AgentPatchResult pr = sess->ProposePatch( p );
+		Check( pr.applied, "ProposePatch (attached) applies cleanly" );
+		Check( pr.status == "applied", "attached ProposePatch status is \"applied\"" );
+		Check( LumR( *pJob ) > 3.0 && LumR( *pJob ) < 4.5,
+		       "attached ProposePatch reached the scene" );
+
+		// The render thread is still alive after the attached commit (it went
+		// through cancel-and-park, not a raw direct edit).
+		Check( c.IsRunning(), "render thread alive after attached ProposePatch" );
+
+		// Conflict through the attached path too: a stale base -> conflict.
+		const RISE::Cst::CstHeadVersion cur = pJob->GetCstHeadVersion();
+		RISE::Cst::CstHeadVersion staleBase = cur;
+		staleBase.revision += 100;   // definitely not the current head
+		Agent::AgentSetPatch pc = p;
+		pc.value = "5.0";
+		pc.hasBaseVersion = true;
+		pc.baseVersion = staleBase;
+		Agent::AgentPatchResult prc = sess->ProposePatch( pc );
+		Check( prc.status == "conflict", "attached ProposePatch honours the stale-base conflict" );
+		Check( !prc.applied, "conflicting attached ProposePatch did not apply" );
+
+		// Detach -> the direct-Job path resumes.  We must STOP the controller
+		// first (the direct path is not render-thread-safe by itself; detach
+		// models "the GUI closed").  A direct propose then still applies.
+		c.Stop();
+		sess->AttachController( nullptr );
+		Check( !sess->HasController(), "session detaches (direct-Job mode restored)" );
+		Agent::AgentSetPatch p2 = p;
+		p2.value = "2.5";
+		Agent::AgentPatchResult pr2 = sess->ProposePatch( p2 );
+		Check( pr2.applied, "detached ProposePatch applies via the direct-Job path" );
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+int main()
+{
+	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
+
+	TestTwoClientConcurrency();
+	TestRebindAfterD2();
+	TestConflictCrossPath();
+	TestRenderParkedDuringEdit();
+	TestAgentSessionLiveMode();
+
+	std::cout << "\n=== Results: " << passCount << " passed, "
+	          << failCount << " failed ===" << std::endl;
+	return failCount == 0 ? 0 : 1;
+}

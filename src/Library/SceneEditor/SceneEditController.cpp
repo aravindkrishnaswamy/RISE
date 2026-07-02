@@ -2748,6 +2748,175 @@ void SceneEditController::PickAt( const Point2& px )
 
 // Render thread -------------------------------------------------------
 
+// Cancel-and-park the render thread.  Caller holds mMutex via `lk`.  This
+// is the single source of truth for the "trip cancel + wait for the pass to
+// drain" idiom that every scene-mutating edit path inlines; keeping it in
+// one place means a new caller (the Facet-5 agent commit) cannot drift from
+// the established park semantics (the same acquire-order predicate the
+// SetProperty branches use).
+void SceneEditController::CancelAndParkRender_( std::unique_lock<std::mutex>& lk )
+{
+	if( mRendering.load( std::memory_order_acquire ) )
+	{
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+}
+
+// Facet 5 slice 1b: the render-thread-SAFE agent commit.  See the header for
+// the contract.  The ENTIRE ApplyCstParamEdit + rebind + version-bump runs
+// under mMutex while the render thread is parked, so no reader can observe
+// the D2 transient {0,0} head-version or a half-rebuilt Scene.  Callable from
+// any thread.
+SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
+	const String& entityName,
+	const String& entityKind,
+	const String& param,
+	const String& value,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	AgentCommitResult r;
+
+	// Pre-flight refusals that need no lock (a Job with no retained Document
+	// can never change, and an empty field can never resolve).  Report the
+	// current head so an optimistic-concurrency caller learns where it is.
+	// GetCstHeadVersion is a trivial by-value POD read; it may momentarily
+	// race the render thread only during a D2 (which does not happen without
+	// a prior successful edit through THIS parked path), and these guards do
+	// not mutate, so an unlocked read here is benign.
+	if( !mJob.HasRetainedCstDocument() )
+	{
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		r.message = String( "no retained CST Document -- agent commit needs a CST-loaded head" );
+		return r;
+	}
+	if( entityName.size() <= 1 || param.size() <= 1 || value.size() <= 1 )
+	{
+		// RString::size() counts the trailing NUL, so a non-empty string has
+		// size >= 2; size <= 1 is the empty case.
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		r.message = String( "target, param, and value must all be non-empty" );
+		return r;
+	}
+
+	// Cancel-and-park the render thread, then hold mMutex across the WHOLE
+	// commit -- the conflict pre-check, ApplyCstParamEdit (which on a D2
+	// ClearAll's + rebuilds the Scene and transiently zeroes the head-version
+	// to {0,0}), the RebindEditorToJob, and the post-commit head read -- so
+	// no render-thread reader observes the {0,0} transient or a half-rebuilt
+	// Scene (the slice-1a reviewer's non-negotiable).
+	std::unique_lock<std::mutex> lk( mMutex );
+	CancelAndParkRender_( lk );
+
+	// Optimistic-concurrency CONFLICT precondition (slice 1a), checked here
+	// UNDER THE LOCK (not before parking) so the current head we compare
+	// against is stable -- a concurrent edit through another parked path
+	// cannot move it between our read and the ApplyCstParamEdit below.  A
+	// stale patch must NEVER touch the Document.
+	if( baseVersionOrNull )
+	{
+		const RISE::Cst::CstHeadVersion cur = mJob.GetCstHeadVersion();
+		if( *baseVersionOrNull != cur )
+		{
+			r.applied     = false;
+			r.conflict    = true;
+			r.rawCode     = 0;
+			r.status      = String( "conflict" );
+			r.headVersion = cur;
+			char buf[160];
+			std::snprintf( buf, sizeof( buf ),
+				"stale baseHeadVersion: head moved to revision %llu (re-read and re-propose)",
+				static_cast<unsigned long long>( cur.revision ) );
+			r.message = String( buf );
+			return r;   // lk unlocks; render thread was parked but no edit landed -- no kick needed
+		}
+	}
+
+	// The SAME edit the GUI property panel and the Agent surface make, but
+	// routed directly (we already hold the park the GUI path takes via
+	// mEditor.Apply).  `occ = 0` = the first occurrence of the param on the
+	// entity.  ApplyCstParamEdit re-derives the live Job itself (incremental
+	// or D2 full re-derive) and bumps the head revision on success.
+	const int code = mJob.ApplyCstParamEdit(
+		entityName.c_str(),
+		entityKind.size() <= 1 ? nullptr : entityKind.c_str(),
+		param.c_str(),
+		/*occ=*/0,
+		value.c_str() );
+
+	// A D2 full re-derive (codes 2 AND 3) ClearAll'd + rebuilt the Scene +
+	// managers -- the editor's cached scene/manager pointers now dangle into
+	// freed storage.  Re-point them (the SAME rebind the variant-switch path
+	// relies on) BEFORE releasing the lock, so the next edit / gizmo / undo
+	// through mEditor does not use-after-free.  We call ApplyCstParamEdit
+	// DIRECTLY (not through mEditor.Apply), so mEditor does NOT self-rebind
+	// -- the controller must do it here.  Both 2 and 3 replaced the managers.
+	if( code == 2 || code == 3 )
+	{
+		RebindEditorToJob();
+	}
+
+	r.rawCode = code;
+	switch( code )
+	{
+		case 1:
+			r.applied = true;
+			r.status  = String( "applied" );
+			r.message = String( "applied incrementally (managers untouched)" );
+			break;
+		case 2:
+			r.applied = true;
+			r.status  = String( "applied" );
+			r.message = String( "applied via a full re-derive (Scene + managers were replaced)" );
+			break;
+		case 3:
+			// Replaced-but-diagnosed: the source contract treats 3 as a
+			// failure, so applied is FALSE -- but the Document WAS mutated and
+			// the managers WERE replaced (we rebound above), so the message
+			// says so plainly (a caller must not assume nothing changed).
+			r.applied = false;
+			r.status  = String( "diagnosed" );
+			r.message = String( "edit NOT a clean success: the Document was mutated and the live managers were "
+			                    "replaced, BUT the full re-derive emitted diagnostics (see log) -- do NOT treat as applied" );
+			break;
+		case 0:
+		default:
+			r.applied = false;
+			r.status  = String( "rejected" );
+			r.message = String( "edit rejected (entity/param not found or the edit would not derive) -- head unchanged" );
+			break;
+	}
+
+	// Post-commit head (revision bumped on a clean apply / diagnosed; the
+	// unchanged current head on a reject) -- read UNDER the lock so it is
+	// coherent with the (possibly just-rebuilt) Job.
+	r.headVersion = mJob.GetCstHeadVersion();
+
+	// On a clean apply, kick the render so the viewport reflects the edit --
+	// the SAME mEditPending + notify the GUI edit paths do.  A reject /
+	// diagnosed edit does not kick (nothing new to show on a reject; a
+	// diagnosed re-derive already rebuilt but is treated as a failure, and
+	// the managers were replaced so a fresh pass would still be valid -- but
+	// we mirror the Agent surface's "applied-only success" contract and only
+	// kick on a clean 1/2, matching the GUI's ok-gated notify).
+	if( r.applied )
+	{
+		mEditPending.store( true, std::memory_order_release );
+		lk.unlock();
+		mCV.notify_one();
+	}
+	// else: lk unlocks on scope exit; the render thread stays parked-then-idle
+	// (it will resume its prior wait; a rejected edit changed nothing).
+	return r;
+}
+
 void SceneEditController::KickRender()
 {
 	// Stamp the edit time first so the render loop sees a fresh

@@ -223,6 +223,70 @@ namespace RISE
 			SceneVariant = 9  ///< scene_variant overlays; picking one RE-DERIVES the scene with that variant active.
 		};
 
+		//! Facet 5 slice 1b: the structured result of a CONTROLLER-ROUTED
+		//! agent commit (ApplyAgentParamEdit).  Mirrors the Agent surface's
+		//! AgentPatchResult 1:1 (folding Job::ApplyCstParamEdit's 0/1/2/3
+		//! return the SAME way), but lives HERE so the SceneEditor library
+		//! layer does not depend on the Agent layer (the dependency runs
+		//! Agent -> SceneEditor, never the reverse).  AgentSession maps this
+		//! into its own AgentPatchResult when it routes ProposePatch through
+		//! an attached controller.
+		//!
+		//!   * rawCode 1/2 -> applied=true,  status="applied": the Document
+		//!            was mutated and the live Job re-derived CLEANLY
+		//!            (1 incremental / 2 full re-derive).  The only
+		//!            clean-success codes.
+		//!   * rawCode 3   -> applied=false, status="diagnosed": the Document
+		//!            WAS mutated and the managers WERE replaced, BUT the full
+		//!            re-derive emitted diagnostics -- the source contract
+		//!            treats 3 as a FAILURE, so applied is false.
+		//!   * rawCode 0   -> applied=false, status="rejected": edit refused;
+		//!            the head is byte-identical (nothing changed).  The
+		//!            pre-flight guards (no Document / empty field) map here.
+		//!   * conflict    -> applied=false, status="conflict", rawCode=0: a
+		//!            supplied baseVersion did NOT equal the Job's current
+		//!            head -- the patch was rejected WITHOUT mutating (a stale
+		//!            patch must never touch the Document); re-read and retry.
+		//! `headVersion` is the Job's head AFTER the call (post-commit on a
+		//! clean apply; the current/unchanged head otherwise).  `conflict` is
+		//! a convenience bool == (status == "conflict").
+		struct AgentCommitResult
+		{
+			bool                       applied = false;
+			bool                       conflict = false;
+			int                        rawCode = 0;      //!< 0 reject/conflict / 1 incremental / 2 D2 / 3 replaced-but-diagnosed
+			String                     status;           //!< "applied" / "rejected" / "diagnosed" / "conflict"
+			RISE::Cst::CstHeadVersion  headVersion;      //!< the head-version AFTER the call
+			String                     message;
+		};
+
+		//! Facet 5 slice 1b: route an agent param-value commit through the
+		//! render-thread-SAFE edit path.  This is the SAME (entity,param) edit
+		//! the Agent surface's ProposePatch makes -- Job::ApplyCstParamEdit --
+		//! but wrapped in the controller's cancel-and-park critical section so
+		//! it is safe against the live render thread, and it calls
+		//! RebindEditorToJob on a D2 full re-derive (codes 2/3) so the
+		//! editor's cached scene/manager pointers do not dangle.  Callable
+		//! from ANY thread (it takes mMutex + cancel-and-parks itself); the
+		//! whole ApplyCstParamEdit + rebind + version-bump runs UNDER mMutex
+		//! so no render-thread reader can observe the transient {0,0}
+		//! head-version (D2 ClearAll) or a half-rebuilt Scene.
+		//!
+		//! @param baseVersionOrNull  OPTIONAL optimistic-concurrency
+		//!        precondition (slice 1a).  When non-null and it does NOT
+		//!        equal the Job's current head, the commit is REJECTED with a
+		//!        CONFLICT (WITHOUT mutating) so a stale patch never clobbers a
+		//!        newer head.  Null -> unconditional (back-compat).
+		//!
+		//! Returns an AgentCommitResult; on a clean apply it sets
+		//! mEditPending + kicks the render so the viewport re-renders.
+		AgentCommitResult ApplyAgentParamEdit(
+			const String& entityName,
+			const String& entityKind,
+			const String& param,
+			const String& value,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
 		//! @param job                     borrowed; caller keeps alive.
 		//!                                Must be IJobPriv (which IJob
 		//!                                always is in practice — Job
@@ -788,6 +852,19 @@ namespace RISE
 	private:
 		void RenderLoop();
 		void KickRender();
+
+		//! Cancel-and-park the render thread: trip the rasterizer cancel
+		//! flag if a pass is in flight (bumping mCancelCount), then wait on
+		//! mCV until mRendering is false -- i.e. the in-flight pass has
+		//! drained and released the Scene.  The caller MUST already hold
+		//! mMutex via `lk` (this waits on it); on return the render thread
+		//! is parked and the caller may safely mutate the Scene / managers
+		//! before releasing the lock.  Factored out of the ~dozen inline
+		//! copies of this idiom (SetProperty branches, CloneActiveCamera,
+		//! the variant switch, Undo/Redo/Rollback) so a new caller (the
+		//! Facet-5 agent commit) reuses the SAME park logic rather than
+		//! risk a subtly-different re-implementation.
+		void CancelAndParkRender_( std::unique_lock<std::mutex>& lk );
 
 		//! Re-point mEditor at the Job's CURRENT scene + managers.  Called at construction AND after any
 		//! whole-scene re-derive (a scene_variant switch ClearAll's + recreates the Scene + managers); without

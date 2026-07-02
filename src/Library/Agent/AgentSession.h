@@ -41,6 +41,7 @@
 namespace RISE
 {
 	class IJobPriv;
+	class SceneEditController;   // Facet 5 slice 1b: LIVE mode routes ProposePatch through the controller's render-safe edit path (fwd-decl only -- no header dep)
 
 	namespace Agent
 	{
@@ -166,6 +167,26 @@ namespace RISE
 
 			~AgentSession();
 
+			//! Facet 5 slice 1b: attach a LIVE SceneEditController so
+			//! ProposePatch routes its set-param commit through the
+			//! controller's render-thread-SAFE edit path (cancel-and-park +
+			//! rebind-after-D2) instead of calling Job::ApplyCstParamEdit
+			//! DIRECTLY.  Attach this when the session shares a Job with a
+			//! running interactive editor (a live GUI), so an agent commit
+			//! cannot race the render thread or dangle the editor's cached
+			//! pointers on a D2 re-derive.  Pass `nullptr` to DETACH (revert
+			//! to the direct-Job path).  The controller is BORROWED -- the
+			//! caller keeps ownership and must outlive the session (or detach
+			//! first).  The controller's Job MUST be the SAME Job this session
+			//! wraps (the caller's responsibility; a live GUI builds both over
+			//! one Job).  When NOT attached (the default / headless slice-0
+			//! mode), ProposePatch is byte-for-byte its prior behaviour.
+			void AttachController( SceneEditController* controller );
+
+			//! True iff a live controller is attached (ProposePatch routes
+			//! through it).
+			bool HasController() const { return mController != nullptr; }
+
 			//! The canonical `.RISEscene` text of the head -- SerializeCst of
 			//! the retained CST Document.  Returns "" when the Job retains no
 			//! Document (a Job not loaded via the CST path); `HasDocument()`
@@ -257,6 +278,12 @@ namespace RISE
 
 			IJobPriv* mJob;    //!< the wrapped Job (owned iff mOwnsJob)
 			bool      mOwnsJob;
+
+			//! Facet 5 slice 1b: the attached LIVE controller (null = headless
+			//! direct-Job mode).  BORROWED (never released); the caller owns it.
+			//! When non-null, ProposePatch delegates to
+			//! SceneEditController::ApplyAgentParamEdit.
+			SceneEditController* mController = nullptr;
 
 			std::vector<unsigned char> mLastPng;   //!< cached PNG bytes of the last Render (for ReadImage)
 		};

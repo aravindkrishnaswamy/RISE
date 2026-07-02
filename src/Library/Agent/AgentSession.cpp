@@ -47,6 +47,7 @@
 #include "../Interfaces/IJob.h"
 #include "../Interfaces/IRasterizer.h"
 #include "../RISE_API.h"
+#include "../SceneEditor/SceneEditController.h"   // Facet 5 slice 1b: LIVE-mode routing through the render-safe edit path
 #include "../SceneEditor/ChunkDescriptorRegistry.h"
 #include "../Parsers/ChunkDescriptor.h"
 #include "../Parsers/IAsciiChunkParser.h"
@@ -322,6 +323,13 @@ namespace RISE
 			return std::unique_ptr<AgentSession>( new AgentSession( job, /*owns=*/false ) );
 		}
 
+		void AgentSession::AttachController( SceneEditController* controller )
+		{
+			// BORROWED: no addref/release -- the caller owns the controller and
+			// must outlive this session (or detach first).  Null detaches.
+			mController = controller;
+		}
+
 		bool AgentSession::HasDocument() const
 		{
 			return mJob && mJob->HasRetainedCstDocument();
@@ -485,6 +493,37 @@ namespace RISE
 		AgentPatchResult AgentSession::ProposePatch( const AgentSetPatch& patch )
 		{
 			AgentPatchResult r;
+
+			// Facet 5 slice 1b: LIVE mode.  When a controller is attached, the
+			// session shares a Job with a running interactive editor, so the
+			// commit MUST go through the controller's render-thread-SAFE edit
+			// path (cancel-and-park + rebind-after-D2) rather than calling
+			// Job::ApplyCstParamEdit directly (which would race the render
+			// thread and dangle the editor's cached pointers on a D2).  The
+			// controller does its OWN guards (no-Document / empty-field /
+			// conflict), so we delegate wholesale and map its AgentCommitResult
+			// 1:1 onto AgentPatchResult -- the mapping is identical to the
+			// direct-path switch below (same 0/1/2/3 folding, same conflict
+			// semantics).  When NOT attached (the default), fall through to the
+			// prior byte-for-byte direct-Job behaviour.
+			if( mController )
+			{
+				const RISE::Cst::CstHeadVersion* basePtr =
+					patch.hasBaseVersion ? &patch.baseVersion : nullptr;
+				const SceneEditController::AgentCommitResult cr =
+					mController->ApplyAgentParamEdit(
+						String( patch.target.c_str() ),
+						String( patch.kind.c_str() ),
+						String( patch.param.c_str() ),
+						String( patch.value.c_str() ),
+						basePtr );
+				r.applied     = cr.applied;
+				r.rawCode     = cr.rawCode;
+				r.status      = cr.status.c_str();
+				r.headVersion = cr.headVersion;
+				r.message     = cr.message.c_str();
+				return r;
+			}
 
 			// Guard: a Job not loaded via the CST path retains no Document, so
 			// there is nothing to edit -- reject clearly rather than silently.
