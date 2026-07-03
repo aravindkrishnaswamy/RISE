@@ -1203,6 +1203,20 @@ uniformcolor_painter
 	color				1.0 0.77 0.34
 }
 
+# Measured gold (Au) n,k -- Johnson & Christy 1972.  A true conductor keeps its
+# gold tint even on a blown highlight (blue reflectance ~0.38 stays low), so the
+# hands read brass instead of clipping to white like a schlick_f0 mirror does.
+scalar_painter
+{
+	name				Au_n
+	file				colors/conductors/Au.n
+}
+scalar_painter
+{
+	name				Au_k
+	file				colors/conductors/Au.k
+}
+
 uniformcolor_painter
 {
 	name				pnt_hand_gold
@@ -1221,11 +1235,13 @@ uniformcolor_painter
 ggx_material
 {
 	name				white_hands
-	rd				pnt_hand_body
-	rs				pnt_hand_gold
-	alphax				0.13
-	alphay				0.13
-	fresnel_mode			schlick_f0
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.06
+	alphay				0.06
+	fresnel_mode			conductor
+	ior				Au_n
+	extinction			Au_k
 }
 
 # Stamped gold dial furniture (anOrdain markings) as thin gold RELIEF geometry:
