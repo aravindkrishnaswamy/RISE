@@ -43,6 +43,7 @@
 #include "Rendering/PixelBasedRasterizerHelper.h"	// GetRayCaster() — reach the active rasterizer's caster for radiance_scale
 #include "Utilities/RString.h"
 #include "Utilities/RasterizerDefaults.h"
+#include "SceneEditor/ChunkDescriptorRegistry.h"   // F5 S2 round 2: insert positioning + rasterizer-class detection by ChunkCategory
 #include <stdio.h>
 #include <set>
 #include "Utilities/MediaPathLocator.h"
@@ -9662,6 +9663,25 @@ bool Job::RederiveCstWithVariant( const char* variantName )
 // enables a unique-in-kind resolve-by-position fallback (see DocFindByNameAnyRole).
 int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue )
 {
+	// The UNCHECKED fast path (no full-derivability gate) -- the GUI property-panel / gizmo route
+	// (SceneEditor::Apply and friends), where per-frame latency matters and the edit sources are
+	// value-only (they do not RETARGET references, so they cannot manufacture a forward reference).
+	return ApplyCstParamEditImpl_( entityName, entityKind, role, occ, newValue, /*requireFullDerivability*/ false );
+}
+
+// Model-B F5 slice S2 round 2 (P1-A root gate): the AGENT-originated variant.  Identical semantics
+// PLUS a full-derivability pre-commit gate: before the incremental fast path may commit, the edited
+// Document is dry-run through the FULL DeriveToJob (throwaway Job) -- an edit that would leave a head
+// that no longer derives in DOCUMENT ORDER (e.g. retargeting a consumer to an entity declared LATER:
+// the incremental path validates against the LIVE managers, where the entity exists, and would commit
+// a forward reference whose bytes fail to reload) is refused with code 0 and the head untouched.
+int Job::ApplyCstParamEditChecked( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue )
+{
+	return ApplyCstParamEditImpl_( entityName, entityKind, role, occ, newValue, /*requireFullDerivability*/ true );
+}
+
+int Job::ApplyCstParamEditImpl_( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue, bool requireFullDerivability )
+{
 	if( !pCstDocument || !entityName || !role || !newValue || !newValue[0] ) return 0;   // empty value rejected (defense)
 	// Cameras are the one editor-addressable kind that can be UNNAMED (the sole `pinhole_camera { ... }`), so
 	// allow the unique-in-kind resolve-by-position fallback for them; always-named kinds keep strict refuse.
@@ -9672,7 +9692,7 @@ int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, cons
 		return 0;
 	}
 	RISE::Cst::Document d1 = RISE::Cst::DocSetOrAddParamValue( *pCstDocument, id, role, occ, newValue );
-	return DeriveEditedCstDocument_( std::move( d1 ), id, entityName, role );
+	return DeriveEditedCstDocument_( std::move( d1 ), id, entityName, role, requireFullDerivability );
 }
 
 // P5 Slice 3 expansion: shared re-derive tail for an already-edited CST Document `d1` whose edit closure is
@@ -9693,11 +9713,38 @@ int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, cons
 // cached scene/manager pointers; SceneEditor self-rebinds, else the next access is a use-after-free);
 // 3 = same as 2 BUT the re-derive emitted diagnostics (managers still replaced -> caller MUST rebind, but the
 // edit FAILED -- treat as failure).  Should-not-happen: the dry-run already validated the identical derive.
-int Job::DeriveEditedCstDocument_( RISE::Cst::Document&& d1in, RISE::Cst::NodeId id, const char* entityName, const char* role )
+// `requireFullDerivability` (F5 S2 round 2, P1-A root gate -- default false): when set, the edited Document
+// is dry-run through the FULL DeriveToJob FIRST -- BEFORE the incremental fast path can mutate the live Job --
+// and the edit is refused (code 0, head + live scene untouched) if the whole document no longer derives in
+// document order.  The incremental path alone validates the closure against the LIVE managers, so without the
+// gate a reference retarget to an entity declared LATER in the document commits a FORWARD REFERENCE: live
+// looks fine, but the retained head's bytes fail to reload (save-time data loss) and every subsequent D2-class
+// verb is refused.  Cost: one extra throwaway derive per gated edit (~ms..24ms at 16k chunks) -- acceptable
+// for DISCRETE agent edits; the GUI panel/gizmo path keeps the ungated fast path.
+int Job::DeriveEditedCstDocument_( RISE::Cst::Document&& d1in, RISE::Cst::NodeId id, const char* entityName, const char* role, bool requireFullDerivability )
 {
 	RISE::Cst::Document d1 = std::move( d1in );
 	std::vector<RISE::Cst::NodeId> closure = RISE::Cst::DocEditClosure( d1, id );
 	if( closure.empty() ) return 0;   // id resolved but produced no closure (should not happen)
+
+	// P1-A root gate (agent edits only): full-derivability dry-run BEFORE the incremental attempt --
+	// DeriveToJobIncremental mutates the live Job on success, so the gate cannot run after it.  When the
+	// D2 fallback is taken below this validates twice (RederiveCstDocumentFull_ dry-runs again); redundant
+	// but harmless for a discrete agent edit.
+	if( requireFullDerivability ) {
+		char vbuf[256]; vbuf[0] = '\0';
+		const bool hasVar = GetActiveSceneVariant( vbuf, sizeof( vbuf ) );
+		const char* activeVariant = ( hasVar && vbuf[0] ) ? vbuf : "none";
+		Job staging;
+		std::vector<std::string> gdiags;
+		RISE::Cst::DeriveToJob( d1, staging, &gdiags, nullptr, activeVariant );
+		if( !gdiags.empty() ) {
+			for( size_t i = 0; i < gdiags.size() && i < 8u; ++i )
+				GlobalLog()->PrintEx( eLog_Warning, "Job::DeriveEditedCstDocument_:: agent gate: `%s`.`%s` would leave a head that no longer derives in document order; edit refused: %s",
+				                      entityName ? entityName : "?", role ? role : "?", gdiags[i].c_str() );
+			return 0;   // head + live scene untouched (d1 is a local copy, simply dropped)
+		}
+	}
 
 	// Fast path: incremental re-derive of just the closure.
 	std::vector<std::string> idiags;
@@ -9720,7 +9767,11 @@ int Job::DeriveEditedCstDocument_( RISE::Cst::Document&& d1in, RISE::Cst::NodeId
 // Job) so a genuinely invalid edit leaves the live scene intact; then the real ClearAll + full re-derive,
 // FORCING the currently-active variant so a variant switch the user made survives the edit, and PRESERVING
 // the active camera/rasterizer/animation + the cached viewport screen-fit across the rebuild.
-int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag )
+// `restoreActiveRasterizer` (F5 S2 round 2, P1-B -- default true): ApplyCstInsertChunk passes FALSE when the
+// inserted chunk IS a rasterizer, so the document-derived activation (last rasterizer chunk in document
+// order = the appended insert) stands and the live active integrator matches what a save+reload would
+// activate.  Restoring the pre-insert rasterizer there would silently diverge live from reload.
+int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag, bool restoreActiveRasterizer )
 {
 	RISE::Cst::Document d1 = std::move( editedDoc );
 	char vbuf[256]; vbuf[0] = '\0';
@@ -9760,7 +9811,9 @@ int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* 
 	// Restore the activations the full re-derive reset to document defaults (best-effort; before the framestore
 	// push so it targets the restored rasterizer).
 	if( !keepCamera.empty()     ) SetActiveCamera( keepCamera.c_str() );
-	if( !keepRasterizer.empty() ) SetActiveRasterizer( keepRasterizer.c_str() );
+	// P1-B: skipped for a rasterizer INSERT (see the header comment) -- the re-derive just activated the
+	// document's last rasterizer chunk (the inserted one), which is exactly what a save+reload would do.
+	if( !keepRasterizer.empty() && restoreActiveRasterizer ) SetActiveRasterizer( keepRasterizer.c_str() );
 	if( keepAnim[0]             ) SetActiveAnimation( keepAnim );
 	// P5 (Model-B): the full re-derive rebuilt the LIVE film at the Document's AUTHORED dims -- re-apply the cached
 	// viewport screen-fit so an edit-triggered D2 doesn't jump the preview from screen-fit to full-res.  BEFORE the
@@ -10081,11 +10134,14 @@ namespace {
 // REALIZE it in the live scene via the shared D2 tail (RederiveCstDocumentFull_: dry-run first, so a failed
 // derive leaves the retained Document AND the live scene byte-identical -- the edited Document is a local
 // COPY that is simply dropped).  Contract on the IJob virtual; -1 = malformed chunk text, -2 = duplicate
-// (kind,name), 0 = would-not-derive (outDiag = first dry-run diagnostic), 2/3 = replaced (caller rebinds).
+// (kind,name) / exact (kind,name,variant), 0 = would-not-derive (outDiag = first dry-run diagnostic),
+// 2/3 = replaced (caller rebinds).
 // The Document splice reuses ApplyCstInsertCameraChunk's symmetric anti-glue idiom UNCONDITIONALLY:
-// [leadSep "\n"][chunk][trailSep "\n"] appended at DocItemCount -- the trivia-preserving DocEraseChunkTidy
-// used by ApplyCstRemoveChunk collapses at most the chunk's OWN trailing separator on a later remove, so an
-// insert->remove cycle costs one residual blank line and never corrupts a neighbour's trivia.
+// [leadSep "\n"][chunk][trailSep "\n"], POSITIONED by declaration tier (round-2 P1-A: declaration-class
+// chunks land before their potential consumers; everything else appends at DocItemCount -- see the
+// insert-position block below) -- the trivia-preserving DocEraseChunkTidy used by ApplyCstRemoveChunk
+// collapses at most the chunk's OWN trailing separator on a later remove, so an insert->remove cycle costs
+// one residual blank line and never corrupts a neighbour's trivia.
 int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned int keywordMax,
                               char* outName, unsigned int nameMax,
                               char* outDiag, unsigned int diagMax )
@@ -10122,6 +10178,21 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 			strayContent = true;       // stray token (header / directive / bare word)
 		}
 	}
+	// Echo the parsed identity EARLY -- ABOVE every refusal below, including the malformed-text and
+	// unclosed-chunk ones (round-2 P3) -- so ANY refusal identifies what was attempted, matching the
+	// IJob contract ("filled as soon as the chunk parses").  The name comes off the CANONICAL
+	// "keyword/name" addressing key (Cst::ChunkNamePath -- the same construction the byName index and
+	// DocFindByName use), NOT a local re-derivation, so the collision key below and the echoed name can
+	// never disagree with the index.  (When the text held MULTIPLE chunks, the FIRST one is echoed.)
+	std::string keyword, namePath, name;
+	if( chunkItem ) {
+		keyword  = chunkItem->role;
+		namePath = RISE::Cst::ChunkNamePath( chunkItem );
+		name     = namePath.empty() ? std::string() : namePath.substr( keyword.size() + 1 );
+		S2CopyOut( outKeyword, keywordMax, keyword );
+		S2CopyOut( outName,    nameMax,    name );
+	}
+
 	if( chunkCount != 1 || strayContent || !chunkItem ) {
 		char why[128];
 		if( chunkCount == 0 )      std::snprintf( why, sizeof( why ), "no chunk found in the text" );
@@ -10154,20 +10225,14 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 		}
 	}
 
-	// Echo the parsed identity EARLY so even a downstream refusal identifies what was attempted.
-	// The name comes off the CANONICAL "keyword/name" addressing key (Cst::ChunkNamePath -- the same
-	// construction the byName index and DocFindByName use), NOT a local re-derivation, so the collision
-	// key below and the echoed name can never disagree with the index.
-	const std::string keyword  = chunkItem->role;
-	const std::string namePath = RISE::Cst::ChunkNamePath( chunkItem );
-	const std::string name     = namePath.empty() ? std::string() : namePath.substr( keyword.size() + 1 );
-	S2CopyOut( outKeyword, keywordMax, keyword );
-	S2CopyOut( outName,    nameMax,    name );
-
 	// Early duplicate refusal -- a clean message for the obvious collision, BEFORE paying the dry-run
-	// derive.  A chunk carrying a `variant` param is exempt: a variant overlay legitimately shares its
-	// base chunk's (kind,name) (the derive layer disambiguates by the active variant).
-	if( S2ChunkParamValue( chunkItem, "variant" ).empty() ) {
+	// derive.  A chunk carrying a `variant` param is exempt from the (kind,name) check -- a variant
+	// overlay legitimately shares its base chunk's (kind,name) (the derive layer disambiguates by the
+	// active variant) -- but an EXACT (kind,name,variant) duplicate is still refused (round-2 P3: the
+	// old blanket exemption let the identical overlay insert repeatedly, each copy unremovable through
+	// the bare-name-addressed remove_chunk).
+	const std::string variantTag = S2ChunkParamValue( chunkItem, "variant" );
+	if( variantTag.empty() ) {
 		if( !name.empty() ) {
 			// NAMED: the (kind,name) addressing key must be fresh.
 			int occ = 0;
@@ -10184,8 +10249,11 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 			// one-way door: the derive is last-wins (the duplicate silently masks the original), a save
 			// persists BOTH, and remove_chunk is bare-name-addressed so the agent could never remove
 			// the duplicate it just inserted.  Refuse it with a clean message.  A DIFFERENT keyword is
-			// still allowed (e.g. inserting a bdpt rasterizer alongside a pathtracing one is the
-			// legitimate way to switch integrators).  O(N) top-level scan -- fine for a discrete verb.
+			// still allowed -- inserting e.g. a bdpt rasterizer alongside a pathtracing one appends it
+			// at the document end AND makes it the ACTIVE rasterizer (round-2 P1-B: the activation
+			// restore in the D2 tail is skipped for a rasterizer insert, so live matches what a
+			// save+reload's last-wins derive would activate).  O(N) top-level scan -- fine for a
+			// discrete verb.
 			const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
 			for( int i = 0; i < nHead; ++i ) {
 				const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *pCstDocument, RISE::Cst::DocNodeIdAt( *pCstDocument, i ) );
@@ -10195,6 +10263,22 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 					GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: an unnamed `%s` chunk already exists; insert rejected", keyword.c_str() );
 					return -2;
 				}
+			}
+		}
+	}
+	else {
+		// VARIANT overlay: refuse only the EXACT (kind,name,variant) duplicate -- a different-variant
+		// overlay of the same base stays allowed.  O(N) top-level scan, same cost class as the unnamed
+		// singleton check above.
+		const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
+		for( int i = 0; i < nHead; ++i ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *pCstDocument, RISE::Cst::DocNodeIdAt( *pCstDocument, i ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == keyword &&
+			    RISE::Cst::ChunkNamePath( it ) == namePath &&
+			    S2ChunkParamValue( it, "variant" ) == variantTag ) {
+				S2CopyOut( outDiag, diagMax, namePath + " with variant `" + variantTag + "`" );
+				GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: a `%s` named `%s` with variant `%s` already exists; insert rejected", keyword.c_str(), name.c_str(), variantTag.c_str() );
+				return -2;
 			}
 		}
 	}
@@ -10213,16 +10297,84 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: could not build the inter-chunk separators; insert rejected" );
 		return 0;
 	}
-	RISE::Cst::Document d1 = *pCstDocument;
-	const int at = RISE::Cst::DocItemCount( d1 );
-	d1 = RISE::Cst::DocInsertItem( d1, at,     leadItem );
-	d1 = RISE::Cst::DocInsertItem( d1, at + 1, chunkItem );
-	d1 = RISE::Cst::DocInsertItem( d1, at + 2, sepItem );
+	// INSERT POSITION (round-2 P1-A ergonomics; the full-derivability dry-run below stays the
+	// correctness guarantee).  Scenes declare before use, so DECLARATION-class chunks are POSITIONED
+	// ahead of their potential consumers instead of blindly appended -- that is what makes the taught
+	// rename recipe (insert renamed chunk -> retarget consumers -> remove the old one) actually derive
+	// in document order.  Two tiers, classified by the descriptor registry's ChunkCategory:
+	//   tier 0 (Painter / Function)  -> before the first tier-1 or tier-2 chunk (materials, geometry,
+	//                                   shaders, ... objects, lights all may consume painters/functions);
+	//   tier 1 (Material / Geometry / Modifier / Medium / Shader / ShaderOp)
+	//                                -> before the first tier-2 chunk (objects/lights);
+	//   everything else (objects, lights, cameras, film, RASTERIZERS -- which must stay LAST-WINS so an
+	//   inserted one becomes active, outputs, photon settings, animations, variants, unknown keywords)
+	//                                -> appended at the document END (the pre-round-2 behaviour).
+	// Declarations may legitimately be INTERLEAVED with consumers in an authored file, so a positioned
+	// insert can still fail the dry-run (e.g. a new blend painter referencing a painter declared after
+	// the insertion point); in that case FALL BACK to append-at-end and dry-run once more -- a NEW chunk
+	// has no consumers yet, so append-at-end derives whenever its own references resolve at all.
+	const ChunkDescriptor* insDesc = DescriptorForKeyword( String( keyword.c_str() ) );
+	auto categoryTier = []( const ChunkDescriptor* d ) -> int {
+		if( !d ) return -1;
+		switch( d->category ) {
+			case ChunkCategory::Painter:
+			case ChunkCategory::Function: return 0;
+			case ChunkCategory::Material:
+			case ChunkCategory::Geometry:
+			case ChunkCategory::Modifier:
+			case ChunkCategory::Medium:
+			case ChunkCategory::Shader:
+			case ChunkCategory::ShaderOp: return 1;
+			case ChunkCategory::Object:
+			case ChunkCategory::Light:    return 2;
+			default:                      return -1;   // append-at-end class
+		}
+	};
+	const int insertTier = categoryTier( insDesc );
+	const int endAt = RISE::Cst::DocItemCount( *pCstDocument );
+	int at = endAt;
+	if( insertTier == 0 || insertTier == 1 ) {
+		for( int i = 0; i < endAt; ++i ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *pCstDocument, RISE::Cst::DocNodeIdAt( *pCstDocument, i ) );
+			if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+			const int t = categoryTier( DescriptorForKeyword( String( it->role.c_str() ) ) );
+			if( t > insertTier ) { at = i; break; }
+		}
+	}
+
+	// P1-B: a rasterizer insert must NOT have the pre-insert active rasterizer restored over it after
+	// the full re-derive -- the derive's last-wins activation (the appended insert) is what a
+	// save+reload would activate, and live must match reload.  `light_rr_threshold` shares
+	// ChunkCategory::Rasterizer but is a tuning directive, not a rasterizer -- hence the keyword
+	// suffix check on top of the category.
+	const bool isRasterizerInsert =
+		insDesc && insDesc->category == ChunkCategory::Rasterizer &&
+		keyword.size() > 11 && keyword.compare( keyword.size() - 11, 11, "_rasterizer" ) == 0;
 
 	char ctx[300];
 	std::snprintf( ctx, sizeof( ctx ), "insert_chunk `%s` `%s`", keyword.c_str(), name.empty() ? "(unnamed)" : name.c_str() );
+
+	{
+		RISE::Cst::Document d1 = *pCstDocument;
+		d1 = RISE::Cst::DocInsertItem( d1, at,     leadItem );
+		d1 = RISE::Cst::DocInsertItem( d1, at + 1, chunkItem );
+		d1 = RISE::Cst::DocInsertItem( d1, at + 2, sepItem );
+		std::string firstDiag;
+		const int code = RederiveCstDocumentFull_( std::move( d1 ), ctx, &firstDiag, /*restoreActiveRasterizer*/ !isRasterizerInsert );
+		if( code != 0 || at == endAt ) {
+			if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+			return code;
+		}
+	}
+
+	// Positioned dry-run failed -- retry once appended at the END (the diag reported on a double
+	// failure is the end-position one, matching the pre-round-2 semantics).
+	RISE::Cst::Document d2 = *pCstDocument;
+	d2 = RISE::Cst::DocInsertItem( d2, endAt,     leadItem );
+	d2 = RISE::Cst::DocInsertItem( d2, endAt + 1, chunkItem );
+	d2 = RISE::Cst::DocInsertItem( d2, endAt + 2, sepItem );
 	std::string firstDiag;
-	const int code = RederiveCstDocumentFull_( std::move( d1 ), ctx, &firstDiag );
+	const int code = RederiveCstDocumentFull_( std::move( d2 ), ctx, &firstDiag, /*restoreActiveRasterizer*/ !isRasterizerInsert );
 	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
 	return code;
 }
@@ -10249,6 +10401,14 @@ int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
 	int occ = 0;
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, target, &occ, kind ? kind : "", uniqueFallback );
 	if( id == 0 ) {
+		if( occ > 1 ) {
+			// Round-2 P3: carry the match count so the caller's ambiguity message can say how many
+			// chunks matched (the folds phrase "pass kind" vs "pass a more specific kind" on whether
+			// the caller already narrowed).
+			char d[160];
+			std::snprintf( d, sizeof( d ), "%d chunks named `%s` match", occ, target );
+			S2CopyOut( outDiag, diagMax, d );
+		}
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: `%s` %s in the CST Document; remove rejected",
 		                      target, ( occ > 1 ) ? "is ambiguous" : "not found" );
 		return ( occ > 1 ) ? -2 : -1;

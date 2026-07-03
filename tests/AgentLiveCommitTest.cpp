@@ -173,8 +173,10 @@ static double LumR( Job& j )
 // result to 3.  This drives the EXACT decoupling under test -- the live Scene was
 // mutated (managers replaced) yet the code reports FAILURE -- through the real
 // controller/editor code paths with a real replaced Scene.  Only ApplyCstParamEdit
-// is overridden (both edit layers under test -- agent ApplyAgentParamEdit and GUI
-// SetProperty(Material) -- route through it).  Requires a VARIANT scene so the
+// is overridden per edit layer -- the GUI layer (SetProperty(Material)) routes
+// through ApplyCstParamEdit, while the agent layer (ApplyAgentParamEdit) routes
+// through the round-2 gated ApplyCstParamEditChecked, so BOTH virtuals are
+// overridden with the same 2 -> 3 rewrite.  Requires a VARIANT scene so the
 // edit takes the D2 path (base returns 2 -> we rewrite to 3); on a base scene the
 // incremental code 1 is left untouched.
 //////////////////////////////////////////////////////////////////////
@@ -189,6 +191,14 @@ public:
 		// Only rewrite a clean D2 replace (2) into a diagnosed replace (3): the Scene + managers
 		// WERE really replaced by the base call, so the "rebind + re-render but report failure"
 		// contract is exercised against a genuinely-replaced live Scene.
+		if( mForceCodeThree && base == 2 ) return 3;
+		return base;
+	}
+	int ApplyCstParamEditChecked( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue ) override
+	{
+		// The agent layer's route (round-2 P1-A: SceneEditController::ApplyAgentParamEdit and the
+		// headless ProposePatch call the gated variant) -- same 2 -> 3 rewrite.
+		const int base = Job::ApplyCstParamEditChecked( entityName, entityKind, role, occ, newValue );
 		if( mForceCodeThree && base == 2 ) return 3;
 		return base;
 	}

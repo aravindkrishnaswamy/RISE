@@ -278,8 +278,11 @@ namespace RISE
 			// boolean channel BEFORE the category dispatch regardless of
 			// kind -- the boolean set is unconditional, so the mark
 			// always flips HasAnyDirty() by construction (data-loss
-			// guard; the sole caller today pre-rejects empty names, but a
-			// future 1c caller must not be able to re-open the hole).
+			// guard).  Empty names are a LIVE case, not just defence:
+			// the agent chunk-CRUD path (SceneEditController::
+			// ApplyAgentChunkCrud_) legitimately passes an empty name for
+			// an UNNAMED inserted chunk (film / rasterizer / camera-class),
+			// and any future caller must not re-open the hole either.
 			if( name.empty() ) {
 				mDirtyTracker.MarkCstHeadDirty();
 			} else if( kind == "standard_object" ) {

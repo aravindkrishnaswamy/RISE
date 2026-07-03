@@ -2819,6 +2819,14 @@ namespace RISE
 		bool HasRetainedCstDocument() const { return pCstDocument != nullptr; }
 		int ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue );
 
+		//! Model-B F5 slice S2 round 2 (P1-A root gate): ApplyCstParamEdit PLUS a full-derivability
+		//! pre-commit dry-run for AGENT-originated edits -- same signature and 0/1/2/3 contract, but
+		//! additionally returns 0 (head + live scene untouched) when the edited Document would no longer
+		//! derive in DOCUMENT ORDER (e.g. a reference retarget to an entity declared later -- a forward
+		//! reference the incremental fast path's live-manager validation cannot see).  The GUI panel /
+		//! gizmo path keeps the ungated ApplyCstParamEdit.
+		int ApplyCstParamEditChecked( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue );
+
 		//! P5 Slice 3 expansion (object transform): commit an object's NET world transform to the retained CST as
 		//! the authoritative `matrix` param (16 col-major doubles), stripping the dead component params.  Same
 		//! 0/1/2/3 contract as ApplyCstParamEdit (2/3 => Scene+managers REPLACED, caller MUST rebind).
@@ -2873,7 +2881,8 @@ namespace RISE
 		//! narrowing, same rules as ApplyCstParamEdit) via the TRIVIA-PRESERVING Cst::DocEraseChunkTidy, then
 		//! drop the entity from the live scene via a full re-derive (dry-run-guarded -- a still-referenced
 		//! target refuses cleanly).  Contract + out-params documented on the IJob virtual.  Returns 2/3
-		//! (replaced; rebind) / 0 (would-not-derive) / -1 (not found) / -2 (ambiguous).  Never 1.
+		//! (replaced; rebind) / 0 (would-not-derive) / -1 (not found / resolved to a DIFFERENT kind than
+		//! requested / no top-level index -- outDiag + log disambiguate) / -2 (ambiguous).  Never 1.
 		int ApplyCstRemoveChunk( const char* target, const char* kind,
 		                         char* outKeyword, unsigned int keywordMax,
 		                         char* outDiag, unsigned int diagMax );
@@ -3039,7 +3048,13 @@ namespace RISE
 		//! P5 Slice 3 expansion: shared incremental + D2 re-derive tail for an already-edited CST Document
 		//! (closure anchored at `closureAnchorId`).  Activation-preserving D2 fallback.  Returns the 0/1/2/3
 		//! contract.  `entityName`/`role` are diagnostic-only.  Used by ApplyCstParamEdit + ApplyCstObjectMatrixEdit.
-		int DeriveEditedCstDocument_( RISE::Cst::Document&& editedDoc, RISE::Cst::NodeId closureAnchorId, const char* entityName, const char* role );
+		//! `requireFullDerivability` (F5 S2 round 2, P1-A root gate): when true, the edited Document is dry-run
+		//! through the FULL DeriveToJob BEFORE the incremental fast path may commit -- an edit that would leave
+		//! a head that no longer derives in document order is refused (code 0, head + live scene untouched).
+		int DeriveEditedCstDocument_( RISE::Cst::Document&& editedDoc, RISE::Cst::NodeId closureAnchorId, const char* entityName, const char* role, bool requireFullDerivability = false );
+		//! Shared body of ApplyCstParamEdit (ungated -- GUI panel/gizmo route) and ApplyCstParamEditChecked
+		//! (agent route -- full-derivability gate on).
+		int ApplyCstParamEditImpl_( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue, bool requireFullDerivability );
 		//! Model-B F5 slice S2: the SHARED D2 tail factored out of DeriveEditedCstDocument_ -- validate-before-
 		//! destroy dry-run into a throwaway Job, then the real ClearAll + full re-derive of `editedDoc`, forcing
 		//! the active variant and PRESERVING the active camera/rasterizer/animation + the cached viewport fit.
@@ -3048,7 +3063,9 @@ namespace RISE
 		//! AND retained Document byte-identical -- the caller's edited copy is simply dropped) / 2 = replaced +
 		//! clean / 3 = replaced-but-diagnosed.  Used by DeriveEditedCstDocument_'s D2 fallback AND the S2 chunk
 		//! insert/remove (which are ALWAYS D2-class: a new/removed entity cannot re-derive incrementally).
-		int RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag );
+		//! `restoreActiveRasterizer` (F5 S2 round 2, P1-B): ApplyCstInsertChunk passes false when the inserted
+		//! chunk IS a rasterizer so the derive's last-wins activation (the insert) stands -- live matches reload.
+		int RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag, bool restoreActiveRasterizer = true );
 		//! Facet 5 slice 1a: bump the retained CST head's revision (leaving uuid), called at EVERY site that
 		//! successfully mutates the retained pCstDocument content.  The invariant: revision changes IFF the
 		//! retained Document content changed -- so a NO-CHANGE code path (a rejected edit) must NOT call this.

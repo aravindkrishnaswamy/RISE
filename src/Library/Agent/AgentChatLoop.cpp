@@ -42,19 +42,27 @@ namespace RISE
 				"visually before declaring it done.\n"
 				"\n"
 				// CAPABILITY SCOPE (Model-B F5 slice S2: insert_chunk /
-				// remove_chunk shipped -- entity add/remove is real now).
+				// remove_chunk shipped -- entity add/remove is real now;
+				// round 2: declaration positioning + the full-derivability
+				// gate make the rename recipe safe, and the unnamed one-way
+				// door is disclosed).
 				"You can change PARAMETERS of existing entities via propose_patch, "
 				"ADD a new entity with insert_chunk (exactly ONE complete "
-				"`keyword { ... }` chunk per call, braces on their own lines; an "
-				"entity must be declared EARLIER in the document than its consumer, "
-				"so insert painters/materials/geometry before the object that "
-				"references them), and DELETE an entity with remove_chunk (refused "
+				"`keyword { ... }` chunk per call, braces on their own lines; "
+				"declaration chunks -- painters, materials, geometry, shaders, "
+				"media -- are positioned before the objects that consume them "
+				"automatically), and DELETE an entity with remove_chunk (refused "
 				"while another chunk still references the target -- retarget or "
-				"remove the consumers first). Honest limits: whole-chunk granularity "
-				"only -- no rename (insert the renamed chunk, retarget consumers, "
-				"remove the old one) and no reordering. For a BIG addition, compose "
-				"the full candidate document and validate it FIRST, then insert "
-				"chunk by chunk.\n"
+				"remove the consumers first). Any edit that would leave the "
+				"document unable to derive in order is refused cleanly with the "
+				"head unchanged. Honest limits: whole-chunk granularity only -- "
+				"no rename verb (the safe recipe: insert_chunk the renamed "
+				"entity, retarget its consumers via propose_patch, then "
+				"remove_chunk the old one), no reordering, and unnamed chunks "
+				"(film, rasterizers, an unnamed camera) cannot be removed once "
+				"inserted -- insert them deliberately. For a BIG addition, "
+				"compose the full candidate document and validate it FIRST, then "
+				"insert chunk by chunk.\n"
 				"\n"
 				"Keep responses concise. After acting, report plainly what changed "
 				"(entity, parameter, old vs new value when known) and what you "

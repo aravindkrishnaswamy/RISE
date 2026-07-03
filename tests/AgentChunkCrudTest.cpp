@@ -392,8 +392,14 @@ static void TestRemove()
 	Check( rmRef.message.find( "would not derive" ) != std::string::npos &&
 	       rmRef.message.find( "REFERENCED" ) != std::string::npos,
 	       "the refusal explains the likely-still-referenced cause" );
-	Check( !rmRef.message.empty() && rmRef.message.find( ": " ) != std::string::npos,
-	       "the refusal carries the dry-run diagnostic detail" );
+	// The dry-run diagnostic DETAIL must ride along (round-2 P3: match a
+	// diagnostic-specific substring, not the tautological ": " separator --
+	// the fold's own prefix contains one).  The consumer's apply failure
+	// names the failing chunk keyword ("standard_object: apply failed
+	// (e.g. unresolved reference); see log").
+	Check( rmRef.message.find( "apply failed" ) != std::string::npos ||
+	       rmRef.message.find( "unresolved reference" ) != std::string::npos,
+	       "the refusal carries the dry-run diagnostic detail (apply-failed / unresolved-reference)" );
 	Check( sess->ReadDocument() == headBefore && sess->HeadVersion() == vBefore,
 	       "refused remove left the head byte-identical" );
 	Check( pJob->GetMaterials()->GetItem( "mat_diffuse" ) != nullptr,
@@ -898,6 +904,298 @@ static void TestLiveDispatcherChunkCrud()
 	std::remove( tmp.c_str() );
 }
 
+//----------------------------------------------------------------------
+// G1: the AGENT full-derivability gate (review round 2 P1-A root gate).
+// An agent param edit that would leave the head unable to derive in
+// DOCUMENT ORDER (a forward reference: consumer chunk before the
+// declaration it names) must be REFUSED with the head untouched -- the
+// incremental fast path validates against the LIVE managers (where the
+// entity exists), so without the gate it commits a head whose bytes no
+// longer reload (silent save-time data loss).
+//----------------------------------------------------------------------
+static void TestAgentEditDerivabilityGate()
+{
+	std::printf( "G1: agent full-derivability gate (forward-reference retarget refused; head reloads)...\n" );
+
+	// (0) PERMANENT RED-PROVE of the wedge SHAPE on the UNCHECKED path
+	// (Job::ApplyCstParamEdit -- the GUI-internal fast path, intentionally
+	// untouched by the gate): retargeting mat_diffuse's reflectance to
+	// pnt_emit -- a painter declared LATER in the document -- commits
+	// incrementally (the live managers have the painter), yet the
+	// committed head FAILS to reload (DeriveToJob applies in document
+	// order).  This is exactly the state the agent gate exists to refuse.
+	{
+		const std::string tmp = TempPath( "agentcrud_g1_wedge.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "wedge fixture loads" );
+		if( !pJob ) return;
+		const int code = pJob->ApplyCstParamEdit( "mat_diffuse", "material", "reflectance", 0, "pnt_emit" );
+		Check( code == 1, "RED-PROVE: the UNCHECKED path commits the forward reference incrementally (rawCode 1)" );
+		const std::string bytes = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		const std::string tmp2 = TempPath( "agentcrud_g1_wedge_reload.RISEscene" );
+		Job* fresh = LoadScene( bytes.c_str(), tmp2 );
+		Check( fresh == nullptr, "RED-PROVE: the wedged head's bytes FAIL to reload (the save-time data loss)" );
+		if( fresh ) fresh->release();
+		pJob->release();
+		std::remove( tmp.c_str() );
+		std::remove( tmp2.c_str() );
+	}
+
+	// (1) HEADLESS agent path: the IDENTICAL edit through ProposePatch is
+	// REFUSED cleanly (code 0), head byte-identical, revision unmoved, and
+	// the head still reloads.
+	{
+		const std::string tmp = TempPath( "agentcrud_g1_headless.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "headless gate fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const std::string headBefore = sess->ReadDocument();
+		const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
+		Agent::AgentSetPatch p;
+		p.target = "mat_diffuse";
+		p.kind   = "material";
+		p.param  = "reflectance";
+		p.value  = "pnt_emit";   // declared AFTER mat_diffuse -> forward reference
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( !r.applied && r.status == "rejected",
+		       "the agent gate REFUSES the forward-reference retarget (headless)" );
+		Check( r.rawCode == 0, "the refusal is code 0 (head + live scene untouched)" );
+		Check( sess->ReadDocument() == headBefore, "the refused edit left the head byte-identical" );
+		Check( sess->HeadVersion() == vBefore, "the refused edit did not bump the revision" );
+		{
+			const std::string tmp2 = TempPath( "agentcrud_g1_headless_reload.RISEscene" );
+			Job* fresh = LoadScene( sess->ReadDocument().c_str(), tmp2 );
+			Check( fresh != nullptr, "the head still RELOADS after the refusal (no wedge)" );
+			if( fresh ) fresh->release();
+			std::remove( tmp2.c_str() );
+		}
+
+		// The gate must NOT over-block: an ORDER-VALID retarget (pnt_albedo
+		// is declared BEFORE mat_emit) still applies on the incremental
+		// fast path (rawCode 1 -- the gate adds a dry-run, not a D2).
+		Agent::AgentSetPatch pOk;
+		pOk.target = "mat_emit";
+		pOk.kind   = "material";
+		pOk.param  = "exitance";
+		pOk.value  = "pnt_albedo";
+		Agent::AgentPatchResult rOk = sess->ProposePatch( pOk );
+		Check( rOk.applied && rOk.rawCode == 1,
+		       "an ORDER-VALID retarget still applies incrementally through the gate" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (2) LIVE-controller agent path (the second entry point): the same
+	// forward-reference retarget through the attached controller is refused
+	// and mutates nothing.
+	{
+		const std::string tmp = TempPath( "agentcrud_g1_live.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "live gate fixture loads" );
+		if( !pJob ) return;
+		{
+			TestController c( *pJob, /*simulatedRenderMs*/20 );
+			c.Start();
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			sess->AttachController( &c );
+
+			const std::string headBefore = sess->ReadDocument();
+			Agent::AgentSetPatch p;
+			p.target = "mat_diffuse";
+			p.kind   = "material";
+			p.param  = "reflectance";
+			p.value  = "pnt_emit";
+			Agent::AgentPatchResult r = sess->ProposePatch( p );
+			Check( !r.applied && r.status == "rejected",
+			       "the agent gate REFUSES the forward-reference retarget (live controller)" );
+			Check( sess->ReadDocument() == headBefore, "the live refusal mutated nothing" );
+
+			c.Stop();
+		}
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//----------------------------------------------------------------------
+// G2: the RENAME RECIPE end-to-end through the dispatcher (review round 2
+// P1-A teaching): insert the renamed material -> retarget the consumer ->
+// remove the old material -> every step applies and the final head
+// reloads cleanly.  Also asserts the declaration-class insert POSITIONING
+// (the new material lands BEFORE the first object chunk).
+//----------------------------------------------------------------------
+static void TestRenameRecipeEndToEnd()
+{
+	std::printf( "G2: rename recipe end-to-end via the dispatcher (insert -> retarget -> remove -> reload)...\n" );
+	const std::string tmp = TempPath( "agentcrud_g2.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "recipe fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	Agent::AgentRpcDispatcher disp( std::move( sess ) );
+
+	// (1) Insert the renamed material.
+	const std::string insResp = disp.HandleLine(
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"insert_chunk\",\"params\":"
+		"{\"chunkText\":\"lambertian_material\\n{\\n\\tname matRenamed\\n\\treflectance pnt_albedo\\n}\"}}" );
+	Agent::JsonValue insResult;
+	Check( JsonResultObj( insResp, insResult ), "step 1 (insert matRenamed) returns a result" );
+	const Agent::JsonValue* insApplied = insResult.find( "applied" );
+	Check( insApplied && insApplied->isBool() && insApplied->asBool(), "step 1 (insert matRenamed) applied" );
+
+	// POSITIONING: the declaration-class chunk landed BEFORE the first
+	// object chunk, so the retarget below derives in document order.
+	{
+		const std::string doc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		const std::size_t posMat = doc.find( "name matRenamed" );
+		const std::size_t posObj = doc.find( "standard_object" );
+		Check( posMat != std::string::npos && posObj != std::string::npos && posMat < posObj,
+		       "the inserted material is POSITIONED before the first object chunk" );
+	}
+
+	// (2) Retarget the consumer.
+	const std::string patchResp = disp.HandleLine(
+		"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"propose_patch\",\"params\":"
+		"{\"target\":\"obj_sph\",\"param\":\"material\",\"value\":\"matRenamed\"}}" );
+	Agent::JsonValue patchResult;
+	Check( JsonResultObj( patchResp, patchResult ), "step 2 (retarget obj_sph) returns a result" );
+	const Agent::JsonValue* patchApplied = patchResult.find( "applied" );
+	Check( patchApplied && patchApplied->isBool() && patchApplied->asBool(),
+	       "step 2 (retarget obj_sph.material -> matRenamed) applied" );
+
+	// (3) Remove the old material.
+	const std::string rmResp = disp.HandleLine(
+		"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"remove_chunk\",\"params\":"
+		"{\"target\":\"mat_diffuse\",\"kind\":\"material\"}}" );
+	Agent::JsonValue rmResult;
+	Check( JsonResultObj( rmResp, rmResult ), "step 3 (remove mat_diffuse) returns a result" );
+	const Agent::JsonValue* rmApplied = rmResult.find( "applied" );
+	Check( rmApplied && rmApplied->isBool() && rmApplied->asBool(),
+	       "step 3 (remove the old material) applied -- the FULL recipe lands" );
+
+	// (4) The final head RELOADS cleanly and carries the rename.
+	{
+		const std::string bytes = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		const std::string tmp2 = TempPath( "agentcrud_g2_reload.RISEscene" );
+		Job* fresh = LoadScene( bytes.c_str(), tmp2 );
+		Check( fresh != nullptr, "the post-recipe head reloads cleanly (no data loss)" );
+		if( fresh ) {
+			Check( fresh->GetMaterials() && fresh->GetMaterials()->GetItem( "matRenamed" ) != nullptr,
+			       "the reloaded scene has the renamed material" );
+			Check( fresh->GetMaterials()->GetItem( "mat_diffuse" ) == nullptr,
+			       "the reloaded scene no longer has the old material" );
+			Check( fresh->GetObjects() && fresh->GetObjects()->GetItem( "obj_sph" ) != nullptr,
+			       "the reloaded scene keeps the retargeted object" );
+			fresh->release();
+		}
+		std::remove( tmp2.c_str() );
+	}
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
+// G3: rasterizer insert ACTIVATION (review round 2 P1-B): inserting a
+// different-keyword rasterizer makes it ACTIVE live, and the serialized
+// head reloaded into a fresh Job agrees (live == reload; last-wins).
+//----------------------------------------------------------------------
+static void TestRasterizerInsertActivation()
+{
+	std::printf( "G3: rasterizer insert activates live AND matches reload (P1-B)...\n" );
+	const std::string tmp = TempPath( "agentcrud_g3.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "rasterizer fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	Check( pJob->GetActiveRasterizerName() == "pathtracing_pel_rasterizer",
+	       "the authored pathtracing rasterizer is active on load" );
+
+	Agent::AgentChunkResult r = sess->InsertChunk(
+		"bdpt_pel_rasterizer\n{\n\tsamples 4\n}" );
+	Check( r.applied, "inserting a different-keyword rasterizer applies" );
+	Check( pJob->GetActiveRasterizerName() == "bdpt_pel_rasterizer",
+	       "the inserted rasterizer is ACTIVE live (activation restore skipped)" );
+
+	// Live == reload: derive the serialized bytes into a FRESH Job and
+	// compare active-rasterizer names (last-wins on load).
+	{
+		const std::string bytes = sess->ReadDocument();
+		const std::string tmp2 = TempPath( "agentcrud_g3_reload.RISEscene" );
+		Job* fresh = LoadScene( bytes.c_str(), tmp2 );
+		Check( fresh != nullptr, "the post-insert head reloads" );
+		if( fresh ) {
+			Check( fresh->GetActiveRasterizerName() == "bdpt_pel_rasterizer",
+			       "the reloaded head's active rasterizer AGREES with live (no divergence)" );
+			Check( fresh->GetActiveRasterizerName() == pJob->GetActiveRasterizerName(),
+			       "live and reload name the SAME active rasterizer" );
+			fresh->release();
+		}
+		std::remove( tmp2.c_str() );
+	}
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
+// G4: round-2 P3 bundle -- (a) an EXACT-duplicate (kind,name,variant)
+// overlay insert is refused while a DIFFERENT-variant overlay stays
+// allowed; (b) the ambiguity refusal message is conditional on whether
+// `kind` was passed.
+//----------------------------------------------------------------------
+static void TestVariantOverlayAndAmbiguityMessages()
+{
+	std::printf( "G4: exact-duplicate variant overlay refused + conditional ambiguity message...\n" );
+	const std::string tmp = TempPath( "agentcrud_g4.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	// (a) Variant overlays: first insert applies; the EXACT (kind,name,
+	// variant) duplicate is refused; a DIFFERENT variant still applies.
+	const char* overlay =
+		"lambertian_material\n{\n\tname mat_diffuse\n\tvariant nightMode\n\treflectance pnt_albedo\n}";
+	Agent::AgentChunkResult r1 = sess->InsertChunk( overlay );
+	Check( r1.applied, "a variant overlay sharing the base (kind,name) inserts" );
+	Agent::AgentChunkResult r2 = sess->InsertChunk( overlay );
+	Check( !r2.applied && r2.status == "rejected",
+	       "the EXACT (kind,name,variant) duplicate overlay is REFUSED" );
+	Check( r2.message.find( "already exists" ) != std::string::npos,
+	       "the duplicate-overlay refusal says it already exists" );
+	Agent::AgentChunkResult r3 = sess->InsertChunk(
+		"lambertian_material\n{\n\tname mat_diffuse\n\tvariant dayMode\n\treflectance pnt_albedo\n}" );
+	Check( r3.applied, "a DIFFERENT-variant overlay of the same base still inserts" );
+
+	// (b) Ambiguity messages: the base + its overlays share the (kind,name)
+	// path, so 'mat_diffuse' is now ambiguous BOTH bare and under the exact
+	// keyword -- exercising both message branches (materials are name-unique
+	// within their manager, so two same-name chunks of different material
+	// kinds cannot exist; overlays are the one legitimate same-name shape).
+	Agent::AgentChunkResult noKind = sess->RemoveChunk( "mat_diffuse" );
+	Check( !noKind.applied && noKind.status == "rejected", "bare ambiguous remove refused" );
+	Check( noKind.message.find( "pass `kind` to narrow" ) != std::string::npos,
+	       "WITHOUT kind the message suggests passing kind" );
+	Agent::AgentChunkResult withKind = sess->RemoveChunk( "mat_diffuse", "lambertian_material" );
+	Check( !withKind.applied && withKind.status == "rejected", "with-kind ambiguous remove refused" );
+	Check( withKind.message.find( "more specific kind" ) != std::string::npos,
+	       "WITH a kind the message asks for a MORE SPECIFIC kind (not the misleading 'pass kind')" );
+	Check( withKind.message.find( "match" ) != std::string::npos,
+	       "the with-kind ambiguity message reports how many chunks match" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+
 int main()
 {
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk) ===\n" );
@@ -911,6 +1209,10 @@ int main()
 	TestInsertRemoveSymmetry();
 	TestLiveControllerPath();
 	TestLiveDispatcherChunkCrud();
+	TestAgentEditDerivabilityGate();
+	TestRenameRecipeEndToEnd();
+	TestRasterizerInsertActivation();
+	TestVariantOverlayAndAmbiguityMessages();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

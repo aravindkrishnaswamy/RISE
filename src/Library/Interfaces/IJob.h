@@ -3341,18 +3341,30 @@ namespace RISE
 		//! a throwaway Job first -- a failed dry-run leaves the Document AND the live scene byte-identical).
 		//! `chunkText` must parse to EXACTLY ONE chunk (`keyword { ... }`; braces on their own lines) with nothing
 		//! but pure-whitespace trivia around it -- scene headers/directives/comments outside the chunk are refused.
-		//! A duplicate (kind,name) against an existing chunk is refused early (unless the incoming chunk carries a
-		//! `variant` param -- a variant overlay legitimately shares its base chunk's (kind,name)).  An UNNAMED
-		//! chunk (film / rasterizer / camera-class) is refused when an unnamed chunk of the SAME keyword already
-		//! exists -- unnamed chunks are singletons per keyword (a duplicate would be last-wins-masked on derive
-		//! yet persisted by save, and bare-name-addressed remove_chunk could never delete it).
+		//! A duplicate (kind,name) against an existing chunk is refused early; a chunk carrying a `variant` param
+		//! is exempt from that check (a variant overlay legitimately shares its base chunk's (kind,name)) but an
+		//! EXACT (kind,name,variant) duplicate is still refused.  An UNNAMED chunk (film / rasterizer /
+		//! camera-class) is refused when an unnamed chunk of the SAME keyword already exists -- unnamed chunks are
+		//! singletons per keyword (a duplicate would be last-wins-masked on derive yet persisted by save, and
+		//! bare-name-addressed remove_chunk could never delete it).  NOTE the one-way door: an unnamed chunk can
+		//! never be REMOVED through this surface once inserted (remove_chunk is bare-name-addressed) -- insert
+		//! them deliberately.
+		//! POSITION (round 2): DECLARATION-class chunks (painters/functions; materials/geometry/modifiers/media/
+		//! shaders/shaderops) are inserted BEFORE their potential consumers (declare-before-use), falling back to
+		//! append-at-end if the positioned insert does not derive; everything else -- objects, lights, cameras,
+		//! film, rasterizers, outputs -- appends at the document END.  A RASTERIZER insert additionally becomes
+		//! the ACTIVE rasterizer (the D2 activation restore is skipped for it), so the live integrator matches
+		//! what a save+reload's last-wins derive would activate.
 		//! Out-params (each nullable): `outKeyword`/`outName` echo the parsed chunk's keyword + `name` param (filled
 		//! as soon as the chunk parses, so even a refusal identifies what was attempted); `outDiag` carries the FIRST
 		//! dry-run diagnostic (code 0) or a short refusal reason (codes -1/-2).
 		//! Returns: 2 = inserted + clean full re-derive (Scene + managers REPLACED -- caller MUST rebind);
 		//! 3 = inserted + managers replaced BUT the re-derive diagnosed (rebind AND treat as failure);
-		//! 0 = refused, would-not-derive in context (dry-run diagnosed; nothing changed);
-		//! -1 = malformed chunk text (not exactly one chunk / stray text); -2 = duplicate (kind,name).
+		//! 0 = refused, would-not-derive in context (dry-run diagnosed; nothing changed) -- ALSO returned for
+		//! no retained CST Document, empty chunk text, and an internal separator-build failure (outDiag/log say
+		//! which);
+		//! -1 = malformed chunk text (not exactly one chunk / stray text / unclosed chunk); -2 = duplicate
+		//! (kind,name) or exact (kind,name,variant).
 		//! Never 1: an insert is ALWAYS D2-class (a new entity cannot re-derive incrementally).
 		//! Default no-op returning 0 (legacy jobs have no retained CST); see Job override.
 		//! NB: appended at the IJob tail per the append-only ABI convention (preserves every prior vtable slot).
@@ -3374,10 +3386,13 @@ namespace RISE
 		//! drop the entity from the live scene via a FULL re-derive (dry-run first -- removing a chunk that is
 		//! still REFERENCED fails the dry-run and leaves Document + live scene byte-identical).
 		//! Out-params (nullable): `outKeyword` echoes the resolved chunk's keyword; `outDiag` the first dry-run
-		//! diagnostic (code 0) or a short refusal reason (codes -1/-2).
+		//! diagnostic (code 0), the match count (code -2), or a short refusal reason (code -1).
 		//! Returns: 2 = removed + clean full re-derive (rebind); 3 = replaced-but-diagnosed (rebind + failure);
-		//! 0 = refused, would-not-derive (e.g. target still referenced; nothing changed);
-		//! -1 = no chunk with that name; -2 = ambiguous name (pass `kind` to narrow).  Never 1.
+		//! 0 = refused, would-not-derive (e.g. target still referenced, or the remainder no longer derives in
+		//! document order; nothing changed) -- ALSO returned for no retained CST Document / empty target;
+		//! -1 = no chunk with that name -- ALSO covers a name that resolved to a chunk of a DIFFERENT kind than
+		//! the requested one (kind verification on a destructive verb) and a chunk with no top-level index
+		//! (outDiag + the log disambiguate); -2 = ambiguous name (narrow with `kind`).  Never 1.
 		//! Default no-op returning 0; see Job override.  Appended at the IJob tail (append-only ABI).
 		virtual int ApplyCstRemoveChunk( const char* target, const char* kind,
 		                                 char* outKeyword, unsigned int keywordMax,
@@ -3388,6 +3403,21 @@ namespace RISE
 			if( outDiag && diagMax ) outDiag[0] = '\0';
 			return 0;
 		}
+
+		//! Model-B F5 slice S2 round 2 (P1-A root gate): ApplyCstParamEdit PLUS a FULL-DERIVABILITY pre-commit
+		//! gate for AGENT-originated edits.  Same parameters and 0/1/2/3 return contract as ApplyCstParamEdit,
+		//! with ONE addition: before the incremental fast path may commit, the edited Document is dry-run through
+		//! the FULL derive (throwaway Job) and the edit is refused with 0 (head + live scene byte-identical) when
+		//! the whole document would no longer derive in DOCUMENT ORDER.  Rationale: the incremental path validates
+		//! the edit closure against the LIVE managers, so a reference RETARGET to an entity declared LATER in the
+		//! document (a forward reference) commits a head whose serialized bytes fail to reload -- silent save-time
+		//! data loss, and every subsequent D2-class verb is refused.  Agent edits are discrete, so the extra
+		//! throwaway derive (~ms..24ms at 16k chunks) is acceptable; the GUI property-panel / gizmo path keeps the
+		//! ungated ApplyCstParamEdit fast path.  Default 0 (only Job overrides).
+		//! NB: appended at the IJob tail per the append-only ABI convention (a NEW virtual, not a signature change
+		//! to ApplyCstParamEdit -- changing an existing virtual's signature would break every prior vtable slot
+		//! contract, which is worse than appending).
+		virtual int ApplyCstParamEditChecked( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue ) { return 0; }
 	};
 
 

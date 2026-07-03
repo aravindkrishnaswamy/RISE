@@ -48,9 +48,11 @@ namespace RISE
 		//! A STRUCTURED set-param patch (slice 0b: set only -- no text-patch,
 		//! no add/remove chunk; those are later slices).  Locates a named
 		//! entity in the retained CST Document and sets one of its params to a
-		//! new value string, routed through Job::ApplyCstParamEdit -- the SAME
-		//! pathway the GUI property panel uses (L2: the agent is just another
-		//! client of the edit surface).
+		//! new value string, routed through Job::ApplyCstParamEditChecked --
+		//! the SAME edit pathway the GUI property panel uses (L2: the agent is
+		//! just another client of the edit surface) plus the round-2 P1-A
+		//! full-derivability gate (an agent retarget must not commit a head
+		//! that no longer derives in document order).
 		struct AgentSetPatch
 		{
 			std::string target;   //!< the entity NAME to edit (a chunk `name`; unnamed cameras resolve by kind)

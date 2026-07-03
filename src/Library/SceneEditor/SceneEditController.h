@@ -280,19 +280,22 @@ namespace RISE
 
 		//! Facet 5 slice 1b: route an agent param-value commit through the
 		//! render-thread-SAFE edit path.  This is the SAME (entity,param) edit
-		//! the Agent surface's ProposePatch makes -- Job::ApplyCstParamEdit --
-		//! but wrapped in the controller's cancel-and-park critical section so
-		//! it is safe against the live render thread, and it calls
-		//! RebindEditorToJob on a D2 full re-derive (codes 2/3) so the
-		//! editor's cached scene/manager pointers do not dangle.  Callable
-		//! from ANY thread PROVIDED the transaction API is unused
-		//! (transactions are main-thread-only and the mTxnOpen pre-flight
-		//! read below is UNSYNCHRONIZED -- mMutex does not cover the flag);
-		//! within that contract it takes mMutex + cancel-and-parks itself,
-		//! and the whole ApplyCstParamEdit + rebind + version-bump runs
-		//! UNDER mMutex so no render-thread reader can observe the
-		//! transient {0,0} head-version (D2 ClearAll) or a half-rebuilt
-		//! Scene.
+		//! the Agent surface's ProposePatch makes -- routed through
+		//! Job::ApplyCstParamEditChecked (round-2 P1-A: the FULL-DERIVABILITY
+		//! gated variant, so an agent retarget can never commit a head that no
+		//! longer derives in document order; the GUI panel/gizmo path keeps the
+		//! ungated ApplyCstParamEdit) -- but wrapped in the controller's
+		//! cancel-and-park critical section so it is safe against the live
+		//! render thread, and it calls RebindEditorToJob on a D2 full re-derive
+		//! (codes 2/3) so the editor's cached scene/manager pointers do not
+		//! dangle.  Callable from ANY thread PROVIDED the transaction API is
+		//! unused (transactions are main-thread-only and the mTxnOpen
+		//! pre-flight read below is UNSYNCHRONIZED -- mMutex does not cover
+		//! the flag); within that contract it takes mMutex +
+		//! cancel-and-parks itself, and the whole commit + rebind +
+		//! version-bump runs UNDER mMutex so no render-thread reader can
+		//! observe the transient {0,0} head-version (D2 ClearAll) or a
+		//! half-rebuilt Scene.
 		//!
 		//! @param baseVersionOrNull  OPTIONAL optimistic-concurrency
 		//!        precondition (slice 1a).  When non-null and it does NOT

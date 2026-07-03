@@ -799,15 +799,22 @@ namespace RISE
 				}
 			}
 
-			// Route through the SAME call the GUI property panel makes.  It
-			// mutates the retained Document (DocSetOrAddParamValue) and
+			// Route through the CHECKED variant of the call the GUI property
+			// panel makes (round-2 P1-A root gate): an agent patch may RETARGET
+			// a reference, and the incremental fast path validates only against
+			// the LIVE managers -- without the gate a retarget to an entity
+			// declared LATER in the document commits a forward reference whose
+			// bytes fail to reload (silent save-time data loss).  The checked
+			// call dry-runs the FULL derive first and refuses (code 0, head
+			// untouched) when the edited document no longer derives in order.
+			// It mutates the retained Document (DocSetOrAddParamValue) and
 			// re-derives the LIVE Job itself -- incremental fast path, or the
 			// D2 full re-derive fallback -- so the head's derived Scene is
 			// consistent with the mutated Document afterward.  We add NO extra
-			// re-derive: ApplyCstParamEdit owns that (see Job.cpp
+			// re-derive: the Job owns that (see Job.cpp
 			// DeriveEditedCstDocument_).  `occ = 0` = the first (typically
 			// only) occurrence of the param on that entity.
-			const int code = mJob->ApplyCstParamEdit(
+			const int code = mJob->ApplyCstParamEditChecked(
 				patch.target.c_str(),
 				patch.kind.empty() ? nullptr : patch.kind.c_str(),
 				patch.param.c_str(),
@@ -871,7 +878,8 @@ namespace RISE
 			//! other's result types (the dependency runs Agent -> SceneEditor
 			//! only, and SceneEditor cannot see AgentChunkResult).
 			void FoldChunkCode( AgentChunkResult& r, int code, bool isInsert,
-			                    const std::string& target, const char* diag )
+			                    const std::string& target, const char* diag,
+			                    bool kindWasPassed )
 			{
 				r.rawCode = ( code < 0 ) ? 0 : code;
 				switch( code ) {
@@ -912,16 +920,25 @@ namespace RISE
 							if( diag && diag[0] ) { r.message += " ("; r.message += diag; r.message += ")"; }
 							r.message += " -- head unchanged";
 						} else {
-							r.message = "remove rejected: name '" + target + "' is ambiguous -- pass `kind` to narrow";
+							// Round-2 P3: conditional hint -- "pass `kind`" is a
+							// dead-end instruction when kind WAS passed.
+							r.message = "remove rejected: name '" + target + "'";
+							r.message += kindWasPassed
+								? " is ambiguous even under that kind -- pass a more specific kind"
+								: " is ambiguous -- pass `kind` to narrow";
+							if( diag && diag[0] ) { r.message += " ("; r.message += diag; r.message += ")"; }
 						}
 						break;
 					case 0:
 					default:
 						r.applied = false;
 						r.status  = "rejected";
+						// Round-2 P1-A: name BOTH would-not-derive causes honestly
+						// (the old "likely still REFERENCED" wording hid the
+						// order-invalid-head cause).
 						r.message = isInsert
 							? std::string( "insert rejected: the chunk would not derive in context -- head unchanged" )
-							: "remove rejected: removing '" + target + "' would not derive (it is likely still REFERENCED by another chunk) -- head unchanged";
+							: "remove rejected: removing '" + target + "' would not derive (it is likely still REFERENCED by another chunk, or the remaining document no longer derives in order -- read_document and validate to inspect) -- head unchanged";
 						if( diag && diag[0] ) { r.message += ": "; r.message += diag; }
 						break;
 				}
@@ -996,7 +1013,7 @@ namespace RISE
 			                                            diagBuf, sizeof( diagBuf ) );
 			r.kind = kwBuf;
 			r.name = nameBuf;
-			FoldChunkCode( r, code, /*isInsert*/ true, std::string(), diagBuf );
+			FoldChunkCode( r, code, /*isInsert*/ true, std::string(), diagBuf, /*kindWasPassed*/ false );
 			r.headVersion = mJob->GetCstHeadVersion();
 			return r;
 		}
@@ -1064,7 +1081,7 @@ namespace RISE
 			                                            kwBuf, sizeof( kwBuf ),
 			                                            diagBuf, sizeof( diagBuf ) );
 			r.kind = kwBuf;
-			FoldChunkCode( r, code, /*isInsert*/ false, target, diagBuf );
+			FoldChunkCode( r, code, /*isInsert*/ false, target, diagBuf, /*kindWasPassed*/ !kind.empty() );
 			r.headVersion = mJob->GetCstHeadVersion();
 			return r;
 		}

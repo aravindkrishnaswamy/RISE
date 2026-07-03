@@ -2888,12 +2888,18 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 		}
 	}
 
-	// The SAME edit the GUI property panel and the Agent surface make, but
-	// routed directly (we already hold the park the GUI path takes via
-	// mEditor.Apply).  `occ = 0` = the first occurrence of the param on the
-	// entity.  ApplyCstParamEdit re-derives the live Job itself (incremental
-	// or D2 full re-derive) and bumps the head revision on success.
-	const int code = mJob.ApplyCstParamEdit(
+	// The SAME edit the GUI property panel makes, but routed directly (we
+	// already hold the park the GUI path takes via mEditor.Apply) and through
+	// the CHECKED variant (round-2 P1-A root gate): an agent edit may RETARGET
+	// references, so it must not commit a head that no longer derives in
+	// document order (a forward reference the incremental path's live-manager
+	// validation cannot see -- the head's bytes would fail to reload).  The
+	// GUI SetProperty / gizmo path (mEditor.Apply -> ApplyCstParamEdit) keeps
+	// the UNGATED fast path: its edits are value-only and latency-sensitive.
+	// `occ = 0` = the first occurrence of the param on the entity.  The call
+	// re-derives the live Job itself (incremental or D2 full re-derive) and
+	// bumps the head revision on success.
+	const int code = mJob.ApplyCstParamEditChecked(
 		entityName.c_str(),
 		entityKind.size() <= 1 ? nullptr : entityKind.c_str(),
 		param.c_str(),
@@ -3169,9 +3175,16 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 				if( diagBuf[0] ) { m += " ("; m += diagBuf; m += ")"; }
 				m += " -- head unchanged";
 			} else {
+				// Round-2 P3: the hint is CONDITIONAL on whether the caller
+				// already narrowed -- repeating "pass `kind`" when kind WAS
+				// passed is a dead-end instruction.
+				const bool kindPassed = ( b.size() > 1 );
 				m = "remove rejected: name '";
 				m += a.c_str();
-				m += "' is ambiguous -- pass `kind` to narrow";
+				m += kindPassed
+					? "' is ambiguous even under that kind -- pass a more specific kind"
+					: "' is ambiguous -- pass `kind` to narrow";
+				if( diagBuf[0] ) { m += " ("; m += diagBuf; m += ")"; }
 			}
 			r.message = String( m.c_str() );
 			break;
@@ -3181,9 +3194,12 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 		{
 			r.applied = false;
 			r.status  = String( "rejected" );
+			// Round-2 P1-A: name BOTH would-not-derive causes honestly -- the
+			// old "likely still REFERENCED" wording sent agents chasing a
+			// phantom consumer when the real cause was an order-invalid head.
 			std::string m = isInsert
 				? std::string( "insert rejected: the chunk would not derive in context -- head unchanged" )
-				: std::string( "remove rejected: removing '" ) + a.c_str() + "' would not derive (it is likely still REFERENCED by another chunk) -- head unchanged";
+				: std::string( "remove rejected: removing '" ) + a.c_str() + "' would not derive (it is likely still REFERENCED by another chunk, or the remaining document no longer derives in order -- read_document and validate to inspect) -- head unchanged";
 			if( diagBuf[0] ) { m += ": "; m += diagBuf; }
 			r.message = String( m.c_str() );
 			break;
