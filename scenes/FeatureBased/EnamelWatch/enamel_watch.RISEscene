@@ -1196,15 +1196,52 @@ ggx_material
 	extinction			Steel_k
 }
 
-# Blued steel hands -- conductor with a strong blue specular tint, glossy.
+# Gold leaf hands (anOrdain) -- polished-gold conductor (schlick gold F0).
+uniformcolor_painter
+{
+	name				pnt_gold_f0
+	color				1.0 0.77 0.34
+}
+
 ggx_material
 {
 	name				white_hands
-	rd				pnt_white
-	rs				pnt_surf_f0
-	alphax				0.18
-	alphay				0.18
+	rd				pnt_surf_f0
+	rs				pnt_gold_f0
+	alphax				0.10
+	alphay				0.10
 	fresnel_mode			schlick_f0
+}
+
+# Stamped gold dial furniture (anOrdain markings) as thin gold RELIEF geometry:
+# railroad chapter ring + even-Arabic numerals + "anOrdain" / "VITREOUS ENAMEL",
+# extruded from a mask into flat gold quads just proud of the enamel top
+# (z=-0.80).  This is the pad-STAMPED gold layer modelled as real geometry --
+# NOT an alpha decal (the spectral PT does not honour material alpha masks), and
+# geometry is also the more physically-accurate model of anOrdain's stamping.
+ggx_material
+{
+	name				furniture_gold
+	rd				pnt_surf_f0
+	rs				pnt_gold_f0
+	alphax				0.14
+	alphay				0.14
+	fresnel_mode			schlick_f0
+}
+
+plymesh_geometry
+{
+	name				furnituregeom
+	file				scenes/FeatureBased/EnamelWatch/furniture.ply
+	double_sided			TRUE
+}
+
+standard_object
+{
+	name				furniture
+	geometry			furnituregeom
+	position			0 0 0
+	material			furniture_gold
 }
 
 # Sapphire (Al2O3 / corundum) dispersion -- Malitson 1962 ordinary-ray Sellmeier
