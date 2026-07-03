@@ -71,7 +71,7 @@ pathtracing_spectral_rasterizer
 	# refraction -> denoiser smears the guilloche).  PT-only opt-in.
 	transparent_shadows		FALSE
 	radiance_map			pnt_env
-	radiance_scale			0.30
+	radiance_scale			0.65
 	radiance_background		FALSE
 }
 
@@ -1288,7 +1288,7 @@ lambertian_luminaire_material
 {
 	name				soft_top_lum
 	exitance			pnt_white
-	scale				8.0
+	scale				26.0
 	material			none
 }
 
@@ -1312,7 +1312,7 @@ lambertian_luminaire_material
 {
 	name				soft_bot_lum
 	exitance			pnt_white
-	scale				40.0
+	scale				14.0
 	material			none
 }
 
@@ -1353,7 +1353,7 @@ standard_object
  {
  	name				dram_key_lum
  	exitance			pnt_white
- 	scale				120.0
+ 	scale				42.0
  	material			none
  }
  clippedplane_geometry
@@ -1374,7 +1374,7 @@ standard_object
  {
  	name				dram_rim_lum
  	exitance			pnt_white
- 	scale				95.0
+ 	scale				0.0
  	material			none
  }
  clippedplane_geometry
@@ -2362,14 +2362,19 @@ standard_object
 # a lighting gradient that fades to black at the edges.  Sits at the caseback
 # plane (z=-10.30, just below the -10.27 caseback) so the watch rests on it.
 ##################################################
-ggx_material
+uniformcolor_painter
+{
+	name				pnt_paper
+	color				0.86 0.86 0.83
+}
+
+# Matte white paper the watch rests on (the captured setup: a diffuse white
+# surface).  Pure Lambertian, high albedo; large plane fills the frame so it is
+# also the bright background (radiance_background FALSE).
+lambertian_material
 {
 	name				surface_dark
-	rd				pnt_black
-	rs				pnt_surf_f0
-	alphax				0.10
-	alphay				0.10
-	fresnel_mode			schlick_f0
+	reflectance			pnt_paper
 }
 
 clippedplane_geometry
