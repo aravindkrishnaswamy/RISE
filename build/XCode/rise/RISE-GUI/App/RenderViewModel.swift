@@ -1399,6 +1399,11 @@ final class RenderViewModel: ObservableObject {
         isEditorVisible = false
         editorText = ""
         editorOriginalText = ""
+        // Mirror the editor: the Agent panel is per-scene too -- its
+        // dispatcher lives in the (now torn-down) viewport bridge, so
+        // reset its visibility + the stale response when the scene clears.
+        isAgentPanelVisible = false
+        agentResponseText = ""
     }
 
     func clearLog() {
