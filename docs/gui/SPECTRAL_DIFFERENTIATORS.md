@@ -74,9 +74,9 @@ writing to a painter chunk the parser already accepts, with a **live spectral sw
 
 | Mode | Painter | Construction site | Parser form |
 |---|---|---|---|
-| Kelvin | `BlackBodyPainter` ([BlackBodyPainter.h](../../src/Library/Painters/BlackBodyPainter.h)) | `temperature`, `nmbegin/nmend`, `numfreq`, `normalize`, `scale` | `blackbody_painter { temperature 5600 ... }` ([AsciiSceneParser.cpp:2891](../../src/Library/Parsers/AsciiSceneParser.cpp)) |
-| Monochromatic + CSV | `SpectralColorPainter` ([SpectralColorPainter.h](../../src/Library/Painters/SpectralColorPainter.h)) — *the one painter that properly implements `GetColorNM`* | `(nm, amplitude)` sample pairs; `cp` repeatable or `file`/`nmfile`/`ampfile` | `spectral_painter { nmbegin .. cp "550 1.0" ... }` ([AsciiSceneParser.cpp:1215](../../src/Library/Parsers/AsciiSceneParser.cpp)) |
-| Named glass (IOR) | `SellmeierScalarPainter` ([SellmeierScalarPainter.h](../../src/Library/Painters/SellmeierScalarPainter.h)) — `n²(λ)=1+Σ Bᵢλ²/(λ²−Cᵢ)`, λ in µm, d-line 587.6 nm representative | 6 coefficients `B1 B2 B3 C1 C2 C3` | `scalar_painter { name bk7 sellmeier "1.039 0.231 1.010 0.006 0.020 103.5" }` ([AsciiSceneParser.cpp:1345](../../src/Library/Parsers/AsciiSceneParser.cpp)) |
+| Kelvin | `BlackBodyPainter` ([BlackBodyPainter.h](../../src/Library/Painters/BlackBodyPainter.h)) | `temperature`, `nmbegin/nmend`, `numfreq`, `normalize`, `scale` | `blackbody_painter { temperature 5600 ... }` (chunk parser now in [ChunkParserRegistry.cpp](../../src/Library/Parsers/ChunkParserRegistry.cpp); `AsciiSceneParser.cpp` deleted in the CST cutover) |
+| Monochromatic + CSV | `SpectralColorPainter` ([SpectralColorPainter.h](../../src/Library/Painters/SpectralColorPainter.h)) — *the one painter that properly implements `GetColorNM`* | `(nm, amplitude)` sample pairs; `cp` repeatable or `file`/`nmfile`/`ampfile` | `spectral_painter { nmbegin .. cp "550 1.0" ... }` (chunk parser now in [ChunkParserRegistry.cpp](../../src/Library/Parsers/ChunkParserRegistry.cpp)) |
+| Named glass (IOR) | `SellmeierScalarPainter` ([SellmeierScalarPainter.h](../../src/Library/Painters/SellmeierScalarPainter.h)) — `n²(λ)=1+Σ Bᵢλ²/(λ²−Cᵢ)`, λ in µm, d-line 587.6 nm representative | 6 coefficients `B1 B2 B3 C1 C2 C3` | `scalar_painter { name bk7 sellmeier "1.039 0.231 1.010 0.006 0.020 103.5" }` (chunk parser now in [ChunkParserRegistry.cpp](../../src/Library/Parsers/ChunkParserRegistry.cpp)) |
 
 ### 2.3 The math
 
@@ -92,7 +92,7 @@ FWHM, e.g. 5 nm, not a true Dirac). `SpectralColorPainter::GetColorNM` returns `
 so the rendered hero samples are the authored curve with no JH detour.
 
 **CSV → spectrum.** The dragged file is `(nm, amplitude)` whitespace pairs — *exactly* the `spectral_painter`
-`file` form (`fscanf("%lf %lf", ...)`, [AsciiSceneParser.cpp:1158](../../src/Library/Parsers/AsciiSceneParser.cpp)).
+`file` form (`fscanf("%lf %lf", ...)`, now in [ChunkParserRegistry.cpp](../../src/Library/Parsers/ChunkParserRegistry.cpp)).
 The UI validates two numeric columns, ascending nm, ≥ a few samples, then writes either an inlined `cp` list (for
 small curves, keeps the scene self-contained / diffable per principle 1) or copies the file into the scene's
 asset dir and references it (for dense measurements).
@@ -184,7 +184,7 @@ The pipe is fully built and proven by the thin-film work:
   which interpolates per hero wavelength and clamps to endpoints outside the sampled band.
 - **Painter → material:** GGX's `ior` and `extinction` slots are `IScalarPainter` (n,k are physical scalars, **not**
   colours — they must *not* go through JH uplift), with `fresnel_mode conductor` ([GGXMaterial.h:49–50](../../src/Library/Materials/GGXMaterial.h),
-  [AsciiSceneParser.cpp:3775](../../src/Library/Parsers/AsciiSceneParser.cpp)). The conductor Fresnel is the
+  [ChunkParserRegistry.cpp](../../src/Library/Parsers/ChunkParserRegistry.cpp)). The conductor Fresnel is the
   single templated chokepoint `Optics::CalculateConductorReflectance<T>` ([THIN_FILM_INTERFERENCE.md](../THIN_FILM_INTERFERENCE.md) §3).
 - **Precedent:** `colors/thinfilm/substrates/{Ti,Steel,Ta,Nb}.{n,k}` already ship in exactly this format with a
   full provenance README — the metal n,k library is a *superset of files already in the repo*.
@@ -1070,7 +1070,7 @@ net-new engine read-back this spec identified.
   `src/Library/Utilities/Color/RGBToSpectrumTable_LUTData.cpp`, read via `RGBToSpectrumTable::Get()`.
 - EDR display: [MetalEDRView.swift](../../build/XCode/rise/RISE-GUI/App/MetalEDRView.swift),
   [RenderViewModel.swift](../../build/XCode/rise/RISE-GUI/App/RenderViewModel.swift) (headroom probe).
-- Parser surface: [AsciiSceneParser.cpp](../../src/Library/Parsers/AsciiSceneParser.cpp)
+- Parser surface: [ChunkParserRegistry.cpp](../../src/Library/Parsers/ChunkParserRegistry.cpp) + [IAsciiChunkParser.h](../../src/Library/Parsers/IAsciiChunkParser.h) (chunk parsers; the pre-cutover `AsciiSceneParser.cpp` was deleted — scenes load via `Cst::ParseToCst` + `DeriveToJob`)
   (`spectral_painter` ~1215, `scalar_painter` ~1233, `blackbody_painter` ~2891, `fresnel_mode` ~3775;
   `auto_probe_activation_spp` ~8346).
 

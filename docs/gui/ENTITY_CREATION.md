@@ -1,5 +1,7 @@
 # RISE GUI — Entity Creation, Outliner & Reference-Safe Deletion
 
+> **⚠ ERRATUM (2026-07-02, post-CST-cutover) — this spec's persistence design is premised on the byte-splice save engine DELETED in Model-B P5 Slice 6d (2026-07-01).** The machinery it builds on — the managed override block, Phase C created-entity re-emit, the `> remove {family}` **managed-tombstone** deletion design (Confirmed decision #1, §5.4, §7.6), `SaveEngine.cpp:1351/:1373` refusals, `OverrideSpanIndex`, `tests/SaveEngineTest.cpp` — **no longer exists**. Today every scene loads via `Cst::ParseToCst` + `DeriveToJob` with the `Job` retaining the canonical **CST `Document`**; entity creation persists by **inserting the entity's chunk into the retained Document** (see `Job::ApplyCstInsertCameraChunk` / `Cst::DocInsertItem` — the shipped camera instance of the pattern), deletion by **removing the chunk** (`Job::ApplyCstRemoveCameraChunk` — works on file-authored cameras; **no tombstone needed**), and `SaveEngine::Save` serializes the whole Document (`Cst::SerializeCst`). The spec's *product* design (outliner, all-families coverage, reference-safe deletion, dependency graph, import-as-one-transaction, naming) stands; its *persistence mechanics* (§5.4 tombstones, §7 "extending Phase C", the re-emit ordering/refusal machinery) must be re-read as: **add per-family Document chunk-insert/remove ops modeled on the camera pair, and the whole-Document save does the rest.** Sentences below claiming the old machinery exists now are corrected inline where load-bearing; the §5.4/§7 design bodies are retained as history of the superseded approach.
+
 **Status:** DESIGN. **Hardened 2026-06-20** after a *second* adversarial review,
 against the two now-CONFIRMED decisions below. That pass found five mechanical
 gaps (deletion persistence was undesigned and contradicted the CAMERAS spec; the
@@ -11,12 +13,8 @@ can't support). This revision closes all five — §5.4 (managed-tombstone delet
 dependency graph), §10 (import-as-transaction), §3.3 (preview-isolation rename).
 **Owner:** Aravind Krishnaswamy
 
-> **Confirmed decisions (2026-06-20) — the frame this spec is mechanically correct against.**
-> 1. **Deletion persistence is a managed tombstone.** A delete that must survive
->    reload emits an ordered `> remove {family} <name>` command into the managed
->    override block (the same sentinel-bracketed, wholesale-rendered block the
->    round-trip save engine already owns). It is **not** a new scene-format
->    construct — `> remove` is an existing parser command (§5.4).
+> **Confirmed decisions (2026-06-20) — the frame this spec was mechanically correct against.**
+> 1. **[OBSOLETE post-CST-cutover — see the erratum]** ~~Deletion persistence is a managed tombstone.~~ This decision was premised on the managed override block the byte-splice save engine owned; both were deleted in Slice 6d. Deletion persistence is now a **Document chunk removal** (`ApplyCstRemoveCameraChunk` pattern) — no tombstone, no `> remove` emit (§5.4 body retained as history).
 > 2. **Coverage is all families + a descriptor/introspection-driven dependency
 >    graph + glTF import as one atomic transaction.** The outliner and the
 >    create/delete ops span objects, lights, materials, **painters**, media,
@@ -37,8 +35,9 @@ deletion** (a descriptor/introspection-driven dependency graph, block-or-cascade
 policy); **managed-tombstone deletion persistence** so a deleted file-authored
 entity stays deleted across reload; stable **naming** + rename; **glTF model /
 texture import** wired into an "Add Model" action **as one atomic import
-transaction**; and extending **Phase C created-entity persistence beyond cameras**
-so non-camera creations round-trip to the `.RISEscene`. This spec owns the
+transaction**; and extending **created-entity persistence beyond cameras** (post-cutover:
+per-family CST Document insert/remove ops — see the erratum; §7's "Phase C" framing is
+historical) so non-camera creations round-trip to the `.RISEscene`. This spec owns the
 roadmap's Phase 0 entity-creation gap ([GUI_ROADMAP.md](../GUI_ROADMAP.md) §11
 Phase 0, §14). It does **not** cover material *graph* editing
 ([MATERIAL_EDITOR.md](MATERIAL_EDITOR.md)), camera *optics* / named views
@@ -78,13 +77,16 @@ no delete, no import. The audit pins this exactly:
   `SceneEdit::Op` enum has **no** `AddObject` / `AddLight` / `AddMaterial` /
   `AddMedium` / `Remove*` / `Import*` value — every other op mutates an
   *existing* entity (audit §2).
-- **Persistence substrate is half-built.** Round-trip save *is* implemented —
-  Mode A/B transforms + Phase B property re-emit for camera/light/material/
-  medium + Phase C created-entity emit ([SaveEngine.cpp](../../src/Library/SceneEditor/SaveEngine.cpp),
-  audit §1). But **Phase C is cameras-only**: `SaveEngine.cpp:1351`
-  ("`V1: only cameras are creatable`"), and a non-camera chunk inside the
-  managed block is a hard **Refused** at `SaveEngine.cpp:1373` (audit §2). So a
-  created light/material/object has *nowhere to be saved* today.
+- **Persistence substrate — updated post-CST-cutover.** The save mechanism is
+  done: `SaveEngine::Save` serializes the Job's retained CST Document
+  ([SaveEngine.cpp](../../src/Library/SceneEditor/SaveEngine.cpp)), so anything
+  in the Document persists. What's **cameras-only today is the Document edit-op
+  pair**: `Job::ApplyCstInsertCameraChunk` / `ApplyCstRemoveCameraChunk`. A
+  created light/material/object still has *no insert op* — its chunk never
+  enters the retained Document, so it cannot be saved. (The pre-cutover framing
+  — "Phase C is cameras-only, `SaveEngine.cpp:1351/:1373`" — described the
+  deleted byte-splice engine; the *gap* is the same shape, the *fix* is now
+  per-family Document insert/remove ops, not save-engine re-emit work.)
 - **The factories already exist.** `Job::AddObject`
   ([Job.cpp:5180](../../src/Library/Job.cpp)), `AddPointOmniLight` /
   `AddPointSpotLight` / `AddAmbientLight` / `AddDirectionalLight`
@@ -101,7 +103,7 @@ So the work is four layered pieces, all but the widget shared:
 |---|---|---|
 | **Outliner model** (shared C++) | scene-graph tree across **all entity families** (objects, lights, materials, **painters**, media, geometry, shaders, modifiers, cameras) + the singleton rows, selection sync, preview isolation | extend `SceneEditController` (the `CategoryEntityCount/Name` surface already exists for the five list categories; **painters / geometry / shaders / modifiers need new `Category` values** — §3.1) |
 | **Creation/deletion ops** (shared C++) | new `SceneEdit::Op` values + controller entry points + the **descriptor/introspection-driven** dependency-graph query for safe delete (§5.1; the painter→painter and composed-material edges need **new** `PainterIntrospection` + composed-material ref-readback — TO-BUILD, §5.1) + the managed-tombstone delete-persistence path (§5.4) | `SceneEdit.h`, `SceneEditor.cpp`, `SceneEditController.{h,cpp}`, `ReferenceGraph.{h,cpp}`, **new `PainterIntrospection.{h,cpp}`** |
-| **Phase-C persistence** (shared C++) | per-family chunk re-emit so non-camera creations save, plus the managed-tombstone `> remove` emit | `SaveEngine.cpp`, `*Introspection.{h,cpp}` |
+| **Creation/deletion persistence** (shared C++) | per-family CST Document chunk **insert/remove ops** modeled on `ApplyCstInsertCameraChunk` / `ApplyCstRemoveCameraChunk` (the whole-Document save then persists them for free; supersedes the pre-cutover "Phase-C re-emit + tombstone" plan) | `Job.{h,cpp}` / `IJob.h` (Document edit ops), `*Introspection.{h,cpp}` (chunk-text rendering) |
 | **Outliner widget** (platform) | the tree view + add/delete buttons + drag | macOS SwiftUI, Windows Qt, Android Compose |
 
 > **Coverage is genuinely *all* families — not "the five list categories."** A
@@ -600,6 +602,16 @@ on-demand graph (§5.1) gives the same safety without the ABI churn.
 
 ### 5.4 Deletion persistence — the managed tombstone
 
+> **⚠ SUPERSEDED (2026-07-01, Slice 6d — see the erratum at the top).** This whole
+> section designs deletion persistence for the **deleted** byte-splice engine
+> (managed block, `OverrideSpanIndex`, `> remove` tombstones, `SaveEngine.cpp:1424`
+> refusals — none of which exist anymore). Post-cutover, deleting a file-authored
+> entity is a **chunk removal from the retained CST Document** (the shipped camera
+> instance: `Job::ApplyCstRemoveCameraChunk`; generalize per family) and the
+> whole-Document save persists it — no tombstone, no ordering rules, no
+> six-family `ParseRemove` constraint, no refusal classes. The body is retained
+> as history of the superseded approach.
+
 A second-review finding, and a **contradiction with CAMERAS_AND_VIEWS B4a**: this
 spec described deletion but never said how a delete *persists*. The hot-delete in
 §5.2 only mutates the in-memory managers. For a **session-created** entity that is
@@ -654,7 +666,7 @@ construct:
   needed); only *file-authored* ones in these three families hit the refusal.
 - **The block is the same sentinel-bracketed, wholesale-rendered region** the
   round-trip save plan defines (`kManagedBlockSentinelOpen`/`Close`,
-  [OverrideSpanIndex.h:43-45](../../src/Library/SceneEditor/OverrideSpanIndex.h);
+  `OverrideSpanIndex.h:43-45` — file deleted in Slice 6d;
   managed-block contract pinned 2.3 / 2.7, [ROUND_TRIP_SAVE_PLAN.md](../ROUND_TRIP_SAVE_PLAN.md)).
   Tombstones live in it alongside `override_object` chunks and created-entity
   chunks; the block is regenerated in canonical form on every save (pinned 2.7).
@@ -771,33 +783,41 @@ name (Object.cpp), so the pointer is fine — but the **scene-file re-emit** key
 on the name, and any *other* name-keyed state (the active-camera name in
 `Scene::activeCameraName`, the dirty-tracker entity keys keyed by
 `(EntityCategory, name)` in [DirtyTracker.h:46](../../src/Library/SceneEditor/DirtyTracker.h),
-the source-span index) must be updated. Rename is therefore a **composite**
-transaction touching the manager key + active-name pointers + dirty/span
-bookkeeping.
+the pre-cutover source-span index) must be updated. Rename is therefore a
+**composite** transaction touching the manager key + active-name pointers +
+dirty bookkeeping.
 
 ### 6.3 Round-trip impact of rename
 
-A rename of a **parse-time entity** can't be done as a Mode-A in-place splice in
-general — the name token appears at the chunk's declaration *and* at every
-reference site (`material bronze` lines on objects). Renaming would need to
-rewrite all of them. **Policy for V1:** a renamed *created* (engine-owned) entity
-re-emits cleanly under its new name (Phase C renders the whole chunk wholesale,
-§7). A rename of a *file-authored* entity is **Refused** by the save engine in V1
-(consistent with its existing refusal of edits it can't splice safely —
-property-edit-with-no-editable-chunk is already `Refused` at
-[SaveEngine.cpp:1164](../../src/Library/SceneEditor/SaveEngine.cpp)). Surface that
-limitation in the rename UI ("rename persists for entities you created this
-session; renaming a scene-file entity is in-memory only until a future save
-mode"). This keeps rename safe and honest rather than silently clobbering
-references.
+**[Mechanics updated post-CST-cutover]** The name token appears at the chunk's
+declaration *and* at every reference site (`material bronze` lines on objects),
+so a persistent rename must rewrite all of them **in the retained CST Document**
+in one transaction — the CST layer already maintains name resolution across
+parse/rename/replace (`Cst.h`; `tests/CstRenameTest.cpp` covers the Document-level
+rename), and the whole-Document save then persists it. *(The pre-cutover V1
+policy — created-entity rename re-emits via Phase C, file-authored rename is
+`Refused` by the byte-splice engine — described machinery deleted in Slice 6d.)*
+Where a controller-level rename op is not yet wired for a family, surface that
+honestly in the rename UI rather than silently clobbering references.
 
 ---
 
 ## 7. Extending Phase C persistence beyond cameras
 
-Today `SaveEngine` Phase C emits a fresh chunk only for created cameras
-([SaveEngine.cpp:1338-1402](../../src/Library/SceneEditor/SaveEngine.cpp)); the
-non-camera case is the hard **Refused** at `:1373`. The **camera path is the
+> **⚠ MECHANISM SUPERSEDED (Slice 6d — see the erratum at the top).** "Phase C"
+> and its driver loop / managed block / refusal sites below were deleted with the
+> byte-splice engine. The **camera template is now the CST pair**: render the
+> created entity's chunk **text** from introspection, then
+> `Job::ApplyCstInsertCameraChunk(chunkText)` inserts it into the retained
+> Document (`Cst::DocInsertItem`); the whole-Document save persists it. The
+> per-family analysis below (keyword resolution, introspection rows, reference
+> ordering, the difficulty table) **remains the right substrate** — a Document
+> insert op takes exactly the chunk text this section teaches how to render —
+> but the target is per-family `ApplyCstInsert*Chunk` ops, not `SaveEngine`
+> re-emit passes. Dead `SaveEngine.cpp` line citations below are historical.
+
+Pre-cutover framing: `SaveEngine` Phase C emitted a fresh chunk only for created
+cameras (the non-camera case was a hard **Refused**). The **camera path is the
 template** to generalize.
 
 ### 7.1 The camera template, decomposed
@@ -847,7 +867,7 @@ Order of difficulty (do them in this order):
 | **Material** | Medium | Slots are **painter references by name**. Re-emit must (a) emit the material chunk referencing painter names, and (b) ensure the referenced painters themselves exist in the file. If a created material binds a *created* painter, that painter chunk must be emitted **before** the material chunk in the block (declaration-order dependency, §7.3). **Composed** materials (PBRMetallicRoughness, GGXEmissive) are read-only/un-introspectable for slot edits (audit §3) — refuse to re-emit a *created* composed material in V1, or emit it via its own authoring-sugar chunk if `GetDescriptorKeyword` can name it. |
 | **Medium** | Medium | Homogeneous only (Heterogeneous's majorant grid is baked at construction and not re-emittable, audit §3 — refuse created Heterogeneous). Coeffs are scalars; straightforward. |
 | **Shader / Modifier** | Medium | Self-contained chunks; a shader is an op-list. Created unbound, so no inbound dependency at emit time; the object that binds them is topo-ordered after (§7.3). |
-| **Object** | **Hardest** | An object chunk **references a geometry name and a material name** (`Job::AddObject` resolves both, [Job.cpp:5197,5211](../../src/Library/Job.cpp)), and optionally a shader/modifier/interior-medium. Re-emit must guarantee every referent is present in the file: an imported geometry (§7.4) and any created material/painter/shader/modifier must be emitted (or already exist) before the `standard_object` chunk. Transforms already round-trip via Mode A/B; the *new* part is the geometry/material/shader/modifier binding + the geometry chunk itself. |
+| **Object** | **Hardest** | An object chunk **references a geometry name and a material name** (`Job::AddObject` resolves both, [Job.cpp:5197,5211](../../src/Library/Job.cpp)), and optionally a shader/modifier/interior-medium. Re-emit must guarantee every referent is present in the file: an imported geometry (§7.4) and any created material/painter/shader/modifier must be emitted (or already exist) before the `standard_object` chunk. Transforms already round-trip (transform edits route into the retained CST Document post-cutover); the *new* part is the geometry/material/shader/modifier binding + the geometry chunk itself. |
 
 ### 7.3 Intra-block declaration order
 
@@ -856,13 +876,12 @@ order** created entities by their reference edges — and the order must come fr
 the **same descriptor/introspection-driven graph** that powers reference-safe
 deletion (§5.1), not a second hand-maintained ordering. A correct topological
 order respecting every edge in §5.1 is: painters (inputs before blends) → geometry
-→ shaders → modifiers → materials → media → objects → cameras. The scene parser
-resolves names at chunk-finalize time
-([AsciiSceneParser.cpp](../../src/Library/Parsers/AsciiSceneParser.cpp), descriptor
-dispatch), so a forward reference to a not-yet-declared name fails to parse. The
-Phase C driver loop (currently name-sorted,
-[SaveEngine.cpp:~1356](../../src/Library/SceneEditor/SaveEngine.cpp)) must switch
-from lexicographic sort to a **topological sort over the §5.1 graph** for
+→ shaders → modifiers → materials → media → objects → cameras. The derive step
+resolves names at chunk-finalize time (descriptor dispatch in
+`IAsciiChunkParser` / `ChunkParserRegistry.cpp`, driven by `DeriveToJob`
+post-cutover), so a forward reference to a not-yet-declared name fails to
+derive. The insertion order into the retained Document must therefore follow a
+**topological sort over the §5.1 graph** for
 non-camera entities (a cycle is impossible — RISE references are acyclic by
 construction; a defensive cycle check refuses rather than emitting an unparseable
 block). Cameras have no outgoing refs so their existing sort is unaffected.
@@ -1018,8 +1037,8 @@ rule.
 | Outliner tree **model** (all-family categories, entities, active badges, preview-isolation state) | all of it — `SceneEditController` accessors (extend `CategoryEntityCount/Name` + the four new `Category` values, §3.1) | tree **widget** rendering, expand/collapse, icons |
 | Create/duplicate/delete **ops** (all families) | all — new `SceneEdit::Op` + controller entry points + dedup naming, committed as `SceneTransaction` (one-shot `Propose`/builder) | toolbar buttons / context menu / FAB |
 | **Dependency graph** (descriptor/introspection-driven) + block-or-cascade decision | all — `ReferenceGraph::FindReferencesTo` (§5.1) + cascade composites | the confirm/reassign **dialog** |
-| **Deletion persistence** (managed tombstones) | all — `SaveEngine` `> remove` emit + dirty-tracker tombstone set (§5.4, §7.6) | — |
-| **Phase-C save** (per-family chunk re-emit, topo order over the §5.1 graph) | all — `SaveEngine` + `*Introspection::GetDescriptorKeyword` | — |
+| **Deletion persistence** (Document chunk removal, post-cutover — supersedes the §5.4 tombstones) | all — per-family `ApplyCstRemove*Chunk` ops on the retained CST Document | — |
+| **Creation persistence** (per-family Document chunk insert, topo order over the §5.1 graph — supersedes "Phase-C save") | all — per-family `ApplyCstInsert*Chunk` ops + `*Introspection::GetDescriptorKeyword` chunk-text rendering | — |
 | Reference counting / lifetime | all — `IReference`/`GenericManager` is the substrate | — |
 | **Import** orchestration (as one atomic transaction, §10) | all — `Job::ImportGLTFScene` ([GLTF_IMPORT.md](../GLTF_IMPORT.md)) wrapped in an import transaction | native **file dialog** + path hand-off |
 | Preview isolation (owner-private, §3.3) | controller skip-list (never published/snapshotted) | eye-icon widget |
@@ -1125,16 +1144,15 @@ controller, no undo, and the whole file is the transaction). The *interactive*
   `scenes/Default/assets/` ([GUI_ROADMAP.md](../GUI_ROADMAP.md) §13 still-open) is
   the natural drop zone for user-imported sidecar assets, but the **license +
   repo-size decision is still open** and out of scope here.
-- **Persistence:** a bulk-imported subtree persists by re-emitting the
-  `gltf_import` chunk pointing at the asset path (§7.4) — *not* by re-emitting
-  every generated object individually (that would be enormous and would lose the
-  importer's provenance). The `ImportProvenance` object (§10.0) is exactly what
-  Phase C emits: **one** `gltf_import` chunk carrying the asset path + `name_prefix`
+- **Persistence:** a bulk-imported subtree persists by inserting **one**
+  `gltf_import` chunk into the retained CST Document, pointing at the asset path
+  (§7.4) — *not* by emitting every generated object individually (that would be
+  enormous and would lose the importer's provenance). The `ImportProvenance`
+  object (§10.0) is exactly what that chunk carries: asset path + `name_prefix`
   + options, so reload re-runs the importer deterministically. This is a
-  meaningfully cheaper Phase-C target than re-emitting 155 objects, and it is the
-  recommended persistence form for imports. (A *deleted* imported subtree
-  tombstones as `> remove`-ing the prefix's entities, §5.4 — or, more cheaply, by
-  dropping the created `gltf_import` chunk if the whole import was session-created.)
+  meaningfully cheaper persistence target than 155 individual object chunks, and
+  it is the recommended form for imports. (A *deleted* imported subtree persists
+  by removing that `gltf_import` chunk from the Document.)
 
 ### 10.3 Caveats to surface
 
@@ -1157,9 +1175,10 @@ Filled-in per the [GUI_ROADMAP.md](../GUI_ROADMAP.md) §15 template.
   - *Controller unit (all families):* add/duplicate/delete for **every** family —
     objects, lights, materials, **painters**, media, geometry, shaders, modifiers,
     cameras — creates/removes the manager entry; undo restores it; redo recreates
-    it deterministically from the snapshot (the `SceneEditControllerSaveTest`
-    pattern, audit §1). Invariant: manager `getItemCount` returns to baseline after
-    add→undo.
+    it deterministically from the snapshot (the `SceneEditorBasicsTest` /
+    `CstSaveFidelityTest` pattern; the pre-cutover `SceneEditControllerSaveTest`
+    was deleted in Slice 6d). Invariant: manager `getItemCount` returns to
+    baseline after add→undo.
   - *Reference-safe delete (across families) — REQUIRED:* exercise the
     descriptor/introspection-driven graph (§5.1) on **non-object** edges, not just
     object→material. **EXISTING-coverage rows (testable today):** delete a painter
@@ -1178,23 +1197,21 @@ Filled-in per the [GUI_ROADMAP.md](../GUI_ROADMAP.md) §15 template.
     *any* family whose introspection exists — proving the graph is not object-only,
     and proving the painter/composed-material cases are *guarded* (not silently
     wrong) before their introspection lands.
-  - *Tombstone survives reload — REQUIRED:* author a scene with a file-authored
-    entity (a `standard_object` / material / painter / light in the source bytes);
-    delete it in the controller; save; **reload**; assert the entity is **gone**
-    (the managed `> remove {family} <name>` line, §5.4, kept it deleted) and that a
-    second save is byte-identical. A companion: deleting a **`FOR`-generated** entity
-    returns `Status::Refused` (not a silently-non-persisting delete), file
-    byte-identical, and the in-memory delete is dropped on reload. Mirror the
-    camera managed-block "survives reload+resave" test
-    ([SaveEngineTest.cpp:2368](../../tests/SaveEngineTest.cpp)).
-  - *Phase-C round-trip per family:* a created
+  - *Delete survives reload — REQUIRED (post-cutover form):* author a scene with a
+    file-authored entity (a `standard_object` / material / painter / light in the
+    source); delete it in the controller (Document chunk removal, the
+    `ApplyCstRemoveCameraChunk` pattern); save; **reload**; assert the entity is
+    **gone** and that a second save is byte-identical. Mirror the camera-erase
+    coverage in `tests/CstCameraEraseTest.cpp` / `CstSaveFidelityTest.cpp` (the
+    pre-cutover `SaveEngineTest.cpp` tombstone tests were deleted in Slice 6d;
+    `FOR`-generated entities no longer exist in native-v7 scenes).
+  - *Created-entity round-trip per family (post-cutover form):* a created
     light/painter/material/medium/object/shader/modifier survives
-    save→reload→resave **byte-identically** on the second save (extend the camera
-    `SaveEngineTest.cpp:1690` created-entity test; the audit flags a missing named
-    material Phase-B test — add the created-entity twins). Include the
+    save→reload→resave **byte-identically** on the second save (mirror the camera
+    insert coverage; fidelity harness `tests/CstSaveFidelityTest.cpp`). Include the
     *material-needs-painter composite* (§8.4): a created material + its created
     painter both round-trip, painter declared before material (topo order, §7.3).
-    Invariant: byte-identity (the save engine's own correctness signal, audit §1).
+    Invariant: byte-identity (the save path's own correctness signal).
   - *Import rollback — REQUIRED:* an "Add Model…" import of a valid glTF commits as
     **one** transaction (one undo entry undoes the whole set; manager counts return
     to baseline after Undo); an import whose Nth entity fails `Apply` mid-commit
@@ -1231,14 +1248,12 @@ Filled-in per the [GUI_ROADMAP.md](../GUI_ROADMAP.md) §15 template.
   `ImportProvenance` unit of §10.0 if extracted) per the
   [CLAUDE.md](../../CLAUDE.md) five-project rule. Seed-asset provenance for
   `scenes/Default/assets/` remains the open §13 license decision.
-- **Migration.** **No scene-format change** for creation, deletion, or tombstones:
-  creations emit existing chunks, and the managed tombstone is the **existing**
-  `> remove` command (§5.4), not a new construct — older scenes parse unchanged.
-  Additive only: the new `Category` / `EntityCategory` values (`Painter`,
-  `Geometry`, `Shader`, `Modifier`,
-  [DirtyTracker.h:46](../../src/Library/SceneEditor/DirtyTracker.h)) and the relaxed
-  per-family `SaveEngine.cpp:1369-1383` refusal are backward-compatible (the managed
-  block only ever grows entities/tombstones the engine can emit). **ABI-additive
+- **Migration.** **No scene-format change** for creation or deletion:
+  creations insert existing chunk kinds into the retained CST Document, deletions
+  remove them — older scenes parse unchanged. Additive only: the new `Category` /
+  `EntityCategory` values (`Painter`, `Geometry`, `Shader`, `Modifier`,
+  [DirtyTracker.h:46](../../src/Library/SceneEditor/DirtyTracker.h)) and the
+  per-family `ApplyCstInsert*/Remove*Chunk` ops are backward-compatible. **ABI-additive
   posture (no break for out-of-tree callers):** new `SceneEdit::Op` values are
   additive; the `IJob` `Add*`/`Remove*` factories already exist; the import
   transaction and `ReferenceGraph` are new non-virtual surface; the create/delete
@@ -1247,9 +1262,9 @@ Filled-in per the [GUI_ROADMAP.md](../GUI_ROADMAP.md) §15 template.
   bridge-enum-translation audit in both bridges ([MEMORY: bridge-enum-translation-audit]).
 - **Rollback.** Feature-flag the outliner + creation behind a default-on toggle
   that, when off, leaves the GUI at today's mutate-only behaviour. Created-entity
-  persistence and tombstones degrade safely: a family not yet implemented (or a
-  delete that can't be tombstoned, §5.4) stays **Refused** (never silent drop), so
-  disabling a family's re-emit cannot corrupt a file.
+  persistence degrades safely: a family whose Document insert/remove op is not yet
+  implemented surfaces a loud refusal (never a silent drop), so disabling a
+  family cannot corrupt a file.
 
 ---
 

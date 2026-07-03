@@ -684,8 +684,9 @@ Because the coordinator is the single mutation-aware render gate, the
 suspend-for-edit handshake (§6) means live renders normally *cannot* be running
 across a revision bump in the first place; checkpoint (2) is the belt-and-braces
 for edits that land via a non-coordinator path and is the same class of guard as
-SaveEngine's external-mod span check
-([CURRENT_STATE_AUDIT.md §1](CURRENT_STATE_AUDIT.md)).
+SaveEngine's external-modification `FileIdentity` check (`SaveEngine.cpp` ~223-247,
+`FileIdentity.h`; the pre-cutover "span check" framing is history — see
+[CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md)'s erratum).
 
 > **Terminology — "revision," not "epoch."** This doc tracks the per-commit
 > **revision** (TRANSACTION_MODEL §3.2's `mRevision`, bumped once per committed
@@ -1152,8 +1153,9 @@ the rules, it does not assert behavior no rule produces (finding #2).
     (This pairs with TRANSACTION_MODEL §15's `SnapshotPublicationDataRaceTest`,
     which owns the publication-side TSan proof; this test owns the
     consumption-side, render-coordinator half.)
-  - *Behavior-neutral refactor:* the existing `SceneEditControllerSaveTest` /
-    interactive render tests pass unchanged after the render loop moves behind the
+  - *Behavior-neutral refactor:* the existing interactive render / CST
+    save-fidelity tests pass unchanged (the pre-cutover
+    `SceneEditControllerSaveTest` was deleted in Slice 6d) after the render loop moves behind the
     coordinator (the controller's observable render behavior is preserved),
     **including with a single open document** (one client → the client-fairness
     term is a no-op, behavior identical to today).

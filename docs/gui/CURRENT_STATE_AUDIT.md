@@ -1,5 +1,13 @@
 # RISE GUI / Editor Stack — Current-State Capability Audit
 
+> **⚠ ERRATUM (2026-07-02) — the Model-B P5 CST cutover (completed 2026-07-01) invalidates this audit's save/load/parse findings.** This audit was code-verified on **2026-06-19**, *before* the CST cutover landed. Three things changed underneath it:
+>
+> 1. **CST load is now the ONLY load path.** Every scene loads via `Cst::ParseToCst` + `DeriveToJob` ([../../src/Library/Cst/Cst.cpp](../../src/Library/Cst/Cst.cpp)), and the `Job` **retains the canonical CST `Document`** for the scene's lifetime. The legacy `AsciiSceneParser.cpp` streaming loader was deleted (Slice 6c; the descriptor-driven chunk parsers themselves live on in `IAsciiChunkParser.h` / `ChunkParserRegistry.cpp` and are driven by `DeriveToJob`). GUI/agent edits route into the retained Document (`Job::ApplyCstParamEdit` and friends).
+> 2. **Save is a whole-Document serialize.** `SaveEngine::Save` ([../../src/Library/SceneEditor/SaveEngine.cpp](../../src/Library/SceneEditor/SaveEngine.cpp), now ~281 lines) unconditionally serializes the retained Document via `Cst::SerializeCst` (byte-exact on an unedited round-trip, minimal-diff on edits), NoOps when the target file already holds those bytes, **Refuses** on an external-modification mtime/size mismatch (`FileIdentity.h`; guard at `SaveEngine.cpp` ~223-247), and writes atomically (tmp + fsync + rename). The `DirtyTracker` only gates the GUI Save button — it selects nothing at save time.
+> 3. **The byte-splice round-trip save engine described in §1 was DELETED** (Slice 6d): Mode A in-place splice, Mode B managed override block, Phase B property re-emit, Phase C created-entity emit, `SourceSpanIndex.h` / `OverrideSpanIndex.h`, `IJobPriv::GetSourceSpanIndex`, and `tests/SaveEngineTest.cpp` (+ `SceneEditControllerSaveTest.cpp`) are all gone. Save fidelity is now covered by `tests/CstSaveFidelityTest.cpp`. The old per-edit Refused classes (FOR-generated, cross-file, symbolic-value, non-camera-in-managed-block…) no longer exist — anything the Document holds persists uniformly. Created cameras persist because `Job::ApplyCstInsertCameraChunk` inserts the chunk into the retained Document (`Cst::DocInsertItem`).
+>
+> **Superseded by the above:** Executive-summary items **1, 2, 12** (and item 14's framing), **§1** (whole section — historical), and **§12**'s "Job does NOT retain scene source text" / `SourceSpanIndex` / `ParseAndLoadScene` claims (`ISceneParser::ParseAndLoadScene` was also removed in Slice 6c-3c; `Cst::ParseToCst(const std::string&)` IS a string-input, construction-free parse). The rest of the audit (entity creation, introspection, picking, ROI, environment, present paths, probe, MCP absence — though the F5 agent surface has since started landing under `src/Library/Agent/`) was not re-verified but is not known to be invalidated.
+
 **Status:** GROUND TRUTH (code-verified, 2026-06-19). This document supersedes
 any `Status:` header in the seven `docs/gui/` specs and `docs/GUI_ROADMAP.md`
 where they disagree. It was produced by reading `src/` and `tests/` directly —
@@ -26,17 +34,19 @@ Many capabilities are **L-but-not-G** (library has it, no GUI calls it) or
 
 ## Executive summary (read this first)
 
-1. **Round-trip scene save IS implemented** — not "pending / Phase-0 future" as
-   four of the seven specs claim. Two-mode engine
-   (`src/Library/SceneEditor/SaveEngine.cpp`, 1,898 lines, "Phase 6.4"): Mode A
+1. **[SUPERSEDED 2026-07-01 — see erratum]** ~~Round-trip scene save IS implemented~~
+   — as of 2026-06-19 this was the two-mode engine
+   (`src/Library/SceneEditor/SaveEngine.cpp`, then 1,898 lines, "Phase 6.4"): Mode A
    in-place byte splice + Mode B managed-override block, **plus** Phase B
-   property re-emit and Phase C created-entity emit. Heavily tested
-   (`tests/SaveEngineTest.cpp`, 41 tests; `tests/SceneEditControllerSaveTest.cpp`).
+   property re-emit and Phase C created-entity emit, tested by
+   `tests/SaveEngineTest.cpp` (41 tests) + `tests/SceneEditControllerSaveTest.cpp`.
+   **That engine (and both test files) was deleted in Slice 6d.** Scene save today =
+   whole-Document `Cst::SerializeCst` of the Job's retained CST Document (erratum #2).
 
-2. **Phase C created-entity persistence is CAMERAS ONLY** — confirmed at
-   `SaveEngine.cpp:1351` ("V1: only cameras are creatable"), filter at `:1362`
-   and `:1373` (non-camera chunk inside the managed block → **Refused**). Hand-
-   pasted non-camera chunks in the block are a hard refusal, not silent drop.
+2. **[SUPERSEDED 2026-07-01 — see erratum]** ~~Phase C created-entity persistence is
+   CAMERAS ONLY~~ — that was the pre-cutover `SaveEngine.cpp:1351` filter, deleted in
+   Slice 6d. Created cameras now persist via `Job::ApplyCstInsertCameraChunk` into the
+   retained Document; anything the Document holds persists uniformly on save.
 
 3. **The only entity-creation path anywhere is `CloneActiveCamera`** — clone the
    active camera (`SceneEditController.cpp:3103`; the lone creation op
@@ -97,13 +107,14 @@ Many capabilities are **L-but-not-G** (library has it, no GUI calls it) or
     struct — there is **no heatmap surface today**. SPECTRAL_DIFFERENTIATORS D5
     states this correctly; MCP_TOOL_SURFACE's `rise://render/variance` overstates it.
 
-12. **No side-effect-free parse/validate path exists** — parsing constructs
-    Job/Scene entities immediately as chunks finalize
-    (`AsciiSceneParser.cpp:9867`, `ParseChunk` → `Finalize` → `pJob.Add*`). The
-    command `> quit` calls `exit(1)` (`AsciiCommandParser.cpp:182`); `render`,
-    `load`, `run` all have hard side effects. **`Job` does NOT retain scene
-    source text** — `SourceSpanIndex` stores byte offsets only; SaveEngine
-    re-reads the file from disk at save time.
+12. **[SUPERSEDED 2026-07-01 — see erratum]** ~~No side-effect-free parse/validate
+    path exists~~ / ~~`Job` does NOT retain scene source text~~ — both flipped by the
+    CST cutover. `Cst::ParseToCst(const std::string&)` is a string-input,
+    construction-free parse to a CST `Document` (construction happens later in
+    `DeriveToJob`), and the `Job` **retains the canonical Document**, from which
+    `SaveEngine` serializes directly (`SourceSpanIndex` and the save-time file
+    re-read are gone). The command-parser caveats (`> quit` calls `exit(1)`,
+    `AsciiCommandParser.cpp:182`) still stand for the script/command layer.
 
 13. **MCP server + LLM agent runtime are ENTIRELY ABSENT (greenfield)** — no
     `src/Library/MCP`, no agent runtime, no JSON tool surface, no provider
@@ -121,13 +132,22 @@ Many capabilities are **L-but-not-G** (library has it, no GUI calls it) or
 
 ## 1. Round-trip save — by mode and entity type
 
-**Architecture.** `SaveEngine` (`SaveEngine.h:83`) takes borrowed
+> **⚠ HISTORICAL (superseded 2026-07-01 — see the erratum at the top).** Everything
+> below in §1 describes the byte-splice engine **deleted in Model-B P5 Slice 6d**.
+> Current save: `SaveEngine::Save` (`SaveEngine.cpp`, ~281 lines) serializes the
+> Job's retained CST Document via `Cst::SerializeCst`, NoOps on byte-equality,
+> Refuses on the external-modification mtime/size guard (`FileIdentity.h`,
+> `SaveEngine.cpp` ~223-247), and writes atomically. The `SaveResult` four-state
+> enum (**Saved / NoOp / Refused / Failed**, `SaveEngine.h:43`) survives; the modes,
+> passes, per-edit refusal classes, and `tests/SaveEngineTest.cpp` below do not.
+
+**Architecture (pre-cutover).** `SaveEngine` took borrowed
 `IJobPriv`, `SourceSpanIndex`, `OverrideSpanIndex`, two `TransformSnapshot`
 (base + loaded), a `DirtyTracker`, and the scale-from-anchor set. `Save(filePath)`
-returns a `SaveResult` with four states: **Saved / NoOp / Refused / Failed**
-(`SaveEngine.h:45`). The engine **re-reads the source file from disk** at save
-time (`SaveEngine.cpp:869`) — it does not keep an in-memory copy; correctness
-signal is byte-identity, not a counter.
+returned a `SaveResult` with four states: **Saved / NoOp / Refused / Failed**.
+The engine **re-read the source file from disk** at save
+time — it did not keep an in-memory copy; correctness
+signal was byte-identity, not a counter.
 
 **Two modes** (`SaveEngine.h:8-18`):
 - **Mode A** — in-place line rewrite: splices the new value into the file's bytes
@@ -206,10 +226,10 @@ material Phase-B path exists and is exercised indirectly, but lacks a named test
   exist; `RemoveCamera` exists (used by `AddCamera` undo). These are NOT exposed
   as a general "add camera from scratch" — only clone.
 
-**Persistence:** a cloned camera persists through save→reload (Phase C). The
-header notes the persistence caveat is now satisfied for cameras
-(`SceneEditController.h:640-644` predates Phase C and still says "round-trip
-pending" — stale comment; Phase C `SaveEngineTest.cpp:1690` proves persistence).
+**Persistence:** a cloned camera persists through save→reload — post-cutover via
+`Job::ApplyCstInsertCameraChunk` (chunk inserted into the retained CST Document)
++ the whole-Document save. (The pre-cutover mechanism was Phase C re-emit,
+proven by the deleted `SaveEngineTest.cpp:1690`; see the erratum.)
 
 **Per-platform exposure of camera-clone:**
 
@@ -409,25 +429,39 @@ net-new additive read-back (SPECTRAL_DIFFERENTIATORS D5 states this correctly).
 
 ## 12. Validation / parse
 
-**No side-effect-free parse/validate path exists.**
-- Scene parsing constructs Job/Scene entities immediately as each chunk's
-  `Finalize` runs `pJob.Add*/Set*` (`AsciiSceneParser.cpp:9867`, generic
-  descriptor dispatch ~`:725`; main loop `:10908`). `LoadAsciiScene`
-  (`Job.cpp:9221`) unconditionally triggers full construction. There is no
-  parse-only / validate-only API, and no string-input parser.
+> **⚠ SUPERSEDED (2026-07-01 — see the erratum at the top).** The CST cutover
+> flipped this section's two headline claims. Current reality:
+>
+> - **A construction-free string-input parse EXISTS**: `Cst::ParseToCst(const
+>   std::string&)` builds a CST `Document` without touching a `Job`; entity
+>   construction happens in the separate `DeriveToJob` step
+>   (`src/Library/Cst/Cst.cpp`). The `AsciiSceneParser.cpp` streaming loader and
+>   `ISceneParser::ParseAndLoadScene` were deleted (Slice 6c); the descriptor-driven
+>   chunk parsers live in `IAsciiChunkParser.h` / `ChunkParserRegistry.cpp`.
+> - **The `Job` DOES retain the scene source of truth**: the canonical CST
+>   `Document` (not raw text; `Cst::SerializeCst(doc)` reproduces the text).
+>   `SourceSpanIndex` was deleted; `SaveEngine` serializes the retained Document
+>   instead of re-reading the file.
+> - The command-parser bullet below still stands.
+
+Pre-cutover findings (2026-06-19, historical):
+- Scene parsing constructed Job/Scene entities immediately as each chunk's
+  `Finalize` ran `pJob.Add*/Set*` (the deleted `AsciiSceneParser.cpp` streaming
+  loader). `LoadAsciiScene` unconditionally triggered full construction. There was
+  no parse-only / validate-only API, and no string-input parser.
 - Command parser (`AsciiCommandParser.cpp`): the command table (`:42-48`) maps
   `render`→ParseRasterize, `renderanimation`, `run`→ParseRun, `quit`→ParseQuit.
   **`> quit` calls `exit(1)`** (`:182`) — it terminates the process. `render`
   kicks a full render; `load` loads a scene file; all carry hard side effects.
-- **`Job` does NOT retain scene source text.** It holds
-  `std::unique_ptr<SourceSpanIndex>` (`Job.h:116`) — byte-range metadata only
-  (`SourceSpanIndex.h:50-73`, offsets/begin/end, no text buffers). SaveEngine
-  round-trips by **re-reading the file from disk** at save time
-  (`SaveEngine.cpp:869`), not from memory. There is no `GetSceneText()`.
+  *(Still true post-cutover for the script/command layer.)*
+- **`Job` did NOT retain scene source text.** It held
+  `std::unique_ptr<SourceSpanIndex>` — byte-range metadata only. SaveEngine
+  round-tripped by **re-reading the file from disk** at save time,
+  not from memory. There was no `GetSceneText()`.
 
-(Consequence for any future MCP/validate tool: scene-text retention on `Job` and a
-side-effect-free parse are both net-new — see GUI_ROADMAP §10.5 / MCP §3.1, §4.6,
-which state this correctly.)
+(The old consequence note — "scene-text retention on `Job` and a side-effect-free
+parse are both net-new" — no longer holds: both exist via the retained CST
+Document and `ParseToCst`.)
 
 ---
 
