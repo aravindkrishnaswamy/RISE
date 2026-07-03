@@ -668,10 +668,17 @@ void ViewportProperties::rebuildPropertyRowsFor(Category sectionCat, SectionWidg
                             // would deleteLater() the very ScrubHandle
                             // whose mouseMoveEvent is on the stack, see
                             // the m_scrubbing guard in refresh()), so
-                            // re-pull just this property's live value
-                            // and cache THAT rather than the submitted
-                            // string.  The drag-end path (endBracket
-                            // below) still does a full refresh().
+                            // re-pull this property's LAST-KNOWN
+                            // CACHED value (propertySnapshotFor reads
+                            // the controller's cache, which refresh()
+                            // won't repopulate while m_scrubbing -- so
+                            // this is pre-drag, NOT live) and cache
+                            // THAT rather than the submitted string.
+                            // Harmless: m_lastValue's only consumer is
+                            // onLineEditFinished, unreachable mid-drag;
+                            // the drag-end path (endBracket below) does
+                            // a full refresh() that re-seeds from the
+                            // genuinely live snapshot.
                             m_bridge->setPropertyForCategory(sectionCat, n, v);
                             const QVector<ViewportProperty> live =
                                 m_bridge->propertySnapshotFor(sectionCat);
