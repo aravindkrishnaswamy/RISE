@@ -187,6 +187,14 @@ namespace RISE
 			double                     meanR = 0.0;   //!< linear per-channel mean (order-independent image signature)
 			double                     meanG = 0.0;
 			double                     meanB = 0.0;
+			//! Round-3 ADDITIVE wire field: the ACTIVE rasterizer's registered
+			//! type name -- IJob::GetActiveRasterizerName(), which registers
+			//! each rasterizer under its scene-file CHUNK KEYWORD (e.g.
+			//! "pathtracing_pel_rasterizer", "bdpt_pel_rasterizer") -- so an
+			//! agent can OBSERVE which integrator is live after a rasterizer
+			//! insert_chunk.  Empty when no rasterizer is active (the no-head /
+			//! no-rasterizer failure paths).
+			std::string                integrator;
 			std::string                message;
 		};
 

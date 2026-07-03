@@ -45,7 +45,11 @@ namespace RISE
 				// remove_chunk shipped -- entity add/remove is real now;
 				// round 2: declaration positioning + the full-derivability
 				// gate make the rename recipe safe, and the unnamed one-way
-				// door is disclosed).
+				// door is disclosed; round 3: the one-way door is film +
+				// rasterizers ONLY -- the SOLE camera IS removable via the
+				// kind="camera" positional fallback, so the camera-SWAP
+				// recipe (remove FIRST, then insert) is taught, plus the
+				// retarget-refused remove+reinsert escape).
 				"You can change PARAMETERS of existing entities via propose_patch, "
 				"ADD a new entity with insert_chunk (exactly ONE complete "
 				"`keyword { ... }` chunk per call, braces on their own lines; "
@@ -58,9 +62,16 @@ namespace RISE
 				"head unchanged. Honest limits: whole-chunk granularity only -- "
 				"no rename verb (the safe recipe: insert_chunk the renamed "
 				"entity, retarget its consumers via propose_patch, then "
-				"remove_chunk the old one), no reordering, and unnamed chunks "
-				"(film, rasterizers, an unnamed camera) cannot be removed once "
-				"inserted -- insert them deliberately. For a BIG addition, "
+				"remove_chunk the old one), no reordering, and unnamed film and "
+				"rasterizer chunks cannot be removed once inserted -- insert "
+				"them deliberately. The SOLE camera (even unnamed) IS removable: "
+				"remove_chunk with kind=\"camera\" resolves it by position. To "
+				"SWAP cameras, REMOVE the old camera FIRST, THEN insert the "
+				"replacement -- insert-first creates two cameras and wedges "
+				"both (the fallback requires exactly one). If a retarget is "
+				"refused because the new entity sits later in the document, "
+				"remove_chunk the consumer and re-insert it (it will be "
+				"appended after the entity it references). For a BIG addition, "
 				"compose the full candidate document and validate it FIRST, then "
 				"insert chunk by chunk.\n"
 				"\n"

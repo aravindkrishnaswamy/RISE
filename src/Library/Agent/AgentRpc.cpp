@@ -454,9 +454,11 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// render {samples?} -> {ok,width,height,meanR,meanG,meanB,message}
+				// render {samples?} -> {ok,width,height,meanR,meanG,meanB,
+				//                       integrator,message}
 				//   (NOT the image bytes -- render stays lean; read_image
-				//    carries the base64 PNG.)
+				//    carries the base64 PNG.  `integrator` = the ACTIVE
+				//    rasterizer's chunk keyword, empty when none is active.)
 				//--------------------------------------------------------------
 				if( m == "render" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
@@ -492,6 +494,7 @@ namespace RISE
 					result.set( "meanR",  JsonValue::MakeNumber( rr.meanR ) );
 					result.set( "meanG",  JsonValue::MakeNumber( rr.meanG ) );
 					result.set( "meanB",  JsonValue::MakeNumber( rr.meanB ) );
+					result.set( "integrator", JsonValue::MakeString( rr.integrator ) );
 					result.set( "message", JsonValue::MakeString( rr.message ) );
 					return MakeSuccess( idValue, result );
 				}

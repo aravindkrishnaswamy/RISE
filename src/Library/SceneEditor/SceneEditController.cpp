@@ -2881,7 +2881,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 			r.headVersion = cur;
 			char buf[160];
 			std::snprintf( buf, sizeof( buf ),
-				"stale baseHeadVersion: head moved to revision %llu (re-read and re-propose)",
+				"baseHeadVersion does not match the current head (revision %llu) -- re-read and re-propose",
 				static_cast<unsigned long long>( cur.revision ) );
 			r.message = String( buf );
 			return r;   // lk unlocks; render thread was parked but no edit landed -- no kick needed
@@ -3087,7 +3087,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 			r.headVersion = cur;
 			char buf[160];
 			std::snprintf( buf, sizeof( buf ),
-				"stale baseHeadVersion: head moved to revision %llu (re-read and re-propose)",
+				"baseHeadVersion does not match the current head (revision %llu) -- re-read and re-propose",
 				static_cast<unsigned long long>( cur.revision ) );
 			r.message = String( buf );
 			return r;
@@ -3171,9 +3171,19 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 			r.status  = String( "rejected" );
 			std::string m;
 			if( isInsert ) {
-				m = "insert rejected: a chunk with the same kind and name already exists";
-				if( diagBuf[0] ) { m += " ("; m += diagBuf; m += ")"; }
-				m += " -- head unchanged";
+				// Round-3: a "reserved name"-prefixed diag (Job's `name none`
+				// refusal) is NOT a chunk collision -- surface the real cause
+				// verbatim instead of the misleading "already exists" claim.
+				// Prefix kept in lockstep with Job::ApplyCstInsertChunk (and
+				// the identical fold in AgentSession.cpp).
+				const std::string dstr = diagBuf[0] ? std::string( diagBuf ) : std::string();
+				if( dstr.compare( 0, 13, "reserved name" ) == 0 ) {
+					m = "insert rejected: " + dstr + " -- head unchanged";
+				} else {
+					m = "insert rejected: a chunk with the same kind and name already exists";
+					if( diagBuf[0] ) { m += " ("; m += diagBuf; m += ")"; }
+					m += " -- head unchanged";
+				}
 			} else {
 				// Round-2 P3: the hint is CONDITIONAL on whether the caller
 				// already narrowed -- repeating "pass `kind`" when kind WAS

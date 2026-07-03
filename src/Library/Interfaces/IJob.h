@@ -3346,9 +3346,12 @@ namespace RISE
 		//! EXACT (kind,name,variant) duplicate is still refused.  An UNNAMED chunk (film / rasterizer /
 		//! camera-class) is refused when an unnamed chunk of the SAME keyword already exists -- unnamed chunks are
 		//! singletons per keyword (a duplicate would be last-wins-masked on derive yet persisted by save, and
-		//! bare-name-addressed remove_chunk could never delete it).  NOTE the one-way door: an unnamed chunk can
-		//! never be REMOVED through this surface once inserted (remove_chunk is bare-name-addressed) -- insert
-		//! them deliberately.
+		//! bare-name-addressed remove_chunk could never delete it).  NOTE the one-way doors: an unnamed FILM or
+		//! RASTERIZER chunk can never be removed through this surface once inserted (remove_chunk is
+		//! bare-name-addressed) -- insert them deliberately.  The SOLE camera is the EXCEPTION:
+		//! ApplyCstRemoveChunk's kind="camera" positional fallback resolves it even unnamed (any target string
+		//! that matches no chunk name), so a camera SWAP must REMOVE the old camera FIRST, THEN insert the
+		//! replacement -- insert-first yields TWO cameras and the exactly-one fallback then resolves neither.
 		//! POSITION (round 2): DECLARATION-class chunks (painters/functions; materials/geometry/modifiers/media/
 		//! shaders/shaderops) are inserted BEFORE their potential consumers (declare-before-use), falling back to
 		//! append-at-end if the positioned insert does not derive; everything else -- objects, lights, cameras,
@@ -3364,7 +3367,10 @@ namespace RISE
 		//! no retained CST Document, empty chunk text, and an internal separator-build failure (outDiag/log say
 		//! which);
 		//! -1 = malformed chunk text (not exactly one chunk / stray text / unclosed chunk); -2 = duplicate
-		//! (kind,name) or exact (kind,name,variant).
+		//! (kind,name) or exact (kind,name,variant), or the RESERVED name `none` (the scene language's unbind
+		//! sentinel -- the material + painter managers pre-register a "none" null entry, and countless slots
+		//! treat the literal string "none" as "unbound", so an entity named `none` could never be bound or
+		//! addressed distinctly; outDiag is prefixed "reserved name" so callers can distinguish it).
 		//! Never 1: an insert is ALWAYS D2-class (a new entity cannot re-derive incrementally).
 		//! Default no-op returning 0 (legacy jobs have no retained CST); see Job override.
 		//! NB: appended at the IJob tail per the append-only ABI convention (preserves every prior vtable slot).

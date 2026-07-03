@@ -42,6 +42,12 @@
 //    L2  The FULL LIVE DISPATCHER path: raw insert_chunk / remove_chunk
 //        JSON-RPC lines through AgentRpcDispatcher::HandleLine against
 //        the attached controller mutate the real managers.
+//    G5  Round-3 red-prove: the taught camera-SWAP recipe is TRUE --
+//        the sole unnamed camera removes via kind="camera" (positional
+//        fallback), the camera-less document derives, and the inserted
+//        thinlens replacement renders.  (G3 additionally asserts the
+//        render result's `integrator` field tracks a rasterizer insert;
+//        H2 asserts the reserved-name `none` refusal message.)
 //
 //  Self-contained: no RISE_MEDIA_PATH, inline native-v7 scenes, OIDN off.
 //
@@ -336,6 +342,19 @@ static void TestInsertRejections()
 	       "unnamed-singleton rejection says the chunk already exists" );
 	Check( rFilm.kind == "film", "unnamed-singleton rejection echoes the kind" );
 
+	// RESERVED name `none` (round 3 message precision): the unbind sentinel
+	// the managers pre-register -- must be refused EARLY with a message that
+	// names the real cause, not the generic would-not-derive / "apply failed
+	// (e.g. unresolved reference)" it used to fold into.
+	Agent::AgentChunkResult rNone = sess->InsertChunk(
+		"sphere_geometry\n{\n\tname none\n\tradius 1\n}" );
+	Check( !rNone.applied && rNone.status == "rejected", "`name none` insert rejected" );
+	Check( rNone.message.find( "reserved name" ) != std::string::npos &&
+	       rNone.message.find( "none" ) != std::string::npos,
+	       "the `name none` rejection names the reserved-name cause" );
+	Check( rNone.message.find( "already exists" ) == std::string::npos,
+	       "the `name none` rejection does NOT claim a chunk collision" );
+
 	// NON-MUTATION: the head is byte-identical and the revision unmoved
 	// across ALL of the refusals above.
 	Check( sess->ReadDocument() == headBefore,
@@ -463,8 +482,11 @@ static void TestConflictGate()
 	const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
 	Agent::AgentChunkResult rC = sess->InsertChunk( lightChunk, &stale );
 	Check( !rC.applied && rC.status == "conflict", "stale-base insert -> status=\"conflict\"" );
-	Check( rC.message.find( "stale baseHeadVersion" ) != std::string::npos,
-	       "conflict message reports the stale base" );
+	// Round-3 message precision: the head did NOT "move" here (the caller's
+	// base is a fabricated FUTURE revision) -- the message must claim only
+	// the true fact: the base does not match the current head.
+	Check( rC.message.find( "does not match the current head" ) != std::string::npos,
+	       "conflict message reports the mismatch (not a false 'head moved' claim)" );
 	Check( sess->ReadDocument() == headBefore, "conflict left the head byte-identical" );
 	Check( sess->HeadVersion() == vBefore, "conflict did not bump the revision" );
 	Check( rC.headVersion == vBefore, "conflict result carries the CURRENT head" );
@@ -1116,11 +1138,30 @@ static void TestRasterizerInsertActivation()
 	Check( pJob->GetActiveRasterizerName() == "pathtracing_pel_rasterizer",
 	       "the authored pathtracing rasterizer is active on load" );
 
+	// Round-3 additive wire field: the render result carries the ACTIVE
+	// integrator (the rasterizer's chunk keyword) -- pre-insert it must be
+	// the authored pathtracing one.
+	{
+		Agent::AgentRenderResult rrPre = sess->Render();
+		Check( rrPre.ok, "the pre-insert render succeeds" );
+		Check( rrPre.integrator == "pathtracing_pel_rasterizer",
+		       "the pre-insert render reports integrator=pathtracing_pel_rasterizer" );
+	}
+
 	Agent::AgentChunkResult r = sess->InsertChunk(
 		"bdpt_pel_rasterizer\n{\n\tsamples 4\n}" );
 	Check( r.applied, "inserting a different-keyword rasterizer applies" );
 	Check( pJob->GetActiveRasterizerName() == "bdpt_pel_rasterizer",
 	       "the inserted rasterizer is ACTIVE live (activation restore skipped)" );
+
+	// ... and post-insert the render result OBSERVES the switch -- the agent
+	// no longer has to take activation on faith.
+	{
+		Agent::AgentRenderResult rrPost = sess->Render();
+		Check( rrPost.ok, "the post-insert render succeeds" );
+		Check( rrPost.integrator == "bdpt_pel_rasterizer",
+		       "the post-insert render reports integrator=bdpt_pel_rasterizer (the field reflects the insert)" );
+	}
 
 	// Live == reload: derive the serialized bytes into a FRESH Job and
 	// compare active-rasterizer names (last-wins on load).
@@ -1196,6 +1237,58 @@ static void TestVariantOverlayAndAmbiguityMessages()
 }
 
 
+//----------------------------------------------------------------------
+// G5: the taught camera-SWAP recipe is TRUE (round 3 P1 red-prove).
+// The round-2 teaching claimed an unnamed camera can NEVER be removed;
+// in fact ApplyCstRemoveChunk's kind="camera" positional fallback
+// resolves the SOLE camera-kind chunk even unnamed.  Drive the exact
+// recipe the prompts now teach: remove the sole unnamed camera FIRST
+// (the camera-less document derives), THEN insert the replacement --
+// and the derived head carries the thinlens camera and renders.
+//----------------------------------------------------------------------
+static void TestCameraSwapRecipe()
+{
+	std::printf( "G5: camera SWAP -- remove the sole unnamed camera (kind=\"camera\"), then insert the replacement...\n" );
+	const std::string tmp = TempPath( "agentcrud_g5.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "camera-swap fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	// Step 1: the sole UNNAMED camera IS removable via the kind="camera"
+	// positional fallback (the target is a bare name that matches nothing;
+	// resolution is by position because exactly ONE camera-kind chunk exists).
+	Agent::AgentChunkResult rm = sess->RemoveChunk( "pinhole_camera", "camera" );
+	Check( rm.applied && rm.status == "applied",
+	       "the sole unnamed camera is REMOVABLE via kind=\"camera\" (the teaching is true)" );
+	Check( rm.kind == "pinhole_camera", "the remove echoes the resolved camera keyword" );
+	Check( sess->ReadDocument().find( "pinhole_camera" ) == std::string::npos,
+	       "the camera chunk is gone from the head (camera-less document derived)" );
+
+	// Step 2: insert the replacement -- the taught remove-FIRST order means
+	// exactly one camera exists again afterwards (no wedged pair).
+	Agent::AgentChunkResult ins = sess->InsertChunk(
+		"thinlens_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n"
+		"\tsensor_size 36.0\n\tfocal_length 35.0\n\tfstop 2.8\n\tfocus_distance 3.5\n}" );
+	Check( ins.applied && ins.status == "applied", "the replacement thinlens camera inserts" );
+	Check( ins.kind == "thinlens_camera", "the insert echoes the camera keyword" );
+	Check( sess->ReadDocument().find( "thinlens_camera" ) != std::string::npos,
+	       "the head carries the thinlens camera" );
+
+	// The DERIVED scene really has the swapped camera: it renders non-black.
+	Agent::AgentRenderResult rr = sess->Render();
+	Check( rr.ok, "the swapped head renders" );
+	Check( rr.meanR + rr.meanG + rr.meanB > 0.0, "the post-swap render is non-black" );
+
+	// And the swapped camera stays removable -- it is again the SOLE camera.
+	Agent::AgentChunkResult rm2 = sess->RemoveChunk( "thinlens_camera", "camera" );
+	Check( rm2.applied, "the swapped-in camera is itself removable via kind=\"camera\"" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk) ===\n" );
@@ -1213,6 +1306,7 @@ int main()
 	TestRenameRecipeEndToEnd();
 	TestRasterizerInsertActivation();
 	TestVariantOverlayAndAmbiguityMessages();
+	TestCameraSwapRecipe();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

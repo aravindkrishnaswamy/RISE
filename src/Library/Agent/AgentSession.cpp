@@ -792,7 +792,7 @@ namespace RISE
 					r.headVersion = cur;
 					char buf[160];
 					std::snprintf( buf, sizeof( buf ),
-						"stale baseHeadVersion: head moved to revision %llu (re-read and re-propose)",
+						"baseHeadVersion does not match the current head (revision %llu) -- re-read and re-propose",
 						static_cast<unsigned long long>( cur.revision ) );
 					r.message = buf;
 					return r;
@@ -916,6 +916,15 @@ namespace RISE
 						r.applied = false;
 						r.status  = "rejected";
 						if( isInsert ) {
+							// Round-3: a "reserved name"-prefixed diag (Job's `name none`
+							// refusal) is NOT a chunk collision -- surface the real cause
+							// verbatim instead of the misleading "already exists" claim.
+							// Prefix kept in lockstep with Job::ApplyCstInsertChunk.
+							const std::string dstr = ( diag && diag[0] ) ? diag : "";
+							if( dstr.compare( 0, 13, "reserved name" ) == 0 ) {
+								r.message = "insert rejected: " + dstr + " -- head unchanged";
+								break;
+							}
 							r.message = "insert rejected: a chunk with the same kind and name already exists";
 							if( diag && diag[0] ) { r.message += " ("; r.message += diag; r.message += ")"; }
 							r.message += " -- head unchanged";
@@ -997,7 +1006,7 @@ namespace RISE
 					r.headVersion = cur;
 					char buf[160];
 					std::snprintf( buf, sizeof( buf ),
-						"stale baseHeadVersion: head moved to revision %llu (re-read and re-propose)",
+						"baseHeadVersion does not match the current head (revision %llu) -- re-read and re-propose",
 						static_cast<unsigned long long>( cur.revision ) );
 					r.message = buf;
 					return r;
@@ -1067,7 +1076,7 @@ namespace RISE
 					r.headVersion = cur;
 					char buf[160];
 					std::snprintf( buf, sizeof( buf ),
-						"stale baseHeadVersion: head moved to revision %llu (re-read and re-propose)",
+						"baseHeadVersion does not match the current head (revision %llu) -- re-read and re-propose",
 						static_cast<unsigned long long>( cur.revision ) );
 					r.message = buf;
 					return r;
@@ -1129,6 +1138,15 @@ namespace RISE
 				res.message = "no active rasterizer";
 				return res;
 			}
+
+			// Round-3 additive wire field: report the ACTIVE rasterizer's
+			// registered type name (= its scene-file chunk keyword, e.g.
+			// "bdpt_pel_rasterizer") so the agent can observe which
+			// integrator a rasterizer insert_chunk activated.  Filled on
+			// BOTH the success and the render-failure paths below -- the
+			// active integrator is a property of the head, not of whether
+			// this particular render produced an image.
+			res.integrator = mJob->GetActiveRasterizerName();
 
 			// Swap in the in-memory sink (remove any authored file outputs so
 			// a headless render does not touch the filesystem), render, read

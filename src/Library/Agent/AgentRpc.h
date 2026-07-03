@@ -57,7 +57,14 @@
 //                                            disambiguation hint; a still-referenced
 //                                            target fails the dry-run -> rejected with
 //                                            the diagnostic, head byte-identical.)
-//      render       {samples?}           -> {ok,width,height,meanR,meanG,meanB,message}
+//      render       {samples?}           -> {ok,width,height,meanR,meanG,meanB,integrator,message}
+//                                           (`integrator` is the ACTIVE rasterizer's
+//                                            registered type name = its scene-file
+//                                            chunk keyword, e.g.
+//                                            "pathtracing_pel_rasterizer" -- empty
+//                                            when no rasterizer is active.  Lets an
+//                                            agent OBSERVE which integrator a
+//                                            rasterizer insert_chunk activated.)
 //      read_image                        -> {png_base64:string, byteLength:number}
 //
 //    Facet 5 slice 1a (optimistic concurrency): read_document now carries the

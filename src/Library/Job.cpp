@@ -10225,6 +10225,20 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 		}
 	}
 
+	// Round-3 message precision: `none` is the scene language's RESERVED unbind sentinel --
+	// InitializeContainers pre-registers a "none" null entry in the material + painter managers
+	// (GenericManager::AddItem then refuses the duplicate name) and countless slots treat the literal
+	// string "none" as "unbound" -- so an entity named `none` could never be bound or addressed
+	// distinctly.  Without this early check the dry-run fails with the generic "apply failed (e.g.
+	// unresolved reference)" diagnostic, hiding the real cause.  The diag's "reserved name" prefix is
+	// how the AgentSession / SceneEditController folds distinguish this -2 from a chunk collision --
+	// keep the prefix in lockstep with them.
+	if( name == "none" ) {
+		S2CopyOut( outDiag, diagMax, "reserved name: `none` is the built-in unbind sentinel -- pick a different name" );
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: `none` is a reserved name (the unbind sentinel); insert rejected" );
+		return -2;
+	}
+
 	// Early duplicate refusal -- a clean message for the obvious collision, BEFORE paying the dry-run
 	// derive.  A chunk carrying a `variant` param is exempt from the (kind,name) check -- a variant
 	// overlay legitimately shares its base chunk's (kind,name) (the derive layer disambiguates by the
@@ -10376,6 +10390,13 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 	std::string firstDiag;
 	const int code = RederiveCstDocumentFull_( std::move( d2 ), ctx, &firstDiag, /*restoreActiveRasterizer*/ !isRasterizerInsert );
 	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+	else {
+		// Round-3 P3: the POSITIONED attempt above logged eLog_Error "would not derive" lines before
+		// this append retry landed (code 2 clean, or code 3 with its OWN fresh diagnostics) -- without
+		// a clarifying line the log reads as if the insert failed outright.
+		GlobalLog()->PrintEx( eLog_Event,
+			"Job::ApplyCstInsertChunk:: the positioned insert fell back to append-at-end, which landed; the `would not derive` diagnostics above came from the positioned attempt and are superseded" );
+	}
 	return code;
 }
 

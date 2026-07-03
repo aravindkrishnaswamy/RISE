@@ -361,6 +361,16 @@ static void TestAnthropicRequestShape()
 			       "insert_chunk description teaches validate-first for big additions" );
 			Check( desc.find( "EARLIER" ) != std::string::npos,
 			       "insert_chunk description teaches declare-before-use ordering" );
+			// Round 3: the one-way door is film + rasterizers ONLY, and the
+			// camera-SWAP recipe (remove FIRST, then insert) is taught -- the
+			// round-2 "an unnamed camera can NEVER be removed" claim was FALSE
+			// (the kind=\"camera\" positional fallback removes the sole camera).
+			Check( desc.find( "an unnamed camera" ) == std::string::npos,
+			       "insert_chunk description no longer lists the camera among the unremovable chunks" );
+			Check( desc.find( "kind=\"camera\"" ) != std::string::npos,
+			       "insert_chunk description teaches the kind=\"camera\" camera removal" );
+			Check( desc.find( "FIRST" ) != std::string::npos,
+			       "insert_chunk description teaches the remove-FIRST camera-swap order" );
 		}
 		if( name == "remove_chunk" ) {
 			Check( desc.find( "baseHeadVersion" ) != std::string::npos,
@@ -370,6 +380,22 @@ static void TestAnthropicRequestShape()
 			Check( desc.find( "no rename" ) != std::string::npos ||
 			       desc.find( "There is no rename" ) != std::string::npos,
 			       "remove_chunk description states the no-rename limit" );
+			// Round 3: the true camera claims + the retarget-refused escape.
+			Check( desc.find( "an unnamed camera" ) == std::string::npos,
+			       "remove_chunk description no longer claims the camera is unremovable" );
+			Check( desc.find( "kind=\"camera\"" ) != std::string::npos &&
+			       desc.find( "SOLE camera" ) != std::string::npos,
+			       "remove_chunk description teaches that the SOLE camera removes via kind=\"camera\"" );
+			Check( desc.find( "FIRST" ) != std::string::npos,
+			       "remove_chunk description teaches the remove-FIRST camera-swap order" );
+			Check( desc.find( "re-insert" ) != std::string::npos,
+			       "remove_chunk description teaches the retarget-refused remove+re-insert escape" );
+		}
+		if( name == "render" ) {
+			// Round 3 additive wire field: the model is told the result carries
+			// the ACTIVE integrator so it checks it after a rasterizer insert.
+			Check( desc.find( "integrator" ) != std::string::npos,
+			       "render description mentions the integrator field" );
 		}
 	}
 	Check( root.get( "system" ).asString().find( "status=diagnosed" ) != std::string::npos,
@@ -385,6 +411,19 @@ static void TestAnthropicRequestShape()
 	Check( root.get( "system" ).asString().find( "whole-chunk granularity" ) != std::string::npos &&
 	       root.get( "system" ).asString().find( "no rename" ) != std::string::npos,
 	       "the system prompt keeps honest limits (whole-chunk granularity; no rename)" );
+	// Round 3: the system prompt teaches the TRUE camera story -- the sole
+	// camera IS removable via kind="camera", the swap order is remove-FIRST --
+	// and the retarget-refused remove+re-insert escape.  The false round-2
+	// "an unnamed camera cannot be removed" claim must be gone.
+	Check( root.get( "system" ).asString().find( "an unnamed camera" ) == std::string::npos,
+	       "the system prompt no longer claims the unnamed camera is unremovable" );
+	Check( root.get( "system" ).asString().find( "kind=\"camera\"" ) != std::string::npos &&
+	       root.get( "system" ).asString().find( "SOLE camera" ) != std::string::npos,
+	       "the system prompt teaches the kind=\"camera\" sole-camera removal" );
+	Check( root.get( "system" ).asString().find( "REMOVE the old camera FIRST" ) != std::string::npos,
+	       "the system prompt teaches the remove-FIRST camera-swap order" );
+	Check( root.get( "system" ).asString().find( "re-insert" ) != std::string::npos,
+	       "the system prompt teaches the retarget-refused remove+re-insert escape" );
 
 	const JsonValue& msgs = root.get( "messages" );
 	Check( msgs.isArray() && msgs.size() == 1, "body carries the one user message" );
