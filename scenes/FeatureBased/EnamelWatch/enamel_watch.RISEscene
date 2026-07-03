@@ -78,7 +78,7 @@ pathtracing_spectral_rasterizer
 directional_light
 {
 	name				dialkey
-	power				3.14159
+	power				6.0
 	color				1 1 1
 	direction			0.45 0.35 0.62
 }
