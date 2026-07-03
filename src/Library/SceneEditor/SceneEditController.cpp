@@ -2783,8 +2783,9 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 	AgentCommitResult r;
 
 	// F5 polish A1 round 2: refuse a MID-TRANSACTION agent commit BEFORE any
-	// mutation or park -- the same rule as the four SetProperty-side mTxnOpen
-	// refusals (active-switch / animation frame-count / rasterizer / film).
+	// mutation or park -- the same rule as the four existing mTxnOpen
+	// refusals (SetSelection's active-switch; SetProperty's animation
+	// frame-count / rasterizer / film).
 	// An agent commit's Document mutation has NO EditHistory record, so
 	// RollbackTransaction's inverse-edit Undo loop can never revert it; a
 	// FULL rollback would then RestoreEditorState the pre-transaction dirty
@@ -2808,6 +2809,10 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 		r.applied = false;
 		r.rawCode = 0;
 		r.status  = String( "rejected" );
+		// The ONE transient reject: the identical commit succeeds once the
+		// gesture completes, so mark it retriable for the wire client (the
+		// permanent rejects below keep the default false).
+		r.retriable = true;
 		r.message = String( "editor transaction in progress -- retry after the gesture completes" );
 		{
 			// Keep this function's "every head read is under mMutex"
@@ -3013,21 +3018,21 @@ void SceneEditController::KickRender()
 	mCV.notify_one();
 }
 
-// Phase 6.5 (docs/ROUND_TRIP_SAVE_PLAN.md §9.9): write dirty edits to
-// disk using SaveEngine.  Three-step cancel-and-park dance:
+// Phase 6.5 (docs/ROUND_TRIP_SAVE_PLAN.md §9.9): save the scene via
+// SaveEngine::Save -- an unconditional whole-Document SerializeCst
+// (NoOps on byte-equality; dirty state selects nothing, it only gates
+// the Save button).  Three-step cancel-and-park dance:
 //   1. Park the render thread (cancel in-flight + wait for
 //      mRendering=false), set mSaving=true.
 //   2. Run SaveEngine outside the lock (file IO is slow).
 //   3. Reacquire lock, clear mSaving, capture any error, notify the
 //      render loop.
 //
-// V1 has no `mScaleFromAnchorSet` reference exposed on the live
-// SceneEditor (it's const-accessed via ScaleFromAnchorSet()) — the
-// SaveEngine takes a non-const reference to clear post-save.  We
-// copy into a local, pass it to the engine, then mirror its clear
-// back onto the editor's state via ClearDirtyState() on success.
-// Phase B can wire the live reference once the SaveEngine is plumbed
-// into the cancel-and-park path more thoroughly.
+// The live SceneEditor exposes `mScaleFromAnchorSet` const-only
+// (ScaleFromAnchorSet()), while the SaveEngine takes a non-const
+// reference it clears post-save.  We copy into a local, pass that to
+// the engine, then mirror its clear back onto the editor's state via
+// ClearDirtyState() on success.
 SaveResult SceneEditController::RequestSave( const std::string& filePath )
 {
 	// ---- Step 1: park render thread + mark save in flight -----------

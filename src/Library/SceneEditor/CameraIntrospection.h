@@ -116,8 +116,12 @@ namespace RISE
 		//! Returns the scene-file chunk keyword for this camera —
 		//! "pinhole_camera" / "thinlens_camera" / "fisheye_camera" /
 		//! "orthographic_camera" — or empty for an out-of-tree type.
-		//! Phase C: the save engine needs this to emit a fresh chunk
-		//! for a newly-created (cloned) camera.
+		//! Current consumers: CameraIntrospection::Inspect (descriptor
+		//! lookup for the property panel) and BuildCameraChunkText (the
+		//! CST camera-clone chunk insert).  (Historically added in Phase
+		//! C so the byte-splice save engine could emit a fresh chunk for
+		//! a newly-created (cloned) camera; that engine went with the
+		//! Slice-6d deletion.)
 		static String GetDescriptorKeyword( const ICamera& camera );
 
 		//! Model-B P5 (camera-clone CST insert): build a FAITHFUL,

@@ -501,11 +501,13 @@ namespace RISE
 			// Job::ApplyCstParamEdit directly (which would race the render
 			// thread and dangle the editor's cached pointers on a D2).  The
 			// controller does its OWN guards (no-Document / empty-field /
-			// conflict), so we delegate wholesale and map its AgentCommitResult
-			// 1:1 onto AgentPatchResult -- the mapping is identical to the
-			// direct-path switch below (same 0/1/2/3 folding, same conflict
-			// semantics).  When NOT attached (the default), fall through to the
-			// prior byte-for-byte direct-Job behaviour.
+			// open-editor-transaction / conflict), so we delegate wholesale and
+			// map its AgentCommitResult 1:1 onto AgentPatchResult -- the mapping
+			// is identical to the direct-path switch below (same 0/1/2/3
+			// folding, same conflict semantics) plus the controller-only
+			// `retriable` flag (true only on the transaction refusal).  When NOT
+			// attached (the default), fall through to the prior byte-for-byte
+			// direct-Job behaviour.
 			if( mController )
 			{
 				const RISE::Cst::CstHeadVersion* basePtr =
@@ -518,6 +520,7 @@ namespace RISE
 						String( patch.value.c_str() ),
 						basePtr );
 				r.applied     = cr.applied;
+				r.retriable   = cr.retriable;
 				r.rawCode     = cr.rawCode;
 				r.status      = cr.status.c_str();
 				r.headVersion = cr.headVersion;

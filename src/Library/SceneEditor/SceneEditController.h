@@ -251,10 +251,22 @@ namespace RISE
 		//! `headVersion` is the Job's head AFTER the call (post-commit on a
 		//! clean apply; the current/unchanged head otherwise).  `conflict` is
 		//! a convenience bool == (status == "conflict").
+		//! `retriable` disambiguates the "rejected" bucket for a machine
+		//! client: true means the refusal is TRANSIENT -- the identical
+		//! commit can succeed later with NO change to the patch.  The ONLY
+		//! transient reject today is the open-editor-transaction refusal
+		//! (retry after the gesture completes); the permanent rejects (no
+		//! Document / empty field / unknown entity / bad value) keep the
+		//! default false -- retrying them verbatim can never succeed.  A
+		//! version CONFLICT does NOT set the flag: it has its own
+		//! status="conflict" and is retriable-by-protocol via re-read
+		//! (re-read the head, rebase, re-propose) rather than by verbatim
+		//! resubmission.
 		struct AgentCommitResult
 		{
 			bool                       applied = false;
 			bool                       conflict = false;
+			bool                       retriable = false; //!< status="rejected" only: true = transient refusal (open editor transaction) -- retry the SAME commit later; false = permanent
 			int                        rawCode = 0;      //!< 0 reject/conflict / 1 incremental / 2 D2 / 3 replaced-but-diagnosed
 			String                     status;           //!< "applied" / "rejected" / "diagnosed" / "conflict"
 			RISE::Cst::CstHeadVersion  headVersion;      //!< the head-version AFTER the call
@@ -268,10 +280,14 @@ namespace RISE
 		//! it is safe against the live render thread, and it calls
 		//! RebindEditorToJob on a D2 full re-derive (codes 2/3) so the
 		//! editor's cached scene/manager pointers do not dangle.  Callable
-		//! from ANY thread (it takes mMutex + cancel-and-parks itself); the
-		//! whole ApplyCstParamEdit + rebind + version-bump runs UNDER mMutex
-		//! so no render-thread reader can observe the transient {0,0}
-		//! head-version (D2 ClearAll) or a half-rebuilt Scene.
+		//! from ANY thread PROVIDED the transaction API is unused
+		//! (transactions are main-thread-only and the mTxnOpen pre-flight
+		//! read below is UNSYNCHRONIZED -- mMutex does not cover the flag);
+		//! within that contract it takes mMutex + cancel-and-parks itself,
+		//! and the whole ApplyCstParamEdit + rebind + version-bump runs
+		//! UNDER mMutex so no render-thread reader can observe the
+		//! transient {0,0} head-version (D2 ClearAll) or a half-rebuilt
+		//! Scene.
 		//!
 		//! @param baseVersionOrNull  OPTIONAL optimistic-concurrency
 		//!        precondition (slice 1a).  When non-null and it does NOT
@@ -282,13 +298,16 @@ namespace RISE
 		//! Returns an AgentCommitResult; on a clean apply it sets
 		//! mEditPending + kicks the render so the viewport re-renders.
 		//!
-		//! REFUSED (status="rejected", non-mutating) while an editor
-		//! transaction is open: an agent commit has no EditHistory record,
-		//! so RollbackTransaction could never revert it -- the agent
-		//! should retry after the gesture completes.  That mTxnOpen check
-		//! relies on the main-thread contract (mMutex does not cover the
-		//! flag; see its member doc), so a future async transport must
-		//! marshal commits to the main thread.
+		//! REFUSED (status="rejected", retriable=true, non-mutating) while
+		//! an editor transaction is open: an agent commit has no
+		//! EditHistory record, so RollbackTransaction could never revert
+		//! it -- the agent should retry after the gesture completes
+		//! (retriable=true marks this as the transient reject a wire
+		//! client may resubmit verbatim).  That mTxnOpen check is the
+		//! unsynchronized read the headline's proviso refers to: it relies
+		//! on the main-thread contract (mMutex does not cover the flag;
+		//! see its member doc), so a future async transport must marshal
+		//! commits to the main thread.
 		AgentCommitResult ApplyAgentParamEdit(
 			const String& entityName,
 			const String& entityKind,
@@ -667,9 +686,16 @@ namespace RISE
 		const SceneEditor& Editor() const { return mEditor; }
 		SceneEditor&       Editor()       { return mEditor; }
 
-		// Phase 6.5 (docs/ROUND_TRIP_SAVE_PLAN.md §9.9): save the
-		// dirty edits + retained overrides back to a `.RISEscene`
-		// file using the two-mode round-trip-save engine.  Follows
+		// Phase 6.5 (docs/ROUND_TRIP_SAVE_PLAN.md §9.9): save the scene
+		// by serializing the Job's retained CST Document whole
+		// (SaveEngine::Save -> Cst::SerializeCst) to a `.RISEscene`
+		// file: an external-modification guard refuses an in-place
+		// save when the loaded file changed on disk after load, the
+		// write is atomic (temp + rename), and the engine NoOps when
+		// the serialized bytes equal the on-disk file.  Dirty state
+		// does not select WHAT is written (the whole Document always
+		// is) -- it only gates the GUI Save button; a successful
+		// Saved/NoOp Clear()s the DirtyTracker.  Follows
 		// the lock-free disk-IO sequence:
 		//   1. Acquire mMutex, cancel in-flight render, wait for
 		//      mRendering=false, set mSaving=true, release mMutex.
@@ -702,11 +728,13 @@ namespace RISE
 		//! all platform shells).
 		std::string LastSaveError() const;
 
-		//! Phase 6.5 UI hook: true iff there's at least one edit
-		//! since the last load / save that the SaveEngine would
-		//! write to disk (i.e., not just NoOp).  Drives the GUI's
-		//! "Save Scene" button enable state on both platform shells.
-		//! Cheap O(1) — just checks the SceneEditor's dirty trackers.
+		//! Phase 6.5 UI hook: true when anything MAY need saving since
+		//! the last load / save.  Conservative: it can be true when a
+		//! Save would NoOp (e.g. edit→undo re-marks dirty; Save then
+		//! NoOps on byte-equality of the serialized Document).  Drives
+		//! the GUI's "Save Scene" button enable state on both platform
+		//! shells.  Cheap O(1) — just checks the SceneEditor's dirty
+		//! trackers.
 		bool HasUnsavedChanges() const { return mEditor.HasUnsavedChanges(); }
 
 		//! Phase 6.5 UI hook: install a listener that fires when
@@ -838,13 +866,14 @@ namespace RISE
 		//! unsupported camera type, or `outLen == 0`.  Bumps
 		//! `SceneEpoch` so platform UIs auto-rebuild the camera list.
 		//!
-		//! Persistence: on a CST-loaded scene (the edit-model pivot),
-		//! the clone is ALSO recorded as a faithful camera chunk in the
-		//! retained canonical CST Document, so it survives a D2 full
-		//! re-derive AND a save->reload (the SaveEngine serializes the
-		//! Document).  Undo removes that chunk; redo re-inserts it.  On a
-		//! LEGACY (non-CST) scene the clone still lives in the in-memory
-		//! Scene/Job only and a reload drops it (legacy serializer gap).
+		//! Persistence: the clone is ALSO recorded as a faithful camera
+		//! chunk in the retained canonical CST Document, so it survives a
+		//! D2 full re-derive AND a save->reload (the SaveEngine serializes
+		//! the Document).  Undo removes that chunk; redo re-inserts it.
+		//! (Historically, on a legacy non-CST scene the clone lived in the
+		//! in-memory Scene/Job only and a reload dropped it; post-Slice-6c
+		//! every production load is CST-only, so that case no longer
+		//! occurs.)
 		bool CloneActiveCamera( const String& proposedName,
 		                        char* outName, unsigned int outLen );
 

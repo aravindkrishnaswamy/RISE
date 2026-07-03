@@ -1023,6 +1023,18 @@ static void TestLiveDispatcherPath()
 //   - after RollbackTransaction: "rollback left no clean-but-diverged state"
 //     FAILS -- HasUnsavedChanges()==false while LumR stays 9.5 (the edit
 //     survived in the Document with its dirty mark wiped) == the data loss.
+//
+// Round 3 adds the WIRE leg: the refusal is TRANSIENT (retry after the
+// gesture completes) but a JSON-RPC client only sees status="rejected" --
+// indistinguishable from a PERMANENT reject (unknown entity / empty field)
+// without parsing free-text English.  The additive `retriable` bool is the
+// machine-readable discriminator: this leg drives raw JSON-RPC
+// propose_patch lines through AgentRpcDispatcher::HandleLine (Test 8's
+// wiring: WrapJob + AttachController on the same controller) and asserts
+// the mid-transaction response carries "retriable":true while a
+// post-EndTransaction unknown-entity reject carries "retriable":false.
+// RED-PROVED by hard-coding retriable=false at the mTxnOpen refusal site
+// (see the commit message for the recorded failing checks).
 //////////////////////////////////////////////////////////////////////
 static void TestMidTransactionAgentCommitRefused()
 {
@@ -1043,7 +1055,8 @@ static void TestMidTransactionAgentCommitRefused()
 		Check( lum0 > 4.5 && lum0 < 5.5, "baseline lum scale is ~5.0" );
 		Check( !c.HasUnsavedChanges(), "scene is CLEAN before the transaction" );
 
-		// Open a REAL transaction (the gesture bracket the GUI uses).
+		// Open a REAL transaction (the gesture bracket intended for the
+		// GUI -- no production caller yet).
 		Check( c.BeginTransaction(), "transaction opens" );
 		Check( c.IsTransactionOpen(), "transaction reports open" );
 
@@ -1106,6 +1119,39 @@ static void TestMidTransactionAgentCommitRefused()
 				String( "scale" ), String( "2.0" ),
 				/*baseVersionOrNull*/ nullptr );
 		Check( !r2.applied && r2.status == String( "rejected" ), "refused inside the second transaction too" );
+		Check( r2.retriable, "the C++ refusal is flagged retriable (transient, not permanent)" );
+
+		//------------------------------------------------------------------
+		// WIRE leg (round 3): the retriable discriminator must reach the
+		// JSON-RPC client.  Mirror Test 8's wiring (WrapJob + AttachController
+		// on the SAME running controller) and drive raw JSON-RPC lines:
+		//   - mid-transaction propose_patch -> status "rejected" AND
+		//     "retriable":true (the transient reject an agent may resubmit
+		//     verbatim after the gesture completes);
+		//   - post-EndTransaction propose_patch on an UNKNOWN entity ->
+		//     status "rejected" AND "retriable":false (a permanent reject a
+		//     retry loop must NOT spin on).
+		//------------------------------------------------------------------
+		std::unique_ptr<Agent::AgentSession> wireSess = Agent::AgentSession::WrapJob( pJob );
+		Check( wireSess != nullptr, "AgentSession wraps the live Job for the wire leg" );
+		if( wireSess ) wireSess->AttachController( &c );
+		Agent::AgentRpcDispatcher wireDisp( std::move( wireSess ) );
+		const std::string txnResp = wireDisp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":20,\"method\":\"propose_patch\",\"params\":"
+			"{\"target\":\"lum\",\"kind\":\"lambertian_luminaire_material\",\"param\":\"scale\",\"value\":\"2.0\"}}" );
+		std::cout << "    mid-txn wire resp=" << txnResp << std::endl;
+		Agent::JsonValue txnResult;
+		Check( JsonResultObj( txnResp, txnResult ), "mid-txn wire propose_patch returns a JSON-RPC result object" );
+		const Agent::JsonValue* wStatus = txnResult.find( "status" );
+		Check( wStatus && wStatus->isString() && wStatus->asString() == "rejected",
+		       "mid-txn wire response status is \"rejected\"" );
+		const Agent::JsonValue* wRetri = txnResult.find( "retriable" );
+		Check( wRetri && wRetri->isBool() && wRetri->asBool(),
+		       "mid-txn wire response carries \"retriable\":true (transient reject)" );
+		const Agent::JsonValue* wApplied = txnResult.find( "applied" );
+		Check( wApplied && wApplied->isBool() && !wApplied->asBool(),
+		       "mid-txn wire propose_patch did not apply" );
+
 		Check( c.EndTransaction(), "second transaction commits (EndTransaction)" );
 		const SceneEditController::AgentCommitResult r3 =
 			c.ApplyAgentParamEdit(
@@ -1113,6 +1159,21 @@ static void TestMidTransactionAgentCommitRefused()
 				String( "scale" ), String( "2.0" ),
 				/*baseVersionOrNull*/ nullptr );
 		Check( r3.applied, "the agent surface re-opens after EndTransaction" );
+		Check( !r3.retriable, "a clean apply carries retriable=false (the flag is reject-only)" );
+
+		// Wire leg, permanent reject: unknown entity, transaction CLOSED.
+		const std::string permResp = wireDisp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"propose_patch\",\"params\":"
+			"{\"target\":\"no_such_entity\",\"param\":\"scale\",\"value\":\"2.0\"}}" );
+		std::cout << "    permanent-reject wire resp=" << permResp << std::endl;
+		Agent::JsonValue permResult;
+		Check( JsonResultObj( permResp, permResult ), "permanent-reject wire propose_patch returns a JSON-RPC result object" );
+		const Agent::JsonValue* pStatus = permResult.find( "status" );
+		Check( pStatus && pStatus->isString() && pStatus->asString() == "rejected",
+		       "unknown-entity wire response status is \"rejected\"" );
+		const Agent::JsonValue* pRetri = permResult.find( "retriable" );
+		Check( pRetri && pRetri->isBool() && !pRetri->asBool(),
+		       "unknown-entity wire response carries \"retriable\":false (permanent reject)" );
 
 		c.Stop();
 	}

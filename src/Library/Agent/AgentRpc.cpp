@@ -233,7 +233,7 @@ namespace RISE
 
 				//--------------------------------------------------------------
 				// propose_patch {target,kind?,param,value,baseHeadVersion?}
-				//   -> {applied,rawCode,status,headVersion,message}
+				//   -> {applied,rawCode,status,retriable,headVersion,message}
 				//   `applied` is CLEAN success only; `status` is the four-state
 				//   gate {"applied","rejected","diagnosed","conflict"} (a rawCode-3
 				//   re-derive is applied=false/status="diagnosed": mutated but
@@ -246,7 +246,12 @@ namespace RISE
 				//   with the current head returns status="conflict" WITHOUT
 				//   mutating; absent -> unconditional (back-compat).  The result's
 				//   `headVersion` is the head AFTER the call (post-commit on a
-				//   clean apply; current head otherwise).
+				//   clean apply; current head otherwise).  `retriable` splits the
+				//   "rejected" bucket: true = TRANSIENT refusal (today: an open
+				//   editor transaction in LIVE mode) -- resubmit the SAME patch
+				//   later; false = permanent (retrying verbatim can never
+				//   succeed).  A "conflict" is retriable-by-protocol via re-read
+				//   + re-propose, so it does NOT set the flag.
 				//--------------------------------------------------------------
 				if( m == "propose_patch" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
@@ -305,6 +310,7 @@ namespace RISE
 					result.set( "applied", JsonValue::MakeBool( pr.applied ) );
 					result.set( "rawCode", JsonValue::MakeNumber( static_cast<double>( pr.rawCode ) ) );
 					result.set( "status",  JsonValue::MakeString( pr.status ) );
+					result.set( "retriable", JsonValue::MakeBool( pr.retriable ) );
 					result.set( "headVersion", HeadVersionJson( pr.headVersion ) );
 					result.set( "message", JsonValue::MakeString( pr.message ) );
 					return MakeSuccess( idValue, result );

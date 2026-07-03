@@ -128,10 +128,9 @@ namespace RISE
 		//! the surrounding undo history (re-review finding A).
 		bool IsCompositeOpen() const { return mCompositeDepth > 0; }
 
-		//! F7: snapshot / restore the DirtyTracker channels so a transactional
-		//! rollback can return the dirty state to its pre-transaction baseline
-		//! (Undo re-marks dirty; created entities are never un-marked).
-		//! F7: snapshot / restore ALL dirty state for transactional rollback.
+		//! F7: snapshot / restore ALL dirty state so a transactional
+		//! rollback can return it to its pre-transaction baseline (Undo
+		//! re-marks dirty; created entities are never un-marked).
 		//! Captures the DirtyTracker channels (four sets + the CST-head
 		//! boolean) PLUS the additional set
 		//! mScaleFromAnchorSet (BUG-2: it lives outside DirtyTracker, so a
@@ -408,8 +407,10 @@ namespace RISE
 		// to compare against their loaded baselines; that mechanism
 		// went with the Slice-6d deletion.  Today the channels only
 		// feed HasUnsavedChanges() / the GUI Save-button state (save
-		// is a whole-Document SerializeCst).  Cleared by
-		// ClearDirtyState() after a successful save.
+		// is a whole-Document SerializeCst), plus the F7
+		// CaptureDirtyState / RestoreDirtyState transactional
+		// snapshot.  Cleared by ClearDirtyState() after a
+		// successful save.
 		DirtyTracker  mDirtyTracker;
 
 		// Phase 6.3 (pinned 2.8 / R2 §7): names that have received any

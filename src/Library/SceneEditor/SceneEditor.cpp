@@ -872,8 +872,10 @@ void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
 	// Phase B: route a property-shaped edit into the per-category
 	// dirty channel.  Transform ops are deliberately omitted — they
 	// mark the object-transform channel (mDirtyTracker.MarkDirty)
-	// inline.  AddCamera (new entity, no source span) and SetSceneTime
-	// (transient) are intentionally NOT persisted by Phase B.
+	// inline.  AddCamera (a created entity — historically the
+	// byte-splice era's "no source span" case, now just the Phase C
+	// created channel below) and SetSceneTime (transient) are
+	// intentionally NOT part of Phase B's per-category channel.
 	switch( edit.op )
 	{
 	case SceneEdit::SetObjectGeometry:

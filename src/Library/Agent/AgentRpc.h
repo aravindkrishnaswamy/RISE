@@ -19,7 +19,12 @@
 //      read_schema  {keyword?}           -> the schema JSON (as a nested object)
 //      validate     {text}               -> {diagnostics:[{severity,code,message,offset,length}]}
 //      propose_patch{target,kind?,param,value,baseHeadVersion?:{uuid,revision}}
-//                                        -> {applied,rawCode,status,headVersion:{uuid,revision},message}
+//                                        -> {applied,rawCode,status,retriable,headVersion:{uuid,revision},message}
+//                                           (retriable=true marks the ONE transient
+//                                            reject -- an open editor transaction in
+//                                            LIVE mode; resubmit the same patch later.
+//                                            Permanent rejects are false; a "conflict"
+//                                            is retriable-by-protocol via re-read.)
 //      render       {samples?}           -> {ok,width,height,meanR,meanG,meanB,message}
 //      read_image                        -> {png_base64:string, byteLength:number}
 //

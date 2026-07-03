@@ -14,7 +14,8 @@
 //  HasAnyDirty(), which drives SceneEditor::HasUnsavedChanges() and
 //  thus the GUI's Save-button / unsaved-changes state.  (Exception:
 //  the persistent mSessionCreated channel is excluded from
-//  HasAnyDirty() and currently feeds nothing.)
+//  HasAnyDirty() and has no reader — though it still rides the F7
+//  CaptureState/RestoreState snapshot.)
 //
 //  Two original channels:
 //    - mNames        — OBJECT TRANSFORM dirty set (Phase 6).

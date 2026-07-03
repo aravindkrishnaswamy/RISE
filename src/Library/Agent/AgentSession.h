@@ -87,8 +87,10 @@ namespace RISE
 		//!            changed either).
 		//!   * 0   -> applied=false, status="rejected": edit refused; the head
 		//!            is byte-identical (nothing changed).  The pre-flight
-		//!            guards (no Document / empty target/param/value) map here
-		//!            too -- they are refusals with an unchanged head.
+		//!            guards (no Document / empty target/param/value, and --
+		//!            LIVE mode only -- the controller's open-editor-
+		//!            transaction refusal) map here too -- they are refusals
+		//!            with an unchanged head.
 		//! Facet 5 slice 1a adds a FOURTH status, the optimistic-concurrency
 		//! CONFLICT: when the patch carries `hasBaseVersion` and its `baseVersion`
 		//! does NOT equal the Job's CURRENT head-version, ProposePatch returns
@@ -111,9 +113,23 @@ namespace RISE
 		//! `message` is a human explanation (rebind codes 2/3 note the full
 		//! re-derive; the code-3 message spells out mutated-but-diagnosed; the
 		//! conflict message reports the revision the head moved to).
+		//! `retriable` disambiguates the "rejected" bucket for a machine
+		//! client: true means the refusal is TRANSIENT -- resubmitting the
+		//! IDENTICAL patch later can succeed.  Today the only transient
+		//! reject is the LIVE-mode controller's open-editor-transaction
+		//! refusal (retry after the gesture completes); permanent rejects
+		//! (no Document / empty field / unknown entity / bad value) stay
+		//! false -- retrying them verbatim can never succeed.  A version
+		//! CONFLICT does NOT set it: conflicts carry their own
+		//! status="conflict" and are retriable-by-protocol via re-read
+		//! (re-read the head, rebase, re-propose), not by verbatim
+		//! resubmission.  Carried 1:1 from the controller's
+		//! AgentCommitResult in LIVE mode; the direct (headless) path has
+		//! no transaction surface, so its rejects are all permanent.
 		struct AgentPatchResult
 		{
 			bool        applied = false;
+			bool        retriable = false;   //!< status="rejected" only: true = transient refusal (open editor transaction) -- retry the SAME patch later; false = permanent
 			int         rawCode = 0;         //!< 0 reject/conflict / 1 incremental / 2 D2 full re-derive / 3 replaced-but-diagnosed
 			std::string status;              //!< "applied" (clean) / "rejected" (head intact) / "diagnosed" (mutated but re-derive diagnosed) / "conflict" (stale baseVersion, head intact)
 			RISE::Cst::CstHeadVersion headVersion;   //!< the head-version AFTER the call (post-commit on success; current head on reject/diagnosed/conflict)
