@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "PointLight.h"
 #include "../Animation/KeyframableHelper.h"
+#include "../Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for transparent (Fresnel-attenuated) shadow rays
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -62,11 +63,21 @@ void PointLight::ComputeDirectLighting(
 		return;
 	}
 
+	// shadowT carries the per-interface Fresnel transmittance when
+	// transparent_shadows is enabled (a clear dielectric between the surface
+	// and the light attenuates rather than fully blocks), else (1,1,1).  Routed
+	// through CastShadowRayAuto so a direct ComputeDirectLighting caller honors
+	// the flag uniformly with the LightSampler NEE path and the other lights.
+	RISEPel shadowT( 1.0, 1.0, 1.0 );
 	if( bReceivesShadows ) {
-		// Check to see if there is a shadow
 		Ray		rayToLight( ri.ptIntersection, vToLight );
 
-		if( pCaster.CastShadowRay( rayToLight, fDistFromLight ) ) {
+		const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
+		if( pRC ) {
+			if( pRC->CastShadowRayAuto( rayToLight, fDistFromLight, false, 0.0, shadowT ) ) {
+				return;
+			}
+		} else if( pCaster.CastShadowRay( rayToLight, fDistFromLight ) ) {
 			return;
 		}
 	}
@@ -76,7 +87,50 @@ void PointLight::ComputeDirectLighting(
 	// Irradiance at surface = emittedRadiance * cos / d^2
 	const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
 
-	amount = (cColor * brdf.value( vToLight, ri )) * (invDistSq * fDot * radiantEnergy);
+	amount = (cColor * brdf.value( vToLight, ri )) * (invDistSq * fDot * radiantEnergy) * shadowT;
+}
+
+Scalar PointLight::ComputeDirectLightingNM(
+	const RayIntersectionGeometric& ri,
+	const IRayCaster& pCaster,
+	const IBSDF& brdf,
+	const bool bReceivesShadows,
+	const Scalar nm
+	) const
+{
+	// Same geometry as the RGB ComputeDirectLighting; only the BSDF eval and
+	// the shadow Fresnel are per-wavelength (brdf.valueNM, CastShadowRayAuto
+	// bNM=true) so a clear dielectric attenuates with the wavelength-specific
+	// IOR rather than the representative RGB IOR.
+	Vector3 vToLight = Vector3Ops::mkVector3( ptPosition, ri.ptIntersection );
+	const Scalar fDistFromLight = Vector3Ops::NormalizeMag( vToLight );
+
+	const Scalar fDot = Vector3Ops::Dot( vToLight, ri.vNormal );
+	if( fDot <= 0.0 ) {
+		return Scalar(0);
+	}
+
+	Scalar shadowT = 1.0;
+	if( bReceivesShadows ) {
+		Ray rayToLight( ri.ptIntersection, vToLight );
+		const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
+		if( pRC ) {
+			RISEPel t( 1.0, 1.0, 1.0 );
+			if( pRC->CastShadowRayAuto( rayToLight, fDistFromLight, true, nm, t ) ) {
+				return Scalar(0);
+			}
+			shadowT = t.r;	// NM path fills all 3 channels equally
+		} else if( pCaster.CastShadowRay( rayToLight, fDistFromLight ) ) {
+			return Scalar(0);
+		}
+	}
+
+	const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
+	const Scalar lightLum =
+		Scalar(0.2126) * cColor.r +
+		Scalar(0.7152) * cColor.g +
+		Scalar(0.0722) * cColor.b;
+	return lightLum * brdf.valueNM( vToLight, ri, nm ) * invDistSq * fDot * radiantEnergy * shadowT;
 }
 
 void PointLight::FinalizeTransformations( )

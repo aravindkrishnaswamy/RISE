@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "DirectionalLight.h"
 #include "../Animation/KeyframableHelper.h"
+#include "../Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for transparent (Fresnel-attenuated) shadow rays
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -51,16 +52,27 @@ void DirectionalLight::ComputeDirectLighting(
 		return;
 	}
 
+	// shadowT carries the per-interface Fresnel transmittance when
+	// transparent_shadows is enabled (a clear dielectric between the surface
+	// and the light attenuates the directional contribution rather than fully
+	// blocking it), else (1,1,1).  Routed through CastShadowRayAuto so the flag
+	// is honored for directional lights exactly as for the omni/spot/area NEE
+	// path — and uniformly across analytic-primitive and SDF dielectrics.
+	RISEPel shadowT( 1.0, 1.0, 1.0 );
 	if( bReceivesShadows ) {
-		// Check to see if there is a shadow
 		Ray		rayToLight( ri.ptIntersection, vDirection );
 
-		if( pCaster.CastShadowRay( rayToLight, RISE_INFINITY ) ) {
+		const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
+		if( pRC ) {
+			if( pRC->CastShadowRayAuto( rayToLight, RISE_INFINITY, false, 0.0, shadowT ) ) {
+				return;
+			}
+		} else if( pCaster.CastShadowRay( rayToLight, RISE_INFINITY ) ) {
 			return;
 		}
 	}
 
-	amount = (cColor * brdf.value( vDirection, ri )) * (fDot * radiantEnergy);
+	amount = (cColor * brdf.value( vDirection, ri )) * (fDot * radiantEnergy) * shadowT;
 }
 
 Scalar DirectionalLight::ComputeDirectLightingNM(
@@ -79,9 +91,19 @@ Scalar DirectionalLight::ComputeDirectLightingNM(
 		return Scalar(0);
 	}
 
+	// shadowT carries the Fresnel transmittance when transparent_shadows is
+	// enabled (else 1.0).  See the RGB ComputeDirectLighting above.
+	Scalar shadowT = 1.0;
 	if( bReceivesShadows ) {
 		Ray rayToLight( ri.ptIntersection, vDirection );
-		if( pCaster.CastShadowRay( rayToLight, RISE_INFINITY ) ) {
+		const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
+		if( pRC ) {
+			RISEPel t( 1.0, 1.0, 1.0 );
+			if( pRC->CastShadowRayAuto( rayToLight, RISE_INFINITY, true, nm, t ) ) {
+				return Scalar(0);
+			}
+			shadowT = t.r;	// NM path fills all 3 channels equally
+		} else if( pCaster.CastShadowRay( rayToLight, RISE_INFINITY ) ) {
 			return Scalar(0);
 		}
 	}
@@ -90,7 +112,7 @@ Scalar DirectionalLight::ComputeDirectLightingNM(
 		Scalar(0.2126) * cColor.r +
 		Scalar(0.7152) * cColor.g +
 		Scalar(0.0722) * cColor.b;
-	return lightLum * brdf.valueNM( vDirection, ri, nm ) * fDot * radiantEnergy;
+	return lightLum * brdf.valueNM( vDirection, ri, nm ) * fDot * radiantEnergy * shadowT;
 }
 
 static const unsigned int DIRECTION_ID = 100;

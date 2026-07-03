@@ -700,17 +700,21 @@ void MainWindow::onStateChanged(int newState)
     }
 
     // Restart the viewport when production rendering ends so the user
-    // can keep editing on the freshly-rendered scene state.  Suppress
-    // the very next preview frame at the sink layer so the production
-    // image stays on screen until the user actually starts dragging —
-    // otherwise the bridge's initial render would flash a half-rendered
-    // preview right after a clean production result.
+    // can keep editing on the freshly-rendered scene state — but WITHOUT
+    // its initial render pass, so the just-finished production image
+    // stays on screen until the user actually interacts.  Without this
+    // the interactive rasterizer's first pass would overwrite the
+    // production result (visible as the render "flashing then flipping
+    // back to the live preview").  The render thread stays parked until
+    // the first edit / gesture; this works for both the LDR QImage path
+    // and the HDR observer path, which the old sink-level frame-drop did
+    // not (the HDR frame reaches the screen through the FrameStore
+    // observer, bypassing the sink entirely).
     const bool renderEnded = (state == RenderEngine::Completed
                           || state == RenderEngine::Cancelled
                           || state == RenderEngine::Error);
     if (renderEnded && m_viewportBridge && !m_viewportBridge->isRunning()) {
-        m_viewportBridge->suppressNextFrame();
-        m_viewportBridge->start();
+        m_viewportBridge->startSuppressingInitialRender();
     }
 
     // While production is in flight, disable viewport interaction so
