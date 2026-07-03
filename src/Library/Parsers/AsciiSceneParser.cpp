@@ -104,6 +104,7 @@
 #include <cstdio>    // Phase 6.2: sscanf in OnOverrideObjectFinalized
 #include <cstdlib>   // strtod for the ar_layer numeric parse
 #include <cerrno>    // ERANGE overflow detection for ar_layer values
+#include "../Materials/DielectricSPF.h"   // DielectricSPF::kMaxARLayers (ar_layer cap)
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "AsciiSceneParser.h"
@@ -3285,10 +3286,11 @@ namespace RISE
 					// `ar_layer <n> <thickness_nm> [k]` -> a broadband multi-
 					// layer stack that reflects faint AND colour-neutral (a
 					// single layer leaves the characteristic purple bloom).
-					// RISE thin-film cap; must match ThinFilm::kMaxFilms and
-					// DielectricSPF::kMaxARLayers (both 8).  Reject rather than
-					// silently truncate a too-deep stack.
-					const std::size_t kMaxARLayers = 8;
+					// Bound to the engine cap (DielectricSPF::kMaxARLayers, itself
+					// static_assert-tied to ThinFilm::kMaxFilms) so this reject
+					// limit can never drift from what the TMM actually evaluates.
+					// Reject a too-deep stack rather than silently truncating it.
+					const std::size_t kMaxARLayers = (std::size_t)RISE::Implementation::DielectricSPF::kMaxARLayers;
 					std::vector<Scalar> arN, arK, arT;
 					const std::vector<std::string>& layerLines = bag.GetRepeatable( "ar_layer" );
 					if( layerLines.size() > kMaxARLayers ) {
