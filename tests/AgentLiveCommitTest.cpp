@@ -207,6 +207,33 @@ private:
 };
 
 //////////////////////////////////////////////////////////////////////
+// A2 (Model-B F5 polish): a Job subclass that forces a code-3 on the
+// TRANSFORM-COMMIT seam specifically -- SceneEditor::CommitPendingCstObjectTransforms
+// routes a standard_object's net transform through Job::ApplyCstObjectMatrixEdit, not
+// through ApplyCstParamEdit (that's a PARAMETER edit; a transform commit rewrites the
+// `matrix` param directly via a dedicated virtual -- see Job.h). CodeThreeJob above
+// does not touch this path, so a SetProperty(Object, position/orientation/scale) edit
+// against it would still report a clean commit even though A2 targets exactly this
+// commit's return value. Same 2 -> 3 rewrite technique: the base call performs a REAL
+// D2 re-derive (a scene_variant closure forces it, same recipe as kVariantScene), so
+// the Scene + managers really are replaced; only the reported code is corrupted to 3.
+//////////////////////////////////////////////////////////////////////
+class CodeThreeTransformJob : public Job
+{
+public:
+	CodeThreeTransformJob() : Job(), mForceCodeThree( true ) {}
+	void SetForceCodeThree( bool on ) { mForceCodeThree = on; }
+	int ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 ) override
+	{
+		const int base = Job::ApplyCstObjectMatrixEdit( objectName, matrix16 );
+		if( mForceCodeThree && base == 2 ) return 3;
+		return base;
+	}
+private:
+	bool mForceCodeThree;
+};
+
+//////////////////////////////////////////////////////////////////////
 // Test 1: two-client concurrency.  A "GUI" thread (SetProperty on the
 // selected material) and an "agent" thread (ApplyAgentParamEdit) hammer the
 // same controller concurrently while the render thread cycles.  Both mutate
@@ -629,6 +656,74 @@ static void TestCodeThreeRerender()
 		Check( r2.rawCode == 2 && r2.applied, "control: force-off edit is a clean D2 (code 2, applied)" );
 		Check( c.ForTest_WaitForRenders( before3 + 1, 3000 ),
 		       "control: clean D2 re-renders (shared kick path intact)" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test A2 (Model-B F5 polish: transform-commit code-3 parity): SetProperty's
+// Object branch's Apply() for a position/orientation/scale edit is a direct LIVE
+// mutate (SceneEditor::ApplyObjectOpForward) that always succeeds -- the CST
+// commit happens SEPARATELY afterward via CommitPendingCstObjectTransforms, which
+// routes through Job::ApplyCstObjectMatrixEdit. Pre-A2, SetProperty ignored that
+// commit's return value entirely, so a diagnosed code-3 (or any other commit
+// failure) on the FOLLOW-THROUGH still reported SetProperty() == true to the
+// caller, even though the Document diverged from the live scene. This test
+// drives a REAL code-3 on that specific seam (CodeThreeTransformJob) and asserts:
+//   - SetProperty(Object, "position", ...) returns FALSE (the fix)
+//   - the render kick still fires (the live scene DID change -- Apply succeeded
+//     and CommitPendingCstObjectTransforms's D2 rebuild really replaced the
+//     Scene+managers; the viewport must not show stale pixels)
+//   - a control edit with the force OFF returns TRUE and still re-renders,
+//     proving we didn't break the clean path.
+//////////////////////////////////////////////////////////////////////
+static void TestTransformCommitCodeThree()
+{
+	std::cout << "Test A2: transform-commit code-3 parity (SetProperty honest failure)..." << std::endl;
+
+	const char* tmp = "agentlive_xform_code3.RISEscene";
+	// Variant scene (as in TestCodeThreeRerender): any CST document edit on `obj` forces
+	// a real D2 full re-derive (base ApplyCstObjectMatrixEdit returns 2), which
+	// CodeThreeTransformJob rewrites to 3.
+	{ std::ofstream o( tmp ); o << kVariantScene; }
+	CodeThreeTransformJob* pJob = new CodeThreeTransformJob();
+	Check( pJob->LoadAsciiSceneViaCst( tmp ), "variant scene loads into CodeThreeTransformJob via the CST path" );
+	if( !pJob ) { std::remove( tmp ); return; }
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		c.SetSelection( SceneEditController::Category::Object, String( "obj" ) );
+
+		//------------------------------------------------------------------
+		// THE FIX: a position edit's Apply() succeeds (direct live mutate), but the
+		// follow-through CST commit is forced to code 3 -- SetProperty must report FALSE.
+		//------------------------------------------------------------------
+		const unsigned int before = c.ForTest_GetRenderCount();
+		const bool setOk = c.SetPropertyForCategory(
+			SceneEditController::Category::Object, String( "position" ), String( "2 3 4" ) );
+		Check( !setOk, "code-3 transform-commit: SetProperty returns FALSE (A2 fix)" );
+		// The render kick is unconditional in the Object branch (stored before the
+		// commits run), so it must still fire regardless of the commit's outcome.
+		Check( c.ForTest_WaitForRenders( before + 1, 3000 ),
+		       "code-3 transform-commit still RE-RENDERS the viewport (kick unaffected by commit outcome)" );
+
+		//------------------------------------------------------------------
+		// CONTROL: force OFF -- a clean transform commit (code 2, a genuine D2) must
+		// report SUCCESS and still re-render, proving the clean path is unbroken.
+		//------------------------------------------------------------------
+		pJob->SetForceCodeThree( false );
+		const unsigned int before2 = c.ForTest_GetRenderCount();
+		const bool setOk2 = c.SetPropertyForCategory(
+			SceneEditController::Category::Object, String( "position" ), String( "5 6 7" ) );
+		Check( setOk2, "control: force-off transform commit reports SUCCESS" );
+		Check( c.ForTest_WaitForRenders( before2 + 1, 3000 ),
+		       "control: clean transform commit re-renders (shared kick path intact)" );
 
 		c.Stop();
 	}
@@ -1201,6 +1296,7 @@ int main()
 	TestRenderParkedDuringEdit();
 	TestAgentSessionLiveMode();
 	TestCodeThreeRerender();
+	TestTransformCommitCodeThree();
 	TestAgentEditMarksDirty();
 	TestLiveDispatcherPath();
 	TestMidTransactionAgentCommitRefused();

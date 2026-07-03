@@ -1398,6 +1398,12 @@ void SceneEditController::OnPointerUp( const Point2& px )
 		// future composite ever span both categories, snapshot BOTH (object matrices + camera pose strings) BEFORE
 		// routing EITHER (CommitPendingCstObjectTransforms already snapshots its matrices first; the camera commit
 		// would need the same).
+		//
+		// A2: OnPointerUp is a `void` gesture-end callback with no caller to report a bool to, so the commit
+		// returns are legitimately ignored here (unlike SetProperty, which now propagates them) -- a route failure
+		// is already logged by the commit itself (SceneEditor::CommitPendingCstObjectTransforms /
+		// CommitPendingCstCameraPose), and the render kick below repaints the live scene regardless via
+		// `mEditPending` set unconditionally after this block.
 		mEditor.CommitPendingCstObjectTransforms();   // object gizmo drag -> `matrix` param
 		mEditor.CommitPendingCstCameraPose();          // camera orbit/pan/zoom/roll -> pose params
 		mEditPending.store( true, std::memory_order_release );
@@ -1652,6 +1658,13 @@ void SceneEditController::Undo()
 	const bool didWork = ok || ( mEditor.History().UndoDepth() != beforeUndoDepth );
 	// P5 Slice 3 expansion (object transform): an undone transform noted its object -> commit the RESTORED matrix
 	// to the CST under this park so undo stays Document-consistent (else a later D2 would re-apply the dragged pose).
+	//
+	// A2: Undo() reports `didWork` -- whether history moved -- not whether the CST recording of that move
+	// succeeded; those are different questions (a partial CST-commit failure here still means the LIVE undo
+	// happened and the caller should treat it as "did work"). A commit failure is logged by the commit itself and
+	// leaves the Document diverged from the live scene only until the next full re-derive (D2) resyncs it --
+	// the same known, documented limitation OnPointerUp accepts for the gesture-end commit. Ignoring the return
+	// here is consistent with that, not an oversight.
 	if( mEditor.HasPendingCstObjectTransforms() ) mEditor.CommitPendingCstObjectTransforms();
 	if( mEditor.HasPendingCstCameraPose() ) mEditor.CommitPendingCstCameraPose();
 	// P1: re-validate the selection UNCONDITIONALLY -- a stale selection (selected
@@ -1698,6 +1711,11 @@ void SceneEditController::Redo()
 	const bool didWork = ok || ( mEditor.History().RedoDepth() != beforeRedoDepth );
 	// P5 Slice 3 expansion (object transform): a redone transform noted its object -> commit the re-applied matrix
 	// to the CST under this park (symmetric with Undo).
+	//
+	// A2: same rationale as Undo above -- `didWork` is about history motion (redo advanced), not about whether
+	// this CST recording succeeded; a commit failure is logged by the commit itself and is a known, accepted
+	// limitation (Document diverges from the live scene until the next D2 resync), consistent with OnPointerUp
+	// and Undo.
 	if( mEditor.HasPendingCstObjectTransforms() ) mEditor.CommitPendingCstObjectTransforms();
 	if( mEditor.HasPendingCstCameraPose() ) mEditor.CommitPendingCstCameraPose();
 	DropStaleSelection_();   // P1: see Undo -- re-validate selection on any redo attempt
@@ -1921,8 +1939,15 @@ bool SceneEditController::RollbackTransaction()
 	// have committed the scrubbed matrix to the CST, and without this re-sync the Document would keep the
 	// rejected pose (a later D2 would then re-apply it).  Also drains the set so no stale snapshot leaks past the
 	// rollback.
-	if( mEditor.HasPendingCstObjectTransforms() ) mEditor.CommitPendingCstObjectTransforms();
-	if( mEditor.HasPendingCstCameraPose() ) mEditor.CommitPendingCstCameraPose();
+	//
+	// A2: unlike OnPointerUp/Undo/Redo (void or history-motion-scoped returns), RollbackTransaction already
+	// reports an honest `fullyReverted` bool for partial reverts (trimmed history, a target entity gone) -- a
+	// commit failure here belongs in that SAME honesty contract: the CST did NOT record the revert, so the
+	// Document is out of sync with the reverted live scene, which is exactly the condition `fullyReverted`
+	// exists to report. Fold it in via `&=` (both commits still run unconditionally; a route failure is
+	// independently logged by the commit itself).
+	if( mEditor.HasPendingCstObjectTransforms() ) fullyReverted &= mEditor.CommitPendingCstObjectTransforms();
+	if( mEditor.HasPendingCstCameraPose() ) fullyReverted &= mEditor.CommitPendingCstCameraPose();
 	// F2: if the cap trimmed a transaction edit (seq >= marker) off the
 	// front, the revert could not be complete -- report it honestly.
 	if( mEditor.History().DidTrim() && mEditor.History().MaxTrimmedSeq() >= mTxnBaseline.historyMarker ) {
@@ -4198,6 +4223,14 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 			// but Apply reports failure (ok=false).  The viewport must still repaint the replaced scene (else stale
 			// pre-edit pixels), so kick the render under the SAME held lock the success path uses -- but SKIP the
 			// transform-commit + auto-sync follow-through (those presuppose a clean edit) and return failure.
+			//
+			// A2: this bool is the ONLY error channel SetProperty hands back, on purpose -- it's the shared
+			// cross-platform GUI surface (Mac / Windows / Android panels all route property edits through this one
+			// method), so it can't carry a platform-specific rich diagnostic. Job's code 3 ("should-not-happen",
+			// diagnosed re-derive) is already fully logged above and via CstLiveSceneChangedInLastApply's caller;
+			// the agent surface (ApplyAgentParamEdit) already returns a structured status="diagnosed" for clients
+			// that DO want to distinguish it. A richer GUI-facing diagnostic (e.g. surfacing WHICH code fired,
+			// not just ok/changed) belongs to the future F2 ValidationReport design, not a bolt-on here.
 			if( mEditor.CstLiveSceneChangedInLastApply() ) {
 				mEditPending.store( true, std::memory_order_release );
 				lk.unlock();
@@ -4208,8 +4241,15 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 
 		// P5 Slice 3 expansion (object transform): a PANEL transform edit (position / orientation / scale) noted the
 		// object for a `matrix`-param commit; flush it here under the SAME park (the commit re-derives).
-		if( mEditor.HasPendingCstObjectTransforms() ) mEditor.CommitPendingCstObjectTransforms();
-		if( mEditor.HasPendingCstCameraPose() ) mEditor.CommitPendingCstCameraPose();
+		// A2 (code-3 parity for the commit follow-through): both commits return false on an internal route failure
+		// (incl. a diagnosed code-3 re-derive), and either already logged the specifics + set
+		// mCstLiveSceneChanged on a live mutation (1/2/3) -- capture the returns so a commit failure is reported
+		// honestly instead of silently folding into the Apply's clean `true`.  Use `&` (not `&&`) so BOTH commits
+		// always run even if the object one fails -- short-circuiting would skip a pending camera-pose commit that
+		// has nothing to do with the object commit's outcome.
+		bool commitsOk = true;
+		if( mEditor.HasPendingCstObjectTransforms() ) commitsOk &= mEditor.CommitPendingCstObjectTransforms();
+		if( mEditor.HasPendingCstCameraPose() ) commitsOk &= mEditor.CommitPendingCstCameraPose();
 
 		// Phase 4b auto-sync follow-through: when the user changes
 		// the selected Object's material binding (or interior medium)
@@ -4237,7 +4277,11 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();
 		mCV.notify_one();
-		return true;
+		// A2: report the commit follow-through's outcome too -- the auto-sync above already ran unconditionally
+		// (it reflects the Apply, which DID succeed, not the commit), and the render kick above is unconditional
+		// (the live scene must repaint either way).  Only the boolean SetProperty hands back to the caller changes:
+		// `ok` was already true here, so this reduces to `commitsOk`, spelled out for clarity at the call site.
+		return ok && commitsOk;
 	}
 
 	case Category::Light: {
