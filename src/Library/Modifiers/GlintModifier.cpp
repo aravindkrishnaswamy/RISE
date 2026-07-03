@@ -22,6 +22,19 @@ using namespace RISE::Implementation;
 
 namespace
 {
+	//! NOTE on non-finite parameters: this class can NOT sanitize a
+	//! NaN/Inf input, by construction of the production build.  Under
+	//! -ffast-math clang tags every double FUNCTION PARAMETER with
+	//! nofpclass(nan inf), so a non-finite value becomes poison AT THE
+	//! CALL BOUNDARY — an in-ctor bit-level (memcpy/integer) finiteness
+	//! check was implemented during review round 3 and EMPIRICALLY
+	//! DELETED by the optimizer (a runtime-bit NaN coverage produced a
+	//! fully-lit facet field with the guard compiled in, even from a
+	//! strict-FP caller TU).  The ONLY sound gate is rejecting
+	//! non-finite values at the STRING layer before construction
+	//! (AllTokensAreFiniteNumbers-style) — a hard obligation on the
+	//! glint_modifier parser (Slice 2).  See the repo ffast-math rule.
+
 	//! Hard safety ceiling on the facet tilt (radians).  The Rayleigh
 	//! tail is unbounded; a facet tilted anywhere near the tangent
 	//! plane is un-physical for this model (real flakes lie roughly
@@ -55,6 +68,9 @@ GlintModifier::GlintModifier(
   vShift( vShift_ ),
   seed( seed_ )
 {
+	// Non-finite inputs are NOT sanitized here — they cannot be (see
+	// the nofpclass note atop this file); the glint_modifier parser
+	// must reject them at the string layer before construction.
 }
 
 GlintModifier::~GlintModifier( )
@@ -201,9 +217,16 @@ void GlintModifier::Modify( RayIntersectionGeometric& ri ) const
 	// shading normal in case the geometry flipped one of them).  A
 	// facet past the geometric tangent plane is where the classic
 	// shading-normal energy asymmetry bites; reject to the smooth
-	// normal instead of emitting a near-tangent frame.
-	const Scalar geomSign = ( Vector3Ops::Dot( ri.vNormal, ri.vGeomNormal ) >= 0 ) ? Scalar(1) : Scalar(-1);
-	if( Vector3Ops::Dot( newN, ri.vGeomNormal ) * geomSign < GLINT_MIN_GEOM_COS ) {
+	// normal instead of emitting a near-tangent frame.  Every in-tree
+	// geometry populates vGeomNormal (audited, review round 3), but the
+	// field has no enforced contract — a future geometry that leaves it
+	// at the zero default would make dot() = 0 < threshold and silently
+	// reject EVERY facet, so fall back to the shading normal when
+	// vGeomNormal is degenerate rather than going silently inert.
+	const Vector3& geomN = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : ri.vNormal;
+	const Scalar geomSign = ( Vector3Ops::Dot( ri.vNormal, geomN ) >= 0 ) ? Scalar(1) : Scalar(-1);
+	if( Vector3Ops::Dot( newN, geomN ) * geomSign < GLINT_MIN_GEOM_COS ) {
 		return;
 	}
 

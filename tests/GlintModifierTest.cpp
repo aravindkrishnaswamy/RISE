@@ -942,6 +942,38 @@ static void TestDielectricAtPerturbedHits()
 }
 
 // ============================================================
+//  Test 8c: zero vGeomNormal falls back to the shading normal
+// ============================================================
+
+static void TestZeroGeomNormalFallback()
+{
+	std::cout << "--- Test 8c: zero vGeomNormal falls back to shading normal ---" << std::endl;
+
+	// A (hypothetical future) geometry that leaves vGeomNormal at its
+	// zero default must NOT silently disable the modifier: the guard
+	// falls back to the shading normal.  Facets must still fire, and
+	// outputs stay guarded against the fallback normal.
+	const GlintModifier& mod = *MakeMod( 2.0, 1.0, 1.0, 4.0, Vector3(1,1,1), Vector3(0,0,0), 9 );
+
+	RandomNumberGenerator rng( 99 );
+	int perturbed = 0;
+	for( int i = 0; i < 5000; i++ )
+	{
+		const Point3 p( rng.CanonicalRandom() * 40.0, rng.CanonicalRandom() * 40.0, 0.0 );
+		RayIntersectionGeometric ri = MakeRI( p, Vector3Ops::Normalize( Vector3( 0.2, -0.3, -1 ) ) );
+		ri.vGeomNormal = Vector3( 0, 0, 0 );
+
+		mod.Modify( ri );
+
+		const Scalar lenN = Vector3Ops::Magnitude( ri.vNormal );
+		CHECK( fabs( lenN - 1.0 ) < 1e-9, "non-unit normal under zero vGeomNormal (" << lenN << ")" );
+		if( Vector3Ops::Dot( ri.vNormal, Vector3( 0, 0, 1 ) ) < 1.0 - 1e-12 ) perturbed++;
+	}
+	std::cout << "  " << perturbed << "/5000 hits perturbed with zero vGeomNormal" << std::endl;
+	CHECK( perturbed > 1500, "modifier silently inert under zero vGeomNormal (" << perturbed << ")" );
+}
+
+// ============================================================
 //  Test 9: hostile-coordinate determinism (the 2^40 fold)
 // ============================================================
 
@@ -998,6 +1030,7 @@ int main()
 	TestNearestWins();
 	TestFlippedOrientationGuard();
 	TestDielectricAtPerturbedHits();
+	TestZeroGeomNormalFallback();
 	TestHostileCoordinates();
 
 	ReleaseMods();

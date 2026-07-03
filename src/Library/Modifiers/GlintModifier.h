@@ -136,6 +136,21 @@ namespace RISE
 			unsigned int seed;			///< hash seed (distinct fleck fields on otherwise identical objects)
 
 		public:
+			//! CONTRACT: parameters MUST be finite.  The ctor cannot
+			//! sanitize NaN/Inf — under the production -ffast-math build,
+			//! clang's nofpclass parameter attribute turns a non-finite
+			//! argument into poison at the call boundary (an in-ctor
+			//! bit-level check was empirically DELETED by the optimizer;
+			//! a NaN coverage rendered as a FULLY-LIT field).  The
+			//! glint_modifier parser must reject non-finite values at the
+			//! STRING layer before construction (Slice-2 obligation; see
+			//! the .cpp nofpclass note and the repo ffast-math rule).
+			//!
+			//! Cost note: Modify runs on EVERY hit of the object across
+			//! all transport paths; FindFacet sweeps the 3x3x3 cell
+			//! neighbourhood (27 integer-hash cell draws + one trig tilt
+			//! on the winner) — materially heavier than BumpMap's four
+			//! IFunction2D taps, still trivial versus per-hit shading.
 			GlintModifier(
 				const Scalar density_,			///< [in] cells per object-space unit; <= 0 makes the modifier inert
 				const Scalar coverage_,			///< [in] per-cell facet existence probability [0,1]

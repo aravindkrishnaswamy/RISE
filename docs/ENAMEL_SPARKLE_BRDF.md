@@ -153,9 +153,17 @@ Costs owned honestly (not hidden):
 
 The Slice-1 constructor takes all seven parameters explicitly (no defaults
 exist yet).  Slice 2 WILL choose parser-level defaults so an unconfigured
-`glint_modifier` chunk is a no-op-adjacent gentle sparkle, and WILL validate
-inputs string-level (the ffast-math-safe way) at parse time — both are
-Slice-2 obligations, not shipped behavior.
+`glint_modifier` chunk is a no-op-adjacent gentle sparkle, and MUST validate
+inputs string-level at parse time — and for non-finite values this is not
+merely the house style but **the only possible gate**: round 3 implemented
+an in-ctor bit-level (memcpy/integer) finiteness check and the production
+`-ffast-math` build **deleted it** — clang tags every double function
+parameter `nofpclass(nan inf)`, so a NaN becomes poison at the call
+boundary before any in-function check can see it (verified empirically:
+a runtime-bit NaN coverage rendered a fully-lit facet field with the guard
+compiled in, even from a strict-FP caller TU).  A `nan`/`inf` token that
+reaches the constructor is silent glitter corruption; reject it in the
+string before `strtod`.
 
 - `density`   — cells per object-space unit.  Anchor to physical fleck pitch:
   fleck pitch ≈ 1/density object units.  For the watch (dial radius 20.6
@@ -207,9 +215,16 @@ stay coherent across facets.
    the glare-free env lighting (small source ⇒ flecks, not a band); calibrate
    density/spread/coverage against the measured targets (≈5 cells/unit,
    single-digit-degree spread, ~0.1 flecks/mm² peak in-lobe); render the
-   tilt set vs the d349/d350 clips.  Optionally audition a silver-substrate
-   glint pass (the general feature makes it one scene line) and keep it only
-   if the footage comparison wants it.
+   tilt set vs the d349/d350 clips.  **The key's ANGULAR SIZE is the
+   strongest density lever** (round-3 simulation at density 5 / coverage
+   0.3 / fill 0.6 / spread 3°: key radius 0.5° ⇒ 0.083 flecks/mm² — on
+   target; 1° ⇒ 0.28; 2° ⇒ 1.36 — fleck count scales roughly with the
+   key's solid angle), so calibrate the key size FIRST, then coverage.
+   The same simulation confirmed 47–58 % fleck turnover per 2° tilt
+   (matches the reference's angle-gating) and ~5.8 distinct facets/mm²
+   areal population with only the H≈Nf slice lit.  Optionally audition a
+   silver-substrate glint pass (the general feature makes it one scene
+   line) and keep it only if the footage comparison wants it.
 4. **Denoise interaction + LOD**: measure OIDN fleck erosion in the BEAUTY
    pass (denoise stays ON for presentation renders per standing rule) —
    this measurement is a **required gate** for any Slice-3 presentation
@@ -267,3 +282,28 @@ engine integration; test strength + claims fidelity):
   and scale/shift semantics now tested; NM twin of the GGX consistency test
   added; coverage band tightened to (0.40, 0.48); photon-tracer count
   corrected to six; MIS wording scoped to what is actually tested.
+
+### Implementation review, rounds 2–3 (2026-07-03, Slice 1)
+
+- Round 2 (fresh correctness + claims reviewers): ONE P1 — the round-1
+  claim that Fast-mode OIDN AOVs carry the perturbed first-hit normal was
+  INVERTED (Fast captures normal+albedo right after `IntersectRay`, before
+  `Modify` runs inside `IntegrateFromHit`); corrected everywhere, Slice-4
+  gate re-derived from beauty-pass erosion.  P2s: nearest-wins tie-break,
+  composed scale+shift order, and the geomSign flipped branch were claimed
+  but untested — all three now have discriminating tests (each mutation
+  revert-proven); parameter section moved to future tense.
+- Round 3 (fresh full-sweep + render-realism/API reviewers): full-sweep
+  ZERO P1 (round-2 OIDN text re-verified to ground truth incl. the hero's
+  spectral-rasterizer path; all new tests' logic validated).  Render
+  realism: the model is structurally capable of the measured fleck targets
+  (0.083/mm² at a 0.5° key radius; 47–58 % turnover per 2° tilt; ~5.8
+  facets/mm² areal) — calibration guidance folded into Slice 3.  API axis:
+  ONE P1 — non-finite parameters are silent glitter corruption; the
+  attempted in-ctor bit-level guard was DELETED by the production build
+  (nofpclass parameter poison, verified from a strict-FP caller too), so
+  string-level rejection is promoted to the load-bearing Slice-2 gate and
+  the ctor contract documents that it cannot sanitize.  P2: zero
+  `vGeomNormal` would have silently disabled the modifier on any future
+  geometry that forgets to populate it — guard now falls back to the
+  shading normal (tested).  Cost note added; key-size coupling documented.
