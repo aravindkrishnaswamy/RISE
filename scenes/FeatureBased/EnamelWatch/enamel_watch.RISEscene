@@ -59,7 +59,7 @@ uniformcolor_painter
 
 pathtracing_spectral_rasterizer
 {
-	samples				22
+	samples				128
 	nmbegin				380
 	nmend				720
 	num_wavelengths			16
@@ -1209,13 +1209,22 @@ uniformcolor_painter
 	color				0.88 0.63 0.26
 }
 
+# Warm gold body so the hands read brass even where they aren't mirroring the
+# bright window (a near-mirror polished hand clips the window highlight past
+# its gold tint -> reads white; a satin finish + warm body reads gold).
+uniformcolor_painter
+{
+	name				pnt_hand_body
+	color				0.24 0.15 0.055
+}
+
 ggx_material
 {
 	name				white_hands
-	rd				pnt_surf_f0
+	rd				pnt_hand_body
 	rs				pnt_hand_gold
-	alphax				0.05
-	alphay				0.05
+	alphax				0.13
+	alphay				0.13
 	fresnel_mode			schlick_f0
 }
 
@@ -1884,23 +1893,23 @@ uniformcolor_painter
 piecewise_linear_function
 {
 	name goldruby_abs
-	cp 400 28.0
-	cp 420 30.5
-	cp 440 33.5
-	cp 460 36.5
-	cp 480 40.0
-	cp 500 42.5
-	cp 515 44.0
-	cp 530 42.0
-	cp 550 36.5
-	cp 570 26.5
-	cp 590 16.6
-	cp 610 9.9
-	cp 630 5.9
-	cp 650 3.5
-	cp 680 2.2
-	cp 700 1.6
-	cp 720 1.4
+	cp 400 36.0
+	cp 420 39.0
+	cp 440 43.0
+	cp 460 47.0
+	cp 480 51.0
+	cp 500 54.0
+	cp 515 56.0
+	cp 530 54.0
+	cp 550 47.0
+	cp 570 34.0
+	cp 590 21.0
+	cp 610 15.0
+	cp 630 9.0
+	cp 650 5.6
+	cp 680 3.7
+	cp 700 2.7
+	cp 720 2.4
 }
 
 homogeneous_medium
