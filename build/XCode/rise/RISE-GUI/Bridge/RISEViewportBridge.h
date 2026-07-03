@@ -426,6 +426,32 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 - (nullable NSString *)addCameraFromActive:(NSString *)proposedName
     NS_SWIFT_NAME(addCameraFromActive(proposedName:));
 
+#pragma mark - Agent surface (Facet 5 slice 1c-1: live in-app injection)
+
+/// Facet 5 slice 1c-1: hand one JSON-RPC 2.0 request LINE to the live
+/// agent dispatcher and return the JSON-RPC response line.  This is the
+/// "agent + user co-edit" entry point: the same
+/// `AgentRpcDispatcher::HandleLine` the CLI's `--agent-stdio` loop drives,
+/// but here it runs IN-PROCESS over the SAME live Job + SceneEditController
+/// this viewport bridge owns — so a typed `propose_patch` edits the running
+/// scene and the viewport reflects it.
+///
+/// Runs SYNCHRONOUSLY on the calling thread.  The caller is Swift's
+/// @MainActor, i.e. the main thread — exactly where the GUI's own
+/// SetProperty drives its cancel-and-park edit, so no extra marshalling is
+/// needed for this slice (a background thread / socket is 1c-2+).  The
+/// dispatcher's commit routes through `SceneEditController::ApplyAgentParamEdit`
+/// (attached at init), which cancel-and-parks the render thread and marks the
+/// editor dirty, so the viewport re-render + the Save-button enable happen
+/// automatically via the controller's existing kick + dirty-changed block —
+/// the caller need NOT refresh the viewport or the Save state by hand.
+///
+/// Never returns nil: if the dispatcher is unavailable (init failed / the
+/// bridge was shut down), a well-formed JSON-RPC -32603 error string is
+/// returned so the Swift caller always parses a valid response.
+- (NSString *)agentHandleLine:(NSString *)jsonRpcRequest
+    NS_SWIFT_NAME(agentHandleLine(_:));
+
 @end
 
 /// One gizmo handle from the controller's screen-space layout.

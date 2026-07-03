@@ -151,6 +151,20 @@ final class RenderViewModel: ObservableObject {
     @Published var isEditorVisible: Bool = false
     @Published var editorText: String = ""
     @Published var editorOriginalText: String = ""
+
+    // Facet 5 slice 1c-1: the live agent (JSON-RPC) panel.  A minimal
+    // "agent + user co-edit" affordance — a typed JSON-RPC request is
+    // handed to the viewport bridge's `agentHandleLine`, which drives the
+    // SAME live dispatcher/session/controller the GUI edits through, so a
+    // `propose_patch` edits the running scene and the viewport reflects it.
+    /// Whether the Agent (JSON-RPC) panel is showing.  Mirrors
+    /// `isEditorVisible` as the show/hide toggle pattern.
+    @Published var isAgentPanelVisible: Bool = false
+    /// The JSON-RPC request text the user is composing.
+    @Published var agentRequestText: String =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"read_document\"}"
+    /// The last JSON-RPC response line (read-only display).
+    @Published var agentResponseText: String = ""
     @Published var hasAnimation: Bool = false
     @Published var recentFiles: [String] = []
 
@@ -1127,6 +1141,37 @@ final class RenderViewModel: ObservableObject {
 
         refreshEditorContents()
         isEditorVisible = true
+    }
+
+    // MARK: - Agent surface (Facet 5 slice 1c-1)
+
+    /// Toggle the Agent (JSON-RPC) panel.  Mirrors `editSceneFile`.
+    func toggleAgentPanel() {
+        isAgentPanelVisible.toggle()
+    }
+
+    /// Facet 5 slice 1c-1: hand one JSON-RPC request line to the live
+    /// agent dispatcher and return its response line.
+    ///
+    /// Runs SYNCHRONOUSLY on the main actor — the bridge's
+    /// `agentHandleLine` runs on the calling (main) thread, exactly like
+    /// GUI SetProperty drives the controller's cancel-and-park from main.
+    /// After a `propose_patch` the viewport re-renders and the Save button
+    /// enables AUTOMATICALLY: the controller's commit kicks a fresh render
+    /// pass (delivered via the live-preview image block) and flips the
+    /// dirty flag (delivered via `setDirtyChangedBlock` → `sceneEditsDirty`).
+    /// So there is NO manual viewport refresh or Save-state poke here.
+    @discardableResult
+    func sendAgentRequest(_ line: String) -> String {
+        guard let vb = viewportBridge else {
+            let err = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":" +
+                      "{\"code\":-32603,\"message\":\"no scene loaded (no viewport bridge)\"}}"
+            agentResponseText = err
+            return err
+        }
+        let response = vb.agentHandleLine(line)
+        agentResponseText = response
+        return response
     }
 
     func saveEditorFile() {

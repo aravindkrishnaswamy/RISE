@@ -57,6 +57,8 @@
 #include "../src/Library/Interfaces/IEmitter.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/Agent/AgentSession.h"
+#include "../src/Library/Agent/AgentRpc.h"
+#include "../src/Library/Agent/Json.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -776,6 +778,151 @@ static void TestAgentEditMarksDirty()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 8 (Facet 5 slice 1c-1): the FULL LIVE DISPATCHER path -- exactly the
+// mechanism the Mac GUI's `-agentHandleLine:` will invoke.  Slice 1b's Test 5
+// proved AgentSession::ProposePatch (a C++ call) routes through an attached
+// controller; this test proves the JSON-RPC TRANSPORT above it does too:
+//
+//   AgentRpcDispatcher::HandleLine("<json-rpc line>")
+//     -> the wrapped AgentSession (WrapJob over the SAME live Job)
+//     -> the attached SceneEditController::ApplyAgentParamEdit
+//     -> the live scene changes + the editor goes dirty.
+//
+// This is the automated proof of the in-app injection loop: the GUI hands a
+// typed JSON-RPC string to `agentHandleLine`, which calls exactly this
+// HandleLine on the exact same dispatcher/session/controller wiring.  We drive
+// it with RAW JSON-RPC lines (not the C++ struct), parse the JSON responses,
+// and assert against the live derived scene + the controller's dirty flag,
+// all while a REAL render thread cycles.
+//
+//   (a) read_document       -> a non-empty document + a non-sentinel headVersion.
+//   (b) propose_patch        -> result.applied==true / status=="applied", the
+//                               live `lum` scale actually moved, and
+//                               HasUnsavedChanges() flipped true.
+//   (c) stale propose_patch   -> status=="conflict", applied==false, no mutation.
+//////////////////////////////////////////////////////////////////////
+static bool JsonResultObj( const std::string& line, Agent::JsonValue& outResult )
+{
+	Agent::JsonValue root;
+	std::string err;
+	if( !Agent::JsonParse( line, root, err ) ) return false;
+	if( !root.isObject() ) return false;
+	const Agent::JsonValue* r = root.find( "result" );
+	if( !r || !r->isObject() ) return false;
+	outResult = *r;
+	return true;
+}
+
+static void TestLiveDispatcherPath()
+{
+	std::cout << "Test 8: live dispatcher path (HandleLine -> attached controller -> live edit)..." << std::endl;
+
+	const char* tmp = "agentlive_dispatcher.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		// Build EXACTLY the wiring the GUI's viewport bridge builds:
+		// WrapJob over the live Job, then attach the running controller.
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		Check( sess != nullptr, "AgentSession wraps the live Job" );
+		if( sess ) sess->AttachController( &c );
+		Agent::AgentRpcDispatcher disp( std::move( sess ) );
+
+		//------------------------------------------------------------------
+		// (a) read_document -- a raw JSON-RPC line in, a JSON response out.
+		//------------------------------------------------------------------
+		const std::string docResp = disp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"read_document\"}" );
+		std::cout << "    read_document resp bytes=" << docResp.size() << std::endl;
+		Agent::JsonValue docResult;
+		Check( JsonResultObj( docResp, docResult ), "read_document returns a JSON-RPC result object" );
+		const Agent::JsonValue* hasDoc = docResult.find( "hasDocument" );
+		Check( hasDoc && hasDoc->isBool() && hasDoc->asBool(), "read_document reports hasDocument=true" );
+		const Agent::JsonValue* document = docResult.find( "document" );
+		Check( document && document->isString() && !document->asString().empty(),
+		       "read_document carries the non-empty head text" );
+		// The head text is the real serialized scene -- it names our luminaire.
+		Check( document && document->asString().find( "lum" ) != std::string::npos,
+		       "the document text is the real head (contains the `lum` entity)" );
+		// Capture the head-version the dispatcher reported so we can build a
+		// STALE base for the conflict check below.
+		const Agent::JsonValue* hv = docResult.find( "headVersion" );
+		Check( hv && hv->isObject(), "read_document carries a headVersion object" );
+		double hvUuid = 0.0, hvRev = 0.0;
+		if( hv && hv->isObject() ) {
+			const Agent::JsonValue* u = hv->find( "uuid" );
+			const Agent::JsonValue* r = hv->find( "revision" );
+			if( u ) hvUuid = u->asNumber();
+			if( r ) hvRev = r->asNumber();
+		}
+		Check( hvUuid != 0.0, "headVersion.uuid is non-sentinel (a real retained head)" );
+
+		//------------------------------------------------------------------
+		// (b) propose_patch -- recolor/rescale the luminaire THROUGH the
+		// transport.  Assert applied + the live scene moved + dirty flipped.
+		//------------------------------------------------------------------
+		Check( !c.HasUnsavedChanges(), "scene is CLEAN before the dispatched propose_patch" );
+		const double beforeR = LumR( *pJob );
+		const std::string patchResp = disp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"propose_patch\",\"params\":"
+			"{\"target\":\"lum\",\"kind\":\"lambertian_luminaire_material\",\"param\":\"scale\",\"value\":\"7.0\"}}" );
+		std::cout << "    propose_patch resp=" << patchResp << std::endl;
+		Agent::JsonValue patchResult;
+		Check( JsonResultObj( patchResp, patchResult ), "propose_patch returns a JSON-RPC result object" );
+		const Agent::JsonValue* applied = patchResult.find( "applied" );
+		Check( applied && applied->isBool() && applied->asBool(), "propose_patch response says applied=true" );
+		const Agent::JsonValue* status = patchResult.find( "status" );
+		Check( status && status->isString() && status->asString() == "applied",
+		       "propose_patch response status is \"applied\"" );
+		// The LIVE derived scene actually changed (scale 7.0 on the white
+		// exitance -> LumR ~7, and measurably different from before).
+		const double afterR = LumR( *pJob );
+		std::cout << "    LumR before=" << beforeR << " after=" << afterR << std::endl;
+		Check( afterR > 6.0 && afterR < 8.0, "the LIVE scene changed (lum scale ~7.0 reached the managers)" );
+		Check( afterR != beforeR, "the dispatched edit measurably moved the derived material" );
+		// The GUI-facing dirty flag flipped -- the Save button would enable.
+		Check( c.HasUnsavedChanges(), "the dispatched propose_patch marked the editor DIRTY (Save enables)" );
+		// The render thread is still alive (the commit cancel-and-parked, not raced).
+		Check( c.IsRunning(), "render thread alive after the dispatched commit" );
+
+		//------------------------------------------------------------------
+		// (c) STALE propose_patch -- pass back the ORIGINAL (pre-edit)
+		// headVersion as baseHeadVersion; it is now stale (the apply above
+		// bumped the revision) -> status=="conflict", no mutation.
+		//------------------------------------------------------------------
+		const double beforeStale = LumR( *pJob );
+		char staleLine[512];
+		std::snprintf( staleLine, sizeof(staleLine),
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"propose_patch\",\"params\":"
+			"{\"target\":\"lum\",\"kind\":\"lambertian_luminaire_material\",\"param\":\"scale\",\"value\":\"1.0\","
+			"\"baseHeadVersion\":{\"uuid\":%.0f,\"revision\":%.0f}}}",
+			hvUuid, hvRev );
+		const std::string staleResp = disp.HandleLine( std::string( staleLine ) );
+		std::cout << "    stale propose_patch resp=" << staleResp << std::endl;
+		Agent::JsonValue staleResult;
+		Check( JsonResultObj( staleResp, staleResult ), "stale propose_patch returns a JSON-RPC result object" );
+		const Agent::JsonValue* sStatus = staleResult.find( "status" );
+		Check( sStatus && sStatus->isString() && sStatus->asString() == "conflict",
+		       "stale propose_patch response status is \"conflict\"" );
+		const Agent::JsonValue* sApplied = staleResult.find( "applied" );
+		Check( sApplied && sApplied->isBool() && !sApplied->asBool(),
+		       "stale propose_patch did not apply" );
+		Check( LumR( *pJob ) == beforeStale, "the conflict left the live scene unchanged (no mutation)" );
+
+		c.Stop();
+		Check( !c.IsRunning(), "controller stops + joins cleanly after the dispatched edits" );
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -787,6 +934,7 @@ int main()
 	TestAgentSessionLiveMode();
 	TestCodeThreeRerender();
 	TestAgentEditMarksDirty();
+	TestLiveDispatcherPath();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

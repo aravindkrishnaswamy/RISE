@@ -250,6 +250,26 @@ struct ContentView: View {
                               || viewModel.renderState == .cancelling
                               || viewModel.renderState == .idle)
                     .help("Clear the current scene")
+
+                    // Facet 5 slice 1c-1: toggle the live Agent (JSON-RPC)
+                    // panel — the minimal "agent + user co-edit" affordance.
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            viewModel.toggleAgentPanel()
+                        }
+                    } label: {
+                        Label("Agent", systemImage: "wand.and.stars")
+                    }
+                    .disabled(viewModel.viewportBridge == nil)
+                    .help(viewModel.isAgentPanelVisible
+                          ? "Hide the Agent (JSON-RPC) panel"
+                          : "Show the Agent (JSON-RPC) panel")
+                }
+
+                // Facet 5 slice 1c-1: the inline Agent (JSON-RPC) panel.
+                if viewModel.isAgentPanelVisible {
+                    Divider()
+                    AgentPanel()
                 }
 
                 Divider()
@@ -575,5 +595,80 @@ private struct ExposureSliderRow: View {
         // used by photo apps (Lightroom etc.) and DCC viewers.
         let sign = v > 0 ? "+" : ""
         return String(format: "\(sign)%.1f EV", v)
+    }
+}
+
+// MARK: - Agent panel (Facet 5 slice 1c-1)
+
+/// The minimal live "agent + user co-edit" affordance: a multiline field
+/// for a JSON-RPC request, a Send button that drives the viewport bridge's
+/// `agentHandleLine` (which routes through the SAME live dispatcher /
+/// session / controller the GUI edits through), and a read-only response
+/// area.  A `propose_patch` edits the running scene; the viewport re-renders
+/// and the Save button enables automatically via the controller's kick +
+/// dirty-changed block (see `RenderViewModel.sendAgentRequest`), so this
+/// view does NOT poke the viewport or the Save state by hand.
+private struct AgentPanel: View {
+    @EnvironmentObject var viewModel: RenderViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: "wand.and.stars")
+                    .imageScale(.small)
+                Text("Agent (JSON-RPC)")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+                Spacer()
+            }
+
+            Text("Request")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            TextEditor(text: $viewModel.agentRequestText)
+                .font(.system(.caption, design: .monospaced))
+                .frame(height: 64)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(Color(nsColor: .separatorColor))
+                )
+
+            HStack {
+                Button {
+                    // Runs synchronously on the main actor (see
+                    // sendAgentRequest); the viewport + Save state update
+                    // themselves via the controller's kick + dirty block.
+                    viewModel.sendAgentRequest(viewModel.agentRequestText)
+                } label: {
+                    Label("Send", systemImage: "paperplane.fill")
+                }
+                .disabled(viewModel.viewportBridge == nil
+                          || viewModel.agentRequestText.isEmpty)
+                .help("Send this JSON-RPC request to the live agent dispatcher")
+                Spacer()
+            }
+
+            Text("Response")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            ScrollView {
+                Text(viewModel.agentResponseText.isEmpty
+                     ? "(no response yet)"
+                     : viewModel.agentResponseText)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundColor(viewModel.agentResponseText.isEmpty
+                                     ? .secondary : .primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(4)
+            }
+            .frame(height: 72)
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(Color(nsColor: .separatorColor))
+            )
+        }
+        .padding(.top, 4)
     }
 }

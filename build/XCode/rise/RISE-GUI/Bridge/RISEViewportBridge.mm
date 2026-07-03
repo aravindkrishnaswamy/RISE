@@ -26,6 +26,8 @@
 #include "SceneEditor/SceneEditController.h"
 #include "Rendering/InteractivePelRasterizer.h"
 #include "Rendering/ViewportFrameStore.h"
+#include "Agent/AgentSession.h"   // Facet 5 slice 1c-1: live in-app agent injection
+#include "Agent/AgentRpc.h"
 
 #include <atomic>
 #include <vector>
@@ -325,6 +327,17 @@ private:
     // controller's listener detached) before _controller destruction
     // in -shutdown so a stale fire after dealloc is impossible.
     RISEViewportDirtyChangedBlock _dirtyChangedBlock;
+
+    // Facet 5 slice 1c-1: the live agent JSON-RPC dispatcher.  Owns a
+    // non-owning AgentSession that WrapJob's the SAME IJobPriv the
+    // controller wraps and is AttachController'd to `_controller`, so a
+    // dispatched propose_patch routes through the controller's render-
+    // safe cancel-and-park edit path.  Raw new/delete, mirroring
+    // `_controller`.  LIFETIME ORDER: destroyed in -shutdown BEFORE
+    // `_controller` (and before the host Job) because the session it
+    // holds BORROWS both — deleting the dispatcher first guarantees it
+    // never references a dead controller / job.
+    RISE::Agent::AgentRpcDispatcher* _agentDispatcher;
 }
 
 - (nullable instancetype)initWithHostBridge:(RISEBridge *)host {
@@ -337,6 +350,7 @@ private:
     _polishCaster = nullptr;
     _interactiveRasterizer = nullptr;
     _previewSink = nullptr;
+    _agentDispatcher = nullptr;
 
     void* jobOpaque = [host opaqueJobHandle];
     if (!jobOpaque) {
@@ -361,6 +375,24 @@ private:
         // before installing the sink as a rasterizer output.
         _previewSink->SetController(_controller);
         RISE_API_SceneEditController_SetPreviewSink(_controller, _previewSink);
+    }
+
+    // Facet 5 slice 1c-1: stand up the live agent dispatcher over the SAME
+    // Job the controller wraps, and attach the controller so a dispatched
+    // propose_patch routes through its render-safe cancel-and-park edit
+    // path (the same path GUI SetProperty uses).  Constructed AFTER
+    // `_controller` (whose lifetime it borrows) and torn down BEFORE it
+    // (see -shutdown).  WrapJob may return null (defensive; pJob is
+    // non-null here), in which case the dispatcher speaks valid JSON-RPC
+    // errors for the session-backed verbs — still safe.
+    {
+        std::unique_ptr<RISE::Agent::AgentSession> session =
+            RISE::Agent::AgentSession::WrapJob(pJob);
+        if (session) {
+            session->AttachController(_controller);
+        }
+        _agentDispatcher =
+            new RISE::Agent::AgentRpcDispatcher(std::move(session));
     }
 
     return self;
@@ -428,6 +460,16 @@ private:
 }
 
 - (void)shutdown {
+    // Facet 5 slice 1c-1: destroy the agent dispatcher FIRST — the
+    // AgentSession it owns BORROWS both `_controller` and the host Job.
+    // Deleting it here, before the controller is torn down below,
+    // guarantees the session never references a dead controller / job
+    // (the lifetime-order invariant noted at the ivar declaration).
+    // Idempotent: -shutdown may be called explicitly and again from
+    // -dealloc; the nil guard makes the second call a no-op.
+    delete _agentDispatcher;
+    _agentDispatcher = nullptr;
+
     if (_controller) {
         // Detach the dirty-changed listener BEFORE destroying the
         // controller so its captured `self` pointer can't fire into
@@ -1014,6 +1056,31 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         [self refreshProperties];
     }
     return ok;
+}
+
+#pragma mark - Agent surface (Facet 5 slice 1c-1)
+
+- (NSString *)agentHandleLine:(NSString *)jsonRpcRequest {
+    // Guard the no-dispatcher / nil-input cases with a well-formed
+    // JSON-RPC -32603 error so the Swift caller always parses a valid
+    // response line (never nil).  id=null because we can't reliably
+    // attribute the request without running the dispatcher's parse.
+    static NSString* const kNoDispatcher =
+        @"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":"
+        @"{\"code\":-32603,\"message\":\"internal error: agent dispatcher unavailable\"}}";
+    if (!_agentDispatcher) {
+        return kNoDispatcher;
+    }
+    // A nil request string becomes an empty line -> the dispatcher's own
+    // -32700 parse-error path (it is TOTAL and never throws).  `?: ""`
+    // keeps the std::string ctor from a null UTF8 pointer.
+    const char* utf8 = jsonRpcRequest ? [jsonRpcRequest UTF8String] : "";
+    // SYNCHRONOUS on the calling (main / @MainActor) thread — mirrors how
+    // GUI SetProperty drives the controller's cancel-and-park from main.
+    const std::string response =
+        _agentDispatcher->HandleLine(std::string(utf8 ? utf8 : ""));
+    NSString* out = [NSString stringWithUTF8String:response.c_str()];
+    return out ?: kNoDispatcher;
 }
 
 @end
