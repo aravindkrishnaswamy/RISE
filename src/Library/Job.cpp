@@ -5173,6 +5173,28 @@ bool Job::AddNormalMapModifier(
 	return true;
 }
 
+bool Job::AddGlintModifier(
+	const char* name,										///< [in] Name of the modifier
+	const double density,									///< [in] cells per object-space unit; <= 0 inert
+	const double coverage,									///< [in] per-cell facet existence probability [0,1]
+	const double fill,										///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 inert
+	const double spread,									///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 inert
+	const double scale[3],									///< [in] anisotropic cell stretch
+	const double shift[3],									///< [in] cell-space offset
+	const unsigned int seed									///< [in] hash seed
+	)
+{
+	IRayIntersectionModifier* pModifier = 0;
+	RISE_API_CreateGlintModifier( &pModifier, density, coverage, fill, spread,
+		Vector3( scale[0], scale[1], scale[2] ),
+		Vector3( shift[0], shift[1], shift[2] ),
+		seed );
+
+	pModManager->AddItem( pModifier, name );
+	safe_release( pModifier );
+	return true;
+}
+
 //
 // Adding objects
 //

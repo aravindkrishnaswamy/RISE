@@ -1718,6 +1718,21 @@ namespace RISE
 			const double scale										///< [in] glTF normalTexture.scale
 			);
 
+		//! Creates a discrete-facet glint modifier.  See IJob.h for the doc.
+		//! (Overrides the IJob virtual; unmarked to match this file's
+		//! no-`override` style.)
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddGlintModifier(
+			const char* name,										///< [in] Name of the modifier
+			const double density,									///< [in] cells per object-space unit; <= 0 inert
+			const double coverage,									///< [in] per-cell facet existence probability [0,1]
+			const double fill,										///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 inert
+			const double spread,									///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 inert
+			const double scale[3],									///< [in] anisotropic cell stretch
+			const double shift[3],									///< [in] cell-space offset
+			const unsigned int seed									///< [in] hash seed
+			);
+
 		//
 		// Adds functions
 		//

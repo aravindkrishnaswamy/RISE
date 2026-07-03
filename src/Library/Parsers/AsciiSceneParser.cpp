@@ -6077,6 +6077,81 @@ namespace RISE
 				}
 			};
 
+			struct GlintModifierAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					double density   = bag.GetDouble( "density",  5.0 );
+					double coverage  = bag.GetDouble( "coverage", 0.15 );
+					double fill      = bag.GetDouble( "fill",     0.6 );
+					double spread    = bag.GetDouble( "spread",   2.0 );
+					double scale[3]  = { 1.0, 1.0, 1.0 };
+					double shift[3]  = { 0.0, 0.0, 0.0 };
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+					unsigned int seed = bag.GetUInt( "seed", 0 );
+
+					// The descriptor layer already hard-rejects non-finite /
+					// non-numeric tokens (AllTokensAreFiniteNumbers) -- the
+					// load-bearing gate for this chunk (the modifier ctor's
+					// laundered backstop only goes silently inert).  Here we
+					// add DOMAIN diagnostics: values that make the modifier
+					// pointless fail LOUDLY (an authored no-op chunk is a
+					// mistake, not an intent), and out-of-range fractions
+					// warn about the clamp they will receive.
+					if( !(density > 0.0) || !(coverage > 0.0) || !(fill > 0.0) || !(spread > 0.0) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"glint_modifier `%s`: density/coverage/fill/spread must all be > 0 (got %g/%g/%g/%g) -- these values would make the modifier inert",
+							name.c_str(), density, coverage, fill, spread );
+						return false;
+					}
+					if( coverage > 1.0 ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"glint_modifier `%s`: coverage %g clamps to 1.0", name.c_str(), coverage );
+					}
+					if( fill > 1.0 ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"glint_modifier `%s`: fill %g clamps to 1.0 (facet radius may not exceed the half-cell)", name.c_str(), fill );
+					}
+					if( !(scale[0] > 0.0) || !(scale[1] > 0.0) || !(scale[2] > 0.0) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"glint_modifier `%s`: scale components must be > 0 (got %g %g %g)",
+							name.c_str(), scale[0], scale[1], scale[2] );
+						return false;
+					}
+
+					return pJob.AddGlintModifier( name.c_str(), density, coverage, fill, spread, scale, shift, seed );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "glint_modifier"; cd.category = ChunkCategory::Modifier;
+						cd.description = "Discrete-facet glint modifier: an object-space cell hash "
+							"places sparse mirror-like micro-facets (jittered centre + radius test, "
+							"per-cell existence probability); a hit landing on a facet has its "
+							"shading normal replaced by the facet's Rayleigh-tilted normal, so the "
+							"object's EXISTING material twinkles as the view/light sweeps -- enamel "
+							"flecks, metallic-flake paint, snow sparkle, glitter.  Facets are pinned "
+							"to the surface (object-space hash): they flash because the geometry "
+							"moves, never because the pattern swims.  Attach via the object's "
+							"`modifier` parameter.  See docs/ENAMEL_SPARKLE_BRDF.md.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "density";  p.kind = ValueKind::Double;     p.description = "Cells per object-space unit; facet pitch = 1/density units.  Anchor to the physical fleck pitch (e.g. 180um flecks on a dial with ~1.08 units/mm => density ~5)"; p.defaultValueHint = "5.0"; }
+						{ auto& p = P(); p.name = "coverage"; p.kind = ValueKind::Double;     p.description = "Per-cell facet existence probability (0,1]; with `fill` this sets the areal facet fraction"; p.defaultValueHint = "0.15"; }
+						{ auto& p = P(); p.name = "fill";     p.kind = ValueKind::Double;     p.description = "Facet disc radius as a fraction of the half-cell (0,1]; the sphere-slice test varies apparent facet sizes naturally"; p.defaultValueHint = "0.6"; }
+						{ auto& p = P(); p.name = "spread";   p.kind = ValueKind::Double;     p.description = "Facet tilt Rayleigh scale in DEGREES (single-digit typical; the twinkle's angular sensitivity)"; p.defaultValueHint = "2.0"; }
+						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::DoubleVec3; p.description = "Anisotropic cell stretch (Worley convention pt*scale+shift); elongated cells give a streak lay"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";    p.kind = ValueKind::DoubleVec3; p.description = "Cell-space offset"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "seed";     p.kind = ValueKind::UInt;       p.description = "Hash seed -- distinct fleck fields on otherwise identical objects"; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			//////////////////////////////////////////
 			// Participating media
 			//////////////////////////////////////////
@@ -9909,6 +9984,7 @@ namespace RISE
 		// Modifiers
 		add( "bumpmap_modifier",                      new BumpmapModifierAsciiChunkParser() );
 		add( "normal_map_modifier",                   new NormalMapModifierAsciiChunkParser() );
+		add( "glint_modifier",                        new GlintModifierAsciiChunkParser() );
 
 		// Media
 		add( "homogeneous_medium",                    new HomogeneousMediumAsciiChunkParser() );

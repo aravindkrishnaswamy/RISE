@@ -1922,6 +1922,27 @@ namespace RISE
 								const Scalar scale				///< [in] glTF normalTexture.scale
 								);
 
+	//! Creates a discrete-facet glint modifier: an object-space cell
+	//! hash places sparse mirror-like micro-facets (jittered centre +
+	//! radius test, Bernoulli existence); a hit on a facet has its
+	//! shading normal replaced by the facet's Rayleigh-tilted normal,
+	//! making the EXISTING materials twinkle (enamel flecks, metallic
+	//! flake, snow, glitter).  See Modifiers/GlintModifier.h and
+	//! docs/ENAMEL_SPARKLE_BRDF.md.  Parameters MUST be finite — the
+	//! ctor goes inert on garbage (volatile-laundered check), but the
+	//! caller owns loud rejection.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGlintModifier(
+								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
+								const Scalar density,			///< [in] cells per object-space unit (facet pitch = 1/density); <= 0 inert
+								const Scalar coverage,			///< [in] per-cell facet existence probability [0,1]
+								const Scalar fill,				///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 inert
+								const Scalar spread,			///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 inert
+								const Vector3& scale,			///< [in] anisotropic cell stretch (1,1,1 = isotropic; Worley convention pt*scale+shift)
+								const Vector3& shift,			///< [in] cell-space offset
+								const unsigned int seed			///< [in] hash seed (distinct fleck fields on otherwise identical objects)
+								);
+
 
 	//////////////////////////////////////////////////////////
 	// Functions

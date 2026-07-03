@@ -4209,6 +4209,7 @@ namespace RISE
 
 #include "Modifiers/BumpMap.h"
 #include "Modifiers/NormalMap.h"
+#include "Modifiers/GlintModifier.h"
 
 namespace RISE
 {
@@ -4260,6 +4261,26 @@ namespace RISE
 
 		(*ppi) = new NormalMap( painter, scale );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "normalmap" );
+		return true;
+	}
+
+	bool RISE_API_CreateGlintModifier(
+								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
+								const Scalar density,			///< [in] cells per object-space unit; <= 0 inert
+								const Scalar coverage,			///< [in] per-cell facet existence probability [0,1]
+								const Scalar fill,				///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 inert
+								const Scalar spread,			///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 inert
+								const Vector3& scale,			///< [in] anisotropic cell stretch (Worley convention pt*scale+shift)
+								const Vector3& shift,			///< [in] cell-space offset
+								const unsigned int seed			///< [in] hash seed
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new GlintModifier( density, coverage, fill, spread, scale, shift, seed );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "glintmodifier" );
 		return true;
 	}
 

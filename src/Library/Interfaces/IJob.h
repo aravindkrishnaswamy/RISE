@@ -1595,6 +1595,26 @@ namespace RISE
 			const double scale										///< [in] glTF normalTexture.scale (xy multiplier; default 1.0)
 			) = 0;
 
+		//! Adds a discrete-facet glint modifier (sparse mirror-like
+		//! micro-facets pinned to the surface by an object-space cell
+		//! hash; a hit on a facet has its shading normal replaced by
+		//! the facet's tilted normal so the existing materials twinkle
+		//! — enamel flecks, metallic flake, snow, glitter).  See
+		//! Modifiers/GlintModifier.h for the model and parameter
+		//! semantics; all values must be FINITE (callers own loud
+		//! rejection; the modifier goes inert on garbage).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddGlintModifier(
+			const char* name,										///< [in] Name of the modifier
+			const double density,									///< [in] cells per object-space unit (facet pitch = 1/density); <= 0 inert
+			const double coverage,									///< [in] per-cell facet existence probability [0,1]
+			const double fill,										///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 inert
+			const double spread,									///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 inert
+			const double scale[3],									///< [in] anisotropic cell stretch (1,1,1 = isotropic; Worley convention pt*scale+shift)
+			const double shift[3],									///< [in] cell-space offset
+			const unsigned int seed									///< [in] hash seed (distinct fleck fields on otherwise identical objects)
+			) = 0;
+
 		//
 		// Adds functions
 		//
