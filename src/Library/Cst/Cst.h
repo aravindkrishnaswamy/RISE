@@ -233,8 +233,9 @@ namespace RISE
 
 		//! Derive the document's chunks into pJob through the LIVE chunk-parser
 		//! registry (item 5). FIRST resets the chunk parsers' cross-chunk parse
-		//! state (ClearChunkParserState, as the legacy ParseAndLoadScene does at
-		//! its start) so nothing leaks between successive derives -- the redesign
+		//! state (ClearChunkParserState, as the legacy ParseAndLoadScene did at
+		//! its start before its Slice-6c deletion) so nothing leaks between
+		//! successive derives -- the redesign
 		//! runs this on every edit. Each chunk is then looked up by keyword in
 		//! CreateAllChunkParsers(); each param line is normalised exactly as the
 		//! legacy parser normalises it (whitespace runs collapsed to single

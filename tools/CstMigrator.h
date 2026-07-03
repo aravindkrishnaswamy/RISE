@@ -332,7 +332,9 @@ static std::string Migrate( const std::string& text )
 // version NEW output carries).  Touches the FIRST line only, and only when it is exactly the v6 header --
 // every other `6` in the body (and an already-`7` header) is left byte-for-byte untouched, so the transform
 // is idempotent.  The reader accepts BOTH 6 and 7, so this is a cosmetic version stamp, not a load gate.
-static std::string BumpSceneHeader( const std::string& text )
+// `inline`: not every includer calls this (CstDeriveGoldenTest uses only Migrate()), and a plain
+// header-defined `static` function would trip -Wunused-function in such TUs.
+static inline std::string BumpSceneHeader( const std::string& text )
 {
 	const std::string v6 = "RISE ASCII SCENE 6";
 	// The header must be the first bytes of the file (optionally the whole first line).

@@ -1372,7 +1372,8 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	SeqToVec( doc.items, items );
 
 	// Reset the chunk parsers' cross-chunk parse state FIRST, exactly as the
-	// legacy ParseAndLoadScene does at the start of every parse. Some Finalize()s
+	// legacy ParseAndLoadScene did at the start of every parse (loader deleted
+	// in Slice 6c; this derive is now the registry's sole caller). Some Finalize()s
 	// read/write file-scope caches within one scene (notably the
 	// uniformcolor_painter colour cache that translucent_material's energy-
 	// conservation check reads); without this, deriving scene A then scene B

@@ -6321,10 +6321,12 @@ namespace RISE
 						  p.description = "Rotation quaternion (xyzw, glTF); matches standard_object semantics."; }
 						{ auto& p = P(); p.name = "matrix";      p.kind = ValueKind::DoubleMat4; p.required = false;
 						  p.description = "Full 4x4 world transform, column-major; overrides "
-						                  "position/orientation/quaternion/scale.  Used by the save "
-						                  "engine for objects whose runtime transform is not "
-						                  "decomposable into pos+orient+scale (e.g. after "
-						                  "ScaleObjectFromAnchor or for matrix-imported objects)."; }
+						                  "position/orientation/quaternion/scale.  The pre-CST "
+						                  "byte-splice save (deleted in Slice 6d) emitted this for "
+						                  "objects whose transform was not decomposable into "
+						                  "pos+orient+scale (e.g. after ScaleObjectFromAnchor); "
+						                  "nothing emits override_object today, but older scene "
+						                  "files that contain it remain parseable."; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.required = false;
 						  p.description = "Per-axis scale; matches standard_object semantics."; }
 						return cd;
