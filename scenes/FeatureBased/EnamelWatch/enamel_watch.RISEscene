@@ -71,14 +71,14 @@ pathtracing_spectral_rasterizer
 	# refraction -> denoiser smears the guilloche).  PT-only opt-in.
 	transparent_shadows		FALSE
 	radiance_map			pnt_env
-	radiance_scale			0.50
+	radiance_scale			1.15
 	radiance_background		FALSE
 }
 
 directional_light
 {
 	name				dialkey
-	power				4.4
+	power				0.0
 	color				1 1 1
 	direction			0.45 0.35 0.62
 }
@@ -1324,7 +1324,7 @@ lambertian_luminaire_material
 {
 	name				soft_top_lum
 	exitance			pnt_white
-	scale				44.0
+	scale				0.0
 	material			none
 }
 
@@ -1348,7 +1348,7 @@ lambertian_luminaire_material
 {
 	name				soft_bot_lum
 	exitance			pnt_white
-	scale				10.0
+	scale				0.0
 	material			none
 }
 
