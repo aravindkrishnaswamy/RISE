@@ -238,6 +238,36 @@ stay coherent across facets.
    spanning pixels) and add footprint-aware response only if a real shot
    needs it.
 
+## Slice-3 outcome (2026-07-03, measured)
+
+Wired into `enamel_watch.RISEscene`: `glint_glaze` (density 5, coverage 0.5,
+fill 0.6, spread 4°, seed 1) on the glaze object + the `glint_key` panel
+(6×6 units at 350 distance ≈ 0.5° angular radius, dial-plane mirror of the
+cam_high34 base pose, `scale 400`).  All measurements at 380×380, spectral
+PT, dial-region luminance on the sRGB PNGs:
+
+- **No glare band** — the env-only look survives; the key adds only its two
+  small physical crystal reflections (outer + inner surface, AR-dimmed).
+- **Feature attribution**: an absurd-parameter render (coverage 1, fill 1,
+  spread 40°) transforms the dial (dense grain, mean −0.03) — the modifier
+  unambiguously fires through parse→attach→SDF-object→spectral-PT.  At
+  production parameters the facet layer contributes ~44 exclusive bright
+  pixels ≈ **exactly the reference-calibrated fleck count** (0.083/mm² ×
+  ~300 mm² lit ≈ 25–40); the pre-existing orange-peel dimples carry the
+  denser base shimmer, as in the real dial (two-scale structure).
+- **Twinkle**: +3° camera tilt (the Wobble amplitude) turns over ~37 % of
+  bright dial pixels (550 gone, 450 new of ~1490) — matching the
+  reference's strong angle-gating.
+- **OIDN fleck survival** (Slice-4 gate, first measurement): plain→denoised
+  keeps 98/145 fleck pixels (68 %) at 512 spp but only 8/35 (23 %) at
+  128 spp — the denoiser needs the noise floor below the fleck structure,
+  so the scene now carries `samples 512` with the rationale inline.  The
+  guide buffers were not the issue (scene runs `oidn_prefilter accurate`;
+  record lands on the smooth buried silver).
+- Side-by-side against the d349 reference frames: sparkle scale/character
+  match; the reference's brighter lobe is its physically larger window —
+  the key's angular size stays the calibration lever for taste passes.
+
 ## Ratification record (2026-07-03)
 
 - Reviewer A (physics): ratify discrete-microfacet model; flagged

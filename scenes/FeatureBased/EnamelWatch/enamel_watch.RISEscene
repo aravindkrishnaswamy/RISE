@@ -47,7 +47,10 @@ uniformcolor_painter
 
 pathtracing_spectral_rasterizer
 {
-	samples				128
+	# 512: the discrete-facet flecks are 1-2px deterministic peaks; OIDN
+	# keeps 68% of them at 512 spp but only 23% at 128 (the denoiser needs
+	# the noise floor below the fleck structure).  Measured 2026-07-03.
+	samples				512
 	nmbegin				380
 	nmend				720
 	num_wavelengths			16
@@ -826,6 +829,41 @@ standard_object
 }
 
 ##################################################
+# GLINT KEY -- a SMALL bright distant panel (~0.5deg angular radius from the
+# dial: 6x6 units at 350 distance), placed at the dial-plane mirror of the
+# cam_high34 base pose so the glaze's smooth specular lobe carries the fleck
+# field for the hero framing (the Wobble tilt then twinkles it).  SMALL is
+# the point: the fleck count scales with the key's solid angle (measured
+# 0.5deg radius -> ~0.08 flecks/mm2, the reference density) and a small
+# source cannot re-introduce the broad glare band the env-only look removed.
+# Physically this is the reference clips' distant window.
+##################################################
+
+lambertian_luminaire_material
+{
+	name				glint_key_lum
+	exitance			pnt_white
+	scale				400.0
+	material			none
+}
+
+clippedplane_geometry
+{
+	name				glint_key_geom
+	pta				-113.94 157.52 290.91
+	ptb				-109.02 160.97 290.91
+	ptc				-106.14 156.86 294.19
+	ptd				-111.06 153.42 294.19
+}
+
+standard_object
+{
+	name				glint_key
+	geometry			glint_key_geom
+	material			glint_key_lum
+}
+
+##################################################
 # ALTERNATE LIGHTING (commented out) -- DRAMATIC HIGH-CONTRAST HERO.
 # A dark, moody 'emerging-from-black' look (high-end dark-product style):
 # a single HARD raking KEY (upper-front, +X side) carves the dial
@@ -1052,6 +1090,23 @@ sdf_geometry
 	heightfield_radius 20.6
 	heightfield_scale 0.40
 }
+# Discrete-facet glint field on the GLAZE surface (the fleck twinkle;
+# docs/ENAMEL_SPARKLE_BRDF.md).  Reference measurement: flecks are NEUTRAL
+# top-surface Fresnel glints ~180um (=> density ~5 cells/unit at this dial's
+# ~1.08 units/mm), sharply angle-gated (spread ~3deg Rayleigh).  Facets are
+# pinned to the dial by the object-space hash: they twinkle because the view
+# rocks (the Wobble animation), never because the pattern swims.  Density is
+# delivered by the SMALL glint key below (fleck count ~ key solid angle).
+glint_modifier
+{
+	name				glint_glaze
+	density				5.0
+	coverage			0.5
+	fill				0.6
+	spread				4.0
+	seed				1
+}
+
 standard_object
 {
 	name				enamel
@@ -1059,6 +1114,7 @@ standard_object
 	position			0 0 -1.12
 	material			enamel_glass
 	interior_medium			goldruby
+	modifier			glint_glaze
 }
 
 standard_object
