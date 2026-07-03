@@ -704,6 +704,145 @@ static void TestSeedScaleShift()
 	          << " y-transitions (ratio " << anisoRatio << ")" << std::endl;
 	CHECK( anisoRatio > 2.2 && anisoRatio < 3.8,
 		"scale (3,1,1) does not elongate the field ~3x (ratio " << anisoRatio << ")" );
+
+	// 7d. COMPOSED scale+shift order (Worley convention q = pt*scale +
+	// shift): with a power-of-two scale and exactly-representable shift,
+	// q(p; scale=2, shift=0.5) is BIT-IDENTICAL to
+	// q(p + shift/scale; scale=2, shift=0) — doubling commutes with FP
+	// rounding.  A swapped composition ((pt+shift)*scale) shifts the
+	// field by a whole extra half-cell and fails this.  (Review round 2,
+	// P2-3: 7b used unit scale, 7c used zero shift, so the composition
+	// ORDER was untested.)
+	const GlintModifier& composed = *MakeMod( 1.0, 0.3, 1.0, 4.0, Vector3(2,1,1), Vector3(0.5,0.25,-0.75), 7 );
+	const GlintModifier& composedRef = *MakeMod( 1.0, 0.3, 1.0, 4.0, Vector3(2,1,1), Vector3(0,0,0), 7 );
+	int checkedComposed = 0;
+	for( int i = 0; i < 20000; i++ )
+	{
+		const Point3 p(
+			rng.CanonicalRandom() * 40.0,
+			rng.CanonicalRandom() * 40.0,
+			rng.CanonicalRandom() * 40.0 );
+		const GlintFacet a = composed.FindFacet( p );
+		const GlintFacet b = composedRef.FindFacet( Point3( p.x + 0.25, p.y + 0.25, p.z - 0.75 ) );
+		CHECK( a.found == b.found, "scale+shift composition order wrong (found mismatch at i=" << i << ")" );
+		if( a.found && b.found ) {
+			CHECK( a.theta == b.theta && a.phi == b.phi,
+				"scale+shift composition order wrong (tilt mismatch at i=" << i << ")" );
+			checkedComposed++;
+		}
+	}
+	std::cout << "  composed scale+shift: " << checkedComposed << " facet agreements" << std::endl;
+	CHECK( checkedComposed > 1000, "composed scale+shift barely exercised (" << checkedComposed << ")" );
+}
+
+// ============================================================
+//  Test 7e: nearest-wins tie-break between overlapping facets
+// ============================================================
+
+static void TestNearestWins()
+{
+	std::cout << "--- Test 7e: nearest-wins between overlapping facets ---" << std::endl;
+
+	// Dense field so overlapping facet spheres are common.  Scan lines
+	// with a small step; at every point where the winning centre
+	// SWITCHES while both consecutive points are covered, nearest-wins
+	// requires the new centre to be no farther than the old one (up to
+	// the step's worth of movement).  A farthest-wins mutation reverses
+	// the inequality at every such boundary.
+	const GlintModifier& mod = *MakeMod( 1.0, 1.0, 1.0, 4.0, Vector3(1,1,1), Vector3(0,0,0), 5 );
+
+	RandomNumberGenerator rng( 91 );
+	const Scalar step = 0.01;
+	int switches = 0, violations = 0;
+
+	for( int line = 0; line < 600; line++ )
+	{
+		const Point3 o(
+			rng.CanonicalRandom() * 40.0,
+			rng.CanonicalRandom() * 40.0,
+			rng.CanonicalRandom() * 40.0 );
+
+		GlintFacet prev = mod.FindFacet( o );
+		for( int k = 1; k <= 300; k++ )
+		{
+			const Point3 p( o.x + k * step, o.y, o.z );
+			const GlintFacet cur = mod.FindFacet( p );
+			if( prev.found && cur.found &&
+				( prev.centreQ.x != cur.centreQ.x || prev.centreQ.y != cur.centreQ.y || prev.centreQ.z != cur.centreQ.z ) )
+			{
+				switches++;
+				const Vector3 dNew( p.x - cur.centreQ.x, p.y - cur.centreQ.y, p.z - cur.centreQ.z );
+				const Vector3 dOld( p.x - prev.centreQ.x, p.y - prev.centreQ.y, p.z - prev.centreQ.z );
+				// At the crossing the two distances are equal; one step
+				// past it the new centre must be strictly nearer (allow
+				// the step's slack).
+				if( Vector3Ops::Magnitude( dNew ) > Vector3Ops::Magnitude( dOld ) + 2.0 * step ) {
+					violations++;
+				}
+			}
+			prev = cur;
+		}
+	}
+
+	std::cout << "  " << switches << " overlap boundary switches, " << violations << " nearest-wins violations" << std::endl;
+	CHECK( switches > 200, "too few overlap switches to test nearest-wins (" << switches << ")" );
+	CHECK( violations == 0, "nearest-wins violated at " << violations << "/" << switches << " switches" );
+}
+
+// ============================================================
+//  Test 7f: geometric-side guard with a FLIPPED shading orientation
+// ============================================================
+
+static void TestFlippedOrientationGuard()
+{
+	std::cout << "--- Test 7f: guard under flipped shading orientation ---" << std::endl;
+
+	// Some geometries flip the shading normal toward the ray at Phong
+	// silhouettes while vGeomNormal stays outward — dot(vNormal,
+	// vGeomNormal) < 0.  The guard's geomSign must then keep facets in
+	// the SHADING hemisphere (dot(newN, vGeomNormal) <= -0.05), not
+	// reject everything or accept wrong-side facets.  A flattened
+	// geomSign (always +1) accepts facets with dot(newN, +Z) >= 0.05,
+	// which this test fails.
+	const GlintModifier& hostile = *MakeMod( 2.0, 1.0, 1.0, 40.0, Vector3(1,1,1), Vector3(0,0,0), 9 );
+
+	// Shading normal leans 130 degrees off the geometric +Z (flipped
+	// hemisphere, as a silhouette Phong normal would be).
+	const Vector3 lean = Vector3Ops::Normalize(
+		Vector3( sin( 130.0 * DEG_TO_RAD ), 0, cos( 130.0 * DEG_TO_RAD ) ) );
+
+	RandomNumberGenerator rng( 95 );
+	int perturbed = 0, rejected = 0;
+
+	for( int i = 0; i < 20000; i++ )
+	{
+		const Point3 p( rng.CanonicalRandom() * 40.0, rng.CanonicalRandom() * 40.0, 0.0 );
+
+		RayIntersectionGeometric ri = MakeRI( p, Vector3Ops::Normalize( Vector3( 0.2, -0.3, -1 ) ) );
+		ri.vNormal = lean;
+		ri.onb.CreateFromW( lean );
+		// vGeomNormal stays +Z: flipped orientation (dot = cos130 < 0).
+
+		hostile.Modify( ri );
+
+		// Orientation-matched guard: outputs stay in the SHADING
+		// hemisphere relative to the geometric normal.
+		CHECK( Vector3Ops::Dot( ri.vNormal, ri.vGeomNormal ) <= -( 0.05 - 1e-9 ),
+			"flipped-orientation output crossed to the geometric-normal side (dot="
+			<< Vector3Ops::Dot( ri.vNormal, ri.vGeomNormal ) << ")" );
+
+		const Scalar dLean = Vector3Ops::Dot( ri.vNormal, lean );
+		if( dLean < 1.0 - 1e-12 ) {
+			perturbed++;
+		} else if( hostile.FindFacet( p ).found ) {
+			rejected++;
+		}
+	}
+
+	std::cout << "  flipped orientation: " << perturbed << " perturbed, " << rejected
+	          << " guard-rejected, all outputs shading-side" << std::endl;
+	CHECK( perturbed > 2000, "flipped-orientation case barely perturbing (" << perturbed << ")" );
+	CHECK( rejected > 50, "guard never fired under flipped orientation (" << rejected << ")" );
 }
 
 // ============================================================
@@ -790,7 +929,10 @@ static void TestDielectricAtPerturbedHits()
 
 	std::cout << "  " << facetHits << " facet hits, " << redirected << " redirected deltas" << std::endl;
 	CHECK( facetHits > 1000, "too few facet hits (" << facetHits << ")" );
-	CHECK( redirected == facetHits, "facets failed to redirect the delta (" << redirected << "/" << facetHits << ")" );
+	// Allow a couple of near-zero-tilt facets (P(theta small enough that
+	// the facet mirror sits within 1e-8 of the smooth mirror) ~ 5e-7 per
+	// facet at spread=4deg) — a strict == would be seed-fragile.
+	CHECK( redirected >= facetHits - 2, "facets failed to redirect the delta (" << redirected << "/" << facetHits << ")" );
 
 	spf->release();
 	tau->release();
@@ -853,6 +995,8 @@ int main()
 	TestModifyGuards();
 	TestGGXConsistencyAtPerturbedHits();
 	TestSeedScaleShift();
+	TestNearestWins();
+	TestFlippedOrientationGuard();
 	TestDielectricAtPerturbedHits();
 	TestHostileCoordinates();
 

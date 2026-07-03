@@ -134,25 +134,28 @@ Costs owned honestly (not hidden):
 - **One modifier per object** (`Object::AssignModifier` REPLACES).  The
   enamel glaze and silver objects carry no modifier today; a compound
   modifier is the named upgrade path if a scene ever needs bump+glint.
-- **AOV interaction**: per-cell normals make the OIDN normal/albedo aux
-  buffers locally non-smooth.  Specifically: in the DEFAULT `OidnPrefilter::
-  Fast` mode the normal AOV is written from the FIRST HIT's perturbed
-  `vNormal` (even for delta dielectric hits), so per-sample facet normals
-  land in the guide buffer and only pixel-averaging pulls them back toward
-  the smooth mean; `Accurate` mode records at the first non-delta scatter
-  and stays clean on the hero.  The Slice-4 OIDN-erosion measurement is
-  therefore a **required gate before Slice-3 presentation renders ship**
-  (denoise is always on for those), not an optional refinement; a glint AOV
-  composite is the fallback plan.  `albedo()` comes from the material: exact
-  and facet-independent for the dielectric hero (painter-sourced), but the
-  GGX conductor `albedo()` evaluates Fresnel at the facet cosine, so the
-  metal-flake use varies per-facet at grazing (pixel-averaging mitigates;
-  part of the same Slice-4 gate).
+- **Denoiser interaction**: the OIDN GUIDE buffers are safe by default —
+  in the DEFAULT `OidnPrefilter::Fast` mode both the normal and albedo AOVs
+  are captured from the camera-ray first hit BEFORE the modifier hook runs
+  (`PathTracingIntegrator.cpp` writes them right after `IntersectRay`;
+  `Modify` fires later inside `IntegrateFromHit`), so the guides carry the
+  SMOOTH frame (verified in review round 2, correcting an inverted round-1
+  claim).  In `Accurate` mode the record happens at the first non-delta
+  scatter, post-Modify, so facet frames CAN reach the guides there (e.g. a
+  glinted buried conductor); measure before using Accurate with glints.
+  The real risk is unchanged from the original design: OIDN smooths
+  high-variance glints in the BEAUTY pass.  The Slice-4 erosion measurement
+  is therefore a **required gate before Slice-3 presentation renders ship**
+  (denoise is always on for those); a glint AOV excluded from denoise and
+  composited is the fallback plan.
 
 ## The `GlintModifier` (parameters)
 
-All defaults chosen so an unconfigured modifier is a no-op-adjacent gentle
-sparkle; validation is string-level (ffast-math-safe) at parse time.
+The Slice-1 constructor takes all seven parameters explicitly (no defaults
+exist yet).  Slice 2 WILL choose parser-level defaults so an unconfigured
+`glint_modifier` chunk is a no-op-adjacent gentle sparkle, and WILL validate
+inputs string-level (the ffast-math-safe way) at parse time — both are
+Slice-2 obligations, not shipped behavior.
 
 - `density`   — cells per object-space unit.  Anchor to physical fleck pitch:
   fleck pitch ≈ 1/density object units.  For the watch (dial radius 20.6
@@ -207,13 +210,15 @@ stay coherent across facets.
    tilt set vs the d349/d350 clips.  Optionally audition a silver-substrate
    glint pass (the general feature makes it one scene line) and keep it only
    if the footage comparison wants it.
-4. **Denoise interaction + LOD**: measure OIDN fleck erosion (denoise stays
-   ON for presentation renders per standing rule) — this measurement is a
-   **required gate** for any Slice-3 presentation render (default Fast
-   prefilter writes first-hit perturbed normals into the guide buffer; see
-   §Costs); if material, exclude a glint AOV from denoise and composite;
-   assess macro-zoom behavior (cells spanning pixels) and add
-   footprint-aware response only if a real shot needs it.
+4. **Denoise interaction + LOD**: measure OIDN fleck erosion in the BEAUTY
+   pass (denoise stays ON for presentation renders per standing rule) —
+   this measurement is a **required gate** for any Slice-3 presentation
+   render; the guide buffers are smooth-by-default (Fast prefilter records
+   pre-Modify; see §Costs) so erosion, if any, comes from the denoiser
+   treating resolved flecks as residual noise.  If material, exclude a
+   glint AOV from denoise and composite; assess macro-zoom behavior (cells
+   spanning pixels) and add footprint-aware response only if a real shot
+   needs it.
 
 ## Ratification record (2026-07-03)
 
@@ -250,8 +255,10 @@ engine integration; test strength + claims fidelity):
   stores the perturbed frame on BOTH subpaths and reconstructs it verbatim;
   the dielectric's IOR-stack-based inside/outside test is facet-immune;
   GGX Scatter/value/Pdf share the FlipW convention.  P2s folded above (SMS
-  Newton-tractability caveat; default-Fast OIDN normal AOV ⇒ Slice-4
-  measurement promoted to a required gate).
+  Newton-tractability caveat; Slice-4 OIDN measurement promoted to a
+  required gate — NOTE this reviewer's Fast-mode AOV-contamination claim
+  was later found INVERTED by round 2 and corrected in §Costs: Fast-mode
+  guides are captured pre-Modify and stay smooth).
 - Test strength: ONE P1 — the tangent-coherence check used a canonical base
   frame, so it could not discriminate preserve-u from a `CreateFromW`
   rebuild (mutation survived).  Fixed: the check now uses a non-canonical
