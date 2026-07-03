@@ -68,7 +68,7 @@
 //        image block/part with a short text note (the loop keeps only
 //        the MOST RECENT image live -- see AgentChatLoop.h).
 //
-//    The six tool definitions (mapping 1:1 to the AgentRpc verbs) are
+//    The seven tool definitions (mapping 1:1 to the AgentRpc verbs) are
 //    defined ONCE, provider-neutrally, in AgentChatCodecs.cpp; each
 //    codec maps them into its native tool declaration shape.  Their
 //    parameter names/shapes mirror AgentRpc.cpp exactly.
@@ -131,7 +131,7 @@ namespace RISE
 			Parse,         //!< the response body did not parse as JSON
 			Provider,      //!< the provider returned a hostile/degenerate/unexpected turn
 			Refusal,       //!< the provider declined the request (safety/refusal)
-			MaxTokens,     //!< the reply hit the output-token cap (truncated; discarded)
+			MaxTokens,     //!< the reply hit the output-token cap (truncated; discarded).  A verbatim retry will likely truncate again -- recovery needs a NEW/narrower user message, not an automatic retry.
 			IterationCap,  //!< the loop's per-turn tool-round cap tripped
 			Misuse         //!< caller-contract violation (e.g. HandleResponse while calls are pending)
 		};
@@ -148,7 +148,7 @@ namespace RISE
 
 			Kind                      kind = Kind::ProviderError;
 			std::vector<ChatToolCall> toolCalls;     //!< non-empty iff kind==ToolCalls
-			std::string               finalText;     //!< filled iff kind==FinalText
+			std::string               finalText;     //!< filled iff kind==FinalText; possibly empty (e.g. a thinking-only end_turn), like assistantDisplayText
 			std::string               errorMessage;  //!< filled iff kind==ProviderError
 			ChatErrorKind             errorKind = ChatErrorKind::None;  //!< set on EVERY ProviderError; None otherwise
 

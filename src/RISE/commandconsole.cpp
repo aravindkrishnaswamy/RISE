@@ -167,10 +167,11 @@ double DoHighIntensityPerformanceRating2( double* pStdDev )
 // exit 0.  An optional scene-file positional arg loads an initial head
 // (read+validate+propose+render then operate on it); with no scene the
 // dispatcher still speaks valid JSON-RPC.  The STATELESS methods --
-// read_schema, validate, and read_document -- work with NO head (the agent
-// bootstraps a scene from scratch: read the grammar, validate a candidate,
-// read the empty head); the HEAD-BACKED methods -- propose_patch, render,
-// read_image -- return a "no session" internal error until a head exists.
+// read_schema, read_skill, validate, and read_document -- work with NO head
+// (the agent bootstraps a scene from scratch: read the grammar, read the
+// authoring skills, validate a candidate, read the empty head); the
+// HEAD-BACKED methods -- propose_patch, render, read_image -- return a
+// "no session" internal error until a head exists.
 //
 // The trust boundary is the OS process (design §7.2); slice 0c adds NO
 // auth token and NO networking -- stdin/stdout only.

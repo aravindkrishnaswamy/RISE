@@ -203,6 +203,48 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
+				// read_skill {name?} -> the skills index / one skill's markdown
+				//   STATELESS (like read_schema): skills are on-disk markdown,
+				//   no Job involved -- so it needs NO loaded head and works in
+				//   the no-head bootstrap.  Progressive disclosure: no `name`
+				//   -> {skills:[{name,title,hook},...]} (the INDEX); a `name`
+				//   -> {name, markdown}.  Path safety lives in
+				//   AgentSession::ReadSkill (bare-name-only; '/', '\\', ".."
+				//   rejected; only .md files inside the skills root are
+				//   served); a rejected or unknown name maps to -32602 with
+				//   the session's message.
+				//--------------------------------------------------------------
+				if( m == "read_skill" ) {
+					std::string name;
+					if( const JsonValue* nv = params.find( "name" ) ) {
+						if( nv->isString() ) name = nv->asString();
+						else if( !nv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'name' must be a string" );
+					}
+					const AgentSkillResult sr = AgentSession::ReadSkill( name );
+					if( !sr.ok ) {
+						return MakeError( idValue, kInvalidParams, "Invalid params: " + sr.error );
+					}
+					JsonValue result = JsonValue::MakeObject();
+					if( name.empty() ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < sr.index.size(); ++i ) {
+							JsonValue e = JsonValue::MakeObject();
+							e.set( "name",  JsonValue::MakeString( sr.index[i].name ) );
+							e.set( "title", JsonValue::MakeString( sr.index[i].title ) );
+							e.set( "hook",  JsonValue::MakeString( sr.index[i].hook ) );
+							arr.push_back( e );
+						}
+						result.set( "skills", arr );
+					}
+					else {
+						result.set( "name",     JsonValue::MakeString( sr.name ) );
+						result.set( "markdown", JsonValue::MakeString( sr.markdown ) );
+					}
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
 				// validate {text} -> {diagnostics:[...]}
 				//   STATELESS: validation parses `text` to a CST and derives it
 				//   into a THROWAWAY Job (never a session's head), so it needs

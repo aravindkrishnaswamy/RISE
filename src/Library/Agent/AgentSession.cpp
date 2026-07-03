@@ -53,10 +53,22 @@
 #include "../Parsers/IAsciiChunkParser.h"
 #include "../Utilities/RString.h"
 
+#include <algorithm>   // Facet 5 slice S1: std::sort for the deterministic skills index
 #include <cctype>
 #include <cfloat>   // DBL_MAX for the -ffast-math-safe non-finite range test
 #include <cmath>
 #include <cstdio>   // Facet 5 slice 1a: std::snprintf for the conflict message
+#include <cstdlib>  // Facet 5 slice S1: std::getenv for the skills-root resolution
+#include <fstream>  // Facet 5 slice S1: read-only skill-file reads
+#include <iterator> // Facet 5 slice S1: istreambuf_iterator for whole-file reads
+
+// Facet 5 slice S1: directory enumeration for the skills index (the one
+// place the Library scans a directory; read-only).
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dirent.h>
+#endif
 
 namespace RISE
 {
@@ -310,6 +322,160 @@ namespace RISE
 				}
 				return false;
 			}
+
+			//----------------------------------------------------------------
+			// Facet 5 slice S1: read_skill helpers (all STATELESS; see the
+			// ReadSkill doc in AgentSession.h for the root-resolution and
+			// path-safety contract).
+			//----------------------------------------------------------------
+
+			//! The skills root, WITH a trailing slash.  First hit wins:
+			//! $RISE_SKILLS_PATH -> $RISE_MEDIA_PATH + "skills/agent/" ->
+			//! "./skills/agent/".
+			std::string SkillsRoot()
+			{
+				const char* sp = std::getenv( "RISE_SKILLS_PATH" );
+				if( sp && sp[0] ) {
+					std::string r = sp;
+					if( r[r.size()-1] != '/' && r[r.size()-1] != '\\' ) r += '/';
+					return r;
+				}
+				const char* mp = std::getenv( "RISE_MEDIA_PATH" );
+				if( mp && mp[0] ) {
+					std::string r = mp;
+					if( r[r.size()-1] != '/' && r[r.size()-1] != '\\' ) r += '/';
+					return r + "skills/agent/";
+				}
+				return "./skills/agent/";
+			}
+
+			//! PATH SAFETY: a skill name must be a BARE filename component --
+			//! reject any '/', '\\', or ".." so a hostile name can never
+			//! traverse out of the skills root.  (The ".md" suffix is appended
+			//! by the caller of this check, so only .md files are served.)
+			bool IsSafeSkillName( const std::string& name )
+			{
+				if( name.empty() ) return false;
+				if( name.find( '/' )  != std::string::npos ) return false;
+				if( name.find( '\\' ) != std::string::npos ) return false;
+				if( name.find( ".." ) != std::string::npos ) return false;
+				return true;
+			}
+
+			//! Read a whole file (binary, read-only).  False when absent.
+			bool ReadFileText( const std::string& path, std::string& out )
+			{
+				std::ifstream f( path.c_str(), std::ios::binary );
+				if( !f ) return false;
+				out.assign( std::istreambuf_iterator<char>( f ),
+				            std::istreambuf_iterator<char>() );
+				return true;
+			}
+
+			//! Parse the skill metadata header the index displays: the first
+			//! line is "# <Title>", the second "> hook: <one-line hook>".
+			//! Lenient on the hook (missing -> empty), so a malformed skill
+			//! still indexes under its title/name rather than vanishing.
+			void ParseSkillHeader( const std::string& markdown,
+			                       std::string& outTitle, std::string& outHook )
+			{
+				outTitle.clear();
+				outHook.clear();
+				std::size_t pos = 0;
+				int lineNo = 0;
+				while( pos < markdown.size() && lineNo < 2 ) {
+					std::size_t eol = markdown.find( '\n', pos );
+					if( eol == std::string::npos ) eol = markdown.size();
+					std::string line = markdown.substr( pos, eol - pos );
+					if( !line.empty() && line[line.size()-1] == '\r' ) line.erase( line.size()-1 );
+					if( lineNo == 0 && line.rfind( "# ", 0 ) == 0 )
+						outTitle = line.substr( 2 );
+					else if( lineNo == 1 && line.rfind( "> hook:", 0 ) == 0 ) {
+						outHook = line.substr( 7 );
+						while( !outHook.empty() && outHook[0] == ' ' ) outHook.erase( 0, 1 );
+					}
+					pos = eol + 1;
+					++lineNo;
+				}
+			}
+
+			//! The bare skill names (*.md, suffix stripped) under `root`,
+			//! sorted byte-wise so the index order is deterministic across
+			//! platforms and readdir orderings.
+			std::vector<std::string> ListSkillNames( const std::string& root )
+			{
+				std::vector<std::string> names;
+#ifdef _WIN32
+				WIN32_FIND_DATAA fd;
+				HANDLE h = FindFirstFileA( ( root + "*.md" ).c_str(), &fd );
+				if( h != INVALID_HANDLE_VALUE ) {
+					do {
+						if( !( fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY ) )
+							names.push_back( fd.cFileName );
+					} while( FindNextFileA( h, &fd ) );
+					FindClose( h );
+				}
+#else
+				DIR* d = opendir( root.c_str() );
+				if( d ) {
+					while( struct dirent* e = readdir( d ) )
+						names.push_back( e->d_name );
+					closedir( d );
+				}
+#endif
+				std::vector<std::string> out;
+				for( std::size_t i = 0; i < names.size(); ++i ) {
+					const std::string& n = names[i];
+					// Only *.md files (and never dotfiles / "." / "..").
+					if( n.size() <= 3 || n[0] == '.' ) continue;
+					if( n.compare( n.size() - 3, 3, ".md" ) != 0 ) continue;
+					out.push_back( n.substr( 0, n.size() - 3 ) );
+				}
+				std::sort( out.begin(), out.end() );
+				return out;
+			}
+		}
+
+		AgentSkillResult AgentSession::ReadSkill( const std::string& name )
+		{
+			AgentSkillResult r;
+			const std::string root = SkillsRoot();
+
+			// Progressive disclosure, tier 1: no name -> the INDEX.
+			if( name.empty() ) {
+				const std::vector<std::string> names = ListSkillNames( root );
+				for( std::size_t i = 0; i < names.size(); ++i ) {
+					std::string text;
+					if( !ReadFileText( root + names[i] + ".md", text ) ) continue;
+					AgentSkillEntry e;
+					e.name = names[i];
+					ParseSkillHeader( text, e.title, e.hook );
+					if( e.title.empty() ) e.title = e.name;   // lenient: never a blank index row
+					r.index.push_back( e );
+				}
+				r.ok = true;
+				return r;
+			}
+
+			// Tier 2: a named fetch.  Path safety FIRST -- a rejected name
+			// never touches the filesystem.
+			if( !IsSafeSkillName( name ) ) {
+				r.ok = false;
+				r.error = "invalid skill name '" + name +
+				          "': must be a bare skill name (no '/', '\\', or \"..\")";
+				return r;
+			}
+			std::string text;
+			if( !ReadFileText( root + name + ".md", text ) ) {
+				r.ok = false;
+				r.error = "unknown skill '" + name +
+				          "' -- call read_skill with no name for the index";
+				return r;
+			}
+			r.ok = true;
+			r.name = name;
+			r.markdown = text;
+			return r;
 		}
 
 		AgentSession::AgentSession( IJobPriv* job, bool owns )

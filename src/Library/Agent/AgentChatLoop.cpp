@@ -19,7 +19,7 @@ namespace RISE
 		namespace
 		{
 			//! The static co-editing system prompt (rule 7): the user and
-			//! the agent co-edit ONE live scene through the six verbs.
+			//! the agent co-edit ONE live scene through the seven verbs.
 			const char* const kSystemPrompt =
 				"You are a scene-editing agent embedded in the RISE renderer. You and "
 				"the user CO-EDIT one live scene: the user sees the same viewport and "
@@ -28,7 +28,9 @@ namespace RISE
 				"\n"
 				"Workflow for every edit:\n"
 				"1. read_document to see the scene and its headVersion (read_schema "
-				"when unsure about a chunk or parameter).\n"
+				"when unsure about a chunk or parameter; consult read_skill before "
+				"scene-authoring tasks -- the skills carry the conventions that make "
+				"scenes render correctly on the first try).\n"
 				"2. propose_patch with the headVersion you just read as "
 				"baseHeadVersion. On status=conflict, re-read and re-propose; on "
 				"retriable=true, retry the same patch after a moment. "
@@ -60,6 +62,14 @@ namespace RISE
 		const char* AgentChatLoop::SystemPrompt()
 		{
 			return kSystemPrompt;
+		}
+
+		void AgentChatLoop::SetSkillIndex( const std::string& indexText )
+		{
+			// Provider-neutral config (like the provider/model selection):
+			// stored verbatim; BuildRequest composes the skills section onto
+			// the base prompt when non-empty.  Survives Reset()/SetProvider().
+			mSkillIndexText = indexText;
 		}
 
 		AgentChatLoop::AgentChatLoop() :
@@ -136,9 +146,19 @@ namespace RISE
 			for( std::size_t i = 0; i < mTranscript.size(); ++i )
 				rawEntries.push_back( mTranscript[i].rawJson );
 
+			// Facet 5 slice S1: append the skills section (when set) to the
+			// base prompt.  An empty index text sends the base prompt
+			// UNCHANGED -- byte-identical to the pre-S1 behaviour.
+			std::string systemPrompt = kSystemPrompt;
+			if( !mSkillIndexText.empty() ) {
+				systemPrompt += "\n\nAvailable skills:\n";
+				systemPrompt += mSkillIndexText;
+				systemPrompt += "\nCall read_skill before scene-authoring tasks.";
+			}
+
 			// The key goes straight through to the codec's auth header and
 			// is retained NOWHERE in this object.
-			return mCodec->BuildRequest( mModelId, apiKey, kSystemPrompt, rawEntries );
+			return mCodec->BuildRequest( mModelId, apiKey, systemPrompt, rawEntries );
 		}
 
 		ChatStepResult AgentChatLoop::HandleResponse( long httpStatus, const std::string& rawBody )

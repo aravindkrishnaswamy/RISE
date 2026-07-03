@@ -293,7 +293,7 @@ static void TestAnthropicRequestShape()
 	Check( sawVersion, "anthropic-version: 2023-06-01 header present" );
 	CheckKeyOnlyInAuthHeader( req, "x-api-key", "T1" );
 
-	// Body shape: model / max_tokens / system / all six tools / the user turn.
+	// Body shape: model / max_tokens / system / all seven tools / the user turn.
 	JsonValue root = ParseBody( req.body );
 	Check( root.isObject(), "body parses as JSON" );
 	Check( root.get( "model" ).asString() == "claude-sonnet-5", "body carries the model id" );
@@ -306,10 +306,10 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 6, "body carries exactly six tools" );
-	const char* expected[] = { "read_document", "read_schema", "validate",
+	Check( tools.isArray() && tools.size() == 7, "body carries exactly seven tools" );
+	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
 	                           "propose_patch", "render", "read_image" };
-	for( int t = 0; t < 6; ++t ) {
+	for( int t = 0; t < 7; ++t ) {
 		bool found = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() == expected[t] ) {
@@ -580,7 +580,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 6, "six functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 7, "seven functionDeclarations" );
 		bool sawPatch = false;
 		for( std::size_t i = 0; i < decls.size(); ++i )
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {

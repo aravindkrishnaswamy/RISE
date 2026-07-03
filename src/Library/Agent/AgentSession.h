@@ -162,6 +162,31 @@ namespace RISE
 			std::string                message;
 		};
 
+		//! Facet 5 slice S1: one entry of the skills INDEX -- `name` is the
+		//! skill's filename minus ".md" (the handle a client passes back to
+		//! fetch the full markdown), `title` the "# ..." first line, `hook`
+		//! the "> hook: ..." second line (the one-line when-to-read cue).
+		struct AgentSkillEntry
+		{
+			std::string name;
+			std::string title;
+			std::string hook;
+		};
+
+		//! Facet 5 slice S1: the result of ReadSkill.  Progressive
+		//! disclosure: an EMPTY requested name returns the INDEX (`index`
+		//! filled, `markdown` empty); a named request returns the full
+		//! `markdown`.  `ok` is false (and `error` states why) for an
+		//! unknown skill name or a rejected (unsafe / non-bare) name.
+		struct AgentSkillResult
+		{
+			bool                         ok = false;
+			std::string                  error;      //!< filled iff !ok
+			std::string                  name;       //!< the requested name (named fetch)
+			std::string                  markdown;   //!< the full skill markdown (named fetch)
+			std::vector<AgentSkillEntry> index;      //!< the index (empty-name fetch)
+		};
+
 		//! A headless, single-threaded read/validate session over a Job.
 		//! NOT thread-safe (slice 0a is deliberately single-threaded -- no
 		//! mutex).  Owns the Job iff it created it (LoadFromFile); a wrapped
@@ -244,6 +269,28 @@ namespace RISE
 			//! no scene loaded) must be able to `validate` a candidate BEFORE
 			//! any head exists.  Identical result to `Validate()`.
 			static std::vector<AgentDiagnostic> ValidateText( const std::string& candidateText );
+
+			//! Facet 5 slice S1: read_skill -- STATELESS, like ReadSchema /
+			//! ValidateText (references NO member state; exposed static so the
+			//! transport's no-head bootstrap can read skills before any head
+			//! exists).  Progressive disclosure: an EMPTY `name` returns the
+			//! INDEX (name + title + one-line hook per skill, scanned from the
+			//! *.md files in the skills root); a non-empty `name` returns that
+			//! skill's full markdown.
+			//!
+			//! SKILLS ROOT RESOLUTION (first hit wins):
+			//!   1. $RISE_SKILLS_PATH               (when set and non-empty)
+			//!   2. $RISE_MEDIA_PATH + "skills/agent/"  (when set and non-empty)
+			//!   3. "./skills/agent/"               (cwd fallback -- the repo
+			//!      root when run from a checkout, matching run_all_tests.sh)
+			//! Reads are READ-ONLY; nothing is ever written under the root.
+			//!
+			//! PATH SAFETY: `name` must be a BARE filename component -- any
+			//! '/', '\\', or ".." is REJECTED (no traversal), and only files
+			//! ending ".md" inside the root are served (the ".md" suffix is
+			//! appended by this call; the caller passes the bare skill name).
+			//! An unknown name -> ok=false with a clean error message.
+			static AgentSkillResult ReadSkill( const std::string& name = std::string() );
 
 			//! propose_patch (slice 0b: STRUCTURED set only).  Apply one
 			//! param-value edit to the retained CST Document via

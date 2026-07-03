@@ -5,7 +5,7 @@
 //    slice B1).
 //
 //    OWNS conversation state and translates between LLM provider wire
-//    formats (via AgentChatCodecs) and the six JSON-RPC verbs the
+//    formats (via AgentChatCodecs) and the seven JSON-RPC verbs the
 //    AgentRpcDispatcher speaks -- but performs NO I/O.  The caller (the
 //    Swift GUI in slice B2; C++ tests today) drives the loop:
 //
@@ -203,9 +203,11 @@ namespace RISE
 			//! Translate one tool call into the JSON-RPC request line the
 			//! AgentRpcDispatcher consumes:
 			//!   {"jsonrpc":"2.0","id":<rpcId>,"method":<name>,"params":<args>}
-			//! Malformed argsJson degrades to empty params (the dispatcher
-			//! then answers -32602, which flows back to the model as an
-			//! error tool result -- self-correcting, never throwing).
+			//! Malformed argsJson degrades to empty params (for verbs with
+			//! REQUIRED params the dispatcher then answers -32602, which
+			//! flows back to the model as an error tool result; verbs whose
+			//! params are all optional simply execute with their defaults --
+			//! self-correcting either way, never throwing).
 			std::string ToolCallToJsonRpcLine( const ChatToolCall& call, int rpcId ) const;
 
 			//! Record the raw JSON-RPC response ENVELOPE line for one of
@@ -232,7 +234,22 @@ namespace RISE
 			const std::vector<ChatToolCall>& PendingToolCalls() const { return mPendingCalls; }
 
 			//! The static co-editing system prompt sent on every request.
+			//! (The BASE prompt only -- when a skill index is set via
+			//! SetSkillIndex, BuildRequest appends the skills section to
+			//! this base; SystemPrompt() itself never changes.)
 			static const char* SystemPrompt();
+
+			//! Facet 5 slice S1: set the "Available skills" section appended
+			//! to the system prompt of every subsequent BuildRequest.
+			//! `indexText` is a stable, human-readable rendering of the
+			//! read_skill INDEX (one "name -- hook" line per skill); the
+			//! DRIVER fetches it ONCE via the read_skill verb at panel init
+			//! and passes the rendered text here -- this loop stays sans-IO
+			//! (it never reads the skills itself).  An EMPTY string OMITS
+			//! the section entirely (the base prompt is sent unchanged).
+			//! The setting is provider-neutral config, like the provider /
+			//! model selection: it survives Reset() and SetProvider().
+			void SetSkillIndex( const std::string& indexText );
 
 		private:
 			AgentChatLoop( const AgentChatLoop& );             // deleted
@@ -248,6 +265,11 @@ namespace RISE
 			std::unique_ptr<IChatProviderCodec> mCodec;
 			ChatProvider                        mProvider;
 			std::string                         mModelId;
+
+			//! Facet 5 slice S1: the rendered skills-index text ("" = no
+			//! skills section).  Provider-neutral config -- survives Reset()
+			//! and SetProvider(), like mProvider/mModelId.
+			std::string                         mSkillIndexText;
 
 			std::vector<ChatTranscriptEntry>    mTranscript;
 

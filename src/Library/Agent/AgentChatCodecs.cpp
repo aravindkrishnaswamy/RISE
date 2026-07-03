@@ -4,7 +4,7 @@
 //    LLM chat loop (see AgentChatCodecs.h).
 //
 //  Layout:
-//    (1) the SIX provider-neutral tool definitions (1:1 with the
+//    (1) the SEVEN provider-neutral tool definitions (1:1 with the
 //        AgentRpc verbs; parameter names/shapes mirror AgentRpc.cpp),
 //    (2) a small raw-span JSON scanner (byte-exact extraction of the
 //        assistant content from a response body, so provider-opaque
@@ -66,6 +66,19 @@ namespace RISE
 					"{\"type\":\"object\",\"properties\":{"
 						"\"keyword\":{\"type\":\"string\",\"description\":"
 						"\"A single chunk keyword (e.g. sphere_geometry) to fetch just that chunk's schema; omit for the whole grammar.\"}"
+					"}}"
+				},
+				{
+					"read_skill",
+					"Read a scene-authoring skill (curated RISE how-to notes with "
+					"verified scene snippets). Call with NO name first to list the "
+					"available skills (name + one-line hook each); call with a name to "
+					"read one BEFORE authoring or explaining scenes -- the skills carry "
+					"the conventions (light directions, power semantics, painter "
+					"wiring) that make first-try scenes render correctly.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"name\":{\"type\":\"string\",\"description\":"
+						"\"A skill name from the index (e.g. scene-skeleton-and-conventions); omit to list all available skills.\"}"
 					"}}"
 				},
 				{
@@ -442,6 +455,13 @@ namespace RISE
 				JsonValue obj;
 				std::string perr;
 				if( !JsonParse( text, obj, perr ) || !obj.isObject() ) return text;
+				// INVARIANT: this prefer-image_note-else-note order matches
+				// StripPngBase64's collision fallback (which writes the attach
+				// note under "image_note" ONLY when the RPC result already
+				// owns a "note").  If an RPC result ever grows an
+				// "image_note" field of its own WITHOUT a "note", the two
+				// rules diverge (this rewrite would clobber the RPC's field)
+				// -- keep the key-choice rules in lockstep.
 				const char* key = obj.has( "image_note" ) ? "image_note"
 				                : obj.has( "note" )       ? "note"
 				                : nullptr;
@@ -965,6 +985,11 @@ namespace RISE
 						JsonValue newResp = JsonValue::MakeObject();
 						bool noted = false;
 						const std::vector<std::pair<std::string, JsonValue>>& rm = mem[j].second.members();
+						// INVARIANT (mirrors RewriteElidedSummaryText's rule):
+						// prefer-image_note-else-note matches StripPngBase64's
+						// collision fallback; if an RPC result ever grows
+						// image_note WITHOUT note, the rules diverge -- keep
+						// the key-choice rules in lockstep.
 						bool hasImageNote = false;
 						for( std::size_t k = 0; k < rm.size(); ++k )
 							if( rm[k].first == "image_note" ) hasImageNote = true;
