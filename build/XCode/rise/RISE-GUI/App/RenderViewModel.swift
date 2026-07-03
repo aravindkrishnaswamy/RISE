@@ -1160,7 +1160,10 @@ final class RenderViewModel: ObservableObject {
         guard !isPreviewPlaying,
               let vb = viewportBridge,
               hasAnimation,
-              renderState != .rendering else { return }
+              // Same worker-alive set as isSceneEditableForAgents:
+              // .cancelling means rasterize() has not returned yet, so
+              // production workers may still read animator state.
+              renderState != .rendering, renderState != .cancelling else { return }
         let t0 = vb.animationTimeStart
         let t1 = vb.animationTimeEnd
         let frames = max(Int(vb.animationNumFrames), 2)

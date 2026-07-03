@@ -88,8 +88,8 @@ struct ChatPanel: View {
                         } label: {
                             Label("Retry", systemImage: "arrow.clockwise")
                         }
-                        .disabled(chat.isBusy)
-                        .help("Retry the failed request (nothing was recorded for it)")
+                        .disabled(chat.isBusy || !viewModel.isSceneEditableForAgents)
+                        .help("Retry the failed request — your message is kept and replays; no duplicate is recorded")
                     }
                     if chat.resetOffered {
                         Button(role: .destructive) {

@@ -416,6 +416,7 @@ final class ChatViewModel: ObservableObject {
         guard isBusy else { return }
         stopRequested = true
         driverTask?.cancel()
+        transcript.append(Entry(kind: .notice, text: "Stopped."))
     }
 
     /// Reset the conversation (offered after repeated HTTP 400s, and
@@ -586,7 +587,13 @@ final class ChatViewModel: ObservableObject {
                                             text: step.assistantDisplayText))
                 }
                 for call in step.toolCalls {
-                    // Stop / scene-close between tool calls: abandon
+                    // Stop / scene-close checks (defensive): on the
+                    // MainActor these flags cannot flip inside this
+                    // awaitless loop (clicks queue until the slice
+                    // ends), so a user Stop actually lands at the next
+                    // URLSession await -- these checks matter for the
+                    // cancelTurn()-from-within-a-tool-call path (a tool
+                    // side effect triggering scene teardown): abandon
                     // the rest; the loop synthesizes cancelled results
                     // for them at the next flush.  The scene-editable
                     // check cannot actually flip inside this loop
