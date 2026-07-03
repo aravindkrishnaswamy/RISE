@@ -199,7 +199,18 @@ private struct ChatSettingsView: View {
     @State private var draftModelId: String = ""
     @State private var draftKey: String = ""
     @State private var confirmSwitch = false
-    @State private var keySaveFailed = false
+    @State private var keySaveNotice: String? = nil
+
+    /// The picker shows/edits `draftProvider`, but the running chat
+    /// (resolveApiKey, the turn driver) always talks to
+    /// `chat.provider` — the last APPLIED selection.  Saving a key
+    /// while these differ is common (pick Gemini, paste its key,
+    /// Save) and entirely valid — key ops intentionally follow the
+    /// picker, not Apply — but the chat itself keeps using the old
+    /// provider until Apply is pressed.  Surface that explicitly so
+    /// "I saved a Gemini key and chat still isn't using it" reads as
+    /// "click Apply" rather than "the save didn't work".
+    private var draftDiffersFromApplied: Bool { draftProvider != chat.provider }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -220,6 +231,7 @@ private struct ChatSettingsView: View {
                 // model id (each provider remembers its own).
                 draftModelId = chat.storedModelId(for: newProvider)
                 draftKey = ""
+                keySaveNotice = nil
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -250,6 +262,15 @@ private struct ChatSettingsView: View {
                      + "applying resets the chat.")
             }
 
+            if draftDiffersFromApplied {
+                Text("\(Image(systemName: "arrow.uturn.left")) Chat is currently "
+                     + "using \(chat.provider.displayName) — click Apply above to "
+                     + "switch it to \(draftProvider.displayName).")
+                    .font(.caption2)
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Divider()
 
             VStack(alignment: .leading, spacing: 2) {
@@ -261,33 +282,50 @@ private struct ChatSettingsView: View {
                     .font(.caption)
                 HStack {
                     Button("Save Key") {
-                        keySaveFailed = !chat.saveApiKey(draftKey, for: draftProvider)
-                        draftKey = ""
+                        switch chat.saveApiKey(draftKey, for: draftProvider) {
+                        case .saved:
+                            keySaveNotice = nil
+                            draftKey = ""
+                        case .emptyInput:
+                            // No-op, not a delete — Clear Key owns
+                            // deletion.  Hint instead of silently
+                            // doing nothing.
+                            keySaveNotice = "Enter a key first, or use Clear Key to remove one."
+                        case .keychainError:
+                            keySaveNotice = "Keychain write failed."
+                        }
                     }
                     .disabled(draftKey.trimmingCharacters(
                         in: .whitespacesAndNewlines).isEmpty)
-                    .help("Store in the macOS Keychain (service “RISE Agent Chat”)")
+                    .help("Store in the macOS Keychain (service “RISE Agent Chat”) "
+                          + "for \(draftProvider.displayName)")
                     Button("Clear Key") {
-                        keySaveFailed = !chat.saveApiKey("", for: draftProvider)
+                        keySaveNotice = chat.clearApiKey(for: draftProvider)
+                            ? nil : "Keychain delete failed."
                         draftKey = ""
                     }
                     .disabled(chat.keySource(for: draftProvider) != .keychain)
                     .help("Delete this provider's key from the Keychain")
                     Spacer()
                 }
-                if keySaveFailed {
-                    Text("Keychain write failed.")
+                if let notice = keySaveNotice {
+                    Text(notice)
                         .font(.caption2)
                         .foregroundColor(.orange)
                 }
-                // Which source would be used RIGHT NOW (never the key
-                // itself).  Resolution: Keychain first, environment
-                // second.
+                // Which source would be used for THIS provider (the
+                // one shown above / being edited here) RIGHT NOW —
+                // never the key itself.  Resolution: Keychain first,
+                // then each environment fallback in order.  Recomputed
+                // on every keyStateEpoch bump (save/clear) so it never
+                // lags a successful write.
                 Text("Active source: \(chat.keySource(for: draftProvider).label)"
-                     + " · Keychain first, then \(draftProvider.apiKeyEnvVar).")
+                     + " · Keychain first, then "
+                     + "\(draftProvider.apiKeyEnvVars.joined(separator: " or ")).")
                     .font(.caption2)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .id(chat.keyStateEpoch)
             }
 
             Divider()
@@ -306,6 +344,7 @@ private struct ChatSettingsView: View {
             draftProvider = chat.provider
             draftModelId = chat.storedModelId(for: chat.provider)
             draftKey = ""
+            keySaveNotice = nil
         }
     }
 

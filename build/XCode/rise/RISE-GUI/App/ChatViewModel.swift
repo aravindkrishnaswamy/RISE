@@ -119,14 +119,23 @@ enum AgentChatProviderChoice: String, CaseIterable, Identifiable {
     /// Keychain account name (kSecAttrAccount).
     var keychainAccount: String { rawValue }
 
-    /// Environment-variable fallback consulted at USE time when the
-    /// Keychain has no key for this provider.
-    var apiKeyEnvVar: String {
+    /// Environment-variable fallback(s) consulted at USE time, in
+    /// order, when the Keychain has no key for this provider.  Gemini
+    /// gets two names because both are in conventional use by Gemini
+    /// tooling (GEMINI_API_KEY is Google's own AI SDK convention;
+    /// GOOGLE_API_KEY is the older/more widely-scripted one) — first
+    /// match wins.
+    var apiKeyEnvVars: [String] {
         switch self {
-        case .anthropic: return "ANTHROPIC_API_KEY"
-        case .gemini:    return "GEMINI_API_KEY"
+        case .anthropic: return ["ANTHROPIC_API_KEY"]
+        case .gemini:    return ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
         }
     }
+
+    /// Back-compat single-name accessor — used where only "the" env
+    /// var name is needed (e.g. the no-key error hint's launch
+    /// suggestion).  Always the first-checked name.
+    var apiKeyEnvVar: String { apiKeyEnvVars[0] }
 
     var defaultModelId: String {
         RISEAgentChatBridge.defaultModelId(for: bridgeValue)
@@ -333,21 +342,48 @@ final class ChatViewModel: ObservableObject {
         UserDefaults.standard.string(forKey: Self.modelIdKey(p)) ?? ""
     }
 
-    /// Store (or, with an empty string, delete) the Keychain key for
-    /// `p`.  Returns false on a Keychain write error.
+    /// Outcome of a Save-Key action — distinct from a plain Bool so
+    /// the UI can tell "you didn't type anything" (a hint, not a
+    /// Keychain failure) apart from an actual write error.  Deletion
+    /// is `clearApiKey`'s job, not an empty-string Save (see the
+    /// hardening note on `saveApiKey`).
+    enum SaveKeyResult {
+        case saved
+        case emptyInput
+        case keychainError
+    }
+
+    /// Store the Keychain key for `p`.  An empty/whitespace-only
+    /// `key` is a NO-OP that reports `.emptyInput` — it does NOT
+    /// delete anything (that's `clearApiKey`'s job; Save meaning
+    /// "delete" on empty text was a foot-gun: a stray extra click
+    /// after the field is cleared, or the Clear/Save state simply
+    /// looking similar, must never silently wipe a stored key).
     @discardableResult
-    func saveApiKey(_ key: String, for p: AgentChatProviderChoice) -> Bool {
-        let ok = AgentChatKeychain.write(
-            account: p.keychainAccount,
-            secret: key.trimmingCharacters(in: .whitespacesAndNewlines))
+    func saveApiKey(_ key: String, for p: AgentChatProviderChoice) -> SaveKeyResult {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .emptyInput }
+        let ok = AgentChatKeychain.write(account: p.keychainAccount, secret: trimmed)
+        keyStateEpoch += 1
+        return ok ? .saved : .keychainError
+    }
+
+    /// Delete the stored Keychain key for `p` (the Clear Key action).
+    /// Returns false only on an actual Keychain error; an
+    /// already-absent item counts as success (matches
+    /// `AgentChatKeychain.delete`).
+    @discardableResult
+    func clearApiKey(for p: AgentChatProviderChoice) -> Bool {
+        let ok = AgentChatKeychain.delete(account: p.keychainAccount)
         keyStateEpoch += 1
         return ok
     }
 
-    /// Resolution order (documented in the UI): Keychain first,
-    /// environment second.  Returns the source WITHOUT the key so the
-    /// UI can caption it; the key itself is fetched separately at USE
-    /// time and never retained.
+    /// Resolution order (documented in the UI): Keychain first, then
+    /// each of the provider's environment-variable fallbacks in
+    /// order.  Returns the source WITHOUT the key so the UI can
+    /// caption it; the key itself is fetched separately at USE time
+    /// and never retained.
     func keySource(for p: AgentChatProviderChoice) -> AgentChatKeySource {
         // Presence check only (no kSecReturnData) — view-body
         // re-renders call this; the secret is materialized solely at
@@ -355,21 +391,26 @@ final class ChatViewModel: ObservableObject {
         if AgentChatKeychain.exists(account: p.keychainAccount) {
             return .keychain
         }
-        if let env = getenv(p.apiKeyEnvVar), env.pointee != 0 {
-            return .environment(p.apiKeyEnvVar)
+        for envVar in p.apiKeyEnvVars {
+            if let env = getenv(envVar), env.pointee != 0 {
+                return .environment(envVar)
+            }
         }
         return .none
     }
 
-    /// The key to use RIGHT NOW (Keychain first, env second), or nil.
-    /// Never logged, never stored on self.
+    /// The key to use RIGHT NOW (Keychain first, then each env-var
+    /// fallback in order), or nil.  Never logged, never stored on
+    /// self.
     private func resolveApiKey() -> String? {
         if let key = AgentChatKeychain.read(account: provider.keychainAccount) {
             return key
         }
-        if let env = getenv(provider.apiKeyEnvVar) {
-            let key = String(cString: env)
-            if !key.isEmpty { return key }
+        for envVar in provider.apiKeyEnvVars {
+            if let env = getenv(envVar) {
+                let key = String(cString: env)
+                if !key.isEmpty { return key }
+            }
         }
         return nil
     }
@@ -530,7 +571,7 @@ final class ChatViewModel: ObservableObject {
                     kind: .error,
                     text: "No API key for \(provider.displayName).  Add one in "
                         + "the chat settings (stored in the Keychain) or launch "
-                        + "with \(provider.apiKeyEnvVar) set."))
+                        + "with \(provider.apiKeyEnvVars.joined(separator: " or ")) set."))
                 // The user message IS recorded; once a key is set,
                 // Retry replays the same conversation safely via
                 // BuildRequest.
