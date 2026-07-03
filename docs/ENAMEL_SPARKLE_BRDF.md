@@ -168,8 +168,12 @@ the same NaN from both caller types (the repo ffast-math rule's canonical
 detector, as used by `IsFiniteOpaque` in FilmIntrospection.cpp).
 
 - `density`   — cells per object-space unit.  Anchor to physical fleck pitch:
-  fleck pitch ≈ 1/density object units.  For the watch (dial radius 20.6
-  units ≈ 19 mm ⇒ ~1.08 units/mm), 180 µm flecks ⇒ density ≈ 5 /unit.
+  fleck pitch ≈ 1/density object units.  For the watch scene (1 unit =
+  38/48 mm ⇒ 1.263 units/mm; the 20.6-unit dial radius = 16.3 mm, the
+  anOrdain dial proper), density 5 ⇒ 158 µm fleck pitch — inside the
+  measured 100–350 µm band (exact-180 µm would be density ≈ 4.4).
+  [Corrected 2026-07-03: an earlier revision wrote "dial radius ≈ 19 mm ⇒
+  ~1.08 units/mm", wrongly equating dial and case radius.]
 - `coverage`  — per-cell facet existence probability in [0,1].  Combined
   with the radius test this sets the areal facet fraction (measured
   empirically by the unit test, documented, not assumed).
@@ -252,10 +256,12 @@ PT, dial-region luminance on the sRGB PNGs:
   spread 40°) transforms the dial (dense grain, mean −0.03) — the modifier
   unambiguously fires through parse→attach→SDF-object→spectral-PT.  At
   production parameters the facet layer contributes ~44 exclusive bright
-  pixels ≈ **exactly the reference-calibrated fleck count** (0.083/mm² ×
-  ~300 mm² lit ≈ 25–40); the pre-existing orange-peel dimples carry the
+  pixels — **consistent with the reference-calibrated fleck count**
+  (0.083/mm² × ~280 mm² lit ≈ 25–40, one fleck spanning 1–2 px); the
+  pre-existing orange-peel dimples carry the
   denser base shimmer, as in the real dial (two-scale structure).
-- **Twinkle**: +3° camera tilt (the Wobble amplitude) turns over ~37 % of
+- **Twinkle**: +3° camera tilt (well within the Wobble's ±12° elev /
+  ±5° azim envelope) turns over ~37 % of
   bright dial pixels (550 gone, 450 new of ~1490) — matching the
   reference's strong angle-gating.
 - **OIDN fleck survival** (Slice-4 gate, first measurement): plain→denoised

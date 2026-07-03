@@ -1092,8 +1092,10 @@ sdf_geometry
 }
 # Discrete-facet glint field on the GLAZE surface (the fleck twinkle;
 # docs/ENAMEL_SPARKLE_BRDF.md).  Reference measurement: flecks are NEUTRAL
-# top-surface Fresnel glints ~180um (=> density ~5 cells/unit at this dial's
-# ~1.08 units/mm), sharply angle-gated (spread ~3deg Rayleigh).  Facets are
+# top-surface Fresnel glints ~100-350um.  This scene: 1 unit = 38/48 mm
+# (scene_unit), i.e. 1.263 units/mm, so density 5 gives a 0.2-unit = 158um
+# fleck pitch — inside the measured band.  Sharply angle-gated
+# (spread ~4deg Rayleigh).  Facets are
 # pinned to the dial by the object-space hash: they twinkle because the view
 # rocks (the Wobble animation), never because the pattern swims.  Density is
 # delivered by the SMALL glint key below (fleck count ~ key solid angle).
