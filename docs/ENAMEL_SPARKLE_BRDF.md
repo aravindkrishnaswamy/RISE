@@ -274,6 +274,32 @@ PT, dial-region luminance on the sRGB PNGs:
   match; the reference's brighter lobe is its physically larger window —
   the key's angular size stays the calibration lever for taste passes.
 
+## Slice-4 outcome (2026-07-03): denoise + LOD decisions
+
+- **OIDN erosion — measured, mitigated by spp, no AOV composite needed.**
+  The required gate ran during Slice-3 tuning: fleck survival through the
+  denoiser is 68 % at 512 spp vs 23 % at 128 spp (the denoiser needs the
+  noise floor below the fleck structure; flecks are deterministic per-pixel
+  so they READ as structure once resolved).  The hero scene carries
+  `samples 512` with the rationale inline; the denoised hero visibly
+  retains the sparkle field, so the glint-AOV-composite fallback is NOT
+  exercised (it remains the documented plan if a future shot needs fleck
+  fidelity at low spp).
+- **Guide buffers**: non-issue for the hero — the scene runs
+  `oidn_prefilter accurate`, which records at the first non-delta scatter
+  (the smooth buried silver), and Fast mode would record pre-Modify anyway
+  (§Costs).
+- **Macro-zoom LOD**: assessed, not needed for any real shot.  At the hero
+  framing a facet spans 1-2 px; the tightest committed framing (cam_macro,
+  100 mm) keeps facets small; a hypothetical deeper zoom would resolve
+  facets into their true disc shapes (physically honest — they ARE discs).
+  Footprint-aware response stays a documented non-goal until a real shot
+  needs it.
+- **Glint-lobe BSDF sampling**: satisfied by construction — the modifier
+  pivot made the existing SPFs sample the perturbed frame (the reason the
+  Slice-1 mechanism review chose it), so the original Slice-4 sampling
+  work item is moot.
+
 ## Ratification record (2026-07-03)
 
 - Reviewer A (physics): ratify discrete-microfacet model; flagged
