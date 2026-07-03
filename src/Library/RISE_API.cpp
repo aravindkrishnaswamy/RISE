@@ -459,7 +459,8 @@ namespace RISE
 								IGeometry** ppi,				///< [out] Pointer to recieve the geometry
 								const char axis,				///< [in] (x|y|z) Which axis the cylinder is sitting on
 								const Scalar radius,			///< [in] Radius of the cylinder
-								const Scalar height			///< [in] Height of the cylinder
+								const Scalar height,			///< [in] Height of the cylinder
+								const bool capped				///< [in] TRUE: closed solid (end caps); FALSE: open tube
 								)
 	{
 		if( !ppi ) {
@@ -467,7 +468,7 @@ namespace RISE
 		}
 
 
-		(*ppi) = new CylinderGeometry( axis, radius, height );
+		(*ppi) = new CylinderGeometry( axis, radius, height, capped );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "cylinder" );
 		return true;
 	}

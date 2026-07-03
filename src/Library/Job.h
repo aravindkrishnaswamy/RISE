@@ -1329,7 +1329,8 @@ namespace RISE
 									const char* name,				///< [in] Name of the geometry
 									const char axis,				///< [in] (x|y|z) Which axis the cylinder is sitting on
 									const double radius,			///< [in] Radius of the cylinder
-									const double height			///< [in] Height of the cylinder
+									const double height,			///< [in] Height of the cylinder
+									const bool capped				///< [in] TRUE: closed solid (end caps); FALSE: open tube
 									);
 
 		//! Creates an infinite plane that passes through the origin

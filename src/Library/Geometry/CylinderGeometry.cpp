@@ -22,10 +22,11 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-CylinderGeometry::CylinderGeometry( const int chAxis, const Scalar dRadius, const Scalar dHeight ) : 
+CylinderGeometry::CylinderGeometry( const int chAxis, const Scalar dRadius, const Scalar dHeight, const bool capped ) :
   m_chAxis( chAxis ),
   m_dRadius( dRadius ),
-  m_dHeight( dHeight )
+  m_dHeight( dHeight ),
+  m_bCapped( capped )
 {
 	RegenerateData();
 }
@@ -98,11 +99,256 @@ bool CylinderGeometry::TessellateToMesh(
 		}
 	}
 
+	if( m_bCapped ) {
+		// Append a triangle fan for each end cap.  Fresh vertices carry the
+		// axis-aligned cap normal and the planar disk UV matching
+		// FillSurfaceNormalUV, so the tessellation is a closed solid consistent
+		// with the analytic intersection.
+		const Scalar caps[2]    = { m_dAxisMin, m_dAxisMax };
+		const Scalar capSgn[2]  = { -1.0,       1.0        };
+
+		// Handedness of the (ra, rb) radial parametrisation w.r.t. +axis:
+		//   x: (ra,rb)=(y,z), cross(+y,+z)=+x  -> +1
+		//   y: (ra,rb)=(x,z), cross(+x,+z)=-y  -> -1  (left-handed)
+		//   z: (ra,rb)=(x,y), cross(+x,+y)=+z  -> +1
+		// A CCW-in-(ra,rb) fan therefore yields a face normal along hf*axis.
+		const Scalar hf = ( m_chAxis == 'y' ) ? -1.0 : 1.0;
+
+		for( int cap = 0; cap < 2; cap++ ) {
+			const Scalar  axial = caps[cap];
+			const Scalar  sgn   = capSgn[cap];
+
+			Vector3 nrm;
+			Point3  center;
+			switch( m_chAxis ) {
+				case 'x': nrm = Vector3( sgn, 0.0, 0.0 ); center = Point3( axial, 0.0, 0.0 ); break;
+				case 'y': nrm = Vector3( 0.0, sgn, 0.0 ); center = Point3( 0.0, axial, 0.0 ); break;
+				case 'z':
+				default:  nrm = Vector3( 0.0, 0.0, sgn ); center = Point3( 0.0, 0.0, axial ); break;
+			}
+
+			const unsigned int centerIdx = static_cast<unsigned int>( vertices.size() );
+			vertices.push_back( center );
+			normals.push_back( nrm );
+			coords.push_back( Point2( 0.5, 0.5 ) );
+
+			const unsigned int rimBase = static_cast<unsigned int>( vertices.size() );
+			for( unsigned int i = 0; i <= nU; i++ ) {
+				const Scalar theta = ( Scalar(i) / Scalar(nU) ) * TWO_PI;
+				const Scalar ra    = m_dRadius * cos( theta );
+				const Scalar rb    = m_dRadius * sin( theta );
+
+				Point3 pos;
+				switch( m_chAxis ) {
+					case 'x': pos = Point3( axial, ra, rb ); break;
+					case 'y': pos = Point3( ra, axial, rb ); break;
+					case 'z':
+					default:  pos = Point3( ra, rb, axial ); break;
+				}
+
+				vertices.push_back( pos );
+				normals.push_back( nrm );
+				coords.push_back( Point2( 0.5*(cos(theta) + 1.0), 0.5*(sin(theta) + 1.0) ) );
+			}
+
+			// Wind so the geometric face normal points outward (= sgn*axis).  A
+			// CCW-in-(ra,rb) fan (center, r0, r1) has face normal hf*axis, so use
+			// it when sgn*hf > 0 and the reversed winding otherwise.  Per-vertex
+			// normals are outward regardless, but keeping the winding consistent
+			// makes the winding-derived geometric normal correct too.
+			const bool ccw = ( sgn * hf > 0.0 );
+			for( unsigned int i = 0; i < nU; i++ ) {
+				const unsigned int r0 = rimBase + i;
+				const unsigned int r1 = rimBase + i + 1;
+				if( ccw ) {
+					tris.push_back( MakeIndexedTriangleSameIdx( centerIdx, r0, r1 ) );
+				} else {
+					tris.push_back( MakeIndexedTriangleSameIdx( centerIdx, r1, r0 ) );
+				}
+			}
+		}
+	}
+
 	return true;
+}
+
+bool CylinderGeometry::IntersectCappedSolid( const Ray& ray, Scalar& tNear, int& surfNear, Scalar& tFar, int& surfFar ) const
+{
+	// Decompose the ray into (axial, radialA, radialB) for the cylinder axis.
+	// The radial pair is only used for the (rotation-invariant) side quadratic
+	// and cap-disk membership, so its internal ordering is immaterial here; the
+	// axial component is the one that must lie along the cylinder axis.  The
+	// pairing below matches FillSurfaceNormalUV's decomposition so cap UVs are
+	// consistent between intersection and area sampling.
+	Scalar axO, raO, rbO, axD, raD, rbD;
+	switch( m_chAxis )
+	{
+	case 'x':
+		axO = ray.origin.x; raO = ray.origin.y; rbO = ray.origin.z;
+		axD = ray.Dir().x;  raD = ray.Dir().y;  rbD = ray.Dir().z;
+		break;
+	case 'y':
+		axO = ray.origin.y; raO = ray.origin.x; rbO = ray.origin.z;
+		axD = ray.Dir().y;  raD = ray.Dir().x;  rbD = ray.Dir().z;
+		break;
+	case 'z':
+	default:
+		axO = ray.origin.z; raO = ray.origin.x; rbO = ray.origin.y;
+		axD = ray.Dir().z;  raD = ray.Dir().x;  rbD = ray.Dir().y;
+		break;
+	}
+
+	// A finite capped cylinder is convex, so a ray crosses its boundary at most
+	// twice.  Gather every valid candidate (up to 2 side + 2 cap) and take the
+	// nearest as entry, the farthest as exit — robust to grazing/rim cases.
+	Scalar	candT[4];
+	int		candS[4];
+	int		n = 0;
+
+	// --- Side wall: infinite cylinder of radius m_dRadius about the axis ---
+	// Reduced quadratic A t^2 + 2 B t + C = 0 (B is the half coefficient),
+	// matching Ray?CylinderIntersection's convention.
+	const Scalar A = raD*raD + rbD*rbD;
+	if( A > NEARZERO ) {
+		const Scalar B = raO*raD + rbO*rbD;
+		const Scalar C = raO*raO + rbO*rbO - m_dRadius*m_dRadius;
+		const Scalar disc = B*B - A*C;
+		if( disc >= 0.0 ) {
+			const Scalar sq   = sqrt( disc );
+			const Scalar inva = 1.0 / A;
+			const Scalar tt[2] = { (-B - sq)*inva, (-B + sq)*inva };
+			for( int i = 0; i < 2; i++ ) {
+				const Scalar t = tt[i];
+				if( t > NEARZERO ) {
+					const Scalar ax = axO + t*axD;
+					if( ax >= m_dAxisMin && ax <= m_dAxisMax ) {
+						candT[n] = t; candS[n] = SURF_SIDE; n++;
+					}
+				}
+			}
+		}
+	}
+
+	// --- End caps: planes axial = axisMin / axisMax, disk of radius m_dRadius ---
+	if( fabs(axD) > NEARZERO ) {
+		const Scalar invAxD   = 1.0 / axD;
+		const Scalar planes[2] = { m_dAxisMin, m_dAxisMax };
+		const int    surfs[2]  = { SURF_CAPMIN, SURF_CAPMAX };
+		const Scalar r2        = m_dRadius*m_dRadius;
+		for( int i = 0; i < 2; i++ ) {
+			const Scalar t = (planes[i] - axO)*invAxD;
+			if( t > NEARZERO ) {
+				const Scalar ra = raO + t*raD;
+				const Scalar rb = rbO + t*rbD;
+				if( ra*ra + rb*rb <= r2 ) {
+					candT[n] = t; candS[n] = surfs[i]; n++;
+				}
+			}
+		}
+	}
+
+	if( n == 0 ) {
+		return false;
+	}
+
+	// Nearest candidate is always the entry (or, when the origin is inside, the
+	// single exit crossing).
+	int iMin = 0;
+	for( int i = 1; i < n; i++ ) {
+		if( candT[i] < candT[iMin] ) iMin = i;
+	}
+	tNear = candT[iMin]; surfNear = candS[iMin];
+
+	// Distinguish "origin inside the solid" (one crossing ahead => leave the exit
+	// range at 0, matching the open-tube convention) from "origin outside"
+	// (entry + exit).  Use an explicit inside test rather than counting distinct
+	// candidates: when the exit lands exactly on the rim, the side wall and a cap
+	// disk BOTH list that single point at all-but-identical t, and a
+	// count-distinct test would wrongly report a phantom entry+exit segment of
+	// FP-rounding width.
+	const bool originInside =
+		( raO*raO + rbO*rbO <= m_dRadius*m_dRadius ) &&
+		( axO >= m_dAxisMin && axO <= m_dAxisMax );
+
+	if( originInside ) {
+		tFar = 0.0; surfFar = surfNear;
+	} else {
+		int iMax = 0;
+		for( int i = 1; i < n; i++ ) {
+			if( candT[i] > candT[iMax] ) iMax = i;
+		}
+		if( iMax != iMin ) {
+			tFar = candT[iMax]; surfFar = candS[iMax];
+		} else {
+			// A single distinct crossing from outside (a grazing/tangent touch):
+			// no meaningful exit — leave the exit range at 0 (open-tube convention).
+			tFar = 0.0; surfFar = surfNear;
+		}
+	}
+	return true;
+}
+
+void CylinderGeometry::FillSurfaceNormalUV( const Point3& pt, int surf, Vector3& normal, Point2* coord ) const
+{
+	if( surf == SURF_SIDE ) {
+		GeometricUtilities::CylinderNormal( pt, m_chAxis, normal );
+		if( coord ) {
+			GeometricUtilities::CylinderTextureCoord( pt, m_chAxis, m_dOVRadius, m_dAxisMin, m_dAxisMax, *coord );
+		}
+		return;
+	}
+
+	// End cap: outward axis-aligned normal; a planar disk UV in [0,1]^2 keyed off
+	// the two radial coordinates (u,v) = ( (ra/r+1)/2, (rb/r+1)/2 ).  This is the
+	// same mapping TessellateToMesh stamps on the cap fan, so the two agree.
+	const Scalar sgn = (surf == SURF_CAPMAX) ? 1.0 : -1.0;
+	Scalar ra = 0.0, rb = 0.0;
+	switch( m_chAxis )
+	{
+	case 'x': normal = Vector3( sgn, 0.0, 0.0 ); ra = pt.y; rb = pt.z; break;
+	case 'y': normal = Vector3( 0.0, sgn, 0.0 ); ra = pt.x; rb = pt.z; break;
+	case 'z':
+	default:  normal = Vector3( 0.0, 0.0, sgn ); ra = pt.x; rb = pt.y; break;
+	}
+
+	if( coord ) {
+		*coord = Point2( 0.5*(ra*m_dOVRadius + 1.0), 0.5*(rb*m_dOVRadius + 1.0) );
+	}
 }
 
 void CylinderGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool , const bool , const bool bComputeExitInfo ) const
 {
+	if( m_bCapped )
+	{
+		Scalar	tNear = 0.0, tFar = 0.0;
+		int		surfNear = SURF_SIDE, surfFar = SURF_SIDE;
+		if( IntersectCappedSolid( ri.ray, tNear, surfNear, tFar, surfFar ) )
+		{
+			ri.bHit   = true;
+			ri.range  = tNear;
+			ri.range2 = tFar;
+
+			ri.ptIntersection = ri.ray.PointAtLength( ri.range );
+			FillSurfaceNormalUV( ri.ptIntersection, surfNear, ri.vNormal, &ri.ptCoord );
+			ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
+
+			if( bComputeExitInfo ) {
+				ri.ptExit = ri.ray.PointAtLength( ri.range2 );
+				FillSurfaceNormalUV( ri.ptExit, surfFar, ri.vNormal2, 0 );
+				ri.vGeomNormal2 = ri.vNormal2;	// analytical: shading == geometric
+			}
+		}
+		else
+		{
+			ri.bHit   = false;
+			ri.range  = RISE_INFINITY;
+			ri.range2 = RISE_INFINITY;
+		}
+		return;
+	}
+
+	// --- Open-tube path (m_bCapped == false): side wall only, unchanged ---
+
 	/* IMPLEMENT THIS OPTO!
 	// If the point is inside the sphere and we are to ONLY hit the front faces, then
 	// we cannot possible hit a front face, so beat it!
@@ -172,6 +418,17 @@ void CylinderGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool , 
 
 bool CylinderGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool , const bool ) const
 {
+	if( m_bCapped )
+	{
+		Scalar	tNear = 0.0, tFar = 0.0;
+		int		surfNear = SURF_SIDE, surfFar = SURF_SIDE;
+		if( IntersectCappedSolid( ray, tNear, surfNear, tFar, surfFar ) ) {
+			// IntersectCappedSolid only returns candidates with t > NEARZERO.
+			return ( tNear <= dHowFar );
+		}
+		return false;
+	}
+
 	/* IMPLEMENT THIS OPTO!
 	// If the point is inside the sphere and we are to ONLY hit the front faces, then
 	// we cannot possible hit a front face, so beat it!
@@ -238,6 +495,45 @@ BoundingBox CylinderGeometry::GenerateBoundingBox() const
 
 void CylinderGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
+	// For the capped solid, split the sample between the side wall and the two
+	// caps in proportion to their areas so the point density stays uniform and
+	// consistent with GetArea() (required for correct area-light / MIS weights).
+	if( m_bCapped ) {
+		const Scalar sideA = 2.0 * PI * m_dRadius * m_dHeight;
+		const Scalar capA  = PI * m_dRadius * m_dRadius;			// per cap
+		const Scalar total = sideA + 2.0 * capA;
+		const Scalar sel   = prand.z * total;
+
+		if( sel >= sideA ) {
+			// A cap.  Pick which end, then sample the disk uniformly:
+			//   r = R*sqrt(u),  theta = 2*pi*v   (area-uniform on the disk).
+			const bool   bMaxCap = ( sel >= sideA + capA );
+			const Scalar rr = m_dRadius * sqrt( prand.x );
+			const Scalar th = TWO_PI * prand.y;
+			const Scalar ra = rr * cos( th );
+			const Scalar rb = rr * sin( th );
+			const Scalar axial = bMaxCap ? m_dAxisMax : m_dAxisMin;
+
+			Point3 pt;
+			switch( m_chAxis )
+			{
+			case 'x': pt = Point3( axial, ra, rb ); break;
+			case 'y': pt = Point3( ra, axial, rb ); break;
+			case 'z':
+			default:  pt = Point3( ra, rb, axial ); break;
+			}
+
+			if( point )  { *point = pt; }
+			if( normal ) { FillSurfaceNormalUV( pt, bMaxCap ? SURF_CAPMAX : SURF_CAPMIN, *normal, 0 ); }
+			if( coord )  {
+				Vector3 tmp;
+				FillSurfaceNormalUV( pt, bMaxCap ? SURF_CAPMAX : SURF_CAPMIN, tmp, coord );
+			}
+			return;
+		}
+		// else fall through to the side-wall sample below.
+	}
+
 	Point3 pt;
 	GeometricUtilities::PointOnCylinder( Point2(prand.x,prand.y), m_chAxis, m_dRadius, m_dAxisMin, m_dAxisMax, pt );
 
@@ -259,6 +555,56 @@ SurfaceDerivatives CylinderGeometry::ComputeSurfaceDerivatives( const Point3& ob
 	SurfaceDerivatives sd;
 
 	const Scalar r = m_dRadius;
+
+	// End-cap points (only possible when m_bCapped): the shading frame lies in
+	// the cap plane.  A cap is identified by an axis-aligned normal (axial
+	// component ~1); the side wall always has a zero axial component.  Build a
+	// right-handed frame for the planar disk UV of FillSurfaceNormalUV:
+	//   u = (ra/r + 1)/2,  v = (rb/r + 1)/2   =>   dP/du = 2r along +ra, dP/dv = 2r along +rb.
+	if( m_bCapped ) {
+		Scalar axialN = 0.0;
+		switch( m_chAxis ) {
+			case 'x': axialN = objSpaceNormal.x; break;
+			case 'y': axialN = objSpaceNormal.y; break;
+			case 'z':
+			default:  axialN = objSpaceNormal.z; break;
+		}
+
+		if( fabs(axialN) > 0.5 ) {
+			const Scalar twoR = 2.0 * r;
+			Vector3 dpdu, dpdv;
+			Scalar  ra = 0.0, rb = 0.0;
+			switch( m_chAxis ) {
+				case 'x':
+					dpdu = Vector3( 0.0, twoR, 0.0 ); dpdv = Vector3( 0.0, 0.0, twoR );
+					ra = objSpacePoint.y; rb = objSpacePoint.z;
+					break;
+				case 'y':
+					dpdu = Vector3( twoR, 0.0, 0.0 ); dpdv = Vector3( 0.0, 0.0, twoR );
+					ra = objSpacePoint.x; rb = objSpacePoint.z;
+					break;
+				case 'z':
+				default:
+					dpdu = Vector3( twoR, 0.0, 0.0 ); dpdv = Vector3( 0.0, twoR, 0.0 );
+					ra = objSpacePoint.x; rb = objSpacePoint.y;
+					break;
+			}
+
+			// Orient (dpdu, dpdv, n) right-handed: swap if the frame is left-handed
+			// (happens on the -axis cap where the outward normal is negated).
+			if( Vector3Ops::Dot( Vector3Ops::Cross( dpdu, dpdv ), objSpaceNormal ) < 0.0 ) {
+				Vector3 tmp = dpdu; dpdu = dpdv; dpdv = tmp;
+			}
+
+			sd.dpdu = dpdu;
+			sd.dpdv = dpdv;
+			sd.dndu = Vector3( 0.0, 0.0, 0.0 );
+			sd.dndv = Vector3( 0.0, 0.0, 0.0 );
+			sd.uv   = Point2( 0.5*(ra*m_dOVRadius + 1.0), 0.5*(rb*m_dOVRadius + 1.0) );
+			sd.valid = true;
+			return sd;
+		}
+	}
 
 	// Extract the two radial coordinates and the axial coordinate based on axis orientation
 	Scalar radA, radB, axial;
@@ -339,7 +685,12 @@ SurfaceDerivatives CylinderGeometry::ComputeSurfaceDerivatives( const Point3& ob
 
 Scalar CylinderGeometry::GetArea( ) const
 {
-	return 2.0 * PI * m_dRadius * m_dHeight;
+	const Scalar side = 2.0 * PI * m_dRadius * m_dHeight;
+	if( m_bCapped ) {
+		// Two end-cap disks, each of area PI r^2.
+		return side + 2.0 * PI * m_dRadius * m_dRadius;
+	}
+	return side;
 }
 
 static const unsigned int RADIUS_ID = 100;

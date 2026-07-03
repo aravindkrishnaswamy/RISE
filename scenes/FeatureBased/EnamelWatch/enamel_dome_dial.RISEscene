@@ -177,12 +177,13 @@ ggx_material
 }
 
 # Enamel slab: flat top at z=0 (fire-polished), extends down to z=-1.0 (bottom
-# buried inside the silver sphere).  A BOX, not a cylinder: cylinder_geometry
-# is an uncapped tube (only the radial wall is intersected), so an axial camera
-# ray passes through its open top WITHOUT crossing a dielectric surface and the
-# interior_medium is never entered -> no absorption.  The box is closed; the
-# radial dome gradient shows within the square patch.  (The round dial uses a
-# closed SDF disk at M4.)
+# buried inside the silver sphere).  A BOX is used here for a square patch that
+# shows the radial dome gradient.  (Historically a cylinder could NOT be used:
+# cylinder_geometry was an uncapped tube, so an axial camera ray passed through
+# its open top without crossing a dielectric surface and the interior_medium was
+# never entered.  cylinder_geometry is now a closed solid by default -- `capped
+# TRUE` -- so a capped cylinder would also work; the box stays for the square
+# patch.)  The round dial uses a closed SDF disk at M4.
 box_geometry
 {
 	name enamelgeom

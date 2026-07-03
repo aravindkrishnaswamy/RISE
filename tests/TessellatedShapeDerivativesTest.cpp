@@ -467,9 +467,10 @@ int main()
 	}
 
 	{
-		// Cylinder side only (no caps — matches analytical intersection).
+		// Cylinder side only (open tube, capped=false) so analytic and tessellated
+		// surfaces match here; the capped solid is covered by CappedCylinderTest.
 		// chAxis is a character code, not an integer.
-		CylinderGeometry* g = new CylinderGeometry( 'y', 1.0, 2.0 );
+		CylinderGeometry* g = new CylinderGeometry( 'y', 1.0, 2.0, false );
 		const Scalar bboxR = std::sqrt( 1.0*1.0 + 1.0*1.0 );  // (radius, half-height)
 		const bool ok = RunShape( "Cylinder (Y-axis, R=1.0, H=2.0)", g, bboxR );
 		allPass &= ok; if( !ok ) ++failCount;

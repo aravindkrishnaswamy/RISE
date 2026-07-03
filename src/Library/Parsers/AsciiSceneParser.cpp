@@ -4869,21 +4869,23 @@ namespace RISE
 					std::string name = bag.GetString( "name",   "noname" );
 					double radius    = bag.GetDouble( "radius", 1.0 );
 					double height    = bag.GetDouble( "height", 1.0 );
+					bool   capped    = bag.GetBool( "capped", true );
 					std::string axisStr = bag.GetString( "axis", "x" );
 					char axis        = axisStr.empty() ? 'x' : axisStr[0];
-					return pJob.AddCylinderGeometry( name.c_str(), axis, radius, height );
+					return pJob.AddCylinderGeometry( name.c_str(), axis, radius, height, capped );
 				}
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "cylinder_geometry"; cd.category = ChunkCategory::Geometry;
-						cd.description = "Implicit cylinder.";
+						cd.description = "Implicit cylinder.  Default is a CLOSED SOLID (two end-cap disks) so an interior_medium bound to it is actually entered; set capped FALSE for a legacy open-ended tube (a camera ray along the axis then crosses no surface).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "axis";   p.kind = ValueKind::Enum;   p.enumValues = {"x","y","z"}; p.description = "Cylinder axis"; p.defaultValueHint = "x"; }
 						{ auto& p = P(); p.name = "radius"; p.kind = ValueKind::Double; p.description = "Cylinder radius"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "height"; p.kind = ValueKind::Double; p.description = "Cylinder height"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "capped"; p.kind = ValueKind::Bool;   p.description = "TRUE: closed solid with end-cap disks (enterable by an interior_medium); FALSE: open-ended tube (side wall only)"; p.defaultValueHint = "TRUE"; }
 						return cd;
 					}();
 					return d;
