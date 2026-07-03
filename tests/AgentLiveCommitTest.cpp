@@ -716,6 +716,12 @@ static void TestAgentEditMarksDirty()
 				/*baseVersionOrNull*/ nullptr );
 		Check( applied.applied && applied.rawCode == 1, "clean apply is a code-1 incremental" );
 		Check( c.HasUnsavedChanges(), "an APPLIED agent edit marks the editor DIRTY (the fix)" );
+		// A1 pin: "lambertian_luminaire_material" is a KNOWN kind
+		// (endsWith "_material"), so the mark routes to the per-category
+		// entity channel -- the object-transform channel (Phase 6 mNames)
+		// stays EMPTY.
+		Check( c.Editor().Dirty().Count() == 0,
+		       "applied agent edit does NOT touch the object-transform channel" );
 
 		// The listener fired exactly once, with true (clean->dirty).
 		{
@@ -762,15 +768,46 @@ static void TestAgentEditMarksDirty()
 		// Round-2 hardening (defensive): MarkCstHeadDirty must flip dirty
 		// even for a KNOWN kind with an EMPTY name.  The mapped
 		// MarkEntityDirty channel SILENTLY NO-OPS on an empty name, so an
-		// empty name must route to the sentinel REGARDLESS of kind.  The
-		// agent caller pre-rejects empty names today, but this guards a
-		// future 1c caller from re-opening the data-loss.  State is CLEAN
-		// here (the save above cleared it).  Red-prove: against the pre-
+		// empty name sets the tracker's first-class CST-head BOOLEAN
+		// channel REGARDLESS of kind (the boolean set is unconditional --
+		// no name to validate -- so the mark can never no-op).  The agent
+		// caller pre-rejects empty names today, but this guards a future
+		// 1c caller from re-opening the data-loss.  State is CLEAN here
+		// (the save above cleared it).  Red-prove: against the pre-
 		// hardening code, MarkEntityDirty(Object,"") no-ops -> stays clean.
 		Check( !c.HasUnsavedChanges(), "clean before the empty-name mark probe" );
 		c.Editor().MarkCstHeadDirty( "", "standard_object" );
 		Check( c.HasUnsavedChanges(),
-		       "MarkCstHeadDirty(empty name, KNOWN kind) still flips dirty via the sentinel (no silent no-op)" );
+		       "MarkCstHeadDirty(empty name, KNOWN kind) still flips dirty via the CST-head boolean channel (no silent no-op)" );
+		// A1 pin: the dirty state came from the BOOLEAN channel -- no
+		// "__cst_head__" sentinel name lands in the object-transform set
+		// (the pre-A1 hack) and the per-entity set stays empty.
+		Check( c.Editor().Dirty().CstHeadDirty(),
+		       "empty-name mark sets the CST-head boolean channel" );
+		Check( c.Editor().Dirty().Count() == 0 && !c.Editor().Dirty().Contains( "__cst_head__" ),
+		       "empty-name mark does NOT pollute the object-transform channel (no sentinel)" );
+		Check( c.Editor().Dirty().EntityCount() == 0,
+		       "empty-name mark does NOT touch the per-entity channel" );
+
+		//------------------------------------------------------------------
+		// A1 (first-class CST-head channel): an UNKNOWN kind -- the agent
+		// can edit painters, and "uniformcolor_painter" maps to none of the
+		// tracker's per-entity categories -- must ALSO set the boolean
+		// channel, NOT park the painter name in the object-transform set
+		// (the pre-A1 semantic overload).  Clear first so this probe
+		// observes its own mark only.
+		//------------------------------------------------------------------
+		c.Editor().ClearDirtyState();
+		Check( !c.HasUnsavedChanges(), "clean before the unknown-kind mark probe" );
+		c.Editor().MarkCstHeadDirty( "grey", "uniformcolor_painter" );
+		Check( c.HasUnsavedChanges(),
+		       "MarkCstHeadDirty(painter name, UNKNOWN kind) flips dirty via the CST-head boolean channel" );
+		Check( c.Editor().Dirty().CstHeadDirty(),
+		       "unknown-kind mark sets the CST-head boolean channel" );
+		Check( !c.Editor().Dirty().Contains( "grey" ) && c.Editor().Dirty().Count() == 0,
+		       "unknown-kind mark does NOT park the painter name in the object-transform channel" );
+		Check( c.Editor().Dirty().EntityCount() == 0,
+		       "unknown-kind mark does NOT touch the per-entity channel" );
 
 		c.Stop();
 	}

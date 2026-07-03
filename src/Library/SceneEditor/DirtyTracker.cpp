@@ -25,6 +25,7 @@ namespace RISE
         mNames.clear();
         mEntityDirty.clear();
         mCreatedPending.clear();
+        mCstHeadDirty = false;
     }
 
     bool DirtyTracker::Contains( const std::string& objectName ) const

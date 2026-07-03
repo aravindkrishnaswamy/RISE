@@ -24,6 +24,10 @@
 //                      against current introspection to find the
 //                      changed parameters.
 //
+//  Later phases added further channels, documented at their
+//  sections below: the Phase C created-entity channels and the
+//  Model-B F5 CST-head boolean channel.
+//
 //  See docs/ROUND_TRIP_SAVE_PLAN.md §7.1 + §7.5 + §7.6.
 //
 //////////////////////////////////////////////////////////////////////
@@ -119,6 +123,27 @@ namespace RISE
                 != mSessionCreated.end();
         }
 
+        // ---- CST-head channel (Model-B F5) --------------------------
+        // Boolean "the retained CST Document head was mutated" flag
+        // for edits that map onto NONE of the per-entity categories
+        // above — agent commits on painters / functions / rasterizer
+        // params / shaders, or a commit whose entity name is empty.
+        // The CST save path (SaveEngine::Save) is a whole-Document
+        // SerializeCst gated only on "is anything dirty", so a single
+        // coarse boolean is exactly the granularity that path needs —
+        // parking such names in the object-transform set (the pre-A1
+        // hack) was a semantic overload.  Transient: cleared by
+        // Clear() so a successful save greys the Save button.
+
+        /// Set the CST-head-dirty flag.  UNCONDITIONAL — there is no
+        /// name to validate — so the mark can never silently no-op
+        /// (data-loss guard for the agent commit path).
+        void MarkCstHeadDirty() { mCstHeadDirty = true; }
+
+        /// True iff the CST head was marked dirty since the last
+        /// load / save.
+        bool CstHeadDirty() const { return mCstHeadDirty; }
+
         // ---- Aggregate ----------------------------------------------
 
         /// True iff there is anything to save SINCE THE LAST SAVE —
@@ -130,12 +155,14 @@ namespace RISE
         {
             return !mNames.empty()
                 || !mEntityDirty.empty()
-                || !mCreatedPending.empty();
+                || !mCreatedPending.empty()
+                || mCstHeadDirty;
         }
 
         /// Clear the TRANSIENT channels (object transform, property,
-        /// created-pending).  Called after a successful save.  The
-        /// persistent `mSessionCreated` channel is intentionally kept.
+        /// created-pending, CST-head).  Called after a successful
+        /// save.  The persistent `mSessionCreated` channel is
+        /// intentionally kept.
         void Clear();
 
 // ---- Transaction snapshot (F7) ------------------------------
@@ -143,21 +170,27 @@ namespace RISE
 // to their pre-transaction state, so a fully reverted document does
 // not keep showing unsaved changes (undo RE-MARKS dirty, and created
 // entities are never un-marked).  A plain value copy of the four
-// sets is sufficient.
+// sets plus the CST-head boolean is sufficient.  The boolean rolls
+// back exactly like the sets: an agent commit that set it BEFORE
+// the transaction began is captured in the snapshot, so a rollback
+// PRESERVES it (the agent's unsaved edit is not part of the
+// reverted transaction and must keep reporting unsaved changes).
 struct State {
 	std::unordered_set<std::string> names;
 	std::set<DirtyEntity>           entityDirty;
 	std::set<DirtyEntity>           createdPending;
 	std::set<DirtyEntity>           sessionCreated;
+	bool                            cstHeadDirty = false;
 };
-State CaptureState() const { return State{ mNames, mEntityDirty, mCreatedPending, mSessionCreated }; }
-void  RestoreState( const State& st ) { mNames = st.names; mEntityDirty = st.entityDirty; mCreatedPending = st.createdPending; mSessionCreated = st.sessionCreated; }
+State CaptureState() const { return State{ mNames, mEntityDirty, mCreatedPending, mSessionCreated, mCstHeadDirty }; }
+void  RestoreState( const State& st ) { mNames = st.names; mEntityDirty = st.entityDirty; mCreatedPending = st.createdPending; mSessionCreated = st.sessionCreated; mCstHeadDirty = st.cstHeadDirty; }
 
     private:
         std::unordered_set<std::string> mNames;          ///< object transform dirty (transient)
         std::set<DirtyEntity>           mEntityDirty;    ///< property-shaped dirty (transient)
         std::set<DirtyEntity>           mCreatedPending; ///< created since last save (transient)
         std::set<DirtyEntity>           mSessionCreated; ///< created this session (persistent)
+        bool                            mCstHeadDirty = false; ///< CST head mutated, uncategorized (transient)
     };
 }
 

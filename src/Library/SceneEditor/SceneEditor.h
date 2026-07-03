@@ -132,7 +132,8 @@ namespace RISE
 		//! rollback can return the dirty state to its pre-transaction baseline
 		//! (Undo re-marks dirty; created entities are never un-marked).
 		//! F7: snapshot / restore ALL dirty state for transactional rollback.
-		//! Captures the four DirtyTracker channels PLUS the fifth set
+		//! Captures the DirtyTracker channels (four sets + the CST-head
+		//! boolean) PLUS the additional set
 		//! mScaleFromAnchorSet (BUG-2: it lives outside DirtyTracker, so a
 		//! plain State copy missed it -> a rolled-back scale-gizmo gesture
 		//! still reported unsaved changes).  Restore also fires the dirty-
@@ -220,11 +221,12 @@ namespace RISE
 		//! channel (mirroring MarkEditEntityDirty), so the mark matches
 		//! the GUI's channel for the common cases.  UNKNOWN kinds (the
 		//! agent can edit painters / functions / rasterizer params /
-		//! shaders — kinds the tracker's categories don't cover) fall
-		//! back to the object-transform channel via
-		//! DirtyTracker::MarkDirty(entityName) so HasAnyDirty() still
-		//! flips true.  Either mark is SAFE: SaveEngine::Save is a
-		//! whole-Document SerializeCst gated only on "is anything
+		//! shaders — kinds the tracker's categories don't cover) set
+		//! the tracker's first-class CST-head boolean channel
+		//! (DirtyTracker::MarkCstHeadDirty) so HasAnyDirty() still
+		//! flips true without parking uncategorized names in the
+		//! object-transform set.  Either mark is SAFE: SaveEngine::Save
+		//! is a whole-Document SerializeCst gated only on "is anything
 		//! dirty" — it never byte-splices per entity — and both channels
 		//! are cleared by DirtyTracker::Clear() on a successful save.
 		//!
@@ -233,8 +235,9 @@ namespace RISE
 		//! runs on the CALLING thread (a future background-transport
 		//! agent must marshal it to the UI dispatch queue — a 1c
 		//! concern, not this fix).  An empty `entityName` is tolerated:
-		//! it routes to the generic sentinel so HasAnyDirty() ALWAYS
-		//! flips (this is a data-loss guard — the mark must never no-op).
+		//! it sets the same CST-head boolean channel, whose set is
+		//! UNCONDITIONAL (no name to validate), so the mark can NEVER
+		//! silently no-op — this is a data-loss guard.
 		void MarkCstHeadDirty( const char* entityName, const char* entityKind )
 		{
 			const std::string name = entityName ? entityName : std::string();
@@ -252,13 +255,14 @@ namespace RISE
 			};
 
 			// An empty name would make MarkEntityDirty a SILENT NO-OP
-			// (DirtyTracker ignores empty names), so route it to the
-			// generic sentinel BEFORE the category dispatch regardless of
-			// kind -- the mark must always flip HasAnyDirty() (data-loss
+			// (DirtyTracker ignores empty names), so set the CST-head
+			// boolean channel BEFORE the category dispatch regardless of
+			// kind -- the boolean set is unconditional, so the mark
+			// always flips HasAnyDirty() by construction (data-loss
 			// guard; the sole caller today pre-rejects empty names, but a
 			// future 1c caller must not be able to re-open the hole).
 			if( name.empty() ) {
-				mDirtyTracker.MarkDirty( std::string( "__cst_head__" ) );
+				mDirtyTracker.MarkCstHeadDirty();
 			} else if( kind == "standard_object" ) {
 				mDirtyTracker.MarkEntityDirty( EntityCategory::Object, name );
 			} else if( kind == "camera" || endsWith( kind, "_camera" ) ) {
@@ -271,10 +275,12 @@ namespace RISE
 				mDirtyTracker.MarkEntityDirty( EntityCategory::Medium, name );
 			} else {
 				// UNKNOWN / uncategorized kind (painter, function,
-				// rasterizer, shader): use the object-transform channel as
-				// a generic "something changed" mark (name is non-empty
-				// here -- the empty case was handled above).
-				mDirtyTracker.MarkDirty( name );
+				// rasterizer, shader): set the first-class CST-head
+				// boolean channel -- a coarse "the retained Document
+				// changed" mark that keeps uncategorized names OUT of
+				// the object-transform set (the pre-A1 semantic
+				// overload parked them in mNames).
+				mDirtyTracker.MarkCstHeadDirty();
 			}
 			FireDirtyChangedIfTransitioned();
 		}
@@ -282,9 +288,12 @@ namespace RISE
 		//! True iff any edit since the last load / save would produce
 		//! a non-NoOp SaveEngine pass.  Drives the GUI's "Save" button
 		//! enable state on both platform shells.  Cheap O(1).
-		//! Consults BOTH dirty channels — object transforms (Phase 6)
-		//! AND property-shaped edits on objects / cameras / lights /
-		//! materials / media (Phase B).
+		//! Consults every TRANSIENT dirty channel via
+		//! DirtyTracker::HasAnyDirty() — object transforms (Phase 6),
+		//! property-shaped edits on objects / cameras / lights /
+		//! materials / media (Phase B), created-pending entities
+		//! (Phase C), and the CST-head boolean (Model-B F5) — plus the
+		//! scale-from-anchor set.
 		bool HasUnsavedChanges() const
 		{
 			return mDirtyTracker.HasAnyDirty()
