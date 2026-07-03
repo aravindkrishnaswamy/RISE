@@ -6,3 +6,4 @@
 #import "RISEBridge.h"
 #import "RISESceneEditorBridge.h"
 #import "RISEViewportBridge.h"
+#import "RISEAgentChatBridge.h"

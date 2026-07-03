@@ -264,12 +264,32 @@ struct ContentView: View {
                     .help(viewModel.isAgentPanelVisible
                           ? "Hide the Agent (JSON-RPC) panel"
                           : "Show the Agent (JSON-RPC) panel")
+
+                    // Facet 5 slice B2: toggle the LLM Chat panel — the
+                    // natural-language sibling of the JSON-RPC debug panel.
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            viewModel.toggleChatPanel()
+                        }
+                    } label: {
+                        Label("Chat", systemImage: "bubble.left.and.bubble.right")
+                    }
+                    .disabled(viewModel.viewportBridge == nil)
+                    .help(viewModel.isChatPanelVisible
+                          ? "Hide the Chat panel"
+                          : "Show the Chat panel (an LLM edits the scene for you)")
                 }
 
                 // Facet 5 slice 1c-1: the inline Agent (JSON-RPC) panel.
                 if viewModel.isAgentPanelVisible {
                     Divider()
                     AgentPanel()
+                }
+
+                // Facet 5 slice B2: the inline LLM Chat panel.
+                if viewModel.isChatPanelVisible {
+                    Divider()
+                    ChatPanel(chat: viewModel.chat)
                 }
 
                 Divider()

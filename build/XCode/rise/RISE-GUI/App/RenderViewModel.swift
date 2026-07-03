@@ -165,6 +165,17 @@ final class RenderViewModel: ObservableObject {
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"read_document\"}"
     /// The last JSON-RPC response line (read-only display).
     @Published var agentResponseText: String = ""
+
+    // Facet 5 slice B2: the LLM chat panel.  All chat state + the
+    // turn driver live in ChatViewModel (which wraps the C++
+    // AgentChatLoop via RISEAgentChatBridge); this view model only
+    // owns its lifetime and forwards the per-scene bind/unbind so the
+    // chat driver never touches a torn-down viewport bridge.
+    /// Whether the Chat panel is showing.  Mirrors `isAgentPanelVisible`.
+    @Published var isChatPanelVisible: Bool = false
+    /// App-lifetime chat state (provider/model selection outlives any
+    /// one scene; the conversation itself resets per scene).
+    let chat = ChatViewModel()
     @Published var hasAnimation: Bool = false
     @Published var recentFiles: [String] = []
 
@@ -554,6 +565,7 @@ final class RenderViewModel: ObservableObject {
     /// path.
     private func continueMergeLoad(at path: String) {
         stopPreviewPlay()   // halt a looping preview-play before the bridge it drives is torn down
+        chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
         viewportBridge?.shutdown()
         viewportBridge = nil
 
@@ -571,6 +583,7 @@ final class RenderViewModel: ObservableObject {
         // thread; once it returns, no other thread holds pointers into
         // Scene state that clearAll is about to destroy.
         stopPreviewPlay()   // halt a looping preview-play before the bridge it drives is torn down
+        chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
         viewportBridge?.shutdown()
         viewportBridge = nil
 
@@ -659,6 +672,7 @@ final class RenderViewModel: ObservableObject {
                     // a prior scene) and stand up a fresh one over the
                     // newly-loaded job.
                     self.stopPreviewPlay()   // halt any looping preview-play before swapping the bridge
+                    self.chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
                     self.viewportBridge?.shutdown()
                     let vb = RISEViewportBridge(hostBridge: bridgeRef)
                     self.viewportBridge = vb
@@ -706,6 +720,13 @@ final class RenderViewModel: ObservableObject {
                     // Render-Animation stop the bridge before kicking the
                     // production rasterizer; both restart it on completion.
                     vb?.start()
+                    // Facet 5 slice B2: bind the chat driver to the
+                    // fresh scene.  Resets the conversation (it was
+                    // about the previous scene) and fetches the skills
+                    // index once via the live dispatcher's read_skill.
+                    if let vb = vb {
+                        self.chat.sceneOpened(viewportBridge: vb)
+                    }
                 } else {
                     self.renderState = .error("Failed to load scene")
                 }
@@ -1150,6 +1171,12 @@ final class RenderViewModel: ObservableObject {
         isAgentPanelVisible.toggle()
     }
 
+    /// Facet 5 slice B2: toggle the LLM Chat panel.  Mirrors
+    /// `toggleAgentPanel`.
+    func toggleChatPanel() {
+        isChatPanelVisible.toggle()
+    }
+
     /// Facet 5 slice 1c-1: hand one JSON-RPC request line to the live
     /// agent dispatcher and return its response line.
     ///
@@ -1227,6 +1254,7 @@ final class RenderViewModel: ObservableObject {
         // first so its render thread is joined before clearAll
         // destroys the scene it's referencing.
         stopPreviewPlay()   // halt a looping preview-play before the bridge it drives is torn down
+        chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
         viewportBridge?.shutdown()
         viewportBridge = nil
         bridge.clearAll()
@@ -1381,6 +1409,7 @@ final class RenderViewModel: ObservableObject {
         // BEFORE bridge.clearAll() so the controller's render thread
         // is joined before the scene is destroyed.
         stopPreviewPlay()   // halt a looping preview-play before the bridge it drives is torn down
+        chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
         viewportBridge?.shutdown()
         viewportBridge = nil
         sceneTime = 0
@@ -1404,6 +1433,11 @@ final class RenderViewModel: ObservableObject {
         // reset its visibility + the stale response when the scene clears.
         isAgentPanelVisible = false
         agentResponseText = ""
+        // Facet 5 slice B2: the Chat panel is per-scene too — its tool
+        // executor lives in the (now torn-down) viewport bridge.  The
+        // conversation itself was already reset by chat.sceneClosed()
+        // above; here we just hide the panel (mirrors the Agent panel).
+        isChatPanelVisible = false
     }
 
     func clearLog() {
