@@ -15,9 +15,14 @@
 //        `x-api-key` header + `anthropic-version: 2023-06-01`).
 //      * GeminiChatCodec -- the Google Gemini v1beta REST API
 //        (POST .../v1beta/models/{model}:generateContent, auth via the
-//        `x-goog-api-key` header).  Wire shape verified against the
-//        live v1beta docs on 2026-07-02 (functionDeclarations /
-//        functionCall / functionResponse / inlineData).
+//        `x-goog-api-key` header).  Wire shapes verified 2026-07-02
+//        against the ai.google.dev/api Content-type reference (the
+//        api/caching page): functionDeclarations, functionCall
+//        {id,name,args} ("If populated, the client to execute the
+//        functionCall and return the response with the matching id"),
+//        functionResponse {id,name,response,parts[]} where parts is an
+//        array of FunctionResponsePart {inlineData:{mimeType,data}}
+//        ("Ordered Parts that constitute a function response").
 //
 //    KEY DESIGN RULES (see AgentChatLoop.h for the loop contract):
 //      * The API key appears ONLY in the auth header the codec emits --
@@ -35,8 +40,10 @@
 //        parallel tool_use; mirrored for Gemini).
 //      * read_image results carry a REAL image block: the base64 PNG is
 //        extracted into an image part (Anthropic `tool_result` content
-//        image block / Gemini `inlineData` part) and STRIPPED from the
-//        textual part so it is not double-sent.
+//        image block; Gemini `functionResponse.parts[].inlineData` --
+//        the documented FunctionResponsePart mechanism for multimodal
+//        function output) and STRIPPED from the textual part so it is
+//        not double-sent.
 //
 //    The six tool definitions (mapping 1:1 to the AgentRpc verbs) are
 //    defined ONCE, provider-neutrally, in AgentChatCodecs.cpp; each
@@ -71,14 +78,19 @@ namespace RISE
 		};
 
 		//! One tool call the model requested.  `id` is the provider's
-		//! tool-call id (Anthropic `tool_use.id`); Gemini function calls
-		//! carry NO id, so the codec synthesizes "call_0", "call_1", ...
-		//! per assistant turn (results are matched by name + order).
+		//! tool-call id (Anthropic `tool_use.id`; Gemini
+		//! `functionCall.id`, which Gemini 3.x populates and the docs
+		//! require echoed back as the matching `functionResponse.id`).
+		//! Only when a Gemini functionCall carries no id does the codec
+		//! synthesize "call_0", "call_1", ... per assistant turn
+		//! (idSynthesized is then true, NO id field is emitted in the
+		//! functionResponse, and results match by name + order).
 		struct ChatToolCall
 		{
-			std::string id;        //!< provider (or synthesized) call id
-			std::string name;      //!< the tool name (a JSON-RPC verb)
-			std::string argsJson;  //!< the call arguments as a JSON object string
+			std::string id;                  //!< provider (or synthesized) call id
+			std::string name;                //!< the tool name (a JSON-RPC verb)
+			std::string argsJson;            //!< the call arguments as a JSON object string
+			bool        idSynthesized = false; //!< true iff `id` was fabricated by the codec (never echoed to the provider)
 		};
 
 		//! The outcome of one chat step (one HTTP round-trip).
@@ -172,8 +184,12 @@ namespace RISE
 				long httpStatus, const std::string& rawBody ) const;
 		};
 
-		//! Google Gemini v1beta REST codec (see file header).  Wire shape
-		//! web-verified 2026-07-02 against ai.google.dev/api/generate-content.
+		//! Google Gemini v1beta REST codec (see file header).  The
+		//! functionCall.id / functionResponse.{id,parts[].inlineData}
+		//! shapes were web-verified 2026-07-02 against the
+		//! ai.google.dev/api Content-type reference (the api/caching
+		//! page); the surrounding generateContent envelope against
+		//! ai.google.dev/api/generate-content.
 		class GeminiChatCodec : public IChatProviderCodec
 		{
 		public:

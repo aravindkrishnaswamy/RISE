@@ -31,7 +31,25 @@
 //      * All tool results for one assistant turn are flushed into ONE
 //        user message (AddToolResult buffers; the flush happens when
 //        every call of the turn has a result, or at the next
-//        BuildRequest).
+//        BuildRequest / AddUserMessage).  A flush SYNTHESIZES an error
+//        tool result ("tool call was not executed...") for every
+//        pending call that has no buffered result, so the wire
+//        invariant "every tool call is answered in the immediately-
+//        following user message" holds BY CONSTRUCTION on both
+//        providers (Anthropic hard-400s unanswered tool_use ids;
+//        Gemini rejects mismatched functionResponses) -- a user
+//        interrupt or tool crash cannot poison the transcript.
+//      * CALLER-CONTRACT GUARDS (each refuses or ignores; none throw):
+//          - HandleResponse while the previous turn's tool calls are
+//            still pending returns ProviderError and records NOTHING
+//            (a legitimate response can only follow a BuildRequest,
+//            which flushes the pending set first).
+//          - AddToolResult for a call id that is NOT pending, or a
+//            SECOND result for an already-answered id, is IGNORED
+//            (first result wins; results are accepted only for the
+//            current assistant turn's pending calls).
+//          - BuildRequest on an empty transcript returns an EMPTY
+//            request (url == "") that the caller must not send.
 //      * ITERATION CAP: at most kMaxToolRoundsPerTurn (20) tool rounds
 //        per conversation-turn.  The 21st tool-call response within one
 //        user turn returns ProviderError("iteration cap...") WITHOUT
@@ -113,21 +131,29 @@ namespace RISE
 			const std::string& ModelId() const  { return mModelId; }
 
 			//! Append a user text message and reset the per-turn tool-round
-			//! counter.  Any buffered tool results are flushed first (they
-			//! belong to the previous assistant turn).
+			//! counter.  Any pending tool calls are flushed first (they
+			//! belong to the previous assistant turn; unanswered ones get
+			//! synthesized error results so the wire stays valid).
 			void AddUserMessage( const std::string& text );
 
 			//! Build the next HTTP request for the caller to perform.
 			//! `apiKey` is forwarded to the codec for the auth header only
-			//! -- it is not stored.  Buffered tool results are flushed
-			//! into the transcript first.
+			//! -- it is not stored.  Pending tool calls are flushed into
+			//! the transcript first (unanswered ones get synthesized error
+			//! results).  If the transcript is empty there is nothing to
+			//! send: the returned request is EMPTY (url == "") and must
+			//! not be performed.
 			ChatHttpRequest BuildRequest( const std::string& apiKey );
 
 			//! Feed back the raw HTTP response (status + body).  On
 			//! ToolCalls the assistant turn is recorded and the calls
 			//! become the pending set AddToolResult answers; on FinalText
 			//! the turn is recorded and the loop is idle; on ProviderError
-			//! nothing is recorded.  Enforces the iteration cap.
+			//! nothing is recorded.  Enforces the iteration cap.  REFUSED
+			//! (ProviderError, nothing recorded) while the previous turn's
+			//! tool calls are still pending -- resolve them via
+			//! AddToolResult, or let BuildRequest / AddUserMessage flush
+			//! them with synthesized error results.
 			ChatStepResult HandleResponse( long httpStatus, const std::string& rawBody );
 
 			//! Translate one tool call into the JSON-RPC request line the
@@ -141,7 +167,11 @@ namespace RISE
 			//! Record the raw JSON-RPC response ENVELOPE line for one of
 			//! the pending calls.  Results are buffered and packed into
 			//! ONE provider-native user message when every pending call
-			//! has been answered (or at the next BuildRequest).
+			//! has been answered (or at the next BuildRequest /
+			//! AddUserMessage, which synthesize error results for any
+			//! still-unanswered calls).  A result whose call id is not in
+			//! the pending set, or a second result for an already-answered
+			//! id, is IGNORED (first result wins).
 			void AddToolResult( const ChatToolCall& call, const std::string& rawJsonRpcResponseLine );
 
 			//! Transcript access for the GUI (role + display text; the raw
@@ -162,7 +192,11 @@ namespace RISE
 			AgentChatLoop( const AgentChatLoop& );             // deleted
 			AgentChatLoop& operator=( const AgentChatLoop& );  // deleted
 
-			//! Pack any buffered tool results into one transcript entry.
+			//! Pack the pending turn's tool results into one transcript
+			//! entry, in pending-call order, SYNTHESIZING an error result
+			//! for every pending call that has no buffered result (so the
+			//! wire never carries an unanswered tool call).  No-op when
+			//! there is no pending turn.
 			void FlushPendingToolResults();
 
 			std::unique_ptr<IChatProviderCodec> mCodec;

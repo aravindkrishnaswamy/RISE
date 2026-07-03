@@ -84,11 +84,11 @@ namespace RISE
 
 		void AgentChatLoop::AddUserMessage( const std::string& text )
 		{
-			// Buffered tool results belong to the PREVIOUS assistant turn --
+			// Pending tool calls belong to the PREVIOUS assistant turn --
 			// flush them ahead of the new user message so the wire order
 			// stays assistant(tool_use) -> user(tool_results) -> user(text).
+			// Unanswered calls get synthesized error results in the flush.
 			FlushPendingToolResults();
-			mPendingCalls.clear();
 
 			ChatTranscriptEntry entry;
 			entry.role = ChatTranscriptEntry::Role::User;
@@ -104,6 +104,11 @@ namespace RISE
 		{
 			FlushPendingToolResults();
 
+			// Nothing to send: refuse with an EMPTY request (url == "").
+			// Documented in the header; the caller must not perform it.
+			if( mTranscript.empty() )
+				return ChatHttpRequest();
+
 			std::vector<std::string> rawEntries;
 			rawEntries.reserve( mTranscript.size() );
 			for( std::size_t i = 0; i < mTranscript.size(); ++i )
@@ -116,6 +121,22 @@ namespace RISE
 
 		ChatStepResult AgentChatLoop::HandleResponse( long httpStatus, const std::string& rawBody )
 		{
+			// Caller-contract guard: a legitimate response can only follow
+			// a BuildRequest, and BuildRequest flushes the pending set --
+			// so a HandleResponse while tool calls are still pending is a
+			// double-consume for one round.  Refuse it, recording nothing.
+			if( !mPendingCalls.empty() ) {
+				ChatStepResult refused;
+				refused.kind = ChatStepResult::Kind::ProviderError;
+				refused.errorMessage =
+					"chat-loop misuse: HandleResponse called while " +
+					std::to_string( mPendingCalls.size() ) +
+					" tool call(s) of the previous turn are still pending -- resolve them "
+					"with AddToolResult (or BuildRequest/AddUserMessage, which flush them "
+					"with synthesized error results) before handling another response";
+				return refused;
+			}
+
 			ChatParsedResponse pr = mCodec->ParseResponse( httpStatus, rawBody );
 
 			if( pr.step.kind == ChatStepResult::Kind::ToolCalls ) {
@@ -177,28 +198,81 @@ namespace RISE
 
 		void AgentChatLoop::AddToolResult( const ChatToolCall& call, const std::string& rawJsonRpcResponseLine )
 		{
+			// Accept a result ONLY for a pending, not-yet-answered call of
+			// the current assistant turn (documented in the header): an id
+			// that is not pending, or a second result for an id that
+			// already has one, is IGNORED -- first result wins.
+			bool pending = false;
+			for( std::size_t i = 0; i < mPendingCalls.size(); ++i ) {
+				if( mPendingCalls[i].id == call.id ) { pending = true; break; }
+			}
+			if( !pending ) return;
+			for( std::size_t i = 0; i < mPendingResults.size(); ++i ) {
+				if( mPendingResults[i].first.id == call.id ) return;
+			}
+
 			mPendingResults.push_back( std::make_pair( call, rawJsonRpcResponseLine ) );
 
 			// Once every pending call of the assistant turn has a result,
 			// pack them ALL into one user message (Anthropic requires the
 			// parallel tool_use blocks to be answered together).
-			if( !mPendingCalls.empty() && mPendingResults.size() >= mPendingCalls.size() )
+			if( mPendingResults.size() >= mPendingCalls.size() )
 				FlushPendingToolResults();
 		}
 
 		void AgentChatLoop::FlushPendingToolResults()
 		{
-			if( mPendingResults.empty() ) return;
+			// No pending turn -> nothing to flush.  (mPendingResults cannot
+			// be non-empty here: AddToolResult only accepts answers to
+			// pending calls.  Clear defensively all the same.)
+			if( mPendingCalls.empty() ) {
+				mPendingResults.clear();
+				return;
+			}
+
+			// WIRE INVARIANT (by construction): every tool call of the
+			// recorded assistant turn is answered in this ONE user message.
+			// Any pending call without a buffered result -- user interrupt,
+			// tool crash, partial round -- gets a SYNTHESIZED error result;
+			// otherwise the transcript would replay an unanswered tool call
+			// on every later request (Anthropic hard-400s it, Gemini
+			// rejects the mismatched functionResponse count) and only
+			// Reset() could recover.
+			static const char* const kUnexecutedEnvelope =
+				"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32001,"
+				"\"message\":\"tool call was not executed (cancelled or interrupted)\"}}";
+
+			std::vector<std::pair<ChatToolCall, std::string>> ordered;
+			ordered.reserve( mPendingCalls.size() );
+			std::vector<bool> used( mPendingResults.size(), false );
+			std::string names;
+			for( std::size_t i = 0; i < mPendingCalls.size(); ++i ) {
+				std::size_t found = mPendingResults.size();
+				for( std::size_t j = 0; j < mPendingResults.size(); ++j ) {
+					if( !used[j] && mPendingResults[j].first.id == mPendingCalls[i].id ) {
+						found = j;
+						break;
+					}
+				}
+				if( i ) names += ", ";
+				names += mPendingCalls[i].name;
+				if( found < mPendingResults.size() ) {
+					used[found] = true;
+					ordered.push_back( mPendingResults[found] );
+				}
+				else {
+					names += " (not executed)";
+					ordered.push_back( std::make_pair( mPendingCalls[i],
+					                                   std::string( kUnexecutedEnvelope ) ) );
+				}
+			}
+			// Defensive: mPendingResults can only hold answers to pending
+			// calls (AddToolResult filters), so `ordered` covers everything.
 
 			ChatTranscriptEntry entry;
 			entry.role = ChatTranscriptEntry::Role::ToolResults;
-			std::string names;
-			for( std::size_t i = 0; i < mPendingResults.size(); ++i ) {
-				if( i ) names += ", ";
-				names += mPendingResults[i].first.name;
-			}
 			entry.displayText = "[tool results: " + names + "]";
-			entry.rawJson = mCodec->PackToolResults( mPendingResults );
+			entry.rawJson = mCodec->PackToolResults( ordered );
 			mTranscript.push_back( entry );
 
 			mPendingResults.clear();

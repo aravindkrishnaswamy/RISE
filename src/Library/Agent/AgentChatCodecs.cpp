@@ -237,7 +237,10 @@ namespace RISE
 
 			//! Find member `key` of the object starting at `objBegin`
 			//! (whitespace allowed before the '{') and return the raw span
-			//! of its value.  FIRST match wins (responses do not repeat keys).
+			//! of its value.  LAST match wins, deliberately matching
+			//! JsonValue::find's last-set-wins rule -- so on a hostile
+			//! body that repeats a key, the parsed view we act on and the
+			//! raw span we echo back are the SAME value.
 			bool RawObjectMember( const std::string& s, std::size_t objBegin, const char* key,
 			                      std::size_t& valBegin, std::size_t& valEnd )
 			{
@@ -245,9 +248,11 @@ namespace RISE
 				if( i >= s.size() || s[i] != '{' ) return false;
 				++i;
 				const std::size_t keyLen = std::strlen( key );
+				bool found = false;
 				while( true ) {
 					i = SkipWs( s, i );
-					if( i >= s.size() || s[i] == '}' ) return false;
+					if( i >= s.size() ) return false;
+					if( s[i] == '}' ) return found;
 					if( s[i] != '"' ) return false;
 					const std::size_t keyBegin = i + 1;
 					const std::size_t afterKey = ScanRawString( s, i );
@@ -261,9 +266,10 @@ namespace RISE
 					i = SkipWs( s, i );
 					const std::size_t vEnd = ScanRawValue( s, i );
 					if( vEnd == kNpos ) return false;
-					if( match ) { valBegin = i; valEnd = vEnd; return true; }
+					if( match ) { valBegin = i; valEnd = vEnd; found = true; }
 					i = SkipWs( s, vEnd );
 					if( i < s.size() && s[i] == ',' ) { ++i; continue; }
+					if( i < s.size() && s[i] == '}' ) return found;
 					return false;
 				}
 			}
@@ -292,6 +298,41 @@ namespace RISE
 			//------------------------------------------------------------------
 			// Shared response/result helpers.
 			//------------------------------------------------------------------
+
+			//! Output-token budget for Anthropic requests.  Adaptive
+			//! thinking on claude-sonnet-5 (the default model) counts
+			//! against max_tokens, and tool results routinely carry whole
+			//! scene documents into context -- 8192 was realistically
+			//! exhaustible mid-reply.  16000 keeps the cap a safety net
+			//! rather than a limit the loop actually hits.
+			const int kAnthropicMaxTokens = 16000;
+
+			//! Percent-escape any modelId character outside [A-Za-z0-9._-]
+			//! before splicing it into a URL path segment, so a hostile or
+			//! mistyped model id cannot alter the request path or smuggle
+			//! query parameters.
+			std::string SanitizeModelIdForUrl( const std::string& modelId )
+			{
+				static const char* const kHex = "0123456789ABCDEF";
+				std::string out;
+				out.reserve( modelId.size() );
+				for( std::size_t i = 0; i < modelId.size(); ++i ) {
+					const char c = modelId[i];
+					const bool ok = ( c >= 'A' && c <= 'Z' ) || ( c >= 'a' && c <= 'z' ) ||
+					                ( c >= '0' && c <= '9' ) ||
+					                c == '.' || c == '_' || c == '-';
+					if( ok ) {
+						out += c;
+					}
+					else {
+						const unsigned char u = static_cast<unsigned char>( c );
+						out += '%';
+						out += kHex[( u >> 4 ) & 0xF];
+						out += kHex[u & 0xF];
+					}
+				}
+				return out;
+			}
 
 			ChatStepResult MakeProviderError( const std::string& message )
 			{
@@ -340,7 +381,11 @@ namespace RISE
 					if( members[i].first == "png_base64" ) continue;
 					summary.set( members[i].first, members[i].second );
 				}
-				summary.set( "note", JsonValue::MakeString( note ) );
+				// Check-then-set: JsonValue::set APPENDS members, so blindly
+				// setting "note" would serialize a DUPLICATE key if the RPC
+				// result ever grows a note field of its own.
+				summary.set( summary.has( "note" ) ? "image_note" : "note",
+				             JsonValue::MakeString( note ) );
 				return summary;
 			}
 
@@ -450,7 +495,7 @@ namespace RISE
 			// is set (omitted = adaptive on models that support it).
 			std::string body = "{\"model\":";
 			JsonAppendEscapedString( body, modelId );
-			body += ",\"max_tokens\":8192,\"system\":";
+			body += ",\"max_tokens\":" + std::to_string( kAnthropicMaxTokens ) + ",\"system\":";
 			JsonAppendEscapedString( body, systemPrompt );
 			body += ",\"tools\":";
 			body += AnthropicToolsJson();
@@ -497,6 +542,16 @@ namespace RISE
 					ChatToolCall c;
 					c.id = block.get( "id" ).asString();
 					c.name = block.get( "name" ).asString();
+					if( c.id.empty() ) {
+						// A tool_use with no id could never be answered (the
+						// tool_result must echo tool_use_id) -- executing the
+						// rest of the turn would ship an unanswerable block,
+						// so refuse the WHOLE response instead of emitting
+						// tool_use_id:"" downstream.
+						out.step = MakeProviderError(
+							"anthropic tool_use block carries no id; refusing the turn (its result could never be matched)" );
+						return out;
+					}
 					const JsonValue& input = block.get( "input" );
 					c.argsJson = input.isObject() ? JsonSerialize( input ) : std::string( "{}" );
 					calls.push_back( c );
@@ -515,9 +570,22 @@ namespace RISE
 				out.step.kind = ChatStepResult::Kind::FinalText;
 				out.step.finalText = text;
 			}
+			else if( stopReason == "max_tokens" ) {
+				// Distinct, actionable dead-end message (the reply is
+				// discarded -- transcript consistency: record nothing).
+				out.step = MakeProviderError(
+					"anthropic: the response hit the output-token cap (stop_reason max_tokens) -- "
+					"the truncated reply was discarded; try a narrower request" );
+				return out;
+			}
+			else if( stopReason == "refusal" ) {
+				out.step = MakeProviderError(
+					"anthropic: the provider declined this request (stop_reason refusal)" );
+				return out;
+			}
 			else {
-				// refusal / max_tokens / anything unexpected -> error with
-				// the stop_reason in the message.
+				// pause_turn / anything unexpected -> error with the
+				// stop_reason in the message.
 				std::string msg = "anthropic stopped with stop_reason \"" + stopReason + "\"";
 				if( stopReason == "tool_use" ) msg += " but no tool_use blocks were present";
 				out.step = MakeProviderError( msg );
@@ -563,10 +631,14 @@ namespace RISE
 		std::string GeminiChatCodec::PackToolResults(
 			const std::vector<std::pair<ChatToolCall, std::string>>& results ) const
 		{
-			// ONE user turn: one functionResponse part per call (matched by
-			// name + order -- Gemini calls carry no id), and for read_image
-			// an ADDITIONAL inlineData image part right after its
-			// functionResponse (the base64 is stripped from the JSON half).
+			// ONE user turn: one functionResponse part per call.  When the
+			// model's functionCall carried an id it is echoed back as
+			// functionResponse.id (the documented matching rule); only
+			// synthesized ids are withheld (those calls match by name +
+			// order).  read_image results deliver the PNG through
+			// functionResponse.parts[].inlineData -- the documented
+			// FunctionResponsePart mechanism for multimodal function
+			// output -- with the base64 stripped from the JSON half.
 			JsonValue parts = JsonValue::MakeArray();
 			for( std::size_t i = 0; i < results.size(); ++i ) {
 				const ChatToolCall& call = results[i].first;
@@ -586,7 +658,7 @@ namespace RISE
 				else {
 					const JsonValue& result = env.get( "result" );
 					if( IsImageResult( call, result, b64 ) ) {
-						respObj = StripPngBase64( result, "the PNG is attached as an inline image part" );
+						respObj = StripPngBase64( result, "the PNG is attached as a functionResponse media part" );
 					}
 					else if( result.isObject() ) {
 						respObj = result;
@@ -598,20 +670,26 @@ namespace RISE
 				}
 
 				JsonValue fr = JsonValue::MakeObject();
+				if( !call.idSynthesized && !call.id.empty() )
+					fr.set( "id", JsonValue::MakeString( call.id ) );
 				fr.set( "name", JsonValue::MakeString( call.name ) );
 				fr.set( "response", respObj );
-				JsonValue frPart = JsonValue::MakeObject();
-				frPart.set( "functionResponse", fr );
-				parts.push_back( frPart );
-
 				if( !b64.empty() ) {
+					// FunctionResponse.parts: [{inlineData:{mimeType,data}}]
+					// (FunctionResponsePart / FunctionResponseBlob, per the
+					// ai.google.dev/api Content reference, 2026-07-02).
 					JsonValue blob = JsonValue::MakeObject();
 					blob.set( "mimeType", JsonValue::MakeString( "image/png" ) );
 					blob.set( "data", JsonValue::MakeString( b64 ) );
-					JsonValue imgPart = JsonValue::MakeObject();
-					imgPart.set( "inlineData", blob );
-					parts.push_back( imgPart );
+					JsonValue frp = JsonValue::MakeObject();
+					frp.set( "inlineData", blob );
+					JsonValue frParts = JsonValue::MakeArray();
+					frParts.push_back( frp );
+					fr.set( "parts", frParts );
 				}
+				JsonValue frPart = JsonValue::MakeObject();
+				frPart.set( "functionResponse", fr );
+				parts.push_back( frPart );
 			}
 
 			JsonValue msg = JsonValue::MakeObject();
@@ -627,8 +705,10 @@ namespace RISE
 			const std::vector<std::string>& rawEntries ) const
 		{
 			ChatHttpRequest r;
+			// The model id is percent-escaped so it cannot alter the URL
+			// path or smuggle query parameters.
 			r.url = "https://generativelanguage.googleapis.com/v1beta/models/" +
-			        modelId + ":generateContent";
+			        SanitizeModelIdForUrl( modelId ) + ":generateContent";
 			// The key appears ONLY here, in the auth header (NOT as the
 			// ?key= query parameter the docs also allow -- a URL leaks into
 			// logs/history far more easily than a header).
@@ -688,11 +768,20 @@ namespace RISE
 				}
 				if( const JsonValue* fc = part.find( "functionCall" ) ) {
 					if( fc->isObject() ) {
-						// Gemini function calls carry NO id: synthesize
-						// "call_0", "call_1", ... per assistant turn;
-						// results match by name + order.
+						// Gemini 3.x populates functionCall.id and the docs
+						// require the response to echo the matching id --
+						// capture it.  Synthesize "call_0", "call_1", ...
+						// ONLY when absent (those match by name + order and
+						// no id field is emitted in the functionResponse).
 						ChatToolCall c;
-						c.id = "call_" + std::to_string( calls.size() );
+						const JsonValue* idv = fc->find( "id" );
+						if( idv && idv->isString() && !idv->asString().empty() ) {
+							c.id = idv->asString();
+						}
+						else {
+							c.id = "call_" + std::to_string( calls.size() );
+							c.idSynthesized = true;
+						}
 						c.name = fc->get( "name" ).asString();
 						const JsonValue& args = fc->get( "args" );
 						c.argsJson = args.isObject() ? JsonSerialize( args ) : std::string( "{}" );
@@ -704,6 +793,15 @@ namespace RISE
 
 			const std::string finishReason = cand.get( "finishReason" ).asString();
 			if( !calls.empty() ) {
+				// Mirror the Anthropic stop_reason gate: a call turn that
+				// was cut short (MAX_TOKENS, SAFETY, ...) may be missing
+				// calls or carry mangled arguments -- it must NOT execute.
+				if( finishReason != "STOP" && !finishReason.empty() ) {
+					out.step = MakeProviderError(
+						"gemini returned function calls but stopped with finishReason \"" +
+						finishReason + "\" -- a truncated call turn is not executed" );
+					return out;
+				}
 				out.step.kind = ChatStepResult::Kind::ToolCalls;
 				out.step.toolCalls = calls;
 			}

@@ -22,20 +22,54 @@
 //    T8  Parallel tool_use: two calls in one assistant message -> both
 //        executed -> BOTH tool_results in ONE user message.
 //    T4  Gemini request shape (x-goog-api-key; functionDeclarations) +
-//        loop (synthesized call_0/call_1 ids; functionResponse +
-//        inlineData in the follow-up body; key-leak check).
+//        loop.  SELF-SUFFICIENT (runs its own render round).  Covers
+//        both id regimes: a no-id functionCall -> synthesized call_0
+//        with NO id echoed, and two functionCall.id-carrying calls
+//        (Gemini 3.x) answered OUT OF ORDER -> each functionResponse
+//        echoes the matching id; the read_image PNG rides INSIDE
+//        functionResponse.parts[].inlineData (FunctionResponsePart);
+//        key-leak checks on the first AND the follow-up request.
 //    T5  Multi-turn VERBATIM echo: a thinking block with a signature
 //        round-trips byte-preserved into the next request body.
 //    T6  Provider switch resets the transcript; same-provider
 //        AddUserMessage preserves it.
 //    T7  Hostile inputs: malformed JSON, missing content, unknown tool
-//        name, non-200 with error body, the iteration cap at the
-//        documented count.  No crashes; all ProviderError/graceful.
+//        name, tool_use with no id (whole turn refused), non-200 with
+//        error body, the iteration cap at the documented count.  No
+//        crashes; all ProviderError/graceful.
+//    T9  Wire invariant under partial rounds: a flush (BuildRequest or
+//        AddUserMessage) SYNTHESIZES an is_error "not executed" result
+//        for every unanswered pending call, so the transcript can never
+//        replay an unanswered tool call; unknown-id / duplicate
+//        AddToolResult are ignored (first result wins); a double
+//        HandleResponse while calls are pending is refused.
+//    T10 Dead-end surfacing: Anthropic max_tokens vs refusal get
+//        DISTINCT actionable errors; a Gemini functionCall turn with
+//        finishReason MAX_TOKENS is refused (truncated calls never
+//        execute).  All record nothing.
+//    T11 Hostile duplicate-key body: the parsed view (JsonValue::find,
+//        last-set wins) and the raw-span echo (RawObjectMember, last
+//        match) agree on which duplicate they take.
+//    T12 BuildRequest on an empty transcript returns the documented
+//        EMPTY request; hostile Gemini model ids are percent-escaped
+//        in the URL path.
 //
 //  RED-PROVE evidence (development-time, reverted): (a) the T1 key-leak
 //  check was run against a codec variant that put the key in the body
 //  -> FAILED as expected; (b) T5 was run against a parse+re-serialize
-//  echo (one byte of formatting lost) -> FAILED as expected.
+//  echo (one byte of formatting lost) -> FAILED as expected; (c) the
+//  suite was run with the flush synthesis disabled (old flush-what-
+//  exists behaviour) -> exactly SIX checks failed as expected: T9(a)
+//  "BOTH tool_use ids are answered in that one message" + "the
+//  unanswered call carries a synthesized is_error 'not executed'
+//  result", and T9(b) "user + assistant + SYNTHESIZED tool-results +
+//  user", "the synthesized results ride BEFORE the new user message",
+//  "the wire carries all four messages", "the interrupted call is
+//  answered (is_error) before the user text"; (d) the suite was run
+//  with the functionResponse.id echo dropped -> exactly TWO checks
+//  failed as expected: T4 "read_document functionResponse echoes id
+//  fc_doc_7 ..." and "read_image functionResponse echoes id fc_img_9
+//  ...".
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -193,7 +227,8 @@ static void TestAnthropicRequestShape()
 	JsonValue root = ParseBody( req.body );
 	Check( root.isObject(), "body parses as JSON" );
 	Check( root.get( "model" ).asString() == "claude-sonnet-5", "body carries the model id" );
-	Check( root.get( "max_tokens" ).asNumber() == 8192.0, "body carries max_tokens 8192" );
+	Check( root.get( "max_tokens" ).asNumber() == 16000.0,
+	       "body carries max_tokens 16000 (adaptive-thinking + scene-doc headroom)" );
 	Check( !root.get( "system" ).asString().empty(), "body carries a non-empty system prompt" );
 	Check( root.get( "system" ).asString().find( "co-edit" ) != std::string::npos ||
 	       root.get( "system" ).asString().find( "CO-EDIT" ) != std::string::npos,
@@ -266,8 +301,10 @@ static void TestAnthropicToolLoop( AgentRpcDispatcher& rpc )
 	loop.AddToolResult( st.toolCalls[0], resp );
 
 	// The next request carries ONE user message with the matching
-	// tool_use_id and the REAL result JSON.
+	// tool_use_id and the REAL result JSON.  This is a FOLLOW-UP request
+	// (one carrying tool results), so sweep it for key leaks too.
 	const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+	CheckKeyOnlyInAuthHeader( req, "x-api-key", "T2-followup" );
 	JsonValue root = ParseBody( req.body );
 	JsonValue last = LastArrayEntry( root, "messages" );
 	Check( last.get( "role" ).asString() == "user", "tool results ride in a user message" );
@@ -362,6 +399,12 @@ static void TestAnthropicReadImagePacking( AgentRpcDispatcher& rpc )
 	for( std::size_t i = 0; i < texts.size(); ++i )
 		if( texts[i].find( probe ) != std::string::npos ) doubled = true;
 	Check( !doubled, "the base64 is STRIPPED from the textual part (not double-sent)" );
+	// Stronger: the probe occurs exactly ONCE in the WHOLE request body
+	// (the image block) -- nowhere else at all.
+	std::size_t occurrences = 0;
+	for( std::size_t pos = req.body.find( probe ); pos != std::string::npos;
+	     pos = req.body.find( probe, pos + 1 ) ) ++occurrences;
+	Check( occurrences == 1, "the base64 probe occurs exactly ONCE in the whole request body" );
 	bool noted = false;
 	for( std::size_t i = 0; i < texts.size(); ++i )
 		if( texts[i].find( "byteLength" ) != std::string::npos ) noted = true;
@@ -408,9 +451,13 @@ static void TestParallelToolUse( AgentRpcDispatcher& rpc )
 }
 
 //----------------------------------------------------------------------
-// T4: Gemini request shape + loop (synthesized ids; functionResponse +
-//     inlineData follow-up).  Relies on T3's render having populated the
-//     session's cached PNG.
+// T4: Gemini request shape + loop.  SELF-SUFFICIENT: performs its own
+//     render round (no dependence on T3's cached render).  Covers BOTH
+//     id regimes: a no-id functionCall (synthesized call_0; NO id field
+//     echoed) and two id-carrying functionCalls (the Gemini 3.x shape)
+//     answered OUT OF ORDER, whose functionResponses must echo the
+//     matching ids.  read_image's PNG must ride INSIDE
+//     functionResponse.parts[].inlineData (FunctionResponsePart).
 //----------------------------------------------------------------------
 static void TestGemini( AgentRpcDispatcher& rpc )
 {
@@ -447,61 +494,105 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       "contents carry the one user turn" );
 	}
 
-	// A model turn with TWO functionCalls -> synthesized ids call_0/call_1.
+	// Round A: a functionCall WITHOUT an id (the pre-3.x shape) ->
+	// synthesized call_0.  Executes a REAL render so this test is
+	// self-sufficient.
+	{
+		const std::string fxA = GeminiFixture(
+			"{\"parts\":[{\"functionCall\":{\"name\":\"render\",\"args\":{}}}],\"role\":\"model\"}",
+			"STOP" );
+		ChatStepResult stA = loop.HandleResponse( 200, fxA );
+		Check( stA.kind == ChatStepResult::Kind::ToolCalls && stA.toolCalls.size() == 1,
+		       "no-id functionCall -> one ToolCall" );
+		if( stA.toolCalls.size() != 1 ) return;
+		Check( stA.toolCalls[0].id == "call_0" && stA.toolCalls[0].idSynthesized,
+		       "absent functionCall.id -> synthesized call_0 (flagged synthesized)" );
+		const std::string resp = rpc.HandleLine( loop.ToolCallToJsonRpcLine( stA.toolCalls[0], 6 ) );
+		Check( ParseBody( resp ).get( "result" ).get( "ok" ).asBool(), "live render (gemini path) ok" );
+		loop.AddToolResult( stA.toolCalls[0], resp );
+	}
+
+	// Round B: TWO functionCalls WITH provider ids (realistic Gemini 3.x
+	// shape -- FunctionCall.id per the ai.google.dev/api reference),
+	// answered OUT OF ORDER.
 	const std::string fx = GeminiFixture(
-		"{\"parts\":[{\"functionCall\":{\"name\":\"read_document\",\"args\":{}}},"
-		"{\"functionCall\":{\"name\":\"read_image\",\"args\":{}}}],\"role\":\"model\"}",
+		"{\"parts\":[{\"functionCall\":{\"id\":\"fc_doc_7\",\"name\":\"read_document\",\"args\":{}}},"
+		"{\"functionCall\":{\"id\":\"fc_img_9\",\"name\":\"read_image\",\"args\":{}}}],\"role\":\"model\"}",
 		"STOP" );
 	ChatStepResult st = loop.HandleResponse( 200, fx );
 	Check( st.kind == ChatStepResult::Kind::ToolCalls && st.toolCalls.size() == 2,
 	       "gemini functionCalls -> two ToolCalls" );
 	if( st.toolCalls.size() != 2 ) return;
-	Check( st.toolCalls[0].id == "call_0" && st.toolCalls[1].id == "call_1",
-	       "ids are synthesized call_0 / call_1" );
+	Check( st.toolCalls[0].id == "fc_doc_7" && !st.toolCalls[0].idSynthesized,
+	       "functionCall.id fc_doc_7 is captured (NOT synthesized)" );
+	Check( st.toolCalls[1].id == "fc_img_9" && !st.toolCalls[1].idSynthesized,
+	       "functionCall.id fc_img_9 is captured (NOT synthesized)" );
 	Check( st.toolCalls[0].name == "read_document" && st.toolCalls[1].name == "read_image",
 	       "call names parsed" );
 
-	loop.AddToolResult( st.toolCalls[0], rpc.HandleLine( loop.ToolCallToJsonRpcLine( st.toolCalls[0], 6 ) ) );
+	// OUT OF ORDER on purpose: the image first, the document second.
 	loop.AddToolResult( st.toolCalls[1], rpc.HandleLine( loop.ToolCallToJsonRpcLine( st.toolCalls[1], 7 ) ) );
+	loop.AddToolResult( st.toolCalls[0], rpc.HandleLine( loop.ToolCallToJsonRpcLine( st.toolCalls[0], 8 ) ) );
 
+	// FOLLOW-UP request (carries tool results): key-leak sweep it too.
 	const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+	CheckKeyOnlyInAuthHeader( req, "x-goog-api-key", "T4-followup" );
 	JsonValue root = ParseBody( req.body );
 	JsonValue last = LastArrayEntry( root, "contents" );
 	Check( last.get( "role" ).asString() == "user", "gemini tool results ride in a user turn" );
 	const JsonValue& parts = last.get( "parts" );
-	// read_document -> functionResponse; read_image -> functionResponse +
-	// a separate inlineData image part in the SAME turn.
-	Check( parts.isArray() && parts.size() == 3,
-	       "user turn carries functionResponse x2 + inlineData (3 parts)" );
+	// Exactly TWO functionResponse parts; the PNG rides INSIDE
+	// read_image's functionResponse.parts (FunctionResponsePart), NOT as
+	// a bare sibling inlineData part.
+	Check( parts.isArray() && parts.size() == 2,
+	       "user turn carries exactly the two functionResponse parts" );
 	std::string b64;
 	bool sawDoc = false, sawImg = false;
 	std::string imgResponseJson;
 	for( std::size_t i = 0; i < parts.size(); ++i ) {
 		const JsonValue& p = parts.at( i );
+		Check( !p.has( "inlineData" ),
+		       "no bare sibling inlineData part (the PNG rides inside functionResponse.parts)" );
 		if( const JsonValue* fr = p.find( "functionResponse" ) ) {
 			const std::string name = fr->get( "name" ).asString();
 			if( name == "read_document" ) {
 				sawDoc = true;
+				Check( fr->get( "id" ).asString() == "fc_doc_7",
+				       "read_document functionResponse echoes id fc_doc_7 (despite out-of-order answering)" );
 				Check( fr->get( "response" ).get( "document" ).asString().find( "sphere_geometry" ) != std::string::npos,
 				       "read_document functionResponse carries the REAL document" );
+				Check( !fr->has( "parts" ), "a non-image functionResponse carries no parts array" );
 			}
 			if( name == "read_image" ) {
 				sawImg = true;
+				Check( fr->get( "id" ).asString() == "fc_img_9",
+				       "read_image functionResponse echoes id fc_img_9 (despite out-of-order answering)" );
 				imgResponseJson = JsonSerialize( fr->get( "response" ) );
+				const JsonValue& frParts = fr->get( "parts" );
+				Check( frParts.isArray() && frParts.size() == 1,
+				       "functionResponse.parts carries one FunctionResponsePart" );
+				const JsonValue& blob = frParts.at( 0 ).get( "inlineData" );
+				Check( blob.get( "mimeType" ).asString() == "image/png",
+				       "FunctionResponsePart.inlineData mimeType image/png" );
+				b64 = blob.get( "data" ).asString();
 			}
 		}
-		if( const JsonValue* blob = p.find( "inlineData" ) ) {
-			Check( blob->get( "mimeType" ).asString() == "image/png", "inlineData mimeType image/png" );
-			b64 = blob->get( "data" ).asString();
-		}
 	}
-	Check( sawDoc && sawImg, "both functionResponses present (matched by name)" );
-	Check( !b64.empty(), "inlineData image part present" );
+	Check( sawDoc && sawImg, "both functionResponses present" );
+	Check( !b64.empty(), "the inlineData image is present inside functionResponse.parts" );
 	std::vector<unsigned char> png;
 	Check( Base64Decode( b64, png ) && png.size() >= 8 && png[0] == 0x89 && png[1] == 'P',
 	       "inlineData decodes to a real PNG" );
 	Check( imgResponseJson.find( b64.substr( 0, 48 ) ) == std::string::npos,
 	       "base64 is STRIPPED from the functionResponse JSON (not double-sent)" );
+
+	// The round-A (synthesized-id) functionResponse must carry NO id
+	// field: contents = user, model A, results A, model B, results B.
+	const JsonValue& contents = root.get( "contents" );
+	Check( contents.size() == 5, "contents carry the full five-turn history" );
+	const JsonValue* frA = contents.at( 2 ).get( "parts" ).at( 0 ).find( "functionResponse" );
+	Check( frA != nullptr && frA->get( "name" ).asString() == "render" && !frA->has( "id" ),
+	       "a synthesized-id functionResponse omits the id field entirely" );
 
 	// Final text turn.
 	const std::string done = GeminiFixture(
@@ -640,6 +731,22 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 		       "dispatcher answers -32602 (flows back as an error result)" );
 	}
 
+	// Anthropic tool_use block with NO id: the whole turn is refused --
+	// a block whose result could never be matched must not execute, and
+	// tool_use_id:"" must never reach the wire.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "hi" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"name\":\"render\",\"input\":{}}]", "tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "tool_use with no id -> ProviderError (never tool_use_id:\"\")" );
+		Check( st.errorMessage.find( "no id" ) != std::string::npos,
+		       "the error names the missing id" );
+		Check( loop.TranscriptSize() == 1, "the id-less turn records nothing" );
+	}
+
 	// Non-200 with a provider error body.
 	{
 		AgentChatLoop loop;
@@ -686,6 +793,281 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 	}
 }
 
+//----------------------------------------------------------------------
+// T9: partial / absent tool results -- the flush SYNTHESIZES error
+//     results so the wire invariant "every tool call answered in the
+//     immediately-following user message" holds by construction, plus
+//     the adjacent caller-contract guards (unknown/duplicate
+//     AddToolResult ignored; double HandleResponse refused).
+//----------------------------------------------------------------------
+static void TestFlushSynthesis( AgentRpcDispatcher& rpc )
+{
+	std::printf( "T9: partial tool rounds synthesize error results (wire invariant)...\n" );
+
+	// (a) Two pending calls, only ONE answered -> BuildRequest ships ONE
+	// user message answering BOTH ids, and the transcript is NOT poisoned.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "read and render" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_ansA\",\"name\":\"read_document\",\"input\":{}},"
+			"{\"type\":\"tool_use\",\"id\":\"toolu_ansB\",\"name\":\"render\",\"input\":{}}]",
+			"tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ToolCalls && st.toolCalls.size() == 2,
+		       "two pending calls" );
+		if( st.toolCalls.size() != 2 ) return;
+		// Answer only the FIRST (an interrupt lands before the render).
+		loop.AddToolResult( st.toolCalls[0],
+			rpc.HandleLine( loop.ToolCallToJsonRpcLine( st.toolCalls[0], 10 ) ) );
+
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		JsonValue root = ParseBody( req.body );
+		JsonValue last = LastArrayEntry( root, "messages" );
+		Check( last.get( "role" ).asString() == "user", "the flush produced ONE user message" );
+		const JsonValue& content = last.get( "content" );
+		Check( content.isArray() && content.size() == 2,
+		       "BOTH tool_use ids are answered in that one message" );
+		bool realA = false, synthB = false;
+		for( std::size_t i = 0; i < content.size(); ++i ) {
+			const JsonValue& tr = content.at( i );
+			if( tr.get( "type" ).asString() != "tool_result" ) continue;
+			const std::string id = tr.get( "tool_use_id" ).asString();
+			const std::string text = tr.get( "content" ).at( 0 ).get( "text" ).asString();
+			if( id == "toolu_ansA" )
+				realA = !tr.has( "is_error" ) && text.find( "document" ) != std::string::npos;
+			if( id == "toolu_ansB" )
+				synthB = tr.get( "is_error" ).asBool() &&
+				         text.find( "not executed" ) != std::string::npos;
+		}
+		Check( realA, "the answered call carries its REAL result (no is_error)" );
+		Check( synthB, "the unanswered call carries a synthesized is_error 'not executed' result" );
+		Check( loop.PendingToolCalls().empty(), "the flush cleared the pending set" );
+
+		// The transcript is NOT poisoned: a normal round works right after.
+		ChatStepResult fin = loop.HandleResponse( 200, AnthropicFixture(
+			"[{\"type\":\"text\",\"text\":\"Understood.\"}]", "end_turn" ) );
+		Check( fin.kind == ChatStepResult::Kind::FinalText,
+		       "a subsequent normal round works (transcript not poisoned)" );
+	}
+
+	// (b) AddUserMessage with a pending unanswered call -> the same
+	// synthesis, flushed BEFORE the new user message.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "render it" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_int1\",\"name\":\"render\",\"input\":{}}]",
+			"tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ToolCalls, "one pending call" );
+
+		loop.AddUserMessage( "never mind, stop" );   // interrupt: NO result was added
+		Check( loop.TranscriptSize() == 4,
+		       "user + assistant + SYNTHESIZED tool-results + user" );
+		Check( loop.TranscriptAt( 2 ).role == ChatTranscriptEntry::Role::ToolResults,
+		       "the synthesized results ride BEFORE the new user message" );
+
+		JsonValue root = ParseBody( loop.BuildRequest( kApiKey ).body );
+		const JsonValue& msgs = root.get( "messages" );
+		Check( msgs.isArray() && msgs.size() == 4, "the wire carries all four messages" );
+		const JsonValue& tr = msgs.at( 2 ).get( "content" ).at( 0 );
+		Check( tr.get( "tool_use_id" ).asString() == "toolu_int1" &&
+		       tr.get( "is_error" ).asBool(),
+		       "the interrupted call is answered (is_error) before the user text" );
+	}
+
+	// (c) Unknown-id and duplicate AddToolResult are IGNORED (first wins).
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "two reads" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_c1\",\"name\":\"read_document\",\"input\":{}},"
+			"{\"type\":\"tool_use\",\"id\":\"toolu_c2\",\"name\":\"read_schema\",\"input\":{}}]",
+			"tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		if( st.toolCalls.size() != 2 ) { Check( false, "two pending calls expected" ); return; }
+
+		ChatToolCall bogus;
+		bogus.id = "toolu_never_issued";
+		bogus.name = "render";
+		loop.AddToolResult( bogus, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"bogus\":true}}" );
+		Check( loop.TranscriptSize() == 2 && loop.PendingToolCalls().size() == 2,
+		       "an unknown-id result is IGNORED (no flush, nothing buffered against it)" );
+
+		loop.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"which\":\"first\"}}" );
+		Check( loop.TranscriptSize() == 2, "one of two answered -> no flush yet" );
+		loop.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"which\":\"second\"}}" );
+		Check( loop.TranscriptSize() == 2,
+		       "a DUPLICATE result for an already-answered id is IGNORED (no premature flush)" );
+		loop.AddToolResult( st.toolCalls[1], "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"ok\":true}}" );
+		Check( loop.TranscriptSize() == 3, "answering the second call flushes" );
+
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		JsonValue root = ParseBody( body );
+		JsonValue last = LastArrayEntry( root, "messages" );
+		const JsonValue& packed = last.get( "content" );
+		Check( packed.size() == 2, "exactly the two real tool_results (no bogus extra)" );
+		std::string c1text;
+		for( std::size_t i = 0; i < packed.size(); ++i )
+			if( packed.at( i ).get( "tool_use_id" ).asString() == "toolu_c1" )
+				c1text = packed.at( i ).get( "content" ).at( 0 ).get( "text" ).asString();
+		Check( c1text.find( "\"which\":\"first\"" ) != std::string::npos,
+		       "the FIRST result for toolu_c1 won" );
+		Check( c1text.find( "second" ) == std::string::npos,
+		       "the duplicate result was dropped" );
+		Check( body.find( "toolu_never_issued" ) == std::string::npos &&
+		       body.find( "bogus" ) == std::string::npos,
+		       "the unknown-id result never reached the wire" );
+	}
+
+	// (d) A second HandleResponse while calls are pending is REFUSED and
+	// records nothing; resolving the pending call recovers.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "go" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_dbl\",\"name\":\"read_document\",\"input\":{}}]",
+			"tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ToolCalls, "first HandleResponse consumed" );
+		const std::size_t size = loop.TranscriptSize();
+
+		ChatStepResult st2 = loop.HandleResponse( 200, fx );
+		Check( st2.kind == ChatStepResult::Kind::ProviderError,
+		       "a second HandleResponse while calls are pending is REFUSED" );
+		Check( st2.errorMessage.find( "pending" ) != std::string::npos,
+		       "the refusal names the pending calls" );
+		Check( loop.TranscriptSize() == size, "the refused response records NOTHING" );
+		Check( loop.PendingToolCalls().size() == 1, "the pending set is untouched" );
+
+		loop.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+		ChatStepResult fin = loop.HandleResponse( 200, AnthropicFixture(
+			"[{\"type\":\"text\",\"text\":\"done\"}]", "end_turn" ) );
+		Check( fin.kind == ChatStepResult::Kind::FinalText,
+		       "after resolving the pending call, HandleResponse works again" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T10: provider dead-ends get DISTINCT, actionable errors; a truncated
+//      Gemini call turn must not execute.
+//----------------------------------------------------------------------
+static void TestStopReasonDeadEnds()
+{
+	std::printf( "T10: max_tokens / refusal / truncated-call dead-ends...\n" );
+
+	// Anthropic stop_reason max_tokens.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "hi" );
+		ChatStepResult st = loop.HandleResponse( 200, AnthropicFixture(
+			"[{\"type\":\"text\",\"text\":\"a truncated repl\"}]", "max_tokens" ) );
+		Check( st.kind == ChatStepResult::Kind::ProviderError, "max_tokens -> ProviderError" );
+		Check( st.errorMessage.find( "output-token cap" ) != std::string::npos &&
+		       st.errorMessage.find( "narrower request" ) != std::string::npos,
+		       "the max_tokens message is distinct and actionable" );
+		Check( loop.TranscriptSize() == 1, "the truncated turn records nothing" );
+	}
+
+	// Anthropic stop_reason refusal -- a DIFFERENT message.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "hi" );
+		ChatStepResult st = loop.HandleResponse( 200, AnthropicFixture(
+			"[]", "refusal" ) );
+		Check( st.kind == ChatStepResult::Kind::ProviderError, "refusal -> ProviderError" );
+		Check( st.errorMessage.find( "declined" ) != std::string::npos,
+		       "the refusal message says the provider declined" );
+		Check( st.errorMessage.find( "output-token cap" ) == std::string::npos,
+		       "refusal and max_tokens messages are DISTINCT" );
+		Check( loop.TranscriptSize() == 1, "the refused turn records nothing" );
+	}
+
+	// Gemini functionCall + finishReason MAX_TOKENS: the truncated call
+	// turn must NOT execute (mirrors the Anthropic stop_reason gate).
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "hi" );
+		const std::string fx = GeminiFixture(
+			"{\"parts\":[{\"functionCall\":{\"id\":\"fc_trunc\",\"name\":\"render\",\"args\":{}}}],\"role\":\"model\"}",
+			"MAX_TOKENS" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "functionCall + MAX_TOKENS -> ProviderError (not ToolCalls)" );
+		Check( st.errorMessage.find( "MAX_TOKENS" ) != std::string::npos &&
+		       st.errorMessage.find( "truncated" ) != std::string::npos,
+		       "the error names the finishReason and the truncation" );
+		Check( loop.TranscriptSize() == 1 && loop.PendingToolCalls().empty(),
+		       "the truncated call turn records nothing and pends nothing" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T11: hostile duplicate-key body -- the parsed view (JsonValue::find,
+//      last-set wins) and the raw-span echo (RawObjectMember, last
+//      match) must agree on WHICH duplicate they take.
+//----------------------------------------------------------------------
+static void TestDuplicateKeyBody()
+{
+	std::printf( "T11: duplicate-key body -- parsed view and echoed span agree...\n" );
+	AgentChatLoop loop;
+	loop.AddUserMessage( "hi" );
+	const std::string body =
+		"{\"id\":\"msg_dup\",\"type\":\"message\",\"role\":\"assistant\","
+		"\"content\":[{\"type\":\"text\",\"text\":\"DECOY-FIRST-VALUE\"}],"
+		"\"content\":[{\"type\":\"text\",\"text\":\"the real reply\"}],"
+		"\"stop_reason\":\"end_turn\",\"stop_sequence\":null}";
+	ChatStepResult st = loop.HandleResponse( 200, body );
+	Check( st.kind == ChatStepResult::Kind::FinalText, "the duplicate-key body still parses" );
+	Check( st.finalText == "the real reply",
+	       "the PARSED view takes the LAST duplicate (JsonValue::find semantics)" );
+
+	loop.AddUserMessage( "go on" );
+	const std::string reqBody = loop.BuildRequest( kApiKey ).body;
+	Check( reqBody.find( "the real reply" ) != std::string::npos,
+	       "the ECHOED span is the last duplicate too" );
+	Check( reqBody.find( "DECOY-FIRST-VALUE" ) == std::string::npos,
+	       "the first-duplicate decoy is NOT echoed (scanner agrees with the parser)" );
+}
+
+//----------------------------------------------------------------------
+// T12: empty-transcript BuildRequest refusal + Gemini model-id escaping.
+//----------------------------------------------------------------------
+static void TestRequestGuards()
+{
+	std::printf( "T12: empty-transcript refusal + gemini model-id escaping...\n" );
+
+	{
+		AgentChatLoop loop;
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		Check( req.url.empty() && req.headers.empty() && req.body.empty(),
+		       "BuildRequest on an empty transcript returns the documented EMPTY request" );
+	}
+
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini, "evil/../model?key=x&y=1" );
+		loop.AddUserMessage( "hi" );
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		Check( req.url == "https://generativelanguage.googleapis.com/v1beta/models/"
+		                  "evil%2F..%2Fmodel%3Fkey%3Dx%26y%3D1:generateContent",
+		       "model-id characters outside [A-Za-z0-9._-] are percent-escaped in the URL path" );
+		Check( req.url.find( '?' ) == std::string::npos,
+		       "no query separator survives the escaping" );
+	}
+
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "hi" );
+		Check( loop.BuildRequest( kApiKey ).url ==
+		       "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
+		       "a normal model id passes through unchanged" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
@@ -707,6 +1089,10 @@ int main()
 	TestVerbatimEcho();
 	TestProviderSwitch();
 	TestHostileInputs( rpc );
+	TestFlushSynthesis( rpc );
+	TestStopReasonDeadEnds();
+	TestDuplicateKeyBody();
+	TestRequestGuards();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );
