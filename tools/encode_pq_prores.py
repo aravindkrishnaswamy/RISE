@@ -14,7 +14,13 @@ Pipe to:  ffmpeg -f rawvideo -pix_fmt yuv444p10le -s WxH -r 30 -i - \
           NOT write the colr atom -> the file is HDR in pixels yet plays back as SDR.
 Usage:  encode_pq_prores.py frame0000.exr frame0001.exr ...   (sorted order = frame order)
 """
-import sys, numpy as np, OpenEXR, Imath
+import sys, os, numpy as np, OpenEXR, Imath
+
+# Optional exposure gain applied to the scene-linear values before the PQ curve
+# (linear 1.0 still = 100 nits).  Default 1.0 = unchanged.  Use for a dim/moody
+# scene whose highlights would otherwise sit below ~100 nits and read as SDR in
+# the HDR container -- e.g. PQ_GAIN=2.0 places a 0.77-linear white at ~154 nits.
+GAIN = float(os.environ.get("PQ_GAIN", "1.0"))
 
 # Rec.709(D65) -> Rec.2020(D65) linear RGB
 M = np.array([[0.6274039, 0.3292830, 0.0433136],
@@ -36,7 +42,7 @@ out = sys.stdout.buffer
 for p in sys.argv[1:]:
     rgb, w, h = load(p)
     v = np.maximum(rgb, 0.0) @ M.T                       # 709 -> 2020 (linear)
-    Lp = np.clip(v * (100.0 / 10000.0), 0, 1)            # linear 1.0 = 100 nits, 10000-nit peak
+    Lp = np.clip(v * GAIN * (100.0 / 10000.0), 0, 1)     # linear 1.0 = 100 nits (x PQ_GAIN), 10000-nit peak
     Lm = Lp ** m1
     E = np.clip(((c1 + c2 * Lm) / (1.0 + c3 * Lm)) ** m2, 0, 1)   # PQ OETF, R'G'B' in [0,1]
     R, G, B = E[..., 0], E[..., 1], E[..., 2]
