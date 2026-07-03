@@ -400,6 +400,66 @@ static void TestApiRejectsNullFilm()
 	subN->release(); subK->release(); filmN->release(); filmT->release();
 }
 
+// ============================================================
+//  Test 5: dielectric_material `ar_layer` multi-layer AR parsing.
+//          A valid stack registers; malformed / non-finite / zero-thickness /
+//          over-8 stacks are REJECTED (hard parse failure, no material).
+// ============================================================
+static std::string DielectricARScene( const std::string& arLines )
+{
+	std::string s;
+	s += "RISE ASCII SCENE 6\n";
+	s += "dielectric_material\n{\n";
+	s += "name dtest\n";
+	s += "tau 1.0\n";
+	s += "ior 1.77\n";
+	s += "scattering 100000\n";
+	s += arLines;
+	s += "}\n";
+	return s;
+}
+
+static bool ParsesDielectricAR( const char* tag, const std::string& arLines, bool& registered )
+{
+	const std::string path = WriteTempScene( tag, DielectricARScene( arLines ) );
+	Job* job = new Job();
+	job->addref();
+	const bool parsed = ParseSceneFile( path, *job );
+	registered = ( job->GetMaterials() && job->GetMaterials()->GetItem( "dtest" ) != 0 );
+	job->release();
+	std::remove( path.c_str() );
+	return parsed;
+}
+
+static void TestDielectricARLayerParsing()
+{
+	std::cout << "\n[5] dielectric_material ar_layer multi-layer AR parsing\n";
+	bool reg = false;
+
+	// Valid 2-layer stack (3-number and 2-number/k-omitted forms both ok).
+	Check(  ParsesDielectricAR( "ar_ok", "ar_layer 1.38 94.2 0\nar_layer 1.66 78.3\n", reg ) && reg,
+		"valid 2-layer ar_layer stack parses and registers the material" );
+
+	// Malformed: a single number is not a layer.
+	Check( !ParsesDielectricAR( "ar_bad1", "ar_layer 1.38\n", reg ) && !reg,
+		"ar_layer with one number is REJECTED (needs <n> <thickness> [k])" );
+
+	// Non-finite token (nan/inf spelling) is rejected at the string layer.
+	Check( !ParsesDielectricAR( "ar_nan", "ar_layer nan 94.2 0\n", reg ) && !reg,
+		"ar_layer with a nan token is REJECTED" );
+
+	// Zero (non-positive) thickness is a spurious extra interface -> rejected.
+	Check( !ParsesDielectricAR( "ar_zero", "ar_layer 1.38 0 0\n", reg ) && !reg,
+		"ar_layer with zero thickness is REJECTED" );
+
+	// More than the 8-layer maximum is rejected (not silently truncated).
+	{
+		std::string many; for( int i = 0; i < 9; ++i ) many += "ar_layer 1.38 94.2 0\n";
+		Check( !ParsesDielectricAR( "ar_deep", many, reg ) && !reg,
+			"9 ar_layer lines (> 8 max) is REJECTED, not silently truncated" );
+	}
+}
+
 int main()
 {
 	std::cout << "=== ThinFilmSceneParseTest -- scene-language + API plumbing ===\n";
@@ -410,6 +470,7 @@ int main()
 	TestThinFilmMissingThicknessRejected();
 	TestApiFactoryPlumbsFilmSlots();
 	TestApiRejectsNullFilm();
+	TestDielectricARLayerParsing();
 
 	std::cout << "\nResults: " << s_pass << " passed, " << s_fail << " failed.\n";
 	return ( s_fail == 0 ) ? 0 : 1;

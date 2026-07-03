@@ -42,6 +42,7 @@
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Interfaces/ISPF.h"
+#include "../src/Library/Interfaces/IObject.h"
 #include "../src/Library/Materials/DielectricSPF.h"
 
 using namespace RISE;
@@ -264,6 +265,49 @@ int main()
 		Check( ref2 >= 0.0 && std::fabs( ref2 - exp2 ) < 1e-6,
 			"SPF 2-layer AR reflection weight == ThinFilm stack reflectance", ref2, exp2 );
 	}
+
+	// OBLIQUE incidence (from outside): the SPF must feed the true cosI to the
+	// stack, not assume normal incidence.  ~40deg -> cosI = cos(0.7).
+	{
+		const Scalar nm = 550.0;
+		const Vector3 obl( std::sin( 0.7 ), 0.0, -std::cos( 0.7 ) );   // into +Z surface
+		RayIntersectionGeometric riO = MakeRI( obl );
+		IORStack stkO( kAir );
+		ScatteredRayContainer scO;
+		spf2->ScatterNM( riO, samp, nm, scO, stkO );
+		const Scalar refO = ReflectionWeight( scO );
+		const Scalar cosI = std::fabs( std::cos( 0.7 ) );
+		const ThinFilm::Complex f2[2] = { ThinFilm::Complex( kN2[0], 0.0 ), ThinFilm::Complex( kN2[1], 0.0 ) };
+		const Scalar expO = ThinFilm::ReflectanceConductorStack(
+			cosI, nm, ThinFilm::Complex( kAir, 0.0 ), f2, kT2, 2, ThinFilm::Complex( kSapph, 0.0 ) );
+		Check( refO >= 0.0 && std::fabs( refO - expO ) < 1e-6,
+			"SPF 2-layer AR oblique weight == stack at cosI<1", refO, expO );
+	}
+
+	// FROM INSIDE (sapphire->air): exercises the layer-order REVERSAL -- the
+	// ray meets the substrate-adjacent layer first, so the stack (and its
+	// endpoints) reverse.  bFromInside is driven by ior_stack.containsCurrent(),
+	// so seed the stack with the current object on top.  (The IObject* is used
+	// only as an opaque identity key by IORStack; it is never dereferenced.)
+	{
+		const Scalar nm = 550.0;
+		const IObject* fakeObj = reinterpret_cast<const IObject*>( 0x1 );
+		IORStack stkI( kAir );					// air = the exit medium (bottom)
+		stkI.SetCurrentObject( fakeObj );
+		stkI.push( kSapph );					// sapphire on top => containsCurrent()
+		RayIntersectionGeometric riI = MakeRI( Vector3( 0, 0, 1 ) );   // travelling outward
+		ScatteredRayContainer scI;
+		spf2->ScatterNM( riI, samp, nm, scI, stkI );
+		const Scalar refI = ReflectionWeight( scI );
+		// REVERSED stack: sapphire-adjacent layer first, N0=sapphire, Ns=air.
+		const ThinFilm::Complex f2rev[2] = { ThinFilm::Complex( kN2[1], 0.0 ), ThinFilm::Complex( kN2[0], 0.0 ) };
+		const Scalar t2rev[2] = { kT2[1], kT2[0] };
+		const Scalar expI = ThinFilm::ReflectanceConductorStack(
+			1.0, nm, ThinFilm::Complex( kSapph, 0.0 ), f2rev, t2rev, 2, ThinFilm::Complex( kAir, 0.0 ) );
+		Check( refI >= 0.0 && std::fabs( refI - expI ) < 1e-6,
+			"SPF 2-layer AR from-inside weight == REVERSED stack (layer-order flip)", refI, expI );
+	}
+
 	spf2->release();
 
 	spfAR->release();

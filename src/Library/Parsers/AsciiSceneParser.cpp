@@ -102,6 +102,8 @@
 #include <algorithm>
 #include <cstring>   // Phase 6.2: strstr for sentinel detection
 #include <cstdio>    // Phase 6.2: sscanf in OnOverrideObjectFinalized
+#include <cstdlib>   // strtod for the ar_layer numeric parse
+#include <cerrno>    // ERANGE overflow detection for ar_layer values
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "AsciiSceneParser.h"
@@ -3283,18 +3285,51 @@ namespace RISE
 					// `ar_layer <n> <thickness_nm> [k]` -> a broadband multi-
 					// layer stack that reflects faint AND colour-neutral (a
 					// single layer leaves the characteristic purple bloom).
+					// RISE thin-film cap; must match ThinFilm::kMaxFilms and
+					// DielectricSPF::kMaxARLayers (both 8).  Reject rather than
+					// silently truncate a too-deep stack.
+					const std::size_t kMaxARLayers = 8;
 					std::vector<Scalar> arN, arK, arT;
 					const std::vector<std::string>& layerLines = bag.GetRepeatable( "ar_layer" );
+					if( layerLines.size() > kMaxARLayers ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"dielectric_material `%s`: %u ar_layer lines exceeds the %u-layer maximum",
+							name.c_str(), (unsigned int)layerLines.size(), (unsigned int)kMaxARLayers );
+						return false;
+					}
 					for( std::size_t i = 0; i < layerLines.size(); ++i ) {
-						double n = 0.0, t = 0.0, k = 0.0; char trailing[8];
-						const int got = sscanf( layerLines[i].c_str(), "%lf %lf %lf %7s", &n, &t, &k, trailing );
-						if( got != 2 && got != 3 ) {
+						// Reject nan/inf spellings and non-numeric junk at the STRING
+						// layer (value-level isfinite is unreliable under -ffast-math;
+						// see AllTokensAreFiniteNumbers), then count + range-check the
+						// numbers (errno/ERANGE catches overflow like 1e999).
+						if( !AllTokensAreFiniteNumbers( layerLines[i].c_str() ) ) {
 							GlobalLog()->PrintEx( eLog_Error,
-								"dielectric_material `%s`: ar_layer %u (`%s`) must be `<n> <thickness_nm> [k]` (2 or 3 numbers)",
+								"dielectric_material `%s`: ar_layer %u (`%s`) has a non-finite or non-numeric token",
 								name.c_str(), (unsigned int)i, layerLines[i].c_str() );
 							return false;
 						}
-						arN.push_back( (Scalar)n ); arT.push_back( (Scalar)t ); arK.push_back( (Scalar)( got == 3 ? k : 0.0 ) );
+						double vals[3] = { 0.0, 0.0, 0.0 }; int cnt = 0; bool overflow = false;
+						for( const char* p = layerLines[i].c_str(); ; ) {
+							while( *p == ' ' || *p == '\t' ) ++p;
+							if( !*p || *p == '#' ) break;
+							errno = 0; char* end = 0;
+							const double v = strtod( p, &end );
+							if( end == p ) break;
+							if( errno == ERANGE ) overflow = true;
+							if( cnt < 3 ) vals[cnt] = v;
+							++cnt; p = end;
+						}
+						// A layer is `<n>0 <thickness_nm>0 [k>=0]`: exactly 2-3 finite
+						// numbers, positive index + thickness (a zero-thickness layer
+						// is a spurious extra interface), non-negative extinction.
+						if( cnt < 2 || cnt > 3 || overflow ||
+						    vals[0] <= 0.0 || vals[1] <= 0.0 || ( cnt == 3 && vals[2] < 0.0 ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"dielectric_material `%s`: ar_layer %u (`%s`) must be `<n>0 <thickness_nm>0 [k>=0]`",
+								name.c_str(), (unsigned int)i, layerLines[i].c_str() );
+							return false;
+						}
+						arN.push_back( (Scalar)vals[0] ); arT.push_back( (Scalar)vals[1] ); arK.push_back( (Scalar)( cnt == 3 ? vals[2] : 0.0 ) );
 					}
 					// Legacy single-layer form, honoured only when no ar_layer
 					// lines are present (back-compat, bit-identical).
@@ -3321,7 +3356,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "10000"; }
-						{ auto& p = P(); p.name = "ar_layer";           p.kind = ValueKind::String; p.repeatable = true; p.description = "One anti-reflective coating layer (repeatable, AMBIENT->SUBSTRATE / air-side first): `<n> <thickness_nm> [k]`.  One layer = the classic MgF2 quarter-wave (drops glare but leaves a purple bloom); a multi-layer broadband stack (e.g. quarter/half/quarter) reflects far fainter AND colour-neutral, as on real premium AR.  Up to 8 layers."; }
+						{ auto& p = P(); p.name = "ar_layer";           p.kind = ValueKind::String; p.repeatable = true; p.description = "One anti-reflective coating layer (repeatable, AMBIENT->SUBSTRATE / air-side first): `<n> <thickness_nm> [k]`, all positive (k optional, >=0).  One layer = the classic MgF2 quarter-wave (drops glare but leaves a purple bloom); a multi-layer broadband stack (e.g. quarter/half/quarter) reflects far fainter AND colour-neutral, as on real premium AR.  At most 8 layers (more is a parse error)."; }
 						{ auto& p = P(); p.name = "ar_film_ior";        p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR film index (e.g. MgF2 1.38); prefer ar_layer.  Honoured only when no ar_layer lines are present. 0 = no coating."; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "ar_film_thickness";  p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR thickness, nm (MgF2 quarter-wave ~99.6 at 550nm); prefer ar_layer. 0 = no coating."; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "ar_film_extinction"; p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR film extinction k (~0 for a transparent AR); prefer ar_layer."; p.defaultValueHint = "0"; }
