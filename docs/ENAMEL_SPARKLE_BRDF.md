@@ -154,16 +154,18 @@ Costs owned honestly (not hidden):
 The Slice-1 constructor takes all seven parameters explicitly (no defaults
 exist yet).  Slice 2 WILL choose parser-level defaults so an unconfigured
 `glint_modifier` chunk is a no-op-adjacent gentle sparkle, and MUST validate
-inputs string-level at parse time — and for non-finite values this is not
-merely the house style but **the only possible gate**: round 3 implemented
-an in-ctor bit-level (memcpy/integer) finiteness check and the production
-`-ffast-math` build **deleted it** — clang tags every double function
-parameter `nofpclass(nan inf)`, so a NaN becomes poison at the call
-boundary before any in-function check can see it (verified empirically:
-a runtime-bit NaN coverage rendered a fully-lit facet field with the guard
-compiled in, even from a strict-FP caller TU).  A `nan`/`inf` token that
-reaches the constructor is silent glitter corruption; reject it in the
-string before `strtod`.
+inputs string-level at parse time (loud rejection of non-finite/garbage
+tokens).  The ctor additionally forces the modifier INERT on any non-finite
+parameter as a silent backstop — but only via the **volatile-laundered**
+bit test: round 3 first implemented a plain memcpy/integer finiteness check
+and the production `-ffast-math` build **deleted it** (clang tags double
+function parameters `nofpclass(nan inf)`, so the NaN is poison at the call
+boundary; a runtime-bit NaN coverage rendered a fully-lit facet field with
+that guard compiled in, even from a strict-FP caller TU).  The laundered
+form — store through `volatile double`, re-load, then test the exponent
+bits — is opaque to the value-range analysis and probe-verified to catch
+the same NaN from both caller types (the repo ffast-math rule's canonical
+detector, as used by `IsFiniteOpaque` in FilmIntrospection.cpp).
 
 - `density`   — cells per object-space unit.  Anchor to physical fleck pitch:
   fleck pitch ≈ 1/density object units.  For the watch (dial radius 20.6
@@ -299,11 +301,14 @@ engine integration; test strength + claims fidelity):
   realism: the model is structurally capable of the measured fleck targets
   (0.083/mm² at a 0.5° key radius; 47–58 % turnover per 2° tilt; ~5.8
   facets/mm² areal) — calibration guidance folded into Slice 3.  API axis:
-  ONE P1 — non-finite parameters are silent glitter corruption; the
-  attempted in-ctor bit-level guard was DELETED by the production build
-  (nofpclass parameter poison, verified from a strict-FP caller too), so
-  string-level rejection is promoted to the load-bearing Slice-2 gate and
-  the ctor contract documents that it cannot sanitize.  P2: zero
-  `vGeomNormal` would have silently disabled the modifier on any future
-  geometry that forgets to populate it — guard now falls back to the
-  shading normal (tested).  Cost note added; key-size coupling documented.
+  ONE P1 — non-finite parameters are silent glitter corruption.  The first
+  attempted fix (plain memcpy bit guard) was DELETED by the production
+  build (nofpclass parameter poison, verified from a strict-FP caller
+  too); the repo's ffast-math memory then supplied the working
+  formulation — the **volatile-laundered** exponent test — which was
+  probe-verified to survive the parameter boundary from both caller types
+  and now backstops the ctor (inert on garbage), with string-level parser
+  rejection remaining the loud Slice-2 gate.  P2: zero `vGeomNormal` would
+  have silently disabled the modifier on any future geometry that forgets
+  to populate it — guard now falls back to the shading normal (tested).
+  Cost note added; key-size coupling documented.

@@ -51,6 +51,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
+#include <cstring>
 #include <vector>
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"
@@ -942,6 +943,54 @@ static void TestDielectricAtPerturbedHits()
 }
 
 // ============================================================
+//  Test 8b: non-finite parameters force INERT (laundered guard)
+// ============================================================
+
+//! Materialize a Scalar from raw IEEE-754 bits at RUNTIME, through a
+//! volatile so the compiler cannot constant-fold it: under -ffast-math
+//! clang treats std::numeric_limits quiet_NaN()/infinity() as poison
+//! and folds them at compile time (-Wnan-infinity-disabled), so the
+//! NaN would never reach the constructor under test.
+static Scalar BitsToScalar( unsigned long long bits )
+{
+	volatile unsigned long long vu = bits;
+	const unsigned long long u = vu;
+	Scalar v;
+	memcpy( &v, &u, sizeof( v ) );
+	return v;
+}
+
+static void TestNonFiniteInert()
+{
+	std::cout << "--- Test 8b: non-finite parameters force inert ---" << std::endl;
+
+	const Scalar qnan = BitsToScalar( 0x7FF8000000000000ULL );	// quiet NaN
+	const Scalar pinf = BitsToScalar( 0x7FF0000000000000ULL );	// +infinity
+
+	// NaN in each scalar slot, NaN in a scale/shift component, and an
+	// Inf coverage: every one must yield a completely inert modifier.
+	// This discriminates the VOLATILE-LAUNDERED ctor guard from the
+	// plain memcpy form, which -ffast-math deletes via nofpclass
+	// parameter poison (measured: NaN coverage -> FULLY-LIT field).
+	const GlintModifier* bad[7] = {
+		MakeMod( qnan, 0.5, 1.0, 4.0, Vector3(1,1,1), Vector3(0,0,0), 7 ),
+		MakeMod( 2.0, qnan, 1.0, 4.0, Vector3(1,1,1), Vector3(0,0,0), 7 ),
+		MakeMod( 2.0, 0.5, qnan, 4.0, Vector3(1,1,1), Vector3(0,0,0), 7 ),
+		MakeMod( 2.0, 0.5, 1.0, qnan, Vector3(1,1,1), Vector3(0,0,0), 7 ),
+		MakeMod( 2.0, 0.5, 1.0, 4.0, Vector3(1,qnan,1), Vector3(0,0,0), 7 ),
+		MakeMod( 2.0, 0.5, 1.0, 4.0, Vector3(1,1,1), Vector3(0,0,qnan), 7 ),
+		MakeMod( 2.0, pinf, 1.0, 4.0, Vector3(1,1,1), Vector3(0,0,0), 7 ),
+	};
+
+	for( int b = 0; b < 7; b++ )
+	{
+		const double c = MeasureCoverage( *bad[b], 5000, 200 + b );
+		CHECK( c == 0.0, "non-finite parameter slot " << b << " did not force inert (coverage " << c << ")" );
+	}
+	std::cout << "  7/7 non-finite configurations inert" << std::endl;
+}
+
+// ============================================================
 //  Test 8c: zero vGeomNormal falls back to the shading normal
 // ============================================================
 
@@ -1030,6 +1079,7 @@ int main()
 	TestNearestWins();
 	TestFlippedOrientationGuard();
 	TestDielectricAtPerturbedHits();
+	TestNonFiniteInert();
 	TestZeroGeomNormalFallback();
 	TestHostileCoordinates();
 

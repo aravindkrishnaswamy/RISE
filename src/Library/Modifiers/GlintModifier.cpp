@@ -16,24 +16,36 @@
 #include "GlintModifier.h"
 #include "../Utilities/math_utils.h"
 #include "../Utilities/Math3D/Math3D.h"
+#include <cstring>
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
 namespace
 {
-	//! NOTE on non-finite parameters: this class can NOT sanitize a
-	//! NaN/Inf input, by construction of the production build.  Under
-	//! -ffast-math clang tags every double FUNCTION PARAMETER with
-	//! nofpclass(nan inf), so a non-finite value becomes poison AT THE
-	//! CALL BOUNDARY — an in-ctor bit-level (memcpy/integer) finiteness
-	//! check was implemented during review round 3 and EMPIRICALLY
-	//! DELETED by the optimizer (a runtime-bit NaN coverage produced a
-	//! fully-lit facet field with the guard compiled in, even from a
-	//! strict-FP caller TU).  The ONLY sound gate is rejecting
-	//! non-finite values at the STRING layer before construction
-	//! (AllTokensAreFiniteNumbers-style) — a hard obligation on the
-	//! glint_modifier parser (Slice 2).  See the repo ffast-math rule.
+	//! Volatile-laundered finiteness test — the ONLY formulation that
+	//! survives the production `-O3 -flto -ffast-math` build.  A plain
+	//! memcpy/union exponent test is DELETED by the optimizer: under
+	//! -ffinite-math-only clang tags double function parameters
+	//! nofpclass(nan inf), so a NaN argument is poison at the call
+	//! boundary and the check folds to "finite" (measured: a runtime-bit
+	//! NaN coverage rendered a fully-lit facet field WITH the plain
+	//! check compiled in, from fast-math and strict-FP callers alike).
+	//! Storing through a volatile double and re-loading is observable
+	//! and opaque to value-range analysis, so the exponent test then
+	//! operates on the real bits (probe-verified for this ctor from
+	//! both caller types).  Same pattern as IsFiniteOpaque
+	//! (SceneEditor/FilmIntrospection.cpp) and the ffast-math rule's
+	//! canonical detector; keep the parser's string-level rejection as
+	//! the loud first line (a parse error beats a silent no-op).
+	inline bool IsFiniteLaundered( RISE::Scalar v )
+	{
+		volatile double opaque = (double)v;
+		double real_v = opaque;
+		unsigned long long bits = 0;
+		std::memcpy( &bits, &real_v, sizeof( bits ) );
+		return ( bits & 0x7ff0000000000000ULL ) != 0x7ff0000000000000ULL;
+	}
 
 	//! Hard safety ceiling on the facet tilt (radians).  The Rayleigh
 	//! tail is unbounded; a facet tilted anywhere near the tangent
@@ -68,9 +80,18 @@ GlintModifier::GlintModifier(
   vShift( vShift_ ),
   seed( seed_ )
 {
-	// Non-finite inputs are NOT sanitized here — they cannot be (see
-	// the nofpclass note atop this file); the glint_modifier parser
-	// must reject them at the string layer before construction.
+	// ANY non-finite parameter => force the modifier INERT via the
+	// canonical density=0 switch, decided on the RAW inputs with the
+	// laundered bit test (the member clamps above mangle NaN
+	// unpredictably under -ffast-math).  Belt to the parser's
+	// string-level suspenders: garbage can never render as glitter.
+	if( !IsFiniteLaundered( density_ ) || !IsFiniteLaundered( coverage_ ) ||
+		!IsFiniteLaundered( fill_ ) || !IsFiniteLaundered( spreadDeg_ ) ||
+		!IsFiniteLaundered( vScale_.x ) || !IsFiniteLaundered( vScale_.y ) || !IsFiniteLaundered( vScale_.z ) ||
+		!IsFiniteLaundered( vShift_.x ) || !IsFiniteLaundered( vShift_.y ) || !IsFiniteLaundered( vShift_.z ) )
+	{
+		density = 0;
+	}
 }
 
 GlintModifier::~GlintModifier( )
