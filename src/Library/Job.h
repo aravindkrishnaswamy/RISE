@@ -2861,6 +2861,23 @@ namespace RISE
 		//! when the chunk omits it).  Document-only (no re-derive, no rebind) -> 1 on success / 0 on no-op/failure.
 		int ApplyCstFilmEdit( const char* width, const char* height, const char* pixelAR );
 
+		//! Model-B F5 slice S2 (agent chunk CRUD): INSERT one complete chunk into the retained Document and
+		//! REALIZE it via a full re-derive (dry-run-guarded: a failed dry-run leaves Document + live scene
+		//! byte-identical).  Contract + out-params documented on the IJob virtual.  Returns 2/3 (replaced;
+		//! rebind) / 0 (would-not-derive) / -1 (malformed chunk text) / -2 (duplicate (kind,name)).  Never 1.
+		int ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned int keywordMax,
+		                         char* outName, unsigned int nameMax,
+		                         char* outDiag, unsigned int diagMax );
+
+		//! Model-B F5 slice S2 (agent chunk CRUD): REMOVE the chunk resolved by bare name (+ optional kind
+		//! narrowing, same rules as ApplyCstParamEdit) via the TRIVIA-PRESERVING Cst::DocEraseChunkTidy, then
+		//! drop the entity from the live scene via a full re-derive (dry-run-guarded -- a still-referenced
+		//! target refuses cleanly).  Contract + out-params documented on the IJob virtual.  Returns 2/3
+		//! (replaced; rebind) / 0 (would-not-derive) / -1 (not found) / -2 (ambiguous).  Never 1.
+		int ApplyCstRemoveChunk( const char* target, const char* kind,
+		                         char* outKeyword, unsigned int keywordMax,
+		                         char* outDiag, unsigned int diagMax );
+
 		//! P5: the retained canonical CST (null unless the scene was loaded via LoadAsciiSceneViaCst).
 		const RISE::Cst::Document*	GetCstDocument() const { return pCstDocument.get(); }
 
@@ -3023,6 +3040,15 @@ namespace RISE
 		//! (closure anchored at `closureAnchorId`).  Activation-preserving D2 fallback.  Returns the 0/1/2/3
 		//! contract.  `entityName`/`role` are diagnostic-only.  Used by ApplyCstParamEdit + ApplyCstObjectMatrixEdit.
 		int DeriveEditedCstDocument_( RISE::Cst::Document&& editedDoc, RISE::Cst::NodeId closureAnchorId, const char* entityName, const char* role );
+		//! Model-B F5 slice S2: the SHARED D2 tail factored out of DeriveEditedCstDocument_ -- validate-before-
+		//! destroy dry-run into a throwaway Job, then the real ClearAll + full re-derive of `editedDoc`, forcing
+		//! the active variant and PRESERVING the active camera/rasterizer/animation + the cached viewport fit.
+		//! `diagContext` is a pre-formatted diagnostic prefix (e.g. "`lum`.`scale`"); `outFirstDryRunDiag` (if
+		//! non-null) receives the FIRST dry-run diagnostic on refusal.  Returns 0 = dry-run diagnosed (live scene
+		//! AND retained Document byte-identical -- the caller's edited copy is simply dropped) / 2 = replaced +
+		//! clean / 3 = replaced-but-diagnosed.  Used by DeriveEditedCstDocument_'s D2 fallback AND the S2 chunk
+		//! insert/remove (which are ALWAYS D2-class: a new/removed entity cannot re-derive incrementally).
+		int RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag );
 		//! Facet 5 slice 1a: bump the retained CST head's revision (leaving uuid), called at EVERY site that
 		//! successfully mutates the retained pCstDocument content.  The invariant: revision changes IFF the
 		//! retained Document content changed -- so a NO-CHANGE code path (a rejected edit) must NOT call this.

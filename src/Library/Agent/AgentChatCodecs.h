@@ -68,7 +68,7 @@
 //        image block/part with a short text note (the loop keeps only
 //        the MOST RECENT image live -- see AgentChatLoop.h).
 //
-//    The seven tool definitions (mapping 1:1 to the AgentRpc verbs) are
+//    The nine tool definitions (mapping 1:1 to the AgentRpc verbs) are
 //    defined ONCE, provider-neutrally, in AgentChatCodecs.cpp; each
 //    codec maps them into its native tool declaration shape.  Their
 //    parameter names/shapes mirror AgentRpc.cpp exactly.

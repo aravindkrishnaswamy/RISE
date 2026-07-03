@@ -2986,6 +2986,229 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 	return r;
 }
 
+// Model-B F5 slice S2: the two chunk-CRUD verbs.  Thin wrappers -- the whole
+// reviewed commit pattern lives in ApplyAgentChunkCrud_ below.
+SceneEditController::AgentCommitResult SceneEditController::ApplyAgentInsertChunk(
+	const String& chunkText,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	return ApplyAgentChunkCrud_( /*isInsert*/ true, chunkText, String(), baseVersionOrNull );
+}
+
+SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChunk(
+	const String& target,
+	const String& kind,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	return ApplyAgentChunkCrud_( /*isInsert*/ false, target, kind, baseVersionOrNull );
+}
+
+// Model-B F5 slice S2: the shared render-thread-SAFE chunk-CRUD commit.  This
+// mirrors ApplyAgentParamEdit step for step (see that method's comments for
+// the full rationale of each stage); the differences are (a) the Job primitive
+// (ApplyCstInsertChunk / ApplyCstRemoveChunk -- both ALWAYS D2-class, never
+// code 1), (b) Job's negative pre-derive refusal codes (-1/-2), normalized
+// here to rawCode=0 / status="rejected" with a verb-specific message, and
+// (c) the dirty-mark identity, which comes from Job's parsed/resolved
+// keyword+name echo rather than the caller's (entityName, entityKind).
+SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_(
+	bool isInsert,
+	const String& a,
+	const String& b,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	AgentCommitResult r;
+	const char* verb = isInsert ? "insert" : "remove";
+
+	// Mid-transaction refusal FIRST, before any mutation or park -- an agent
+	// chunk edit has no EditHistory record, so RollbackTransaction could never
+	// revert it (same rule + rationale as ApplyAgentParamEdit; same
+	// main-thread contract on the unsynchronized mTxnOpen read).
+	if( mTxnOpen )
+	{
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent chunk %s refused inside an open transaction (no EditHistory record -> rollback cannot revert it).", verb );
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.retriable = true;   // the ONE transient reject: retry after the gesture completes
+		r.message = String( "editor transaction in progress -- retry after the gesture completes" );
+		{
+			// Every head read stays under mMutex (no torn 16-byte read).
+			std::lock_guard<std::mutex> hlk( mMutex );
+			r.headVersion = mJob.GetCstHeadVersion();
+		}
+		return r;
+	}
+
+	// Cancel-and-park, then hold mMutex across the WHOLE commit (pre-flight,
+	// conflict gate, the Job apply -- whose D2 ClearAll transiently zeroes the
+	// head-version -- the rebind, and the post-commit head read).
+	std::unique_lock<std::mutex> lk( mMutex );
+	CancelAndParkRender_( lk );
+
+	if( !mJob.HasRetainedCstDocument() )
+	{
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		r.message = String( "no retained CST Document -- agent commit needs a CST-loaded head" );
+		return r;
+	}
+	if( a.size() <= 1 )
+	{
+		// RString::size() counts the trailing NUL; size <= 1 is the empty case.
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		r.message = isInsert ? String( "chunkText must be non-empty" )
+		                     : String( "target must be non-empty" );
+		return r;
+	}
+
+	// Optimistic-concurrency CONFLICT precondition, under the lock so the head
+	// we compare against is stable.  A stale patch must NEVER touch the Document.
+	if( baseVersionOrNull )
+	{
+		const RISE::Cst::CstHeadVersion cur = mJob.GetCstHeadVersion();
+		if( *baseVersionOrNull != cur )
+		{
+			r.applied     = false;
+			r.conflict    = true;
+			r.rawCode     = 0;
+			r.status      = String( "conflict" );
+			r.headVersion = cur;
+			char buf[160];
+			std::snprintf( buf, sizeof( buf ),
+				"stale baseHeadVersion: head moved to revision %llu (re-read and re-propose)",
+				static_cast<unsigned long long>( cur.revision ) );
+			r.message = String( buf );
+			return r;
+		}
+	}
+
+	// The Job primitive (parsing/resolution + duplicate/reference validation +
+	// dry-run-guarded full re-derive all live THERE, under this lock).
+	char kwBuf[128];   kwBuf[0] = '\0';
+	char nameBuf[256]; nameBuf[0] = '\0';
+	char diagBuf[512]; diagBuf[0] = '\0';
+	int code;
+	if( isInsert )
+	{
+		code = mJob.ApplyCstInsertChunk( a.c_str(),
+		                                 kwBuf, sizeof( kwBuf ),
+		                                 nameBuf, sizeof( nameBuf ),
+		                                 diagBuf, sizeof( diagBuf ) );
+	}
+	else
+	{
+		code = mJob.ApplyCstRemoveChunk( a.c_str(),
+		                                 b.size() <= 1 ? nullptr : b.c_str(),
+		                                 kwBuf, sizeof( kwBuf ),
+		                                 diagBuf, sizeof( diagBuf ) );
+		// The remove target IS the chunk name (bare-name addressing).
+		std::snprintf( nameBuf, sizeof( nameBuf ), "%s", a.c_str() );
+	}
+	r.chunkKeyword = String( kwBuf );
+	r.chunkName    = String( nameBuf );
+
+	// A chunk CRUD that landed is ALWAYS a D2 full re-derive (codes 2/3): the
+	// Scene + managers were replaced, so re-point the editor's cached pointers
+	// BEFORE releasing the lock (same rebind rule as ApplyAgentParamEdit).
+	if( code == 2 || code == 3 )
+	{
+		RebindEditorToJob();
+	}
+
+	// Fold the code.  Negative pre-derive refusals normalize to rawCode 0 --
+	// the wire contract keeps rawCode in {0,1,2,3} -- with a specific message.
+	r.rawCode = ( code < 0 ) ? 0 : code;
+	switch( code )
+	{
+		case 2:
+			r.applied = true;
+			r.status  = String( "applied" );
+			r.message = isInsert
+				? String( "chunk inserted via a full re-derive (Scene + managers were replaced)" )
+				: String( "chunk removed via a full re-derive (Scene + managers were replaced)" );
+			break;
+		case 3:
+			r.applied = false;
+			r.status  = String( "diagnosed" );
+			r.message = String( "edit NOT a clean success: the Document was mutated and the live managers were "
+			                    "replaced, BUT the full re-derive emitted diagnostics (see log) -- do NOT treat as applied" );
+			break;
+		case -1:
+		{
+			r.applied = false;
+			r.status  = String( "rejected" );
+			std::string m;
+			if( isInsert ) {
+				m = "insert rejected: chunkText must parse to exactly ONE complete chunk (`keyword { ... }`, braces on their own lines; no scene header/directives)";
+				if( diagBuf[0] ) { m += ": "; m += diagBuf; }
+			} else if( diagBuf[0] ) {
+				// A diagnosed -1 (e.g. the kind-verification refusal: the name
+				// resolved but to a DIFFERENT kind) carries its own reason.
+				m = std::string( "remove rejected: " ) + diagBuf + " -- head unchanged";
+			} else {
+				m = "remove rejected: no chunk named '";
+				m += a.c_str();
+				m += "' found -- head unchanged";
+			}
+			r.message = String( m.c_str() );
+			break;
+		}
+		case -2:
+		{
+			r.applied = false;
+			r.status  = String( "rejected" );
+			std::string m;
+			if( isInsert ) {
+				m = "insert rejected: a chunk with the same kind and name already exists";
+				if( diagBuf[0] ) { m += " ("; m += diagBuf; m += ")"; }
+				m += " -- head unchanged";
+			} else {
+				m = "remove rejected: name '";
+				m += a.c_str();
+				m += "' is ambiguous -- pass `kind` to narrow";
+			}
+			r.message = String( m.c_str() );
+			break;
+		}
+		case 0:
+		default:
+		{
+			r.applied = false;
+			r.status  = String( "rejected" );
+			std::string m = isInsert
+				? std::string( "insert rejected: the chunk would not derive in context -- head unchanged" )
+				: std::string( "remove rejected: removing '" ) + a.c_str() + "' would not derive (it is likely still REFERENCED by another chunk) -- head unchanged";
+			if( diagBuf[0] ) { m += ": "; m += diagBuf; }
+			r.message = String( m.c_str() );
+			break;
+		}
+	}
+
+	// Post-commit head, read under the lock (coherent with a just-rebuilt Job).
+	r.headVersion = mJob.GetCstHeadVersion();
+
+	// Dirty-mark + re-render kick whenever the live Scene CHANGED (codes 2/3;
+	// a diagnosed code-3 ALSO mutated the Document -- see ApplyAgentParamEdit's
+	// data-loss rationale).  MarkCstHeadDirty tolerates an empty name (boolean
+	// CST-head channel) and an unknown kind, so an unnamed inserted chunk
+	// (e.g. `film`) still marks the editor unsaved.
+	if( code == 2 || code == 3 )
+	{
+		mEditor.MarkCstHeadDirty( nameBuf, kwBuf[0] ? kwBuf : nullptr );
+
+		mEditPending.store( true, std::memory_order_release );
+		lk.unlock();
+		mCV.notify_one();
+	}
+	return r;
+}
+
 void SceneEditController::KickRender()
 {
 	// Stamp the edit time first so the render loop sees a fresh

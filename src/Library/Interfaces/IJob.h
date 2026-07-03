@@ -3335,6 +3335,59 @@ namespace RISE
 		//! Returns ScaleFilmToFit's bool.  Default no-op returning false (legacy / non-Job); see Job override.
 		//! NB: appended at the IJob tail per the append-only ABI convention (preserves every prior vtable slot).
 		virtual bool SetViewportFit( const unsigned int surfaceW, const unsigned int surfaceH, const unsigned int maxLongEdge ) { return false; }
+
+		//! Model-B F5 slice S2 (agent chunk CRUD -- insert): INSERT one complete chunk into the retained CST
+		//! Document, then REALIZE it in the live scene via a FULL re-derive (validate-before-destroy dry-run into
+		//! a throwaway Job first -- a failed dry-run leaves the Document AND the live scene byte-identical).
+		//! `chunkText` must parse to EXACTLY ONE chunk (`keyword { ... }`; braces on their own lines) with nothing
+		//! but pure-whitespace trivia around it -- scene headers/directives/comments outside the chunk are refused.
+		//! A duplicate (kind,name) against an existing chunk is refused early (unless the incoming chunk carries a
+		//! `variant` param -- a variant overlay legitimately shares its base chunk's (kind,name)).  An UNNAMED
+		//! chunk (film / rasterizer / camera-class) is refused when an unnamed chunk of the SAME keyword already
+		//! exists -- unnamed chunks are singletons per keyword (a duplicate would be last-wins-masked on derive
+		//! yet persisted by save, and bare-name-addressed remove_chunk could never delete it).
+		//! Out-params (each nullable): `outKeyword`/`outName` echo the parsed chunk's keyword + `name` param (filled
+		//! as soon as the chunk parses, so even a refusal identifies what was attempted); `outDiag` carries the FIRST
+		//! dry-run diagnostic (code 0) or a short refusal reason (codes -1/-2).
+		//! Returns: 2 = inserted + clean full re-derive (Scene + managers REPLACED -- caller MUST rebind);
+		//! 3 = inserted + managers replaced BUT the re-derive diagnosed (rebind AND treat as failure);
+		//! 0 = refused, would-not-derive in context (dry-run diagnosed; nothing changed);
+		//! -1 = malformed chunk text (not exactly one chunk / stray text); -2 = duplicate (kind,name).
+		//! Never 1: an insert is ALWAYS D2-class (a new entity cannot re-derive incrementally).
+		//! Default no-op returning 0 (legacy jobs have no retained CST); see Job override.
+		//! NB: appended at the IJob tail per the append-only ABI convention (preserves every prior vtable slot).
+		virtual int ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned int keywordMax,
+		                                 char* outName, unsigned int nameMax,
+		                                 char* outDiag, unsigned int diagMax )
+		{
+			// The default no-op still honours the out-param contract (buffers always NUL-terminated).
+			if( outKeyword && keywordMax ) outKeyword[0] = '\0';
+			if( outName && nameMax ) outName[0] = '\0';
+			if( outDiag && diagMax ) outDiag[0] = '\0';
+			return 0;
+		}
+
+		//! Model-B F5 slice S2 (agent chunk CRUD -- remove): REMOVE the chunk resolved by bare name `target`
+		//! (optional `kind` keyword-suffix narrowing + the sole-unnamed-camera positional fallback -- the SAME
+		//! resolution rules as ApplyCstParamEdit) from the retained CST Document via the TRIVIA-PRESERVING
+		//! Cst::DocEraseChunkTidy (safe for FILE-AUTHORED chunks: never the clone-undo-only idx-1 drop), then
+		//! drop the entity from the live scene via a FULL re-derive (dry-run first -- removing a chunk that is
+		//! still REFERENCED fails the dry-run and leaves Document + live scene byte-identical).
+		//! Out-params (nullable): `outKeyword` echoes the resolved chunk's keyword; `outDiag` the first dry-run
+		//! diagnostic (code 0) or a short refusal reason (codes -1/-2).
+		//! Returns: 2 = removed + clean full re-derive (rebind); 3 = replaced-but-diagnosed (rebind + failure);
+		//! 0 = refused, would-not-derive (e.g. target still referenced; nothing changed);
+		//! -1 = no chunk with that name; -2 = ambiguous name (pass `kind` to narrow).  Never 1.
+		//! Default no-op returning 0; see Job override.  Appended at the IJob tail (append-only ABI).
+		virtual int ApplyCstRemoveChunk( const char* target, const char* kind,
+		                                 char* outKeyword, unsigned int keywordMax,
+		                                 char* outDiag, unsigned int diagMax )
+		{
+			// The default no-op still honours the out-param contract (buffers always NUL-terminated).
+			if( outKeyword && keywordMax ) outKeyword[0] = '\0';
+			if( outDiag && diagMax ) outDiag[0] = '\0';
+			return 0;
+		}
 	};
 
 

@@ -9708,9 +9708,21 @@ int Job::DeriveEditedCstDocument_( RISE::Cst::Document&& d1in, RISE::Cst::NodeId
 		return 1;
 	}
 
-	// D2 fallback: full re-derive of the edited document, FORCING the currently-active variant so a variant
-	// switch the user made survives the edit.  Validate-before-destroy (dry-run into a throwaway Job) so a
-	// genuinely invalid edit leaves the live scene intact -- the incremental above already rolled back.
+	// D2 fallback: full re-derive of the edited document via the SHARED tail below (dry-run + activation-
+	// preserving ClearAll re-derive).  The pre-formatted context keeps the log line byte-identical to the
+	// pre-factor "`<entity>`.`<role>` would not derive" wording.
+	char ctx[300];
+	std::snprintf( ctx, sizeof( ctx ), "`%s`.`%s`", entityName ? entityName : "?", role ? role : "?" );
+	return RederiveCstDocumentFull_( std::move( d1 ), ctx, nullptr );
+}
+
+// Model-B F5 slice S2: the SHARED D2 tail (see Job.h).  Validate-before-destroy (dry-run into a throwaway
+// Job) so a genuinely invalid edit leaves the live scene intact; then the real ClearAll + full re-derive,
+// FORCING the currently-active variant so a variant switch the user made survives the edit, and PRESERVING
+// the active camera/rasterizer/animation + the cached viewport screen-fit across the rebuild.
+int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag )
+{
+	RISE::Cst::Document d1 = std::move( editedDoc );
 	char vbuf[256]; vbuf[0] = '\0';
 	const bool hasVar = GetActiveSceneVariant( vbuf, sizeof( vbuf ) );
 	const char* activeVariant = ( hasVar && vbuf[0] ) ? vbuf : "none";
@@ -9719,9 +9731,10 @@ int Job::DeriveEditedCstDocument_( RISE::Cst::Document&& d1in, RISE::Cst::NodeId
 		std::vector<std::string> vdiags;
 		RISE::Cst::DeriveToJob( d1, staging, &vdiags, nullptr, activeVariant );
 		if( !vdiags.empty() ) {
+			if( outFirstDryRunDiag ) *outFirstDryRunDiag = vdiags[0];
 			for( size_t i = 0; i < vdiags.size() && i < 8u; ++i )
-				GlobalLog()->PrintEx( eLog_Error, "Job::DeriveEditedCstDocument_:: `%s`.`%s` would not derive: %s", entityName, role, vdiags[i].c_str() );
-			return 0;   // live scene UNTOUCHED
+				GlobalLog()->PrintEx( eLog_Error, "Job::DeriveEditedCstDocument_:: %s would not derive: %s", diagContext ? diagContext : "(edit)", vdiags[i].c_str() );
+			return 0;   // live scene UNTOUCHED (d1 was the caller's edited COPY; the retained head is intact)
 		}
 	}
 	// An EDIT must not reset the user's runtime activations the way a variant SWITCH intentionally does:
@@ -10032,6 +10045,250 @@ int Job::ApplyCstDeleteCameraChunk( const char* camName )
 	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
 	BumpCstHeadRevision();   // Facet 5 slice 1a: the retained Document content changed -> bump revision
 	return 1;
+}
+
+namespace {
+	// Model-B F5 slice S2: NUL-safe copy of a std::string into a caller buffer (nullable; always terminated).
+	void S2CopyOut( char* dst, unsigned int dstMax, const std::string& s )
+	{
+		if( !dst || dstMax == 0 ) return;
+		const size_t n = ( s.size() < (size_t)( dstMax - 1 ) ) ? s.size() : (size_t)( dstMax - 1 );
+		if( n ) memcpy( dst, s.data(), n );
+		dst[n] = '\0';
+	}
+
+	// Model-B F5 slice S2: the value of a chunk's first `pname` param (e.g. "name" / "variant"), "" if absent.
+	// Mirrors the CST tree shape ParseChunk builds: a Param kid whose first Token kid is the pname (role
+	// "pname") and whose subsequent Token kids are the pvalue tokens.
+	std::string S2ChunkParamValue( const RISE::Cst::NodeRef& chunk, const char* pname )
+	{
+		if( !chunk ) return std::string();
+		for( const auto& kid : chunk->kids ) {
+			if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+			std::string nm, val;
+			for( const auto& tk : kid->kids ) {
+				if( !tk || tk->kind != RISE::Cst::NodeKind::Token ) continue;
+				if( tk->role == "pname" && nm.empty() ) nm = tk->text;
+				else if( tk->role == "pvalue" && val.empty() ) val = tk->text;
+			}
+			if( nm == pname ) return val;
+		}
+		return std::string();
+	}
+}
+
+// Model-B F5 slice S2 (agent chunk CRUD -- insert): INSERT one complete chunk into the retained Document and
+// REALIZE it in the live scene via the shared D2 tail (RederiveCstDocumentFull_: dry-run first, so a failed
+// derive leaves the retained Document AND the live scene byte-identical -- the edited Document is a local
+// COPY that is simply dropped).  Contract on the IJob virtual; -1 = malformed chunk text, -2 = duplicate
+// (kind,name), 0 = would-not-derive (outDiag = first dry-run diagnostic), 2/3 = replaced (caller rebinds).
+// The Document splice reuses ApplyCstInsertCameraChunk's symmetric anti-glue idiom UNCONDITIONALLY:
+// [leadSep "\n"][chunk][trailSep "\n"] appended at DocItemCount -- the trivia-preserving DocEraseChunkTidy
+// used by ApplyCstRemoveChunk collapses at most the chunk's OWN trailing separator on a later remove, so an
+// insert->remove cycle costs one residual blank line and never corrupts a neighbour's trivia.
+int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned int keywordMax,
+                              char* outName, unsigned int nameMax,
+                              char* outDiag, unsigned int diagMax )
+{
+	S2CopyOut( outKeyword, keywordMax, std::string() );
+	S2CopyOut( outName,    nameMax,    std::string() );
+	S2CopyOut( outDiag,    diagMax,    std::string() );
+	if( !pCstDocument || !chunkText || !chunkText[0] ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: no retained CST Document or empty chunk text; insert rejected" );
+		return 0;
+	}
+
+	// Parse the candidate text into its own throwaway Document and require EXACTLY ONE chunk with nothing
+	// but pure-whitespace trivia around it.  Stray tokens (a `RISE ASCII SCENE 7` header, directives, bare
+	// words) and top-level COMMENTS are refused: only the chunk item is spliced, so anything outside it
+	// would be SILENTLY DROPPED -- refuse loudly instead of losing the caller's bytes.
+	RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( std::string( chunkText ) );
+	const int nItems = RISE::Cst::DocItemCount( chunkDoc );
+	RISE::Cst::NodeRef chunkItem;
+	int chunkCount = 0;
+	bool strayContent = false;
+	for( int i = 0; i < nItems; ++i ) {
+		const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
+		if( !it ) continue;
+		if( it->kind == RISE::Cst::NodeKind::Chunk ) {
+			++chunkCount;
+			if( !chunkItem ) chunkItem = it;
+		}
+		else if( it->kind == RISE::Cst::NodeKind::Trivia ) {
+			if( it->text.find_first_not_of( " \t\r\n" ) != std::string::npos )
+				strayContent = true;   // a top-level comment would be silently dropped -- refuse
+		}
+		else {
+			strayContent = true;       // stray token (header / directive / bare word)
+		}
+	}
+	if( chunkCount != 1 || strayContent || !chunkItem ) {
+		char why[128];
+		if( chunkCount == 0 )      std::snprintf( why, sizeof( why ), "no chunk found in the text" );
+		else if( chunkCount > 1 )  std::snprintf( why, sizeof( why ), "%d chunks found (one per call)", chunkCount );
+		else                       std::snprintf( why, sizeof( why ), "stray text outside the chunk (headers/directives/comments are not allowed)" );
+		S2CopyOut( outDiag, diagMax, why );
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: chunk text refused: %s", why );
+		return -1;
+	}
+
+	// The chunk must be CLOSED (review round 1 P1).  ParseChunk tolerates EOF mid-chunk -- an UNCLOSED
+	// chunk (`keyword {` with no matching `}`, the classic truncated-LLM-output shape) still parses as
+	// exactly one Chunk item and even DERIVES cleanly (the derive reads only Param kids) -- but the
+	// retained head would then SERIALIZE without the `}`, and the next save+reload swallows every
+	// following chunk into the unclosed body: silent live-vs-file divergence + entity loss.  ParseChunk
+	// assigns the role "rbrace" ONLY to a depth-closing `}` token, so require the chunk's last
+	// non-trivia kid to be exactly that.
+	{
+		bool closed = false;
+		for( std::size_t k = chunkItem->kids.size(); k > 0; --k ) {
+			const RISE::Cst::NodeRef& kid = chunkItem->kids[k - 1];
+			if( !kid || kid->kind == RISE::Cst::NodeKind::Trivia ) continue;
+			closed = ( kid->kind == RISE::Cst::NodeKind::Token && kid->role == "rbrace" );
+			break;
+		}
+		if( !closed ) {
+			S2CopyOut( outDiag, diagMax, "the chunk is not closed (missing `}`)" );
+			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: chunk text refused: unclosed chunk (missing `}`)" );
+			return -1;
+		}
+	}
+
+	// Echo the parsed identity EARLY so even a downstream refusal identifies what was attempted.
+	// The name comes off the CANONICAL "keyword/name" addressing key (Cst::ChunkNamePath -- the same
+	// construction the byName index and DocFindByName use), NOT a local re-derivation, so the collision
+	// key below and the echoed name can never disagree with the index.
+	const std::string keyword  = chunkItem->role;
+	const std::string namePath = RISE::Cst::ChunkNamePath( chunkItem );
+	const std::string name     = namePath.empty() ? std::string() : namePath.substr( keyword.size() + 1 );
+	S2CopyOut( outKeyword, keywordMax, keyword );
+	S2CopyOut( outName,    nameMax,    name );
+
+	// Early duplicate refusal -- a clean message for the obvious collision, BEFORE paying the dry-run
+	// derive.  A chunk carrying a `variant` param is exempt: a variant overlay legitimately shares its
+	// base chunk's (kind,name) (the derive layer disambiguates by the active variant).
+	if( S2ChunkParamValue( chunkItem, "variant" ).empty() ) {
+		if( !name.empty() ) {
+			// NAMED: the (kind,name) addressing key must be fresh.
+			int occ = 0;
+			RISE::Cst::DocFindByName( *pCstDocument, namePath, nullptr, &occ );
+			if( occ > 0 ) {
+				S2CopyOut( outDiag, diagMax, namePath );
+				GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: a `%s` named `%s` already exists; insert rejected", keyword.c_str(), name.c_str() );
+				return -2;
+			}
+		}
+		else {
+			// UNNAMED: film / rasterizer / camera-class chunks carry no (kind,name) key, so the named
+			// check above cannot see them -- but a SECOND unnamed chunk of the SAME keyword is a
+			// one-way door: the derive is last-wins (the duplicate silently masks the original), a save
+			// persists BOTH, and remove_chunk is bare-name-addressed so the agent could never remove
+			// the duplicate it just inserted.  Refuse it with a clean message.  A DIFFERENT keyword is
+			// still allowed (e.g. inserting a bdpt rasterizer alongside a pathtracing one is the
+			// legitimate way to switch integrators).  O(N) top-level scan -- fine for a discrete verb.
+			const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
+			for( int i = 0; i < nHead; ++i ) {
+				const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *pCstDocument, RISE::Cst::DocNodeIdAt( *pCstDocument, i ) );
+				if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == keyword &&
+				    RISE::Cst::ChunkNamePath( it ).empty() ) {
+					S2CopyOut( outDiag, diagMax, "an unnamed `" + keyword + "` chunk already exists (unnamed chunks are singletons per keyword)" );
+					GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: an unnamed `%s` chunk already exists; insert rejected", keyword.c_str() );
+					return -2;
+				}
+			}
+		}
+	}
+
+	// Splice [leadSep][chunk][trailSep] onto a COPY of the head (the symmetric anti-glue triple -- see
+	// ApplyCstInsertCameraChunk for the full rationale), then realize via the shared dry-run-guarded D2 tail.
+	RISE::Cst::Document sepDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+	RISE::Cst::NodeRef  sepItem = RISE::Cst::DocResolveNodeId( sepDoc, RISE::Cst::DocNodeIdAt( sepDoc, 0 ) );
+	RISE::Cst::Document leadDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+	RISE::Cst::NodeRef  leadItem = RISE::Cst::DocResolveNodeId( leadDoc, RISE::Cst::DocNodeIdAt( leadDoc, 0 ) );
+	if( !sepItem || !leadItem ) {
+		// Practically unreachable (ParseToCst("\n") always yields one trivia item), but if it ever
+		// fires the diag must say what happened -- an empty diag would fold into the misleading
+		// "would not derive in context" message.
+		S2CopyOut( outDiag, diagMax, "internal: could not build the inter-chunk separator" );
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: could not build the inter-chunk separators; insert rejected" );
+		return 0;
+	}
+	RISE::Cst::Document d1 = *pCstDocument;
+	const int at = RISE::Cst::DocItemCount( d1 );
+	d1 = RISE::Cst::DocInsertItem( d1, at,     leadItem );
+	d1 = RISE::Cst::DocInsertItem( d1, at + 1, chunkItem );
+	d1 = RISE::Cst::DocInsertItem( d1, at + 2, sepItem );
+
+	char ctx[300];
+	std::snprintf( ctx, sizeof( ctx ), "insert_chunk `%s` `%s`", keyword.c_str(), name.empty() ? "(unnamed)" : name.c_str() );
+	std::string firstDiag;
+	const int code = RederiveCstDocumentFull_( std::move( d1 ), ctx, &firstDiag );
+	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+	return code;
+}
+
+// Model-B F5 slice S2 (agent chunk CRUD -- remove): REMOVE the chunk resolved by bare name (+ optional kind
+// suffix narrowing, SAME rules as ApplyCstParamEdit incl. the sole-unnamed-camera positional fallback) via
+// the TRIVIA-PRESERVING Cst::DocEraseChunkTidy -- NEVER the clone-undo-only ApplyCstRemoveCameraChunk idiom,
+// whose unconditional idx-1 drop corrupts a FILE-AUTHORED chunk's neighbouring trivia -- then drop the
+// entity from the live scene via the shared dry-run-guarded D2 tail.  A still-referenced target fails the
+// dry-run (unresolved reference) and leaves Document + live scene byte-identical.
+int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
+                              char* outKeyword, unsigned int keywordMax,
+                              char* outDiag, unsigned int diagMax )
+{
+	S2CopyOut( outKeyword, keywordMax, std::string() );
+	S2CopyOut( outDiag,    diagMax,    std::string() );
+	if( !pCstDocument || !target || !target[0] ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: no retained CST Document or empty target; remove rejected" );
+		return 0;
+	}
+	// Resolution mirrors ApplyCstParamEdit: cameras are the one editor-addressable kind that can be UNNAMED,
+	// so they get the unique-in-kind resolve-by-position fallback; always-named kinds keep strict refuse.
+	const bool uniqueFallback = ( kind && std::string( kind ) == "camera" );
+	int occ = 0;
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, target, &occ, kind ? kind : "", uniqueFallback );
+	if( id == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: `%s` %s in the CST Document; remove rejected",
+		                      target, ( occ > 1 ) ? "is ambiguous" : "not found" );
+		return ( occ > 1 ) ? -2 : -1;
+	}
+	const int idx = RISE::Cst::DocIndexOfNodeId( *pCstDocument, id, nullptr );
+	if( idx < 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: `%s` resolved no top-level index; remove rejected", target );
+		return -1;
+	}
+	{
+		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
+		if( chunk ) S2CopyOut( outKeyword, keywordMax, chunk->role );
+		// KIND VERIFICATION (review round 1 P2, the ApplyCstObjectMatrixEdit defensive pattern):
+		// DocFindByNameAnyRole's SINGLE-MATCH path returns a uniquely-named chunk REGARDLESS of the kind
+		// suffix -- so `remove_chunk target=x kind=material` where `x` is uniquely a geometry would
+		// otherwise remove the GEOMETRY.  For a DESTRUCTIVE verb, re-verify the resolved chunk's keyword
+		// against the requested kind (exact match, or the same "ends in _<kind>" suffix rule the
+		// narrowing uses) and refuse a mismatch as not-found.
+		if( chunk && kind && kind[0] ) {
+			const std::string k( kind );
+			const std::string& role = chunk->role;
+			const bool roleMatches =
+				( role == k ) ||
+				( role.size() > k.size() + 1 &&
+				  role.compare( role.size() - k.size() - 1, k.size() + 1, "_" + k ) == 0 );
+			if( !roleMatches ) {
+				S2CopyOut( outDiag, diagMax, "'" + std::string( target ) + "' resolved to a `" + role + "`, not a `" + k + "`" );
+				GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: `%s` resolved to a `%s`, not the requested kind `%s`; remove rejected", target, role.c_str(), kind );
+				return -1;
+			}
+		}
+	}
+
+	RISE::Cst::Document d1 = RISE::Cst::DocEraseChunkTidy( *pCstDocument, idx );
+	char ctx[300];
+	std::snprintf( ctx, sizeof( ctx ), "remove_chunk `%s`", target );
+	std::string firstDiag;
+	const int code = RederiveCstDocumentFull_( std::move( d1 ), ctx, &firstDiag );
+	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+	return code;
 }
 
 // Model-B P5 Slice 3 expansion (FILM edit/preset): record a Film dim edit in the retained CST.  The live

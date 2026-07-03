@@ -462,15 +462,15 @@ static JsonValue ParseBody( const std::string& body )
 
 static void TestChatLoopWiring()
 {
-	std::printf( "S4: chat-loop tool table (seven tools) + SetSkillIndex...\n" );
+	std::printf( "S4: chat-loop tool table (nine tools) + SetSkillIndex...\n" );
 
-	// Anthropic: seven tools, read_skill present with a schema.
+	// Anthropic: nine tools (S2 added insert_chunk/remove_chunk), read_skill present with a schema.
 	{
 		AgentChatLoop loop;
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 7, "anthropic body carries seven tools" );
+		Check( tools.isArray() && tools.size() == 9, "anthropic body carries nine tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() != "read_skill" ) continue;
@@ -483,14 +483,14 @@ static void TestChatLoopWiring()
 		Check( saw, "anthropic tool list includes read_skill" );
 	}
 
-	// Gemini: seven functionDeclarations, read_skill present.
+	// Gemini: nine functionDeclarations, read_skill present.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Gemini );
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 7, "gemini body carries seven functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 9, "gemini body carries nine functionDeclarations" );
 		bool saw = false;
 		for( std::size_t i = 0; i < decls.size(); ++i )
 			if( decls.at( i ).get( "name" ).asString() == "read_skill" ) saw = true;

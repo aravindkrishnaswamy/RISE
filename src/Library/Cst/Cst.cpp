@@ -390,14 +390,10 @@ namespace
 	// from the green/seq node, weight-balanced like the item sequence).
 	//----------------------------------------------------------------------
 
-	//! "keyword/name" addressing key for a named chunk; "" otherwise.
-	std::string ChunkNamePath( const NodeRef& item )
-	{
-		if( !item || item->kind != NodeKind::Chunk ) return std::string();
-		std::string nm;
-		if( !ParamValue( item.get(), "name", nm ) || nm.empty() ) return std::string();
-		return item->role + "/" + nm;
-	}
+	// ("keyword/name" addressing-key construction lives in the EXPORTED
+	// RISE::Cst::ChunkNamePath below -- moved out of this anonymous
+	// namespace for Model-B F5 S2 so Job's insert_chunk duplicate check
+	// reuses the one canonical construction.)
 
 	// ---- IdSeq: positional persistent WBT of (NodeId, order-label) ----
 	// Position-ordered (in-order = document order), so order-LABELS ascend in-order
@@ -898,6 +894,18 @@ namespace
 }
 
 namespace RISE { namespace Cst {
+
+//! "keyword/name" addressing key for a named chunk; "" otherwise.  EXPORTED
+//! (Cst.h) since Model-B F5 S2 -- Job::ApplyCstInsertChunk builds the same
+//! key for its duplicate-(kind,name) check; every internal name-index site
+//! below also routes through this one construction.
+std::string ChunkNamePath( const NodeRef& item )
+{
+	if( !item || item->kind != NodeKind::Chunk ) return std::string();
+	std::string nm;
+	if( !ParamValue( item.get(), "name", nm ) || nm.empty() ) return std::string();
+	return item->role + "/" + nm;
+}
 
 // True iff `doc` is native v7-form -- loadable by the CST path WITHOUT mis-deriving.  CST-load (DeriveToJob)
 // SILENTLY SKIPS every top-level `>` directive (v7 has no `>` command layer), so the ONLY `>` lines safe to

@@ -271,6 +271,11 @@ namespace RISE
 			String                     status;           //!< "applied" / "rejected" / "diagnosed" / "conflict"
 			RISE::Cst::CstHeadVersion  headVersion;      //!< the head-version AFTER the call
 			String                     message;
+			//! Model-B F5 slice S2 (chunk-CRUD verbs only; empty for ApplyAgentParamEdit):
+			//! the affected chunk's KEYWORD (kind) and `name` param, echoed from Job's
+			//! parse/resolution so the Agent surface reports what was inserted/removed.
+			String                     chunkKeyword;
+			String                     chunkName;
 		};
 
 		//! Facet 5 slice 1b: route an agent param-value commit through the
@@ -313,6 +318,32 @@ namespace RISE
 			const String& entityKind,
 			const String& param,
 			const String& value,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
+		//! Model-B F5 slice S2: route an agent CHUNK INSERT through the SAME
+		//! render-thread-SAFE critical section as ApplyAgentParamEdit (mTxnOpen
+		//! refusal FIRST -> cancel-and-park under mMutex -> conflict gate ->
+		//! Job::ApplyCstInsertChunk -> rebind (an insert is ALWAYS D2-class:
+		//! codes 2/3 replace the Scene + managers) -> MarkCstHeadDirty ->
+		//! re-render kick -> post-commit head read).  `chunkText` must be ONE
+		//! complete `keyword { ... }` chunk (contract on the IJob virtual).
+		//! The result's chunkKeyword/chunkName echo the parsed identity; Job's
+		//! negative refusal codes (-1 malformed / -2 duplicate) are normalized
+		//! to rawCode=0 / status="rejected" with a specific message.
+		AgentCommitResult ApplyAgentInsertChunk(
+			const String& chunkText,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
+		//! Model-B F5 slice S2: route an agent CHUNK REMOVE through the same
+		//! critical section (see ApplyAgentInsertChunk).  `target` is the bare
+		//! chunk name; `kind` (may be empty) narrows a cross-category clash
+		//! with the SAME resolution rules as ApplyAgentParamEdit.  The erase is
+		//! the TRIVIA-PRESERVING Cst::DocEraseChunkTidy (safe for file-authored
+		//! chunks); a still-referenced target fails Job's dry-run and is
+		//! rejected with the first diagnostic, head byte-identical.
+		AgentCommitResult ApplyAgentRemoveChunk(
+			const String& target,
+			const String& kind,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
 
 		//! @param job                     borrowed; caller keeps alive.
@@ -903,6 +934,21 @@ namespace RISE
 		//! Facet-5 agent commit) reuses the SAME park logic rather than
 		//! risk a subtly-different re-implementation.
 		void CancelAndParkRender_( std::unique_lock<std::mutex>& lk );
+
+		//! Model-B F5 slice S2: the SHARED body of ApplyAgentInsertChunk /
+		//! ApplyAgentRemoveChunk -- the two verbs differ ONLY in which Job
+		//! primitive runs inside the parked critical section and in their
+		//! rejection wording, so one core carries the whole reviewed commit
+		//! pattern (mTxnOpen refusal FIRST -> park under mMutex -> pre-flight
+		//! refusals -> conflict gate -> apply -> rebind on 2/3 -> code fold ->
+		//! MarkCstHeadDirty + kick on a mutated head).  `isInsert` selects the
+		//! primitive; `a` = chunkText (insert) or target name (remove); `b` =
+		//! unused (insert) or kind (remove).
+		AgentCommitResult ApplyAgentChunkCrud_(
+			bool isInsert,
+			const String& a,
+			const String& b,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
 
 		//! Re-point mEditor at the Job's CURRENT scene + managers.  Called at construction AND after any
 		//! whole-scene re-derive (a scene_variant switch ClearAll's + recreates the Scene + managers); without

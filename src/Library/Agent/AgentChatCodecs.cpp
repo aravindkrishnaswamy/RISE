@@ -4,7 +4,7 @@
 //    LLM chat loop (see AgentChatCodecs.h).
 //
 //  Layout:
-//    (1) the SEVEN provider-neutral tool definitions (1:1 with the
+//    (1) the NINE provider-neutral tool definitions (1:1 with the
 //        AgentRpc verbs; parameter names/shapes mirror AgentRpc.cpp),
 //    (2) a small raw-span JSON scanner (byte-exact extraction of the
 //        assistant content from a response body, so provider-opaque
@@ -117,6 +117,51 @@ namespace RISE
 						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
 						"\"required\":[\"uuid\",\"revision\"]}"
 					"},\"required\":[\"target\",\"param\",\"value\"]}"
+				},
+				{
+					"insert_chunk",
+					"ADD one new entity to the live scene by inserting a complete chunk. "
+					"chunkText must be EXACTLY ONE `keyword { ... }` block with the braces "
+					"on their own lines -- no scene header, no directives, no comments "
+					"outside the chunk, one chunk per call. Order matters: an entity must "
+					"be declared EARLIER in the document than its consumer, so insert a "
+					"painter/material/geometry BEFORE the object that references it. Use "
+					"read_schema for the chunk's parameters; for a BIG addition, compose "
+					"the full candidate document and validate it FIRST, then insert chunk "
+					"by chunk. Always pass the headVersion you last read as "
+					"baseHeadVersion. A duplicate (kind,name) is rejected -- pick a fresh "
+					"name. status=applied means the entity is live (a full re-derive ran); "
+					"render + read_image to verify.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"chunkText\":{\"type\":\"string\",\"description\":"
+						"\"One complete chunk as scene-language text, e.g. omni_light\\n{\\nname key\\nposition 0 5 0\\ncolor 1 1 1\\npower 3.0\\n}\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"chunkText\"]}"
+				},
+				{
+					"remove_chunk",
+					"DELETE one entity (a whole chunk) from the live scene by name. "
+					"Removal is whole-chunk only; the target is the chunk's bare name "
+					"(the same addressing as propose_patch), with optional kind (the "
+					"chunk keyword or a suffix like material) to narrow a name clash. "
+					"A target still REFERENCED by another chunk is rejected with the "
+					"diagnostic -- retarget or remove the consumers first. Always pass "
+					"the headVersion you last read as baseHeadVersion. There is no "
+					"rename: to rename an entity, insert the renamed chunk, retarget "
+					"its consumers via propose_patch, then remove the old one.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"target\":{\"type\":\"string\",\"description\":"
+						"\"The bare NAME of the chunk to remove (a chunk name from the document).\"},"
+						"\"kind\":{\"type\":\"string\",\"description\":"
+						"\"Optional entity KIND keyword (e.g. omni_light) to disambiguate a name clash.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"target\"]}"
 				},
 				{
 					"render",

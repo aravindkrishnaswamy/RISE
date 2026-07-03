@@ -88,6 +88,60 @@ namespace RISE
 				return o;
 			}
 
+			//! Model-B F5 slice S2: parse the OPTIONAL `baseHeadVersion` param
+			//! shared by propose_patch / insert_chunk / remove_chunk.  Returns
+			//! 1 = present and valid (outBase filled), 0 = absent (or null --
+			//! unconditional edit), -1 = malformed (outErr carries the -32602
+			//! message).  The validation is the slice-1a contract verbatim:
+			//! numeric uuid/revision, finite (explicit range test, NOT
+			//! std::isfinite -- -ffast-math folds that to true), non-negative,
+			//! integral, <= 2^53 (the largest exactly-representable integer
+			//! double; the monotonic-from-1 counters never approach it).
+			int ParseBaseHeadVersionParam( const JsonValue& params,
+			                               RISE::Cst::CstHeadVersion& outBase,
+			                               std::string& outErr )
+			{
+				const JsonValue* bhv = params.find( "baseHeadVersion" );
+				if( !bhv || bhv->isNull() ) return 0;
+				if( !bhv->isObject() ) {
+					outErr = "Invalid params: 'baseHeadVersion' must be an object {uuid,revision}";
+					return -1;
+				}
+				const JsonValue* u = bhv->find( "uuid" );
+				const JsonValue* rv = bhv->find( "revision" );
+				if( !u || !u->isNumber() || !rv || !rv->isNumber() ) {
+					outErr = "Invalid params: 'baseHeadVersion' needs numeric 'uuid' and 'revision'";
+					return -1;
+				}
+				const double ud = u->asNumber();
+				const double rd = rv->asNumber();
+				if( !( ud >= 0.0 && ud <= 9007199254740992.0 && ud == std::floor( ud ) &&
+				       rd >= 0.0 && rd <= 9007199254740992.0 && rd == std::floor( rd ) ) ) {
+					outErr = "Invalid params: 'baseHeadVersion' uuid/revision must be finite non-negative integers";
+					return -1;
+				}
+				outBase.uuid     = static_cast<std::uint64_t>( ud );
+				outBase.revision = static_cast<std::uint64_t>( rd );
+				return 1;
+			}
+
+			//! Model-B F5 slice S2: serialize an AgentChunkResult (insert_chunk /
+			//! remove_chunk share the shape: the propose_patch result fields plus
+			//! the affected chunk's name/kind echo).
+			JsonValue ChunkResultJson( const AgentChunkResult& cr )
+			{
+				JsonValue result = JsonValue::MakeObject();
+				result.set( "applied",   JsonValue::MakeBool( cr.applied ) );
+				result.set( "rawCode",   JsonValue::MakeNumber( static_cast<double>( cr.rawCode ) ) );
+				result.set( "status",    JsonValue::MakeString( cr.status ) );
+				result.set( "retriable", JsonValue::MakeBool( cr.retriable ) );
+				result.set( "headVersion", HeadVersionJson( cr.headVersion ) );
+				result.set( "message",   JsonValue::MakeString( cr.message ) );
+				result.set( "name",      JsonValue::MakeString( cr.name ) );
+				result.set( "kind",      JsonValue::MakeString( cr.kind ) );
+				return result;
+			}
+
 			//! Parse a schema JSON STRING (from SchemaGen) into a JsonValue so
 			//! it embeds as a nested object in the response, not a stringified
 			//! blob.  On the (defensive) chance SchemaGen ever emits something
@@ -321,36 +375,17 @@ namespace RISE
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'kind' must be a string" );
 					}
 					// OPTIONAL baseHeadVersion: when present it MUST be an object
-					// with numeric `uuid` + `revision` (else -32602).  A null value
-					// is treated as absent (unconditional edit).
-					if( const JsonValue* bhv = params.find( "baseHeadVersion" ) ) {
-						if( !bhv->isNull() ) {
-							if( !bhv->isObject() )
-								return MakeError( idValue, kInvalidParams, "Invalid params: 'baseHeadVersion' must be an object {uuid,revision}" );
-							const JsonValue* u = bhv->find( "uuid" );
-							const JsonValue* rv = bhv->find( "revision" );
-							if( !u || !u->isNumber() || !rv || !rv->isNumber() )
-								return MakeError( idValue, kInvalidParams, "Invalid params: 'baseHeadVersion' needs numeric 'uuid' and 'revision'" );
-							// Guard the casts: static_cast<uint64_t>(inf/nan/negative)
-							// is UB, and a fractional value would spuriously MATCH a
-							// real integer revision after truncation.  As with the
-							// render 'samples' guard below, an explicit range test is
-							// used (NOT std::isfinite, which -ffast-math /
-							// -ffinite-math-only folds to true): a plain >=/<= on the
-							// double survives the fold and rejects NaN (fails both
-							// bounds) and +/-inf (fails the 2^53 bound); the >=0 bound
-							// rejects negatives; the floor equality rejects fractions.
-							// 2^53 is the largest exactly-representable integer double;
-							// the monotonic-from-1 counters never approach it.
-							const double ud = u->asNumber();
-							const double rd = rv->asNumber();
-							if( !( ud >= 0.0 && ud <= 9007199254740992.0 && ud == std::floor( ud ) &&
-							       rd >= 0.0 && rd <= 9007199254740992.0 && rd == std::floor( rd ) ) )
-								return MakeError( idValue, kInvalidParams, "Invalid params: 'baseHeadVersion' uuid/revision must be finite non-negative integers" );
-							sp.hasBaseVersion    = true;
-							sp.baseVersion.uuid     = static_cast<std::uint64_t>( ud );
-							sp.baseVersion.revision = static_cast<std::uint64_t>( rd );
-						}
+					// with numeric, finite, non-negative INTEGRAL uuid/revision
+					// (else -32602); null is treated as absent (unconditional
+					// edit).  Validation factored into ParseBaseHeadVersionParam
+					// (Model-B F5 S2: insert_chunk / remove_chunk share it) --
+					// the UB-guard rationale (explicit range test surviving
+					// -ffast-math, NOT std::isfinite) lives on the helper.
+					{
+						std::string bErr;
+						const int b = ParseBaseHeadVersionParam( params, sp.baseVersion, bErr );
+						if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+						sp.hasBaseVersion = ( b == 1 );
 					}
 					const AgentPatchResult pr = s->ProposePatch( sp );
 					JsonValue result = JsonValue::MakeObject();
@@ -361,6 +396,61 @@ namespace RISE
 					result.set( "headVersion", HeadVersionJson( pr.headVersion ) );
 					result.set( "message", JsonValue::MakeString( pr.message ) );
 					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// insert_chunk {chunkText, baseHeadVersion?}
+				//   -> {applied,rawCode,status,retriable,headVersion,message,name,kind}
+				//   Model-B F5 slice S2: ADD one complete chunk to the head and
+				//   REALIZE it via a dry-run-guarded full re-derive.  The result
+				//   gates exactly like propose_patch ({"applied","rejected",
+				//   "diagnosed","conflict"} + retriable) and echoes the parsed
+				//   chunk's kind/name.  REQUIRES a head: no session -> error.
+				//--------------------------------------------------------------
+				if( m == "insert_chunk" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* chunkText = params.find( "chunkText" );
+					if( !chunkText || !chunkText->isString() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'chunkText' (string) is required" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+					const AgentChunkResult cr =
+						s->InsertChunk( chunkText->asString(), ( b == 1 ) ? &base : nullptr );
+					return MakeSuccess( idValue, ChunkResultJson( cr ) );
+				}
+
+				//--------------------------------------------------------------
+				// remove_chunk {target, kind?, baseHeadVersion?}
+				//   -> {applied,rawCode,status,retriable,headVersion,message,name,kind}
+				//   Model-B F5 slice S2: REMOVE the chunk resolved by bare name
+				//   (+ optional kind narrowing, same resolution as propose_patch)
+				//   via the trivia-preserving erase; a still-referenced target is
+				//   rejected with the dry-run diagnostic, head byte-identical.
+				//--------------------------------------------------------------
+				if( m == "remove_chunk" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* target = params.find( "target" );
+					if( !target || !target->isString() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'target' (string) is required" );
+					}
+					std::string kind;
+					if( const JsonValue* kv = params.find( "kind" ) ) {
+						if( kv->isString() ) kind = kv->asString();
+						else if( !kv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'kind' must be a string" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+					const AgentChunkResult cr =
+						s->RemoveChunk( target->asString(), kind, ( b == 1 ) ? &base : nullptr );
+					return MakeSuccess( idValue, ChunkResultJson( cr ) );
 				}
 
 				//--------------------------------------------------------------

@@ -170,8 +170,8 @@ double DoHighIntensityPerformanceRating2( double* pStdDev )
 // read_schema, read_skill, validate, and read_document -- work with NO head
 // (the agent bootstraps a scene from scratch: read the grammar, read the
 // authoring skills, validate a candidate, read the empty head); the
-// HEAD-BACKED methods -- propose_patch, render, read_image -- return a
-// "no session" internal error until a head exists.
+// HEAD-BACKED methods -- propose_patch, insert_chunk, remove_chunk, render,
+// read_image -- return a "no session" internal error until a head exists.
 //
 // The trust boundary is the OS process (design §7.2); slice 0c adds NO
 // auth token and NO networking -- stdin/stdout only.

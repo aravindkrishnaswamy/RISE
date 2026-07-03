@@ -862,6 +862,213 @@ namespace RISE
 			return r;
 		}
 
+		namespace
+		{
+			//! Model-B F5 slice S2: fold a chunk-CRUD code from the DIRECT
+			//! (headless) Job path into the result.  The controller path has
+			//! its own identical fold (SceneEditController::ApplyAgentChunkCrud_)
+			//! -- kept separate because the layers may not depend on each
+			//! other's result types (the dependency runs Agent -> SceneEditor
+			//! only, and SceneEditor cannot see AgentChunkResult).
+			void FoldChunkCode( AgentChunkResult& r, int code, bool isInsert,
+			                    const std::string& target, const char* diag )
+			{
+				r.rawCode = ( code < 0 ) ? 0 : code;
+				switch( code ) {
+					case 2:
+						r.applied = true;
+						r.status  = "applied";
+						r.message = isInsert
+							? "chunk inserted via a full re-derive (Scene + managers were replaced)"
+							: "chunk removed via a full re-derive (Scene + managers were replaced)";
+						break;
+					case 3:
+						r.applied = false;
+						r.status  = "diagnosed";
+						r.message = "edit NOT a clean success: the Document was mutated and the live managers were "
+						            "replaced, BUT the full re-derive emitted diagnostics (see log) -- do NOT treat as applied";
+						break;
+					case -1:
+						r.applied = false;
+						r.status  = "rejected";
+						if( isInsert ) {
+							r.message = "insert rejected: chunkText must parse to exactly ONE complete chunk "
+							            "(`keyword { ... }`, braces on their own lines; no scene header/directives)";
+							if( diag && diag[0] ) { r.message += ": "; r.message += diag; }
+						} else if( diag && diag[0] ) {
+							// A diagnosed -1 (e.g. the kind-verification refusal:
+							// the name resolved but to a DIFFERENT kind) carries
+							// its own specific reason -- surface it verbatim.
+							r.message = std::string( "remove rejected: " ) + diag + " -- head unchanged";
+						} else {
+							r.message = "remove rejected: no chunk named '" + target + "' found -- head unchanged";
+						}
+						break;
+					case -2:
+						r.applied = false;
+						r.status  = "rejected";
+						if( isInsert ) {
+							r.message = "insert rejected: a chunk with the same kind and name already exists";
+							if( diag && diag[0] ) { r.message += " ("; r.message += diag; r.message += ")"; }
+							r.message += " -- head unchanged";
+						} else {
+							r.message = "remove rejected: name '" + target + "' is ambiguous -- pass `kind` to narrow";
+						}
+						break;
+					case 0:
+					default:
+						r.applied = false;
+						r.status  = "rejected";
+						r.message = isInsert
+							? std::string( "insert rejected: the chunk would not derive in context -- head unchanged" )
+							: "remove rejected: removing '" + target + "' would not derive (it is likely still REFERENCED by another chunk) -- head unchanged";
+						if( diag && diag[0] ) { r.message += ": "; r.message += diag; }
+						break;
+				}
+			}
+		}
+
+		AgentChunkResult AgentSession::InsertChunk( const std::string& chunkText,
+		                                            const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			AgentChunkResult r;
+
+			// LIVE mode: delegate wholesale to the controller's render-safe
+			// path (park + conflict gate + Job primitive + rebind + dirty +
+			// kick), exactly as ProposePatch does.  Map its AgentCommitResult
+			// 1:1, including the chunk-identity echo.
+			if( mController )
+			{
+				const SceneEditController::AgentCommitResult cr =
+					mController->ApplyAgentInsertChunk( String( chunkText.c_str() ), baseOrNull );
+				r.applied     = cr.applied;
+				r.retriable   = cr.retriable;
+				r.rawCode     = cr.rawCode;
+				r.status      = cr.status.c_str();
+				r.headVersion = cr.headVersion;
+				r.message     = cr.message.c_str();
+				r.name        = cr.chunkName.c_str();
+				r.kind        = cr.chunkKeyword.c_str();
+				return r;
+			}
+
+			// HEADLESS (direct-Job) mode.  Pre-flight guards mirror ProposePatch.
+			if( !mJob || !mJob->HasRetainedCstDocument() ) {
+				r.applied = false;
+				r.rawCode = 0;
+				r.status  = "rejected";
+				r.headVersion = HeadVersion();
+				r.message = "no retained CST Document -- InsertChunk needs a CST-loaded head";
+				return r;
+			}
+			if( chunkText.empty() ) {
+				r.applied = false;
+				r.rawCode = 0;
+				r.status  = "rejected";
+				r.headVersion = mJob->GetCstHeadVersion();
+				r.message = "chunkText must be non-empty";
+				return r;
+			}
+			// Optimistic-concurrency CONFLICT precondition, BEFORE any mutation
+			// (same semantics + message as ProposePatch's slice-1a gate).
+			if( baseOrNull ) {
+				const RISE::Cst::CstHeadVersion cur = mJob->GetCstHeadVersion();
+				if( *baseOrNull != cur ) {
+					r.applied     = false;
+					r.rawCode     = 0;
+					r.status      = "conflict";
+					r.headVersion = cur;
+					char buf[160];
+					std::snprintf( buf, sizeof( buf ),
+						"stale baseHeadVersion: head moved to revision %llu (re-read and re-propose)",
+						static_cast<unsigned long long>( cur.revision ) );
+					r.message = buf;
+					return r;
+				}
+			}
+
+			char kwBuf[128];   kwBuf[0] = '\0';
+			char nameBuf[256]; nameBuf[0] = '\0';
+			char diagBuf[512]; diagBuf[0] = '\0';
+			const int code = mJob->ApplyCstInsertChunk( chunkText.c_str(),
+			                                            kwBuf, sizeof( kwBuf ),
+			                                            nameBuf, sizeof( nameBuf ),
+			                                            diagBuf, sizeof( diagBuf ) );
+			r.kind = kwBuf;
+			r.name = nameBuf;
+			FoldChunkCode( r, code, /*isInsert*/ true, std::string(), diagBuf );
+			r.headVersion = mJob->GetCstHeadVersion();
+			return r;
+		}
+
+		AgentChunkResult AgentSession::RemoveChunk( const std::string& target,
+		                                            const std::string& kind,
+		                                            const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			AgentChunkResult r;
+			r.name = target;
+
+			// LIVE mode: delegate to the controller (see InsertChunk).
+			if( mController )
+			{
+				const SceneEditController::AgentCommitResult cr =
+					mController->ApplyAgentRemoveChunk( String( target.c_str() ),
+					                                    String( kind.c_str() ), baseOrNull );
+				r.applied     = cr.applied;
+				r.retriable   = cr.retriable;
+				r.rawCode     = cr.rawCode;
+				r.status      = cr.status.c_str();
+				r.headVersion = cr.headVersion;
+				r.message     = cr.message.c_str();
+				r.name        = cr.chunkName.c_str();
+				r.kind        = cr.chunkKeyword.c_str();
+				return r;
+			}
+
+			if( !mJob || !mJob->HasRetainedCstDocument() ) {
+				r.applied = false;
+				r.rawCode = 0;
+				r.status  = "rejected";
+				r.headVersion = HeadVersion();
+				r.message = "no retained CST Document -- RemoveChunk needs a CST-loaded head";
+				return r;
+			}
+			if( target.empty() ) {
+				r.applied = false;
+				r.rawCode = 0;
+				r.status  = "rejected";
+				r.headVersion = mJob->GetCstHeadVersion();
+				r.message = "target must be non-empty";
+				return r;
+			}
+			if( baseOrNull ) {
+				const RISE::Cst::CstHeadVersion cur = mJob->GetCstHeadVersion();
+				if( *baseOrNull != cur ) {
+					r.applied     = false;
+					r.rawCode     = 0;
+					r.status      = "conflict";
+					r.headVersion = cur;
+					char buf[160];
+					std::snprintf( buf, sizeof( buf ),
+						"stale baseHeadVersion: head moved to revision %llu (re-read and re-propose)",
+						static_cast<unsigned long long>( cur.revision ) );
+					r.message = buf;
+					return r;
+				}
+			}
+
+			char kwBuf[128];   kwBuf[0] = '\0';
+			char diagBuf[512]; diagBuf[0] = '\0';
+			const int code = mJob->ApplyCstRemoveChunk( target.c_str(),
+			                                            kind.empty() ? nullptr : kind.c_str(),
+			                                            kwBuf, sizeof( kwBuf ),
+			                                            diagBuf, sizeof( diagBuf ) );
+			r.kind = kwBuf;
+			FoldChunkCode( r, code, /*isInsert*/ false, target, diagBuf );
+			r.headVersion = mJob->GetCstHeadVersion();
+			return r;
+		}
+
 		AgentRenderResult AgentSession::Render( int samplesOverride )
 		{
 			AgentRenderResult res;

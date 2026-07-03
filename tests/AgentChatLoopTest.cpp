@@ -293,7 +293,7 @@ static void TestAnthropicRequestShape()
 	Check( sawVersion, "anthropic-version: 2023-06-01 header present" );
 	CheckKeyOnlyInAuthHeader( req, "x-api-key", "T1" );
 
-	// Body shape: model / max_tokens / system / all seven tools / the user turn.
+	// Body shape: model / max_tokens / system / all nine tools / the user turn.
 	JsonValue root = ParseBody( req.body );
 	Check( root.isObject(), "body parses as JSON" );
 	Check( root.get( "model" ).asString() == "claude-sonnet-5", "body carries the model id" );
@@ -306,10 +306,11 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 7, "body carries exactly seven tools" );
+	Check( tools.isArray() && tools.size() == 9, "body carries exactly nine tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
-	                           "propose_patch", "render", "read_image" };
-	for( int t = 0; t < 7; ++t ) {
+	                           "propose_patch", "insert_chunk", "remove_chunk",
+	                           "render", "read_image" };
+	for( int t = 0; t < 9; ++t ) {
 		bool found = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() == expected[t] ) {
@@ -347,11 +348,43 @@ static void TestAnthropicRequestShape()
 			Check( desc.find( "error-severity" ) != std::string::npos,
 			       "validate description scopes failure to error-severity diagnostics" );
 		}
+		// Model-B F5 slice S2: the chunk-CRUD descriptions are prescriptive --
+		// insert_chunk teaches one-chunk-per-call, declare-before-use ordering,
+		// validate-first for big additions, and the headVersion protocol;
+		// remove_chunk teaches the referenced-target refusal + no-rename limit.
+		if( name == "insert_chunk" ) {
+			Check( desc.find( "baseHeadVersion" ) != std::string::npos,
+			       "insert_chunk description instructs passing baseHeadVersion" );
+			Check( desc.find( "ONE" ) != std::string::npos,
+			       "insert_chunk description teaches one-chunk-per-call" );
+			Check( desc.find( "validate" ) != std::string::npos,
+			       "insert_chunk description teaches validate-first for big additions" );
+			Check( desc.find( "EARLIER" ) != std::string::npos,
+			       "insert_chunk description teaches declare-before-use ordering" );
+		}
+		if( name == "remove_chunk" ) {
+			Check( desc.find( "baseHeadVersion" ) != std::string::npos,
+			       "remove_chunk description instructs passing baseHeadVersion" );
+			Check( desc.find( "REFERENCED" ) != std::string::npos,
+			       "remove_chunk description teaches the still-referenced refusal" );
+			Check( desc.find( "no rename" ) != std::string::npos ||
+			       desc.find( "There is no rename" ) != std::string::npos,
+			       "remove_chunk description states the no-rename limit" );
+		}
 	}
 	Check( root.get( "system" ).asString().find( "status=diagnosed" ) != std::string::npos,
 	       "the system prompt teaches status=diagnosed" );
-	Check( root.get( "system" ).asString().find( "adding or removing entities is not supported yet" ) != std::string::npos,
-	       "the system prompt states the parameter-only capability scope (no entity add/remove)" );
+	// Model-B F5 slice S2: the capability sentence now states entity add/remove
+	// is REAL (insert_chunk / remove_chunk) with honest limits, replacing the
+	// pre-S2 "not supported yet" scope.
+	Check( root.get( "system" ).asString().find( "adding or removing entities is not supported yet" ) == std::string::npos,
+	       "the stale parameters-only capability sentence is GONE" );
+	Check( root.get( "system" ).asString().find( "insert_chunk" ) != std::string::npos &&
+	       root.get( "system" ).asString().find( "remove_chunk" ) != std::string::npos,
+	       "the system prompt teaches the S2 chunk-CRUD verbs" );
+	Check( root.get( "system" ).asString().find( "whole-chunk granularity" ) != std::string::npos &&
+	       root.get( "system" ).asString().find( "no rename" ) != std::string::npos,
+	       "the system prompt keeps honest limits (whole-chunk granularity; no rename)" );
 
 	const JsonValue& msgs = root.get( "messages" );
 	Check( msgs.isArray() && msgs.size() == 1, "body carries the one user message" );
@@ -426,6 +459,73 @@ static void TestAnthropicToolLoop( AgentRpcDispatcher& rpc )
 	       "a FinalText result carries the display text too" );
 	Check( fin.errorKind == ChatErrorKind::None, "a FinalText result carries errorKind None" );
 	Check( loop.TranscriptSize() == 4, "transcript is user + assistant + tool-results + assistant" );
+}
+
+//----------------------------------------------------------------------
+// T2b (Model-B F5 slice S2): a canned insert_chunk tool_use round-trips
+// through the LIVE dispatcher -- the model asks to add an omni_light, the
+// loop translates it to a JSON-RPC line, the dispatcher REALLY inserts +
+// re-derives, and the result JSON (applied:true + the name/kind echo)
+// rides back in the tool_result.
+//----------------------------------------------------------------------
+static void TestInsertChunkToolLoop( AgentRpcDispatcher& rpc )
+{
+	std::printf( "T2b: insert_chunk tool loop end-to-end (live dispatcher)...\n" );
+	AgentChatLoop loop;
+	loop.AddUserMessage( "Add a key light above the sphere" );
+
+	const std::string fixture = AnthropicFixture(
+		"[{\"type\":\"text\",\"text\":\"Adding a key light.\"},"
+		"{\"type\":\"tool_use\",\"id\":\"toolu_ins1\",\"name\":\"insert_chunk\","
+		"\"input\":{\"chunkText\":\"omni_light\\n{\\nname chatloop_key\\nposition 0 5 0\\ncolor 1 1 1\\npower 2.0\\n}\"}}]",
+		"tool_use" );
+
+	ChatStepResult st = loop.HandleResponse( 200, fixture );
+	Check( st.kind == ChatStepResult::Kind::ToolCalls && st.toolCalls.size() == 1,
+	       "insert_chunk fixture -> one ToolCall" );
+	if( st.toolCalls.size() != 1 ) return;
+	Check( st.toolCalls[0].name == "insert_chunk", "call name is insert_chunk" );
+
+	const std::string line = loop.ToolCallToJsonRpcLine( st.toolCalls[0], 42 );
+	JsonValue lineJson = ParseBody( line );
+	Check( lineJson.get( "method" ).asString() == "insert_chunk", "rpc line carries the method" );
+	Check( lineJson.get( "params" ).get( "chunkText" ).asString().find( "chatloop_key" ) != std::string::npos,
+	       "rpc line params carry the chunk text" );
+	const std::string resp = rpc.HandleLine( line );
+	JsonValue respJson = ParseBody( resp );
+	Check( respJson.get( "result" ).get( "applied" ).asBool(),
+	       "the LIVE dispatcher really inserted the chunk" );
+	Check( respJson.get( "result" ).get( "name" ).asString() == "chatloop_key",
+	       "the result echoes the parsed chunk name" );
+	Check( respJson.get( "result" ).get( "kind" ).asString() == "omni_light",
+	       "the result echoes the parsed chunk kind" );
+
+	loop.AddToolResult( st.toolCalls[0], resp );
+	const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+	JsonValue root = ParseBody( req.body );
+	JsonValue last = LastArrayEntry( root, "messages" );
+	Check( last.get( "role" ).asString() == "user", "insert_chunk result rides in a user message" );
+	const std::string resultText =
+		last.get( "content" ).at( 0 ).get( "content" ).at( 0 ).get( "text" ).asString();
+	Check( resultText.find( "\"applied\":true" ) != std::string::npos,
+	       "the REAL insert result JSON rides in the tool_result" );
+
+	// Clean up the inserted light through the SAME loop so the shared
+	// dispatcher scene stays as the later tests expect it (T2 relies on
+	// pnt_albedo only; the extra light would only brighten renders, but
+	// removing it also round-trips remove_chunk through the live path).
+	const std::string rmFixture = AnthropicFixture(
+		"[{\"type\":\"tool_use\",\"id\":\"toolu_rm1\",\"name\":\"remove_chunk\","
+		"\"input\":{\"target\":\"chatloop_key\",\"kind\":\"omni_light\"}}]",
+		"tool_use" );
+	ChatStepResult st2 = loop.HandleResponse( 200, rmFixture );
+	Check( st2.kind == ChatStepResult::Kind::ToolCalls && st2.toolCalls.size() == 1,
+	       "remove_chunk fixture -> one ToolCall" );
+	if( st2.toolCalls.size() != 1 ) return;
+	const std::string rmResp = rpc.HandleLine( loop.ToolCallToJsonRpcLine( st2.toolCalls[0], 43 ) );
+	Check( ParseBody( rmResp ).get( "result" ).get( "applied" ).asBool(),
+	       "the LIVE dispatcher really removed the chunk (remove_chunk round-trips too)" );
+	loop.AddToolResult( st2.toolCalls[0], rmResp );
 }
 
 //----------------------------------------------------------------------
@@ -580,15 +680,28 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 7, "seven functionDeclarations" );
-		bool sawPatch = false;
-		for( std::size_t i = 0; i < decls.size(); ++i )
+		Check( decls.isArray() && decls.size() == 9, "nine functionDeclarations" );
+		bool sawPatch = false, sawInsert = false, sawRemove = false;
+		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {
 				sawPatch = true;
 				Check( decls.at( i ).get( "parameters" ).isObject(),
 				       "propose_patch declaration carries parameters" );
 			}
+			if( decls.at( i ).get( "name" ).asString() == "insert_chunk" ) {
+				sawInsert = true;
+				Check( decls.at( i ).get( "parameters" ).isObject(),
+				       "insert_chunk declaration carries parameters" );
+			}
+			if( decls.at( i ).get( "name" ).asString() == "remove_chunk" ) {
+				sawRemove = true;
+				Check( decls.at( i ).get( "parameters" ).isObject(),
+				       "remove_chunk declaration carries parameters" );
+			}
+		}
 		Check( sawPatch, "functionDeclarations include propose_patch" );
+		Check( sawInsert && sawRemove,
+		       "functionDeclarations include the S2 chunk-CRUD verbs (both providers)" );
 		const JsonValue& contents = root.get( "contents" );
 		Check( contents.isArray() && contents.size() == 1 &&
 		       contents.at( 0 ).get( "role" ).asString() == "user",
@@ -1974,6 +2087,7 @@ int main()
 
 	TestAnthropicRequestShape();
 	TestAnthropicToolLoop( rpc );
+	TestInsertChunkToolLoop( rpc );
 	TestAnthropicReadImagePacking( rpc );
 	TestParallelToolUse( rpc );
 	TestGemini( rpc );

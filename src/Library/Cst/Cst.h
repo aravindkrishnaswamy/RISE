@@ -515,6 +515,13 @@ namespace RISE
 		//! 0 if out of range). `*visits` (if non-null) receives the descent count.
 		NodeId DocNodeIdAt( const Document& doc, int index, int* visits = nullptr );
 
+		//! The "keyword/name" addressing key of a NAMED chunk item ("" for a
+		//! non-chunk item or an unnamed chunk) -- the SAME key DocFindByName
+		//! resolves, exposed so a caller building a name-path from a parsed
+		//! chunk (Model-B F5 S2: insert_chunk's duplicate-(kind,name) check)
+		//! uses the one canonical construction instead of re-deriving it.
+		std::string ChunkNamePath( const NodeRef& item );
+
 		//! Resolve a name-path (e.g. "sphere_geometry/s") to its NodeId, REQUIRING a
 		//! unique occurrence: returns the id iff exactly one chunk has that name-path,
 		//! else 0. `*occurrences` (if non-null) receives the count (0 = absent,

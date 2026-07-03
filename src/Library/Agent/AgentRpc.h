@@ -36,6 +36,27 @@
 //                                            LIVE mode; resubmit the same patch later.
 //                                            Permanent rejects are false; a "conflict"
 //                                            is retriable-by-protocol via re-read.)
+//      insert_chunk {chunkText,baseHeadVersion?:{uuid,revision}}
+//                                        -> {applied,rawCode,status,retriable,headVersion,message,name,kind}
+//                                           (Model-B F5 slice S2: ADD one complete chunk
+//                                            -- a `keyword { ... }` block -- to the head
+//                                            and REALIZE it via a dry-run-guarded full
+//                                            re-derive.  Same result gating as
+//                                            propose_patch, plus the parsed chunk's
+//                                            `kind` (keyword) + `name` echo.  Exactly
+//                                            ONE chunk per call; headers/directives/
+//                                            multi-chunk text and duplicate (kind,name)
+//                                            are rejected with a specific message.)
+//      remove_chunk {target,kind?,baseHeadVersion?}
+//                                        -> {applied,rawCode,status,retriable,headVersion,message,name,kind}
+//                                           (Model-B F5 slice S2: REMOVE the chunk
+//                                            resolved by bare name (+ optional kind
+//                                            narrowing, same rules as propose_patch)
+//                                            via the trivia-preserving erase.  Unknown
+//                                            -> rejected; ambiguous -> rejected with a
+//                                            disambiguation hint; a still-referenced
+//                                            target fails the dry-run -> rejected with
+//                                            the diagnostic, head byte-identical.)
 //      render       {samples?}           -> {ok,width,height,meanR,meanG,meanB,message}
 //      read_image                        -> {png_base64:string, byteLength:number}
 //

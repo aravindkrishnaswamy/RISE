@@ -136,6 +136,32 @@ namespace RISE
 			std::string message;
 		};
 
+		//! Model-B F5 slice S2: the structured result of InsertChunk /
+		//! RemoveChunk.  SAME shape and gating semantics as AgentPatchResult
+		//! (applied = CLEAN success only; status in {"applied","rejected",
+		//! "diagnosed","conflict"}; retriable marks the ONE transient reject
+		//! -- the LIVE-mode open-editor-transaction refusal; headVersion is
+		//! the head AFTER the call) PLUS the affected chunk's identity echo:
+		//! `kind` = the chunk KEYWORD, `name` = its `name` param (the remove
+		//! target's bare name on a remove; "" for an unnamed chunk).  Filled
+		//! as soon as the chunk parses / the target resolves, so even a
+		//! refusal identifies what was attempted.
+		//! rawCode stays in the wire contract {0,1,2,3}: a chunk CRUD that
+		//! lands is ALWAYS a D2 full re-derive, so a success is rawCode 2
+		//! (never 1); Job's internal negative pre-derive refusal codes are
+		//! normalized to 0 with a specific message.
+		struct AgentChunkResult
+		{
+			bool        applied = false;
+			bool        retriable = false;
+			int         rawCode = 0;
+			std::string status;
+			RISE::Cst::CstHeadVersion headVersion;
+			std::string message;
+			std::string name;   //!< the chunk's `name` param / the remove target
+			std::string kind;   //!< the chunk keyword (e.g. "omni_light")
+		};
+
 		//! The structured result of Render: the rendered head as PNG bytes
 		//! plus the film dims.  `ok` is false (and `png` empty) when no head
 		//! is loaded or the render failed.
@@ -327,6 +353,40 @@ namespace RISE
 			//! head on reject/diagnosed/conflict).  Absent baseVersion -> the edit is
 			//! UNCONDITIONAL (slice-0 back-compat).
 			AgentPatchResult ProposePatch( const AgentSetPatch& patch );
+
+			//! Model-B F5 slice S2 (insert_chunk): ADD one complete chunk (a
+			//! `keyword { ... }` block, braces on their own lines) to the head
+			//! and REALIZE it in the live scene via a dry-run-guarded FULL
+			//! re-derive -- a failed dry-run leaves the Document AND the live
+			//! scene byte-identical (no half-applied state).  Validation
+			//! (all authoritative in Job, under the controller's lock in LIVE
+			//! mode): exactly ONE chunk with nothing but whitespace around it
+			//! (headers / directives / multi-chunk text refused); a duplicate
+			//! (kind,name) against an existing chunk refused early with a
+			//! clean message (variant overlays exempt); an in-context derive
+			//! failure refused with the first dry-run diagnostic.  LIVE mode
+			//! (controller attached) routes through the render-safe
+			//! ApplyAgentInsertChunk (park + conflict gate + rebind + dirty +
+			//! kick); headless calls Job::ApplyCstInsertChunk directly with
+			//! the same conflict gate here.  `baseOrNull` is the OPTIONAL
+			//! optimistic-concurrency precondition (see ProposePatch).
+			AgentChunkResult InsertChunk( const std::string& chunkText,
+			                              const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! Model-B F5 slice S2 (remove_chunk): REMOVE the chunk resolved
+			//! by bare name `target` (+ optional `kind` keyword-suffix
+			//! narrowing -- the SAME resolution rules as ProposePatch,
+			//! including the sole-unnamed-camera positional fallback) and drop
+			//! the entity from the live scene via the same dry-run-guarded
+			//! full re-derive.  The Document erase is the TRIVIA-PRESERVING
+			//! Cst::DocEraseChunkTidy -- safe for FILE-AUTHORED chunks (never
+			//! the clone-undo-only idx-1 drop).  Unknown target -> rejected;
+			//! ambiguous -> rejected with a disambiguation hint; a target
+			//! still REFERENCED by another chunk fails the dry-run and is
+			//! rejected with the diagnostic, head byte-identical.
+			AgentChunkResult RemoveChunk( const std::string& target,
+			                              const std::string& kind = std::string(),
+			                              const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
 			//! render + read_image (slice 0b): render the current head into an
 			//! in-memory sRGB PNG and return the bytes + film dims.  Headless
