@@ -3626,8 +3626,12 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		char* buf, unsigned int bufLen );
 
 	//! Apply an edited value.  Triggers a re-render via the
-	//! cancel-restart loop.  Returns false on parse failure or
-	//! read-only property.
+	//! cancel-restart loop.  Returns false on parse failure,
+	//! read-only property, OR (Object edits, A2) when the live edit
+	//! applied but the CST transform-commit follow-through failed --
+	//! in that last case the scene DID change and re-renders even
+	//! though this returns false (the failure is logged; callers
+	//! must not treat false as "nothing happened").
 	bool RISE_API_SceneEditController_SetProperty(
 		SceneEditController* p, const char* name, const char* valueStr );
 

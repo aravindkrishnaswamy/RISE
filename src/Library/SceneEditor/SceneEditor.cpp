@@ -1252,8 +1252,11 @@ bool SceneEditor::ApplyCstObjectComponents_( const std::string& name, const std:
 // per-frame gizmo edits only NOTE objects (NoteCstObjectTransform_); this single flush at drag-end / panel-edit /
 // undo / redo does the one re-derive.  Snapshot EVERY target matrix BEFORE routing any -- the first route's D2
 // rebuilds the scene from the Document, which would reset a not-yet-routed object's live transform to its (stale)
-// Document value.  Returns false if any route failed (the live edit still stands; the CST just couldn't record
-// it -- logged).
+// Document value.  Returns false if any route failed.  Two failure shapes, OPPOSITE Document states (A2):
+// code 0 = the Document did NOT record the live transform -- a later full re-derive (D2) rebuilds the live
+// scene FROM the Document and therefore REVERTS the unrecorded transform (the divergence resolves by LOSING
+// the live edit, not by recording it); code 3 = the Document DID record it but the live re-derive diagnosed.
+// Either way the live edit stands right now and the failure is logged.
 bool SceneEditor::CommitPendingCstObjectTransforms()
 {
 	if( mPendingCstObjMatrix.empty() ) return true;
@@ -1294,7 +1297,7 @@ bool SceneEditor::CommitPendingCstObjectTransforms()
 		}
 		if( !routed ) {
 			ok = false;
-			GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: object transform commit to the CST failed for `%s` (live edit stands, but the Document is out of sync)", work[i].name.c_str() );
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: object transform commit to the CST failed for `%s` -- the live edit stands; EITHER the Document did not record it (a later full re-derive will REVERT the live transform) OR it was recorded but the re-derive diagnosed; see the preceding log lines", work[i].name.c_str() );
 		}
 	}
 	return ok;
@@ -1327,8 +1330,10 @@ bool SceneEditor::CommitPendingCstCameraPose()
 	const int r = mJob->ApplyCstCameraPoseEdit( camName.c_str(), loc.c_str(), lookat.c_str(), up.c_str(), orient.c_str(), target.c_str() );
 	if( r >= 2 ) RebindToJob_();
 	if( r != 0 ) mCstLiveSceneChanged = true;   // code 1/2/3 all MUTATED the live scene -> the controller must re-render
-	if( r == 0 || r == 3 )
-		GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: camera pose commit to the CST failed for `%s` (live edit stands, but the Document is out of sync)", camName.c_str() );
+	if( r == 0 )
+		GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: camera pose commit to the CST failed for `%s` -- the Document did NOT record the live pose (a later full re-derive will REVERT it)", camName.c_str() );
+	else if( r == 3 )
+		GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: camera pose commit for `%s` recorded in the Document but the re-derive DIAGNOSED (see log) -- not a clean success", camName.c_str() );
 	return r == 1 || r == 2;
 }
 

@@ -1661,10 +1661,13 @@ void SceneEditController::Undo()
 	//
 	// A2: Undo() reports `didWork` -- whether history moved -- not whether the CST recording of that move
 	// succeeded; those are different questions (a partial CST-commit failure here still means the LIVE undo
-	// happened and the caller should treat it as "did work"). A commit failure is logged by the commit itself and
-	// leaves the Document diverged from the live scene only until the next full re-derive (D2) resyncs it --
-	// the same known, documented limitation OnPointerUp accepts for the gesture-end commit. Ignoring the return
-	// here is consistent with that, not an oversight.
+	// happened and the caller should treat it as "did work"). A commit failure is logged by the commit itself.
+	// BE PRECISE about the consequence (the two failure shapes have OPPOSITE Document states): code 0 means the
+	// Document did NOT record the undone transform, and a later full re-derive (D2) rebuilds the live scene FROM
+	// the Document -- i.e. the D2 REVERTS the live undo rather than recording it (the divergence resolves in the
+	// data-losing direction); code 3 means the Document DID record it but the re-derive diagnosed. Ignoring the
+	// return here is the same known, accepted limitation OnPointerUp carries for the gesture-end commit -- an
+	// oversight it is not, but neither is a later D2 a safe recovery path.
 	if( mEditor.HasPendingCstObjectTransforms() ) mEditor.CommitPendingCstObjectTransforms();
 	if( mEditor.HasPendingCstCameraPose() ) mEditor.CommitPendingCstCameraPose();
 	// P1: re-validate the selection UNCONDITIONALLY -- a stale selection (selected
@@ -1714,8 +1717,8 @@ void SceneEditController::Redo()
 	//
 	// A2: same rationale as Undo above -- `didWork` is about history motion (redo advanced), not about whether
 	// this CST recording succeeded; a commit failure is logged by the commit itself and is a known, accepted
-	// limitation (Document diverges from the live scene until the next D2 resync), consistent with OnPointerUp
-	// and Undo.
+	// limitation, consistent with OnPointerUp and Undo. See Undo's comment for the precise per-code consequence
+	// (code 0: a later D2 REVERTS the unrecorded live transform; code 3: recorded but diagnosed).
 	if( mEditor.HasPendingCstObjectTransforms() ) mEditor.CommitPendingCstObjectTransforms();
 	if( mEditor.HasPendingCstCameraPose() ) mEditor.CommitPendingCstCameraPose();
 	DropStaleSelection_();   // P1: see Undo -- re-validate selection on any redo attempt
@@ -1942,9 +1945,10 @@ bool SceneEditController::RollbackTransaction()
 	//
 	// A2: unlike OnPointerUp/Undo/Redo (void or history-motion-scoped returns), RollbackTransaction already
 	// reports an honest `fullyReverted` bool for partial reverts (trimmed history, a target entity gone) -- a
-	// commit failure here belongs in that SAME honesty contract: the CST did NOT record the revert, so the
-	// Document is out of sync with the reverted live scene, which is exactly the condition `fullyReverted`
-	// exists to report. Fold it in via `&=` (both commits still run unconditionally; a route failure is
+	// commit failure here belongs in that SAME honesty contract: the commit did not CLEANLY record the revert
+	// (code 0: not recorded at all -- a later D2 would replay the stale Document over the reverted live scene;
+	// code 3: recorded but the re-derive diagnosed), which is exactly the not-fully-reverted condition
+	// `fullyReverted` exists to report. Fold it in via `&=` (both commits still run unconditionally; a route failure is
 	// independently logged by the commit itself).
 	if( mEditor.HasPendingCstObjectTransforms() ) fullyReverted &= mEditor.CommitPendingCstObjectTransforms();
 	if( mEditor.HasPendingCstCameraPose() ) fullyReverted &= mEditor.CommitPendingCstCameraPose();

@@ -873,7 +873,11 @@ namespace RISE
 
 		//! Apply an edit to a named property.  Triggers a re-render via
 		//! the existing edit-pending machinery.  Returns false if the
-		//! parse fails or the property is read-only.  Routes through
+		//! parse fails, the property is read-only, or (Object edits,
+		//! A2) the live edit applied but the CST transform-commit
+		//! follow-through failed -- in that case the scene DID change
+		//! and re-renders even though this returns false (logged;
+		//! false does not always mean "nothing happened").  Routes through
 		//! the PRIMARY selection — for the multi-section editing path
 		//! (per-section edits when both Object and Material sections
 		//! are expanded), use `SetPropertyForCategory` so the edit
