@@ -1203,13 +1203,19 @@ uniformcolor_painter
 	color				1.0 0.77 0.34
 }
 
+uniformcolor_painter
+{
+	name				pnt_hand_gold
+	color				0.88 0.63 0.26
+}
+
 ggx_material
 {
 	name				white_hands
 	rd				pnt_surf_f0
-	rs				pnt_gold_f0
-	alphax				0.10
-	alphay				0.10
+	rs				pnt_hand_gold
+	alphax				0.05
+	alphay				0.05
 	fresnel_mode			schlick_f0
 }
 
@@ -1878,23 +1884,23 @@ uniformcolor_painter
 piecewise_linear_function
 {
 	name goldruby_abs
-	cp 400 19.84
-	cp 420 20.88
-	cp 440 22.32
-	cp 460 25.20
-	cp 480 29.52
-	cp 500 33.84
-	cp 515 36.00
-	cp 530 34.96
-	cp 550 30.64
-	cp 570 22.32
-	cp 590 14.40
-	cp 610 8.64
-	cp 630 5.04
-	cp 650 2.88
-	cp 680 1.84
-	cp 700 1.28
-	cp 720 1.12
+	cp 400 28.0
+	cp 420 30.5
+	cp 440 33.5
+	cp 460 36.5
+	cp 480 40.0
+	cp 500 42.5
+	cp 515 44.0
+	cp 530 42.0
+	cp 550 36.5
+	cp 570 26.5
+	cp 590 16.6
+	cp 610 9.9
+	cp 630 5.9
+	cp 650 3.5
+	cp 680 2.2
+	cp 700 1.6
+	cp 720 1.4
 }
 
 homogeneous_medium
@@ -2051,10 +2057,10 @@ sdf_geometry
 {
 	name				casebodysdf
 	part				cylinder union 0  0 0 -4.635  90 0 0  1 1 1  24 5.635 0  0
-	part				roundcone smin 2.4  -13.88 20.5 -2.2  -45 0 0  1.45 1 0.5  3.6 1.2 8.5  0
-	part				roundcone smin 2.4  13.88 20.5 -2.2  -45 0 0  1.45 1 0.5  3.6 1.2 8.5  0
-	part				roundcone smin 2.4  -13.88 -20.5 -2.2  -135 0 0  1.45 1 0.5  3.6 1.2 8.5  0
-	part				roundcone smin 2.4  13.88 -20.5 -2.2  -135 0 0  1.45 1 0.5  3.6 1.2 8.5  0
+	part				roundcone smin 2.4  -13.88 20.5 -2.2  -53 0 0  1.15 0.80 0.5  3.3 0.95 9.2  0
+	part				roundcone smin 2.4  13.88 20.5 -2.2  -53 0 0  1.15 0.80 0.5  3.3 0.95 9.2  0
+	part				roundcone smin 2.4  -13.88 -20.5 -2.2  -127 0 0  1.15 0.80 0.5  3.3 0.95 9.2  0
+	part				roundcone smin 2.4  13.88 -20.5 -2.2  -127 0 0  1.15 0.80 0.5  3.3 0.95 9.2  0
 	part				torus smin 1.2  0 0 1  90 0 0  1 1 1  22 1.25 0  0
 	part				cylinder subtract 1  0 0 -1  90 0 0  1 1 1  21 3 0  0
 }
