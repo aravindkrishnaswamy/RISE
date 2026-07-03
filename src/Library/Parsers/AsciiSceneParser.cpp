@@ -3278,10 +3278,37 @@ namespace RISE
 					std::string scat = bag.GetString( "scattering", "10000" );
 					bool hg          = bag.GetBool(   "henyey-greenstein", false );
 
-					const double ar_ior   = bag.GetDouble( "ar_film_ior",        0.0 );
-					const double ar_thick = bag.GetDouble( "ar_film_thickness",  0.0 );
-					const double ar_ext   = bag.GetDouble( "ar_film_extinction", 0.0 );
-					return pJob.AddDielectricMaterial( name.c_str(), tau.c_str(), ior.c_str(), scat.c_str(), hg, ar_ior, ar_ext, ar_thick );
+					// AR coating layers in AMBIENT -> SUBSTRATE order (outermost,
+					// air-side, first).  Preferred form: repeatable
+					// `ar_layer <n> <thickness_nm> [k]` -> a broadband multi-
+					// layer stack that reflects faint AND colour-neutral (a
+					// single layer leaves the characteristic purple bloom).
+					std::vector<Scalar> arN, arK, arT;
+					const std::vector<std::string>& layerLines = bag.GetRepeatable( "ar_layer" );
+					for( std::size_t i = 0; i < layerLines.size(); ++i ) {
+						double n = 0.0, t = 0.0, k = 0.0; char trailing[8];
+						const int got = sscanf( layerLines[i].c_str(), "%lf %lf %lf %7s", &n, &t, &k, trailing );
+						if( got != 2 && got != 3 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"dielectric_material `%s`: ar_layer %u (`%s`) must be `<n> <thickness_nm> [k]` (2 or 3 numbers)",
+								name.c_str(), (unsigned int)i, layerLines[i].c_str() );
+							return false;
+						}
+						arN.push_back( (Scalar)n ); arT.push_back( (Scalar)t ); arK.push_back( (Scalar)( got == 3 ? k : 0.0 ) );
+					}
+					// Legacy single-layer form, honoured only when no ar_layer
+					// lines are present (back-compat, bit-identical).
+					if( arN.empty() ) {
+						const double ar_ior   = bag.GetDouble( "ar_film_ior",        0.0 );
+						const double ar_thick = bag.GetDouble( "ar_film_thickness",  0.0 );
+						const double ar_ext   = bag.GetDouble( "ar_film_extinction", 0.0 );
+						if( ar_thick > 0.0 ) {
+							arN.push_back( (Scalar)ar_ior ); arT.push_back( (Scalar)ar_thick ); arK.push_back( (Scalar)ar_ext );
+						}
+					}
+					const unsigned int nLayers = (unsigned int)arN.size();
+					return pJob.AddDielectricMaterial( name.c_str(), tau.c_str(), ior.c_str(), scat.c_str(), hg,
+						nLayers ? arN.data() : 0, nLayers ? arK.data() : 0, nLayers ? arT.data() : 0, nLayers );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3294,9 +3321,10 @@ namespace RISE
 						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "10000"; }
-						{ auto& p = P(); p.name = "ar_film_ior";        p.kind = ValueKind::Double; p.description = "Anti-reflective coating film index (e.g. MgF2 1.38). 0 = no coating (bare Fresnel)."; p.defaultValueHint = "0"; }
-						{ auto& p = P(); p.name = "ar_film_thickness";  p.kind = ValueKind::Double; p.description = "AR coating physical thickness, nm (e.g. MgF2 quarter-wave ~99.6 at 550nm). 0 = no coating."; p.defaultValueHint = "0"; }
-						{ auto& p = P(); p.name = "ar_film_extinction"; p.kind = ValueKind::Double; p.description = "AR coating film extinction k (~0 for a transparent AR dielectric)."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "ar_layer";           p.kind = ValueKind::String; p.repeatable = true; p.description = "One anti-reflective coating layer (repeatable, AMBIENT->SUBSTRATE / air-side first): `<n> <thickness_nm> [k]`.  One layer = the classic MgF2 quarter-wave (drops glare but leaves a purple bloom); a multi-layer broadband stack (e.g. quarter/half/quarter) reflects far fainter AND colour-neutral, as on real premium AR.  Up to 8 layers."; }
+						{ auto& p = P(); p.name = "ar_film_ior";        p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR film index (e.g. MgF2 1.38); prefer ar_layer.  Honoured only when no ar_layer lines are present. 0 = no coating."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "ar_film_thickness";  p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR thickness, nm (MgF2 quarter-wave ~99.6 at 550nm); prefer ar_layer. 0 = no coating."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "ar_film_extinction"; p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR film extinction k (~0 for a transparent AR); prefer ar_layer."; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();

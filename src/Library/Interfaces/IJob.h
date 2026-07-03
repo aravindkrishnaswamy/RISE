@@ -813,9 +813,10 @@ namespace RISE
 									const char* rIndex,				///< [in] Index of refraction
 									const char* scat,				///< [in] Scattering function (either Phong or HG)
 									const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
-								const Scalar arN = 0,			///< [in] AR coating film real index (0 = no coating)
-								const Scalar arK = 0,			///< [in] AR coating film extinction (~0)
-								const Scalar arThickness = 0	///< [in] AR coating thickness, nm (0 = no coating)
+								const Scalar* arN = 0,			///< [in] AR coating layer real indices, ambient->substrate (0/null = no coating)
+								const Scalar* arK = 0,			///< [in] AR coating layer extinctions (~0; null => all 0)
+								const Scalar* arThickness = 0,	///< [in] AR coating layer thicknesses, nm
+								const unsigned int arNLayers = 0	///< [in] Number of AR layers (0 = no coating)
 									) = 0;
 
 		//! Adds a SubSurface Scattering material

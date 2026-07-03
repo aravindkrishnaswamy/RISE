@@ -21,18 +21,43 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+// The stack-allocated AR path caps at DielectricSPF::kMaxARLayers; the TMM it
+// forwards to caps at ThinFilm::kMaxFilms.  They MUST agree or a scene could
+// author more layers than the TMM evaluates (silent truncation of coating).
+static_assert( DielectricSPF::kMaxARLayers == RISE::ThinFilm::kMaxFilms,
+	"DielectricSPF::kMaxARLayers must match ThinFilm::kMaxFilms" );
+
+DielectricSPF::ARStack DielectricSPF::BuildARStack(
+	const Scalar* n, const Scalar* k, const Scalar* t, int nLayers )
+{
+	ARStack out;
+	if( nLayers < 0 || !n || !t ) nLayers = 0;
+	if( nLayers > kMaxARLayers ) nLayers = kMaxARLayers;
+	out.nLayers = nLayers;
+	for( int i = 0; i < nLayers; ++i ) {
+		out.n[i] = n[i];
+		out.k[i] = k ? k[i] : Scalar(0);	// k array optional (transparent AR)
+		out.t[i] = t[i];
+	}
+	for( int i = nLayers; i < kMaxARLayers; ++i ) {
+		out.n[i] = out.k[i] = out.t[i] = Scalar(0);
+	}
+	return out;
+}
+
 DielectricSPF::DielectricSPF(
 	const IScalarPainter& tau_,
 	const IScalarPainter& ri,
 	const IScalarPainter& s,
 	const bool hg,
-	Scalar arN_, Scalar arK_, Scalar arThickness_
+	const Scalar* arN_, const Scalar* arK_, const Scalar* arThickness_,
+	int arNLayers_
 	) :
   pTau( &tau_ ),
   pRIndex( &ri ),
   pScat( &s ),
   bHG( hg ),
-  arN( arN_ ), arK( arK_ ), arThickness( arThickness_ )
+  arStack( BuildARStack( arN_, arK_, arThickness_, arNLayers_ ) )
 {
 	pTau->addref();
 	pRIndex->addref();
@@ -67,8 +92,32 @@ void DielectricSPF::SetScattering( const IScalarPainter& v )
 	pScat = &v;
 }
 
+//! Unpolarized reflectance of the AR stack for one interface crossing.
+//! The stack is authored ambient(air)->substrate(medium); a ray crossing from
+//! OUTSIDE traverses it in that order, while one crossing from INSIDE meets the
+//! substrate-adjacent layer first, so the layer order (and endpoints) reverse.
+//! `nIncident`/`nSubstrate` are the real indices on the incoming / outgoing
+//! side of THIS crossing.  Falls back to the exact Airy single-film result at
+//! nLayers==1 (ReflectanceConductorStack is algebraically identical there).
+static Scalar ARStackReflectance(
+	const DielectricSPF::ARStack& s, bool fromInside,
+	Scalar cosI, Scalar lam, Scalar nIncident, Scalar nSubstrate )
+{
+	const int nF = s.nLayers;
+	RISE::ThinFilm::Complex film[ DielectricSPF::kMaxARLayers ];
+	Scalar                  thick[ DielectricSPF::kMaxARLayers ];
+	for( int i = 0; i < nF; ++i ) {
+		const int src = fromInside ? ( nF - 1 - i ) : i;
+		film[i]  = RISE::ThinFilm::detail::MakeIndex( s.n[src], s.k[src] );
+		thick[i] = s.t[src];
+	}
+	const RISE::ThinFilm::Complex N0 = RISE::ThinFilm::detail::MakeIndex( nIncident,  0.0 );
+	const RISE::ThinFilm::Complex Ns = RISE::ThinFilm::detail::MakeIndex( nSubstrate, 0.0 );
+	return RISE::ThinFilm::ReflectanceConductorStack( cosI, lam, N0, film, thick, nF, Ns );
+}
+
 //! Returns true if there was reflection
-Scalar DielectricSPF::GenerateScatteredRay( 
+Scalar DielectricSPF::GenerateScatteredRay(
 	ScatteredRay& dielectric,									///< [out] Scattered dielectric ray
 	ScatteredRay& fresnel,										///< [out] Scattered fresnel or reflected ray
 	bool& bDielectric,											///< [out] Dielectric ray exists?
@@ -107,10 +156,10 @@ Scalar DielectricSPF::GenerateScatteredRay(
 			dielectric.ior_stack = new IORStack( ior_stack );
 			dielectric.ior_stack->pop();
 			GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
-			if( arThickness > 0.0 ) {
+			if( arStack.nLayers > 0 ) {
 				const Scalar cosI = fabs( Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() ) );
 				const Scalar lam = ( nm > 0.0 ) ? nm : 550.0;
-				ref = ThinFilm::ReflectanceConductor( cosI, lam, rIndex, 0.0, arN, arK, arThickness, exitIOR, 0.0 );
+				ref = ARStackReflectance( arStack, /*fromInside*/ true, cosI, lam, rIndex, exitIOR );
 			} else {
 				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, -ri.onb.w(), rIndex, exitIOR );
 			}
@@ -122,10 +171,10 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	else
 	{
 		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack.top(), rIndex, refracted ) ) {
-			if( arThickness > 0.0 ) {
+			if( arStack.nLayers > 0 ) {
 				const Scalar cosI = fabs( Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() ) );
 				const Scalar lam = ( nm > 0.0 ) ? nm : 550.0;
-				ref = ThinFilm::ReflectanceConductor( cosI, lam, ior_stack.top(), 0.0, arN, arK, arThickness, rIndex, 0.0 );
+				ref = ARStackReflectance( arStack, /*fromInside*/ false, cosI, lam, ior_stack.top(), rIndex );
 			} else {
 				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, ri.onb.w(), ior_stack.top(), rIndex );
 			}
@@ -275,7 +324,7 @@ void DielectricSPF::Scatter(
 	const bool disperse =
 		pRIndex->HasPerChannelVariation() ||
 		pScat->HasPerChannelVariation() ||
-		( arThickness > 0.0 );
+		( arStack.nLayers > 0 );
 
 	if( !disperse ) {
 		// No dispersion

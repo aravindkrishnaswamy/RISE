@@ -1715,16 +1715,17 @@ namespace RISE
 								const IScalarPainter& rIndex,
 								const IScalarPainter& scat,
 								const bool hg,
-								const Scalar arN,
-								const Scalar arK,
-								const Scalar arThickness
+								const Scalar* arN,
+								const Scalar* arK,
+								const Scalar* arThickness,
+								const unsigned int arNLayers
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new DielectricMaterial( tau, rIndex, scat, hg, arN, arK, arThickness );
+		(*ppi) = new DielectricMaterial( tau, rIndex, scat, hg, arN, arK, arThickness, (int)arNLayers );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "dielectric material" );
 		return true;
 	}

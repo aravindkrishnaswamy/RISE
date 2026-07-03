@@ -38,9 +38,9 @@ namespace RISE
 
 		public:
 			DielectricMaterial( const IScalarPainter& tau_, const IScalarPainter& ri, const IScalarPainter& scat, const bool hg,
-				Scalar arN = 0, Scalar arK = 0, Scalar arThickness = 0 )
+				const Scalar* arN = 0, const Scalar* arK = 0, const Scalar* arThickness = 0, int arNLayers = 0 )
 			{
-				pSPF = new DielectricSPF( tau_, ri, scat, hg, arN, arK, arThickness );
+				pSPF = new DielectricSPF( tau_, ri, scat, hg, arN, arK, arThickness, arNLayers );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 			}
 

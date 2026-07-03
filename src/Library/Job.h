@@ -1020,9 +1020,10 @@ namespace RISE
 									const char* rIndex,				///< [in] Index of refraction
 									const char* scat,				///< [in] Scattering function (either Phong or HG)
 									const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
-									const Scalar arN,
-									const Scalar arK,
-									const Scalar arThickness
+									const Scalar* arN,
+									const Scalar* arK,
+									const Scalar* arThickness,
+									const unsigned int arNLayers
 									);
 
 		//! Creates a SubSurface Scattering material
