@@ -68,6 +68,7 @@
 #include <windows.h>
 #else
 #include <dirent.h>
+#include <sys/stat.h>   // S1 review round 1: regular-file check for the skills index
 #endif
 
 namespace RISE
@@ -401,11 +402,28 @@ namespace RISE
 
 			//! The bare skill names (*.md, suffix stripped) under `root`,
 			//! sorted byte-wise so the index order is deterministic across
-			//! platforms and readdir orderings.
-			std::vector<std::string> ListSkillNames( const std::string& root )
+			//! platforms and readdir orderings.  Only REGULAR files index
+			//! (a directory / FIFO / socket / device named "*.md" is
+			//! skipped).  SYMLINK-FOLLOW, honestly documented: the stat()
+			//! check FOLLOWS symlinks, so a symlink resolving to a regular
+			//! file still indexes -- deliberate, because this is a
+			//! trusted-OPERATOR surface (the root comes from the operator's
+			//! environment, never from agent input; the agent can only pick
+			//! names off this index).  `outRootFound`, when non-null,
+			//! reports whether the root DIRECTORY itself was reachable --
+			//! distinguishing a missing skills root (miswired install) from
+			//! a present-but-empty one (both return an empty list).
+			std::vector<std::string> ListSkillNames( const std::string& root, bool* outRootFound = nullptr )
 			{
+				if( outRootFound ) *outRootFound = false;
 				std::vector<std::string> names;
 #ifdef _WIN32
+				{
+					const DWORD attr = GetFileAttributesA( root.c_str() );
+					if( outRootFound )
+						*outRootFound = ( attr != INVALID_FILE_ATTRIBUTES ) &&
+						                ( ( attr & FILE_ATTRIBUTE_DIRECTORY ) != 0 );
+				}
 				WIN32_FIND_DATAA fd;
 				HANDLE h = FindFirstFileA( ( root + "*.md" ).c_str(), &fd );
 				if( h != INVALID_HANDLE_VALUE ) {
@@ -418,8 +436,15 @@ namespace RISE
 #else
 				DIR* d = opendir( root.c_str() );
 				if( d ) {
-					while( struct dirent* e = readdir( d ) )
+					if( outRootFound ) *outRootFound = true;
+					while( struct dirent* e = readdir( d ) ) {
+						// Regular files only (stat FOLLOWS symlinks; see the
+						// doc note above on why that is deliberate).
+						struct stat st;
+						if( stat( ( root + e->d_name ).c_str(), &st ) != 0 ) continue;
+						if( !S_ISREG( st.st_mode ) ) continue;
 						names.push_back( e->d_name );
+					}
 					closedir( d );
 				}
 #endif
@@ -443,7 +468,13 @@ namespace RISE
 
 			// Progressive disclosure, tier 1: no name -> the INDEX.
 			if( name.empty() ) {
-				const std::vector<std::string> names = ListSkillNames( root );
+				bool rootFound = false;
+				const std::vector<std::string> names = ListSkillNames( root, &rootFound );
+				// An empty index is AMBIGUOUS without this: distinguish a
+				// missing skills root (miswired install / wrong cwd) from a
+				// present-but-empty directory (legitimately no skills).
+				if( !rootFound )
+					r.note = "skills root not found at '" + root + "' (set RISE_SKILLS_PATH or run from the repo root)";
 				for( std::size_t i = 0; i < names.size(); ++i ) {
 					std::string text;
 					if( !ReadFileText( root + names[i] + ".md", text ) ) continue;
@@ -463,6 +494,21 @@ namespace RISE
 				r.ok = false;
 				r.error = "invalid skill name '" + name +
 				          "': must be a bare skill name (no '/', '\\', or \"..\")";
+				return r;
+			}
+			// MEMBERSHIP GATE (S1 review round 1): the name must be in the
+			// LISTED index -- the fetchable set IS the listed set.  This one
+			// check closes four edges at once: a dotfile skill would be
+			// fetchable-but-unlisted; a DIRECTORY named '<x>.md' could be
+			// opened; a FIFO would HANG the read on POSIX; a Windows device
+			// name (CON / NUL) would resolve to a device.  None of those are
+			// in ListSkillNames' regular-*.md-files index, so none reach
+			// ReadFileText.
+			const std::vector<std::string> listed = ListSkillNames( root );
+			if( std::find( listed.begin(), listed.end(), name ) == listed.end() ) {
+				r.ok = false;
+				r.error = "unknown skill '" + name +
+				          "' -- call read_skill with no name for the index";
 				return r;
 			}
 			std::string text;

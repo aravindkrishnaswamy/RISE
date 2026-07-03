@@ -7,6 +7,10 @@ Key = a spot aimed at the subject; fill = a dim omni opposite the key;
 rim = a directional from behind-above to separate subject from
 background.  Remember: `direction` on a directional light points
 FROM-surface-TO-light; spots aim with `position` + `target` instead.
+The floor is deliberate: without a backdrop there is nothing for the
+fill to lift or the rim to separate the subject FROM.  Samples 64
+renders reasonably clean at this size; production quality wants
+several hundred.
 
 ```rise
 RISE ASCII SCENE 7
@@ -19,15 +23,15 @@ standard_shader
 
 pathtracing_pel_rasterizer
 {
-	samples			16
+	samples			64
 	pixel_filter	box
 	oidn_denoise	FALSE
 }
 
 film
 {
-	width	256
-	height	256
+	width	128
+	height	128
 }
 
 pinhole_camera
@@ -44,10 +48,22 @@ uniformcolor_painter
 	color	0.7 0.7 0.7
 }
 
+uniformcolor_painter
+{
+	name	pnt_floor
+	color	0.4 0.4 0.4
+}
+
 lambertian_material
 {
 	name		mat_subject
 	reflectance	pnt_gray
+}
+
+lambertian_material
+{
+	name		mat_floor
+	reflectance	pnt_floor
 }
 
 sphere_geometry
@@ -62,6 +78,24 @@ standard_object
 	geometry	sph
 	material	mat_subject
 	position	0 0.5 0
+}
+
+# The floor the shadows fall on (an infinite plane defaults to the XY
+# plane; rotate -90 about X to lay it flat).
+infiniteplane_geometry
+{
+	name	floor
+	xtile	1.0
+	ytile	1.0
+}
+
+standard_object
+{
+	name		obj_floor
+	geometry	floor
+	material	mat_floor
+	position	0 -0.5 0
+	orientation	-90 0 0
 }
 
 # KEY: bright, warm, above-front-right.  inner/outer are cone
@@ -103,7 +137,10 @@ directional_light
 environment; `radiance_background TRUE` also shows it behind the
 scene.  Any painter works — a `uniformcolor_painter` gives a constant
 dome (below); for a real light probe use an `hdr_painter` with
-`file lightprobes/<name>.hdr` and scale with `radiance_scale`.
+`file lightprobes/<name>.hdr` and scale with `radiance_scale`.  Pick
+a subject color/albedo with CONTRAST against the dome — a white
+sphere inside a bright uniform dome converges to the dome color and
+disappears into the background.
 
 ```rise
 RISE ASCII SCENE 7
@@ -126,14 +163,14 @@ pathtracing_pel_rasterizer
 	pixel_filter			box
 	oidn_denoise			FALSE
 	radiance_map			pnt_sky
-	radiance_scale			1.5
+	radiance_scale			1.0
 	radiance_background		TRUE
 }
 
 film
 {
-	width	256
-	height	256
+	width	128
+	height	128
 }
 
 pinhole_camera
@@ -146,14 +183,14 @@ pinhole_camera
 
 uniformcolor_painter
 {
-	name	pnt_white
-	color	0.8 0.8 0.8
+	name	pnt_rust
+	color	0.6 0.15 0.1
 }
 
 lambertian_material
 {
-	name		mat_white
-	reflectance	pnt_white
+	name		mat_rust
+	reflectance	pnt_rust
 }
 
 sphere_geometry
@@ -166,7 +203,7 @@ standard_object
 {
 	name		obj_sphere
 	geometry	sph
-	material	mat_white
+	material	mat_rust
 }
 ```
 
@@ -177,6 +214,8 @@ emitter: `exitance` is the emission color painter, `scale` the
 brightness, `material` the underlying surface (`none` = pure emitter).
 Prefer area emitters over point lights for soft shadows and for BDPT /
 VCM scenes; prefer point/omni lights for cheap hard-shadow setups.
+**Winding rule**: the quad's vertex ORDER picks the emitting side — if
+an emissive quad gives a black render, flip the point order.
 
 ```rise
 RISE ASCII SCENE 7
@@ -196,8 +235,8 @@ pathtracing_pel_rasterizer
 
 film
 {
-	width	256
-	height	256
+	width	128
+	height	128
 }
 
 pinhole_camera
@@ -233,6 +272,23 @@ standard_object
 	material	mat_diffuse
 }
 
+# The floor that shows the area light's soft falloff gradient.
+infiniteplane_geometry
+{
+	name	floor
+	xtile	1.0
+	ytile	1.0
+}
+
+standard_object
+{
+	name		obj_floor
+	geometry	floor
+	material	mat_diffuse
+	position	0 -0.8 0
+	orientation	-90 0 0
+}
+
 uniformcolor_painter
 {
 	name	pnt_emit
@@ -247,14 +303,16 @@ lambertian_luminaire_material
 	material	none
 }
 
-# An emitter quad facing the sphere from the camera side.
+# The emitter: a horizontal quad ABOVE-RIGHT of the sphere (off the
+# camera axis, so the gradient it casts is actually visible).  This
+# point order makes the quad emit DOWNWARD, toward the scene.
 clippedplane_geometry
 {
 	name	quad_emit
-	pta		-0.6 0.6 3.5
-	ptb		0.6 0.6 3.5
-	ptc		0.6 -0.6 3.5
-	ptd		-0.6 -0.6 3.5
+	pta		0.9 1.8 0.2
+	ptb		2.1 1.8 0.2
+	ptc		2.1 1.8 1.4
+	ptd		0.9 1.8 1.4
 }
 
 standard_object
@@ -275,4 +333,5 @@ standard_object
 - Luminaire `scale` multiplies exitance directly; 10-150 is a typical
   range for a small quad lighting a room-sized scene.
 - If everything is black: check the directional `direction` sign first
-  (FROM-surface-TO-light), then power magnitudes.
+  (FROM-surface-TO-light), then power magnitudes; for an emissive
+  quad, check the vertex winding (it picks the emitting side).

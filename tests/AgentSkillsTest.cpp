@@ -15,7 +15,12 @@
 //        traversal shapes "../x", "a/b", "..\\x" -> -32602 (path
 //        safety); a ".md"-suffixed name is NOT served (the verb
 //        appends .md itself -- "<name>.md" would resolve
-//        "<name>.md.md", which does not exist).
+//        "<name>.md.md", which does not exist).  S1 review round 1:
+//        the named fetch is MEMBERSHIP-gated (the fetchable set IS
+//        the listed set), closing the dotfile / directory-named-.md /
+//        FIFO / Windows-device edges -- exercised in S0's override
+//        root; and the index distinguishes a MISSING skills root
+//        (note field set) from a present-but-empty one (no note).
 //    S3  THE SNIPPET CONTRACT (the keystone): every ```rise fenced
 //        block in every skill is a COMPLETE scene that parses to a
 //        native-v7 CST and derives into a Job with ZERO diagnostics
@@ -24,6 +29,19 @@
 //        (RED-proven during slice S1: a bogus parameter injected into
 //        one snippet made this section fail with an "invalid
 //        parameter(s)" derive diagnostic; reverted.)
+//        S1 review round 1 adds THE RENDER CONTRACT: each snippet is
+//        also RENDERED (AgentSession::LoadFromFile + Render on the
+//        extracted scene) and its linear mean luma must land in
+//        (0.02, 0.98) -- a snippet that renders black (the lone-glass-
+//        under-a-delta-light anti-pattern) or a solid-white washout
+//        FAILS.  Renders are not bit-deterministic across thread
+//        schedules, so the contract is THRESHOLDS, never exact values.
+//        (RED-proven: removing the crown-glass snippet's backdrop wall
+//        + dome makes that snippet render 100% black and this section
+//        fail; reverted.)  Plus the untagged-fence escape sweep: NO
+//        non-```rise fenced block in any skill may contain
+//        "RISE ASCII SCENE" -- scene content cannot dodge the
+//        contract by dropping the fence tag.
 //    S4  Chat-loop wiring: the provider-neutral tool table now carries
 //        SEVEN tools (read_skill present in BOTH providers' request
 //        bodies); SetSkillIndex("") omits the skills section (the
@@ -45,12 +63,19 @@
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
+
+#ifndef _WIN32
+#include <sys/stat.h>   // mkfifo for the S0 FIFO-hardening fixture
+#include <sys/types.h>
+#endif
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -103,11 +128,14 @@ static std::string SkillRequest( int id, const char* name )
 	return JsonSerialize( req );
 }
 
-// Extract every ```rise fenced block from a markdown text.
-static std::vector<std::string> ExtractRiseBlocks( const std::string& md )
+// Extract EVERY fenced block from a markdown text as (tag, content)
+// pairs -- tag is whatever follows the opening ``` ("" for untagged).
+// The snippet contract consumes the "rise"-tagged blocks; the escape
+// sweep audits everything else.
+static std::vector< std::pair<std::string, std::string> > ExtractFencedBlocks( const std::string& md )
 {
-	std::vector<std::string> blocks;
-	std::string cur;
+	std::vector< std::pair<std::string, std::string> > blocks;
+	std::string cur, tag;
 	bool inside = false;
 	std::size_t pos = 0;
 	while( pos <= md.size() ) {
@@ -115,13 +143,14 @@ static std::vector<std::string> ExtractRiseBlocks( const std::string& md )
 		if( eol == std::string::npos ) eol = md.size();
 		std::string line = md.substr( pos, eol - pos );
 		if( !line.empty() && line[line.size()-1] == '\r' ) line.erase( line.size()-1 );
-		if( !inside && line == "```rise" ) {
+		if( !inside && line.rfind( "```", 0 ) == 0 ) {
 			inside = true;
+			tag = line.substr( 3 );
 			cur.clear();
 		}
 		else if( inside && line == "```" ) {
 			inside = false;
-			blocks.push_back( cur );
+			blocks.push_back( std::make_pair( tag, cur ) );
 		}
 		else if( inside ) {
 			cur += line;
@@ -131,6 +160,26 @@ static std::vector<std::string> ExtractRiseBlocks( const std::string& md )
 		pos = eol + 1;
 	}
 	return blocks;
+}
+
+// The ```rise-tagged blocks only (the snippet contract's input).
+static std::vector<std::string> ExtractRiseBlocks( const std::string& md )
+{
+	std::vector<std::string> blocks;
+	const std::vector< std::pair<std::string, std::string> > all = ExtractFencedBlocks( md );
+	for( std::size_t i = 0; i < all.size(); ++i )
+		if( all[i].first == "rise" ) blocks.push_back( all[i].second );
+	return blocks;
+}
+
+// A writable temp directory (the same resolution the S0 fixture uses).
+static std::string TempDir()
+{
+	const char* base = std::getenv( "TMPDIR" );
+	if( !base ) base = std::getenv( "TMP" );   // Windows spelling
+	std::string dir = base ? base : "/tmp";
+	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
+	return dir;
 }
 
 //----------------------------------------------------------------------
@@ -168,16 +217,64 @@ static void TestRootResolution()
 			std::ofstream f( fake.c_str(), std::ios::binary );
 			f << "# Fake Skill\n> hook: A test-only skill.\n\nbody\n";
 		}
+		// S1 review round 1 hardening fixtures: a dotfile skill, a
+		// DIRECTORY named "<x>.md", and (POSIX) a FIFO named "<x>.md".
+		// None may index; none may be fetched by name (the fetchable
+		// set IS the listed set -- a FIFO fetch would otherwise HANG).
+		const std::string dotfile = dir + "/.hidden.md";
+		{
+			std::ofstream f( dotfile.c_str(), std::ios::binary );
+			f << "# Hidden\n> hook: Should never index.\n";
+		}
+		const std::string dirmd = dir + "/dirskill.md";
+#ifdef _WIN32
+		system( ( "mkdir \"" + dirmd + "\" 2>NUL" ).c_str() );
+#else
+		system( ( "mkdir -p '" + dirmd + "'" ).c_str() );
+		const std::string fifomd = dir + "/pipeskill.md";
+		std::remove( fifomd.c_str() );
+		Check( mkfifo( fifomd.c_str(), 0600 ) == 0, "test fixture: created the FIFO" );
+#endif
+
 		SetEnvVar( "RISE_SKILLS_PATH", dir.c_str() );
 		const AgentSkillResult r = AgentSession::ReadSkill();
-		Check( r.ok && r.index.size() == 1, "RISE_SKILLS_PATH override root serves exactly the fake skill" );
+		Check( r.ok && r.index.size() == 1, "RISE_SKILLS_PATH override root serves exactly the fake skill (dotfile / dir / FIFO excluded)" );
 		if( r.index.size() == 1 ) {
 			Check( r.index[0].name == "fake-skill", "override index carries the bare name (no .md)" );
 			Check( r.index[0].title == "Fake Skill", "title parsed from the '# ' first line" );
 			Check( r.index[0].hook == "A test-only skill.", "hook parsed from the '> hook:' second line" );
 		}
+		Check( r.note.empty(), "present-but-sparse root carries NO missing-root note" );
+
+		// Membership gate: unlisted names are NOT fetchable even though
+		// a same-named filesystem entry exists under the root.
+		Check( !AgentSession::ReadSkill( ".hidden" ).ok,  "dotfile skill is not fetchable (unlisted)" );
+		Check( !AgentSession::ReadSkill( "dirskill" ).ok, "directory named .md is not fetchable (unlisted)" );
+#ifndef _WIN32
+		Check( !AgentSession::ReadSkill( "pipeskill" ).ok, "FIFO named .md is not fetchable (unlisted; a read would hang)" );
+#endif
+		Check( AgentSession::ReadSkill( "fake-skill" ).ok, "the listed skill still fetches through the membership gate" );
+
+		// Missing-root vs empty-root: a nonexistent root returns an
+		// EMPTY index WITH the advisory note; the sparse-but-present
+		// root above returned no note.
+		const std::string missing = dir + "/no_such_subdir";
+		SetEnvVar( "RISE_SKILLS_PATH", missing.c_str() );
+		{
+			const AgentSkillResult m = AgentSession::ReadSkill();
+			Check( m.ok && m.index.empty(), "missing root: index call still ok + empty" );
+			Check( !m.note.empty(), "missing root: the index result carries the advisory note" );
+		}
+
 		SetEnvVar( "RISE_SKILLS_PATH", nullptr );
 		std::remove( fake.c_str() );
+		std::remove( dotfile.c_str() );
+#ifdef _WIN32
+		system( ( "rmdir \"" + dirmd + "\" 2>NUL" ).c_str() );
+#else
+		std::remove( fifomd.c_str() );
+		system( ( "rmdir '" + dirmd + "'" ).c_str() );
+#endif
 	}
 }
 
@@ -248,7 +345,20 @@ static void TestVerbRejections( AgentRpcDispatcher& rpc )
 //----------------------------------------------------------------------
 static void TestSnippetContract( AgentRpcDispatcher& rpc )
 {
-	std::printf( "S3: THE SNIPPET CONTRACT (every ```rise block parses + derives clean)...\n" );
+	std::printf( "S3: THE SNIPPET CONTRACT (every ```rise block parses + derives clean + RENDERS non-black)...\n" );
+
+	// THE RENDER CONTRACT thresholds.  Linear mean luma (Rec.709
+	// weights over the pre-quantization channel means) must exceed
+	// kMinLuma -- a black render (the lone-specular-under-a-delta-light
+	// anti-pattern) fails -- and stay under kMaxLuma, so a solid-white
+	// washout (e.g. an emissive quad filling the frustum) fails too.
+	// THRESHOLDS, never exact values: renders are not bit-deterministic
+	// across thread schedules.
+	const double kMinLuma = 0.02;
+	const double kMaxLuma = 0.98;
+
+	const std::string scenePath = TempDir() + "rise_agent_skills_snippet.RISEscene";
+	double renderSeconds = 0.0;
 
 	std::size_t totalSnippets = 0;
 	for( std::size_t s = 0; s < kSeedSkillCount; ++s ) {
@@ -282,13 +392,61 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 			Check( applied > 0, label + ": derive applied at least one chunk" );
 			Check( job->GetScene() != nullptr, label + ": derived scene is non-null" );
 			job->release();
+
+			// (c) THE RENDER CONTRACT: the snippet renders, and shows
+			// SOMETHING -- through the agent surface itself (the same
+			// LoadFromFile + Render an agent drives), asserting mean
+			// luma inside (kMinLuma, kMaxLuma).
+			{
+				std::ofstream f( scenePath.c_str(), std::ios::binary );
+				f << blocks[b];
+			}
+			const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+			std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+			Check( session != nullptr, label + ": loads through the agent surface" );
+			if( session ) {
+				const AgentRenderResult rr = session->Render();
+				Check( rr.ok, label + ": renders ok (" + rr.message + ")" );
+				const double luma = 0.2126 * rr.meanR + 0.7152 * rr.meanG + 0.0722 * rr.meanB;
+				std::printf( "    %s rendered %dx%d mean RGB (%.4f, %.4f, %.4f) luma %.4f\n",
+				             label.c_str(), rr.width, rr.height, rr.meanR, rr.meanG, rr.meanB, luma );
+				Check( rr.ok && luma > kMinLuma,
+				       label + ": mean luma " + std::to_string( luma ) + " > " + std::to_string( kMinLuma ) + " (not black)" );
+				Check( rr.ok && luma < kMaxLuma,
+				       label + ": mean luma " + std::to_string( luma ) + " < " + std::to_string( kMaxLuma ) + " (not a washout)" );
+			}
+			renderSeconds += std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count();
 		}
 	}
+	std::remove( scenePath.c_str() );
+	std::printf( "  render contract: %.1f seconds over %d snippets\n",
+	             renderSeconds, static_cast<int>( totalSnippets ) );
+
 	// A rot guard for the extraction itself: the three seed skills ship
 	// SEVEN snippets total (1 + 3 + 3) -- if the fence tag or extraction
 	// regresses, this trips before a snippet silently escapes checking.
 	Check( totalSnippets == 7, "the seed skills carry the expected 7 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
+}
+
+//----------------------------------------------------------------------
+// S3b: the untagged-fence escape sweep.
+//----------------------------------------------------------------------
+static void TestFenceEscapes( AgentRpcDispatcher& rpc )
+{
+	std::printf( "S3b: no non-```rise fence carries scene content...\n" );
+
+	for( std::size_t s = 0; s < kSeedSkillCount; ++s ) {
+		const JsonValue fenv = ParseLine( rpc.HandleLine( SkillRequest( 6, kSeedSkills[s] ) ) );
+		const std::string md = fenv.get( "result" ).get( "markdown" ).asString();
+		const std::vector< std::pair<std::string, std::string> > all = ExtractFencedBlocks( md );
+		for( std::size_t b = 0; b < all.size(); ++b ) {
+			if( all[b].first == "rise" ) continue;
+			Check( all[b].second.find( "RISE ASCII SCENE" ) == std::string::npos,
+			       std::string( kSeedSkills[s] ) + " fence " + std::to_string( b ) +
+			       " (tag '" + all[b].first + "'): scene content must use the ```rise tag (the snippet contract)" );
+		}
+	}
 }
 
 //----------------------------------------------------------------------
@@ -446,6 +604,7 @@ int main()
 	TestVerbIndexAndFetch( rpc );
 	TestVerbRejections( rpc );
 	TestSnippetContract( rpc );
+	TestFenceEscapes( rpc );
 	TestChatLoopWiring();
 	TestToolRound( rpc );
 

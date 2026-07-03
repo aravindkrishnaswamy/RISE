@@ -17,12 +17,17 @@
 //    Methods (mapped to AgentSession):
 //      read_document                     -> {document:string, hasDocument:bool, headVersion:{uuid,revision}}
 //      read_schema  {keyword?}           -> the schema JSON (as a nested object)
-//      read_skill   {name?}              -> no name: {skills:[{name,title,hook},...]}
-//                                           (the INDEX); a name: {name, markdown}
+//      read_skill   {name?}              -> no name: {skills:[{name,title,hook},...], note?:string}
+//                                           (the INDEX; `note` appears only when the
+//                                            skills ROOT directory is missing, telling
+//                                            a miswired root from a present-but-empty
+//                                            one); a name: {name, markdown}
 //                                           (Facet 5 slice S1: progressive-disclosure
 //                                            scene-authoring skills; STATELESS like
 //                                            read_schema.  Name must be BARE -- '/',
-//                                            '\\', ".." -> -32602; unknown -> -32602.)
+//                                            '\\', ".." -> -32602; unknown or not in
+//                                            the index (the fetchable set IS the
+//                                            listed set) -> -32602.)
 //      validate     {text}               -> {diagnostics:[{severity,code,message,offset,length}]}
 //      propose_patch{target,kind?,param,value,baseHeadVersion?:{uuid,revision}}
 //                                        -> {applied,rawCode,status,retriable,headVersion:{uuid,revision},message}

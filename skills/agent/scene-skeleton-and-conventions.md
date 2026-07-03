@@ -29,8 +29,8 @@ pathtracing_pel_rasterizer
 # The film owns the raster dims; cameras are imaging-only (no width/height).
 film
 {
-	width	256
-	height	256
+	width	128
+	height	128
 }
 
 # Right-handed, Y-up.  A camera at +Z looks down -Z at the origin.
@@ -107,3 +107,8 @@ directional_light
 When a scene renders unexpectedly dark, FIRST swap the materials for a
 Lambertian white and re-check the light directions before touching
 anything else.
+
+**Output note**: the agent surface renders in-memory, but a saved
+scene run via the CLI writes NO image unless the scene carries a
+`file_rasterizeroutput` chunk — see docs/SCENE_CONVENTIONS.md §10 for
+the standard dual EXR (HDR archive) + PNG (display preview) idiom.

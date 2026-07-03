@@ -185,6 +185,7 @@ namespace RISE
 			std::string                  name;       //!< the requested name (named fetch)
 			std::string                  markdown;   //!< the full skill markdown (named fetch)
 			std::vector<AgentSkillEntry> index;      //!< the index (empty-name fetch)
+			std::string                  note;       //!< index-only advisory: set when the skills ROOT DIRECTORY itself was not found (distinguishing a miswired root from a present-but-empty one; both give an empty index)
 		};
 
 		//! A headless, single-threaded read/validate session over a Job.
@@ -290,6 +291,17 @@ namespace RISE
 			//! ending ".md" inside the root are served (the ".md" suffix is
 			//! appended by this call; the caller passes the bare skill name).
 			//! An unknown name -> ok=false with a clean error message.
+			//!
+			//! MEMBERSHIP: a named fetch is served ONLY for a name present in
+			//! the index (the same regular-*.md-files listing the no-name call
+			//! returns) -- the fetchable set IS the listed set.  So dotfiles,
+			//! directories named "<x>.md", FIFOs, and Windows device names
+			//! (CON / NUL) are never opened.  SYMLINKS ARE FOLLOWED: a symlink
+			//! under the root that resolves to a regular file is listed and
+			//! served.  That is deliberate and honest -- this is a
+			//! trusted-OPERATOR surface (the root comes from the operator's
+			//! environment above, never from agent input; the agent only picks
+			//! names off the operator's own index).
 			static AgentSkillResult ReadSkill( const std::string& name = std::string() );
 
 			//! propose_patch (slice 0b: STRUCTURED set only).  Apply one

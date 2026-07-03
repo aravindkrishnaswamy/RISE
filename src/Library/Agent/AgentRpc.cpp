@@ -236,6 +236,11 @@ namespace RISE
 							arr.push_back( e );
 						}
 						result.set( "skills", arr );
+						// Index-only advisory: a missing skills ROOT (vs a
+						// present-but-empty one) -- surfaced so an agent can tell
+						// a miswired install from "no skills shipped".
+						if( !sr.note.empty() )
+							result.set( "note", JsonValue::MakeString( sr.note ) );
 					}
 					else {
 						result.set( "name",     JsonValue::MakeString( sr.name ) );

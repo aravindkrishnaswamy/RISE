@@ -1,13 +1,32 @@
 # Materials and Media Basics
 > hook: Read before adding or editing materials (diffuse, glass, metal, PBR), scalar parameters like IOR/roughness, or participating media.
 
+## Specular materials need something to reflect or refract
+
+A glass or metal object shows ONLY what arrives at it from the rest of
+the scene.  A lone specular sphere under a directional (delta) light in
+an empty void renders BLACK BY CONSTRUCTION: NEE cannot connect a delta
+light to a delta BSDF, and there is nothing for the surface to mirror
+or transmit.  Always give glass/metal a diffuse backdrop AND/OR an
+environment dome (`radiance_map` on the rasterizer) — the same
+anti-pattern rule as docs/skills/effective-rise-scene-authoring.md
+documents for metals.  Every snippet below follows it.
+
 ## Material starters (painter wiring included)
 
 Materials reference painters BY NAME; declare the painter first.  Four
-common starters — matte, glass, metal, PBR — on one lit stage:
+common starters — matte, glass, metal, PBR — on one lit stage with a
+floor and a sky dome (so the glass and gold actually read):
 
 ```rise
 RISE ASCII SCENE 7
+
+# The dome painter FIRST -- the rasterizer references it by name.
+uniformcolor_painter
+{
+	name	pnt_sky
+	color	0.45 0.55 0.75
+}
 
 standard_shader
 {
@@ -17,23 +36,26 @@ standard_shader
 
 pathtracing_pel_rasterizer
 {
-	samples			16
-	pixel_filter	box
-	oidn_denoise	FALSE
+	samples					16
+	pixel_filter			box
+	oidn_denoise			FALSE
+	radiance_map			pnt_sky
+	radiance_background		TRUE
 }
 
 film
 {
-	width	256
-	height	256
+	width	128
+	height	128
 }
 
+# fov 55 at this distance keeps all four spheres fully in frame.
 pinhole_camera
 {
-	location	0 1 8
+	location	0 1.2 9
 	lookat		0 0.5 0
 	up			0 1 0
-	fov			45.0
+	fov			55.0
 }
 
 uniformcolor_painter
@@ -42,22 +64,30 @@ uniformcolor_painter
 	color	0.15 0.25 0.75
 }
 
+# Gold reads as gold with a bright warm specular tint (rs) over a
+# deep warm diffuse base (rd) -- identical rd/rs looks like plastic.
 uniformcolor_painter
 {
-	name	pnt_silver
-	color	0.95 0.95 0.95
+	name	pnt_gold_warm
+	color	1.0 0.77 0.34
 }
 
 uniformcolor_painter
 {
-	name	pnt_gold
-	color	0.83 0.69 0.22
+	name	pnt_gold_deep
+	color	0.35 0.20 0.03
 }
 
 uniformcolor_painter
 {
 	name	pnt_red
 	color	0.8 0.15 0.1
+}
+
+uniformcolor_painter
+{
+	name	pnt_floor
+	color	0.5 0.5 0.5
 }
 
 # 1. Matte diffuse.
@@ -82,8 +112,8 @@ dielectric_material
 cooktorrance_material
 {
 	name		mat_gold
-	rd			pnt_gold
-	rs			pnt_gold
+	rd			pnt_gold_deep
+	rs			pnt_gold_warm
 	facets		0.08
 	ior			2.5
 	extinction	3.0
@@ -99,10 +129,33 @@ pbr_metallic_roughness_material
 	roughness	0.35
 }
 
+lambertian_material
+{
+	name		mat_floor
+	reflectance	pnt_floor
+}
+
 sphere_geometry
 {
 	name	sph
 	radius	0.9
+}
+
+# The floor: gives the specular spheres something to reflect/refract.
+infiniteplane_geometry
+{
+	name	floor
+	xtile	1.0
+	ytile	1.0
+}
+
+standard_object
+{
+	name		obj_floor
+	geometry	floor
+	material	mat_floor
+	position	0 -0.4 0
+	orientation	-90 0 0
 }
 
 standard_object
@@ -153,15 +206,27 @@ emission, tau tints): its values pass through colorspace conversion and
 spectral uplift.  `IScalarPainter` is the PHYSICAL-SCALAR pipe (IOR,
 roughness, scattering/absorption coefficients, phase asymmetry): values
 are raw magnitudes, NEVER color-converted or uplifted.  Binding a color
-painter into a scalar slot silently mangles values in spectral renders
-(e.g. `scattering 1000000` clamped to ~1).  Route by physical meaning:
-tinted attenuation/reflectance/emission -> color painter; coefficient
+painter into a scalar slot used to silently mangle values in spectral
+renders (e.g. `scattering 1000000` clamped to ~1); today the parser
+emits a per-parameter diagnostic at parse time — heed it rather than
+guessing.  Route by physical meaning: tinted
+attenuation/reflectance/emission -> color painter; coefficient
 with units -> `scalar_painter` (forms: `value <x>`, `values <r g b>`,
 `file <spd>`, `sellmeier ...`).  Inline numbers in scalar slots (`ior
 1.5`) are already scalar-safe.
 
+The demo puts the glass sphere in front of a checkered backdrop, under
+a sky dome — remember, glass in a void is black; the backdrop and dome
+are what you see refracted through the sphere:
+
 ```rise
 RISE ASCII SCENE 7
+
+uniformcolor_painter
+{
+	name	pnt_sky
+	color	0.45 0.55 0.75
+}
 
 standard_shader
 {
@@ -171,15 +236,17 @@ standard_shader
 
 pathtracing_pel_rasterizer
 {
-	samples			16
-	pixel_filter	box
-	oidn_denoise	FALSE
+	samples					16
+	pixel_filter			box
+	oidn_denoise			FALSE
+	radiance_map			pnt_sky
+	radiance_background		TRUE
 }
 
 film
 {
-	width	256
-	height	256
+	width	128
+	height	128
 }
 
 pinhole_camera
@@ -205,10 +272,54 @@ dielectric_material
 	scattering	100000.0
 }
 
+# The backdrop the glass refracts: a two-tone checker wall.
+uniformcolor_painter
+{
+	name	pnt_check_light
+	color	0.85 0.85 0.85
+}
+
+uniformcolor_painter
+{
+	name	pnt_check_dark
+	color	0.1 0.2 0.5
+}
+
+checker_painter
+{
+	name	pnt_checker
+	colora	pnt_check_light
+	colorb	pnt_check_dark
+	size	0.5
+}
+
+lambertian_material
+{
+	name		mat_backdrop
+	reflectance	pnt_checker
+}
+
 sphere_geometry
 {
 	name	sph
 	radius	1.0
+}
+
+# An infinite plane defaults to the XY plane facing +Z -- a ready-made
+# backdrop wall behind the sphere.
+infiniteplane_geometry
+{
+	name	wall
+	xtile	1.0
+	ytile	1.0
+}
+
+standard_object
+{
+	name		obj_wall
+	geometry	wall
+	material	mat_backdrop
+	position	0 0 -2
 }
 
 standard_object
@@ -233,9 +344,18 @@ A `homogeneous_medium` gives volumetric absorption/scattering; bind it
 to a closed object via `interior_medium`.  `absorption`/`scattering`
 are per-channel coefficients (units 1/distance); `phase` is
 `isotropic` or `hg <g>` (Henyey-Greenstein, g in [-1,1], + = forward).
+The white wall and dome behind the flask are what make the tint
+visible — light reaching the camera THROUGH the medium is what gets
+colored, and a medium in a void has nothing behind it to color:
 
 ```rise
 RISE ASCII SCENE 7
+
+uniformcolor_painter
+{
+	name	pnt_sky
+	color	0.35 0.35 0.35
+}
 
 standard_shader
 {
@@ -245,15 +365,17 @@ standard_shader
 
 pathtracing_pel_rasterizer
 {
-	samples			16
-	pixel_filter	box
-	oidn_denoise	FALSE
+	samples					16
+	pixel_filter			box
+	oidn_denoise			FALSE
+	radiance_map			pnt_sky
+	radiance_background		TRUE
 }
 
 film
 {
-	width	256
-	height	256
+	width	128
+	height	128
 }
 
 pinhole_camera
@@ -281,10 +403,39 @@ dielectric_material
 	scattering	100000.0
 }
 
+# The white wall seen through the flask -- its light picks up the
+# green tint on the way to the camera.
+uniformcolor_painter
+{
+	name	pnt_wall
+	color	0.6 0.6 0.6
+}
+
+lambertian_material
+{
+	name		mat_wall
+	reflectance	pnt_wall
+}
+
 sphere_geometry
 {
 	name	sph
 	radius	1.0
+}
+
+infiniteplane_geometry
+{
+	name	wall
+	xtile	1.0
+	ytile	1.0
+}
+
+standard_object
+{
+	name		obj_wall
+	geometry	wall
+	material	mat_wall
+	position	0 0 -2
 }
 
 standard_object
