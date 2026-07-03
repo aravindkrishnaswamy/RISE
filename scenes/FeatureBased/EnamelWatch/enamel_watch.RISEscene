@@ -2113,16 +2113,25 @@ sdf_geometry
 	part				box subtract 0.06  26 2.95641 -5.85959  337.5 0 0  1 1 1  2.2 0.72 0.42  0
 }
 
+# anOrdain Model 1 "New Hands": slim LEAF / lance (feuille) hands -- narrow at
+# the hub, swelling to a belly around mid-length, then tapering to a fine point
+# (NOT the Ming single-roundcone baton that was widest at the hub). Each hand is
+# two roundcones stacked along +Y: a neck (hub-r -> belly-r) unioned to a tip
+# (belly-r -> point). z-scale ~0.15 flattens them into thin flat hands; the
+# object orientation aims each along its hour. Reach unchanged (hour ~10.5,
+# minute ~16) so the 10:10-ish pose is preserved.
 sdf_geometry
 {
 	name				handhoursdf
-	part				roundcone union 0  0 0 0  0 0 0  1 1 0.144828  1.45 0.48 10  0
+	part				roundcone union 0     0 0 0    0 0 0  1 1 0.15  0.24 0.82 5.0  0
+	part				roundcone union 0.28  0 5.0 0  0 0 0  1 1 0.15  0.82 0.05 6.0  0
 }
 
 sdf_geometry
 {
 	name				handminutesdf
-	part				roundcone union 0  0 0 0  0 0 0  1 1 0.172131  1.22 0.4 16  0
+	part				roundcone union 0     0 0 0    0 0 0  1 1 0.15  0.22 0.72 7.5  0
+	part				roundcone union 0.28  0 7.5 0  0 0 0  1 1 0.15  0.72 0.04 9.5  0
 }
 
 standard_object
