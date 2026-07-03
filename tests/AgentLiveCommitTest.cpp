@@ -722,6 +722,11 @@ static void TestAgentEditMarksDirty()
 		// stays EMPTY.
 		Check( c.Editor().Dirty().Count() == 0,
 		       "applied agent edit does NOT touch the object-transform channel" );
+		// Positive routing pin: the KNOWN material kind lands in the
+		// per-entity channel (a regression that routes known kinds to
+		// the CST-head boolean channel can't pass silently).
+		Check( c.Editor().Dirty().EntityCount() == 1,
+		       "applied agent edit routes the KNOWN material kind to the per-entity channel" );
 
 		// The listener fired exactly once, with true (clean->dirty).
 		{
@@ -808,6 +813,30 @@ static void TestAgentEditMarksDirty()
 		       "unknown-kind mark does NOT park the painter name in the object-transform channel" );
 		Check( c.Editor().Dirty().EntityCount() == 0,
 		       "unknown-kind mark does NOT touch the per-entity channel" );
+
+		//------------------------------------------------------------------
+		// A1 review round 1 P2 (OR-merge across restore): a mid-transaction
+		// agent commit's CST-head mark must SURVIVE a rollback's dirty-state
+		// restore.  The agent path's Document mutation has no EditHistory
+		// record, so the rollback's Undo loop can never revert it — if
+		// RestoreState plain-copied the boolean back to the clean
+		// pre-transaction baseline, HasUnsavedChanges() would go false while
+		// the mutated Document survives, and a close-without-prompt would
+		// silently LOSE the agent edit.  Simulates the transaction sequence
+		// directly: capture clean dirty state (BeginTransaction baseline) →
+		// agent mark (mid-transaction commit) → restore (rollback).
+		// Red-prove: with a plain-value-copy RestoreState this goes CLEAN.
+		//------------------------------------------------------------------
+		c.Editor().ClearDirtyState();
+		Check( !c.HasUnsavedChanges(), "clean before the restore-survival probe" );
+		const auto cleanSnap = c.Editor().CaptureDirtyState();
+		c.Editor().MarkCstHeadDirty( "grey", "uniformcolor_painter" );
+		Check( c.HasUnsavedChanges(), "agent mark applied after the clean capture" );
+		c.Editor().RestoreDirtyState( cleanSnap );
+		Check( c.Editor().Dirty().CstHeadDirty(),
+		       "CST-head flag SURVIVES a restore of the clean pre-transaction snapshot (OR-merge)" );
+		Check( c.HasUnsavedChanges(),
+		       "HasUnsavedChanges() still true after the rollback-style restore (no silent agent-edit loss)" );
 
 		c.Stop();
 	}

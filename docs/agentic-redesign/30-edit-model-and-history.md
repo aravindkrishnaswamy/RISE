@@ -1088,7 +1088,7 @@ public:
 | **Orbit-preview camera** (interactive pose during a drag, distinct from the saved camera) | folded into the live camera | `SessionState` *view camera* (see note) | no |
 | **Render progress / in-flight pass / preview-scale / polish state** | `mRendering`, `mCancelProgress`, `mPreviewScale`, `mPolishState`, … | **render orchestrator** (its own component, §2.9) | no |
 | **`mSceneEpoch`** (UI re-pull trigger) | controller | derived from version id changes | no |
-| **"Dirty / unsaved?"** (in-process) | `DirtyTracker` (2 channels) + `mScaleFromAnchorSet` + `HasUnsavedChanges` | **`headVersion != lastFlushedVersionId`** (one comparison, see below) | n/a |
+| **"Dirty / unsaved?"** (in-process) | `DirtyTracker` (5 channels) + `mScaleFromAnchorSet` + `HasUnsavedChanges` | **`headVersion != lastFlushedVersionId`** (one comparison, see below) | n/a |
 | **External-file conflict** (on-disk changed under us) | *(not detected today)* | **load/flush fingerprint (prefilter + content hash) + atomic save (D6/D17)** | the fingerprint travels with the head |
 
 ```cpp

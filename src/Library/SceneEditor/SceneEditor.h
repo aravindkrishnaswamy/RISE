@@ -138,7 +138,10 @@ namespace RISE
 		//! plain State copy missed it -> a rolled-back scale-gizmo gesture
 		//! still reported unsaved changes).  Restore also fires the dirty-
 		//! changed listener (BUG-1: a silent dirty->clean left the Save button
-		//! stale).
+		//! stale).  Note the CST-head boolean is NOT restored by plain
+		//! value: DirtyTracker::RestoreState OR-merges it, so an
+		//! un-revertible mid-transaction agent commit survives a
+		//! rollback restore (see the F7 doc in DirtyTracker.h).
 		struct DirtySnapshot {
 			DirtyTracker::State              tracker;
 			std::unordered_set<std::string> scaleFromAnchor;
@@ -183,21 +186,25 @@ namespace RISE
 		const EditHistory& History() const { return mHistory; }
 		EditHistory&       History()       { return mHistory; }
 
-		//! Phase 6.3 (docs/ROUND_TRIP_SAVE_PLAN.md §7.1): per-object
-		//! dirty-since-load set.  Populated by Apply / Undo / Redo
-		//! whenever a transform-shaped SceneEdit touches an object;
-		//! read by the save engine (Phase 6.4) to decide which
-		//! objects to compare against the loaded snapshot.  V1 only
-		//! tracks OBJECT transform ops (material / shader / etc. do
-		//! not mark dirty — out of V1 scope per §7.6).
+		//! Dirty-since-load tracker (origin: Phase 6.3,
+		//! docs/ROUND_TRIP_SAVE_PLAN.md §7.1).  Populated by Apply /
+		//! Undo / Redo (and the agent path via MarkCstHeadDirty).
+		//! Historically the Phase 6.4 byte-splice save engine read it
+		//! to decide which objects to compare against the loaded
+		//! snapshot; since the Slice-6d byte-splice deletion the
+		//! channels only feed HasUnsavedChanges() / the GUI
+		//! Save-button state — the save engine's sole tracker
+		//! interaction is Clear() after a successful save.
 		const DirtyTracker& Dirty() const { return mDirtyTracker; }
 		DirtyTracker&       Dirty()       { return mDirtyTracker; }
 
 		//! Object names that received a `ScaleObjectFromAnchor` op
-		//! since the last load.  Phase 6.4 §9.2 forceMatrixOverride
-		//! gate consults this — SFA-touched objects always serialize
-		//! as `matrix` overrides (pinned 2.8) even when their
-		//! current transform happens to be decomposable.
+		//! since the last load.  Historically the Phase 6.4 §9.2
+		//! forceMatrixOverride gate consulted this so SFA-touched
+		//! objects always serialized as `matrix` overrides (pinned
+		//! 2.8); since the Slice-6d byte-splice deletion it only
+		//! feeds HasUnsavedChanges(), and the save engine merely
+		//! clears it after a successful save.
 		const std::unordered_set<std::string>& ScaleFromAnchorSet() const { return mScaleFromAnchorSet; }
 		void ClearDirtyState()
 		{
@@ -226,9 +233,11 @@ namespace RISE
 		//! (DirtyTracker::MarkCstHeadDirty) so HasAnyDirty() still
 		//! flips true without parking uncategorized names in the
 		//! object-transform set.  Either mark is SAFE: SaveEngine::Save
-		//! is a whole-Document SerializeCst gated only on "is anything
-		//! dirty" — it never byte-splices per entity — and both channels
-		//! are cleared by DirtyTracker::Clear() on a successful save.
+		//! has NO dirty gate — it serializes the whole Document
+		//! unconditionally (NoOp on byte-equality) and never
+		//! byte-splices per entity; the aggregate dirty bit gates only
+		//! the GUI Save-button enable — and both channels are cleared
+		//! by DirtyTracker::Clear() on a successful save.
 		//!
 		//! Fires FireDirtyChangedIfTransitioned() so the Save-button
 		//! listener runs on the clean→dirty transition.  The listener

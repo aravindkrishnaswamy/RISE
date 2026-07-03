@@ -4,25 +4,25 @@
 //    pipeline.
 //
 //  Records which entities have been mutated by the interactive
-//  editor since the last load or save.  The save engine iterates
-//  the tracker to know which entities to compare against their
-//  loaded baseline (transform snapshot for objects; property
-//  snapshot for everything else).
+//  editor since the last load or save.  Historically (Phase 6/B/C)
+//  the byte-splice save engine iterated the tracker to decide which
+//  entities to compare against their loaded baselines; the
+//  CST-cutover Slice 6d deleted that mechanism.  Today
+//  SaveEngine::Save is an unconditional whole-Document SerializeCst
+//  (NoOp on byte-equality) whose ONLY tracker interaction is
+//  Clear() after a successful save — the channels exist to feed
+//  HasAnyDirty(), which drives SceneEditor::HasUnsavedChanges() and
+//  thus the GUI's Save-button / unsaved-changes state.
 //
-//  Two channels:
+//  Two original channels:
 //    - mNames        — OBJECT TRANSFORM dirty set (Phase 6).
-//                      Coarse per-object; the save engine's
-//                      matrix-equality check (§9.4) resolves the
-//                      "drag → undo → no-op" case.
+//                      Coarse per-object.
 //    - mEntityDirty  — Phase B per-(category,name) dirty set for
 //                      property-shaped edits: object material /
 //                      shader / shadow / interior-medium bindings,
 //                      camera transform + properties, light
 //                      properties, material slots, medium
-//                      properties.  Also coarse per entity; the
-//                      save engine diffs a parse-time PropertySnapshot
-//                      against current introspection to find the
-//                      changed parameters.
+//                      properties.  Also coarse per entity.
 //
 //  Later phases added further channels, documented at their
 //  sections below: the Phase C created-entity channels and the
@@ -70,7 +70,9 @@ namespace RISE
         bool Contains( const std::string& objectName ) const;
 
         /// Deterministic sorted list of object-transform-dirty names.
-        /// The save engine's transform pass iterates this.
+        /// No production consumer since the Slice-6d byte-splice
+        /// deletion (the save engine's transform pass that iterated
+        /// it is gone); retained for tests/diagnostics.
         std::vector<std::string> Snapshot() const;
 
         std::size_t Count() const { return mNames.size(); }
@@ -82,40 +84,46 @@ namespace RISE
         void MarkEntityDirty( EntityCategory category, const std::string& name );
 
         /// Deterministic sorted list of (category,name) entity-dirty
-        /// pairs.  The save engine's property pass iterates this.
+        /// pairs.  No production consumer since the Slice-6d
+        /// byte-splice deletion (the save engine's property pass that
+        /// iterated it is gone); retained for tests/diagnostics.
         std::vector<DirtyEntity> EntitySnapshot() const;
 
         std::size_t EntityCount() const { return mEntityDirty.size(); }
 
         // ---- Created-entity channel (Phase C) -----------------------
         // Entities the editor CREATED this session (e.g. an AddCamera
-        // clone).  These have no source span — the save engine emits
-        // a fresh chunk for them inside the managed block.
+        // clone).  Under the deleted byte-splice save these had no
+        // source span, so the save engine emitted a fresh chunk for
+        // them inside its managed block; that machinery is gone with
+        // Slice 6d, and today the channel only feeds dirty state.
         //
-        // Two sub-channels because the two consumers have opposite
-        // lifetimes:
+        // Two sub-channels with opposite lifetimes:
         //   - `mCreatedPending`  — "created since the last save".
         //     Transient: cleared by Clear() so the Save button greys
         //     after a save.  Feeds HasAnyDirty().
         //   - `mSessionCreated`  — "created at any point this session".
-        //     PERSISTENT across Clear(): the emitted chunk lives in
-        //     the wholesale-re-rendered managed block, so every
-        //     subsequent save must re-emit it.  Reset only when the
-        //     whole tracker is reconstructed (new scene → new editor).
+        //     PERSISTENT across Clear() (a byte-splice-era rule: the
+        //     emitted chunk lived in the wholesale-re-rendered managed
+        //     block, so every subsequent save had to re-emit it).
+        //     Reset only when the whole tracker is reconstructed
+        //     (new scene → new editor).
 
         /// Mark an entity as newly created.  Writes BOTH sub-channels.
         void MarkEntityCreated( EntityCategory category, const std::string& name );
 
         /// Sorted (category,name) list of entities created this
-        /// SESSION — the save engine re-emits a fresh chunk for each.
+        /// SESSION.  No production consumer since the Slice-6d
+        /// byte-splice deletion (the save engine no longer re-emits
+        /// per-entity chunks); retained for tests/diagnostics.
         std::vector<DirtyEntity> SessionCreatedSnapshot() const;
 
         std::size_t SessionCreatedCount() const { return mSessionCreated.size(); }
 
-        /// True iff (category,name) was created this session.  The
-        /// save engine's property pass consults this: a property edit
-        /// on a session-created entity is NOT a refusal (no source
-        /// span) — the created-entity pass re-emits the whole chunk.
+        /// True iff (category,name) was created this session.  No
+        /// production consumer since the Slice-6d byte-splice
+        /// deletion (the save engine's property pass that consulted
+        /// it is gone); retained for tests/diagnostics.
         bool IsSessionCreated( EntityCategory category,
                                const std::string& name ) const
         {
@@ -128,12 +136,14 @@ namespace RISE
         // for edits that map onto NONE of the per-entity categories
         // above — agent commits on painters / functions / rasterizer
         // params / shaders, or a commit whose entity name is empty.
-        // The CST save path (SaveEngine::Save) is a whole-Document
-        // SerializeCst gated only on "is anything dirty", so a single
-        // coarse boolean is exactly the granularity that path needs —
-        // parking such names in the object-transform set (the pre-A1
-        // hack) was a semantic overload.  Transient: cleared by
-        // Clear() so a successful save greys the Save button.
+        // SaveEngine::Save has NO dirty gate — it serializes the
+        // whole Document unconditionally and NoOps on byte-equality;
+        // the aggregate dirty bit (HasAnyDirty()) gates only the GUI
+        // Save-button enable, so a single coarse boolean is exactly
+        // the granularity that consumer needs — parking such names in
+        // the object-transform set (the pre-A1 hack) was a semantic
+        // overload.  Transient: cleared by Clear() so a successful
+        // save greys the Save button.
 
         /// Set the CST-head-dirty flag.  UNCONDITIONAL — there is no
         /// name to validate — so the mark can never silently no-op
@@ -169,12 +179,18 @@ namespace RISE
 // The editor's transactional rollback restores the dirty channels
 // to their pre-transaction state, so a fully reverted document does
 // not keep showing unsaved changes (undo RE-MARKS dirty, and created
-// entities are never un-marked).  A plain value copy of the four
-// sets plus the CST-head boolean is sufficient.  The boolean rolls
-// back exactly like the sets: an agent commit that set it BEFORE
-// the transaction began is captured in the snapshot, so a rollback
-// PRESERVES it (the agent's unsaved edit is not part of the
-// reverted transaction and must keep reporting unsaved changes).
+// entities are never un-marked).  The four SETS restore by plain
+// value copy.  The CST-head BOOLEAN is deliberately ASYMMETRIC:
+// RestoreState OR-merges it (a set flag survives ANY restore),
+// because its only writer is the agent-commit path
+// (SceneEditController::ApplyAgentParamEdit), whose Document
+// mutation has no EditHistory record — the rollback's Undo loop can
+// never revert it.  A plain value copy would let a mid-transaction
+// agent commit be wiped by the rollback's restore of the clean
+// pre-transaction baseline while the mutated Document survives,
+// silently losing the edit on a close-without-prompt.  (A flag set
+// BEFORE the transaction began is captured in the snapshot and is
+// preserved either way.)
 struct State {
 	std::unordered_set<std::string> names;
 	std::set<DirtyEntity>           entityDirty;
@@ -183,7 +199,7 @@ struct State {
 	bool                            cstHeadDirty = false;
 };
 State CaptureState() const { return State{ mNames, mEntityDirty, mCreatedPending, mSessionCreated, mCstHeadDirty }; }
-void  RestoreState( const State& st ) { mNames = st.names; mEntityDirty = st.entityDirty; mCreatedPending = st.createdPending; mSessionCreated = st.sessionCreated; mCstHeadDirty = st.cstHeadDirty; }
+void  RestoreState( const State& st ) { mNames = st.names; mEntityDirty = st.entityDirty; mCreatedPending = st.createdPending; mSessionCreated = st.sessionCreated; mCstHeadDirty = st.cstHeadDirty || mCstHeadDirty; }
 
     private:
         std::unordered_set<std::string> mNames;          ///< object transform dirty (transient)
