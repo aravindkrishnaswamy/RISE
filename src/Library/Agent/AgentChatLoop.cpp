@@ -38,6 +38,13 @@ namespace RISE
 				"3. render, then read_image to SEE the result and verify the edit "
 				"visually before declaring it done.\n"
 				"\n"
+				// CAPABILITY SCOPE -- revise this sentence when insert_chunk
+				// ships (a later F5 slice) and entity add/remove becomes real.
+				"You can only change PARAMETERS of existing entities via "
+				"propose_patch; adding or removing entities is not supported yet -- "
+				"when asked to create or delete something, say so and suggest what "
+				"the user can do in the GUI instead.\n"
+				"\n"
 				"Keep responses concise. After acting, report plainly what changed "
 				"(entity, parameter, old vs new value when known) and what you "
 				"observed in the render.";
@@ -87,6 +94,18 @@ namespace RISE
 
 		void AgentChatLoop::AddUserMessage( const std::string& text )
 		{
+			// EMPTY / whitespace-only user text is a documented NO-OP
+			// (see the header): Anthropic hard-400s an empty text block,
+			// so recording one would poison every later request.  The
+			// caller sent nothing, so nothing is flushed or reset either
+			// -- the turn state stays exactly as it was.
+			bool blank = true;
+			for( std::size_t i = 0; i < text.size(); ++i ) {
+				const char c = text[i];
+				if( c != ' ' && c != '\t' && c != '\n' && c != '\r' ) { blank = false; break; }
+			}
+			if( blank ) return;
+
 			// Pending tool calls belong to the PREVIOUS assistant turn --
 			// flush them ahead of the new user message so the wire order
 			// stays assistant(tool_use) -> user(tool_results) -> user(text).

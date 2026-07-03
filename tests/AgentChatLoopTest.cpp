@@ -59,13 +59,18 @@
 //        (record nothing; the next request is clean).
 //    T14 Image retention: only the most recent read_image PNG stays
 //        live; older ToolResults entries are rewritten with the image
-//        elided (both providers; ids stay matched on the wire).
+//        elided (both providers; ids stay matched on the wire).  The
+//        loop-written attach note is rewritten alongside the block
+//        (never an RPC-owned note field); two images packed in ONE
+//        flush keep only the LAST live (pre-elided at pack time).
 //    T15 -ffast-math-safe non-finite guards: 1e999 tool args survive
 //        JSON serialization as the documented `0` fallback (the
 //        JSON-RPC line stays valid JSON); an `inf` numeric scene value
 //        classifies as INVALID_VALUE in AgentSession validation.
-//    T16 Gemini id uniqueness: synthesized ids skip collisions with
-//        ids captured this turn; duplicate ids refuse the whole turn.
+//    T16 Duplicate-call-id refusal on BOTH providers (a repeated
+//        Anthropic tool_use id or Gemini functionCall id refuses the
+//        whole turn); Gemini synthesized ids skip collisions with ids
+//        captured this turn.
 //    T17 Gemini adjacent role:user contents merge into ONE content at
 //        BuildRequest (functionResponse parts first) so the wire roles
 //        always alternate.
@@ -75,9 +80,21 @@
 //    T19 Degenerate empty-content final turns (Anthropic content:[] +
 //        end_turn; Gemini STOP with missing/empty parts) are refused,
 //        recording nothing.
+//    T20 Gemini role-spoof gate: a candidate whose content.role is
+//        present and != "model" (string or not, calls or text) is
+//        refused outright -- otherwise the verbatim echo joins
+//        BuildRequest's adjacent-user merge and the conversation
+//        collapses into one wire-invalid user content.
+//    T21 Loop-contract details: empty/whitespace AddUserMessage is a
+//        documented no-op (nothing recorded, flushed, or reset);
+//        direct Reset() clears transcript + pending + rounds but keeps
+//        the provider/model; TranscriptAt out of range returns the
+//        safe static empty entry.
 //    Plus: ChatStepResult.assistantDisplayText on both success kinds,
-//    and ChatErrorKind asserted on every error path (Parse, Http,
-//    Refusal, MaxTokens, IterationCap, Misuse, Provider).
+//    ChatErrorKind asserted on every error path (Parse, Http,
+//    Refusal, MaxTokens, IterationCap, Misuse, Provider), the system
+//    prompt's parameter-only capability note (T1), and the Gemini
+//    calls-require-explicit-STOP policy with text-only leniency (T10).
 //
 //  RED-PROVE evidence (development-time, reverted): (a) the T1 key-leak
 //  check was run against a codec variant that put the key in the body
@@ -110,7 +127,18 @@
 //  non-numeric args survive ...", "the non-finite number serialized as
 //  the documented fallback 0"), proving the intrinsic guard really IS
 //  folded to dead code under the production -ffast-math flags and the
-//  literal `inf` escapes into the serialized JSON.
+//  literal `inf` escapes into the serialized JSON.  Round-3 additions:
+//  (h) the suite was run with the Anthropic duplicate-tool_use-id gate
+//  disabled -> exactly FIVE T16 checks failed ("anthropic duplicate
+//  tool_use ids -> ProviderError ...", "... errorKind Provider", "the
+//  refusal names the repeated tool_use id", "... records NOTHING and
+//  pends nothing", "the next BuildRequest carries NO trace ..."); (i)
+//  the suite was run with the Gemini role-spoof gate disabled ->
+//  exactly EIGHT T20 checks failed (both spoof cases + the non-string
+//  role case), and notably "the next request carries only the user
+//  message (merge untouched)" PASSED vacuously -- the spoofed turn had
+//  merged into ONE user content, demonstrating the exact conversation
+//  collapse the gate exists to prevent.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -322,6 +350,8 @@ static void TestAnthropicRequestShape()
 	}
 	Check( root.get( "system" ).asString().find( "status=diagnosed" ) != std::string::npos,
 	       "the system prompt teaches status=diagnosed" );
+	Check( root.get( "system" ).asString().find( "adding or removing entities is not supported yet" ) != std::string::npos,
+	       "the system prompt states the parameter-only capability scope (no entity add/remove)" );
 
 	const JsonValue& msgs = root.get( "messages" );
 	Check( msgs.isArray() && msgs.size() == 1, "body carries the one user message" );
@@ -1085,6 +1115,33 @@ static void TestStopReasonDeadEnds()
 		Check( loop.TranscriptSize() == 1 && loop.PendingToolCalls().empty(),
 		       "the truncated call turn records nothing and pends nothing" );
 	}
+
+	// Gemini: a calls-bearing turn with an ABSENT finishReason is refused
+	// (documented policy: finishReason is nominally optional in the proto,
+	// so text-only turns stay lenient -- but a call turn without an
+	// explicit STOP cannot be distinguished from one cut short mid-list).
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "hi" );
+		const std::string fx =
+			"{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":"
+			"{\"id\":\"fc_nofin\",\"name\":\"render\",\"args\":{}}}],\"role\":\"model\"},\"index\":0}]}";
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "a gemini functionCall turn with NO finishReason is refused" );
+		Check( st.errorMessage.find( "finishReason" ) != std::string::npos,
+		       "the refusal names the missing finishReason" );
+		Check( loop.TranscriptSize() == 1 && loop.PendingToolCalls().empty(),
+		       "the finishReason-less call turn records nothing and pends nothing" );
+
+		// Text-only leniency is PRESERVED: the same absent finishReason
+		// with a plain text part is still a FinalText.
+		ChatStepResult fin = loop.HandleResponse( 200,
+			"{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}],\"role\":\"model\"},\"index\":0}]}" );
+		Check( fin.kind == ChatStepResult::Kind::FinalText,
+		       "a TEXT-ONLY turn without finishReason stays accepted (documented leniency)" );
+	}
 }
 
 //----------------------------------------------------------------------
@@ -1296,6 +1353,22 @@ static void TestImageElision()
 		for( std::size_t i = 0; i < newTr.get( "content" ).size(); ++i )
 			if( newTr.get( "content" ).at( i ).get( "type" ).asString() == "image" ) newHasImage = true;
 		Check( newHasImage, "anthropic: the NEWEST entry still carries its live image block" );
+
+		// The loop-written ATTACH note is rewritten alongside the image:
+		// only the LIVE entry may still say "attached"; the elided entry's
+		// summary note must read elided (no contradictory context).
+		Check( CountOccurrences( body, "the PNG is attached as an image block" ) == 1,
+		       "anthropic: the stale attach note is rewritten (only the live entry says attached)" );
+		bool oldNoteElided = false;
+		for( std::size_t i = 0; i < oldBlocks.size(); ++i ) {
+			if( oldBlocks.at( i ).get( "type" ).asString() != "text" ) continue;
+			JsonValue summary = ParseBody( oldBlocks.at( i ).get( "text" ).asString() );
+			if( summary.isObject() &&
+			    summary.get( "note" ).asString().find( "image elided" ) != std::string::npos )
+				oldNoteElided = true;
+		}
+		Check( oldNoteElided,
+		       "anthropic: the elided entry's summary note field reads elided" );
 	}
 
 	// --- Gemini (the functionResponse.parts inlineData transport) ---
@@ -1337,6 +1410,112 @@ static void TestImageElision()
 		Check( newFr != nullptr && newFr->get( "parts" ).isArray() &&
 		       newFr->get( "parts" ).size() == 1,
 		       "gemini: the NEWEST functionResponse still carries its live inlineData part" );
+	}
+
+	// --- Two images in ONE flush (Anthropic): only the LAST keeps a live
+	// image block; the earlier one is packed PRE-ELIDED at pack time. ---
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "show me both" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_two1\",\"name\":\"read_image\",\"input\":{}},"
+			"{\"type\":\"tool_use\",\"id\":\"toolu_two2\",\"name\":\"read_image\",\"input\":{}}]",
+			"tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		if( st.toolCalls.size() != 2 ) { Check( false, "two parallel read_image calls expected" ); return; }
+		loop.AddToolResult( st.toolCalls[0], envA );
+		loop.AddToolResult( st.toolCalls[1], envB );
+
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, b64B ) == 1,
+		       "anthropic two-in-one-flush: the LAST base64 rides exactly once" );
+		Check( CountOccurrences( body, b64A ) == 0,
+		       "anthropic two-in-one-flush: the earlier base64 is pre-elided at pack time" );
+		JsonValue root = ParseBody( body );
+		JsonValue last = LastArrayEntry( root, "messages" );
+		const JsonValue& packed = last.get( "content" );
+		bool firstHasImage = false, secondHasImage = false, firstNoted = false;
+		for( std::size_t i = 0; i < packed.size(); ++i ) {
+			const JsonValue& tr = packed.at( i );
+			const std::string id = tr.get( "tool_use_id" ).asString();
+			const JsonValue& blocks = tr.get( "content" );
+			for( std::size_t j = 0; j < blocks.size(); ++j ) {
+				const JsonValue& b = blocks.at( j );
+				if( b.get( "type" ).asString() == "image" ) {
+					if( id == "toolu_two1" ) firstHasImage = true;
+					if( id == "toolu_two2" ) secondHasImage = true;
+				}
+				if( id == "toolu_two1" && b.get( "type" ).asString() == "text" &&
+				    b.get( "text" ).asString().find( "image elided" ) != std::string::npos )
+					firstNoted = true;
+			}
+		}
+		Check( !firstHasImage && secondHasImage,
+		       "anthropic two-in-one-flush: only the LAST result carries an image block" );
+		Check( firstNoted,
+		       "anthropic two-in-one-flush: the earlier result carries the elision text" );
+	}
+
+	// --- Two images in ONE flush (Gemini): same rule on the inlineData
+	// transport. ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "show me both" );
+		const std::string fx = GeminiFixture(
+			"{\"parts\":[{\"functionCall\":{\"id\":\"fc_two1\",\"name\":\"read_image\",\"args\":{}}},"
+			"{\"functionCall\":{\"id\":\"fc_two2\",\"name\":\"read_image\",\"args\":{}}}],\"role\":\"model\"}",
+			"STOP" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		if( st.toolCalls.size() != 2 ) { Check( false, "two parallel gemini read_image calls expected" ); return; }
+		loop.AddToolResult( st.toolCalls[0], envA );
+		loop.AddToolResult( st.toolCalls[1], envB );
+
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, b64B ) == 1,
+		       "gemini two-in-one-flush: the LAST base64 rides exactly once" );
+		Check( CountOccurrences( body, b64A ) == 0,
+		       "gemini two-in-one-flush: the earlier base64 is pre-elided at pack time" );
+		JsonValue root = ParseBody( body );
+		JsonValue last = LastArrayEntry( root, "contents" );
+		const JsonValue& parts = last.get( "parts" );
+		const JsonValue* fr1 = parts.at( 0 ).find( "functionResponse" );
+		const JsonValue* fr2 = parts.at( 1 ).find( "functionResponse" );
+		Check( fr1 != nullptr && !fr1->has( "parts" ) &&
+		       JsonSerialize( fr1->get( "response" ) ).find( "image elided" ) != std::string::npos,
+		       "gemini two-in-one-flush: the earlier functionResponse has no parts and reads elided" );
+		Check( fr2 != nullptr && fr2->get( "parts" ).isArray() && fr2->get( "parts" ).size() == 1,
+		       "gemini two-in-one-flush: only the LAST functionResponse carries the live inlineData part" );
+	}
+
+	// --- An RPC result that already OWNS a "note" field (Gemini): the
+	// attach note then lives under "image_note", and the elision rewrite
+	// must target image_note, never the RPC-owned note. ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "noted" );
+		const std::string envNote =
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"png_base64\":\"" + b64A +
+			"\",\"byteLength\":48,\"note\":\"rpc-owned-note\"}}";
+		const char* ids[] = { "fc_noteA", "fc_noteB" };
+		const std::string* envs[] = { &envNote, &envB };
+		for( int r = 0; r < 2; ++r ) {
+			const std::string fx = GeminiFixture(
+				std::string( "{\"parts\":[{\"functionCall\":{\"id\":\"" ) + ids[r] +
+				"\",\"name\":\"read_image\",\"args\":{}}}],\"role\":\"model\"}", "STOP" );
+			ChatStepResult st = loop.HandleResponse( 200, fx );
+			if( st.toolCalls.size() != 1 ) { Check( false, "one gemini read_image call expected (note case)" ); return; }
+			loop.AddToolResult( st.toolCalls[0], *envs[r] );
+		}
+		JsonValue root = ParseBody( loop.BuildRequest( kApiKey ).body );
+		const JsonValue* oldFr = root.get( "contents" ).at( 2 ).get( "parts" ).at( 0 ).find( "functionResponse" );
+		Check( oldFr != nullptr &&
+		       oldFr->get( "response" ).get( "note" ).asString() == "rpc-owned-note",
+		       "gemini: an RPC-owned note field is NOT clobbered by the elision" );
+		Check( oldFr != nullptr &&
+		       oldFr->get( "response" ).get( "image_note" ).asString().find( "image elided" ) != std::string::npos,
+		       "gemini: the attach note (image_note) is rewritten to the elision text" );
 	}
 }
 
@@ -1395,12 +1574,17 @@ static void TestFastMathGuards()
 }
 
 //----------------------------------------------------------------------
-// T16: Gemini id uniqueness (P3-1) -- synthesized ids skip collisions
-//      with ids captured this turn; duplicate ids refuse the turn.
+// T16: duplicate-call-id refusal on BOTH providers + Gemini
+//      synthesized-id collision handling.  Ids are the result-matching
+//      key: without the gate a duplicate id is recorded + pended once,
+//      AddToolResult ignores the second call as already-answered, the
+//      flush synthesizes a SECOND result for the SAME id, and the wire
+//      carries duplicate ids answered by duplicate results (permanent
+//      400).
 //----------------------------------------------------------------------
-static void TestGeminiIdUniqueness()
+static void TestDuplicateIdRefusal()
 {
-	std::printf( "T16: gemini synthesized-id collisions + duplicate-id refusal...\n" );
+	std::printf( "T16: duplicate-id refusal (both providers) + synthesized-id collisions...\n" );
 
 	// A provider id literally named "call_1" + a no-id call: the
 	// synthesized id must NOT collide.
@@ -1453,6 +1637,35 @@ static void TestGeminiIdUniqueness()
 		Check( st.kind == ChatStepResult::Kind::ProviderError,
 		       "a provider id colliding with an earlier synthesized id -> refused" );
 		Check( loop.TranscriptSize() == 1, "the colliding turn records nothing" );
+	}
+
+	// Anthropic: two tool_use blocks sharing an id -- same ambiguity,
+	// same gate (P1-1 of review round 3).  Without it, the flush would
+	// synthesize a second result for the SAME id -> permanent 400.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "hi" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_dup\",\"name\":\"read_document\",\"input\":{}},"
+			"{\"type\":\"tool_use\",\"id\":\"toolu_dup\",\"name\":\"render\",\"input\":{}}]",
+			"tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "anthropic duplicate tool_use ids -> ProviderError (whole turn refused)" );
+		Check( st.errorKind == ChatErrorKind::Provider,
+		       "the anthropic duplicate-id refusal -> errorKind Provider" );
+		Check( st.errorMessage.find( "toolu_dup" ) != std::string::npos,
+		       "the refusal names the repeated tool_use id" );
+		Check( loop.TranscriptSize() == 1 && loop.PendingToolCalls().empty(),
+		       "the anthropic duplicate-id turn records NOTHING and pends nothing" );
+		Check( loop.BuildRequest( kApiKey ).body.find( "toolu_dup" ) == std::string::npos,
+		       "the next BuildRequest carries NO trace of the refused duplicate-id turn" );
+
+		// A normal turn still works afterwards (transcript not poisoned).
+		ChatStepResult fin = loop.HandleResponse( 200, AnthropicFixture(
+			"[{\"type\":\"text\",\"text\":\"ok\"}]", "end_turn" ) );
+		Check( fin.kind == ChatStepResult::Kind::FinalText,
+		       "a normal turn works after the anthropic duplicate-id refusal" );
 	}
 }
 
@@ -1601,6 +1814,151 @@ static void TestDegenerateEmptyTurns()
 	}
 }
 
+//----------------------------------------------------------------------
+// T20: Gemini role-spoof gate (P1-2 of review round 3) -- a candidate
+//      whose content.role is present and != "model" is refused OUTRIGHT.
+//      Without the gate the spoofed content is echoed verbatim as the
+//      assistant entry and BuildRequest's adjacent-user merge (which
+//      classifies by parsing role from rawJson) folds it into the user
+//      run: the conversation collapses into ONE user content with a
+//      functionCall inside it -- wire-invalid, permanent poison.
+//----------------------------------------------------------------------
+static void TestGeminiRoleSpoofGate()
+{
+	std::printf( "T20: gemini role-spoofed model turns are refused...\n" );
+
+	// A calls-bearing candidate spoofing role:"user".
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "hi" );
+		const std::string fx = GeminiFixture(
+			"{\"parts\":[{\"functionCall\":{\"id\":\"fc_spoof\",\"name\":\"render\",\"args\":{}}}],\"role\":\"user\"}",
+			"STOP" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "content.role \"user\" on a model candidate -> ProviderError (whole turn refused)" );
+		Check( st.errorKind == ChatErrorKind::Provider,
+		       "the role-spoof refusal -> errorKind Provider" );
+		Check( st.errorMessage.find( "\"user\"" ) != std::string::npos,
+		       "the refusal names the spoofed role" );
+		Check( loop.TranscriptSize() == 1 && loop.PendingToolCalls().empty(),
+		       "the spoofed turn records NOTHING and pends nothing" );
+
+		// The user merge is untouched: the next request carries the lone
+		// user message and no functionCall ever joins a user content.
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( body.find( "fc_spoof" ) == std::string::npos,
+		       "the next request carries NO trace of the spoofed turn" );
+		JsonValue root = ParseBody( body );
+		Check( root.get( "contents" ).size() == 1 &&
+		       root.get( "contents" ).at( 0 ).get( "role" ).asString() == "user",
+		       "the next request carries only the user message (merge untouched)" );
+
+		// A genuine model turn still works afterwards.
+		ChatStepResult fin = loop.HandleResponse( 200, GeminiFixture(
+			"{\"parts\":[{\"text\":\"ok\"}],\"role\":\"model\"}", "STOP" ) );
+		Check( fin.kind == ChatStepResult::Kind::FinalText,
+		       "a normal model turn works after the refusal (transcript not poisoned)" );
+	}
+
+	// A text-only spoofed turn is refused too (the echo would still join
+	// the user merge on replay), and a NON-STRING role is equally hostile.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "hi" );
+		ChatStepResult st = loop.HandleResponse( 200, GeminiFixture(
+			"{\"parts\":[{\"text\":\"sneaky\"}],\"role\":\"user\"}", "STOP" ) );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "a role-spoofed TEXT-ONLY turn is refused too" );
+		Check( loop.TranscriptSize() == 1, "the text-only spoof records nothing" );
+
+		ChatStepResult st2 = loop.HandleResponse( 200, GeminiFixture(
+			"{\"parts\":[{\"text\":\"sneaky\"}],\"role\":123}", "STOP" ) );
+		Check( st2.kind == ChatStepResult::Kind::ProviderError,
+		       "a NON-STRING content.role is refused as well" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T21: loop-contract details -- empty AddUserMessage no-op, direct
+//      Reset() semantics, TranscriptAt bounds behaviour.
+//----------------------------------------------------------------------
+static void TestLoopContractDetails()
+{
+	std::printf( "T21: empty-message no-op, Reset(), TranscriptAt bounds...\n" );
+
+	// (a) Empty / whitespace-only AddUserMessage is a documented NO-OP
+	// (Anthropic hard-400s an empty text block).
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "" );
+		loop.AddUserMessage( " \t\r\n " );
+		Check( loop.TranscriptSize() == 0,
+		       "empty / whitespace-only user text records NOTHING" );
+		Check( loop.BuildRequest( kApiKey ).url.empty(),
+		       "the transcript stays empty -> BuildRequest still refuses" );
+
+		// With calls pending, the no-op does NOT flush them either: the
+		// caller sent nothing, so the turn state stays exactly as it was.
+		loop.AddUserMessage( "hi" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_noop\",\"name\":\"render\",\"input\":{}}]",
+			"tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ToolCalls, "one call pending before the no-op" );
+		const std::size_t size = loop.TranscriptSize();
+		loop.AddUserMessage( "   " );
+		Check( loop.TranscriptSize() == size && loop.PendingToolCalls().size() == 1,
+		       "a whitespace-only message flushes NOTHING (turn state untouched)" );
+	}
+
+	// (b) Direct Reset(): transcript + pending calls/results + round
+	// counter cleared; the provider/model selection is KEPT.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic, "claude-sonnet-4-6" );
+		loop.AddUserMessage( "hi" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_rstA\",\"name\":\"read_document\",\"input\":{}},"
+			"{\"type\":\"tool_use\",\"id\":\"toolu_rstB\",\"name\":\"render\",\"input\":{}}]",
+			"tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ToolCalls && st.toolCalls.size() == 2,
+		       "transcript + two pending calls before Reset" );
+		if( st.toolCalls.size() == 2 )   // buffer ONE result so mPendingResults is non-empty too
+			loop.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+		Check( loop.ToolRoundCount() == 1, "round counter is non-zero before Reset" );
+
+		loop.Reset();
+		Check( loop.TranscriptSize() == 0, "Reset clears the transcript" );
+		Check( loop.PendingToolCalls().empty(), "Reset clears the pending calls" );
+		Check( loop.ToolRoundCount() == 0, "Reset clears the round counter" );
+		Check( loop.Provider() == ChatProvider::Anthropic && loop.ModelId() == "claude-sonnet-4-6",
+		       "Reset KEEPS the provider/model selection" );
+		Check( loop.BuildRequest( kApiKey ).url.empty(),
+		       "after Reset, BuildRequest refuses (no stray flush of dropped results)" );
+
+		loop.AddUserMessage( "again" );
+		Check( loop.TranscriptSize() == 1, "the loop is fully usable again after Reset" );
+	}
+
+	// (c) TranscriptAt out of range returns the documented safe static
+	// empty entry (never throws) -- mirrors JsonValue::at.
+	{
+		AgentChatLoop loop;
+		const ChatTranscriptEntry& e = loop.TranscriptAt( 12345 );
+		Check( e.displayText.empty() && e.rawJson.empty() &&
+		       e.role == ChatTranscriptEntry::Role::User && !e.carriesLiveImage,
+		       "TranscriptAt out of range returns the safe empty entry" );
+		loop.AddUserMessage( "one" );
+		Check( loop.TranscriptAt( 0 ).displayText == "one" &&
+		       loop.TranscriptAt( 1 ).rawJson.empty(),
+		       "in-range access works; one-past-the-end is the safe empty entry" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
@@ -1629,10 +1987,12 @@ int main()
 	TestHostileDispositionGates();
 	TestImageElision();
 	TestFastMathGuards();
-	TestGeminiIdUniqueness();
+	TestDuplicateIdRefusal();
 	TestGeminiUserRunMerge();
 	TestHeaderAndUrlSanitizing();
 	TestDegenerateEmptyTurns();
+	TestGeminiRoleSpoofGate();
+	TestLoopContractDetails();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

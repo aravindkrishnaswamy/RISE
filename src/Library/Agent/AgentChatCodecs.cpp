@@ -427,6 +427,34 @@ namespace RISE
 				outB64 = b64->asString();
 				return true;
 			}
+
+			//! Rewrite the attach note inside a StripPngBase64-produced
+			//! textual summary so an elided image is not described as
+			//! "attached" (contradictory context for the model).  The
+			//! summary is LOOP-OWNED JSON (StripPngBase64 wrote it), so
+			//! parse + rewrite is legal.  Prefers "image_note" -- the key
+			//! StripPngBase64 falls back to when the RPC result already
+			//! owned a "note" of its own -- so an RPC-owned note field is
+			//! never clobbered.  Text that does not parse as an object, or
+			//! carries neither key, is returned unchanged.
+			std::string RewriteElidedSummaryText( const std::string& text )
+			{
+				JsonValue obj;
+				std::string perr;
+				if( !JsonParse( text, obj, perr ) || !obj.isObject() ) return text;
+				const char* key = obj.has( "image_note" ) ? "image_note"
+				                : obj.has( "note" )       ? "note"
+				                : nullptr;
+				if( !key ) return text;
+				JsonValue out = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& mem = obj.members();
+				for( std::size_t i = 0; i < mem.size(); ++i ) {
+					out.set( mem[i].first, mem[i].first == key
+					         ? JsonValue::MakeString( kImageElidedNote )
+					         : mem[i].second );
+				}
+				return JsonSerialize( out );
+			}
 		}
 
 		bool ChatToolResultCarriesImage( const ChatToolCall& call,
@@ -468,6 +496,19 @@ namespace RISE
 			// ONE user message carrying one tool_result block per tool_use --
 			// Anthropic requires every tool_use of the assistant turn to be
 			// answered in the SAME following user message.
+			//
+			// IMAGE RETENTION, entry-internal half: within one flush only
+			// the LAST image-bearing result keeps a live image block --
+			// earlier ones are packed PRE-ELIDED (summary note + elision
+			// text, exactly what RewriteElidedImages would later produce)
+			// so the "one live image globally" rule holds even when one
+			// assistant turn requested read_image twice.
+			std::size_t lastImage = results.size();
+			for( std::size_t i = 0; i < results.size(); ++i ) {
+				if( ChatToolResultCarriesImage( results[i].first, results[i].second ) )
+					lastImage = i;
+			}
+
 			JsonValue contentArr = JsonValue::MakeArray();
 			for( std::size_t i = 0; i < results.size(); ++i ) {
 				const ChatToolCall& call = results[i].first;
@@ -490,16 +531,25 @@ namespace RISE
 					const JsonValue& result = env.get( "result" );
 					std::string b64;
 					if( IsImageResult( call, result, b64 ) ) {
-						blocks.push_back( MakeTextBlock( JsonSerialize(
-							StripPngBase64( result, "the PNG is attached as an image block" ) ) ) );
-						JsonValue source = JsonValue::MakeObject();
-						source.set( "type", JsonValue::MakeString( "base64" ) );
-						source.set( "media_type", JsonValue::MakeString( "image/png" ) );
-						source.set( "data", JsonValue::MakeString( b64 ) );
-						JsonValue img = JsonValue::MakeObject();
-						img.set( "type", JsonValue::MakeString( "image" ) );
-						img.set( "source", source );
-						blocks.push_back( img );
+						if( i == lastImage ) {
+							blocks.push_back( MakeTextBlock( JsonSerialize(
+								StripPngBase64( result, "the PNG is attached as an image block" ) ) ) );
+							JsonValue source = JsonValue::MakeObject();
+							source.set( "type", JsonValue::MakeString( "base64" ) );
+							source.set( "media_type", JsonValue::MakeString( "image/png" ) );
+							source.set( "data", JsonValue::MakeString( b64 ) );
+							JsonValue img = JsonValue::MakeObject();
+							img.set( "type", JsonValue::MakeString( "image" ) );
+							img.set( "source", source );
+							blocks.push_back( img );
+						}
+						else {
+							// Superseded within this very flush: pack it
+							// already elided (see the header comment above).
+							blocks.push_back( MakeTextBlock( JsonSerialize(
+								StripPngBase64( result, kImageElidedNote ) ) ) );
+							blocks.push_back( MakeTextBlock( kImageElidedNote ) );
+						}
 					}
 					else {
 						blocks.push_back( MakeTextBlock( JsonSerialize( result ) ) );
@@ -541,26 +591,36 @@ namespace RISE
 					continue;
 				}
 				// Swap each {type:"image",...} element for the elision text
-				// block; every other block (and every other member of the
-				// tool_result, tool_use_id included) is copied through, so
-				// the rewritten entry stays wire-valid.
-				bool trChanged = false;
+				// block; every other member of the tool_result (tool_use_id
+				// included) is copied through, so the rewritten entry stays
+				// wire-valid.  In an image-bearing tool_result the textual
+				// summary's attach note ("the PNG is attached as an image
+				// block") is rewritten too -- it is loop-written content
+				// (StripPngBase64 produced it) and leaving it would show
+				// the model a note contradicting the elided block.
+				bool hasImage = false;
+				for( std::size_t j = 0; j < blocks.size(); ++j )
+					if( blocks.at( j ).get( "type" ).asString() == "image" ) hasImage = true;
+				if( !hasImage ) {
+					newContent.push_back( tr );
+					continue;
+				}
+				changed = true;
 				JsonValue newBlocks = JsonValue::MakeArray();
 				for( std::size_t j = 0; j < blocks.size(); ++j ) {
 					const JsonValue& b = blocks.at( j );
-					if( b.get( "type" ).asString() == "image" ) {
+					const std::string btype = b.get( "type" ).asString();
+					if( btype == "image" ) {
 						newBlocks.push_back( MakeTextBlock( kImageElidedNote ) );
-						trChanged = true;
+					}
+					else if( btype == "text" ) {
+						newBlocks.push_back( MakeTextBlock(
+							RewriteElidedSummaryText( b.get( "text" ).asString() ) ) );
 					}
 					else {
 						newBlocks.push_back( b );
 					}
 				}
-				if( !trChanged ) {
-					newContent.push_back( tr );
-					continue;
-				}
-				changed = true;
 				JsonValue newTr = JsonValue::MakeObject();
 				const std::vector<std::pair<std::string, JsonValue>>& mem = tr.members();
 				for( std::size_t j = 0; j < mem.size(); ++j )
@@ -614,7 +674,7 @@ namespace RISE
 		{
 			ChatParsedResponse out;
 			if( httpStatus != 200 ) {
-				out.step = MakeHttpError( "anthropic", httpStatus, rawBody );
+				out.step = MakeHttpError( ProviderName(), httpStatus, rawBody );
 				return out;
 			}
 
@@ -653,6 +713,23 @@ namespace RISE
 						out.step = MakeProviderError( ChatErrorKind::Provider,
 							"anthropic tool_use block carries no id; refusing the turn (its result could never be matched)" );
 						return out;
+					}
+					// Duplicate ids within one turn make result matching
+					// ambiguous -- ids are the result-matching key and must
+					// be unique.  Without this gate, AddToolResult would
+					// ignore the second call as already-answered, the flush
+					// would synthesize a SECOND result for the SAME id, and
+					// the wire would carry duplicate tool_use ids answered by
+					// duplicate tool_use_id results (a permanent 400).
+					// Refuse the whole turn instead (mirrors the Gemini
+					// duplicate-functionCall-id gate).
+					for( std::size_t k = 0; k < calls.size(); ++k ) {
+						if( calls[k].id == c.id ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"anthropic response repeats tool_use id \"" + c.id +
+								"\" -- refusing the turn (results could not be matched unambiguously)" );
+							return out;
+						}
 					}
 					const JsonValue& input = block.get( "input" );
 					c.argsJson = input.isObject() ? JsonSerialize( input ) : std::string( "{}" );
@@ -766,6 +843,17 @@ namespace RISE
 			// functionResponse.parts[].inlineData -- the documented
 			// FunctionResponsePart mechanism for multimodal function
 			// output -- with the base64 stripped from the JSON half.
+			//
+			// IMAGE RETENTION, entry-internal half (mirrors the Anthropic
+			// codec): within one flush only the LAST image-bearing result
+			// keeps a live inlineData part; earlier ones are packed
+			// PRE-ELIDED (no parts array; the note already reads elided).
+			std::size_t lastImage = results.size();
+			for( std::size_t i = 0; i < results.size(); ++i ) {
+				if( ChatToolResultCarriesImage( results[i].first, results[i].second ) )
+					lastImage = i;
+			}
+
 			JsonValue parts = JsonValue::MakeArray();
 			for( std::size_t i = 0; i < results.size(); ++i ) {
 				const ChatToolCall& call = results[i].first;
@@ -785,7 +873,16 @@ namespace RISE
 				else {
 					const JsonValue& result = env.get( "result" );
 					if( IsImageResult( call, result, b64 ) ) {
-						respObj = StripPngBase64( result, "the PNG is attached as a functionResponse media part" );
+						if( i == lastImage ) {
+							respObj = StripPngBase64( result, "the PNG is attached as a functionResponse media part" );
+						}
+						else {
+							// Superseded within this very flush: pack it
+							// already elided (note reads elided; b64 cleared
+							// so no inlineData parts array is emitted below).
+							respObj = StripPngBase64( result, kImageElidedNote );
+							b64.clear();
+						}
 					}
 					else if( result.isObject() ) {
 						respObj = result;
@@ -861,11 +958,19 @@ namespace RISE
 				for( std::size_t j = 0; j < mem.size(); ++j ) {
 					if( mem[j].first == "parts" ) continue;
 					if( mem[j].first == "response" && mem[j].second.isObject() ) {
+						// Rewrite the ATTACH note StripPngBase64 wrote --
+						// preferring "image_note" (the key it falls back to
+						// when the RPC result already owned a "note"), so an
+						// RPC-owned note field is never clobbered.
 						JsonValue newResp = JsonValue::MakeObject();
 						bool noted = false;
 						const std::vector<std::pair<std::string, JsonValue>>& rm = mem[j].second.members();
+						bool hasImageNote = false;
+						for( std::size_t k = 0; k < rm.size(); ++k )
+							if( rm[k].first == "image_note" ) hasImageNote = true;
+						const char* noteKey = hasImageNote ? "image_note" : "note";
 						for( std::size_t k = 0; k < rm.size(); ++k ) {
-							if( !noted && ( rm[k].first == "note" || rm[k].first == "image_note" ) ) {
+							if( rm[k].first == noteKey ) {
 								newResp.set( rm[k].first, JsonValue::MakeString( kImageElidedNote ) );
 								noted = true;
 							}
@@ -924,7 +1029,11 @@ namespace RISE
 			// turn).  User entries are loop-generated (MakeUserEntry /
 			// PackToolResults), so parse + re-serialize is legal for them;
 			// model entries splice VERBATIM (byte-preservation contract)
-			// and are never merged.
+			// and are never merged -- ParseResponse guarantees a recorded
+			// model entry's role really is "model" (a candidate spoofing
+			// any other role is refused outright; role-less content is
+			// wrapped under an explicit "model"), so a provider body can
+			// never smuggle an assistant turn into this user merge.
 			std::vector<std::string> wireEntries;
 			std::vector<JsonValue>   userRun;
 			std::vector<std::size_t> userRunSrc;   // rawEntries index per userRun element
@@ -989,7 +1098,7 @@ namespace RISE
 		{
 			ChatParsedResponse out;
 			if( httpStatus != 200 ) {
-				out.step = MakeHttpError( "gemini", httpStatus, rawBody );
+				out.step = MakeHttpError( ProviderName(), httpStatus, rawBody );
 				return out;
 			}
 
@@ -1018,6 +1127,29 @@ namespace RISE
 
 			const JsonValue& cand = candidates.at( 0 );
 			const JsonValue& content = cand.get( "content" );
+
+			// RECORD-OR-REFUSE role gate: the raw-span echo below records
+			// candidates[0].content VERBATIM whenever it carries a "role"
+			// member, and BuildRequest's adjacent-user merge classifies
+			// transcript entries by parsing that role.  A hostile candidate
+			// spoofing content.role:"user" would therefore be recorded as
+			// the assistant turn and then MERGED into the surrounding user
+			// run on the next request -- the conversation collapses into
+			// ONE user content with a functionCall part inside it (wire-
+			// invalid, permanent poison).  Refuse any candidate whose
+			// content.role is present and not "model"; an ABSENT role keeps
+			// the wrap-as-model behavior below.
+			if( content.isObject() ) {
+				const JsonValue* role = content.find( "role" );
+				if( role && !( role->isString() && role->asString() == "model" ) ) {
+					out.step = MakeProviderError( ChatErrorKind::Provider,
+						"gemini candidate content carries role \"" +
+						( role->isString() ? role->asString() : std::string( "(non-string)" ) ) +
+						"\" instead of \"model\" -- refusing the turn (a spoofed role would corrupt the wire-role alternation on replay)" );
+					return out;
+				}
+			}
+
 			const JsonValue& parts = content.get( "parts" );
 
 			std::string text;
@@ -1096,10 +1228,19 @@ namespace RISE
 				// Mirror the Anthropic stop_reason gate: a call turn that
 				// was cut short (MAX_TOKENS, SAFETY, ...) may be missing
 				// calls or carry mangled arguments -- it must NOT execute.
-				if( finishReason != "STOP" && !finishReason.empty() ) {
+				// POLICY on an ABSENT/empty finishReason: finishReason is
+				// nominally optional in the proto, so TEXT-ONLY turns stay
+				// lenient (below) -- but a calls-bearing turn without an
+				// explicit STOP cannot be distinguished from one cut short
+				// mid-call-list, and executing a truncated call set is
+				// worse than refusing.  Require STOP before calls execute.
+				if( finishReason != "STOP" ) {
 					out.step = MakeProviderError( finishKind,
-						"gemini returned function calls but stopped with finishReason \"" +
-						finishReason + "\" -- a truncated call turn is not executed" );
+						finishReason.empty()
+							? std::string( "gemini returned function calls without a finishReason -- "
+							               "refusing (an explicit STOP is required before a call turn executes)" )
+							: "gemini returned function calls but stopped with finishReason \"" +
+							  finishReason + "\" -- a truncated call turn is not executed" );
 					return out;
 				}
 				out.step.kind = ChatStepResult::Kind::ToolCalls;

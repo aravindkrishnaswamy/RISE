@@ -293,6 +293,12 @@ namespace RISE
 				// q.v.).  A plain range comparison against +/-DBL_MAX is not
 				// folded away and rejects both non-finites: NaN fails every
 				// ordered comparison, and +/-inf fails the respective bound.
+				// HONEST CAVEAT: for the values -ffinite-math-only licenses
+				// the compiler to ASSUME (all finite), this comparison is
+				// tautologically true -- so a future clang could legally
+				// fold it away too.  AgentChatLoopTest T15 pins the
+				// behaviour against production-flag objects; a toolchain
+				// regression is caught at test time, not in the field.
 				if( !( d >= -DBL_MAX && d <= DBL_MAX ) ) {
 					out += '0';
 					return;

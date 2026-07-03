@@ -37,26 +37,42 @@
 //        codecs' record-or-refuse rule (ParseResponse REFUSES -- and
 //        the loop records nothing of -- any response whose tool calls
 //        could not become the pending set: calls under a non-tool-call
-//        stop_reason/finishReason, id-less / duplicate-id / malformed
-//        call blocks; see AgentChatCodecs.h), the wire invariant
-//        "every RECORDED tool call is answered in the immediately-
-//        following user message" holds for every entry this loop
-//        records, on both providers (Anthropic hard-400s unanswered
-//        tool_use ids; Gemini rejects mismatched functionResponses) --
-//        a user interrupt, tool crash, or hostile response body cannot
-//        poison the transcript.
+//        stop_reason/finishReason, malformed call blocks, DUPLICATE
+//        call ids on either provider, and id-less Anthropic tool_use
+//        blocks -- Gemini instead SYNTHESIZES ids for id-less calls;
+//        see AgentChatCodecs.h), the wire invariant "every RECORDED
+//        tool call is answered in the immediately-following user
+//        message" holds for every entry this loop records, on both
+//        providers (Anthropic hard-400s unanswered tool_use ids;
+//        Gemini rejects mismatched functionResponses).
+//      * HONEST POISON SCOPING: a user interrupt, tool crash, or
+//        hostile response body cannot create RECORDED-BUT-
+//        UNANSWERABLE tool calls -- the parse gates plus the flush
+//        synthesis guarantee that much.  What byte-preservation CANNOT
+//        guarantee is that every recorded echo replays cleanly: an
+//        exotic-but-well-formed content the codec does not model
+//        (e.g. a server_tool_use block under end_turn) is echoed
+//        verbatim and may be invalid on replay.  Reset() /
+//        SetProvider() recovers; the GUI driver should offer that on
+//        repeated HTTP 400s.
 //      * IMAGE RETENTION: only the MOST RECENT read_image PNG stays
 //        live in the transcript.  When a new tool-results entry packs
 //        an image, every OLDER ToolResults entry's image block/part is
 //        rewritten to a short "[image elided -- superseded by a newer
 //        render]" text note (Anthropic: the {type:"image"} element;
 //        Gemini: the functionResponse.parts inlineData) via the
-//        codec's RewriteElidedImages.  Without this, every request
-//        re-sends (and re-bills) every historical ~1.3MB base64 PNG
-//        and long sessions eventually exceed provider request-size
-//        limits.  Rewriting is legal ONLY for ToolResults entries --
-//        they are loop-generated; assistant entries keep the verbatim
-//        byte-preservation contract and are never touched.
+//        codec's RewriteElidedImages -- which also rewrites the loop-
+//        written "the PNG is attached ..." note so the model never
+//        sees contradictory context.  The rule is entry-internal too:
+//        when ONE flush packs several image results, PackToolResults
+//        keeps only the LAST live (earlier ones are packed pre-
+//        elided), so exactly one image is live globally.  Without all
+//        this, every request re-sends (and re-bills) every historical
+//        ~1.3MB base64 PNG and long sessions eventually exceed
+//        provider request-size limits.  Rewriting is legal ONLY for
+//        ToolResults entries -- they are loop-generated; assistant
+//        entries keep the verbatim byte-preservation contract and are
+//        never touched.
 //      * CALLER-CONTRACT GUARDS (each refuses or ignores; none throw):
 //          - HandleResponse while the previous turn's tool calls are
 //            still pending returns ProviderError and records NOTHING
@@ -159,6 +175,9 @@ namespace RISE
 			//! counter.  Any pending tool calls are flushed first (they
 			//! belong to the previous assistant turn; unanswered ones get
 			//! synthesized error results so the wire stays valid).
+			//! EMPTY or whitespace-only text is a documented NO-OP
+			//! (Anthropic hard-400s an empty text block): nothing is
+			//! appended, flushed, or reset.
 			void AddUserMessage( const std::string& text );
 
 			//! Build the next HTTP request for the caller to perform.
@@ -200,7 +219,9 @@ namespace RISE
 			void AddToolResult( const ChatToolCall& call, const std::string& rawJsonRpcResponseLine );
 
 			//! Transcript access for the GUI (role + display text; the raw
-			//! provider-native JSON rides along).
+			//! provider-native JSON rides along).  An out-of-range index
+			//! returns a reference to a static EMPTY entry (never throws)
+			//! -- the same bounds-safe convention as JsonValue::at.
 			std::size_t                TranscriptSize() const { return mTranscript.size(); }
 			const ChatTranscriptEntry& TranscriptAt( std::size_t i ) const;
 

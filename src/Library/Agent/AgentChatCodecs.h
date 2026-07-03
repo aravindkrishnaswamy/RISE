@@ -43,12 +43,19 @@
 //        WHOLE response (ProviderError; the loop records nothing).
 //        Any response whose tool calls could not become the loop's
 //        pending set is refused outright: tool_use / functionCall
-//        blocks under a non-tool-call stop_reason/finishReason, an
-//        id-less Anthropic tool_use, a malformed (non-object) Gemini
-//        functionCall value, duplicate Gemini functionCall ids, and
-//        degenerate empty-content final turns.  Never "salvage" part
-//        of such a body: the raw echo would replay the un-answerable
-//        call blocks on every later request.
+//        blocks under a non-tool-call stop_reason/finishReason
+//        (Gemini calls additionally REQUIRE an explicit finishReason
+//        STOP -- an absent finishReason is tolerated only on
+//        text-only turns, where the proto makes it optional), an
+//        id-less Anthropic tool_use (Gemini instead SYNTHESIZES ids
+//        for id-less calls), DUPLICATE call ids on either provider
+//        (ids are the result-matching key and must be unique), a
+//        malformed (non-object) Gemini functionCall value, a Gemini
+//        candidate whose content.role is present and not "model" (a
+//        spoofed role would join BuildRequest's user merge on
+//        replay), and degenerate empty-content final turns.  Never
+//        "salvage" part of such a body: the raw echo would replay
+//        the un-answerable call blocks on every later request.
 //      * All tool results for one assistant turn are packed into ONE
 //        following user message (an Anthropic hard requirement for
 //        parallel tool_use; mirrored for Gemini).
@@ -103,9 +110,9 @@ namespace RISE
 		//! captured this turn (idSynthesized is then true, NO id field
 		//! is emitted in the functionResponse, and results match by
 		//! name + order).  Duplicate ids within one turn (a repeated
-		//! provider id, or a provider id colliding with an earlier
-		//! synthesized one) REFUSE the whole turn -- ids are the result-
-		//! matching key and must be unique.
+		//! provider id -- on EITHER provider -- or a Gemini provider id
+		//! colliding with an earlier synthesized one) REFUSE the whole
+		//! turn -- ids are the result-matching key and must be unique.
 		struct ChatToolCall
 		{
 			std::string id;                  //!< provider (or synthesized) call id
@@ -172,7 +179,8 @@ namespace RISE
 		public:
 			virtual ~IChatProviderCodec() {}
 
-			//! A short human name ("anthropic" / "gemini") for messages.
+			//! A short human name ("anthropic" / "gemini"), used to prefix
+			//! HTTP-error messages (see ParseResponse's non-200 path).
 			virtual const char* ProviderName() const = 0;
 
 			//! The default model id used when the loop is given none.
@@ -187,8 +195,12 @@ namespace RISE
 			//! ChatToolCall with the raw JSON-RPC response ENVELOPE line
 			//! from AgentRpcDispatcher::HandleLine.  read_image results
 			//! get a real image block/part (base64 stripped from the
-			//! textual half); JSON-RPC error envelopes become error tool
-			//! results (Anthropic `is_error: true`).
+			//! textual half) -- but when SEVERAL results in one pack
+			//! carry images, only the LAST keeps a live image; earlier
+			//! ones are packed pre-elided so at most one image is live
+			//! per entry (the loop's RewriteElidedImages pass handles
+			//! OLDER entries).  JSON-RPC error envelopes become error
+			//! tool results (Anthropic `is_error: true`).
 			virtual std::string PackToolResults(
 				const std::vector<std::pair<ChatToolCall, std::string>>& results ) const = 0;
 
@@ -196,6 +208,12 @@ namespace RISE
 			//! live image block/part with a short "[image elided ...]"
 			//! text note (Anthropic: the {type:"image"} content element;
 			//! Gemini: the functionResponse.parts inlineData transport).
+			//! The loop-written ATTACH note ("the PNG is attached as
+			//! ...") in the textual summary is rewritten to the elision
+			//! text as well, so the model is never shown a note
+			//! contradicting the elided block; an RPC-owned "note" field
+			//! is never clobbered (the attach note then lives under
+			//! "image_note", which the rewrite prefers).
 			//! Used by the loop to keep only the MOST RECENT image live
 			//! (see AgentChatLoop.h "IMAGE RETENTION").  This regeneration
 			//! is legal ONLY because ToolResults entries are loop-generated

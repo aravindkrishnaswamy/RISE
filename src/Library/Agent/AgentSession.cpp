@@ -289,6 +289,13 @@ namespace RISE
 							// AgentRpc.cpp house idiom, q.v.).  A plain
 							// >=/<= against +/-DBL_MAX survives the fold:
 							// NaN fails both bounds, +/-inf fails one.
+							// HONEST CAVEAT: for values the compiler may
+							// ASSUME finite under -ffinite-math-only this
+							// comparison is tautologically true, so a
+							// future clang could legally fold it too --
+							// AgentChatLoopTest T15(b) pins the behaviour
+							// against production-flag objects, catching a
+							// toolchain regression at test time.
 							const double dv = std::strtod( v.c_str(), nullptr );
 							if( !LooksNumeric( v ) || !( dv >= -DBL_MAX && dv <= DBL_MAX ) ) { bad = true; break; }
 						}
