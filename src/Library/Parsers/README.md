@@ -97,7 +97,7 @@ The registry in `CreateAllChunkParsers()` ([AsciiSceneParser.cpp](AsciiScenePars
 | Materials | 25 | `lambertian_material`, `dielectric_material`, `ggx_material`, `pbr_metallic_roughness_material`, `sheen_material`, `composite_material` |
 | Cameras | 7 | `scene_options`, `camera_defaults` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
 | Geometry | 18 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry` |
-| Modifiers | 2 | `bumpmap_modifier`, `normal_map_modifier` |
+| Modifiers | 3 | `bumpmap_modifier`, `normal_map_modifier`, `glint_modifier` |
 | Media | 3 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium` |
 | Objects | 2 | `standard_object`, `csg_object` |
 | Shader ops | 13 | `pathtracing_shaderop`, `mis_pathtracing_shaderop` (legacy alias), `finalgather_shaderop`, `directlighting_shaderop`, `arealight_shaderop`, `alpha_test_shaderop` |

@@ -195,7 +195,8 @@ stay coherent across facets.
   projects — CLAUDE.md "Change Checklist").
 - `Parsers/AsciiSceneParser.cpp` — `glint_modifier` descriptor + Finalize;
   `RISE_API.{h,cpp}`, `IJob.h`, `Job.{h,cpp}` — factory + adder (Slice 2).
-- Tests: `tests/GlintModifierTest.cpp`.
+- Tests: `tests/GlintModifierTest.cpp` (class),
+  `tests/GlintModifierSceneParseTest.cpp` (chunk plumb-through).
 
 ## Phasing (each slice ends with the implementation-review-loop → 0 P1s)
 

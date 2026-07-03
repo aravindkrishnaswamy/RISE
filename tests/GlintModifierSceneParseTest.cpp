@@ -83,11 +83,13 @@ namespace
 	{
 		ISceneParser* parser = 0;
 		if( !RISE_API_CreateAsciiSceneParser( &parser, path.c_str() ) || !parser ) {
+			std::remove( path.c_str() );
 			return false;
 		}
 		parser->addref();
 		const bool ok = parser->ParseAndLoadScene( job );
 		parser->release();
+		std::remove( path.c_str() );		// keep TMPDIR clean
 		return ok;
 	}
 
