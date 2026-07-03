@@ -664,8 +664,12 @@ private struct AgentPanel: View {
                     Label("Send", systemImage: "paperplane.fill")
                 }
                 .disabled(viewModel.viewportBridge == nil
+                          || !viewModel.isSceneEditableForAgents
                           || viewModel.agentRequestText.isEmpty)
-                .help("Send this JSON-RPC request to the live agent dispatcher")
+                .help(viewModel.isSceneEditableForAgents
+                      ? "Send this JSON-RPC request to the live agent dispatcher"
+                      : "Disabled while a production render is running — "
+                        + "agent edits would race the render workers")
                 Spacer()
             }
 

@@ -104,21 +104,26 @@ struct ChatPanel: View {
                 }
             }
 
-            // Input row.
+            // Input row.  Send / typing are additionally gated on the
+            // scene being editable (B2 review round 1): during a
+            // production render, tool calls would mutate Scene state
+            // the render workers read off-main.  The driver enforces
+            // the same predicate; this is the visible layer.
             HStack(spacing: 6) {
                 TextField("Ask for a scene change…", text: $chat.inputText)
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
                     .onSubmit { chat.send() }
-                    .disabled(chat.isBusy || viewModel.viewportBridge == nil)
+                    .disabled(chat.isBusy || viewModel.viewportBridge == nil
+                              || !viewModel.isSceneEditableForAgents)
                 if chat.isBusy {
                     Button {
                         chat.requestStop()
                     } label: {
                         Label("Stop", systemImage: "stop.fill")
                     }
-                    .help("Stop after the current step (pending tool calls are "
-                          + "reported to the model as cancelled)")
+                    .help("Stop now — aborts an in-flight request; pending "
+                          + "tool calls are reported to the model as cancelled")
                     ProgressView()
                         .controlSize(.small)
                 } else {
@@ -128,9 +133,13 @@ struct ChatPanel: View {
                         Label("Send", systemImage: "paperplane.fill")
                     }
                     .disabled(viewModel.viewportBridge == nil
+                              || !viewModel.isSceneEditableForAgents
                               || chat.inputText.trimmingCharacters(
                                      in: .whitespacesAndNewlines).isEmpty)
-                    .help("Send this request to the model")
+                    .help(viewModel.isSceneEditableForAgents
+                          ? "Send this request to the model"
+                          : "Chat is disabled while a production render is "
+                            + "running — wait for it to finish")
                 }
             }
         }

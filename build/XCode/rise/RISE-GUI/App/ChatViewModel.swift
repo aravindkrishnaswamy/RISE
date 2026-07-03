@@ -75,6 +75,21 @@ enum AgentChatKeychain {
         let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
         return status == errSecSuccess || status == errSecItemNotFound
     }
+
+    /// Presence check WITHOUT kSecReturnData.  The settings UI calls
+    /// this from view-body re-renders (via `keySource(for:)`); a
+    /// data-returning query would materialize the secret on every
+    /// render.  Matching on attributes alone answers "is there a
+    /// key?" without the secret leaving the Keychain.  (`write`
+    /// never stores an empty secret, so attribute-presence and
+    /// `read() != nil` agree.)
+    static func exists(account: String) -> Bool {
+        var query = baseQuery(account: account)
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        return SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess
+    }
 }
 
 // MARK: - Provider selection
@@ -161,10 +176,12 @@ final class ChatViewModel: ObservableObject {
     /// True while a turn's request/tool loop is in flight (Send
     /// disabled, Stop shown).
     @Published private(set) var isBusy: Bool = false
-    /// Set after an Http-kind error — the one retriable case.  The
-    /// Retry button re-issues the SAME conversation state (nothing was
-    /// recorded for the failed step).  Never set for MaxTokens /
-    /// IterationCap, which must NOT be retried verbatim.
+    /// Set after an Http-kind error or the no-API-key failure — the
+    /// retriable cases.  The Retry button re-issues the SAME
+    /// conversation state (nothing was recorded for the failed step;
+    /// for no-key, the user message IS recorded and BuildRequest
+    /// replays it safely once a key is set).  Never set for
+    /// MaxTokens / IterationCap, which must NOT be retried verbatim.
     @Published private(set) var retryAvailable: Bool = false
     /// Honest poison scoping: offered after repeated HTTP 400s (an
     /// exotic-but-well-formed recorded turn may be invalid on replay;
@@ -178,6 +195,18 @@ final class ChatViewModel: ObservableObject {
     /// Bumped whenever a key is saved/cleared so the settings UI
     /// re-derives the key-source caption.
     @Published private(set) var keyStateEpoch: Int = 0
+
+    /// B2 review round 1: "may agent tool calls mutate the scene
+    /// RIGHT NOW?"  Injected by RenderViewModel at construction (it
+    /// answers false during a production render, whose worker threads
+    /// read Scene state off-main — a tool call's CST re-derive would
+    /// destroy scene objects under them).  Fails CLOSED when unset.
+    /// Checked in send(), at the top of every driver round, after
+    /// every await, and before each tool call; all of those sites and
+    /// the predicate itself run on the main actor, so check-then-
+    /// execute cannot interleave with a render kick (see driveTurn's
+    /// invariant comment).
+    var sceneEditable: () -> Bool = { false }
 
     private let chatBridge = RISEAgentChatBridge()
     /// The per-scene tool executor.  WEAK: RenderViewModel owns the
@@ -201,6 +230,10 @@ final class ChatViewModel: ObservableObject {
     /// (or the task handle) of a NEWER turn started in between.
     private var turnGeneration: Int = 0
     /// Consecutive HTTP-400 count for the reset-offer heuristic.
+    /// Scoped to the CURRENT conversation: reset wherever the
+    /// conversation resets (sceneOpened / sceneClosed /
+    /// applyProviderSelection / resetConversation) so a stale count
+    /// can't trigger the reset offer on a fresh conversation.
     private var consecutiveHttp400s: Int = 0
 
     private static let providerKey = "agentChat.provider"
@@ -231,6 +264,7 @@ final class ChatViewModel: ObservableObject {
         chatBridge.reset()
         transcript = []
         clearErrorAffordances()
+        consecutiveHttp400s = 0
 
         let indexLine = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"read_skill\"}"
         chatBridge.setSkillIndex(
@@ -248,6 +282,7 @@ final class ChatViewModel: ObservableObject {
         transcript = []
         inputText = ""
         clearErrorAffordances()
+        consecutiveHttp400s = 0
     }
 
     /// Render the read_skill (no name) JSON-RPC response into the
@@ -289,6 +324,7 @@ final class ChatViewModel: ObservableObject {
         modelId = chatBridge.modelId
         transcript = []
         clearErrorAffordances()
+        consecutiveHttp400s = 0
     }
 
     /// Persisted model id for `p` ("" = provider default).  Lets the
@@ -313,7 +349,10 @@ final class ChatViewModel: ObservableObject {
     /// UI can caption it; the key itself is fetched separately at USE
     /// time and never retained.
     func keySource(for p: AgentChatProviderChoice) -> AgentChatKeySource {
-        if AgentChatKeychain.read(account: p.keychainAccount) != nil {
+        // Presence check only (no kSecReturnData) — view-body
+        // re-renders call this; the secret is materialized solely at
+        // USE time in resolveApiKey().
+        if AgentChatKeychain.exists(account: p.keychainAccount) {
             return .keychain
         }
         if let env = getenv(p.apiKeyEnvVar), env.pointee != 0 {
@@ -341,7 +380,8 @@ final class ChatViewModel: ObservableObject {
     /// turn to completion.
     func send() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isBusy, viewportBridge != nil else { return }
+        guard !text.isEmpty, !isBusy, viewportBridge != nil,
+              sceneEditable() else { return }
         inputText = ""
         clearErrorAffordances()
         transcript.append(Entry(kind: .user, text: text))
@@ -363,13 +403,19 @@ final class ChatViewModel: ObservableObject {
         startTurn()
     }
 
-    /// The Stop button: request a graceful stop.  The driver checks
-    /// the flag between HTTP rounds and between tool calls and simply
-    /// stops; the loop's next flush synthesizes cancelled results for
-    /// anything left pending.
+    /// The Stop button: stop NOW.  The flag covers the synchronous
+    /// stretches (checked between HTTP rounds and between tool
+    /// calls); cancelling the Task additionally aborts an in-flight
+    /// URLSession await immediately, so a Stop during the HTTP phase
+    /// doesn't wait out the round-trip.  The catch path treats the
+    /// resulting CancellationError as a silent stop, and nothing is
+    /// recorded until handleResponse — contract-safe.  The loop's
+    /// next flush synthesizes cancelled results for anything left
+    /// pending.
     func requestStop() {
         guard isBusy else { return }
         stopRequested = true
+        driverTask?.cancel()
     }
 
     /// Reset the conversation (offered after repeated HTTP 400s, and
@@ -380,7 +426,28 @@ final class ChatViewModel: ObservableObject {
         chatBridge.reset()
         transcript = []
         clearErrorAffordances()
+        consecutiveHttp400s = 0
         transcript.append(Entry(kind: .notice, text: "Conversation reset."))
+    }
+
+    /// B2 review round 1: a production render is about to start
+    /// (startRender / startAnimationRender call this BEFORE kicking
+    /// the production rasterizer, mirroring the sceneClosed teardown
+    /// discipline).  A turn suspended in its HTTP await would
+    /// otherwise resume mid-render — its cancelled/stop/executor
+    /// checks all passing — and execute tool calls against Scene
+    /// state the production workers read off-main.  Cancelling here
+    /// plus the driver's check-after-every-await of `sceneEditable`
+    /// closes both interleaving orders (see driveTurn's invariant
+    /// comment).  Nothing recorded mid-round needs cleanup: the next
+    /// send's flush synthesizes cancelled results for pending tool
+    /// calls, same as Stop.
+    func productionRenderStarting() {
+        guard isBusy else { return }
+        cancelTurn()
+        transcript.append(Entry(
+            kind: .notice,
+            text: "Turn cancelled — a production render started."))
     }
 
     private func clearErrorAffordances() {
@@ -414,6 +481,20 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    /// The B2-review scene-editable gate, applied at the same points
+    /// as the cancellation checks.  On failure it ends the turn with
+    /// a user-visible error row; nothing recorded mid-round needs
+    /// cleanup (the next send's flush synthesizes cancelled results —
+    /// same recovery as Stop).
+    private func sceneEditableOrReportRenderConflict() -> Bool {
+        if sceneEditable() { return true }
+        transcript.append(Entry(
+            kind: .error,
+            text: "A production render is running — wait for it to "
+                + "finish, then send again."))
+        return false
+    }
+
     /// One conversation turn: HTTP round-trips + tool rounds until the
     /// model finishes with text, errors, or the user stops.  Runs on
     /// the main actor; only the URLSession await leaves the main
@@ -422,10 +503,26 @@ final class ChatViewModel: ObservableObject {
     /// SetProperty edits drive) — note a `render` tool call therefore
     /// blocks the UI for its duration (acceptable for this slice; the
     /// verb's default is a small preview-sized pass).
+    ///
+    /// PRODUCTION-RENDER INVARIANT (B2 review round 1): tool calls
+    /// must never execute while the production rasterizer's workers
+    /// read Scene state off-main.  `renderState` is @MainActor state
+    /// and every stretch of this driver between awaits is one
+    /// synchronous MainActor slice — in particular the tool loop
+    /// below has NO awaits, and startRender is also MainActor, so
+    /// startRender cannot interleave with it.  The only reordering
+    /// risk is a turn suspended in the URLSession await when the user
+    /// clicks Render; startRender's `productionRenderStarting()`
+    /// cancels this task, and the post-await checks below re-verify
+    /// both cancellation and `sceneEditable` on resume — the pair
+    /// closes both orders (resume-before-kick executes safely before
+    /// production starts; resume-after-kick returns without touching
+    /// the scene).
     private func driveTurn() async {
         while true {
             if Task.isCancelled || stopRequested { return }
             guard viewportBridge != nil else { return }
+            guard sceneEditableOrReportRenderConflict() else { return }
 
             guard let apiKey = resolveApiKey() else {
                 transcript.append(Entry(
@@ -433,6 +530,10 @@ final class ChatViewModel: ObservableObject {
                     text: "No API key for \(provider.displayName).  Add one in "
                         + "the chat settings (stored in the Keychain) or launch "
                         + "with \(provider.apiKeyEnvVar) set."))
+                // The user message IS recorded; once a key is set,
+                // Retry replays the same conversation safely via
+                // BuildRequest.
+                retryAvailable = true
                 return
             }
 
@@ -468,6 +569,11 @@ final class ChatViewModel: ObservableObject {
             // The scene may have closed while the request was in
             // flight; the pending state flushes on the next turn.
             guard viewportBridge != nil else { return }
+            // ...or a production render may have started while we
+            // were suspended (see the invariant comment above; the
+            // common order is already caught by the cancellation
+            // check, this closes the rest).
+            guard sceneEditableOrReportRenderConflict() else { return }
 
             let step = chatBridge.handleResponse(
                 status: status, body: String(data: data, encoding: .utf8) ?? "")
@@ -482,9 +588,14 @@ final class ChatViewModel: ObservableObject {
                 for call in step.toolCalls {
                     // Stop / scene-close between tool calls: abandon
                     // the rest; the loop synthesizes cancelled results
-                    // for them at the next flush.
+                    // for them at the next flush.  The scene-editable
+                    // check cannot actually flip inside this loop
+                    // (no awaits — one MainActor slice, per the
+                    // invariant comment above); it is kept alongside
+                    // the others so every tool call is visibly gated.
                     if Task.isCancelled || stopRequested { return }
                     guard let vb = viewportBridge else { return }
+                    guard sceneEditableOrReportRenderConflict() else { return }
 
                     transcript.append(Entry(kind: .toolActivity,
                                             text: "→ \(call.name)"))

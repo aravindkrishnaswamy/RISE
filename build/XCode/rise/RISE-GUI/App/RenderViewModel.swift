@@ -176,6 +176,29 @@ final class RenderViewModel: ObservableObject {
     /// App-lifetime chat state (provider/model selection outlives any
     /// one scene; the conversation itself resets per scene).
     let chat = ChatViewModel()
+
+    /// B2 review round 1: may agent tool calls (the chat driver and
+    /// the Agent JSON-RPC panel) mutate the live scene RIGHT NOW?
+    /// Only while the interactive viewport is the sole scene reader.
+    /// During a production render (.rendering / .cancelling — the
+    /// production rasterizer's worker threads read Scene state
+    /// off-main until the render task completes) a propose_patch's
+    /// CST re-derive would destroy scene objects under those workers
+    /// — the same race the Clear & Load teardown dance guards (the
+    /// "deep in IntegratePixel" crash).  .loading is excluded too:
+    /// the parser mutates job state on a background thread (the chat
+    /// executor is nil then anyway — belt and suspenders).
+    /// MainActor invariant: this predicate, startRender, and every
+    /// caller run on the main actor, so check-then-execute cannot
+    /// interleave with a render kick.
+    var isSceneEditableForAgents: Bool {
+        switch renderState {
+        case .rendering, .cancelling, .loading:
+            return false
+        default:
+            return true
+        }
+    }
     @Published var hasAnimation: Bool = false
     @Published var recentFiles: [String] = []
 
@@ -341,6 +364,15 @@ final class RenderViewModel: ObservableObject {
     init() {
         versionString = RISEBridge.versionString()
         recentFiles = UserDefaults.standard.stringArray(forKey: Self.recentFilesKey) ?? []
+        // B2 review round 1: the chat driver re-checks this predicate
+        // after every await and before each tool call, so a turn
+        // resuming from its HTTP suspension can never mutate the
+        // scene under a production render (the predicate's other
+        // half: startRender / startAnimationRender cancel the turn
+        // BEFORE kicking production).
+        chat.sceneEditable = { [weak self] in
+            self?.isSceneEditableForAgents ?? false
+        }
         bridge.setLogBlock { [weak self] (level: RISELogLevel, message: String) in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
@@ -750,6 +782,13 @@ final class RenderViewModel: ObservableObject {
         // Halt any looping preview-play first — it drives scrubTime on the
         // viewport renderer, which must be idle before production starts.
         stopPreviewPlay()
+        // B2 review round 1: cancel any in-flight chat turn BEFORE
+        // production kicks, mirroring the sceneClosed discipline at
+        // the teardown sites.  A turn suspended in its HTTP await
+        // would otherwise resume mid-render — its cancelled / stop /
+        // executor checks all passing — and execute tool calls
+        // against Scene state the production workers read off-main.
+        chat.productionRenderStarting()
         viewportBridge?.stop()
 
         // Advance scene state to the canonical scrubbed time AND
@@ -948,6 +987,9 @@ final class RenderViewModel: ObservableObject {
 
         // Stop the viewport before production renders (see startRender).
         stopPreviewPlay()
+        // B2 review round 1: cancel any in-flight chat turn before
+        // production kicks (see startRender).
+        chat.productionRenderStarting()
         viewportBridge?.stop()
 
         renderState = .rendering
@@ -1193,6 +1235,20 @@ final class RenderViewModel: ObservableObject {
         guard let vb = viewportBridge else {
             let err = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":" +
                       "{\"code\":-32603,\"message\":\"no scene loaded (no viewport bridge)\"}}"
+            agentResponseText = err
+            return err
+        }
+        // B2 review round 1 (audit-by-bug-pattern sibling of the chat
+        // gate): refuse while a production render owns the scene —
+        // `agentHandleLine` would mutate Scene state the production
+        // rasterizer's workers read off-main.  Well-formed JSON-RPC
+        // error, like the nil-dispatcher path above, so the refusal
+        // is visible in the panel's Response area (the panel's Send
+        // is also disabled on the same predicate).
+        guard isSceneEditableForAgents else {
+            let err = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":" +
+                      "{\"code\":-32603,\"message\":\"a production render is running — " +
+                      "wait for it to finish, then send again\"}}"
             agentResponseText = err
             return err
         }
