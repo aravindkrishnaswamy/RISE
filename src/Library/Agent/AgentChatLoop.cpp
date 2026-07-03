@@ -31,7 +31,10 @@ namespace RISE
 				"when unsure about a chunk or parameter).\n"
 				"2. propose_patch with the headVersion you just read as "
 				"baseHeadVersion. On status=conflict, re-read and re-propose; on "
-				"retriable=true, retry the same patch after a moment.\n"
+				"retriable=true, retry the same patch after a moment. "
+				"status=diagnosed means the edit WAS applied but the re-derive "
+				"produced diagnostics -- read them and fix the reported problem; "
+				"do not blindly re-propose the same patch.\n"
 				"3. render, then read_image to SEE the result and verify the edit "
 				"visually before declaring it done.\n"
 				"\n"
@@ -128,6 +131,7 @@ namespace RISE
 			if( !mPendingCalls.empty() ) {
 				ChatStepResult refused;
 				refused.kind = ChatStepResult::Kind::ProviderError;
+				refused.errorKind = ChatErrorKind::Misuse;
 				refused.errorMessage =
 					"chat-loop misuse: HandleResponse called while " +
 					std::to_string( mPendingCalls.size() ) +
@@ -148,6 +152,7 @@ namespace RISE
 				if( mToolRounds >= kMaxToolRoundsPerTurn ) {
 					ChatStepResult capped;
 					capped.kind = ChatStepResult::Kind::ProviderError;
+					capped.errorKind = ChatErrorKind::IterationCap;
 					capped.errorMessage =
 						"iteration cap: the model requested more than " +
 						std::to_string( kMaxToolRoundsPerTurn ) +
@@ -269,10 +274,32 @@ namespace RISE
 			// Defensive: mPendingResults can only hold answers to pending
 			// calls (AddToolResult filters), so `ordered` covers everything.
 
+			// IMAGE RETENTION (see the header): when this entry packs a NEW
+			// image, elide the image from every older ToolResults entry so
+			// only the most recent PNG rides (and is billed) per request.
+			// ToolResults entries are loop-generated, so rewriting them is
+			// legal; assistant entries are never touched.
+			bool carriesImage = false;
+			for( std::size_t i = 0; i < ordered.size(); ++i ) {
+				if( ChatToolResultCarriesImage( ordered[i].first, ordered[i].second ) ) {
+					carriesImage = true;
+					break;
+				}
+			}
+			if( carriesImage ) {
+				for( std::size_t i = 0; i < mTranscript.size(); ++i ) {
+					if( mTranscript[i].role != ChatTranscriptEntry::Role::ToolResults ||
+					    !mTranscript[i].carriesLiveImage ) continue;
+					mTranscript[i].rawJson = mCodec->RewriteElidedImages( mTranscript[i].rawJson );
+					mTranscript[i].carriesLiveImage = false;
+				}
+			}
+
 			ChatTranscriptEntry entry;
 			entry.role = ChatTranscriptEntry::Role::ToolResults;
 			entry.displayText = "[tool results: " + names + "]";
 			entry.rawJson = mCodec->PackToolResults( ordered );
+			entry.carriesLiveImage = carriesImage;
 			mTranscript.push_back( entry );
 
 			mPendingResults.clear();

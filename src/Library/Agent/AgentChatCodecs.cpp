@@ -72,7 +72,8 @@ namespace RISE
 					"validate",
 					"Validate a CANDIDATE scene document without touching the live scene. "
 					"Call this to check a document you are considering BEFORE proposing "
-					"changes; an empty diagnostics list means the candidate is valid.",
+					"changes; no error-severity diagnostics means the candidate will load "
+					"(warnings/info alone are not failures).",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"text\":{\"type\":\"string\",\"description\":"
 						"\"The complete candidate .RISEscene document text to check.\"}"
@@ -85,7 +86,10 @@ namespace RISE
 					"baseHeadVersion. If the result has status=conflict, re-call "
 					"read_document and re-propose against the new headVersion. If "
 					"retriable=true the refusal is transient -- retry the SAME patch "
-					"after a moment. Only status=applied means the edit landed cleanly.",
+					"after a moment. Only status=applied means the edit landed cleanly. "
+					"status=diagnosed means the edit WAS applied but the re-derive "
+					"produced diagnostics -- read them and fix the reported problem; do "
+					"not blindly re-propose the same patch.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"target\":{\"type\":\"string\",\"description\":"
 						"\"The entity NAME to edit (a chunk name from the document).\"},"
@@ -116,7 +120,8 @@ namespace RISE
 					"read_image",
 					"Fetch the LAST successful render as a PNG image so you can SEE the "
 					"scene. Call after propose_patch + render to visually verify your "
-					"edit did what you intended. Requires a prior successful render.",
+					"edit did what you intended. If nothing has been rendered yet this "
+					"returns an empty png_base64 (byteLength 0) -- call render first.",
 					nullptr
 				},
 			};
@@ -307,6 +312,23 @@ namespace RISE
 			//! rather than a limit the loop actually hits.
 			const int kAnthropicMaxTokens = 16000;
 
+			//! Strip every control character (< 0x20 -- CR, LF, TAB, ...)
+			//! from a caller-supplied string before splicing it into an
+			//! HTTP header VALUE, so a pasted API key carrying a stray
+			//! newline cannot smuggle extra headers into the request
+			//! (header-injection defense; a stripped key simply fails
+			//! auth, which is the honest outcome).
+			std::string SanitizeHeaderValue( const std::string& v )
+			{
+				std::string out;
+				out.reserve( v.size() );
+				for( std::size_t i = 0; i < v.size(); ++i ) {
+					const unsigned char c = static_cast<unsigned char>( v[i] );
+					if( c >= 0x20 ) out += v[i];
+				}
+				return out;
+			}
+
 			//! Percent-escape any modelId character outside [A-Za-z0-9._-]
 			//! before splicing it into a URL path segment, so a hostile or
 			//! mistyped model id cannot alter the request path or smuggle
@@ -334,10 +356,11 @@ namespace RISE
 				return out;
 			}
 
-			ChatStepResult MakeProviderError( const std::string& message )
+			ChatStepResult MakeProviderError( ChatErrorKind kind, const std::string& message )
 			{
 				ChatStepResult r;
 				r.kind = ChatStepResult::Kind::ProviderError;
+				r.errorKind = kind;
 				r.errorMessage = message;
 				return r;
 			}
@@ -358,8 +381,13 @@ namespace RISE
 				std::string full = std::string( provider ) + " HTTP " + std::to_string( status );
 				if( !msg.empty() ) full += ": " + msg;
 				else full += " (no parseable error message)";
-				return MakeProviderError( full );
+				return MakeProviderError( ChatErrorKind::Http, full );
 			}
+
+			//! The text that replaces an elided (superseded) image block or
+			//! part -- see AgentChatLoop.h "IMAGE RETENTION".
+			const char* const kImageElidedNote =
+				"[image elided -- superseded by a newer render]";
 
 			JsonValue MakeTextBlock( const std::string& text )
 			{
@@ -399,6 +427,21 @@ namespace RISE
 				outB64 = b64->asString();
 				return true;
 			}
+		}
+
+		bool ChatToolResultCarriesImage( const ChatToolCall& call,
+		                                 const std::string& rawJsonRpcResponseLine )
+		{
+			// Same predicate the pack paths apply: a parseable JSON-RPC
+			// SUCCESS envelope (an error envelope never packs an image)
+			// whose result is a read_image payload with non-empty
+			// png_base64.
+			JsonValue env;
+			std::string perr;
+			if( !JsonParse( rawJsonRpcResponseLine, env, perr ) || !env.isObject() ) return false;
+			if( env.find( "error" ) ) return false;
+			std::string b64;
+			return IsImageResult( call, env.get( "result" ), b64 );
 		}
 
 		//======================================================================
@@ -477,6 +520,62 @@ namespace RISE
 			return JsonSerialize( msg );
 		}
 
+		std::string AnthropicChatCodec::RewriteElidedImages( const std::string& packedEntryJson ) const
+		{
+			// Parse + regenerate is LEGAL here: this entry was produced by
+			// PackToolResults above (loop-generated), not by a provider --
+			// only assistant entries carry the byte-preservation contract.
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( packedEntryJson, root, perr ) || !root.isObject() ) return packedEntryJson;
+			const JsonValue& content = root.get( "content" );
+			if( !content.isArray() ) return packedEntryJson;
+
+			bool changed = false;
+			JsonValue newContent = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < content.size(); ++i ) {
+				const JsonValue& tr = content.at( i );
+				const JsonValue& blocks = tr.get( "content" );
+				if( tr.get( "type" ).asString() != "tool_result" || !blocks.isArray() ) {
+					newContent.push_back( tr );
+					continue;
+				}
+				// Swap each {type:"image",...} element for the elision text
+				// block; every other block (and every other member of the
+				// tool_result, tool_use_id included) is copied through, so
+				// the rewritten entry stays wire-valid.
+				bool trChanged = false;
+				JsonValue newBlocks = JsonValue::MakeArray();
+				for( std::size_t j = 0; j < blocks.size(); ++j ) {
+					const JsonValue& b = blocks.at( j );
+					if( b.get( "type" ).asString() == "image" ) {
+						newBlocks.push_back( MakeTextBlock( kImageElidedNote ) );
+						trChanged = true;
+					}
+					else {
+						newBlocks.push_back( b );
+					}
+				}
+				if( !trChanged ) {
+					newContent.push_back( tr );
+					continue;
+				}
+				changed = true;
+				JsonValue newTr = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& mem = tr.members();
+				for( std::size_t j = 0; j < mem.size(); ++j )
+					newTr.set( mem[j].first, mem[j].first == "content" ? newBlocks : mem[j].second );
+				newContent.push_back( newTr );
+			}
+			if( !changed ) return packedEntryJson;
+
+			JsonValue newRoot = JsonValue::MakeObject();
+			const std::vector<std::pair<std::string, JsonValue>>& mem = root.members();
+			for( std::size_t i = 0; i < mem.size(); ++i )
+				newRoot.set( mem[i].first, mem[i].first == "content" ? newContent : mem[i].second );
+			return JsonSerialize( newRoot );
+		}
+
 		ChatHttpRequest AnthropicChatCodec::BuildRequest(
 			const std::string& modelId,
 			const std::string& apiKey,
@@ -485,9 +584,10 @@ namespace RISE
 		{
 			ChatHttpRequest r;
 			r.url = "https://api.anthropic.com/v1/messages";
-			// The key appears ONLY here, in the auth header.
+			// The key appears ONLY here, in the auth header -- control
+			// characters stripped so a pasted key cannot inject headers.
 			r.headers.push_back( std::make_pair( "content-type", "application/json" ) );
-			r.headers.push_back( std::make_pair( "x-api-key", apiKey ) );
+			r.headers.push_back( std::make_pair( "x-api-key", SanitizeHeaderValue( apiKey ) ) );
 			r.headers.push_back( std::make_pair( "anthropic-version", "2023-06-01" ) );
 
 			// The body is assembled as a string so assistant entries (raw
@@ -521,12 +621,14 @@ namespace RISE
 			JsonValue root;
 			std::string perr;
 			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) {
-				out.step = MakeProviderError( "anthropic response did not parse as JSON: " + perr );
+				out.step = MakeProviderError( ChatErrorKind::Parse,
+					"anthropic response did not parse as JSON: " + perr );
 				return out;
 			}
 			const JsonValue& content = root.get( "content" );
 			if( !content.isArray() ) {
-				out.step = MakeProviderError( "anthropic response carries no content array" );
+				out.step = MakeProviderError( ChatErrorKind::Provider,
+					"anthropic response carries no content array" );
 				return out;
 			}
 
@@ -548,7 +650,7 @@ namespace RISE
 						// rest of the turn would ship an unanswerable block,
 						// so refuse the WHOLE response instead of emitting
 						// tool_use_id:"" downstream.
-						out.step = MakeProviderError(
+						out.step = MakeProviderError( ChatErrorKind::Provider,
 							"anthropic tool_use block carries no id; refusing the turn (its result could never be matched)" );
 						return out;
 					}
@@ -559,38 +661,63 @@ namespace RISE
 				// thinking / other block kinds: not displayed; the raw echo
 				// below preserves them for the provider.
 			}
-			out.assistantDisplayText = text;
 
 			const std::string stopReason = root.get( "stop_reason" ).asString();
-			if( stopReason == "tool_use" && !calls.empty() ) {
+			if( stopReason == "tool_use" ) {
+				if( calls.empty() ) {
+					out.step = MakeProviderError( ChatErrorKind::Provider,
+						"anthropic stopped with stop_reason \"tool_use\" but no tool_use blocks were present" );
+					return out;
+				}
 				out.step.kind = ChatStepResult::Kind::ToolCalls;
 				out.step.toolCalls = calls;
-			}
-			else if( stopReason == "end_turn" ) {
-				out.step.kind = ChatStepResult::Kind::FinalText;
-				out.step.finalText = text;
 			}
 			else if( stopReason == "max_tokens" ) {
 				// Distinct, actionable dead-end message (the reply is
 				// discarded -- transcript consistency: record nothing).
-				out.step = MakeProviderError(
+				out.step = MakeProviderError( ChatErrorKind::MaxTokens,
 					"anthropic: the response hit the output-token cap (stop_reason max_tokens) -- "
 					"the truncated reply was discarded; try a narrower request" );
 				return out;
 			}
 			else if( stopReason == "refusal" ) {
-				out.step = MakeProviderError(
+				out.step = MakeProviderError( ChatErrorKind::Refusal,
 					"anthropic: the provider declined this request (stop_reason refusal)" );
 				return out;
+			}
+			else if( !calls.empty() ) {
+				// WIRE-INVARIANT GATE: tool_use blocks under a non-tool_use
+				// stop_reason (a hostile or corrupted body).  Recording this
+				// turn would echo tool_use blocks the loop never pends --
+				// so no tool_result could EVER answer them and every later
+				// request would replay an unanswered tool_use (a permanent
+				// 400).  Refuse the WHOLE response; record nothing.
+				out.step = MakeProviderError( ChatErrorKind::Provider,
+					"anthropic response carries tool_use blocks under stop_reason \"" + stopReason +
+					"\" -- refusing the turn (its calls would be recorded but never answerable)" );
+				return out;
+			}
+			else if( stopReason == "end_turn" ) {
+				if( content.size() == 0 ) {
+					// A degenerate empty-content final turn: recording
+					// {"content":[]} poisons the echo (the API rejects an
+					// assistant message with no content blocks).
+					out.step = MakeProviderError( ChatErrorKind::Provider,
+						"anthropic ended the turn with an EMPTY content array -- refusing the degenerate turn" );
+					return out;
+				}
+				out.step.kind = ChatStepResult::Kind::FinalText;
+				out.step.finalText = text;
 			}
 			else {
 				// pause_turn / anything unexpected -> error with the
 				// stop_reason in the message.
-				std::string msg = "anthropic stopped with stop_reason \"" + stopReason + "\"";
-				if( stopReason == "tool_use" ) msg += " but no tool_use blocks were present";
-				out.step = MakeProviderError( msg );
+				out.step = MakeProviderError( ChatErrorKind::Provider,
+					"anthropic stopped with stop_reason \"" + stopReason + "\"" );
 				return out;
 			}
+			out.assistantDisplayText = text;
+			out.step.assistantDisplayText = text;
 
 			// The assistant transcript entry: the content array as a RAW
 			// byte span of the body (verbatim echo -- signatures intact).
@@ -698,6 +825,77 @@ namespace RISE
 			return JsonSerialize( msg );
 		}
 
+		std::string GeminiChatCodec::RewriteElidedImages( const std::string& packedEntryJson ) const
+		{
+			// Parse + regenerate is LEGAL here: this entry was produced by
+			// PackToolResults above (loop-generated), not by a provider --
+			// only assistant (model) entries carry the byte-preservation
+			// contract.  The image travels as functionResponse.parts
+			// [{inlineData:...}]; a FunctionResponsePart carries only
+			// media (no text form exists), so elision DROPS the parts
+			// array and rewrites the response object's note to say the
+			// image is gone.
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( packedEntryJson, root, perr ) || !root.isObject() ) return packedEntryJson;
+			const JsonValue& parts = root.get( "parts" );
+			if( !parts.isArray() ) return packedEntryJson;
+
+			bool changed = false;
+			JsonValue newParts = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < parts.size(); ++i ) {
+				const JsonValue& p = parts.at( i );
+				const JsonValue* fr = p.find( "functionResponse" );
+				const bool hasImage = fr && fr->isObject() && fr->get( "parts" ).isArray();
+				if( !hasImage ) {
+					newParts.push_back( p );
+					continue;
+				}
+				changed = true;
+				// Rebuild the functionResponse WITHOUT its parts array and
+				// with the response note rewritten to the elision text
+				// (PackToolResults always sets a note on an image result;
+				// append one defensively if it is ever absent).
+				JsonValue newFr = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& mem = fr->members();
+				for( std::size_t j = 0; j < mem.size(); ++j ) {
+					if( mem[j].first == "parts" ) continue;
+					if( mem[j].first == "response" && mem[j].second.isObject() ) {
+						JsonValue newResp = JsonValue::MakeObject();
+						bool noted = false;
+						const std::vector<std::pair<std::string, JsonValue>>& rm = mem[j].second.members();
+						for( std::size_t k = 0; k < rm.size(); ++k ) {
+							if( !noted && ( rm[k].first == "note" || rm[k].first == "image_note" ) ) {
+								newResp.set( rm[k].first, JsonValue::MakeString( kImageElidedNote ) );
+								noted = true;
+							}
+							else {
+								newResp.set( rm[k].first, rm[k].second );
+							}
+						}
+						if( !noted )
+							newResp.set( "note", JsonValue::MakeString( kImageElidedNote ) );
+						newFr.set( "response", newResp );
+					}
+					else {
+						newFr.set( mem[j].first, mem[j].second );
+					}
+				}
+				JsonValue newPart = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& pm = p.members();
+				for( std::size_t j = 0; j < pm.size(); ++j )
+					newPart.set( pm[j].first, pm[j].first == "functionResponse" ? newFr : pm[j].second );
+				newParts.push_back( newPart );
+			}
+			if( !changed ) return packedEntryJson;
+
+			JsonValue newRoot = JsonValue::MakeObject();
+			const std::vector<std::pair<std::string, JsonValue>>& mem = root.members();
+			for( std::size_t i = 0; i < mem.size(); ++i )
+				newRoot.set( mem[i].first, mem[i].first == "parts" ? newParts : mem[i].second );
+			return JsonSerialize( newRoot );
+		}
+
 		ChatHttpRequest GeminiChatCodec::BuildRequest(
 			const std::string& modelId,
 			const std::string& apiKey,
@@ -711,18 +909,75 @@ namespace RISE
 			        SanitizeModelIdForUrl( modelId ) + ":generateContent";
 			// The key appears ONLY here, in the auth header (NOT as the
 			// ?key= query parameter the docs also allow -- a URL leaks into
-			// logs/history far more easily than a header).
+			// logs/history far more easily than a header).  Control
+			// characters are stripped so a pasted key cannot inject headers.
 			r.headers.push_back( std::make_pair( "content-type", "application/json" ) );
-			r.headers.push_back( std::make_pair( "x-goog-api-key", apiKey ) );
+			r.headers.push_back( std::make_pair( "x-goog-api-key", SanitizeHeaderValue( apiKey ) ) );
+
+			// Gemini requires ALTERNATING roles on the wire, but the
+			// transcript can legally hold ADJACENT user entries (an
+			// interrupt-flushed tool-results entry followed by the user's
+			// next text message).  Merge every run of adjacent role:"user"
+			// entries into ONE content whose parts are the run's parts
+			// concatenated with the functionResponse parts FIRST (the tool
+			// answers must lead the content that answers a functionCall
+			// turn).  User entries are loop-generated (MakeUserEntry /
+			// PackToolResults), so parse + re-serialize is legal for them;
+			// model entries splice VERBATIM (byte-preservation contract)
+			// and are never merged.
+			std::vector<std::string> wireEntries;
+			std::vector<JsonValue>   userRun;
+			std::vector<std::size_t> userRunSrc;   // rawEntries index per userRun element
+			wireEntries.reserve( rawEntries.size() );
+			const auto flushUserRun = [&]() {
+				if( userRun.empty() ) return;
+				if( userRun.size() == 1 ) {
+					// A lone user entry needs no merge: splice the original
+					// string (cheaper, and trivially byte-stable).
+					wireEntries.push_back( rawEntries[userRunSrc[0]] );
+				}
+				else {
+					JsonValue parts = JsonValue::MakeArray();
+					for( int wantFr = 1; wantFr >= 0; --wantFr ) {
+						for( std::size_t i = 0; i < userRun.size(); ++i ) {
+							const JsonValue& runParts = userRun[i].get( "parts" );
+							for( std::size_t j = 0; j < runParts.size(); ++j ) {
+								const bool isFr = runParts.at( j ).has( "functionResponse" );
+								if( isFr == ( wantFr == 1 ) ) parts.push_back( runParts.at( j ) );
+							}
+						}
+					}
+					JsonValue merged = JsonValue::MakeObject();
+					merged.set( "role", JsonValue::MakeString( "user" ) );
+					merged.set( "parts", parts );
+					wireEntries.push_back( JsonSerialize( merged ) );
+				}
+				userRun.clear();
+				userRunSrc.clear();
+			};
+			for( std::size_t i = 0; i < rawEntries.size(); ++i ) {
+				JsonValue e;
+				std::string perr;
+				if( JsonParse( rawEntries[i], e, perr ) && e.isObject() &&
+				    e.get( "role" ).asString() == "user" && e.get( "parts" ).isArray() ) {
+					userRun.push_back( e );
+					userRunSrc.push_back( i );
+				}
+				else {
+					flushUserRun();
+					wireEntries.push_back( rawEntries[i] );
+				}
+			}
+			flushUserRun();
 
 			std::string body = "{\"systemInstruction\":{\"parts\":[{\"text\":";
 			JsonAppendEscapedString( body, systemPrompt );
 			body += "}]},\"tools\":[{\"functionDeclarations\":";
 			body += GeminiFunctionDeclarationsJson();
 			body += "}],\"contents\":[";
-			for( std::size_t i = 0; i < rawEntries.size(); ++i ) {
+			for( std::size_t i = 0; i < wireEntries.size(); ++i ) {
 				if( i ) body += ",";
-				body += rawEntries[i];
+				body += wireEntries[i];
 			}
 			body += "]}";
 			r.body = body;
@@ -741,17 +996,23 @@ namespace RISE
 			JsonValue root;
 			std::string perr;
 			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) {
-				out.step = MakeProviderError( "gemini response did not parse as JSON: " + perr );
+				out.step = MakeProviderError( ChatErrorKind::Parse,
+					"gemini response did not parse as JSON: " + perr );
 				return out;
 			}
 			const JsonValue& candidates = root.get( "candidates" );
 			if( !candidates.isArray() || candidates.size() == 0 ) {
 				std::string msg = "gemini response carries no candidates";
+				ChatErrorKind kind = ChatErrorKind::Provider;
 				const JsonValue& em = root.get( "error" ).get( "message" );
 				if( em.isString() ) msg += ": " + em.asString();
 				const JsonValue& block = root.get( "promptFeedback" ).get( "blockReason" );
-				if( block.isString() ) msg += " (blockReason " + block.asString() + ")";
-				out.step = MakeProviderError( msg );
+				if( block.isString() ) {
+					// A blocked prompt is the provider declining the request.
+					msg += " (blockReason " + block.asString() + ")";
+					kind = ChatErrorKind::Refusal;
+				}
+				out.step = MakeProviderError( kind, msg );
 				return out;
 			}
 
@@ -761,43 +1022,82 @@ namespace RISE
 
 			std::string text;
 			std::vector<ChatToolCall> calls;
+			std::vector<std::string> usedIds;   // every id captured this turn (provider + synthesized)
+			int synthCounter = 0;
+			const auto idUsed = [&usedIds]( const std::string& id ) {
+				for( std::size_t k = 0; k < usedIds.size(); ++k )
+					if( usedIds[k] == id ) return true;
+				return false;
+			};
 			for( std::size_t i = 0; i < parts.size(); ++i ) {
 				const JsonValue& part = parts.at( i );
 				if( const JsonValue* t = part.find( "text" ) ) {
 					if( t->isString() ) text += t->asString();
 				}
 				if( const JsonValue* fc = part.find( "functionCall" ) ) {
-					if( fc->isObject() ) {
-						// Gemini 3.x populates functionCall.id and the docs
-						// require the response to echo the matching id --
-						// capture it.  Synthesize "call_0", "call_1", ...
-						// ONLY when absent (those match by name + order and
-						// no id field is emitted in the functionResponse).
-						ChatToolCall c;
-						const JsonValue* idv = fc->find( "id" );
-						if( idv && idv->isString() && !idv->asString().empty() ) {
-							c.id = idv->asString();
-						}
-						else {
-							c.id = "call_" + std::to_string( calls.size() );
-							c.idSynthesized = true;
-						}
-						c.name = fc->get( "name" ).asString();
-						const JsonValue& args = fc->get( "args" );
-						c.argsJson = args.isObject() ? JsonSerialize( args ) : std::string( "{}" );
-						calls.push_back( c );
+					if( !fc->isObject() ) {
+						// WIRE-INVARIANT GATE: a functionCall-keyed part whose
+						// value is not an object cannot become a pending call,
+						// but it WOULD ride in the raw echo -- an un-answered
+						// call on every later request.  Refuse the whole turn.
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"gemini response carries a malformed functionCall part (not an object) -- refusing the turn" );
+						return out;
 					}
+					// Gemini 3.x populates functionCall.id and the docs
+					// require the response to echo the matching id --
+					// capture it.  Synthesize "call_0", "call_1", ...
+					// ONLY when absent (those match by name + order and
+					// no id field is emitted in the functionResponse).
+					ChatToolCall c;
+					const JsonValue* idv = fc->find( "id" );
+					if( idv && idv->isString() && !idv->asString().empty() ) {
+						c.id = idv->asString();
+						// Duplicate ids (a repeated provider id, or a provider
+						// id colliding with one synthesized earlier this turn)
+						// make result matching ambiguous -- refuse the whole
+						// turn rather than guess (consistent with the other
+						// record-or-refuse gates).
+						if( idUsed( c.id ) ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"gemini response repeats functionCall id \"" + c.id +
+								"\" -- refusing the turn (results could not be matched unambiguously)" );
+							return out;
+						}
+					}
+					else {
+						// Skip any candidate that collides with an id already
+						// captured this turn (e.g. a provider id literally
+						// named "call_0").
+						do {
+							c.id = "call_" + std::to_string( synthCounter++ );
+						} while( idUsed( c.id ) );
+						c.idSynthesized = true;
+					}
+					usedIds.push_back( c.id );
+					c.name = fc->get( "name" ).asString();
+					const JsonValue& args = fc->get( "args" );
+					c.argsJson = args.isObject() ? JsonSerialize( args ) : std::string( "{}" );
+					calls.push_back( c );
 				}
 			}
-			out.assistantDisplayText = text;
 
 			const std::string finishReason = cand.get( "finishReason" ).asString();
+			// Classify a non-STOP finish for the error kind: token cap and
+			// the safety-ish family get their own kinds so a driver can
+			// react without string-matching.
+			const ChatErrorKind finishKind =
+				( finishReason == "MAX_TOKENS" ) ? ChatErrorKind::MaxTokens :
+				( finishReason == "SAFETY" || finishReason == "RECITATION" ||
+				  finishReason == "BLOCKLIST" || finishReason == "PROHIBITED_CONTENT" ||
+				  finishReason == "SPII" || finishReason == "IMAGE_SAFETY" ) ? ChatErrorKind::Refusal :
+				ChatErrorKind::Provider;
 			if( !calls.empty() ) {
 				// Mirror the Anthropic stop_reason gate: a call turn that
 				// was cut short (MAX_TOKENS, SAFETY, ...) may be missing
 				// calls or carry mangled arguments -- it must NOT execute.
 				if( finishReason != "STOP" && !finishReason.empty() ) {
-					out.step = MakeProviderError(
+					out.step = MakeProviderError( finishKind,
 						"gemini returned function calls but stopped with finishReason \"" +
 						finishReason + "\" -- a truncated call turn is not executed" );
 					return out;
@@ -806,15 +1106,26 @@ namespace RISE
 				out.step.toolCalls = calls;
 			}
 			else if( finishReason == "STOP" || finishReason.empty() ) {
+				if( !parts.isArray() || parts.size() == 0 ) {
+					// A degenerate final turn with missing/empty content:
+					// recording it would echo a partless (or parts:null)
+					// model turn that poisons every later request.
+					out.step = MakeProviderError( ChatErrorKind::Provider,
+						"gemini candidate carries no content parts -- refusing the degenerate empty turn" );
+					return out;
+				}
 				out.step.kind = ChatStepResult::Kind::FinalText;
 				out.step.finalText = text;
 			}
 			else {
 				// SAFETY / MAX_TOKENS / RECITATION / ... -> error with the
 				// finishReason in the message.
-				out.step = MakeProviderError( "gemini stopped with finishReason \"" + finishReason + "\"" );
+				out.step = MakeProviderError( finishKind,
+					"gemini stopped with finishReason \"" + finishReason + "\"" );
 				return out;
 			}
+			out.assistantDisplayText = text;
+			out.step.assistantDisplayText = text;
 
 			// Raw-span echo of candidates[0].content (verbatim -- preserves
 			// provider-opaque fields such as thought signatures).

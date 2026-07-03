@@ -33,12 +33,30 @@
 //        every call of the turn has a result, or at the next
 //        BuildRequest / AddUserMessage).  A flush SYNTHESIZES an error
 //        tool result ("tool call was not executed...") for every
-//        pending call that has no buffered result, so the wire
-//        invariant "every tool call is answered in the immediately-
-//        following user message" holds BY CONSTRUCTION on both
-//        providers (Anthropic hard-400s unanswered tool_use ids;
-//        Gemini rejects mismatched functionResponses) -- a user
-//        interrupt or tool crash cannot poison the transcript.
+//        pending call that has no buffered result.  Together with the
+//        codecs' record-or-refuse rule (ParseResponse REFUSES -- and
+//        the loop records nothing of -- any response whose tool calls
+//        could not become the pending set: calls under a non-tool-call
+//        stop_reason/finishReason, id-less / duplicate-id / malformed
+//        call blocks; see AgentChatCodecs.h), the wire invariant
+//        "every RECORDED tool call is answered in the immediately-
+//        following user message" holds for every entry this loop
+//        records, on both providers (Anthropic hard-400s unanswered
+//        tool_use ids; Gemini rejects mismatched functionResponses) --
+//        a user interrupt, tool crash, or hostile response body cannot
+//        poison the transcript.
+//      * IMAGE RETENTION: only the MOST RECENT read_image PNG stays
+//        live in the transcript.  When a new tool-results entry packs
+//        an image, every OLDER ToolResults entry's image block/part is
+//        rewritten to a short "[image elided -- superseded by a newer
+//        render]" text note (Anthropic: the {type:"image"} element;
+//        Gemini: the functionResponse.parts inlineData) via the
+//        codec's RewriteElidedImages.  Without this, every request
+//        re-sends (and re-bills) every historical ~1.3MB base64 PNG
+//        and long sessions eventually exceed provider request-size
+//        limits.  Rewriting is legal ONLY for ToolResults entries --
+//        they are loop-generated; assistant entries keep the verbatim
+//        byte-preservation contract and are never touched.
 //      * CALLER-CONTRACT GUARDS (each refuses or ignores; none throw):
 //          - HandleResponse while the previous turn's tool calls are
 //            still pending returns ProviderError and records NOTHING
@@ -100,6 +118,13 @@ namespace RISE
 			Role        role = Role::User;
 			std::string displayText;
 			std::string rawJson;   //!< provider-native message JSON (verbatim for assistant turns)
+
+			//! True while this ToolResults entry still carries a live
+			//! image block/part.  Cleared when a NEWER image supersedes
+			//! it and rawJson is rewritten with the image elided (see the
+			//! IMAGE RETENTION rule in the file header).  Always false
+			//! for User/Assistant entries.
+			bool        carriesLiveImage = false;
 		};
 
 		//! The sans-IO chat loop (see the file header for the contract).

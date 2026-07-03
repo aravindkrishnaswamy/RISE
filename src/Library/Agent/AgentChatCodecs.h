@@ -28,13 +28,27 @@
 //      * The API key appears ONLY in the auth header the codec emits --
 //        never in the URL, never in the body, never in any other string
 //        the codec produces.  Codecs log NOTHING (bodies may embed
-//        scene content; the key must never reach a log either).
+//        scene content; the key must never reach a log either).  Header
+//        values built from caller input (the key) are stripped of every
+//        control character (< 0x20, i.e. CR/LF and friends) so a pasted
+//        key cannot smuggle extra headers into the request.
 //      * Assistant turns are stored as RAW provider-native JSON and
 //        echoed VERBATIM (byte-preserved) on subsequent BuildRequests.
 //        ParseResponse extracts the assistant content as a raw byte
 //        span of the response body -- NOT a parse + re-serialize --
 //        so provider-opaque fields (Anthropic thinking-block
 //        `signature`s, Gemini thought signatures) round-trip intact.
+//      * RECORD-OR-REFUSE: ParseResponse either returns a disposition
+//        whose recorded entry is safe to echo forever, or refuses the
+//        WHOLE response (ProviderError; the loop records nothing).
+//        Any response whose tool calls could not become the loop's
+//        pending set is refused outright: tool_use / functionCall
+//        blocks under a non-tool-call stop_reason/finishReason, an
+//        id-less Anthropic tool_use, a malformed (non-object) Gemini
+//        functionCall value, duplicate Gemini functionCall ids, and
+//        degenerate empty-content final turns.  Never "salvage" part
+//        of such a body: the raw echo would replay the un-answerable
+//        call blocks on every later request.
 //      * All tool results for one assistant turn are packed into ONE
 //        following user message (an Anthropic hard requirement for
 //        parallel tool_use; mirrored for Gemini).
@@ -43,7 +57,9 @@
 //        image block; Gemini `functionResponse.parts[].inlineData` --
 //        the documented FunctionResponsePart mechanism for multimodal
 //        function output) and STRIPPED from the textual part so it is
-//        not double-sent.
+//        not double-sent.  RewriteElidedImages later replaces such an
+//        image block/part with a short text note (the loop keeps only
+//        the MOST RECENT image live -- see AgentChatLoop.h).
 //
 //    The six tool definitions (mapping 1:1 to the AgentRpc verbs) are
 //    defined ONCE, provider-neutrally, in AgentChatCodecs.cpp; each
@@ -82,15 +98,35 @@ namespace RISE
 		//! `functionCall.id`, which Gemini 3.x populates and the docs
 		//! require echoed back as the matching `functionResponse.id`).
 		//! Only when a Gemini functionCall carries no id does the codec
-		//! synthesize "call_0", "call_1", ... per assistant turn
-		//! (idSynthesized is then true, NO id field is emitted in the
-		//! functionResponse, and results match by name + order).
+		//! synthesize "call_0", "call_1", ... per assistant turn,
+		//! skipping any candidate that collides with an id already
+		//! captured this turn (idSynthesized is then true, NO id field
+		//! is emitted in the functionResponse, and results match by
+		//! name + order).  Duplicate ids within one turn (a repeated
+		//! provider id, or a provider id colliding with an earlier
+		//! synthesized one) REFUSE the whole turn -- ids are the result-
+		//! matching key and must be unique.
 		struct ChatToolCall
 		{
 			std::string id;                  //!< provider (or synthesized) call id
 			std::string name;                //!< the tool name (a JSON-RPC verb)
 			std::string argsJson;            //!< the call arguments as a JSON object string
 			bool        idSynthesized = false; //!< true iff `id` was fabricated by the codec (never echoed to the provider)
+		};
+
+		//! A machine-readable classification for ProviderError outcomes so
+		//! a GUI driver can branch on the KIND (retry on Http, stop on
+		//! Refusal, ...) without string-matching errorMessage.
+		enum class ChatErrorKind
+		{
+			None,          //!< not an error (ToolCalls / FinalText)
+			Http,          //!< non-200 HTTP status from the provider
+			Parse,         //!< the response body did not parse as JSON
+			Provider,      //!< the provider returned a hostile/degenerate/unexpected turn
+			Refusal,       //!< the provider declined the request (safety/refusal)
+			MaxTokens,     //!< the reply hit the output-token cap (truncated; discarded)
+			IterationCap,  //!< the loop's per-turn tool-round cap tripped
+			Misuse         //!< caller-contract violation (e.g. HandleResponse while calls are pending)
 		};
 
 		//! The outcome of one chat step (one HTTP round-trip).
@@ -107,6 +143,14 @@ namespace RISE
 			std::vector<ChatToolCall> toolCalls;     //!< non-empty iff kind==ToolCalls
 			std::string               finalText;     //!< filled iff kind==FinalText
 			std::string               errorMessage;  //!< filled iff kind==ProviderError
+			ChatErrorKind             errorKind = ChatErrorKind::None;  //!< set on EVERY ProviderError; None otherwise
+
+			//! The assistant's interim display text for THIS turn --
+			//! filled for BOTH ToolCalls (the text alongside the calls,
+			//! possibly empty) and FinalText (== finalText), so a GUI can
+			//! show the model's narration while tools run.  Empty on
+			//! ProviderError.
+			std::string               assistantDisplayText;
 		};
 
 		//! ParseResponse's full product: the step outcome PLUS the raw
@@ -148,6 +192,18 @@ namespace RISE
 			virtual std::string PackToolResults(
 				const std::vector<std::pair<ChatToolCall, std::string>>& results ) const = 0;
 
+			//! Rewrite a PackToolResults-produced entry, replacing every
+			//! live image block/part with a short "[image elided ...]"
+			//! text note (Anthropic: the {type:"image"} content element;
+			//! Gemini: the functionResponse.parts inlineData transport).
+			//! Used by the loop to keep only the MOST RECENT image live
+			//! (see AgentChatLoop.h "IMAGE RETENTION").  This regeneration
+			//! is legal ONLY because ToolResults entries are loop-generated
+			//! -- assistant entries carry the byte-preservation contract
+			//! and must never pass through here.  Returns the entry
+			//! unchanged when it carries no image (or does not parse).
+			virtual std::string RewriteElidedImages( const std::string& packedEntryJson ) const = 0;
+
 			//! Build the full HTTP request for the current conversation.
 			//! `apiKey` is used ONLY for the auth header -- it is not
 			//! retained, not placed in the body/url, and never logged.
@@ -175,6 +231,7 @@ namespace RISE
 			virtual std::string MakeUserEntry( const std::string& text ) const;
 			virtual std::string PackToolResults(
 				const std::vector<std::pair<ChatToolCall, std::string>>& results ) const;
+			virtual std::string RewriteElidedImages( const std::string& packedEntryJson ) const;
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -198,6 +255,7 @@ namespace RISE
 			virtual std::string MakeUserEntry( const std::string& text ) const;
 			virtual std::string PackToolResults(
 				const std::vector<std::pair<ChatToolCall, std::string>>& results ) const;
+			virtual std::string RewriteElidedImages( const std::string& packedEntryJson ) const;
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -206,6 +264,15 @@ namespace RISE
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
 		};
+
+		//! True iff packing (call, raw JSON-RPC envelope line) would carry
+		//! a LIVE image block/part -- i.e. a read_image success result with
+		//! a non-empty png_base64.  Shared by the loop (to decide when the
+		//! image-elision pass must run) and the codecs (which use the same
+		//! predicate to build the image block/part), so the two can never
+		//! disagree about what counts as an image-bearing result.
+		bool ChatToolResultCarriesImage( const ChatToolCall& call,
+		                                 const std::string& rawJsonRpcResponseLine );
 	}
 }
 

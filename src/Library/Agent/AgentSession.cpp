@@ -54,6 +54,7 @@
 #include "../Utilities/RString.h"
 
 #include <cctype>
+#include <cfloat>   // DBL_MAX for the -ffast-math-safe non-finite range test
 #include <cmath>
 #include <cstdio>   // Facet 5 slice 1a: std::snprintf for the conflict message
 
@@ -280,7 +281,16 @@ namespace RISE
 						if( !p || !IsNumericKind( p->kind ) ) continue;
 						bool bad = values.empty();   // a numeric param needs a value
 						for( const std::string& v : values ) {
-							if( !LooksNumeric( v ) || !std::isfinite( std::strtod( v.c_str(), nullptr ) ) ) { bad = true; break; }
+							// Non-finite detection via an explicit range test,
+							// NOT std::isfinite: the production build compiles
+							// with -ffast-math (-> -ffinite-math-only), under
+							// which clang folds std::isfinite(x) to true and
+							// this classification silently degrades (the
+							// AgentRpc.cpp house idiom, q.v.).  A plain
+							// >=/<= against +/-DBL_MAX survives the fold:
+							// NaN fails both bounds, +/-inf fails one.
+							const double dv = std::strtod( v.c_str(), nullptr );
+							if( !LooksNumeric( v ) || !( dv >= -DBL_MAX && dv <= DBL_MAX ) ) { bad = true; break; }
 						}
 						if( bad ) {
 							outCode = AgentDiagnosticCode::INVALID_VALUE;
