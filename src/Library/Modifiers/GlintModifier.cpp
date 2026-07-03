@@ -49,7 +49,7 @@ GlintModifier::GlintModifier(
 	) :
   density( density_ ),
   coverage( r_max( Scalar(0), r_min( Scalar(1), coverage_ ) ) ),
-  fill( r_max( Scalar(1e-4), r_min( Scalar(1), fill_ ) ) ),
+  fill( r_min( Scalar(1), fill_ ) ),
   spreadRad( spreadDeg_ * DEG_TO_RAD ),
   vScale( vScale_ ),
   vShift( vShift_ ),
@@ -65,8 +65,11 @@ GlintFacet GlintModifier::FindFacet( const Point3& objPt ) const
 {
 	GlintFacet result;
 
-	// Inert configurations: no cells, no coverage, or no tilt to apply.
-	if( !(density > 0) || !(coverage > 0) || !(spreadRad > 0) ) {
+	// Inert configurations: no cells, no coverage, no facet area, or no
+	// tilt to apply.  fill <= 0 is inert like density/spread (a facet
+	// with zero radius is no facet), keeping the authored-domain
+	// semantics uniform across all four scalars.
+	if( !(density > 0) || !(coverage > 0) || !(fill > 0) || !(spreadRad > 0) ) {
 		return result;
 	}
 
@@ -146,8 +149,9 @@ GlintFacet GlintModifier::FindFacet( const Point3& objPt ) const
 	// Tilt lanes (4-5) from the winning facet: Rayleigh-distributed
 	// polar angle with scale `spreadRad` (theta = sigma*sqrt(-2 ln(1-u))),
 	// uniform azimuth.  The 1-u argument is bounded away from 0 so the
-	// log never blows up; the safety ceiling truncates the (already
-	// ~1e-5 mass at 60 deg for single-digit spreads) far tail.
+	// log never blows up; the safety ceiling truncates a far tail whose
+	// mass is ~1e-87 at sigma=3deg and ~1.5e-8 at sigma=10deg (it only
+	// meaningfully engages for hostile spreads, e.g. ~32% at 40deg).
 	const unsigned int hD = GlintHash::HashU32( bestLane );
 	const unsigned int hE = GlintHash::HashU32( hD );
 
@@ -177,7 +181,11 @@ void GlintModifier::Modify( RayIntersectionGeometric& ri ) const
 	// tilt angles are frame-independent facet properties; the frame
 	// varies negligibly across one facet (facets are ~sub-pixel, base
 	// curvature is macro-scale), so the facet normal is effectively
-	// constant across its disc.
+	// constant across its disc.  One known seam: a facet whose disc
+	// straddles the world +/-Y pole line sees CreateFromW's canonical
+	// tangent flip, so its azimuth jumps there (a localized cosmetic
+	// discontinuity on general closed surfaces; unreachable on the
+	// enamel dome, whose normals stay near +Z).
 	const Scalar st = std::sin( facet.theta );
 	const Scalar ct = std::cos( facet.theta );
 	const Scalar cp = std::cos( facet.phi );

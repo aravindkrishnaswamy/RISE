@@ -129,7 +129,7 @@ namespace RISE
 
 			Scalar		density;		///< cells per object-space unit (facet pitch = 1/density units)
 			Scalar		coverage;		///< per-cell facet existence probability, clamped [0,1]
-			Scalar		fill;			///< facet disc radius as fraction of the half-cell, clamped (0,1]
+			Scalar		fill;			///< facet disc radius as fraction of the half-cell, clamped <= 1; <= 0 is inert
 			Scalar		spreadRad;		///< facet tilt Rayleigh scale (stored radians; authored degrees)
 			Vector3		vScale;			///< anisotropic cell stretch (Worley3DPainter convention)
 			Vector3		vShift;			///< cell-space offset (Worley3DPainter convention)
@@ -139,7 +139,7 @@ namespace RISE
 			GlintModifier(
 				const Scalar density_,			///< [in] cells per object-space unit; <= 0 makes the modifier inert
 				const Scalar coverage_,			///< [in] per-cell facet existence probability [0,1]
-				const Scalar fill_,				///< [in] facet disc radius fraction of the half-cell (0,1]
+				const Scalar fill_,				///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 makes the modifier inert
 				const Scalar spreadDeg_,		///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 makes the modifier inert
 				const Vector3& vScale_,			///< [in] anisotropic cell stretch (1,1,1 = isotropic)
 				const Vector3& vShift_,			///< [in] cell-space offset

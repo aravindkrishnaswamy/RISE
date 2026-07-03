@@ -18,13 +18,27 @@
 //       facet's radius return that same facet from EITHER side of a
 //       cell wall.
 //    5. Modify() guards: perturbed normals are unit length, never tilt
-//       past the geometric tangent plane guard, and the rebuilt ONB is
-//       orthonormal with the tangent direction preserved (u stays in
-//       the plane spanned by old u and the new normal).
-//    6. GGX SPF/BRDF consistency at modifier-perturbed hits: sampling
-//       pdf self-consistency and SPF-vs-BRDF albedo agreement hold at
-//       the perturbed frame — the "MIS-consistent by construction"
-//       claim, tested rather than asserted.
+//       past the geometric tangent plane guard, the tilt ceiling holds
+//       where the hostile spread actually clamps, and the rebuilt ONB
+//       is orthonormal with the tangent direction preserved — checked
+//       against a NON-canonical base tangent so preserve-u is actually
+//       discriminated from a CreateFromW rebuild.
+//    6. GGX RGB + NM pointwise SPF/BRDF consistency at modifier-
+//       perturbed hits: sampled-pdf vs queried-pdf self-consistency
+//       and SPF-vs-BRDF albedo agreement at the perturbed frame (the
+//       ingredient the integrators' MIS relies on; not a full
+//       NEE-vs-BSDF MIS proof).
+//    7. Seed / scale / shift semantics: differing seeds give a
+//       materially different field; `shift` translates the field
+//       exactly; anisotropic `scale` elongates it (boundary-transition
+//       rates scale with the stretch).
+//    8. DielectricSPF hero path at perturbed hits: delta reflection
+//       mirrors about the FACET normal, refraction obeys Snell about
+//       it, Fresnel weights sum to 1 at entry, and the facet visibly
+//       redirects the delta versus the smooth surface.
+//    9. Hostile-coordinate determinism: the 2^40 cell fold keeps
+//       FindFacet finite, stable, and bit-deterministic at extreme
+//       object-space coordinates.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -50,6 +64,7 @@
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Materials/GGXBRDF.h"
 #include "../src/Library/Materials/GGXSPF.h"
+#include "../src/Library/Materials/DielectricSPF.h"
 #include "../src/Library/Interfaces/ILog.h"
 
 #include "TestStubObject.h"
@@ -187,12 +202,15 @@ static void TestCoverage()
 	}
 
 	// Absolute bound at coverage=1, fill=1: one sphere of radius 0.5
-	// per unit cell covers a fraction ~1-exp(-pi/6) ~ 0.41 of space
-	// (Poisson approximation of the jittered-grid overlap).
+	// per unit cell.  The TRUE jittered-grid value is ~0.46 (the
+	// one-per-cell packing constraint suppresses overlap versus the
+	// Poisson 1-exp(-pi/6)=0.41 lower bound; review round 1 measured
+	// independent-jitter MC at ~0.459, this impl at ~0.447).  The band
+	// is tight enough that a ~5% facet-radius error fails it.
 	const GlintModifier& modFull = *MakeMod( 2.0, 1.0, 1.0, 4.0, Vector3(1,1,1), Vector3(0,0,0), 3 );
 	const double cFull = MeasureCoverage( modFull, N, 102 );
 	std::cout << "  coverage(1.0, fill=1): " << std::fixed << std::setprecision(4) << cFull << std::endl;
-	CHECK( cFull > 0.30 && cFull < 0.52, "full coverage out of expected band (got " << cFull << ")" );
+	CHECK( cFull > 0.40 && cFull < 0.48, "full coverage out of expected band (got " << cFull << ")" );
 
 	// Linear scaling in `coverage` (sparse regime -> overlap negligible).
 	const GlintModifier& modC30 = *MakeMod( 2.0, 0.30, 1.0, 4.0, Vector3(1,1,1), Vector3(0,0,0), 3 );
@@ -372,29 +390,48 @@ static void TestModifyGuards()
 		CHECK( Vector3Ops::Dot( ri.vNormal, ri.vGeomNormal ) >= 0.05 - 1e-9,
 			"perturbed normal violates geometric-side guard" );
 
+		// Tilt ceiling asserted WHERE IT ACTUALLY FIRES: at spread=40deg
+		// ~32% of Rayleigh draws exceed 60deg and must clamp (at
+		// production spreads the ceiling is unreachable, so a ceiling
+		// assert there would be vacuous).
+		const GlintFacet hf = hostile.FindFacet( p );
+		if( hf.found ) {
+			CHECK( hf.theta <= 1.0471975511965976 + 1e-12, "hostile tilt beyond ceiling (" << hf.theta << ")" );
+		}
+
 		if( Vector3Ops::Dot( ri.vNormal, Vector3( 0, 0, 1 ) ) < 1.0 - 1e-12 ) perturbed++;
 	}
 	CHECK( perturbed > 5000, "hostile-spread modifier barely perturbing (" << perturbed << ")" );
 	std::cout << "  hostile spread: " << perturbed << "/20000 hits perturbed, all guarded" << std::endl;
 
-	// Tangent coherence at gentle spread: the rebuilt u must stay in
-	// the plane spanned by the old u and the new normal (preserve-u
-	// construction), i.e. dot(newU, oldV) ~ 0.
+	// Tangent coherence at gentle spread: the rebuilt u must be the
+	// PROJECTION of the pre-perturbation u onto the new tangent plane.
+	// The base ONB deliberately carries a NON-CANONICAL tangent
+	// (geometry-defined, as bShadingTangentFromGeometry produces) —
+	// with a canonical base frame, CreateFromW would reproduce the same
+	// u and the preserve-u construction would be indistinguishable from
+	// it (review round 1, P1-a: the original form of this check let a
+	// CreateFromW rebuild pass 2000/2000).
+	const Vector3 baseTangent = Vector3Ops::Normalize( Vector3( 0.4, 0.9, 0 ) );
 	int coherent = 0, facetHits = 0;
 	for( int i = 0; i < 20000 && facetHits < 2000; i++ )
 	{
 		const Point3 p( rng.CanonicalRandom() * 40.0, rng.CanonicalRandom() * 40.0, 0.0 );
 		RayIntersectionGeometric ri = MakeRI( p, Vector3Ops::Normalize( Vector3( 0.2, -0.3, -1 ) ) );
+		ri.onb.CreateFromWU( Vector3( 0, 0, 1 ), baseTangent );
 		const Vector3 oldU = ri.onb.u();
-		const Vector3 oldV = ri.onb.v();
 		gentle.Modify( ri );
 		if( Vector3Ops::Dot( ri.vNormal, Vector3( 0, 0, 1 ) ) > 1.0 - 1e-12 ) continue;
 		facetHits++;
-		if( fabs( Vector3Ops::Dot( ri.onb.u(), oldV ) ) < 0.08 && Vector3Ops::Dot( ri.onb.u(), oldU ) > 0.9 ) {
+
+		// Expected u: old u projected onto the new tangent plane.
+		const Vector3 n = ri.vNormal;
+		const Vector3 expectU = Vector3Ops::Normalize( oldU - n * Vector3Ops::Dot( oldU, n ) );
+		if( Vector3Ops::Dot( ri.onb.u(), expectU ) > 1.0 - 1e-9 ) {
 			coherent++;
 		}
 	}
-	std::cout << "  tangent coherence: " << coherent << "/" << facetHits << std::endl;
+	std::cout << "  tangent coherence (non-canonical base): " << coherent << "/" << facetHits << std::endl;
 	CHECK( facetHits > 500, "too few facet hits for tangent test (" << facetHits << ")" );
 	CHECK( coherent == facetHits, "preserve-u tangent construction violated (" << coherent << "/" << facetHits << ")" );
 
@@ -510,7 +547,7 @@ static void TestGGXConsistencyAtPerturbedHits()
 
 	const double spfAlbedo = ( accumN > 0 ) ? spfAccum / accumN : 0;
 	const double brdfAlbedo = ( accumN > 0 ) ? brdfAccum / accumN : 0;
-	std::cout << "  valid=" << valid << " pdfFail=" << pdfFailures
+	std::cout << "  RGB: valid=" << valid << " pdfFail=" << pdfFailures
 	          << " spfAlbedo=" << std::setprecision(4) << spfAlbedo
 	          << " brdfAlbedo=" << brdfAlbedo << std::endl;
 
@@ -519,6 +556,58 @@ static void TestGGXConsistencyAtPerturbedHits()
 	CHECK( brdfAlbedo > 1e-3 && fabs( spfAlbedo - brdfAlbedo ) / brdfAlbedo < 0.05,
 		"SPF/BRDF estimator mismatch at perturbed frame (" << spfAlbedo << " vs " << brdfAlbedo << ")" );
 	CHECK( spfAlbedo < 1.05, "energy gain at perturbed frame (" << spfAlbedo << ")" );
+
+	// NM (spectral) twin at the same perturbed frames: ScatterNM /
+	// PdfNM / valueNM must uphold the identical contract — the hero
+	// renders spectrally, and an RGB-only check would leave the NM
+	// path's frame handling unproven (review round 1, P2-d).
+	const Scalar nm = 550.0;
+	int validNM = 0, pdfFailuresNM = 0;
+	double spfAccumNM = 0, brdfAccumNM = 0;
+	int accumNNM = 0;
+
+	for( int i = 0; i < 40000; i++ )
+	{
+		const Point3 p( rng.CanonicalRandom() * 40.0, rng.CanonicalRandom() * 40.0, 0.0 );
+		RayIntersectionGeometric ri = MakeRI( p, Vector3Ops::Normalize( Vector3( 0.45, 0.1, -0.9 ) ) );
+		mod.Modify( ri );
+
+		ScatteredRayContainer scattered;
+		spf->ScatterNM( ri, sampler, nm, scattered, iorStack );
+
+		for( unsigned int s = 0; s < scattered.Count(); s++ )
+		{
+			const ScatteredRay& scat = scattered[s];
+			if( scat.isDelta ) continue;
+
+			const Vector3 wo = scat.ray.Dir();
+			const Scalar cosWo = Vector3Ops::Dot( wo, ri.onb.w() );
+			if( cosWo <= 0 ) continue;
+
+			const Scalar spfPdf = spf->PdfNM( ri, wo, nm, iorStack );
+			if( spfPdf < 1e-10 ) continue;
+
+			validNM++;
+
+			const Scalar pdfErr = ( scat.pdf > 1e-10 ) ? fabs( scat.pdf - spfPdf ) / scat.pdf : 0;
+			if( pdfErr > 1e-4 ) pdfFailuresNM++;
+
+			spfAccumNM += scat.krayNM;
+			brdfAccumNM += brdf->valueNM( wo, ri, nm ) * cosWo / spfPdf;
+			accumNNM++;
+		}
+	}
+
+	const double spfAlbedoNM = ( accumNNM > 0 ) ? spfAccumNM / accumNNM : 0;
+	const double brdfAlbedoNM = ( accumNNM > 0 ) ? brdfAccumNM / accumNNM : 0;
+	std::cout << "  NM(550): valid=" << validNM << " pdfFail=" << pdfFailuresNM
+	          << " spfAlbedo=" << spfAlbedoNM << " brdfAlbedo=" << brdfAlbedoNM << std::endl;
+
+	CHECK( validNM > 10000, "too few valid NM perturbed-frame samples (" << validNM << ")" );
+	CHECK( pdfFailuresNM <= validNM / 1000, "NM pdf self-consistency failures at perturbed frame (" << pdfFailuresNM << "/" << validNM << ")" );
+	CHECK( brdfAlbedoNM > 1e-3 && fabs( spfAlbedoNM - brdfAlbedoNM ) / brdfAlbedoNM < 0.05,
+		"NM SPF/BRDF estimator mismatch at perturbed frame (" << spfAlbedoNM << " vs " << brdfAlbedoNM << ")" );
+	CHECK( spfAlbedoNM < 1.05, "NM energy gain at perturbed frame (" << spfAlbedoNM << ")" );
 
 	brdf->release();
 	spf->release();
@@ -529,6 +618,224 @@ static void TestGGXConsistencyAtPerturbedHits()
 	ior->release();
 	ext->release();
 	stub->release();
+}
+
+// ============================================================
+//  Test 7: seed / scale / shift semantics
+// ============================================================
+
+static void TestSeedScaleShift()
+{
+	std::cout << "--- Test 7: seed / scale / shift semantics ---" << std::endl;
+
+	// 7a. Differing seeds give materially different fields.
+	const GlintModifier& seedA = *MakeMod( 2.0, 0.4, 1.0, 4.0, Vector3(1,1,1), Vector3(0,0,0), 7 );
+	const GlintModifier& seedB = *MakeMod( 2.0, 0.4, 1.0, 4.0, Vector3(1,1,1), Vector3(0,0,0), 8 );
+
+	RandomNumberGenerator rng( 71 );
+	int differ = 0;
+	const int NS = 20000;
+	for( int i = 0; i < NS; i++ )
+	{
+		const Point3 p(
+			rng.CanonicalRandom() * 40.0,
+			rng.CanonicalRandom() * 40.0,
+			rng.CanonicalRandom() * 40.0 );
+		const GlintFacet a = seedA.FindFacet( p );
+		const GlintFacet b = seedB.FindFacet( p );
+		if( a.found != b.found ||
+			( a.found && ( a.centreQ.x != b.centreQ.x || a.theta != b.theta || a.phi != b.phi ) ) ) {
+			differ++;
+		}
+	}
+	std::cout << "  seed fields differ at " << differ << "/" << NS << " points" << std::endl;
+	CHECK( differ > NS / 5, "differing seeds barely change the field (" << differ << "/" << NS << ")" );
+
+	// 7b. `shift` translates the field EXACTLY: q(p; shift=s) equals
+	// q(p + s; shift=0) at scale 1, density 1, so the two must agree
+	// bit-for-bit (found flag, centre, tilt).
+	const Vector3 s( 0.37, 0.11, -0.23 );
+	const GlintModifier& shifted = *MakeMod( 1.0, 0.3, 1.0, 4.0, Vector3(1,1,1), s, 7 );
+	const GlintModifier& unshifted = *MakeMod( 1.0, 0.3, 1.0, 4.0, Vector3(1,1,1), Vector3(0,0,0), 7 );
+	int checkedShift = 0;
+	for( int i = 0; i < 20000; i++ )
+	{
+		const Point3 p(
+			rng.CanonicalRandom() * 40.0,
+			rng.CanonicalRandom() * 40.0,
+			rng.CanonicalRandom() * 40.0 );
+		const GlintFacet a = shifted.FindFacet( p );
+		const GlintFacet b = unshifted.FindFacet( Point3( p.x + s.x, p.y + s.y, p.z + s.z ) );
+		CHECK( a.found == b.found, "shift does not translate the field (found mismatch at i=" << i << ")" );
+		if( a.found && b.found ) {
+			CHECK( a.theta == b.theta && a.phi == b.phi,
+				"shift does not translate the field (tilt mismatch at i=" << i << ")" );
+			checkedShift++;
+		}
+	}
+	std::cout << "  shift translation: " << checkedShift << " facet agreements" << std::endl;
+	CHECK( checkedShift > 1000, "shift test barely exercised (" << checkedShift << ")" );
+
+	// 7c. Anisotropic `scale` elongates the field: with scale (3,1,1)
+	// the q-space x-axis runs 3x faster, so found/not-found boundary
+	// transitions per unit OBJECT-space length along x should be ~3x
+	// those along y.
+	const GlintModifier& aniso = *MakeMod( 1.0, 0.5, 1.0, 4.0, Vector3(3,1,1), Vector3(0,0,0), 7 );
+	int transX = 0, transY = 0;
+	for( int line = 0; line < 300; line++ )
+	{
+		const Point3 o(
+			rng.CanonicalRandom() * 40.0,
+			rng.CanonicalRandom() * 40.0,
+			rng.CanonicalRandom() * 40.0 );
+		bool prevX = aniso.FindFacet( o ).found;
+		bool prevY = prevX;
+		for( int k = 1; k <= 200; k++ )
+		{
+			const Scalar t = k * 0.05;
+			const bool fx = aniso.FindFacet( Point3( o.x + t, o.y, o.z ) ).found;
+			const bool fy = aniso.FindFacet( Point3( o.x, o.y + t, o.z ) ).found;
+			if( fx != prevX ) { transX++; prevX = fx; }
+			if( fy != prevY ) { transY++; prevY = fy; }
+		}
+	}
+	const double anisoRatio = ( transY > 0 ) ? (double)transX / (double)transY : 0;
+	std::cout << "  anisotropy: " << transX << " x-transitions vs " << transY
+	          << " y-transitions (ratio " << anisoRatio << ")" << std::endl;
+	CHECK( anisoRatio > 2.2 && anisoRatio < 3.8,
+		"scale (3,1,1) does not elongate the field ~3x (ratio " << anisoRatio << ")" );
+}
+
+// ============================================================
+//  Test 8: DielectricSPF hero path at perturbed hits
+// ============================================================
+
+static void TestDielectricAtPerturbedHits()
+{
+	std::cout << "--- Test 8: DielectricSPF delta consistency at perturbed hits ---" << std::endl;
+
+	StubObject* stub = new StubObject();
+	stub->addref();
+
+	UniformScalarPainter* tau = new UniformScalarPainter( 1.0 );		tau->addref();
+	UniformScalarPainter* ior = new UniformScalarPainter( 1.55 );		ior->addref();
+	UniformScalarPainter* scat = new UniformScalarPainter( 1000000.0 );	scat->addref();
+
+	DielectricSPF* spf = new DielectricSPF( *tau, *ior, *scat, false );	spf->addref();
+
+	const GlintModifier& mod = *MakeMod( 2.0, 1.0, 1.0, 4.0, Vector3(1,1,1), Vector3(0,0,0), 17 );
+
+	RandomNumberGenerator rng( 81 );
+	IndependentSampler sampler( rng );
+	IORStack iorStack = MakeTestIORStack( stub );
+
+	int facetHits = 0, redirected = 0;
+	const Vector3 inDir = Vector3Ops::Normalize( Vector3( 0.5, 0.2, -0.8 ) );
+
+	for( int i = 0; i < 20000 && facetHits < 4000; i++ )
+	{
+		const Point3 p( rng.CanonicalRandom() * 40.0, rng.CanonicalRandom() * 40.0, 0.0 );
+		RayIntersectionGeometric ri = MakeRI( p, inDir );
+		mod.Modify( ri );
+		if( Vector3Ops::Dot( ri.vNormal, Vector3( 0, 0, 1 ) ) > 1.0 - 1e-12 ) continue;
+		facetHits++;
+
+		ScatteredRayContainer scattered;
+		spf->Scatter( ri, sampler, scattered, iorStack );
+
+		const Vector3 w = ri.onb.w();
+		Scalar krayReflect = -1, krayRefract = -1;
+
+		for( unsigned int s = 0; s < scattered.Count(); s++ )
+		{
+			const ScatteredRay& scat2 = scattered[s];
+			CHECK( scat2.isDelta, "polished dielectric emitted a non-delta ray" );
+
+			if( scat2.type == ScatteredRay::eRayReflection )
+			{
+				// Delta reflection must mirror about the FACET normal.
+				const Vector3 mirror = Vector3Ops::Normalize(
+					inDir - w * ( 2.0 * Vector3Ops::Dot( inDir, w ) ) );
+				CHECK( Vector3Ops::Dot( scat2.ray.Dir(), mirror ) > 1.0 - 1e-9,
+					"reflection not mirrored about facet normal" );
+				krayReflect = ColorMath::MaxValue( scat2.kray );
+
+				// The facet must actually redirect the delta vs the
+				// smooth surface.
+				const Vector3 smoothMirror = Vector3Ops::Normalize(
+					inDir - Vector3(0,0,1) * ( 2.0 * Vector3Ops::Dot( inDir, Vector3(0,0,1) ) ) );
+				if( Vector3Ops::Dot( scat2.ray.Dir(), smoothMirror ) < 1.0 - 1e-8 ) redirected++;
+			}
+			else if( scat2.type == ScatteredRay::eRayRefraction )
+			{
+				// Snell about the facet normal: sinT/sinI = 1/1.55.
+				const Scalar cosI = fabs( Vector3Ops::Dot( inDir, w ) );
+				const Scalar sinI = sqrt( r_max( Scalar(0), 1.0 - cosI * cosI ) );
+				const Scalar cosT = fabs( Vector3Ops::Dot( scat2.ray.Dir(), w ) );
+				const Scalar sinT = sqrt( r_max( Scalar(0), 1.0 - cosT * cosT ) );
+				if( sinI > 1e-6 ) {
+					CHECK( fabs( sinT / sinI - 1.0 / 1.55 ) < 1e-6,
+						"refraction violates Snell about facet normal (ratio " << ( sinT / sinI ) << ")" );
+				}
+				krayRefract = ColorMath::MaxValue( scat2.kray );
+			}
+		}
+
+		// Fresnel split sums to 1 at entry (tau=1 clear dielectric).
+		if( krayReflect >= 0 && krayRefract >= 0 ) {
+			CHECK( fabs( krayReflect + krayRefract - 1.0 ) < 1e-9,
+				"Fresnel R+T != 1 at facet (" << ( krayReflect + krayRefract ) << ")" );
+		}
+	}
+
+	std::cout << "  " << facetHits << " facet hits, " << redirected << " redirected deltas" << std::endl;
+	CHECK( facetHits > 1000, "too few facet hits (" << facetHits << ")" );
+	CHECK( redirected == facetHits, "facets failed to redirect the delta (" << redirected << "/" << facetHits << ")" );
+
+	spf->release();
+	tau->release();
+	ior->release();
+	scat->release();
+	stub->release();
+}
+
+// ============================================================
+//  Test 9: hostile-coordinate determinism (the 2^40 fold)
+// ============================================================
+
+static void TestHostileCoordinates()
+{
+	std::cout << "--- Test 9: hostile-coordinate determinism ---" << std::endl;
+
+	const GlintModifier& mod = *MakeMod( 1.0, 0.5, 1.0, 4.0, Vector3(1,1,1), Vector3(0,0,0), 7 );
+
+	// Far beyond the 2^40 fold period, positive and negative.
+	const Point3 far1( 3.1e12, -2.7e12, 5.0e11 );
+	const Point3 far2( -1.9e13, 4.4e12, -8.8e12 );
+
+	int found = 0;
+	const Point3 bases[2] = { far1, far2 };
+	for( int b = 0; b < 2; b++ )
+	{
+		for( int k = 0; k < 2000; k++ )
+		{
+			// Scan a local neighbourhood at the hostile offset (steps
+			// resolvable in double at this magnitude).
+			const Point3 p( bases[b].x + k * 0.25, bases[b].y, bases[b].z );
+			const GlintFacet f1 = mod.FindFacet( p );
+			const GlintFacet f2 = mod.FindFacet( p );
+			CHECK( f1.found == f2.found &&
+				( !f1.found || ( f1.centreQ.x == f2.centreQ.x && f1.theta == f2.theta && f1.phi == f2.phi ) ),
+				"hostile-coordinate FindFacet not bit-deterministic at b=" << b << " k=" << k );
+			if( f1.found ) {
+				found++;
+				CHECK( f1.theta >= 0 && f1.theta <= 1.0471975511965976 + 1e-12,
+					"hostile-coordinate tilt out of range (" << f1.theta << ")" );
+			}
+		}
+	}
+	std::cout << "  " << found << "/4000 hostile-coordinate points on facets" << std::endl;
+	CHECK( found > 400, "facet field degenerate at hostile coordinates (" << found << ")" );
 }
 
 // ============================================================
@@ -545,6 +852,9 @@ int main()
 	TestBoundaryIntegrity();
 	TestModifyGuards();
 	TestGGXConsistencyAtPerturbedHits();
+	TestSeedScaleShift();
+	TestDielectricAtPerturbedHits();
+	TestHostileCoordinates();
 
 	ReleaseMods();
 

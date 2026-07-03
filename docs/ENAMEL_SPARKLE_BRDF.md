@@ -86,9 +86,11 @@ reference characterization) converged:
    *model* is ratified.
 2. **Mechanism**: `IRayIntersectionModifier::Modify(ri)` perturbs
    `ri.vNormal`/`ri.onb` at hit-production time in **every** transport path
-   (RayCaster ×3, PathTracingIntegrator RGB+NM, BDPT eye+light, all five
-   photon tracers, SMS solver + photon map, SSS walks — verified 2026-07-03),
-   so the existing materials deliver the glints with:
+   (RayCaster ×3, PathTracingIntegrator RGB+NM, BDPT eye+light — both
+   subpaths store the PERTURBED frame in their vertices, and connection-time
+   reconstruction copies it verbatim — all six photon tracers, SMS solver +
+   photon map, SSS walks; verified 2026-07-03, re-verified by review round
+   1), so the existing materials deliver the glints with:
    - **BSDF sampling of the glint lobe for free** (GGXSPF samples VNDF around
      the perturbed `onb`; DielectricSPF reflects about it).  This is
      *decisive*, not merely convenient: the enamel mandates
@@ -97,12 +99,26 @@ reference characterization) converged:
      delivers buried glints at all**, and the original SparkleBRDF v1
      explicitly did not sample its glint lobe.
    - **MIS consistency by construction**: value/Scatter/Pdf all see the same
-     perturbed frame.  (The BRDF design had a quantifiable glint deficit
-     `1 − w_NEE` under env/area lighting because `Pdf()` omitted the glint
-     lobe while `value()` included it.)
+     perturbed frame, including the shared FlipW convention (the BRDF design
+     had a quantifiable glint deficit `1 − w_NEE` under env/area lighting
+     because `Pdf()` omitted the glint lobe while `value()` included it).
+     Unit-tested as pointwise GGX SPF/BRDF pdf + albedo consistency at
+     perturbed frames, RGB and NM — the ingredient the integrators' MIS
+     relies on, not a full NEE-vs-BSDF MIS proof.
    - **G6 ambient-IOR Fresnel, Kulla-Conty multiscatter, HWSS, thin-film**
      inherited untouched from the production GGX; dielectric facets conserve
-     energy trivially (R+T = 1 per facet at any tilt).
+     energy trivially (R+T = 1 per facet at any tilt), and the dielectric's
+     inside/outside classification is IOR-stack-based
+     (`ior_stack.containsCurrent()`), so a facet tilt can never unbalance
+     the IOR stack.
+   - **SMS caveat**: `Modify` fires on the SMS path and stays UNBIASED there
+     (`ValidateChainPhysics` gates on the facet-independent `vGeomNormal`),
+     but the discrete facet field is not Newton-tractable — the manifold
+     Jacobian differentiates the smooth-base `dndu/dndv`, which the facet
+     field's piecewise-constant normals don't satisfy, so SMS will mostly
+     fail to converge on facets (missed caustics, never wrong energy).  SMS
+     does not deliver glint caustics; use PT/VCM for glinted specular
+     casters.
 3. **Layer**: the reference flecks are neutral top-surface glints (see
    measurements above) — a conductor-based `sparkle_material` could not have
    expressed the hero phenomenon.  The modifier attaches to any object: the
@@ -119,10 +135,19 @@ Costs owned honestly (not hidden):
   enamel glaze and silver objects carry no modifier today; a compound
   modifier is the named upgrade path if a scene ever needs bump+glint.
 - **AOV interaction**: per-cell normals make the OIDN normal/albedo aux
-  buffers locally non-smooth.  Tilts are a few degrees (Fresnel/albedo
-  change is second-order); measured in Slice 4, with a glint AOV composite
-  as the fallback plan.  `albedo()` continues to come from the material and
-  stays noise-free at first order.
+  buffers locally non-smooth.  Specifically: in the DEFAULT `OidnPrefilter::
+  Fast` mode the normal AOV is written from the FIRST HIT's perturbed
+  `vNormal` (even for delta dielectric hits), so per-sample facet normals
+  land in the guide buffer and only pixel-averaging pulls them back toward
+  the smooth mean; `Accurate` mode records at the first non-delta scatter
+  and stays clean on the hero.  The Slice-4 OIDN-erosion measurement is
+  therefore a **required gate before Slice-3 presentation renders ship**
+  (denoise is always on for those), not an optional refinement; a glint AOV
+  composite is the fallback plan.  `albedo()` comes from the material: exact
+  and facet-independent for the dielectric hero (painter-sourced), but the
+  GGX conductor `albedo()` evaluates Fresnel at the facet cosine, so the
+  metal-flake use varies per-facet at grazing (pixel-averaging mitigates;
+  part of the same Slice-4 gate).
 
 ## The `GlintModifier` (parameters)
 
@@ -137,6 +162,8 @@ sparkle; validation is string-level (ffast-math-safe) at parse time.
   empirically by the unit test, documented, not assumed).
 - `fill`      — facet disc radius as a fraction of the half-cell (0,1]; the
   3D sphere∩surface test yields naturally varying apparent facet sizes.
+  Values ≤ 0 make the modifier inert (like density/spread); values > 1
+  clamp to 1 (the 3×3×3 neighbourhood guarantee requires radius ≤ half-cell).
 - `spread`    — facet tilt Rayleigh scale, DEGREES (single-digit typical).
 - `scale`/`shift` — anisotropic cell stretch + offset (Worley3DPainter
   convention); elongated cells give the observed streak lay.
@@ -166,8 +193,10 @@ stay coherent across facets.
    `coverage`×`fill` (measured, revert-proven); (c) tilt distribution matches
    the Rayleigh scale; (d) no facet clipping at cell boundaries; (e) side
    guards (never flips past the geometric tangent plane); (f) GGX SPF/BRDF
-   pointwise consistency at modifier-perturbed hits (sampling and NEE eval
-   agree — the MIS-consistency claim, tested not asserted).
+   pointwise pdf + albedo consistency at modifier-perturbed hits, RGB and
+   NM; (g) seed/scale/shift semantics; (h) DielectricSPF delta consistency
+   at perturbed hits (mirror about the facet normal, Snell, R+T=1);
+   (i) hostile-coordinate fold determinism.
 2. **Parser + API/Job plumbing**; `glint_modifier` parses, validates, and
    attaches; scene-parse test.
 3. **Wire into the enamel glaze** (the dimpled dielectric top; neutral
@@ -179,10 +208,12 @@ stay coherent across facets.
    glint pass (the general feature makes it one scene line) and keep it only
    if the footage comparison wants it.
 4. **Denoise interaction + LOD**: measure OIDN fleck erosion (denoise stays
-   ON for presentation renders per standing rule); if material, exclude a
-   glint AOV from denoise and composite; assess macro-zoom behavior (cells
-   spanning pixels) and add footprint-aware response only if a real shot
-   needs it.
+   ON for presentation renders per standing rule) — this measurement is a
+   **required gate** for any Slice-3 presentation render (default Fast
+   prefilter writes first-hit perturbed normals into the guide buffer; see
+   §Costs); if material, exclude a glint AOV from denoise and composite;
+   assess macro-zoom behavior (cells spanning pixels) and add
+   footprint-aware response only if a real shot needs it.
 
 ## Ratification record (2026-07-03)
 
@@ -205,3 +236,27 @@ stay coherent across facets.
   at buried surfaces makes BSDF-sampled delivery mandatory; DielectricSPF
   consumes `ri.onb.w()` and BumpMap's Modify contract (perturb `vNormal`,
   rebuild `onb`) verified as the integration seam.
+
+### Implementation review, round 1 (2026-07-03, Slice 1)
+
+Three fresh adversarial reviewers on commit a8f7b3c8 (math/statistics;
+engine integration; test strength + claims fidelity):
+- Math/statistics: ZERO P1 — hash lanes, Rayleigh inverse-CDF, solid-angle
+  density (finite at θ→0), fold continuity at negative coordinates, true
+  jittered-grid coverage (~0.46, above the Poisson 0.41 bound), and the
+  preserve-u right-handedness all verified with independent numerical
+  experiments.
+- Engine integration: ZERO P1 — all 23 `Modify` call sites walked; BDPT
+  stores the perturbed frame on BOTH subpaths and reconstructs it verbatim;
+  the dielectric's IOR-stack-based inside/outside test is facet-immune;
+  GGX Scatter/value/Pdf share the FlipW convention.  P2s folded above (SMS
+  Newton-tractability caveat; default-Fast OIDN normal AOV ⇒ Slice-4
+  measurement promoted to a required gate).
+- Test strength: ONE P1 — the tangent-coherence check used a canonical base
+  frame, so it could not discriminate preserve-u from a `CreateFromW`
+  rebuild (mutation survived).  Fixed: the check now uses a non-canonical
+  geometry-defined base tangent and asserts the rebuilt u equals the
+  projection of THAT tangent (mutation now fails 0/2000).  P2s fixed: seed
+  and scale/shift semantics now tested; NM twin of the GGX consistency test
+  added; coverage band tightened to (0.40, 0.48); photon-tracer count
+  corrected to six; MIS wording scoped to what is actually tested.
