@@ -2134,6 +2134,17 @@ sdf_geometry
 	part				roundcone union 0.28  0 7.5 0  0 0 0  1 1 0.15  0.72 0.04 9.5  0
 }
 
+# anOrdain central seconds hand: a VERY thin straight needle reaching almost to
+# the chapter ring, with a short counterweight tail past the hub (the -Y round-
+# cone, rotated 180 about Z, swelling to a small round counterweight). Far
+# thinner than the leaf hour/minute hands; z-scale 0.15 keeps it a flat blade.
+sdf_geometry
+{
+	name				handsecsdf
+	part				roundcone union 0    0 0 0   0 0 0    1 1 0.15  0.17 0.02 19  0
+	part				roundcone union 0.2  0 0 0   0 0 180  1 1 0.15  0.20 0.40 3.0  0
+}
+
 standard_object
 {
 	name				sdfcase
@@ -2166,6 +2177,15 @@ standard_object
 	material			white_hands
 	position			0 0 0.95
 	orientation		0 0 -60
+}
+
+standard_object
+{
+	name				sdfsec
+	geometry			handsecsdf
+	material			white_hands
+	position			0 0 1.18
+	orientation		0 0 -160
 }
 
 ##################################################
