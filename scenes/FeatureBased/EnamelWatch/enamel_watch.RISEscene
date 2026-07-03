@@ -1161,7 +1161,7 @@ ggx_material
 uniformcolor_painter
 {
 	name				pnt_strap_blue
-	color				0.04 0.08 0.22
+	color				0.20 0.045 0.05
 }
 
 uniformcolor_painter
@@ -1902,8 +1902,8 @@ expression_function2d
 expression_function2d
 {
 	name en_dimpled
-	param N 64
-	param amp 0.06
+	param N 85
+	param amp 0.15
 	def gu u*N
 	def gv v*N
 	def cx floor(gu)
