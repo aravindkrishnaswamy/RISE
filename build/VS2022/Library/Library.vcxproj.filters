@@ -897,6 +897,9 @@
     <ClCompile Include="..\..\..\src\Library\Modifiers\BumpMap.cpp">
       <Filter>Modifiers</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Modifiers\GlintModifier.cpp">
+      <Filter>Modifiers</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Modifiers\NormalMap.cpp">
       <Filter>Modifiers</Filter>
     </ClCompile>
@@ -2419,6 +2422,9 @@
       <Filter>Interfaces</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Modifiers\BumpMap.h">
+      <Filter>Modifiers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Modifiers\GlintModifier.h">
       <Filter>Modifiers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Modifiers\NormalMap.h">
