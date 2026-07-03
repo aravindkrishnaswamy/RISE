@@ -139,9 +139,13 @@ namespace RISE
 		//! still reported unsaved changes).  Restore also fires the dirty-
 		//! changed listener (BUG-1: a silent dirty->clean left the Save button
 		//! stale).  Note the CST-head boolean is NOT restored by plain
-		//! value: DirtyTracker::RestoreState OR-merges it, so an
-		//! un-revertible mid-transaction agent commit survives a
-		//! rollback restore (see the F7 doc in DirtyTracker.h).
+		//! value: DirtyTracker::RestoreState OR-merges it -- but that
+		//! belt-and-braces covers ONLY the UNCATEGORIZED/empty-kind
+		//! agent-mark channel (KNOWN kinds mark the per-entity sets,
+		//! which restore by plain copy); the real mid-transaction guard
+		//! is ApplyAgentParamEdit's mTxnOpen refusal, which rejects
+		//! agent commits while a transaction is open (see the F7 doc
+		//! in DirtyTracker.h).
 		struct DirtySnapshot {
 			DirtyTracker::State              tracker;
 			std::unordered_set<std::string> scaleFromAnchor;
@@ -182,7 +186,10 @@ namespace RISE
 		//! computed on first use; cached thereafter.
 		Scalar SceneScale() const;
 
-		//! For round-trip save (Phase 6 / Phase A).
+		//! The undo/redo record.  Historically an input to round-trip
+		//! save (Phase 6 / Phase A byte-splice); since the Slice-6d
+		//! deletion save no longer reads it — consumers are undo/redo
+		//! and the controller's transactional-rollback machinery.
 		const EditHistory& History() const { return mHistory; }
 		EditHistory&       History()       { return mHistory; }
 
@@ -202,9 +209,13 @@ namespace RISE
 		//! since the last load.  Historically the Phase 6.4 §9.2
 		//! forceMatrixOverride gate consulted this so SFA-touched
 		//! objects always serialized as `matrix` overrides (pinned
-		//! 2.8); since the Slice-6d byte-splice deletion it only
-		//! feeds HasUnsavedChanges(), and the save engine merely
-		//! clears it after a successful save.
+		//! 2.8); since the Slice-6d byte-splice deletion it feeds
+		//! HasUnsavedChanges() and the F7 CaptureDirtyState /
+		//! RestoreDirtyState transaction snapshot.  The production
+		//! save path (SceneEditController::RequestSave) hands the
+		//! engine a local COPY of this set; the member itself is
+		//! cleared by the controller's mEditor.ClearDirtyState()
+		//! call on a successful save.
 		const std::unordered_set<std::string>& ScaleFromAnchorSet() const { return mScaleFromAnchorSet; }
 		void ClearDirtyState()
 		{
@@ -294,9 +305,12 @@ namespace RISE
 			FireDirtyChangedIfTransitioned();
 		}
 
-		//! True iff any edit since the last load / save would produce
-		//! a non-NoOp SaveEngine pass.  Drives the GUI's "Save" button
-		//! enable state on both platform shells.  Cheap O(1).
+		//! True when anything MAY need saving since the last load /
+		//! save.  Conservative: it can be true when a Save would NoOp
+		//! (e.g. edit→undo re-marks dirty; Save then NoOps on
+		//! byte-equality of the serialized Document).  Drives the
+		//! GUI's "Save" button enable state on both platform shells.
+		//! Cheap O(1).
 		//! Consults every TRANSIENT dirty channel via
 		//! DirtyTracker::HasAnyDirty() — object transforms (Phase 6),
 		//! property-shaped edits on objects / cameras / lights /
@@ -389,17 +403,23 @@ namespace RISE
 		// code can call it from forward / inverse paths.
 		mutable Scalar mSceneScale;
 
-		// Phase 6.3: tracks which OBJECTS have been mutated by
-		// transform-shaped ops since the last load / save.  Read by
-		// the save engine to decide which objects to compare.  Cleared
-		// by ClearDirtyState() after a successful save.
+		// Phase 6.3: dirty-since-load channels.  Historically the
+		// byte-splice save engine read them to decide which entities
+		// to compare against their loaded baselines; that mechanism
+		// went with the Slice-6d deletion.  Today the channels only
+		// feed HasUnsavedChanges() / the GUI Save-button state (save
+		// is a whole-Document SerializeCst).  Cleared by
+		// ClearDirtyState() after a successful save.
 		DirtyTracker  mDirtyTracker;
 
 		// Phase 6.3 (pinned 2.8 / R2 §7): names that have received any
-		// ScaleObjectFromAnchor op since the last load.  Save engine's
-		// forceMatrixOverride gate (§9.2) consults this — SFA-touched
-		// objects always serialize as matrix-form overrides regardless
-		// of whether `TryDecompose(Mfinal).ok` succeeds.
+		// ScaleObjectFromAnchor op since the last load.  Historically
+		// the byte-splice save engine's forceMatrixOverride gate (§9.2)
+		// consulted this so SFA-touched objects always serialized as
+		// matrix-form overrides; that gate went with the Slice-6d
+		// deletion.  Today it only feeds HasUnsavedChanges() (plus the
+		// F7 dirty-state capture/restore); cleared by ClearDirtyState()
+		// after a successful save.
 		std::unordered_set<std::string> mScaleFromAnchorSet;
 
 		// P5 Slice 3 expansion (object transform): objects whose live transform changed since the last
@@ -555,9 +575,11 @@ namespace RISE
 		//! per-category channel.  Called from Apply / Undo / Redo.
 		//! Transform ops are NOT handled here — they mark the object-
 		//! transform channel inline.  Over-marking is harmless: the
-		//! save engine's property pass diffs current-vs-loaded
-		//! introspection, so a marked-but-unchanged entity contributes
-		//! nothing (it nets to a NoOp).
+		//! channels only feed HasUnsavedChanges(), and save is an
+		//! unconditional whole-Document SerializeCst that NoOps on
+		//! byte-equality (the byte-splice engine's property pass that
+		//! diffed marked entities went with Slice 6d), so a
+		//! marked-but-unchanged entity at worst lights the Save button.
 		void MarkEditEntityDirty( const SceneEdit& edit );
 
 		//! Compute whether the loaded scene has any populated photon map.

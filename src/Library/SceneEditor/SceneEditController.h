@@ -242,7 +242,8 @@ namespace RISE
 		//!            treats 3 as a FAILURE, so applied is false.
 		//!   * rawCode 0   -> applied=false, status="rejected": edit refused;
 		//!            the head is byte-identical (nothing changed).  The
-		//!            pre-flight guards (no Document / empty field) map here.
+		//!            pre-flight guards (no Document / empty field / open
+		//!            editor transaction) map here.
 		//!   * conflict    -> applied=false, status="conflict", rawCode=0: a
 		//!            supplied baseVersion did NOT equal the Job's current
 		//!            head -- the patch was rejected WITHOUT mutating (a stale
@@ -280,6 +281,14 @@ namespace RISE
 		//!
 		//! Returns an AgentCommitResult; on a clean apply it sets
 		//! mEditPending + kicks the render so the viewport re-renders.
+		//!
+		//! REFUSED (status="rejected", non-mutating) while an editor
+		//! transaction is open: an agent commit has no EditHistory record,
+		//! so RollbackTransaction could never revert it -- the agent
+		//! should retry after the gesture completes.  That mTxnOpen check
+		//! relies on the main-thread contract (mMutex does not cover the
+		//! flag; see its member doc), so a future async transport must
+		//! marshal commits to the main thread.
 		AgentCommitResult ApplyAgentParamEdit(
 			const String& entityName,
 			const String& entityKind,

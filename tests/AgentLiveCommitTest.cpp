@@ -727,6 +727,15 @@ static void TestAgentEditMarksDirty()
 		// the CST-head boolean channel can't pass silently).
 		Check( c.Editor().Dirty().EntityCount() == 1,
 		       "applied agent edit routes the KNOWN material kind to the per-entity channel" );
+		// Round-2 pin: assert the PAIR IDENTITY too -- the one mark is
+		// (Material, "lum"), not merely "some entity somewhere".
+		{
+			const std::vector<DirtyEntity> ents = c.Editor().Dirty().EntitySnapshot();
+			Check( ents.size() == 1
+			    && ents[0].first == EntityCategory::Material
+			    && ents[0].second == "lum",
+			       "the per-entity mark is (Material, \"lum\") -- category + name pinned" );
+		}
 
 		// The listener fired exactly once, with true (clean->dirty).
 		{
@@ -989,6 +998,128 @@ static void TestLiveDispatcherPath()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 9 (Model-B F5 polish A1 round 2): a MID-TRANSACTION agent commit is
+// REFUSED -- end-to-end through the REAL transaction API (BeginTransaction /
+// RollbackTransaction are public on SceneEditController, so TestController
+// drives the exact production sequence).
+//
+// Why: an agent commit's Document mutation has NO EditHistory record, so
+// RollbackTransaction's inverse-edit Undo loop can never revert it, and a
+// FULL rollback restores the pre-transaction dirty baseline -- a KNOWN-kind
+// mark (material "lum" -> EntityCategory::Material) lands in mEntityDirty,
+// which RestoreState plain-copies, so the mark would be WIPED while the
+// mutated Document survives: HasUnsavedChanges()==false + a diverged scene
+// == silent data loss on close-without-prompt.  (The round-1 OR-merge only
+// shields the uncategorized CST-head BOOLEAN channel.)  The fix refuses the
+// commit up front, before any mutation or park.
+//
+// RED-PROVE (guard removed -- verified by deleting the mTxnOpen block in
+// ApplyAgentParamEdit): the commit APPLIES mid-transaction, so
+//   - "mid-txn agent commit is refused"            FAILS (applied==true),
+//   - "refusal is a code-0 reject"                 FAILS (rawCode==1),
+//   - "refusal left the head revision unchanged"   FAILS (revision bumped),
+//   - "refusal left the derived scene unchanged"   FAILS (LumR -> 9.5),
+//   - after RollbackTransaction: "rollback left no clean-but-diverged state"
+//     FAILS -- HasUnsavedChanges()==false while LumR stays 9.5 (the edit
+//     survived in the Document with its dirty mark wiped) == the data loss.
+//////////////////////////////////////////////////////////////////////
+static void TestMidTransactionAgentCommitRefused()
+{
+	std::cout << "Test 9: mid-transaction agent commit refused (mTxnOpen guard)..." << std::endl;
+
+	const char* tmp = "agentlive_midtxn.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const RISE::Cst::CstHeadVersion head0 = pJob->GetCstHeadVersion();
+		const double lum0 = LumR( *pJob );
+		Check( lum0 > 4.5 && lum0 < 5.5, "baseline lum scale is ~5.0" );
+		Check( !c.HasUnsavedChanges(), "scene is CLEAN before the transaction" );
+
+		// Open a REAL transaction (the gesture bracket the GUI uses).
+		Check( c.BeginTransaction(), "transaction opens" );
+		Check( c.IsTransactionOpen(), "transaction reports open" );
+
+		//------------------------------------------------------------------
+		// The mid-transaction agent commit: a KNOWN kind ("_material" ->
+		// EntityCategory::Material), exactly the shape whose dirty mark the
+		// rollback restore would wipe.  Must be refused, NON-MUTATING.
+		//------------------------------------------------------------------
+		const SceneEditController::AgentCommitResult r =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "9.5" ),
+				/*baseVersionOrNull*/ nullptr );
+		std::cout << "    rawCode=" << r.rawCode << " status=" << r.status.c_str()
+		          << " message=\"" << r.message.c_str() << "\"" << std::endl;
+		Check( !r.applied, "mid-txn agent commit is refused (applied=false)" );
+		Check( r.rawCode == 0, "refusal is a code-0 reject" );
+		Check( r.status == String( "rejected" ), "refusal status is \"rejected\" (honest -- NOT a faked conflict)" );
+		Check( !r.conflict, "refusal is not reported as a conflict (the head did not move)" );
+		Check( std::string( r.message.c_str() ).find( "transaction" ) != std::string::npos,
+		       "refusal message tells the agent a transaction is in progress (actionable diagnostic)" );
+		Check( r.headVersion == head0, "refusal result carries the UNCHANGED head" );
+		Check( pJob->GetCstHeadVersion() == head0, "refusal left the head revision unchanged (Document untouched)" );
+		Check( LumR( *pJob ) == lum0, "refusal left the derived scene unchanged" );
+		Check( !c.HasUnsavedChanges(), "refusal marked nothing dirty" );
+
+		//------------------------------------------------------------------
+		// Roll the (empty) transaction back -- the data-loss window: with the
+		// guard removed the commit landed above, its Material mark is wiped
+		// by the baseline restore here, and the scene silently diverges.
+		//------------------------------------------------------------------
+		Check( c.RollbackTransaction(), "rollback completes (full revert)" );
+		Check( !c.IsTransactionOpen(), "transaction reports closed after rollback" );
+		Check( !c.HasUnsavedChanges(), "clean after rollback (nothing to save)" );
+		Check( pJob->GetCstHeadVersion() == head0, "head revision still unchanged after rollback" );
+		Check( LumR( *pJob ) == lum0, "the scene does NOT contain the agent's attempted edit after rollback" );
+		Check( !( !c.HasUnsavedChanges() && LumR( *pJob ) != lum0 ),
+		       "rollback left no clean-but-diverged state (the data-loss condition)" );
+
+		//------------------------------------------------------------------
+		// Control: with the transaction CLOSED, the SAME commit applies
+		// cleanly -- the refusal is transaction-scoped, not a broken path.
+		//------------------------------------------------------------------
+		const SceneEditController::AgentCommitResult retry =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "9.5" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( retry.applied, "the same commit applies once the transaction is closed" );
+		Check( LumR( *pJob ) > 9.0 && LumR( *pJob ) < 10.0, "post-transaction retry reached the scene (~9.5)" );
+		Check( c.HasUnsavedChanges(), "post-transaction apply marks the editor dirty" );
+
+		// EndTransaction (commit) closes the window too: refuse inside,
+		// apply after -- proves BOTH close paths re-open the agent surface.
+		c.Editor().ClearDirtyState();
+		Check( c.BeginTransaction(), "second transaction opens" );
+		const SceneEditController::AgentCommitResult r2 =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "2.0" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( !r2.applied && r2.status == String( "rejected" ), "refused inside the second transaction too" );
+		Check( c.EndTransaction(), "second transaction commits (EndTransaction)" );
+		const SceneEditController::AgentCommitResult r3 =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "2.0" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( r3.applied, "the agent surface re-opens after EndTransaction" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -1001,6 +1132,7 @@ int main()
 	TestCodeThreeRerender();
 	TestAgentEditMarksDirty();
 	TestLiveDispatcherPath();
+	TestMidTransactionAgentCommitRefused();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

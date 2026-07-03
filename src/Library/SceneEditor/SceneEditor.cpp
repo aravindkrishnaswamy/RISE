@@ -925,9 +925,11 @@ void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
 			std::string( edit.objectName.c_str() ) );
 		break;
 	case SceneEdit::AddCamera:
-		// Phase C: a newly-created entity has no source span — the
-		// save engine emits a fresh chunk for it.  objectName carries
-		// the new camera's name.
+		// Phase C: mark the new entity created.  Historically the
+		// byte-splice save engine emitted a fresh chunk for it (a
+		// created entity has no source span); that machinery went
+		// with Slice 6d — today the mark only feeds dirty state.
+		// objectName carries the new camera's name.
 		mDirtyTracker.MarkEntityCreated( EntityCategory::Camera,
 			std::string( edit.objectName.c_str() ) );
 		break;
@@ -1054,10 +1056,10 @@ static std::string FormatVec3( const Vector3& v )
 
 // P5 Slice 3 expansion (csg transform): decompose a RIGID (translate+rotate, UNIT-scale) transform into
 // position + Euler(XYZ, DEGREES), matching RISE's P*O composition (O = XRot*YRot*ZRot, Transformable::SetOrientation).
-// Returns false on shear / non-unit scale / gimbal-lock / reflection.  Mirrors SaveEngine's §9.5 TryDecompose
-// (kept local to avoid a Job/editor -> SaveEngine-internal dependency); like it, it REBUILDS the matrix RISE's
-// way and compares, so a future composition-convention change fails SAFE (returns false -> the csg edit is
-// refused, never mis-saved).  Used to commit a csg_object transform via its position/orientation params (csg
+// Returns false on shear / non-unit scale / gimbal-lock / reflection.  A self-verifying local decompose;
+// originally it mirrored the byte-splice SaveEngine's §9.5 TryDecompose, deleted in Slice 6d.  It REBUILDS the
+// matrix RISE's way and compares, so a future composition-convention change fails SAFE (returns false -> the
+// csg edit is refused, never mis-saved).  Used to commit a csg_object transform via its position/orientation params (csg
 // authors no matrix/scale param).  Non-unit scale returns false because csg has no scale param to persist it.
 static bool DecomposeRigid( const Matrix4& M, Vector3& outPos, Vector3& outOrientDeg )
 {
@@ -1078,7 +1080,8 @@ static bool DecomposeRigid( const Matrix4& M, Vector3& outPos, Vector3& outOrien
 	    std::fabs( Vector3Ops::Dot( r0, r2 ) ) > tol ||
 	    std::fabs( Vector3Ops::Dot( r1, r2 ) ) > tol ) return false;   // shear
 	if( Vector3Ops::Dot( r0, Vector3Ops::Cross( r1, r2 ) ) < 0.0 ) return false;   // reflection
-	// Euler extraction for RISE's Rx*Ry*Rz (see SaveEngine TryDecompose for the cell-by-cell derivation).
+	// Euler extraction for RISE's Rx*Ry*Rz (the cell-by-cell derivation originally lived in the byte-splice
+	// SaveEngine's §9.5 TryDecompose, deleted in Slice 6d).
 	const double sin_y = r2.x;
 	if( std::fabs( sin_y ) >= 1.0 - 1e-9 ) return false;   // gimbal-lock
 	const double cos_y = std::sqrt( 1.0 - sin_y * sin_y );

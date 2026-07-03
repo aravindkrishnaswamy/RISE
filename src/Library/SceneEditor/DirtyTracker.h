@@ -12,7 +12,9 @@
 //  (NoOp on byte-equality) whose ONLY tracker interaction is
 //  Clear() after a successful save — the channels exist to feed
 //  HasAnyDirty(), which drives SceneEditor::HasUnsavedChanges() and
-//  thus the GUI's Save-button / unsaved-changes state.
+//  thus the GUI's Save-button / unsaved-changes state.  (Exception:
+//  the persistent mSessionCreated channel is excluded from
+//  HasAnyDirty() and currently feeds nothing.)
 //
 //  Two original channels:
 //    - mNames        — OBJECT TRANSFORM dirty set (Phase 6).
@@ -79,14 +81,16 @@ namespace RISE
 
         // ---- Property channel (Phase B) -----------------------------
 
-        /// Mark an entity dirty for property-shaped save routing.
-        /// Empty `name` is ignored.
+        /// Record per-(category,name) dirty state for a property-shaped
+        /// edit (no save routing exists post Slice 6d — this only feeds
+        /// HasAnyDirty()).  Empty `name` is ignored.
         void MarkEntityDirty( EntityCategory category, const std::string& name );
 
         /// Deterministic sorted list of (category,name) entity-dirty
         /// pairs.  No production consumer since the Slice-6d
         /// byte-splice deletion (the save engine's property pass that
-        /// iterated it is gone); retained for tests/diagnostics.
+        /// iterated it is gone); test-used (AgentLiveCommitTest pins
+        /// the agent mark's (category,name) routing through it).
         std::vector<DirtyEntity> EntitySnapshot() const;
 
         std::size_t EntityCount() const { return mEntityDirty.size(); }
@@ -115,7 +119,8 @@ namespace RISE
         /// Sorted (category,name) list of entities created this
         /// SESSION.  No production consumer since the Slice-6d
         /// byte-splice deletion (the save engine no longer re-emits
-        /// per-entity chunks); retained for tests/diagnostics.
+        /// per-entity chunks); currently unused (no callers) —
+        /// retained pending a future consumer or deletion.
         std::vector<DirtyEntity> SessionCreatedSnapshot() const;
 
         std::size_t SessionCreatedCount() const { return mSessionCreated.size(); }
@@ -123,7 +128,8 @@ namespace RISE
         /// True iff (category,name) was created this session.  No
         /// production consumer since the Slice-6d byte-splice
         /// deletion (the save engine's property pass that consulted
-        /// it is gone); retained for tests/diagnostics.
+        /// it is gone); currently unused (no callers) — retained
+        /// pending a future consumer or deletion.
         bool IsSessionCreated( EntityCategory category,
                                const std::string& name ) const
         {
@@ -156,8 +162,10 @@ namespace RISE
 
         // ---- Aggregate ----------------------------------------------
 
-        /// True iff there is anything to save SINCE THE LAST SAVE —
-        /// drives the GUI's "unsaved changes" / Save-button state.
+        /// True when anything MAY need saving SINCE THE LAST SAVE —
+        /// conservatively true (e.g. an edit→undo pair leaves it set;
+        /// Save then NoOps on byte-equality) — drives the GUI's
+        /// "unsaved changes" / Save-button state.
         /// Deliberately excludes `mSessionCreated` (persistent): a
         /// session-created entity that was already saved is not an
         /// unsaved change.
@@ -185,12 +193,19 @@ namespace RISE
 // because its only writer is the agent-commit path
 // (SceneEditController::ApplyAgentParamEdit), whose Document
 // mutation has no EditHistory record — the rollback's Undo loop can
-// never revert it.  A plain value copy would let a mid-transaction
-// agent commit be wiped by the rollback's restore of the clean
+// never revert it.  A plain value copy would let such a commit's
+// mark be wiped by the rollback's restore of the clean
 // pre-transaction baseline while the mutated Document survives,
 // silently losing the edit on a close-without-prompt.  (A flag set
 // BEFORE the transaction began is captured in the snapshot and is
-// preserved either way.)
+// preserved either way.)  NOTE the OR-merge is belt-and-braces for
+// the UNCATEGORIZED/empty-kind agent-mark channel ONLY — a
+// KNOWN-kind agent mark (e.g. a material edit) lands in
+// mEntityDirty, which restores by plain copy.  The REAL guard
+// against mid-transaction agent-commit data loss is
+// ApplyAgentParamEdit's mTxnOpen refusal (agent commits are
+// rejected while a transaction is open), so no un-revertible
+// Document mutation can land inside a transaction at all.
 struct State {
 	std::unordered_set<std::string> names;
 	std::set<DirtyEntity>           entityDirty;

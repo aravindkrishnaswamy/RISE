@@ -1130,7 +1130,7 @@ up, D29):
   commit the user names.
 - If we keep an **explicit save** affordance (lossless-CST-canonical, in-memory
   head not yet flushed): "dirty" = `headVersion != lastFlushedVersionId` — a
-  single integer comparison, **not** a 2-channel tracker + a 5th set + transition
+  single integer comparison, **not** a 5-channel tracker + a side set + transition
   listener. The entire `DirtyTracker`/`mScaleFromAnchorSet`/
   `FireDirtyChangedIfTransitioned` apparatus collapses to that comparison.
 

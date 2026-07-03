@@ -1802,7 +1802,11 @@ void SceneEditController::RestoreEditorState( const EditorStateSnapshot& st, boo
 	// restored.  NOTE (P1-#3 review): redo-stack restore is NOT done here -- this is
 	// a general capture/restore primitive (also called directly by tests) and must
 	// not carry a hidden history side effect; RollbackTransaction restores the redo
-	// stack itself, explicitly, only on a full revert.
+	// stack itself, explicitly, only on a full revert.  ONE DirtyTracker-layer
+	// asymmetry does ride along: DirtyTracker::RestoreState OR-merges the CST-head
+	// boolean instead of plain-copying it (see the F7 doc in DirtyTracker.h), so
+	// a future non-rollback consumer cannot use this primitive to force that flag
+	// back to clean.
 	if( restoreDirty ) {
 		mEditor.RestoreDirtyState( st.dirty );
 	}
@@ -2777,6 +2781,44 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
 {
 	AgentCommitResult r;
+
+	// F5 polish A1 round 2: refuse a MID-TRANSACTION agent commit BEFORE any
+	// mutation or park -- the same rule as the four SetProperty-side mTxnOpen
+	// refusals (active-switch / animation frame-count / rasterizer / film).
+	// An agent commit's Document mutation has NO EditHistory record, so
+	// RollbackTransaction's inverse-edit Undo loop can never revert it; a
+	// FULL rollback would then RestoreEditorState the pre-transaction dirty
+	// baseline OVER the commit's dirty mark while the mutated Document
+	// survives -> HasUnsavedChanges()==false -> a close-without-prompt
+	// silently LOSES the agent's edit.  (DirtyTracker::RestoreState's
+	// OR-merge shields only the uncategorized CST-head BOOLEAN channel;
+	// a KNOWN-kind mark -- e.g. a material edit -> EntityCategory::Material
+	// -- lands in mEntityDirty, which restores by plain copy.)  Surfaced
+	// HONESTLY as a plain "rejected" (NOT a conflict -- the head did not
+	// move; the agent should simply retry once the gesture completes).
+	// Thread contract: mTxnOpen is a plain bool that mMutex does NOT cover
+	// (Begin/EndTransaction write it with no lock held; see the member doc
+	// in the header) -- the check is race-free today because the
+	// transaction API and the in-app agent path both run on the main
+	// thread; a future async agent transport must revisit this (marshal
+	// the commit to the main thread or synchronize the flag).
+	if( mTxnOpen )
+	{
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent commit refused inside an open transaction (no EditHistory record -> rollback cannot revert it)." );
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.message = String( "editor transaction in progress -- retry after the gesture completes" );
+		{
+			// Keep this function's "every head read is under mMutex"
+			// invariant (no torn 16-byte read against a concurrent
+			// parked edit on another thread).  No park needed -- we
+			// mutate nothing, so the in-flight pass keeps rendering.
+			std::lock_guard<std::mutex> hlk( mMutex );
+			r.headVersion = mJob.GetCstHeadVersion();
+		}
+		return r;
+	}
 
 	// Cancel-and-park the render thread, THEN hold mMutex across the WHOLE
 	// commit -- the pre-flight refusals, the conflict pre-check,
