@@ -94,8 +94,9 @@ namespace RISE
 				},
 				{
 					"propose_patch",
-					"Set one parameter of one named scene entity (the ONLY way to edit "
-					"the live scene). Always pass the headVersion you last read as "
+					"Set one parameter of one named scene entity (the ONLY way to change "
+					"a PARAMETER; insert_chunk/remove_chunk add and delete whole "
+					"entities). Always pass the headVersion you last read as "
 					"baseHeadVersion. If the result has status=conflict, re-call "
 					"read_document and re-propose against the new headVersion. If "
 					"retriable=true the refusal is transient -- retry the SAME patch "
@@ -134,7 +135,8 @@ namespace RISE
 					"this surface once inserted -- insert them deliberately. The SOLE "
 					"camera (even unnamed) IS removable via remove_chunk kind=\"camera\", "
 					"so to SWAP cameras REMOVE the old one FIRST, THEN insert the "
-					"replacement -- insert-first creates two cameras and wedges both "
+					"replacement -- insert-first creates two cameras and strands the old "
+					"unnamed one (a NAMED second camera stays removable by name) "
 					"(the positional fallback requires exactly one). "
 					"Use read_schema for the chunk's parameters; for a BIG "
 					"addition, compose the full candidate document and validate it "
@@ -169,7 +171,8 @@ namespace RISE
 					"unnamed: pass kind=\"camera\" (the target resolves by position "
 					"when exactly one camera exists). To SWAP cameras, remove the old "
 					"one FIRST, then insert the replacement -- insert-first creates two "
-					"cameras and wedges both. Always "
+					"cameras and strands the old unnamed one (a NAMED second camera "
+					"stays removable by name). Always "
 					"pass the headVersion you last read as baseHeadVersion. There is no "
 					"rename verb -- the safe recipe: insert_chunk the renamed entity "
 					"(declarations are positioned before their consumers), retarget its "

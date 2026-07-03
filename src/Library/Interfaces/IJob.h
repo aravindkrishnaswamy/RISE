@@ -3351,7 +3351,8 @@ namespace RISE
 		//! bare-name-addressed) -- insert them deliberately.  The SOLE camera is the EXCEPTION:
 		//! ApplyCstRemoveChunk's kind="camera" positional fallback resolves it even unnamed (any target string
 		//! that matches no chunk name), so a camera SWAP must REMOVE the old camera FIRST, THEN insert the
-		//! replacement -- insert-first yields TWO cameras and the exactly-one fallback then resolves neither.
+		//! replacement -- insert-first yields TWO cameras and the exactly-one fallback then resolves neither
+		//! (a NAMED second camera stays removable by name; the stranded one is the old UNNAMED camera).
 		//! POSITION (round 2): DECLARATION-class chunks (painters/functions; materials/geometry/modifiers/media/
 		//! shaders/shaderops) are inserted BEFORE their potential consumers (declare-before-use), falling back to
 		//! append-at-end if the positioned insert does not derive; everything else -- objects, lights, cameras,
