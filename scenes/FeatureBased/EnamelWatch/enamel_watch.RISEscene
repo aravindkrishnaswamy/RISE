@@ -59,7 +59,7 @@ uniformcolor_painter
 
 pathtracing_spectral_rasterizer
 {
-	samples				28
+	samples				22
 	nmbegin				380
 	nmend				720
 	num_wavelengths			16
@@ -103,8 +103,8 @@ file_rasterizeroutput
 
 film
 {
-	width				420
-	height				420
+	width				380
+	height				380
 }
 
 ##################################################
@@ -1161,7 +1161,7 @@ ggx_material
 uniformcolor_painter
 {
 	name				pnt_strap_blue
-	color				0.20 0.045 0.05
+	color				0.07 0.011 0.014
 }
 
 uniformcolor_painter
@@ -1224,8 +1224,8 @@ ggx_material
 	name				furniture_gold
 	rd				pnt_surf_f0
 	rs				pnt_gold_f0
-	alphax				0.14
-	alphay				0.14
+	alphax				0.07
+	alphay				0.07
 	fresnel_mode			schlick_f0
 }
 
@@ -1288,7 +1288,7 @@ lambertian_luminaire_material
 {
 	name				soft_top_lum
 	exitance			pnt_white
-	scale				26.0
+	scale				62.0
 	material			none
 }
 
@@ -1353,7 +1353,7 @@ standard_object
  {
  	name				dram_key_lum
  	exitance			pnt_white
- 	scale				42.0
+ 	scale				85.0
  	material			none
  }
  clippedplane_geometry
@@ -2493,7 +2493,7 @@ standard_object
 uniformcolor_painter
 {
 	name				pnt_thread
-	color				0.30 0.36 0.55
+	color				0.30 0.075 0.075
 }
 
 ggx_material
