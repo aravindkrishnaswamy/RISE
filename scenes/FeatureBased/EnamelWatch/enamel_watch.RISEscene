@@ -1909,12 +1909,12 @@ uniformcolor_painter
 piecewise_linear_function
 {
 	name goldruby_abs
-	cp 400 36.0
-	cp 420 39.0
-	cp 440 43.0
-	cp 460 47.0
-	cp 480 51.0
-	cp 500 54.0
+	cp 400 56.0
+	cp 420 57.0
+	cp 440 57.0
+	cp 460 57.0
+	cp 480 56.0
+	cp 500 55.0
 	cp 515 56.0
 	cp 530 54.0
 	cp 550 47.0
@@ -2233,27 +2233,23 @@ timeline
 }
 
 ##################################################
-# Double-domed sapphire crystal (sphere-traced SDF shell, authored in the
-# watch's ABSOLUTE world frame; src/Library/Geometry/SDFGeometry.{h,cpp}).
-# The dome is a 1.5-unit-thick (~1.19mm) shell between two CONCENTRIC spherical
-# surfaces, capping a flat underside (seat) plane at z=1.30.  A central inner-
-# sphere subtract carves the concave recess, leaving a SOLID flat-bottomed glass
-# flange (16.16 < r < 21.5) -- and the hour markers are a BROKEN ETCHED RING in
-# that flange underside: one continuous half-round LASER-ETCH GROOVE (a torus
-# subtract; 0.9 wide opening, rounded ceiling to z=1.75, etch depth 0.45) around
-# the r=18 ring, BROKEN at the 12 hour positions by gap-refill boxes (a WIDER
-# gap at 12 o'clock).  So the markers are the long lume ARCS BETWEEN the hours
-# (each ~7.15 u ~5.7 mm), not batons at them -- lume-filled by markerlumesdf
-# below.  The arcs ride on the crystal, nearly coplanar with the hands, floating
-# over the recessed dial (minimal parallax); the dial is viewed through the
-# refracting shell.  Regenerate with sdf_gen.py.
+# Gently-domed sapphire crystal, anOrdain Model 1 profile (sphere-traced SDF
+# shell, authored in the watch's ABSOLUTE world frame; SDFGeometry.{h,cpp}).
+# The anOrdain wears a LOW sapphire that sits nearly flush in the thin polished
+# bezel (see the reference clip) -- NOT the tall big-lens Ming box-dome this
+# scene inherited.  A ~1.5-unit shell between two concentric spherical surfaces
+# over a flat seat at z=1.30; the outer apex now rises to z~3.5 (was 4.80, a
+# ~40% lower dome), so the dial is read through a much gentler curve with only
+# mild edge refraction -- matching the clip.  A central inner-sphere subtract
+# carves the concave recess, leaving the solid glass flange that meets the
+# bezel.  The Ming laser-etch marker groove has been removed (clean dome).
 ##################################################
 sdf_geometry
 {
 	name				crystalsdf
-	part				sphere union 0  0 0 -62.9857  0 0 0  1 1 1  67.7857 0 0  0
+	part				sphere union 0  0 0 -96.5  0 0 0  1 1 1  100 0 0  0
 	part				box intersect 0  0 0 3.65  0 0 0  1 1 1  22 22 2.35  0
-	part				sphere subtract 0  0 0 -62.9857  0 0 0  1 1 1  66.2857 0 0  0
+	part				sphere subtract 0  0 0 -96.5  0 0 0  1 1 1  98.5 0 0  0
 }
 
 standard_object
