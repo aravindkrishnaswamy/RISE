@@ -316,7 +316,7 @@ void CylinderGeometry::FillSurfaceNormalUV( const Point3& pt, int surf, Vector3&
 	}
 }
 
-void CylinderGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool , const bool , const bool bComputeExitInfo ) const
+void CylinderGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
 	if( m_bCapped )
 	{
@@ -324,18 +324,54 @@ void CylinderGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool , 
 		int		surfNear = SURF_SIDE, surfFar = SURF_SIDE;
 		if( IntersectCappedSolid( ri.ray, tNear, surfNear, tFar, surfFar ) )
 		{
-			ri.bHit   = true;
-			ri.range  = tNear;
-			ri.range2 = tFar;
+			// Honour the front/back-face filter like Sphere / Box / SDF (the
+			// IGeometry contract): the capped cylinder is CONVEX, so a from-outside
+			// ray has an entry (FRONT: outward normal opposes the ray) then an exit
+			// (BACK); a from-inside ray has only the exit ahead.  Report the NEAREST
+			// crossing whose facing the caller asked for -- stepping past a
+			// disallowed nearer crossing to the farther one -- so a front-only ray
+			// started inside doesn't report the back exit and (false,false) misses.
+			const Vector3& dir = ri.ray.Dir();
+			const bool   hasFar = ( tFar > tNear );
 
-			ri.ptIntersection = ri.ray.PointAtLength( ri.range );
-			FillSurfaceNormalUV( ri.ptIntersection, surfNear, ri.vNormal, &ri.ptCoord );
-			ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
+			Vector3 nNear; FillSurfaceNormalUV( ri.ray.PointAtLength( tNear ), surfNear, nNear, 0 );
+			const bool frontNear = ( nNear.x*dir.x + nNear.y*dir.y + nNear.z*dir.z ) < 0.0;
 
-			if( bComputeExitInfo ) {
-				ri.ptExit = ri.ray.PointAtLength( ri.range2 );
-				FillSurfaceNormalUV( ri.ptExit, surfFar, ri.vNormal2, 0 );
-				ri.vGeomNormal2 = ri.vNormal2;	// analytical: shading == geometric
+			bool   got     = ( frontNear && bHitFrontFaces ) || ( !frontNear && bHitBackFaces );
+			Scalar tHit    = tNear;  int surfHit   = surfNear;
+			Scalar tOther  = tFar;   int surfOther = surfFar;   // the remaining crossing = exit info
+
+			if( !got && hasFar )
+			{
+				Vector3 nFar; FillSurfaceNormalUV( ri.ray.PointAtLength( tFar ), surfFar, nFar, 0 );
+				const bool frontFar = ( nFar.x*dir.x + nFar.y*dir.y + nFar.z*dir.z ) < 0.0;
+				if( ( frontFar && bHitFrontFaces ) || ( !frontFar && bHitBackFaces ) ) {
+					tHit = tFar; surfHit = surfFar; tOther = 0.0; surfOther = surfFar;  // nothing beyond the exit
+					got  = true;
+				}
+			}
+
+			if( got )
+			{
+				ri.bHit   = true;
+				ri.range  = tHit;
+				ri.range2 = ( tOther > tHit ) ? tOther : 0.0;   // 0 = no exit beyond (open-tube sentinel)
+
+				ri.ptIntersection = ri.ray.PointAtLength( ri.range );
+				FillSurfaceNormalUV( ri.ptIntersection, surfHit, ri.vNormal, &ri.ptCoord );
+				ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
+
+				if( bComputeExitInfo ) {
+					ri.ptExit = ri.ray.PointAtLength( ri.range2 );
+					FillSurfaceNormalUV( ri.ptExit, ( ri.range2 > 0.0 ) ? surfOther : surfHit, ri.vNormal2, 0 );
+					ri.vGeomNormal2 = ri.vNormal2;	// analytical: shading == geometric
+				}
+			}
+			else
+			{
+				ri.bHit   = false;
+				ri.range  = RISE_INFINITY;
+				ri.range2 = RISE_INFINITY;
 			}
 		}
 		else
@@ -416,7 +452,7 @@ void CylinderGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool , 
 	}
 }
 
-bool CylinderGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool , const bool ) const
+bool CylinderGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 {
 	if( m_bCapped )
 	{
@@ -424,7 +460,23 @@ bool CylinderGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scal
 		int		surfNear = SURF_SIDE, surfFar = SURF_SIDE;
 		if( IntersectCappedSolid( ray, tNear, surfNear, tFar, surfFar ) ) {
 			// IntersectCappedSolid only returns candidates with t > NEARZERO.
-			return ( tNear <= dHowFar );
+			// Honour the front/back-face filter (IGeometry contract, and consistent
+			// with the detailed IntersectRay above): occlude only if a crossing of
+			// the requested facing lies within dHowFar.  Front = outward normal
+			// opposes the ray (entry); back = exit.
+			const Vector3& dir = ray.Dir();
+			Vector3 nNear; FillSurfaceNormalUV( ray.PointAtLength( tNear ), surfNear, nNear, 0 );
+			const bool frontNear = ( nNear.x*dir.x + nNear.y*dir.y + nNear.z*dir.z ) < 0.0;
+			if( ( ( frontNear && bHitFrontFaces ) || ( !frontNear && bHitBackFaces ) ) && tNear <= dHowFar )
+				return true;
+
+			if( tFar > tNear ) {
+				Vector3 nFar; FillSurfaceNormalUV( ray.PointAtLength( tFar ), surfFar, nFar, 0 );
+				const bool frontFar = ( nFar.x*dir.x + nFar.y*dir.y + nFar.z*dir.z ) < 0.0;
+				if( ( ( frontFar && bHitFrontFaces ) || ( !frontFar && bHitBackFaces ) ) && tFar <= dHowFar )
+					return true;
+			}
+			return false;
 		}
 		return false;
 	}

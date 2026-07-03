@@ -492,6 +492,55 @@ static void TestCapDerivatives()
 	g->release();
 }
 
+// ============================================================
+// Front/back-face filtering on the capped solid (IGeometry contract,
+// consistent with Sphere/Box/SDF).  Regression for: capped IntersectRay /
+// IntersectRay_IntersectionOnly discarded bHitFrontFaces/bHitBackFaces, so a
+// front-only ray started INSIDE reported the back-face exit and (false,false)
+// still hit.  Revert-proof: these fail on the pre-fix capped path.
+// ============================================================
+static void TestFrontBackFilter()
+{
+	std::cout << "-- front/back-face filter (capped)" << std::endl;
+	const Scalar r = 1.0, h = 2.0;                       // z-axis caps at z = +-1
+	CylinderGeometry* g = new CylinderGeometry( 'z', r, h, true );
+
+	auto cast = [&]( const Point3& o, const Vector3& d, bool front, bool back ) -> Hit {
+		RayIntersectionGeometric ri( Ray( o, d ), nullRasterizerState );
+		g->IntersectRay( ri, front, back, true );
+		Hit hh; hh.bHit = ri.bHit; hh.range = ri.range; hh.pos = ri.ptIntersection; hh.normal = ri.vNormal; return hh;
+	};
+
+	// From OUTSIDE, straight down the axis: entry = +z top cap (FRONT), exit = -z (BACK).
+	{	Hit hf = cast( Point3(0,0,5), Vector3(0,0,-1), true,  false );
+		REQUIRE( hf.bHit && IsClose( hf.pos.z, 1.0, 1e-4 ), "front-only outside hits the top ENTRY cap z=+1" ); }
+	{	Hit hb = cast( Point3(0,0,5), Vector3(0,0,-1), false, true );
+		REQUIRE( hb.bHit && IsClose( hb.pos.z, -1.0, 1e-4 ), "back-only outside steps PAST the entry to the exit cap z=-1" ); }
+	{	Hit hn = cast( Point3(0,0,5), Vector3(0,0,-1), false, false );
+		REQUIRE( !hn.bHit, "(false,false) does not hit the capped solid" ); }
+
+	// From INSIDE (origin), going down: only the exit (-z, BACK) lies ahead.
+	{	Hit hi = cast( Point3(0,0,0), Vector3(0,0,-1), true, false );
+		REQUIRE( !hi.bHit, "front-only from INSIDE does not report the back-face exit (P1)" ); }
+	{	Hit hib = cast( Point3(0,0,0), Vector3(0,0,-1), false, true );
+		REQUIRE( hib.bHit && IsClose( hib.pos.z, -1.0, 1e-4 ), "back-only from inside hits the exit cap z=-1" ); }
+
+	// Shadow / visibility path honours the same filter.
+	REQUIRE( !g->IntersectRay_IntersectionOnly( Ray( Point3(0,0,0), Vector3(0,0,-1) ), 100.0, true,  false ),
+	         "shadow: front-only from inside is NOT occluded by the back exit (P1)" );
+	REQUIRE(  g->IntersectRay_IntersectionOnly( Ray( Point3(0,0,0), Vector3(0,0,-1) ), 100.0, false, true ),
+	         "shadow: back-only from inside IS occluded by the exit" );
+	REQUIRE( !g->IntersectRay_IntersectionOnly( Ray( Point3(0,0,5), Vector3(0,0,-1) ), 100.0, false, false ),
+	         "shadow: (false,false) never occludes" );
+
+	// Sanity: with BOTH flags (the render default) the nearest crossing still wins
+	// -- byte-identical to the pre-filter behaviour.
+	{	Hit hd = cast( Point3(0,0,5), Vector3(0,0,-1), true, true );
+		REQUIRE( hd.bHit && IsClose( hd.pos.z, 1.0, 1e-4 ), "both-flags reports the nearest crossing (top cap)" ); }
+
+	safe_release( g );
+}
+
 int main()
 {
 	std::cout << "========================================" << std::endl;
@@ -511,6 +560,7 @@ int main()
 	TestArea();
 	TestUniformRandomPoint();
 	TestCapDerivatives();
+	TestFrontBackFilter();
 
 	std::cout << "----------------------------------------" << std::endl;
 	if( g_failures == 0 ) {

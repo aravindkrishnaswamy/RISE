@@ -1173,7 +1173,7 @@ namespace RISE
 									const char axis,				///< [in] (x|y|z) Which axis the cylinder is sitting on
 									const double radius,			///< [in] Radius of the cylinder
 									const double height,			///< [in] Height of the cylinder
-									const bool capped				///< [in] TRUE: closed solid (end caps); FALSE: open tube
+									const bool capped = true		///< [in] TRUE: closed solid (end caps, default); FALSE: open tube.  Defaulted so pre-cap 4-arg callers keep compiling.
 									) = 0;
 
 		//! Adds an infinite plane that passes through the origin

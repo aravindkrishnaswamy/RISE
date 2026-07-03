@@ -340,6 +340,7 @@ static void TestHeightfieldFlatTopEntry()
 	Check( !g->IntersectRay_IntersectionOnly( Ray( Point3(0,0,5), Vector3(0,0,-1) ), Scalar(4.0),  true, true ),
 	        "heightfield: shadow path does not occlude a ray that stops short of the top (dHowFar honoured)" );
 	safe_release( g );
+	safe_release( flat );   // SDFGeometry addref'd its own ref; release the one `new` gave us (Reference starts at refcount 1)
 
 	// Non-vacuous step-off coverage: a CLOSED part-based slab (top + bottom faces)
 	// so a continuation ray spawned ON the top going down must step off its own
