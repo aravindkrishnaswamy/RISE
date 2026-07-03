@@ -414,9 +414,36 @@ void CylinderGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bH
 		break;
 	}
 
-	ri.bHit = h.bHit;
-	ri.range = h.dRange;
-	ri.range2 = h.dRange2;
+	// Honour the front/back-face filter (IGeometry contract), consistent with the
+	// capped path above and with Sphere/Box/SDF.  The side-wall helper reports a
+	// FRONT face from OUTSIDE (bHitFarSide==false, the near wall) or the BACK exit
+	// from INSIDE (bHitFarSide==true); a from-outside ray also has a far BACK
+	// crossing at h.dRange2 (0 when from inside).  Report the nearest crossing
+	// whose facing the caller asked for.
+	if( h.bHit )
+	{
+		const bool frontNear = !bHitFarSide;
+		bool   got  = ( frontNear && bHitFrontFaces ) || ( !frontNear && bHitBackFaces );
+		Scalar tHit = h.dRange, tExit = h.dRange2;   // dRange2>0 only from outside (its far BACK exit)
+		if( !got && h.dRange2 > 0.0 && bHitBackFaces ) {   // step past the front near wall to the back exit
+			tHit = h.dRange2; tExit = 0.0; got = true;
+		}
+		if( got ) {
+			ri.bHit   = true;
+			ri.range  = tHit;
+			ri.range2 = ( tExit > tHit ) ? tExit : 0.0;
+		} else {
+			ri.bHit   = false;
+			ri.range  = RISE_INFINITY;
+			ri.range2 = RISE_INFINITY;
+		}
+	}
+	else
+	{
+		ri.bHit   = false;
+		ri.range  = h.dRange;    // RISE_INFINITY sentinel from the helper
+		ri.range2 = h.dRange2;
+	}
 
 	// Now compute the normal and texture mapping co-ordinates.
 	//
@@ -509,11 +536,22 @@ bool CylinderGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scal
 		break;
 	}
 
-	if( h.bHit && (h.dRange < NEARZERO || h.dRange > dHowFar) ) {
-		h.bHit = false;
+	if( !h.bHit ) {
+		return false;
 	}
 
-	return h.bHit;
+	// Honour the front/back-face filter (IGeometry contract), consistent with the
+	// capped path.  The reported near crossing is a FRONT face from outside
+	// (bHitFarSide==false) or the BACK exit from inside (bHitFarSide==true); a
+	// from-outside ray also has a far BACK crossing at h.dRange2 (0 from inside).
+	// Occlude only if a requested-facing crossing lies within (NEARZERO, dHowFar].
+	const bool frontNear = !bHitFarSide;
+	if( ( ( frontNear && bHitFrontFaces ) || ( !frontNear && bHitBackFaces ) )
+	    && h.dRange > NEARZERO && h.dRange <= dHowFar )
+		return true;
+	if( h.dRange2 > 0.0 && bHitBackFaces && h.dRange2 > NEARZERO && h.dRange2 <= dHowFar )   // far BACK exit
+		return true;
+	return false;
 }
 
 void CylinderGeometry::GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const

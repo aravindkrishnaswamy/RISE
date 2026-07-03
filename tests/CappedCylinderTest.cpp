@@ -538,6 +538,31 @@ static void TestFrontBackFilter()
 	{	Hit hd = cast( Point3(0,0,5), Vector3(0,0,-1), true, true );
 		REQUIRE( hd.bHit && IsClose( hd.pos.z, 1.0, 1e-4 ), "both-flags reports the nearest crossing (top cap)" ); }
 
+	// --- OPEN tube (capped=false): the same filter on the side wall, via a RADIAL
+	// ray (an axial ray misses the wall entirely -- that is the foot-gun).  Near
+	// wall = FRONT, far wall = BACK; from inside only the exit wall (BACK) is ahead.
+	CylinderGeometry* tube = new CylinderGeometry( 'z', r, h, false );
+	auto castT = [&]( const Point3& o, const Vector3& d, bool front, bool back ) -> Hit {
+		RayIntersectionGeometric ri( Ray( o, d ), nullRasterizerState );
+		tube->IntersectRay( ri, front, back, true );
+		Hit hh; hh.bHit = ri.bHit; hh.pos = ri.ptIntersection; return hh;
+	};
+	{	Hit hf = castT( Point3(5,0,0), Vector3(-1,0,0), true,  false );
+		REQUIRE( hf.bHit && IsClose( hf.pos.x, 1.0, 1e-4 ), "tube: front-only outside hits the NEAR wall x=+1" ); }
+	{	Hit hb = castT( Point3(5,0,0), Vector3(-1,0,0), false, true );
+		REQUIRE( hb.bHit && IsClose( hb.pos.x, -1.0, 1e-4 ), "tube: back-only outside steps to the FAR wall x=-1" ); }
+	{	Hit hn = castT( Point3(5,0,0), Vector3(-1,0,0), false, false );
+		REQUIRE( !hn.bHit, "tube: (false,false) does not hit the side wall" ); }
+	{	Hit hi = castT( Point3(0,0,0), Vector3(-1,0,0), true, false );
+		REQUIRE( !hi.bHit, "tube: front-only from INSIDE does not report the back exit wall" ); }
+	{	Hit hib = castT( Point3(0,0,0), Vector3(-1,0,0), false, true );
+		REQUIRE( hib.bHit && IsClose( hib.pos.x, -1.0, 1e-4 ), "tube: back-only from inside hits the exit wall x=-1" ); }
+	REQUIRE( !tube->IntersectRay_IntersectionOnly( Ray( Point3(0,0,0), Vector3(-1,0,0) ), 100.0, true,  false ),
+	         "tube shadow: front-only from inside is NOT occluded by the exit wall" );
+	REQUIRE(  tube->IntersectRay_IntersectionOnly( Ray( Point3(0,0,0), Vector3(-1,0,0) ), 100.0, false, true ),
+	         "tube shadow: back-only from inside IS occluded by the exit wall" );
+
+	safe_release( tube );
 	safe_release( g );
 }
 
