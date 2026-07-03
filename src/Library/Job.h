@@ -352,13 +352,17 @@ namespace RISE
 		ILightManager*				GetLights()			{ return pLightManager; };
 		IRasterizer*				GetRasterizer()		{ return pRasterizer; };
 
-		// Phase 6.1 getters.  Mutable versions return non-const pointers
-		// for AsciiSceneParser's population pass; const versions are
-		// what the save engine consumes.  Pointers stable across the
-		// Job's lifetime (the unique_ptr's are populated in
-		// InitializeContainers and never reseated).  Inline like the
-		// other manager getters; matches Job's no-`override` convention
-		// (see SetSuppressFileRasterizerOutputs comment).
+		// Phase 6.1 getters.  HISTORICAL: the mutable versions fed the
+		// legacy streaming loader's population pass and the const versions
+		// the pre-CST save engine — both deleted (Model-B P5 Slices 6c/6d).
+		// The CST load path populates neither snapshot, so all four are
+		// currently unused (no callers outside these declarations);
+		// retained pending deletion (IJobPriv's virtual tail is
+		// append-only).  Pointers stable across the Job's lifetime (the
+		// unique_ptr's are populated in InitializeContainers and never
+		// reseated).  Inline like the other manager getters; matches Job's
+		// no-`override` convention (see SetSuppressFileRasterizerOutputs
+		// comment).
 		TransformSnapshot*			GetBaseTransformSnapshotMutable()	{ return pBaseTransforms.get(); }
 		const TransformSnapshot*	GetBaseTransformSnapshot() const	{ return pBaseTransforms.get(); }
 		TransformSnapshot*			GetLoadedTransformSnapshotMutable()	{ return pLoadedTransforms.get(); }

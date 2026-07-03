@@ -6,8 +6,9 @@
 //    - DirtyTracker basic ops (MarkDirty, Contains, Snapshot, Clear).
 //    - SceneEditor::Apply marks transform ops dirty; property ops
 //      do NOT mark dirty (V1 scope).
-//    - Undo / Redo of transform ops mark dirty (the save engine's
-//      matrix-equality compare resolves the "no-op rewrite" case).
+//    - Undo / Redo of transform ops mark dirty (SaveEngine's whole-file
+//      byte-equality NoOp resolves the "no-op rewrite" case; the pre-CST
+//      §9.4 matrix-equality compare is gone).
 //    - ScaleObjectFromAnchor populates SceneEditor::ScaleFromAnchorSet()
 //      (pinned 2.8 always-matrix policy).
 //    - ClearDirtyState() resets both.

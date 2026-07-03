@@ -129,7 +129,7 @@ namespace RISE
 		struct AgentPatchResult
 		{
 			bool        applied = false;
-			bool        retriable = false;   //!< status="rejected" only: true = transient refusal (open editor transaction) -- retry the SAME patch later; false = permanent
+			bool        retriable = false;   //!< always emitted on the wire; meaningful for status="rejected" only: true = transient refusal (open editor transaction) -- retry the SAME patch later; false = permanent
 			int         rawCode = 0;         //!< 0 reject/conflict / 1 incremental / 2 D2 full re-derive / 3 replaced-but-diagnosed
 			std::string status;              //!< "applied" (clean) / "rejected" (head intact) / "diagnosed" (mutated but re-derive diagnosed) / "conflict" (stale baseVersion, head intact)
 			RISE::Cst::CstHeadVersion headVersion;   //!< the head-version AFTER the call (post-commit on success; current head on reject/diagnosed/conflict)

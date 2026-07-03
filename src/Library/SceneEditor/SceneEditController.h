@@ -266,7 +266,7 @@ namespace RISE
 		{
 			bool                       applied = false;
 			bool                       conflict = false;
-			bool                       retriable = false; //!< status="rejected" only: true = transient refusal (open editor transaction) -- retry the SAME commit later; false = permanent
+			bool                       retriable = false; //!< always present; meaningful for status="rejected" only: true = transient refusal (open editor transaction) -- retry the SAME commit later; false = permanent
 			int                        rawCode = 0;      //!< 0 reject/conflict / 1 incremental / 2 D2 / 3 replaced-but-diagnosed
 			String                     status;           //!< "applied" / "rejected" / "diagnosed" / "conflict"
 			RISE::Cst::CstHeadVersion  headVersion;      //!< the head-version AFTER the call

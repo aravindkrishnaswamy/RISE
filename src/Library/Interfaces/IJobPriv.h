@@ -68,12 +68,13 @@ namespace RISE
 		virtual IShaderManager*				GetShaders() = 0;
 		virtual IShaderOpManager*			GetShaderOps() = 0;
 
-		// Two transform snapshots captured at scene-load time.  Read-only
-		// after parse completes; mutable access is only during the load
-		// pass.  Owned by Job and live for its lifetime.  (The legacy
-		// SourceSpanIndex / OverrideSpanIndex byte-splice metadata was
-		// deleted in Model-B P5 Slice 6d — CST-only loading never
-		// populated them.)
+		// Two transform snapshots the legacy streaming loader captured at
+		// scene-load time (loader deleted, Model-B P5 Slice 6c).  The
+		// CST-only load path never populates them — Job allocates them
+		// empty so the getters return stable non-null pointers.  Currently
+		// unused (no callers); retained pending deletion — the virtual
+		// layout here is append-only.  (The related SourceSpanIndex /
+		// OverrideSpanIndex byte-splice metadata was deleted in Slice 6d.)
 		virtual TransformSnapshot*			GetBaseTransformSnapshotMutable() = 0;
 		virtual const TransformSnapshot*	GetBaseTransformSnapshot() const = 0;
 		virtual TransformSnapshot*			GetLoadedTransformSnapshotMutable() = 0;

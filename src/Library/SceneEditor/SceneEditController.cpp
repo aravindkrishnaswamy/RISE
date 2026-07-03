@@ -2783,9 +2783,10 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 	AgentCommitResult r;
 
 	// F5 polish A1 round 2: refuse a MID-TRANSACTION agent commit BEFORE any
-	// mutation or park -- the same rule as the four existing mTxnOpen
-	// refusals (SetSelection's active-switch; SetProperty's animation
-	// frame-count / rasterizer / film).
+	// mutation or park -- the same rule as the existing mTxnOpen refusals
+	// on the other entry points (SetSelection's active-switch; SetProperty's
+	// animation frame-count / rasterizer / film; Undo/Redo's history
+	// navigation).
 	// An agent commit's Document mutation has NO EditHistory record, so
 	// RollbackTransaction's inverse-edit Undo loop can never revert it; a
 	// FULL rollback would then RestoreEditorState the pre-transaction dirty

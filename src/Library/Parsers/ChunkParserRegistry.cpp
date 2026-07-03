@@ -5,17 +5,18 @@
 //    the default IAsciiChunkParser::ParseChunk dispatch, and the public
 //    DispatchChunkParameters / ClearChunkParserState / LastAllocatedCameraName
 //    wrappers.  This is the SHARED chunk-parser registry: it is consumed
-//    by the CST derive path (Cst.cpp), the scene-editor introspection
-//    panels (SceneEditor/ChunkDescriptorRegistry.cpp), AND the legacy
-//    streaming loader in AsciiSceneParser.cpp.
+//    by the CST derive path (Cst/Cst.cpp, ParseToCst + DeriveToJob -- the
+//    ONLY scene-load path) and the scene-editor introspection panels
+//    (SceneEditor/ChunkDescriptorRegistry.cpp).
 //
-//    Split out of AsciiSceneParser.cpp (Model-B P5 Slice 6b) so the
-//    legacy streaming loader can later be retired as a clean unit without
-//    disturbing this registry.  PURE MOVE -- no behaviour change.
+//    Split out of AsciiSceneParser.cpp (Model-B P5 Slice 6b) precisely so
+//    the legacy streaming loader could be retired as a clean unit without
+//    disturbing this registry -- that retirement happened in Slice 6c/6d
+//    (AsciiSceneParser.cpp and its ParseAndLoadScene are deleted).
 //
 //    The descriptor-driven architecture (every parser overrides only
 //    Describe() + Finalize(); the default ParseChunk validates against the
-//    descriptor) is documented in the header of AsciiSceneParser.cpp.
+//    descriptor) is documented in README.md in this directory.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -78,9 +79,9 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 // Shared file-scope helpers used by the chunk-parser registry.  (The
-// legacy hal() QMC sequence `mh` lives ONLY in AsciiSceneParser.cpp, the
-// streaming TU that actually consumes it -- see the per-top-level reset
-// there; this TU does not touch MultiHalton.)
+// legacy hal() QMC sequence `mh` lived ONLY in the deleted streaming TU,
+// AsciiSceneParser.cpp, and was deleted with it in Slice 6c -- this TU
+// never touched MultiHalton.)
 
 inline bool string_split( const String& s, String& first, String& second, const char ch )
 {
@@ -345,17 +346,18 @@ namespace RISE
 			static thread_local std::set<std::string> s_cameraNamesUsed;
 
 			// The runtime name AllocateCameraName issued for the MOST
-			// RECENTLY finalized camera chunk.  The Phase-B entity-index hook
-			// (AsciiSceneParser::OnEntityChunkFinalized) reads this to key a
-			// NAME-OMITTED camera's SourceSpan under the SAME runtime name the
-			// editor enumerates ("default", auto-suffixed) instead of
-			// ExtractObjectName's "noname" -- otherwise an unnamed camera's
-			// property edits can't round-trip (the editor keys
-			// (Camera,"default") but the index would hold (Camera,"noname")).
-			// Set on every AllocateCameraName call; the hook fires immediately
-			// after the camera's Finalize, so it always reflects the
-			// just-parsed camera.  thread_local for the same reason as
-			// s_cameraNamesUsed.
+			// RECENTLY finalized camera chunk.  HISTORICAL: the Phase-B
+			// entity-index hook (AsciiSceneParser::OnEntityChunkFinalized,
+			// deleted with the streaming loader in Slice 6c) read this to key
+			// a NAME-OMITTED camera's SourceSpan under the SAME runtime name
+			// the editor enumerates ("default", auto-suffixed) instead of
+			// ExtractObjectName's "noname".  The SourceSpan entity index
+			// itself went in Slice 6d; today's save (SaveEngine's whole-
+			// Document SerializeCst) needs no such keying.  Still set on
+			// every AllocateCameraName call; the only remaining reader is
+			// the currently-unused public LastAllocatedCameraName accessor
+			// (retained pending deletion).  thread_local for the same reason
+			// as s_cameraNamesUsed.
 			static thread_local std::string s_lastAllocatedCameraName;
 
 			// Default name issued to an unnamed camera chunk.  The
@@ -393,22 +395,26 @@ namespace RISE
 				return s_lastAllocatedCameraName;
 			}
 
-			// Read-only accessor for the Phase-B entity-index hook
-			// (AsciiSceneParser::OnEntityChunkFinalized, defined outside this
-			// namespace).  Returns the runtime name issued to the most
-			// recently finalized camera chunk.
+			// Read-only accessor: the runtime name issued to the most
+			// recently finalized camera chunk.  Its consumer -- the Phase-B
+			// entity-index hook (AsciiSceneParser::OnEntityChunkFinalized) --
+			// was deleted with the streaming loader in Slice 6c; today the
+			// only caller is the public LastAllocatedCameraName wrapper,
+			// which itself has no callers.  Retained pending deletion.
 			static const std::string& LastAllocatedCameraName() {
 				return s_lastAllocatedCameraName;
 			}
 
-			// Per-parse reset (ParseAndLoadScene / DeriveToJob; a nested `> load`/`> run` parse passes false).
+			// Per-parse reset.  Sole live caller: Cst::DeriveToJob (Cst/Cst.cpp), via the public
+			// ClearChunkParserState wrapper, always with the default resetTopLevelState=true.
 			// resetTopLevelState gates the reset of state that accumulates ACROSS a top-level build to TOP-LEVEL
-			// parses only.  Camera auto-naming must stay unique manager-wide ACROSS includes, so a nested parse
-			// must NOT wipe the outer scene's allocated names (else a child's unnamed camera re-allocates
-			// "default" and Scene::AddCamera rejects the duplicate, failing the include).  The other caches reset
-			// on every parse (incl. nested), matching the legacy per-sub-parse semantics.  NOTE: the legacy hal()
-			// QMC sequence is NOT reset here -- its `mh` lives in the streaming TU (AsciiSceneParser.cpp) which is
-			// the sole consumer, and ParseAndLoadScene resets it per top-level parse directly (isTopLevel gate).
+			// parses only.  HISTORICAL: the deleted streaming loader (ParseAndLoadScene, Slice 6c) passed false
+			// on a nested `> load`/`> run` parse -- camera auto-naming had to stay unique manager-wide ACROSS
+			// includes, so a nested parse must not wipe the outer scene's allocated names (else a child's unnamed
+			// camera re-allocates "default" and Scene::AddCamera rejects the duplicate).  No caller passes false
+			// today; the parameter is retained pending deletion.  The other caches reset on every call.  (The
+			// legacy hal() QMC sequence lived in the deleted streaming TU and went with it -- never this TU's
+			// concern.)
 			static void ClearParseState( bool resetTopLevelState = true ) {
 				s_painterColors.clear();
 				s_cameraDefaults = CameraDefaultsState();
@@ -6237,10 +6243,13 @@ namespace RISE
 						// (Job::AddObjectMatrix pushed the matrix onto the
 						// stack), a per-field override of that target
 						// COMPOSES with the existing stack matrix rather
-						// than replacing it.  V1's save engine never emits
+						// than replacing it.  HISTORICAL: the pre-CST byte-
+						// splice save engine (deleted Slice 6d) never emitted
 						// per-field overrides for matrix-authored objects
-						// (pinned 2.13: matrix author-mode forces matrix-
-						// form override), so the round-trip path is safe.
+						// (pinned 2.13: matrix author-mode forced matrix-
+						// form override), so its round-trip path was safe;
+						// nothing emits override_object at all today (save
+						// is SaveEngine's whole-Document SerializeCst).
 						// Hand-written overrides targeting matrix-authored
 						// sources should use the matrix or quaternion
 						// branch to replace cleanly.
@@ -6261,7 +6270,7 @@ namespace RISE
 							// R2 fix (pinned 2.7): ALWAYS use
 							// SetStretch — `scale` Vec3 routes to
 							// SetStretch in standard_object too
-							// (AsciiSceneParser.cpp:5574 → AddObject
+							// (its parser in this file → AddObject
 							// → IObjectPriv::SetStretch).
 							obj->SetStretch( Vector3( scl[0], scl[1], scl[2] ) );
 							any = true;
@@ -6292,11 +6301,12 @@ namespace RISE
 						cd.keyword     = "override_object";
 						cd.category    = ChunkCategory::Object;
 						cd.description = "Apply transform overrides to an already-declared "
-							"object.  Used by the interactive editor's round-trip save for "
-							"objects that have no direct source-line representation (FOR-"
-							"generated entities, or objects whose authored value used a "
-							"macro / expression).  Order in the scene file matters — this "
-							"chunk must appear AFTER the chunk that created the target.";
+							"object.  Legacy chunk emitted by the pre-CST round-trip save "
+							"(deleted in Model-B P5 Slice 6d) for objects that had no direct "
+							"source-line representation; nothing emits it today, but it "
+							"remains parseable for older scene files that contain it.  Order "
+							"in the scene file matters — this chunk must appear AFTER the "
+							"chunk that created the target.";
 						auto P = [&cd]() -> ParameterDescriptor& {
 							cd.parameters.emplace_back();
 							return cd.parameters.back();
@@ -9789,7 +9799,8 @@ namespace RISE
 	// Public wrapper (declared in IAsciiChunkParser.h) over the inline
 	// Implementation::ChunkParsers::DispatchChunkParameters, so the CST derive
 	// path can validate+populate a bag through the SAME live validation the
-	// legacy parser uses, then Finalize() separately (refuse-all boundary).
+	// default ParseChunk dispatch uses, then Finalize() separately (refuse-all
+	// boundary).
 	bool DispatchChunkParameters( const ChunkDescriptor& desc, ParseStateBag& bag, const IAsciiChunkParser::ParamsList& params )
 	{
 		return Implementation::ChunkParsers::DispatchChunkParameters( desc, bag, params );
@@ -9797,23 +9808,24 @@ namespace RISE
 
 	// Public wrapper (declared in IAsciiChunkParser.h) over the per-parse
 	// state reset, so the CST derive path can reset the chunk parsers' cross-
-	// chunk caches before deriving, exactly as ParseAndLoadScene does at its
-	// start -- preventing parse state from leaking between successive derives.
-	// The `resetTopLevelState` argument forwards to the private ClearParseState:
-	// the streaming loader passes `false` on a recursive `> load` / `> run` so
-	// the camera-name dedup survives the nested parse; the CST derive path and
-	// every top-level parse take the default `true`.  (The legacy hal() QMC
-	// sequence is NOT reset through here -- ParseAndLoadScene resets its own
-	// `mh` directly per top-level parse; see the isTopLevel gate there.)
+	// chunk caches before deriving -- the same reset the legacy ParseAndLoadScene
+	// performed at its start (streaming loader deleted, Slice 6c) -- preventing
+	// parse state from leaking between successive derives.  Sole live caller:
+	// Cst::DeriveToJob (Cst/Cst.cpp), always with the default `true`.  The
+	// `resetTopLevelState` argument forwards to the private ClearParseState;
+	// `false` was the deleted streaming loader's recursive `> load` / `> run`
+	// mode (keep the camera-name dedup across the nested parse) and is
+	// currently unused (no callers pass it); retained pending deletion.
 	void ClearChunkParserState( bool resetTopLevelState )
 	{
 		Implementation::ChunkParsers::ClearParseState( resetTopLevelState );
 	}
 
 	// Public wrapper (declared in IAsciiChunkParser.h) over the private
-	// ChunkParsers::LastAllocatedCameraName, so the streaming loader (now in a
-	// separate translation unit) can read the camera name the most recent
-	// camera-chunk Finalize allocated.
+	// ChunkParsers::LastAllocatedCameraName.  HISTORICAL: existed so the
+	// streaming loader (a separate translation unit, deleted Slice 6c) could
+	// read the camera name the most recent camera-chunk Finalize allocated.
+	// Currently unused (no callers); retained pending deletion.
 	const std::string& LastAllocatedCameraName()
 	{
 		return Implementation::ChunkParsers::LastAllocatedCameraName();

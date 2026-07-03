@@ -65,14 +65,17 @@ namespace RISE
 		//! Drop everything.
 		void Clear();
 
-		//! For round-trip save: has this object's transform been
-		//! touched at least once since the scene was loaded?  This
-		//! includes edits that have been undone — the serializer
-		//! re-emits the live transform regardless, and undone edits
-		//! still represent "user touched it."
+		//! Has this object's transform been touched at least once since
+		//! the scene was loaded?  Includes edits that have been undone —
+		//! undone edits still represent "user touched it."  HISTORICAL:
+		//! fed the pre-CST round-trip save's per-object re-emit (serializer
+		//! deleted, Model-B P5 Slice 6d; today's SaveEngine serializes the
+		//! whole Document and never consults this).  No production
+		//! consumers remain — exercised by tests only.
 		bool IsObjectDirty( const String& name ) const;
 
-		//! Iterate dirty objects.  Yields each name once.
+		//! Iterate dirty objects.  Yields each name once.  Currently
+		//! unused (no callers); retained pending deletion.
 		template <class Fn>
 		void EnumerateDirtyObjects( Fn fn ) const
 		{
