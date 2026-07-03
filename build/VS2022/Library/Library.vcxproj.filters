@@ -543,6 +543,12 @@
     <ClCompile Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.cpp">
       <Filter>Geometry</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\AgentChatCodecs.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\AgentChatLoop.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Agent\AgentRpc.cpp">
       <Filter>Agent</Filter>
     </ClCompile>
@@ -1726,6 +1732,12 @@
       <Filter>Geometry</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Agent\AgentDiagnostic.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\AgentChatCodecs.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\AgentChatLoop.h">
       <Filter>Agent</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Agent\AgentRpc.h">

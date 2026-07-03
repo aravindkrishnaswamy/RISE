@@ -227,6 +227,8 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/PhotonMapping/TranslucentPelPhotonTracer.cpp"
 
     # SRCLIBCAMERA
+    "${RISE_LIB}/Agent/AgentChatCodecs.cpp"
+    "${RISE_LIB}/Agent/AgentChatLoop.cpp"
     "${RISE_LIB}/Agent/AgentRpc.cpp"
     "${RISE_LIB}/Agent/AgentSession.cpp"
     "${RISE_LIB}/Agent/Base64.cpp"
