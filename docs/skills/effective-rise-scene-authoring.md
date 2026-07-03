@@ -126,7 +126,11 @@ lambertian_material
     reflectance ctrl_white
 }
 
-sphere_geometry { name ctrl_sph radius 0.6 }
+sphere_geometry
+{
+    name   ctrl_sph
+    radius 0.6
+}
 
 standard_object
 {

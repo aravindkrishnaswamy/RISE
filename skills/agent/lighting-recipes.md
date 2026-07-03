@@ -140,7 +140,10 @@ dome (below); for a real light probe use an `hdr_painter` with
 `file lightprobes/<name>.hdr` and scale with `radiance_scale`.  Pick
 a subject color/albedo with CONTRAST against the dome — a white
 sphere inside a bright uniform dome converges to the dome color and
-disappears into the background.
+disappears into the background.  A uniform dome also gives flat,
+shadowless shading — physically correct, since the incident light is
+identical from every direction; use an `hdr_painter` probe when you
+want directional modelling and soft shadows.
 
 ```rise
 RISE ASCII SCENE 7

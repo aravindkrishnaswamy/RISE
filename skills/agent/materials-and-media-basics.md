@@ -344,7 +344,7 @@ A `homogeneous_medium` gives volumetric absorption/scattering; bind it
 to a closed object via `interior_medium`.  `absorption`/`scattering`
 are per-channel coefficients (units 1/distance); `phase` is
 `isotropic` or `hg <g>` (Henyey-Greenstein, g in [-1,1], + = forward).
-The white wall and dome behind the flask are what make the tint
+The gray wall and dome behind the flask are what make the tint
 visible — light reaching the camera THROUGH the medium is what gets
 colored, and a medium in a void has nothing behind it to color:
 
@@ -403,7 +403,7 @@ dielectric_material
 	scattering	100000.0
 }
 
-# The white wall seen through the flask -- its light picks up the
+# The gray wall seen through the flask -- its light picks up the
 # green tint on the way to the camera.
 uniformcolor_painter
 {
