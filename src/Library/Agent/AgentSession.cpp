@@ -1308,6 +1308,18 @@ namespace RISE
 			bool rendered = false;
 			InMemoryRasterizerOutput* sink = nullptr;
 
+			// Unwind guard for OUR owning ref on `sink` (refcount 1 from
+			// `new` below): if mJob->Rasterize() throws (OIDN is a real
+			// throw site), the normal release sites are skipped and the
+			// owning ref would leak.  safe_release() nulls the pointer, so
+			// every normal path (failure release, tail release, ownership
+			// transfer to mLastSink -- which nulls `sink` explicitly) leaves
+			// this a no-op.  Declared AFTER `sink` so it destructs FIRST.
+			struct SinkUnwindGuard {
+				InMemoryRasterizerOutput*& p;
+				~SinkUnwindGuard() { safe_release( p ); }
+			} sinkUnwindGuard{ sink };
+
 			// P1-B (belt-and-braces): if ANY requested camera field fails to
 			// apply, fail loud -- restore what was already applied THIS call
 			// and skip the render entirely rather than reporting
@@ -1505,6 +1517,7 @@ namespace RISE
 				mLastPng = res.png;
 				safe_release( mLastSink );
 				mLastSink = sink;
+				sink = nullptr;   // ownership transferred -- the unwind guard must not release it
 				return res;
 			}
 
