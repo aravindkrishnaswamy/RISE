@@ -11,9 +11,14 @@ import Security
 // synchronous `agentHandleLine`, and renders a display transcript.
 //
 // SECRET HYGIENE (hard rule): API keys live in the macOS Keychain (or
-// arrive via environment variables) and are read at USE time only —
-// never stored in UserDefaults, never logged/printed, never shown in
-// the UI.  Nothing in this file logs request/response bodies.
+// arrive via environment variables), never in UserDefaults, never
+// logged/printed, never shown in the UI.  Nothing in this file logs
+// request/response bodies.  Resolution (Keychain, else env-var
+// fallback) happens at most ONCE per provider per process lifetime:
+// the result is cached in `ChatViewModel.cachedApiKeys`, an in-memory
+// (never persisted, never @Published) dictionary that lives exactly
+// as long as the app process does — see that property's doc comment
+// for the full security posture.
 
 // MARK: - Keychain-backed API-key store
 
@@ -205,6 +210,38 @@ final class ChatViewModel: ObservableObject {
     /// re-derives the key-source caption.
     @Published private(set) var keyStateEpoch: Int = 0
 
+    /// Process-memory-only cache of the resolved API key, per provider.
+    ///
+    /// WHY: `resolveApiKey()` used to hit the Keychain
+    /// (`SecItemCopyMatching` with `kSecReturnData`) on every single
+    /// HTTP round of every turn.  On a dev-signed (ad-hoc / no stable
+    /// Team ID) build, macOS cannot verify the app's code-signing
+    /// identity against the ACL recorded on the Keychain item, so
+    /// *every* data-returning query re-prompts the user for their
+    /// login password — one popup per HTTP round-trip, which made
+    /// multi-tool-call turns nearly unusable.
+    ///
+    /// This cache resolves the key ONCE (Keychain, else env-var
+    /// fallback) and serves every subsequent call from memory for the
+    /// rest of the process's life, until the user changes what's
+    /// stored (`saveApiKey`) or clears it (`clearApiKey`).
+    ///
+    /// Security posture (stated plainly rather than overstated): this
+    /// is a plaintext `String` held in process memory.  Swift/Combine
+    /// give us no reliable way to zero a `String`'s backing storage on
+    /// dealloc (unlike a manually-managed byte buffer), so "wiped on
+    /// exit" really means "the value dies when the process's address
+    /// space is torn down by the OS" — not an explicit scrub.  That is
+    /// an acceptable bar here: the secret is a user-supplied API key
+    /// the user already explicitly granted THIS app access to via the
+    /// Keychain (or an env var they set for this process), this is a
+    /// single-user trusted-operator desktop tool with no other
+    /// tenants/processes/users to isolate from, and the value never
+    /// leaves this property (never logged, never published, never
+    /// serialized to disk, never shown in any view).  Not @Published —
+    /// no view ever binds to it, directly or indirectly.
+    private var cachedApiKeys: [AgentChatProviderChoice: String] = [:]
+
     /// B2 review round 1: "may agent tool calls mutate the scene
     /// RIGHT NOW?"  Injected by RenderViewModel at construction (it
     /// answers false during a production render, whose worker threads
@@ -364,6 +401,15 @@ final class ChatViewModel: ObservableObject {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .emptyInput }
         let ok = AgentChatKeychain.write(account: p.keychainAccount, secret: trimmed)
+        if ok {
+            // Seed the cache directly with the just-saved value so the
+            // very next resolveApiKey() call (the next HTTP round, or
+            // an immediate Retry) is served from memory — zero
+            // Keychain reads, hence zero prompts, after a successful
+            // save.  On failure the cache is left untouched: whatever
+            // was resolving before (Keychain or env) keeps resolving.
+            cachedApiKeys[p] = trimmed
+        }
         keyStateEpoch += 1
         return ok ? .saved : .keychainError
     }
@@ -375,6 +421,14 @@ final class ChatViewModel: ObservableObject {
     @discardableResult
     func clearApiKey(for p: AgentChatProviderChoice) -> Bool {
         let ok = AgentChatKeychain.delete(account: p.keychainAccount)
+        // Drop the cached value regardless of outcome: even on a
+        // (rare) Keychain delete failure, the user's intent was to
+        // stop using this key, so the next resolve should re-probe
+        // rather than keep serving the stale cached secret.  A
+        // successful delete means the Keychain no longer has it
+        // either way, so re-probing next time correctly falls through
+        // to the env-var fallback (or "no key").
+        cachedApiKeys.removeValue(forKey: p)
         keyStateEpoch += 1
         return ok
     }
@@ -400,16 +454,36 @@ final class ChatViewModel: ObservableObject {
     }
 
     /// The key to use RIGHT NOW (Keychain first, then each env-var
-    /// fallback in order), or nil.  Never logged, never stored on
-    /// self.
+    /// fallback in order), or nil.  Never logged.
+    ///
+    /// Cached in `cachedApiKeys` for the rest of the process's life
+    /// once resolved (see that property's doc for the security
+    /// posture) — this is what turns "one Keychain prompt per HTTP
+    /// round" into "at most one Keychain prompt per provider per app
+    /// run".  A miss (nil) is deliberately NOT cached: if the user has
+    /// no key yet, the next call must re-probe so that setting a key
+    /// mid-conversation (Save Key, which seeds the cache directly) or
+    /// exporting an env var and relaunching recovers without a restart
+    /// — see `saveApiKey`'s cache-seed for the in-app case.
     private func resolveApiKey() -> String? {
+        if let cached = cachedApiKeys[provider] {
+            return cached
+        }
         if let key = AgentChatKeychain.read(account: provider.keychainAccount) {
+            cachedApiKeys[provider] = key
             return key
         }
         for envVar in provider.apiKeyEnvVars {
             if let env = getenv(envVar) {
                 let key = String(cString: env)
-                if !key.isEmpty { return key }
+                if !key.isEmpty {
+                    // Cache env-sourced keys too: harmless (getenv is
+                    // not the thing prompting), and keeps the two
+                    // sources consistent — one resolution per provider
+                    // per run either way.
+                    cachedApiKeys[provider] = key
+                    return key
+                }
             }
         }
         return nil
