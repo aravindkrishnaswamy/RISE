@@ -1,0 +1,359 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#   File:           glint_flakes.RISEscene
+#   Description:    Canonical showcase + visual regression for the discrete-facet GLINT MODIFIER
+#                   (glint_modifier chunk -> Modifiers/GlintModifier; docs/ENAMEL_SPARKLE_BRDF.md).
+#
+#                   The modifier is the correct physics for materials whose sparkle comes from
+#                   genuinely DISCRETE specular scatterers -- metallic-flake automotive paint,
+#                   craft glitter, aventurine ("goldstone") glass with real copper crystals,
+#                   frost/snow.  (It is NOT the model for a continuous fired-glass surface like
+#                   grand-feu enamel, whose twinkle is a continuous displacement relief -- the
+#                   enamel_watch scene uses an SDF heightfield for that, not this modifier.)
+#
+#                   An object-space cell hash places at most one mirror-like micro-facet per cell
+#                   (jittered centre + radius test + per-cell existence probability); a hit landing
+#                   on a facet has its shading normal replaced by the facet's small hash-seeded tilt,
+#                   so the object's EXISTING material flashes discrete glints wherever a facet mirrors
+#                   the light to the eye.  The field is pinned to each object (object-space hash), so
+#                   the flakes flash because the view/light moves, never because the pattern swims.
+#
+#                   Five spheres over a dark floor under one small, bright, localized key (a discrete
+#                   source is REQUIRED -- a uniform environment cannot produce specular glints).  Left
+#                   to right the parameters sweep so each knob is legible:
+#                     1. smooth silver   -- NO modifier (control: one broad highlight, no flecks)
+#                     2. fine silver     -- dense fine flakes (high density, low spread)
+#                     3. coarse gold     -- sparse coarse flakes (low density/coverage, larger spread)
+#                     4. red metal-flake -- red base coat + white metallic flakes (car paint)
+#                     5. blue glitter    -- high coverage, wide spread (dense wide-angle sparkle)
+#
+#   Render:         export RISE_MEDIA_PATH="$(pwd)/"
+#                   printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Materials/glint_flakes.RISEscene
+#
+#   Author:         Aravind Krishnaswamy
+#   Birthdate:      July 3, 2026
+#############################################################################################################
+
+scene_options
+{
+	scene_unit		1.0
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			256
+	oidn_denoise		false
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/glint_flakes
+	multiple		FALSE
+	type			PNG
+	bpp			8
+	color_space		sRGB
+}
+
+film
+{
+	width			1000
+	height			420
+}
+
+# Head-on, slightly raised, framing the row of spheres.
+pinhole_camera
+{
+	name			cam
+	location		0 -22 7.5
+	lookat			0 0 1.0
+	up			0 0 1
+	fov			30.0
+}
+
+##################################################
+# Painters
+##################################################
+uniformcolor_painter
+{
+	name			black
+	color			0 0 0
+}
+uniformcolor_painter
+{
+	name			white
+	color			1 1 1
+}
+uniformcolor_painter
+{
+	name			floorcol
+	color			0.02 0.02 0.025
+}
+uniformcolor_painter
+{
+	name			gold
+	color			1.0 0.82 0.34
+}
+uniformcolor_painter
+{
+	name			silver
+	color			0.97 0.97 0.98
+}
+uniformcolor_painter
+{
+	name			redpig
+	color			0.55 0.05 0.05
+}
+uniformcolor_painter
+{
+	name			bluepig
+	color			0.05 0.08 0.55
+}
+
+# Conductor n/k (single representative scalars; RGB render).
+scalar_painter
+{
+	name			ag_n
+	value			0.15
+}
+scalar_painter
+{
+	name			ag_k
+	value			3.5
+}
+scalar_painter
+{
+	name			au_n
+	value			0.28
+}
+scalar_painter
+{
+	name			au_k
+	value			2.9
+}
+scalar_painter
+{
+	name			base_rough
+	value			0.02
+}
+
+##################################################
+# Lighting: one small bright localized key (a "window"), up-and-front, +Y/+Z,
+# so its mirror in each sphere rakes the visible hemisphere.  Dark surround
+# (no radiance_map) so only the glints and the key's highlight read.
+##################################################
+lambertian_luminaire_material
+{
+	name			keylum
+	exitance		white
+	scale			90
+	material		none
+}
+clippedplane_geometry
+{
+	name			keygeom
+	pta			-2.0 14.0 12.0
+	ptb			 2.0 14.0 12.0
+	ptc			 2.0 12.5 15.0
+	ptd			-2.0 12.5 15.0
+}
+standard_object
+{
+	name			key
+	geometry		keygeom
+	material		keylum
+}
+
+# A very dim wide fill so the unlit sphere backs are not pure black (readability).
+lambertian_luminaire_material
+{
+	name			filllum
+	exitance		white
+	scale			0.6
+	material		none
+}
+clippedplane_geometry
+{
+	name			fillgeom
+	pta			-40 -40 40
+	ptb			 40 -40 40
+	ptc			 40 -60 10
+	ptd			-40 -60 10
+}
+standard_object
+{
+	name			fill
+	geometry		fillgeom
+	material		filllum
+}
+
+##################################################
+# Dark floor
+##################################################
+ggx_material
+{
+	name			floormat
+	rd			floorcol
+	rs			white
+	alphax			0.25
+	alphay			0.25
+	ior			ag_n
+	extinction		ag_k
+}
+clippedplane_geometry
+{
+	name			floorgeom
+	pta			-40 -40 0
+	ptb			 40 -40 0
+	ptc			 40  40 0
+	ptd			-40  40 0
+}
+standard_object
+{
+	name			floor
+	geometry		floorgeom
+	material		floormat
+}
+
+##################################################
+# Glint modifiers -- one per sphere (Object::AssignModifier is one-per-object).
+##################################################
+glint_modifier
+{
+	name			gm_fine
+	density			9.0
+	coverage		0.55
+	fill			0.6
+	spread			5.0
+	seed			1
+}
+glint_modifier
+{
+	name			gm_coarse
+	density			4.0
+	coverage		0.35
+	fill			0.7
+	spread			9.0
+	seed			2
+}
+glint_modifier
+{
+	name			gm_paint
+	density			8.0
+	coverage		0.50
+	fill			0.6
+	spread			6.0
+	seed			3
+}
+glint_modifier
+{
+	name			gm_glitter
+	density			7.0
+	coverage		0.75
+	fill			0.65
+	spread			12.0
+	seed			4
+}
+
+##################################################
+# Materials (GGX conductors; car-paint adds a coloured diffuse base coat)
+##################################################
+ggx_material
+{
+	name			m_silver
+	rd			black
+	rs			silver
+	alphax			base_rough
+	alphay			base_rough
+	ior			ag_n
+	extinction		ag_k
+}
+ggx_material
+{
+	name			m_gold
+	rd			black
+	rs			gold
+	alphax			base_rough
+	alphay			base_rough
+	ior			au_n
+	extinction		au_k
+}
+ggx_material
+{
+	name			m_red
+	rd			redpig
+	rs			silver
+	alphax			base_rough
+	alphay			base_rough
+	ior			ag_n
+	extinction		ag_k
+}
+ggx_material
+{
+	name			m_blue
+	rd			bluepig
+	rs			silver
+	alphax			base_rough
+	alphay			base_rough
+	ior			ag_n
+	extinction		ag_k
+}
+
+##################################################
+# Five spheres, x = -8 .. +8, sitting on the floor (radius 1.6, centre z = 1.6)
+##################################################
+sphere_geometry
+{
+	name			sph
+	radius			1.6
+}
+
+# 1. control: smooth silver, NO modifier
+standard_object
+{
+	name			s_smooth
+	geometry		sph
+	material		m_silver
+	position		-8 0 1.6
+}
+# 2. fine silver flakes
+standard_object
+{
+	name			s_fine
+	geometry		sph
+	material		m_silver
+	position		-4 0 1.6
+	modifier		gm_fine
+}
+# 3. coarse gold flakes
+standard_object
+{
+	name			s_coarse
+	geometry		sph
+	material		m_gold
+	position		0 0 1.6
+	modifier		gm_coarse
+}
+# 4. red metallic-flake car paint
+standard_object
+{
+	name			s_paint
+	geometry		sph
+	material		m_red
+	position		4 0 1.6
+	modifier		gm_paint
+}
+# 5. blue glitter
+standard_object
+{
+	name			s_glitter
+	geometry		sph
+	material		m_blue
+	position		8 0 1.6
+	modifier		gm_glitter
+}
