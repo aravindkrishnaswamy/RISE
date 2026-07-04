@@ -1,12 +1,42 @@
-# Sparkle / Glint — discrete microfacets for vitreous-enamel flecks
+# Sparkle / Glint — discrete-facet microfacets (a general material feature)
 
-**Status (2026-07-03): design RATIFIED with a mechanism + layer pivot after a
-3-reviewer adversarial gate (see §Ratification).  The feature is a general
-discrete-facet GLINT NORMAL MODIFIER (`GlintModifier`, scene chunk
-`glint_modifier`) composing with the EXISTING materials — NOT the
-`SparkleBRDF`/`SparkleSPF`/`sparkle_material` stack originally sketched here.
-The discrete-microfacet physics below stands unchanged; only the integration
-point and the target layer moved.**
+**Status (2026-07-03): SHIPPED as a general engine feature; the enamel watch,
+which motivated it, ended up NOT using it (see the material-class finding
+below).**  The feature is a discrete-facet GLINT NORMAL MODIFIER
+(`GlintModifier`, scene chunk `glint_modifier`) composing with the EXISTING
+materials — NOT the `SparkleBRDF`/`SparkleSPF`/`sparkle_material` stack
+originally sketched here (mechanism pivot), and NOT on the silver substrate
+(layer pivot); both pivots are in §Ratification.  Canonical showcase:
+[scenes/FeatureBased/Materials/glint_flakes.RISEscene](../scenes/FeatureBased/Materials/glint_flakes.RISEscene).
+
+## Material-class finding — when to use this modifier, and when NOT to (2026-07-03)
+
+The discrete-facet model is the correct physics for materials whose sparkle
+comes from genuinely **discrete specular scatterers**: metallic-flake
+automotive paint, craft glitter, aventurine ("goldstone") glass with real
+copper crystals, frost/snow.  Its per-cell **independent** facet normals ARE
+those independent flakes.
+
+It is the WRONG model for a **continuous** surface, and grand-feu vitreous
+enamel — the material that motivated this whole feature — turns out to be
+exactly that.  Fired glass is a continuous, correlated, fire-polished surface;
+its twinkle is that surface's own top-surface Fresnel glints (the reference
+measured them as neutral-white top-surface Fresnel, not sub-surface crystals),
+catching a localized light as the dial tilts.  Crucially, the fleck-scale
+relief on the enamel dial is **already** modeled correctly, as a *continuous*
+SDF displacement heightfield (the `en_dimpled` Worley field: N=85 cells over
+the 41.2-unit disk = **384 µm** cells, squarely inside the reference's
+100–350 µm fleck band).  So the enamel watch's dial twinkle is the continuous
+displacement relief lit by a small localized key (`glint_watch`'s `GlintSweep`
+animation rakes that key across the dial to reveal it) — the discrete
+`glint_modifier` was both the wrong material physics there and redundant with
+the dimples, and was removed from the watch.
+
+The lesson (the forcing-function principle working as intended): the scene
+exposed a real, general engine capability, which shipped and is proven; and
+the same investigation established that the *right* model for THIS material was
+the continuous primitive RISE already had.  Both outcomes are correct.  The
+discrete-microfacet physics and the modifier design below stand unchanged.
 
 ## Motivation
 
