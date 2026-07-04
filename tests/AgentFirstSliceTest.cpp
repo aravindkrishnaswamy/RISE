@@ -501,6 +501,150 @@ int main()
 		       "render(camera not an object) -> -32602 Invalid params" );
 	}
 
+	//----------------------------------------------------------------------
+	// P1-B (RPC-layer shape validation): a camera vector field must parse as
+	// EXACTLY 3 finite numbers.  Before this fix, ParseCameraOverrideParam
+	// only checked that location/lookat were STRINGS -- any string sailed
+	// through unvalidated to AgentSession, where CameraIntrospection::
+	// SetProperty's sscanf-based ParseVec3 silently no-ops on a malformed
+	// shape like "5 5" (returns false, discarded by the pre-fix caller) or
+	// tolerates trailing garbage like "1 2 3 4" (sscanf reads the first 3
+	// and ignores the rest).  Both classes are now rejected HERE, at the
+	// wire boundary, with a clean -32602 naming the field -- the session
+	// underneath is never even asked to apply a shape this bad.
+	//----------------------------------------------------------------------
+	std::printf( "[preview-render wire] camera vector SHAPE validation (P1-B)\n" );
+	{
+		// location with only 2 tokens -> -32602 (the exact reported false-positive).
+		JsonValue cam = JsonValue::MakeObject();
+		cam.set( "location", JsonValue::MakeString( "5 5" ) );
+		cam.set( "lookat",   JsonValue::MakeString( "0 0 0" ) );
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "camera", cam );
+		const std::string resp = rpc.HandleLine( Req( 40, "render", params ) );
+		JsonValue env = ParseResponse( resp, 40 );
+		Check( env.has( "error" ), "render(camera.location=\"5 5\") is an error" );
+		Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
+		       "render(camera.location=\"5 5\", 2 tokens) -> -32602 Invalid params" );
+	}
+	{
+		// location with non-numeric components -> -32602.
+		JsonValue cam = JsonValue::MakeObject();
+		cam.set( "location", JsonValue::MakeString( "abc def ghi" ) );
+		cam.set( "lookat",   JsonValue::MakeString( "0 0 0" ) );
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "camera", cam );
+		const std::string resp = rpc.HandleLine( Req( 41, "render", params ) );
+		JsonValue env = ParseResponse( resp, 41 );
+		Check( env.has( "error" ), "render(camera.location=\"abc def ghi\") is an error" );
+		Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
+		       "render(camera.location non-numeric) -> -32602 Invalid params" );
+	}
+	{
+		// location with 4 tokens (trailing garbage that sscanf's "%lf %lf
+		// %lf" would silently tolerate) -> -32602.  This is the case the
+		// AgentSession belt-and-braces layer CANNOT catch on its own
+		// (SetProperty's ParseVec3 happily parses the first 3 and ignores
+		// the 4th) -- the RPC-layer exact-3-token check is the only gate
+		// for this specific shape.
+		JsonValue cam = JsonValue::MakeObject();
+		cam.set( "location", JsonValue::MakeString( "1 2 3 4" ) );
+		cam.set( "lookat",   JsonValue::MakeString( "0 0 0" ) );
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "camera", cam );
+		const std::string resp = rpc.HandleLine( Req( 42, "render", params ) );
+		JsonValue env = ParseResponse( resp, 42 );
+		Check( env.has( "error" ), "render(camera.location=\"1 2 3 4\") is an error" );
+		Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
+		       "render(camera.location, 4 tokens) -> -32602 Invalid params" );
+	}
+	{
+		// location empty string -> -32602.
+		JsonValue cam = JsonValue::MakeObject();
+		cam.set( "location", JsonValue::MakeString( "" ) );
+		cam.set( "lookat",   JsonValue::MakeString( "0 0 0" ) );
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "camera", cam );
+		const std::string resp = rpc.HandleLine( Req( 43, "render", params ) );
+		JsonValue env = ParseResponse( resp, 43 );
+		Check( env.has( "error" ), "render(camera.location=\"\") is an error" );
+		Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
+		       "render(camera.location empty) -> -32602 Invalid params" );
+	}
+	{
+		// up malformed while location/lookat are valid -> -32602 (must not
+		// silently keep the original up while accepting location/lookat).
+		JsonValue cam = JsonValue::MakeObject();
+		cam.set( "location", JsonValue::MakeString( "3.5 0 0" ) );
+		cam.set( "lookat",   JsonValue::MakeString( "0 0 0" ) );
+		cam.set( "up",       JsonValue::MakeString( "9 9" ) );
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "camera", cam );
+		const std::string resp = rpc.HandleLine( Req( 44, "render", params ) );
+		JsonValue env = ParseResponse( resp, 44 );
+		Check( env.has( "error" ), "render(camera.up=\"9 9\", 2 tokens) is an error" );
+		Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
+		       "render(camera.up malformed while location/lookat valid) -> -32602 Invalid params" );
+	}
+	{
+		// fov out-of-range: 0, 180 (both boundary-exclusive), and negative,
+		// all rejected.
+		auto CheckBadFov = [&]( double id, double fovValue, const char* label ) {
+			JsonValue cam = JsonValue::MakeObject();
+			cam.set( "location", JsonValue::MakeString( "0 0 5" ) );
+			cam.set( "lookat",   JsonValue::MakeString( "0 0 0" ) );
+			cam.set( "fov",      JsonValue::MakeNumber( fovValue ) );
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "camera", cam );
+			const std::string resp = rpc.HandleLine( Req( id, "render", params ) );
+			JsonValue env = ParseResponse( resp, id );
+			Check( env.has( "error" ), ( std::string( "render(camera.fov=" ) + label + ") is an error" ) );
+			Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
+			       ( std::string( "render(camera.fov=" ) + label + ") -> -32602 Invalid params" ) );
+		};
+		CheckBadFov( 45, 0.0,   "0 (lower boundary, exclusive)" );
+		CheckBadFov( 46, 180.0, "180 (upper boundary, exclusive)" );
+		CheckBadFov( 47, -5.0,  "-5 (negative)" );
+	}
+	{
+		// fov 1e999 (non-finite via TEXTUAL double parse -- matches the
+		// established 'samples' guard idiom above: the hostile literal is
+		// written into the raw JSON-RPC line as TEXT and parsed by
+		// JsonParse, so the +inf value is produced by the JSON parser's
+		// strtod, not by a C++ double literal -- a C++-side `1e999` literal
+		// trips '-Wliteral-range' at compile time (magnitude too large for
+		// double), which is exactly the kind of warning CLAUDE.md forbids
+		// introducing).
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":48,\"method\":\"render\",\"params\":"
+			"{\"camera\":{\"location\":\"0 0 5\",\"lookat\":\"0 0 0\",\"fov\":1e999}}}" );
+		JsonValue env = ParseResponse( resp, 48 );
+		Check( env.has( "error" ), "render(camera.fov=1e999) is an error" );
+		Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
+		       "render(camera.fov=1e999, parses to +inf) -> -32602 Invalid params" );
+	}
+	{
+		// fov 179.9 (just inside the open interval) -> accepted.
+		JsonValue cam = JsonValue::MakeObject();
+		cam.set( "location", JsonValue::MakeString( "0 0 5" ) );
+		cam.set( "lookat",   JsonValue::MakeString( "0 0 0" ) );
+		cam.set( "fov",      JsonValue::MakeNumber( 179.9 ) );
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "camera", cam );
+		const std::string resp = rpc.HandleLine( Req( 49, "render", params ) );
+		JsonValue env = ParseResponse( resp, 49 );
+		Check( env.has( "result" ), "render(camera.fov=179.9, just inside (0,180)) succeeds" );
+		Check( env.get( "result" ).get( "ok" ).asBool(), "render(camera.fov=179.9) ok==true" );
+	}
+	{
+		// The session is still usable after all those rejections -- a
+		// well-formed render succeeds cleanly right after.
+		const std::string resp = rpc.HandleLine( Req( 50, "render", JsonValue::MakeObject() ) );
+		JsonValue env = ParseResponse( resp, 50 );
+		Check( env.has( "result" ), "render() with no camera override still succeeds after the malformed-shape rejections" );
+		Check( env.get( "result" ).get( "ok" ).asBool(), "render() ok==true (session not left in a broken state)" );
+	}
+
 	std::printf( "[preview-render wire] read_image maxEdge clamps to [16,1024]\n" );
 	{
 		// Ensure a render has happened so read_image has a cached image.

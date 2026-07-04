@@ -41,6 +41,8 @@
 #include "../src/Library/Job.h"
 #include "../src/Library/Interfaces/ICamera.h"
 #include "../src/Library/Interfaces/ICameraManager.h"
+#include "../src/Library/Interfaces/IScenePriv.h"
+#include "../src/Library/Interfaces/IFilm.h"
 #include "../src/Library/SceneEditor/CameraIntrospection.h"
 
 #include <cmath>
@@ -48,6 +50,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <stdexcept>   // P1-A red-prove: ThrowingRasterizeJob throws std::runtime_error
 #include <string>
 #include <vector>
 
@@ -116,7 +119,9 @@ static bool ReadPngDims( const std::vector<unsigned char>& b, unsigned int& w, u
 	return true;
 }
 
-static void RunCameraOverrideTests();   // fwd decl -- defined below, called from main()
+static void RunCameraOverrideTests();          // fwd decl -- defined below, called from main()
+static void RunRestoreOnThrowTest();           // P1-A red-prove -- defined below, called from main()
+static void RunMalformedCameraOverrideTests(); // P1-B -- defined below, called from main()
 
 static void RunCoreTests()
 {
@@ -531,10 +536,251 @@ static void RunCameraOverrideTests()
 	std::remove( scenePath.c_str() );
 }
 
+//////////////////////////////////////////////////////////////////////
+// P1-A red-prove: a Job subclass whose Rasterize() throws AFTER the base
+// Job::Rasterize() has genuinely run (so the sink really got a completed
+// image and the camera/film overrides were really applied) -- mirrors the
+// CodeThreeJob technique in AgentLiveCommitTest.cpp (override a single
+// virtual, call the base for real, then corrupt/interrupt the outcome) so
+// the exception fires from the EXACT call site AgentSession::RenderCore_
+// invokes (mJob->Rasterize()), proving the RAII guard's restore runs on a
+// real unwind through that real call, not a synthetic short-circuit.
+//////////////////////////////////////////////////////////////////////
+class ThrowingRasterizeJob : public Job
+{
+public:
+	ThrowingRasterizeJob() : Job(), mThrowOnRasterize( true ) {}
+	void SetThrowOnRasterize( bool on ) { mThrowOnRasterize = on; }
+	bool Rasterize() override
+	{
+		const bool base = Job::Rasterize();   // the real render actually runs
+		if( mThrowOnRasterize ) {
+			throw std::runtime_error( "ThrowingRasterizeJob: simulated OIDN-class throw from Rasterize()" );
+		}
+		return base;
+	}
+private:
+	bool mThrowOnRasterize;
+};
+
+static void RunRestoreOnThrowTest()
+{
+	std::printf( "=== AgentProposeRenderTest: P1-A RAII restore-on-throw (Rasterize() throws) ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_throw_restore.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the throw-restore scene to a temp file" );
+
+	ThrowingRasterizeJob* pJob = new ThrowingRasterizeJob();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "ThrowingRasterizeJob loads the native-v7 scene via the CST path" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the throwing Job" );
+	if( !session ) { pJob->release(); return; }
+
+	ICameraManager* cams = pJob->GetCameras();
+	const std::string activeName = pJob->GetActiveCameraName();
+	ICamera* cam = ( cams && !activeName.empty() ) ? cams->GetItem( activeName.c_str() ) : nullptr;
+	Check( cam != nullptr, "the active camera resolves for introspection" );
+	if( !cam ) { pJob->release(); return; }
+
+	const String origLocation = CameraIntrospection::GetPropertyValue( *cam, String( "location" ) );
+	const IScenePriv* scenePriv = pJob->GetScene();
+	const IFilm* curFilm = scenePriv ? scenePriv->GetFilm() : nullptr;
+	Check( curFilm != nullptr, "the scene has a Film to capture pre-override dims from" );
+	const unsigned int origW = curFilm ? curFilm->GetWidth()  : 0;
+	const unsigned int origH = curFilm ? curFilm->GetHeight() : 0;
+	Check( origW == 24 && origH == 24, "pre-override Film dims are the Document's authored 24x24" );
+
+	//----------------------------------------------------------------------
+	// Render WITH both a film-dims override and a camera-pose override so
+	// BOTH restore paths (camera fields + film dims) are exercised by the
+	// SAME throwing call.  mJob->Rasterize() throws; AgentRpc's caller-side
+	// dispatch (not exercised directly here -- this is the AgentSession
+	// layer) would turn an escaping exception into a clean -32603, but the
+	// money assertion is what happens to the CAMERA/FILM STATE: it must be
+	// restored EVEN THOUGH the exception unwound past the old straight-line
+	// restore code that used to sit after Rasterize().
+	//----------------------------------------------------------------------
+	AgentRenderParams p;
+	p.width  = 16;
+	p.height = 16;
+	p.camera.hasLocation = true;
+	p.camera.location    = "3.5 0 0";
+	p.camera.hasLookAt   = true;
+	p.camera.lookAt      = "0 0 0";
+
+	bool threw = false;
+	try {
+		session->Render( p );
+	}
+	catch( const std::exception& ) {
+		threw = true;
+	}
+	Check( threw, "Render() with a throwing Rasterize() propagates the exception (RED-PROVE the seam actually fires)" );
+
+	//----------------------------------------------------------------------
+	// THE MONEY ASSERTION: despite the exception, both overrides are
+	// restored -- the RAII guard's destructor ran during unwinding.
+	//----------------------------------------------------------------------
+	const String afterLocation = CameraIntrospection::GetPropertyValue( *cam, String( "location" ) );
+	Check( std::string( afterLocation.c_str() ) == std::string( origLocation.c_str() ),
+	       "P1-A: camera 'location' is RESTORED after Rasterize() throws (RAII guard ran on unwind)" );
+
+	const IScenePriv* scenePrivAfter = pJob->GetScene();
+	const IFilm* filmAfter = scenePrivAfter ? scenePrivAfter->GetFilm() : nullptr;
+	Check( filmAfter != nullptr, "the scene still has a Film after the throwing render" );
+	Check( filmAfter && filmAfter->GetWidth() == origW && filmAfter->GetHeight() == origH,
+	       "P1-A: Film dims are RESTORED to the pre-override 24x24 after Rasterize() throws (RAII guard ran on unwind)" );
+
+	//----------------------------------------------------------------------
+	// RED-PROVE the red-prove: confirm the session is still USABLE after the
+	// exception (a subsequent non-throwing render succeeds cleanly) -- the
+	// guard's restore did not itself leave the Job in a broken state.
+	//----------------------------------------------------------------------
+	pJob->SetThrowOnRasterize( false );
+	AgentRenderResult clean = session->Render( -1 );
+	Check( clean.ok, "a follow-up non-throwing Render() succeeds after the earlier throw+restore (session still usable)" );
+	Check( clean.width == 24 && clean.height == 24, "follow-up render is at the authored 24x24 (no lingering override)" );
+
+	std::printf( "=== P1-A RAII restore-on-throw: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//////////////////////////////////////////////////////////////////////
+// P1-B: malformed camera vectors must be rejected CLEANLY, not silently
+// no-op while cameraOverridden reports true.  Exercises BOTH layers:
+//
+//   * AgentSession's belt-and-braces (this file, via WrapJob + a HOSTILE
+//     string passed directly through the C++ API, bypassing AgentRpc's
+//     validation entirely) -- proves fail-loud holds even for a caller
+//     that skips the wire layer.
+//   * The RPC-layer shape validation (AgentRpc.cpp ParseCameraOverrideParam)
+//     is exercised end-to-end by AgentChatLoopTest.cpp / the JSON-RPC wire
+//     tests, not duplicated here -- this file is the AgentSession-level
+//     (C++ API) surface.
+//////////////////////////////////////////////////////////////////////
+static void RunMalformedCameraOverrideTests()
+{
+	std::printf( "=== AgentProposeRenderTest: P1-B fail-loud camera-override validation (AgentSession belt-and-braces) ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_malformed_camera.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the malformed-camera scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene directly" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); return; }
+
+	ICameraManager* cams = pJob->GetCameras();
+	const std::string activeName = pJob->GetActiveCameraName();
+	ICamera* cam = ( cams && !activeName.empty() ) ? cams->GetItem( activeName.c_str() ) : nullptr;
+	Check( cam != nullptr, "the active camera resolves for introspection" );
+	if( !cam ) { pJob->release(); return; }
+
+	const String origLocation = CameraIntrospection::GetPropertyValue( *cam, String( "location" ) );
+	const String origLookAt   = CameraIntrospection::GetPropertyValue( *cam, String( "lookat" ) );
+	const String origUp       = CameraIntrospection::GetPropertyValue( *cam, String( "up" ) );
+	const String origFov      = CameraIntrospection::GetPropertyValue( *cam, String( "fov" ) );
+
+	// RED-PROVE THE BUG THIS FIXES: before the fix, CameraIntrospection::
+	// SetProperty's bool return was discarded (captureAndSet ignored it) and
+	// overrodeCamera = !capturedCam.empty() counted ATTEMPTS, not successes
+	// -- so a hostile string like "5 5" (2 tokens, ParseVec3's sscanf wants
+	// 3) would sail through as ok:true, cameraOverridden:true, with the
+	// camera actually UNCHANGED (SetProperty's ParseVec3 failed and
+	// returned early before calling SetLocation). That is precisely the
+	// false observation the feature exists to prevent. The fixed contract:
+	// ok must be FALSE and the camera must be untouched.
+	auto CheckMalformed = [&]( const std::string& label,
+	                            bool hasLoc, const std::string& loc,
+	                            bool hasLookAt, const std::string& lookAt,
+	                            bool hasUp, const std::string& up,
+	                            bool hasFov, const std::string& fov )
+	{
+		AgentRenderParams p;
+		p.camera.hasLocation = hasLoc;   p.camera.location = loc;
+		p.camera.hasLookAt   = hasLookAt; p.camera.lookAt   = lookAt;
+		p.camera.hasUp       = hasUp;     p.camera.up       = up;
+		p.camera.hasFov      = hasFov;    p.camera.fov      = fov;
+
+		AgentRenderResult rr = session->Render( p );
+		Check( !rr.ok, ( "[" + label + "] malformed camera override -> ok==false (fail-loud)" ).c_str() );
+		Check( !rr.cameraOverridden, ( "[" + label + "] malformed camera override -> cameraOverridden==false (no false-positive)" ).c_str() );
+		Check( !rr.message.empty(), ( "[" + label + "] malformed camera override -> a non-empty message explains the failure" ).c_str() );
+
+		Check( std::string( CameraIntrospection::GetPropertyValue( *cam, String( "location" ) ).c_str() ) == std::string( origLocation.c_str() ),
+		       ( "[" + label + "] camera 'location' is UNCHANGED after a rejected override" ).c_str() );
+		Check( std::string( CameraIntrospection::GetPropertyValue( *cam, String( "lookat" ) ).c_str() ) == std::string( origLookAt.c_str() ),
+		       ( "[" + label + "] camera 'lookat' is UNCHANGED after a rejected override" ).c_str() );
+		Check( std::string( CameraIntrospection::GetPropertyValue( *cam, String( "up" ) ).c_str() ) == std::string( origUp.c_str() ),
+		       ( "[" + label + "] camera 'up' is UNCHANGED after a rejected override" ).c_str() );
+		Check( std::string( CameraIntrospection::GetPropertyValue( *cam, String( "fov" ) ).c_str() ) == std::string( origFov.c_str() ),
+		       ( "[" + label + "] camera 'fov' is UNCHANGED after a rejected override" ).c_str() );
+	};
+
+	std::printf( "[fail-loud] location \"5 5\" (2 tokens -- the exact reported false-positive)\n" );
+	CheckMalformed( "location 2-token", true, "5 5", true, "0 0 0", false, "", false, "" );
+
+	std::printf( "[fail-loud] location \"abc def ghi\" (non-numeric)\n" );
+	CheckMalformed( "location non-numeric", true, "abc def ghi", true, "0 0 0", false, "", false, "" );
+
+	// NOTE (honest gap, by design): "1 2 3 4" (trailing-token garbage) is
+	// NOT a case this AgentSession-level belt-and-braces layer can catch on
+	// its own -- CameraIntrospection::SetProperty's ParseVec3 is a plain
+	// sscanf( "%lf %lf %lf" ), which reads the first 3 tokens and silently
+	// ignores trailing content, so SetProperty returns TRUE (a real,
+	// successful apply) for that string. The belt-and-braces guard here
+	// only fires when SetProperty itself reports failure; it cannot
+	// retroactively invent a rejection SetProperty didn't produce. The
+	// EXACT-3-token shape check that catches "1 2 3 4" lives at the RPC
+	// layer (AgentRpc.cpp ParseCameraOverrideParam / ValidateVec3Shape),
+	// which validates the wire string BEFORE it ever reaches AgentSession
+	// -- see AgentFirstSliceTest.cpp's "camera vector SHAPE validation
+	// (P1-B)" block for that coverage. A direct C++ caller that bypasses
+	// the RPC layer (as this test does) and hands SetProperty a
+	// trailing-garbage string gets exactly what SetProperty gives it: a
+	// clean apply of the first 3 components. That is SetProperty's
+	// documented contract, not a bug this layer is responsible for.
+
+	std::printf( "[fail-loud] location \"\" (empty)\n" );
+	CheckMalformed( "location empty", true, "", true, "0 0 0", false, "", false, "" );
+
+	std::printf( "[fail-loud] up malformed while location/lookat are VALID (must not silently keep original up)\n" );
+	CheckMalformed( "up malformed", true, "3.5 0 0", true, "0 0 0", true, "9 9", false, "" );
+
+	//------------------------------------------------------------------
+	// Sanity: after all those rejections, a CLEAN override still works --
+	// proves the session was never left in a broken state by a rejected
+	// override.
+	//------------------------------------------------------------------
+	std::printf( "[fail-loud] a clean override still works after several rejections\n" );
+	{
+		AgentRenderParams good;
+		good.camera.hasLocation = true;  good.camera.location = "3.5 0 0";
+		good.camera.hasLookAt   = true;  good.camera.lookAt   = "0 0 0";
+		AgentRenderResult rr = session->Render( good );
+		Check( rr.ok, "a well-formed camera override renders successfully after prior rejections" );
+		Check( rr.cameraOverridden, "a well-formed camera override reports cameraOverridden==true" );
+	}
+	Check( std::string( CameraIntrospection::GetPropertyValue( *cam, String( "location" ) ).c_str() ) == std::string( origLocation.c_str() ),
+	       "camera 'location' restored to ORIGINAL after the clean override's render too" );
+
+	std::printf( "=== P1-B fail-loud camera-override validation: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	RunCoreTests();
 	RunCameraOverrideTests();
+	RunRestoreOnThrowTest();
+	RunMalformedCameraOverrideTests();
 
 	std::printf( "=== AgentProposeRenderTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

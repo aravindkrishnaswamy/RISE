@@ -19,9 +19,13 @@
 #include "Json.h"
 #include "SchemaGen.h"
 
+#include <cctype>   // P1-B: std::isspace for the whitespace-split camera-vector shape check
+#include <cerrno>   // P1-B: errno for the strtod ERANGE overflow check
+#include <cfloat>   // P1-B: DBL_MAX for the -ffast-math-safe finite-range test
 #include <cmath>
 #include <cstdint>
 #include <cstdio>   // preview-render: std::snprintf for the fov degrees-string conversion
+#include <cstdlib>  // P1-B: std::strtod for the camera-vector component parse
 #include <exception>
 #include <string>
 #include <vector>
@@ -188,12 +192,93 @@ namespace RISE
 				return 1;
 			}
 
+			//! P1-B: split `s` on ASCII whitespace and return the tokens.  No
+			//! regex / no deps -- a plain hand-rolled scan matching the
+			//! whitespace-separated numeric-triple convention used
+			//! throughout the scene-file grammar (CameraIntrospection's own
+			//! ParseVec3 uses sscanf's equivalent whitespace-skipping).
+			std::vector<std::string> SplitWhitespace( const std::string& s )
+			{
+				std::vector<std::string> out;
+				std::size_t i = 0;
+				const std::size_t n = s.size();
+				while( i < n ) {
+					while( i < n && std::isspace( static_cast<unsigned char>( s[i] ) ) ) ++i;
+					if( i >= n ) break;
+					std::size_t j = i;
+					while( j < n && !std::isspace( static_cast<unsigned char>( s[j] ) ) ) ++j;
+					out.push_back( s.substr( i, j - i ) );
+					i = j;
+				}
+				return out;
+			}
+
+			//! P1-B: validate that `token` parses as a single finite number
+			//! (no trailing garbage).  Uses std::strtod + an explicit range
+			//! test against the double bounds -- NOT std::isfinite (dead
+			//! code under -ffinite-math-only per the project's established
+			//! idiom; see the 'samples' parse above).  Rejects empty tokens
+			//! and tokens with unconsumed trailing characters (so "5abc"
+			//! does not silently parse as 5).
+			bool IsFiniteNumberToken( const std::string& token )
+			{
+				if( token.empty() ) return false;
+				const char* start = token.c_str();
+				char* end = nullptr;
+				errno = 0;
+				const double v = std::strtod( start, &end );
+				if( end != start + token.size() ) return false;   // trailing garbage
+				if( errno == ERANGE ) return false;                // overflowed to +/-HUGE_VAL
+				// Explicit finite range test (survives -ffinite-math-only):
+				// NaN fails both comparisons; +/-inf fails the DBL_MAX bound.
+				if( !( v >= -DBL_MAX && v <= DBL_MAX ) ) return false;
+				return true;
+			}
+
+			//! P1-B: validate a camera vector-field STRING SHAPE -- exactly
+			//! 3 whitespace-separated finite numbers, matching what
+			//! CameraIntrospection::SetProperty's ParseVec3 (sscanf "%lf %lf
+			//! %lf") actually accepts.  Catches the false-observation bug at
+			//! the wire boundary: "5 5" (2 tokens) or "abc def ghi"
+			//! (non-numeric) used to sail through as a no-op override while
+			//! the render result still reported cameraOverridden==true.
+			//! Returns true + leaves outErr untouched on a valid shape;
+			//! false + outErr set to a clean, field-naming message otherwise.
+			bool ValidateVec3Shape( const std::string& value, const char* fieldName, std::string& outErr )
+			{
+				const std::vector<std::string> toks = SplitWhitespace( value );
+				if( toks.size() != 3 ) {
+					outErr = std::string( "Invalid params: '" ) + fieldName +
+						"' must be a string of 3 numbers \"x y z\" (got " +
+						std::to_string( toks.size() ) + " token(s))";
+					return false;
+				}
+				for( std::size_t i = 0; i < toks.size(); ++i ) {
+					if( !IsFiniteNumberToken( toks[i] ) ) {
+						outErr = std::string( "Invalid params: '" ) + fieldName +
+							"' must be a string of 3 numbers \"x y z\" (component " +
+							std::to_string( i ) + " = \"" + toks[i] + "\" is not a finite number)";
+						return false;
+					}
+				}
+				return true;
+			}
+
 			//! Preview-render: parse the OPTIONAL `camera` override object
 			//! `{location,lookat,up?,fov?}` (all string fields; location/lookat
 			//! required together with the object, up/fov independently
 			//! optional).  Returns 1 = present and valid (outOverride filled),
 			//! 0 = absent/null (no override requested), -1 = malformed
 			//! (outErr carries the -32602 message).
+			//!
+			//! P1-B: EVERY vector field's SHAPE is validated here (exactly 3
+			//! finite numbers) before it ever reaches AgentSession -- a
+			//! malformed vector (wrong token count, non-numeric component,
+			//! trailing garbage) is a clean -32602 naming the field, not a
+			//! silent no-op that still reports cameraOverridden==true.  `fov`
+			//! is validated as a single finite number strictly inside the
+			//! open interval (0, 180) degrees (0/180/negative/non-finite are
+			//! all physically nonsensical field-of-view values).
 			int ParseCameraOverrideParam( const JsonValue& params,
 			                              AgentCameraOverride& outOverride,
 			                              std::string& outErr )
@@ -207,24 +292,38 @@ namespace RISE
 				const JsonValue* loc = cam->find( "location" );
 				const JsonValue* la  = cam->find( "lookat" );
 				if( !loc || !loc->isString() || !la || !la->isString() ) {
-					outErr = "Invalid params: 'camera' needs string 'location' and 'lookat' (e.g. \"0 5 10\")";
+					outErr = "Invalid params: 'camera' needs 'location' and 'lookat', each a string of 3 numbers \"x y z\" (e.g. \"0 5 10\")";
 					return -1;
 				}
+				if( !ValidateVec3Shape( loc->asString(), "camera.location", outErr ) ) return -1;
+				if( !ValidateVec3Shape( la->asString(),  "camera.lookat",   outErr ) ) return -1;
 				outOverride.hasLocation = true;
 				outOverride.location    = loc->asString();
 				outOverride.hasLookAt   = true;
 				outOverride.lookAt      = la->asString();
 				if( const JsonValue* up = cam->find( "up" ) ) {
-					if( up->isString() ) { outOverride.hasUp = true; outOverride.up = up->asString(); }
+					if( up->isString() ) {
+						if( !ValidateVec3Shape( up->asString(), "camera.up", outErr ) ) return -1;
+						outOverride.hasUp = true;
+						outOverride.up    = up->asString();
+					}
 					else if( !up->isNull() ) {
-						outErr = "Invalid params: 'camera.up' must be a string";
+						outErr = "Invalid params: 'camera.up' must be a string of 3 numbers \"x y z\"";
 						return -1;
 					}
 				}
 				if( const JsonValue* fov = cam->find( "fov" ) ) {
 					if( fov->isNumber() ) {
+						const double fv = fov->asNumber();
+						// Explicit range test (not std::isfinite -- see the
+						// project-wide idiom note above): NaN fails both
+						// comparisons, +/-inf fails the open-interval bounds.
+						if( !( fv > 0.0 && fv < 180.0 ) ) {
+							outErr = "Invalid params: 'camera.fov' must be in (0, 180) degrees";
+							return -1;
+						}
 						char buf[64];
-						std::snprintf( buf, sizeof( buf ), "%.6g", fov->asNumber() );
+						std::snprintf( buf, sizeof( buf ), "%.6g", fv );
 						outOverride.hasFov = true;
 						outOverride.fov    = buf;
 					} else if( !fov->isNull() ) {

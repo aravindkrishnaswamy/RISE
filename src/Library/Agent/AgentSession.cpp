@@ -50,6 +50,7 @@
 #include "../Interfaces/IFilm.h"
 #include "../Interfaces/ICamera.h"
 #include "../Interfaces/ICameraManager.h"
+#include "../Interfaces/ILog.h"   // P1-A: RenderOverrideRestoreGuard's defensive log-and-swallow
 #include "../RISE_API.h"
 #include "../SceneEditor/SceneEditController.h"   // Facet 5 slice 1b: LIVE-mode routing through the render-safe edit path
 #include "../SceneEditor/CameraIntrospection.h"   // preview-render: ephemeral camera-pose override
@@ -1110,6 +1111,105 @@ namespace RISE
 				std::string name;    //!< the CameraIntrospection property name
 				std::string value;   //!< its value BEFORE the override
 			};
+
+			//! P1-A fix: RAII guard that restores the film-dims / camera-pose
+			//! overrides on EVERY exit from the render window, including an
+			//! exception unwinding out of mJob->Rasterize() (OIDN denoise is a
+			//! documented real throw site -- see
+			//! PixelBasedRasterizerHelper.cpp's own FrameStoreBulkBracket RAII
+			//! guard for the identical rationale).  Before this guard, the
+			//! capture -> override -> render -> restore sequence was a plain
+			//! straight-line lambda body with the restore AFTER Rasterize(): an
+			//! exception there would unwind past the restore entirely, leaving
+			//! the shared Film dims / active camera PERMANENTLY overridden even
+			//! though AgentRpc's dispatch-level catch(...) reports a clean
+			//! -32603 to the caller.
+			//!
+			//! Construct with references to the state the render window needs;
+			//! call Arm() once the capture step has actually recorded the
+			//! pre-override values (so a guard destructed before Arm() -- e.g.
+			//! a throw during the capture step itself, before any override was
+			//! applied -- is a safe no-op).  The destructor is NOEXCEPT-SAFE:
+			//! CameraIntrospection::SetProperty and Job::SetFilm are both
+			//! plain-data setters that do not throw (verified by inspection --
+			//! neither contains a `throw` and both fail via a bool return), but
+			//! the restore is wrapped in a try/catch anyway as a defensive belt
+			//! (log-and-swallow, NEVER rethrow from a destructor) in case a
+			//! future change to either introduces one.
+			class RenderOverrideRestoreGuard
+			{
+			public:
+				RenderOverrideRestoreGuard( IJobPriv& job,
+				                            bool& overrodeFilm,
+				                            unsigned int& origFilmW,
+				                            unsigned int& origFilmH,
+				                            double& origFilmPAR,
+				                            ICamera*& activeCam,
+				                            std::vector<CapturedCameraField>& capturedCam )
+					: mJob( job )
+					, mOverrodeFilm( overrodeFilm )
+					, mOrigFilmW( origFilmW )
+					, mOrigFilmH( origFilmH )
+					, mOrigFilmPAR( origFilmPAR )
+					, mActiveCam( activeCam )
+					, mCapturedCam( capturedCam )
+					, mArmed( false )
+				{
+				}
+
+				//! Call once the pre-override state has been captured (whether
+				//! or not any override actually applied) -- makes the
+				//! destructor's restore live.
+				void Arm() { mArmed = true; }
+
+				//! Explicit early restore (used once the render window's
+				//! normal-path restore runs) so the destructor's restore is a
+				//! no-op on the ordinary success path -- Disarm() after a
+				//! successful explicit restore avoids a harmless-but-redundant
+				//! double SetProperty/SetFilm call.
+				void Disarm() { mArmed = false; }
+
+				~RenderOverrideRestoreGuard()
+				{
+					if( !mArmed ) return;
+					try {
+						// Reverse order, matching the original tail-of-lambda
+						// restore sequencing: camera fields first, film dims
+						// last.
+						if( mActiveCam ) {
+							for( std::size_t i = mCapturedCam.size(); i-- > 0; ) {
+								CameraIntrospection::SetProperty( *mActiveCam,
+									String( mCapturedCam[i].name.c_str() ),
+									String( mCapturedCam[i].value.c_str() ) );
+							}
+						}
+						if( mOverrodeFilm ) {
+							mJob.SetFilm( mOrigFilmW, mOrigFilmH, mOrigFilmPAR );
+						}
+					}
+					catch( ... ) {
+						// NEVER rethrow from a destructor (would terminate() if
+						// already unwinding from Rasterize()'s own exception).
+						// Log so a future throw here is at least diagnosable.
+						GlobalLog()->PrintEx( eLog_Error,
+							"AgentSession::Render: exception escaped the film/camera "
+							"override restore -- state may be left overridden" );
+					}
+				}
+
+			private:
+				RenderOverrideRestoreGuard( const RenderOverrideRestoreGuard& );             // deleted
+				RenderOverrideRestoreGuard& operator=( const RenderOverrideRestoreGuard& );   // deleted
+
+				IJobPriv&                          mJob;
+				bool&                               mOverrodeFilm;
+				unsigned int&                       mOrigFilmW;
+				unsigned int&                       mOrigFilmH;
+				double&                              mOrigFilmPAR;
+				ICamera*&                            mActiveCam;
+				std::vector<CapturedCameraField>&    mCapturedCam;
+				bool                                 mArmed;
+			};
 		}
 
 		AgentRenderResult AgentSession::Render( int samplesOverride )
@@ -1208,8 +1308,32 @@ namespace RISE
 			bool rendered = false;
 			InMemoryRasterizerOutput* sink = nullptr;
 
+			// P1-B (belt-and-braces): if ANY requested camera field fails to
+			// apply, fail loud -- restore what was already applied THIS call
+			// and skip the render entirely rather than reporting
+			// cameraOverridden==true on a partial/no-op override.  The RPC
+			// layer (AgentRpc.cpp ParseCameraOverrideParam) is the primary
+			// gate (validates vector SHAPE before this call is ever reached),
+			// but a direct C++ caller (bypassing the RPC layer) must get the
+			// same honesty guarantee.
+			bool cameraOverrideFailed = false;
+			std::string cameraOverrideFailedField;
+
 			auto doRenderWork = [&]()
 			{
+				// P1-A fix: arm an RAII guard BEFORE any override is applied
+				// so restoration runs unconditionally on every exit from this
+				// lambda -- including an exception unwinding out of
+				// mJob->Rasterize() below (OIDN denoise is a documented real
+				// throw site).  The explicit tail restore further down
+				// Disarm()s the guard on the ordinary success path so the
+				// destructor's restore is a no-op there (avoids a harmless
+				// but redundant double SetProperty/SetFilm call).
+				RenderOverrideRestoreGuard restoreGuard( *mJob,
+					overrodeFilm, origFilmW, origFilmH, origFilmPAR,
+					activeCam, capturedCam );
+				restoreGuard.Arm();
+
 				// ---- Film-dims override: capture -> set -> (render happens
 				// after this lambda's camera section) -- restore happens at
 				// the tail of this SAME lambda so both overrides are undone
@@ -1228,28 +1352,63 @@ namespace RISE
 
 				// ---- Camera-pose override: resolve the ACTIVE camera,
 				// capture the current value of every REQUESTED field, then
-				// apply the overrides.
+				// apply the overrides.  P1-B: SetProperty's bool return is
+				// now CHECKED -- a parse failure (malformed vector shape,
+				// non-finite number, ...) must not silently no-op while
+				// `overrodeCamera` reports true.
 				if( wantCameraOverride ) {
 					ICameraManager* cams = mJob->GetCameras();
 					const std::string activeName = mJob->GetActiveCameraName();
 					activeCam = ( cams && !activeName.empty() )
 						? cams->GetItem( activeName.c_str() ) : nullptr;
 					if( activeCam ) {
-						auto captureAndSet = [&]( bool has, const char* name, const std::string& newVal )
+						// captureAndSet returns true iff the field was
+						// requested AND applied cleanly; false on a rejected
+						// SetProperty (the field is captured but NOT pushed
+						// onto capturedCam in that case, since nothing was
+						// actually changed -- there is nothing to restore
+						// for it, and restoring it would be a harmless but
+						// misleading no-op given it was never applied).
+						auto captureAndSet = [&]( bool has, const char* name, const std::string& newVal ) -> bool
 						{
-							if( !has ) return;
+							if( !has ) return true;   // not requested -- vacuously fine
+							const String priorValue = CameraIntrospection::GetPropertyValue( *activeCam, String( name ) );
+							const bool applied = CameraIntrospection::SetProperty( *activeCam, String( name ), String( newVal.c_str() ) );
+							if( !applied ) {
+								cameraOverrideFailed = true;
+								cameraOverrideFailedField = name;
+								return false;
+							}
 							CapturedCameraField f;
 							f.name  = name;
-							f.value = CameraIntrospection::GetPropertyValue( *activeCam, String( name ) ).c_str();
+							f.value = priorValue.c_str();
 							capturedCam.push_back( f );
-							CameraIntrospection::SetProperty( *activeCam, String( name ), String( newVal.c_str() ) );
+							return true;
 						};
-						captureAndSet( params.camera.hasLocation, "location", params.camera.location );
-						captureAndSet( params.camera.hasLookAt,   "lookat",   params.camera.lookAt );
-						captureAndSet( params.camera.hasUp,       "up",       params.camera.up );
-						captureAndSet( params.camera.hasFov,      "fov",      params.camera.fov );
+						// Apply in the SAME order as before; stop at the
+						// first failure (fail-loud -- no point applying
+						// further fields once one has already failed) but
+						// keep going through captureAndSet's own bookkeeping
+						// so every field ALREADY applied before the failure
+						// is captured and will be restored by the guard.
+						captureAndSet( params.camera.hasLocation, "location", params.camera.location )
+							&& captureAndSet( params.camera.hasLookAt, "lookat", params.camera.lookAt )
+							&& captureAndSet( params.camera.hasUp,     "up",     params.camera.up )
+							&& captureAndSet( params.camera.hasFov,    "fov",    params.camera.fov );
 						overrodeCamera = !capturedCam.empty();
 					}
+					// else: no active camera resolved at all -- nothing to
+					// override; not itself a failure (matches pre-P1-B
+					// behaviour: overrodeCamera stays false).
+				}
+
+				if( cameraOverrideFailed ) {
+					// FAIL LOUD: do not render un-overridden and do not
+					// report a partial override as applied.  The guard's
+					// destructor (still armed) restores every field that
+					// WAS applied before the failure; nothing further to do
+					// here except skip the render.
+					return;
 				}
 
 				// ---- The render itself (in-memory sink; never touches the
@@ -1269,7 +1428,10 @@ namespace RISE
 				// / returning (headless mode) -- ReadDocument's byte-identity
 				// contract only covers the Document, but the active camera's
 				// PROPERTIES must also be back to their pre-call values (the
-				// restoration test AgentSession callers rely on).
+				// restoration test AgentSession callers rely on).  This is the
+				// ORDINARY-path restore; the guard exists for the ABNORMAL
+				// (exception) path, so Disarm() it here to skip the
+				// redundant destructor-time restore.
 				for( std::size_t i = capturedCam.size(); i-- > 0; ) {
 					CameraIntrospection::SetProperty( *activeCam,
 						String( capturedCam[i].name.c_str() ),
@@ -1278,6 +1440,7 @@ namespace RISE
 				if( overrodeFilm ) {
 					mJob->SetFilm( origFilmW, origFilmH, origFilmPAR );
 				}
+				restoreGuard.Disarm();
 			};
 
 			if( mController && ( wantFilmOverride || wantCameraOverride ) ) {
@@ -1295,6 +1458,22 @@ namespace RISE
 				}
 			} else {
 				doRenderWork();
+			}
+
+			// P1-B (belt-and-braces, fail-loud): a camera override field that
+			// failed to apply means the requested pose was NOT achieved --
+			// report ok=false rather than silently rendering un-overridden
+			// (or worse, reporting cameraOverridden==true on a no-op).  The
+			// guard already restored every field that DID apply before the
+			// failure; the render itself was skipped (doRenderWork returns
+			// early on this path), so there is no sink to release.
+			if( cameraOverrideFailed ) {
+				res.ok = false;
+				res.integrator = mJob->GetActiveRasterizerName();
+				res.cameraOverridden = false;
+				res.message = "camera override failed: '" + cameraOverrideFailedField +
+					"' did not parse -- render skipped, camera left unchanged";
+				return res;
 			}
 
 			if( !renderRan || !rendered || !sink || !sink->HasImage() ) {

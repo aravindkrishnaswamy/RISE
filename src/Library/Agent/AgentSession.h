@@ -499,11 +499,23 @@ namespace RISE
 			//! every requested field's CURRENT value via
 			//! CameraIntrospection::GetPropertyValue, SetProperty the
 			//! overrides onto the ACTIVE camera, Rasterize, then SetProperty
-			//! every captured field back.  Both restores run even when the
-			//! render itself fails (best-effort -- a failed restore attempt is
-			//! not reported as a distinct error; the pre-render capture makes
-			//! restoration a plain re-apply of already-valid strings, so it
-			//! does not itself fail in practice).
+			//! every captured field back.  Restoration is RAII-guarded (an
+			//! internal RenderOverrideRestoreGuard, see AgentSession.cpp) so
+			//! it runs on EVERY exit from the render window -- including an
+			//! exception unwinding out of Rasterize() itself (OIDN denoise is
+			//! a documented real throw site): the film dims / camera pose are
+			//! never left permanently overridden just because the render
+			//! failed mid-flight.
+			//!
+			//! FAIL-LOUD camera-override validation: every requested camera
+			//! field's `CameraIntrospection::SetProperty` return is checked.
+			//! If ANY field fails to apply (a malformed value that bypassed
+			//! the RPC-layer shape validation in AgentRpc.cpp -- e.g. a
+			//! direct C++ caller), the call returns `ok=false` with a
+			//! `message` naming the failed field, `cameraOverridden=false`,
+			//! and does NOT render -- every field that WAS applied before the
+			//! failure is restored first.  This never reports
+			//! `cameraOverridden=true` on a partial or no-op override.
 			//!
 			//! LIVE mode (a controller is attached): the mutate-render-restore
 			//! window for BOTH overrides runs under

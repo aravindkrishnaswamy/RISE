@@ -12,6 +12,8 @@
 #include "../Utilities/Color/Color.h"           // eColorSpace_sRGB
 #include "../Utilities/MemoryBuffer.h"
 
+#include <cmath>   // P3: std::round for the downscale dims rounding rule
+
 using namespace RISE;
 using namespace RISE::Agent;
 
@@ -142,11 +144,18 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPngDownscaled(
 	}
 
 	// Aspect-preserving box-filter downscale.  Compute the new dims from
-	// the same scale factor the constraint implies, floor-clamped to 1 so
-	// a degenerate 1-pixel-tall/wide source never divides by zero below.
+	// the SAME scale factor + the SAME rounding rule for both axes --
+	// P3 fix: the prior code truncated each axis independently
+	// (`static_cast<unsigned int>` on a positive double floors), which lets
+	// the two axes round in different directions (e.g. one axis's
+	// fractional part is 0.49 and floors down, the other's is 0.51 and
+	// would have rounded up) and drift the encoded aspect ratio away from
+	// the source's.  std::round applied identically to both axes keeps the
+	// nearest-integer error symmetric; min-1-clamp still guards a
+	// degenerate 1-pixel-tall/wide source from dividing by zero below.
 	const double scale = static_cast<double>( maxEdge ) / static_cast<double>( longEdge );
-	unsigned int newW = static_cast<unsigned int>( scale * mWidth );
-	unsigned int newH = static_cast<unsigned int>( scale * mHeight );
+	unsigned int newW = static_cast<unsigned int>( std::round( scale * mWidth ) );
+	unsigned int newH = static_cast<unsigned int>( std::round( scale * mHeight ) );
 	if( newW < 1 ) newW = 1;
 	if( newH < 1 ) newH = 1;
 
