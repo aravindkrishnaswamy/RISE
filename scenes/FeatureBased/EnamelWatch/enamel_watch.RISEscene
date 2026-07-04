@@ -829,14 +829,20 @@ standard_object
 }
 
 ##################################################
-# GLINT KEY -- a SMALL bright distant panel (~0.5deg angular radius from the
-# dial: 6x6 units at 350 distance), placed at the dial-plane mirror of the
+# GLINT KEY -- a SMALL bright accent panel (~0.49deg angular radius: 3.1x3.1
+# units at 180 distance), aimed along the dial-plane specular MIRROR of the
 # cam_high34 base pose so the glaze's smooth specular lobe carries the fleck
-# field for the hero framing (the Wobble tilt then twinkles it).  SMALL is
-# the point: the fleck count scales with the key's solid angle (measured
-# 0.5deg radius -> ~0.08 flecks/mm2, the reference density) and a small
-# source cannot re-introduce the broad glare band the env-only look removed.
-# Physically this is the reference clips' distant window.
+# field for the hero framing (the Wobble tilt then twinkles it).  It sits at
+# distance 180 = clearly IN FRONT of the soft_top scrim's plane (which is at
+# z~248 at this height) -- an accent kicker up-and-behind the watch, NOT a
+# third source stacked on the scrim (an earlier revision put it at distance
+# 350, coincident with the scrim plane -- unphysical; a scrim cannot contain
+# a light at its own surface).  SMALL is the point: the fleck count scales
+# with the key's solid angle (~0.49deg radius -> the reference fleck density)
+# and a small source cannot re-introduce the broad glare band the env-only
+# look removed.  Physically this is the reference clips' distant window,
+# reflected to the eye off the near-flat dial.  Front face (winding normal)
+# points at the dial.
 ##################################################
 
 lambertian_luminaire_material
@@ -850,10 +856,10 @@ lambertian_luminaire_material
 clippedplane_geometry
 {
 	name				glint_key_geom
-	pta				-113.94 157.52 290.91
-	ptb				-109.02 160.97 290.91
-	ptc				-106.14 156.86 294.19
-	ptd				-111.06 153.42 294.19
+	pta				-59.17 81.83 149.02
+	ptb				-56.64 83.60 149.02
+	ptc				-55.17 81.49 150.73
+	ptd				-57.69 79.72 150.73
 }
 
 standard_object
