@@ -88,6 +88,23 @@ namespace RISE
 			//! mutate the captured pixels.
 			std::vector<unsigned char> ToPng() const;
 
+			//! read_image maxEdge (F5 the cheap multi-angle observe loop):
+			//! serialize a BOX-FILTER DOWNSCALED copy of the captured frame to
+			//! 8-bit sRGB PNG bytes, reusing the same PNGWriter path as ToPng.
+			//! The downscale happens on the LINEAR pixels (before ToPng's sRGB
+			//! Integerize), same rationale as MeanChannels: averaging in linear
+			//! space is the physically correct box filter, and it costs nothing
+			//! extra since this method already owns the pre-encode buffer.
+			//! `maxEdge` bounds the LONG edge (aspect-preserving; never
+			//! upscales -- a frame already <= maxEdge on its long edge is
+			//! encoded at its native size, same bytes as ToPng()).  Fills
+			//! `outWidth`/`outHeight` with the dims actually encoded.  Returns
+			//! an EMPTY vector when no frame has been captured yet (outWidth/
+			//! outHeight left at 0).
+			std::vector<unsigned char> ToPngDownscaled( unsigned int maxEdge,
+			                                            unsigned int& outWidth,
+			                                            unsigned int& outHeight ) const;
+
 		protected:
 			~InMemoryRasterizerOutput() override;
 

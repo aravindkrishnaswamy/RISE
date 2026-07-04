@@ -46,8 +46,13 @@
 #include "../Interfaces/IJobPriv.h"
 #include "../Interfaces/IJob.h"
 #include "../Interfaces/IRasterizer.h"
+#include "../Interfaces/IScenePriv.h"
+#include "../Interfaces/IFilm.h"
+#include "../Interfaces/ICamera.h"
+#include "../Interfaces/ICameraManager.h"
 #include "../RISE_API.h"
 #include "../SceneEditor/SceneEditController.h"   // Facet 5 slice 1b: LIVE-mode routing through the render-safe edit path
+#include "../SceneEditor/CameraIntrospection.h"   // preview-render: ephemeral camera-pose override
 #include "../SceneEditor/ChunkDescriptorRegistry.h"
 #include "../Parsers/ChunkDescriptor.h"
 #include "../Parsers/IAsciiChunkParser.h"
@@ -531,6 +536,7 @@ namespace RISE
 
 		AgentSession::~AgentSession()
 		{
+			safe_release( mLastSink );
 			if( mOwnsJob && mJob ) mJob->release();
 			mJob = nullptr;
 		}
@@ -1095,7 +1101,34 @@ namespace RISE
 			return r;
 		}
 
+		namespace
+		{
+			//! Preview-render: the captured original value of one overridden
+			//! camera field, so it can be restored verbatim after the render.
+			struct CapturedCameraField
+			{
+				std::string name;    //!< the CameraIntrospection property name
+				std::string value;   //!< its value BEFORE the override
+			};
+		}
+
 		AgentRenderResult AgentSession::Render( int samplesOverride )
+		{
+			// Legacy entry point: build an all-absent AgentRenderParams so
+			// this is BYTE-COMPATIBLE with the pre-preview-render behaviour
+			// (samplesOverride is folded in -- still advisory/ignored, same
+			// as before; see RenderCore_'s doc for why).
+			AgentRenderParams params;
+			params.samples = samplesOverride;
+			return RenderCore_( params );
+		}
+
+		AgentRenderResult AgentSession::Render( const AgentRenderParams& params )
+		{
+			return RenderCore_( params );
+		}
+
+		AgentRenderResult AgentSession::RenderCore_( const AgentRenderParams& params )
 		{
 			AgentRenderResult res;
 
@@ -1116,16 +1149,18 @@ namespace RISE
 			// DerivedScene WITHOUT touching the scene).  The clean transient
 			// path -- applying the override on the DERIVED/live rasterizer
 			// after derive, before Rasterize() -- needs a sample-count setter
-			// on IRasterizer, which does NOT exist in slice 0b (SetSampleCount
-			// lives only on InteractivePelRasterizer, not on the general
-			// interface GetRasterizer() returns).  So in slice 0b the
-			// render-scoped sample override is NOT yet wired without mutating
-			// the CST; it is deferred to the EffectiveRenderConfig layer.
-			// `samplesOverride` is currently IGNORED -- the render uses the
-			// authored sample count -- and the signature is retained only for
-			// API stability.  ReadDocument() is guaranteed byte-identical
-			// across a Render call.
-			(void)samplesOverride;
+			// on IRasterizer, which does NOT exist (SetSampleCount lives only
+			// on InteractivePelRasterizer, not on the general interface
+			// GetRasterizer() returns -- verified again for the preview-render
+			// work: no additional seam appeared). So the render-scoped sample
+			// override is STILL not wired without mutating the CST; it stays
+			// deferred to the EffectiveRenderConfig layer. `params.samples` is
+			// currently IGNORED -- the render uses the authored sample count.
+			// ReadDocument() is guaranteed byte-identical across a Render call
+			// REGARDLESS of the params passed (the film-dims and camera-pose
+			// overrides below are LIVE-only / non-Document mutations, captured
+			// and restored around the render -- see below).
+			(void)params.samples;
 
 			// Fetch and null-check the live rasterizer BEFORE any mutation:
 			// RemoveRasterizerOutputs() unconditionally dereferences
@@ -1148,23 +1183,124 @@ namespace RISE
 			// this particular render produced an image.
 			res.integrator = mJob->GetActiveRasterizerName();
 
-			// Swap in the in-memory sink (remove any authored file outputs so
-			// a headless render does not touch the filesystem), render, read
-			// the PNG bytes back, then release the sink.
-			mJob->RemoveRasterizerOutputs();
+			const bool wantFilmOverride =
+				( params.width > 0 && params.height > 0 );
+			const bool wantCameraOverride =
+				( params.camera.hasLocation || params.camera.hasLookAt ||
+				  params.camera.hasUp || params.camera.hasFov );
 
-			// `new` yields refcount 1 (our owning ref); AddRasterizerOutput
-			// addrefs it (the rasterizer's `outs` keeps that ref until the
-			// next RemoveRasterizerOutputs / rasterizer teardown).  We drop
-			// OUR ref via safe_release(sink) below -- no extra addref here.
-			InMemoryRasterizerOutput* sink = new InMemoryRasterizerOutput();
-			rast->AddRasterizerOutput( sink );
+			// LIVE-mode safety (see AgentSession.h Render(AgentRenderParams)
+			// doc + CLAUDE.md investigation note): DoOneRenderPass swaps the
+			// SAME shared Film dims / camera frame in place, unsynchronized
+			// against anything outside SceneEditController.  When a controller
+			// is attached, run the WHOLE capture-override-render-restore
+			// sequence for BOTH overrides inside ONE
+			// RunPreviewRenderParked callback so it cannot race that swap.
+			// Headless mode (no controller) has no interactive thread to
+			// race, so the lambda runs directly.
+			bool overrodeFilm = false;
+			bool overrodeCamera = false;
+			unsigned int origFilmW = 0, origFilmH = 0;
+			double origFilmPAR = 1.0;
+			std::vector<CapturedCameraField> capturedCam;
+			ICamera* activeCam = nullptr;
+			bool renderRan = false;
+			bool rendered = false;
+			InMemoryRasterizerOutput* sink = nullptr;
 
-			const bool rendered = mJob->Rasterize();
-			if( !rendered || !sink->HasImage() ) {
+			auto doRenderWork = [&]()
+			{
+				// ---- Film-dims override: capture -> set -> (render happens
+				// after this lambda's camera section) -- restore happens at
+				// the tail of this SAME lambda so both overrides are undone
+				// before RunPreviewRenderParked unlocks (headless mode: same
+				// ordering, just without the lock).
+				const IScenePriv* scenePriv = mJob->GetScene();
+				const IFilm* curFilm = scenePriv ? scenePriv->GetFilm() : nullptr;
+				if( wantFilmOverride && curFilm ) {
+					origFilmW   = curFilm->GetWidth();
+					origFilmH   = curFilm->GetHeight();
+					origFilmPAR = curFilm->GetPixelAR();
+					if( mJob->SetFilm( params.width, params.height, origFilmPAR ) ) {
+						overrodeFilm = true;
+					}
+				}
+
+				// ---- Camera-pose override: resolve the ACTIVE camera,
+				// capture the current value of every REQUESTED field, then
+				// apply the overrides.
+				if( wantCameraOverride ) {
+					ICameraManager* cams = mJob->GetCameras();
+					const std::string activeName = mJob->GetActiveCameraName();
+					activeCam = ( cams && !activeName.empty() )
+						? cams->GetItem( activeName.c_str() ) : nullptr;
+					if( activeCam ) {
+						auto captureAndSet = [&]( bool has, const char* name, const std::string& newVal )
+						{
+							if( !has ) return;
+							CapturedCameraField f;
+							f.name  = name;
+							f.value = CameraIntrospection::GetPropertyValue( *activeCam, String( name ) ).c_str();
+							capturedCam.push_back( f );
+							CameraIntrospection::SetProperty( *activeCam, String( name ), String( newVal.c_str() ) );
+						};
+						captureAndSet( params.camera.hasLocation, "location", params.camera.location );
+						captureAndSet( params.camera.hasLookAt,   "lookat",   params.camera.lookAt );
+						captureAndSet( params.camera.hasUp,       "up",       params.camera.up );
+						captureAndSet( params.camera.hasFov,      "fov",      params.camera.fov );
+						overrodeCamera = !capturedCam.empty();
+					}
+				}
+
+				// ---- The render itself (in-memory sink; never touches the
+				// filesystem).
+				mJob->RemoveRasterizerOutputs();
+				// `new` yields refcount 1 (our owning ref); AddRasterizerOutput
+				// addrefs it (the rasterizer's `outs` keeps that ref until the
+				// next RemoveRasterizerOutputs / rasterizer teardown).  We drop
+				// OUR ref via safe_release(sink) after this lambda returns --
+				// no extra addref here.
+				sink = new InMemoryRasterizerOutput();
+				rast->AddRasterizerOutput( sink );
+				rendered = mJob->Rasterize();
+				renderRan = true;
+
+				// ---- Restore, in reverse order, BEFORE unlocking (live mode)
+				// / returning (headless mode) -- ReadDocument's byte-identity
+				// contract only covers the Document, but the active camera's
+				// PROPERTIES must also be back to their pre-call values (the
+				// restoration test AgentSession callers rely on).
+				for( std::size_t i = capturedCam.size(); i-- > 0; ) {
+					CameraIntrospection::SetProperty( *activeCam,
+						String( capturedCam[i].name.c_str() ),
+						String( capturedCam[i].value.c_str() ) );
+				}
+				if( overrodeFilm ) {
+					mJob->SetFilm( origFilmW, origFilmH, origFilmPAR );
+				}
+			};
+
+			if( mController && ( wantFilmOverride || wantCameraOverride ) ) {
+				if( !mController->RunPreviewRenderParked( doRenderWork ) ) {
+					// Refused (an editor transaction is open): the override
+					// window could not be safely parked against the
+					// interactive render thread.  Fall back to an UN-overridden
+					// render rather than risk racing the shared Film/camera
+					// state -- honest degradation, reported in `message`.
+					AgentRenderParams noOverride;
+					noOverride.samples = params.samples;
+					AgentRenderResult fallback = RenderCore_( noOverride );
+					fallback.message = "preview override skipped: an editor transaction is open (render ran without the override) -- " + fallback.message;
+					return fallback;
+				}
+			} else {
+				doRenderWork();
+			}
+
+			if( !renderRan || !rendered || !sink || !sink->HasImage() ) {
 				safe_release( sink );
 				res.ok = false;
-				res.message = rendered ? "render produced no image" : "render failed";
+				res.message = ( renderRan && rendered ) ? "render produced no image" : "render failed";
 				return res;
 			}
 
@@ -1174,12 +1310,23 @@ namespace RISE
 			sink->MeanChannels( res.meanR, res.meanG, res.meanB );
 			res.ok     = !res.png.empty();
 			res.message = res.ok ? "ok" : "PNG encode produced no bytes";
+			res.previewWidth     = res.width;
+			res.previewHeight    = res.height;
+			res.cameraOverridden = overrodeCamera;
 
 			// Cache for ReadImage() ONLY on a successful, non-empty encode --
 			// a failed render must not wipe a prior good cache (ReadImage
-			// documents "the LAST successful Render").
+			// documents "the LAST successful Render").  Also keep the SINK
+			// itself (swap-release the previous one) so ReadImage(maxEdge) can
+			// re-encode a downscaled PNG from the cached full-res linear
+			// pixels without re-rendering -- `sink` already carries refcount 1
+			// (our owning ref from `new` above); we transfer that ownership to
+			// mLastSink instead of releasing it.
 			if( res.ok ) {
 				mLastPng = res.png;
+				safe_release( mLastSink );
+				mLastSink = sink;
+				return res;
 			}
 
 			safe_release( sink );
@@ -1189,6 +1336,25 @@ namespace RISE
 		std::vector<unsigned char> AgentSession::ReadImage() const
 		{
 			return mLastPng;
+		}
+
+		std::vector<unsigned char> AgentSession::ReadImage( unsigned int maxEdge,
+		                                                    unsigned int& outWidth,
+		                                                    unsigned int& outHeight ) const
+		{
+			outWidth = 0;
+			outHeight = 0;
+			if( maxEdge == 0 ) {
+				// No bound requested -- byte-compatible with ReadImage(): same
+				// cached bytes, dims read off the cached sink when available.
+				if( mLastSink ) {
+					outWidth  = mLastSink->Width();
+					outHeight = mLastSink->Height();
+				}
+				return mLastPng;
+			}
+			if( !mLastSink ) return std::vector<unsigned char>();   // nothing rendered yet
+			return mLastSink->ToPngDownscaled( maxEdge, outWidth, outHeight );
 		}
 	}
 }

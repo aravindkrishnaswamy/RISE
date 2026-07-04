@@ -1286,6 +1286,92 @@ static void TestMidTransactionAgentCommitRefused()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 10: preview-render safety -- SceneEditController::RunPreviewRenderParked
+// (the seam AgentSession::Render's film-dims / camera-pose overrides use in
+// LIVE mode so they cannot race DoOneRenderPass's own Film/camera swap).
+//
+//   (a) During a long in-flight render pass, RunPreviewRenderParked must
+//       CANCEL-AND-PARK it (cancel counter advances) before running the
+//       callback, and the callback must actually run (observable side
+//       effect) -- proving the "safe against a live render thread" contract,
+//       mirroring TestRenderParkedDuringEdit's park-observability recipe.
+//   (b) Inside an open editor transaction, RunPreviewRenderParked must
+//       REFUSE (return false) and NOT invoke the callback at all -- same
+//       mTxnOpen rule as ApplyAgentParamEdit, RED-PROVEN by checking the
+//       side-effect flag stays false.
+//   (c) Outside a transaction (control), the SAME call returns true and DOES
+//       invoke the callback -- proves (b) is transaction-scoped, not a
+//       broken seam.
+//////////////////////////////////////////////////////////////////////
+static void TestPreviewRenderParked()
+{
+	std::cout << "Test 10: preview-render park seam (RunPreviewRenderParked)..." << std::endl;
+
+	const char* tmp = "agentlive_previewpark.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		// (a) Long simulated render so a callback reliably lands mid-pass.
+		TestController c( *pJob, /*simulatedRenderMs*/300 );
+		c.Start();
+		std::this_thread::sleep_for( std::chrono::milliseconds( 40 ) );
+		const unsigned int cancelsBefore = c.ForTest_GetCancelCount();
+
+		std::atomic<bool> ran{ false };
+		const bool ok = c.RunPreviewRenderParked( [&]{ ran.store( true ); } );
+		Check( ok, "RunPreviewRenderParked returns true outside a transaction" );
+		Check( ran.load(), "the callback actually ran" );
+
+		const unsigned int cancelsAfter = c.ForTest_GetCancelCount();
+		std::cout << "    cancelsBefore=" << cancelsBefore
+		          << " cancelsAfter=" << cancelsAfter << std::endl;
+		Check( cancelsAfter > cancelsBefore,
+		       "RunPreviewRenderParked tripped the render cancel (parked the in-flight pass)" );
+
+		// The render thread must still be ALIVE after the park (no deadlock /
+		// lost wakeup) -- NOT necessarily mid a FRESH pass: RunPreviewRenderParked
+		// makes no scene edit, so (outside a gesture's refine-mode watchdog) the
+		// loop legitimately stays parked on its idle wait until the next real
+		// edit/gesture, exactly as documented ("no kick needed").  Asserting a
+		// forced fresh pass here would be asserting the WRONG contract.
+		Check( c.IsRunning(), "render thread still running after the preview-render park" );
+
+		c.Stop();
+	}
+
+	{
+		// (b) Mid-transaction refusal: the callback must NOT run.
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		Check( c.BeginTransaction(), "transaction opens" );
+		Check( c.IsTransactionOpen(), "transaction reports open" );
+
+		std::atomic<bool> ranMidTxn{ false };
+		const bool okMidTxn = c.RunPreviewRenderParked( [&]{ ranMidTxn.store( true ); } );
+		Check( !okMidTxn, "RunPreviewRenderParked REFUSES inside an open transaction" );
+		Check( !ranMidTxn.load(), "the callback did NOT run when refused (RED-PROVEN: a broken guard would flip this)" );
+
+		Check( c.RollbackTransaction(), "rollback completes" );
+		Check( !c.IsTransactionOpen(), "transaction reports closed after rollback" );
+
+		// (c) Control: same call, transaction now closed -> succeeds and runs.
+		std::atomic<bool> ranAfter{ false };
+		const bool okAfter = c.RunPreviewRenderParked( [&]{ ranAfter.store( true ); } );
+		Check( okAfter, "the same call succeeds once the transaction is closed" );
+		Check( ranAfter.load(), "the callback ran once unblocked (proves the refusal above was transaction-scoped)" );
+
+		c.Stop();
+	}
+
+	pJob->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -1300,6 +1386,7 @@ int main()
 	TestAgentEditMarksDirty();
 	TestLiveDispatcherPath();
 	TestMidTransactionAgentCommitRefused();
+	TestPreviewRenderParked();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

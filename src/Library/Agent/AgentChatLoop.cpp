@@ -39,7 +39,14 @@ namespace RISE
 				"produced diagnostics -- read them and fix the reported problem; "
 				"do not blindly re-propose the same patch.\n"
 				"3. render, then read_image to SEE the result and verify the edit "
-				"visually before declaring it done.\n"
+				"visually before declaring it done. While modeling/placing things, "
+				"use CHEAP LOOKS: render with width/height 128-192 and read_image "
+				"maxEdge ~192, and use render's `camera` override to check the "
+				"scene from 2-3 different angles WITHOUT editing the actual camera "
+				"-- it's ephemeral (restored automatically, never touches the "
+				"document) and costs far fewer tokens/seconds than a full render. "
+				"Only do a full-size, full-sample render (no width/height/camera) "
+				"for the FINAL check once you're confident the edit is right.\n"
 				"\n"
 				// CAPABILITY SCOPE (Model-B F5 slice S2: insert_chunk /
 				// remove_chunk shipped -- entity add/remove is real now;

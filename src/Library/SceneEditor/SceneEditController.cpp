@@ -3048,6 +3048,33 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChun
 	return ApplyAgentChunkCrud_( /*isInsert*/ false, target, kind, baseVersionOrNull );
 }
 
+// Facet 5 (preview-render safety): park the render thread and run a
+// NON-mutating (from the Document's point of view) callback under mMutex.
+// Same mTxnOpen refusal as the agent commit paths (parking here would stall
+// an in-progress gesture); otherwise cancel-and-park exactly like
+// ApplyAgentParamEdit / ApplyAgentChunkCrud_ and invoke `fn` synchronously
+// with the render thread drained. `fn` runs BEFORE the lock releases, so
+// DoOneRenderPass cannot observe (or race) whatever transient Film/camera
+// state `fn` sets up -- the caller is responsible for restoring that state
+// itself before returning from `fn` (this method has no notion of what `fn`
+// changed; it only guarantees exclusivity while `fn` runs).
+bool SceneEditController::RunPreviewRenderParked( const std::function<void()>& fn )
+{
+	if( mTxnOpen )
+	{
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: preview render refused inside an open transaction (would stall the gesture)." );
+		return false;
+	}
+
+	std::unique_lock<std::mutex> lk( mMutex );
+	CancelAndParkRender_( lk );
+	if( fn ) fn();
+	// Unlock (end of scope) resumes the render loop's normal wait/cycle --
+	// no kick needed: we made no Document/scene edit, so the interactive
+	// loop's own refinement watchdog resumes exactly where it left off.
+	return true;
+}
+
 // Model-B F5 slice S2: the shared render-thread-SAFE chunk-CRUD commit.  This
 // mirrors ApplyAgentParamEdit step for step (see that method's comments for
 // the full rationale of each stage); the differences are (a) the Job primitive

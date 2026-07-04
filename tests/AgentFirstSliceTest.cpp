@@ -414,6 +414,136 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
+	// Preview-render wire tests (F5 the cheap multi-angle observe loop):
+	// width/height clamping [16,512], camera param shape validation, and
+	// read_image maxEdge clamping [16,1024].  All driven through the SAME
+	// live dispatcher `rpc` used above, so the head carries whatever the
+	// coherence block left it at (irrelevant here -- we only check dims /
+	// param-shape behaviour, not pixel content).
+	//----------------------------------------------------------------------
+	std::printf( "[preview-render wire] width/height clamp to [16,512]\n" );
+	{
+		// Below the floor: 4x4 requested -> clamped to 16x16 (never rejected).
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "width",  JsonValue::MakeNumber( 4.0 ) );
+		params.set( "height", JsonValue::MakeNumber( 4.0 ) );
+		const std::string resp = rpc.HandleLine( Req( 30, "render", params ) );
+		JsonValue env = ParseResponse( resp, 30 );
+		Check( env.has( "result" ), "render(width=4,height=4) returns a success result (clamped, not rejected)" );
+		Check( env.get( "result" ).get( "ok" ).asBool(), "render(width=4,height=4) ok==true" );
+		Check( env.get( "result" ).get( "width" ).asNumber() == 16.0,
+		       "render(width=4) is CLAMPED UP to the floor (16), never rejected" );
+		Check( env.get( "result" ).get( "previewWidth" ).asNumber() == 16.0,
+		       "previewWidth echoes the clamped 16" );
+		Check( env.get( "result" ).get( "previewHeight" ).asNumber() == 16.0,
+		       "previewHeight echoes the clamped 16" );
+	}
+	{
+		// Above the ceiling: 9999x9999 requested -> clamped to 512x512.
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "width",  JsonValue::MakeNumber( 9999.0 ) );
+		params.set( "height", JsonValue::MakeNumber( 9999.0 ) );
+		const std::string resp = rpc.HandleLine( Req( 31, "render", params ) );
+		JsonValue env = ParseResponse( resp, 31 );
+		Check( env.has( "result" ), "render(width=9999) returns a success result (clamped, not rejected)" );
+		Check( env.get( "result" ).get( "width" ).asNumber() == 512.0,
+		       "render(width=9999) is CLAMPED DOWN to the ceiling (512)" );
+		Check( env.get( "result" ).get( "height" ).asNumber() == 512.0,
+		       "render(height=9999) is CLAMPED DOWN to the ceiling (512)" );
+	}
+	{
+		// width WITHOUT height (ambiguous pairing) -> no override applied;
+		// render still succeeds at the Document's authored dims.
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "width", JsonValue::MakeNumber( 64.0 ) );
+		const std::string resp = rpc.HandleLine( Req( 32, "render", params ) );
+		JsonValue env = ParseResponse( resp, 32 );
+		Check( env.has( "result" ), "render(width only, no height) still succeeds" );
+		Check( env.get( "result" ).get( "width" ).asNumber() == 24.0,
+		       "width without height is NOT applied (must be paired) -- stays at the authored 24" );
+	}
+
+	std::printf( "[preview-render wire] camera override param-shape validation\n" );
+	{
+		// A well-formed camera override succeeds and reports cameraOverridden.
+		JsonValue cam = JsonValue::MakeObject();
+		cam.set( "location", JsonValue::MakeString( "0 0 5" ) );
+		cam.set( "lookat",   JsonValue::MakeString( "0 0 0" ) );
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "camera", cam );
+		const std::string resp = rpc.HandleLine( Req( 33, "render", params ) );
+		JsonValue env = ParseResponse( resp, 33 );
+		Check( env.has( "result" ), "render(camera={location,lookat}) succeeds" );
+		Check( env.get( "result" ).get( "ok" ).asBool(), "render(camera override) ok==true" );
+		Check( env.get( "result" ).get( "cameraOverridden" ).asBool(),
+		       "render(camera override) reports cameraOverridden==true" );
+	}
+	{
+		// camera present but missing 'lookat' -> -32602 (both required together).
+		JsonValue cam = JsonValue::MakeObject();
+		cam.set( "location", JsonValue::MakeString( "0 0 5" ) );
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "camera", cam );
+		const std::string resp = rpc.HandleLine( Req( 34, "render", params ) );
+		JsonValue env = ParseResponse( resp, 34 );
+		Check( env.has( "error" ), "render(camera missing lookat) is an error" );
+		Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
+		       "render(camera missing lookat) -> -32602 Invalid params" );
+	}
+	{
+		// camera is not an object -> -32602.
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "camera", JsonValue::MakeString( "not an object" ) );
+		const std::string resp = rpc.HandleLine( Req( 35, "render", params ) );
+		JsonValue env = ParseResponse( resp, 35 );
+		Check( env.has( "error" ), "render(camera as a string) is an error" );
+		Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
+		       "render(camera not an object) -> -32602 Invalid params" );
+	}
+
+	std::printf( "[preview-render wire] read_image maxEdge clamps to [16,1024]\n" );
+	{
+		// Ensure a render has happened so read_image has a cached image.
+		const std::string rresp = rpc.HandleLine( Req( 36, "render", JsonValue::MakeObject() ) );
+		JsonValue renv = ParseResponse( rresp, 36 );
+		Check( renv.get( "result" ).get( "ok" ).asBool(), "render before the read_image maxEdge checks succeeds" );
+
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "maxEdge", JsonValue::MakeNumber( 8.0 ) );   // below the floor
+		const std::string resp = rpc.HandleLine( Req( 37, "read_image", params ) );
+		JsonValue env = ParseResponse( resp, 37 );
+		Check( env.has( "result" ), "read_image(maxEdge=8) succeeds (clamped, not rejected)" );
+		Check( env.get( "result" ).get( "width" ).asNumber() == 16.0,
+		       "read_image(maxEdge=8) is CLAMPED UP to the floor (16)" );
+		Check( env.get( "result" ).get( "height" ).asNumber() == 16.0,
+		       "read_image(maxEdge=8) height also clamped to 16 (square 24x24 source)" );
+		const std::string b64 = env.get( "result" ).get( "png_base64" ).asString();
+		Check( !b64.empty(), "read_image(maxEdge=8) returns non-empty png_base64" );
+		std::vector<unsigned char> decoded;
+		Check( Base64Decode( b64, decoded ), "read_image(maxEdge=8) png_base64 decodes cleanly" );
+		Check( decoded.size() >= 8 && decoded[0] == 0x89 && decoded[1] == 'P' && decoded[2] == 'N' && decoded[3] == 'G',
+		       "read_image(maxEdge=8) decodes to a valid \\x89PNG signature" );
+	}
+	{
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "maxEdge", JsonValue::MakeNumber( 99999.0 ) );   // above the ceiling
+		const std::string resp = rpc.HandleLine( Req( 38, "read_image", params ) );
+		JsonValue env = ParseResponse( resp, 38 );
+		Check( env.has( "result" ), "read_image(maxEdge=99999) succeeds (clamped, not rejected)" );
+		// The native image is 24x24, well under the 1024 ceiling, so the
+		// clamp-then-never-upscale rule leaves it at the native 24x24.
+		Check( env.get( "result" ).get( "width" ).asNumber() == 24.0,
+		       "read_image(maxEdge=99999) never upscales past the native 24x24" );
+	}
+	{
+		// No maxEdge at all -> legacy shape, dims still reported (additive).
+		const std::string resp = rpc.HandleLine( Req( 39, "read_image", JsonValue::MakeObject() ) );
+		JsonValue env = ParseResponse( resp, 39 );
+		Check( env.get( "result" ).get( "width" ).asNumber() == 24.0,
+		       "read_image() with no maxEdge reports the native 24x24 (back-compat + additive width/height)" );
+	}
+
+	//----------------------------------------------------------------------
 	// P1 #1 — NO-HEAD dispatcher: the stateless bootstrap methods work with
 	// a NULL session (mirroring `rise --agent-stdio` with no scene / a failed
 	// load).  read_schema + validate + read_document need NO head; an agent

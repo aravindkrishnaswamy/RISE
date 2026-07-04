@@ -36,6 +36,7 @@
 #include "../Interfaces/ILogPrinter.h"
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -348,6 +349,25 @@ namespace RISE
 			const String& target,
 			const String& kind,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
+		//! Facet 5 (preview-render safety): run `fn` with the render thread
+		//! CANCEL-AND-PARKED under mMutex -- for a caller that needs to
+		//! transiently mutate LIVE, non-Document state that the interactive
+		//! render loop ALSO touches unsynchronized (DoOneRenderPass's
+		//! per-pass Film-dims / camera-frame swap runs with no lock against
+		//! anything outside this controller).  This is NOT a Document edit:
+		//! it does not go through ApplyCstParamEdit, does not bump the
+		//! head-version, and does not mark anything dirty -- it exists so
+		//! the Agent surface's preview `render` (transient film-dims /
+		//! camera-pose override, capture-set-render-restore) cannot race
+		//! DoOneRenderPass's swap of the SAME shared Film/cameras.  `fn` is
+		//! invoked exactly once, synchronously, on the calling thread, with
+		//! the render thread parked and mMutex held; `fn` must not re-enter
+		//! the controller.  Refused (returns false, `fn` NOT invoked) while
+		//! an editor transaction is open -- parking here would stall the
+		//! gesture (same rule as ApplyAgentParamEdit's mTxnOpen refusal).
+		//! Returns true iff `fn` ran.
+		bool RunPreviewRenderParked( const std::function<void()>& fn );
 
 		//! @param job                     borrowed; caller keeps alive.
 		//!                                Must be IJobPriv (which IJob

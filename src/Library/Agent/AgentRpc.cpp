@@ -21,6 +21,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdio>   // preview-render: std::snprintf for the fov degrees-string conversion
 #include <exception>
 #include <string>
 #include <vector>
@@ -153,6 +154,85 @@ namespace RISE
 				std::string err;
 				if( JsonParse( schemaText, parsed, err ) ) return parsed;
 				return JsonValue::MakeString( schemaText );
+			}
+
+			//! Preview-render: parse an OPTIONAL numeric field into a
+			//! CLAMPED unsigned int in [loClamp,hiClamp].  Returns 1 = present
+			//! and valid (out filled, CLAMPED into range -- a caller-supplied
+			//! out-of-range value is silently clamped rather than rejected, so
+			//! an agent that guesses "1024" for a 512-max field still gets a
+			//! usable preview instead of an error), 0 = absent/null, -1 =
+			//! present but not a finite number (outErr carries the -32602
+			//! message).  Same non-finite guard idiom as the existing
+			//! 'samples' parse above (explicit range test, NOT std::isfinite --
+			//! survives -ffinite-math-only).
+			int ParseClampedUInt( const JsonValue& params, const char* field,
+			                      unsigned int loClamp, unsigned int hiClamp,
+			                      unsigned int& out, std::string& outErr )
+			{
+				const JsonValue* v = params.find( field );
+				if( !v || v->isNull() ) return 0;
+				if( !v->isNumber() ) {
+					outErr = std::string( "Invalid params: '" ) + field + "' must be a number";
+					return -1;
+				}
+				const double d = v->asNumber();
+				if( !( d >= -2147483648.0 && d <= 2147483647.0 ) ) {
+					outErr = std::string( "Invalid params: '" ) + field + "' must be a finite, in-range number";
+					return -1;
+				}
+				double clamped = d;
+				if( clamped < static_cast<double>( loClamp ) ) clamped = static_cast<double>( loClamp );
+				if( clamped > static_cast<double>( hiClamp ) ) clamped = static_cast<double>( hiClamp );
+				out = static_cast<unsigned int>( clamped );
+				return 1;
+			}
+
+			//! Preview-render: parse the OPTIONAL `camera` override object
+			//! `{location,lookat,up?,fov?}` (all string fields; location/lookat
+			//! required together with the object, up/fov independently
+			//! optional).  Returns 1 = present and valid (outOverride filled),
+			//! 0 = absent/null (no override requested), -1 = malformed
+			//! (outErr carries the -32602 message).
+			int ParseCameraOverrideParam( const JsonValue& params,
+			                              AgentCameraOverride& outOverride,
+			                              std::string& outErr )
+			{
+				const JsonValue* cam = params.find( "camera" );
+				if( !cam || cam->isNull() ) return 0;
+				if( !cam->isObject() ) {
+					outErr = "Invalid params: 'camera' must be an object {location,lookat,up?,fov?}";
+					return -1;
+				}
+				const JsonValue* loc = cam->find( "location" );
+				const JsonValue* la  = cam->find( "lookat" );
+				if( !loc || !loc->isString() || !la || !la->isString() ) {
+					outErr = "Invalid params: 'camera' needs string 'location' and 'lookat' (e.g. \"0 5 10\")";
+					return -1;
+				}
+				outOverride.hasLocation = true;
+				outOverride.location    = loc->asString();
+				outOverride.hasLookAt   = true;
+				outOverride.lookAt      = la->asString();
+				if( const JsonValue* up = cam->find( "up" ) ) {
+					if( up->isString() ) { outOverride.hasUp = true; outOverride.up = up->asString(); }
+					else if( !up->isNull() ) {
+						outErr = "Invalid params: 'camera.up' must be a string";
+						return -1;
+					}
+				}
+				if( const JsonValue* fov = cam->find( "fov" ) ) {
+					if( fov->isNumber() ) {
+						char buf[64];
+						std::snprintf( buf, sizeof( buf ), "%.6g", fov->asNumber() );
+						outOverride.hasFov = true;
+						outOverride.fov    = buf;
+					} else if( !fov->isNull() ) {
+						outErr = "Invalid params: 'camera.fov' must be a number (degrees)";
+						return -1;
+					}
+				}
+				return 1;
 			}
 		}
 
@@ -454,11 +534,14 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// render {samples?} -> {ok,width,height,meanR,meanG,meanB,
-				//                       integrator,message}
+				// render {samples?,width?,height?,camera?} ->
+				//   {ok,width,height,meanR,meanG,meanB,integrator,
+				//    previewWidth,previewHeight,cameraOverridden,message}
 				//   (NOT the image bytes -- render stays lean; read_image
 				//    carries the base64 PNG.  `integrator` = the ACTIVE
-				//    rasterizer's chunk keyword, empty when none is active.)
+				//    rasterizer's chunk keyword, empty when none is active.
+				//    width/height/camera are the OPTIONAL preview-render
+				//    overrides -- absent = today's exact behaviour.)
 				//--------------------------------------------------------------
 				if( m == "render" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
@@ -486,7 +569,33 @@ namespace RISE
 						else if( !sm->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a number" );
 					}
-					const AgentRenderResult rr = s->Render( samples );
+
+					// Preview-render dims: width/height are CLAMPED to [16,512]
+					// (never rejected -- an out-of-range guess still renders,
+					// just at the clamped size) and must be supplied TOGETHER
+					// (one without the other is ambiguous: keep today's exact
+					// behaviour -- no override -- rather than guess an aspect
+					// ratio).
+					AgentRenderParams rparams;
+					rparams.samples = samples;
+					unsigned int width = 0, height = 0;
+					std::string dimErr;
+					const int wPresent = ParseClampedUInt( params, "width",  16, 512, width,  dimErr );
+					if( wPresent < 0 ) return MakeError( idValue, kInvalidParams, dimErr );
+					const int hPresent = ParseClampedUInt( params, "height", 16, 512, height, dimErr );
+					if( hPresent < 0 ) return MakeError( idValue, kInvalidParams, dimErr );
+					if( wPresent == 1 && hPresent == 1 ) {
+						rparams.width  = width;
+						rparams.height = height;
+					}
+
+					AgentCameraOverride camOverride;
+					std::string camErr;
+					const int camPresent = ParseCameraOverrideParam( params, camOverride, camErr );
+					if( camPresent < 0 ) return MakeError( idValue, kInvalidParams, camErr );
+					if( camPresent == 1 ) rparams.camera = camOverride;
+
+					const AgentRenderResult rr = s->Render( rparams );
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "ok",     JsonValue::MakeBool( rr.ok ) );
 					result.set( "width",  JsonValue::MakeNumber( static_cast<double>( rr.width ) ) );
@@ -495,21 +604,38 @@ namespace RISE
 					result.set( "meanG",  JsonValue::MakeNumber( rr.meanG ) );
 					result.set( "meanB",  JsonValue::MakeNumber( rr.meanB ) );
 					result.set( "integrator", JsonValue::MakeString( rr.integrator ) );
+					result.set( "previewWidth",  JsonValue::MakeNumber( static_cast<double>( rr.previewWidth ) ) );
+					result.set( "previewHeight", JsonValue::MakeNumber( static_cast<double>( rr.previewHeight ) ) );
+					result.set( "cameraOverridden", JsonValue::MakeBool( rr.cameraOverridden ) );
 					result.set( "message", JsonValue::MakeString( rr.message ) );
 					return MakeSuccess( idValue, result );
 				}
 
 				//--------------------------------------------------------------
-				// read_image -> {png_base64:string, byteLength:number}
+				// read_image {maxEdge?} -> {png_base64:string,byteLength:number,
+				//                           width:number,height:number}
 				//   Reads the LAST successful render's cached PNG bytes and
 				//   base64-encodes them so the binary travels in JSON.
+				//   maxEdge (OPTIONAL, clamped [16,1024]) downscales the
+				//   returned image to that long-edge bound (box filter,
+				//   aspect-preserving, never upscales) -- re-encoded from the
+				//   cached full-resolution pixels, no re-render.
 				//--------------------------------------------------------------
 				if( m == "read_image" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
-					const std::vector<unsigned char> png = s->ReadImage();
+					unsigned int maxEdge = 0;
+					std::string meErr;
+					const int mePresent = ParseClampedUInt( params, "maxEdge", 16, 1024, maxEdge, meErr );
+					if( mePresent < 0 ) return MakeError( idValue, kInvalidParams, meErr );
+					unsigned int imgW = 0, imgH = 0;
+					const std::vector<unsigned char> png =
+						( mePresent == 1 ) ? s->ReadImage( maxEdge, imgW, imgH )
+						                   : s->ReadImage( 0, imgW, imgH );
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "png_base64", JsonValue::MakeString( Base64Encode( png ) ) );
 					result.set( "byteLength", JsonValue::MakeNumber( static_cast<double>( png.size() ) ) );
+					result.set( "width",  JsonValue::MakeNumber( static_cast<double>( imgW ) ) );
+					result.set( "height", JsonValue::MakeNumber( static_cast<double>( imgH ) ) );
 					return MakeSuccess( idValue, result );
 				}
 

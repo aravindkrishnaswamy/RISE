@@ -57,15 +57,52 @@
 //                                            disambiguation hint; a still-referenced
 //                                            target fails the dry-run -> rejected with
 //                                            the diagnostic, head byte-identical.)
-//      render       {samples?}           -> {ok,width,height,meanR,meanG,meanB,integrator,message}
+//      render       {samples?,width?,height?,camera?}
+//                                        -> {ok,width,height,meanR,meanG,meanB,integrator,
+//                                            previewWidth,previewHeight,cameraOverridden,message}
 //                                           (`integrator` is the ACTIVE rasterizer's
 //                                            registered type name = its scene-file
 //                                            chunk keyword, e.g.
 //                                            "pathtracing_pel_rasterizer" -- empty
 //                                            when no rasterizer is active.  Lets an
 //                                            agent OBSERVE which integrator a
-//                                            rasterizer insert_chunk activated.)
-//      read_image                        -> {png_base64:string, byteLength:number}
+//                                            rasterizer insert_chunk activated.
+//                                            Facet 5 preview-render (the cheap
+//                                            multi-angle observe loop): `width`/
+//                                            `height` (clamped [16,512], must be
+//                                            paired) are a TRANSIENT film-dims
+//                                            override -- never touches the
+//                                            Document (Job::SetFilm is a LIVE-only
+//                                            Scene mutation, captured + restored
+//                                            around the render).  `camera`
+//                                            {location,lookat,up?,fov?} is an
+//                                            EPHEMERAL override of the ACTIVE
+//                                            camera's pose for this ONE render --
+//                                            captured via CameraIntrospection
+//                                            before the override and restored
+//                                            after, so the camera's properties are
+//                                            byte-for-byte the same before and
+//                                            after every render call.  `samples`
+//                                            stays advisory/ignored (see
+//                                            AgentSession::Render's doc for why).
+//                                            LIVE mode: the override window is
+//                                            run under
+//                                            SceneEditController::RunPreviewRenderParked
+//                                            so it cannot race the interactive
+//                                            render thread's own Film/camera
+//                                            swap; when an editor transaction is
+//                                            open the override is refused and the
+//                                            render falls back to un-overridden
+//                                            (reported in `message`).)
+//      read_image   {maxEdge?}           -> {png_base64:string, byteLength:number,
+//                                            width:number, height:number}
+//                                           (Facet 5 preview-render: `maxEdge`
+//                                            (clamped [16,1024]) downscales the
+//                                            cached image -- box filter, aspect-
+//                                            preserving, never upscales -- before
+//                                            base64-encoding; no re-render.
+//                                            `width`/`height` report the dims of
+//                                            the returned image.)
 //
 //    Facet 5 slice 1a (optimistic concurrency): read_document now carries the
 //    retained CST head's (uuid,revision) identity; propose_patch accepts an

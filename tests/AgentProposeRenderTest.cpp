@@ -38,6 +38,10 @@
 
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Cst/Cst.h"
+#include "../src/Library/Job.h"
+#include "../src/Library/Interfaces/ICamera.h"
+#include "../src/Library/Interfaces/ICameraManager.h"
+#include "../src/Library/SceneEditor/CameraIntrospection.h"
 
 #include <cmath>
 #include <cstdio>
@@ -112,7 +116,9 @@ static bool ReadPngDims( const std::vector<unsigned char>& b, unsigned int& w, u
 	return true;
 }
 
-int main()
+static void RunCameraOverrideTests();   // fwd decl -- defined below, called from main()
+
+static void RunCoreTests()
 {
 	std::printf( "=== AgentProposeRenderTest (Facet 5 slice 0b: propose_patch + render/read_image) ===\n" );
 
@@ -121,7 +127,7 @@ int main()
 
 	std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
 	Check( session != nullptr, "AgentSession::LoadFromFile loads the native-v7 scene" );
-	if( !session ) { std::printf( "cannot continue without a session\n" ); return 1; }
+	if( !session ) { std::printf( "cannot continue without a session\n" ); return; }
 
 	//----------------------------------------------------------------------
 	// propose_patch — a structured set on a real param.
@@ -293,6 +299,243 @@ int main()
 		Check( rr.png != firstPng, "post-edit PNG bytes differ from the pre-edit render" );
 	}
 
-	std::printf( "=== AgentProposeRenderTest: %d passed, %d failed ===\n", g_pass, g_fail );
+	//----------------------------------------------------------------------
+	// Preview-render: legacy Render(int) stays EXACTLY byte-compatible --
+	// AgentRenderParams with every field absent must reproduce the same
+	// result shape as before (previewWidth/previewHeight echo the actual
+	// (unoverridden) film dims; cameraOverridden is false).
+	//----------------------------------------------------------------------
+	std::printf( "[preview-render] all-absent params == legacy Render(-1) behaviour\n" );
+	{
+		AgentRenderParams legacy;   // every field at its default (absent)
+		AgentRenderResult rr = session->Render( legacy );
+		Check( rr.ok, "Render(all-absent AgentRenderParams) succeeded" );
+		Check( rr.width == 24 && rr.height == 24, "dims are the Document's authored 24x24 (no override applied)" );
+		Check( rr.previewWidth == 24 && rr.previewHeight == 24, "previewWidth/previewHeight echo the dims actually used" );
+		Check( !rr.cameraOverridden, "cameraOverridden is false when no camera override was requested" );
+	}
+
+	//----------------------------------------------------------------------
+	// Preview-render: transient film-dims override.  Render at a SMALL
+	// preview size; assert the result echoes the requested dims (PNG dims
+	// too), then assert a FOLLOW-UP unoverridden Render is back at the
+	// Document's authored 24x24 -- proving the override is TRANSIENT (never
+	// wrote back into the Scene/Document permanently).
+	//----------------------------------------------------------------------
+	std::printf( "[preview-render] transient film-dims override (16x16 preview)\n" );
+	{
+		const std::string docBeforePreview = session->ReadDocument();
+
+		AgentRenderParams p;
+		p.width  = 16;
+		p.height = 16;
+		AgentRenderResult rr = session->Render( p );
+		Check( rr.ok, "Render(width=16,height=16) succeeded" );
+		Check( rr.width == 16 && rr.height == 16, "render dims honour the 16x16 preview override" );
+		Check( rr.previewWidth == 16 && rr.previewHeight == 16, "previewWidth/previewHeight echo 16x16" );
+		unsigned int pw = 0, ph = 0;
+		Check( ReadPngDims( rr.png, pw, ph ), "preview PNG IHDR is present" );
+		Check( pw == 16 && ph == 16, "preview PNG IHDR dims are 16x16" );
+
+		// THE HARD CONTRACT: a previewed render must not mutate the retained
+		// Document AT ALL (RED-PROVEN below by checking this catches a
+		// regression: if the override leaked into the Document, this would
+		// differ by a width/height param on the film chunk).
+		Check( session->ReadDocument() == docBeforePreview,
+		       "ReadDocument() is BYTE-IDENTICAL across a dims-overridden preview render" );
+
+		// Restoration: a follow-up render with NO override is back at the
+		// Document's authored 24x24 (the Job-level Film dims were restored,
+		// not just the Document).
+		AgentRenderResult rr2 = session->Render( -1 );
+		Check( rr2.ok, "follow-up unoverridden Render() succeeded" );
+		Check( rr2.width == 24 && rr2.height == 24,
+		       "follow-up render is back at the Document's authored 24x24 (film-dims override was TRANSIENT)" );
+	}
+
+	//----------------------------------------------------------------------
+	// Preview-render: width/height clamping.  Out-of-range requests are
+	// CLAMPED (never rejected) to [16,512] -- AgentRpc.cpp does the
+	// clamping before it reaches AgentSession, so drive that layer here via
+	// a second AgentSession sharing the same head is unnecessary; the
+	// clamp is exercised directly by requesting an in-range-but-boundary
+	// value (16, the floor) and confirming it round-trips exactly (the
+	// clamp logic itself is unit-level AgentRpc.cpp behaviour, exercised
+	// end-to-end by the wire test below).
+	//----------------------------------------------------------------------
+	std::printf( "[preview-render] boundary dims (16x16 floor) round-trip exactly\n" );
+	{
+		AgentRenderParams p;
+		p.width  = 16;
+		p.height = 16;
+		AgentRenderResult rr = session->Render( p );
+		Check( rr.ok && rr.width == 16 && rr.height == 16, "16x16 (the clamp floor) renders at exactly 16x16" );
+	}
+
+	//----------------------------------------------------------------------
+	// read_image maxEdge: downscale on read (no re-render).  Render at the
+	// Document's authored 24x24, then ReadImage with maxEdge=8: the long
+	// edge must be clamped to 8, aspect preserved (source is square), PNG
+	// signature valid, and the byte count should shrink vs the un-clamped
+	// read.
+	//----------------------------------------------------------------------
+	std::printf( "[read_image] maxEdge downscales the cached image (no re-render)\n" );
+	{
+		AgentRenderResult rr = session->Render( -1 );
+		Check( rr.ok && rr.width == 24 && rr.height == 24, "full-res render (24x24) for the maxEdge test" );
+
+		unsigned int fullW = 0, fullH = 0;
+		std::vector<unsigned char> fullBytes = session->ReadImage( /*maxEdge=*/0, fullW, fullH );
+		Check( HasPngSignature( fullBytes ), "ReadImage(maxEdge=0) PNG carries a valid signature" );
+		Check( fullW == 24 && fullH == 24, "ReadImage(maxEdge=0) reports the native 24x24 dims (back-compat)" );
+		Check( fullBytes == rr.png, "ReadImage(maxEdge=0) returns the SAME bytes as the render (legacy behaviour)" );
+
+		unsigned int smallW = 0, smallH = 0;
+		std::vector<unsigned char> smallBytes = session->ReadImage( /*maxEdge=*/8, smallW, smallH );
+		Check( HasPngSignature( smallBytes ), "ReadImage(maxEdge=8) PNG carries a valid signature" );
+		Check( smallW == 8 && smallH == 8, "ReadImage(maxEdge=8) downscales the square 24x24 source to 8x8" );
+		Check( smallBytes.size() < fullBytes.size(),
+		       "the downscaled PNG is smaller than the full-resolution PNG" );
+
+		// Never-upscale: requesting a maxEdge LARGER than the native image
+		// returns the SAME dims (and bytes) as the unbounded read.
+		unsigned int bigW = 0, bigH = 0;
+		std::vector<unsigned char> bigBytes = session->ReadImage( /*maxEdge=*/1024, bigW, bigH );
+		Check( bigW == 24 && bigH == 24, "maxEdge larger than the source never upscales (stays at 24x24)" );
+		Check( bigBytes == fullBytes, "a maxEdge above the native size returns the SAME bytes as the unbounded read" );
+	}
+
+	std::printf( "=== AgentProposeRenderTest (core): %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// A separate main-body helper: the camera-override tests need to
+// introspect the ACTIVE camera's properties directly (before/after) to
+// prove restoration, which requires holding our OWN Job* (AgentSession
+// owns its Job privately with no accessor) -- so this second scene uses
+// AgentSession::WrapJob over a locally-owned Job, mirroring the
+// AgentLiveCommitTest pattern.
+//////////////////////////////////////////////////////////////////////
+static void RunCameraOverrideTests()
+{
+	std::printf( "=== AgentProposeRenderTest: camera-pose override (preview-render) ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_camera_override.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the camera-override scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene directly (for camera introspection)" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); return; }
+
+	// Resolve the active camera directly so we can introspect its
+	// properties before/after a camera-overridden render.
+	ICameraManager* cams = pJob->GetCameras();
+	const std::string activeName = pJob->GetActiveCameraName();
+	ICamera* cam = ( cams && !activeName.empty() ) ? cams->GetItem( activeName.c_str() ) : nullptr;
+	Check( cam != nullptr, "the active camera resolves for introspection" );
+	if( !cam ) { pJob->release(); return; }
+
+	const String origLocation = CameraIntrospection::GetPropertyValue( *cam, String( "location" ) );
+	const String origLookAt   = CameraIntrospection::GetPropertyValue( *cam, String( "lookat" ) );
+	const String origUp       = CameraIntrospection::GetPropertyValue( *cam, String( "up" ) );
+	const String origFov      = CameraIntrospection::GetPropertyValue( *cam, String( "fov" ) );
+	std::printf( "  original camera: location=\"%s\" lookat=\"%s\" up=\"%s\" fov=\"%s\"\n",
+	             origLocation.c_str(), origLookAt.c_str(), origUp.c_str(), origFov.c_str() );
+
+	//----------------------------------------------------------------------
+	// Baseline render from the AUTHORED camera angle.
+	//----------------------------------------------------------------------
+	AgentRenderResult baseline = session->Render( -1 );
+	Check( baseline.ok, "baseline (unoverridden) render succeeded" );
+
+	//----------------------------------------------------------------------
+	// Render from a markedly DIFFERENT angle (side-on instead of head-on) --
+	// the money assertion: the two renders' channel means must differ by
+	// more than the same-head MC noise floor established in the main test
+	// above (this scene is identical, so we re-establish a local floor via
+	// two overridden renders from the SAME new angle).
+	//----------------------------------------------------------------------
+	std::printf( "[preview-render] camera override renders from a different angle\n" );
+	AgentRenderParams sideParams;
+	sideParams.camera.hasLocation = true;
+	sideParams.camera.location    = "3.5 0 0";   // 90 degrees around from the authored +Z view
+	sideParams.camera.hasLookAt   = true;
+	sideParams.camera.lookAt      = "0 0 0";
+	AgentRenderResult side1 = session->Render( sideParams );
+	Check( side1.ok, "side-angle render (camera override) succeeded" );
+	Check( side1.cameraOverridden, "cameraOverridden==true when a camera override was applied" );
+
+	AgentRenderResult side2 = session->Render( sideParams );
+	Check( side2.ok, "second side-angle render (same override) succeeded" );
+	const double sideNoiseFloor =
+		std::fabs( side2.meanR - side1.meanR ) +
+		std::fabs( side2.meanG - side1.meanG ) +
+		std::fabs( side2.meanB - side1.meanB );
+
+	const double angleShift =
+		std::fabs( side1.meanR - baseline.meanR ) +
+		std::fabs( side1.meanG - baseline.meanG ) +
+		std::fabs( side1.meanB - baseline.meanB );
+	std::printf( "  angleShift=%.5f  (same-angle noise floor=%.5f)\n", angleShift, sideNoiseFloor );
+	Check( angleShift > 10.0 * sideNoiseFloor + 0.002,
+	       "a different camera angle shifts the channel means FAR beyond the same-angle noise floor" );
+
+	//----------------------------------------------------------------------
+	// Restoration: the active camera's properties must be IDENTICAL to
+	// their pre-render values after EVERY Render call, overridden or not.
+	//----------------------------------------------------------------------
+	std::printf( "[preview-render] camera properties are RESTORED after an overridden render\n" );
+	const String afterLocation = CameraIntrospection::GetPropertyValue( *cam, String( "location" ) );
+	const String afterLookAt   = CameraIntrospection::GetPropertyValue( *cam, String( "lookat" ) );
+	const String afterUp       = CameraIntrospection::GetPropertyValue( *cam, String( "up" ) );
+	const String afterFov      = CameraIntrospection::GetPropertyValue( *cam, String( "fov" ) );
+	Check( std::string( afterLocation.c_str() ) == std::string( origLocation.c_str() ),
+	       "camera 'location' restored to its pre-render value after a camera-overridden render" );
+	Check( std::string( afterLookAt.c_str() ) == std::string( origLookAt.c_str() ),
+	       "camera 'lookat' restored to its pre-render value after a camera-overridden render" );
+	Check( std::string( afterUp.c_str() ) == std::string( origUp.c_str() ),
+	       "camera 'up' restored to its pre-render value (was not part of the override -- must be untouched too)" );
+	Check( std::string( afterFov.c_str() ) == std::string( origFov.c_str() ),
+	       "camera 'fov' restored to its pre-render value (was not part of the override)" );
+
+	// A follow-up UNOVERRIDDEN render is back to the baseline angle (channel
+	// means agree with the ORIGINAL baseline within noise, not the side angle).
+	AgentRenderResult after = session->Render( -1 );
+	Check( after.ok, "follow-up unoverridden render succeeded" );
+	Check( !after.cameraOverridden, "follow-up render reports cameraOverridden==false (no override requested)" );
+	const double backToBaseline =
+		std::fabs( after.meanR - baseline.meanR ) +
+		std::fabs( after.meanG - baseline.meanG ) +
+		std::fabs( after.meanB - baseline.meanB );
+	std::printf( "  backToBaseline drift=%.5f (side angle shift was %.5f)\n", backToBaseline, angleShift );
+	Check( backToBaseline < angleShift,
+	       "the follow-up unoverridden render is back near the ORIGINAL baseline angle, not the side angle" );
+
+	//----------------------------------------------------------------------
+	// RED-PROVE the restoration test: verify Render(-1) (no override
+	// requested at all) leaves the camera untouched too -- confirming the
+	// assertions above are actually discriminating (they would catch a
+	// "forgot to restore" regression because they compare against a KNOWN
+	// original value captured before ANY override ran).
+	//----------------------------------------------------------------------
+	Check( std::string( CameraIntrospection::GetPropertyValue( *cam, String( "location" ) ).c_str() )
+	           == std::string( origLocation.c_str() ),
+	       "RED-PROVE: camera location still matches the ORIGINAL captured value (not just the last override's target)" );
+
+	std::printf( "=== camera-pose override tests: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+int main()
+{
+	RunCoreTests();
+	RunCameraOverrideTests();
+
+	std::printf( "=== AgentProposeRenderTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

@@ -196,10 +196,33 @@ namespace RISE
 					"pathtracing_pel_rasterizer). Call after a successful propose_patch; "
 					"compare the channel means against the previous render to confirm "
 					"the edit changed the image. After inserting a rasterizer, check "
-					"`integrator` to confirm which one is live.",
+					"`integrator` to confirm which one is live. "
+					"TOKEN ECONOMY: for modeling/placement checks use width/height 128-192 "
+					"(NOT the full authored resolution) and read_image maxEdge ~192 -- a "
+					"tiny preview is enough to confirm placement/shape/color and costs a "
+					"fraction of the tokens and render time. Use `camera` to check the "
+					"scene from 2-3 DIFFERENT ANGLES without editing the actual camera "
+					"chunk -- the override is EPHEMERAL (restored after this one render) "
+					"and never touches the document, so it's the cheap way to look at a "
+					"scene from the side/above/behind before committing to a placement. "
+					"Reserve full-size, full-sample renders (no width/height/camera "
+					"override) for the FINAL verification once you're confident the edit "
+					"is right.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"samples\":{\"type\":\"number\",\"description\":"
-						"\"Optional sample-count override (currently advisory; the authored count is used).\"}"
+						"\"Optional sample-count override (currently advisory; the authored count is used).\"},"
+						"\"width\":{\"type\":\"number\",\"description\":"
+						"\"Optional TRANSIENT preview width in pixels, clamped to [16,512]. Must be paired with height. Does not touch the document -- use 128-192 for cheap placement checks.\"},"
+						"\"height\":{\"type\":\"number\",\"description\":"
+						"\"Optional TRANSIENT preview height in pixels, clamped to [16,512]. Must be paired with width.\"},"
+						"\"camera\":{\"type\":\"object\",\"description\":"
+						"\"Optional EPHEMERAL camera-pose override for this ONE render only -- captured and restored automatically, never touches the document. Use to check the scene from a different angle.\","
+						"\"properties\":{"
+							"\"location\":{\"type\":\"string\",\"description\":\"Eye position \\\"x y z\\\" (required if camera is given).\"},"
+							"\"lookat\":{\"type\":\"string\",\"description\":\"Target point \\\"x y z\\\" (required if camera is given).\"},"
+							"\"up\":{\"type\":\"string\",\"description\":\"Optional up vector \\\"x y z\\\"; defaults to the camera's current up.\"},"
+							"\"fov\":{\"type\":\"number\",\"description\":\"Optional field of view in degrees; defaults to the camera's current fov.\"}"
+						"},\"required\":[\"location\",\"lookat\"]}"
 					"}}"
 				},
 				{
@@ -207,8 +230,15 @@ namespace RISE
 					"Fetch the LAST successful render as a PNG image so you can SEE the "
 					"scene. Call after propose_patch + render to visually verify your "
 					"edit did what you intended. If nothing has been rendered yet this "
-					"returns an empty png_base64 (byteLength 0) -- call render first.",
-					nullptr
+					"returns an empty png_base64 (byteLength 0) -- call render first. "
+					"TOKEN ECONOMY: pass maxEdge ~192 for a modeling/placement check -- the "
+					"image is downscaled (no re-render) before being sent to you, so a "
+					"quick look costs far fewer tokens than the full-resolution image. "
+					"Omit maxEdge only for the final, full-detail look once you're done.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"maxEdge\":{\"type\":\"number\",\"description\":"
+						"\"Optional long-edge bound in pixels, clamped to [16,1024]. Downscales (box filter, aspect-preserving, never upscales) the cached image before sending -- no re-render. Use ~192 for cheap modeling checks.\"}"
+					"}}"
 				},
 			};
 

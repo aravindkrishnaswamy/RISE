@@ -43,6 +43,8 @@ namespace RISE
 	class IJobPriv;
 	class SceneEditController;   // Facet 5 slice 1b: LIVE mode routes ProposePatch through the controller's render-safe edit path (fwd-decl only -- no header dep)
 
+	namespace Agent { class InMemoryRasterizerOutput; }   // preview-render: cached sink for read_image's maxEdge downscale (fwd-decl only -- no header dep)
+
 	namespace Agent
 	{
 		//! A STRUCTURED set-param patch (slice 0b: set only -- no text-patch,
@@ -164,6 +166,48 @@ namespace RISE
 			std::string kind;   //!< the chunk keyword (e.g. "omni_light")
 		};
 
+		//! Preview-render (F5 the cheap multi-angle observe loop): an OPTIONAL
+		//! EPHEMERAL override of the active camera's pose for one Render call
+		//! only.  Each `has*` flag gates its field independently, so a caller
+		//! can override just `location`+`lookat` and leave `up`/`fov` at the
+		//! camera's current values.  Values are the SAME string forms
+		//! CameraIntrospection::SetProperty accepts ("x y z" for the Vec3
+		//! fields, a plain number in DEGREES for fov).  Render captures the
+		//! camera's CURRENT value of every overridden field via
+		//! CameraIntrospection::GetPropertyValue BEFORE applying any override,
+		//! and restores every captured field after the render -- the active
+		//! camera's properties are IDENTICAL before and after a Render call,
+		//! whether or not an override was requested (see AgentSession.cpp for
+		//! the capture-set-render-restore sequencing and the LIVE-mode safety
+		//! note).
+		struct AgentCameraOverride
+		{
+			bool        hasLocation = false;
+			std::string location;    //!< "x y z"
+			bool        hasLookAt = false;
+			std::string lookAt;      //!< "x y z"
+			bool        hasUp = false;
+			std::string up;          //!< "x y z"
+			bool        hasFov = false;
+			std::string fov;         //!< degrees, plain number
+		};
+
+		//! Preview-render params (all optional; every field at its default
+		//! reproduces EXACTLY today's Render(-1) behaviour -- wire-additive).
+		//! `width`/`height` are a TRANSIENT film-dims override (both must be
+		//! set together; clamped to [16,512] by the caller -- AgentRpc.cpp --
+		//! before reaching here); 0 means "no override, use the Document's
+		//! authored dims".  `samples` mirrors the legacy samplesOverride
+		//! (still IGNORED -- see Render's doc).  `camera` is the optional
+		//! ephemeral camera-pose override above.
+		struct AgentRenderParams
+		{
+			unsigned int         width = 0;    //!< 0 = no override
+			unsigned int         height = 0;   //!< 0 = no override
+			int                  samples = -1;  //!< -1 = no override (still advisory; see Render)
+			AgentCameraOverride  camera;
+		};
+
 		//! The structured result of Render: the rendered head as PNG bytes
 		//! plus the film dims.  `ok` is false (and `png` empty) when no head
 		//! is loaded or the render failed.
@@ -195,6 +239,14 @@ namespace RISE
 			//! insert_chunk.  Empty when no rasterizer is active (the no-head /
 			//! no-rasterizer failure paths).
 			std::string                integrator;
+			//! Preview-render ADDITIVE wire fields: the dims ACTUALLY used for
+			//! this render (== width/height above; kept as an explicit echo so
+			//! a caller reading only the new fields doesn't have to cross-
+			//! reference) and whether a camera override was applied (and
+			//! restored) for this call.
+			unsigned int               previewWidth = 0;
+			unsigned int               previewHeight = 0;
+			bool                       cameraOverridden = false;
 			std::string                message;
 		};
 
@@ -410,16 +462,92 @@ namespace RISE
 			//! (docs/agentic-redesign/50-agentic-surface.md §2.2.5); the render
 			//! uses the AUTHORED sample count.  The bytes of a SUCCESSFUL
 			//! render are cached for ReadImage().
+			//!
+			//! LIVE-MODE SAFETY (investigated for the preview-render work,
+			//! documented honestly rather than silently papered over): this
+			//! entry point calls mJob->Rasterize() DIRECTLY, with NO park
+			//! against a live SceneEditController's interactive render thread
+			//! -- that gap PRE-DATES preview-render and is UNCHANGED here (this
+			//! call takes no params to override, so there is nothing new to
+			//! race).  It is unserialized against DoOneRenderPass, which reads
+			//! + transiently mutates the SAME shared Scene/Film/cameras for its
+			//! own preview-scale pass.  A production-grade fix is the
+			//! `RenderCoordinator` design (docs/gui/RENDER_COORDINATOR.md,
+			//! status: DESIGN, no code) -- out of scope here.  The scoped fix
+			//! landed by THIS work is narrower and real: Render(AgentRenderParams)
+			//! below parks the render thread (SceneEditController::
+			//! RunPreviewRenderParked) for the WINDOW where it mutates the
+			//! shared Film dims / camera pose, because those two specific
+			//! mutations are what preview-render newly introduces on a path
+			//! that previously made none.  A plain Render(-1) (or an
+			//! all-absent-params Render(AgentRenderParams)) does not take that
+			//! park, matching its pre-existing behavior exactly.
 			AgentRenderResult Render( int samplesOverride = -1 );
+
+			//! Preview-render (F5 the cheap multi-angle observe loop): the SAME
+			//! Render as above, plus the OPTIONAL transient overrides in
+			//! `params` (film dims / camera pose).  Wire-additive: a
+			//! default-constructed AgentRenderParams (every field absent)
+			//! reproduces Render(-1) EXACTLY, byte-for-byte, including the
+			//! Document byte-identity guarantee.
+			//!
+			//! Film-dims override: capture the Scene's CURRENT Film dims,
+			//! Job::SetFilm to the requested preview dims (a LIVE-only
+			//! mutation of the derived Scene -- it does NOT touch the CST
+			//! Document; see Job::SetFilm / ScaleFilmToFit), Rasterize, then
+			//! SetFilm back to the captured dims.  Camera override: capture
+			//! every requested field's CURRENT value via
+			//! CameraIntrospection::GetPropertyValue, SetProperty the
+			//! overrides onto the ACTIVE camera, Rasterize, then SetProperty
+			//! every captured field back.  Both restores run even when the
+			//! render itself fails (best-effort -- a failed restore attempt is
+			//! not reported as a distinct error; the pre-render capture makes
+			//! restoration a plain re-apply of already-valid strings, so it
+			//! does not itself fail in practice).
+			//!
+			//! LIVE mode (a controller is attached): the mutate-render-restore
+			//! window for BOTH overrides runs under
+			//! SceneEditController::RunPreviewRenderParked -- the render
+			//! thread's OWN per-pass Film-dims / camera-frame swap
+			//! (DoOneRenderPass) touches the SAME shared Film/cameras with NO
+			//! lock of its own, so an unparked override would race it.  When
+			//! parking is refused (an editor transaction is open), the
+			//! override is likewise refused -- see the honest failure mode in
+			//! the result's `message` (dims/camera stay at the Document's
+			//! authored values and `cameraOverridden` is false; the render
+			//! still runs, just without the requested override).  Headless
+			//! (no controller attached) mode has no interactive thread to race
+			//! and applies the override directly.
+			AgentRenderResult Render( const AgentRenderParams& params );
 
 			//! The PNG bytes of the LAST successful Render (empty before the
 			//! first render).  A convenience read of the cached result.
 			std::vector<unsigned char> ReadImage() const;
 
+			//! read_image maxEdge (F5 the cheap multi-angle observe loop):
+			//! the LAST successful Render's image, DOWNSCALED (box filter, in
+			//! linear space, aspect-preserving, never upscales) so its long
+			//! edge is <= `maxEdge` -- clamped to [16,1024] by the caller
+			//! (AgentRpc.cpp) before reaching here.  `maxEdge==0` is treated
+			//! as "no bound" and returns the SAME bytes as ReadImage() (so
+			//! read_image with no maxEdge stays byte-compatible).  Fills
+			//! outWidth/outHeight with the dims of the returned image (0/0
+			//! when nothing has been rendered yet).  Re-encodes from the
+			//! cached full-resolution linear pixel buffer of the last
+			//! render -- it does NOT re-render.
+			std::vector<unsigned char> ReadImage( unsigned int maxEdge,
+			                                      unsigned int& outWidth,
+			                                      unsigned int& outHeight ) const;
+
 		private:
 			AgentSession( IJobPriv* job, bool owns );
 			AgentSession( const AgentSession& );             // deleted
 			AgentSession& operator=( const AgentSession& );  // deleted
+
+			//! The shared core of both Render overloads: legacy Render(int) is a
+			//! thin forwarder that builds an all-absent AgentRenderParams (so
+			//! it is BYTE-COMPATIBLE with the pre-preview-render behaviour).
+			AgentRenderResult RenderCore_( const AgentRenderParams& params );
 
 			IJobPriv* mJob;    //!< the wrapped Job (owned iff mOwnsJob)
 			bool      mOwnsJob;
@@ -431,6 +559,13 @@ namespace RISE
 			SceneEditController* mController = nullptr;
 
 			std::vector<unsigned char> mLastPng;   //!< cached PNG bytes of the last Render (for ReadImage)
+
+			//! read_image maxEdge: the LAST successful Render's in-memory sink,
+			//! kept alive (addref'd) so ReadImage(maxEdge) can re-encode a
+			//! downscaled PNG from the cached full-resolution linear pixels
+			//! WITHOUT re-rendering.  Null before the first successful render.
+			//! Owned (released in the destructor and whenever replaced).
+			InMemoryRasterizerOutput* mLastSink = nullptr;
 		};
 	}
 }
