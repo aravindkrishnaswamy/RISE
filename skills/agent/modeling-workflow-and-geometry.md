@@ -35,9 +35,11 @@ is cheap if you ask for a small preview instead of the final image.
    override** ONLY for final verification once you are confident the
    placement is right.
 
-**Why this matters (measured):** a `maxEdge 128` preview PNG is about
-**13x smaller** than a full 800^2 frame; `maxEdge 192` is about **8x**
-smaller.  A blocking-out pass that renders from 3 angles at 160x120
+**Why this matters (measured):** a `maxEdge 128`-`192` preview PNG is
+roughly an order of magnitude smaller than a full 800^2 frame --
+**8-17x**, depending on content (PNG size varies with image
+complexity, so don't expect an exact multiplier to reproduce across
+scenes).  A blocking-out pass that renders from 3 angles at 160x120
 and reads back one `maxEdge 160` image costs a small fraction of the
 tokens (and render time) of doing the same pass at full resolution
 each step.  Reserve full resolution for the shot you are actually
@@ -240,14 +242,19 @@ standard_object
 	name		obj_sphere
 	geometry	sph
 	material	mat_sphere
-	position	0 0.6 1.2
-	# On top of the pedestal in Y, but pushed off to the side in Z so
-	# a second camera angle (see the observe loop) can tell the two
-	# apart instead of one occluding the other from every direction.
+	position	0 1.1 0
+	# Genuinely ON TOP of the pedestal: the pedestal top is at y=0.6
+	# (position.y 0.3 + half-height 0.3), so the sphere's center at
+	# y=1.1 rests its radius-0.5 bottom exactly on that surface, same
+	# X/Z as the pedestal underneath it.
 }
 
 # Cylinder: axis "y" stands it upright (default axis is "x", which
-# would lay it on its side).
+# would lay it on its side).  Placed well clear of the box's footprint
+# on the floor -- from the authored camera it can look close to the
+# pedestal group in silhouette, but the observe loop's second angle
+# (swap X and Z, e.g. location "6 3 3") shows all three primitives as
+# genuinely separate objects instead of one occluding another.
 cylinder_geometry
 {
 	name	cyl
@@ -261,7 +268,7 @@ standard_object
 	name		obj_cyl
 	geometry	cyl
 	material	mat_cyl
-	position	-1.4 0.5 -0.6
+	position	1.3 0.5 1.6
 }
 
 directional_light
@@ -415,9 +422,18 @@ directional_light
    3 finite numbers `"x y z"` -- extra/missing tokens or a non-numeric
    component is rejected.  `fov` is a plain number in the exclusive
    range `(0, 180)`.
-2. **Preview `width`/`height` must be paired.**  Passing one without
-   the other is rejected; both are clamped to `[16, 512]` and never
-   touch the document (they are restored after the render).
+2. **Preview `width`/`height` must be paired, or NEITHER takes effect.**
+   Passing only one is not rejected -- it is silently IGNORED, and the
+   render proceeds at the scene's AUTHORED dimensions (there is no
+   sane way to guess the other dimension, so the default is "do not
+   override" rather than invent an aspect ratio).  A stray one-sided
+   `render {width:160}` on a scene authored at 800x800 quietly costs a
+   full-size render instead of the cheap preview you meant to ask for.
+   Always pass BOTH, and confirm the override actually took by reading
+   `previewWidth`/`previewHeight` back from the result -- if they don't
+   match what you asked for, the pairing was broken.  When both ARE
+   paired, they are clamped to `[16, 512]` and never touch the document
+   (restored after the render).
 3. **`csg_object` refuses `scale`.**  Position/orientation are
    transform-routable on a CSG result; size the operand geometries
    (`obja`/`objb`) BEFORE combining them.
