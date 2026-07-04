@@ -1,14 +1,14 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  AgentSkillsTest.cpp - Facet 5 (agentic surface) slice S1: the
-//    read_skill verb, the three seed skills, and THE SNIPPET CONTRACT.
+//    read_skill verb, the four seed skills, and THE SNIPPET CONTRACT.
 //
 //  What is covered:
 //    S0  Skills-root resolution: the ./skills/agent cwd fallback (the
 //        suite runs from the repo root with no RISE_MEDIA_PATH), and
 //        the RISE_SKILLS_PATH override taking precedence.
 //    S1  The verb, STATELESS (dispatcher built with a NULL session):
-//        the no-arg index lists exactly the three seed skills, each
+//        the no-arg index lists exactly the four seed skills, each
 //        with a non-empty title + hook; a named fetch returns the
 //        markdown containing the indexed title.
 //    S2  Unknown / rejected names: an unknown skill -> -32602; the
@@ -99,10 +99,11 @@ static void SetEnvVar( const char* name, const char* value )
 #endif
 }
 
-// The three seed skills (sorted byte-wise -- the index order contract).
+// The four seed skills (sorted byte-wise -- the index order contract).
 static const char* const kSeedSkills[] = {
 	"lighting-recipes",
 	"materials-and-media-basics",
+	"modeling-workflow-and-geometry",
 	"scene-skeleton-and-conventions",
 };
 static const std::size_t kSeedSkillCount = sizeof( kSeedSkills ) / sizeof( kSeedSkills[0] );
@@ -190,14 +191,14 @@ static void TestRootResolution()
 	std::printf( "S0: skills-root resolution...\n" );
 
 	// The cwd fallback: with neither env var set, ./skills/agent serves
-	// the three seed skills (the suite runs from the repo root).
+	// the four seed skills (the suite runs from the repo root).
 	SetEnvVar( "RISE_SKILLS_PATH", nullptr );
 	SetEnvVar( "RISE_MEDIA_PATH", nullptr );
 	{
 		const AgentSkillResult r = AgentSession::ReadSkill();
 		Check( r.ok, "fallback root: index read ok" );
 		Check( r.index.size() == kSeedSkillCount,
-		       "fallback root (./skills/agent) serves the three seed skills" );
+		       "fallback root (./skills/agent) serves the four seed skills" );
 	}
 
 	// RISE_SKILLS_PATH override wins: a temp root with ONE fake skill.
@@ -285,12 +286,12 @@ static void TestVerbIndexAndFetch( AgentRpcDispatcher& rpc )
 {
 	std::printf( "S1: read_skill index + named fetch (null-session dispatcher)...\n" );
 
-	// Index: exactly the three seed skills, non-empty titles + hooks.
+	// Index: exactly the four seed skills, non-empty titles + hooks.
 	const JsonValue env = ParseLine( rpc.HandleLine( SkillRequest( 1, nullptr ) ) );
 	Check( env.isObject() && !env.find( "error" ), "no-arg read_skill succeeds with NO session (stateless)" );
 	const JsonValue& skills = env.get( "result" ).get( "skills" );
 	Check( skills.isArray() && skills.size() == kSeedSkillCount,
-	       "index lists exactly the three seed skills" );
+	       "index lists exactly the four seed skills" );
 	for( std::size_t i = 0; i < kSeedSkillCount && i < skills.size(); ++i ) {
 		const JsonValue& e = skills.at( i );
 		Check( e.get( "name" ).asString() == kSeedSkills[i],
@@ -422,10 +423,10 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	std::printf( "  render contract: %.1f seconds over %d snippets\n",
 	             renderSeconds, static_cast<int>( totalSnippets ) );
 
-	// A rot guard for the extraction itself: the three seed skills ship
-	// SEVEN snippets total (1 + 3 + 3) -- if the fence tag or extraction
+	// A rot guard for the extraction itself: the four seed skills ship
+	// NINE snippets total (1 + 3 + 2 + 3) -- if the fence tag or extraction
 	// regresses, this trips before a snippet silently escapes checking.
-	Check( totalSnippets == 7, "the seed skills carry the expected 7 ```rise snippets in total (got " +
+	Check( totalSnippets == 9, "the seed skills carry the expected 9 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 
