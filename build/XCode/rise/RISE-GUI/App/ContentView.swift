@@ -253,17 +253,21 @@ struct ContentView: View {
 
                     // Facet 5 slice 1c-1: toggle the live Agent (JSON-RPC)
                     // panel — the minimal "agent + user co-edit" affordance.
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            viewModel.toggleAgentPanel()
+                    // Superseded by Chat for everyday use; only shown when
+                    // the Developer toggle (Chat settings popover) is on.
+                    if viewModel.showAgentDebugPanel {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                viewModel.toggleAgentPanel()
+                            }
+                        } label: {
+                            Label("Agent", systemImage: "wand.and.stars")
                         }
-                    } label: {
-                        Label("Agent", systemImage: "wand.and.stars")
+                        .disabled(viewModel.viewportBridge == nil)
+                        .help(viewModel.isAgentPanelVisible
+                              ? "Hide the Agent (JSON-RPC) panel"
+                              : "Show the Agent (JSON-RPC) panel")
                     }
-                    .disabled(viewModel.viewportBridge == nil)
-                    .help(viewModel.isAgentPanelVisible
-                          ? "Hide the Agent (JSON-RPC) panel"
-                          : "Show the Agent (JSON-RPC) panel")
 
                     // Facet 5 slice B2: toggle the LLM Chat panel — the
                     // natural-language sibling of the JSON-RPC debug panel.
@@ -281,7 +285,9 @@ struct ContentView: View {
                 }
 
                 // Facet 5 slice 1c-1: the inline Agent (JSON-RPC) panel.
-                if viewModel.isAgentPanelVisible {
+                // Gated on the Developer toggle in addition to its own
+                // visibility flag — see `showAgentDebugPanel`.
+                if viewModel.showAgentDebugPanel && viewModel.isAgentPanelVisible {
                     Divider()
                     AgentPanel()
                 }

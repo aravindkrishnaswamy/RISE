@@ -157,9 +157,33 @@ final class RenderViewModel: ObservableObject {
     // handed to the viewport bridge's `agentHandleLine`, which drives the
     // SAME live dispatcher/session/controller the GUI edits through, so a
     // `propose_patch` edits the running scene and the viewport reflects it.
+    //
+    // Superseded by the Chat panel for everyday use (2026-07); kept ONLY
+    // as the raw-wire debug surface against the LIVE controller (the
+    // headless CLI agent session is a separate process/session and isn't
+    // affected either way).  Gated behind a developer toggle, default
+    // OFF — see `showAgentDebugPanel` below.
     /// Whether the Agent (JSON-RPC) panel is showing.  Mirrors
-    /// `isEditorVisible` as the show/hide toggle pattern.
+    /// `isEditorVisible` as the show/hide toggle pattern.  Meaningful only
+    /// when `showAgentDebugPanel` is true; the button/panel are hidden
+    /// entirely otherwise (see ContentView).
     @Published var isAgentPanelVisible: Bool = false
+
+    /// Developer toggle: reveals the Agent (JSON-RPC) debug panel's
+    /// button + inline panel at all.  Persisted in UserDefaults (a UI
+    /// preference, not a secret) so it survives relaunch; default OFF —
+    /// the Chat panel is the everyday surface, this is a wire-debug tool.
+    /// Switching this off while the panel is open hides it gracefully
+    /// (and clears the visibility flag so re-enabling later doesn't
+    /// surprise-pop a stale panel back open).
+    @Published var showAgentDebugPanel: Bool = false {
+        didSet {
+            UserDefaults.standard.set(showAgentDebugPanel, forKey: Self.showAgentDebugPanelKey)
+            if !showAgentDebugPanel {
+                isAgentPanelVisible = false
+            }
+        }
+    }
     /// The JSON-RPC request text the user is composing.
     @Published var agentRequestText: String =
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"read_document\"}"
@@ -360,10 +384,12 @@ final class RenderViewModel: ObservableObject {
     private static let maxLogMessages = 10000
     private static let maxRecentFiles = 10
     private static let recentFilesKey = "recentSceneFiles"
+    private static let showAgentDebugPanelKey = "showAgentDebugPanel"
 
     init() {
         versionString = RISEBridge.versionString()
         recentFiles = UserDefaults.standard.stringArray(forKey: Self.recentFilesKey) ?? []
+        showAgentDebugPanel = UserDefaults.standard.bool(forKey: Self.showAgentDebugPanelKey)
         // B2 review round 1: the chat driver re-checks this predicate
         // after every await and before each tool call, so a turn
         // resuming from its HTTP suspension can never mutate the

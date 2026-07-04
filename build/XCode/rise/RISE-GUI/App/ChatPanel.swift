@@ -193,6 +193,7 @@ private struct ChatTranscriptRow: View {
 /// time resolution is Keychain first, then the provider's environment
 /// variable — the caption below shows WHICH source is active.
 private struct ChatSettingsView: View {
+    @EnvironmentObject var viewModel: RenderViewModel
     @ObservedObject var chat: ChatViewModel
 
     @State private var draftProvider: AgentChatProviderChoice = .anthropic
@@ -337,6 +338,27 @@ private struct ChatSettingsView: View {
             }
             .disabled(!chat.hasConversation)
             .help("Drop the conversation history (keeps provider / model / keys)")
+
+            Divider()
+
+            // Developer: the Agent (JSON-RPC) panel is the raw-wire debug
+            // surface against the LIVE controller (propose_patch etc. go
+            // straight through agentHandleLine) — it predates and is now
+            // superseded by this Chat panel for everyday use, but stays
+            // available for wire-level debugging.  Off by default so it
+            // doesn't confuse everyday users; the headless CLI agent
+            // session is unaffected either way (separate process/session).
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Developer")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Toggle("Show raw JSON-RPC panel", isOn: $viewModel.showAgentDebugPanel)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+                    .help("Reveal the Agent (JSON-RPC) debug panel — the raw wire "
+                          + "surface against the live controller. Superseded by "
+                          + "Chat for everyday use.")
+            }
         }
         .padding(12)
         .frame(width: 300)
