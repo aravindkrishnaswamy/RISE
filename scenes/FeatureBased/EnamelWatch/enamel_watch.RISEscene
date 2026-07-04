@@ -11,8 +11,8 @@ RISE ASCII SCENE 6
 #                   sit above.  Env-only, glare-free studio lighting.  Rendered spectrally (PT, not
 #                   VCM).  Fully procedural: dial heightfields, case/crown/hands and crystal are
 #                   SDF / sweep / path-instance geometry -- no pre-baked meshes or maps.  The
-#                   loopable "Wobble" sparkle animation gently rocks the camera so the crystalline
-#                   dimples and gold hands catch the light.  Generic -- no brand mark.
+#                   loopable "GlintSweep" animation rakes a localized key across the dial so the
+#                   continuous fired-glass dimple relief twinkles (the fumé breathes with it).  Generic -- no brand mark.
 #   Author:         Aravind Krishnaswamy
 #############################################################################################################
 
@@ -198,7 +198,7 @@ pinhole_camera
 ##################################################
 # NAMED ANIMATIONS on cam_high34 -- pick one in the RISE-GUI side-panel
 # dropdown, with the CLI `> modify animation <name>`, or by moving `active`
-# below.  `renderanimation` renders the ACTIVE animation (Wobble by default)
+# below.  `renderanimation` renders the ACTIVE animation (GlintSweep by default)
 # and the GUI timeline scrubs / the Play button loops it.  All five orbit the
 # camera around the dial's lookat (re-centred, so it stays framed) and every
 # one drives BOTH `elevation` and `azimuth` so switching between them is always
@@ -207,8 +207,11 @@ pinhole_camera
 # the view rocks, warming toward grazing.
 # cam_high34 must stay the ACTIVE (last) camera for renderanimation to drive it.
 #
-#   Wobble     (active) gentle elliptical orbit, +-12deg elev / +-5deg azim;
-#              subtle sparkle breathe over the dimpled enamel, C1-seamless loop.
+#   GlintSweep (active) WIDE elliptical rake (+-18deg elev / +-12deg azim) that
+#              sweeps the glint_key lobe across the dial so the dimple relief
+#              twinkles; C1-seamless loop.
+#   Wobble     gentle elliptical orbit, +-12deg elev / +-5deg azim; subtle
+#              sparkle breathe over the dimpled enamel, C1-seamless loop.
 #   Reveal     dramatic dip-and-rise (elev 31 -> -35 -> 31, azim +-12); the dial
 #              sheen sweeps head-on -> grazing -> head-on.
 #   Figure-8   infinity-path wobble (azim 10*sin, elev 12*sin at 2x rate); both
@@ -226,7 +229,6 @@ pinhole_camera
 animation
 {
 	name			Wobble
-	active			TRUE
 	time_start		0.0
 	time_end		1.0
 	num_frames		48
@@ -270,6 +272,22 @@ animation
 	time_start		0.0
 	time_end		1.0
 	num_frames		120
+}
+
+#   GlintSweep (ACTIVE) a WIDE elliptical orbit (+-18deg elev / +-12deg azim,
+#              90deg out of phase) that rakes the glint_key's specular lobe
+#              in an ellipse across the whole dial -- so the continuous
+#              fired-glass dimple relief flashes its twinkle as the lobe
+#              sweeps over each patch of orange-peel.  Wider than Wobble
+#              (whose gentle rock keeps the lobe near centre); C1-seamless
+#              loop (start = end, hermite).
+animation
+{
+	name			GlintSweep
+	active			TRUE
+	time_start		0.0
+	time_end		1.0
+	num_frames		48
 }
 
 # --- Wobble (active) ---
@@ -609,6 +627,80 @@ timeline
 	value		5.0
 }
 
+# --- GlintSweep (active) -- wide elliptical rake to reveal the dimple twinkle ---
+
+timeline
+{
+	animation	GlintSweep
+	element_type	camera
+	element			cam_high34
+	param			elevation
+	interpolator	hermite
+
+	time		0.000
+	value		0.0
+
+	time		0.125
+	value		12.728
+
+	time		0.250
+	value		18.0
+
+	time		0.375
+	value		12.728
+
+	time		0.500
+	value		0.0
+
+	time		0.625
+	value		-12.728
+
+	time		0.750
+	value		-18.0
+
+	time		0.875
+	value		-12.728
+
+	time		1.000
+	value		0.0
+}
+
+timeline
+{
+	animation	GlintSweep
+	element_type	camera
+	element			cam_high34
+	param			azimuth
+	interpolator	hermite
+
+	time		0.000
+	value		12.0
+
+	time		0.125
+	value		8.485
+
+	time		0.250
+	value		0.0
+
+	time		0.375
+	value		-8.485
+
+	time		0.500
+	value		-12.0
+
+	time		0.625
+	value		-8.485
+
+	time		0.750
+	value		0.0
+
+	time		0.875
+	value		8.485
+
+	time		1.000
+	value		12.0
+}
+
 # (HandsSweep's hour/minute-hand timelines live AFTER the hand objects
 # sdfhour/sdfminute below -- a timeline's element must already exist when
 # its chunk is parsed, and the hands are defined later in the file.)
@@ -831,17 +923,17 @@ standard_object
 ##################################################
 # GLINT KEY -- a SMALL bright accent panel (~0.49deg angular radius: 3.1x3.1
 # units at 180 distance), aimed along the dial-plane specular MIRROR of the
-# cam_high34 base pose so the glaze's smooth specular lobe carries the fleck
-# field for the hero framing (the Wobble tilt then twinkles it).  It sits at
-# distance 180 = clearly IN FRONT of the soft_top scrim's plane (which is at
-# z~248 at this height) -- an accent kicker up-and-behind the watch, NOT a
-# third source stacked on the scrim (an earlier revision put it at distance
-# 350, coincident with the scrim plane -- unphysical; a scrim cannot contain
-# a light at its own surface).  SMALL is the point: the fleck count scales
-# with the key's solid angle (~0.49deg radius -> the reference fleck density)
-# and a small source cannot re-introduce the broad glare band the env-only
-# look removed.  Physically this is the reference clips' distant window,
-# reflected to the eye off the near-flat dial.  Front face (winding normal)
+# cam_high34 base pose so the glaze's specular lobe reveals the dimple relief's
+# twinkle for the hero framing (the GlintSweep / Wobble tilt then rakes it
+# across the dial).  It sits at distance 180 = clearly IN FRONT of the
+# soft_top scrim's plane (which is at z~248 at this height) -- an accent
+# kicker up-and-behind the watch, NOT a third source stacked on the scrim (an
+# earlier revision put it at distance 350, coincident with the scrim plane --
+# unphysical; a scrim cannot contain a light at its own surface).  SMALL is
+# the point: a localized source is REQUIRED for specular glints (a uniform env
+# produces none), yet small enough that it cannot re-introduce the broad glare
+# band the env-only look removed.  Physically this is the reference clips'
+# distant window, reflected to the eye off the near-flat dial.  Front face (winding normal)
 # points at the dial.
 ##################################################
 
@@ -1096,24 +1188,20 @@ sdf_geometry
 	heightfield_radius 20.6
 	heightfield_scale 0.40
 }
-# Discrete-facet glint field on the GLAZE surface (the fleck twinkle;
-# docs/ENAMEL_SPARKLE_BRDF.md).  Reference measurement: flecks are NEUTRAL
-# top-surface Fresnel glints ~100-350um.  This scene: 1 unit = 38/48 mm
-# (scene_unit), i.e. 1.263 units/mm, so density 5 gives a 0.2-unit = 158um
-# fleck pitch — inside the measured band.  Sharply angle-gated
-# (spread ~4deg Rayleigh).  Facets are
-# pinned to the dial by the object-space hash: they twinkle because the view
-# rocks (the Wobble animation), never because the pattern swims.  Density is
-# delivered by the SMALL glint key below (fleck count ~ key solid angle).
-glint_modifier
-{
-	name				glint_glaze
-	density				5.0
-	coverage			0.5
-	fill				0.6
-	spread				4.0
-	seed				1
-}
+# NOTE on the fleck twinkle (docs/ENAMEL_SPARKLE_BRDF.md): grand-feu enamel
+# is a CONTINUOUS fired-glass surface, and its twinkle is that surface's own
+# top-surface Fresnel glints catching a localized light as the dial tilts.
+# The fleck-scale relief IS the en_dimpled Worley heightfield above: N=85
+# cells over the 41.2-unit disk = 384um cells (1 unit = 38/48 mm), squarely
+# in the reference's 100-350um fleck band.  So the physically-correct model of
+# the dial sparkle is the CONTINUOUS displacement heightfield already applied
+# to en_enamelgeom -- NOT the discrete-facet `glint_modifier`, which models
+# genuinely discrete scatterers (metal-flake paint, glitter, aventurine) and
+# would be both the wrong material physics here and redundant with the
+# dimples.  The dimples twinkle under the small glint_key below (a uniform env
+# cannot produce specular glints -- that is why the env-only look showed none);
+# the GlintSweep animation rakes that key across the dial to reveal it.  The
+# glint_modifier's canonical home is scenes/FeatureBased/Materials/glint_flakes.
 
 standard_object
 {
@@ -1122,7 +1210,6 @@ standard_object
 	position			0 0 -1.12
 	material			enamel_glass
 	interior_medium			goldruby
-	modifier			glint_glaze
 }
 
 standard_object
