@@ -3937,6 +3937,166 @@ static void RunRefusedProductionSubmitNoFallbackRedProveTest()
 	std::printf( "=== (aa) refused production submit no-fallback RED-PROVE: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// (bb) Model-B F2 slice S4 fix round 4 RED-PROVE: mirrors the ACTUAL
+//      app call order (RenderViewModel.swift's startRender /
+//      startAnimationRender on macOS; MainWindow::onRender /
+//      onRenderAnimation on Windows) --
+//
+//          controller.Start()
+//          controller.StopInteractive()   // "pause the viewport"
+//          RunProductionRenderComposed(...)   // the production submit
+//
+//      Pre-fix, the platform shells called the MONOLITHIC Stop() in the
+//      middle step, which ALSO set mAgentRenderStop=true and permanently
+//      joined mAgentRenderThread (spawned once, in the ctor; nothing
+//      ever respawns it) -- so the production submit a few lines later
+//      was refused with "SceneEditController: agent render submission
+//      refused -- controller stopped.", surfacing to the user as
+//      RunProductionRenderComposed's "production render submission to
+//      the coordinator was refused (busy or stopped)" warning and NO
+//      RENDER EVER RUNNING.  This test asserts the submit SUCCEEDS
+//      post-fix (red-prove: FAILS on the pre-fix monolithic Stop()),
+//      that the interactive loop can be restarted afterward (Start()
+//      re-entry: mRunning CAS + thread respawn), and that a SECOND
+//      production render on the SAME controller after that restart also
+//      succeeds -- the exact "Render, then Render again" user flow the
+//      bug report described.
+//////////////////////////////////////////////////////////////////////
+static void RunViewportPauseThenProductionSubmitRedProveTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (bb) RED-PROVE: app call order (Start -> StopInteractive -> production submit) succeeds ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_viewport_pause_production.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the viewport-pause-production scene to a temp file" );
+
+	// SlowProgressJob (defined above, used by tests (v)/(z)): its
+	// Rasterize() reports 50 explicit progress ticks through whatever
+	// callback is installed, unlike a plain Job's real rasterizer on
+	// this tiny 24x24/8spp scene, which can legitimately complete in a
+	// single pass with zero *tile*-granularity progress callbacks --
+	// that would make a tick-count assertion meaningless/flaky. Using
+	// the same job class the house progress-composition tests already
+	// rely on keeps the "the render genuinely ran doRasterize" proof
+	// deterministic.
+	SlowProgressJob* pJob = new SlowProgressJob();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "SlowProgressJob loads the native-v7 scene via the CST path (viewport-pause-production test)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+
+	// Step 1: mirror the app's scene-load-time Start() (Mac: loadScene's
+	// success path calls vb.start(); Windows: onStateChanged's
+	// SceneLoaded branch calls m_viewportBridge->start()).
+	controller.Start( /*suppressInitialRender=*/false );
+	Check( controller.IsRunning(), "the interactive loop is running after the initial Start()" );
+
+	// Step 2: mirror startRender()/onRender()'s viewport-pause call --
+	// StopInteractive(), NOT the monolithic Stop().
+	controller.StopInteractive();
+	Check( !controller.IsRunning(), "StopInteractive() halts the interactive loop (IsRunning() false)" );
+
+	// Step 3: the production submit itself -- RunProductionRenderComposed,
+	// exactly what -[RISEBridge rasterize] / RenderEngine::startRender
+	// call.
+	std::atomic<int> guiTicks{ 0 };
+	class CountingCallback : public IProgressCallback
+	{
+	public:
+		std::atomic<int>* ticks;
+		bool Progress( const double, const double ) override
+		{
+			ticks->fetch_add( 1, std::memory_order_acq_rel );
+			return true;
+		}
+		void SetTitle( const char* ) override {}
+	} guiCb;
+	guiCb.ticks = &guiTicks;
+
+	bool firstResult = false;
+	const bool firstCompletedInTime = RunWatchdogged(
+		"first production submit after StopInteractive()", 5000,
+		[&]() {
+			firstResult = SceneEditController::RunProductionRenderComposed(
+				*pJob, &controller, String( "app_flow_production_1" ), &guiCb,
+				[pJob]() -> bool { return pJob->Rasterize(); } );
+		} );
+	Check( firstCompletedInTime, "the first production submit does not hang" );
+	Check( firstResult,
+	       "MONEY ASSERTION (bb-1) RED-PROVE: RunProductionRenderComposed SUCCEEDS immediately after "
+	       "Start()+StopInteractive() -- pre-fix (StopInteractive calling the monolithic Stop()) this "
+	       "was refused with \"controller stopped\" and the render NEVER RAN." );
+	Check( guiTicks.load( std::memory_order_acquire ) > 0, "the composed progress callback actually received ticks (the render genuinely ran doRasterize)" );
+	Check( !pJob->mAborted, "the first production render was not aborted (control)" );
+
+	// Step 4: mirror the app's post-render restart.  Real callers use
+	// startSuppressingInitialRender (Mac's renderTask completion block;
+	// Windows' onStateChanged renderEnded branch) so the just-finished
+	// production image isn't immediately overwritten -- but THAT choice
+	// deliberately parks the render thread until the next edit/gesture,
+	// which would make "an interactive pass actually runs" untestable
+	// without inventing a synthetic edit-injection hook.  Using the
+	// ordinary Start() here (initial pass NOT suppressed) instead proves
+	// the same re-entry claim Start()'s header doc makes -- "a subsequent
+	// Start() renders normally" -- with a real, observable pass.
+	const unsigned int countBeforeRestart = controller.ForTest_GetRenderCount();
+	controller.Start( /*suppressInitialRender=*/false );
+	Check( controller.IsRunning(), "the interactive loop restarts after StopInteractive() + a production render (Start() re-entry)" );
+
+	bool sawNewPass = false;
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 3000 );
+		while( std::chrono::steady_clock::now() < deadline )
+		{
+			if( controller.ForTest_GetRenderCount() != countBeforeRestart ) { sawNewPass = true; break; }
+			std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+		}
+	}
+	Check( sawNewPass, "the restarted interactive loop actually services a render pass (not just IsRunning() == true)" );
+
+	// Step 5: a SECOND production render on the same controller -- the
+	// "Render, then edit, then Render again" flow -- must ALSO succeed,
+	// proving the fix isn't a one-shot fluke (e.g. some latent state only
+	// happening to be right the first time).
+	controller.StopInteractive();
+	Check( !controller.IsRunning(), "StopInteractive() halts the interactive loop again for the second render" );
+
+	bool secondResult = false;
+	const bool secondCompletedInTime = RunWatchdogged(
+		"second production submit after a second StopInteractive()", 5000,
+		[&]() {
+			secondResult = SceneEditController::RunProductionRenderComposed(
+				*pJob, &controller, String( "app_flow_production_2" ), &guiCb,
+				[pJob]() -> bool { return pJob->Rasterize(); } );
+		} );
+	Check( secondCompletedInTime, "the second production submit does not hang" );
+	Check( secondResult,
+	       "MONEY ASSERTION (bb-2): a SECOND production render on the same controller, after another "
+	       "Start()/StopInteractive() cycle, also succeeds -- the fix is not a one-shot fluke." );
+	Check( guiTicks.load( std::memory_order_acquire ) > 50, "the second production render also delivered fresh progress ticks (guiTicks advanced past the first render's 50)" );
+	Check( !pJob->mAborted, "the second production render was not aborted (control)" );
+
+	// Control (unchanged full-Stop() semantics): a subsequent call to the
+	// REAL Stop() must still permanently retire the agent worker -- the
+	// pre-existing (g)/(h) red-proves below cover this in detail; this
+	// inline check is a narrower belt-and-braces assertion that THIS
+	// controller, which has now been through StopInteractive() twice and
+	// two production renders, still honors full Stop()'s contract.
+	controller.Stop();
+	Check( !controller.IsRunning(), "the interactive loop is stopped after the real Stop()" );
+
+	SceneEditController::RenderJobId postStopId = SceneEditController::kInvalidRenderJobId;
+	const bool postStopAccepted = controller.SubmitAgentRenderAsync(
+		[]() { /* must never run */ }, String( "post_full_stop_after_bb" ), &postStopId );
+	Check( !postStopAccepted,
+	       "CONTROL: after the REAL Stop() (not StopInteractive()), a submission is still refused -- "
+	       "full Stop()'s agent-worker-retirement contract is unchanged by this fix." );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (bb) viewport-pause-then-production-submit RED-PROVE: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunAsyncReturnsQuicklyTest();
@@ -3970,6 +4130,7 @@ int main()
 	RunInnerResetOnThrowRedProveTest();
 	RunExplicitGuiProgressNotInstalledOnJobRedProveTest();
 	RunRefusedProductionSubmitNoFallbackRedProveTest();
+	RunViewportPauseThenProductionSubmitRedProveTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

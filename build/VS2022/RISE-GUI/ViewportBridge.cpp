@@ -272,7 +272,13 @@ void ViewportBridge::startSuppressingInitialRender()
 void ViewportBridge::stop()
 {
     if (!m_controller) return;
-    RISE_API_SceneEditController_Stop(m_controller);
+    // Model-B F2 slice S4 fix round 4: StopInteractive, NOT the
+    // monolithic Stop() -- see this method's header doc in
+    // ViewportBridge.h.  The destructor above still gets the FULL
+    // teardown: it calls this stop() first, then
+    // RISE_API_DestroySceneEditController (a few lines down), whose
+    // destructor call to the real Stop() retires the agent worker.
+    RISE_API_SceneEditController_StopInteractive(m_controller);
     m_running = false;
 }
 

@@ -7331,6 +7331,13 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_SceneEditController_StopInteractive( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->StopInteractive();
+		return true;
+	}
+
 	bool RISE_API_SceneEditController_SetPreviewSink(
 		SceneEditController* p, IRasterizerOutput* sink )
 	{

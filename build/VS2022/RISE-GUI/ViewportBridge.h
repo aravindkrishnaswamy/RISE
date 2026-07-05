@@ -86,7 +86,24 @@ public:
     /// only ever covered the LDR sink path, not the HDR observer path)
     /// is needed.
     void startSuppressingInitialRender();
-    /// Stop the render thread and join.  Idempotent.
+    /// Stop the interactive render thread and join.  Idempotent.  Does
+    /// NOT touch the attached SceneEditController's agent-render worker
+    /// -- a production render submitted immediately afterward (via
+    /// RunProductionRenderThroughController, which
+    /// RenderEngine::startRender/startAnimationRender call) is still
+    /// served normally.
+    ///
+    /// Model-B F2 slice S4 fix round 4: this used to call the C++
+    /// controller's monolithic Stop(), which ALSO permanently retired
+    /// the agent-render worker (mAgentRenderStop is a one-shot flag; the
+    /// worker thread is spawned only once, in the constructor, and
+    /// nothing ever respawns it) -- so MainWindow::onRender/
+    /// onRenderAnimation calling this immediately before
+    /// m_engine->startRender()/startAnimationRender() poisoned the
+    /// controller for the rest of its lifetime, and the production
+    /// render (and every later one) was refused with "controller
+    /// stopped".  Wired to RISE_API_SceneEditController_StopInteractive
+    /// instead; see that function's doc.
     void stop();
     bool isRunning() const { return m_running; }
 

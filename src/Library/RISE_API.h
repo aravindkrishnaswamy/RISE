@@ -3386,8 +3386,27 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_StartSuppressingInitialRender(
 		SceneEditController* p );
 
-	//! Stop the controller's render thread.  Joins the thread.
+	//! Stop the controller's render thread.  Joins the thread.  ALSO
+	//! permanently retires the agent-render worker -- every later
+	//! agent/production render submission on this controller is refused
+	//! ("controller stopped").  Correct for controller teardown (the
+	//! destructor calls this); NOT what a platform shell should call
+	//! merely to pause the interactive viewport before a production
+	//! render -- use RISE_API_SceneEditController_StopInteractive for
+	//! that (see its doc, and SceneEditController::Stop's header doc).
 	bool RISE_API_SceneEditController_Stop( SceneEditController* p );
+
+	//! Stop ONLY the controller's interactive render thread.  Joins the
+	//! thread; leaves the agent-render worker (and any in-flight/queued
+	//! agent or production render) untouched, so a production render
+	//! submitted immediately afterward via SubmitProductionRenderSync /
+	//! RunProductionRenderComposed is still served normally.  This is
+	//! what a platform shell's Render action should call to pause the
+	//! interactive viewport ahead of a production render -- Start() /
+	//! RISE_API_SceneEditController_StartSuppressingInitialRender can
+	//! re-spawn the interactive loop afterward exactly as after a full
+	//! Stop().  Model-B F2 slice S4 fix round 4.
+	bool RISE_API_SceneEditController_StopInteractive( SceneEditController* p );
 
 	//! Install the preview image sink (typically a platform-specific
 	//! IRasterizerOutput that marshals the framebuffer to the UI

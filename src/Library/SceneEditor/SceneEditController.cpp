@@ -631,18 +631,54 @@ void SceneEditController::Start( bool suppressInitialRender )
 	mRenderThread = std::thread( &SceneEditController::RenderLoop, this );
 }
 
+void SceneEditController::StopInteractive()
+{
+	bool expected = true;
+	if( !mRunning.compare_exchange_strong( expected, false ) )
+	{
+		return;  // interactive loop was not running
+	}
+
+	// Trip cancel BEFORE notifying.  Hold mMutex around the wakeup to
+	// prevent a lost wakeup: if we notified outside the lock, the
+	// render thread could be between its predicate check and the
+	// kernel park inside cv.wait, and miss the notify forever — which
+	// would deadlock join() below.  C++ guarantees no missed wakeups
+	// only when the notifier has held the mutex used by the waiter.
+	mCancelProgress.RequestCancel();
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+	}
+	mCV.notify_one();
+
+	if( mRenderThread.joinable() )
+	{
+		mRenderThread.join();
+	}
+}
+
 void SceneEditController::Stop()
 {
+	// Model-B F2 slice S4 fix round 4: the interactive-loop half now
+	// lives in StopInteractive() (see its header doc) so a platform
+	// shell that only wants to pause the viewport ahead of a production
+	// render can do so WITHOUT permanently retiring the agent-render
+	// worker below.  Full Stop() still does both, in the same order the
+	// monolithic version used to -- interactive loop first, then the
+	// agent worker -- so this is a behavior-preserving split for every
+	// existing Stop() caller (in particular the destructor).
+	StopInteractive();
+
 	// Model-B F2 slice S2a: the agent-render worker is INDEPENDENT of
 	// mRunning/the interactive loop's Start()/Stop() lifecycle (it is
 	// spawned unconditionally in the ctor -- see that comment), so its
-	// teardown must NOT be gated behind the mRunning CAS below, or a
+	// teardown must NOT be gated behind the mRunning CAS above, or a
 	// caller that never called Start() (headless-controller agent-only
 	// use) would leak the joinable thread past ~SceneEditController's
 	// Stop() call.  Guarded instead by mAgentRenderThread.joinable(),
 	// which is false after the first Stop() -- so a second Stop() call
 	// (or the dtor's unconditional Stop()) is a correct no-op here too,
-	// same idempotency shape as the mRenderThread teardown below.
+	// same idempotency shape as the mRenderThread teardown above.
 	// Same lost-wakeup discipline as the interactive-loop teardown:
 	// trip the stop flag, hold the lock the WORKER ACTUALLY WAITS ON
 	// around the notify so a worker between its predicate check and the
@@ -685,29 +721,6 @@ void SceneEditController::Stop()
 	if( mAgentRenderThread.joinable() )
 	{
 		mAgentRenderThread.join();
-	}
-
-	bool expected = true;
-	if( !mRunning.compare_exchange_strong( expected, false ) )
-	{
-		return;  // interactive loop was not running
-	}
-
-	// Trip cancel BEFORE notifying.  Hold mMutex around the wakeup to
-	// prevent a lost wakeup: if we notified outside the lock, the
-	// render thread could be between its predicate check and the
-	// kernel park inside cv.wait, and miss the notify forever — which
-	// would deadlock join() below.  C++ guarantees no missed wakeups
-	// only when the notifier has held the mutex used by the waiter.
-	mCancelProgress.RequestCancel();
-	{
-		std::lock_guard<std::mutex> lk( mMutex );
-	}
-	mCV.notify_one();
-
-	if( mRenderThread.joinable() )
-	{
-		mRenderThread.join();
 	}
 }
 

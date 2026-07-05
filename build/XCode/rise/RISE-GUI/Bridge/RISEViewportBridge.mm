@@ -533,7 +533,19 @@ private:
 
 - (void)stop {
     if (!_controller) return;
-    RISE_API_SceneEditController_Stop(_controller);
+    // Model-B F2 slice S4 fix round 4: StopInteractive, NOT the
+    // monolithic Stop() -- this method exists so RenderViewModel can
+    // pause the interactive viewport ahead of a production render
+    // (startRender/startAnimationRender) WITHOUT permanently retiring
+    // this controller's agent-render worker.  See this method's header
+    // doc in RISEViewportBridge.h and
+    // RISE_API_SceneEditController_StopInteractive's doc for the full
+    // rationale -- the monolithic Stop() call here used to poison every
+    // later production/agent submission on this controller with
+    // "controller stopped".  Full teardown still happens in -shutdown,
+    // via RISE_API_DestroySceneEditController's destructor call to the
+    // real Stop().
+    RISE_API_SceneEditController_StopInteractive(_controller);
     _ownsRunning = NO;
 }
 

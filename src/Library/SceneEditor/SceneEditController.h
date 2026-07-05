@@ -978,8 +978,46 @@ namespace RISE
 		//!        scene load) renders normally.
 		void Start( bool suppressInitialRender = false );
 
+		//! Halt ONLY the interactive render loop (mRenderThread): set the
+		//! running flag false, trip the cancel flag, signal the condvar,
+		//! and join the thread.  Idempotent.  Does NOT touch the agent-
+		//! render worker (mAgentRenderThread) or mAgentRenderStop -- a
+		//! production/agent render submitted immediately afterward via
+		//! SubmitAgentRenderSync / SubmitProductionRenderSync /
+		//! RunProductionRenderComposed is still served normally.
+		//!
+		//! Model-B F2 slice S4 fix round 4: this is the piece both
+		//! platform shells actually want when they pause the interactive
+		//! viewport before a production render (RenderViewModel.swift's
+		//! startRender/startAnimationRender on macOS;
+		//! MainWindow::onRender/onRenderAnimation on Windows) -- the goal
+		//! there is "stop the interactive loop from racing the production
+		//! rasterizer for the scene", not "permanently retire this
+		//! controller's agent-render worker".  Before this split, both
+		//! call sites called the monolithic Stop() below, which ALSO set
+		//! mAgentRenderStop = true and joined mAgentRenderThread -- a
+		//! ONE-SHOT, UNRESTARTABLE teardown (the worker is spawned only
+		//! once, in the constructor; nothing ever resets the flag or
+		//! respawns the thread) -- so the production render submitted a
+		//! few lines later was refused with "controller stopped", and
+		//! EVERY subsequent render on that controller (interactive restart
+		//! notwithstanding) was refused the same way for the rest of the
+		//! controller's lifetime.  Re-entrant with Start(): calling Start()
+		//! after StopInteractive() respawns mRenderThread exactly as after
+		//! a full Stop(), since Start() only ever looks at mRunning.
+		void StopInteractive();
+
 		//! Set the running flag false, trip the cancel flag, signal the
-		//! condvar, and join the render thread.  Idempotent.
+		//! condvar, and join the render thread -- AND permanently retire
+		//! the agent-render worker (mAgentRenderThread), refusing every
+		//! later agent/production submission with "controller stopped".
+		//! Idempotent.  This is the FULL teardown; it's what the
+		//! destructor calls (via RISE_API_DestroySceneEditController) and
+		//! is correct there because the controller itself is going away.
+		//! It is very likely NOT what a platform shell wants to call
+		//! merely to pause the interactive viewport ahead of a production
+		//! render -- see StopInteractive() above for that case.  Calls
+		//! StopInteractive() first, then tears down the agent worker.
 		void Stop();
 
 		bool IsRunning() const;

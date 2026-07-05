@@ -62,7 +62,23 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
 /// first place, so no display-layer frame-suppression is needed.
 - (void)startSuppressingInitialRender;
 
-/// Stop the render thread and join.  Idempotent.
+/// Stop the interactive render thread and join.  Idempotent.  Does NOT
+/// touch the attached SceneEditController's agent-render worker -- a
+/// production render submitted immediately afterward (via
+/// -[RISEBridge rasterize] et al, which route through
+/// RunProductionRenderComposed) is still served normally.
+///
+/// Model-B F2 slice S4 fix round 4: this used to call the C++
+/// controller's monolithic Stop(), which ALSO permanently retired the
+/// agent-render worker (mAgentRenderStop is a one-shot flag; the worker
+/// thread is spawned only once, in the constructor, and nothing ever
+/// respawns it) -- so RenderViewModel's startRender/startAnimationRender
+/// calling this immediately before a production submit poisoned the
+/// controller for the rest of its lifetime, and the production render
+/// (and every later one, interactive-viewport restart notwithstanding)
+/// was refused with "controller stopped".  Wired to
+/// RISE_API_SceneEditController_StopInteractive instead; see that
+/// function's doc and SceneEditController::StopInteractive's header doc.
 - (void)stop;
 
 @property (nonatomic, readonly) BOOL isRunning;
