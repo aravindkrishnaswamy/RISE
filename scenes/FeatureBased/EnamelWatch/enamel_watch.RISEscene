@@ -1092,8 +1092,11 @@ homogeneous_medium
 # chromium=green, iron=grey, manganese=purple, copper=turquoise, gold-ruby=plum).
 # The DIAL colour = substrate reflectance(lambda) x medium transmission(lambda)^2
 # (double pass), so the SUBSTRATE is a second lever: SILVER (neutral bright) for
-# most; GOLD (floor_gold, warm) for amber/champagne and warm reds.  Windows sit at
-# sigma_a ~2.4-3.5 (goldruby's visible level); absorbed bands ~46-56 (killed).  To
+# most; GOLD (floor_gold, warm) for amber/champagne and warm reds.  Transmission
+# windows sit at sigma_a ~2.4-3.5 (goldruby's visible level); absorbed bands ~46-56
+# (killed).  EXCEPTION: payne_grey is a near-black 'dilute black' colorant (mean
+# sigma_a ~25, roughly flat) -- calibrated 2026-07-05 against the measured anOrdain
+# product photo so the ground crushes near-black and the surface glints sparkle.  To
 # switch the dial: bind a different `interior_medium` on `enamel` (+ `floor_gold`
 # on `en_dome` for a gold ground).  goldruby/plum stays the default.
 #
@@ -1115,30 +1118,34 @@ homogeneous_medium
 # where silver and gold reflectance DIFFER (blue/green).
 ##################################################
 
-# Iron (Fe) grey -- anOrdain 'Payne's Grey'.  A near-NEUTRAL translucent grey:
-# low, roughly flat absorption, gently RISING into the red so a little more blue
-# is transmitted -> the cool blue/purple undertone anOrdain describes.  Iron in
-# glass (Fe2+/Fe3+) gives the smoky neutral over the SILVER ground.
+# Iron (Fe) grey -- anOrdain 'Payne's Grey'.  Payne's Grey is a *dilute black*
+# (William Payne's pigment: indigo + raw sienna + crimson lake), so this is a
+# HIGH-absorption near-neutral: mean sigma_a ~25, gently RISING into the red so a
+# little more blue transmits -> the cool undertone anOrdain describes.  Calibrated
+# (2026-07-05) against the measured anOrdain product photo: the ground must crush
+# to near-black (measured dial linLum median 0.015-0.041) so the top-surface
+# Fresnel glints read as the brilliant aventurine sparkle.  Iron in glass
+# (Fe2+/Fe3+) gives the smoky neutral over the SILVER ground.
 piecewise_linear_function
 {
 	name payne_grey_abs
-	cp 400 2.8
-	cp 420 2.8
-	cp 440 3
-	cp 460 3.2
-	cp 480 3.4
-	cp 500 3.6
-	cp 515 3.7
-	cp 530 3.9
-	cp 550 4.1
-	cp 570 4.3
-	cp 590 4.5
-	cp 610 4.7
-	cp 630 4.9
-	cp 650 4.9
-	cp 680 5.1
-	cp 700 5.1
-	cp 720 5.2
+	cp 400 21.0
+	cp 420 21.3
+	cp 440 21.7
+	cp 460 22.1
+	cp 480 22.7
+	cp 500 23.2
+	cp 515 23.8
+	cp 530 24.4
+	cp 550 24.9
+	cp 570 25.6
+	cp 590 26.3
+	cp 610 27.0
+	cp 630 27.7
+	cp 650 28.3
+	cp 680 29.0
+	cp 700 29.4
+	cp 720 30.0
 }
 
 homogeneous_medium
