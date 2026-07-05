@@ -9695,6 +9695,25 @@ int Job::ApplyCstParamEditImpl_( const char* entityName, const char* entityKind,
 	return DeriveEditedCstDocument_( std::move( d1 ), id, entityName, role, requireFullDerivability );
 }
 
+// Shared-undo U1: the inverse of an agent-originated param INSERT (see the IJob virtual doc).  Resolution
+// mirrors ApplyCstParamEditImpl_ exactly (same DocFindByNameAnyRole call, same camera-unique-fallback rule) --
+// only the Document edit differs (DocRemoveParam instead of DocSetOrAddParamValue).  Always full-derivability-
+// gated: the only caller is the agent Undo path (SceneEditor::ApplyRevertMutation's SetAgentCstParam arm, via
+// SceneEditor::RouteCstParamRemove_ -- reached from SceneEditController::Undo()), which -- like every
+// agent-originated Document mutation -- must never commit a head that would fail to re-derive in document order.
+int Job::ApplyCstParamRemoveChecked( const char* entityName, const char* entityKind, const char* role )
+{
+	if( !pCstDocument || !entityName || !role ) return 0;
+	const bool uniqueFallback = ( entityKind && std::string( entityKind ) == "camera" );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, entityName, nullptr, entityKind ? entityKind : "", uniqueFallback );
+	if( id == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamRemoveChecked:: `%s` not found or ambiguous in the CST Document; remove rejected", entityName );
+		return 0;
+	}
+	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, id, role );
+	return DeriveEditedCstDocument_( std::move( d1 ), id, entityName, role, /*requireFullDerivability*/ true );
+}
+
 // P5 Slice 3 expansion: shared re-derive tail for an already-edited CST Document `d1` whose edit closure is
 // anchored at `id` (used by ApplyCstParamEdit AND ApplyCstObjectMatrixEdit).  `entityName`/`role` are diagnostics.
 // FAST PATH: incrementally re-derive just the affected closure.  COST: one edit is O(N log N) -- DocEditClosure

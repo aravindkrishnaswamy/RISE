@@ -2827,6 +2827,9 @@ namespace RISE
 		//! gizmo path keeps the ungated ApplyCstParamEdit.
 		int ApplyCstParamEditChecked( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue );
 
+		//! Shared-undo U1: full-derivability-gated inverse of a param INSERT -- see the IJob virtual doc.
+		int ApplyCstParamRemoveChecked( const char* entityName, const char* entityKind, const char* role );
+
 		//! P5 Slice 3 expansion (object transform): commit an object's NET world transform to the retained CST as
 		//! the authoritative `matrix` param (16 col-major doubles), stripping the dead component params.  Same
 		//! 0/1/2/3 contract as ApplyCstParamEdit (2/3 => Scene+managers REPLACED, caller MUST rebind).

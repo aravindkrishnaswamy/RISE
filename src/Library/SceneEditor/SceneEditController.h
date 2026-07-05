@@ -976,6 +976,17 @@ namespace RISE
 		//! risk a subtly-different re-implementation.
 		void CancelAndParkRender_( std::unique_lock<std::mutex>& lk );
 
+		//! Shared-undo U1: capture the CURRENT value (or absence) of `param` on
+		//! the entity resolved by (entityName, entityKind) from the retained
+		//! CST Document, BEFORE ApplyAgentParamEdit's coming
+		//! ApplyCstParamEditChecked call mutates it.  Caller must hold mMutex
+		//! (same hold as the coming apply -- no TOCTOU).  Returns false (no
+		//! output written) if there is no retained Document or the entity does
+		//! not resolve.  See SceneEditController.cpp for the full contract.
+		bool CaptureAgentPriorParamValue_(
+			const String& entityName, const String& entityKind, const String& param,
+			String& outPrevValue, bool& outWasAbsent );
+
 		//! Model-B F5 slice S2: the SHARED body of ApplyAgentInsertChunk /
 		//! ApplyAgentRemoveChunk -- the two verbs differ ONLY in which Job
 		//! primitive runs inside the parked critical section and in their

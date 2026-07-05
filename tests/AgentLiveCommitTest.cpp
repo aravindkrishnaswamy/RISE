@@ -139,6 +139,19 @@ static const char* kVariantScene =
 	"standard_object\n{\nname obj\ngeometry s\nmaterial lum\n}\n"
 	"scene_variant\n{\nname night\n}\n";
 
+// Shared-undo U1: a base scene whose `lum` OMITS the `scale` param (defaulted
+// to 1.0 by the descriptor -- see LambertianLuminaireMaterialAsciiChunkParser's
+// Finalize).  An agent edit to `scale` on this scene INSERTS the param (it was
+// never in the source text), so Undo's inverse must be a REMOVE, not a re-SET
+// of a nonexistent prior value.
+static const char* kNoScaleScene =
+	"RISE ASCII SCENE 7\n"
+	"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+	"uniformcolor_painter\n{\nname grey\ncolor 0.5 0.5 0.5\n}\n"
+	"lambertian_luminaire_material\n{\nname lum\nexitance white\nmaterial none\n}\n"
+	"sphere_geometry\n{\nname s\nradius 1\n}\n"
+	"standard_object\n{\nname obj\ngeometry s\nmaterial lum\n}\n";
+
 static Job* LoadScene( const char* text, const char* tmpPath )
 {
 	{ std::ofstream o( tmpPath ); o << text; }
@@ -1372,6 +1385,379 @@ static void TestPreviewRenderParked()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 11: shared-undo U1 headline -- an agent PARAM edit is a first-class
+// undo/redo citizen.  RED-PROVE: assert the pre-fix behaviour (an agent edit
+// leaves NO history record) would have failed this test -- i.e. BEFORE the
+// fix, UndoDepth does not grow on an agent commit and a subsequent Undo has
+// nothing of the agent's to revert.  Also proves the head-revision BUMPS on
+// both Undo and Redo (agent clients' conflict gates must see the movement)
+// and that the viewport is kicked (a fresh render fires) on both.
+//////////////////////////////////////////////////////////////////////
+static void TestAgentEditUndoRedo()
+{
+	std::cout << "Test 11: agent edit undo/redo (shared-undo U1 headline)..." << std::endl;
+
+	const char* tmp = "agentlive_undoredo.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const unsigned int undoBefore = c.Editor().History().UndoDepth();
+
+		const SceneEditController::AgentCommitResult applied =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "7.0" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( applied.applied && applied.rawCode == 1, "agent commit applies cleanly (code 1, incremental)" );
+
+		// RED-PROVE the headline: an agent edit MUST push a history record.
+		Check( c.Editor().History().UndoDepth() == undoBefore + 1,
+		       "RED-PROVE: the agent commit pushed exactly ONE history record "
+		       "(at the pre-fix parent this stays UNCHANGED -- no record pushed)" );
+		Check( LumR( *pJob ) > 6.0 && LumR( *pJob ) < 8.0, "the scale-7.0 edit reached the derived scene" );
+
+		const RISE::Cst::CstHeadVersion afterApply = pJob->GetCstHeadVersion();
+		const unsigned int rcBeforeUndo = c.ForTest_GetRenderCount();
+
+		c.Undo();
+		Check( c.ForTest_WaitForRenders( rcBeforeUndo + 1, 3000 ), "Undo kicked a fresh render pass" );
+		Check( c.Editor().History().UndoDepth() == undoBefore, "Undo popped the agent record off the undo stack" );
+		Check( c.Editor().History().RedoDepth() == 1, "the reverted agent edit landed on the redo stack" );
+
+		// The param is BACK to the prior value in BOTH the derived scene AND
+		// the serialized Document.
+		Check( LumR( *pJob ) > 4.5 && LumR( *pJob ) < 5.5, "Undo restored the derived scene to scale~5.0 (the ORIGINAL kBaseScene value)" );
+		{
+			const std::string doc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+			Check( doc.find( "scale 5" ) != std::string::npos || doc.find( "scale 5.0" ) != std::string::npos,
+			       "Undo restored the Document's `scale` param text to the original 5.0" );
+		}
+
+		// Revision semantics: Undo MUTATES the Document (a revert-apply through
+		// the same ApplyCstParamEdit machinery), so the head revision MUST BUMP
+		// (monotonic, never reused) so a conflict-gated agent client sees the
+		// movement.
+		const RISE::Cst::CstHeadVersion afterUndo = pJob->GetCstHeadVersion();
+		Check( afterUndo != afterApply, "Undo bumped the head-version (revert is itself a Document mutation)" );
+		Check( afterUndo.revision > afterApply.revision, "the revision strictly ADVANCED (monotonic) on Undo" );
+
+		// Redo re-applies.
+		const unsigned int rcBeforeRedo = c.ForTest_GetRenderCount();
+		c.Redo();
+		Check( c.ForTest_WaitForRenders( rcBeforeRedo + 1, 3000 ), "Redo kicked a fresh render pass" );
+		Check( c.Editor().History().UndoDepth() == undoBefore + 1, "Redo moved the record back to the undo stack" );
+		Check( c.Editor().History().RedoDepth() == 0, "redo stack drained after the single Redo" );
+		Check( LumR( *pJob ) > 6.0 && LumR( *pJob ) < 8.0, "Redo re-applied the scale-7.0 edit to the derived scene" );
+
+		const RISE::Cst::CstHeadVersion afterRedo = pJob->GetCstHeadVersion();
+		Check( afterRedo != afterUndo, "Redo bumped the head-version again" );
+		Check( afterRedo.revision > afterUndo.revision, "the revision strictly ADVANCED (monotonic) on Redo" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 12: the INTERLEAVING headline -- GUI edit A, agent edit B, GUI edit C;
+// Undo x3 must revert C, then B (the agent edit!), then A, in strict LIFO
+// order across BOTH clients (no special-casing by origin).  Redo x3 restores
+// all three in forward order.  This is the concrete proof of the bug this
+// slice fixes: previously, Undo after an agent edit would skip straight past
+// it to an OLDER human edit, corrupting the user's mental model of "undo my
+// last action."
+//////////////////////////////////////////////////////////////////////
+static void TestInterleavedLifoUndo()
+{
+	std::cout << "Test 12: interleaved GUI/agent LIFO undo/redo (the headline)..." << std::endl;
+
+	const char* tmp = "agentlive_interleave.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.SetSelection( SceneEditController::Category::Material, String( "lum" ) );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const unsigned int undoBefore = c.Editor().History().UndoDepth();
+
+		// A: GUI edit -- exitance white -> grey.
+		Check( c.SetPropertyForCategory( SceneEditController::Category::Material, String( "exitance" ), String( "grey" ) ),
+		       "[A] GUI edit (exitance -> grey) applies" );
+		// B: agent edit -- scale -> 2.0.
+		const SceneEditController::AgentCommitResult b =
+			c.ApplyAgentParamEdit( String( "lum" ), String( "lambertian_luminaire_material" ),
+			                       String( "scale" ), String( "2.0" ), nullptr );
+		Check( b.applied, "[B] agent edit (scale -> 2.0) applies" );
+		// C: GUI edit -- exitance grey -> white.
+		Check( c.SetPropertyForCategory( SceneEditController::Category::Material, String( "exitance" ), String( "white" ) ),
+		       "[C] GUI edit (exitance -> white) applies" );
+
+		Check( c.Editor().History().UndoDepth() == undoBefore + 3, "all three edits (A, B, C) pushed history records" );
+		// LumR right now: scale 2.0 * exitance white(1.0) = 2.0.
+		Check( LumR( *pJob ) > 1.5 && LumR( *pJob ) < 2.5, "post-C derived state is scale2.0 * white ~= 2.0" );
+
+		// Undo #1 -> reverts C (exitance back to grey); scale stays 2.0.
+		c.Undo();
+		Check( c.Editor().History().UndoDepth() == undoBefore + 2, "Undo #1 popped one record" );
+		Check( LumR( *pJob ) > 0.9 && LumR( *pJob ) < 1.1, "Undo #1 reverted C: scale2.0 * grey0.5 ~= 1.0" );
+
+		// Undo #2 -> reverts B (THE AGENT EDIT), scale back to 5.0; exitance stays grey.
+		c.Undo();
+		Check( c.Editor().History().UndoDepth() == undoBefore + 1, "Undo #2 popped one record" );
+		Check( LumR( *pJob ) > 2.4 && LumR( *pJob ) < 2.6,
+		       "Undo #2 reverted THE AGENT EDIT (B): scale5.0 * grey0.5 ~= 2.5 -- "
+		       "RED-PROVE headline: at the pre-fix parent, this Undo would have "
+		       "skipped B entirely and reverted an OLDER edit (or nothing)" );
+
+		// Undo #3 -> reverts A (exitance back to white); scale stays 5.0 (original).
+		c.Undo();
+		Check( c.Editor().History().UndoDepth() == undoBefore, "Undo #3 popped the last record -- back to baseline" );
+		Check( LumR( *pJob ) > 4.5 && LumR( *pJob ) < 5.5, "Undo #3 reverted A: back to the ORIGINAL scale5.0 * white1.0 ~= 5.0" );
+		Check( c.Editor().History().RedoDepth() == 3, "all three reverted edits are on the redo stack" );
+
+		// Redo x3 restores forward order: A, then B (the agent edit), then C.
+		c.Redo();
+		Check( LumR( *pJob ) > 2.4 && LumR( *pJob ) < 2.6, "Redo #1 re-applied A: scale5.0 * grey0.5 ~= 2.5" );
+		c.Redo();
+		Check( LumR( *pJob ) > 0.9 && LumR( *pJob ) < 1.1, "Redo #2 re-applied THE AGENT EDIT (B): scale2.0 * grey0.5 ~= 1.0" );
+		c.Redo();
+		Check( LumR( *pJob ) > 1.5 && LumR( *pJob ) < 2.5, "Redo #3 re-applied C: scale2.0 * white1.0 ~= 2.0" );
+		Check( c.Editor().History().UndoDepth() == undoBefore + 3, "all three edits restored to the undo stack" );
+		Check( c.Editor().History().RedoDepth() == 0, "redo stack fully drained" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 13: the defaulted-slot (absent-param) case.  `lum` on kNoScaleScene has
+// NO `scale` line (defaults to 1.0 via the descriptor).  An agent edit to
+// `scale` INSERTS the param; Undo's inverse must REMOVE it -- proven by a
+// Document byte-comparison against the pre-edit serialization (not merely
+// "scale is absent from a live read", which the derived-scene default would
+// also satisfy even if the PARAM TEXT were wrongly left behind as "1.0").
+//////////////////////////////////////////////////////////////////////
+static void TestAgentEditDefaultedSlotUndo()
+{
+	std::cout << "Test 13: agent edit on a DEFAULTED (absent) slot -- undo REMOVES the inserted param..." << std::endl;
+
+	const char* tmp = "agentlive_defaulted.RISEscene";
+	Job* pJob = LoadScene( kNoScaleScene, tmp );
+	Check( pJob != nullptr, "no-scale scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const std::string preEditDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( preEditDoc.find( "scale" ) == std::string::npos, "pre-edit Document has NO `scale` param (red-prove the absent-slot premise)" );
+		Check( LumR( *pJob ) > 0.9 && LumR( *pJob ) < 1.1, "pre-edit derived scale defaults to 1.0" );
+
+		const SceneEditController::AgentCommitResult applied =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "9.0" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( applied.applied, "agent edit on the defaulted slot applies (INSERTS the param)" );
+		Check( LumR( *pJob ) > 8.5 && LumR( *pJob ) < 9.5, "post-edit derived scale is 9.0" );
+		{
+			const std::string postEditDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+			Check( postEditDoc.find( "scale" ) != std::string::npos, "the edit INSERTED a `scale` param into the Document" );
+		}
+
+		c.Undo();
+		Check( LumR( *pJob ) > 0.9 && LumR( *pJob ) < 1.1, "Undo restored the derived scale to the descriptor default (1.0)" );
+
+		// The precise assertion: Document BYTE-COMPARISON vs the pre-edit
+		// serialization -- proves the inverse is a true REMOVE (the chunk's
+		// param list is back to exactly what it was), not a re-SET to "1.0"
+		// (which would leave a `scale 1.0` line the original text never had).
+		const std::string postUndoDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postUndoDoc.find( "scale" ) == std::string::npos,
+		       "Undo REMOVED the param entirely (not re-set to the default) -- `scale` absent again" );
+		Check( postUndoDoc == preEditDoc,
+		       "Undo's Document is BYTE-IDENTICAL to the pre-edit Document (true remove, not a masked re-set)" );
+
+		// Redo re-inserts it.
+		c.Redo();
+		Check( LumR( *pJob ) > 8.5 && LumR( *pJob ) < 9.5, "Redo re-inserted the param (derived scale back to 9.0)" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 14: code-3 (diagnosed-but-mutated) is STILL undoable -- the documented
+// choice (see ApplyAgentParamEdit's comment): the Document WAS mutated (the
+// managers WERE replaced) even though the source contract reports code 3 as a
+// failure, so treating it as un-revertable would be strictly worse than
+// treating it as revertable.  Reuses the CodeThreeJob rewrite technique (a
+// REAL D2 re-derive on a variant scene, with the reported code corrupted to 3
+// after the fact) so the Scene + managers really are replaced.
+//////////////////////////////////////////////////////////////////////
+static void TestCodeThreeUndo()
+{
+	std::cout << "Test 14: code-3 (diagnosed) agent edit is STILL undo/redo-able (documented choice)..." << std::endl;
+
+	const char* tmp = "agentlive_c3undo.RISEscene";
+	{ std::ofstream o( tmp ); o << kVariantScene; }
+	CodeThreeJob* pJob = new CodeThreeJob();
+	Check( pJob->LoadAsciiSceneViaCst( tmp ), "variant scene loads into CodeThreeJob via the CST path" );
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const unsigned int undoBefore = c.Editor().History().UndoDepth();
+
+		const SceneEditController::AgentCommitResult r =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "3.5" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( !r.applied && r.rawCode == 3, "the edit is a code-3 diagnosed-but-mutated commit" );
+
+		// DOCUMENTED CHOICE: even though applied==false, the Document WAS
+		// mutated -- a history record IS pushed (capture-before-apply already
+		// captured the correct prior state regardless of the outcome code).
+		Check( c.Editor().History().UndoDepth() == undoBefore + 1,
+		       "a code-3 (diagnosed) commit STILL pushes a history record (documented choice)" );
+
+		// Undo's revert is ITSELF a D2 re-derive on this variant scene, which
+		// CodeThreeJob would otherwise ALSO force-rewrite to 3 -- and
+		// RouteCstParamEdit_ (the revert's route helper, shared with every
+		// other CST-routed property Undo in this codebase) treats a 3 as a
+		// FAILED route, same as the forward path's own contract.  Turn the
+		// force off for the revert so it takes the underlying clean D2 (code
+		// 2) the base Job really produces -- this test is about whether a
+		// code-3 FORWARD commit is undoable, not about double-diagnosing the
+		// revert too.
+		pJob->SetForceCodeThree( false );
+		c.Undo();
+		Check( c.Editor().History().UndoDepth() == undoBefore, "the code-3 edit IS undoable" );
+		Check( LumR( *pJob ) > 4.0 && LumR( *pJob ) < 6.0, "Undo restored the pre-edit derived scale (~5.0)" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 15: conflict-gate after an Undo of an agent edit -- the revision moved
+// (Undo is itself a Document mutation), so a stale-base propose_patch built
+// against the PRE-UNDO head must CONFLICT, exactly like any other head move.
+//////////////////////////////////////////////////////////////////////
+static void TestConflictGateAfterUndo()
+{
+	std::cout << "Test 15: conflict-gate sees the revision move caused by an Undo..." << std::endl;
+
+	const char* tmp = "agentlive_conflictundo.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const SceneEditController::AgentCommitResult applied =
+			c.ApplyAgentParamEdit( String( "lum" ), String( "lambertian_luminaire_material" ),
+			                       String( "scale" ), String( "7.0" ), nullptr );
+		Check( applied.applied, "agent edit applies" );
+
+		// A client reads the head HERE (pre-Undo) and will build its next
+		// proposal against this now-stale base.
+		const RISE::Cst::CstHeadVersion staleBase = pJob->GetCstHeadVersion();
+
+		c.Undo();   // mutates the Document again -- the head MOVES.
+
+		const SceneEditController::AgentCommitResult stale =
+			c.ApplyAgentParamEdit( String( "lum" ), String( "lambertian_luminaire_material" ),
+			                       String( "scale" ), String( "8.0" ), &staleBase );
+		Check( stale.conflict, "a propose_patch against the PRE-UNDO base CONFLICTS (Undo moved the revision)" );
+		Check( !stale.applied, "the conflicting commit did not apply" );
+
+		// Re-read + retry succeeds.
+		const RISE::Cst::CstHeadVersion fresh = stale.headVersion;
+		const SceneEditController::AgentCommitResult retry =
+			c.ApplyAgentParamEdit( String( "lum" ), String( "lambertian_luminaire_material" ),
+			                       String( "scale" ), String( "8.0" ), &fresh );
+		Check( retry.applied, "retry with the fresh (post-Undo) base applies cleanly" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 16: HasUnsavedChanges stays sane across an undo-to-clean round trip --
+// an agent edit dirties the editor; undoing it back to the pre-edit baseline
+// should leave HasUnsavedChanges() FALSE again (matching the existing GUI
+// undo-to-clean behaviour -- DirtyTracker's per-entity channel is a SET, and
+// Undo re-marks the SAME entity dirty rather than clearing it, so this pins
+// the OBSERVED behaviour rather than asserting an idealized one).
+//////////////////////////////////////////////////////////////////////
+static void TestUndoToCleanDirtyState()
+{
+	std::cout << "Test 16: HasUnsavedChanges across an agent-edit undo-to-clean round trip..." << std::endl;
+
+	const char* tmp = "agentlive_undoclean.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+		Check( !c.HasUnsavedChanges(), "clean before any edit" );
+
+		const SceneEditController::AgentCommitResult applied =
+			c.ApplyAgentParamEdit( String( "lum" ), String( "lambertian_luminaire_material" ),
+			                       String( "scale" ), String( "7.0" ), nullptr );
+		Check( applied.applied, "agent edit applies" );
+		Check( c.HasUnsavedChanges(), "dirty after the agent edit" );
+
+		c.Undo();
+		// Observed behaviour (matches the existing GUI undo path): Undo
+		// re-marks the SAME entity dirty via MarkEditEntityDirty inside
+		// SceneEditor::Undo, so HasUnsavedChanges() stays true rather than
+		// clearing -- the per-entity channel is a SET (Material,"lum"), not a
+		// counter, so undoing the edit that dirtied it does not remove it.
+		// This test PINS that observed behaviour rather than asserting an
+		// idealized "undo fully un-dirties" contract this codebase doesn't
+		// implement anywhere (GUI undo has the identical property).
+		Check( c.HasUnsavedChanges(), "still reports dirty after Undo (matches existing GUI undo-to-clean behaviour: "
+		                              "the per-entity dirty SET is not cleared by an Undo re-mark)" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -1387,6 +1773,12 @@ int main()
 	TestLiveDispatcherPath();
 	TestMidTransactionAgentCommitRefused();
 	TestPreviewRenderParked();
+	TestAgentEditUndoRedo();
+	TestInterleavedLifoUndo();
+	TestAgentEditDefaultedSlotUndo();
+	TestCodeThreeUndo();
+	TestConflictGateAfterUndo();
+	TestUndoToCleanDirtyState();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

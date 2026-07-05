@@ -1124,6 +1124,7 @@ static inline bool IsCstRoutedOp( SceneEdit::Op op )
 	    || op == SceneEdit::SetLightProperty
 	    || op == SceneEdit::SetCameraProperty
 	    || op == SceneEdit::SetMediumProperty
+	    || op == SceneEdit::SetAgentCstParam    // shared-undo U1: agent edits re-derive by name too
 	    || SceneEdit::IsObjectOp( op )
 	    || SceneEdit::IsCameraOp( op );   // camera DRAG ops re-derive at the pose-commit boundary too
 }
@@ -1202,6 +1203,42 @@ bool SceneEditor::RouteCstParamEdit_( const char* entityName, const char* entity
 	const int r = mJob->ApplyCstParamEdit( entityName, entityKind, role, 0, value );
 	if( r >= 2 ) RebindToJob_();
 	if( r != 0 ) mCstLiveSceneChanged = true;   // code 1/2/3 all MUTATED the live scene -> the controller must re-render
+	return r == 1 || r == 2;
+}
+
+// Shared-undo U1: the inverse of an agent param edit that INSERTED a previously-absent param (SetAgentCstParam's
+// prevValueWasAbsent case) -- removes the param instead of re-setting a (nonexistent) prior value.  Mirrors
+// RouteCstParamEdit_ exactly (rebind on >=2, mCstLiveSceneChanged on != 0); only the Job entry point differs
+// (ApplyCstParamRemoveChecked, always full-derivability-gated -- agent-originated Document mutations never take
+// the ungated fast path).
+bool SceneEditor::RouteCstParamRemove_( const char* entityName, const char* entityKind, const char* role )
+{
+	const int r = mJob->ApplyCstParamRemoveChecked( entityName, entityKind, role );
+	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;
+	return r == 1 || r == 2;
+}
+
+// Shared-undo U1: the FULL-DERIVABILITY-GATED twin of RouteCstParamEdit_, used ONLY by SetAgentCstParam's
+// Undo/Redo (both directions, not just the absent-param Remove arm above).  Every other CST-routed op's
+// Undo/Redo (SetMaterialProperty, SetLightProperty, SetCameraProperty, SetMediumProperty) safely uses the
+// ungated RouteCstParamEdit_ because a GUI value edit has no adjacent mutation channel that can silently
+// invalidate a previously-proven-safe reference between the original Apply and a later Redo.  SetAgentCstParam
+// does NOT have that safety: Model-B F5's agent chunk-CRUD verbs (SceneEditController::ApplyAgentChunkCrud_ ->
+// Job::ApplyCstInsertChunk / ApplyCstRemoveChunk) mutate the retained Document WITHOUT ever touching mHistory
+// (no Push, no redo-stack clear -- see that method's own comment on why: chunk CRUD has no EditHistory record
+// at all yet, slice U2's scope).  So a chunk insert/remove/reorder can land BETWEEN an agent param edit and a
+// later Undo/Redo of it without invalidating the redo entry, changing whether a previously-forward-safe
+// reference is still forward-safe.  Re-applying a stale value through the UNGATED incremental-only path in that
+// window would validate only against the live managers and could silently re-commit a head that fails to
+// re-derive from serialized bytes -- exactly what the gate exists to prevent.  Cost: one extra throwaway
+// full-derive dry-run per Undo/Redo of an agent edit (not the GUI hot path) -- acceptable for a discrete,
+// infrequent operation.
+bool SceneEditor::RouteCstParamEditChecked_( const char* entityName, const char* entityKind, const char* role, const char* value )
+{
+	const int r = mJob->ApplyCstParamEditChecked( entityName, entityKind, role, 0, value );
+	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;
 	return r == 1 || r == 2;
 }
 
@@ -1580,6 +1617,27 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 	}
 
 	return false;   // unknown op
+}
+
+// Shared-undo U1: see the header doc.  This is the ONE place a SceneEdit is pushed onto mHistory WITHOUT going
+// through Apply's CaptureForApply + ApplyForwardMutation -- the mutation already landed (the caller applied it
+// via Job::ApplyCstParamEditChecked before calling this), so there is nothing left to capture or mutate here.
+void SceneEditor::PushAgentCstParamEdit(
+	const String& entityName, const String& entityKind, const String& param,
+	const String& newValue, const String& prevValue, bool prevValueWasAbsent )
+{
+	SceneEdit edit;
+	edit.op                 = SceneEdit::SetAgentCstParam;
+	edit.objectName         = entityName;
+	edit.cstEntityKind      = entityKind;
+	edit.propertyName       = param;
+	edit.propertyValue      = newValue;
+	edit.prevPropertyValue  = prevValue;
+	edit.prevValueWasAbsent = prevValueWasAbsent;
+	// capturedTargetSerial stays 0 (default): SetAgentCstParam is a CST-routed op (IsCstRoutedOp), so
+	// ApplyForwardMutation/ApplyRevertMutation's identity-serial guard is skipped for it regardless -- it
+	// applies/reverts/redoes BY NAME, like every other CST-routed property op.
+	mHistory.Push( edit );
 }
 
 bool SceneEditor::Apply( const SceneEdit& editIn )
@@ -1974,6 +2032,27 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		return true;
 	}
 
+	if( edit.op == SceneEdit::SetAgentCstParam )
+	{
+		// Shared-undo U1 (Undo direction): the whole point of this op -- see SceneEdit.h's doc and
+		// PushAgentCstParamEdit.  Two shapes: the param was ABSENT before the agent edit (it got INSERTED by
+		// DocSetOrAddParamValue) -> the inverse is a REMOVE, not a re-SET of a value that never existed; else
+		// re-apply the captured prior value.  BOTH arms use the FULL-DERIVABILITY-GATED route (RouteCstParamRemove_
+		// / RouteCstParamEditChecked_), NOT the ungated RouteCstParamEdit_ every other CST-routed property revert
+		// uses above -- see RouteCstParamEditChecked_'s doc for why an agent-originated edit cannot safely share
+		// the GUI's ungated fast path here (Model-B F5's agent chunk-CRUD verbs can mutate the Document between
+		// this edit's original Apply and this Undo without leaving an mHistory record to invalidate).
+		if( !mJob ) return false;
+		const char* kind = edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr;
+		if( edit.prevValueWasAbsent ) {
+			if( !RouteCstParamRemove_( edit.objectName.c_str(), kind, edit.propertyName.c_str() ) ) return false;
+		} else {
+			if( !RouteCstParamEditChecked_( edit.objectName.c_str(), kind, edit.propertyName.c_str(), edit.prevPropertyValue.c_str() ) ) return false;
+		}
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
 	// Composite Begin/End popped on its own — degenerate, treat as noop.
 	if( SceneEdit::IsCompositeMarker( edit.op ) )
 	{
@@ -2246,6 +2325,26 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 			return true;
 		}
 		if( !CameraIntrospection::SetProperty( *baseCam, edit.objectName, edit.propertyValue ) ) return false;   // H2-S3: surface parse failure so Apply can reject
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetAgentCstParam )
+	{
+		// Shared-undo U1 (Redo direction): re-apply the new value the same way
+		// the ORIGINAL agent commit did -- DocSetOrAddParamValue inserts-or-sets,
+		// so this is correct whether or not the param existed at the time of the
+		// original edit.  The FIRST apply of a fresh agent edit never reaches
+		// here (the mutation already landed via Job::ApplyCstParamEditChecked
+		// before the history push -- see PushAgentCstParamEdit); this arm is
+		// exercised by Redo only.  Uses the FULL-DERIVABILITY-GATED
+		// RouteCstParamEditChecked_, NOT the ungated RouteCstParamEdit_ -- see
+		// that helper's doc for why an agent-originated edit cannot safely
+		// share the GUI property panel's ungated fast path here.
+		if( !mJob ) return false;
+		if( !RouteCstParamEditChecked_( edit.objectName.c_str(),
+		                                 edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr,
+		                                 edit.propertyName.c_str(), edit.propertyValue.c_str() ) ) return false;
 		mLastScope = Dirty_Camera;
 		return true;
 	}

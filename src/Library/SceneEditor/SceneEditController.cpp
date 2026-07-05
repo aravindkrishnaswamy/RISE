@@ -34,6 +34,7 @@
 
 #include "pch.h"
 #include "SceneEditController.h"
+#include "../Cst/Cst.h"                   // Shared-undo U1: DocFindByNameAnyRole / DocResolveNodeId (prior-value capture)
 #include "../Utilities/Transformable.h"   // F6: CaptureTransformState at gizmo drag-start
 #include "ObjectIntrospection.h"
 #include "LightIntrospection.h"
@@ -2807,6 +2808,68 @@ void SceneEditController::CancelAndParkRender_( std::unique_lock<std::mutex>& lk
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 }
 
+namespace {
+
+// Shared-undo U1: the value of a chunk's first `pname` param, mirroring the exact CST tree shape ParseChunk
+// builds (a Param kid whose first Token kid is the pname/role and whose subsequent Token kids are the pvalue
+// tokens) -- this is the SAME shape Job.cpp's file-local S2ChunkParamValue walks; duplicated here (rather than
+// exposed from Job.cpp) because it is a pure Cst::Node tree read with no Job state dependency, and the
+// controller already holds a `const RISE::Cst::Document*` via IJob::GetCstDocument().  `*outPresent` reports
+// whether the param was found AT ALL (distinct from "found but empty" -- occ=0 only, matching the agent path's
+// fixed occ=0 convention).
+std::string AgentReadFirstParamValue( const RISE::Cst::NodeRef& chunk, const char* pname, bool* outPresent )
+{
+	if( outPresent ) *outPresent = false;
+	if( !chunk ) return std::string();
+	for( const auto& kid : chunk->kids )
+	{
+		if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+		std::string nm, val;
+		for( const auto& tk : kid->kids )
+		{
+			if( !tk || tk->kind != RISE::Cst::NodeKind::Token ) continue;
+			if( tk->role == "pname" && nm.empty() ) nm = tk->text;
+			else if( tk->role == "pvalue" && val.empty() ) val = tk->text;
+		}
+		if( nm == pname )
+		{
+			if( outPresent ) *outPresent = true;
+			return val;
+		}
+	}
+	return std::string();
+}
+
+}  // namespace
+
+// Shared-undo U1: capture the CURRENT value of `param` on the entity resolved by (entityName, entityKind) from
+// the retained CST Document -- BEFORE an agent edit mutates it.  `*outPresent` = false means the param is
+// ABSENT (a defaulted slot the scene text omits; the coming edit will INSERT it, so the inverse is a REMOVE, not
+// a re-SET -- see SceneEdit::prevValueWasAbsent).  Resolution uses the SAME DocFindByNameAnyRole call and
+// camera-unique-fallback rule as Job::ApplyCstParamEditImpl_, so a value read here always matches whatever the
+// upcoming ApplyCstParamEditChecked call will resolve against (both run under the SAME mMutex hold in
+// ApplyAgentParamEdit -- no TOCTOU between the read and the apply).  Returns false (no capture) if there is no
+// retained Document or the entity does not resolve -- callers must not push a history record in that case (the
+// caller's ApplyCstParamEditChecked will independently reject with code 0, so no mutation happens either).
+bool SceneEditController::CaptureAgentPriorParamValue_(
+	const String& entityName, const String& entityKind, const String& param,
+	String& outPrevValue, bool& outWasAbsent )
+{
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return false;
+	const bool uniqueFallback = ( entityKind.size() > 1 && std::string( entityKind.c_str() ) == "camera" );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
+		*doc, entityName.c_str(), nullptr, entityKind.size() > 1 ? entityKind.c_str() : "", uniqueFallback );
+	if( id == 0 ) return false;
+	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
+	if( !chunk ) return false;
+	bool present = false;
+	const std::string val = AgentReadFirstParamValue( chunk, param.c_str(), &present );
+	outWasAbsent = !present;
+	outPrevValue = present ? String( val.c_str() ) : String();
+	return true;
+}
+
 // Facet 5 slice 1b: the render-thread-SAFE agent commit.  See the header for
 // the contract.  The ENTIRE ApplyCstParamEdit + rebind + version-bump runs
 // under mMutex while the render thread is parked, so no reader can observe
@@ -2927,6 +2990,18 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 		}
 	}
 
+	// Shared-undo U1: capture the entity's CURRENT value of `param` (or its
+	// ABSENCE) from the retained Document BEFORE the coming apply mutates it --
+	// under the SAME mMutex hold as the apply itself (no TOCTOU: nothing else
+	// can move the head between this read and ApplyCstParamEditChecked below).
+	// `haveCapture` is false only when there is no retained Document or the
+	// entity does not resolve -- in that case ApplyCstParamEditChecked below
+	// will independently reject with code 0 (no mutation, so no history push
+	// either); the capture failing is never itself a reason to refuse the edit.
+	String prevValue;
+	bool   prevWasAbsent = false;
+	const bool haveCapture = CaptureAgentPriorParamValue_( entityName, entityKind, param, prevValue, prevWasAbsent );
+
 	// The SAME edit the GUI property panel makes, but routed directly (we
 	// already hold the park the GUI path takes via mEditor.Apply) and through
 	// the CHECKED variant (round-2 P1-A root gate): an agent edit may RETARGET
@@ -3021,6 +3096,33 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 		mEditor.MarkCstHeadDirty(
 			entityName.c_str(),
 			entityKind.size() <= 1 ? nullptr : entityKind.c_str() );
+
+		// Shared-undo U1: push an EditHistory record so this agent edit is a
+		// first-class undo/redo citizen -- the headline gap this slice closes
+		// (previously an agent commit left NO history record, so a human
+		// Cmd-Z either skipped it entirely or undid an OLDER human edit
+		// instead).  Pushed for EVERY mutating code, INCLUDING 3
+		// (diagnosed-but-mutated): the Document WAS mutated (DocSetOrAddParamValue
+		// committed, the head revision bumped, MarkCstHeadDirty above just
+		// marked it unsaved) -- an un-revertable mutated Document would be
+		// strictly worse than a revertable one, and capture-before-apply above
+		// already captured the correct prior state regardless of how the
+		// re-derive that follows it turns out.  `haveCapture` should always be
+		// true here (ApplyCstParamEditChecked just resolved this same entity
+		// under this same lock hold to reach a mutating code), but a defensive
+		// skip-with-log guards against ever pushing a garbage/empty capture.
+		if( haveCapture )
+		{
+			mEditor.PushAgentCstParamEdit( entityName, entityKind, param, value, prevValue, prevWasAbsent );
+		}
+		else
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: agent commit on `%s`.`%s` applied (code %d) but the prior-value capture "
+				"failed -- NO undo history record was pushed for this edit (should not happen: the apply just "
+				"resolved the same entity under the same lock).",
+				entityName.c_str(), param.c_str(), code );
+		}
 
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();

@@ -251,6 +251,20 @@ namespace RISE
 			//! workers; the swap is racy without the park.
 			SetMediumProperty,
 
+			//! Shared-undo U1: an AGENT-originated CST param edit, pushed by
+			//! SceneEditController::ApplyAgentParamEdit AFTER the mutation has
+			//! already landed via Job::ApplyCstParamEditChecked (unlike every
+			//! other op, the forward mutation for the FIRST apply happens
+			//! OUTSIDE SceneEditor::Apply -- see
+			//! SceneEditor::PushAgentCstParamEdit).  Redo re-applies via the
+			//! ordinary RouteCstParamEdit_ forward path; Undo reverts via
+			//! RouteCstParamEdit_ (or a param REMOVE when `prevValueWasAbsent`).
+			//! `objectName` = entity name, `cstEntityKind` = the CST chunk kind
+			//! (may be empty -- the agent can target kinds outside the GUI's
+			//! Category taxonomy), `propertyName` = the param role,
+			//! `propertyValue`/`prevPropertyValue` = new/prior string values.
+			SetAgentCstParam,
+
 			// Composite markers — bracket a user drag so undo
 			// collapses one drag into one history entry.
 			CompositeBegin,         ///< objectName = label for UI
@@ -306,6 +320,22 @@ namespace RISE
 		//! later.  Empty for legacy edits (Undo falls back to active).
 		String         cameraTargetName;
 
+		//! Shared-undo U1 (SetAgentCstParam only): the CST chunk kind of the
+		//! edited entity, as resolved by SceneEditController::ApplyAgentParamEdit
+		//! (may be empty -- an agent commit can target a kind the GUI's
+		//! Category taxonomy does not cover; RouteCstParamEdit_ tolerates an
+		//! empty kind the same way Job::ApplyCstParamEditChecked does).
+		String         cstEntityKind;
+
+		//! Shared-undo U1 (SetAgentCstParam only): true when the param was
+		//! ABSENT on the entity's chunk at capture time (a defaulted slot the
+		//! scene text omitted, which Job::ApplyCstParamEditChecked's
+		//! DocSetOrAddParamValue then INSERTED).  Undo's inverse of an INSERT
+		//! is a param REMOVE (SceneEditor::RouteCstParamRemove_ ->
+		//! Job::ApplyCstParamRemoveChecked), not a re-SET of a (nonexistent)
+		//! prior value; `prevPropertyValue` is meaningless when this is true.
+		bool           prevValueWasAbsent;
+
 		//! F2: monotonic id stamped by EditHistory::Push, immune to front-
 		//! trimming.  A transaction baseline records the next seq so rollback
 		//! can identify its edits even after the 1024-entry cap trims the front.
@@ -353,6 +383,8 @@ namespace RISE
 		, hasTransformState( false )
 		, prevBindingWasNull( false )
 		, cameraTargetName()
+		, cstEntityKind()
+		, prevValueWasAbsent( false )
 		, historySeq( 0 )
 		, capturedTargetSerial( 0 )
 		, prevTransformState()

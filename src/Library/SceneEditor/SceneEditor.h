@@ -307,6 +307,33 @@ namespace RISE
 			FireDirtyChangedIfTransitioned();
 		}
 
+		//! Shared-undo U1: push an EditHistory record for an agent PARAM commit
+		//! that has ALREADY been applied to the retained Document (via
+		//! Job::ApplyCstParamEditChecked -- see
+		//! SceneEditController::ApplyAgentParamEdit).  Unlike every other
+		//! SceneEdit op, the FORWARD mutation for this first apply happens
+		//! BEFORE this call, not inside it -- this method only records the
+		//! (entityName, entityKind, param, newValue, prevValue-or-absent)
+		//! tuple so a later Undo/Redo can revert/redo it through the ordinary
+		//! ApplyRevertMutation/ApplyForwardMutation machinery (RouteCstParamEdit_ /
+		//! RouteCstParamRemove_ — the SAME routing the GUI property panel uses).
+		//!
+		//! Does NOT call MarkEditEntityDirty or FireDirtyChangedIfTransitioned
+		//! or touch mLastScope -- the caller (ApplyAgentParamEdit) already calls
+		//! MarkCstHeadDirty for the dirty side effect (which fires the listener
+		//! itself), and mLastScope has no agent-path reader.  Does NOT run
+		//! CaptureForApply (there is nothing to capture — the caller already
+		//! captured `prevValue`/`prevValueWasAbsent` from the Document under the
+		//! same lock as the apply) and does NOT call ApplyForwardMutation (the
+		//! mutation already happened).
+		//!
+		//! `entityKind` may be empty (agents can target CST kinds outside the
+		//! GUI's Category taxonomy).  Clears the redo stack (ordinary new-edit
+		//! semantics — Push does this).
+		void PushAgentCstParamEdit(
+			const String& entityName, const String& entityKind, const String& param,
+			const String& newValue, const String& prevValue, bool prevValueWasAbsent );
+
 		//! True when anything MAY need saving since the last load /
 		//! save.  Conservative: it can be true when a Save would NoOp
 		//! (e.g. edit→undo re-marks dirty; Save then NoOps on
@@ -527,6 +554,14 @@ namespace RISE
 		//! Self-rebinds on a D2 full re-derive (result >=2).  Returns false (caller fails the edit) on a reject
 		//! (0) or a diagnosed re-derive (3).  Shared by the material/light/... CST branches.
 		bool RouteCstParamEdit_( const char* entityName, const char* entityKind, const char* role, const char* value );
+
+		//! Shared-undo U1: inverse of an agent param edit that INSERTED a previously-absent param -- removes it
+		//! instead of re-setting a nonexistent prior value.  See SceneEditor.cpp for the full rationale.
+		bool RouteCstParamRemove_( const char* entityName, const char* entityKind, const char* role );
+
+		//! Shared-undo U1: full-derivability-gated twin of RouteCstParamEdit_, used ONLY by SetAgentCstParam's
+		//! Undo/Redo -- see SceneEditor.cpp for why the agent op cannot safely share the ungated GUI-property route.
+		bool RouteCstParamEditChecked_( const char* entityName, const char* entityKind, const char* role, const char* value );
 
 		//! P5 Slice 3 expansion (object): route a SetObjectShadowFlags edit to the standard_object
 		//! casts_shadows / receives_shadows bool params (bit0 = casts, bit1 = receives).  Two CST re-derives.
