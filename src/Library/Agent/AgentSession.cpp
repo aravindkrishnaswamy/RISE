@@ -1383,6 +1383,58 @@ namespace RISE
 				IProgressCallback*  mPriorValue;
 				bool                mArmed;
 			};
+
+			//! Model-B F2 slice S3 (EffectiveRenderConfig): RAII restore of
+			//! IRasterizer::SetSampleCountOverride, matching the SAME house
+			//! shape as RenderOverrideRestoreGuard / ProgressRestoreGuard
+			//! (Arm/Disarm, restore-on-every-exit-including-a-throw) so a
+			//! render's sample-count override can NEVER be left applied
+			//! past this one render -- including when Rasterize() throws
+			//! (OIDN is a documented real throw site).  `mPriorSamples` is
+			//! captured via GetSampleCountOverride() BEFORE the override is
+			//! applied; the destructor re-applies it via
+			//! SetSampleCountOverride so the rasterizer is left EXACTLY as
+			//! found.  A no-op (never armed) when no override was
+			//! requested, OR the rasterizer doesn't support the override
+			//! (GetSampleCountOverride returned -1 -- nothing meaningful to
+			//! restore).
+			class SampleCountRestoreGuard
+			{
+			public:
+				SampleCountRestoreGuard( IRasterizer& rast, int priorSamples )
+					: mRast( rast ), mPriorSamples( priorSamples ), mArmed( false )
+				{
+				}
+
+				void Arm()    { mArmed = true; }
+				void Disarm() { mArmed = false; }
+
+				~SampleCountRestoreGuard()
+				{
+					if( !mArmed ) return;
+					if( mPriorSamples < 1 ) return;   // -1 (unsupported) or otherwise unknown -- nothing to restore
+					try {
+						mRast.SetSampleCountOverride( mPriorSamples );
+					}
+					catch( ... ) {
+						// NEVER rethrow from a destructor (would terminate()
+						// if already unwinding from Rasterize()'s own
+						// exception).  Log so a future throw here is at
+						// least diagnosable.
+						GlobalLog()->PrintEx( eLog_Error,
+							"AgentSession::Render: exception escaped the sample-count "
+							"override restore -- the rasterizer's SPP may be left overridden" );
+					}
+				}
+
+			private:
+				SampleCountRestoreGuard( const SampleCountRestoreGuard& );             // deleted
+				SampleCountRestoreGuard& operator=( const SampleCountRestoreGuard& );  // deleted
+
+				IRasterizer& mRast;
+				int          mPriorSamples;
+				bool         mArmed;
+			};
 		}
 
 		AgentRenderResult AgentSession::Render( int samplesOverride )
@@ -1421,21 +1473,29 @@ namespace RISE
 			// contradicting the design's non-mutating override model
 			// (docs/agentic-redesign/50-agentic-surface.md §2.2.5's
 			// ResolveEffectiveRenderConfig layers render overrides onto the
-			// DerivedScene WITHOUT touching the scene).  The clean transient
-			// path -- applying the override on the DERIVED/live rasterizer
-			// after derive, before Rasterize() -- needs a sample-count setter
-			// on IRasterizer, which does NOT exist (SetSampleCount lives only
-			// on InteractivePelRasterizer, not on the general interface
-			// GetRasterizer() returns -- verified again for the preview-render
-			// work: no additional seam appeared). So the render-scoped sample
-			// override is STILL not wired without mutating the CST; it stays
-			// deferred to the EffectiveRenderConfig layer. `params.samples` is
-			// currently IGNORED -- the render uses the authored sample count.
-			// ReadDocument() is guaranteed byte-identical across a Render call
-			// REGARDLESS of the params passed (the film-dims and camera-pose
-			// overrides below are LIVE-only / non-Document mutations, captured
-			// and restored around the render -- see below).
-			(void)params.samples;
+			// DerivedScene WITHOUT touching the scene).
+			//
+			// Model-B F2 slice S3 (EffectiveRenderConfig) CLOSES this gap:
+			// IRasterizer::SetSampleCountOverride / GetSampleCountOverride
+			// (implemented on the pixel-based rasterizer family --
+			// PixelBasedRasterizerHelper -- covering PT, spectral PT, BDPT,
+			// VCM) give the transient, non-mutating setter this comment used
+			// to say did not exist.  `params.samples` (>= 1) is now
+			// CAPTURED (GetSampleCountOverride, before any mutation) ->
+			// APPLIED (SetSampleCountOverride) -> render -> RESTORED to the
+			// captured value, via SampleCountRestoreGuard (the SAME
+			// Arm/Disarm/restore-on-every-exit house pattern as
+			// RenderOverrideRestoreGuard / ProgressRestoreGuard below, so a
+			// throw out of Rasterize() -- OIDN is a documented real throw
+			// site -- still restores).  A rasterizer that has NOT opted in
+			// (MLT, photon-map-only integrators, AutoRasterizer's outer
+			// wrapper) reports false/-1 and the override is honestly NOT
+			// applied -- res.samplesOverridden stays false and `message`
+			// notes it.  ReadDocument() remains byte-identical across a
+			// Render call REGARDLESS of `params.samples` (this is a LIVE
+			// rasterizer-state mutation, exactly like the film-dims /
+			// camera-pose overrides below -- never a CST edit).
+			const bool wantSamplesOverride = ( params.samples >= 1 );
 
 			// Fetch and null-check the live rasterizer BEFORE any mutation:
 			// RemoveRasterizerOutputs() unconditionally dereferences
@@ -1479,6 +1539,16 @@ namespace RISE
 			double origFilmPAR = 1.0;
 			std::vector<CapturedCameraField> capturedCam;
 			ICamera* activeCam = nullptr;
+			// Model-B F2 slice S3: sample-count override state.  Captured
+			// via GetSampleCountOverride() BEFORE any mutation (-1 = the
+			// active rasterizer doesn't support the override at all);
+			// `overrodeSamples` is set true only once SetSampleCountOverride
+			// actually returns true for THIS render, so a caller reading
+			// res.samplesOverridden gets an honest answer even when
+			// `wantSamplesOverride` was requested against an unsupported
+			// rasterizer.
+			const int origSamples = rast->GetSampleCountOverride();
+			bool overrodeSamples = false;
 			bool renderRan = false;
 			bool rendered = false;
 			// Fix-round-1 P2-C: true iff CancelAgentRender_ / Stop() tripped
@@ -1532,6 +1602,18 @@ namespace RISE
 					overrodeFilm, origFilmW, origFilmH, origFilmPAR,
 					activeCam, capturedCam );
 				restoreGuard.Arm();
+
+				// Model-B F2 slice S3: sample-count override.  Armed
+				// BEFORE the apply (same "arm before mutate" discipline as
+				// restoreGuard above) so a throw between here and the
+				// explicit tail restore still restores via the destructor.
+				// `origSamples` was already captured (GetSampleCountOverride,
+				// before ANY mutation) by the caller, outside this lambda.
+				SampleCountRestoreGuard sampleGuard( *rast, origSamples );
+				sampleGuard.Arm();
+				if( wantSamplesOverride ) {
+					overrodeSamples = rast->SetSampleCountOverride( params.samples );
+				}
 
 				// ---- Film-dims override: capture -> set -> (render happens
 				// after this lambda's camera section) -- restore happens at
@@ -1683,6 +1765,20 @@ namespace RISE
 					mJob->SetFilm( origFilmW, origFilmH, origFilmPAR );
 				}
 				restoreGuard.Disarm();
+
+				// Model-B F2 slice S3: explicit ordinary-path restore of
+				// the sample-count override, same "Disarm after explicit
+				// restore" discipline as restoreGuard just above --
+				// restores unconditionally (not just when overrodeSamples
+				// is true) so a rasterizer that supports the override but
+				// where THIS render didn't request one is still left at
+				// whatever GetSampleCountOverride() reported before (a
+				// no-op in that common case, since origSamples ==
+				// whatever's already live).
+				if( origSamples >= 1 ) {
+					rast->SetSampleCountOverride( origSamples );
+				}
+				sampleGuard.Disarm();
 			};
 
 			// Model-B F2 slice S1: render identity.  When this call actually
@@ -1820,19 +1916,26 @@ namespace RISE
 				bool submitted = false;
 				std::string thrownMessage;
 				try {
-					submitted = mController->SubmitAgentRenderSync( doRenderWork, String(), &controllerJobId );
+					submitted = mController->SubmitAgentRenderSync( doRenderWork, String(), &controllerJobId,
+						/*timeoutMs=*/30000, params.pinned );
 				}
 				catch( const std::exception& e ) { thrownMessage = e.what(); }
 				catch( ... )                     { thrownMessage = "unknown exception"; }
 				if( !submitted && thrownMessage.empty() ) {
 					// Refused: either an editor transaction is open (same
-					// rule as RunPreviewRenderParked) or the single-slot
-					// worker already has a render queued/running.  Honest
+					// rule as RunPreviewRenderParked), the single-slot
+					// worker already has a render queued/running, or --
+					// Model-B F2 slice S3 -- the occupant is a PINNED
+					// render (never silently superseded; see
+					// SubmitAgentRenderSync's `pinned` doc).  Honest
 					// failure -- no fallback direct call here, since a
 					// direct call is exactly the race this slice closes.
 					res.ok = false;
 					res.integrator = mJob->GetActiveRasterizerName();
-					res.message = "render refused: the agent-render worker is busy or an editor transaction is open -- retry shortly";
+					const SceneEditController::RenderJobStatus cur = mController->CurrentRenderJob();
+					res.message = ( cur.active && cur.pinned )
+						? "render refused: a pinned render is in flight -- pinned renders run to completion and are never superseded; retry after it completes"
+						: "render refused: the agent-render worker is busy or an editor transaction is open -- retry shortly";
 					return res;
 				}
 				if( !thrownMessage.empty() ) {
@@ -1924,6 +2027,27 @@ namespace RISE
 			res.previewHeight    = res.height;
 			res.cameraOverridden = overrodeCamera;
 
+			// Model-B F2 slice S3: report the sample-count override
+			// outcome.  `overrodeSamples` is only true when
+			// SetSampleCountOverride actually accepted THIS render's
+			// request (see doRenderWork above); `effectiveSamples` is the
+			// requested count on that path, else whatever
+			// GetSampleCountOverride() reads back (the rasterizer's own
+			// current/restored count, when that query is supported) --
+			// never guessed.  A requested-but-unsupported override gets a
+			// clear, additive note appended to `message` rather than
+			// silently overwriting the "ok" success message.
+			res.samplesOverridden = overrodeSamples;
+			if( overrodeSamples ) {
+				res.effectiveSamples = params.samples;
+			} else {
+				const int readBack = rast->GetSampleCountOverride();
+				res.effectiveSamples = ( readBack >= 1 ) ? readBack : 0;
+				if( wantSamplesOverride && res.ok ) {
+					res.message += " (samples override not supported by the active rasterizer -- rendered at the scene-authored count)";
+				}
+			}
+
 			// Cache for ReadImage() ONLY on a successful, non-empty encode --
 			// a failed render must not wipe a prior good cache (ReadImage
 			// documents "the LAST successful Render").  Also keep the SINK
@@ -1955,6 +2079,7 @@ namespace RISE
 		AgentSession::AgentRenderAsyncResult AgentSession::RenderAsync( const AgentRenderParams& params )
 		{
 			AgentRenderAsyncResult out;
+			out.pinned = params.pinned;   // echoed regardless of accepted -- see the struct doc
 
 			if( !mController ) {
 				out.accepted = false;
@@ -2103,11 +2228,24 @@ namespace RISE
 					}
 				},
 				String( "render_async" ),
-				&jobId );
+				&jobId,
+				params.pinned );
 
 			if( !accepted ) {
 				out.accepted = false;
-				out.message  = "render refused: the agent-render worker is busy or an editor transaction is open -- retry shortly";
+				// Model-B F2 slice S3: distinguish "a PINNED render is
+				// occupying the slot" from the generic busy/transaction
+				// refusal -- CurrentRenderJob() is a fast mJobStatusMutex
+				// read (never blocks behind an in-flight render; see that
+				// method's doc), so this check is cheap even though the
+				// slot was JUST found busy a moment ago.  A benign race
+				// (the pinned job completes between the refusal above and
+				// this read) just falls back to the generic message,
+				// which is still accurate (the submission WAS refused).
+				const SceneEditController::RenderJobStatus cur = mController->CurrentRenderJob();
+				out.message = ( cur.active && cur.pinned )
+					? "render refused: a pinned render is in flight -- pinned renders run to completion and are never superseded; retry after it completes"
+					: "render refused: the agent-render worker is busy or an editor transaction is open -- retry shortly";
 				return out;
 			}
 
@@ -2135,6 +2273,7 @@ namespace RISE
 				mController->GetRenderJobStatus( static_cast<SceneEditController::RenderJobId>( renderJobId ) );
 			out.found  = lookup.found;
 			out.active = lookup.found && lookup.status.active;
+			out.pinned = lookup.found && lookup.status.pinned;
 			return out;
 		}
 

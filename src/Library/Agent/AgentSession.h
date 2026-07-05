@@ -199,15 +199,46 @@ namespace RISE
 		//! `width`/`height` are a TRANSIENT film-dims override (both must be
 		//! set together; clamped to [16,512] by the caller -- AgentRpc.cpp --
 		//! before reaching here); 0 means "no override, use the Document's
-		//! authored dims".  `samples` mirrors the legacy samplesOverride
-		//! (still IGNORED -- see Render's doc).  `camera` is the optional
-		//! ephemeral camera-pose override above.
+		//! authored dims".  `camera` is the optional ephemeral camera-pose
+		//! override above.
+		//!
+		//! Model-B F2 slice S3 (EffectiveRenderConfig): `samples` is now
+		//! HONORED for rasterizers that opt in to IRasterizer::
+		//! SetSampleCountOverride (the pixel-based family: PT, spectral PT,
+		//! BDPT, VCM -- see that virtual's doc) via a capture/apply/restore
+		//! window around the render, WITHOUT mutating the retained CST
+		//! Document -- ReadDocument() stays byte-identical across a Render
+		//! call regardless of `samples`, exactly like the film-dims/camera
+		//! overrides above.  -1 means "no override, use the scene-authored
+		//! sample count" (default).  A value < 1 other than -1 is NOT
+		//! valid (the RPC layer clamps to >= 1; a direct C++ caller passing
+		//! 0 or a negative value other than -1 is treated as "no override",
+		//! matching the pre-existing advisory-only contract for out-of-band
+		//! values).  On a rasterizer that has NOT opted in (MLT, photon-map
+		//! families, AutoRasterizer's outer wrapper), the override is
+		//! honestly NOT APPLIED -- see AgentRenderResult::samplesOverridden.
+		//!
+		//! Model-B F2 slice S3 (pinned-vs-preview): `pinned` (default false
+		//! = today's PREVIEW semantics, unchanged) marks this Render /
+		//! RenderAsync call as PINNED.  With the controller's single agent-
+		//! render slot, a PINNED job in flight causes any NEW submission
+		//! (async or sync, pinned or not) to be REJECTED rather than
+		//! silently superseded -- see SceneEditController::
+		//! SubmitAgentRenderAsync's `pinned` doc for the full policy
+		//! (including that render_cancel / Stop() still cancel a pinned
+		//! render; pinned protects against supersession, not against an
+		//! explicit cancel).  Has no effect on a HEADLESS session (no
+		//! controller, no slot to protect) or on the OVERRIDE-park path
+		//! (RunPreviewRenderParked has no single-slot concept -- see
+		//! Render(AgentRenderParams)'s doc); only the two coordinator-
+		//! tracked SubmitAgentRenderAsync/Sync paths consult it.
 		struct AgentRenderParams
 		{
 			unsigned int         width = 0;    //!< 0 = no override
 			unsigned int         height = 0;   //!< 0 = no override
-			int                  samples = -1;  //!< -1 = no override (still advisory; see Render)
+			int                  samples = -1;  //!< -1 = no override; else the requested SPP (see EffectiveRenderConfig doc above)
 			AgentCameraOverride  camera;
+			bool                 pinned = false;  //!< false = preview (today's semantics); true = pinned (never silently superseded -- see doc above)
 		};
 
 		//! The structured result of Render: the rendered head as PNG bytes
@@ -282,6 +313,25 @@ namespace RISE
 			//! that succeeded"; check `ok`, not `renderJobId != 0`, to test
 			//! success.
 			std::uint64_t              renderJobId = 0;
+			//! Model-B F2 slice S3 (EffectiveRenderConfig) ADDITIVE wire
+			//! fields.  `samplesOverridden` is true iff params.samples was
+			//! present (>= 1) AND the active rasterizer accepted
+			//! IRasterizer::SetSampleCountOverride for this render (capture-
+			//! apply-restore around Rasterize(), no CST mutation -- see
+			//! AgentRenderParams::samples's doc).  False whenever no
+			//! override was requested, OR one was requested but the active
+			//! rasterizer honestly does not support it (SetSampleCountOverride
+			//! returned false -- e.g. MLT, a photon-map-only rasterizer, or
+			//! AutoRasterizer's outer wrapper) -- `message` notes the
+			//! unsupported case so a caller isn't left guessing why the
+			//! override had no effect.  `effectiveSamples` is the sample
+			//! count the render actually ran at: the override value when
+			//! `samplesOverridden` is true, else the rasterizer's own
+			//! GetSampleCountOverride() reading (its scene-authored count)
+			//! when that query is cheaply available, else 0 (unknown --
+			//! never guessed).
+			bool                       samplesOverridden = false;
+			int                        effectiveSamples = 0;
 		};
 
 		//! Facet 5 slice S1: one entry of the skills INDEX -- `name` is the
@@ -628,6 +678,11 @@ namespace RISE
 				bool          accepted = false;
 				std::uint64_t renderJobId = 0;   //!< 0 when !accepted
 				std::string   message;
+				//! Model-B F2 slice S3 ADDITIVE wire field: echoes the
+				//! `pinned` flag this submission was made with (regardless
+				//! of `accepted` -- a caller can see what it ASKED for even
+				//! on a refusal).
+				bool          pinned = false;
 			};
 
 			//! Model-B F2 slice S2a: submit a render to run ASYNCHRONOUSLY on
@@ -741,6 +796,12 @@ namespace RISE
 			{
 				bool   found  = false;   //!< false: unrecognized id (unknown, or a session-local/ODD id -- see GetRenderJobStatus's doc)
 				bool   active = false;   //!< meaningful only when found
+				//! Model-B F2 slice S3 ADDITIVE wire field: whether the job
+				//! `found`/`active` describe was submitted PINNED.  Only
+				//! meaningful when `found` is true (mirrors `active`'s own
+				//! caveat); false for an Interactive-class job (no pinned
+				//! concept) and for any not-found lookup.
+				bool   pinned = false;
 			};
 
 			//! Model-B F2 slice S2a: poll the status of a render job id

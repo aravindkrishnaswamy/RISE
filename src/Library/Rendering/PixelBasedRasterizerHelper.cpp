@@ -2293,3 +2293,43 @@ void PixelBasedRasterizerHelper::SubSampleRays( ISampling2D* pSampling_, IPixelF
 		}
 	}
 }
+
+// Model-B F2 slice S3 (EffectiveRenderConfig) -- see the header doc for the
+// full contract.  `samples` < 1 is a no-op (never applied); `samples` == 1
+// releases `pSampling` (matches this class's "null == implicit 1 SPP"
+// convention elsewhere -- GetProgressiveTotalSPP / the
+// RasterizeSceneAnimation totalSPPPerFrame idiom); `samples` > 1 mutates the
+// EXISTING kernel in place when one is already installed (preserves the
+// scene-authored kernel TYPE), or installs a fresh MultiJittered kernel
+// (mirrors InteractivePelRasterizer::SetSampleCount's own from-scratch
+// choice) when none was authored.
+bool PixelBasedRasterizerHelper::SetSampleCountOverride( int samples )
+{
+	if( samples < 1 ) return false;
+
+	if( samples == 1 )
+	{
+		safe_release( pSampling );
+		pSampling = 0;
+		return true;
+	}
+
+	if( pSampling )
+	{
+		pSampling->SetNumSamples( static_cast<unsigned int>( samples ) );
+		return true;
+	}
+
+	ISampling2D* pNewSampling = 0;
+	RISE_API_CreateMultiJitteredSampling2D( &pNewSampling, 1.0, 1.0 );
+	if( !pNewSampling ) return false;   // defensive -- the factory is not documented to fail, but never crash on a null return
+	pNewSampling->SetNumSamples( static_cast<unsigned int>( samples ) );
+	SubSampleRays( pNewSampling, 0 );
+	pNewSampling->release();   // SubSampleRays addref'd its own copy
+	return true;
+}
+
+int PixelBasedRasterizerHelper::GetSampleCountOverride() const
+{
+	return pSampling ? static_cast<int>( pSampling->GetNumSamples() ) : 1;
+}

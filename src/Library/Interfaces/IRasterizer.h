@@ -140,6 +140,54 @@ namespace RISE
 		//! InteractivePelRasterizer) return true; dedicated integrators (PT/BDPT/VCM/
 		//! MLT) stay false.  Defaulted + declared last -> ABI-stable.
 		virtual bool ConsumesScenePhotonMaps() const { return false; }
+
+		//! Model-B F2 slice S3 (EffectiveRenderConfig): a TRANSIENT,
+		//! render-scoped override of this rasterizer's samples-per-pixel,
+		//! for a caller (the Agent surface's `render{"samples":N}`) that
+		//! wants a one-shot sample-count override WITHOUT mutating the
+		//! scene's retained CST Document (the `samples` param on the
+		//! rasterizer's own chunk, e.g. `pathtracing_pel_rasterizer
+		//! { samples 8 }`).  Capture/apply/restore symmetry is the
+		//! caller's responsibility (mirrors AgentSession.cpp's
+		//! RenderOverrideRestoreGuard house pattern for the film-dims /
+		//! camera-pose overrides): call GetSampleCountOverride() BEFORE
+		//! this to capture the current count, call this to apply the
+		//! override, render, then call this AGAIN with the captured value
+		//! to restore it -- so the rasterizer is left EXACTLY as found
+		//! regardless of whether the override was ever requested.
+		//!
+		//! Returns true iff this rasterizer supports the override and
+		//! applied it; false (a no-op -- the rasterizer's sample count is
+		//! UNCHANGED) means "honestly unsupported", the safe default for
+		//! every rasterizer that does not override this -- MLT, photon-
+		//! map-only integrators, and AutoRasterizer's outer dispatcher
+		//! wrapper all report false here (a caller should surface that
+		//! honestly rather than silently ignore the request).  `samples`
+		//! < 1 is never applied (returns false, no state change) -- a
+		//! caller wanting "no override" should simply not call this at
+		//! all, matching the existing -1-means-absent convention on the
+		//! Agent surface's AgentRenderParams::samples.
+		//!
+		//! Implemented on the pixel-based rasterizer family (PT, spectral
+		//! PT, BDPT, VCM -- everything deriving from
+		//! Implementation::PixelBasedRasterizerHelper, which already owns
+		//! a swappable `ISampling2D* pSampling` -- see SubSampleRays) via
+		//! ONE base-class override; every other IRasterizer subclass
+		//! inherits this safe default unchanged.  Defaulted + declared
+		//! last -> ABI-stable (same convention as ConsumesScenePhotonMaps
+		//! above).
+		virtual bool SetSampleCountOverride( int samples ) { (void)samples; return false; }
+
+		//! The CURRENT effective samples-per-pixel, for capturing the
+		//! pre-override value before calling SetSampleCountOverride (see
+		//! that method's capture/apply/restore contract).  Returns -1 when
+		//! this rasterizer does not support the override (mirrors
+		//! SetSampleCountOverride's false return -- "unknown/unsupported",
+		//! never guessed) or has no sample count meaningfully configured
+		//! yet (e.g. queried before any render has run and no explicit
+		//! `samples` param was authored).  Defaulted + declared last ->
+		//! ABI-stable.
+		virtual int GetSampleCountOverride() const { return -1; }
 	};
 }
 

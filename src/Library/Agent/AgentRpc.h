@@ -57,9 +57,10 @@
 //                                            disambiguation hint; a still-referenced
 //                                            target fails the dry-run -> rejected with
 //                                            the diagnostic, head byte-identical.)
-//      render       {samples?,width?,height?,camera?}
+//      render       {samples?,width?,height?,camera?,pinned?}
 //                                        -> {ok,width,height,meanR,meanG,meanB,integrator,
-//                                            previewWidth,previewHeight,cameraOverridden,message}
+//                                            previewWidth,previewHeight,cameraOverridden,message,
+//                                            renderJobId,samplesOverridden,effectiveSamples}
 //                                           (`integrator` is the ACTIVE rasterizer's
 //                                            registered type name = its scene-file
 //                                            chunk keyword, e.g.
@@ -82,18 +83,54 @@
 //                                            before the override and restored
 //                                            after, so the camera's properties are
 //                                            byte-for-byte the same before and
-//                                            after every render call.  `samples`
-//                                            stays advisory/ignored (see
-//                                            AgentSession::Render's doc for why).
-//                                            LIVE mode: the override window is
-//                                            run under
+//                                            after every render call.  LIVE mode:
+//                                            the override window is run under
 //                                            SceneEditController::RunPreviewRenderParked
 //                                            so it cannot race the interactive
 //                                            render thread's own Film/camera
 //                                            swap; when an editor transaction is
 //                                            open the override is refused and the
 //                                            render falls back to un-overridden
-//                                            (reported in `message`).)
+//                                            (reported in `message`).
+//                                            Model-B F2 slice S3
+//                                            (EffectiveRenderConfig): `samples`
+//                                            (clamped [1,65536]; -1 or absent =
+//                                            no override) is now HONORED for
+//                                            rasterizers that opt in to
+//                                            IRasterizer::SetSampleCountOverride
+//                                            (the pixel-based family: PT,
+//                                            spectral PT, BDPT, VCM) via a
+//                                            capture/apply/restore window --
+//                                            NEVER mutates the retained CST
+//                                            Document.  `samplesOverridden`
+//                                            (additive) reports whether the
+//                                            override actually took;
+//                                            `effectiveSamples` (additive) is
+//                                            the SPP this render actually ran
+//                                            at.  An unsupported rasterizer
+//                                            (MLT, photon-map-only, Auto's
+//                                            outer wrapper) reports
+//                                            samplesOverridden:false with a
+//                                            note appended to `message` --
+//                                            never silently ignored.
+//                                            Model-B F2 slice S3
+//                                            (pinned-vs-preview): `pinned`
+//                                            (default false = today's PREVIEW
+//                                            semantics) marks this render as
+//                                            PINNED -- see
+//                                            SceneEditController::
+//                                            SubmitAgentRenderAsync's `pinned`
+//                                            doc for the single-slot
+//                                            supersession-refusal policy this
+//                                            enables (a pinned render in
+//                                            flight refuses ANY new
+//                                            submission, async or sync,
+//                                            pinned or not, until it
+//                                            completes; render_cancel / a
+//                                            controller Stop() still cancel
+//                                            it -- pinned guards against
+//                                            supersession, not against an
+//                                            explicit cancel/teardown).)
 //      read_image   {maxEdge?}           -> {png_base64:string, byteLength:number,
 //                                            width:number, height:number}
 //                                           (Facet 5 preview-render: `maxEdge`
@@ -106,12 +143,12 @@
 //
 //    Model-B F2 slice S2a/S2b (async render): render{"async":true} submits to
 //    the ATTACHED controller's dedicated agent-render worker and returns
-//    IMMEDIATELY with {renderJobId,status:"submitted"|"refused",message}
+//    IMMEDIATELY with {renderJobId,status:"submitted"|"refused",message,pinned}
 //    instead of blocking for the render's duration -- LIVE (in-app GUI)
 //    controllers only; `rise --agent-stdio` is headless and refuses async
-//    cleanly.  render_status {renderJobId} -> {found,active} polls a job
+//    cleanly.  render_status {renderJobId} -> {found,active,pinned} polls a job
 //    id (from either an async or a synchronous render); render_wait
-//    {renderJobId,timeoutMs?} -> {completed,found,active,result?} blocks up
+//    {renderJobId,timeoutMs?} -> {completed,found,active,pinned,result?} blocks up
 //    to timeoutMs (default 5000, clamped [0,60000]) for it to finish.
 //    `result` (slice S2b, additive) carries the SAME shape a synchronous
 //    render returns ({ok,width,height,meanR,...}) when this session cached
@@ -123,7 +160,11 @@
 //    cancel signal for the outstanding async render WITHOUT blocking for it
 //    to actually stop (poll render_status/render_wait afterward to observe
 //    completion) -- headless sessions refuse it (no controller, nothing to
-//    cancel) exactly like render{"async":true} refuses submission.
+//    cancel) exactly like render{"async":true} refuses submission.  Cancels
+//    a PINNED render exactly like a preview one (slice S3: pinned protects
+//    against SILENT SUPERSESSION by a later submission, not against an
+//    explicit cancel or a controller Stop()/teardown drain -- both of
+//    those remain unconditional).
 //
 //    Facet 5 slice 1a (optimistic concurrency): read_document now carries the
 //    retained CST head's (uuid,revision) identity; propose_patch accepts an

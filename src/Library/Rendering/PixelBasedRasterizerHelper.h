@@ -491,18 +491,70 @@ namespace RISE
 		virtual IRasterizeSequence* CreateDefaultRasterSequence( unsigned int tileEdge ) const;
 
 			// Rasterizer interface implementations
-			virtual void AttachToScene( const IScene* ){};		// We don't need to do anything to attach
-			virtual void DetachFromScene( const IScene* ){};	// We don't need to do anything to detach
+			//
+			// Model-B F2 slice S3 note: adding `override` to
+			// SetSampleCountOverride/GetSampleCountOverride below flips on
+			// clang's -Winconsistent-missing-override heuristic for this
+			// WHOLE class (it only checks once a class uses `override`
+			// anywhere) -- these five pre-existing IRasterizer overrides
+			// were silently missing the keyword and had never been flagged
+			// before.  Added here (not touched otherwise) to keep the
+			// clean-rebuild warning-free per CLAUDE.md's "compiler
+			// warnings are bugs" rule; verified this is the actual
+			// mechanism by a stash-rebuild-pop A/B (0 warnings on HEAD,
+			// these 5 appear only once `override` is introduced anywhere
+			// in this class).
+			virtual void AttachToScene( const IScene* ) override {};		// We don't need to do anything to attach
+			virtual void DetachFromScene( const IScene* ) override {};	// We don't need to do anything to detach
 
 			void SPRasterizeSingleBlock( const RuntimeContext& rc, IRasterImage& image, const IScene& scene, const Rect& rect, const unsigned int height ) const;
 			void SPRasterizeSingleBlockOfAnimation( const RuntimeContext& rc, IRasterImage& image, const IScene& scene, const Rect& rect, const unsigned int height, const AnimFrameData& framedata ) const;
 
-			virtual unsigned int PredictTimeToRasterizeScene( const IScene& pScene, const ISampling2D& pSampling, unsigned int* pActualTime ) const;
-			virtual void RasterizeScene( const IScene& pScene, const Rect* pRect, IRasterizeSequence* pRasterSequence ) const;
-			virtual void RasterizeSceneAnimation( const IScene& pScene, const Scalar time_start, const Scalar time_end, const unsigned int num_frames, const bool do_fields, const bool invert_fields, const Rect* pRect, const unsigned int* specificFrame, IRasterizeSequence* pRasterSequence ) const;
+			virtual unsigned int PredictTimeToRasterizeScene( const IScene& pScene, const ISampling2D& pSampling, unsigned int* pActualTime ) const override;
+			virtual void RasterizeScene( const IScene& pScene, const Rect* pRect, IRasterizeSequence* pRasterSequence ) const override;
+			virtual void RasterizeSceneAnimation( const IScene& pScene, const Scalar time_start, const Scalar time_end, const unsigned int num_frames, const bool do_fields, const bool invert_fields, const Rect* pRect, const unsigned int* specificFrame, IRasterizeSequence* pRasterSequence ) const override;
 
 			virtual void SubSampleRays( ISampling2D* pSampling_, IPixelFilter* pPixelFilter_ );
 			void SetProgressiveConfig( const ProgressiveConfig& config );
+
+			//! Model-B F2 slice S3 (EffectiveRenderConfig) -- see the
+			//! IRasterizer base doc for the full capture/apply/restore
+			//! contract.  Implemented here (the pixel-based rasterizer
+			//! family's shared base -- PT, spectral PT, BDPT, VCM all
+			//! derive from this) rather than per-subclass: every one of
+			//! them already owns `pSampling`/SetNumSamples via this class,
+			//! so ONE override covers the whole family.
+			//!
+			//! samples < 1: no-op, returns false (never applied -- mirrors
+			//! the "-1 means absent" convention one layer up).
+			//! samples == 1: releases `pSampling` (matches this class's
+			//! own "null pSampling == implicit 1 SPP, no kernel" contract
+			//! -- see GetProgressiveTotalSPP / RasterizeSceneAnimation's
+			//! `pSampling ? ... : 1` idiom this mirrors) -- so a restore
+			//! back to an unauthored 1-SPP scene is a real release, not a
+			//! kernel stuck at NumSamples(1).
+			//! samples > 1, `pSampling` already set (the scene authored a
+			//! `samples` param): mutates the EXISTING kernel's count IN
+			//! PLACE via ISampling2D::SetNumSamples -- preserves whichever
+			//! kernel TYPE the scene author chose (stratified / Sobol /
+			//! Halton / multi-jittered / ...); only the count changes.
+			//! samples > 1, `pSampling` null (the scene never authored a
+			//! `samples` param -- implicit 1 SPP): constructs a fresh
+			//! MultiJittered kernel (the same kernel type
+			//! InteractivePelRasterizer::SetSampleCount uses for its own
+			//! from-scratch polish-pass case) via SubSampleRays.  Always
+			//! returns true once past the samples<1 guard -- this override
+			//! never fails on the pixel-based family.
+			virtual bool SetSampleCountOverride( int samples ) override;
+
+			//! The samples-per-pixel this rasterizer will actually use on
+			//! its next RasterizeScene call: `pSampling->GetNumSamples()`
+			//! when a kernel is installed, else 1 (implicit single-ray
+			//! per pixel -- the SAME idiom RasterizeSceneAnimation already
+			//! uses for `totalSPPPerFrame`).  Never -1 on this class (that
+			//! sentinel is reserved for a rasterizer that does NOT support
+			//! the override at all -- see the IRasterizer base doc).
+			virtual int GetSampleCountOverride() const override;
 
 		};
 	}

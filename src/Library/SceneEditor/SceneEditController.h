@@ -289,12 +289,24 @@ namespace RISE
 		//! Status() consumer can tell WHICH agent submitted an in-flight
 		//! render, useful for S2b's gate predicate and for diagnosing which
 		//! caller is occupying the single slot.
+		//! Model-B F2 slice S3 ADDITIVE field: `pinned` echoes whether the
+		//! CURRENT agent-slot occupant was submitted as a PINNED render
+		//! (see SubmitAgentRenderAsync / SubmitAgentRenderSync's `pinned`
+		//! parameter).  Always false for an Interactive-class job (the
+		//! interactive loop has no pinned concept); meaningful for an
+		//! AgentPreview-class job for as long as `active` is true (stale
+		//! once the job completes, same "informational only" caveat as
+		//! `id`/`renderClass` above).  A pinned job in flight is what
+		//! makes SubmitAgentRenderAsync / SubmitAgentRenderSync refuse a
+		//! NEW submission with the pinned-specific message -- see those
+		//! methods' docs.
 		struct RenderJobStatus
 		{
 			RenderJobId  id          = kInvalidRenderJobId;
 			RenderClass  renderClass = RenderClass::Interactive;
 			bool         active      = false;
 			String       clientLabel;
+			bool         pinned      = false;
 		};
 
 		//! Facet 5 slice 1b: the structured result of a CONTROLLER-ROUTED
@@ -521,6 +533,29 @@ namespace RISE
 		//! must never jump a waiting sync ticket.  See SubmitAgentRenderSync
 		//! for the fairness scheme this refusal protects.
 		//!
+		//! Model-B F2 slice S3 (pinned-vs-preview): `pinned` (default
+		//! false = today's PREVIEW semantics, unchanged) marks this
+		//! submission as a PINNED render.  With one render slot, the
+		//! DELIBERATE MINIMAL policy is REJECT, NOT QUEUE:
+		//!   * a PINNED job in flight (mAgentRenderPinned true for the
+		//!     current occupant) causes ANY new submission -- async or
+		//!     sync, pinned or not -- to be refused with a pinned-
+		//!     specific message ("a pinned render is in flight"), on top
+		//!     of (not instead of) the existing single-slot / Stop() /
+		//!     fair-queue refusal causes.
+		//!   * a PREVIEW job in flight keeps today's exact reject-if-busy
+		//!     behaviour -- this parameter does not change what happens
+		//!     when the occupant is a preview job.
+		//!   * once accepted, a pinned job runs to completion exactly
+		//!     like a preview job -- there is no "pinned jobs can't be
+		//!     cancelled" protection.  Pinned protects against SILENT
+		//!     SUPERSESSION by a later submission, NOT against an
+		//!     explicit CancelAgentRender_ / render_cancel or a Stop()/
+		//!     teardown drain -- both cancel a pinned render exactly as
+		//!     they cancel a preview one (CancelAgentRender_ and Stop()
+		//!     are unconditional; they do not consult mAgentRenderPinned
+		//!     at all).
+		//!
 		//! `fn` runs on the WORKER thread, not the caller's -- it must be
 		//! self-contained (no thread-affinity assumptions) and, like
 		//! RunPreviewRenderParked's `fn`, must not re-enter this controller
@@ -537,7 +572,8 @@ namespace RISE
 		bool SubmitAgentRenderAsync(
 			std::function<void()> fn,
 			const String&         clientLabel,
-			RenderJobId*          outJobId );
+			RenderJobId*          outJobId,
+			bool                  pinned = false );
 
 		//! Model-B F2 slice S2a: the SYNCHRONOUS convenience wrapper --
 		//! submits `fn` exactly like SubmitAgentRenderAsync, then blocks the
@@ -607,12 +643,23 @@ namespace RISE
 		//! queueing deadline should pass one explicitly.  Returns false
 		//! (fn NEVER invoked) on a fairness-wait timeout, or on the same
 		//! refusal causes as SubmitAgentRenderAsync (open transaction,
-		//! Stop() called) discovered once this caller reaches the front.
+		//! Stop() called) discovered once this caller reaches the front --
+		//! Model-B F2 slice S3 ADDS the pinned-in-flight refusal to that
+		//! set too: once this caller reaches the front of the fair queue,
+		//! it is refused exactly like SubmitAgentRenderAsync would be if a
+		//! PINNED job currently occupies the slot (see that method's
+		//! `pinned` doc) -- a sync caller gets no special exemption from
+		//! the pinned-supersession guard.
+		//!
+		//! `pinned` (default false, same semantics as
+		//! SubmitAgentRenderAsync's parameter) marks THIS submission as
+		//! pinned once it is accepted.
 		bool SubmitAgentRenderSync(
 			std::function<void()> fn,
 			const String&         clientLabel,
 			RenderJobId*          outJobId,
-			unsigned int          timeoutMs = 30000 );
+			unsigned int          timeoutMs = 30000,
+			bool                  pinned = false );
 
 		//! Model-B F2 slice S2a: status surface for a render job id.  For a
 		//! COORDINATOR (controller-minted, EVEN) id that matches the
@@ -1343,12 +1390,18 @@ namespace RISE
 		//! continuously from ticket-release through this claim, so ITS OWN
 		//! still-registered-until-a-moment-ago ticket must not self-refuse);
 		//! SubmitAgentRenderAsync passes false (the normal external-caller rule).
+		//! Model-B F2 slice S3: `pinned` marks this submission (once
+		//! accepted) as a PINNED render in the slot bookkeeping
+		//! (mAgentRenderPinned + mCurrentRenderJob.pinned) -- see
+		//! SubmitAgentRenderAsync's doc for the refusal policy this
+		//! enables (a pinned occupant refuses ANY new submission).
 		bool SubmitAgentRenderAsync_Locked(
 			std::unique_lock<std::mutex>& slotLk,
 			std::function<void()>         fn,
 			const String&                 clientLabel,
 			RenderJobId*                  outJobId,
-			bool                          bypassFairQueueCheck );
+			bool                          bypassFairQueueCheck,
+			bool                          pinned = false );
 
 		//! Fix-round-3 (churn UAF): GROUND-TRUTH predicate for "the agent-
 		//! render worker is not (and will never be, without a fresh
@@ -1817,6 +1870,20 @@ namespace RISE
 		// already carry the identical information to the surface that
 		// actually reads it (GetRenderJobStatus / CurrentRenderJob).
 		RenderJobId                 mAgentRenderJobId;     // the id assigned to the CURRENT slot occupant -- guarded by mAgentRenderSlotMutex
+		//! Model-B F2 slice S3: true iff the CURRENT slot occupant
+		//! (mAgentRenderJobId) was submitted PINNED.  Guarded by
+		//! mAgentRenderSlotMutex, same as the rest of the slot bookkeeping
+		//! -- SubmitAgentRenderAsync_Locked's single-slot check reads this
+		//! to decide whether a new submission gets the pinned-specific
+		//! refusal or the ordinary busy one.  A second, independent copy
+		//! of the SAME fact also lives in mCurrentRenderJob.pinned
+		//! (guarded by mJobStatusMutex) for the STATUS-READ side
+		//! (GetRenderJobStatus / CurrentRenderJob) -- mirrors the existing
+		//! split between mAgentRenderJobId and mCurrentRenderJob.id (one
+		//! lock guards "can a NEW submission proceed", the other guards
+		//! "what does a STATUS POLL see", and neither may block behind
+		//! the other -- see the three-lock note above).
+		bool                        mAgentRenderPinned;
 		//! Set by the worker just before it signals completion on
 		//! mAgentRenderDoneCV: true iff mAgentRenderFn threw.  Consumed
 		//! (and cleared) by SubmitAgentRenderSync, which rethrows via

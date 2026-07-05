@@ -172,6 +172,10 @@ namespace RISE
 				result.set( "cameraOverridden", JsonValue::MakeBool( rr.cameraOverridden ) );
 				result.set( "message", JsonValue::MakeString( rr.message ) );
 				result.set( "renderJobId", JsonValue::MakeNumber( static_cast<double>( rr.renderJobId ) ) );
+				// Model-B F2 slice S3 ADDITIVE wire fields -- see
+				// AgentRenderResult::samplesOverridden's doc.
+				result.set( "samplesOverridden", JsonValue::MakeBool( rr.samplesOverridden ) );
+				result.set( "effectiveSamples", JsonValue::MakeNumber( static_cast<double>( rr.effectiveSamples ) ) );
 				return result;
 			}
 
@@ -714,6 +718,21 @@ namespace RISE
 							if( !( sv >= -2147483648.0 && sv <= 2147483647.0 ) )
 								return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a finite, in-range number" );
 							samples = static_cast<int>( sv );
+							// Model-B F2 slice S3 (EffectiveRenderConfig): -1
+							// stays the "no override" sentinel (AgentRenderParams::
+							// samples doc); anything else is CLAMPED into
+							// [1,65536] rather than rejected (a caller's
+							// out-of-range guess still renders, just at the
+							// clamped count -- matches the width/height
+							// ParseClampedUInt convention just below).  65536 is
+							// a generous cap: no production RISE scene
+							// authors anywhere near that SPP, but the clamp
+							// exists to keep a hostile/typo'd huge value from
+							// ballooning a single render's cost unboundedly.
+							if( samples != -1 ) {
+								if( samples < 1 ) samples = 1;
+								else if( samples > 65536 ) samples = 65536;
+							}
 						}
 						else if( !sm->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a number" );
@@ -756,12 +775,26 @@ namespace RISE
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'async' must be a boolean" );
 					}
 
+					// Model-B F2 slice S3 ADDITIVE param: {"pinned":true} ->
+					// this render (async or sync) is PINNED -- see
+					// AgentRenderParams::pinned's doc for the single-slot
+					// supersession-refusal policy this enables.  Absent or
+					// false -> today's PREVIEW semantics, unchanged.
+					bool wantPinned = false;
+					if( const JsonValue* pv = params.find( "pinned" ) ) {
+						if( pv->isBool() ) wantPinned = pv->asBool();
+						else if( !pv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'pinned' must be a boolean" );
+					}
+					rparams.pinned = wantPinned;
+
 					if( wantAsync ) {
 						const AgentSession::AgentRenderAsyncResult ar = s->RenderAsync( rparams );
 						JsonValue result = JsonValue::MakeObject();
 						result.set( "renderJobId", JsonValue::MakeNumber( static_cast<double>( ar.renderJobId ) ) );
 						result.set( "status", JsonValue::MakeString( ar.accepted ? "submitted" : "refused" ) );
 						result.set( "message", JsonValue::MakeString( ar.message ) );
+						result.set( "pinned", JsonValue::MakeBool( ar.pinned ) );
 						return MakeSuccess( idValue, result );
 					}
 
@@ -805,6 +838,9 @@ namespace RISE
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "found",  JsonValue::MakeBool( st.found ) );
 					result.set( "active", JsonValue::MakeBool( st.active ) );
+					// Model-B F2 slice S3 ADDITIVE wire field -- see
+					// AgentSession::AgentRenderJobStatus::pinned's doc.
+					result.set( "pinned", JsonValue::MakeBool( st.pinned ) );
 					return MakeSuccess( idValue, result );
 				}
 
@@ -864,6 +900,9 @@ namespace RISE
 					result.set( "completed", JsonValue::MakeBool( completed ) );
 					result.set( "found",  JsonValue::MakeBool( st.found ) );
 					result.set( "active", JsonValue::MakeBool( st.active ) );
+					// Model-B F2 slice S3 ADDITIVE wire field -- see
+					// AgentSession::AgentRenderJobStatus::pinned's doc.
+					result.set( "pinned", JsonValue::MakeBool( st.pinned ) );
 					if( completed ) {
 						const AgentSession::AgentLastAsyncRenderResult ar = s->LastAsyncRenderResult( jobId );
 						if( ar.found ) result.set( "result", RenderResultJson( ar.result ) );

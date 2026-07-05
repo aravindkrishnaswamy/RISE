@@ -424,6 +424,244 @@ static void RunSingleSlotRejectionTest()
 }
 
 //////////////////////////////////////////////////////////////////////
+// (b2) Model-B F2 slice S3 RED-PROVE: pinned-vs-preview.  A PINNED render
+//     in flight refuses ANY new submission (async or sync, pinned or not)
+//     with the pinned-SPECIFIC message -- distinct from the ordinary
+//     single-slot-busy refusal RunSingleSlotRejectionTest above proves.
+//     Once the pinned job completes, the slot frees up normally.
+//     render_cancel / Stop() still cancel a pinned render (pinned guards
+//     against SUPERSESSION, not against an explicit cancel/teardown).
+//////////////////////////////////////////////////////////////////////
+static void RunPinnedRenderTests()
+{
+	std::printf( "=== AgentRenderAsyncTest: (b2) Model-B F2 slice S3 pinned-vs-preview ===\n" );
+
+	//------------------------------------------------------------------
+	// (1) RED-PROVE the rejection REASON: a pinned occupant refuses a
+	//     second ASYNC submission with the pinned-specific message (not
+	//     the generic busy one), and a second SYNC submission is ALSO
+	//     refused (does not queue behind it -- the sync fair-queue path
+	//     respects the pinned refusal too).  After the pinned job
+	//     completes, both async and sync submissions work again.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_pinned_reject.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the pinned-rejection scene to a temp file" );
+
+		SlowRasterizeJob* pJob = new SlowRasterizeJob();
+		pJob->SetSleepMs( 300 );
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "SlowRasterizeJob loads the native-v7 scene via the CST path (pinned-rejection test)" );
+
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		controller.Start( /*suppressInitialRender=*/true );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the slow Job (pinned-rejection test)" );
+		if( session )
+		{
+			session->AttachController( &controller );
+
+			AgentRenderParams pinnedParams;
+			pinnedParams.pinned = true;
+			const AgentSession::AgentRenderAsyncResult pinnedSubmit = session->RenderAsync( pinnedParams );
+			Check( pinnedSubmit.accepted, "the PINNED submission is accepted" );
+			Check( pinnedSubmit.pinned, "the accepted submission's result echoes pinned=true" );
+
+			// Give the worker a brief moment to pick it up.
+			std::this_thread::sleep_for( std::chrono::milliseconds( 30 ) );
+
+			const AgentSession::AgentRenderJobStatus midStatus = session->RenderStatus( pinnedSubmit.renderJobId );
+			Check( midStatus.found && midStatus.active, "the pinned job is observed active mid-flight" );
+			Check( midStatus.pinned, "RenderStatus echoes pinned=true for the in-flight pinned job" );
+
+			// A SECOND async submission (itself NOT pinned) is refused --
+			// RED-PROVE the REASON is pinned-specific, not the generic
+			// "busy" message a plain preview occupant would give (see
+			// RunSingleSlotRejectionTest's "a rejected submission carries
+			// a clear explanatory message" -- this asserts something
+			// STRONGER: which message).
+			AgentRenderParams plainParams;   // pinned=false
+			const AgentSession::AgentRenderAsyncResult secondAsync = session->RenderAsync( plainParams );
+			Check( !secondAsync.accepted, "a second ASYNC submission while a PINNED render is in flight is refused" );
+			Check( secondAsync.message.find( "pinned" ) != std::string::npos,
+			       "MONEY ASSERTION: the refusal message is PINNED-SPECIFIC (\"pinned render is in flight\"), distinct from the generic "
+			       "busy/transaction message RunSingleSlotRejectionTest observes against an ordinary preview occupant" );
+
+			// A second SYNC submission does NOT queue behind the pinned
+			// occupant -- it is refused too (bounded by a short
+			// timeoutMs so this doesn't wait out the pinned render's
+			// full 300ms if the fairness gate were ever to (incorrectly)
+			// let it wait).
+			bool syncRefused = false;
+			const bool syncCallReturned = RunWatchdogged(
+				"SubmitAgentRenderSync while a pinned render is in flight", 5000,
+				[&]() {
+					SceneEditController::RenderJobId dummyId = 0;
+					syncRefused = !controller.SubmitAgentRenderSync(
+						[](){}, String( "pinned_reject_sync_probe" ), &dummyId, /*timeoutMs=*/200 );
+				} );
+			Check( syncCallReturned, "the sync probe call itself returned (watchdog did not trip)" );
+			Check( syncRefused,
+			       "MONEY ASSERTION: a second SYNC submission while a PINNED render is in flight is ALSO refused (does NOT queue behind "
+			       "it and does NOT run once the pinned job completes -- the fair-queue ticket path respects the pinned refusal too)" );
+
+			// Let the pinned render finish naturally.
+			Check( session->RenderWait( pinnedSubmit.renderJobId, 5000 ), "the pinned render eventually completes" );
+
+			const AgentSession::AgentRenderJobStatus doneStatus = session->RenderStatus( pinnedSubmit.renderJobId );
+			Check( doneStatus.found && !doneStatus.active, "the pinned job is observed inactive once complete" );
+
+			// After completion, BOTH async and sync submissions work
+			// again -- the slot is not permanently poisoned by having
+			// hosted a pinned occupant.
+			const AgentSession::AgentRenderAsyncResult postAsync = session->RenderAsync( plainParams );
+			Check( postAsync.accepted, "a fresh async submission after the pinned job completed is accepted" );
+			Check( session->RenderWait( postAsync.renderJobId, 5000 ), "the post-pinned async submission completes" );
+
+			SceneEditController::RenderJobId postSyncId = 0;
+			const bool postSyncAccepted = controller.SubmitAgentRenderSync(
+				[](){}, String( "pinned_reject_sync_post" ), &postSyncId, /*timeoutMs=*/5000 );
+			Check( postSyncAccepted, "a fresh sync submission after the pinned job completed is accepted" );
+
+			session->AttachController( nullptr );
+		}
+
+		controller.Stop();
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// A heavy PT scene (mirrors RunStopCancelsInFlightAgentRenderTest's /
+	// RunCancelAsyncRenderRedProveTest's kHeavyCancelScene, declared later
+	// in this file -- duplicated inline here rather than forward-
+	// referencing it): a real cancel needs actual in-flight rasterizer
+	// work with progress-callback checkpoints to interrupt.
+	// SlowRasterizeJob's artificial sleep (used in sub-test (1) above) is
+	// NOT cancel-checked at all, so it is the wrong tool for (2)/(3)
+	// below -- cancelling during the sleep has no effect until the sleep
+	// elapses on its own, which would make these tests pass for the WRONG
+	// reason (or fail spuriously, as an earlier draft of this test did).
+	const std::string heavyScene =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\n\tsamples 4096\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+		"film\n{\n\twidth 96\n\theight 96\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+		"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+		"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+		"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+	//------------------------------------------------------------------
+	// (2) RED-PROVE render_cancel still cancels a PINNED render --
+	//     pinned protects against SILENT SUPERSESSION by a later
+	//     submission, NOT against an explicit cancel.  Mirrors
+	//     RunCancelAsyncRenderRedProveTest's GREEN side, with
+	//     pinned=true this time.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_pinned_cancel.RISEscene", heavyScene );
+		Check( !scenePath.empty(), "wrote the pinned-cancel heavy scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the heavy native-v7 scene via the CST path (pinned-cancel test)" );
+
+		SceneEditController* controller = new SceneEditController( *pJob, /*interactiveRasterizer*/0 );
+		controller->Start( /*suppressInitialRender=*/true );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the heavy Job (pinned-cancel test)" );
+		if( session )
+		{
+			session->AttachController( controller );
+
+			AgentRenderParams pinnedParams;
+			pinnedParams.pinned = true;
+			const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( pinnedParams );
+			Check( ar.accepted, "the pinned async render is accepted (pinned-cancel test)" );
+
+			std::this_thread::sleep_for( std::chrono::milliseconds( 40 ) );
+
+			const AgentSession::AgentRenderJobStatus preCancel = session->RenderStatus( ar.renderJobId );
+			Check( preCancel.found && preCancel.pinned, "the in-flight job is confirmed pinned before cancelling" );
+
+			session->CancelAsyncRender( ar.renderJobId );
+
+			const bool completedAfterCancel = RunWatchdogged(
+				"render_wait(150ms) after CancelAsyncRender on a PINNED render", 5000,
+				[&]() {
+					Check( session->RenderWait( ar.renderJobId, 150 ),
+					       "MONEY ASSERTION: CancelAsyncRender aborts a PINNED render promptly (well within the heavy scene's multi-second "
+					       "natural duration, matching RunCancelAsyncRenderRedProveTest's GREEN-side bound) -- pinned guards against "
+					       "supersession, NOT against an explicit cancel" );
+				} );
+			Check( completedAfterCancel, "the pinned-cancel wait+check itself returned (watchdog did not trip)" );
+
+			session->AttachController( nullptr );
+		}
+
+		delete controller;
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (3) RED-PROVE Stop() still tears down a PINNED render promptly --
+	//     mirrors RunStopCancelsInFlightAgentRenderTest, with pinned=true.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_pinned_stop.RISEscene", heavyScene );
+		Check( !scenePath.empty(), "wrote the pinned-stop heavy scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the heavy native-v7 scene via the CST path (pinned-stop test)" );
+
+		SceneEditController* controller = new SceneEditController( *pJob, /*interactiveRasterizer*/0 );
+		controller->Start( /*suppressInitialRender=*/true );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the heavy Job (pinned-stop test)" );
+		if( session )
+		{
+			session->AttachController( controller );
+
+			AgentRenderParams pinnedParams;
+			pinnedParams.pinned = true;
+			const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( pinnedParams );
+			Check( ar.accepted, "the pinned async render is accepted (pinned-stop test)" );
+
+			std::this_thread::sleep_for( std::chrono::milliseconds( 40 ) );
+
+			const auto t0 = std::chrono::steady_clock::now();
+			const bool stoppedPromptly = RunWatchdogged(
+				"Stop() during a PINNED render", 5000,
+				[&]() { controller->Stop(); } );
+			const auto t1 = std::chrono::steady_clock::now();
+			const long long stopMs = std::chrono::duration_cast<std::chrono::milliseconds>( t1 - t0 ).count();
+			Check( stoppedPromptly, "Stop() during a PINNED render returns within the watchdog bound" );
+			// Same discriminating bound as RunStopCancelsInFlightAgentRenderTest
+			// (well under this scene's multi-second natural duration, well
+			// above the fixed behaviour's measured ~tens of ms).
+			Check( stopMs < 800,
+			       "MONEY ASSERTION: Stop() during an in-flight PINNED render tears down well under the heavy scene's natural duration -- "
+			       "pinned protects against supersession by a NEW submission, not against teardown" );
+
+			session->AttachController( nullptr );
+		}
+
+		delete controller;
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	std::printf( "=== (b2) pinned-vs-preview: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
 // (c) RED-PROVE the race closure: a REAL concurrent interactive render
 //     thread + a REAL agent Rasterize() call must never observe more
 //     than 1 thread inside the shared "render critical section" at once.
@@ -2405,6 +2643,7 @@ int main()
 {
 	RunAsyncReturnsQuicklyTest();
 	RunSingleSlotRejectionTest();
+	RunPinnedRenderTests();
 	RunConcurrencyRaceClosureTest();
 	RunSyncStillWorksTest();
 	RunStatusWaitOddIdRejectionTest();

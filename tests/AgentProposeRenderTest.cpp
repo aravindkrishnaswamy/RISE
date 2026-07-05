@@ -44,6 +44,7 @@
 #include "../src/Library/Interfaces/ICameraManager.h"
 #include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Interfaces/IFilm.h"
+#include "../src/Library/Interfaces/IRasterizer.h"   // Model-B F2 slice S3: SetSampleCountOverride/GetSampleCountOverride red-prove
 #include "../src/Library/SceneEditor/CameraIntrospection.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"   // Model-B F2 slice S1: RenderJobId coordinator bookkeeping
 
@@ -129,6 +130,7 @@ static void RunRestoreOnThrowTest();           // P1-A red-prove -- defined belo
 static void RunMalformedCameraOverrideTests(); // P1-B -- defined below, called from main()
 static void RunRenderJobIdTests();             // Model-B F2 slice S1 -- defined below, called from main()
 static void RunPreS2HardeningTests();          // Model-B F2 slice S1 pre-S2 hardening -- defined below, called from main()
+static void RunSampleCountOverrideTests();     // Model-B F2 slice S3 (EffectiveRenderConfig) -- defined below, called from main()
 
 static void RunCoreTests()
 {
@@ -1261,6 +1263,224 @@ static void RunPreS2HardeningTests()
 	std::printf( "=== pre-S2 hardening: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Model-B F2 slice S3 (EffectiveRenderConfig): AgentRenderParams::samples
+// is no longer a documented no-op -- it is HONORED via
+// IRasterizer::SetSampleCountOverride/GetSampleCountOverride (implemented
+// on PixelBasedRasterizerHelper, covering the pixel-based rasterizer
+// family: PT, spectral PT, BDPT, VCM) with a capture/apply/restore window
+// around Rasterize() that NEVER touches the retained CST Document.  kScene
+// authors `pathtracing_pel_rasterizer { samples 8 ... }`, so the pre-
+// override scene-authored count is 8 throughout.
+//////////////////////////////////////////////////////////////////////
+static void RunSampleCountOverrideTests()
+{
+	std::printf( "=== AgentProposeRenderTest: Model-B F2 slice S3 sample-count override ===\n" );
+
+	//------------------------------------------------------------------
+	// (a) RED-PROVE byte-identity: ReadDocument() before/after a
+	//     samples-overridden render is IDENTICAL -- the whole point of
+	//     the design is that this is a LIVE rasterizer-state mutation,
+	//     never a CST edit.  Without the design's non-mutating contract
+	//     (the old slice-0b draft that routed samplesOverride through
+	//     ProposePatch), the Document would gain a rewritten `samples`
+	//     line here.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_samples_byteidentity.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the byte-identity scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (samples byte-identity test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (samples byte-identity test)" );
+		if( session )
+		{
+			const std::string beforeDoc = session->ReadDocument();
+			Check( beforeDoc.find( "samples 8" ) != std::string::npos, "the pre-render Document authors 'samples 8'" );
+
+			AgentRenderParams p;
+			p.samples = 64;   // a big departure from the authored 8 -- if this leaked into the CST, the doc would visibly change
+			const AgentRenderResult r = session->Render( p );
+			Check( r.ok, "the samples-overridden render succeeds" );
+			Check( r.samplesOverridden, "PT (a pixel-based rasterizer) accepts the sample-count override" );
+			Check( r.effectiveSamples == 64, "effectiveSamples echoes the requested override (64)" );
+
+			const std::string afterDoc = session->ReadDocument();
+			Check( afterDoc == beforeDoc,
+			       "MONEY ASSERTION (byte-identity): ReadDocument() is BYTE-IDENTICAL before and after a samples-overridden render -- "
+			       "the override never touches the retained CST Document" );
+			Check( afterDoc.find( "samples 8" ) != std::string::npos, "the Document STILL authors 'samples 8' after a samples=64 override render" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (b) RED-PROVE restore: after an overridden render, the rasterizer's
+	//     OWN sample count reads back to the scene-authored 8 (not left
+	//     stuck at the override) -- both via GetSampleCountOverride()
+	//     directly and via a SECOND, un-overridden render's
+	//     effectiveSamples echo.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_samples_restore.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the restore scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (samples restore test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (samples restore test)" );
+		if( session )
+		{
+			IRasterizer* rast = pJob->GetRasterizer();
+			Check( rast != nullptr, "the scene has an active rasterizer to query" );
+			if( rast ) {
+				Check( rast->GetSampleCountOverride() == 8, "GetSampleCountOverride() reads the scene-authored count (8) before any override" );
+			}
+
+			AgentRenderParams p1;
+			p1.samples = 1;   // a big departure DOWN from 8, so a failed restore is easy to observe
+			const AgentRenderResult r1 = session->Render( p1 );
+			Check( r1.ok && r1.samplesOverridden, "the samples=1 override render succeeds and is accepted" );
+			Check( r1.effectiveSamples == 1, "effectiveSamples echoes 1 for the first render" );
+
+			if( rast ) {
+				Check( rast->GetSampleCountOverride() == 8,
+				       "RESTORE MONEY ASSERTION: immediately after the samples=1 override render, GetSampleCountOverride() reads back the "
+				       "scene-authored 8 -- NOT left stuck at the override value" );
+			}
+
+			// A SECOND render with NO override requested renders at the
+			// restored (scene-authored) count -- corroborating evidence
+			// via the result's own echo, independent of the direct
+			// rasterizer query above.
+			AgentRenderParams p2;   // samples left at -1 (no override)
+			const AgentRenderResult r2 = session->Render( p2 );
+			Check( r2.ok, "the follow-up un-overridden render succeeds" );
+			Check( !r2.samplesOverridden, "the follow-up render did not request an override" );
+			Check( r2.effectiveSamples == 8, "the follow-up render's effectiveSamples echoes the RESTORED scene-authored count (8), not the prior override (1)" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (c) RED-PROVE the existing-kernel in-place mutation path: kScene's
+	//     rasterizer already authors a kernel (samples 8), so overriding
+	//     to another value > 1 must MUTATE that kernel's count in place
+	//     (SetNumSamples) rather than silently doing nothing -- observed
+	//     via the same GetSampleCountOverride() readback.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_samples_inplace.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the in-place-mutation scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (samples in-place test)" );
+
+		IRasterizer* rast = pJob->GetRasterizer();
+		Check( rast != nullptr, "the scene has an active rasterizer (samples in-place test)" );
+		if( rast ) {
+			Check( rast->SetSampleCountOverride( 32 ), "SetSampleCountOverride(32) is accepted against the authored 8-sample kernel" );
+			Check( rast->GetSampleCountOverride() == 32, "the existing kernel's count is MUTATED IN PLACE to 32" );
+			Check( rast->SetSampleCountOverride( 8 ), "restoring back to 8 is accepted" );
+			Check( rast->GetSampleCountOverride() == 8, "the kernel's count is restored to 8" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (d) RED-PROVE the unsupported-rasterizer honesty contract: MLT
+	//     (mlt_rasterizer) does NOT derive from PixelBasedRasterizerHelper
+	//     and therefore inherits IRasterizer's safe default -- ALWAYS
+	//     false/-1, never silently "succeeding" at nothing.  Queried
+	//     directly (no render needed -- MLT is comparatively expensive
+	//     and this is purely an interface-contract check).
+	//------------------------------------------------------------------
+	{
+		const std::string mltScene =
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			"mlt_rasterizer\n{\n\toidn_denoise false\n}\n\n"
+			"film\n{\n\twidth 8\n\theight 8\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+			"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+			"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+			"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+			"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+			"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+			"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+		const std::string scenePath = WriteTemp( "rise_agent_samples_unsupported.RISEscene", mltScene );
+		Check( !scenePath.empty(), "wrote the MLT (unsupported-rasterizer) scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the MLT native-v7 scene via the CST path" );
+
+		IRasterizer* rast = pJob->GetRasterizer();
+		Check( rast != nullptr, "the MLT scene has an active rasterizer" );
+		if( rast ) {
+			Check( rast->GetSampleCountOverride() == -1,
+			       "HONESTY MONEY ASSERTION: MLT (not a PixelBasedRasterizerHelper subclass) reports GetSampleCountOverride()==-1 -- unsupported, never guessed" );
+			Check( !rast->SetSampleCountOverride( 16 ),
+			       "HONESTY MONEY ASSERTION: MLT's SetSampleCountOverride(16) returns false -- honestly unsupported, no silent no-op success" );
+			Check( rast->GetSampleCountOverride() == -1, "MLT's state is unchanged by the refused override attempt" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (e) RED-PROVE throw-path restore: ThrowingRasterizeJob + a samples
+	//     override -- the rasterizer's sample count is restored via the
+	//     SAME SampleCountRestoreGuard RAII pattern as the film/camera
+	//     overrides, even though mJob->Rasterize() throws mid-render.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_samples_throwrestore.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the samples throw-restore scene to a temp file" );
+
+		ThrowingRasterizeJob* pJob = new ThrowingRasterizeJob();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "ThrowingRasterizeJob loads the native-v7 scene via the CST path (samples throw-restore test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the throwing Job (samples throw-restore test)" );
+		if( session )
+		{
+			IRasterizer* rast = pJob->GetRasterizer();
+			Check( rast != nullptr, "the throwing Job has an active rasterizer" );
+
+			AgentRenderParams p;
+			p.samples = 40;   // a big departure from the authored 8
+
+			const AgentRenderResult thrownResult = session->Render( p );
+			Check( !thrownResult.ok, "the samples-overridden render on a throwing Rasterize() reports ok=false" );
+			Check( thrownResult.message.find( "ThrowingRasterizeJob" ) != std::string::npos,
+			       "the failure message names the thrown exception's text (samples throw-restore test)" );
+
+			if( rast ) {
+				Check( rast->GetSampleCountOverride() == 8,
+				       "THROW-PATH RESTORE MONEY ASSERTION: despite the exception, the rasterizer's sample count is restored to the "
+				       "scene-authored 8 -- the SampleCountRestoreGuard's destructor ran during unwinding, exactly like the film/camera guard" );
+			}
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	std::printf( "=== sample-count override: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunCoreTests();
@@ -1269,6 +1489,7 @@ int main()
 	RunMalformedCameraOverrideTests();
 	RunRenderJobIdTests();
 	RunPreS2HardeningTests();
+	RunSampleCountOverrideTests();
 
 	std::printf( "=== AgentProposeRenderTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

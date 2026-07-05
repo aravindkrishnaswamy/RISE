@@ -171,6 +171,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mAgentRenderPending( false )
 , mAgentRenderFn()
 , mAgentRenderJobId( kInvalidRenderJobId )
+, mAgentRenderPinned( false )
 , mAgentRenderException()
 , mAgentRenderNextTicket( 0 )
 , mAgentRenderServingTicket( 0 )
@@ -3666,7 +3667,8 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 	std::function<void()>         fn,
 	const String&                 clientLabel,
 	RenderJobId*                  outJobId,
-	bool                          bypassFairQueueCheck )
+	bool                          bypassFairQueueCheck,
+	bool                          pinned )
 {
 	(void)slotLk;   // proves the caller holds the lock; not touched here
 
@@ -3688,6 +3690,19 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 
 	if( mAgentRenderPending )
 	{
+		// Model-B F2 slice S3: a PINNED occupant refuses EVERY new
+		// submission (async or sync, pinned or not) with a DEDICATED log
+		// line -- the single-slot message just below still covers the
+		// ordinary preview-occupant case.  Checked before the generic
+		// single-slot refusal (which would otherwise fire first and mask
+		// which reason applies) but AFTER mAgentRenderPending is
+		// confirmed true (mAgentRenderPinned is only meaningful while a
+		// job actually occupies the slot).
+		if( mAgentRenderPinned )
+		{
+			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent render submission refused -- a PINNED render is in flight (never silently superseded; retry after it completes)." );
+			return false;
+		}
 		// Single-slot: a submission is already queued or running.
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent render submission refused -- another agent render is already queued or running (single-slot policy)." );
 		return false;
@@ -3744,6 +3759,7 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 		mCurrentRenderJob.renderClass = RenderClass::AgentPreview;
 		mCurrentRenderJob.active      = true;
 		mCurrentRenderJob.clientLabel = clientLabel;   // Fix-round-1 P3-c: surface who submitted this job
+		mCurrentRenderJob.pinned      = pinned;        // Model-B F2 slice S3
 	}
 	{
 		// Model-B F2 slice S2a: claim the interactive-loop gate for
@@ -3760,6 +3776,7 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 	mAgentRenderJobId       = jobId;
 	mAgentRenderException   = nullptr;
 	mAgentRenderPending     = true;
+	mAgentRenderPinned      = pinned;   // Model-B F2 slice S3 -- guarded by mAgentRenderSlotMutex, same as the rest of the slot bookkeeping
 
 	if( outJobId ) *outJobId = jobId;
 	return true;
@@ -3772,7 +3789,8 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 bool SceneEditController::SubmitAgentRenderAsync(
 	std::function<void()> fn,
 	const String&         clientLabel,
-	RenderJobId*          outJobId )
+	RenderJobId*          outJobId,
+	bool                  pinned )
 {
 	if( mTxnOpen )
 	{
@@ -3784,7 +3802,7 @@ bool SceneEditController::SubmitAgentRenderAsync(
 	{
 		std::unique_lock<std::mutex> slotLk( mAgentRenderSlotMutex );
 		accepted = SubmitAgentRenderAsync_Locked( slotLk, std::move( fn ), clientLabel, outJobId,
-			/*bypassFairQueueCheck=*/false );
+			/*bypassFairQueueCheck=*/false, pinned );
 	}
 	if( !accepted ) return false;
 
@@ -3802,7 +3820,8 @@ bool SceneEditController::SubmitAgentRenderSync(
 	std::function<void()> fn,
 	const String&         clientLabel,
 	RenderJobId*          outJobId,
-	unsigned int          timeoutMs )
+	unsigned int          timeoutMs,
+	bool                  pinned )
 {
 	// Fix-round-1 P1-2: claim a FIFO ticket before attempting to submit,
 	// so a burst of concurrent async submitters cannot systematically
@@ -3888,7 +3907,7 @@ bool SceneEditController::SubmitAgentRenderSync(
 		if( !stoppedBeforeOurTurn )
 		{
 			accepted = SubmitAgentRenderAsync_Locked( slotLk, std::move( fn ), clientLabel, &jobId,
-				/*bypassFairQueueCheck=*/true );
+				/*bypassFairQueueCheck=*/true, pinned );
 		}
 	}   // slotLk released here -- AFTER both the ticket release and the slot claim
 	mAgentRenderDoneCV.notify_all();   // release the NEXT queued waiter (mirrors TicketGuard::Release's own notify)
