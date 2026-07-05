@@ -3435,14 +3435,23 @@ bool SceneEditController::RunPreviewRenderParked(
 	// RAII: flips `active` false on EVERY exit from here down, including
 	// an exception unwinding out of fn() -- takes mJobStatusMutex itself
 	// (briefly) rather than relying on mMutex, which `lk` holds for the
-	// whole render.
+	// whole render.  `lk` holding mMutex for this whole scope already
+	// makes this record safe from RenderLoop's mint (RenderLoop's own
+	// mint site briefly takes mMutex too, so it cannot interleave) --
+	// but fix-round-3 (churn UAF) makes EVERY clear site
+	// ownership-checked on principle, so this guard can never clobber a
+	// later job's record even if that invariant is ever weakened.
 	struct ActiveFlipGuard {
 		SceneEditController& self;
+		RenderJobId          jobId;
 		~ActiveFlipGuard() {
 			std::lock_guard<std::mutex> statusLk( self.mJobStatusMutex );
-			self.mCurrentRenderJob.active = false;
+			if( self.mCurrentRenderJob.id == jobId )
+			{
+				self.mCurrentRenderJob.active = false;
+			}
 		}
-	} activeFlipGuard{ *this };
+	} activeFlipGuard{ *this, jobId };
 
 	if( fn ) fn();
 
@@ -3480,6 +3489,7 @@ void SceneEditController::AgentRenderWorkerLoop_()
 	for(;;)
 	{
 		std::function<void()> fn;
+		RenderJobId thisOccupantJobId = kInvalidRenderJobId;
 		{
 			std::unique_lock<std::mutex> slotLk( mAgentRenderSlotMutex );
 			mAgentRenderCV.wait( slotLk, [&]{
@@ -3499,6 +3509,14 @@ void SceneEditController::AgentRenderWorkerLoop_()
 			// only once the render actually finishes, further down.
 			fn = std::move( mAgentRenderFn );
 			mAgentRenderFn = nullptr;
+			// Fix-round-3 (churn UAF): snapshot the id THIS occupant was
+			// minted with -- mAgentRenderJobId is stable from here until
+			// this loop iteration clears mAgentRenderPending (no new
+			// submission can land while the slot is occupied), so this
+			// read outside slotLk is safe, same as the mAgentRenderFn move
+			// just above.  Used below to ownership-check the completion
+			// write instead of clearing unconditionally.
+			thisOccupantJobId = mAgentRenderJobId;
 		}   // slotLk released here -- a concurrent SubmitAgentRenderAsync's
 		    // occupancy check is never blocked by the render that follows.
 
@@ -3537,14 +3555,29 @@ void SceneEditController::AgentRenderWorkerLoop_()
 			// release with proper ordering.
 			struct ActiveFlipGuard {
 				SceneEditController& self;
+				RenderJobId          jobId;
 				~ActiveFlipGuard() {
 					{
+						// Fix-round-3 (churn UAF): ownership-checked clear --
+						// see RenderLoop's completion site for the full
+						// mechanism this guards against.  Here the
+						// vulnerability runs the OTHER direction: this
+						// worker's mMutex hold (via CancelAndParkRender_,
+						// spanning the whole render) already excludes any
+						// INTERLEAVED interactive pass, so in practice this
+						// guard's own id always still matches -- but a
+						// caller must never assume that from the write
+						// site alone, so every clear site uses the same
+						// compare-then-clear on principle.
 						std::lock_guard<std::mutex> statusLk( self.mJobStatusMutex );
-						self.mCurrentRenderJob.active = false;
+						if( self.mCurrentRenderJob.id == jobId )
+						{
+							self.mCurrentRenderJob.active = false;
+						}
 					}
 					self.mAgentRenderBlocksInteractive.store( false, std::memory_order_release );
 				}
-			} activeFlipGuard{ *this };
+			} activeFlipGuard{ *this, thisOccupantJobId };
 
 			try {
 				if( fn ) fn();
@@ -3876,6 +3909,14 @@ SceneEditController::RenderJobLookup SceneEditController::GetRenderJobStatus( Re
 	return out;
 }
 
+// Fix-round-3 (churn UAF): see the header doc for the full contract.  Brief
+// mAgentRenderSlotMutex hold, mirroring every other slot-bookkeeping read.
+bool SceneEditController::AgentRenderSlotIdleFor_( RenderJobId id ) const
+{
+	std::lock_guard<std::mutex> slotLk( mAgentRenderSlotMutex );
+	return !( mAgentRenderPending && mAgentRenderJobId == id );
+}
+
 bool SceneEditController::WaitForRenderJob( RenderJobId id, unsigned int timeoutMs ) const
 {
 	if( id == kInvalidRenderJobId ) return false;
@@ -3890,14 +3931,27 @@ bool SceneEditController::WaitForRenderJob( RenderJobId id, unsigned int timeout
 	// the SEPARATE mAgentRenderSlotMutex.  Poll mCurrentRenderJob under
 	// mJobStatusMutex in a short loop, sleeping on mAgentRenderSlotMutex's
 	// CV between checks.
+	//
+	// Fix-round-3 (churn UAF): the status record (`active`) is NOT trusted
+	// alone anymore.  Fix-round-3's OTHER half (ownership-checked clears at
+	// every write site) closes the clobber at the source, but this read
+	// side adds a SECOND, independent guard: even if some future write site
+	// regresses the ownership check, a caller draining an AGENT job can
+	// never observe a false-complete, because completion here additionally
+	// requires the agent slot to be idle for `id` -- the ONE piece of state
+	// the worker itself mutates strictly AFTER its closure has returned
+	// (see AgentRenderSlotIdleFor_'s doc).  For an INTERACTIVE-class id (or
+	// any id the agent slot was never tracking), the slot-idle check is
+	// vacuously true, so this adds no new waiting for that case.
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( timeoutMs );
 	for(;;)
 	{
+		bool statusSaysDone = false;
 		{
 			std::lock_guard<std::mutex> lk( mJobStatusMutex );
-			if( mCurrentRenderJob.id != id )   return true;    // superseded by a newer job -- this one is done
-			if( !mCurrentRenderJob.active )    return true;    // already complete
+			statusSaysDone = ( mCurrentRenderJob.id != id ) || !mCurrentRenderJob.active;
 		}
+		if( statusSaysDone && AgentRenderSlotIdleFor_( id ) ) return true;
 		if( timeoutMs == 0 ) return false;              // poll-once contract: no wait
 		const auto now = std::chrono::steady_clock::now();
 		if( now >= deadline ) return false;
@@ -4489,6 +4543,10 @@ void SceneEditController::RenderLoop()
 		// the lock blocks the render thread from beginning a new
 		// pass while the main thread is partway through a mutation
 		// it queued before the previous pass's notify woke us.
+		// Fix-round-3 (churn UAF): remember the id THIS PASS mints so the
+		// completion write below can be OWNERSHIP-CHECKED -- see that
+		// site's comment for the clobber this closes.
+		RenderJobId thisPassJobId = kInvalidRenderJobId;
 		{
 			std::lock_guard<std::mutex> lk( mMutex );
 			mCancelProgress.Reset();
@@ -4509,6 +4567,7 @@ void SceneEditController::RenderLoop()
 				mCurrentRenderJob.renderClass = RenderClass::Interactive;
 				mCurrentRenderJob.active      = true;
 				mCurrentRenderJob.clientLabel = String();   // Fix-round-1 P3-c: an Interactive-class job has no client label -- clear any stale value left by a prior AgentPreview job record
+				thisPassJobId = mCurrentRenderJob.id;
 			}
 		}
 
@@ -4523,8 +4582,26 @@ void SceneEditController::RenderLoop()
 			std::lock_guard<std::mutex> lk( mMutex );
 			mRendering.store( false, std::memory_order_release );
 			{
+				// Fix-round-3 (churn UAF): OWNERSHIP-CHECKED clear.  Before
+				// this fix, this write was unconditional -- if an agent
+				// render was submitted (SubmitAgentRenderAsync_Locked's
+				// mint) WHILE this interactive pass was mid-flight (running
+				// DoOneRenderPass ABOVE with mMutex released -- the mint has
+				// no dependency on mRendering/mMutex), the agent's job
+				// record would already have overwritten mCurrentRenderJob
+				// by the time we get here, and this unconditional
+				// `active = false` would clobber the AGENT's still-running
+				// job's record -- exactly the mechanism that let
+				// DrainAsyncRender_'s WaitForRenderJob observe a
+				// false-complete for a job whose worker closure was still
+				// executing against a session about to be freed (the
+				// documented churn UAF).  Only clear if the record still
+				// names THIS PASS's id.
 				std::lock_guard<std::mutex> statusLk( mJobStatusMutex );
-				mCurrentRenderJob.active = false;   // Model-B F2 slice S1/S2a: nested mJobStatusMutex, same site as the store above
+				if( mCurrentRenderJob.id == thisPassJobId )
+				{
+					mCurrentRenderJob.active = false;   // Model-B F2 slice S1/S2a: nested mJobStatusMutex, same site as the store above
+				}
 			}
 		}
 		mCV.notify_all();

@@ -1575,6 +1575,236 @@ static void RunProgressRestoredOnThrowTest()
 	std::printf( "=== (o) progress restored on throw: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Fix-round-3 (churn UAF) test infra -----------------------------------
+//
+// A controller whose DoOneRenderPass can be held open on a manually-
+// controlled gate, so a test can deterministically land an agent-render
+// SUBMIT while an interactive pass is provably mid-flight (past its mint,
+// not yet at its completion write) -- the exact seam the clobber needs.
+//////////////////////////////////////////////////////////////////////
+class SeamController : public SceneEditController
+{
+public:
+	explicit SeamController( IJobPriv& job ) : SceneEditController( job, /*interactiveRasterizer*/0 ) {}
+
+	// Called by the interactive pass; blocks until the test releases it.
+	std::atomic<bool> passEntered{ false };
+	std::atomic<bool> releaseGate{ false };
+
+protected:
+	// Deliberately does NOT consult IsCancelRequested() -- the test needs
+	// this pass to stay genuinely mid-flight (mRendering still true) until
+	// it EXPLICITLY releases the gate, mirroring a real render that has
+	// not yet reached a cancellation checkpoint.  A production rasterizer
+	// pass DOES check cancellation, but this seam's whole point is
+	// simulating the pre-checkpoint window where that hasn't happened yet.
+	void DoOneRenderPass() override
+	{
+		passEntered.store( true, std::memory_order_release );
+		while( !releaseGate.load( std::memory_order_acquire ) )
+		{
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+};
+
+//////////////////////////////////////////////////////////////////////
+// (p) Fix-round-3 DETERMINISTIC unit-shape RED-PROVE: mint an agent job
+//     WHILE an interactive pass is provably mid-flight (past its own
+//     mint, blocked inside DoOneRenderPass on a test-controlled gate),
+//     then let the interactive pass complete, and assert the AGENT
+//     record's `active` is NOT clobbered false by the interactive
+//     pass's completion write -- and that WaitForRenderJob does not
+//     false-complete for the still-running agent job either.
+//////////////////////////////////////////////////////////////////////
+static void RunInterleavedMintNoClobberTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (p) fix-round-3 RED-PROVE: interactive completion does not clobber an interleaved agent job ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_async_clobber.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the clobber scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (clobber test)" );
+
+	SeamController controller( *pJob );
+	controller.Start();   // NOT suppressed -- we need a genuine live interactive pass
+
+	// Wait for the interactive loop's initial pass to be mid-flight (past
+	// its mint, blocked on our gate).
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !controller.passEntered.load( std::memory_order_acquire ) &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( controller.passEntered.load( std::memory_order_acquire ), "the interactive pass is genuinely mid-flight before we mint the agent job" );
+
+	// The interactive pass's mint already ran (it happens BEFORE
+	// DoOneRenderPass is called) -- confirm the current record is
+	// Interactive and active, then submit an agent render.  Because the
+	// interactive pass is parked on our gate (not yet at ITS completion
+	// write), a submission now genuinely interleaves: the agent mint runs
+	// WHILE the interactive pass is still "in flight" from the record's
+	// perspective, and the interactive pass's completion write will race
+	// the agent's own record.
+	const SceneEditController::RenderJobStatus beforeSubmit = controller.CurrentRenderJob();
+	Check( beforeSubmit.active && beforeSubmit.renderClass == SceneEditController::RenderClass::Interactive,
+	       "the interactive pass's own record is active before we submit the agent job" );
+
+	// The agent closure is deliberately SLOW (well past the interactive
+	// pass's own completion-write window below) -- otherwise, once the
+	// gate releases and the interactive pass's own completion write
+	// races the agent's, the agent's OWN closure could also finish and
+	// legitimately clear `active` in the same window, masking a clobber
+	// bug behind a real completion (both would read the same false
+	// result for different reasons).  Slowing the closure isolates the
+	// ILLEGITIMATE clear (interactive pass, wrong id) from the
+	// legitimate one (agent's own ActiveFlipGuard, right id).
+	std::atomic<bool> agentRan{ false };
+	SceneEditController::RenderJobId agentJobId = SceneEditController::kInvalidRenderJobId;
+	const bool accepted = controller.SubmitAgentRenderAsync(
+		[&]() {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 500 ) );
+			agentRan.store( true, std::memory_order_release );
+		},
+		String( "clobber_probe" ), &agentJobId );
+	Check( accepted, "the agent submission is accepted" );
+	Check( agentJobId != SceneEditController::kInvalidRenderJobId, "the agent submission gets a real id" );
+
+	// Give the worker a moment to actually mint+claim (it does not need to
+	// RUN the closure yet -- the worker's own CancelAndParkRender_ is
+	// waiting on mRendering, which is still true because our gate is
+	// still closed).  Poll GetRenderJobStatus for the agent's own id
+	// becoming the CURRENT record.
+	bool sawAgentRecord = false;
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( std::chrono::steady_clock::now() < deadline ) {
+			const SceneEditController::RenderJobLookup lk = controller.GetRenderJobStatus( agentJobId );
+			if( lk.found ) { sawAgentRecord = true; break; }
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( sawAgentRecord, "the agent job's record becomes the CURRENT record (mint interleaved while the interactive pass is still mid-flight)" );
+
+	// NOW release the interactive pass's gate -- its completion write
+	// races the agent job, which is still sitting in the slot (the
+	// worker's CancelAndParkRender_ has not yet observed mRendering==false).
+	controller.releaseGate.store( true, std::memory_order_release );
+
+	// Give the interactive pass's completion write time to land.
+	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+
+	const SceneEditController::RenderJobLookup afterInteractiveCompletes = controller.GetRenderJobStatus( agentJobId );
+	Check( afterInteractiveCompletes.found, "the agent job's record is still found after the interactive pass completes" );
+	Check( afterInteractiveCompletes.status.active,
+	       "FIX-ROUND-3 MONEY ASSERTION: the agent job's record is STILL ACTIVE after the interleaved interactive pass's completion write -- "
+	       "the ownership-checked clear means the interactive pass's completion (a DIFFERENT job id) does not clobber this record. "
+	       "Pre-fix, the interactive pass's unconditional `mCurrentRenderJob.active = false` would have cleared this exact record." );
+
+	// WaitForRenderJob must likewise NOT false-complete for the agent job
+	// while the agent's own closure has not yet run (the worker is still
+	// legitimately blocked behind the -- now released -- interactive
+	// pass's CancelAndParkRender_ wait; the closure runs trivially fast
+	// once unblocked).
+	Check( controller.WaitForRenderJob( agentJobId, 5000 ), "WaitForRenderJob eventually observes the agent job's REAL completion" );
+	Check( agentRan.load( std::memory_order_acquire ), "the agent closure actually ran by the time WaitForRenderJob returned true" );
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (p) interleaved mint no-clobber: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (q) Fix-round-3 CHURN RED-PROVE / permanent regression test: the
+//     reviewer's repro -- churn N throwaway AgentSessions (mint,
+//     RenderAsync, destroy immediately) while a CONCURRENT interactive
+//     thread keeps kicking real render passes via OnTimeScrub.  This is
+//     the pattern that crashed ~35-40% of the time pre-fix (measured
+//     10/10 process-level crashes -- SIGSEGV -- on this machine's
+//     churn driver against unfixed HEAD; see the task's repro notes).
+//     Post-fix this must complete cleanly every time.  Watchdogged: a
+//     regression here is either a crash (the harness process dies,
+//     which run_all_tests.sh observes as a nonzero exit / missing
+//     PASS line) or -- if it merely hangs instead -- the watchdog below
+//     reports a loud, specific failure.
+//////////////////////////////////////////////////////////////////////
+static void RunChurnConcurrentInteractiveTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (q) fix-round-3 RED-PROVE: session churn under a concurrent interactive stream (no UAF) ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_async_churn.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the churn scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (churn test)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start();   // genuinely live interactive loop -- REQUIRED to hit the clobber window
+
+	std::atomic<bool> stopScrub{ false };
+	std::thread scrubThread( [&]() {
+		double t = 0.0;
+		while( !stopScrub.load( std::memory_order_acquire ) )
+		{
+			controller.OnTimeScrub( t );
+			t += 0.01;
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	} );
+
+	const int kIterations = 150;
+	const bool completedInTime = RunWatchdogged(
+		"churn loop (150 session mint/RenderAsync/destroy cycles under a concurrent interactive stream)", 60000,
+		[&]() {
+			for( int i = 0; i < kIterations; ++i )
+			{
+				std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+				session->AttachController( &controller );
+				AgentRenderParams p;
+				session->RenderAsync( p );
+				// session destroyed HERE, immediately -- ~AgentSession must
+				// drain genuinely (not just observe a clobbered `active`)
+				// before this scope exits, or the worker can go on to
+				// dereference this freed session.
+			}
+		} );
+	Check( completedInTime, "the churn loop completes within the watchdog bound (no hang)" );
+
+	stopScrub.store( true, std::memory_order_release );
+	scrubThread.join();
+
+	// Reaching here at all (no crash) is the primary assertion for this
+	// test -- a UAF crash kills the process, which run_all_tests.sh
+	// observes directly. Also confirm the controller is still in a sane
+	// state (no poisoned slot) by running one more clean submission
+	// BEFORE Stop() (a post-Stop() submission is honestly refused by
+	// design -- see RunPostStopRefusalTest -- so that check belongs here,
+	// not after teardown).
+	{
+		std::unique_ptr<AgentSession> finalSession = AgentSession::WrapJob( pJob );
+		finalSession->AttachController( &controller );
+		AgentRenderParams p;
+		const AgentSession::AgentRenderAsyncResult finalAr = finalSession->RenderAsync( p );
+		Check( finalAr.accepted, "a fresh submission after the churn loop is still accepted (the slot was not left poisoned)" );
+		if( finalAr.accepted ) {
+			Check( finalSession->RenderWait( finalAr.renderJobId, 5000 ), "the post-churn submission completes normally" );
+		}
+		finalSession->AttachController( nullptr );
+	}
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (q) churn under concurrent interactive: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunAsyncReturnsQuicklyTest();
@@ -1593,6 +1823,8 @@ int main()
 	RunUnboundedDrainLoopTest();
 	RunNoStaleOutstandingIdTest();
 	RunProgressRestoredOnThrowTest();
+	RunInterleavedMintNoClobberTest();
+	RunChurnConcurrentInteractiveTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

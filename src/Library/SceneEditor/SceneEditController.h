@@ -1326,6 +1326,34 @@ namespace RISE
 			RenderJobId*                  outJobId,
 			bool                          bypassFairQueueCheck );
 
+		//! Fix-round-3 (churn UAF): GROUND-TRUTH predicate for "the agent-
+		//! render worker is not (and will never be, without a fresh
+		//! submission) inside a closure for job `id`".  mCurrentRenderJob's
+		//! `active` flag is a STATUS RECORD that a completing INTERACTIVE
+		//! pass can clear out from under an in-flight AGENT job's record
+		//! (see RenderLoop's completion-site comment for the exact
+		//! clobber this closes) -- ownership-checked writes (fix-round-3's
+		//! other half) close the clobber AT THE SOURCE, but this predicate
+		//! exists so a DRAIN (WaitForRenderJob) never has to trust the
+		//! status record alone: it cross-checks the slot bookkeeping
+		//! (mAgentRenderPending / mAgentRenderJobId), which is the ONLY
+		//! state the worker actually mutates to signal "I am done running
+		//! this closure" (mAgentRenderPending is cleared, under
+		//! mAgentRenderSlotMutex, strictly AFTER fn() has returned -- see
+		//! AgentRenderWorkerLoop_'s tail).  Returns true (idle) whenever
+		//! `id` is NOT the current agent-slot occupant -- in particular:
+		//!   * the slot has never been touched by this id (an
+		//!     Interactive-class id, or an id this controller never
+		//!     minted) -- vacuously idle, nothing to cross-check;
+		//!   * the slot occupant moved on to a DIFFERENT id (this id's
+		//!     closure fully returned before the next submission could be
+		//!     accepted -- single-slot policy guarantees that ordering);
+		//!   * the slot is simply unoccupied.
+		//! Returns false ONLY while `id` is the exact occupant CURRENTLY
+		//! recorded pending -- i.e. the worker is (or is about to be)
+		//! inside that job's closure.
+		bool AgentRenderSlotIdleFor_( RenderJobId id ) const;
+
 		//! Cancel-and-park the render thread: trip the rasterizer cancel
 		//! flag if a pass is in flight (bumping mCancelCount), then wait on
 		//! mCV until mRendering is false -- i.e. the in-flight pass has
