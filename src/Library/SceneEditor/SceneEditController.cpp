@@ -3668,6 +3668,18 @@ void SceneEditController::AgentRenderWorkerLoop_()
 			std::lock_guard<std::mutex> slotLk( mAgentRenderSlotMutex );
 			mAgentRenderException = caught;
 			mAgentRenderPending   = false;
+			// Model-B F2 S3 fix round (P3-b): defensive clear alongside
+			// mAgentRenderPending above.  Benign today -- every reader of
+			// mAgentRenderPinned (SubmitAgentRenderAsync_Locked's pinned-
+			// occupant check) is gated behind `if( mAgentRenderPending )`,
+			// so a stale `true` left here after the slot frees can never
+			// be observed as "a pinned job is occupying the slot" once
+			// mAgentRenderPending is false.  Clearing it anyway removes
+			// the standing proof obligation ("mAgentRenderPinned is only
+			// meaningful while mAgentRenderPending is true" -- see that
+			// field's own doc) instead of leaving it as an invariant a
+			// future reader has to re-derive from first principles.
+			mAgentRenderPinned    = false;
 		}
 		mAgentRenderDoneCV.notify_all();
 	}

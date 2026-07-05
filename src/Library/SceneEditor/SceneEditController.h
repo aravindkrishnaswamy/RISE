@@ -643,13 +643,33 @@ namespace RISE
 		//! queueing deadline should pass one explicitly.  Returns false
 		//! (fn NEVER invoked) on a fairness-wait timeout, or on the same
 		//! refusal causes as SubmitAgentRenderAsync (open transaction,
-		//! Stop() called) discovered once this caller reaches the front --
-		//! Model-B F2 slice S3 ADDS the pinned-in-flight refusal to that
-		//! set too: once this caller reaches the front of the fair queue,
-		//! it is refused exactly like SubmitAgentRenderAsync would be if a
-		//! PINNED job currently occupies the slot (see that method's
-		//! `pinned` doc) -- a sync caller gets no special exemption from
-		//! the pinned-supersession guard.
+		//! Stop() called) discovered once this caller reaches the front.
+		//!
+		//! Model-B F2 S3 fix round (P2 -- corrects a prior version of this
+		//! doc): a PINNED occupant does NOT give this call a distinct
+		//! "pinned refusal" outcome.  The fairness wait's predicate is
+		//! `!mAgentRenderPending && myTicket == mAgentRenderServingTicket`
+		//! -- i.e. this call is only ever woken to attempt the inline
+		//! submit once the slot is ALREADY free -- so
+		//! SubmitAgentRenderAsync_Locked's `if( mAgentRenderPinned )`
+		//! branch is UNREACHABLE from this path (mAgentRenderPending is
+		//! guaranteed false, under the same continuously-held
+		//! mAgentRenderSlotMutex, by the time that check would run).  The
+		//! coherent, live-verified semantic: a pinned occupant makes a
+		//! sync caller WAIT for the fairness window (like any other
+		//! occupant), not refuse it outright -- pinned guards against
+		//! SILENT SUPERSESSION by a later submission stealing the slot out
+		//! from under an in-flight render, not against fair queuing behind
+		//! it.  A sync caller with a `timeoutMs` shorter than the pinned
+		//! render's remaining duration simply times out (the ordinary
+		//! fairness-wait timeout above), which reads identically to "no
+		//! occupant at all, but the wait ran out" -- there is no separate
+		//! pinned-specific rejection message on this path (contrast
+		//! SubmitAgentRenderAsync, which DOES refuse a pinned-occupied slot
+		//! immediately with the dedicated pinned message, since it never
+		//! waits).  A sync caller with a GENEROUS `timeoutMs` instead waits
+		//! out the pinned render's remaining duration and then proceeds
+		//! normally once the slot frees.
 		//!
 		//! `pinned` (default false, same semantics as
 		//! SubmitAgentRenderAsync's parameter) marks THIS submission as

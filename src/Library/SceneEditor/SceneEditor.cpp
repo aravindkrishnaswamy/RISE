@@ -107,30 +107,55 @@ void SceneEditor::BumpSceneLightGenerationIfMaterialEmits( const IMaterial* mat 
 	}
 }
 
-void SceneEditor::BumpSceneLightGenerationForAgentParamEdit(
-	const char* entityName, const char* entityKind )
+bool SceneEditor::ClassifyCstEntityKind( const std::string& kind, EntityCategory& outCategory )
 {
-	// Shared-undo follow-up (P2 fix): see the doc comment in SceneEditor.h --
-	// resolve material-ness from the CST chunk-kind string using the SAME
-	// vocabulary MarkCstHeadDirty's kind dispatch uses, then bump iff the
-	// resolved material is emissive (matching MarkEditEntityDirty's
-	// SetMaterialProperty arm, the GUI-path counterpart this closes the gap
-	// with).  Empty/unrecognized kinds bump CONSERVATIVELY -- a spurious
-	// bump costs one alias-table rebuild; a missed bump on an actually-
-	// emissive target is a rendering-correctness bug.
-	const std::string kind = entityKind ? entityKind : std::string();
+	// Model-B F2 S3 fix round (P3-a): the ONE place that maps a CST
+	// chunk-kind string to its EntityCategory -- see the header doc for
+	// why this used to be two independently-maintained copies.
 	auto endsWith = []( const std::string& s, const char* suffix ) {
 		const std::string suf( suffix );
 		return s.size() >= suf.size()
 		    && s.compare( s.size() - suf.size(), suf.size(), suf ) == 0;
 	};
-	const bool isKnownMaterialKind = ( kind == "material" || endsWith( kind, "_material" ) );
-	const bool isKnownOtherKind =
-		   kind == "standard_object"
-		|| kind == "camera" || endsWith( kind, "_camera" )
-		|| endsWith( kind, "_light" )
-		|| endsWith( kind, "_medium" );
-	if( isKnownMaterialKind )
+	if( kind == "standard_object" ) {
+		outCategory = EntityCategory::Object;
+		return true;
+	}
+	if( kind == "camera" || endsWith( kind, "_camera" ) ) {
+		outCategory = EntityCategory::Camera;
+		return true;
+	}
+	if( endsWith( kind, "_light" ) ) {
+		outCategory = EntityCategory::Light;
+		return true;
+	}
+	if( kind == "material" || endsWith( kind, "_material" ) ) {
+		outCategory = EntityCategory::Material;
+		return true;
+	}
+	if( endsWith( kind, "_medium" ) ) {
+		outCategory = EntityCategory::Medium;
+		return true;
+	}
+	return false;   // empty / unrecognized -- caller applies its own fallback policy
+}
+
+void SceneEditor::BumpSceneLightGenerationForAgentParamEdit(
+	const char* entityName, const char* entityKind )
+{
+	// Shared-undo follow-up (P2 fix): see the doc comment in SceneEditor.h --
+	// resolve material-ness from the CST chunk-kind string via the SAME
+	// ClassifyCstEntityKind MarkCstHeadDirty's kind dispatch uses, then
+	// bump iff the resolved material is emissive (matching
+	// MarkEditEntityDirty's SetMaterialProperty arm, the GUI-path
+	// counterpart this closes the gap with).  Empty/unrecognized kinds
+	// bump CONSERVATIVELY -- a spurious bump costs one alias-table
+	// rebuild; a missed bump on an actually-emissive target is a
+	// rendering-correctness bug.
+	const std::string kind = entityKind ? entityKind : std::string();
+	EntityCategory category;
+	const bool isKnown = ClassifyCstEntityKind( kind, category );
+	if( isKnown && category == EntityCategory::Material )
 	{
 		if( mMaterialManager && entityName )
 		{
@@ -138,7 +163,7 @@ void SceneEditor::BumpSceneLightGenerationForAgentParamEdit(
 				mMaterialManager->GetItem( entityName ) );
 		}
 	}
-	else if( !isKnownOtherKind )
+	else if( !isKnown )
 	{
 		// Empty / unrecognized kind: bump conservatively (see the tradeoff
 		// note above and in the header doc comment).

@@ -45,6 +45,7 @@
 #include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Interfaces/IFilm.h"
 #include "../src/Library/Interfaces/IRasterizer.h"   // Model-B F2 slice S3: SetSampleCountOverride/GetSampleCountOverride red-prove
+#include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"   // Model-B F2 S3 fix round (P1): ForTest_SamplingKernelName red-prove
 #include "../src/Library/SceneEditor/CameraIntrospection.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"   // Model-B F2 slice S1: RenderJobId coordinator bookkeeping
 
@@ -1390,6 +1391,169 @@ static void RunSampleCountOverrideTests()
 			Check( rast->GetSampleCountOverride() == 32, "the existing kernel's count is MUTATED IN PLACE to 32" );
 			Check( rast->SetSampleCountOverride( 8 ), "restoring back to 8 is accepted" );
 			Check( rast->GetSampleCountOverride() == 8, "the kernel's count is restored to 8" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (c2) Model-B F2 S3 fix round (P1) RED-PROVE: the samples-override
+	//      restore must NOT silently swap the sampling-kernel TYPE.
+	//      Without the stash, SetSampleCountOverride(1) released the
+	//      scene-authored kernel outright, so a later restore to N>1
+	//      (pSampling==null, no way to tell "authored Sobol" apart from
+	//      "no kernel at all") always rebuilt a FRESH MultiJittered
+	//      kernel -- silently changing the kernel TYPE under the caller.
+	//      Exercised against BOTH the DEFAULT kernel (kScene authors
+	//      `samples 8` with no explicit `pixel_sampler`, which
+	//      PixelFilterConfig defaults to "sobol") and an EXPLICIT
+	//      non-default kernel (`pixel_sampler halton`), via the
+	//      ForTest_SamplingKernelName() test seam (typeid-based; no
+	//      other public accessor exposes the kernel's concrete type).
+	//------------------------------------------------------------------
+	{
+		// (c2-i) Default kernel (Sobol): orig=8 -> override(1) -> restore(8).
+		const std::string scenePath = WriteTemp( "rise_agent_samples_kerneltype_sobol.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the Sobol kernel-type scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (Sobol kernel-type test)" );
+
+		IRasterizer* rast = pJob->GetRasterizer();
+		Check( rast != nullptr, "the scene has an active rasterizer (Sobol kernel-type test)" );
+		RISE::Implementation::PixelBasedRasterizerHelper* pHelper =
+			dynamic_cast<RISE::Implementation::PixelBasedRasterizerHelper*>( rast );
+		Check( pHelper != nullptr, "the active rasterizer is a PixelBasedRasterizerHelper (Sobol kernel-type test)" );
+		if( rast && pHelper )
+		{
+			const std::string kernelBefore = pHelper->ForTest_SamplingKernelName();
+			Check( !kernelBefore.empty(), "the scene-authored kernel (default Sobol) is installed before any override" );
+
+			Check( rast->SetSampleCountOverride( 1 ), "SetSampleCountOverride(1) (preview override) is accepted" );
+			Check( rast->GetSampleCountOverride() == 1, "the override reads back as 1 spp" );
+
+			Check( rast->SetSampleCountOverride( 8 ), "restoring to 8 is accepted" );
+			Check( rast->GetSampleCountOverride() == 8, "the restore reads back the scene-authored count (8)" );
+			Check( pHelper->ForTest_SamplingKernelName() == kernelBefore,
+			       "P1 MONEY ASSERTION (Sobol): the restored kernel's CONCRETE TYPE matches the pre-override kernel -- "
+			       "WITHOUT the stash fix this reads back as MultiJitteredSampling2D instead, a silent kernel-type swap" );
+
+			// Double-override sequence: orig=8 -> 1 -> 64 -> 8.  The stash
+			// is reinstalled (not re-released) at the intermediate 64
+			// step, so the type survives a THIRD override, not just one
+			// restore.
+			Check( rast->SetSampleCountOverride( 1 ), "second cycle: SetSampleCountOverride(1) accepted" );
+			Check( rast->SetSampleCountOverride( 64 ), "second cycle: SetSampleCountOverride(64) (reinstall-from-stash path) accepted" );
+			Check( rast->GetSampleCountOverride() == 64, "second cycle: the reinstalled kernel's count reads back as 64" );
+			Check( pHelper->ForTest_SamplingKernelName() == kernelBefore,
+			       "second cycle: the kernel type is STILL the original Sobol type after reinstall-at-64, not MultiJittered" );
+			Check( rast->SetSampleCountOverride( 8 ), "second cycle: final restore to 8 accepted" );
+			Check( rast->GetSampleCountOverride() == 8, "second cycle: final restore reads back 8" );
+			Check( pHelper->ForTest_SamplingKernelName() == kernelBefore,
+			       "second cycle: the kernel type is still the original Sobol type after the final restore to 8" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+	{
+		// (c2-ii) Explicit non-default kernel (Halton): same shape as
+		//         (c2-i), authored via `pixel_sampler halton` (syntax
+		//         mirrors scenes/Tests/Shaders/transparency_shaderop.RISEscene).
+		const std::string haltonScene =
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\tpixel_sampler halton\n\toidn_denoise false\n}\n\n"
+			"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+			"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+			"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+			"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+			"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+			"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+			"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+		const std::string scenePath = WriteTemp( "rise_agent_samples_kerneltype_halton.RISEscene", haltonScene );
+		Check( !scenePath.empty(), "wrote the Halton kernel-type scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (Halton kernel-type test)" );
+
+		IRasterizer* rast = pJob->GetRasterizer();
+		Check( rast != nullptr, "the scene has an active rasterizer (Halton kernel-type test)" );
+		RISE::Implementation::PixelBasedRasterizerHelper* pHelper =
+			dynamic_cast<RISE::Implementation::PixelBasedRasterizerHelper*>( rast );
+		Check( pHelper != nullptr, "the active rasterizer is a PixelBasedRasterizerHelper (Halton kernel-type test)" );
+		if( rast && pHelper )
+		{
+			const std::string kernelBefore = pHelper->ForTest_SamplingKernelName();
+			Check( !kernelBefore.empty(), "the scene-authored Halton kernel is installed before any override" );
+
+			Check( rast->SetSampleCountOverride( 1 ), "SetSampleCountOverride(1) (preview override) is accepted" );
+			Check( rast->GetSampleCountOverride() == 1, "the override reads back as 1 spp" );
+
+			Check( rast->SetSampleCountOverride( 8 ), "restoring to 8 is accepted" );
+			Check( rast->GetSampleCountOverride() == 8, "the restore reads back the scene-authored count (8)" );
+			Check( pHelper->ForTest_SamplingKernelName() == kernelBefore,
+			       "P1 MONEY ASSERTION (Halton): the restored kernel's CONCRETE TYPE matches the pre-override Halton kernel -- "
+			       "WITHOUT the stash fix this reads back as MultiJitteredSampling2D instead, a silent kernel-type swap" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+	{
+		// (c2-iii) orig-samples-1 (no kernel authored at all -- explicit
+		//          `samples 1`, since PathTracingPelDefaults::numPixelSamples
+		//          defaults to 32, not 1: GetSamplingAndFilterElements only
+		//          builds a kernel when numPixelSamples > 1, so `samples 1`
+		//          is what actually leaves `pSampling` null) -> override 64
+		//          -> restore 1: the GENUINE from-scratch MultiJittered path
+		//          must still fire when there was never a kernel to stash,
+		//          and the restore back to 1 must release it outright (no
+		//          stash created, since SetSampleCountOverride(1) only
+		//          stashes when `pSampling` was already non-null).
+		const std::string noKernelScene =
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+			"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+			"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+			"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+			"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+			"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+			"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+			"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+		const std::string scenePath = WriteTemp( "rise_agent_samples_kerneltype_nokernel.RISEscene", noKernelScene );
+		Check( !scenePath.empty(), "wrote the no-kernel-authored scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (no-kernel-authored test)" );
+
+		IRasterizer* rast = pJob->GetRasterizer();
+		Check( rast != nullptr, "the scene has an active rasterizer (no-kernel-authored test)" );
+		RISE::Implementation::PixelBasedRasterizerHelper* pHelper =
+			dynamic_cast<RISE::Implementation::PixelBasedRasterizerHelper*>( rast );
+		Check( pHelper != nullptr, "the active rasterizer is a PixelBasedRasterizerHelper (no-kernel-authored test)" );
+		if( rast && pHelper )
+		{
+			Check( std::string( pHelper->ForTest_SamplingKernelName() ).empty(), "no kernel is installed before any override (implicit 1 spp)" );
+			Check( rast->GetSampleCountOverride() == 1, "GetSampleCountOverride() reads 1 for the un-authored scene" );
+
+			Check( rast->SetSampleCountOverride( 64 ), "SetSampleCountOverride(64) against a no-kernel scene is accepted" );
+			Check( rast->GetSampleCountOverride() == 64, "the fresh from-scratch kernel reads back 64 samples" );
+			Check( !std::string( pHelper->ForTest_SamplingKernelName() ).empty(), "a genuine from-scratch kernel (MultiJittered) is now installed" );
+
+			Check( rast->SetSampleCountOverride( 1 ), "restoring to 1 is accepted" );
+			Check( rast->GetSampleCountOverride() == 1, "the restore reads back 1 spp" );
+			Check( std::string( pHelper->ForTest_SamplingKernelName() ).empty(),
+			       "restoring to 1 releases the from-scratch kernel outright -- back to the TRUE original null/1-spp state, "
+			       "no stash left installed in its place" );
 		}
 
 		pJob->release();

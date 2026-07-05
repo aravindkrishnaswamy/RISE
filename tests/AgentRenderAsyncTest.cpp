@@ -437,12 +437,29 @@ static void RunPinnedRenderTests()
 	std::printf( "=== AgentRenderAsyncTest: (b2) Model-B F2 slice S3 pinned-vs-preview ===\n" );
 
 	//------------------------------------------------------------------
-	// (1) RED-PROVE the rejection REASON: a pinned occupant refuses a
-	//     second ASYNC submission with the pinned-specific message (not
-	//     the generic busy one), and a second SYNC submission is ALSO
-	//     refused (does not queue behind it -- the sync fair-queue path
-	//     respects the pinned refusal too).  After the pinned job
-	//     completes, both async and sync submissions work again.
+	// (1) RED-PROVE the rejection REASON for ASYNC: a pinned occupant
+	//     refuses a second ASYNC submission with the pinned-specific
+	//     message (not the generic busy one).  For SYNC: Model-B F2 S3
+	//     fix round (P2 -- corrects a prior version of this comment,
+	//     which claimed a short-timeout SYNC refusal here was a
+	//     "pinned-specific refusal that does not queue behind it and
+	//     does not run once the pinned job completes" -- that is NOT
+	//     what this asserts.  SubmitAgentRenderSync's fairness wait only
+	//     ever attempts the inline submit once the slot is ALREADY free,
+	//     so the pinned-occupant refusal branch inside
+	//     SubmitAgentRenderAsync_Locked is UNREACHABLE from the sync
+	//     path -- see SceneEditController.h's SubmitAgentRenderSync doc.
+	//     What the short-`timeoutMs` probe below actually proves is an
+	//     ordinary FAIRNESS-WAIT TIMEOUT: a sync caller whose `timeoutMs`
+	//     is shorter than the pinned render's remaining duration times
+	//     out and returns false, exactly as it would against any other
+	//     occupant of the slot.  A SECOND probe with a GENEROUS
+	//     `timeoutMs` demonstrates the complementary wait-then-succeed
+	//     path: the sync caller waits out the pinned render and is
+	//     accepted once the slot frees -- pinned guards against silent
+	//     supersession, not against fair queuing.  After the pinned job
+	//     completes, both async and (already covered) sync submissions
+	//     work again.
 	//------------------------------------------------------------------
 	{
 		const std::string scenePath = WriteTemp( "rise_agent_pinned_reject.RISEscene", kScene );
@@ -487,29 +504,59 @@ static void RunPinnedRenderTests()
 			       "MONEY ASSERTION: the refusal message is PINNED-SPECIFIC (\"pinned render is in flight\"), distinct from the generic "
 			       "busy/transaction message RunSingleSlotRejectionTest observes against an ordinary preview occupant" );
 
-			// A second SYNC submission does NOT queue behind the pinned
-			// occupant -- it is refused too (bounded by a short
-			// timeoutMs so this doesn't wait out the pinned render's
-			// full 300ms if the fairness gate were ever to (incorrectly)
-			// let it wait).
-			bool syncRefused = false;
+			// A second SYNC submission with a SHORT timeoutMs (well under
+			// the pinned render's remaining ~270ms) does not queue in
+			// time -- this is an ORDINARY FAIRNESS-WAIT TIMEOUT (P2: NOT
+			// a pinned-specific refusal -- SubmitAgentRenderSync never
+			// reaches the pinned-occupant check; see that method's doc).
+			bool syncTimedOut = false;
 			const bool syncCallReturned = RunWatchdogged(
-				"SubmitAgentRenderSync while a pinned render is in flight", 5000,
+				"SubmitAgentRenderSync (short timeout) while a pinned render is in flight", 5000,
 				[&]() {
 					SceneEditController::RenderJobId dummyId = 0;
-					syncRefused = !controller.SubmitAgentRenderSync(
+					syncTimedOut = !controller.SubmitAgentRenderSync(
 						[](){}, String( "pinned_reject_sync_probe" ), &dummyId, /*timeoutMs=*/200 );
 				} );
 			Check( syncCallReturned, "the sync probe call itself returned (watchdog did not trip)" );
-			Check( syncRefused,
-			       "MONEY ASSERTION: a second SYNC submission while a PINNED render is in flight is ALSO refused (does NOT queue behind "
-			       "it and does NOT run once the pinned job completes -- the fair-queue ticket path respects the pinned refusal too)" );
+			Check( syncTimedOut,
+			       "a second SYNC submission with a timeoutMs (200ms) shorter than the pinned render's remaining duration times out and "
+			       "returns false -- an ordinary fairness-wait timeout, the SAME outcome a non-pinned occupant would produce, not a "
+			       "pinned-specific rejection" );
 
-			// Let the pinned render finish naturally.
+			// P2 red-prove of the COMPLEMENTARY wait-then-succeed path:
+			// a second SYNC submission with a GENEROUS timeoutMs (well
+			// over the pinned render's remaining duration) WAITS for the
+			// pinned occupant to finish and is THEN accepted -- pinned
+			// guards against silent supersession, not against a sync
+			// caller's fair turn.  Note: acceptance here claims the
+			// single slot for THIS new submission, so
+			// GetRenderJobStatus/RenderStatus against the ORIGINAL
+			// pinnedSubmit.renderJobId can no longer find it (the status
+			// record only ever tracks the MOST RECENT job -- see
+			// GetRenderJobStatus's `mCurrentRenderJob.id != id` check) --
+			// acceptance itself, which can only happen once
+			// mAgentRenderPending is false, is the money assertion.
+			bool syncAcceptedAfterWait = false;
+			SceneEditController::RenderJobId waitedJobId = 0;
+			const bool syncWaitReturned = RunWatchdogged(
+				"SubmitAgentRenderSync (generous timeout) while a pinned render is in flight", 5000,
+				[&]() {
+					syncAcceptedAfterWait = controller.SubmitAgentRenderSync(
+						[](){}, String( "pinned_wait_then_succeed_sync_probe" ), &waitedJobId, /*timeoutMs=*/5000 );
+				} );
+			Check( syncWaitReturned, "the generous-timeout sync probe call itself returned (watchdog did not trip)" );
+			Check( syncAcceptedAfterWait,
+			       "MONEY ASSERTION (P2): a SYNC submission with a GENEROUS timeoutMs WAITS out the pinned render's remaining duration "
+			       "and is THEN accepted -- proving the coherent semantic is 'pinned makes a sync caller wait its fair turn', not "
+			       "'pinned refuses every sync caller outright'" );
+
+			// session->RenderWait on the ORIGINAL pinned job id still
+			// returns true even though it has been superseded in
+			// mCurrentRenderJob by the probe above -- WaitForRenderJob
+			// (unlike GetRenderJobStatus) treats `mCurrentRenderJob.id !=
+			// id` as "done" (a later job can only exist because this one
+			// already finished on a single-slot controller).
 			Check( session->RenderWait( pinnedSubmit.renderJobId, 5000 ), "the pinned render eventually completes" );
-
-			const AgentSession::AgentRenderJobStatus doneStatus = session->RenderStatus( pinnedSubmit.renderJobId );
-			Check( doneStatus.found && !doneStatus.active, "the pinned job is observed inactive once complete" );
 
 			// After completion, BOTH async and sync submissions work
 			// again -- the slot is not permanently poisoned by having

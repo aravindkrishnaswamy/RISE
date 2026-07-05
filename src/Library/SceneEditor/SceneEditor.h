@@ -264,14 +264,11 @@ namespace RISE
 
 			// Map KNOWN CST chunk kinds to their per-category channel so
 			// the agent mark mirrors the GUI's MarkEditEntityDirty for
-			// the common cases.  Light / medium kinds are suffix families
-			// (e.g. "point_light", "isotropic_medium"), so match on the
-			// suffix rather than an exact string.
-			auto endsWith = []( const std::string& s, const char* suffix ) {
-				const std::string suf( suffix );
-				return s.size() >= suf.size()
-				    && s.compare( s.size() - suf.size(), suf.size(), suf ) == 0;
-			};
+			// the common cases.  ClassifyCstEntityKind (below) is the
+			// SINGLE shared classifier -- see its own doc for why this
+			// used to be an independent copy of the same vocabulary.
+			EntityCategory category;
+			const bool isKnown = ClassifyCstEntityKind( kind, category );
 
 			// An empty name would make MarkEntityDirty a SILENT NO-OP
 			// (DirtyTracker ignores empty names), so set the CST-head
@@ -285,16 +282,8 @@ namespace RISE
 			// and any future caller must not re-open the hole either.
 			if( name.empty() ) {
 				mDirtyTracker.MarkCstHeadDirty();
-			} else if( kind == "standard_object" ) {
-				mDirtyTracker.MarkEntityDirty( EntityCategory::Object, name );
-			} else if( kind == "camera" || endsWith( kind, "_camera" ) ) {
-				mDirtyTracker.MarkEntityDirty( EntityCategory::Camera, name );
-			} else if( endsWith( kind, "_light" ) ) {
-				mDirtyTracker.MarkEntityDirty( EntityCategory::Light, name );
-			} else if( kind == "material" || endsWith( kind, "_material" ) ) {
-				mDirtyTracker.MarkEntityDirty( EntityCategory::Material, name );
-			} else if( endsWith( kind, "_medium" ) ) {
-				mDirtyTracker.MarkEntityDirty( EntityCategory::Medium, name );
+			} else if( isKnown ) {
+				mDirtyTracker.MarkEntityDirty( category, name );
 			} else {
 				// UNKNOWN / uncategorized kind (painter, function,
 				// rasterizer, shader): set the first-class CST-head
@@ -500,6 +489,27 @@ namespace RISE
 		//! area / Le are read live) -- but a reused RayCaster must rebuild to
 		//! converge (re-review finding B).  No-op for null / non-emissive mat.
 		void BumpSceneLightGenerationIfMaterialEmits( const class IMaterial* mat );
+
+		//! Model-B F2 S3 fix round (P3-a): the SINGLE source of truth for
+		//! "which EntityCategory does this CST chunk-kind string belong
+		//! to" -- shared by MarkCstHeadDirty (above, in the public section)
+		//! and BumpSceneLightGenerationForAgentParamEdit (SceneEditor.cpp),
+		//! which used to carry two independently-maintained copies of the
+		//! same suffix-matching `endsWith` vocabulary ("standard_object" /
+		//! "camera" or "*_camera" / "*_light" / "material" or "*_material" /
+		//! "*_medium").  Drift risk: a future new CST kind (or a renamed
+		//! suffix) added to one classifier and not the other would silently
+		//! desync the agent's dirty-marking from its light-regen bump.  ONE
+		//! helper, called from both, makes that structurally impossible.
+		//!
+		//! Returns true and fills `outCategory` when `kind` matches a KNOWN
+		//! CST entity kind; returns false (outCategory untouched) for an
+		//! empty or unrecognized kind (painter / function / rasterizer /
+		//! shader / any future uncategorized chunk) -- callers each apply
+		//! their OWN policy for the unknown case (MarkCstHeadDirty falls
+		//! back to the coarse CST-head boolean channel; the light-regen
+		//! bump conservatively bumps).
+		static bool ClassifyCstEntityKind( const std::string& kind, EntityCategory& outCategory );
 
 		IScenePriv*  mScene;   // borrowed; re-pointable via RebindScene after a whole-scene rebuild
 		class IMaterialManager*       mMaterialManager;       // borrowed; nullable

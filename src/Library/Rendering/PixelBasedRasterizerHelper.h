@@ -24,6 +24,7 @@
 #include "AOVBuffers.h"
 #include "../Utilities/RuntimeContext.h"
 #include "../Utilities/ProgressiveConfig.h"
+#include <typeinfo>	// Model-B F2 S3 fix round: ForTest_SamplingKernelName's typeid
 
 namespace RISE
 {
@@ -139,6 +140,22 @@ namespace RISE
 			ISampling2D*		pSampling;
 			IPixelFilter*		pPixelFilter;
 			bool				useZSobol;		///< Use Morton-indexed Sobol (blue-noise error distribution)
+
+			//! Model-B F2 S3 fix round (P1): holds the scene-authored kernel
+			//! WHILE `SetSampleCountOverride(1)` has `pSampling` forced to
+			//! null (the "null == implicit 1 SPP" render-path convention --
+			//! see `pSampling`'s own doc).  Owns a reference exactly like
+			//! `pSampling` does (transferred, not addref'd again, on the
+			//! 1-override path; released and nulled on the >1-restore
+			//! path) so the override round-trip through
+			//! GetSampleCountOverride()'s bare int can still recover the
+			//! ORIGINAL kernel TYPE, not just its count.  Null whenever no
+			//! override-of-a-real-kernel is in flight (the overwhelming
+			//! common case).  Released in the destructor for the same
+			//! reason `pSampling` is: neither has any other scene-lifecycle
+			//! hook (`DetachFromScene` is a no-op on this class), so the
+			//! destructor is the only place that must not leak it.
+			ISampling2D*		pSamplingStashedByOverride;
 
 			mutable FilteredFilm*	pFilteredFilm;		///< Film buffer for wide-support filter reconstruction
 			mutable IRasterImage*	pFilteredScratch;	///< Scratch image for progressive display with film
@@ -525,26 +542,74 @@ namespace RISE
 			//! them already owns `pSampling`/SetNumSamples via this class,
 			//! so ONE override covers the whole family.
 			//!
+			//! Model-B F2 S3 fix round (P1): the capture/apply/restore
+			//! contract round-trips through `GetSampleCountOverride()`'s
+			//! bare INT ONLY (see `SampleCountRestoreGuard` in
+			//! AgentSession.cpp) -- there is no channel for the caller to
+			//! also hand back a kernel TYPE.  Without `pSamplingStashedByOverride`,
+			//! a samples==1 call used to RELEASE the scene-authored kernel
+			//! outright, so a later samples>1 restore had no way to tell
+			//! "scene authored Sobol/Halton/whatever" apart from "scene
+			//! never authored a kernel at all" -- both look like `pSampling
+			//! == null` -- and silently rebuilt a fresh MultiJittered
+			//! kernel either way.  On a session that previews at 1 spp and
+			//! then restores to the scene's real sample count, this
+			//! swapped the kernel TYPE under the user for every subsequent
+			//! render, invisible to both ReadDocument (never touched) and
+			//! the count-only override tests.  The stash makes the API
+			//! non-lossy across ANY call sequence while leaving the "null
+			//! pSampling == implicit 1 SPP" render-path convention exactly
+			//! as-is (the stash is invisible to the render path --
+			//! `pSampling` itself stays null while overridden to 1).
+			//!
 			//! samples < 1: no-op, returns false (never applied -- mirrors
 			//! the "-1 means absent" convention one layer up).
-			//! samples == 1: releases `pSampling` (matches this class's
-			//! own "null pSampling == implicit 1 SPP, no kernel" contract
-			//! -- see GetProgressiveTotalSPP / RasterizeSceneAnimation's
-			//! `pSampling ? ... : 1` idiom this mirrors) -- so a restore
-			//! back to an unauthored 1-SPP scene is a real release, not a
-			//! kernel stuck at NumSamples(1).
+			//! samples == 1, `pSampling` non-null: the reference is
+			//! TRANSFERRED (not released) into `pSamplingStashedByOverride`
+			//! -- no addref, no release, just a pointer move -- then
+			//! `pSampling` is set null.  samples == 1, `pSampling` already
+			//! null: a true no-kernel scene; nothing to stash (any earlier
+			//! stash, if present, is left untouched -- see the
+			//! orig=1->64->1 sequence in the header's class-level test doc).
 			//! samples > 1, `pSampling` already set (the scene authored a
-			//! `samples` param): mutates the EXISTING kernel's count IN
-			//! PLACE via ISampling2D::SetNumSamples -- preserves whichever
-			//! kernel TYPE the scene author chose (stratified / Sobol /
-			//! Halton / multi-jittered / ...); only the count changes.
-			//! samples > 1, `pSampling` null (the scene never authored a
-			//! `samples` param -- implicit 1 SPP): constructs a fresh
-			//! MultiJittered kernel (the same kernel type
+			//! `samples` param and no 1-override is currently in flight):
+			//! mutates the EXISTING kernel's count IN PLACE via
+			//! ISampling2D::SetNumSamples -- preserves whichever kernel
+			//! TYPE the scene author chose (stratified / Sobol / Halton /
+			//! multi-jittered / ...); only the count changes.
+			//! samples > 1, `pSampling` null AND a stash is present:
+			//! REINSTALLS the stash (transfers it back into `pSampling`,
+			//! `SetNumSamples(samples)`) instead of constructing a new
+			//! kernel -- this is the restore-after-a-1-override path and is
+			//! exactly what recovers the original TYPE.
+			//! samples > 1, `pSampling` null AND no stash: the genuine
+			//! scene-authored-1-spp case -- constructs a fresh MultiJittered
+			//! kernel (the same kernel type
 			//! InteractivePelRasterizer::SetSampleCount uses for its own
-			//! from-scratch polish-pass case) via SubSampleRays.  Always
-			//! returns true once past the samples<1 guard -- this override
-			//! never fails on the pixel-based family.
+			//! from-scratch polish-pass case) via SubSampleRays.
+			//! Always returns true once past the samples<1 guard -- this
+			//! override never fails on the pixel-based family.
+			//!
+			//! Double-override sequences (why the stash alone is sufficient
+			//! for the guard's int-only capture/restore, worked through
+			//! explicitly since this is easy to get wrong):
+			//!   orig=8 (Sobol) -> 1 -> 8: apply(1) stashes Sobol, pSampling
+			//!     null; restore(8) reinstalls the Sobol stash, SetNumSamples(8).
+			//!   orig=8 (Sobol) -> 1 -> 64 -> 8: apply(1) stashes Sobol;
+			//!     a SECOND override to 64 (samples>1, pSampling null, stash
+			//!     present) reinstalls the stash and sets count 64 -- the
+			//!     stash is consumed/cleared on reinstall, so `pSampling` is
+			//!     the live Sobol kernel again (count 64) with no stash
+			//!     outstanding; the final restore(8) hits the ordinary
+			//!     in-place-mutation branch (pSampling already set) and
+			//!     mutates count back to 8.  Type preserved throughout.
+			//!   orig=1 (no kernel authored, pSampling null, no stash) -> 64
+			//!     -> 1: apply(64) has no stash to reinstall, so it builds a
+			//!     fresh MultiJittered kernel (the genuine-1-spp branch);
+			//!     restore(1) releases that MultiJittered kernel outright
+			//!     (no stash created, because samples==1's stash step only
+			//!     fires when `pSampling` is non-null at that call) -- back
+			//!     to the true original null/1-spp state.
 			virtual bool SetSampleCountOverride( int samples ) override;
 
 			//! The samples-per-pixel this rasterizer will actually use on
@@ -554,7 +619,29 @@ namespace RISE
 			//! uses for `totalSPPPerFrame`).  Never -1 on this class (that
 			//! sentinel is reserved for a rasterizer that does NOT support
 			//! the override at all -- see the IRasterizer base doc).
+			//!
+			//! Model-B F2 S3 fix round: intentionally reads `pSampling`
+			//! ONLY, never `pSamplingStashedByOverride` -- the live render
+			//! state while overridden to 1 spp really is "no kernel, 1
+			//! sample," and this accessor's contract is "what will the
+			//! NEXT RasterizeScene call actually do," not "what kernel is
+			//! parked for a future restore."  A caller mid-1-override
+			//! correctly reads back 1 here even though a stash exists.
 			virtual int GetSampleCountOverride() const override;
+
+			//! Test-only accessor: `typeid(*pSampling).name()`'s mangled
+			//! name, or "" when `pSampling` is null (the 1-spp / no-kernel
+			//! state).  Exists so a test can red-prove the P1 fix above --
+			//! no other public seam exposes the sampling kernel's
+			//! CONCRETE TYPE (only its sample COUNT, via
+			//! GetSampleCountOverride).  RTTI is available on every RISE
+			//! build (no `-fno-rtti` anywhere in the make/Xcode/VS2022
+			//! configs), so `typeid` is safe to use unconditionally here.
+			//! Production code never calls this.
+			const char* ForTest_SamplingKernelName() const
+			{
+				return pSampling ? typeid( *pSampling ).name() : "";
+			}
 
 		};
 	}
