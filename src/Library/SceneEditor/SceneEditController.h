@@ -265,15 +265,23 @@ namespace RISE
 		//!                   cancel-restart preview loop driving the
 		//!                   viewport).
 		//!   AgentPreview -- a caller-supplied lambda run synchronously
-		//!                   under RunPreviewRenderParked (today: the Agent
+		//!                   under RunPreviewRenderParked, OR submitted via
+		//!                   SubmitAgentRenderAsync/Sync (today: the Agent
 		//!                   surface's transient film/camera-override
-		//!                   render).
-		//! Production-render tracking is explicitly OUT of scope for this
-		//! slice (see slice S4).
+		//!                   render AND its plain no-override render).
+		//!   Production   -- Model-B F2 slice S4: a platform-shell
+		//!                   "Render" action (the GUI's full-quality,
+		//!                   possibly-multi-minute render), submitted via
+		//!                   SubmitProductionRenderSync.  Routed through the
+		//!                   SAME single-slot worker as AgentPreview so a
+		//!                   production render, an agent render, and the
+		//!                   interactive loop can never occupy Rasterize()
+		//!                   at the same time.
 		enum class RenderClass
 		{
 			Interactive  = 0,
-			AgentPreview = 1
+			AgentPreview = 1,
+			Production   = 2
 		};
 
 		//! Snapshot of the CURRENT render job, read under mMutex.  `active`
@@ -569,11 +577,20 @@ namespace RISE
 		//! call can observe it immediately).  Returns true iff the
 		//! submission was accepted (the worker WILL run `fn`); false on
 		//! refusal.
+		//! Model-B F2 slice S4: `renderClass` (default AgentPreview, so
+		//! every pre-existing call site is byte-for-byte unaffected) tags
+		//! the slot's job-status record instead of always minting
+		//! AgentPreview -- the ONLY thing a Production submission
+		//! (SubmitProductionRenderSync below) does differently from an
+		//! ordinary agent submission is this tag; every fair-queue /
+		//! pinned / Stop() refusal rule is IDENTICAL and shared via
+		//! SubmitAgentRenderAsync_Locked.
 		bool SubmitAgentRenderAsync(
 			std::function<void()> fn,
 			const String&         clientLabel,
 			RenderJobId*          outJobId,
-			bool                  pinned = false );
+			bool                  pinned = false,
+			RenderClass           renderClass = RenderClass::AgentPreview );
 
 		//! Model-B F2 slice S2a: the SYNCHRONOUS convenience wrapper --
 		//! submits `fn` exactly like SubmitAgentRenderAsync, then blocks the
@@ -674,12 +691,68 @@ namespace RISE
 		//! `pinned` (default false, same semantics as
 		//! SubmitAgentRenderAsync's parameter) marks THIS submission as
 		//! pinned once it is accepted.
+		//! Model-B F2 slice S4: `renderClass` (default AgentPreview) is
+		//! the same additive tag documented on the async overload above --
+		//! it changes nothing about the fairness/refusal semantics this
+		//! method's own doc describes, only what CurrentRenderJob /
+		//! GetRenderJobStatus report while this submission occupies the
+		//! slot.
 		bool SubmitAgentRenderSync(
 			std::function<void()> fn,
 			const String&         clientLabel,
 			RenderJobId*          outJobId,
 			unsigned int          timeoutMs = 30000,
-			bool                  pinned = false );
+			bool                  pinned = false,
+			RenderClass           renderClass = RenderClass::AgentPreview );
+
+		//! Model-B F2 slice S4: route a PRODUCTION render (a platform
+		//! shell's "Render" / "Render Animation" / "Render Region" action)
+		//! through the EXACT SAME single-slot coordinator machinery as
+		//! SubmitAgentRenderSync -- fairness ticket, cancel-and-park,
+		//! pinned-occupant rules, Stop()-honesty -- just tagged
+		//! RenderClass::Production in the job-status record instead of
+		//! AgentPreview.  This is the fix for the pre-F2-S4 gap: platform
+		//! shells (macOS RISEBridge.mm's `-rasterize`, Windows
+		//! RenderEngine.cpp) used to call Job::Rasterize() DIRECTLY,
+		//! wholly unserialized against the interactive loop AND the
+		//! agent-render worker -- two threads could be inside Rasterize()
+		//! on the SAME Scene at once, and Job::SetProgress's single slot
+		//! meant whichever render's teardown ran last silently owned the
+		//! other's cancel/progress hook.  Routing through here closes
+		//! both: with one render slot, production/agent/interactive are
+		//! mutually exclusive BY CONSTRUCTION, and the ONLY progress hook
+		//! ever installed on the Job while a render is in flight is this
+		//! controller's own mCancelProgress (see AgentRenderProgress()) --
+		//! a caller composes the platform's own progress/cancel UI as
+		//! mCancelProgress's `inner` (CancellableProgressCallback::SetInner)
+		//! for the duration of `fn`, so the platform UI keeps working
+		//! exactly as before while the coordinator's own cancel (Stop() /
+		//! CancelAgentRender_) ALSO aborts a production render, since
+		//! CancellableProgressCallback::Progress refuses (returns false)
+		//! the instant EITHER the outer cancel trips OR the composed
+		//! inner callback returns false.
+		//!
+		//! `fn` runs on the SAME dedicated worker thread that runs agent
+		//! renders (uniform with SubmitAgentRenderSync, NOT a caller-runs-
+		//! fn-under-park shape) -- exactly one thread is ever inside
+		//! Rasterize() at a time, on any render class.  This call BLOCKS
+		//! the calling thread (mirroring the platform shells' existing
+		//! "rasterize is synchronous, call it from a background thread"
+		//! contract) until `fn` completes or the submission is refused.
+		//! `queueTimeoutMs` bounds ONLY the fairness wait for a turn at the
+		//! slot (same meaning as SubmitAgentRenderSync's `timeoutMs`) --
+		//! once accepted, this waits out the render unconditionally,
+		//! however long it takes.  Returns false (fn never invoked) on
+		//! the same refusal causes as SubmitAgentRenderSync: an open
+		//! editor transaction, Stop() called/in-progress, a fairness-wait
+		//! timeout, or a PINNED occupant's fairness wait outlasting
+		//! `queueTimeoutMs`.  A thrown exception out of `fn` propagates to
+		//! the caller exactly as SubmitAgentRenderSync documents.
+		bool SubmitProductionRenderSync(
+			std::function<void()> fn,
+			const String&         clientLabel,
+			RenderJobId*          outJobId,
+			unsigned int          queueTimeoutMs = 30000 );
 
 		//! Model-B F2 slice S2a: status surface for a render job id.  For a
 		//! COORDINATOR (controller-minted, EVEN) id that matches the
@@ -1426,13 +1499,17 @@ namespace RISE
 		//! (mAgentRenderPinned + mCurrentRenderJob.pinned) -- see
 		//! SubmitAgentRenderAsync's doc for the refusal policy this
 		//! enables (a pinned occupant refuses ANY new submission).
+		//! Model-B F2 slice S4: `renderClass` (default AgentPreview) tags
+		//! the minted mCurrentRenderJob.renderClass -- see
+		//! SubmitAgentRenderAsync's overload doc.
 		bool SubmitAgentRenderAsync_Locked(
 			std::unique_lock<std::mutex>& slotLk,
 			std::function<void()>         fn,
 			const String&                 clientLabel,
 			RenderJobId*                  outJobId,
 			bool                          bypassFairQueueCheck,
-			bool                          pinned = false );
+			bool                          pinned = false,
+			RenderClass                   renderClass = RenderClass::AgentPreview );
 
 		//! Fix-round-3 (churn UAF): GROUND-TRUTH predicate for "the agent-
 		//! render worker is not (and will never be, without a fresh

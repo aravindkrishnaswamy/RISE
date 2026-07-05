@@ -364,6 +364,15 @@ private:
         return nil;
     }
 
+    // Model-B F2 slice S4: register this controller on the host bridge so
+    // its production-render entry points (-rasterize / -rasterizeAnimation /
+    // -rasterizeRegionLeft:top:right:bottom:) route through the SAME
+    // single-slot coordinator as the interactive loop and agent renders,
+    // instead of calling Job::Rasterize() directly.  Cleared back to NULL
+    // at the START of -shutdown, before `_controller` is destroyed -- see
+    // -attachSceneEditController:'s header doc for the full contract.
+    [_host attachSceneEditController:static_cast<void*>(_controller)];
+
     if (_previewSink) {
         // The sink queries the controller's cancel state at end-of-pass
         // to decide whether to drop a stale dispatch.  Wire the pointer
@@ -455,6 +464,18 @@ private:
 }
 
 - (void)shutdown {
+    // Model-B F2 slice S4: deregister FIRST, before anything else in this
+    // method — the host bridge's production-render entry points
+    // (-rasterize etc.) read `_viewportController` from whatever thread the
+    // platform UI happens to call them on, so this pointer must go back to
+    // NULL before `_controller` itself starts coming apart below.  Safe to
+    // call even if a stale render is still draining inside the coordinator:
+    // RISE_API_DestroySceneEditController (further down) is what actually
+    // calls Stop()/joins the worker; clearing the host's pointer here just
+    // stops any NEW production render from being submitted to a controller
+    // that is about to disappear.
+    [_host attachSceneEditController:nullptr];
+
     // Facet 5 slice 1c-1: destroy the agent dispatcher FIRST — the
     // AgentSession it owns BORROWS both `_controller` and the host Job.
     // Deleting it here, before the controller is torn down below,

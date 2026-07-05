@@ -35,6 +35,7 @@
 #include "../src/Library/Agent/Json.h"       // slice S2b: JsonValue/JsonParse/JsonSerialize for the RPC-verb round-trip
 #include "../src/Library/Job.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
+#include "../src/Library/SceneEditor/CancellableProgressCallback.h"   // Model-B F2 slice S4: composed progress/cancel test
 #include "../src/Library/Interfaces/ILogPriv.h"   // round-2 P1-1 red-prove: capture the escalating cancel-ignored warning
 
 #include <atomic>
@@ -2860,6 +2861,548 @@ static void RunSaveVsRenderRedProveTest()
 	std::printf( "=== (t) save-vs-render RED-PROVE: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Model-B F2 slice S4: SubmitProductionRenderSync tests.
+//
+// (u) TRIPLE-CLASS concurrency proof: a production submission
+//     (SubmitProductionRenderSync), an agent-render spam loop
+//     (SubmitAgentRenderAsync), and the interactive loop (via a live
+//     scrub thread) must never observe more than 1 thread inside the
+//     shared render critical section at once -- extending (c)'s
+//     two-class proof to all THREE classes now that Production exists.
+//     RED-PROVE half: a raw, UNCOORDINATED direct Job::Rasterize() call
+//     (bypassing the coordinator entirely, i.e. the pre-S4 GUI shape)
+//     racing the SAME live interactive loop DOES hit concurrency 2 --
+//     demonstrating the gap this slice closes.
+//////////////////////////////////////////////////////////////////////
+static void RunProductionTripleConcurrencyProofTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (u) production/agent/interactive triple-class concurrency proof ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_production_triple.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the production-triple scene to a temp file" );
+
+	ConcurrencyProof proof;
+	ConcurrencyProofJob* pJob = new ConcurrencyProofJob( proof );
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "ConcurrencyProofJob loads the native-v7 scene via the CST path (production-triple test)" );
+
+	ConcurrencyTestController controller( *pJob, proof, /*simulatedRenderMs*/15 );
+	controller.Start();   // genuinely live interactive loop to race against
+
+	std::atomic<bool> stop{ false };
+	std::atomic<int>  productionRuns{ 0 };
+	std::atomic<int>  agentRuns{ 0 };
+
+	// Production submissions, one at a time, sync (mirrors the GUI's
+	// "rasterize is blocking, call it from a background thread" shape).
+	// A short gap between submissions is deliberate: SubmitProductionRenderSync
+	// (like any SubmitAgentRenderSync caller) registers a FAIR-QUEUE ticket
+	// that refuses any NEW async submission for as long as it is
+	// outstanding -- a production loop with NO gap would keep a ticket
+	// registered almost continuously and starve the agent thread below by
+	// construction of the fairness policy (sync waiters are owed the next
+	// free slot ahead of async submitters), which would defeat this test's
+	// OWN "both classes actually ran" sanity check for a reason that has
+	// nothing to do with the concurrency invariant under test.
+	std::thread productionThread( [&]() {
+		while( !stop.load( std::memory_order_acquire ) )
+		{
+			SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
+			const bool ok = controller.SubmitProductionRenderSync(
+				[&]() { productionRuns.fetch_add( 1, std::memory_order_acq_rel ); pJob->Rasterize(); },
+				String( "gui_production_probe" ), &jobId, /*queueTimeoutMs*/ 2000 );
+			(void)ok;   // refusals are expected under contention; only concurrency matters here
+			std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+		}
+	} );
+
+	// Agent-render spam, exactly like (c)'s race-closure thread.
+	std::thread agentThread( [&]() {
+		while( !stop.load( std::memory_order_acquire ) )
+		{
+			SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
+			controller.SubmitAgentRenderAsync(
+				[&]() { agentRuns.fetch_add( 1, std::memory_order_acq_rel ); pJob->Rasterize(); },
+				String( "agent_probe" ), &jobId );
+			std::this_thread::sleep_for( std::chrono::milliseconds( 2 ) );
+		}
+	} );
+
+	// Interactive scrub thread, exactly like (c).
+	std::thread scrubThread( [&]() {
+		double t = 0.0;
+		while( !stop.load( std::memory_order_acquire ) )
+		{
+			controller.OnTimeScrub( t );
+			t += 0.01;
+			std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+		}
+	} );
+
+	std::this_thread::sleep_for( std::chrono::milliseconds( 600 ) );
+	stop.store( true, std::memory_order_release );
+	productionThread.join();
+	agentThread.join();
+	scrubThread.join();
+
+	controller.Stop();
+
+	const int maxConcurrency = proof.maxObserved.load( std::memory_order_acquire );
+	std::printf( "  [production-triple] production runs=%d agent runs=%d max observed concurrency=%d\n",
+	             productionRuns.load(), agentRuns.load(), maxConcurrency );
+	Check( productionRuns.load( std::memory_order_acquire ) > 0, "at least one production submission actually ran its closure" );
+	Check( agentRuns.load( std::memory_order_acquire ) > 0, "at least one agent submission actually ran its closure" );
+	Check( maxConcurrency == 1,
+	       "MONEY ASSERTION: max observed concurrency across Production + AgentPreview + Interactive is EXACTLY 1 -- "
+	       "SubmitProductionRenderSync routes through the SAME single-slot coordinator as agent renders, so all three "
+	       "classes are mutually exclusive inside the shared render critical section." );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (u) production triple concurrency proof: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (u continued) RED-PROVE: a DIRECT, uncoordinated Job::Rasterize() call
+//     (the pre-S4 GUI shape -- calling straight into Rasterize() with no
+//     park at all) racing the SAME live interactive loop DOES observe
+//     concurrency 2.  This is the exact gap SubmitProductionRenderSync
+//     closes; demonstrating it here (rather than just trusting the
+//     positive proof above) proves the fixed path is actually doing
+//     something -- a coordinator that vacuously never contends would
+//     also show maxConcurrency==1 above for the wrong reason.
+//////////////////////////////////////////////////////////////////////
+static void RunDirectRasterizeRedProveTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (u) RED-PROVE: direct uncoordinated Rasterize() call hits concurrency 2 ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_production_direct_redprove.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the direct-rasterize red-prove scene to a temp file" );
+
+	ConcurrencyProof proof;
+	ConcurrencyProofJob* pJob = new ConcurrencyProofJob( proof );
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "ConcurrencyProofJob loads the native-v7 scene via the CST path (direct-rasterize red-prove test)" );
+
+	ConcurrencyTestController controller( *pJob, proof, /*simulatedRenderMs*/15 );
+	controller.Start();   // genuinely live interactive loop to race against
+
+	std::atomic<bool> stop{ false };
+	// Deliberately bypasses SceneEditController entirely -- this is
+	// exactly what RISEBridge.mm's -rasterize / RenderEngine.cpp's
+	// startRender called BEFORE this slice: mJob->Rasterize() straight
+	// from the platform shell's own thread, no coordinator involved.
+	std::thread directThread( [&]() {
+		while( !stop.load( std::memory_order_acquire ) )
+		{
+			pJob->Rasterize();
+		}
+	} );
+	std::thread scrubThread( [&]() {
+		double t = 0.0;
+		while( !stop.load( std::memory_order_acquire ) )
+		{
+			controller.OnTimeScrub( t );
+			t += 0.01;
+			std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+		}
+	} );
+
+	std::this_thread::sleep_for( std::chrono::milliseconds( 600 ) );
+	stop.store( true, std::memory_order_release );
+	directThread.join();
+	scrubThread.join();
+
+	controller.Stop();
+
+	const int maxConcurrency = proof.maxObserved.load( std::memory_order_acquire );
+	std::printf( "  [direct-rasterize-red-prove] max observed concurrency: %d\n", maxConcurrency );
+	Check( maxConcurrency >= 2,
+	       "RED-PROVE: a direct, uncoordinated Job::Rasterize() call racing the live interactive loop DOES observe "
+	       "concurrency >= 2 -- this is the pre-S4 gap (both RISEBridge.mm and RenderEngine.cpp called Rasterize() "
+	       "directly with no park at all). Contrast with (u)'s positive proof, where routing the SAME kind of call "
+	       "through SubmitProductionRenderSync keeps max observed concurrency at exactly 1." );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (u) direct-rasterize RED-PROVE: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (v) Progress composition: a production render's composed callback
+//     receives progress ticks AND aborts promptly when EITHER the
+//     controller's own cancel trips (Stop()) OR the caller-supplied
+//     (GUI-side) cancel closure trips.  Mirrors the RunProductionRender-
+//     ThroughController shape both platform shells use: SetInner points
+//     the controller's mCancelProgress at a test "GUI" callback for the
+//     render's duration.
+//////////////////////////////////////////////////////////////////////
+class SlowProgressJob : public Job
+{
+public:
+	SlowProgressJob() : Job() {}
+	bool Rasterize() override
+	{
+		// Report a handful of progress ticks through whatever callback is
+		// installed, honouring its cancel return -- mirrors a real
+		// rasterizer's block-fetch loop polling IProgressCallback between
+		// blocks.
+		IProgressCallback* cb = GetProgress();
+		for( int i = 0; i < 50; ++i )
+		{
+			if( cb )
+			{
+				const bool keepGoing = cb->Progress( static_cast<double>( i ), 50.0 );
+				if( !keepGoing ) { mAborted = true; return false; }
+			}
+			std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+		}
+		return true;
+	}
+	bool mAborted = false;
+};
+
+static void RunProductionProgressCompositionTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (v) production render progress/cancel composition ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_production_progress.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the production-progress scene to a temp file" );
+
+	// ---- (v-1) GUI-side ("inner") progress ticks are forwarded, and a
+	//      GUI-side cancel (the closure returning false) aborts promptly.
+	{
+		SlowProgressJob* pJob = new SlowProgressJob();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "SlowProgressJob loads the native-v7 scene via the CST path (progress test, v-1)" );
+
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		controller.Start( /*suppressInitialRender=*/true );
+
+		std::atomic<int>  guiTicks{ 0 };
+		std::atomic<bool> guiCancel{ false };
+		class TestGuiCallback : public IProgressCallback
+		{
+		public:
+			std::atomic<int>*  ticks;
+			std::atomic<bool>* cancelFlag;
+			bool Progress( const double, const double ) override
+			{
+				ticks->fetch_add( 1, std::memory_order_acq_rel );
+				return !cancelFlag->load( std::memory_order_acquire );
+			}
+			void SetTitle( const char* ) override {}
+		} guiCb;
+		guiCb.ticks = &guiTicks;
+		guiCb.cancelFlag = &guiCancel;
+
+		// Mirrors RunProductionRenderThroughController: point the
+		// coordinator's own mCancelProgress at the GUI callback for the
+		// render's duration, install it on the Job, run, restore.
+		auto* coordProgress = static_cast<CancellableProgressCallback*>( controller.AgentRenderProgress() );
+		coordProgress->SetInner( &guiCb );
+
+		SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
+		const bool submitted = controller.SubmitProductionRenderSync(
+			[&]() {
+				pJob->SetProgress( coordProgress );
+				pJob->Rasterize();
+				pJob->SetProgress( nullptr );
+			},
+			String( "progress_probe_v1" ), &jobId );
+		coordProgress->SetInner( nullptr );
+
+		Check( submitted, "the production submission is accepted (v-1)" );
+		Check( guiTicks.load( std::memory_order_acquire ) > 0,
+		       "the GUI-side (inner) callback receives progress ticks forwarded through the coordinator's composed callback" );
+		Check( !pJob->mAborted, "with no cancel requested, the render is NOT aborted (control for v-1)" );
+
+		controller.Stop();
+		pJob->release();
+	}
+
+	// ---- (v-2) the controller's OWN cancel (Stop()) aborts a production
+	//      render promptly, even with a GUI-side callback that never
+	//      itself requests cancel.
+	{
+		SlowProgressJob* pJob = new SlowProgressJob();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "SlowProgressJob loads the native-v7 scene via the CST path (progress test, v-2)" );
+
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		controller.Start( /*suppressInitialRender=*/true );
+
+		class NeverCancelCallback : public IProgressCallback
+		{
+		public:
+			bool Progress( const double, const double ) override { return true; }
+			void SetTitle( const char* ) override {}
+		} neverCancelCb;
+
+		auto* coordProgress = static_cast<CancellableProgressCallback*>( controller.AgentRenderProgress() );
+		coordProgress->SetInner( &neverCancelCb );
+
+		std::thread productionThread( [&]() {
+			SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
+			controller.SubmitProductionRenderSync(
+				[&]() {
+					pJob->SetProgress( coordProgress );
+					pJob->Rasterize();
+					pJob->SetProgress( nullptr );
+				},
+				String( "progress_probe_v2" ), &jobId );
+		} );
+
+		// Give the render a moment to genuinely start (SlowProgressJob
+		// sleeps 5ms/tick for up to 250ms total).
+		std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+
+		const bool stoppedPromptly = RunWatchdogged( "Stop() during a production render returns promptly", 3000, [&]() {
+			controller.Stop();
+		} );
+		Check( stoppedPromptly, "Stop() during an in-flight production render returns within the watchdog bound (v-2)" );
+
+		productionThread.join();
+		coordProgress->SetInner( nullptr );
+
+		Check( pJob->mAborted,
+		       "MONEY ASSERTION (v-2): the controller's OWN cancel (Stop(), via CancelAgentRender_) aborts the production render "
+		       "even though the GUI-side inner callback never itself requested cancel -- CancellableProgressCallback::Progress "
+		       "refuses the instant EITHER cancel source trips." );
+
+		pJob->release();
+	}
+
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (v) production progress/cancel composition: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (w) Queue semantics + status record: a production submit while an
+//     agent render runs waits (ticket) then runs; an agent submit while
+//     a production render runs is refused (single-slot, matching the
+//     existing preview-occupant refusal semantics); the status record
+//     shows RenderClass::Production + the submitted clientLabel while a
+//     production render occupies the slot.
+//////////////////////////////////////////////////////////////////////
+static void RunProductionQueueSemanticsTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (w) production queue semantics + status record ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_production_queue.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the production-queue scene to a temp file" );
+
+	// ---- (w-1) status record: Production class + clientLabel visible
+	//      while a production render occupies the slot.
+	{
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (queue test, w-1)" );
+
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		controller.Start( /*suppressInitialRender=*/true );
+
+		std::atomic<bool> releaseGate{ false };
+		std::thread productionThread( [&]() {
+			SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
+			controller.SubmitProductionRenderSync(
+				[&]() {
+					while( !releaseGate.load( std::memory_order_acquire ) ) {
+						std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+					}
+				},
+				String( "status_probe_w1" ), &jobId );
+		} );
+
+		SceneEditController::RenderJobStatus st;
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+			while( std::chrono::steady_clock::now() < deadline ) {
+				st = controller.CurrentRenderJob();
+				if( st.active && st.renderClass == SceneEditController::RenderClass::Production ) break;
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+			}
+		}
+		Check( st.active && st.renderClass == SceneEditController::RenderClass::Production,
+		       "MONEY ASSERTION (w-1): the status record shows renderClass==Production while a production render occupies the slot" );
+		Check( st.clientLabel == "status_probe_w1", "the status record echoes the clientLabel a production submission passed in" );
+
+		releaseGate.store( true, std::memory_order_release );
+		productionThread.join();
+
+		controller.Stop();
+		pJob->release();
+	}
+
+	// ---- (w-2) production submit while an agent render runs: waits
+	//      (ticket), then runs once the agent render completes.
+	{
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (queue test, w-2)" );
+
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		controller.Start( /*suppressInitialRender=*/true );
+
+		std::atomic<bool> agentReleaseGate{ false };
+		std::atomic<bool> agentRunning{ false };
+		SceneEditController::RenderJobId agentJobId = SceneEditController::kInvalidRenderJobId;
+		const bool agentAccepted = controller.SubmitAgentRenderAsync(
+			[&]() {
+				agentRunning.store( true, std::memory_order_release );
+				while( !agentReleaseGate.load( std::memory_order_acquire ) ) {
+					std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+				}
+			},
+			String( "agent_holds_slot_w2" ), &agentJobId );
+		Check( agentAccepted, "the agent render is accepted and occupies the slot (w-2)" );
+
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+			while( !agentRunning.load( std::memory_order_acquire ) && std::chrono::steady_clock::now() < deadline ) {
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+			}
+		}
+		Check( agentRunning.load( std::memory_order_acquire ), "the agent render is genuinely running before we submit the production render (w-2)" );
+
+		std::atomic<bool> productionRan{ false };
+		std::atomic<bool> productionSubmitReturned{ false };
+		std::thread productionThread( [&]() {
+			SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
+			const bool ok = controller.SubmitProductionRenderSync(
+				[&]() { productionRan.store( true, std::memory_order_release ); },
+				String( "production_waits_w2" ), &jobId, /*queueTimeoutMs*/ 5000 );
+			Check( ok, "the production submission is EVENTUALLY accepted once the agent render's slot frees (w-2)" );
+			productionSubmitReturned.store( true, std::memory_order_release );
+		} );
+
+		// While the agent render still holds the slot, the production
+		// submission must NOT have run yet (it's fairly queued behind the
+		// occupant, not refused outright the way SubmitAgentRenderAsync
+		// would be -- SubmitProductionRenderSync forwards to
+		// SubmitAgentRenderSync's fairness-wait machinery).
+		std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
+		Check( !productionRan.load( std::memory_order_acquire ),
+		       "MONEY ASSERTION (w-2a): the production submission has NOT run yet while the agent render still holds the slot -- "
+		       "it WAITS (fairness ticket), it is not refused outright" );
+
+		// A concurrent agent submit while production waits its turn is
+		// refused outright (SubmitAgentRenderAsync's own fair-queue
+		// refusal: a waiting sync caller -- here, the production submit's
+		// underlying SubmitAgentRenderSync call -- must not be jumped by a
+		// new async submitter).
+		SceneEditController::RenderJobId cutInJobId = SceneEditController::kInvalidRenderJobId;
+		const bool cutInAccepted = controller.SubmitAgentRenderAsync(
+			[&]() {}, String( "cut_in_attempt_w2" ), &cutInJobId );
+		Check( !cutInAccepted,
+		       "a NEW agent submission while the production submit is fairly queued behind the running agent render is REFUSED "
+		       "(fair-queue semantics -- an async submitter cannot jump a waiting caller's turn)" );
+
+		// Release the agent render; the production submission should then
+		// proceed and run.
+		agentReleaseGate.store( true, std::memory_order_release );
+		productionThread.join();
+
+		Check( productionSubmitReturned.load( std::memory_order_acquire ), "the production submission call returns" );
+		Check( productionRan.load( std::memory_order_acquire ),
+		       "MONEY ASSERTION (w-2b): once the agent render's slot frees, the queued production submission proceeds and runs its closure" );
+
+		controller.Stop();
+		pJob->release();
+	}
+
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (w) production queue semantics: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (x) Stop()-during-production: unblocks/refuses honestly, no hang.
+//     Mirrors the existing (l) RunQueuedSyncWaiterUnblocksOnStopTest /
+//     (m) RunStopCancelsInFlightAgentRenderTest shape, but for a
+//     Production-class submission via SubmitProductionRenderSync.
+//////////////////////////////////////////////////////////////////////
+static void RunStopDuringProductionTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (x) Stop() during an in-flight production render unblocks honestly, no hang ===\n" );
+
+	// A LARGE sample count so the render has plenty of progress-callback
+	// checkpoints to actually observe a mid-flight cancel at -- mirrors (i)
+	// RunStopCancelsInFlightAgentRenderTest's heavy scene exactly.  A tiny
+	// sample count (or a closure that merely sleeps with no progress hook
+	// installed at all) could "pass" for the WRONG reason -- the render
+	// either finishes naturally before Stop() acts, or never has anything
+	// for CancelAgentRender_'s tripped flag to reach, since nothing except
+	// the installed progress hook consults it.  Installing that hook (via
+	// AgentRenderProgress(), exactly like RunProductionRenderThroughController
+	// does in the platform shells) inside the submitted closure is the
+	// point of this test, not incidental.
+	const std::string heavyScene =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\n\tsamples 4096\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+		"film\n{\n\twidth 96\n\theight 96\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+		"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+		"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+		"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+	const std::string scenePath = WriteTemp( "rise_agent_production_stop_scene.RISEscene", heavyScene );
+	Check( !scenePath.empty(), "wrote the heavy production-stop scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the heavy native-v7 scene via the CST path (production-stop test)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	std::atomic<bool> productionSubmitReturned{ false };
+	std::thread productionThread( [&]() {
+		SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
+		controller.SubmitProductionRenderSync(
+			[&]() {
+				// Mirrors RunProductionRenderThroughController: install the
+				// controller's own cancel-aware progress hook before
+				// Rasterize() so CancelAgentRender_ (which Stop() calls) has
+				// something downstream to actually abort against, then
+				// restore afterward.
+				IProgressCallback* coordProgress = controller.AgentRenderProgress();
+				pJob->SetProgress( coordProgress );
+				pJob->Rasterize();
+				pJob->SetProgress( nullptr );
+			},
+			String( "production_stop_probe" ), &jobId );
+		productionSubmitReturned.store( true, std::memory_order_release );
+	} );
+
+	// Let the heavy render get properly under way before we pull the rug out.
+	std::this_thread::sleep_for( std::chrono::milliseconds( 40 ) );
+
+	const bool stoppedPromptly = RunWatchdogged( "Stop() during an in-flight production render returns promptly", 5000, [&]() {
+		controller.Stop();
+	} );
+	Check( stoppedPromptly,
+	       "MONEY ASSERTION: Stop() during an in-flight production render (submitted via SubmitProductionRenderSync) returns within "
+	       "the watchdog bound -- it does not hang waiting out the render's full natural duration, mirroring CancelAgentRender_'s "
+	       "existing behaviour for AgentPreview-class renders (see (i) RunStopCancelsInFlightAgentRenderTest)." );
+
+	// The submitting thread must also unblock (Stop() releases queued/
+	// running slot occupants honestly -- see SubmitAgentRenderAsync_Locked's
+	// Stop() refusal + the worker's own cancel-and-drain).
+	const bool submitReturnedPromptly = RunWatchdogged( "the production submit call itself returns after Stop()", 3000, [&]() {
+		productionThread.join();
+	} );
+	Check( submitReturnedPromptly, "the SubmitProductionRenderSync call unblocks (join returns) after Stop(), no hang" );
+	Check( productionSubmitReturned.load( std::memory_order_acquire ), "the production submission call did in fact return" );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (x) Stop() during production: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunAsyncReturnsQuicklyTest();
@@ -2885,6 +3428,11 @@ int main()
 	RunLostEditWedgeRedProveTest();
 	RunSaveVsRenderRedProveTest();
 	RunChurnConcurrentInteractiveTest();
+	RunProductionTripleConcurrencyProofTest();
+	RunDirectRasterizeRedProveTest();
+	RunProductionProgressCompositionTest();
+	RunProductionQueueSemanticsTest();
+	RunStopDuringProductionTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

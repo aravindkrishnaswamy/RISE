@@ -3698,7 +3698,8 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 	const String&                 clientLabel,
 	RenderJobId*                  outJobId,
 	bool                          bypassFairQueueCheck,
-	bool                          pinned )
+	bool                          pinned,
+	RenderClass                   renderClass )
 {
 	(void)slotLk;   // proves the caller holds the lock; not touched here
 
@@ -3786,7 +3787,7 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 		std::lock_guard<std::mutex> statusLk( mJobStatusMutex );
 		jobId = mNextRenderJobId += kControllerRenderJobIdStride;
 		mCurrentRenderJob.id          = jobId;
-		mCurrentRenderJob.renderClass = RenderClass::AgentPreview;
+		mCurrentRenderJob.renderClass = renderClass;
 		mCurrentRenderJob.active      = true;
 		mCurrentRenderJob.clientLabel = clientLabel;   // Fix-round-1 P3-c: surface who submitted this job
 		mCurrentRenderJob.pinned      = pinned;        // Model-B F2 slice S3
@@ -3820,7 +3821,8 @@ bool SceneEditController::SubmitAgentRenderAsync(
 	std::function<void()> fn,
 	const String&         clientLabel,
 	RenderJobId*          outJobId,
-	bool                  pinned )
+	bool                  pinned,
+	RenderClass           renderClass )
 {
 	if( mTxnOpen )
 	{
@@ -3832,7 +3834,7 @@ bool SceneEditController::SubmitAgentRenderAsync(
 	{
 		std::unique_lock<std::mutex> slotLk( mAgentRenderSlotMutex );
 		accepted = SubmitAgentRenderAsync_Locked( slotLk, std::move( fn ), clientLabel, outJobId,
-			/*bypassFairQueueCheck=*/false, pinned );
+			/*bypassFairQueueCheck=*/false, pinned, renderClass );
 	}
 	if( !accepted ) return false;
 
@@ -3851,7 +3853,8 @@ bool SceneEditController::SubmitAgentRenderSync(
 	const String&         clientLabel,
 	RenderJobId*          outJobId,
 	unsigned int          timeoutMs,
-	bool                  pinned )
+	bool                  pinned,
+	RenderClass           renderClass )
 {
 	// Fix-round-1 P1-2: claim a FIFO ticket before attempting to submit,
 	// so a burst of concurrent async submitters cannot systematically
@@ -3937,7 +3940,7 @@ bool SceneEditController::SubmitAgentRenderSync(
 		if( !stoppedBeforeOurTurn )
 		{
 			accepted = SubmitAgentRenderAsync_Locked( slotLk, std::move( fn ), clientLabel, &jobId,
-				/*bypassFairQueueCheck=*/true, pinned );
+				/*bypassFairQueueCheck=*/true, pinned, renderClass );
 		}
 	}   // slotLk released here -- AFTER both the ticket release and the slot claim
 	mAgentRenderDoneCV.notify_all();   // release the NEXT queued waiter (mirrors TicketGuard::Release's own notify)
@@ -3970,6 +3973,22 @@ bool SceneEditController::SubmitAgentRenderSync(
 	}
 	if( caught ) std::rethrow_exception( caught );
 	return true;
+}
+
+// Model-B F2 slice S4: a thin, class-tagged forward onto SubmitAgentRenderSync
+// -- see this method's header doc for why a Production submission shares
+// EVERY line of the single-slot fairness/refusal/park machinery with an
+// agent submission and differs ONLY in the RenderClass tag a status reader
+// observes.  `fn` still runs on the dedicated worker thread (uniform with
+// agent renders); this call still blocks the caller until `fn` completes.
+bool SceneEditController::SubmitProductionRenderSync(
+	std::function<void()> fn,
+	const String&         clientLabel,
+	RenderJobId*          outJobId,
+	unsigned int          queueTimeoutMs )
+{
+	return SubmitAgentRenderSync( std::move( fn ), clientLabel, outJobId, queueTimeoutMs,
+		/*pinned=*/false, RenderClass::Production );
 }
 
 SceneEditController::RenderJobLookup SceneEditController::GetRenderJobStatus( RenderJobId id ) const

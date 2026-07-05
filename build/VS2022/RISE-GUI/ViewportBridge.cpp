@@ -136,6 +136,19 @@ ViewportBridge::ViewportBridge(RenderEngine* engine, QObject* parent)
         releaseLivePreview();
         return;
     }
+
+    // Model-B F2 slice S4: register this controller on the engine so its
+    // production-render entry points (startRender / startAnimationRender)
+    // route through the SAME single-slot coordinator as the interactive
+    // loop and agent renders, instead of calling Job::Rasterize() directly.
+    // Cleared back to nullptr at the START of the destructor, before
+    // `m_controller` is destroyed -- see RenderEngine::attachSceneEditController's
+    // header doc for the full contract.  Mirrors macOS
+    // RISEViewportBridge's -attachSceneEditController: wiring exactly.
+    if (m_engine) {
+        m_engine->attachSceneEditController(static_cast<void*>(m_controller));
+    }
+
     if (m_previewSink) {
         // The sink queries the controller's cancel state at end-of-pass
         // so it can drop a stale dispatch.  Wire the pointer before
@@ -189,6 +202,15 @@ void ViewportBridge::scaleFilmToFit(int surfaceW, int surfaceH, int maxLongEdge)
 ViewportBridge::~ViewportBridge()
 {
     stop();
+    // Model-B F2 slice S4: deregister FIRST, before anything else here --
+    // see the constructor's comment.  Safe even if a stale render is still
+    // draining inside the coordinator: RISE_API_DestroySceneEditController
+    // below is what actually calls Stop()/joins the worker; clearing the
+    // engine's pointer here just stops any NEW production render from
+    // being submitted to a controller that is about to disappear.
+    if (m_engine) {
+        m_engine->attachSceneEditController(nullptr);
+    }
     if (m_controller) {
         // Phase 6.5: detach the dirty-changed C callback BEFORE the
         // controller (and its std::function listener) goes away so

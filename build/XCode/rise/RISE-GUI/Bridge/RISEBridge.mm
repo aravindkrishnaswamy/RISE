@@ -45,6 +45,8 @@
 #include "Rendering/TargetFormat.h"
 #include "Rendering/ViewTransform.h"
 #include "Interfaces/IFrameEncoder.h"
+#include "SceneEditor/SceneEditController.h"
+#include "SceneEditor/CancellableProgressCallback.h"
 
 #include <atomic>
 #include <memory>
@@ -524,11 +526,123 @@ public:
 };
 
 // ============================================================
+// Model-B F2 slice S4: production-render coordinator routing
+// ============================================================
+//
+// Runs `doRasterize` (the platform-specific "actually call
+// Job::Rasterize()/RasterizeAnimationUsingOptions()/RasterizeRegion()"
+// closure) through `controller`'s single-slot coordinator when a
+// controller is attached, so a production render can never overlap the
+// interactive loop or an agent render inside Rasterize() -- see
+// SceneEditController::SubmitProductionRenderSync's header doc for the
+// full rationale.  NULL-safe: with no controller (headless / no scene
+// loaded / between viewport-bridge teardown and the next one's init),
+// this falls back to calling `doRasterize` directly on the calling
+// thread, i.e. today's pre-S4 behaviour.
+//
+// Progress/cancel composition: the Job already has whatever
+// IProgressCallback -setProgressBlock: installed (persistent for the
+// bridge's lifetime -- see that method).  A controller-routed render
+// must NOT lose that hook (the Swift progress bar / cancel button) NOR
+// bypass the controller's OWN cancel (Stop() / a live agent-render
+// cancel) -- so for the duration of `doRasterize` we swap the Job's
+// installed callback for the controller's mCancelProgress
+// (AgentRenderProgress()), pointing ITS `inner` at whatever was
+// installed before (CancellableProgressCallback::SetInner).
+// CancellableProgressCallback::Progress refuses (returns false) the
+// instant EITHER the controller's own cancel has tripped OR the inner
+// (GUI) callback returns false -- so both cancel sources compose
+// correctly with neither able to silently starve the other.  Restored
+// RAII-style (ProgressRestoreGuard shape, matching AgentSession.cpp's
+// house pattern) on every exit, including a throw out of `doRasterize`
+// (OIDN denoise is a documented real throw site).
+static BOOL RunProductionRenderThroughController(
+    IJobPriv* job,
+    SceneEditController* controller,
+    const String& clientLabel,
+    std::function<BOOL()> doRasterize)
+{
+    if (!controller) {
+        return doRasterize();
+    }
+
+    class ProgressRestoreGuard {
+    public:
+        ProgressRestoreGuard(IJobPriv& j, IProgressCallback* priorValue)
+            : mJob(j), mPriorValue(priorValue), mArmed(false) {}
+        void Arm()    { mArmed = true; }
+        void Disarm() { mArmed = false; }
+        ~ProgressRestoreGuard() {
+            if (!mArmed) return;
+            try {
+                mJob.SetProgress(mPriorValue);
+            } catch (...) {
+                GlobalLog()->PrintEx(eLog_Error,
+                    "RISEBridge: exception escaped the production-render progress-hook restore "
+                    "-- the Job's progress callback may be left stale");
+            }
+        }
+    private:
+        ProgressRestoreGuard(const ProgressRestoreGuard&);
+        ProgressRestoreGuard& operator=(const ProgressRestoreGuard&);
+        IJobPriv&           mJob;
+        IProgressCallback*  mPriorValue;
+        bool                mArmed;
+    };
+
+    BOOL result = NO;
+    SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
+    const bool submitted = controller->SubmitProductionRenderSync(
+        [&]() {
+            IProgressCallback* priorProgress = job->GetProgress();
+            CancellableProgressCallback* coordProgress = static_cast<CancellableProgressCallback*>(
+                controller->AgentRenderProgress());
+            coordProgress->SetInner(priorProgress);
+
+            ProgressRestoreGuard progressGuard(*job, priorProgress);
+            progressGuard.Arm();
+            job->SetProgress(coordProgress);
+
+            result = doRasterize();
+
+            job->SetProgress(priorProgress);
+            progressGuard.Disarm();
+            coordProgress->SetInner(nullptr);
+        },
+        clientLabel,
+        &jobId);
+
+    if (!submitted) {
+        // Refused (open transaction, Stop() in progress/racing, or a
+        // fairness-wait timeout) -- fall back to a direct call so a
+        // production render is never silently dropped on the floor.
+        // This mirrors the pre-S4 behaviour for the refusal case; the
+        // ordinary case above is what actually closes the concurrency
+        // gap.
+        GlobalLog()->PrintEx(eLog_Warning,
+            "RISEBridge: production render submission to the coordinator was refused -- "
+            "falling back to a direct Rasterize() call.");
+        return doRasterize();
+    }
+    return result;
+}
+
+// ============================================================
 // RISEBridge implementation
 // ============================================================
 @implementation RISEBridge {
     IJobPriv* _job;
     BlockProgressCallback* _progressCallback;
+    // Model-B F2 slice S4: borrowed, NULL-safe.  Registered by
+    // RISEViewportBridge (via -attachSceneEditController:) once its
+    // SceneEditController exists; cleared back to NULL before that
+    // controller is destroyed.  See -attachSceneEditController:'s header
+    // doc for the full lifetime contract.  When non-NULL, the production
+    // render entry points (-rasterize / -rasterizeAnimation /
+    // -rasterizeRegionLeft:top:right:bottom:) route through it instead of
+    // calling Job::Rasterize() directly, so a production render can never
+    // overlap the interactive loop or an agent render inside Rasterize().
+    SceneEditController* _viewportController;
     // L5a round-5 — TWO independent ViewportFrameStores, one per
     // path.  Production VFS is for the full-quality renderer
     // (Render / Render-Animation buttons), with per-tile updates
@@ -587,6 +701,7 @@ public:
 
         _job = nullptr;
         RISE_CreateJobPriv(&_job);
+        _viewportController = nullptr;
 
         // L5d — interactive GUI: drop file_rasterizeroutput chunks
         // at parse time so loading a scene doesn't auto-write
@@ -1129,8 +1244,10 @@ public:
 
     [self ensureVFSAttachedToRasterizer:rasterizer];
 
-    BOOL result = _job->Rasterize() ? YES : NO;
-    return result;
+    IJobPriv* job = _job;
+    return RunProductionRenderThroughController(
+        _job, _viewportController, String("gui_rasterize"),
+        [job]() -> BOOL { return job->Rasterize() ? YES : NO; });
 }
 
 - (void)setAnimationVideoOutputPath:(NSString *)path {
@@ -1162,7 +1279,10 @@ public:
         movieOutput->release();  // rasterizer now owns it (refcount=1)
     }
 
-    BOOL result = _job->RasterizeAnimationUsingOptions() ? YES : NO;
+    IJobPriv* job = _job;
+    BOOL result = RunProductionRenderThroughController(
+        _job, _viewportController, String("gui_rasterize_animation"),
+        [job]() -> BOOL { return job->RasterizeAnimationUsingOptions() ? YES : NO; });
 
     // Finalize the video file after rendering completes.
     // The movieOutput pointer is still valid because the rasterizer holds a reference.
@@ -1194,7 +1314,12 @@ public:
 
     [self ensureVFSAttachedToRasterizer:rasterizer];
 
-    return _job->RasterizeRegion(left, top, right, bottom) ? YES : NO;
+    IJobPriv* job = _job;
+    return RunProductionRenderThroughController(
+        _job, _viewportController, String("gui_rasterize_region"),
+        [job, left, top, right, bottom]() -> BOOL {
+            return job->RasterizeRegion(left, top, right, bottom) ? YES : NO;
+        });
 }
 
 #pragma mark - Render-time ETA estimator
@@ -1259,6 +1384,13 @@ public:
     // resolution-thrash interfering with production buffers).
     [self ensureInteractiveVFSCreated];
     return static_cast<void*>(_interactiveVFS);
+}
+
+- (void)attachSceneEditController:(void *)opaqueController {
+    // See the header doc for the full lifetime contract (RISEViewportBridge
+    // is the sole caller; registers after creating its controller, clears
+    // to NULL before destroying it).
+    _viewportController = static_cast<SceneEditController*>(opaqueController);
 }
 
 @end

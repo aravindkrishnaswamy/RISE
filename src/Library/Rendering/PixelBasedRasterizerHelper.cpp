@@ -2289,6 +2289,20 @@ void PixelBasedRasterizerHelper::SubSampleRays( ISampling2D* pSampling_, IPixelF
 
 		pSampling = pSampling_;
 		pSampling->addref();
+
+		// Model-B F2 slice S4 fold-in (P3): defensive no-op insurance --
+		// no caller reaches here with a stash still parked (a real kernel
+		// author always calls this BEFORE any SetSampleCountOverride, or
+		// AFTER the override cycle has already restored/cleared the
+		// stash), but a future caller that installs a fresh kernel while
+		// SetSampleCountOverride's stash is still outstanding would
+		// otherwise leak the stashed reference AND leave a dangling
+		// stash for a later samples>1 restore to wrongly reinstall over
+		// this freshly-authored kernel.  Clearing it here makes "a fresh
+		// SubSampleRays always wins" true unconditionally instead of
+		// true-by-absence-of-callers-that-violate-it.
+		safe_release( pSamplingStashedByOverride );
+		pSamplingStashedByOverride = 0;
 	}
 
 	if( pPixelFilter_ )
@@ -2326,10 +2340,15 @@ bool PixelBasedRasterizerHelper::SetSampleCountOverride( int samples )
 			// Ownership transfer: `pSampling` already holds our one
 			// reference; move it to the stash without addref/release so
 			// GetSampleCountOverride's "null pSampling == 1 SPP" read
-			// stays honest while a stash is outstanding.  A pre-existing
-			// stash (e.g. orig=1 -> 64 -> 1 with no kernel ever authored,
-			// followed by a second cycle) is left alone here -- this
-			// branch only fires when `pSampling` itself is non-null.
+			// stays honest while a stash is outstanding.  The
+			// safe_release just below is a DEFENSIVE no-op, unreachable
+			// in the current call graph: this branch only fires when
+			// `pSampling` itself is non-null, and every path that parks
+			// a stash first drains `pSampling` to null (see the
+			// samples>1 branches below), so a pre-existing stash can
+			// never coexist with a live `pSampling` by the time control
+			// reaches here.  Kept as insurance against a future caller
+			// that reaches this branch with both non-null.
 			safe_release( pSamplingStashedByOverride );
 			pSamplingStashedByOverride = pSampling;
 			pSampling = 0;
