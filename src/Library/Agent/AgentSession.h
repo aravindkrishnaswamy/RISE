@@ -268,8 +268,18 @@ namespace RISE
 			//! it, so don't read a session-local id as comparable across
 			//! sessions OR against a coordinator-tracked id from the SAME
 			//! session's OTHER render calls (the two counters are
-			//! independent). 0 is
-			//! never assigned to a real render (reserved "none").
+			//! independent, BUT disjoint BY CONSTRUCTION: coordinator ids
+			//! are always EVEN, session-local ids are always ODD -- see
+			//! mNextSessionLocalRenderJobId's doc -- so a future
+			//! Status(jobId)/Wait(jobId) can tell which counter minted a
+			//! given id and reject/route accordingly). 0 is never assigned
+			//! to a real render (reserved "none").  A FAILED render (ok ==
+			//! false, e.g. a fail-loud camera-override rejection or an
+			//! exception from mJob->Rasterize()) still carries a real,
+			//! nonzero renderJobId when the render actually reached that
+			//! stage -- this field names "a call that ran", not "a call
+			//! that succeeded"; check `ok`, not `renderJobId != 0`, to test
+			//! success.
 			std::uint64_t              renderJobId = 0;
 		};
 
@@ -609,8 +619,27 @@ namespace RISE
 			//! but this particular call has no film/camera override to park
 			//! for) -- see AgentRenderResult::renderJobId's doc for the full
 			//! coordinator-tracked-vs-session-local honesty contract.
-			//! Starts at 1 (0 reserved "none"), single-threaded like the
-			//! rest of this class -- no atomic needed.
+			//!
+			//! Pre-S2 hardening: this counter and a SceneEditController's
+			//! coordinator counter (SceneEditController::mNextRenderJobId)
+			//! are two INDEPENDENT counters that both start small -- without
+			//! a disjointness rule the same numeric id could name two
+			//! different renders in one process (a session-local render and
+			//! a coordinator-tracked render on an attached controller both
+			//! minting "5", say), which a future Status(jobId)/Wait(jobId)
+			//! (S2) would alias onto the wrong job.  Fix: the two spaces are
+			//! disjoint by PARITY -- this counter mints ODD ids only,
+			//! starting at 1 and incrementing by
+			//! kSessionLocalRenderJobIdStride; SceneEditController's
+			//! coordinator counter mints EVEN ids (starts at 2, same
+			//! stride).  See SceneEditController::kControllerRenderJobIdStride's
+			//! doc for why a tagged-high-bit scheme (id | (1ULL<<63)) was
+			//! considered and rejected (it corrupts on the JSON wire path --
+			//! Json.cpp SerializeNumber's exact-integer fast path only
+			//! covers fabs(d) < 9.0e15, and 2^63 cannot even round-trip
+			//! through a double exactly).  Single-threaded like the rest of
+			//! this class -- no atomic needed.
+			static constexpr std::uint64_t kSessionLocalRenderJobIdStride = 2;
 			std::uint64_t mNextSessionLocalRenderJobId = 1;
 		};
 	}

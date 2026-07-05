@@ -1484,7 +1484,11 @@ namespace RISE
 				renderJobId = static_cast<std::uint64_t>( controllerJobId );
 			} else {
 				doRenderWork();
-				renderJobId = mNextSessionLocalRenderJobId++;
+				// Pre-S2 hardening: ODD ids only (see
+				// mNextSessionLocalRenderJobId's doc) -- disjoint from
+				// SceneEditController's EVEN coordinator-tracked ids.
+				renderJobId = mNextSessionLocalRenderJobId;
+				mNextSessionLocalRenderJobId += kSessionLocalRenderJobIdStride;
 			}
 			res.renderJobId = renderJobId;
 

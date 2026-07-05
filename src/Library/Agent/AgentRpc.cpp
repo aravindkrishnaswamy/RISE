@@ -646,7 +646,15 @@ namespace RISE
 				//    monotonically increasing id for this render -- see
 				//    AgentRenderResult::renderJobId's doc for the LIVE
 				//    (controller-tracked) vs headless (session-local)
-				//    semantics.)
+				//    semantics.  Pre-S2 hardening: the two id spaces are
+				//    disjoint BY PARITY -- coordinator-minted ids are always
+				//    EVEN, session-local ids are always ODD -- so a future
+				//    Status(jobId)/Wait(jobId) verb can reject a
+				//    session-local id outright rather than aliasing it onto
+				//    a coordinator job.  A FAILED render (ok:false) still
+				//    carries a real renderJobId when the render actually
+				//    ran -- this field names "a call that ran", not "a call
+				//    that succeeded".)
 				//--------------------------------------------------------------
 				if( m == "render" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );

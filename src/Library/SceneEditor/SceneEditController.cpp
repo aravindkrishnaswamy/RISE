@@ -146,7 +146,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mSaving( false )
 , mCancelCount( 0 )
 , mRenderCount( 0 )
-, mNextRenderJobId( 1 )
+, mNextRenderJobId( kControllerRenderJobIdStride )   // pre-S2 hardening: EVEN ids, disjoint from AgentSession's ODD session-local ids
 , mCurrentRenderJob()
 , mFullResW( 0 )
 , mFullResH( 0 )
@@ -3230,6 +3230,26 @@ bool SceneEditController::RunPreviewRenderParked( const std::function<void()>& f
 // invocation, the no-kick-on-return contract) is UNCHANGED from the base
 // overload; this only adds bookkeeping around the existing critical
 // section.
+//
+// `fn` must NOT call CurrentRenderJob() or any other mMutex-taking method
+// on this controller -- mMutex is a plain (non-recursive) std::mutex and
+// is already held across this whole call; re-entering it from `fn` is an
+// immediate deadlock, not a retry.
+//
+// Pre-S2 hardening: `fn` is AgentSession's doRenderWork, which calls
+// mJob->Rasterize() -- a DOCUMENTED real throw site (OIDN; see
+// AgentSession.h's Render(AgentRenderParams) doc + the SinkUnwindGuard in
+// AgentSession.cpp).  Before this fix, `mCurrentRenderJob.active = false`
+// sat AFTER the `fn()` call in plain sequential code -- a throw out of
+// `fn` skipped it, so `active` stayed true FOREVER (until the next
+// RunPreviewRenderParked / RenderLoop pass happened to overwrite it): a
+// permanent false "render in flight" for any Status()-style consumer.
+// mMutex itself is fine (std::unique_lock unwinds via RAII), but the
+// bookkeeping flag is plain data with no RAII of its own.  Fix: a tiny
+// scope guard (matching the AgentSession.cpp SinkUnwindGuard house idiom)
+// whose destructor flips `active` false on EVERY exit -- normal return OR
+// exception unwind -- runs under the lock already held here, so no new
+// locking in the destructor.
 bool SceneEditController::RunPreviewRenderParked(
 	const std::function<void()>& fn,
 	RenderClass                  renderClass,
@@ -3247,15 +3267,36 @@ bool SceneEditController::RunPreviewRenderParked(
 	std::unique_lock<std::mutex> lk( mMutex );
 	CancelAndParkRender_( lk );
 
-	const RenderJobId jobId = mNextRenderJobId++;
+	const RenderJobId jobId = mNextRenderJobId += kControllerRenderJobIdStride;
 	mCurrentRenderJob.id          = jobId;
 	mCurrentRenderJob.renderClass = renderClass;
 	mCurrentRenderJob.active      = true;
 
-	if( fn ) fn();
-
-	mCurrentRenderJob.active = false;
+	// outJobId is assigned BEFORE fn() runs, not after: the job record
+	// above already reflects a real, already-started render (id minted,
+	// active=true) regardless of whether `fn` later throws, so "this job
+	// existed and ran" is the honest answer even on the throw path -- an
+	// id names a call that ran, not a call that succeeded (mirrors
+	// AgentRenderResult::renderJobId's field doc: a FAILED render still
+	// carries its renderJobId). This does NOT change the documented
+	// untouched-on-REFUSAL contract above (the mTxnOpen early-return still
+	// leaves *outJobId untouched and the counter un-advanced) -- it only
+	// resolves the previously-undocumented throw case in favour of
+	// "assigned", since the alternative (assigning only after a
+	// successful fn()) would silently swallow the id of a render that
+	// genuinely ran and genuinely failed.
 	if( outJobId ) *outJobId = jobId;
+
+	// RAII: flips `active` false on EVERY exit from here down, including
+	// an exception unwinding out of fn() -- runs under mMutex, which is
+	// already held (unique_lock `lk` is still owned at this scope), so no
+	// locking inside the destructor.
+	struct ActiveFlipGuard {
+		RenderJobStatus& job;
+		~ActiveFlipGuard() { job.active = false; }
+	} activeFlipGuard{ mCurrentRenderJob };
+
+	if( fn ) fn();
 
 	// Unlock (end of scope) resumes the render loop's normal wait/cycle --
 	// no kick needed: we made no Document/scene edit, so the interactive
@@ -3834,7 +3875,7 @@ void SceneEditController::RenderLoop()
 			// Model-B F2 slice S1: render-identity bookkeeping at the SAME
 			// existing lock site -- no new synchronization.  This is the
 			// interactive preview pass, so RenderClass::Interactive always.
-			mCurrentRenderJob.id          = mNextRenderJobId++;
+			mCurrentRenderJob.id          = mNextRenderJobId += kControllerRenderJobIdStride;
 			mCurrentRenderJob.renderClass = RenderClass::Interactive;
 			mCurrentRenderJob.active      = true;
 		}

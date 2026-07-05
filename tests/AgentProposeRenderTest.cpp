@@ -37,6 +37,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "../src/Library/Agent/AgentSession.h"
+#include "../src/Library/Agent/Json.h"   // pre-S2 hardening: red-prove the session-local id's exact wire round-trip
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Job.h"
 #include "../src/Library/Interfaces/ICamera.h"
@@ -127,6 +128,7 @@ static void RunCameraOverrideTests();          // fwd decl -- defined below, cal
 static void RunRestoreOnThrowTest();           // P1-A red-prove -- defined below, called from main()
 static void RunMalformedCameraOverrideTests(); // P1-B -- defined below, called from main()
 static void RunRenderJobIdTests();             // Model-B F2 slice S1 -- defined below, called from main()
+static void RunPreS2HardeningTests();          // Model-B F2 slice S1 pre-S2 hardening -- defined below, called from main()
 
 static void RunCoreTests()
 {
@@ -1031,6 +1033,219 @@ static void RunRenderJobIdTests()
 	std::printf( "=== Model-B F2 slice S1: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Pre-S2 hardening (two review-flagged items that must land BEFORE S2
+// builds Status(jobId) on this bookkeeping):
+//
+//   ITEM 1 (P2): a throw out of RunPreviewRenderParked's `fn` must NOT
+//     leave CurrentRenderJob().active stuck at true forever.  Reuses the
+//     ThrowingRasterizeJob seam (a real mJob->Rasterize() throw site, the
+//     same one the P1-A restore-on-throw test exercises) but THIS time
+//     with a controller ATTACHED and a camera override, so the render
+//     actually routes through RunPreviewRenderParked (matching
+//     AgentSession::RenderCore_'s documented routing rule) rather than
+//     running headless.
+//
+//   ITEM 2 (P3, S2-blocking): the controller's coordinator-tracked ids
+//     and AgentSession's session-local ids must be PROVABLY DISJOINT (by
+//     parity: coordinator EVEN, session-local ODD), and a session-local
+//     id must round-trip through the JSON wire serializer EXACTLY (not
+//     just "some number came out the other end").
+//////////////////////////////////////////////////////////////////////
+static void RunPreS2HardeningTests()
+{
+	std::printf( "=== AgentProposeRenderTest: pre-S2 hardening (exception-safe active flip + disjoint render-job ids) ===\n" );
+
+	//----------------------------------------------------------------------
+	// ITEM 1: throw out of a CONTROLLER-ATTACHED, RunPreviewRenderParked-
+	// routed render must leave CurrentRenderJob().active == false.
+	//----------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_throw_active_flip.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the throw-active-flip scene to a temp file" );
+
+		ThrowingRasterizeJob* pJob = new ThrowingRasterizeJob();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "ThrowingRasterizeJob loads the native-v7 scene via the CST path (active-flip test)" );
+
+		RenderJobIdTestController controller( *pJob, /*simulatedRenderMs*/5 );
+		controller.Start();
+		Check( controller.ForTest_WaitForRenders( 1, 2000 ), "controller's initial interactive render fires (active-flip test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the throwing Job (active-flip test)" );
+		if( session )
+		{
+			session->AttachController( &controller );
+			Check( session->HasController(), "active-flip session reports an attached controller" );
+
+			// Force the RunPreviewRenderParked route (matches
+			// AgentSession::RenderCore_'s documented routing rule: a
+			// controller attached + a requested override).
+			AgentRenderParams p;
+			p.camera.hasLocation = true;
+			p.camera.location    = "3.5 0 0";
+			p.camera.hasLookAt   = true;
+			p.camera.lookAt      = "0 0 0";
+
+			bool threw = false;
+			try {
+				session->Render( p );
+			}
+			catch( const std::exception& ) {
+				threw = true;
+			}
+			Check( threw, "controller-routed Render() with a throwing Rasterize() propagates the exception (RED-PROVE the seam fires)" );
+
+			// THE MONEY ASSERTION: unfixed code leaves `active` stuck true
+			// forever after this throw (mCurrentRenderJob.active = false
+			// sat AFTER fn() in plain sequential code, so the throw skips
+			// it) -- this assertion FAILS against that code and PASSES
+			// once the RAII guard flips `active` false on every exit.
+			const SceneEditController::RenderJobStatus afterThrow = controller.CurrentRenderJob();
+			Check( !afterThrow.active,
+			       "ITEM 1 MONEY ASSERTION: CurrentRenderJob().active is FALSE after fn() throws out of RunPreviewRenderParked (RAII guard ran on unwind)" );
+
+			// RED-PROVE THE RED-PROVE: the session/controller are still
+			// usable after the throw -- a follow-up non-throwing render
+			// succeeds AND correctly reports active again while it should,
+			// then inactive again after.
+			pJob->SetThrowOnRasterize( false );
+			AgentRenderParams good;
+			good.camera.hasLocation = true;  good.camera.location = "3.5 0 0";
+			good.camera.hasLookAt   = true;  good.camera.lookAt   = "0 0 0";
+			AgentRenderResult clean = session->Render( good );
+			Check( clean.ok, "a follow-up non-throwing controller-routed Render() succeeds after the earlier throw" );
+			const SceneEditController::RenderJobStatus afterClean = controller.CurrentRenderJob();
+			Check( !afterClean.active, "CurrentRenderJob().active is false after the follow-up render completes normally too" );
+			Check( afterClean.id != afterThrow.id, "the follow-up render was assigned a FRESH id (the counter kept advancing through the throw)" );
+
+			session->AttachController( nullptr );
+		}
+
+		controller.Stop();
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//----------------------------------------------------------------------
+	// ITEM 2a: a controller-attached, no-override render (session-local
+	// id, since no override means it never reaches RunPreviewRenderParked)
+	// and an override render (coordinator id) on the SAME session/
+	// controller yield ids from PROVABLY DISJOINT spaces -- asserted via
+	// the documented parity discriminator (coordinator EVEN, session-local
+	// ODD), not merely "different".
+	//----------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_disjoint_ids.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the disjoint-ids scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene directly (disjoint-ids test)" );
+
+		RenderJobIdTestController controller( *pJob, /*simulatedRenderMs*/5 );
+		controller.Start();
+		Check( controller.ForTest_WaitForRenders( 1, 2000 ), "controller's initial interactive render fires (disjoint-ids test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (disjoint-ids test)" );
+		if( session )
+		{
+			session->AttachController( &controller );
+
+			// No override requested -> does NOT route through
+			// RunPreviewRenderParked -> session-local (ODD) id.
+			const AgentRenderResult noOverride = session->Render( -1 );
+			Check( noOverride.ok, "controller-attached, no-override render succeeds" );
+			Check( ( noOverride.renderJobId % 2 ) == 1,
+			       "ITEM 2a: a controller-attached render with NO override yields an ODD (session-local) renderJobId" );
+
+			// A camera override IS requested -> routes through
+			// RunPreviewRenderParked -> coordinator (EVEN) id.
+			AgentRenderParams p;
+			p.camera.hasLocation = true;  p.camera.location = "3.5 0 0";
+			p.camera.hasLookAt   = true;  p.camera.lookAt   = "0 0 0";
+			const AgentRenderResult withOverride = session->Render( p );
+			Check( withOverride.ok, "controller-attached, WITH-override render succeeds" );
+			Check( ( withOverride.renderJobId % 2 ) == 0,
+			       "ITEM 2a: a controller-attached render WITH an override yields an EVEN (coordinator) renderJobId" );
+
+			Check( withOverride.renderJobId != noOverride.renderJobId,
+			       "ITEM 2a: the two ids are numerically distinct (necessary but not sufficient -- the parity checks above are the real discriminator)" );
+
+			// A second no-override render continues the SAME odd sequence
+			// (proves the discriminator is a stable space, not a fluke of
+			// one call landing on an odd number by chance).
+			const AgentRenderResult noOverride2 = session->Render( -1 );
+			Check( noOverride2.ok, "second controller-attached, no-override render succeeds" );
+			Check( ( noOverride2.renderJobId % 2 ) == 1, "a second no-override render also yields an ODD id" );
+			Check( noOverride2.renderJobId > noOverride.renderJobId, "session-local ids keep increasing across calls" );
+
+			session->AttachController( nullptr );
+		}
+
+		controller.Stop();
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//----------------------------------------------------------------------
+	// ITEM 2b: a session-local renderJobId round-trips through the JSON
+	// wire serializer BYTE-EXACTLY.  This is the concrete red-prove for
+	// the rejected high-bit-tag scheme: id | (1ULL<<63) (~9.22e18) fails
+	// Json.cpp SerializeNumber's `fabs(d) < 9.0e15` exact-integer fast
+	// path, falls through to %.17g (scientific notation), AND cannot even
+	// round-trip through a double bit-exactly (2^63 exceeds the 53-bit
+	// mantissa) -- so this test would FAIL under that scheme. The chosen
+	// parity scheme keeps every realistic id comfortably inside the
+	// exact-double-integer range, so this test PASSES.
+	//----------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_wire_roundtrip.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the wire-roundtrip scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene directly (wire-roundtrip test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (wire-roundtrip test)" );
+		if( session )
+		{
+			const AgentRenderResult r = session->Render( -1 );
+			Check( r.ok, "headless render for the wire-roundtrip test succeeds" );
+			Check( ( r.renderJobId % 2 ) == 1, "headless session-local renderJobId is ODD" );
+
+			// Mirror AgentRpc.cpp's exact wire encoding: MakeNumber(double).
+			const RISE::Agent::JsonValue wire = RISE::Agent::JsonValue::MakeNumber( static_cast<double>( r.renderJobId ) );
+			const std::string serialized = RISE::Agent::JsonSerialize( wire );
+
+			// Must be an exact base-10 integer literal -- NOT scientific
+			// notation, NOT a trailing ".0" -- so a wire client parses it
+			// back as the exact same integer.
+			Check( serialized.find( 'e' ) == std::string::npos && serialized.find( 'E' ) == std::string::npos,
+			       "ITEM 2b: the serialized renderJobId is NOT in scientific notation" );
+			Check( serialized.find( '.' ) == std::string::npos,
+			       "ITEM 2b: the serialized renderJobId has no trailing fractional part" );
+			Check( serialized == std::to_string( r.renderJobId ),
+			       "ITEM 2b: the serialized renderJobId is the EXACT decimal string of the uint64 id" );
+
+			// Full round-trip: parse it back and compare as a uint64,
+			// bit-for-bit.
+			RISE::Agent::JsonValue parsedBack;
+			std::string parseErr;
+			Check( RISE::Agent::JsonParse( serialized, parsedBack, parseErr ), "the serialized renderJobId re-parses as valid JSON" );
+			Check( parsedBack.isNumber(), "the re-parsed value is a JSON number" );
+			const std::uint64_t roundTripped = static_cast<std::uint64_t>( parsedBack.asNumber() );
+			Check( roundTripped == r.renderJobId,
+			       "ITEM 2b MONEY ASSERTION: the renderJobId round-trips through JsonSerialize -> JsonParse EXACTLY (byte-exact wire identity)" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	std::printf( "=== pre-S2 hardening: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunCoreTests();
@@ -1038,6 +1253,7 @@ int main()
 	RunRestoreOnThrowTest();
 	RunMalformedCameraOverrideTests();
 	RunRenderJobIdTests();
+	RunPreS2HardeningTests();
 
 	std::printf( "=== AgentProposeRenderTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -232,9 +232,31 @@ namespace RISE
 		//! cancellation semantics change; it exists so later slices (async
 		//! render worker, pinned-vs-preview, gate retirement) have a stable
 		//! seam to hang off.  0 is the reserved "invalid/none" id -- the
-		//! counter starts at 1.
+		//! counter starts at 2 (see kControllerRenderJobIdStride below).
 		typedef std::uint64_t RenderJobId;
 		static constexpr RenderJobId kInvalidRenderJobId = 0;
+
+		//! Pre-S2 hardening: this controller's coordinator-minted ids and
+		//! AgentSession's session-local ids (AgentSession.h
+		//! mNextSessionLocalRenderJobId) are TWO INDEPENDENT counters that
+		//! both start small -- without a disjointness rule the same numeric
+		//! id can name two different renders in one process, which a future
+		//! Status(jobId)/Wait(jobId) (S2) would alias onto the wrong job.
+		//! Fix: the two spaces are disjoint by PARITY -- coordinator
+		//! (controller-minted) ids are EVEN, starting at 2 and incrementing
+		//! by this stride; session-local ids are ODD, starting at 1 and
+		//! incrementing by the same stride (see AgentSession.h).  A tagged-
+		//! high-bit scheme (id | (1ULL<<63)) was considered and REJECTED:
+		//! the wire path serializes ids through a double
+		//! (JsonValue::MakeNumber -> Json.cpp SerializeNumber), whose
+		//! exact-integer fast path requires fabs(d) < 9.0e15 -- (1ULL<<63)
+		//! is ~9.22e18, so it both (a) falls through to the %.17g
+		//! scientific-notation branch and (b) cannot even round-trip
+		//! through a double exactly (2^63 exceeds the 53-bit mantissa),
+		//! corrupting the id on the wire.  The parity scheme keeps every
+		//! id, for the lifetime of any realistic session, comfortably
+		//! inside the exact-double-integer range.
+		static constexpr RenderJobId kControllerRenderJobIdStride = 2;
 
 		//! What KIND of render a RenderJobId names.  Named for what EXISTS
 		//! TODAY only:
@@ -402,26 +424,42 @@ namespace RISE
 		//! camera-pose override, capture-set-render-restore) cannot race
 		//! DoOneRenderPass's swap of the SAME shared Film/cameras.  `fn` is
 		//! invoked exactly once, synchronously, on the calling thread, with
-		//! the render thread parked and mMutex held; `fn` must not re-enter
-		//! the controller.  Refused (returns false, `fn` NOT invoked) while
+		//! the render thread parked and mMutex HELD; `fn` must not re-enter
+		//! the controller -- in particular it must not call
+		//! CurrentRenderJob() or any other mMutex-taking method on this
+		//! object.  mMutex is a plain (non-recursive) std::mutex, so
+		//! re-entering it from `fn` is an immediate self-deadlock, not a
+		//! stall-and-retry.  Refused (returns false, `fn` NOT invoked) while
 		//! an editor transaction is open -- parking here would stall the
 		//! gesture (same rule as ApplyAgentParamEdit's mTxnOpen refusal).
 		//! Returns true iff `fn` ran.
 		bool RunPreviewRenderParked( const std::function<void()>& fn );
 
-		//! Model-B F2 slice S1: SAME as RunPreviewRenderParked above, plus
-		//! render-identity bookkeeping -- assigns a fresh monotonic
-		//! RenderJobId, records {id, renderClass, active=true} under the SAME
-		//! mMutex hold this method already takes for the cancel-and-park
-		//! (zero new synchronization), runs `fn`, then marks the job record
-		//! inactive before returning.  `clientLabel` is an optional free-form
-		//! diagnostic tag (e.g. the agent transport's session id) -- not
-		//! interpreted, purely for later observability.  `outJobId` (when
-		//! non-null) receives the assigned id -- but ONLY on the path that
-		//! actually runs `fn` (an id names a render that happened); on
-		//! refusal (mTxnOpen open, `fn` never invoked) `*outJobId` is left
-		//! UNTOUCHED and the counter does not advance.  Returns true iff
-		//! `fn` ran (identical refusal contract to the base overload).
+		//! Model-B F2 slice S1: SAME as RunPreviewRenderParked above
+		//! (including the non-recursive-mMutex / no-reentrancy contract on
+		//! `fn`), plus render-identity bookkeeping -- assigns a fresh
+		//! monotonic RenderJobId, records {id, renderClass, active=true}
+		//! under the SAME mMutex hold this method already takes for the
+		//! cancel-and-park (zero new synchronization), runs `fn`, then
+		//! marks the job record inactive before returning -- via an RAII
+		//! guard, so `active` is flipped false on EVERY exit, including an
+		//! exception unwinding out of `fn` (a real throw site: `fn` is
+		//! typically AgentSession's doRenderWork, which calls
+		//! mJob->Rasterize(), and OIDN denoise is a documented real throw
+		//! source -- see AgentSession.h's Render(AgentRenderParams) doc).
+		//! `clientLabel` is an optional free-form diagnostic tag (e.g. the
+		//! agent transport's session id) -- not interpreted, purely for
+		//! later observability.  `outJobId` (when non-null) receives the
+		//! assigned id on the path that actually runs `fn` -- INCLUDING
+		//! when `fn` throws (the job existed and ran; an id names a call
+		//! that ran, not a call that succeeded -- mirrors
+		//! AgentRenderResult::renderJobId's field doc that a FAILED render
+		//! still carries its renderJobId).  On refusal (mTxnOpen open, `fn`
+		//! never invoked) `*outJobId` is left UNTOUCHED and the counter
+		//! does not advance.  Returns true iff `fn` ran (identical refusal
+		//! contract to the base overload) -- note a throw out of `fn`
+		//! propagates PAST this call (it returns true only on the ordinary
+		//! path; an exception unwinds through instead of returning at all).
 		bool RunPreviewRenderParked(
 			const std::function<void()>& fn,
 			RenderClass                  renderClass,
@@ -1285,14 +1323,17 @@ namespace RISE
 
 		// Model-B F2 slice S1: render-identity bookkeeping.  BOTH fields are
 		// guarded by the EXISTING mMutex above -- no new lock.  The counter
-		// starts at 1 (0 = kInvalidRenderJobId / "none assigned yet") and is
-		// SHARED across both RenderClass values (RunPreviewRenderParked's
-		// agent-preview path and RenderLoop's interactive pass both draw
-		// from it), so ids are globally ordered across classes on one
-		// controller.  mCurrentRenderJob is updated at the SAME lock sites
-		// that already existed for mRendering: RunPreviewRenderParked's
-		// cancel-and-park hold, and RenderLoop's two existing
-		// std::lock_guard blocks around mRendering.store(true/false).
+		// starts at 2 and increments by kControllerRenderJobIdStride (EVEN
+		// ids only; 0 = kInvalidRenderJobId / "none assigned yet"; see that
+		// constant's doc for why -- disjoint from AgentSession's ODD
+		// session-local ids) and is SHARED across both RenderClass values
+		// (RunPreviewRenderParked's agent-preview path and RenderLoop's
+		// interactive pass both draw from it), so ids are globally ordered
+		// across classes on one controller.  mCurrentRenderJob is updated
+		// at the SAME lock sites that already existed for mRendering:
+		// RunPreviewRenderParked's cancel-and-park hold, and RenderLoop's
+		// two existing std::lock_guard blocks around
+		// mRendering.store(true/false).
 		RenderJobId     mNextRenderJobId;
 		RenderJobStatus mCurrentRenderJob;
 
