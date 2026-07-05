@@ -1084,6 +1084,257 @@ homogeneous_medium
 	phase isotropic
 }
 
+##################################################
+# DIAL COLOUR PALETTE (2026-07-05).  Physically-based translucent-enamel
+# colorants: each is a spectral absorption curve sigma_a(lambda) [1/scene-unit]
+# for the fume interior_medium, grounded in the real metal-oxide/colloid
+# chemistry vitreous-enamel makers use (anOrdain's own account: cobalt=blue,
+# chromium=green, iron=grey, manganese=purple, copper=turquoise, gold-ruby=plum).
+# The DIAL colour = substrate reflectance(lambda) x medium transmission(lambda)^2
+# (double pass), so the SUBSTRATE is a second lever: SILVER (neutral bright) for
+# most; GOLD (floor_gold, warm) for amber/champagne and warm reds.  Windows sit at
+# sigma_a ~2.4-3.5 (goldruby's visible level); absorbed bands ~46-56 (killed).  To
+# switch the dial: bind a different `interior_medium` on `enamel` (+ `floor_gold`
+# on `en_dome` for a gold ground).  goldruby/plum stays the default.
+#
+# COLOURWAY RECIPES (interior_medium / en_dome substrate) -- the tear-sheet set:
+#   Plum          goldruby            / floor_silver   (default)
+#   Payne's Grey  payne_grey          / floor_silver
+#   Cobalt Blue   cobalt_blue         / floor_silver
+#   Chrome Green  chrome_green        / floor_silver
+#   Turquoise     copper_turquoise    / floor_silver
+#   Amethyst      manganese_amethyst  / floor_silver
+#   Champagne     iron_amber          / floor_gold     (warm ground)
+#   Olive         chrome_green        / floor_gold     (same colorant as Chrome
+#                                                        Green; the GOLD ground
+#                                                        warms/mutes it to olive --
+#                                                        the substrate lever)
+# NOTE: gold-ruby over gold ~= over silver (both grounds reflect red strongly and
+# gold-ruby already kills blue), so a gold-substrate "rose" red is NOT distinct;
+# the substrate only shifts colours whose transmission window overlaps the band
+# where silver and gold reflectance DIFFER (blue/green).
+##################################################
+
+# Iron (Fe) grey -- anOrdain 'Payne's Grey'.  A near-NEUTRAL translucent grey:
+# low, roughly flat absorption, gently RISING into the red so a little more blue
+# is transmitted -> the cool blue/purple undertone anOrdain describes.  Iron in
+# glass (Fe2+/Fe3+) gives the smoky neutral over the SILVER ground.
+piecewise_linear_function
+{
+	name payne_grey_abs
+	cp 400 2.8
+	cp 420 2.8
+	cp 440 3
+	cp 460 3.2
+	cp 480 3.4
+	cp 500 3.6
+	cp 515 3.7
+	cp 530 3.9
+	cp 550 4.1
+	cp 570 4.3
+	cp 590 4.5
+	cp 610 4.7
+	cp 630 4.9
+	cp 650 4.9
+	cp 680 5.1
+	cp 700 5.1
+	cp 720 5.2
+}
+
+homogeneous_medium
+{
+	name payne_grey
+	absorption 1.0 1.0 1.0
+	scattering 0.0 0.0 0.0
+	absorption_spectral payne_grey_abs
+	phase isotropic
+}
+
+# Cobalt (Co2+) BLUE.  Tetrahedral Co2+ absorbs a broad triple band across
+# green-orange-red (~535/590/645 nm) and transmits BLUE (~440 nm window).
+# The classic deep cobalt.  (anOrdain: 'adding cobalt produces a blue'.)
+piecewise_linear_function
+{
+	name cobalt_abs
+	cp 400 4
+	cp 420 3
+	cp 440 2.5
+	cp 460 3
+	cp 480 7
+	cp 500 18
+	cp 515 32
+	cp 530 46
+	cp 550 40
+	cp 570 44
+	cp 590 50
+	cp 610 46
+	cp 630 50
+	cp 650 52
+	cp 680 44
+	cp 700 36
+	cp 720 30
+}
+
+homogeneous_medium
+{
+	name cobalt_blue
+	absorption 3.0 2.8 0.5
+	scattering 0.0 0.0 0.0
+	absorption_spectral cobalt_abs
+	phase isotropic
+}
+
+# Chromium (Cr3+) GREEN.  Two absorption humps -- violet-blue (~440) and red
+# (~650) -- with a transmission WINDOW at green (~515-530).  Chrome green.
+# (anOrdain: 'chromium a green'.)
+piecewise_linear_function
+{
+	name chrome_abs
+	cp 400 40
+	cp 420 44
+	cp 440 48
+	cp 460 38
+	cp 480 20
+	cp 500 8
+	cp 515 3.5
+	cp 530 2.8
+	cp 550 3.5
+	cp 570 9
+	cp 590 22
+	cp 610 38
+	cp 630 48
+	cp 650 52
+	cp 680 46
+	cp 700 38
+	cp 720 32
+}
+
+homogeneous_medium
+{
+	name chrome_green
+	absorption 3.0 0.6 2.8
+	scattering 0.0 0.0 0.0
+	absorption_spectral chrome_abs
+	phase isotropic
+}
+
+# Copper (Cu2+) TURQUOISE.  Broad absorption across the red into the near-IR
+# (rising 550->720), transmitting cyan/blue-green (~460-480 window).
+# Turquoise/teal over silver.
+piecewise_linear_function
+{
+	name copper_abs
+	cp 400 10
+	cp 420 5
+	cp 440 3
+	cp 460 2.5
+	cp 480 2.8
+	cp 500 4
+	cp 515 6
+	cp 530 10
+	cp 550 18
+	cp 570 28
+	cp 590 36
+	cp 610 44
+	cp 630 50
+	cp 650 54
+	cp 680 56
+	cp 700 57
+	cp 720 58
+}
+
+homogeneous_medium
+{
+	name copper_turquoise
+	absorption 3.4 1.3 0.5
+	scattering 0.0 0.0 0.0
+	absorption_spectral copper_abs
+	phase isotropic
+}
+
+# Manganese (Mn3+) AMETHYST.  Broad absorption in the green-yellow (~500-550),
+# transmitting BOTH blue (~440) and red (~680) -> purple/violet.  A traditional
+# amethyst / 'mineral purple' colorant.
+piecewise_linear_function
+{
+	name manganese_abs
+	cp 400 6
+	cp 420 4
+	cp 440 3
+	cp 460 5
+	cp 480 14
+	cp 500 30
+	cp 515 42
+	cp 530 50
+	cp 550 46
+	cp 570 36
+	cp 590 24
+	cp 610 15
+	cp 630 8
+	cp 650 5
+	cp 680 3.5
+	cp 700 4
+	cp 720 5
+}
+
+homogeneous_medium
+{
+	name manganese_amethyst
+	absorption 1.0 3.0 0.8
+	scattering 0.0 0.0 0.0
+	absorption_spectral manganese_abs
+	phase isotropic
+}
+
+# Iron (Fe3+) AMBER.  Absorbs the blue (~400-500) and transmits yellow-orange-
+# red (>~560).  Warm amber/champagne -- shown over the GOLD substrate
+# (floor_gold) for extra warmth (a real 'gold fume' pairing).
+piecewise_linear_function
+{
+	name iron_amber_abs
+	cp 400 52
+	cp 420 48
+	cp 440 42
+	cp 460 32
+	cp 480 22
+	cp 500 13
+	cp 515 9
+	cp 530 6
+	cp 550 4
+	cp 570 3
+	cp 590 2.6
+	cp 610 2.5
+	cp 630 2.4
+	cp 650 2.4
+	cp 680 2.4
+	cp 700 2.4
+	cp 720 2.4
+}
+
+homogeneous_medium
+{
+	name iron_amber
+	absorption 0.2 0.7 3.0
+	scattering 0.0 0.0 0.0
+	absorption_spectral iron_amber_abs
+	phase isotropic
+}
+
+# GOLD substrate (Au, Johnson-Christy) -- the warm ground for amber/rose fume.
+# Same satin finish as floor_silver; the gold's low blue / high red reflectance
+# warms the dial and mutes blues, so pair it with WARM colorants only.
+ggx_material
+{
+	name floor_gold
+	rd en_black
+	rs en_white
+	alphax 0.14
+	alphay 0.14
+	fresnel_mode conductor
+	ior Au_n
+	extinction Au_k
+}
+
 dielectric_material
 {
 	name enamel_glass
