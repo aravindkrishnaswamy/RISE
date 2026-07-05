@@ -172,6 +172,22 @@ namespace
 
 	// Build a temp filename in the OS tmp dir.  Use a fixed prefix +
 	// random suffix per run to avoid collisions across parallel tests.
+	//
+	// The path returned here is ABSOLUTE ($TMPDIR on macOS is typically
+	// /var/folders/..., not "/tmp/").  EncodeViaShim below feeds this
+	// straight to FileRasterizerOutput's constructor, which (per
+	// global.options' checked-in `rendered_output_in_rise_media_folder
+	// TRUE`) unconditionally does
+	// `strcpy(szPattern, getenv("RISE_MEDIA_PATH")); strcat(szPattern,
+	// szPattern_)` — with no check for szPattern_ already being
+	// absolute.  On any dev/CI box that has exported RISE_MEDIA_PATH
+	// per the Quickstart (`export RISE_MEDIA_PATH="$(pwd)/"`), that
+	// turns our absolute temp path into a bogus double-rooted one
+	// (e.g. ".../RISE//var/folders/...") that doesn't exist on disk,
+	// so the write fails and FileRasterizerOutput falls back to its
+	// emergency `fro_temp_*` writer in the CURRENT directory — see
+	// main()'s save/restore of RISE_MEDIA_PATH, which neutralizes the
+	// concatenation for the lifetime of this test instead.
 	std::string MakeTempPathWithoutExt()
 	{
 		const char* tmpdir = std::getenv( "TMPDIR" );
@@ -643,6 +659,31 @@ namespace
 
 int main()
 {
+	// This test hands FileRasterizerOutput ABSOLUTE temp paths (see
+	// MakeTempPathWithoutExt's comment).  FileRasterizerOutput's
+	// constructor unconditionally prepends RISE_MEDIA_PATH onto its
+	// pattern when `rendered_output_in_rise_media_folder` is TRUE (the
+	// checked-in global.options default) — a real, intentional piece
+	// of library behaviour for the SCENE-AUTHORED relative patterns
+	// every production caller actually passes it.  No production
+	// caller ever hands it an absolute path, so that concatenation
+	// never needs to special-case one.  This test is the exception:
+	// it exists to exercise the shim in isolation, so it must
+	// neutralize the concatenation for its own lifetime rather than
+	// asking the library to change that contract.  Save/restore
+	// RISE_MEDIA_PATH around the whole run so a dev shell that has it
+	// exported (per the Quickstart) doesn't turn our absolute temp
+	// paths into a bogus double-rooted path that fails to open and
+	// falls back to littering fro_temp_* files in the cwd.
+	const char* savedMediaPath = std::getenv( "RISE_MEDIA_PATH" );
+	const bool hadMediaPath = ( savedMediaPath != nullptr );
+	const std::string savedMediaPathValue = hadMediaPath ? savedMediaPath : std::string();
+#ifdef _WIN32
+	_putenv_s( "RISE_MEDIA_PATH", "" );
+#else
+	setenv( "RISE_MEDIA_PATH", "", 1 );
+#endif
+
 	std::cout << "FileRasterizerOutputShimTest L3 — shim → file ≡ L2 IFrameEncoder bytes\n";
 	std::cout << "----------------------------------------------------------------------\n";
 
@@ -655,5 +696,20 @@ int main()
 
 	std::cout << "----------------------------------------------------------------------\n";
 	std::cout << "passed " << gPassCount << ", failed " << gFailCount << "\n";
+
+	if ( hadMediaPath ) {
+#ifdef _WIN32
+		_putenv_s( "RISE_MEDIA_PATH", savedMediaPathValue.c_str() );
+#else
+		setenv( "RISE_MEDIA_PATH", savedMediaPathValue.c_str(), 1 );
+#endif
+	} else {
+#ifdef _WIN32
+		_putenv_s( "RISE_MEDIA_PATH", "" );
+#else
+		unsetenv( "RISE_MEDIA_PATH" );
+#endif
+	}
+
 	return gFailCount == 0 ? 0 : 1;
 }
