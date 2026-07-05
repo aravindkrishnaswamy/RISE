@@ -1721,7 +1721,203 @@ static void RunInterleavedMintNoClobberTest()
 }
 
 //////////////////////////////////////////////////////////////////////
-// (q) Fix-round-3 CHURN RED-PROVE / permanent regression test: the
+// Fix-round-4 P2 test infra ---------------------------------------------
+//
+// A controller that gates on BOTH sides of the real P2 race:
+//
+//   * ForTest_OnAboutToMintInteractivePass -- RenderLoop calls this at the
+//     END of its unlocked window, immediately BEFORE it re-acquires mMutex
+//     to (re-check the agent gate and, if still clear) mint this pass's
+//     mCurrentRenderJob record.
+//   * ForTest_OnAgentWorkerAboutToParkRender -- the agent worker calls this
+//     right after pulling a submission out of the slot (the mint + flag-
+//     set in SubmitAgentRenderAsync_Locked has ALREADY happened by this
+//     point), but BEFORE it acquires mMutex via CancelAndParkRender_.
+//
+// Both hooks fire UNLOCKED, so a test can independently control which side
+// reaches its own mMutex acquisition first -- releasing RenderLoop's gate
+// while the worker's gate is STILL held guarantees RenderLoop's mint block
+// is the one that wins the mMutex race, which is exactly the ordering the
+// P2 bug needs: the agent's mint + flag-set already landed, but RenderLoop
+// still gets to mMutex FIRST.  Without this second (worker-side) gate, the
+// worker's own CancelAndParkRender_ mMutex acquisition can win that race
+// first purely by scheduler luck, holding mMutex for the whole (slow)
+// closure and making RenderLoop's mint block WAIT on the mutex rather than
+// race it -- which cannot exercise the bug (measured: the single-gate
+// version of this test passed even with the P2 fix's in-lock re-check
+// physically deleted, because the worker always got to mMutex first in
+// practice).
+//////////////////////////////////////////////////////////////////////
+class MintSeamController : public SceneEditController
+{
+public:
+	explicit MintSeamController( IJobPriv& job ) : SceneEditController( job, /*interactiveRasterizer*/0 ) {}
+
+	std::atomic<bool> mintHookEntered{ false };
+	std::atomic<bool> releaseMintGate{ false };
+	std::atomic<bool> workerHookEntered{ false };
+	std::atomic<bool> releaseWorkerGate{ false };
+
+protected:
+	void ForTest_OnAboutToMintInteractivePass() override
+	{
+		mintHookEntered.store( true, std::memory_order_release );
+		while( !releaseMintGate.load( std::memory_order_acquire ) )
+		{
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+
+	void ForTest_OnAgentWorkerAboutToParkRender() override
+	{
+		workerHookEntered.store( true, std::memory_order_release );
+		while( !releaseWorkerGate.load( std::memory_order_acquire ) )
+		{
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+};
+
+//////////////////////////////////////////////////////////////////////
+// (q) Fix-round-4 P2 DETERMINISTIC RED-PROVE: mint an agent job (its mint
+//     + flag-set fully lands), with BOTH RenderLoop's mint attempt and the
+//     agent worker's own mMutex acquisition held open on separate gates,
+//     then release RenderLoop's gate FIRST (while the worker is still
+//     held back) so RenderLoop's mint block deterministically wins the
+//     mMutex race and runs its (re-check-and-skip, post-fix) or
+//     (unconditional-clobber, pre-fix) mint logic against the agent's
+//     already-landed record.  This is the MINT-clobber sibling of test
+//     (p)'s completion-clobber -- (p) forces the race at the interactive
+//     pass's completion write; this test forces it at the interactive
+//     pass's MINT itself, which is the P2 gap: pre-fix, RenderLoop's mint
+//     block took mMutex and wrote mCurrentRenderJob UNCONDITIONALLY with
+//     no re-check of mAgentRenderBlocksInteractive.
+//////////////////////////////////////////////////////////////////////
+static void RunMintClobberRedProveTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (q) fix-round-4 P2 RED-PROVE: RenderLoop's own mint does not clobber an interleaved agent mint ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_async_mintclobber.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the mint-clobber scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (mint-clobber test)" );
+
+	MintSeamController controller( *pJob );
+	controller.Start();   // NOT suppressed -- we need RenderLoop to actually reach the pre-mint hook
+
+	// Wait for RenderLoop to be parked in the pre-mint gap (past its own
+	// line-4473 gate snapshot -- which read mAgentRenderBlocksInteractive
+	// as false, since nothing has submitted yet -- and blocked in our
+	// hook, not yet at the in-lock re-check/mint).
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !controller.mintHookEntered.load( std::memory_order_acquire ) &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( controller.mintHookEntered.load( std::memory_order_acquire ), "RenderLoop is genuinely parked in the pre-mint gap before we submit the agent job" );
+
+	// Submit an agent render NOW, while RenderLoop is parked in the gap
+	// between its own gate snapshot and its mint.  SubmitAgentRenderAsync_Locked
+	// mints {agentJobId, AgentPreview, active=true} into mCurrentRenderJob
+	// and only afterward sets mAgentRenderBlocksInteractive -- so the
+	// agent's mint genuinely lands BEFORE RenderLoop's flag is set, let
+	// alone before RenderLoop's own in-lock re-check runs.  The worker
+	// thread will wake, pull the submission out of the slot, and then
+	// park on its OWN gate (ForTest_OnAgentWorkerAboutToParkRender) before
+	// it ever touches mMutex -- so it cannot race RenderLoop for mMutex
+	// yet, no matter how the scheduler would otherwise order the two
+	// threads.
+	std::atomic<bool> agentRan{ false };
+	SceneEditController::RenderJobId agentJobId = SceneEditController::kInvalidRenderJobId;
+	const bool accepted = controller.SubmitAgentRenderAsync(
+		[&]() { agentRan.store( true, std::memory_order_release ); },
+		String( "mint_clobber_probe" ), &agentJobId );
+	Check( accepted, "the agent submission is accepted while RenderLoop sits in the pre-mint gap" );
+	Check( agentJobId != SceneEditController::kInvalidRenderJobId, "the agent submission gets a real id" );
+
+	// Confirm the agent's record is genuinely the CURRENT record before we
+	// release RenderLoop -- this is the state the pre-fix code would have
+	// clobbered.
+	bool sawAgentRecord = false;
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( std::chrono::steady_clock::now() < deadline ) {
+			const SceneEditController::RenderJobLookup lk = controller.GetRenderJobStatus( agentJobId );
+			if( lk.found ) { sawAgentRecord = true; break; }
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( sawAgentRecord, "the agent job's record is the CURRENT record while RenderLoop is still parked pre-mint" );
+
+	// Confirm the WORKER is genuinely parked on ITS gate too, before mMutex
+	// -- i.e. it cannot yet contend for mMutex, so releasing RenderLoop's
+	// gate next is guaranteed to let RenderLoop's mint block reach mMutex
+	// first.
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !controller.workerHookEntered.load( std::memory_order_acquire ) &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( controller.workerHookEntered.load( std::memory_order_acquire ), "the agent worker is genuinely parked before mMutex, unable to contend for it yet" );
+
+	// NOW release RenderLoop's pre-mint gate ONLY -- the worker is still
+	// held back on its own gate, so RenderLoop's mint block is GUARANTEED
+	// to reach mMutex first.  Pre-fix: RenderLoop immediately mints a
+	// fresh Interactive record unconditionally, stomping the agent's
+	// record we just confirmed above.  Post-fix: RenderLoop re-checks
+	// mAgentRenderBlocksInteractive (true, set by the accepted submission
+	// above) inside that SAME mMutex hold and skips the mint entirely for
+	// this iteration.
+	controller.releaseMintGate.store( true, std::memory_order_release );
+
+	// Give RenderLoop's (correct, post-fix) skip -- or (buggy, pre-fix)
+	// clobbering mint -- time to land.  RenderLoop is not competing with
+	// the worker for mMutex (still gated), so this is a generous margin,
+	// not a race window of its own.
+	std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
+
+	const SceneEditController::RenderJobLookup afterRelease = controller.GetRenderJobStatus( agentJobId );
+	Check( afterRelease.found,
+	       "FIX-ROUND-4 P2 MONEY ASSERTION: the agent job's record is STILL FOUND after RenderLoop's mint block has had a clean, "
+	       "uncontested shot at mMutex -- pre-fix, RenderLoop's unconditional mint at this site would have overwritten "
+	       "mCurrentRenderJob with a fresh Interactive-class record, and GetRenderJobStatus(agentJobId) would report "
+	       "not-found for the whole remainder of the agent job's real run." );
+	Check( afterRelease.found && afterRelease.status.renderClass == SceneEditController::RenderClass::AgentPreview,
+	       "the record found (if any) is still the AgentPreview record, not a clobbering Interactive one" );
+
+	// NOW release the worker's gate -- let the agent job actually run and
+	// complete.
+	controller.releaseWorkerGate.store( true, std::memory_order_release );
+
+	Check( controller.WaitForRenderJob( agentJobId, 5000 ), "WaitForRenderJob eventually observes the agent job's REAL completion" );
+	Check( agentRan.load( std::memory_order_acquire ), "the agent closure actually ran" );
+
+	// The interactive loop must resume normally afterward -- not wedged by
+	// the skip-and-continue this fix adds.  The skipped iteration consumed
+	// no edit of its own (isExplicitEdit's local scope ended with the
+	// `continue`, same as the pre-existing line-4473 bounce), so nudge a
+	// fresh edit via the public OnTimeScrub kick (mirrors this file's other
+	// tests' use of it as a pointer-free KickRender) and require at least
+	// one MORE interactive pass to complete.
+	const unsigned int countAfterAgent = controller.ForTest_GetRenderCount();
+	controller.OnTimeScrub( 0.01 );
+	Check( controller.ForTest_WaitForRenders( countAfterAgent + 1, 5000 ),
+	       "the interactive loop resumes and completes at least one more pass after the agent job releases the gate (skip-and-continue does not wedge RenderLoop)" );
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (q) mint-clobber RED-PROVE: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (r) Fix-round-3 CHURN RED-PROVE / permanent regression test: the
 //     reviewer's repro -- churn N throwaway AgentSessions (mint,
 //     RenderAsync, destroy immediately) while a CONCURRENT interactive
 //     thread keeps kicking real render passes via OnTimeScrub.  This is
@@ -1802,7 +1998,7 @@ static void RunChurnConcurrentInteractiveTest()
 	pJob->release();
 	std::remove( scenePath.c_str() );
 
-	std::printf( "=== (q) churn under concurrent interactive: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+	std::printf( "=== (r) churn under concurrent interactive: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
 int main()
@@ -1824,6 +2020,7 @@ int main()
 	RunNoStaleOutstandingIdTest();
 	RunProgressRestoredOnThrowTest();
 	RunInterleavedMintNoClobberTest();
+	RunMintClobberRedProveTest();
 	RunChurnConcurrentInteractiveTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );

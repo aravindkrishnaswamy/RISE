@@ -3520,6 +3520,14 @@ void SceneEditController::AgentRenderWorkerLoop_()
 		}   // slotLk released here -- a concurrent SubmitAgentRenderAsync's
 		    // occupancy check is never blocked by the render that follows.
 
+		// Fix-round-4 P2 RED-PROVE test seam -- no-op in production (see
+		// the declaration doc).  This is the narrow real window a test
+		// needs: the submission's mint + flag-set already happened (in
+		// SubmitAgentRenderAsync_Locked, before this thread was even
+		// woken), but this thread has not yet raced RenderLoop's own mint
+		// block for mMutex.
+		ForTest_OnAgentWorkerAboutToParkRender();
+
 		std::exception_ptr caught;
 		{
 			// Cancel-and-park the interactive thread -- identical critical
@@ -4535,6 +4543,13 @@ void SceneEditController::RenderLoop()
 			mInteractiveImpl->SetSampleCount( isPolishPass ? kPolishSampleCount : 1 );
 		}
 
+		// Fix-round-4 P2 RED-PROVE test seam -- no-op in production (see
+		// the declaration doc).  Sits at the END of the unlocked window
+		// between the line-4473 gate snapshot and the mint block's own
+		// in-lock re-check just below, so a test override can block here
+		// to force an agent mint to land in that exact gap.
+		ForTest_OnAboutToMintInteractivePass();
+
 		// Both rendering transitions are serialised under mMutex so
 		// OnTimeScrub (which mutates scene state that DoOneRenderPass
 		// is reading) can hold the lock across its wait+mutate+kick
@@ -4546,9 +4561,32 @@ void SceneEditController::RenderLoop()
 		// Fix-round-3 (churn UAF): remember the id THIS PASS mints so the
 		// completion write below can be OWNERSHIP-CHECKED -- see that
 		// site's comment for the clobber this closes.
+		//
+		// Fix-round-4 P2: the line-4473 check above is a SNAPSHOT taken
+		// before ~60 unlocked lines of refinement/polish bookkeeping ran
+		// -- SubmitAgentRenderAsync_Locked can mint its own AgentPreview
+		// record into mCurrentRenderJob and only THEN set
+		// mAgentRenderBlocksInteractive in the gap between that snapshot
+		// and this mMutex acquisition, and nothing between the two sites
+		// re-checked the flag.  Result: this block would mint a fresh
+		// Interactive record unconditionally and stomp the agent job's
+		// record the moment it landed -- the same clobber the mint-site
+		// doc (mAgentRenderBlocksInteractive's declaration comment) claims
+		// is structurally impossible.  Re-check the flag HERE, inside the
+		// same mMutex hold this block mints under, immediately before the
+		// mint -- mirroring line 4473's own gate exactly (same flag, same
+		// `continue`-and-skip-this-iteration semantics: don't mint, don't
+		// flip mRendering, don't run DoOneRenderPass this iteration; the
+		// pending edit/refinement tick is picked back up next iteration
+		// exactly as a line-4473 bounce already handles).  This closes the
+		// window without changing what the flag means: it still gates
+		// "may an interactive pass mint/start", it now just gates it at
+		// the ONE site that actually mints, not only at an earlier
+		// snapshot that unlocked code could invalidate.
 		RenderJobId thisPassJobId = kInvalidRenderJobId;
 		{
 			std::lock_guard<std::mutex> lk( mMutex );
+			if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) continue;
 			mCancelProgress.Reset();
 			mRendering.store( true, std::memory_order_release );
 			// Model-B F2 slice S1: render-identity bookkeeping.  Model-B
@@ -4571,40 +4609,65 @@ void SceneEditController::RenderLoop()
 			}
 		}
 
-		DoOneRenderPass();
-		mRenderCount.fetch_add( 1, std::memory_order_acq_rel );
-
-		// Set rendering=false and notify any waiter (OnTimeScrub uses
-		// this to wait until the in-flight pass observes the cancel
-		// and returns — without it, the animator's keyframe-driven
-		// mesh/BSP rebuilds race with an in-flight IntersectRay).
+		// Fix-round-4 P3-1: RAII active-flip guard around the pass itself,
+		// matching the shape RunPreviewRenderParked's ActiveFlipGuard and
+		// the agent worker's ActiveFlipGuard already use -- WITHOUT this,
+		// an exception out of DoOneRenderPass() (OIDN denoise is a
+		// DOCUMENTED real throw site -- see PixelBasedRasterizerHelper.cpp's
+		// FrameStoreBulkBracket comment -- and the refinement/polish paths
+		// above do turn preview denoise on) would skip both the
+		// `mRendering.store( false, ... )` and the ownership-checked
+		// `active = false` clear below, leaving THIS pass's job record
+		// (and mRendering) stuck true forever -- every later status poll
+		// for this job would report "still running" permanently, and
+		// CancelAndParkRender_ callers (OnTimeScrub, RunPreviewRenderParked,
+		// the agent worker, Stop()) would block forever waiting for
+		// mRendering to go false.  Scoped as tightly as possible (this
+		// nested block, not the whole loop body) so its destructor fires
+		// at EXACTLY the same point the old unconditional completion write
+		// used to -- right after DoOneRenderPass()/mRenderCount, still
+		// BEFORE the polish-pass post-roll below -- so this fix changes
+		// nothing about the non-exceptional timing other callers observe.
+		// Honest reachability note: RenderLoop runs as `mRenderThread`'s
+		// top-level entry point with no surrounding try/catch (see the
+		// ctor's `std::thread( &RenderLoop, this )`), so on the common
+		// standard-library implementations an exception that unwinds all
+		// the way out of a thread's entry function invokes
+		// std::terminate() WITHOUT running stack unwinding (this guard's
+		// destructor would not get a chance to run either) -- today's
+		// actual failure mode for an uncaught throw here is process
+		// termination, not a stuck flag.  The guard is added anyway, for
+		// the same reason RunPreviewRenderParked's and the agent worker's
+		// already exist: it is cheap, it makes all three job-opening sites
+		// structurally consistent, and it is the correct shape regardless
+		// of whether a future refactor (or a platform where thread-entry
+		// exceptions DO unwind) changes today's terminate-not-unwind
+		// behaviour.
 		{
-			std::lock_guard<std::mutex> lk( mMutex );
-			mRendering.store( false, std::memory_order_release );
-			{
-				// Fix-round-3 (churn UAF): OWNERSHIP-CHECKED clear.  Before
-				// this fix, this write was unconditional -- if an agent
-				// render was submitted (SubmitAgentRenderAsync_Locked's
-				// mint) WHILE this interactive pass was mid-flight (running
-				// DoOneRenderPass ABOVE with mMutex released -- the mint has
-				// no dependency on mRendering/mMutex), the agent's job
-				// record would already have overwritten mCurrentRenderJob
-				// by the time we get here, and this unconditional
-				// `active = false` would clobber the AGENT's still-running
-				// job's record -- exactly the mechanism that let
-				// DrainAsyncRender_'s WaitForRenderJob observe a
-				// false-complete for a job whose worker closure was still
-				// executing against a session about to be freed (the
-				// documented churn UAF).  Only clear if the record still
-				// names THIS PASS's id.
-				std::lock_guard<std::mutex> statusLk( mJobStatusMutex );
-				if( mCurrentRenderJob.id == thisPassJobId )
-				{
-					mCurrentRenderJob.active = false;   // Model-B F2 slice S1/S2a: nested mJobStatusMutex, same site as the store above
+			struct ActiveFlipGuard {
+				SceneEditController& self;
+				RenderJobId          jobId;
+				~ActiveFlipGuard() {
+					std::lock_guard<std::mutex> lk( self.mMutex );
+					self.mRendering.store( false, std::memory_order_release );
+					{
+						// Same ownership-checked clear as fix-round-3 (churn
+						// UAF) used unconditionally at this same site -- see
+						// that fix's history for the clobber this guards
+						// against.
+						std::lock_guard<std::mutex> statusLk( self.mJobStatusMutex );
+						if( self.mCurrentRenderJob.id == jobId )
+						{
+							self.mCurrentRenderJob.active = false;
+						}
+					}
+					self.mCV.notify_all();
 				}
-			}
+			} activeFlipGuard{ *this, thisPassJobId };
+
+			DoOneRenderPass();
+			mRenderCount.fetch_add( 1, std::memory_order_acq_rel );
 		}
-		mCV.notify_all();
 
 		// Polish-pass post-roll.  Three transitions land here:
 		//

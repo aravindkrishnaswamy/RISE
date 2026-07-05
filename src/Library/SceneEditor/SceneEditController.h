@@ -1276,6 +1276,30 @@ namespace RISE
 		//! work without needing a real scene + caster + film.
 		virtual void DoOneRenderPass();
 
+		//! Fix-round-4 P2 RED-PROVE test hook.  Called by RenderLoop on
+		//! every iteration, unlocked, immediately BEFORE it re-acquires
+		//! mMutex to (re-check the agent gate and, if still clear) mint
+		//! this pass's mCurrentRenderJob record -- i.e. exactly the seam
+		//! a test needs to deterministically land an agent-render mint
+		//! (SubmitAgentRenderAsync_Locked) in the window the P2 fix
+		//! closes.  No-op in production (empty base implementation);
+		//! test overrides can block here until released.
+		virtual void ForTest_OnAboutToMintInteractivePass() {}
+
+		//! Fix-round-4 P2 RED-PROVE test hook, the WORKER-side twin of
+		//! ForTest_OnAboutToMintInteractivePass above.  Called by
+		//! AgentRenderWorkerLoop_ once per occupant, unlocked, immediately
+		//! AFTER it releases mAgentRenderSlotMutex (the submission has
+		//! already been minted and pulled out of the slot) but BEFORE it
+		//! acquires mMutex via CancelAndParkRender_ -- i.e. the narrow real
+		//! window between SubmitAgentRenderAsync_Locked's flag-set and the
+		//! worker's own mMutex acquisition, which is what RenderLoop's mint
+		//! block can otherwise race to grab first.  A test can hold the
+		//! worker open here to give RenderLoop's mint attempt a clean,
+		//! deterministic shot at that race instead of relying on raw
+		//! scheduler timing.  No-op in production.
+		virtual void ForTest_OnAgentWorkerAboutToParkRender() {}
+
 	private:
 		void RenderLoop();
 		void KickRender();
@@ -1622,10 +1646,31 @@ namespace RISE
 		// mCurrentRenderJob write) by SubmitAgentRenderAsync for the
 		// FULL duration from mint through worker completion; cleared
 		// (under mMutex) by the worker right before it clears the slot.
-		// RenderLoop's wake predicate AND its per-pass mint gate both
-		// require this to be false before starting/minting a NEW
-		// interactive pass -- so the two "job openers" can never race
-		// for the same mCurrentRenderJob record.
+		//
+		// Fix-round-4 P3-2: the paragraph below used to claim RenderLoop's
+		// per-pass "mint gate" (not just its wake predicate) already
+		// required this flag false, which was NOT what the code did at the
+		// time -- the mint block took mMutex and minted unconditionally,
+		// with no re-check between the wake predicate/line-4473 snapshot
+		// and the mint a good ~60 unlocked lines later.  That gap was a
+		// real, reachable clobber (round-4 P2's RED-PROVE test forces it).
+		// P2's fix closes it by re-checking this flag a SECOND time, INSIDE
+		// the same mMutex hold the mint block itself takes, immediately
+		// before minting -- so as of that fix, the claim below is actually
+		// true: RenderLoop consults this flag twice (the wake predicate
+		// AND the 4473 post-wake snapshot, both before doing any
+		// refinement/polish bookkeeping; then again, authoritatively,
+		// right before the mint under mMutex) and skips minting outright
+		// if it's set at that final check, so the two "job openers" cannot
+		// land overlapping mints on mCurrentRenderJob.  The remaining
+		// exposure this does NOT need to close: an agent mint that lands
+		// AFTER RenderLoop's final in-lock check has already passed (i.e.
+		// RenderLoop's mint runs first) is fine as-is -- both mint sites'
+		// own completion writes are ownership-checked (fix-round-3, churn
+		// UAF) against the id they themselves minted, so whichever pass's
+		// mint loses the race still gets its own clean completion later;
+		// only an UNGUARDED unconditional mint clobbering an ALREADY-
+		// LANDED record was ever the bug.
 		std::atomic<bool>           mAgentRenderBlocksInteractive;
 		std::string                 mLastSaveError;
 		std::atomic<unsigned int>   mCancelCount;
