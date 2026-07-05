@@ -787,6 +787,17 @@ namespace RISE
 		//! param.  Brace-safe (drops nodes only; token-separating Trivia keeps neighbours from gluing).
 		Document DocRemoveParam( const Document& doc, NodeId chunkId, const std::string& role, int* visits = nullptr );
 
+		//! Shared-undo U1 P1-2 fix (round 1): like DocRemoveParam but removes ONLY the `occ`-th occurrence of
+		//! `role` (0 = first, matching WithParamValue's `++seen == occ` counting convention), leaving every
+		//! OTHER occurrence -- including its own trivia -- byte-exact.  DocRemoveParam (which strips ALL
+		//! occurrences) exists for a different purpose (the object-transform commit's "delete every component-
+		//! transform param" idiom) and stays as-is; this is for the agent-edit Undo inverse of a param INSERT
+		//! (SceneEditor::RouteCstParamRemove_ -> Job::ApplyCstParamRemoveChecked), where removing every same-
+		//! role occurrence would silently delete OTHER edits a repeatable param accumulated after the agent's
+		//! insert -- the Undo was only ever asked to revert its own occurrence.  No-op (returns `doc` unchanged)
+		//! if the chunk or the `occ`-th occurrence is absent.
+		Document DocRemoveParamOcc( const Document& doc, NodeId chunkId, const std::string& role, int occ, int* visits = nullptr );
+
 		//! RENAME a chunk (item 7, the D14 driver): set the chunk's `name` to
 		//! `newName` AND rewrite every referrer's value to `newName`, found from the
 		//! traced reference graph (TraceReferences -- NOT a re-resolution). The

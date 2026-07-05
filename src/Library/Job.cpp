@@ -9697,11 +9697,15 @@ int Job::ApplyCstParamEditImpl_( const char* entityName, const char* entityKind,
 
 // Shared-undo U1: the inverse of an agent-originated param INSERT (see the IJob virtual doc).  Resolution
 // mirrors ApplyCstParamEditImpl_ exactly (same DocFindByNameAnyRole call, same camera-unique-fallback rule) --
-// only the Document edit differs (DocRemoveParam instead of DocSetOrAddParamValue).  Always full-derivability-
+// only the Document edit differs (DocRemoveParamOcc instead of DocSetOrAddParamValue).  Always full-derivability-
 // gated: the only caller is the agent Undo path (SceneEditor::ApplyRevertMutation's SetAgentCstParam arm, via
 // SceneEditor::RouteCstParamRemove_ -- reached from SceneEditController::Undo()), which -- like every
 // agent-originated Document mutation -- must never commit a head that would fail to re-derive in document order.
-int Job::ApplyCstParamRemoveChecked( const char* entityName, const char* entityKind, const char* role )
+// P1-2 fix (round 1): removes ONLY the `occ`-th occurrence (Cst::DocRemoveParamOcc), not every same-role
+// occurrence (the pre-fix Cst::DocRemoveParam) -- see the IJob virtual doc for why "every occurrence" is wrong
+// here: a repeatable param can accumulate MORE occurrences (via other edits) between the agent's insert and this
+// Undo, and this Undo must revert only its own occurrence.
+int Job::ApplyCstParamRemoveChecked( const char* entityName, const char* entityKind, const char* role, int occ )
 {
 	if( !pCstDocument || !entityName || !role ) return 0;
 	const bool uniqueFallback = ( entityKind && std::string( entityKind ) == "camera" );
@@ -9710,7 +9714,7 @@ int Job::ApplyCstParamRemoveChecked( const char* entityName, const char* entityK
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamRemoveChecked:: `%s` not found or ambiguous in the CST Document; remove rejected", entityName );
 		return 0;
 	}
-	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, id, role );
+	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParamOcc( *pCstDocument, id, role, occ );
 	return DeriveEditedCstDocument_( std::move( d1 ), id, entityName, role, /*requireFullDerivability*/ true );
 }
 
@@ -10131,17 +10135,27 @@ namespace {
 
 	// Model-B F5 slice S2: the value of a chunk's first `pname` param (e.g. "name" / "variant"), "" if absent.
 	// Mirrors the CST tree shape ParseChunk builds: a Param kid whose first Token kid is the pname (role
-	// "pname") and whose subsequent Token kids are the pvalue tokens.
+	// "pname") and whose subsequent kids are the pvalue Token(s) interleaved with inter-value Trivia.
+	//
+	// P1-1 sibling fix (round 1): this is the IDENTICAL first-token-only bug found in
+	// SceneEditController.cpp's AgentReadFirstParamValue -- a multi-token value (`color 1 1 1`) is several
+	// pvalue Token kids, and the old walk kept only the first ("1" instead of "1 1 1"). Both call sites today
+	// pass "variant" (a single-token tag by convention), so the bug is currently latent -- but fixed anyway
+	// per the audit-by-bug-pattern doctrine (a future multi-token param read through this helper would silently
+	// truncate). Matches Cst::ParamNodeValue's join semantics exactly: once the first pvalue Token is seen,
+	// every subsequent kid's `text` (Trivia and Token alike) is appended verbatim.
 	std::string S2ChunkParamValue( const RISE::Cst::NodeRef& chunk, const char* pname )
 	{
 		if( !chunk ) return std::string();
 		for( const auto& kid : chunk->kids ) {
 			if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
 			std::string nm, val;
+			bool inVal = false;
 			for( const auto& tk : kid->kids ) {
-				if( !tk || tk->kind != RISE::Cst::NodeKind::Token ) continue;
-				if( tk->role == "pname" && nm.empty() ) nm = tk->text;
-				else if( tk->role == "pvalue" && val.empty() ) val = tk->text;
+				if( !tk ) continue;
+				if( !inVal && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pname" && nm.empty() ) { nm = tk->text; continue; }
+				if( !inVal && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pvalue" ) inVal = true;
+				if( inVal ) val += tk->text;
 			}
 			if( nm == pname ) return val;
 		}

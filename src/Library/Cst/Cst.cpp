@@ -2510,6 +2510,43 @@ Document DocRemoveParam( const Document& doc, NodeId chunkId, const std::string&
 	return DocReplaceItem( doc, index, edited, visits );
 }
 
+// Shared-undo U1 P1-2 fix (round 1): like WithParamRemoved but targets ONLY the `occ`-th occurrence of `role`
+// (0 = first, matching WithParamValue's `++seen == occ` counting convention) -- every OTHER occurrence (and its
+// own trivia) is left byte-exact, shared by pointer.  Same brace-safe tidy as WithParamRemoved: the one
+// whitespace-only Trivia kid immediately following the removed Param is also dropped so no blank line survives.
+// Returns the original chunk unchanged if the `occ`-th occurrence is absent.
+static NodeRef WithParamRemovedOcc( const NodeRef& chunk, const std::string& role, int occ )
+{
+	if( !chunk || occ < 0 ) return chunk;
+	int seen = -1;
+	bool found = false;
+	for( const auto& k : chunk->kids ) if( k->kind == NodeKind::Param && k->role == role && ++seen == occ ) { found = true; break; }
+	if( !found ) return chunk;
+	std::vector<NodeRef> kids; kids.reserve( chunk->kids.size() );
+	seen = -1;
+	bool justRemoved = false;
+	for( const auto& k : chunk->kids ) {
+		if( !justRemoved && k->kind == NodeKind::Param && k->role == role && ++seen == occ ) { justRemoved = true; continue; }
+		if( justRemoved && k->kind == NodeKind::Trivia && k->text.find_first_not_of( " \t\r\n" ) == std::string::npos ) {
+			justRemoved = false; continue;
+		}
+		justRemoved = false;
+		kids.push_back( k );
+	}
+	return Internal( NodeKind::Chunk, std::move( kids ), chunk->role );
+}
+
+Document DocRemoveParamOcc( const Document& doc, NodeId chunkId, const std::string& role, int occ, int* visits )
+{
+	if( visits ) *visits = 0;
+	NodeRef chunk;
+	const int index = DocIndexOfNodeId( doc, chunkId, &chunk, visits );
+	if( index < 0 || !chunk || chunk->kind != NodeKind::Chunk ) return doc;
+	NodeRef edited = WithParamRemovedOcc( chunk, role, occ );
+	if( edited.get() == chunk.get() ) return doc;
+	return DocReplaceItem( doc, index, edited, visits );
+}
+
 Document DocSetOrAddParamValue( const Document& doc, NodeId chunkId, const std::string& role, int occ, const std::string& newValue, bool* inserted, int* visits )
 {
 	if( visits ) *visits = 0;

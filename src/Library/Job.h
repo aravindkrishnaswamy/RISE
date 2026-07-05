@@ -2828,7 +2828,9 @@ namespace RISE
 		int ApplyCstParamEditChecked( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue );
 
 		//! Shared-undo U1: full-derivability-gated inverse of a param INSERT -- see the IJob virtual doc.
-		int ApplyCstParamRemoveChecked( const char* entityName, const char* entityKind, const char* role );
+		//! P1-2 fix (round 1): `occ` selects WHICH occurrence to remove (0 = first) -- removing every same-role
+		//! occurrence would delete other edits a repeatable param accumulated after the agent's insert.
+		int ApplyCstParamRemoveChecked( const char* entityName, const char* entityKind, const char* role, int occ );
 
 		//! P5 Slice 3 expansion (object transform): commit an object's NET world transform to the retained CST as
 		//! the authoritative `matrix` param (16 col-major doubles), stripping the dead component params.  Same

@@ -935,6 +935,27 @@ void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
 		mDirtyTracker.MarkEntityCreated( EntityCategory::Camera,
 			std::string( edit.objectName.c_str() ) );
 		break;
+	case SceneEdit::SetAgentCstParam:
+		// P1-4 fix (round 1): the FORWARD agent commit marks dirty via
+		// MarkCstHeadDirty (SceneEditController::ApplyAgentParamEdit calls it
+		// directly, since that mutation lands OUTSIDE SceneEditor::Apply --
+		// see PushAgentCstParamEdit's doc). But MarkEditEntityDirty (THIS
+		// function) is the one Undo()/Redo() call for every op via
+		// ApplyRevertMutation/ApplyForwardMutation's shared callers -- falling
+		// to `default: break` here left an agent edit's Undo/Redo with NO
+		// dirty mark of its own. Harmless when the entity was already dirty
+		// from the original forward edit (the per-entity channel is a set,
+		// so re-marking is a no-op) -- but after a SAVE clears the tracker,
+		// an Undo or Redo of an agent edit mutates the Document away from the
+		// saved bytes with nothing to flip HasUnsavedChanges() back on,
+		// so a close-without-prompt silently discards the reverted/redone
+		// edit. Route through the SAME MarkCstHeadDirty the forward path
+		// uses (kind-aware category dispatch; unknown/empty kind falls to
+		// the CST-head boolean channel) so Undo/Redo match the forward mark
+		// exactly.
+		MarkCstHeadDirty( edit.objectName.c_str(),
+			edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr );
+		break;
 	default:
 		break;
 	}
@@ -1210,13 +1231,30 @@ bool SceneEditor::RouteCstParamEdit_( const char* entityName, const char* entity
 // prevValueWasAbsent case) -- removes the param instead of re-setting a (nonexistent) prior value.  Mirrors
 // RouteCstParamEdit_ exactly (rebind on >=2, mCstLiveSceneChanged on != 0); only the Job entry point differs
 // (ApplyCstParamRemoveChecked, always full-derivability-gated -- agent-originated Document mutations never take
-// the ungated fast path).
-bool SceneEditor::RouteCstParamRemove_( const char* entityName, const char* entityKind, const char* role )
+// the ungated fast path).  `occ` (P1-2 fix, round 1) selects WHICH occurrence to remove (0 = first) -- the sole
+// caller (ApplyRevertMutation's SetAgentCstParam arm) always passes 0, matching the agent path's fixed occ=0
+// edit convention, but the plumbing is occ-aware end to end (Job::ApplyCstParamRemoveChecked ->
+// Cst::DocRemoveParamOcc) rather than hardcoding "remove every occurrence".
+//
+// P1-3 fix (round 1): the return is keyed on MUTATION, not cleanliness -- r==1 (incremental), r==2 (clean full
+// re-derive), and r==3 (full re-derive that DIAGNOSED) ALL mutated + rebound the retained Document (a code-3
+// DeriveEditedCstDocument_ commits the Document and replaces the Scene/managers UNCONDITIONALLY -- fdiags is
+// only checked to pick the return code, not to gate the commit); only r==0 (reject) left the head untouched.
+// The pre-fix `r == 1 || r == 2` treated a code-3 revert as "didn't happen", but SceneEditor::Undo()/Redo() had
+// ALREADY moved the entry across the undo/redo stacks (PopForUndo/PopForRedo) before calling this -- a false
+// return there triggers RestoreLastUndoFromRedo()/RestoreLastRedoFromUndo(), moving the entry BACK even though
+// the Document was already mutated. That leaves history and Document disagreeing about whether the revert
+// happened, and a retried Cmd-Z double-reverts (or wedges) the entry. Callers that need to know the diagnosed
+// case for logging read `outDiagnosed` (non-null only where SceneEditor.cpp needs it); everyone else can ignore
+// it -- the honest "did the mutation land" answer is the return value alone.
+bool SceneEditor::RouteCstParamRemove_( const char* entityName, const char* entityKind, const char* role, int occ, bool* outDiagnosed )
 {
-	const int r = mJob->ApplyCstParamRemoveChecked( entityName, entityKind, role );
+	if( outDiagnosed ) *outDiagnosed = false;
+	const int r = mJob->ApplyCstParamRemoveChecked( entityName, entityKind, role, occ );
 	if( r >= 2 ) RebindToJob_();
 	if( r != 0 ) mCstLiveSceneChanged = true;
-	return r == 1 || r == 2;
+	if( r == 3 && outDiagnosed ) *outDiagnosed = true;
+	return r >= 1;
 }
 
 // Shared-undo U1: the FULL-DERIVABILITY-GATED twin of RouteCstParamEdit_, used ONLY by SetAgentCstParam's
@@ -1234,12 +1272,20 @@ bool SceneEditor::RouteCstParamRemove_( const char* entityName, const char* enti
 // re-derive from serialized bytes -- exactly what the gate exists to prevent.  Cost: one extra throwaway
 // full-derive dry-run per Undo/Redo of an agent edit (not the GUI hot path) -- acceptable for a discrete,
 // infrequent operation.
-bool SceneEditor::RouteCstParamEditChecked_( const char* entityName, const char* entityKind, const char* role, const char* value )
+//
+// P1-3 fix (round 1): same mutation-keyed return as RouteCstParamRemove_ above -- see its doc for the full
+// rationale (a code-3 diagnosed re-derive still mutated + rebound the Document, so it must count as "the
+// revert/redo happened" for the history-stack bookkeeping, even though it is reported to the CALLER of the
+// forward-path ApplyAgentParamEdit as a failure).  `outDiagnosed` (non-null only where the caller logs it)
+// reports the code-3 case; the return value alone answers "did the mutation land".
+bool SceneEditor::RouteCstParamEditChecked_( const char* entityName, const char* entityKind, const char* role, const char* value, bool* outDiagnosed )
 {
+	if( outDiagnosed ) *outDiagnosed = false;
 	const int r = mJob->ApplyCstParamEditChecked( entityName, entityKind, role, 0, value );
 	if( r >= 2 ) RebindToJob_();
 	if( r != 0 ) mCstLiveSceneChanged = true;
-	return r == 1 || r == 2;
+	if( r == 3 && outDiagnosed ) *outDiagnosed = true;
+	return r >= 1;
 }
 
 // P5 Slice 3 expansion (object): a shadow-flags edit maps to TWO standard_object bool params, so route both
@@ -2044,11 +2090,17 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		// this edit's original Apply and this Undo without leaving an mHistory record to invalidate).
 		if( !mJob ) return false;
 		const char* kind = edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr;
+		bool diagnosed = false;
+		// P1-2 fix (round 1): occ=0 -- the agent path's fixed occ convention (ApplyAgentParamEdit always
+		// edits/removes occurrence 0; see AgentReadFirstParamValue's matching capture).
 		if( edit.prevValueWasAbsent ) {
-			if( !RouteCstParamRemove_( edit.objectName.c_str(), kind, edit.propertyName.c_str() ) ) return false;
+			if( !RouteCstParamRemove_( edit.objectName.c_str(), kind, edit.propertyName.c_str(), /*occ*/0, &diagnosed ) ) return false;
 		} else {
-			if( !RouteCstParamEditChecked_( edit.objectName.c_str(), kind, edit.propertyName.c_str(), edit.prevPropertyValue.c_str() ) ) return false;
+			if( !RouteCstParamEditChecked_( edit.objectName.c_str(), kind, edit.propertyName.c_str(), edit.prevPropertyValue.c_str(), &diagnosed ) ) return false;
 		}
+		if( diagnosed )
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Undo:: agent edit on `%s`.`%s` reverted via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean revert",
+			                       edit.objectName.c_str(), edit.propertyName.c_str() );
 		mLastScope = Dirty_Camera;
 		return true;
 	}
@@ -2342,9 +2394,15 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		// that helper's doc for why an agent-originated edit cannot safely
 		// share the GUI property panel's ungated fast path here.
 		if( !mJob ) return false;
-		if( !RouteCstParamEditChecked_( edit.objectName.c_str(),
-		                                 edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr,
-		                                 edit.propertyName.c_str(), edit.propertyValue.c_str() ) ) return false;
+		{
+			bool diagnosed = false;
+			if( !RouteCstParamEditChecked_( edit.objectName.c_str(),
+			                                 edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr,
+			                                 edit.propertyName.c_str(), edit.propertyValue.c_str(), &diagnosed ) ) return false;
+			if( diagnosed )
+				GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Redo:: agent edit on `%s`.`%s` re-applied via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean redo",
+				                       edit.objectName.c_str(), edit.propertyName.c_str() );
+		}
 		mLastScope = Dirty_Camera;
 		return true;
 	}

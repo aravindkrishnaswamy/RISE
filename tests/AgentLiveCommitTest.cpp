@@ -174,6 +174,23 @@ static double LumR( Job& j )
 	return (double)x->GetEmitter()->averageRadiantExitance().r;
 }
 
+// P1-1 red-prove helper: the G and B channels of `lum`'s average radiant exitance --
+// same live-read rationale as LumR, but exposes all three components so a multi-token
+// `color r g b` capture/restore can be checked component-by-component (the reported
+// corruption was r=5 g=0 b=0 instead of 5 5 5 -- a single-channel read would miss it).
+static double LumG( Job& j )
+{
+	IMaterial* x = j.GetMaterials() ? j.GetMaterials()->GetItem( "lum" ) : 0;
+	if( !x || !x->GetEmitter() ) return -1.0;
+	return (double)x->GetEmitter()->averageRadiantExitance().g;
+}
+static double LumB( Job& j )
+{
+	IMaterial* x = j.GetMaterials() ? j.GetMaterials()->GetItem( "lum" ) : 0;
+	if( !x || !x->GetEmitter() ) return -1.0;
+	return (double)x->GetEmitter()->averageRadiantExitance().b;
+}
+
 //////////////////////////////////////////////////////////////////////
 // A Job subclass that FORCES a code-3 ("replaced-but-diagnosed") return from
 // ApplyCstParamEdit while REALLY performing the underlying re-derive.  A genuine
@@ -1758,6 +1775,392 @@ static void TestUndoToCleanDirtyState()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 18 (P1-1 fix, round 1): a MULTI-TOKEN param value (`color 1 1 1`) must
+// round-trip through capture+Undo WITHOUT truncation.  RED-PROVE: at the
+// pre-fix parent, AgentReadFirstParamValue / S2ChunkParamValue kept only the
+// FIRST pvalue token, so capturing "1 1 1" before the edit yielded "1", and
+// Undo's re-SET of the captured "prior value" wrote back `color 1` -- the
+// bug report's measured corruption (post-undo r=5 g=0 b=0 instead of 5 5 5,
+// reproduced here on `white`'s RGB painter feeding `lum`'s exitance).
+//////////////////////////////////////////////////////////////////////
+static void TestMultiTokenParamUndo()
+{
+	std::cout << "Test 18: multi-token param (`color r g b`) survives capture+Undo intact (P1-1)..." << std::endl;
+
+	const char* tmp = "agentlive_multitoken.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		// Pre-edit: `white` is "1 1 1" (kBaseScene), feeding lum's exitance at scale 5.0.
+		Check( LumR( *pJob ) > 4.5 && LumR( *pJob ) < 5.5, "pre-edit R ~5.0 (scale5.0 * white(1,1,1).r)" );
+		Check( LumG( *pJob ) > 4.5 && LumG( *pJob ) < 5.5, "pre-edit G ~5.0" );
+		Check( LumB( *pJob ) > 4.5 && LumB( *pJob ) < 5.5, "pre-edit B ~5.0" );
+
+		// Agent edits `white`'s `color` to an ASYMMETRIC 3-component value -- if the
+		// capture truncates to the first token, Undo will write back "0.2" alone
+		// (a single-component re-tokenisation), not "0.2 0.4 0.6".
+		const SceneEditController::AgentCommitResult applied =
+			c.ApplyAgentParamEdit(
+				String( "white" ), String( "uniformcolor_painter" ),
+				String( "color" ), String( "0.2 0.4 0.6" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( applied.applied, "agent multi-token color edit applies" );
+		Check( LumR( *pJob ) > 0.9 && LumR( *pJob ) < 1.1, "post-edit R ~1.0 (scale5.0 * 0.2)" );
+		Check( LumG( *pJob ) > 1.9 && LumG( *pJob ) < 2.1, "post-edit G ~2.0 (scale5.0 * 0.4)" );
+		Check( LumB( *pJob ) > 2.9 && LumB( *pJob ) < 3.1, "post-edit B ~3.0 (scale5.0 * 0.6)" );
+
+		c.Undo();
+
+		// RED-PROVE: the derived scene's G and B channels are the load-bearing
+		// assertions -- a truncated capture ("0.2" only) re-tokenises via
+		// DocSetParamValue's SplitWs into a SINGLE-component color, which most
+		// painter implementations broadcast/zero-fill asymmetrically (measured
+		// bug-report shape: r=5 g=0 b=0). A correct capture restores ALL THREE
+		// original components.
+		Check( LumR( *pJob ) > 4.5 && LumR( *pJob ) < 5.5,
+		       "Undo restored R ~5.0 (the ORIGINAL first component)" );
+		Check( LumG( *pJob ) > 4.5 && LumG( *pJob ) < 5.5,
+		       "RED-PROVE: Undo restored G ~5.0 -- at the pre-fix parent this is ~0 (truncated capture lost the G/B components)" );
+		Check( LumB( *pJob ) > 4.5 && LumB( *pJob ) < 5.5,
+		       "RED-PROVE: Undo restored B ~5.0 -- at the pre-fix parent this is ~0 (truncated capture lost the G/B components)" );
+
+		// Document-level proof (independent of any painter-specific broadcast
+		// semantics): the serialized `color` line must read back as all three
+		// original tokens, not a single truncated one.
+		const std::string doc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( doc.find( "color 1 1 1" ) != std::string::npos,
+		       "RED-PROVE: the Document's `color` param text is byte-exact `1 1 1` after Undo "
+		       "(at the pre-fix parent it reads `color 1`, missing the 2nd/3rd tokens)" );
+		Check( doc.find( "color 0.2" ) == std::string::npos,
+		       "no truncated remnant (`color 0.2` with no `0.4 0.6`) survives in the Document" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 19 (P1-2 fix, round 1): DocRemoveParam's pre-fix "strip EVERY
+// occurrence" behaviour must NOT resurface through the agent Undo path for a
+// REPEATABLE param.  Scenario: `sh` (a standard_shader) starts with ZERO
+// `shaderop` lines; the agent inserts occ 0 (`prevValueWasAbsent` -> Undo's
+// inverse is a REMOVE, per Test 13's pattern).  BEFORE the Undo fires, two
+// MORE `shaderop` occurrences land on the SAME chunk via an entirely
+// independent mechanism (chunk-CRUD remove+reinsert of the whole `sh` chunk,
+// simulating "other edits" per the P1-2 spec -- the chunk's NodeId changes,
+// but SceneEditor::RouteCstParamRemove_ resolves by NAME, exactly the
+// chunk-CRUD-interleaving hazard RouteCstParamEditChecked_'s own doc
+// describes). RED-PROVE: at the pre-fix parent (Cst::DocRemoveParam strips
+// ALL same-role params), Undo deletes all THREE `shaderop` lines --
+// irrecoverably losing the two occurrences the agent's Undo was never asked
+// to touch. Post-fix (Cst::DocRemoveParamOcc), Undo removes ONLY occurrence 0.
+//////////////////////////////////////////////////////////////////////
+static const char* kShaderCrudScene =
+	"RISE ASCII SCENE 7\n"
+	"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+	"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
+	"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n"
+	"standard_shader\n{\nname sh\n}\n"
+	"sphere_geometry\n{\nname s\nradius 1\n}\n"
+	"standard_object\n{\nname obj\ngeometry s\nmaterial lum\nshader global\n}\n";
+
+// Extracts the substring covering the `standard_shader { name sh ... }` chunk out of a whole-Document
+// serialization -- `sh` is not the only chunk in kShaderCrudScene with a `shaderop` param (`global` has one
+// too), so counting "shaderop" occurrences over the WHOLE document would over-count. Scopes the search to
+// between "name sh" and the very next "}".
+static std::string ShChunkText( const std::string& doc )
+{
+	const size_t nameAt = doc.find( "name sh" );
+	if( nameAt == std::string::npos ) return std::string();
+	const size_t closeAt = doc.find( "\n}", nameAt );
+	if( closeAt == std::string::npos ) return doc.substr( nameAt );
+	return doc.substr( nameAt, closeAt - nameAt );
+}
+
+static void TestOccAwareParamRemoveUndo()
+{
+	std::cout << "Test 19: occ-aware param remove -- Undo deletes ONLY its own occurrence, not every occurrence (P1-2)..." << std::endl;
+
+	const char* tmp = "agentlive_occaware.RISEscene";
+	Job* pJob = LoadScene( kShaderCrudScene, tmp );
+	Check( pJob != nullptr, "shader-crud scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		{
+			const std::string preDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+			const std::string shPre = ShChunkText( preDoc );
+			Check( !shPre.empty(), "`sh`'s chunk text is found in the pre-edit Document" );
+			Check( shPre.find( "shaderop" ) == std::string::npos,
+			       "pre-edit: `sh` has NO `shaderop` line yet (red-prove the absent-slot premise)" );
+		}
+
+		// Agent inserts occ 0 on `sh` (the param was ABSENT -> prevValueWasAbsent).
+		const SceneEditController::AgentCommitResult applied =
+			c.ApplyAgentParamEdit(
+				String( "sh" ), String( "standard_shader" ),
+				String( "shaderop" ), String( "DefaultPathTracing" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( applied.applied, "agent insert of occ 0 (`shaderop`) on `sh` applies" );
+
+		// Independent mechanism ("other edits"): remove + reinsert the WHOLE `sh`
+		// chunk with THREE shaderop lines (occ 0 unchanged in VALUE, occ 1 + 2 new),
+		// routed through the SAME controller entry points a real agent chunk-CRUD
+		// verb uses (ApplyAgentRemoveChunk / ApplyAgentInsertChunk -- these push NO
+		// EditHistory record, per their own doc, so the undo/redo stack is
+		// untouched by this step). This changes `sh`'s NodeId but NOT its name --
+		// RouteCstParamRemove_ resolves by name, so the later agent Undo is
+		// unaffected by the identity change (matches the documented chunk-CRUD-
+		// interleaving hazard RouteCstParamEditChecked_'s doc describes).
+		{
+			const SceneEditController::AgentCommitResult rmR =
+				c.ApplyAgentRemoveChunk( String( "sh" ), String( "standard_shader" ), nullptr );
+			Check( rmR.applied, "removing the old `sh` chunk succeeds (independent of the agent Undo path)" );
+		}
+		{
+			const char* newChunk =
+				"standard_shader\n{\nname sh\nshaderop DefaultPathTracing\nshaderop DefaultDirectLighting\nshaderop DefaultEmission\n}\n";
+			const SceneEditController::AgentCommitResult insR =
+				c.ApplyAgentInsertChunk( String( newChunk ), nullptr );
+			Check( insR.applied, "reinserting `sh` with THREE shaderop occurrences succeeds" );
+		}
+		{
+			// Scope the occurrence count to `sh`'s OWN chunk text -- `global` (a
+			// SEPARATE standard_shader in this scene) also carries a `shaderop`
+			// param, so counting over the WHOLE document would over-count.
+			const std::string midDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+			const std::string shMid = ShChunkText( midDoc );
+			Check( !shMid.empty(), "`sh`'s chunk text is found in the mid-test Document" );
+			int occurrences = 0;
+			size_t pos = 0;
+			while( ( pos = shMid.find( "shaderop", pos ) ) != std::string::npos ) { ++occurrences; pos += 8; }
+			Check( occurrences == 3, "the `sh` chunk now carries THREE shaderop occurrences (0=agent's, 1+2=`other edits`)" );
+		}
+
+		// The Undo of the ORIGINAL agent insert must remove ONLY occurrence 0.
+		c.Undo();
+
+		const std::string postUndoDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		const std::string shPostUndo = ShChunkText( postUndoDoc );
+		Check( !shPostUndo.empty(), "`sh`'s chunk text is found in the post-Undo Document" );
+		int occurrencesAfter = 0;
+		{
+			size_t pos = 0;
+			while( ( pos = shPostUndo.find( "shaderop", pos ) ) != std::string::npos ) { ++occurrencesAfter; pos += 8; }
+		}
+		Check( occurrencesAfter == 2,
+		       "RED-PROVE: exactly TWO shaderop occurrences survive Undo on `sh` -- at the pre-fix parent "
+		       "(Cst::DocRemoveParam strips EVERY same-role occurrence) this is 0 (both `other-edit` "
+		       "occurrences are irrecoverably lost)" );
+		Check( shPostUndo.find( "shaderop DefaultDirectLighting" ) != std::string::npos,
+		       "RED-PROVE: occurrence 1 (DefaultDirectLighting) survives Undo byte-exactly" );
+		Check( shPostUndo.find( "shaderop DefaultEmission" ) != std::string::npos,
+		       "RED-PROVE: occurrence 2 (DefaultEmission) survives Undo byte-exactly" );
+		Check( shPostUndo.find( "shaderop DefaultPathTracing" ) == std::string::npos,
+		       "occurrence 0 (the agent's own insert) IS removed by Undo (the inverse of ITS OWN insert) -- "
+		       "scoped to `sh`'s OWN chunk (`global`'s separate DefaultPathTracing line is untouched)" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 20 (P1-3 fix, round 1): an ARMED code-3 (diagnosed-but-mutated) revert
+// must complete the undo/redo stack transfer, not just "still be undoable via
+// a laundered clean re-derive" (Test 14 disarmed force-code-three before
+// calling Undo specifically to dodge this path -- see its own comment). This
+// test leaves force-code-three ARMED THROUGH the Undo (and the following
+// Redo), so RouteCstParamEditChecked_ itself observes code 3 and must treat
+// it as "mutation landed" for the stack-transfer bookkeeping, matching the
+// forward path's own documented choice (ApplyAgentParamEdit pushes history on
+// EVERY mutating code, including 3). RED-PROVE: at the pre-fix parent
+// (`r == 1 || r == 2`), Undo's ApplyRevertMutation returns false even though
+// the Document WAS mutated + rebound -- SceneEditor::Undo() then calls
+// RestoreLastUndoFromRedo(), moving the entry BACK to the undo stack even
+// though the live Document has ALREADY been reverted -- a subsequent Cmd-Z
+// double-reverts (applies the SAME inverse a second time) instead of no-op /
+// redo working correctly.
+//////////////////////////////////////////////////////////////////////
+static void TestArmedCodeThreeRevert()
+{
+	std::cout << "Test 20: ARMED code-3 revert completes the undo/redo stack transfer (P1-3)..." << std::endl;
+
+	const char* tmp = "agentlive_c3armed.RISEscene";
+	{ std::ofstream o( tmp ); o << kVariantScene; }
+	CodeThreeJob* pJob = new CodeThreeJob();
+	Check( pJob->LoadAsciiSceneViaCst( tmp ), "variant scene loads into CodeThreeJob via the CST path" );
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const unsigned int undoBefore = c.Editor().History().UndoDepth();
+
+		// Forward commit: force-code-three is ARMED (CodeThreeJob's ctor default),
+		// so this lands as a code-3 diagnosed-but-mutated commit (Test 14's setup).
+		const SceneEditController::AgentCommitResult r =
+			c.ApplyAgentParamEdit(
+				String( "lum" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "3.5" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( !r.applied && r.rawCode == 3, "the forward edit is a code-3 diagnosed-but-mutated commit" );
+		Check( c.Editor().History().UndoDepth() == undoBefore + 1, "the code-3 forward commit still pushed a history record" );
+		Check( LumR( *pJob ) > 3.0 && LumR( *pJob ) < 4.0, "the live derived scene DID move to ~3.5 despite the diagnosed code" );
+
+		// Undo with force-code-three STILL ARMED -- RouteCstParamEditChecked_'s
+		// underlying ApplyCstParamEditChecked call ALSO returns 3 here (the revert
+		// is itself a clean D2 re-derive that CodeThreeJob rewrites 2->3).
+		c.Undo();
+
+		// The entry MUST have moved to the redo stack -- NOT stayed on / been
+		// restored to the undo stack (RestoreLastUndoFromRedo would leave undo
+		// depth UNCHANGED at undoBefore+1).
+		Check( c.Editor().History().UndoDepth() == undoBefore,
+		       "RED-PROVE: the undo stack depth dropped back to baseline -- at the pre-fix parent "
+		       "(bool return `r==1||r==2`) RouteCstParamEditChecked_ reports FALSE for code 3, "
+		       "Undo() calls RestoreLastUndoFromRedo(), and this stays at undoBefore+1" );
+		Check( c.Editor().History().RedoDepth() == 1,
+		       "RED-PROVE: the reverted entry landed on the redo stack -- at the pre-fix parent it "
+		       "never reaches the redo stack (moved back to undo instead)" );
+
+		// The Document ACTUALLY reverted (the mutation landed even though the
+		// code is diagnosed) -- byte-compare against the known pre-edit value.
+		Check( LumR( *pJob ) > 4.0 && LumR( *pJob ) < 6.0, "Undo's diagnosed-but-mutated revert DID restore the derived scale to ~5.0" );
+		{
+			const std::string doc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+			Check( doc.find( "scale 5" ) != std::string::npos,
+			       "the reverted Document's `scale` param text reads back 5.0 (byte-level proof the revert landed)" );
+		}
+
+		// A subsequent Redo must work (not double-revert, not wedge). Still armed.
+		c.Redo();
+		Check( c.Editor().History().UndoDepth() == undoBefore + 1, "Redo moved the entry back to the undo stack" );
+		Check( c.Editor().History().RedoDepth() == 0, "redo stack drained after the single Redo" );
+		Check( LumR( *pJob ) > 3.0 && LumR( *pJob ) < 4.0, "Redo re-applied the scale-3.5 edit to the derived scene" );
+
+		// Repeated Cmd-Z (Undo again) must revert ONCE more, cleanly -- not
+		// double-revert (which would be the symptom of a wedged/duplicated
+		// history entry from the pre-fix divergence).
+		c.Undo();
+		Check( c.Editor().History().UndoDepth() == undoBefore, "the second Undo again drops to baseline" );
+		Check( LumR( *pJob ) > 4.0 && LumR( *pJob ) < 6.0, "the second Undo again restores ~5.0 (no double-revert artifact)" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 21 (P1-4 fix, round 1): Undo/Redo of an agent edit must mark the
+// editor dirty in BOTH directions when the mutation lands AWAY from the last
+// saved bytes. RED-PROVE shape: edit -> Save (clears dirty) -> Redo of a
+// LATER undo (re-applying a change) must leave HasUnsavedChanges()==true,
+// and symmetrically edit -> Save -> Undo must ALSO leave it true. At the
+// pre-fix parent, MarkEditEntityDirty falls to `default: break` for
+// SetAgentCstParam, so neither call marks anything -- only the forward
+// ApplyAgentParamEdit path's direct MarkCstHeadDirty call did, and Save
+// clears the tracker Save sees. A close-without-prompt after either gap
+// would silently discard the redone/undone edit.
+//////////////////////////////////////////////////////////////////////
+static void TestUndoRedoAfterSaveMarksDirty()
+{
+	std::cout << "Test 21: Undo/Redo of an agent edit marks dirty even AFTER a Save (P1-4)..." << std::endl;
+
+	// ---- Redo-after-save direction -----------------------------------
+	{
+		const char* tmp = "agentlive_dirtyredo.RISEscene";
+		Job* pJob = LoadScene( kBaseScene, tmp );
+		Check( pJob != nullptr, "base scene loads (redo-after-save case)" );
+		if( pJob ) {
+			TestController c( *pJob, /*simulatedRenderMs*/20 );
+			c.Start();
+			Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+			const SceneEditController::AgentCommitResult applied =
+				c.ApplyAgentParamEdit( String( "lum" ), String( "lambertian_luminaire_material" ),
+				                       String( "scale" ), String( "7.0" ), nullptr );
+			Check( applied.applied, "agent edit applies" );
+
+			c.Undo();
+			Check( LumR( *pJob ) > 4.5 && LumR( *pJob ) < 5.5, "Undo reverted to the original scale~5.0" );
+
+			// Save NOW, at the reverted (pre-edit) state -- clears the dirty tracker.
+			const char* saveAs = "agentlive_dirtyredo_save.RISEscene";
+			std::remove( saveAs );
+			const SaveResult sr = c.RequestSave( std::string( saveAs ) );
+			Check( Succeeded( sr.status ), "save succeeds at the reverted (pre-edit) state" );
+			Check( !c.HasUnsavedChanges(), "clean immediately after the save" );
+
+			// Redo re-applies the scale-7.0 edit -- this mutates AWAY from the just-saved bytes.
+			c.Redo();
+			Check( LumR( *pJob ) > 6.0 && LumR( *pJob ) < 8.0, "Redo re-applied the scale-7.0 edit to the derived scene" );
+			Check( c.HasUnsavedChanges(),
+			       "RED-PROVE: HasUnsavedChanges() is TRUE after Redo-following-a-Save -- at the pre-fix parent "
+			       "MarkEditEntityDirty has no SetAgentCstParam case (falls to default:break), so this stays "
+			       "FALSE and a close-without-prompt would silently discard the redone edit" );
+
+			c.Stop();
+			std::remove( saveAs );
+		}
+		if( pJob ) pJob->release();
+		std::remove( tmp );
+	}
+
+	// ---- Undo-after-save direction -----------------------------------
+	{
+		const char* tmp = "agentlive_dirtyundo.RISEscene";
+		Job* pJob = LoadScene( kBaseScene, tmp );
+		Check( pJob != nullptr, "base scene loads (undo-after-save case)" );
+		if( pJob ) {
+			TestController c( *pJob, /*simulatedRenderMs*/20 );
+			c.Start();
+			Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+			const SceneEditController::AgentCommitResult applied =
+				c.ApplyAgentParamEdit( String( "lum" ), String( "lambertian_luminaire_material" ),
+				                       String( "scale" ), String( "7.0" ), nullptr );
+			Check( applied.applied, "agent edit applies" );
+
+			// Save NOW, at the post-edit (scale~7.0) state -- clears the dirty tracker.
+			const char* saveAs = "agentlive_dirtyundo_save.RISEscene";
+			std::remove( saveAs );
+			const SaveResult sr = c.RequestSave( std::string( saveAs ) );
+			Check( Succeeded( sr.status ), "save succeeds at the post-edit state" );
+			Check( !c.HasUnsavedChanges(), "clean immediately after the save" );
+
+			// Undo reverts the scale-7.0 edit -- this mutates AWAY from the just-saved bytes.
+			c.Undo();
+			Check( LumR( *pJob ) > 4.5 && LumR( *pJob ) < 5.5, "Undo reverted to the original scale~5.0" );
+			Check( c.HasUnsavedChanges(),
+			       "RED-PROVE: HasUnsavedChanges() is TRUE after Undo-following-a-Save -- at the pre-fix parent "
+			       "this stays FALSE (same MarkEditEntityDirty gap) and a close-without-prompt would silently "
+			       "discard the undone edit (the scene would reopen at the SAVED scale~7.0 state, "
+			       "silently losing the user's Undo)" );
+
+			c.Stop();
+			std::remove( saveAs );
+		}
+		if( pJob ) pJob->release();
+		std::remove( tmp );
+	}
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -1779,6 +2182,10 @@ int main()
 	TestCodeThreeUndo();
 	TestConflictGateAfterUndo();
 	TestUndoToCleanDirtyState();
+	TestMultiTokenParamUndo();
+	TestOccAwareParamRemoveUndo();
+	TestArmedCodeThreeRevert();
+	TestUndoRedoAfterSaveMarksDirty();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

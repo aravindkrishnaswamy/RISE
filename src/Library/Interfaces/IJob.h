@@ -3427,20 +3427,26 @@ namespace RISE
 		virtual int ApplyCstParamEditChecked( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue ) { return 0; }
 
 		//! Shared-undo U1: the FULL-DERIVABILITY-GATED inverse of a param INSERT --
-		//! removes EVERY occurrence of `role` on the entity's chunk (Cst::DocRemoveParam),
-		//! then re-derives via the SAME 0/1/2/3-contract tail ApplyCstParamEditChecked uses.
+		//! removes ONLY the `occ`-th occurrence of `role` on the entity's chunk (Cst::DocRemoveParamOcc; 0 =
+		//! first), then re-derives via the SAME 0/1/2/3-contract tail ApplyCstParamEditChecked uses.
 		//! Undoes an agent edit that INSERTED a previously-absent (defaulted) param: the
 		//! entity had no `role` line in the scene text, Job::ApplyCstParamEditChecked's
 		//! DocSetOrAddParamValue inserted one, and undo must remove it (a re-SET of "the
 		//! prior value" is meaningless -- there was no prior value, only the descriptor
 		//! default).  Same resolution rules as ApplyCstParamEditChecked (entityKind
 		//! narrows a cross-category name clash; the "camera" kind gets the unique-in-kind
-		//! resolve-by-position fallback).  Return: 0 = not found / would-not-derive (head
+		//! resolve-by-position fallback).
+		//! P1-2 fix (round 1): `occ` is REQUIRED (not defaulted) -- removing EVERY same-role occurrence (the
+		//! pre-fix behaviour, Cst::DocRemoveParam) silently deletes other edits a repeatable param accumulated
+		//! AFTER the agent's insert; the Undo was only ever asked to revert its own occurrence. This virtual was
+		//! introduced in the same slice as this fix (unpushed, no external consumers), so the signature is
+		//! amended IN PLACE rather than appending a second tail virtual.
+		//! Return: 0 = not found / would-not-derive (head
 		//! untouched); 1 = removed incrementally; 2 = removed via a full re-derive (Scene +
 		//! managers REPLACED, caller must rebind); 3 = same as 2 but the re-derive
 		//! diagnosed (still rebind; treat as failure).  Default 0 (only Job overrides).
 		//! NB: appended at the IJob tail per the append-only ABI convention.
-		virtual int ApplyCstParamRemoveChecked( const char* entityName, const char* entityKind, const char* role ) { return 0; }
+		virtual int ApplyCstParamRemoveChecked( const char* entityName, const char* entityKind, const char* role, int occ ) { return 0; }
 	};
 
 

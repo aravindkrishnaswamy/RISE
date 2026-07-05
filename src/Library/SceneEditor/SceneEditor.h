@@ -557,11 +557,17 @@ namespace RISE
 
 		//! Shared-undo U1: inverse of an agent param edit that INSERTED a previously-absent param -- removes it
 		//! instead of re-setting a nonexistent prior value.  See SceneEditor.cpp for the full rationale.
-		bool RouteCstParamRemove_( const char* entityName, const char* entityKind, const char* role );
+		//! P1-2 fix (round 1): `occ` selects which occurrence to remove (0 = first).
+		//! P1-3 fix (round 1): the bool return is keyed on MUTATION (r>=1), not cleanliness (r==1||2) -- a
+		//! code-3 diagnosed re-derive still mutated + rebound the Document, so it must read as "the revert
+		//! happened" for the caller's history-stack bookkeeping.  `outDiagnosed` (may be null) reports the
+		//! code-3 case for callers that need to log it. See SceneEditor.cpp for the full rationale.
+		bool RouteCstParamRemove_( const char* entityName, const char* entityKind, const char* role, int occ, bool* outDiagnosed = nullptr );
 
 		//! Shared-undo U1: full-derivability-gated twin of RouteCstParamEdit_, used ONLY by SetAgentCstParam's
 		//! Undo/Redo -- see SceneEditor.cpp for why the agent op cannot safely share the ungated GUI-property route.
-		bool RouteCstParamEditChecked_( const char* entityName, const char* entityKind, const char* role, const char* value );
+		//! P1-3 fix (round 1): same mutation-keyed return + `outDiagnosed` as RouteCstParamRemove_ above.
+		bool RouteCstParamEditChecked_( const char* entityName, const char* entityKind, const char* role, const char* value, bool* outDiagnosed = nullptr );
 
 		//! P5 Slice 3 expansion (object): route a SetObjectShadowFlags edit to the standard_object
 		//! casts_shadows / receives_shadows bool params (bit0 = casts, bit1 = receives).  Two CST re-derives.

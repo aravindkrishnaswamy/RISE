@@ -2811,12 +2811,23 @@ void SceneEditController::CancelAndParkRender_( std::unique_lock<std::mutex>& lk
 namespace {
 
 // Shared-undo U1: the value of a chunk's first `pname` param, mirroring the exact CST tree shape ParseChunk
-// builds (a Param kid whose first Token kid is the pname/role and whose subsequent Token kids are the pvalue
-// tokens) -- this is the SAME shape Job.cpp's file-local S2ChunkParamValue walks; duplicated here (rather than
-// exposed from Job.cpp) because it is a pure Cst::Node tree read with no Job state dependency, and the
-// controller already holds a `const RISE::Cst::Document*` via IJob::GetCstDocument().  `*outPresent` reports
-// whether the param was found AT ALL (distinct from "found but empty" -- occ=0 only, matching the agent path's
-// fixed occ=0 convention).
+// builds (a Param kid whose first Token kid is the pname/role and whose subsequent kids are the pvalue Token(s)
+// interleaved with inter-value Trivia) -- this is the SAME shape Job.cpp's file-local S2ChunkParamValue walks;
+// duplicated here (rather than exposed from Job.cpp) because it is a pure Cst::Node tree read with no Job state
+// dependency, and the controller already holds a `const RISE::Cst::Document*` via IJob::GetCstDocument().
+// `*outPresent` reports whether the param was found AT ALL (distinct from "found but empty" -- occ=0 only,
+// matching the agent path's fixed occ=0 convention).
+//
+// P1-1 fix (round 1): a multi-token value (e.g. `color 1 1 1`, a vector/tuple) is SEVERAL pvalue Token kids, one
+// per whitespace-separated token, each preceded by an inter-value Trivia kid holding the separating whitespace
+// (see the anonymous-namespace ParseChunk loop in Cst.cpp ~150-161). The old walk kept only the FIRST pvalue
+// token ("1" out of "1 1 1"), so an Undo of a multi-token param re-set it to a truncated single-component value
+// (measured: a `color 1 1 1` emitter param round-tripped through capture+undo landed as r=5 g=0 b=0 instead of
+// 5 5 5). Cst::ParamNodeValue (Cst.cpp ~183, file-local to that TU) is the correct accessor -- it is NOT
+// reachable from here (anonymous-namespace / not declared in Cst.h) -- so this walk is rewritten to match its
+// join semantics EXACTLY, token-by-token: once the first pvalue Token is seen, every subsequent kid's `text`
+// (Trivia AND Token alike) is appended verbatim until the Param node ends, reproducing "1 1 1" (not "111" or
+// "1") for a 3-token value.
 std::string AgentReadFirstParamValue( const RISE::Cst::NodeRef& chunk, const char* pname, bool* outPresent )
 {
 	if( outPresent ) *outPresent = false;
@@ -2825,11 +2836,13 @@ std::string AgentReadFirstParamValue( const RISE::Cst::NodeRef& chunk, const cha
 	{
 		if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
 		std::string nm, val;
+		bool inVal = false;
 		for( const auto& tk : kid->kids )
 		{
-			if( !tk || tk->kind != RISE::Cst::NodeKind::Token ) continue;
-			if( tk->role == "pname" && nm.empty() ) nm = tk->text;
-			else if( tk->role == "pvalue" && val.empty() ) val = tk->text;
+			if( !tk ) continue;
+			if( !inVal && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pname" && nm.empty() ) { nm = tk->text; continue; }
+			if( !inVal && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pvalue" ) inVal = true;
+			if( inVal ) val += tk->text;
 		}
 		if( nm == pname )
 		{
