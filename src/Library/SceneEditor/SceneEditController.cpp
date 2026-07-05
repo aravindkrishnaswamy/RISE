@@ -4422,6 +4422,14 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 		mSaving.store( true );
 	}
 
+	// Fix-round-6 RED-PROVE test seam -- no-op in production (see the
+	// declaration doc).  Sits right after mSaving flips true and mMutex
+	// releases, so a test override can block here to hold mSaving true
+	// for as long as it needs, giving RenderLoop's mint-site re-check a
+	// deterministic (rather than IO-timing-dependent) window to prove
+	// itself against.
+	ForTest_OnSaveEngineAboutToRun();
+
 	// ---- Step 2: run SaveEngine WITHOUT the lock --------------------
 	// File IO can take a few ms; holding mMutex across that would
 	// stall any other UI-state transition that needs the lock.
@@ -4680,10 +4688,34 @@ void SceneEditController::RenderLoop()
 		// see KickRender's own comment for that happens-before edge -- so
 		// it is still correct for the retried iteration and restamping it
 		// here would just be a no-op race with a concurrent submitter.
+		//
+		// Fix-round-6 (save-vs-render race): the line-4473 gate snapshot
+		// ALSO reads mSaving as part of `pred`, but that's the same kind
+		// of snapshot Fix-round-4 P2 already found unsafe for the agent
+		// flag -- taken before ~60 unlocked lines run, and RequestSave can
+		// acquire mMutex and set mSaving=true anywhere in that window (its
+		// own step 1 does exactly that under mMutex, same as
+		// SubmitAgentRenderAsync_Locked's mint+flag-set).  Nothing between
+		// the line-4473 snapshot and this mMutex acquisition re-checked
+		// mSaving, so an interactive pass could mint and run DoOneRenderPass
+		// (reading frame-store state) CONCURRENTLY with SaveEngine::Save()'s
+		// unlocked file IO reading that same state -- structurally the
+		// identical clobber class as the agent-flag race, just against the
+		// save path instead of the agent-render path.  Re-check mSaving HERE
+		// too, inside the same mMutex hold, with the identical conditional-
+		// restore treatment: this bounce ALSO runs after the line-4467
+		// exchange has already consumed mEditPending, so it needs the same
+		// restore-if-explicit-edit rescue Fix-round-5 added for the agent
+		// flag, or a save that lands in this exact window would wedge the
+		// loop the same way.  Loop-resume is automatic: RequestSave's step 3
+		// clears mSaving and notify_one()s under mMutex (see that method),
+		// so the restored edit (or a genuine refinement-tick re-arrival)
+		// re-wakes this loop the moment the save publishes its result.
 		RenderJobId thisPassJobId = kInvalidRenderJobId;
 		{
 			std::lock_guard<std::mutex> lk( mMutex );
-			if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+			if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire )
+			 || mSaving.load( std::memory_order_acquire ) )
 			{
 				if( isExplicitEdit )
 				{

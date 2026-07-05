@@ -1347,6 +1347,17 @@ namespace RISE
 		//! scheduler timing.  No-op in production.
 		virtual void ForTest_OnAgentWorkerAboutToParkRender() {}
 
+		//! Fix-round-6 (save-vs-render race) RED-PROVE test hook.  Called
+		//! by RequestSave, unlocked, immediately AFTER its step-1 lock
+		//! scope has set mSaving=true and released mMutex, but BEFORE
+		//! SaveEngine::Save runs.  A test can hold RequestSave open here
+		//! to deterministically widen the real (normally sub-millisecond)
+		//! window during which mSaving is true and RenderLoop's mint-site
+		//! re-check must bounce rather than mint -- without this seam,
+		//! proving the race requires racing real file IO, which is not
+		//! deterministic.  No-op in production.
+		virtual void ForTest_OnSaveEngineAboutToRun() {}
+
 	private:
 		void RenderLoop();
 		void KickRender();
@@ -1681,7 +1692,14 @@ namespace RISE
 		// Phase 6.5: signals the render loop NOT to start a new pass
 		// while a save is in flight (mirror of mRendering for the
 		// "saving" direction).  Set inside the locked section of
-		// RequestSave; cleared after the engine returns.
+		// RequestSave; cleared after the engine returns.  Fix-round-6:
+		// consulted at the SAME two sites as mAgentRenderBlocksInteractive
+		// below (the wake predicate's snapshot AND the mint block's own
+		// in-lock re-check immediately before minting) for the identical
+		// reason -- RequestSave's mSaving=true store happens under mMutex
+		// but can land anywhere in the ~60 unlocked lines between the
+		// snapshot and the mint, so only the in-lock re-check is
+		// authoritative.
 		std::atomic<bool>           mSaving;
 		// Model-B F2 slice S2a: mirrors mSaving's pattern for the agent-
 		// render worker's window.  Without this, there is a real race:

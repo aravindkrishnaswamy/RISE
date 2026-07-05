@@ -2639,6 +2639,180 @@ static void RunChurnConcurrentInteractiveTest()
 	std::printf( "=== (s) churn under concurrent interactive: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Fix-round-6 (save-vs-render race) test infra ------------------------
+//
+// SaveGateMintController combines the existing MintSeamController mint-
+// site gate (ForTest_OnAboutToMintInteractivePass, parks RenderLoop right
+// before its in-lock mint-site re-check) with a NEW save-side gate
+// (ForTest_OnSaveEngineAboutToRun, parks RequestSave right after it has
+// set mSaving=true and released mMutex, before SaveEngine::Save runs).
+// Holding BOTH gates open lets the test deterministically reproduce the
+// exact ordering the race needs: mSaving is genuinely true (RequestSave's
+// step 1 already ran), and RenderLoop is genuinely parked in the pre-mint
+// gap -- so releasing RenderLoop's gate next is guaranteed to make its
+// mint-site re-check the very next thing that touches mMutex, with
+// mSaving still held true by the still-gated save thread.  This mirrors
+// this file's (q)/(r) agent-flag tests exactly, with mSaving standing in
+// for mAgentRenderBlocksInteractive and the save-gate hook standing in
+// for the agent worker's own park hook.
+//////////////////////////////////////////////////////////////////////
+class SaveGateMintController : public SceneEditController
+{
+public:
+	explicit SaveGateMintController( IJobPriv& job ) : SceneEditController( job, /*interactiveRasterizer*/0 ) {}
+
+	std::atomic<bool> mintHookEntered{ false };
+	std::atomic<bool> releaseMintGate{ false };
+	std::atomic<bool> saveHookEntered{ false };
+	std::atomic<bool> releaseSaveGate{ false };
+
+protected:
+	void ForTest_OnAboutToMintInteractivePass() override
+	{
+		mintHookEntered.store( true, std::memory_order_release );
+		while( !releaseMintGate.load( std::memory_order_acquire ) )
+		{
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+
+	void ForTest_OnSaveEngineAboutToRun() override
+	{
+		saveHookEntered.store( true, std::memory_order_release );
+		while( !releaseSaveGate.load( std::memory_order_acquire ) )
+		{
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+};
+
+//////////////////////////////////////////////////////////////////////
+// (t) Fix-round-6 SAVE-VS-RENDER RED-PROVE: RequestSave sets mSaving=true
+//     (step 1) and parks on ForTest_OnSaveEngineAboutToRun BEFORE running
+//     SaveEngine::Save, while RenderLoop is independently parked in the
+//     pre-mint gap (ForTest_OnAboutToMintInteractivePass) servicing the
+//     initial-render edit Start() queues -- same trigger (q)/(r) use.
+//     Releasing RenderLoop's gate while the save thread is STILL held on
+//     its own gate guarantees RenderLoop's mint-site re-check runs while
+//     mSaving is genuinely true.
+//
+//     Pre-fix (mint-site checks only mAgentRenderBlocksInteractive): the
+//     mint-site re-check does not see mSaving at all, so RenderLoop mints
+//     and DoOneRenderPass runs CONCURRENTLY with the (still-parked, about
+//     to call SaveEngine::Save) save thread -- i.e. an interactive render
+//     pass would be free to run while a save is "in flight" from the
+//     wake-predicate's point of view.  This test proves that never
+//     happens: render count must stay AT ZERO for the whole time mSaving
+//     is held true, no matter how long the save gate is held.
+//
+//     Post-fix, RenderLoop's mint-site bounces (continue) and -- mirroring
+//     Fix-round-5's lost-edit-wedge rescue -- restores mEditPending since
+//     the original wake was a real (isExplicitEdit) edit.  Releasing the
+//     save gate lets RequestSave's step 3 clear mSaving and notify_one()
+//     under mMutex; the MONEY ASSERTION is that the ORIGINAL edit's
+//     interactive pass then runs to completion with NO further external
+//     kick -- exactly the same "no external kick" shape (r) uses to prove
+//     the restore actually rescues the edit rather than merely not
+//     crashing.
+//////////////////////////////////////////////////////////////////////
+static void RunSaveVsRenderRedProveTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (t) fix-round-6 RED-PROVE: a save in flight bounces the interactive mint, and the bounced edit still renders with no further kick ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_async_savevsrender.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the save-vs-render scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (save-vs-render test)" );
+
+	SaveGateMintController controller( *pJob );
+	controller.Start();   // NOT suppressed -- Start() queues the initial-render edit that RenderLoop will be parked trying to service.
+
+	// Wait for RenderLoop to be parked in the pre-mint gap, same as (q)/(r).
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !controller.mintHookEntered.load( std::memory_order_acquire ) &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( controller.mintHookEntered.load( std::memory_order_acquire ), "RenderLoop is genuinely parked in the pre-mint gap servicing the initial-render edit" );
+	Check( controller.ForTest_GetRenderCount() == 0, "no interactive pass has run yet -- the original edit is still unserviced" );
+
+	// Kick off RequestSave on its own thread -- it must run step 1 (cancel
+	// -- a no-op here, nothing is rendering -- then set mSaving=true) and
+	// reach its own gate BEFORE we release RenderLoop's gate below.
+	std::thread saveThread( [&]() {
+		SaveResult r = controller.RequestSave( scenePath );
+		Check( Succeeded( r.status ), "the save completes successfully once released (Saved or NoOp)" );
+	} );
+
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !controller.saveHookEntered.load( std::memory_order_acquire ) &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( controller.saveHookEntered.load( std::memory_order_acquire ), "RequestSave is genuinely parked with mSaving=true, before SaveEngine::Save runs" );
+	Check( controller.IsSaving(), "IsSaving() observes mSaving=true while the save thread is gated" );
+
+	// NOW release RenderLoop's gate ONLY -- the save thread is still held
+	// back on its own gate, so RenderLoop's mint-site re-check is
+	// GUARANTEED to run while mSaving is still true.  Pre-fix: the
+	// mint-site re-check doesn't consult mSaving at all, so RenderLoop
+	// mints and runs DoOneRenderPass concurrently with the (still parked,
+	// about to call SaveEngine::Save) save thread.  Post-fix: RenderLoop
+	// re-checks mSaving (true) inside the same mMutex hold and bounces via
+	// `continue`, restoring mEditPending since isExplicitEdit is true.
+	controller.releaseMintGate.store( true, std::memory_order_release );
+
+	// Give RenderLoop's bounce (or the buggy mint) time to land.  While
+	// the save gate is STILL held, the render count must not move --
+	// this is the MONEY ASSERTION for the "no concurrent mint during
+	// save" half of the claim.  Poll for a generous window rather than a
+	// single sleep+check so a slow-scheduled machine doesn't produce a
+	// false pass by finishing the check before a buggy mint would have
+	// landed.
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 300 );
+		bool sawMint = false;
+		while( std::chrono::steady_clock::now() < deadline ) {
+			if( controller.ForTest_GetRenderCount() != 0 ) { sawMint = true; break; }
+			std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+		}
+		Check( !sawMint,
+		       "FIX-ROUND-6 MONEY ASSERTION (a): no interactive mint lands while mSaving is held true -- RenderLoop's mint-site re-check "
+		       "bounced instead of minting/running DoOneRenderPass concurrently with the (still parked) save thread" );
+	}
+	Check( controller.IsSaving(), "mSaving is still true -- the save thread has not been released yet (sanity check on the test's own gating)" );
+
+	// NOW release the save gate -- SaveEngine::Save actually runs (fast;
+	// this is a 24x24 8-sample scene) and RequestSave's step 3 clears
+	// mSaving + notify_one()s under mMutex.
+	controller.releaseSaveGate.store( true, std::memory_order_release );
+	saveThread.join();
+	Check( !controller.IsSaving(), "mSaving is cleared once the save thread completes" );
+
+	// MONEY ASSERTION (b): with mSaving now clear, RenderLoop's wake
+	// predicate must go true on ITS OWN -- from the RESTORED mEditPending,
+	// not from any external kick this test issues -- and the ORIGINAL
+	// edit's interactive pass must run.  Pre-fix (no restore on the
+	// mSaving bounce), mEditPending would stay false forever after the
+	// bounce and this wait would time out with the render count stuck at
+	// 0.  No OnTimeScrub / KickRender call appears anywhere below this
+	// point in the test.
+	Check( controller.ForTest_WaitForRenders( 1, 5000 ),
+	       "FIX-ROUND-6 MONEY ASSERTION (b): the original edit's interactive pass runs to completion with NO further external kick after the save releases mSaving (the bounce restored mEditPending instead of dropping it)" );
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (t) save-vs-render RED-PROVE: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunAsyncReturnsQuicklyTest();
@@ -2662,6 +2836,7 @@ int main()
 	RunInterleavedMintNoClobberTest();
 	RunMintClobberRedProveTest();
 	RunLostEditWedgeRedProveTest();
+	RunSaveVsRenderRedProveTest();
 	RunChurnConcurrentInteractiveTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
