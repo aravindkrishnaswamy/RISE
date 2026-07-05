@@ -616,14 +616,18 @@ static void RunRestoreOnThrowTest()
 	p.camera.hasLookAt   = true;
 	p.camera.lookAt      = "0 0 0";
 
-	bool threw = false;
-	try {
-		session->Render( p );
-	}
-	catch( const std::exception& ) {
-		threw = true;
-	}
-	Check( threw, "Render() with a throwing Rasterize() propagates the exception (RED-PROVE the seam actually fires)" );
+	// Model-B F2 slice S2a doc-truth fix: Render() no longer lets a thrown
+	// exception escape as a raw C++ exception -- RenderCore_ now catches it
+	// (at every call shape that can run doRenderWork(), including this
+	// headless direct-call path) and reports it as an ordinary ok=false
+	// result CARRYING the renderJobId the failed render was assigned (see
+	// AgentSession.cpp's S1-delta doc-truth-fix comment).  RED-PROVE the
+	// seam actually fires via the result instead of a caught exception.
+	const AgentRenderResult thrownResult = session->Render( p );
+	Check( !thrownResult.ok, "Render() with a throwing Rasterize() reports ok=false (RED-PROVE the seam actually fires)" );
+	Check( thrownResult.renderJobId != 0, "S1-delta doc-truth fix: a FAILED (thrown) render still carries a real, nonzero renderJobId" );
+	Check( thrownResult.message.find( "ThrowingRasterizeJob" ) != std::string::npos,
+	       "the failure message names the thrown exception's text" );
 
 	//----------------------------------------------------------------------
 	// THE MONEY ASSERTION: despite the exception, both overrides are
@@ -1087,14 +1091,14 @@ static void RunPreS2HardeningTests()
 			p.camera.hasLookAt   = true;
 			p.camera.lookAt      = "0 0 0";
 
-			bool threw = false;
-			try {
-				session->Render( p );
-			}
-			catch( const std::exception& ) {
-				threw = true;
-			}
-			Check( threw, "controller-routed Render() with a throwing Rasterize() propagates the exception (RED-PROVE the seam fires)" );
+			// Model-B F2 slice S2a doc-truth fix: the thrown exception is now
+			// caught by RenderCore_ and reported as ok=false + a nonzero
+			// renderJobId (see AgentSession.cpp's S1-delta comment) rather
+			// than escaping as a raw C++ exception -- RED-PROVE the seam via
+			// the result.
+			const AgentRenderResult throwResult = session->Render( p );
+			Check( !throwResult.ok, "controller-routed Render() with a throwing Rasterize() reports ok=false (RED-PROVE the seam fires)" );
+			Check( throwResult.renderJobId != 0, "S1-delta doc-truth fix: the failed controller-routed render still carries a real, nonzero renderJobId" );
 
 			// THE MONEY ASSERTION: unfixed code leaves `active` stuck true
 			// forever after this throw (mCurrentRenderJob.active = false
@@ -1104,6 +1108,8 @@ static void RunPreS2HardeningTests()
 			const SceneEditController::RenderJobStatus afterThrow = controller.CurrentRenderJob();
 			Check( !afterThrow.active,
 			       "ITEM 1 MONEY ASSERTION: CurrentRenderJob().active is FALSE after fn() throws out of RunPreviewRenderParked (RAII guard ran on unwind)" );
+			Check( afterThrow.id == throwResult.renderJobId,
+			       "the controller's post-throw job record names the SAME id the failed result reported" );
 
 			// RED-PROVE THE RED-PROVE: the session/controller are still
 			// usable after the throw -- a follow-up non-throwing render
@@ -1128,12 +1134,17 @@ static void RunPreS2HardeningTests()
 	}
 
 	//----------------------------------------------------------------------
-	// ITEM 2a: a controller-attached, no-override render (session-local
-	// id, since no override means it never reaches RunPreviewRenderParked)
-	// and an override render (coordinator id) on the SAME session/
-	// controller yield ids from PROVABLY DISJOINT spaces -- asserted via
-	// the documented parity discriminator (coordinator EVEN, session-local
-	// ODD), not merely "different".
+	// ITEM 2a (Model-B F2 slice S2a REBASE): pre-S2a, a controller-attached
+	// no-override render never reached RunPreviewRenderParked at all (the
+	// documented pre-existing race -- see AgentSession.h's LIVE-MODE
+	// SAFETY note) and so fell through to the session-local (ODD) counter.
+	// S2a closes that race by routing EVERY controller-attached render --
+	// override or not -- through the controller's coordinator (either
+	// RunPreviewRenderParked for an override, or SubmitAgentRenderSync for
+	// no override).  The updated, deliberate contract: BOTH now yield EVEN
+	// (coordinator) ids, from the SAME shared monotonic counter, and the
+	// session-local (ODD) counter is now reachable ONLY when no controller
+	// is attached at all (headless) -- covered separately below.
 	//----------------------------------------------------------------------
 	{
 		const std::string scenePath = WriteTemp( "rise_agent_disjoint_ids.RISEscene", kScene );
@@ -1152,12 +1163,14 @@ static void RunPreS2HardeningTests()
 		{
 			session->AttachController( &controller );
 
-			// No override requested -> does NOT route through
-			// RunPreviewRenderParked -> session-local (ODD) id.
+			// Model-B F2 slice S2a: no override requested, but a controller
+			// IS attached -- now routes through SubmitAgentRenderSync (the
+			// no-override race closure), so this ALSO yields an EVEN
+			// (coordinator) id, not the pre-S2a session-local ODD one.
 			const AgentRenderResult noOverride = session->Render( -1 );
 			Check( noOverride.ok, "controller-attached, no-override render succeeds" );
-			Check( ( noOverride.renderJobId % 2 ) == 1,
-			       "ITEM 2a: a controller-attached render with NO override yields an ODD (session-local) renderJobId" );
+			Check( ( noOverride.renderJobId % 2 ) == 0,
+			       "ITEM 2a (S2a rebase): a controller-attached render with NO override now yields an EVEN (coordinator) renderJobId -- the no-override race closure" );
 
 			// A camera override IS requested -> routes through
 			// RunPreviewRenderParked -> coordinator (EVEN) id.
@@ -1170,15 +1183,17 @@ static void RunPreS2HardeningTests()
 			       "ITEM 2a: a controller-attached render WITH an override yields an EVEN (coordinator) renderJobId" );
 
 			Check( withOverride.renderJobId != noOverride.renderJobId,
-			       "ITEM 2a: the two ids are numerically distinct (necessary but not sufficient -- the parity checks above are the real discriminator)" );
+			       "ITEM 2a: the two ids are numerically distinct" );
+			Check( withOverride.renderJobId > noOverride.renderJobId,
+			       "ITEM 2a (S2a rebase): both draw from the SAME shared monotonic coordinator counter (strictly increasing across classes)" );
 
-			// A second no-override render continues the SAME odd sequence
-			// (proves the discriminator is a stable space, not a fluke of
-			// one call landing on an odd number by chance).
+			// A second no-override render continues the SAME coordinator
+			// sequence (proves this is the stable shared-counter behavior,
+			// not a fluke of one call).
 			const AgentRenderResult noOverride2 = session->Render( -1 );
 			Check( noOverride2.ok, "second controller-attached, no-override render succeeds" );
-			Check( ( noOverride2.renderJobId % 2 ) == 1, "a second no-override render also yields an ODD id" );
-			Check( noOverride2.renderJobId > noOverride.renderJobId, "session-local ids keep increasing across calls" );
+			Check( ( noOverride2.renderJobId % 2 ) == 0, "a second no-override render also yields an EVEN (coordinator) id" );
+			Check( noOverride2.renderJobId > withOverride.renderJobId, "coordinator ids keep increasing across calls, across BOTH override and no-override renders" );
 
 			session->AttachController( nullptr );
 		}

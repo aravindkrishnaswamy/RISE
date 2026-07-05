@@ -67,9 +67,11 @@
 #include "../Scene.h"                 // concrete Scene (transitive scene-state includes); transactional rollback no longer uses CreateSnapshot/RestoreFromSnapshot
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/RuntimeContext.h"
+#include <algorithm>      // Model-B F2 slice S2a: std::min for WaitForRenderJob's bounded wait_until slices
 #include <chrono>
 #include <cstdio>
 #include <ctime>          // for time() used by CloneActiveCamera dedup fallback
+#include <exception>      // Model-B F2 slice S2a: std::exception_ptr / current_exception / rethrow_exception
 #include <string>
 
 using namespace RISE;
@@ -144,10 +146,35 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mSuppressInitialRender( false )
 , mRendering( false )
 , mSaving( false )
+, mAgentRenderBlocksInteractive( false )
 , mCancelCount( 0 )
 , mRenderCount( 0 )
-, mNextRenderJobId( kControllerRenderJobIdStride )   // pre-S2 hardening: EVEN ids, disjoint from AgentSession's ODD session-local ids
+// Model-B F2 slice S2a fix: every mint site does `mNextRenderJobId +=
+// kControllerRenderJobIdStride` BEFORE using the result (see
+// RunPreviewRenderParked / RenderLoop) -- so starting the counter AT the
+// stride made the FIRST minted id stride*2 (4), not stride (2), silently
+// contradicting the class's own documented "starts at 2" contract (see
+// kControllerRenderJobIdStride's doc + RenderJobId's doc).  Starting one
+// stride EARLY (0) makes the first `+= stride` land exactly on
+// kControllerRenderJobIdStride (2), matching the doc.  0 is safe here
+// specifically because it is ALSO kInvalidRenderJobId -- this bare 0 is
+// never itself handed out as a job id (every consumer reads the POST-
+// increment value), so there is no collision with the "no id assigned"
+// sentinel.
+, mJobStatusMutex()
+, mNextRenderJobId( 0 )
 , mCurrentRenderJob()
+, mAgentRenderThread()
+, mAgentRenderCV()
+, mAgentRenderDoneCV()
+, mAgentRenderStop( false )
+, mAgentRenderPending( false )
+, mAgentRenderFn()
+, mAgentRenderClass( RenderClass::AgentPreview )
+, mAgentRenderClientLabel()
+, mAgentRenderJobId( kInvalidRenderJobId )
+, mAgentRenderException()
+, mAgentRenderCompletedGeneration( 0 )
 , mFullResW( 0 )
 , mFullResH( 0 )
 , mPreviewScale( 1 )
@@ -171,6 +198,20 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 	// re-derive).  Test harnesses that build a SceneEditor directly skip this and degrade to "transform /
 	// camera ops only" mode.
 	RebindEditorToJob();
+
+	// Model-B F2 slice S2a: spawn the dedicated agent-render worker HERE
+	// (constructor), not in Start() -- it is independent of the
+	// interactive render thread's Start()/Stop() lifecycle (a caller may
+	// submit an agent render before ever calling Start(), or after
+	// Stop()'d the interactive loop; the two threads are orthogonal
+	// -- the worker only ever contends with the interactive loop through
+	// the SAME mMutex/CancelAndParkRender_ critical section, exactly
+	// like RunPreviewRenderParked already does from whatever thread
+	// calls it).  LONG-LIVED: started once here, joined once in Stop()
+	// (which ~SceneEditController calls unconditionally), so any future
+	// one-time-per-thread initialization a submitted `fn` might rely on
+	// runs exactly once for the life of this controller.
+	mAgentRenderThread = std::thread( &SceneEditController::AgentRenderWorkerLoop_, this );
 }
 
 // Re-point the editor at the Job's CURRENT scene + managers.  Called at construction AND after every whole-scene
@@ -591,10 +632,33 @@ void SceneEditController::Start( bool suppressInitialRender )
 
 void SceneEditController::Stop()
 {
+	// Model-B F2 slice S2a: the agent-render worker is INDEPENDENT of
+	// mRunning/the interactive loop's Start()/Stop() lifecycle (it is
+	// spawned unconditionally in the ctor -- see that comment), so its
+	// teardown must NOT be gated behind the mRunning CAS below, or a
+	// caller that never called Start() (headless-controller agent-only
+	// use) would leak the joinable thread past ~SceneEditController's
+	// Stop() call.  Guarded instead by mAgentRenderThread.joinable(),
+	// which is false after the first Stop() -- so a second Stop() call
+	// (or the dtor's unconditional Stop()) is a correct no-op here too,
+	// same idempotency shape as the mRenderThread teardown below.
+	// Same lost-wakeup discipline as the interactive-loop teardown:
+	// trip the stop flag, hold mMutex around the notify so a worker
+	// between its predicate check and the kernel park cannot miss it.
+	mAgentRenderStop.store( true, std::memory_order_release );
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+	}
+	mAgentRenderCV.notify_all();
+	if( mAgentRenderThread.joinable() )
+	{
+		mAgentRenderThread.join();
+	}
+
 	bool expected = true;
 	if( !mRunning.compare_exchange_strong( expected, false ) )
 	{
-		return;  // not running
+		return;  // interactive loop was not running
 	}
 
 	// Trip cancel BEFORE notifying.  Hold mMutex around the wakeup to
@@ -3267,10 +3331,20 @@ bool SceneEditController::RunPreviewRenderParked(
 	std::unique_lock<std::mutex> lk( mMutex );
 	CancelAndParkRender_( lk );
 
-	const RenderJobId jobId = mNextRenderJobId += kControllerRenderJobIdStride;
-	mCurrentRenderJob.id          = jobId;
-	mCurrentRenderJob.renderClass = renderClass;
-	mCurrentRenderJob.active      = true;
+	RenderJobId jobId;
+	{
+		// Model-B F2 slice S2a fix: mJobStatusMutex, NOT mMutex, guards
+		// mCurrentRenderJob/mNextRenderJobId -- see that member's doc for
+		// why (a status reader must never block behind mMutex's
+		// render-duration hold).  This brief nested acquisition is safe:
+		// mJobStatusMutex is never held here across anything but these
+		// three field writes.
+		std::lock_guard<std::mutex> statusLk( mJobStatusMutex );
+		jobId = mNextRenderJobId += kControllerRenderJobIdStride;
+		mCurrentRenderJob.id          = jobId;
+		mCurrentRenderJob.renderClass = renderClass;
+		mCurrentRenderJob.active      = true;
+	}
 
 	// outJobId is assigned BEFORE fn() runs, not after: the job record
 	// above already reflects a real, already-started render (id minted,
@@ -3288,13 +3362,16 @@ bool SceneEditController::RunPreviewRenderParked(
 	if( outJobId ) *outJobId = jobId;
 
 	// RAII: flips `active` false on EVERY exit from here down, including
-	// an exception unwinding out of fn() -- runs under mMutex, which is
-	// already held (unique_lock `lk` is still owned at this scope), so no
-	// locking inside the destructor.
+	// an exception unwinding out of fn() -- takes mJobStatusMutex itself
+	// (briefly) rather than relying on mMutex, which `lk` holds for the
+	// whole render.
 	struct ActiveFlipGuard {
-		RenderJobStatus& job;
-		~ActiveFlipGuard() { job.active = false; }
-	} activeFlipGuard{ mCurrentRenderJob };
+		SceneEditController& self;
+		~ActiveFlipGuard() {
+			std::lock_guard<std::mutex> statusLk( self.mJobStatusMutex );
+			self.mCurrentRenderJob.active = false;
+		}
+	} activeFlipGuard{ *this };
 
 	if( fn ) fn();
 
@@ -3306,8 +3383,294 @@ bool SceneEditController::RunPreviewRenderParked(
 
 SceneEditController::RenderJobStatus SceneEditController::CurrentRenderJob() const
 {
-	std::lock_guard<std::mutex> lk( mMutex );
+	// Model-B F2 slice S2a fix: mJobStatusMutex, not mMutex -- see that
+	// member's doc.  Reading via mMutex would block this call for an
+	// entire in-flight render's duration.
+	std::lock_guard<std::mutex> lk( mJobStatusMutex );
 	return mCurrentRenderJob;
+}
+
+// Model-B F2 slice S2a -------------------------------------------------
+
+// The dedicated agent-render worker's loop.  Long-lived: one instance of
+// this loop runs for the whole life of the controller (see the ctor's
+// std::thread construction + Stop()'s teardown).  Waits for a submission
+// or shutdown (guarded by the NARROW mAgentRenderSlotMutex -- see that
+// member's doc for why this is a SEPARATE lock from mMutex), pulls the
+// closure out of the slot, THEN acquires mMutex and runs it under the
+// SAME critical section RunPreviewRenderParked uses -- CancelAndParkRender_
+// -- so the interactive thread is parked for the render's whole duration
+// exactly as it is for a RunPreviewRenderParked caller.  mMutex is
+// released again BEFORE the slot is cleared, so a fresh submission's
+// quick mAgentRenderSlotMutex-only check is never blocked behind a
+// render in progress.
+void SceneEditController::AgentRenderWorkerLoop_()
+{
+	for(;;)
+	{
+		std::function<void()> fn;
+		{
+			std::unique_lock<std::mutex> slotLk( mAgentRenderSlotMutex );
+			mAgentRenderCV.wait( slotLk, [&]{
+				return mAgentRenderPending || mAgentRenderStop.load( std::memory_order_acquire );
+			} );
+
+			if( !mAgentRenderPending )
+			{
+				// Woken for shutdown with nothing queued -- exit.
+				if( mAgentRenderStop.load( std::memory_order_acquire ) ) return;
+				continue;   // spurious wake guard (shouldn't happen given the predicate above)
+			}
+
+			// Take the submission out of the slot.  mAgentRenderPending
+			// STAYS true for the render's whole duration (it means
+			// "occupied", not "queued-but-not-started") -- it is cleared
+			// only once the render actually finishes, further down.
+			fn = std::move( mAgentRenderFn );
+			mAgentRenderFn = nullptr;
+		}   // slotLk released here -- a concurrent SubmitAgentRenderAsync's
+		    // occupancy check is never blocked by the render that follows.
+
+		std::exception_ptr caught;
+		{
+			// Cancel-and-park the interactive thread -- identical critical
+			// section to RunPreviewRenderParked (same CancelAndParkRender_,
+			// same mMutex hold for the render's whole duration).  The job
+			// record was already populated by the submitter
+			// (SubmitAgentRenderAsync) before this thread ever saw the
+			// submission, so no re-mint here.
+			std::unique_lock<std::mutex> renderLk( mMutex );
+			CancelAndParkRender_( renderLk );
+
+			// RAII: flips the job record's `active` false AND releases the
+			// interactive-loop gate on EVERY exit, including a throw out
+			// of `fn` -- mirrors RunPreviewRenderParked's ActiveFlipGuard,
+			// plus the S2a gate release.  The job-record write takes
+			// mJobStatusMutex (NOT mMutex -- see that member's doc: a
+			// status reader must never block behind mMutex's
+			// render-duration hold); mAgentRenderBlocksInteractive is a
+			// plain atomic, cleared here under mMutex (renderLk, already
+			// held) so RenderLoop's next mMutex acquisition sees the gate
+			// release with proper ordering.
+			struct ActiveFlipGuard {
+				SceneEditController& self;
+				~ActiveFlipGuard() {
+					{
+						std::lock_guard<std::mutex> statusLk( self.mJobStatusMutex );
+						self.mCurrentRenderJob.active = false;
+					}
+					self.mAgentRenderBlocksInteractive.store( false, std::memory_order_release );
+				}
+			} activeFlipGuard{ *this };
+
+			try {
+				if( fn ) fn();
+			}
+			catch( ... ) {
+				// Captured, NOT rethrown here -- this is a background
+				// worker thread; rethrowing would terminate() the process
+				// the instant it left this try block uncaught.
+				// SubmitAgentRenderSync picks this up (via
+				// mAgentRenderException below) and rethrows it on the
+				// CALLING thread after completion; a SubmitAgentRenderAsync
+				// caller that never syncs on this exception simply never
+				// sees it thrown (matches AgentRenderResult's existing
+				// "ok=false" convention -- async failures are reported
+				// through result plumbing, not C++ exceptions, once they
+				// cross a thread boundary).
+				caught = std::current_exception();
+			}
+		}   // renderLk released here -- BEFORE the slot is cleared below,
+		    // so mMutex is never held while touching the slot.
+
+		// Wake the interactive loop NOW that mAgentRenderBlocksInteractive
+		// is clear -- it may have a pending edit queued up behind the
+		// gate (see RenderLoop's pred / continue check).
+		mCV.notify_all();
+
+		// Free the slot + publish the exception + bump the completion
+		// generation, all under the narrow slot mutex, then notify.
+		{
+			std::lock_guard<std::mutex> slotLk( mAgentRenderSlotMutex );
+			mAgentRenderException = caught;
+			mAgentRenderPending   = false;
+			++mAgentRenderCompletedGeneration;
+		}
+		mAgentRenderDoneCV.notify_all();
+	}
+}
+
+// Submit `fn` to run on the dedicated worker; return immediately after a
+// brief mAgentRenderSlotMutex hold (NOT mMutex -- see that member's doc)
+// that mints the job id and hands the slot to the worker.  See the header
+// doc for the single-slot / refusal contract.
+bool SceneEditController::SubmitAgentRenderAsync(
+	std::function<void()> fn,
+	const String&         clientLabel,
+	RenderJobId*          outJobId )
+{
+	if( mTxnOpen )
+	{
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent render submission refused inside an open transaction (would stall the gesture)." );
+		return false;
+	}
+
+	RenderJobId jobId = kInvalidRenderJobId;
+	{
+		std::lock_guard<std::mutex> slotLk( mAgentRenderSlotMutex );
+
+		if( mAgentRenderPending )
+		{
+			// Single-slot: a submission is already queued or running.
+			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent render submission refused -- another agent render is already queued or running (single-slot policy)." );
+			return false;
+		}
+
+		// mCurrentRenderJob/mNextRenderJobId are guarded by mJobStatusMutex
+		// (NOT mMutex -- see that member's doc: mMutex is held by the
+		// worker for the render's WHOLE DURATION, so a status reader
+		// using mMutex would block for the entire render instead of
+		// observing it in flight; this was a real bug caught by this
+		// slice's own flaky test).  mAgentRenderBlocksInteractive is a
+		// SEPARATE plain atomic that RenderLoop checks WHILE holding
+		// mMutex -- set it under a brief, nested mMutex acquisition here
+		// so RenderLoop's mint block and this write are strictly
+		// ordered (RenderLoop cannot observe the gate false while this
+		// job is being minted).  Nesting mMutex INSIDE the already-held
+		// slot lock is safe here specifically because the single-slot
+		// policy above guarantees no render is currently in flight (the
+		// worker only holds mMutex WHILE a render runs, and a render can
+		// only start after mAgentRenderPending flips true, which happens
+		// later in this same critical section) -- so this brief, nested
+		// mMutex acquisition can never block behind the worker's
+		// render-duration hold.  No other code path acquires mMutex then
+		// tries to acquire mAgentRenderSlotMutex (the worker and
+		// WaitForRenderJob both release one before acquiring the other),
+		// so this nesting order (slot outer, mMutex inner) is the ONLY
+		// nesting order used anywhere and cannot deadlock.
+		{
+			std::lock_guard<std::mutex> statusLk( mJobStatusMutex );
+			jobId = mNextRenderJobId += kControllerRenderJobIdStride;
+			mCurrentRenderJob.id          = jobId;
+			mCurrentRenderJob.renderClass = RenderClass::AgentPreview;
+			mCurrentRenderJob.active      = true;
+		}
+		{
+			// Model-B F2 slice S2a: claim the interactive-loop gate for
+			// the FULL duration of this render (mint through worker
+			// completion) -- see mAgentRenderBlocksInteractive's doc for
+			// the exact race this closes (RenderLoop's own mint block
+			// stomping mCurrentRenderJob in the gap between this mint and
+			// the worker actually starting).
+			std::lock_guard<std::mutex> renderLk( mMutex );
+			mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
+		}
+
+		mAgentRenderFn          = std::move( fn );
+		mAgentRenderClass        = RenderClass::AgentPreview;
+		mAgentRenderClientLabel  = clientLabel;
+		mAgentRenderJobId        = jobId;
+		mAgentRenderException    = nullptr;
+		mAgentRenderPending      = true;
+	}
+
+	if( outJobId ) *outJobId = jobId;
+
+	mAgentRenderCV.notify_all();
+	return true;
+}
+
+// The synchronous convenience wrapper: submit, then block until the
+// worker signals completion of THIS job (waiting on mAgentRenderDoneCV,
+// guarded by mAgentRenderSlotMutex, for the slot to free up), then
+// rethrow whatever exception the worker captured (if any) so this call's
+// throw contract matches a direct synchronous invocation of `fn`.
+bool SceneEditController::SubmitAgentRenderSync(
+	std::function<void()> fn,
+	const String&         clientLabel,
+	RenderJobId*          outJobId )
+{
+	RenderJobId jobId = kInvalidRenderJobId;
+	if( !SubmitAgentRenderAsync( std::move( fn ), clientLabel, &jobId ) )
+	{
+		return false;
+	}
+	if( outJobId ) *outJobId = jobId;
+
+	std::exception_ptr caught;
+	{
+		std::unique_lock<std::mutex> slotLk( mAgentRenderSlotMutex );
+		// Wait until the slot this submission occupied is no longer
+		// pending -- i.e. the worker has finished running it.  Since
+		// this is a synchronous call and the single-slot policy refuses
+		// concurrent submissions, mAgentRenderPending going false can
+		// only mean THIS job finished (no other submission could have
+		// been accepted in between to reuse the slot).
+		mAgentRenderDoneCV.wait( slotLk, [&]{ return !mAgentRenderPending; } );
+		caught = mAgentRenderException;
+		mAgentRenderException = nullptr;
+	}
+	if( caught ) std::rethrow_exception( caught );
+	return true;
+}
+
+SceneEditController::RenderJobLookup SceneEditController::GetRenderJobStatus( RenderJobId id ) const
+{
+	RenderJobLookup out;
+	if( id == kInvalidRenderJobId ) return out;
+	// Parity contract (ce9f5e03): ODD ids are AgentSession's session-local
+	// space, never minted by this controller -- reject outright rather
+	// than aliasing onto whatever this controller's counter last assigned.
+	if( ( id % kControllerRenderJobIdStride ) != 0 ) return out;
+
+	// Model-B F2 slice S2a fix: mJobStatusMutex, not mMutex -- see that
+	// member's doc.  This is the exact fix for the flaky "never observed
+	// active" bug: mMutex is held by the worker for the whole render, so
+	// using it here would block every status poll until the render
+	// finished.
+	std::lock_guard<std::mutex> lk( mJobStatusMutex );
+	if( mCurrentRenderJob.id != id ) return out;   // not the current/most-recent job this controller knows about
+	out.found  = true;
+	out.status = mCurrentRenderJob;
+	return out;
+}
+
+bool SceneEditController::WaitForRenderJob( RenderJobId id, unsigned int timeoutMs ) const
+{
+	if( id == kInvalidRenderJobId ) return false;
+	if( ( id % kControllerRenderJobIdStride ) != 0 ) return false;   // ODD session-local id -- not ours to wait on
+
+	// mCurrentRenderJob is guarded by mJobStatusMutex (NOT mMutex -- see
+	// that member's doc: mMutex is held by the worker for the render's
+	// WHOLE DURATION, so polling via mMutex would block this call for the
+	// entire render instead of noticing completion promptly -- the same
+	// bug class this slice's own flaky test caught for GetRenderJobStatus).
+	// The worker's completion signal (mAgentRenderDoneCV) is guarded by
+	// the SEPARATE mAgentRenderSlotMutex.  Poll mCurrentRenderJob under
+	// mJobStatusMutex in a short loop, sleeping on mAgentRenderSlotMutex's
+	// CV between checks.
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( timeoutMs );
+	for(;;)
+	{
+		{
+			std::lock_guard<std::mutex> lk( mJobStatusMutex );
+			if( mCurrentRenderJob.id != id )   return true;    // superseded by a newer job -- this one is done
+			if( !mCurrentRenderJob.active )    return true;    // already complete
+		}
+		if( timeoutMs == 0 ) return false;              // poll-once contract: no wait
+		const auto now = std::chrono::steady_clock::now();
+		if( now >= deadline ) return false;
+		// Bound each wait slice so we re-check mCurrentRenderJob under
+		// mMutex periodically rather than relying on a single CV wait
+		// (mAgentRenderDoneCV is signalled by the worker, but the
+		// interactive loop's own completion of the SAME id -- if this
+		// id happens to be superseded by an interactive pass -- notifies
+		// mCV instead; polling on a short bound covers both without
+		// taking a dependency on the wrong CV).
+		std::unique_lock<std::mutex> slotLk( mAgentRenderSlotMutex );
+		const auto sliceEnd = std::min( deadline, now + std::chrono::milliseconds( 20 ) );
+		mAgentRenderDoneCV.wait_until( slotLk, sliceEnd );
+	}
 }
 
 // Model-B F5 slice S2: the shared render-thread-SAFE chunk-CRUD commit.  This
@@ -3778,9 +4141,15 @@ void SceneEditController::RenderLoop()
 			// (file IO + render-thread frame reads would race).  The
 			// save wraps up quickly (ms for typical scene files);
 			// loop-resume is automatic via the post-save cv.notify_one.
+			// Model-B F2 slice S2a: mAgentRenderBlocksInteractive is the
+			// SAME gate for the agent-render worker's window -- see that
+			// member's doc for the race it closes.  Loop-resume is
+			// automatic via the worker's cv.notify_all() when it clears
+			// the flag.
 			auto pred = [&]{
 				return ( mEditPending.load( std::memory_order_acquire )
-				      && !mSaving.load( std::memory_order_acquire ) )
+				      && !mSaving.load( std::memory_order_acquire )
+				      && !mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
 				    || !mRunning.load( std::memory_order_acquire );
 			};
 			if( refineMode )
@@ -3796,6 +4165,17 @@ void SceneEditController::RenderLoop()
 		}
 
 		if( !mRunning.load( std::memory_order_acquire ) ) break;
+
+		// Model-B F2 slice S2a: the idle-refinement path's wait_for can
+		// return on a bare TIMEOUT (pred never satisfied) even while
+		// mAgentRenderBlocksInteractive is set -- pred only gates the
+		// EXPLICIT-edit wake, not the timeout wake.  Re-check explicitly
+		// here, before ANY mint/pass-start logic below, so a refinement
+		// tick can never race the agent-render worker's window either.
+		// mEditPending was NOT consumed on this path (exchange above
+		// only fires when pred was satisfied), so looping back costs
+		// nothing -- the edit (if any) is still pending.
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) continue;
 
 		// Property-scrub watchdog: if a scrub gesture began but no
 		// edits have arrived for kScrubWatchdogMs, presume the End
@@ -3872,12 +4252,22 @@ void SceneEditController::RenderLoop()
 			std::lock_guard<std::mutex> lk( mMutex );
 			mCancelProgress.Reset();
 			mRendering.store( true, std::memory_order_release );
-			// Model-B F2 slice S1: render-identity bookkeeping at the SAME
-			// existing lock site -- no new synchronization.  This is the
-			// interactive preview pass, so RenderClass::Interactive always.
-			mCurrentRenderJob.id          = mNextRenderJobId += kControllerRenderJobIdStride;
-			mCurrentRenderJob.renderClass = RenderClass::Interactive;
-			mCurrentRenderJob.active      = true;
+			// Model-B F2 slice S1: render-identity bookkeeping.  Model-B
+			// F2 slice S2a fix: mCurrentRenderJob/mNextRenderJobId moved
+			// to their OWN mJobStatusMutex (nested here) -- see that
+			// member's doc for why (a status reader must never block
+			// behind mMutex's render-duration hold; this class's own
+			// mMutex hold here is brief -- just this block -- but the
+			// AGENT worker's mMutex hold spans the whole render, so the
+			// job-status record needs a lock that NEITHER path ever holds
+			// that long).  This is the interactive preview pass, so
+			// RenderClass::Interactive always.
+			{
+				std::lock_guard<std::mutex> statusLk( mJobStatusMutex );
+				mCurrentRenderJob.id          = mNextRenderJobId += kControllerRenderJobIdStride;
+				mCurrentRenderJob.renderClass = RenderClass::Interactive;
+				mCurrentRenderJob.active      = true;
+			}
 		}
 
 		DoOneRenderPass();
@@ -3890,7 +4280,10 @@ void SceneEditController::RenderLoop()
 		{
 			std::lock_guard<std::mutex> lk( mMutex );
 			mRendering.store( false, std::memory_order_release );
-			mCurrentRenderJob.active = false;   // Model-B F2 slice S1: same lock site as the store above
+			{
+				std::lock_guard<std::mutex> statusLk( mJobStatusMutex );
+				mCurrentRenderJob.active = false;   // Model-B F2 slice S1/S2a: nested mJobStatusMutex, same site as the store above
+			}
 		}
 		mCV.notify_all();
 

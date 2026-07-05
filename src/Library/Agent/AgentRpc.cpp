@@ -708,6 +708,27 @@ namespace RISE
 					if( camPresent < 0 ) return MakeError( idValue, kInvalidParams, camErr );
 					if( camPresent == 1 ) rparams.camera = camOverride;
 
+					// Model-B F2 slice S2a ADDITIVE param: {"async":true} ->
+					// submit to the controller's dedicated agent-render worker
+					// and return IMMEDIATELY with {renderJobId,status:"submitted"}
+					// instead of blocking for the render's duration.  Absent or
+					// false -> today's exact synchronous behaviour (unchanged).
+					bool wantAsync = false;
+					if( const JsonValue* av = params.find( "async" ) ) {
+						if( av->isBool() ) wantAsync = av->asBool();
+						else if( !av->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'async' must be a boolean" );
+					}
+
+					if( wantAsync ) {
+						const AgentSession::AgentRenderAsyncResult ar = s->RenderAsync( rparams );
+						JsonValue result = JsonValue::MakeObject();
+						result.set( "renderJobId", JsonValue::MakeNumber( static_cast<double>( ar.renderJobId ) ) );
+						result.set( "status", JsonValue::MakeString( ar.accepted ? "submitted" : "refused" ) );
+						result.set( "message", JsonValue::MakeString( ar.message ) );
+						return MakeSuccess( idValue, result );
+					}
+
 					const AgentRenderResult rr = s->Render( rparams );
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "ok",     JsonValue::MakeBool( rr.ok ) );
@@ -725,6 +746,80 @@ namespace RISE
 					// AgentRenderResult::renderJobId's doc for the LIVE vs
 					// headless id semantics.
 					result.set( "renderJobId", JsonValue::MakeNumber( static_cast<double>( rr.renderJobId ) ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// render_status {renderJobId} -> {found,active}
+				//   Model-B F2 slice S2a: poll the status of a render job id
+				//   returned by `render` (async or sync).  `found`=false for an
+				//   unrecognized id (headless session, or a session-local/ODD
+				//   id -- see SceneEditController::WaitForRenderJob's parity
+				//   contract); `active` is meaningful only when `found`=true.
+				//--------------------------------------------------------------
+				if( m == "render_status" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* rj = params.find( "renderJobId" );
+					if( !rj || !rj->isNumber() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'renderJobId' (number) is required" );
+					}
+					const double rv = rj->asNumber();
+					// Same exact-double-integer bound as ParseBaseHeadVersionParam
+					// above (2^53, the largest integer a double represents exactly) --
+					// renderJobId is a small monotonic counter in practice, but the
+					// guard must reject NaN/+inf/huge values BEFORE the narrowing
+					// static_cast below (UB otherwise), matching this file's existing
+					// non-finite-guard idiom (explicit range test, not std::isfinite --
+					// see the 'samples' parse for why).
+					if( !( rv >= 0.0 && rv <= 9007199254740992.0 ) )
+						return MakeError( idValue, kInvalidParams, "Invalid params: 'renderJobId' must be a finite, non-negative number" );
+					const std::uint64_t jobId = static_cast<std::uint64_t>( rv );
+					const AgentSession::AgentRenderJobStatus st = s->RenderStatus( jobId );
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "found",  JsonValue::MakeBool( st.found ) );
+					result.set( "active", JsonValue::MakeBool( st.active ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// render_wait {renderJobId, timeoutMs?} -> {completed,found,active}
+				//   Model-B F2 slice S2a: block up to timeoutMs (default 5000,
+				//   clamped [0,60000]) for the render job to complete.
+				//   `completed`=true iff it was observed to finish (or was
+				//   already finished) within the timeout; false on timeout or
+				//   an unrecognized id.
+				//--------------------------------------------------------------
+				if( m == "render_wait" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* rj = params.find( "renderJobId" );
+					if( !rj || !rj->isNumber() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'renderJobId' (number) is required" );
+					}
+					const double rv = rj->asNumber();
+					// Same exact-double-integer bound as ParseBaseHeadVersionParam
+					// above (2^53, the largest integer a double represents exactly) --
+					// renderJobId is a small monotonic counter in practice, but the
+					// guard must reject NaN/+inf/huge values BEFORE the narrowing
+					// static_cast below (UB otherwise), matching this file's existing
+					// non-finite-guard idiom (explicit range test, not std::isfinite --
+					// see the 'samples' parse for why).
+					if( !( rv >= 0.0 && rv <= 9007199254740992.0 ) )
+						return MakeError( idValue, kInvalidParams, "Invalid params: 'renderJobId' must be a finite, non-negative number" );
+					const std::uint64_t jobId = static_cast<std::uint64_t>( rv );
+
+					unsigned int timeoutMs = 5000;
+					std::string toErr;
+					const int toPresent = ParseClampedUInt( params, "timeoutMs", 0, 60000, timeoutMs, toErr );
+					if( toPresent < 0 ) return MakeError( idValue, kInvalidParams, toErr );
+
+					const bool completed = s->RenderWait( jobId, timeoutMs );
+					const AgentSession::AgentRenderJobStatus st = s->RenderStatus( jobId );
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "completed", JsonValue::MakeBool( completed ) );
+					result.set( "found",  JsonValue::MakeBool( st.found ) );
+					result.set( "active", JsonValue::MakeBool( st.active ) );
 					return MakeSuccess( idValue, result );
 				}
 

@@ -32,6 +32,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -565,6 +566,67 @@ namespace RISE
 			//! and applies the override directly.
 			AgentRenderResult Render( const AgentRenderParams& params );
 
+			//! Model-B F2 slice S2a: the result of RenderAsync -- either the
+			//! render was ACCEPTED (submitted to the controller's dedicated
+			//! agent-render worker; `renderJobId` names it) or REFUSED
+			//! (no controller attached, an editor transaction is open, or
+			//! the worker's single slot is already occupied).
+			struct AgentRenderAsyncResult
+			{
+				bool          accepted = false;
+				std::uint64_t renderJobId = 0;   //!< 0 when !accepted
+				std::string   message;
+			};
+
+			//! Model-B F2 slice S2a: submit a render to run ASYNCHRONOUSLY on
+			//! the ATTACHED controller's dedicated agent-render worker, and
+			//! return IMMEDIATELY (does not block for the render's
+			//! duration).  CONTROLLER-ATTACHED ONLY: `HasController()` must
+			//! be true, else this refuses outright (`accepted=false`,
+			//! `message` explains why) -- a headless session has no
+			//! coordinator/worker to submit to, and this is deliberately
+			//! NOT silently downgraded to a synchronous direct call (that
+			//! would defeat the caller's async intent without telling
+			//! them). Same override semantics as Render(params): film-dims
+			//! / camera-pose overrides are captured, applied, and restored
+			//! around the render exactly as the synchronous path does --
+			//! the restore happens on the WORKER thread before it reports
+			//! the job complete, so by the time GetRenderJobStatus/
+			//! WaitForRenderJob observes {active:false}, the Document and
+			//! camera/film LIVE state are back to their pre-call values.
+			//! `outImage`/`outMeans`-style results are NOT returned here
+			//! (there is nothing to return yet -- the render hasn't run);
+			//! poll RenderStatus(renderJobId) and, once complete, ReadImage()
+			//! for the cached PNG (populated on a successful async render
+			//! exactly like a successful synchronous one).
+			AgentRenderAsyncResult RenderAsync( const AgentRenderParams& params );
+
+			//! Model-B F2 slice S2a: the wire-friendly status of an
+			//! outstanding (or just-completed) RenderAsync call.  Mirrors
+			//! SceneEditController::RenderJobLookup but does not leak the
+			//! controller type into this header's public surface.
+			struct AgentRenderJobStatus
+			{
+				bool   found  = false;   //!< false: unrecognized id (unknown, or a session-local/ODD id -- see GetRenderJobStatus's doc)
+				bool   active = false;   //!< meaningful only when found
+			};
+
+			//! Model-B F2 slice S2a: poll the status of a render job id
+			//! previously returned by RenderAsync (or by a synchronous
+			//! Render() call that happened to route through the
+			//! controller's coordinator -- see AgentRenderResult::
+			//! renderJobId).  Controller-attached only; headless always
+			//! reports `found=false` (there is no coordinator to ask).
+			AgentRenderJobStatus RenderStatus( std::uint64_t renderJobId ) const;
+
+			//! Model-B F2 slice S2a: block up to `timeoutMs` for the render
+			//! job named by `renderJobId` to complete.  Returns true iff it
+			//! was observed complete (or was already complete) within the
+			//! timeout; false on timeout OR an unrecognized id (headless,
+			//! or a session-local/ODD id -- see SceneEditController::
+			//! WaitForRenderJob's doc).  `timeoutMs=0` polls once.
+			bool RenderWait( std::uint64_t renderJobId, unsigned int timeoutMs ) const;
+
 			//! The PNG bytes of the LAST successful Render (empty before the
 			//! first render).  A convenience read of the cached result.
 			std::vector<unsigned char> ReadImage() const;
@@ -592,7 +654,22 @@ namespace RISE
 			//! The shared core of both Render overloads: legacy Render(int) is a
 			//! thin forwarder that builds an all-absent AgentRenderParams (so
 			//! it is BYTE-COMPATIBLE with the pre-preview-render behaviour).
-			AgentRenderResult RenderCore_( const AgentRenderParams& params );
+			//!
+			//! Model-B F2 slice S2a: `assumeParked` (default false, back-
+			//! compat) is set to true ONLY by RenderAsync's submitted
+			//! closure, which already runs INSIDE the controller's dedicated
+			//! agent-render worker -- i.e. the cancel-and-park critical
+			//! section is ALREADY held by the caller (the worker loop), so
+			//! this call must skip its own routing (calling
+			//! RunPreviewRenderParked / SubmitAgentRenderSync again from
+			//! there would self-deadlock on the controller's non-recursive
+			//! mMutex).  When true, this runs the render body directly
+			//! (equivalent to the headless branch) and reports the
+			//! `forcedJobId` the caller already minted, rather than minting
+			//! or routing its own.
+			AgentRenderResult RenderCore_( const AgentRenderParams& params,
+			                                bool assumeParked = false,
+			                                std::uint64_t forcedJobId = 0 );
 
 			IJobPriv* mJob;    //!< the wrapped Job (owned iff mOwnsJob)
 			bool      mOwnsJob;
@@ -641,6 +718,22 @@ namespace RISE
 			//! this class -- no atomic needed.
 			static constexpr std::uint64_t kSessionLocalRenderJobIdStride = 2;
 			std::uint64_t mNextSessionLocalRenderJobId = 1;
+
+			//! Model-B F2 slice S2a: guards mLastPng / mLastSink against a
+			//! torn read/write race between the agent-render WORKER thread
+			//! (which runs RenderCore_'s cache-population tail at the end of
+			//! an async render, on the controller's dedicated worker
+			//! thread) and whatever thread calls ReadImage() /
+			//! ReadImage(maxEdge) while that async render is still in
+			//! flight or just completing.  The synchronous Render() path
+			//! (headless direct call, or SubmitAgentRenderSync/
+			//! RunPreviewRenderParked which BLOCK the calling thread until
+			//! the render is done) never races its OWN caller this way --
+			//! this mutex exists specifically for the async case, where the
+			//! submitting thread has already moved on by the time the
+			//! worker populates the cache.  A plain std::mutex, not
+			//! reentrant -- mirrors the controller's own mMutex discipline.
+			mutable std::mutex mAsyncCacheMutex;
 		};
 	}
 }

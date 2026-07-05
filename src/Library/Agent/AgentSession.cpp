@@ -1228,7 +1228,9 @@ namespace RISE
 			return RenderCore_( params );
 		}
 
-		AgentRenderResult AgentSession::RenderCore_( const AgentRenderParams& params )
+		AgentRenderResult AgentSession::RenderCore_( const AgentRenderParams& params,
+		                                              bool assumeParked,
+		                                              std::uint64_t forcedJobId )
 		{
 			AgentRenderResult res;
 
@@ -1456,20 +1458,94 @@ namespace RISE
 			};
 
 			// Model-B F2 slice S1: render identity.  When this call actually
-			// routes through the controller's RunPreviewRenderParked, that
-			// call assigns the id (a real coordinator-tracked job); every
-			// other path (no controller, or a controller attached but this
-			// call has no override to park for) has no coordinator behind
-			// it, so this session's OWN local counter assigns one -- see
+			// routes through the controller's coordinator (either because an
+			// override forces the RunPreviewRenderParked-equivalent park, OR
+			// -- Model-B F2 slice S2a -- because a controller is attached at
+			// all, even with no override), that path assigns the id (a real
+			// coordinator-tracked job); the ONLY remaining session-local path
+			// is fully headless (no controller attached whatsoever) -- see
 			// AgentRenderResult::renderJobId's doc for the honesty contract
 			// (session-local ids are not comparable across sessions).
+			//
+			// Model-B F2 slice S2a CLOSES the pre-existing race documented on
+			// this method's own header comment (LIVE-MODE SAFETY): before
+			// this slice, a controller-attached render with NO override
+			// called doRenderWork() DIRECTLY on the calling thread, wholly
+			// unserialized against DoOneRenderPass -- the ONLY unparked path
+			// left after slice 1b's ApplyAgentParamEdit and preview-render's
+			// override-window parking.  Routing it through
+			// SceneEditController::SubmitAgentRenderSync means EVERY
+			// controller-attached agent render -- override or not -- now
+			// runs under the SAME cancel-and-park critical section the
+			// interactive loop respects, on the dedicated agent-render
+			// worker rather than the caller's own thread.
+			//
+			// S1-delta doc-truth fix: AgentRenderResult::renderJobId's field
+			// doc claims "a FAILED render still carries a real, nonzero
+			// renderJobId when the render actually reached that stage" --
+			// but prior to this fix, a THROW out of doRenderWork() propagated
+			// as a raw C++ exception past this whole function, so the id was
+			// never attached to any result at all (the caller got an
+			// exception, not an AgentRenderResult).  Fixed here: every call
+			// shape that can run doRenderWork() (RunPreviewRenderParked,
+			// SubmitAgentRenderSync, and the direct headless call) is now
+			// wrapped in its OWN try/catch that converts a thrown exception
+			// into res.ok=false + res.renderJobId=<the id that was assigned
+			// before the throw> + a message naming the exception -- making
+			// the doc's claim TRUE end-to-end instead of only true for the
+			// non-throwing failure paths further down.  This is a DELIBERATE
+			// behavior change from pre-S2a: Render() used to let a Rasterize()
+			// throw (e.g. OIDN) escape as a raw exception; it now reports it
+			// as an ordinary ok=false result, matching every other failure
+			// mode this method already reports that way and matching the
+			// RPC layer's existing catch-all (AgentRpc.cpp already turned an
+			// escaped exception into a clean -32603 with no id attached --
+			// this makes the C++ API layer equally honest without requiring
+			// the wire transport).  AgentProposeRenderTest's two throw tests
+			// are updated accordingly (see RunRestoreOnThrowTest /
+			// RunPreS2HardeningTests): they now assert ok==false + a nonzero
+			// renderJobId instead of a caught C++ exception, while the
+			// restore-state assertions (the actual money assertions) are
+			// unchanged -- restoration still runs via the same RAII guard.
 			std::uint64_t renderJobId = 0;
 
-			if( mController && ( wantFilmOverride || wantCameraOverride ) ) {
+			// Model-B F2 slice S2a: `assumeParked` means this call is
+			// running INSIDE the controller's dedicated agent-render
+			// worker already (RenderAsync's submitted closure) -- the
+			// cancel-and-park critical section is already held by that
+			// worker, so routing through RunPreviewRenderParked /
+			// SubmitAgentRenderSync AGAIN from here would try to re-enter
+			// the controller's non-recursive mMutex and self-deadlock.
+			// Run the render body directly (same shape as the headless
+			// branch) and report the id the ASYNC submitter already
+			// minted, rather than minting or routing a fresh one.
+			if( assumeParked ) {
+				renderJobId = forcedJobId;
+				std::string thrownMessage;
+				try {
+					doRenderWork();
+				}
+				catch( const std::exception& e ) { thrownMessage = e.what(); }
+				catch( ... )                     { thrownMessage = "unknown exception"; }
+				if( !thrownMessage.empty() ) {
+					res.ok          = false;
+					res.integrator  = mJob->GetActiveRasterizerName();
+					res.renderJobId = renderJobId;
+					res.message     = "render failed: " + thrownMessage;
+					return res;
+				}
+			} else if( mController && ( wantFilmOverride || wantCameraOverride ) ) {
 				SceneEditController::RenderJobId controllerJobId = 0;
-				if( !mController->RunPreviewRenderParked(
+				bool parked = false;
+				std::string thrownMessage;
+				try {
+					parked = mController->RunPreviewRenderParked(
 						doRenderWork, SceneEditController::RenderClass::AgentPreview,
-						String(), &controllerJobId ) ) {
+						String(), &controllerJobId );
+				}
+				catch( const std::exception& e ) { thrownMessage = e.what(); }
+				catch( ... )                     { thrownMessage = "unknown exception"; }
+				if( !parked && thrownMessage.empty() ) {
 					// Refused (an editor transaction is open): the override
 					// window could not be safely parked against the
 					// interactive render thread.  Fall back to an UN-overridden
@@ -1481,14 +1557,73 @@ namespace RISE
 					fallback.message = "preview override skipped: an editor transaction is open (render ran without the override) -- " + fallback.message;
 					return fallback;
 				}
+				if( !thrownMessage.empty() ) {
+					res.ok          = false;
+					res.integrator  = mJob->GetActiveRasterizerName();
+					res.renderJobId = static_cast<std::uint64_t>( controllerJobId );
+					res.message     = "render failed: " + thrownMessage;
+					return res;
+				}
+				renderJobId = static_cast<std::uint64_t>( controllerJobId );
+			} else if( mController ) {
+				// Model-B F2 slice S2a: no override requested, but a
+				// controller IS attached -- route through the SAME
+				// cancel-and-park critical section (via the dedicated
+				// worker) rather than calling doRenderWork() directly on
+				// this thread.  This is the no-override race closure.
+				SceneEditController::RenderJobId controllerJobId = 0;
+				bool submitted = false;
+				std::string thrownMessage;
+				try {
+					submitted = mController->SubmitAgentRenderSync( doRenderWork, String(), &controllerJobId );
+				}
+				catch( const std::exception& e ) { thrownMessage = e.what(); }
+				catch( ... )                     { thrownMessage = "unknown exception"; }
+				if( !submitted && thrownMessage.empty() ) {
+					// Refused: either an editor transaction is open (same
+					// rule as RunPreviewRenderParked) or the single-slot
+					// worker already has a render queued/running.  Honest
+					// failure -- no fallback direct call here, since a
+					// direct call is exactly the race this slice closes.
+					res.ok = false;
+					res.integrator = mJob->GetActiveRasterizerName();
+					res.message = "render refused: the agent-render worker is busy or an editor transaction is open -- retry shortly";
+					return res;
+				}
+				if( !thrownMessage.empty() ) {
+					res.ok          = false;
+					res.integrator  = mJob->GetActiveRasterizerName();
+					res.renderJobId = static_cast<std::uint64_t>( controllerJobId );
+					res.message     = "render failed: " + thrownMessage;
+					return res;
+				}
 				renderJobId = static_cast<std::uint64_t>( controllerJobId );
 			} else {
-				doRenderWork();
 				// Pre-S2 hardening: ODD ids only (see
 				// mNextSessionLocalRenderJobId's doc) -- disjoint from
-				// SceneEditController's EVEN coordinator-tracked ids.
+				// SceneEditController's EVEN coordinator-tracked ids.  Only
+				// reachable HEADLESS now (no controller at all) -- a
+				// controller-attached render always goes through one of the
+				// two coordinator-tracked branches above (S2a).  Assign the
+				// id BEFORE calling doRenderWork() (mirrors
+				// RunPreviewRenderParked's "id names a call that ran, not a
+				// call that succeeded" convention) so a throw still reports
+				// a real id below.
 				renderJobId = mNextSessionLocalRenderJobId;
 				mNextSessionLocalRenderJobId += kSessionLocalRenderJobIdStride;
+				std::string thrownMessage;
+				try {
+					doRenderWork();
+				}
+				catch( const std::exception& e ) { thrownMessage = e.what(); }
+				catch( ... )                     { thrownMessage = "unknown exception"; }
+				if( !thrownMessage.empty() ) {
+					res.ok          = false;
+					res.integrator  = mJob->GetActiveRasterizerName();
+					res.renderJobId = renderJobId;
+					res.message     = "render failed: " + thrownMessage;
+					return res;
+				}
 			}
 			res.renderJobId = renderJobId;
 
@@ -1533,7 +1668,13 @@ namespace RISE
 			// pixels without re-rendering -- `sink` already carries refcount 1
 			// (our owning ref from `new` above); we transfer that ownership to
 			// mLastSink instead of releasing it.
+			//
+			// Model-B F2 slice S2a: guarded by mAsyncCacheMutex -- when this
+			// is running on the async worker thread (assumeParked), a
+			// concurrent ReadImage() call on the submitter's thread must not
+			// observe a torn mLastPng/mLastSink update.
 			if( res.ok ) {
+				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
 				mLastPng = res.png;
 				safe_release( mLastSink );
 				mLastSink = sink;
@@ -1545,8 +1686,93 @@ namespace RISE
 			return res;
 		}
 
+		// Model-B F2 slice S2a -------------------------------------------------
+
+		AgentSession::AgentRenderAsyncResult AgentSession::RenderAsync( const AgentRenderParams& params )
+		{
+			AgentRenderAsyncResult out;
+
+			if( !mController ) {
+				out.accepted = false;
+				out.message  = "no controller attached -- RenderAsync requires a LIVE controller (headless sessions have no coordinator/worker to submit to); use the synchronous Render() instead";
+				return out;
+			}
+
+			// Submit a closure that runs the FULL render body (override
+			// capture/apply/render/restore, same as the synchronous path)
+			// via RenderCore_'s `assumeParked` mode -- it must NOT re-enter
+			// the controller's routing (that would self-deadlock on
+			// mMutex, since this closure already runs INSIDE the worker's
+			// cancel-and-park hold).  The submitted closure captures `this`
+			// and `params` by value (both outlive the async call: `this`
+			// per AgentSession's normal lifetime contract, `params` copied
+			// into the lambda) -- RenderCore_'s EXISTING cache-population
+			// tail (mLastPng / mLastSink, guarded by mAsyncCacheMutex) runs
+			// on the worker thread and stashes the result there on a
+			// successful render, exactly as it already does for a
+			// synchronous call; a later ReadImage() call (from any thread)
+			// picks it up.  S2a's minimal surface exposes completion via
+			// RenderStatus/RenderWait + ReadImage rather than returning the
+			// full AgentRenderResult from this call (there is nothing to
+			// return yet at submit time -- the render hasn't run).
+			SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
+			const bool accepted = mController->SubmitAgentRenderAsync(
+				[this, params]() {
+					// The closure captures `this` and a BY-VALUE copy of
+					// `params` -- both stay valid for the closure's whole
+					// run (this AgentSession outlives the async render per
+					// its normal lifetime contract; `params` is an owned
+					// copy).  `assumeParked=true` skips RenderCore_'s own
+					// controller routing (this closure already runs INSIDE
+					// the worker's cancel-and-park hold, so routing again
+					// would self-deadlock); `forcedJobId` is left at its
+					// default 0 -- S2a's minimal surface does not thread
+					// the id INTO the result the worker discards (`r`
+					// below), only OUT via SubmitAgentRenderAsync's
+					// `outJobId` param, which the caller already has.  The
+					// cache-population tail inside RenderCore_ (guarded by
+					// mAsyncCacheMutex) stashes mLastPng/mLastSink on a
+					// successful render, which is how ReadImage() picks up
+					// the async result once it completes.
+					const AgentRenderResult r = RenderCore_( params, /*assumeParked=*/true );
+					(void)r;
+				},
+				String( "render_async" ),
+				&jobId );
+
+			if( !accepted ) {
+				out.accepted = false;
+				out.message  = "render refused: the agent-render worker is busy or an editor transaction is open -- retry shortly";
+				return out;
+			}
+
+			out.accepted    = true;
+			out.renderJobId = static_cast<std::uint64_t>( jobId );
+			out.message     = "submitted";
+			return out;
+		}
+
+		AgentSession::AgentRenderJobStatus AgentSession::RenderStatus( std::uint64_t renderJobId ) const
+		{
+			AgentRenderJobStatus out;
+			if( !mController ) return out;   // headless -- no coordinator to ask
+			const SceneEditController::RenderJobLookup lookup =
+				mController->GetRenderJobStatus( static_cast<SceneEditController::RenderJobId>( renderJobId ) );
+			out.found  = lookup.found;
+			out.active = lookup.found && lookup.status.active;
+			return out;
+		}
+
+		bool AgentSession::RenderWait( std::uint64_t renderJobId, unsigned int timeoutMs ) const
+		{
+			if( !mController ) return false;   // headless -- nothing to wait for
+			return mController->WaitForRenderJob(
+				static_cast<SceneEditController::RenderJobId>( renderJobId ), timeoutMs );
+		}
+
 		std::vector<unsigned char> AgentSession::ReadImage() const
 		{
+			std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
 			return mLastPng;
 		}
 
@@ -1556,6 +1782,7 @@ namespace RISE
 		{
 			outWidth = 0;
 			outHeight = 0;
+			std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );   // Model-B F2 slice S2a
 			if( maxEdge == 0 ) {
 				// No bound requested -- byte-compatible with ReadImage(): same
 				// cached bytes, dims read off the cached sink when available.

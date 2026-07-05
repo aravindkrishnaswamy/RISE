@@ -37,6 +37,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <mutex>
 #include <thread>
@@ -470,6 +471,101 @@ namespace RISE
 		//! mMutex.  See RenderJobStatus's doc for the "stale when inactive"
 		//! semantics.
 		RenderJobStatus CurrentRenderJob() const;
+
+		//! Model-B F2 slice S2a: submit `fn` to run OFF the calling thread on
+		//! this controller's DEDICATED, long-lived agent-render WORKER, and
+		//! return immediately (the mint + handoff happens under a brief
+		//! mMutex hold; the calling thread does not block for the render's
+		//! duration).  The WORKER -- not the submitter -- takes mMutex,
+		//! cancel-and-parks the interactive thread, runs `fn`, and releases,
+		//! exactly mirroring RunPreviewRenderParked's critical section
+		//! (same lock, same CancelAndParkRender_, same ActiveFlipGuard-
+		//! style exception safety) -- just executed on a different thread.
+		//! This is what closes the pre-existing race documented on
+		//! AgentSession::Render: a plain no-override agent render used to
+		//! call mJob->Rasterize() DIRECTLY with no park at all; routing it
+		//! through here (or through the synchronous SubmitAgentRenderSync
+		//! wrapper below) means EVERY controller-attached agent render is
+		//! now serialized against DoOneRenderPass.
+		//!
+		//! SINGLE-SLOT: only one agent render may be queued/in-flight at a
+		//! time.  A submit while a prior one is still queued OR running is
+		//! REJECTED (returns false, `fn` is NEVER invoked, the counter does
+		//! not advance, `*outJobId` is left untouched) -- this is not a
+		//! depth-N queue.  Also refused (identical to RunPreviewRenderParked)
+		//! while an editor transaction is open.
+		//!
+		//! `fn` runs on the WORKER thread, not the caller's -- it must be
+		//! self-contained (no thread-affinity assumptions) and, like
+		//! RunPreviewRenderParked's `fn`, must not re-enter this controller
+		//! (mMutex is non-recursive; the worker already holds it for the
+		//! duration of `fn`).
+		//!
+		//! `outJobId` (when non-null) receives the assigned id the moment
+		//! the submission is ACCEPTED (before the worker necessarily starts
+		//! running `fn` -- but the job is already recorded {active=true} at
+		//! that point, so a concurrent GetRenderJobStatus/WaitForRenderJob
+		//! call can observe it immediately).  Returns true iff the
+		//! submission was accepted (the worker WILL run `fn`); false on
+		//! refusal.
+		bool SubmitAgentRenderAsync(
+			std::function<void()> fn,
+			const String&         clientLabel,
+			RenderJobId*          outJobId );
+
+		//! Model-B F2 slice S2a: the SYNCHRONOUS convenience wrapper --
+		//! submits `fn` exactly like SubmitAgentRenderAsync, then blocks the
+		//! calling thread until the worker finishes running it (or the
+		//! submission was refused, in which case this returns false
+		//! immediately with no wait).  Used by AgentSession's Render() to
+		//! preserve today's "blocks until the render is done" contract while
+		//! still routing through the dedicated worker (closing the
+		//! no-override race) instead of calling mJob->Rasterize() on the
+		//! calling thread directly.  A throw out of `fn` on the worker is
+		//! caught there and RE-THROWN on the CALLING thread once the worker
+		//! signals completion, so this method's throw contract matches a
+		//! direct synchronous call of `fn` -- callers that wrap this in
+		//! try/catch see the exact same exception a direct call would have
+		//! produced.
+		bool SubmitAgentRenderSync(
+			std::function<void()> fn,
+			const String&         clientLabel,
+			RenderJobId*          outJobId );
+
+		//! Model-B F2 slice S2a: status surface for a render job id.  For a
+		//! COORDINATOR (controller-minted, EVEN) id that matches the
+		//! CURRENT or MOST-RECENTLY-COMPLETED job on this controller,
+		//! returns that job's status (mirrors CurrentRenderJob's "stale
+		//! when inactive" semantics -- `active` is only meaningful for the
+		//! CURRENT job; an older completed id reports {id, class,
+		//! active=false} using whatever the LAST record happens to be, so a
+		//! caller should treat a mismatched id defensively -- see below).
+		//! ODD (session-local, AgentSession-minted) ids and any id that does
+		//! not match the last-known record are reported NOT FOUND: `found`
+		//! is false and `status` is a default-constructed RenderJobStatus.
+		//! This is a single-record lookup (no historical ring) -- it can
+		//! only answer "is THIS the job I currently know about", not "give
+		//! me the history of job N". That is sufficient for S2a's Status/
+		//! Wait surface: a caller submits, gets an id back, and immediately
+		//! polls/waits on that SAME id before anything else runs on this
+		//! controller.
+		struct RenderJobLookup
+		{
+			bool            found = false;
+			RenderJobStatus status;
+		};
+		RenderJobLookup GetRenderJobStatus( RenderJobId id ) const;
+
+		//! Model-B F2 slice S2a: block the calling thread until the render
+		//! job named by `id` completes, or `timeoutMs` elapses.  Returns
+		//! true iff the job was observed to complete (or was ALREADY
+		//! complete) within the timeout; false on timeout OR when `id` is
+		//! an ODD (session-local) id or otherwise unrecognized (mirrors
+		//! GetRenderJobStatus's "not found" contract -- there is nothing on
+		//! this controller to wait for).  A `timeoutMs` of 0 polls once
+		//! (no wait) -- use this for a non-blocking "is it done yet" check
+		//! that still validates the id.
+		bool WaitForRenderJob( RenderJobId id, unsigned int timeoutMs ) const;
 
 		//! @param job                     borrowed; caller keeps alive.
 		//!                                Must be IJobPriv (which IJob
@@ -1065,6 +1161,26 @@ namespace RISE
 		void RenderLoop();
 		void KickRender();
 
+		//! Model-B F2 slice S2a: the dedicated agent-render worker's loop.
+		//! Started in the ctor, joined in Stop() (which the dtor calls
+		//! unconditionally) -- LONG-LIVED (never
+		//! spawn-per-render), so any one-time-per-thread init a future
+		//! `fn` might rely on happens exactly once.  Waits on
+		//! mAgentRenderCV for {a submission pending | shutdown}; on a
+		//! submission, takes mMutex, cancel-and-parks the interactive
+		//! thread (CancelAndParkRender_ -- identical critical section to
+		//! RunPreviewRenderParked, just run from this thread instead of
+		//! the submitter's), runs the pending `fn` under an RAII guard
+		//! that flips the job record inactive on every exit (including a
+		//! throw), captures any exception into mAgentRenderException
+		//! (rethrown to a SubmitAgentRenderSync caller; silently observed
+		//! by SubmitAgentRenderAsync callers via GetRenderJobStatus/
+		//! WaitForRenderJob only -- they must inspect their own result
+		//! plumbing for failure, matching AgentRenderResult's existing
+		//! "ok=false" convention), then releases mMutex and notifies
+		//! mAgentRenderDoneCV.
+		void AgentRenderWorkerLoop_();
+
 		//! Cancel-and-park the render thread: trip the rasterizer cancel
 		//! flag if a pass is in flight (bumping mCancelCount), then wait on
 		//! mCV until mRendering is false -- i.e. the in-flight pass has
@@ -1317,25 +1433,145 @@ namespace RISE
 		// "saving" direction).  Set inside the locked section of
 		// RequestSave; cleared after the engine returns.
 		std::atomic<bool>           mSaving;
+		// Model-B F2 slice S2a: mirrors mSaving's pattern for the agent-
+		// render worker's window.  Without this, there is a real race:
+		// SubmitAgentRenderAsync mints {agentJobId, active=true} into
+		// mCurrentRenderJob and hands the closure to the worker, but the
+		// worker has not yet reached CancelAndParkRender_ (which is what
+		// actually sets mRendering / blocks a NEW interactive pass) --
+		// during that gap, RenderLoop's own per-pass mint block (which
+		// runs unconditionally at the top of every iteration) can win the
+		// race for mMutex first and STOMP mCurrentRenderJob with its OWN
+		// interactive id, silently losing the agent job's record (caught
+		// by this slice's own flaky test run: GetRenderJobStatus stopped
+		// finding the freshly-submitted id because RenderLoop had already
+		// overwritten it).  Set true (under mMutex, alongside the
+		// mCurrentRenderJob write) by SubmitAgentRenderAsync for the
+		// FULL duration from mint through worker completion; cleared
+		// (under mMutex) by the worker right before it clears the slot.
+		// RenderLoop's wake predicate AND its per-pass mint gate both
+		// require this to be false before starting/minting a NEW
+		// interactive pass -- so the two "job openers" can never race
+		// for the same mCurrentRenderJob record.
+		std::atomic<bool>           mAgentRenderBlocksInteractive;
 		std::string                 mLastSaveError;
 		std::atomic<unsigned int>   mCancelCount;
 		std::atomic<unsigned int>   mRenderCount;
 
-		// Model-B F2 slice S1: render-identity bookkeeping.  BOTH fields are
-		// guarded by the EXISTING mMutex above -- no new lock.  The counter
+		// Model-B F2 slice S1: render-identity bookkeeping.  The counter
 		// starts at 2 and increments by kControllerRenderJobIdStride (EVEN
 		// ids only; 0 = kInvalidRenderJobId / "none assigned yet"; see that
 		// constant's doc for why -- disjoint from AgentSession's ODD
 		// session-local ids) and is SHARED across both RenderClass values
 		// (RunPreviewRenderParked's agent-preview path and RenderLoop's
 		// interactive pass both draw from it), so ids are globally ordered
-		// across classes on one controller.  mCurrentRenderJob is updated
-		// at the SAME lock sites that already existed for mRendering:
-		// RunPreviewRenderParked's cancel-and-park hold, and RenderLoop's
-		// two existing std::lock_guard blocks around
-		// mRendering.store(true/false).
+		// across classes on one controller.
+		//
+		// Model-B F2 slice S2a fix: BOTH fields moved from "guarded by
+		// mMutex" to their OWN dedicated mJobStatusMutex.  Reason: mMutex
+		// is held by BOTH RunPreviewRenderParked AND the S2a worker for
+		// the RENDER'S WHOLE DURATION (that hold is what gives
+		// CancelAndParkRender_ its exclusivity) -- so a STATUS READER
+		// (GetRenderJobStatus / CurrentRenderJob / WaitForRenderJob) that
+		// also locked mMutex would BLOCK for the entire render before it
+		// could even READ the status, making "observe the job ACTIVE
+		// while it runs" impossible (caught by this slice's own flaky
+		// test: every poll during a 200ms render blocked until the
+		// render finished, then read `active=false` because by then it
+		// HAD finished -- looked like a missed update, was actually lock
+		// contention).  mJobStatusMutex is NEVER held across a render --
+		// every writer (RenderLoop's two sites, SubmitAgentRenderAsync's
+		// mint, both ActiveFlipGuards) and every reader (CurrentRenderJob,
+		// GetRenderJobStatus, WaitForRenderJob's poll) takes it only for
+		// the few instructions needed to read or write this record, so a
+		// status poll is NEVER blocked behind an in-flight render.
+		mutable std::mutex mJobStatusMutex;
 		RenderJobId     mNextRenderJobId;
 		RenderJobStatus mCurrentRenderJob;
+
+		// Model-B F2 slice S2a: the dedicated, long-lived agent-render
+		// worker.  Started next to mRenderThread in the ctor, joined next
+		// to it in Stop() -- mirrors mRenderThread's lifecycle exactly so
+		// teardown order stays correct (both threads must be joined
+		// BEFORE anything they touch -- mJob, mEditor, the sinks -- is
+		// destroyed; Stop() joins both before ~SceneEditController runs
+		// the rest of its body).
+		//
+		// THREE locks total on this controller now (mMutex + two below),
+		// each deliberately narrow and single-purpose -- the split is the
+		// fix for TWO real bugs this slice's own concurrency test caught:
+		//
+		//   1. mMutex is held by the worker for the render's WHOLE
+		//      DURATION (via CancelAndParkRender_, exactly like
+		//      RunPreviewRenderParked).  A submitter that needed mMutex to
+		//      check/set the single-slot flag would BLOCK for the render's
+		//      entire duration before it could even LEARN the slot was
+		//      occupied, defeating "refuse immediately" and "returns
+		//      quickly" alike.  mAgentRenderSlotMutex (below) is a
+		//      SEPARATE, NARROW lock guarding ONLY the slot bookkeeping
+		//      (mAgentRenderPending / mAgentRenderFn / the id/label/
+		//      exception/generation fields) -- held for microseconds at a
+		//      time (check-and-set on submit; pull-the-closure-out at the
+		//      start of a worker iteration; clear-and-notify at the end)
+		//      and NEVER held across the render itself.
+		//
+		//   2. mCurrentRenderJob/mNextRenderJobId (declared just above,
+		//      with mJobStatusMutex) hit the SAME problem one level down:
+		//      even after (1)'s fix, GetRenderJobStatus/CurrentRenderJob/
+		//      WaitForRenderJob still used mMutex to READ the job record --
+		//      so a caller polling "is it done yet?" during an in-flight
+		//      render blocked for the WHOLE render before it could read
+		//      anything, making "observe active while running" impossible
+		//      (every poll saw the render already finished).
+		//      mJobStatusMutex is the fix: a THIRD narrow lock, held only
+		//      long enough to read/write the one small record, taken by
+		//      every writer (RenderLoop's two sites, SubmitAgentRenderAsync,
+		//      both ActiveFlipGuards) and every reader, NEVER held across a
+		//      render by anyone.
+		//
+		// Nesting order is the ONLY order used anywhere, so none of the
+		// three locks can deadlock against each other: mAgentRenderSlotMutex
+		// may be held OUTSIDE a brief, nested mMutex or mJobStatusMutex
+		// acquisition (SubmitAgentRenderAsync does both, in that order);
+		// mMutex may be held OUTSIDE a brief, nested mJobStatusMutex
+		// acquisition (RenderLoop, the worker, RunPreviewRenderParked); no
+		// path ever acquires mJobStatusMutex or mMutex and THEN tries to
+		// acquire mAgentRenderSlotMutex while still holding it (the worker
+		// and WaitForRenderJob both release one before acquiring the
+		// other).
+		std::thread                 mAgentRenderThread;
+		mutable std::mutex          mAgentRenderSlotMutex;
+		std::condition_variable     mAgentRenderCV;       // worker waits on this for {pending | stop} -- guarded by mAgentRenderSlotMutex
+		// mutable: WaitForRenderJob is logically const (a read-only status
+		// poll) but must block on this CV.
+		mutable std::condition_variable mAgentRenderDoneCV;   // submitter(s) wait on this for "the slot freed up" -- guarded by mAgentRenderSlotMutex
+		std::atomic<bool>           mAgentRenderStop;      // set by Stop(); wakes the worker to exit
+		bool                        mAgentRenderPending;   // a submission is queued or currently running -- guarded by mAgentRenderSlotMutex
+		std::function<void()>       mAgentRenderFn;        // the pending/running submission -- guarded by mAgentRenderSlotMutex
+		RenderClass                 mAgentRenderClass;
+		String                      mAgentRenderClientLabel;
+		RenderJobId                 mAgentRenderJobId;     // the id assigned to the CURRENT slot occupant -- guarded by mAgentRenderSlotMutex
+		//! Set by the worker just before it signals completion on
+		//! mAgentRenderDoneCV: true iff mAgentRenderFn threw.  Consumed
+		//! (and cleared) by SubmitAgentRenderSync, which rethrows via
+		//! std::rethrow_exception so its own caller sees the identical
+		//! exception a direct synchronous call of `fn` would have
+		//! produced.  A SubmitAgentRenderAsync caller does not consume
+		//! this -- it has no synchronous point to rethrow into -- so it
+		//! is cleared unconditionally at the START of every new
+		//! submission (never allowed to linger past the slot it
+		//! belonged to).  Guarded by mAgentRenderSlotMutex.
+		std::exception_ptr          mAgentRenderException;
+		//! Bumped by the worker every time it finishes a submission
+		//! (success or throw) -- lets WaitForRenderJob distinguish "the
+		//! slot's occupant is still THIS job, still running" from "the
+		//! slot's occupant is THIS job, now finished" without racing a
+		//! generation-counter ABA (a NEW submission reusing the same slot
+		//! bumps this too, so a waiter for an OLD id that gets bumped away
+		//! by a newer submission still observes completion promptly
+		//! rather than blocking on a slot that no longer belongs to it).
+		//! Guarded by mAgentRenderSlotMutex.
+		unsigned int                mAgentRenderCompletedGeneration;
 
 		// Adaptive preview-resolution divisor.  1 = full camera res;
 		// 2 = half each axis = 1/4 the pixel work; 4 = 1/16; 8 = 1/64;
