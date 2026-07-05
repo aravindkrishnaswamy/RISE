@@ -198,6 +198,7 @@ public:
 	bool Rasterize() override
 	{
 		mProof.Enter();
+		mRasterizeCallCount.fetch_add( 1, std::memory_order_acq_rel );
 		// A tiny extra hold so a concurrent interactive pass has a
 		// realistic window to land in even though the real render itself
 		// is fast on this tiny 24x24 scene.
@@ -207,8 +208,17 @@ public:
 		mProof.Leave();
 		return ok;
 	}
+	// Fix-round-3 (refused-fallback red-prove): a plain call counter,
+	// independent of the concurrency-window accounting above -- lets a
+	// test assert "Rasterize() was never even ATTEMPTED" (count stays 0)
+	// rather than only "no concurrency was observed", which is the
+	// stronger claim the refused-submission fix makes: a refused
+	// production render must not call doRasterize() AT ALL, not merely
+	// "call it without overlapping the occupant".
+	int RasterizeCallCount() const { return mRasterizeCallCount.load( std::memory_order_acquire ); }
 private:
 	ConcurrencyProof& mProof;
+	std::atomic<int>  mRasterizeCallCount{ 0 };
 };
 
 // A Job subclass whose Rasterize() sleeps in cancel-checked-ish slices
@@ -3741,6 +3751,192 @@ static void RunExplicitGuiProgressNotInstalledOnJobRedProveTest()
 	std::printf( "=== (z) explicit guiProgress not installed on Job: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// (aa) Fix-round-3 RED-PROVE: SceneEditController::RunProductionRenderComposed
+//     REFUSES a production render outright (no fallback call to
+//     `doRasterize`) when SubmitProductionRenderSync itself is refused --
+//     e.g. an agent render already occupies the single slot. Pre-fix, the
+//     refused branch called `doRasterize()` directly on the CALLER's
+//     thread with no park/coordination at all -- exactly the pre-S4,
+//     uncoordinated shape, and reachable in NORMAL use whenever a user's
+//     production render loses the slot race against an in-flight agent
+//     render. That fallback could run CONCURRENTLY with the occupant
+//     (two threads inside Rasterize() at once -- invariant I1, the thing
+//     S4 exists to prevent) and carried zero progress/cancel wiring for
+//     `guiProgress`.
+//
+//     This test occupies the slot with a slow agent render, then calls
+//     RunProductionRenderComposed with a short `queueTimeoutMs` (via a
+//     thin SubmitProductionRenderSync probe) so the production submission
+//     is refused while the occupant is still running, and asserts:
+//       (1) the refused call returns false,
+//       (2) doRasterize (counted via ConcurrencyProofJob::RasterizeCallCount)
+//           was NEVER invoked by the refused call -- pre-fix this would be
+//           1 (and concurrent with the occupant, i.e. the SAME gap
+//           RunDirectRasterizeRedProveTest above demonstrates generically),
+//       (3) the occupant completes unharmed (its own call count reaches
+//           the expected value, no crash/UAF).
+//     A trailing control confirms the NO-CONTROLLER shape (the wrapper's
+//     own null-check at the very top of RunProductionRenderComposed) is
+//     UNCHANGED -- it still calls doRasterize directly.
+//////////////////////////////////////////////////////////////////////
+static void RunRefusedProductionSubmitNoFallbackRedProveTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (aa) RED-PROVE: refused production submit does not fall back to an uncoordinated Rasterize() ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_production_refused_fallback.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the refused-fallback scene to a temp file" );
+
+	// A dedicated slow-and-counting Job: the occupant needs to hold the
+	// slot comfortably longer than the production submission's short
+	// `queueTimeoutMs` below (the real render on this tiny 24x24 scene
+	// completes in a few ms, which would let the fairness wait succeed
+	// before the timeout and defeat this test's own premise -- unlike
+	// ConcurrencyProofJob's fixed 10ms holds, this class's sleep is
+	// tunable). Still participates in the shared ConcurrencyProof counter
+	// and exposes a plain call counter, same contract as
+	// ConcurrencyProofJob::RasterizeCallCount.
+	class SlowCountingConcurrencyProofJob : public Job
+	{
+	public:
+		SlowCountingConcurrencyProofJob( ConcurrencyProof& proof, unsigned int sleepMs )
+		: Job(), mProof( proof ), mSleepMs( sleepMs ) {}
+		bool Rasterize() override
+		{
+			mProof.Enter();
+			mRasterizeCallCount.fetch_add( 1, std::memory_order_acq_rel );
+			std::this_thread::sleep_for( std::chrono::milliseconds( mSleepMs ) );
+			const bool ok = Job::Rasterize();
+			mProof.Leave();
+			return ok;
+		}
+		int RasterizeCallCount() const { return mRasterizeCallCount.load( std::memory_order_acquire ); }
+	private:
+		ConcurrencyProof& mProof;
+		unsigned int      mSleepMs;
+		std::atomic<int>  mRasterizeCallCount{ 0 };
+	};
+
+	ConcurrencyProof proof;
+	SlowCountingConcurrencyProofJob* pJob = new SlowCountingConcurrencyProofJob( proof, /*sleepMs*/ 800 );
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "SlowCountingConcurrencyProofJob loads the native-v7 scene via the CST path (refused-fallback test)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	// Occupy the single slot with a slow AGENT render (mirrors the gap's
+	// own framing: "a user production render losing the slot race
+	// against an agent render").
+	std::atomic<bool> occupantStarted{ false };
+	std::atomic<bool> occupantDone{ false };
+	SceneEditController::RenderJobId occupantJobId = SceneEditController::kInvalidRenderJobId;
+	const bool occupantAccepted = controller.SubmitAgentRenderAsync(
+		[&]() {
+			occupantStarted.store( true, std::memory_order_release );
+			pJob->Rasterize();
+			occupantDone.store( true, std::memory_order_release );
+		},
+		String( "occupant_agent_render" ), &occupantJobId );
+	Check( occupantAccepted, "the occupant agent render is accepted (slot is free at the start)" );
+
+	// Wait until the occupant has genuinely entered Rasterize() before
+	// attempting the production submission below -- otherwise a fast
+	// scheduler could let the production call land before the occupant
+	// claims the slot, which would defeat this test's own premise.
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !occupantStarted.load( std::memory_order_acquire ) &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( occupantStarted.load( std::memory_order_acquire ), "the occupant genuinely started running before the production submission attempt" );
+
+	// The refused production submission: a short queueTimeoutMs so the
+	// fairness wait gives up promptly while the occupant (an 800ms sleep
+	// before the real Rasterize() call, comfortably longer than this
+	// timeout) is still holding the slot.
+	std::atomic<int>  guiTicks{ 0 };
+	class CountingCallback : public IProgressCallback
+	{
+	public:
+		std::atomic<int>* ticks;
+		bool Progress( const double, const double ) override
+		{
+			ticks->fetch_add( 1, std::memory_order_acq_rel );
+			return true;
+		}
+		void SetTitle( const char* ) override {}
+	} guiCb;
+	guiCb.ticks = &guiTicks;
+
+	const int rasterizeCountBefore = pJob->RasterizeCallCount();
+
+	bool productionResult = true;   // deliberately pre-set to the WRONG value; must become false
+	const bool joinedPromptly = RunWatchdogged( "the refused production submission returns promptly", 3000, [&]() {
+		productionResult = SceneEditController::RunProductionRenderComposed(
+			*pJob, &controller, String( "refused_production_probe" ), &guiCb,
+			[pJob]() -> bool { return pJob->Rasterize(); },
+			/*queueTimeoutMs*/ 50 );
+	} );
+	Check( joinedPromptly, "the refused production submission does not hang (aa)" );
+
+	Check( !productionResult,
+	       "MONEY ASSERTION (aa-1): RunProductionRenderComposed returns false when SubmitProductionRenderSync is refused "
+	       "(slot busy with the occupant agent render) -- honest refusal, no silent success." );
+
+	const int rasterizeCountAfter = pJob->RasterizeCallCount();
+	Check( rasterizeCountAfter == rasterizeCountBefore,
+	       "MONEY ASSERTION (aa-2) RED-PROVE: doRasterize was NEVER invoked by the refused production submission -- "
+	       "pre-fix, the refused branch called doRasterize() directly (an UNCOORDINATED extra Rasterize() call, "
+	       "concurrent with the still-running occupant -- the exact invariant-I1 violation RunDirectRasterizeRedProveTest "
+	       "demonstrates generically); post-fix the refused call returns false without ever touching doRasterize." );
+
+	Check( guiTicks.load( std::memory_order_acquire ) == 0,
+	       "no progress ticks were delivered to guiProgress by the refused submission (nothing was ever wired up, "
+	       "since doRasterize never ran)" );
+
+	// The occupant must complete unharmed -- the refused submission must
+	// not have disturbed it in any way (no crash, no stolen slot).
+	Check( controller.WaitForRenderJob( occupantJobId, 5000 ), "the occupant agent render eventually completes (unharmed by the refused submission)" );
+	Check( occupantDone.load( std::memory_order_acquire ), "the occupant's closure ran to completion" );
+
+	const int maxConcurrency = proof.maxObserved.load( std::memory_order_acquire );
+	std::printf( "  [refused-fallback] rasterizeCountBefore=%d rasterizeCountAfter=%d occupant max observed concurrency=%d\n",
+	             rasterizeCountBefore, rasterizeCountAfter, maxConcurrency );
+	Check( maxConcurrency == 1, "the occupant alone never observes concurrency > 1 (no uncoordinated fallback ran alongside it)" );
+
+	controller.Stop();
+	pJob->release();
+
+	// Control: the NO-CONTROLLER shape (the wrapper's own null-check at
+	// the very top of RunProductionRenderComposed) is UNCHANGED -- with no
+	// controller attached at all, doRasterize still runs directly. This is
+	// the ONLY legitimate direct-render path; it is untouched by this fix.
+	{
+		SlowRasterizeJob* pNoCtrlJob = new SlowRasterizeJob();
+		pNoCtrlJob->SetSleepMs( 5 );
+		Check( pNoCtrlJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "SlowRasterizeJob loads the native-v7 scene via the CST path (no-controller control, aa)" );
+
+		std::atomic<int> noCtrlTicks{ 0 };
+		CountingCallback noCtrlCb;
+		noCtrlCb.ticks = &noCtrlTicks;
+
+		bool ranDirectly = false;
+		const bool ok = SceneEditController::RunProductionRenderComposed(
+			*pNoCtrlJob, /*controller*/nullptr, String( "no_controller_probe" ), &noCtrlCb,
+			[pNoCtrlJob, &ranDirectly]() -> bool { ranDirectly = true; return pNoCtrlJob->Rasterize(); } );
+		Check( ranDirectly, "CONTROL: with NO controller attached, RunProductionRenderComposed still calls doRasterize directly (unchanged pre-S4 / headless shape)" );
+		Check( ok, "CONTROL: the no-controller direct render completes successfully" );
+
+		pNoCtrlJob->release();
+	}
+
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (aa) refused production submit no-fallback RED-PROVE: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunAsyncReturnsQuicklyTest();
@@ -3773,6 +3969,7 @@ int main()
 	RunStopDuringProductionTest();
 	RunInnerResetOnThrowRedProveTest();
 	RunExplicitGuiProgressNotInstalledOnJobRedProveTest();
+	RunRefusedProductionSubmitNoFallbackRedProveTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

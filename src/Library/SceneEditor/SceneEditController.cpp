@@ -4000,7 +4000,8 @@ bool SceneEditController::RunProductionRenderComposed(
 	SceneEditController*          controller,
 	const String&                 clientLabel,
 	IProgressCallback*            guiProgress,
-	const std::function<bool()>& doRasterize )
+	const std::function<bool()>& doRasterize,
+	unsigned int                  queueTimeoutMs )
 {
 	if( !controller )
 	{
@@ -4114,19 +4115,49 @@ bool SceneEditController::RunProductionRenderComposed(
 			innerGuard.Disarm();
 		},
 		clientLabel,
-		&jobId );
+		&jobId,
+		queueTimeoutMs );
 
 	if( !submitted )
 	{
-		// Refused (open transaction, Stop() in progress/racing, or a
-		// fairness-wait timeout) -- fall back to a direct call so a
-		// production render is never silently dropped on the floor.  Mirrors
-		// the pre-S4 behaviour for the refusal case; the ordinary case above
-		// is what actually closes the concurrency gap.
+		// Refused (open transaction, Stop() in progress/racing, a pinned
+		// occupant, queued waiters, or a fairness-wait timeout) -- a
+		// `controller` exists here (the null-controller case returned
+		// directly at the top of this function), and a refusal means it is
+		// BUSY or STOPPED, not absent.  Calling `doRasterize` directly in
+		// that situation is exactly the pre-S4, uncoordinated shape S4 was
+		// written to eliminate: the refusal can legitimately be a slot
+		// that is CURRENTLY OCCUPIED by another render (that is the whole
+		// reason SubmitProductionRenderSync said no), so an uncoordinated
+		// fallback call here could run concurrently with that occupant --
+		// two threads inside Rasterize() at once, the exact invariant I1
+		// this coordinator exists to prevent (RunDirectRasterizeRedProveTest
+		// in tests/AgentRenderAsyncTest.cpp demonstrates the resulting
+		// concurrency>=2 on the uncoordinated path). It would also run
+		// with zero progress/cancel wiring: `guiProgress` is silently
+		// discarded, so the platform's Cancel button and progress/ETA UI
+		// go dead for this render -- harmless on macOS (whose
+		// BlockProgressCallback is installed persistently on the Job, so a
+		// concurrent render happens to still tick it) but not on Windows,
+		// where RenderEngine.cpp deliberately skips installing its own
+		// callback on the Job whenever a controller is attached (see
+		// startRender's comment), so nothing would receive progress/cancel
+		// at all for this render.
+		//
+		// Decision: refuse honestly instead of racing an uncoordinated
+		// render.  `doRasterize` is NOT invoked; both platform shells
+		// already treat a `false`/`NO` return from this function as an
+		// ordinary render failure (mac: RenderViewModel.swift sets
+		// `renderState = .error(...)`; Windows: RenderEngine::startRender's
+		// completion handler sets `Error` and emits `errorOccurred`) -- so
+		// callers already have a well-formed way to surface this without
+		// this function inventing a THIRD outcome.
 		GlobalLog()->PrintEx( eLog_Warning,
 			"SceneEditController::RunProductionRenderComposed: production render submission to "
-			"the coordinator was refused -- falling back to a direct Rasterize() call." );
-		return doRasterize();
+			"the coordinator was refused (busy or stopped) -- refusing rather than running an "
+			"uncoordinated fallback Rasterize() call; progress/cancel for this render fall back "
+			"to the platform's own callback, if any, since the coordinator never claimed the slot." );
+		return false;
 	}
 	return result;
 }

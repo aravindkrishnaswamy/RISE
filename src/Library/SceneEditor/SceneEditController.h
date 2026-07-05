@@ -859,12 +859,21 @@ namespace RISE
 		//! pointing the Job away from coordProgress, then the inner clear
 		//! makes coordProgress itself inert -- belt-and-suspenders, not load-
 		//! bearing for correctness.)
+		//! `queueTimeoutMs` (Fix-round-3): forwarded verbatim to the
+		//! underlying SubmitProductionRenderSync call -- bounds ONLY the
+		//! fairness wait for a turn at the slot, same meaning as that
+		//! method's own parameter of the same name. Default (30000ms)
+		//! matches SubmitProductionRenderSync's default, so every existing
+		//! caller (both platform shells) is unaffected; tests pass a short
+		//! value to exercise the refusal path deterministically without a
+		//! 30s wait.
 		static bool RunProductionRenderComposed(
 			IJobPriv&                     job,
 			SceneEditController*          controller,
 			const String&                clientLabel,
 			IProgressCallback*            guiProgress,
-			const std::function<bool()>& doRasterize );
+			const std::function<bool()>& doRasterize,
+			unsigned int                  queueTimeoutMs = 30000 );
 
 		//! Model-B F2 slice S2a: status surface for a render job id.  For a
 		//! COORDINATOR (controller-minted, EVEN) id that matches the
