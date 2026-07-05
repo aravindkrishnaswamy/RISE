@@ -2068,8 +2068,39 @@ namespace RISE
 							}
 						}
 					} outstandingGuard{ *this, ownJobIdCell };
-					const AgentRenderResult r = RenderCore_( params, /*assumeParked=*/true );
-					(void)r;
+					AgentRenderResult r = RenderCore_( params, /*assumeParked=*/true );
+					// Model-B F2 slice S2b: cache the FULL result (the whole
+					// point of RenderCore_ having computed it) so a caller
+					// that drove this render via render{"async":true} ->
+					// render_status/render_wait can retrieve the identical
+					// {ok,width,height,meanR,...} shape a synchronous Render()
+					// call returns directly -- see LastAsyncRenderResult's
+					// doc.  Guarded by the SAME mAsyncCacheMutex the
+					// OutstandingGuard above already takes (a separate, brief
+					// critical section here rather than widening the guard's
+					// own hold, so a future change to OutstandingGuard's
+					// scope doesn't have to reason about this too).
+					//
+					// r.renderJobId is OVERWRITTEN with `*ownJobIdCell` (this
+					// closure's OWN job id, published by RenderAsync before
+					// the worker could possibly have started) rather than
+					// trusting whatever RenderCore_ set it to: `assumeParked`
+					// mode calls RenderCore_ with the default `forcedJobId=0`
+					// (there is no way to pass the real id in BEFORE
+					// SubmitAgentRenderAsync mints it -- the same chicken/egg
+					// this closure already solves for mAsyncOutstandingJobId
+					// via ownJobIdCell), so RenderCore_'s internal
+					// `renderJobId = forcedJobId;` line leaves r.renderJobId
+					// at 0 on every async render, success or failure alike.
+					// Left uncorrected, a caller reading the cached result's
+					// OWN renderJobId field (e.g. the render_wait JSON echo)
+					// would see 0 instead of the id it just polled.
+					r.renderJobId = *ownJobIdCell;
+					{
+						std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+						mLastAsyncRenderResult      = r;
+						mLastAsyncRenderResultJobId = *ownJobIdCell;
+					}
 				},
 				String( "render_async" ),
 				&jobId );
@@ -2112,6 +2143,35 @@ namespace RISE
 			if( !mController ) return false;   // headless -- nothing to wait for
 			return mController->WaitForRenderJob(
 				static_cast<SceneEditController::RenderJobId>( renderJobId ), timeoutMs );
+		}
+
+		void AgentSession::CancelAsyncRender( std::uint64_t renderJobId )
+		{
+			// `renderJobId` is advisory only (see the header doc) -- the
+			// controller's agent-render worker is single-slot, so there is
+			// at most one outstanding async render to cancel regardless of
+			// which id was named.  A headless session (no controller) has
+			// nothing to cancel: no-op, matching CancelAgentRender_'s own
+			// "safe to call on an idle controller" contract rather than
+			// erroring out.
+			(void)renderJobId;
+			if( !mController ) return;
+			mController->CancelAgentRender_();
+		}
+
+		AgentSession::AgentLastAsyncRenderResult AgentSession::LastAsyncRenderResult( std::uint64_t renderJobId ) const
+		{
+			std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+			AgentLastAsyncRenderResult out;
+			// Strict identity check (see the header doc): renderJobId must
+			// match the job THIS cache entry belongs to.  renderJobId==0 is
+			// never a real job id (kInvalidRenderJobId / the "none" sentinel
+			// -- see AgentRenderResult::renderJobId's doc), so it can never
+			// spuriously match an unset mLastAsyncRenderResultJobId==0 cache.
+			if( renderJobId == 0 || renderJobId != mLastAsyncRenderResultJobId ) return out;
+			out.found  = true;
+			out.result = mLastAsyncRenderResult;
+			return out;
 		}
 
 		std::vector<unsigned char> AgentSession::ReadImage() const

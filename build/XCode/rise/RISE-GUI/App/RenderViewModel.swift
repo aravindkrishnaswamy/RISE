@@ -201,8 +201,14 @@ final class RenderViewModel: ObservableObject {
     /// one scene; the conversation itself resets per scene).
     let chat = ChatViewModel()
 
-    /// B2 review round 1: may agent tool calls (the chat driver and
-    /// the Agent JSON-RPC panel) mutate the live scene RIGHT NOW?
+    /// B2 review round 1 (refined Model-B F2 slice S2b — see the S2b note
+    /// below): may agent tool calls (the chat driver and the Agent
+    /// JSON-RPC panel) mutate the live scene RIGHT NOW?  THE single gate:
+    /// both call sites — `ChatViewModel.sceneEditable` (wired in `init`
+    /// below) and `sendAgentRequest` (the raw JSON-RPC debug panel) —
+    /// consume this ONE property.  There is exactly one case-list here;
+    /// neither call site re-implements or duplicates it.
+    ///
     /// Only while the interactive viewport is the sole scene reader.
     /// During a production render (.rendering / .cancelling — the
     /// production rasterizer's worker threads read Scene state
@@ -215,7 +221,30 @@ final class RenderViewModel: ObservableObject {
     /// MainActor invariant: this predicate, startRender, and every
     /// caller run on the main actor, so check-then-execute cannot
     /// interleave with a render kick.
+    ///
+    /// Model-B F2 slice S2b ADDITIVE clause: `chat.isChatRenderOutstanding`
+    /// folds in truth the `renderState` switch above cannot see on its
+    /// own — a chat-driven `render` tool call's async render runs on the
+    /// controller's dedicated agent-render worker WITHOUT ever flipping
+    /// `renderState` out of `.sceneLoaded`/`.completed` (that state
+    /// machine only tracks the PRODUCTION rasterizer).  Without this
+    /// clause, the Agent JSON-RPC debug panel could fire a `propose_patch`
+    /// (or a second render) concurrently with a chat-driven render still
+    /// in flight on the SAME controller.  This is genuinely NEW truth,
+    /// not a redundant restatement of the renderState cases — the two
+    /// clauses gate two DIFFERENT concurrent-render sources (production
+    /// rasterizer vs. chat-driven agent render) that share the same
+    /// underlying "don't let two things touch the scene/controller at
+    /// once" concern.
+    ///
+    /// The renderState switch's own semantics are DELIBERATELY left
+    /// completely intact this round (belt-and-suspenders, per the S2b
+    /// task scope) — a future slice may reconsider whether some of these
+    /// cases could instead be read directly off the coordinator once a
+    /// review round has proven this combined predicate correct; deleting
+    /// the redundancy is out of scope here.
     var isSceneEditableForAgents: Bool {
+        if chat.isChatRenderOutstanding { return false }
         switch renderState {
         case .rendering, .cancelling, .loading:
             return false
@@ -398,6 +427,22 @@ final class RenderViewModel: ObservableObject {
         // BEFORE kicking production).
         chat.sceneEditable = { [weak self] in
             self?.isSceneEditableForAgents ?? false
+        }
+        // Model-B F2 slice S2b: the NARROWER sibling `productionRenderActive`
+        // — see its doc on ChatViewModel for why the render tool call's own
+        // poll loop needs this instead of the combined `isSceneEditableForAgents`
+        // (which now also reports false for that SAME call's own outstanding
+        // render).  Re-derives the identical `renderState` cases directly
+        // rather than calling `isSceneEditableForAgents` and subtracting the
+        // chat-render clause back out.
+        chat.productionRenderActive = { [weak self] in
+            guard let self else { return true }   // fail closed, matching sceneEditable's convention
+            switch self.renderState {
+            case .rendering, .cancelling, .loading:
+                return true
+            default:
+                return false
+            }
         }
         bridge.setLogBlock { [weak self] (level: RISELogLevel, message: String) in
             Task { @MainActor [weak self] in

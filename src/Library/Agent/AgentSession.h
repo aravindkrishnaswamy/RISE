@@ -653,6 +653,86 @@ namespace RISE
 			//! exactly like a successful synchronous one).
 			AgentRenderAsyncResult RenderAsync( const AgentRenderParams& params );
 
+			//! Model-B F2 slice S2b: cancel the OUTSTANDING async render (if
+			//! any), WITHOUT blocking for it to finish -- a public, callable-
+			//! any-time sibling of the private DrainAsyncRender_ (which is
+			//! cancel-THEN-WAIT, unbounded, and only reachable from
+			//! ~AgentSession / AttachController).  A caller (the `render_cancel`
+			//! RPC verb) that just wants to trip the cancel flag and let the
+			//! worker's normal completion path (RenderStatus / RenderWait /
+			//! ReadImage) observe the result promptly, without tying up the
+			//! calling thread, uses this instead.
+			//!
+			//! Mechanism: reuses SceneEditController::CancelAgentRender_ --
+			//! the SAME CancellableProgressCallback (mCancelProgress) an
+			//! in-flight agent render's doRenderWork installed on the Job
+			//! before calling Rasterize() (see AgentRenderProgress()'s doc).
+			//! Idempotent and safe to call whether or not a render is
+			//! actually in flight (a no-op cancel on an idle controller, or
+			//! when no controller is attached at all).
+			//!
+			//! CONTROLLER-ATTACHED ONLY in the sense that matters: with no
+			//! controller attached there is no async render this session
+			//! could have submitted (RenderAsync itself refuses outright in
+			//! that case), so this degrades to a harmless no-op rather than
+			//! an error -- unlike RenderAsync, there is no "wrong intent"
+			//! reading of calling cancel when nothing is outstanding.
+			//!
+			//! `renderJobId`, if nonzero, is advisory only: it is NOT
+			//! currently used to target a SPECIFIC job (SceneEditController's
+			//! agent-render worker is single-slot, so there is at most one
+			//! outstanding async render to cancel at a time regardless of
+			//! which id the caller names); it exists in the signature so a
+			//! future multi-slot worker can route the cancellation to the
+			//! right job without an ABI change to this method, and so the
+			//! RPC verb can echo the caller's id in its response for a
+			//! sanity mismatch check.  This method does NOT wait for the
+			//! render to actually stop -- the worker's own completion path
+			//! (observed via RenderStatus/RenderWait) is what reports
+			//! "actually cancelled" (typically within tens of ms, per
+			//! DrainAsyncRender_'s doc -- live-measured 7-20ms in
+			//! AgentRenderAsyncTest.cpp's Stop()-during-a-render red-prove).
+			//! Does NOT clear mAsyncOutstandingJobId (unlike
+			//! DrainAsyncRender_) -- that id is retired by the worker's own
+			//! OutstandingGuard when the render actually completes, exactly
+			//! as it is for an uncancelled render; this method only trips
+			//! the cancel flag, it does not pretend the job is done.
+			void CancelAsyncRender( std::uint64_t renderJobId = 0 );
+
+			//! Model-B F2 slice S2b: the full stats of the LAST async render
+			//! to complete (whatever RenderAsync's submitted closure got back
+			//! from RenderCore_, which the closure itself discards -- see
+			//! that closure's `(void)r;`).  A caller that drove
+			//! render{"async":true} -> render_status/render_wait and
+			//! observed completion uses this to retrieve the SAME
+			//! {ok,width,height,meanR,meanG,meanB,integrator,previewWidth,
+			//! previewHeight,cameraOverridden,message} shape a synchronous
+			//! Render() call returns directly -- the whole point being that
+			//! an async-driven caller (the Mac GUI chat driver) can present
+			//! an IDENTICAL result contract to its consumer (the LLM)
+			//! regardless of which path actually ran the render.
+			//!
+			//! `renderJobId` MUST match the id of the render this cache
+			//! holds, else `found` is false (the caller asked about a
+			//! DIFFERENT job than the one most recently cached -- e.g. a
+			//! stale id from an earlier submission, or a job that hasn't
+			//! completed yet).  This is a strict identity check, not "any
+			//! completed render": a caller polling job A must never be
+			//! handed job B's stats just because B happened to finish more
+			//! recently.
+			//!
+			//! Guarded by mAsyncCacheMutex (the SAME lock already used for
+			//! mLastPng/mLastSink/mAsyncOutstandingJobId) -- populated by
+			//! RenderAsync's submitted closure right where it currently
+			//! discards `r`, read here by whatever thread polls after
+			//! render_wait/render_status observes completion.
+			struct AgentLastAsyncRenderResult
+			{
+				bool             found = false;   //!< true iff renderJobId matches the cached result's job
+				AgentRenderResult result;         //!< meaningful only when found
+			};
+			AgentLastAsyncRenderResult LastAsyncRenderResult( std::uint64_t renderJobId ) const;
+
 			//! Model-B F2 slice S2a: the wire-friendly status of an
 			//! outstanding (or just-completed) RenderAsync call.  Mirrors
 			//! SceneEditController::RenderJobLookup but does not leak the
@@ -836,6 +916,14 @@ namespace RISE
 			//! WITHOUT re-rendering.  Null before the first successful render.
 			//! Owned (released in the destructor and whenever replaced).
 			InMemoryRasterizerOutput* mLastSink = nullptr;
+
+			//! Model-B F2 slice S2b: the full AgentRenderResult of the LAST
+			//! async render to complete, plus the renderJobId it belongs to
+			//! -- see LastAsyncRenderResult()'s doc.  {0, default-constructed
+			//! AgentRenderResult} before the first async render completes.
+			//! Guarded by mAsyncCacheMutex, same as mLastPng/mLastSink.
+			std::uint64_t     mLastAsyncRenderResultJobId = 0;
+			AgentRenderResult mLastAsyncRenderResult;
 
 			//! Model-B F2 slice S1: SESSION-LOCAL render-id counter, used
 			//! whenever this call does NOT route through a

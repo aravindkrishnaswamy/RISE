@@ -31,6 +31,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "../src/Library/Agent/AgentSession.h"
+#include "../src/Library/Agent/AgentRpc.h"   // slice S2b: render_cancel verb round-trip through HandleLine
+#include "../src/Library/Agent/Json.h"       // slice S2b: JsonValue/JsonParse/JsonSerialize for the RPC-verb round-trip
 #include "../src/Library/Job.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/Interfaces/ILogPriv.h"   // round-2 P1-1 red-prove: capture the escalating cancel-ignored warning
@@ -336,6 +338,23 @@ static void RunAsyncReturnsQuicklyTest()
 		// render).
 		const std::vector<unsigned char> png = session->ReadImage();
 		Check( !png.empty(), "ReadImage() returns non-empty bytes after the async render completes" );
+
+		// Model-B F2 slice S2b: LastAsyncRenderResult retrieves the SAME
+		// stats a synchronous Render() would have returned directly, for
+		// a render that completed NATURALLY (not cancelled) -- the
+		// positive-path sibling of the cancelled-render check in
+		// RunCancelAsyncRenderRedProveTest.
+		const AgentSession::AgentLastAsyncRenderResult lastResult = session->LastAsyncRenderResult( ar.renderJobId );
+		Check( lastResult.found, "LastAsyncRenderResult finds the just-completed job's cached stats" );
+		Check( lastResult.result.ok, "the naturally-completed async render's cached result reports ok=true" );
+		Check( lastResult.result.renderJobId == ar.renderJobId, "the cached result's own renderJobId matches the job it was cached under" );
+		Check( lastResult.result.width > 0 && lastResult.result.height > 0, "the cached result carries nonzero dimensions" );
+
+		// A DIFFERENT (unrelated, never-submitted) job id must NOT match --
+		// the strict-identity contract, not "whatever's most recently
+		// cached".
+		const AgentSession::AgentLastAsyncRenderResult wrongId = session->LastAsyncRenderResult( ar.renderJobId + 1000 );
+		Check( !wrongId.found, "LastAsyncRenderResult reports found=false for a renderJobId that does not match the cached job (strict identity)" );
 
 		session->AttachController( nullptr );
 	}
@@ -939,6 +958,272 @@ static void RunStopCancelsInFlightAgentRenderTest()
 	std::remove( slowScenePath.c_str() );
 
 	std::printf( "=== (i) Stop() cancels in-flight agent render: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (i2) Model-B F2 slice S2b RED-PROVE: AgentSession::CancelAsyncRender /
+//     the render_cancel RPC verb actually abort an in-flight async render
+//     promptly, WITHOUT the caller blocking for the render's duration.
+//
+//     RED side (proves the assertion actually discriminates rather than
+//     passing by construction): a SHORT render_wait timeout on an
+//     UNCANCELLED heavy render times out (completed=false, active=true)
+//     -- establishing that this scene/sample-count genuinely outlives the
+//     short timeout on its own.  GREEN side: the SAME short timeout,
+//     preceded by a render_cancel, observes completion (completed=true)
+//     well within that same short window -- the cancel signal reached
+//     Rasterize() via the shared progress hook, exactly like Stop()'s
+//     P2-C fix (RunStopCancelsInFlightAgentRenderTest above).
+//////////////////////////////////////////////////////////////////////
+static const char* const kHeavyCancelScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4096\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 96\n\theight 96\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+static void RunCancelAsyncRenderRedProveTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (i2) S2b RED-PROVE: CancelAsyncRender / render_cancel abort an in-flight render promptly ===\n" );
+
+	const std::string slowScenePath = WriteTemp( "rise_agent_async_cancelverb.RISEscene", kHeavyCancelScene );
+	Check( !slowScenePath.empty(), "wrote the heavy render_cancel scene to a temp file" );
+
+	// --- RED side: no cancel, short render_wait times out ------------------
+	{
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( slowScenePath.c_str() ),
+		       "Job loads the heavy scene via the CST path (RED side)" );
+
+		SceneEditController* controller = new SceneEditController( *pJob, /*interactiveRasterizer*/0 );
+		controller->Start( /*suppressInitialRender=*/true );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the heavy Job (RED side)" );
+		if( session )
+		{
+			session->AttachController( controller );
+			AgentRenderParams p;
+			const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( p );
+			Check( ar.accepted, "RED side: the heavy async render is accepted" );
+
+			std::this_thread::sleep_for( std::chrono::milliseconds( 40 ) );   // let it get under way
+
+			// A SHORT wait with NO cancel: this scene's natural duration
+			// (~2200ms measured in RunStopCancelsInFlightAgentRenderTest)
+			// vastly outlives a 150ms window, so this must time out --
+			// establishing the RED baseline this test's GREEN side then
+			// contrasts against.
+			const bool completedNoCancel = RunWatchdogged(
+				"render_wait(150ms) with no cancel (RED side)", 5000,
+				[&]() {
+					Check( !session->RenderWait( ar.renderJobId, 150 ),
+					       "RED-PROVE baseline: an UNCANCELLED heavy render does NOT complete within a 150ms wait "
+					       "(establishes that this scene genuinely outlives the short window on its own -- "
+					       "so the GREEN side's completion within the SAME window is due to the cancel, not chance)" );
+				} );
+			Check( completedNoCancel, "the RED-side wait+check itself returned (watchdog did not trip)" );
+
+			// Now actually stop the render before tearing down (avoid
+			// leaking a runaway render thread into the next sub-test).
+			session->CancelAsyncRender( ar.renderJobId );
+			Check( session->RenderWait( ar.renderJobId, 5000 ), "RED side: the render eventually completes once genuinely cancelled for teardown" );
+			session->AttachController( nullptr );
+		}
+		delete controller;
+		pJob->release();
+	}
+
+	// --- GREEN side: CancelAsyncRender (direct C++ call) ---------------
+	{
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( slowScenePath.c_str() ),
+		       "Job loads the heavy scene via the CST path (GREEN side, direct call)" );
+
+		SceneEditController* controller = new SceneEditController( *pJob, /*interactiveRasterizer*/0 );
+		controller->Start( /*suppressInitialRender=*/true );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the heavy Job (GREEN side, direct call)" );
+		if( session )
+		{
+			session->AttachController( controller );
+			AgentRenderParams p;
+			const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( p );
+			Check( ar.accepted, "GREEN side (direct): the heavy async render is accepted" );
+
+			std::this_thread::sleep_for( std::chrono::milliseconds( 40 ) );
+
+			// CancelAsyncRender does NOT block -- prove that itself first.
+			const auto tCancel0 = std::chrono::steady_clock::now();
+			session->CancelAsyncRender( ar.renderJobId );
+			const auto tCancel1 = std::chrono::steady_clock::now();
+			const long long cancelCallMs = std::chrono::duration_cast<std::chrono::milliseconds>( tCancel1 - tCancel0 ).count();
+			Check( cancelCallMs < 50, "CancelAsyncRender itself returns near-instantly (does not block for the render's duration)" );
+
+			// A short render_wait now observes prompt completion -- the
+			// SAME 150ms window the RED side proved times out without a
+			// cancel.
+			const bool completedAfterCancel = RunWatchdogged(
+				"render_wait(150ms) after CancelAsyncRender (GREEN side)", 5000,
+				[&]() {
+					Check( session->RenderWait( ar.renderJobId, 150 ),
+					       "MONEY ASSERTION: after CancelAsyncRender, render_wait(150ms) observes completion within the SAME short "
+					       "window the RED-side baseline proved an uncancelled render blows through -- the cancel signal actually "
+					       "reached Rasterize() via the shared progress hook." );
+				} );
+			Check( completedAfterCancel, "the GREEN-side (direct) wait+check itself returned (watchdog did not trip)" );
+
+			const AgentSession::AgentRenderJobStatus st = session->RenderStatus( ar.renderJobId );
+			Check( st.found && !st.active, "GREEN side (direct): RenderStatus confirms the job is no longer active after the cancelled completion" );
+
+			session->AttachController( nullptr );
+		}
+		delete controller;
+		pJob->release();
+	}
+
+	// --- GREEN side: render_cancel RPC verb (through HandleLine) -------
+	{
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( slowScenePath.c_str() ),
+		       "Job loads the heavy scene via the CST path (GREEN side, RPC verb)" );
+
+		SceneEditController* controller = new SceneEditController( *pJob, /*interactiveRasterizer*/0 );
+		controller->Start( /*suppressInitialRender=*/true );
+
+		std::unique_ptr<AgentSession> ownedSession = AgentSession::WrapJob( pJob );
+		Check( ownedSession != nullptr, "AgentSession::WrapJob wraps the heavy Job (GREEN side, RPC verb)" );
+		if( ownedSession )
+		{
+			ownedSession->AttachController( controller );
+			AgentSession* session = ownedSession.get();
+			AgentRpcDispatcher rpc( std::move( ownedSession ) );
+
+			// render {"async":true} through the wire, exactly like the
+			// Swift chat driver's submit call.
+			JsonValue renderParams = JsonValue::MakeObject();
+			renderParams.set( "async", JsonValue::MakeBool( true ) );
+			JsonValue submitReq = JsonValue::MakeObject();
+			submitReq.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+			submitReq.set( "id", JsonValue::MakeNumber( 1.0 ) );
+			submitReq.set( "method", JsonValue::MakeString( "render" ) );
+			submitReq.set( "params", renderParams );
+			const std::string submitResp = rpc.HandleLine( JsonSerialize( submitReq ) );
+			JsonValue submitEnv; std::string submitErr;
+			Check( JsonParse( submitResp, submitEnv, submitErr ), "render{async:true} response parses as JSON" );
+			const double jobId = submitEnv.get( "result" ).get( "renderJobId" ).asNumber( 0.0 );
+			Check( jobId > 0.0 && ( static_cast<std::uint64_t>( jobId ) % 2 ) == 0,
+			       "render{async:true} over the wire assigns a nonzero, EVEN (coordinator-tracked) renderJobId" );
+
+			std::this_thread::sleep_for( std::chrono::milliseconds( 40 ) );
+
+			// render_cancel {renderJobId} over the wire.
+			JsonValue cancelParams = JsonValue::MakeObject();
+			cancelParams.set( "renderJobId", JsonValue::MakeNumber( jobId ) );
+			JsonValue cancelReq = JsonValue::MakeObject();
+			cancelReq.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+			cancelReq.set( "id", JsonValue::MakeNumber( 2.0 ) );
+			cancelReq.set( "method", JsonValue::MakeString( "render_cancel" ) );
+			cancelReq.set( "params", cancelParams );
+			const std::string cancelResp = rpc.HandleLine( JsonSerialize( cancelReq ) );
+			JsonValue cancelEnv; std::string cancelErr;
+			Check( JsonParse( cancelResp, cancelEnv, cancelErr ), "render_cancel response parses as JSON" );
+			Check( cancelEnv.get( "result" ).get( "cancelled" ).asBool(),
+			       "render_cancel reports cancelled=true (a live controller was attached to route it through)" );
+
+			// render_wait {renderJobId, timeoutMs:150} over the wire --
+			// the SAME short window the RED side (direct-API) proved an
+			// uncancelled render blows through.
+			JsonValue waitEnv;
+			const bool waitCompletedAfterCancel = RunWatchdogged(
+				"render_wait{timeoutMs:150} after render_cancel over the wire (GREEN side, RPC verb)", 5000,
+				[&]() {
+					JsonValue waitParams = JsonValue::MakeObject();
+					waitParams.set( "renderJobId", JsonValue::MakeNumber( jobId ) );
+					waitParams.set( "timeoutMs", JsonValue::MakeNumber( 150.0 ) );
+					JsonValue waitReq = JsonValue::MakeObject();
+					waitReq.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+					waitReq.set( "id", JsonValue::MakeNumber( 3.0 ) );
+					waitReq.set( "method", JsonValue::MakeString( "render_wait" ) );
+					waitReq.set( "params", waitParams );
+					const std::string waitResp = rpc.HandleLine( JsonSerialize( waitReq ) );
+					std::string waitErr;
+					Check( JsonParse( waitResp, waitEnv, waitErr ), "render_wait response parses as JSON" );
+					Check( waitEnv.get( "result" ).get( "completed" ).asBool(),
+					       "MONEY ASSERTION (RPC verb): render_wait{timeoutMs:150} over the wire observes completion "
+					       "after render_cancel, within the same short window the direct-API RED side proved times out uncancelled." );
+				} );
+			Check( waitCompletedAfterCancel, "the GREEN-side (RPC verb) wait+check itself returned (watchdog did not trip)" );
+
+			// Model-B F2 slice S2b: render_wait's post-completion 'result'
+			// echo -- since THIS renderJobId was submitted via
+			// render{"async":true} on THIS session and has now completed,
+			// render_wait must carry the full synchronous-shaped stats so
+			// the chat driver can deliver an IDENTICAL tool-result contract
+			// to the LLM regardless of the async detour.  The render was
+			// cancelled mid-flight, so `ok` is expected false (see
+			// RenderCore_'s wasCancelled branch: "render cancelled"), but
+			// the shape itself -- and `integrator` in particular, which is
+			// populated even on a cancelled render -- must still be present.
+			const JsonValue& waitResult = waitEnv.get( "result" ).get( "result" );
+			Check( waitResult.isObject(), "render_wait's completion echo carries a nested 'result' object with the synchronous render shape" );
+			Check( !waitResult.get( "ok" ).asBool(), "the cancelled render's echoed result reports ok=false (it did not complete a full pass)" );
+			Check( waitResult.get( "integrator" ).asString() == "pathtracing_pel_rasterizer",
+			       "the echoed result's 'integrator' names the active rasterizer even for a cancelled render" );
+			Check( waitResult.get( "renderJobId" ).asNumber( -1.0 ) == jobId,
+			       "the echoed result's renderJobId matches the polled job (strict identity, not just 'some' cached result)" );
+
+			// Headless-equivalent honesty check: render_cancel with no
+			// outstanding job (nothing to cancel) reports cancelled=true
+			// (a controller IS attached) but found=false for a stale id --
+			// distinct from "errored".  Use a fresh bogus id.
+			JsonValue noopParams = JsonValue::MakeObject();
+			noopParams.set( "renderJobId", JsonValue::MakeNumber( 999998.0 ) );
+			JsonValue noopReq = JsonValue::MakeObject();
+			noopReq.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+			noopReq.set( "id", JsonValue::MakeNumber( 4.0 ) );
+			noopReq.set( "method", JsonValue::MakeString( "render_cancel" ) );
+			noopReq.set( "params", noopParams );
+			const std::string noopResp = rpc.HandleLine( JsonSerialize( noopReq ) );
+			JsonValue noopEnv; std::string noopErr;
+			Check( JsonParse( noopResp, noopEnv, noopErr ), "render_cancel (no outstanding job) response parses as JSON" );
+			Check( !noopEnv.get( "result" ).get( "found" ).asBool(),
+			       "render_cancel against a stale/unrecognized renderJobId reports found=false (not an RPC error)" );
+
+			// render_cancel with NO renderJobId param at all (the fully
+			// optional shape the Swift driver's cancelTurn path uses,
+			// since it does not necessarily know the id) -- must not
+			// error, and still routes the cancel through (cancelled=true).
+			JsonValue bareReq = JsonValue::MakeObject();
+			bareReq.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+			bareReq.set( "id", JsonValue::MakeNumber( 5.0 ) );
+			bareReq.set( "method", JsonValue::MakeString( "render_cancel" ) );
+			bareReq.set( "params", JsonValue::MakeObject() );
+			const std::string bareResp = rpc.HandleLine( JsonSerialize( bareReq ) );
+			JsonValue bareEnv; std::string bareErr;
+			Check( JsonParse( bareResp, bareEnv, bareErr ), "render_cancel with no renderJobId param parses as JSON" );
+			Check( bareEnv.get( "result" ).get( "cancelled" ).asBool(),
+			       "render_cancel with NO renderJobId param still reports cancelled=true (routes through the attached controller)" );
+			Check( !bareEnv.get( "result" ).get( "found" ).asBool(),
+			       "render_cancel with no renderJobId param reports found=false (nothing to look up)" );
+
+			session->AttachController( nullptr );
+		}
+		delete controller;
+		pJob->release();
+	}
+
+	std::remove( slowScenePath.c_str() );
+	std::printf( "=== (i2) CancelAsyncRender / render_cancel red-prove: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2128,6 +2413,7 @@ int main()
 	RunPostStopRefusalTest();
 	RunQueuedSyncWaiterUnblocksOnStopTest();
 	RunStopCancelsInFlightAgentRenderTest();
+	RunCancelAsyncRenderRedProveTest();
 	RunFairSlotReservationTest();
 	RunTxnOpenRenderRefusalTest();
 	RunSessionDestroyedMidFlightTest();

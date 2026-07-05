@@ -147,6 +147,34 @@ namespace RISE
 				return result;
 			}
 
+			//! Model-B F2 slice S2b: serialize an AgentRenderResult into the
+			//! SAME {ok,width,height,meanR,meanG,meanB,integrator,
+			//! previewWidth,previewHeight,cameraOverridden,message,
+			//! renderJobId} shape the synchronous `render` verb returns
+			//! directly (see its handler below) -- shared so `render_wait`'s
+			//! post-completion echo (S2b) is byte-for-byte the same field
+			//! set a caller would get from a synchronous render, regardless
+			//! of which path actually ran it.  `png` bytes are deliberately
+			//! excluded (matches the sync handler's existing "render stays
+			//! lean; read_image carries the base64 PNG" convention).
+			JsonValue RenderResultJson( const AgentRenderResult& rr )
+			{
+				JsonValue result = JsonValue::MakeObject();
+				result.set( "ok",     JsonValue::MakeBool( rr.ok ) );
+				result.set( "width",  JsonValue::MakeNumber( static_cast<double>( rr.width ) ) );
+				result.set( "height", JsonValue::MakeNumber( static_cast<double>( rr.height ) ) );
+				result.set( "meanR",  JsonValue::MakeNumber( rr.meanR ) );
+				result.set( "meanG",  JsonValue::MakeNumber( rr.meanG ) );
+				result.set( "meanB",  JsonValue::MakeNumber( rr.meanB ) );
+				result.set( "integrator", JsonValue::MakeString( rr.integrator ) );
+				result.set( "previewWidth",  JsonValue::MakeNumber( static_cast<double>( rr.previewWidth ) ) );
+				result.set( "previewHeight", JsonValue::MakeNumber( static_cast<double>( rr.previewHeight ) ) );
+				result.set( "cameraOverridden", JsonValue::MakeBool( rr.cameraOverridden ) );
+				result.set( "message", JsonValue::MakeString( rr.message ) );
+				result.set( "renderJobId", JsonValue::MakeNumber( static_cast<double>( rr.renderJobId ) ) );
+				return result;
+			}
+
 			//! Parse a schema JSON STRING (from SchemaGen) into a JsonValue so
 			//! it embeds as a nested object in the response, not a stringified
 			//! blob.  On the (defensive) chance SchemaGen ever emits something
@@ -738,23 +766,13 @@ namespace RISE
 					}
 
 					const AgentRenderResult rr = s->Render( rparams );
-					JsonValue result = JsonValue::MakeObject();
-					result.set( "ok",     JsonValue::MakeBool( rr.ok ) );
-					result.set( "width",  JsonValue::MakeNumber( static_cast<double>( rr.width ) ) );
-					result.set( "height", JsonValue::MakeNumber( static_cast<double>( rr.height ) ) );
-					result.set( "meanR",  JsonValue::MakeNumber( rr.meanR ) );
-					result.set( "meanG",  JsonValue::MakeNumber( rr.meanG ) );
-					result.set( "meanB",  JsonValue::MakeNumber( rr.meanB ) );
-					result.set( "integrator", JsonValue::MakeString( rr.integrator ) );
-					result.set( "previewWidth",  JsonValue::MakeNumber( static_cast<double>( rr.previewWidth ) ) );
-					result.set( "previewHeight", JsonValue::MakeNumber( static_cast<double>( rr.previewHeight ) ) );
-					result.set( "cameraOverridden", JsonValue::MakeBool( rr.cameraOverridden ) );
-					result.set( "message", JsonValue::MakeString( rr.message ) );
-					// Model-B F2 slice S1 ADDITIVE wire field: see
-					// AgentRenderResult::renderJobId's doc for the LIVE vs
-					// headless id semantics.
-					result.set( "renderJobId", JsonValue::MakeNumber( static_cast<double>( rr.renderJobId ) ) );
-					return MakeSuccess( idValue, result );
+					// Model-B F2 slice S1 ADDITIVE wire field 'renderJobId':
+					// see AgentRenderResult::renderJobId's doc for the LIVE
+					// vs headless id semantics.  RenderResultJson (slice S2b)
+					// is the SAME field-by-field shape this handler used to
+					// build inline -- factored out so render_wait's
+					// post-completion echo can return an IDENTICAL shape.
+					return MakeSuccess( idValue, RenderResultJson( rr ) );
 				}
 
 				//--------------------------------------------------------------
@@ -791,12 +809,30 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// render_wait {renderJobId, timeoutMs?} -> {completed,found,active}
+				// render_wait {renderJobId, timeoutMs?} ->
+				//   {completed,found,active,result?}
 				//   Model-B F2 slice S2a: block up to timeoutMs (default 5000,
 				//   clamped [0,60000]) for the render job to complete.
 				//   `completed`=true iff it was observed to finish (or was
 				//   already finished) within the timeout; false on timeout or
 				//   an unrecognized id.
+				//   Model-B F2 slice S2b ADDITIVE field: `result`, present
+				//   iff `completed` AND this session cached that job's full
+				//   render stats (i.e. THIS renderJobId was the one most
+				//   recently submitted via render{"async":true} on this
+				//   session -- see AgentSession::LastAsyncRenderResult's
+				//   strict-identity doc).  Same shape as the synchronous
+				//   `render` verb's success result (RenderResultJson) --
+				//   lets an async-driven caller retrieve an IDENTICAL
+				//   contract to a synchronous render without a second call.
+				//   Absent when the id belongs to a DIFFERENT session, a
+				//   synchronous render (which already returned its result
+				//   directly), or hasn't completed -- a caller that needs
+				//   the stats and doesn't get `result` here has nothing
+				//   further to poll for on this verb; this is additive and
+				//   silently omitted rather than erroring, matching
+				//   render_status/render_wait's existing "found=false is not
+				//   an error" honesty convention.
 				//--------------------------------------------------------------
 				if( m == "render_wait" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
@@ -826,6 +862,62 @@ namespace RISE
 					const AgentSession::AgentRenderJobStatus st = s->RenderStatus( jobId );
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "completed", JsonValue::MakeBool( completed ) );
+					result.set( "found",  JsonValue::MakeBool( st.found ) );
+					result.set( "active", JsonValue::MakeBool( st.active ) );
+					if( completed ) {
+						const AgentSession::AgentLastAsyncRenderResult ar = s->LastAsyncRenderResult( jobId );
+						if( ar.found ) result.set( "result", RenderResultJson( ar.result ) );
+					}
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// render_cancel {renderJobId?} -> {cancelled,found,active}
+				//   Model-B F2 slice S2b: trip the cancel signal for the
+				//   OUTSTANDING async render, WITHOUT blocking for it to
+				//   actually stop (the Swift chat driver's cancelTurn path
+				//   uses this so a production render doesn't have to wait
+				//   behind an agent render -- the single-slot worker would
+				//   otherwise serialize them).  `renderJobId` is OPTIONAL and
+				//   advisory only -- the controller's agent-render worker is
+				//   single-slot, so there is at most one outstanding async
+				//   render to cancel regardless of which id is named (see
+				//   AgentSession::CancelAsyncRender's doc).  `cancelled` is
+				//   true iff a live controller was attached to route the
+				//   cancel through (mirrors AgentSession::CancelAsyncRender's
+				//   no-op-when-headless contract -- it is NOT an error to
+				//   call this with nothing outstanding, or from a headless
+				//   `--agent-stdio` session; both report cancelled=false
+				//   rather than an RPC error, matching render_status/
+				//   render_wait's "found=false" honesty for an unrecognized
+				//   or absent job).  `found`/`active` echo the CURRENT
+				//   status of `renderJobId` immediately after the cancel
+				//   request (found=false when renderJobId is absent/0 or
+				//   unrecognized) so a caller can observe the pre-completion
+				//   state in the same round-trip without a second call.
+				//--------------------------------------------------------------
+				if( m == "render_cancel" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::uint64_t jobId = 0;
+					if( const JsonValue* rj = params.find( "renderJobId" ) ) {
+						if( rj->isNumber() ) {
+							const double rv = rj->asNumber();
+							// Same exact-double-integer bound as render_status/
+							// render_wait above.
+							if( !( rv >= 0.0 && rv <= 9007199254740992.0 ) )
+								return MakeError( idValue, kInvalidParams, "Invalid params: 'renderJobId' must be a finite, non-negative number" );
+							jobId = static_cast<std::uint64_t>( rv );
+						}
+						else if( !rj->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'renderJobId' must be a number" );
+					}
+
+					const bool hadController = s->HasController();
+					s->CancelAsyncRender( jobId );
+					const AgentSession::AgentRenderJobStatus st =
+						( jobId != 0 ) ? s->RenderStatus( jobId ) : AgentSession::AgentRenderJobStatus();
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "cancelled", JsonValue::MakeBool( hadController ) );
 					result.set( "found",  JsonValue::MakeBool( st.found ) );
 					result.set( "active", JsonValue::MakeBool( st.active ) );
 					return MakeSuccess( idValue, result );

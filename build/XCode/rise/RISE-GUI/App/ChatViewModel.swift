@@ -254,6 +254,33 @@ final class ChatViewModel: ObservableObject {
     /// invariant comment).
     var sceneEditable: () -> Bool = { false }
 
+    /// Model-B F2 slice S2b: a NARROWER sibling of `sceneEditable`, used
+    /// ONLY inside a chat-driven `render` tool call's own render_wait
+    /// poll loop (`executeRenderToolCallAsync`).  Answers "did a
+    /// PRODUCTION render start?" — i.e. the exact same `renderState`
+    /// switch `isSceneEditableForAgents` uses — WITHOUT folding in
+    /// `chat.isChatRenderOutstanding`.  This distinction is load-bearing,
+    /// not a duplicated case list: `isSceneEditableForAgents` (which
+    /// backs `sceneEditable` below) now ALSO returns false while THIS
+    /// call's own render is outstanding — correct for every OTHER caller
+    /// (the JSON-RPC debug panel, a later tool call, a fresh send()), but
+    /// self-defeating for the render call's OWN poll loop, which would
+    /// otherwise observe its own in-flight status as a conflict and
+    /// abandon on its very first slice.  Injected by RenderViewModel
+    /// alongside `sceneEditable`, reading `renderState` directly (the
+    /// same cases, deliberately re-derived rather than calling the
+    /// combined predicate) so this loop still correctly aborts when a
+    /// PRODUCTION render starts mid-poll (productionRenderStarting's
+    /// cancelTurn path is what actually tears the turn down in that
+    /// case; this predicate is the belt-and-suspenders defensive check
+    /// alongside Task.isCancelled/stopRequested, matching the rest of
+    /// this file's post-await pattern).  Fails CLOSED when unset — unlike
+    /// `sceneEditable` (whose false-by-default means "not editable"),
+    /// this property's safe default is `true` ("assume a production
+    /// render IS active"), since a poller that can't determine the real
+    /// state should abandon rather than proceed.
+    var productionRenderActive: () -> Bool = { true }
+
     private let chatBridge = RISEAgentChatBridge()
     /// The per-scene tool executor.  WEAK: RenderViewModel owns the
     /// viewport bridge; on clearScene it calls `sceneClosed()` (which
@@ -281,6 +308,37 @@ final class ChatViewModel: ObservableObject {
     /// applyProviderSelection / resetConversation) so a stale count
     /// can't trigger the reset offer on a fresh conversation.
     private var consecutiveHttp400s: Int = 0
+
+    /// Model-B F2 slice S2b: the renderJobId of a chat-driven `render`
+    /// tool call currently outstanding on the LIVE controller's async
+    /// worker (0 = none).  Set right after a successful async submit, in
+    /// `executeRenderToolCallAsync`; cleared there (via `defer`) once
+    /// that call's render_wait loop observes completion, AND cleared by
+    /// `cancelAnyOutstandingChatRender()` the instant it fires a cancel
+    /// (belt-and-suspenders — see that method's doc for why it cannot
+    /// rely solely on the loop's own `defer`).  Read by
+    /// `cancelAnyOutstandingChatRender()` so productionRenderStarting /
+    /// cancelTurn / a user Stop can trip `render_cancel` on it WITHOUT
+    /// waiting for the render to actually finish — the point being that a
+    /// production render must not queue up behind a chat-driven agent
+    /// render on the controller's single-slot worker (see
+    /// SubmitAgentRenderAsync's single-slot policy).  MainActor-only,
+    /// like every other piece of driver state in this class.
+    private var outstandingChatRenderJobId: UInt64 = 0
+
+    /// Model-B F2 slice S2b: true while a chat-driven `render` tool call
+    /// has an async render outstanding on the controller's single-slot
+    /// worker.  This is truth `renderState` (a pure GUI/Swift notion)
+    /// cannot see on its own — an agent render does not flip `renderState`
+    /// out of `.sceneLoaded`/`.completed` — so `RenderViewModel`'s single
+    /// `isSceneEditableForAgents` predicate (the ONE gate both the chat
+    /// driver and the Agent JSON-RPC debug panel consume) folds this in
+    /// alongside its existing `renderState` switch: without it, the raw
+    /// JSON-RPC panel could fire a `propose_patch` (or another render)
+    /// concurrently with a chat-driven render still running on the same
+    /// controller.  MainActor-only, like `outstandingChatRenderJobId`
+    /// itself.
+    var isChatRenderOutstanding: Bool { outstandingChatRenderJobId != 0 }
 
     private static let providerKey = "agentChat.provider"
     private static func modelIdKey(_ p: AgentChatProviderChoice) -> String {
@@ -531,6 +589,7 @@ final class ChatViewModel: ObservableObject {
         guard isBusy else { return }
         stopRequested = true
         driverTask?.cancel()
+        cancelAnyOutstandingChatRender()
         transcript.append(Entry(kind: .notice, text: "Stopped."))
     }
 
@@ -580,6 +639,46 @@ final class ChatViewModel: ObservableObject {
         driverTask?.cancel()
         driverTask = nil
         isBusy = false
+        cancelAnyOutstandingChatRender()
+    }
+
+    /// Model-B F2 slice S2b: trip `render_cancel` on the controller if a
+    /// chat-driven `render` tool call is currently outstanding on its
+    /// single-slot async worker.  Called from every path that ends a turn
+    /// early (Stop, productionRenderStarting → cancelTurn, sceneClosed →
+    /// cancelTurn, provider switch → cancelTurn, manual reset →
+    /// cancelTurn) so a NEWER intent (most importantly: the user clicking
+    /// Render) never has to wait behind an agent render queued on the
+    /// SAME single-slot worker (SceneEditController::SubmitAgentRenderAsync's
+    /// single-slot policy would otherwise serialize them).
+    ///
+    /// Fire-and-forget: `agentHandleLine` is synchronous but render_cancel
+    /// itself does not block for the render's duration (it only trips the
+    /// shared cancel flag — see AgentSession::CancelAsyncRender's doc), so
+    /// this call returns promptly regardless of whether a render is
+    /// actually running.  Safe to call with nothing outstanding (id 0 —
+    /// render_cancel's `renderJobId` param is optional) and safe to call
+    /// with no viewport bridge attached (guarded below).
+    ///
+    /// Clears `outstandingChatRenderJobId` immediately after firing the
+    /// cancel (rather than leaving that to the render_wait loop's own
+    /// `defer`): this method is ALSO called from paths where that loop
+    /// may no longer be running at all (e.g. `sceneOpened`/`sceneClosed`
+    /// calling `cancelTurn()` when the turn was already idle, or a
+    /// Stop/cancelTurn landing after the loop already returned but
+    /// before its `defer` ran) — leaving the stale id set in those cases
+    /// would incorrectly persist a cancelled job's id across scenes/
+    /// turns.  The render_wait loop's own `defer { outstandingChatRenderJobId
+    /// = 0 }` is therefore a harmless redundant clear on the common path
+    /// where the loop is still alive when this fires — setting a UInt64
+    /// to 0 twice from the same MainActor is not a race.
+    private func cancelAnyOutstandingChatRender() {
+        guard outstandingChatRenderJobId != 0, let vb = viewportBridge else { return }
+        let jobId = outstandingChatRenderJobId
+        outstandingChatRenderJobId = 0
+        let line = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"render_cancel\"," +
+                   "\"params\":{\"renderJobId\":\(jobId)}}"
+        _ = vb.agentHandleLine(line)
     }
 
     private func startTurn() {
@@ -613,27 +712,41 @@ final class ChatViewModel: ObservableObject {
 
     /// One conversation turn: HTTP round-trips + tool rounds until the
     /// model finishes with text, errors, or the user stops.  Runs on
-    /// the main actor; only the URLSession await leaves the main
-    /// thread.  Tool calls execute SYNCHRONOUSLY on main via
-    /// `agentHandleLine` (the 1c-1 contract: same thread the GUI's own
-    /// SetProperty edits drive) — note a `render` tool call therefore
-    /// blocks the UI for its duration (acceptable for this slice; the
-    /// verb's default is a small preview-sized pass).
+    /// the main actor; the URLSession await leaves the main thread, and
+    /// (since Model-B F2 slice S2b) so does a `render` tool call's
+    /// render_wait polling loop — see executeRenderToolCallAsync's doc
+    /// for why that is same-actor SLICING (short synchronous
+    /// `agentHandleLine` calls separated by `await Task.sleep`), not a
+    /// second thread calling the dispatcher; `AgentRpcDispatcher::
+    /// HandleLine` is documented single-caller, and every actual call
+    /// into it — submit, each poll slice — still happens on this
+    /// MainActor Task, never concurrently with anything else.  EVERY
+    /// OTHER tool call still executes SYNCHRONOUSLY on main via
+    /// `agentHandleLine` in one shot (the 1c-1 contract: same thread the
+    /// GUI's own SetProperty edits drive) — they are fast CST reads/
+    /// edits with no render-duration cost to amortize.
     ///
-    /// PRODUCTION-RENDER INVARIANT (B2 review round 1): tool calls
-    /// must never execute while the production rasterizer's workers
-    /// read Scene state off-main.  `renderState` is @MainActor state
-    /// and every stretch of this driver between awaits is one
-    /// synchronous MainActor slice — in particular the tool loop
-    /// below has NO awaits, and startRender is also MainActor, so
-    /// startRender cannot interleave with it.  The only reordering
-    /// risk is a turn suspended in the URLSession await when the user
-    /// clicks Render; startRender's `productionRenderStarting()`
-    /// cancels this task, and the post-await checks below re-verify
-    /// both cancellation and `sceneEditable` on resume — the pair
-    /// closes both orders (resume-before-kick executes safely before
-    /// production starts; resume-after-kick returns without touching
-    /// the scene).
+    /// PRODUCTION-RENDER INVARIANT (B2 review round 1; refined S2b):
+    /// tool calls must never execute while the production rasterizer's
+    /// workers read Scene state off-main.  `renderState` is @MainActor
+    /// state and every stretch of this driver between suspension points
+    /// is one synchronous MainActor slice.  Pre-S2b the tool loop had NO
+    /// awaits at all, so `startRender` (also MainActor) could only ever
+    /// interleave at the outer URLSession await.  S2b's render_wait
+    /// polling loop adds NEW suspension points INSIDE the tool loop —
+    /// the invariant is preserved by re-checking `Task.isCancelled`,
+    /// `stopRequested`, `viewportBridge`, and `sceneEditable()` at the
+    /// top of every render_wait slice (inside
+    /// executeRenderToolCallAsync) AND again at the call site
+    /// immediately after `await executeRenderToolCallAsync(...)`
+    /// returns, before the result is ever handed to `addToolResult`.
+    /// `startRender`'s `productionRenderStarting()` additionally calls
+    /// `cancelAnyOutstandingChatRender()` (via `cancelTurn()`), which
+    /// trips `render_cancel` on the controller so a production render
+    /// does not have to wait behind an agent render queued on the SAME
+    /// single-slot worker — this closes the "resume-after-kick" order
+    /// promptly rather than merely safely-but-slowly (the pre-S2b
+    /// pattern already handled "safely"; S2b adds "promptly").
     private func driveTurn() async {
         while true {
             if Task.isCancelled || stopRequested { return }
@@ -723,8 +836,37 @@ final class ChatViewModel: ObservableObject {
                                             text: "→ \(call.name)"))
                     let line = chatBridge.toolCallToJsonRpcLine(call, rpcId: nextRpcId)
                     nextRpcId += 1
-                    // Synchronous, on main — the 1c-1 executor contract.
-                    let responseLine = vb.agentHandleLine(line)
+
+                    // Model-B F2 slice S2b: a `render` tool call goes
+                    // through the NON-BLOCKING async path (submit +
+                    // short-slice render_wait polling, all still on
+                    // main/MainActor — see executeRenderToolCallAsync's
+                    // doc for why this is a same-actor slicing scheme, NOT
+                    // a second thread calling into the dispatcher).  Every
+                    // OTHER tool call keeps the 1c-1 synchronous contract
+                    // unchanged (they are all fast CST reads/edits with no
+                    // render-duration cost to amortize).
+                    let responseLine: String
+                    if call.name == "render" {
+                        responseLine = await executeRenderToolCallAsync(
+                            call: call, submitLine: line, vb: vb)
+                    } else {
+                        // Synchronous, on main — the 1c-1 executor contract.
+                        responseLine = vb.agentHandleLine(line)
+                    }
+
+                    // The awaited render path above can suspend across
+                    // Stop / scene-close / a production render starting;
+                    // re-verify before touching shared driver state, same
+                    // as every other post-await site in this file.  A
+                    // failure here means the turn is already being torn
+                    // down by whatever flipped the gate — abandon; the
+                    // next send's flush synthesizes a cancelled result for
+                    // this (and any later) pending call.
+                    if Task.isCancelled || stopRequested { return }
+                    guard viewportBridge != nil else { return }
+                    guard sceneEditableOrReportRenderConflict() else { return }
+
                     chatBridge.addToolResult(call, jsonRpcResponseLine: responseLine)
                 }
                 continue
@@ -744,6 +886,234 @@ final class ChatViewModel: ObservableObject {
                 return
             }
         }
+    }
+
+    /// Model-B F2 slice S2b: execute a `render` tool call WITHOUT
+    /// blocking the UI for the render's duration.
+    ///
+    /// THREAD-CONTRACT FINDING THAT DRIVES THIS SHAPE: `AgentRpcDispatcher`
+    /// (src/Library/Agent/AgentRpc.h) is documented "NOT thread-safe (slice
+    /// 0c is single-threaded, matching AgentSession)" — HandleLine (which
+    /// `agentHandleLine` calls straight through to on the calling thread)
+    /// is a single-caller API, not a thread-safe one.  So the fix is NOT
+    /// "poll render_status/render_wait from a second thread while the
+    /// MainActor does something else" — that would be a second concurrent
+    /// caller into the SAME dispatcher/session the MainActor might also be
+    /// driving (e.g. the Agent JSON-RPC debug panel, or another tool call
+    /// in a future parallel-calls world). The correct shape, and the one
+    /// used here, is SAME-ACTOR SLICING: every `agentHandleLine` call in
+    /// this method still runs synchronously on the MainActor (preserving
+    /// the single-caller contract exactly), but the render itself runs on
+    /// the controller's dedicated agent-render worker thread (submitted
+    /// via `render{"async":true}`), so each individual `agentHandleLine`
+    /// call this method makes is fast (a submit, or a bounded short-
+    /// timeout render_wait poll) — never a multi-second blocking call.
+    /// Between slices we `await Task.sleep` for a small pause, which
+    /// SUSPENDS this Task and returns control to the run loop — that's
+    /// what keeps the UI responsive (button clicks, viewport interaction,
+    /// SwiftUI redraws all run in that gap), not any actual parallelism
+    /// against the dispatcher.
+    ///
+    /// CONTRACT WITH THE LLM: the taught `render` tool schema
+    /// (AgentChatCodecs.cpp) has no `async` parameter — the LLM never
+    /// asks for async execution, and this method does not change what the
+    /// LLM is taught. The DRIVER transparently upgrades every `render`
+    /// call to the async wire shape, then downgrades the result back to
+    /// the exact synchronous shape before handing it to
+    /// `chatBridge.addToolResult` — RenderResultJson's shared field-by-
+    /// field construction (AgentRpc.cpp) is what makes the synchronous
+    /// `render` verb and `render_wait`'s post-completion `result` echo
+    /// byte-for-byte the same shape, so the LLM cannot tell the
+    /// difference.
+    ///
+    /// `submitLine` is the ALREADY-BUILT synchronous-shaped JSON-RPC line
+    /// from `toolCallToJsonRpcLine` (id + method "render" + the LLM's
+    /// params); this method parses it, injects `"async":true`, and
+    /// re-serializes before submitting — never touching the LLM-authored
+    /// param fields (width/height/camera/samples all pass through
+    /// unchanged).
+    ///
+    /// Returns the JSON-RPC response line to feed into `addToolResult`.
+    /// On any refusal/malformed-response/timeout-exhaustion path this
+    /// returns an HONEST result (a JSON-RPC success envelope whose
+    /// `result.ok` is false with an explanatory `message`, or the raw
+    /// refusal line from the submit call) rather than silently
+    /// fabricating success — the codec only inspects `error` vs `result`
+    /// (AgentChatCodecs.cpp), so an `ok:false` result reads to the LLM as
+    /// "the render did not succeed", which is the truth.
+    private func executeRenderToolCallAsync(
+        call: RISEAgentChatToolCall, submitLine: String, vb: RISEViewportBridge
+    ) async -> String {
+        // Inject {"async":true} into the params object.  A parse failure
+        // here (should not happen — toolCallToJsonRpcLine always emits
+        // well-formed JSON) falls back to the ORIGINAL synchronous call:
+        // still correct, just blocking, which is strictly better than
+        // fabricating a bogus response.
+        guard let asyncLine = Self.injectAsyncTrue(intoJsonRpcLine: submitLine) else {
+            return vb.agentHandleLine(submitLine)
+        }
+
+        // Submit.  Synchronous but fast — this is a queue-and-return
+        // call, not the render itself (see AgentSession::RenderAsync).
+        let submitResponse = vb.agentHandleLine(asyncLine)
+        guard
+            let submitData = submitResponse.data(using: .utf8),
+            let submitObj = (try? JSONSerialization.jsonObject(with: submitData)) as? [String: Any]
+        else {
+            // Malformed response line — shouldn't happen (HandleLine
+            // never throws / always emits valid JSON-RPC), but fail
+            // honestly rather than crash on a force-unwrap.
+            return submitResponse
+        }
+        if submitObj["error"] != nil {
+            // Refused outright (no controller attached — e.g. a headless
+            // context, though the Mac GUI always has one once a scene is
+            // open) — surface the refusal verbatim; it is already a
+            // well-formed JSON-RPC error envelope.
+            return submitResponse
+        }
+        guard
+            let result = submitObj["result"] as? [String: Any],
+            let status = result["status"] as? String
+        else {
+            return submitResponse
+        }
+        if status != "submitted" {
+            // "refused" — the single-slot worker is busy or an editor
+            // transaction is open.  Deliver an HONEST ok:false result in
+            // the SYNCHRONOUS shape (not the raw submit envelope, which
+            // has a different shape than what the LLM is taught to
+            // expect from `render`) so the model sees a clean failure
+            // and can retry or adjust, exactly as a synchronous render
+            // failure would read.
+            let message = (result["message"] as? String) ?? "render refused"
+            return Self.makeSyntheticRenderResultLine(ok: false, message: message)
+        }
+        guard let jobIdNumber = result["renderJobId"] as? NSNumber else {
+            return Self.makeSyntheticRenderResultLine(
+                ok: false, message: "render accepted but no renderJobId was returned")
+        }
+        let jobId = jobIdNumber.uint64Value
+
+        // Track the outstanding job so cancelTurn / Stop /
+        // productionRenderStarting can trip render_cancel on it without
+        // waiting for THIS wait loop to notice.
+        outstandingChatRenderJobId = jobId
+        defer { outstandingChatRenderJobId = 0 }
+
+        // Poll render_wait in SHORT slices, awaiting a brief sleep
+        // between each — see the method doc for why this keeps the UI
+        // responsive without violating HandleLine's single-caller
+        // contract.  250ms keeps any one MainActor-blocking slice small
+        // relative to human perception while not spamming the dispatcher;
+        // the outer loop has no fixed cap (a render legitimately can take
+        // a long time) — cancellation is what bounds it in practice: a
+        // Stop/scene-close/production-render-start sets stopRequested /
+        // cancels the Task / flips sceneEditable, and the check at the
+        // top of every slice below returns promptly (the render itself
+        // keeps running on the worker thread — cancelAnyOutstandingChatRender,
+        // called by all three of those paths, is what actually tells the
+        // controller to abort it).
+        let sliceMs: UInt64 = 250
+        while true {
+            if Task.isCancelled || stopRequested { return "" }
+            guard viewportBridge != nil else { return "" }
+            // NOT `sceneEditable()` — see `productionRenderActive`'s doc:
+            // that combined predicate now correctly reports false for
+            // THIS call's own outstanding render, which would make this
+            // loop mistake itself for a conflict.  This narrower check
+            // answers only "did a PRODUCTION render start?".
+            guard !productionRenderActive() else { return "" }
+
+            let waitLine = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"render_wait\"," +
+                "\"params\":{\"renderJobId\":\(jobId),\"timeoutMs\":\(sliceMs)}}"
+            let waitResponse = vb.agentHandleLine(waitLine)
+            if let waitData = waitResponse.data(using: .utf8),
+               let waitObj = (try? JSONSerialization.jsonObject(with: waitData)) as? [String: Any],
+               let waitResult = waitObj["result"] as? [String: Any],
+               let completed = waitResult["completed"] as? Bool, completed
+            {
+                // Done.  render_wait's `result` sub-object (present iff
+                // completed AND this session cached that job's stats —
+                // see AgentRpc.cpp's render_wait handler) carries the
+                // EXACT synchronous-render shape.  Re-wrap it as a plain
+                // JSON-RPC success envelope so it is indistinguishable
+                // from what a synchronous `render` call would have
+                // returned for this same tool call.
+                if let inner = waitResult["result"] as? [String: Any] {
+                    return Self.makeSyntheticResponseLine(result: inner)
+                }
+                // completed==true but no cached result (shouldn't happen
+                // for a job this method itself submitted — the session
+                // that submitted it is the same one being polled here —
+                // but degrade honestly rather than hang or crash).
+                return Self.makeSyntheticRenderResultLine(
+                    ok: false,
+                    message: "render completed but no cached result was found")
+            }
+            // Not yet complete (or a transient parse hiccup) — sleep
+            // briefly, then loop.  The `await` here is what actually
+            // yields to the run loop between slices.
+            try? await Task.sleep(nanoseconds: sliceMs * 1_000_000)
+        }
+    }
+
+    /// Parse a JSON-RPC request line and set params.async = true,
+    /// re-serializing.  Returns nil on any parse failure (caller falls
+    /// back to the original line).
+    private static func injectAsyncTrue(intoJsonRpcLine line: String) -> String? {
+        guard
+            let data = line.data(using: .utf8),
+            var obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return nil }
+        var params = (obj["params"] as? [String: Any]) ?? [:]
+        params["async"] = true
+        obj["params"] = params
+        guard
+            let outData = try? JSONSerialization.data(withJSONObject: obj),
+            let outLine = String(data: outData, encoding: .utf8)
+        else { return nil }
+        return outLine
+    }
+
+    /// Build a plain JSON-RPC success envelope {"jsonrpc":"2.0","id":0,
+    /// "result":result} — the `id` value is never inspected by the
+    /// chat codec (AgentChatCodecs.cpp only branches on `error` vs
+    /// `result`), so a fixed placeholder id is honest here.
+    private static func makeSyntheticResponseLine(result: [String: Any]) -> String {
+        let obj: [String: Any] = ["jsonrpc": "2.0", "id": 0, "result": result]
+        guard
+            let data = try? JSONSerialization.data(withJSONObject: obj),
+            let line = String(data: data, encoding: .utf8)
+        else {
+            // JSONSerialization on a dictionary of JSON-safe values
+            // should not fail; degrade to a minimal honest error rather
+            // than force-unwrap.
+            return "{\"jsonrpc\":\"2.0\",\"id\":0,\"error\":" +
+                "{\"code\":-32603,\"message\":\"internal error: failed to serialize render result\"}}"
+        }
+        return line
+    }
+
+    /// Build a synthetic render-shaped result (the SAME field set
+    /// RenderResultJson emits in AgentRpc.cpp) for the honest-failure
+    /// paths above, where only `ok` and `message` are known.  The other
+    /// numeric/string fields default to the same zero/empty values
+    /// AgentRenderResult's own default member initializers use, so a
+    /// consumer that reads any of them sees a value consistent with "no
+    /// render ran" rather than an absent key.
+    private static func makeSyntheticRenderResultLine(ok: Bool, message: String) -> String {
+        let result: [String: Any] = [
+            "ok": ok,
+            "width": 0, "height": 0,
+            "meanR": 0.0, "meanG": 0.0, "meanB": 0.0,
+            "integrator": "",
+            "previewWidth": 0, "previewHeight": 0,
+            "cameraOverridden": false,
+            "message": message,
+            "renderJobId": 0,
+        ]
+        return makeSyntheticResponseLine(result: result)
     }
 
     /// Per-kind error UX, honoring each ChatErrorKind's documented

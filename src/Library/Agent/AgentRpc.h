@@ -104,6 +104,27 @@
 //                                            `width`/`height` report the dims of
 //                                            the returned image.)
 //
+//    Model-B F2 slice S2a/S2b (async render): render{"async":true} submits to
+//    the ATTACHED controller's dedicated agent-render worker and returns
+//    IMMEDIATELY with {renderJobId,status:"submitted"|"refused",message}
+//    instead of blocking for the render's duration -- LIVE (in-app GUI)
+//    controllers only; `rise --agent-stdio` is headless and refuses async
+//    cleanly.  render_status {renderJobId} -> {found,active} polls a job
+//    id (from either an async or a synchronous render); render_wait
+//    {renderJobId,timeoutMs?} -> {completed,found,active,result?} blocks up
+//    to timeoutMs (default 5000, clamped [0,60000]) for it to finish.
+//    `result` (slice S2b, additive) carries the SAME shape a synchronous
+//    render returns ({ok,width,height,meanR,...}) when this session cached
+//    that renderJobId's stats -- i.e. it was submitted via
+//    render{"async":true} on THIS session and has now completed; absent
+//    otherwise (a different session's job, a synchronous job, or not yet
+//    complete).
+//    render_cancel {renderJobId?} -> {cancelled,found,active} trips the
+//    cancel signal for the outstanding async render WITHOUT blocking for it
+//    to actually stop (poll render_status/render_wait afterward to observe
+//    completion) -- headless sessions refuse it (no controller, nothing to
+//    cancel) exactly like render{"async":true} refuses submission.
+//
 //    Facet 5 slice 1a (optimistic concurrency): read_document now carries the
 //    retained CST head's (uuid,revision) identity; propose_patch accepts an
 //    OPTIONAL baseHeadVersion precondition and, if it is stale (!= the current
