@@ -956,6 +956,16 @@ void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
 		MarkCstHeadDirty( edit.objectName.c_str(),
 			edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr );
 		break;
+	case SceneEdit::AgentInsertChunk:
+	case SceneEdit::AgentRemoveChunk:
+		// Shared-undo U2: same rationale as SetAgentCstParam above -- the FORWARD chunk-CRUD commit marks
+		// dirty via MarkCstHeadDirty directly (SceneEditController::ApplyAgentChunkCrud_), since that mutation
+		// also lands OUTSIDE SceneEditor::Apply.  Undo/Redo of a chunk-CRUD op route through THIS function via
+		// ApplyRevertMutation/ApplyForwardMutation's shared callers, so without this case a chunk-CRUD Undo/Redo
+		// after a Save would leave HasUnsavedChanges() false -- the same data-loss gap P1-4 closed for param edits.
+		MarkCstHeadDirty( edit.objectName.c_str(),
+			edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr );
+		break;
 	default:
 		break;
 	}
@@ -1146,6 +1156,8 @@ static inline bool IsCstRoutedOp( SceneEdit::Op op )
 	    || op == SceneEdit::SetCameraProperty
 	    || op == SceneEdit::SetMediumProperty
 	    || op == SceneEdit::SetAgentCstParam    // shared-undo U1: agent edits re-derive by name too
+	    || op == SceneEdit::AgentInsertChunk    // shared-undo U2: agent chunk CRUD re-derives (full re-derive) too
+	    || op == SceneEdit::AgentRemoveChunk
 	    || SceneEdit::IsObjectOp( op )
 	    || SceneEdit::IsCameraOp( op );   // camera DRAG ops re-derive at the pose-commit boundary too
 }
@@ -1282,6 +1294,71 @@ bool SceneEditor::RouteCstParamEditChecked_( const char* entityName, const char*
 {
 	if( outDiagnosed ) *outDiagnosed = false;
 	const int r = mJob->ApplyCstParamEditChecked( entityName, entityKind, role, 0, value );
+	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;
+	if( r == 3 && outDiagnosed ) *outDiagnosed = true;
+	return r >= 1;
+}
+
+// Shared-undo U2: route an AgentInsertChunk/AgentRemoveChunk Undo or Redo through Job's chunk-CRUD
+// primitives.  Every one of Job::ApplyCstInsertChunk / ApplyCstRemoveChunk / ApplyCstRestoreChunkAt is
+// ALREADY full-derivability-gated (they route through the shared RederiveCstDocumentFull_ tail, which
+// ALWAYS dry-runs before committing -- unlike ApplyCstParamEdit's OPTIONAL gate, chunk CRUD has no ungated
+// fast path to begin with), so -- unlike RouteCstParamEditChecked_/RouteCstParamRemove_, which exist
+// specifically to select the gated Job entry point over an ungated sibling -- this helper's job is purely
+// dispatch: pick the right Job call for (which op, which direction) and fold its 0/2/3 return the same
+// mutation-keyed way (r>=1 => "the mutation landed", including a diagnosed code-3).  Never 1 for any of
+// the three calls (a chunk-CRUD verb is always D2-class), so `r >= 1` and `r >= 2` are equivalent here;
+// written as `r != 0` to mirror the sibling helpers' shape.
+bool SceneEditor::RouteAgentChunkCrud_( const SceneEdit& edit, bool forInsertOp, bool forward, bool* outDiagnosed )
+{
+	if( outDiagnosed ) *outDiagnosed = false;
+	if( !mJob ) return false;
+	const char* kind = edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr;
+	int r = 0;
+	if( forInsertOp && forward )
+	{
+		// Redo of an insert: re-insert the SAME captured bytes.  Deterministic: Undo (the remove below)
+		// restored the pre-insert Document byte-identically, so re-running the positioned insert on that
+		// identical Document lands the same way it did the first time.
+		char kwBuf[128]; kwBuf[0] = '\0';
+		char nameBuf[256]; nameBuf[0] = '\0';
+		char diagBuf[512]; diagBuf[0] = '\0';
+		r = mJob->ApplyCstInsertChunk( edit.propertyValue.c_str(), kwBuf, sizeof( kwBuf ), nameBuf, sizeof( nameBuf ), diagBuf, sizeof( diagBuf ) );
+		if( r < 0 ) r = 0;   // fold malformed/duplicate refusals into the ordinary "would not derive" bucket
+	}
+	else if( forInsertOp && !forward )
+	{
+		// Undo of an insert: remove EXACTLY the 3 items ApplyCstInsertChunk spliced ([leadSep][chunk]
+		// [trailSep]) at the captured EXACT index -- NOT the general Cst::DocEraseChunkTidy heuristic a
+		// manual remove_chunk uses (which collapses at most ONE adjacent separator and -- correctly, by its
+		// own contract -- leaves a residual blank line on a chunk that had TWO fresh separators inserted
+		// around it; see AgentChunkCrudTest.cpp's T3).  This keeps Undo-of-insert byte-identical to the
+		// pre-insert Document, matching Undo-of-remove's own byte-identity bar.  A still-REFERENCED chunk
+		// (something now names it) fails the dry-run inside ApplyCstRemoveItemsAt's re-derive tail and
+		// refuses honestly (r==0), leaving the Document untouched -- the derivability gate this whole slice
+		// exists to enforce (SAME guarantee ApplyCstRemoveChunk gives; just a different Document-splice
+		// mechanism to reach it).
+		char diagBuf[512]; diagBuf[0] = '\0';
+		r = mJob->ApplyCstRemoveItemsAt( edit.agentChunkIndex, /*count*/3, diagBuf, sizeof( diagBuf ) );
+	}
+	else if( !forInsertOp && !forward )
+	{
+		// Undo of a remove: splice the captured bytes back at the captured EXACT index.
+		char diagBuf[512]; diagBuf[0] = '\0';
+		r = mJob->ApplyCstRestoreChunkAt( edit.propertyValue.c_str(), edit.agentChunkIndex,
+		                                  /*restoreActiveRasterizer*/ !edit.agentChunkWasRasterizer,
+		                                  diagBuf, sizeof( diagBuf ) );
+	}
+	else
+	{
+		// Redo of a remove: re-remove by (name, kind) -- deterministic for the same reason insert-Redo is:
+		// Undo restored the pre-remove Document byte-identically first.
+		char kwBuf[128]; kwBuf[0] = '\0';
+		char diagBuf[512]; diagBuf[0] = '\0';
+		r = mJob->ApplyCstRemoveChunk( edit.objectName.c_str(), kind, kwBuf, sizeof( kwBuf ), diagBuf, sizeof( diagBuf ) );
+		if( r < 0 ) r = 0;
+	}
 	if( r >= 2 ) RebindToJob_();
 	if( r != 0 ) mCstLiveSceneChanged = true;
 	if( r == 3 && outDiagnosed ) *outDiagnosed = true;
@@ -1683,6 +1760,25 @@ void SceneEditor::PushAgentCstParamEdit(
 	// capturedTargetSerial stays 0 (default): SetAgentCstParam is a CST-routed op (IsCstRoutedOp), so
 	// ApplyForwardMutation/ApplyRevertMutation's identity-serial guard is skipped for it regardless -- it
 	// applies/reverts/redoes BY NAME, like every other CST-routed property op.
+	mHistory.Push( edit );
+}
+
+// Shared-undo U2: see the header doc.  Same shape as PushAgentCstParamEdit -- the forward mutation (Job::
+// ApplyCstInsertChunk / ApplyCstRemoveChunk) already landed via SceneEditController::ApplyAgentChunkCrud_
+// before this call; there is nothing left to capture or mutate here.
+void SceneEditor::PushAgentChunkCrudEdit(
+	bool isInsert, const String& chunkName, const String& chunkKind, const String& chunkBytes,
+	int docIndex, bool wasRasterizer )
+{
+	SceneEdit edit;
+	edit.op                      = isInsert ? SceneEdit::AgentInsertChunk : SceneEdit::AgentRemoveChunk;
+	edit.objectName               = chunkName;
+	edit.cstEntityKind            = chunkKind;
+	edit.propertyValue            = chunkBytes;
+	edit.agentChunkIndex          = docIndex;
+	edit.agentChunkWasRasterizer  = wasRasterizer;
+	// capturedTargetSerial stays 0 (default): both ops are CST-routed (IsCstRoutedOp, extended below) -- they
+	// apply/revert/redo BY NAME (or by captured position for a remove's Undo), never a stale pointer.
 	mHistory.Push( edit );
 }
 
@@ -2105,6 +2201,22 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		return true;
 	}
 
+	if( edit.op == SceneEdit::AgentInsertChunk || edit.op == SceneEdit::AgentRemoveChunk )
+	{
+		// Shared-undo U2 (Undo direction): the inverse-patch doctrine -- Undo of an insert REMOVES the chunk
+		// (occurrence-aware, by name+kind); Undo of a remove RESTORES the captured exact bytes at the captured
+		// exact index.  See SceneEdit.h's op docs + RouteAgentChunkCrud_ for the full per-shape rationale.
+		if( !mJob ) return false;
+		const bool forInsertOp = ( edit.op == SceneEdit::AgentInsertChunk );
+		bool diagnosed = false;
+		if( !RouteAgentChunkCrud_( edit, forInsertOp, /*forward*/ false, &diagnosed ) ) return false;
+		if( diagnosed )
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Undo:: agent chunk %s on `%s` reverted via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean revert",
+			                       forInsertOp ? "insert" : "remove", edit.objectName.c_str() );
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
 	// Composite Begin/End popped on its own — degenerate, treat as noop.
 	if( SceneEdit::IsCompositeMarker( edit.op ) )
 	{
@@ -2402,6 +2514,25 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 			if( diagnosed )
 				GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Redo:: agent edit on `%s`.`%s` re-applied via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean redo",
 				                       edit.objectName.c_str(), edit.propertyName.c_str() );
+		}
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::AgentInsertChunk || edit.op == SceneEdit::AgentRemoveChunk )
+	{
+		// Shared-undo U2 (Redo direction): re-apply the ORIGINAL verb (re-insert the captured bytes / re-remove
+		// by name).  The FIRST apply of a fresh chunk-CRUD commit never reaches here (the mutation already
+		// landed via Job::ApplyCstInsertChunk/ApplyCstRemoveChunk before the history push -- see
+		// PushAgentChunkCrudEdit); this arm is exercised by Redo only.
+		if( !mJob ) return false;
+		const bool forInsertOp = ( edit.op == SceneEdit::AgentInsertChunk );
+		{
+			bool diagnosed = false;
+			if( !RouteAgentChunkCrud_( edit, forInsertOp, /*forward*/ true, &diagnosed ) ) return false;
+			if( diagnosed )
+				GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Redo:: agent chunk %s on `%s` re-applied via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean redo",
+				                       forInsertOp ? "insert" : "remove", edit.objectName.c_str() );
 		}
 		mLastScope = Dirty_Camera;
 		return true;

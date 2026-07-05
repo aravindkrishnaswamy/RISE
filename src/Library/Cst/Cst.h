@@ -223,6 +223,14 @@ namespace RISE
 		//! (the INV-4 round-trip invariant).
 		std::string SerializeCst( const Document& doc );
 
+		//! Serialize a SINGLE node (a top-level Chunk or Trivia item) to its exact
+		//! verbatim bytes -- the item-level counterpart of SerializeCst, used by
+		//! Model-B shared-undo U2 to capture a chunk's (and any tidied-away
+		//! separator's) exact text BEFORE an erase, so an Undo-of-remove can splice
+		//! it back byte-identically at the SAME index (DocInsertItem's documented
+		//! inverse-of-DocRemoveItem contract).  Null `n` yields an empty string.
+		std::string SerializeNode( const NodeRef& n );
+
 		//! True iff `doc` is native v7-form -- loadable by the CST path without mis-deriving.  Accepts a
 		//! `RISE ASCII SCENE <n>` header + chunks + render-NEUTRAL `>` directives ONLY (`> echo`, `> set
 		//! accelerator`).  REJECTS what DeriveToJob would silently skip + thereby mis-derive: a `FOR`/`ENDFOR`

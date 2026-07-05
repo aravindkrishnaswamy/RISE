@@ -9836,7 +9836,19 @@ int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* 
 	if( !keepCamera.empty()     ) SetActiveCamera( keepCamera.c_str() );
 	// P1-B: skipped for a rasterizer INSERT (see the header comment) -- the re-derive just activated the
 	// document's last rasterizer chunk (the inserted one), which is exactly what a save+reload would do.
-	if( !keepRasterizer.empty() && restoreActiveRasterizer ) SetActiveRasterizer( keepRasterizer.c_str() );
+	//
+	// Shared-undo U2 fix: ALSO skip the restore when `keepRasterizer`'s chunk no longer exists in the
+	// EDITED document -- e.g. Undo-of-an-agent-rasterizer-insert (or a plain remove_chunk on the currently
+	// ACTIVE rasterizer) removes exactly that chunk, so the pre-edit "keep" name names a rasterizer the
+	// re-derive did NOT recreate.  SetActiveRasterizer would otherwise LAZILY RECONSTRUCT it from the
+	// standard-types catalogue with default params (Job::InstantiateRasterizerWithDefaults) -- a phantom
+	// instance backed by NO Document chunk, silently diverging live from what a fresh reload of the SAME
+	// (now-edited) Document would activate (the invariant this whole path exists to uphold).  The re-derive
+	// above already registered a rasterizer entry per surviving rasterizer chunk (RegisterAndActivateRasterizer,
+	// keyed by chunk keyword) -- checking the registry (not re-deriving anything new) is the honest "does this
+	// name still exist" test, matching P1-B's own "don't invent new activation machinery" principle.
+	const bool keepRasterizerStillExists = rasterizerRegistry.find( keepRasterizer ) != rasterizerRegistry.end();
+	if( !keepRasterizer.empty() && restoreActiveRasterizer && keepRasterizerStillExists ) SetActiveRasterizer( keepRasterizer.c_str() );
 	if( keepAnim[0]             ) SetActiveAnimation( keepAnim );
 	// P5 (Model-B): the full re-derive rebuilt the LIVE film at the Document's AUTHORED dims -- re-apply the cached
 	// viewport screen-fit so an edit-triggered D2 doesn't jump the preview from screen-fit to full-res.  BEFORE the
@@ -10499,6 +10511,91 @@ int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
 	RISE::Cst::Document d1 = RISE::Cst::DocEraseChunkTidy( *pCstDocument, idx );
 	char ctx[300];
 	std::snprintf( ctx, sizeof( ctx ), "remove_chunk `%s`", target );
+	std::string firstDiag;
+	const int code = RederiveCstDocumentFull_( std::move( d1 ), ctx, &firstDiag );
+	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+	return code;
+}
+
+// Shared-undo U2: EXACT-POSITION inverse of ApplyCstRemoveChunk -- see the IJob virtual doc for the full
+// contract.  `bytesInOrder` is the caller's captured concatenation of every top-level item a PRIOR
+// DocEraseChunkTidy actually dropped (the chunk + at most its own tidied trailing separator), in document
+// order; parse it back into its constituent top-level items and splice them at `atIndex` in order -- the
+// documented exact inverse of DocRemoveItem (Cst.h): DocRemoveItem(DocInsertItem(doc,i,x),i) round-trips
+// byte-for-byte, so re-inserting the SAME items at the SAME index restores the pre-erase Document exactly
+// (subject to the dry-run below proving the restored Document still derives -- e.g. nothing removed in the
+// interim now collides with the restored chunk's name).
+int Job::ApplyCstRestoreChunkAt( const char* bytesInOrder, int atIndex, bool restoreActiveRasterizer,
+                                  char* outDiag, unsigned int diagMax )
+{
+	S2CopyOut( outDiag, diagMax, std::string() );
+	if( !pCstDocument || !bytesInOrder || !bytesInOrder[0] ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRestoreChunkAt:: no retained CST Document or empty bytes; restore rejected" );
+		return 0;
+	}
+
+	// Parse the captured bytes back into their own throwaway Document and collect EVERY top-level item
+	// (chunk AND trivia) in order -- unlike ApplyCstInsertChunk (which requires exactly one Chunk plus
+	// pure-whitespace trivia), a restore's payload legitimately carries a Chunk followed by a Trivia
+	// separator (the tidied-away item DocEraseChunkTidy dropped alongside it), so every item is spliced back.
+	RISE::Cst::Document bytesDoc = RISE::Cst::ParseToCst( std::string( bytesInOrder ) );
+	const int nItems = RISE::Cst::DocItemCount( bytesDoc );
+	std::vector<RISE::Cst::NodeRef> items;
+	items.reserve( (size_t)nItems );
+	for( int i = 0; i < nItems; ++i ) {
+		const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( bytesDoc, RISE::Cst::DocNodeIdAt( bytesDoc, i ) );
+		if( it ) items.push_back( it );
+	}
+	if( items.empty() ) {
+		S2CopyOut( outDiag, diagMax, "captured bytes did not parse to any top-level item" );
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRestoreChunkAt:: captured bytes did not parse to any top-level item; restore rejected" );
+		return 0;
+	}
+
+	const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
+	const int at = ( atIndex < 0 ) ? 0 : ( atIndex > nHead ? nHead : atIndex );
+	RISE::Cst::Document d1 = *pCstDocument;
+	for( size_t k = 0; k < items.size(); ++k )
+		d1 = RISE::Cst::DocInsertItem( d1, at + (int)k, items[k] );
+
+	char ctx[128];
+	std::snprintf( ctx, sizeof( ctx ), "restore_chunk_at %d", at );
+	std::string firstDiag;
+	const int code = RederiveCstDocumentFull_( std::move( d1 ), ctx, &firstDiag, restoreActiveRasterizer );
+	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+	return code;
+}
+
+// Shared-undo U2: EXACT-POSITION inverse of ApplyCstInsertChunk -- see the IJob virtual doc for the full
+// contract.  ApplyCstInsertChunk ALWAYS splices exactly [leadSep][chunk][trailSep] (3 items) at a single
+// contiguous index; this removes exactly `count` items at `atIndex` via repeated Cst::DocRemoveItem AT THE
+// SAME INDEX (removing at a fixed index `count` times drops the contiguous run [atIndex, atIndex+count) in
+// order -- the exact inverse of the insert's repeated DocInsertItem at increasing indices), then realizes via
+// the shared dry-run-guarded full re-derive tail.  Unlike Job::ApplyCstRemoveChunk (Cst::DocEraseChunkTidy's
+// heuristic single-adjacent-separator collapse, correct for an arbitrary FILE-AUTHORED chunk but -- BY
+// DESIGN -- leaving a residual blank line when applied to a chunk with TWO fresh separators around it), this
+// is exact: DocRemoveItem(DocInsertItem(doc,i,x),i) round-trips byte-for-byte (Cst.h), so removing the SAME
+// 3 items at the SAME index restores the pre-insert Document byte-identically.
+int Job::ApplyCstRemoveItemsAt( int atIndex, int count, char* outDiag, unsigned int diagMax )
+{
+	S2CopyOut( outDiag, diagMax, std::string() );
+	if( !pCstDocument || count <= 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveItemsAt:: no retained CST Document or non-positive count; remove rejected" );
+		return 0;
+	}
+	const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
+	if( atIndex < 0 || atIndex + count > nHead ) {
+		S2CopyOut( outDiag, diagMax, "atIndex/count out of range for the current Document" );
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveItemsAt:: atIndex=%d count=%d out of range (document has %d items); remove rejected", atIndex, count, nHead );
+		return 0;
+	}
+
+	RISE::Cst::Document d1 = *pCstDocument;
+	for( int k = 0; k < count; ++k )
+		d1 = RISE::Cst::DocRemoveItem( d1, atIndex );   // removing AT atIndex repeatedly drops the contiguous run in order
+
+	char ctx[128];
+	std::snprintf( ctx, sizeof( ctx ), "remove_items_at %d count %d", atIndex, count );
 	std::string firstDiag;
 	const int code = RederiveCstDocumentFull_( std::move( d1 ), ctx, &firstDiag );
 	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );

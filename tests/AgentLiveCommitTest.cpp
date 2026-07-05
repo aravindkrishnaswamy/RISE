@@ -232,6 +232,31 @@ public:
 		if( mForceCodeThree && base == 2 ) return 3;
 		return base;
 	}
+	// Shared-undo U2 (Test 27): chunk-CRUD verbs are ALWAYS D2-class (never code 1) -- same 2 -> 3
+	// rewrite technique so ApplyAgentInsertChunk/ApplyAgentRemoveChunk's forward apply AND their
+	// Undo/Redo (RouteAgentChunkCrud_'s ApplyCstInsertChunk / ApplyCstRemoveChunk / ApplyCstRestoreChunkAt
+	// calls) all observe a genuinely-replaced-but-diagnosed Scene at every step of the round trip.
+	int ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned int keywordMax,
+	                         char* outName, unsigned int nameMax, char* outDiag, unsigned int diagMax ) override
+	{
+		const int base = Job::ApplyCstInsertChunk( chunkText, outKeyword, keywordMax, outName, nameMax, outDiag, diagMax );
+		if( mForceCodeThree && base == 2 ) return 3;
+		return base;
+	}
+	int ApplyCstRemoveChunk( const char* target, const char* kind,
+	                         char* outKeyword, unsigned int keywordMax, char* outDiag, unsigned int diagMax ) override
+	{
+		const int base = Job::ApplyCstRemoveChunk( target, kind, outKeyword, keywordMax, outDiag, diagMax );
+		if( mForceCodeThree && base == 2 ) return 3;
+		return base;
+	}
+	int ApplyCstRestoreChunkAt( const char* bytesInOrder, int atIndex, bool restoreActiveRasterizer,
+	                            char* outDiag, unsigned int diagMax ) override
+	{
+		const int base = Job::ApplyCstRestoreChunkAt( bytesInOrder, atIndex, restoreActiveRasterizer, outDiag, diagMax );
+		if( mForceCodeThree && base == 2 ) return 3;
+		return base;
+	}
 private:
 	bool mForceCodeThree;
 };
@@ -1914,28 +1939,55 @@ static void TestOccAwareParamRemoveUndo()
 				String( "shaderop" ), String( "DefaultPathTracing" ),
 				/*baseVersionOrNull*/ nullptr );
 		Check( applied.applied, "agent insert of occ 0 (`shaderop`) on `sh` applies" );
+		const unsigned int undoDepthAfterParamEdit = c.Editor().History().UndoDepth();
 
 		// Independent mechanism ("other edits"): remove + reinsert the WHOLE `sh`
-		// chunk with THREE shaderop lines (occ 0 unchanged in VALUE, occ 1 + 2 new),
-		// routed through the SAME controller entry points a real agent chunk-CRUD
-		// verb uses (ApplyAgentRemoveChunk / ApplyAgentInsertChunk -- these push NO
-		// EditHistory record, per their own doc, so the undo/redo stack is
-		// untouched by this step). This changes `sh`'s NodeId but NOT its name --
-		// RouteCstParamRemove_ resolves by name, so the later agent Undo is
-		// unaffected by the identity change (matches the documented chunk-CRUD-
-		// interleaving hazard RouteCstParamEditChecked_'s doc describes).
-		{
-			const SceneEditController::AgentCommitResult rmR =
-				c.ApplyAgentRemoveChunk( String( "sh" ), String( "standard_shader" ), nullptr );
-			Check( rmR.applied, "removing the old `sh` chunk succeeds (independent of the agent Undo path)" );
-		}
-		{
+		// chunk with THREE shaderop lines (occ 0 unchanged in VALUE, occ 1 + 2 new).
+		// Cst has no primitive to APPEND occurrence >0 of a repeatable param in
+		// place (Cst::WithParamValueOrInsert only inserts at occ 0 when absent --
+		// see its own doc), so a whole-chunk remove+reinsert is the only way to
+		// manufacture a THIRD occurrence.  Routed DIRECTLY through Job's chunk-CRUD
+		// primitives (NOT the controller's ApplyAgentRemoveChunk/ApplyAgentInsertChunk)
+		// -- since Shared-undo U2 (this slice) made those two controller verbs
+		// first-class undo/redo citizens, routing "other edits" through them would
+		// ADD their own history entries and no longer simulate an INDEPENDENT
+		// mechanism outside the shared-undo system (e.g. a second agent session, a
+		// raw Document edit, a script) that leaves NO history footprint of its own.
+		// Wrapped in RunPreviewRenderParked (the SAME cancel-and-park critical
+		// section the controller's own agent-commit paths use) so the direct Job
+		// mutation cannot race the live render thread, followed by the SAME
+		// manual re-bind ApplyAgentChunkCrud_ itself would have done on a D2
+		// (RebindEditorToJob is private; this reproduces it via the public
+		// Editor()/RebindScene + manager-setter surface) -- else the controller's
+		// cached scene/manager pointers would dangle after the ClearAll.  This
+		// changes `sh`'s NodeId but NOT its name -- RouteCstParamRemove_ resolves
+		// by name, so the agent's later Undo (still the NEXT entry to pop -- this
+		// direct route added no history) is unaffected by the identity change
+		// (the documented chunk-CRUD-interleaving hazard RouteCstParamEditChecked_'s
+		// doc describes).
+		Check( c.RunPreviewRenderParked( [&]{
+			char kw[64]; char diag[256];
+			const int rmCode = pJob->ApplyCstRemoveChunk( "sh", "standard_shader", kw, sizeof( kw ), diag, sizeof( diag ) );
+			Check( rmCode == 2 || rmCode == 3, "removing the old `sh` chunk succeeds (independent of the agent Undo path, no history pushed)" );
+
 			const char* newChunk =
 				"standard_shader\n{\nname sh\nshaderop DefaultPathTracing\nshaderop DefaultDirectLighting\nshaderop DefaultEmission\n}\n";
-			const SceneEditController::AgentCommitResult insR =
-				c.ApplyAgentInsertChunk( String( newChunk ), nullptr );
-			Check( insR.applied, "reinserting `sh` with THREE shaderop occurrences succeeds" );
-		}
+			char kw2[64]; char nm2[64]; char diag2[256];
+			const int insCode = pJob->ApplyCstInsertChunk( newChunk, kw2, sizeof( kw2 ), nm2, sizeof( nm2 ), diag2, sizeof( diag2 ) );
+			Check( insCode == 2 || insCode == 3, "reinserting `sh` with THREE shaderop occurrences succeeds (no history pushed)" );
+
+			// Manual rebind (mirrors SceneEditController::RebindEditorToJob, which is
+			// private -- this reproduces it via the public surface).
+			c.Editor().RebindScene( *pJob->GetScene() );
+			c.Editor().SetMaterialManager( pJob->GetMaterials() );
+			c.Editor().SetShaderManager( pJob->GetShaders() );
+			c.Editor().SetPainterManager( pJob->GetPainters() );
+			c.Editor().SetScalarPainterManager( pJob->GetScalarPainters() );
+			c.Editor().SetJob( pJob );
+		} ), "the parked direct-Job 'other edits' + manual rebind ran" );
+		Check( c.Editor().History().UndoDepth() == undoDepthAfterParamEdit,
+		       "the direct Job-level chunk-CRUD 'other edits' pushed NO history of their own -- the agent's "
+		       "param-edit entry is still the next one to pop" );
 		{
 			// Scope the occurrence count to `sh`'s OWN chunk text -- `global` (a
 			// SEPARATE standard_shader in this scene) also carries a `shaderop`
@@ -2161,6 +2213,480 @@ static void TestUndoRedoAfterSaveMarksDirty()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// Model-B shared-undo U2 fixtures + tests: agent chunk CRUD (insert_chunk /
+// remove_chunk) is a first-class undo/redo citizen.  A base scene with THREE
+// materials in document order (`matA`, `matB`, `matC`) so a remove of the
+// MIDDLE one (`matB`) exercises the exact-position restore (the headline
+// byte-identity claim requires a chunk that sits BETWEEN two others, not at
+// the document's edge).
+//////////////////////////////////////////////////////////////////////
+static const char* kU2Scene =
+	"RISE ASCII SCENE 7\n"
+	"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+	"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
+	"lambertian_material\n{\nname matA\nreflectance white\n}\n"
+	"lambertian_material\n{\nname matB\nreflectance white\n}\n"
+	"lambertian_material\n{\nname matC\nreflectance white\n}\n"
+	"sphere_geometry\n{\nname s\nradius 1\n}\n"
+	"standard_object\n{\nname obj\ngeometry s\nmaterial lum\n}\n";
+
+//////////////////////////////////////////////////////////////////////
+// Test 22: insert_chunk -> Undo -> byte-identical to pre-insert; derived
+// scene coherent; Redo re-inserts byte-exactly; revision bumps on each;
+// dirty marked in both directions.
+//////////////////////////////////////////////////////////////////////
+static void TestChunkInsertUndoRedo()
+{
+	std::cout << "Test 22: insert_chunk Undo/Redo -- byte-identical round trip (shared-undo U2)..." << std::endl;
+
+	const char* tmp = "agentlive_u2_insert.RISEscene";
+	Job* pJob = LoadScene( kU2Scene, tmp );
+	Check( pJob != nullptr, "U2 fixture scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const std::string preDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		const RISE::Cst::CstHeadVersion preVersion = pJob->GetCstHeadVersion();
+		Check( !c.HasUnsavedChanges(), "clean before any edit" );
+
+		const char* newChunk = "lambertian_material\n{\nname matD\nreflectance white\n}\n";
+		const SceneEditController::AgentCommitResult ins = c.ApplyAgentInsertChunk( String( newChunk ), nullptr );
+		Check( ins.applied, "insert_chunk applies" );
+		Check( ins.chunkName == String( "matD" ), "insert echoes the resolved name" );
+		Check( ins.headVersion.revision == preVersion.revision + 1, "insert bumped the revision by exactly one" );
+		Check( c.HasUnsavedChanges(), "insert marks the editor dirty" );
+		const std::string postInsertDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postInsertDoc.find( "matD" ) != std::string::npos, "the inserted chunk is present in the Document" );
+		Check( postInsertDoc != preDoc, "the Document actually changed" );
+
+		// Undo -> byte-identical to the pre-insert Document.
+		c.Undo();
+		const std::string postUndoDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postUndoDoc == preDoc, "Undo of insert_chunk restores the Document BYTE-IDENTICAL to pre-insert" );
+		Check( pJob->GetCstHeadVersion().revision == preVersion.revision + 2,
+		       "Undo bumped the revision again (a genuine Document mutation, not a no-op)" );
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "matD" ) == nullptr,
+		       "the derived scene no longer has `matD` after Undo (live matches the reverted Document)" );
+
+		// Redo -> re-inserts byte-exactly (same bytes the agent originally supplied).
+		c.Redo();
+		const std::string postRedoDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postRedoDoc == postInsertDoc, "Redo of insert_chunk re-inserts BYTE-EXACTLY (matches the post-insert Document)" );
+		Check( pJob->GetCstHeadVersion().revision == preVersion.revision + 3, "Redo bumped the revision a third time" );
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "matD" ) != nullptr,
+		       "the derived scene has `matD` again after Redo" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 23: remove_chunk on a MIDDLE chunk (matB, sandwiched between matA and
+// matC) -> Undo -> byte-identical restore INCLUDING position -> Redo
+// re-removes byte-exactly.  This is the headline exact-position claim:
+// DocInsertItem-at-the-same-index is the documented byte-exact inverse of
+// DocRemoveItem, so the WHOLE Document (not just the chunk's own text) must
+// compare equal.
+//////////////////////////////////////////////////////////////////////
+static void TestChunkRemoveMiddleUndoRedo()
+{
+	std::cout << "Test 23: remove_chunk (middle chunk) Undo/Redo -- byte-identical WITH position (shared-undo U2)..." << std::endl;
+
+	const char* tmp = "agentlive_u2_remove.RISEscene";
+	Job* pJob = LoadScene( kU2Scene, tmp );
+	Check( pJob != nullptr, "U2 fixture scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const std::string preDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( preDoc.find( "matA" ) != std::string::npos
+		    && preDoc.find( "matB" ) != std::string::npos
+		    && preDoc.find( "matC" ) != std::string::npos,
+		       "all three sandwiching materials present pre-edit" );
+		const RISE::Cst::CstHeadVersion preVersion = pJob->GetCstHeadVersion();
+
+		const SceneEditController::AgentCommitResult rm =
+			c.ApplyAgentRemoveChunk( String( "matB" ), String( "material" ), nullptr );
+		Check( rm.applied, "remove_chunk on the middle material (matB) applies" );
+		Check( rm.headVersion.revision == preVersion.revision + 1, "remove bumped the revision by exactly one" );
+		Check( c.HasUnsavedChanges(), "remove marks the editor dirty" );
+		const std::string postRemoveDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postRemoveDoc.find( "matB" ) == std::string::npos, "matB is gone from the Document" );
+		Check( postRemoveDoc.find( "matA" ) != std::string::npos && postRemoveDoc.find( "matC" ) != std::string::npos,
+		       "matA and matC (the sandwiching neighbours) survive" );
+
+		// Undo -> byte-identical restore INCLUDING position (the whole Document, not
+		// just matB's own text, must compare equal -- proves matA/matC's relationship
+		// to matB round-trips exactly, not just that matB's bytes happen to reappear
+		// somewhere).
+		c.Undo();
+		const std::string postUndoDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postUndoDoc == preDoc,
+		       "Undo of remove_chunk restores the FULL Document BYTE-IDENTICAL to pre-remove, INCLUDING matB's exact position between matA and matC" );
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "matB" ) != nullptr,
+		       "the derived scene has `matB` again after Undo" );
+
+		// Redo -> re-removes byte-exactly.
+		c.Redo();
+		const std::string postRedoDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postRedoDoc == postRemoveDoc, "Redo of remove_chunk re-removes BYTE-EXACTLY (matches the post-remove Document)" );
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "matB" ) == nullptr,
+		       "the derived scene no longer has `matB` after Redo" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 24: interleaved LIFO with param edits -- agent insert X -> agent
+// param edit on X -> Undo (param) -> Undo (insert gone) -> Redo x2 restores
+// both; byte-compare at each step.
+//////////////////////////////////////////////////////////////////////
+static void TestChunkInsertThenParamEditInterleavedLifo()
+{
+	std::cout << "Test 24: interleaved insert + param-edit LIFO undo/redo (shared-undo U2)..." << std::endl;
+
+	const char* tmp = "agentlive_u2_lifo.RISEscene";
+	Job* pJob = LoadScene( kU2Scene, tmp );
+	Check( pJob != nullptr, "U2 fixture scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const std::string docBeforeInsert = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+
+		// Insert X (a fresh material `matX`).
+		const char* newChunk = "lambertian_material\n{\nname matX\nreflectance white\n}\n";
+		const SceneEditController::AgentCommitResult ins = c.ApplyAgentInsertChunk( String( newChunk ), nullptr );
+		Check( ins.applied, "insert of `matX` applies" );
+		const std::string docAfterInsert = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+
+		// Param edit on X: rebind `matX.reflectance` (currently absent -> prevValueWasAbsent
+		// is false here since `reflectance` IS present in the authored chunk text -- this is
+		// a plain value-edit, not an insert-of-absent-param).
+		const SceneEditController::AgentCommitResult edit =
+			c.ApplyAgentParamEdit( String( "matX" ), String( "material" ), String( "reflectance" ), String( "white" ), nullptr );
+		Check( edit.applied, "param edit on `matX` applies (no-op VALUE change, still a real Document edit -- occ 0 re-SET)" );
+		const std::string docAfterParamEdit = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+
+		// Undo (param): reverts the param edit -- Document matches post-insert-pre-edit state.
+		c.Undo();
+		Check( RISE::Cst::SerializeCst( *pJob->GetCstDocument() ) == docAfterInsert,
+		       "Undo #1 (param edit) restores the post-insert Document byte-identically" );
+
+		// Undo (insert): matX is gone -- Document matches the ORIGINAL pre-insert state.
+		c.Undo();
+		Check( RISE::Cst::SerializeCst( *pJob->GetCstDocument() ) == docBeforeInsert,
+		       "Undo #2 (insert) restores the ORIGINAL pre-insert Document byte-identically" );
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "matX" ) == nullptr,
+		       "matX is gone from the derived scene after both undos" );
+
+		// Redo x2 restores both, in order.
+		c.Redo();
+		Check( RISE::Cst::SerializeCst( *pJob->GetCstDocument() ) == docAfterInsert,
+		       "Redo #1 (re-insert) restores the post-insert Document byte-identically" );
+		c.Redo();
+		Check( RISE::Cst::SerializeCst( *pJob->GetCstDocument() ) == docAfterParamEdit,
+		       "Redo #2 (re-apply the param edit) restores the post-edit Document byte-identically" );
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "matX" ) != nullptr,
+		       "matX is back in the derived scene after both redos" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 25: Undo-of-insert while the inserted chunk became REFERENCED
+// afterward (another chunk now names it) -- the derivability gate (the same
+// dry-run-guarded Job::ApplyCstRemoveChunk every manual remove_chunk uses)
+// must refuse honestly: the entry stays on the undo stack, the Document is
+// untouched, and the controller remains usable afterward.
+//////////////////////////////////////////////////////////////////////
+static void TestUndoInsertRefusedWhenReferenced()
+{
+	std::cout << "Test 25: Undo-of-insert refused when the chunk became referenced afterward (shared-undo U2 gate)..." << std::endl;
+
+	const char* tmp = "agentlive_u2_gate.RISEscene";
+	Job* pJob = LoadScene( kU2Scene, tmp );
+	Check( pJob != nullptr, "U2 fixture scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		// Insert a fresh material `matRef` -- the ONLY entry this test puts on the
+		// undo stack (its Undo is the one under test).
+		const char* newChunk = "lambertian_material\n{\nname matRef\nreflectance white\n}\n";
+		const SceneEditController::AgentCommitResult ins = c.ApplyAgentInsertChunk( String( newChunk ), nullptr );
+		Check( ins.applied, "insert of `matRef` applies" );
+		const std::string docAfterInsert = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		const unsigned int undoDepthAfterInsert = c.Editor().History().UndoDepth();
+
+		// Retarget `obj.material` to `matRef` -- making it REFERENCED -- via the
+		// SAME direct-Job + RunPreviewRenderParked + manual-rebind idiom Test 19
+		// uses for its "independent mechanism, no history footprint" edits.  This
+		// is deliberate: if the retarget instead pushed its OWN undo-stack entry
+		// (e.g. via SetPropertyForCategory), it would sit ON TOP of the insert and
+		// strict LIFO would force US to pop (and thereby un-reference) it before
+		// ever reaching the insert's Undo -- which would prove nothing about the
+		// gate.  Routing around history the same way an out-of-band mechanism
+		// would (another agent session, a script) is what lets this test attempt
+		// the insert's Undo while the reference is STILL standing.
+		Check( c.RunPreviewRenderParked( [&]{
+			const int rc = pJob->ApplyCstParamEditChecked( "obj", "standard_object", "material", 0, "matRef" );
+			Check( rc == 1 || rc == 2 || rc == 3, "retargeting `obj.material` to `matRef` applies (no history pushed)" );
+			if( rc >= 2 ) {
+				// Defensive: a D2 replace would require the same manual rebind Test 19
+				// performs (RebindEditorToJob is private) -- not expected here (a plain
+				// reference retarget on a non-variant scene re-derives incrementally),
+				// but reproduce it if it ever does so the controller stays usable.
+				c.Editor().RebindScene( *pJob->GetScene() );
+				c.Editor().SetMaterialManager( pJob->GetMaterials() );
+				c.Editor().SetShaderManager( pJob->GetShaders() );
+				c.Editor().SetPainterManager( pJob->GetPainters() );
+				c.Editor().SetScalarPainterManager( pJob->GetScalarPainters() );
+				c.Editor().SetJob( pJob );
+			}
+		} ), "the parked direct-Job retarget ran" );
+		Check( c.Editor().History().UndoDepth() == undoDepthAfterInsert,
+		       "the direct-Job retarget pushed NO history of its own -- the insert is still the ONLY undo entry" );
+		Check( pJob->GetObjects() && pJob->GetObjects()->GetItem( "obj" ) != nullptr,
+		       "`obj` still resolves after the retarget" );
+		{
+			const std::string doc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+			Check( doc.find( "material matRef" ) != std::string::npos,
+			       "the Document shows `obj` now referencing `matRef`" );
+		}
+
+		// Attempt to Undo the insert while `matRef` IS referenced: the derivability
+		// gate (RouteAgentChunkCrud_'s insert-Undo arm -> Job::ApplyCstRemoveChunk,
+		// the SAME dry-run-guarded primitive a manual remove_chunk uses) must refuse
+		// honestly -- the entry stays on the undo stack (no divergence between the
+		// stack and the Document), the Document is UNTOUCHED, and the controller
+		// remains usable afterward (a subsequent, unrelated edit still works).
+		const std::string docBeforeUndoAttempt = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		c.Undo();
+		const std::string docAfterUndoAttempt = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( docAfterUndoAttempt == docBeforeUndoAttempt,
+		       "RED-PROVE: the refused Undo left the Document BYTE-IDENTICAL (no partial/silent mutation)" );
+		Check( c.Editor().History().UndoDepth() == undoDepthAfterInsert,
+		       "RED-PROVE: the insert's entry is STILL on the undo stack (honest bookkeeping -- not silently dropped)" );
+		Check( c.Editor().History().RedoDepth() == 0,
+		       "the refused Undo did NOT move anything onto the redo stack" );
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "matRef" ) != nullptr,
+		       "matRef is untouched (still resolvable) after the refused Undo" );
+
+		// Controller usable after: an unrelated edit still applies cleanly.
+		const SceneEditController::AgentCommitResult after =
+			c.ApplyAgentParamEdit( String( "lum" ), String( "lambertian_luminaire_material" ), String( "scale" ), String( "9.0" ), nullptr );
+		Check( after.applied, "the controller remains usable after the refused Undo (an unrelated edit still applies)" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+// A scene fixture that AUTHORS a rasterizer chunk (kU2Scene/kBaseScene rely on the
+// engine's built-in default rasterizer and never declare one) -- needed for Test 26,
+// which inserts a SECOND rasterizer and checks GetActiveRasterizerName() live == a
+// fresh reload of the Document, both before and after Undo.
+static const char* kU2RasterizerScene =
+	"RISE ASCII SCENE 7\n"
+	"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+	"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
+	"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n"
+	"pathtracing_pel_rasterizer\n{\nsamples 4\npixel_filter box\noidn_denoise false\n}\n"
+	"film\n{\nwidth 16\nheight 16\n}\n"
+	"pinhole_camera\n{\nlocation 0 0 3.5\nlookat 0 0 0\nup 0 1 0\nfov 40.0\n}\n"
+	"sphere_geometry\n{\nname s\nradius 1\n}\n"
+	"standard_object\n{\nname obj\ngeometry s\nmaterial lum\nshader global\n}\n";
+
+//////////////////////////////////////////////////////////////////////
+// Test 26: rasterizer insert -> Undo -> the ACTIVE rasterizer matches a
+// FRESH RELOAD of the resulting Document (the live==reload invariant).
+// Forward insert of a rasterizer-class chunk activates it (P1-B: the D2
+// activation restore is skipped for a rasterizer insert -- see
+// Job::ApplyCstInsertChunk); Undo removes it, and the pre-existing
+// `pathtracing_pel_rasterizer` becomes the (last-and-only) active one again,
+// via Job::ApplyCstRemoveChunk's ordinary activation-restore path (Undo of an
+// insert routes through the SAME primitive a manual remove_chunk uses -- it
+// is NOT itself a rasterizer-class insert, so no special-casing is needed on
+// the Undo side; the invariant this test proves is that the ORDINARY
+// restore-active-rasterizer path already gives the right answer).
+//////////////////////////////////////////////////////////////////////
+static void TestRasterizerInsertUndoMatchesReload()
+{
+	std::cout << "Test 26: rasterizer insert Undo -- active rasterizer matches a fresh reload (shared-undo U2)..." << std::endl;
+
+	const char* tmp = "agentlive_u2_rasterizer.RISEscene";
+	Job* pJob = LoadScene( kU2RasterizerScene, tmp );
+	Check( pJob != nullptr, "rasterizer fixture scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		Check( pJob->GetActiveRasterizerName() == "pathtracing_pel_rasterizer",
+		       "the authored pathtracing rasterizer is active on load" );
+
+		// Insert a DIFFERENT-keyword rasterizer -- it becomes active (P1-B).
+		const SceneEditController::AgentCommitResult ins =
+			c.ApplyAgentInsertChunk( String( "bdpt_pel_rasterizer\n{\nsamples 2\n}\n" ), nullptr );
+		Check( ins.applied, "inserting a different-keyword rasterizer applies" );
+		Check( pJob->GetActiveRasterizerName() == "bdpt_pel_rasterizer",
+		       "the inserted rasterizer is ACTIVE live" );
+
+		// Undo the insert -- the pre-existing pathtracing rasterizer must be active
+		// again, AND a fresh reload of the (now-reverted) Document must agree.
+		c.Undo();
+		Check( pJob->GetActiveRasterizerName() == "pathtracing_pel_rasterizer",
+		       "Undo restores the pre-existing rasterizer as ACTIVE live" );
+		{
+			const std::string bytes = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+			const char* tmp2 = "agentlive_u2_rasterizer_reload.RISEscene";
+			Job* fresh = LoadScene( bytes.c_str(), tmp2 );
+			Check( fresh != nullptr, "the post-Undo head reloads cleanly" );
+			if( fresh ) {
+				Check( fresh->GetActiveRasterizerName() == pJob->GetActiveRasterizerName(),
+				       "live == reload: the fresh reload activates the SAME rasterizer Undo left active live" );
+				Check( fresh->GetActiveRasterizerName() == "pathtracing_pel_rasterizer",
+				       "specifically: the reload activates pathtracing_pel_rasterizer (bdpt is gone)" );
+				fresh->release();
+			}
+			std::remove( tmp2 );
+		}
+
+		// Redo the insert -- bdpt becomes active again live AND on reload.
+		c.Redo();
+		Check( pJob->GetActiveRasterizerName() == "bdpt_pel_rasterizer",
+		       "Redo re-activates the inserted rasterizer live" );
+		{
+			const std::string bytes = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+			const char* tmp2 = "agentlive_u2_rasterizer_reload2.RISEscene";
+			Job* fresh = LoadScene( bytes.c_str(), tmp2 );
+			Check( fresh != nullptr, "the post-Redo head reloads cleanly" );
+			if( fresh ) {
+				Check( fresh->GetActiveRasterizerName() == "bdpt_pel_rasterizer",
+				       "live == reload after Redo too" );
+				fresh->release();
+			}
+			std::remove( tmp2 );
+		}
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 27: code-3 (diagnosed-but-mutated) armed through chunk-CRUD Undo AND
+// Redo -- the stack transfer must complete cleanly (entry moves to redo on
+// Undo, back to undo on Redo), the Document ACTUALLY mutates each time
+// (diagnosed is not a no-op), and a subsequent save->reload is clean (no
+// wedge, no corruption left behind by the diagnosed path).
+//////////////////////////////////////////////////////////////////////
+static void TestCodeThreeArmedChunkCrudUndoRedo()
+{
+	std::cout << "Test 27: code-3 ARMED through chunk-CRUD Undo/Redo -- stack transfer completes, no wedge (shared-undo U2)..." << std::endl;
+
+	const char* tmp = "agentlive_u2_c3.RISEscene";
+	{ std::ofstream o( tmp ); o << kU2Scene; }
+	CodeThreeJob* pJob = new CodeThreeJob();
+	Check( pJob->LoadAsciiSceneViaCst( tmp ), "U2 fixture scene loads into CodeThreeJob via the CST path" );
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const unsigned int undoBefore = c.Editor().History().UndoDepth();
+
+		// Forward insert: force-code-three is ARMED (CodeThreeJob's ctor default),
+		// so this lands as a code-3 diagnosed-but-mutated commit.
+		const char* newChunk = "lambertian_material\n{\nname matC3\nreflectance white\n}\n";
+		const SceneEditController::AgentCommitResult ins = c.ApplyAgentInsertChunk( String( newChunk ), nullptr );
+		Check( !ins.applied && ins.rawCode == 3, "the forward insert is a code-3 diagnosed-but-mutated commit" );
+		Check( c.Editor().History().UndoDepth() == undoBefore + 1, "the code-3 forward insert still pushed a history record" );
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "matC3" ) != nullptr,
+		       "the live derived scene DID gain `matC3` despite the diagnosed code" );
+
+		// Undo with force-code-three STILL ARMED -- RouteAgentChunkCrud_'s underlying
+		// ApplyCstRemoveChunk call ALSO returns 3 here (CodeThreeJob rewrites every
+		// clean 2 -> 3, including the Undo-of-insert's remove).
+		c.Undo();
+		Check( c.Editor().History().UndoDepth() == undoBefore,
+		       "the undo stack depth dropped back to baseline (the diagnosed revert counted as 'the mutation landed')" );
+		Check( c.Editor().History().RedoDepth() == 1,
+		       "the reverted entry landed on the redo stack (not stuck on / restored to undo)" );
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "matC3" ) == nullptr,
+		       "Undo's diagnosed-but-mutated revert DID remove matC3 from the live derived scene" );
+		{
+			const std::string doc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+			Check( doc.find( "matC3" ) == std::string::npos,
+			       "the reverted Document no longer mentions matC3 (byte-level proof the revert landed)" );
+		}
+
+		// Redo must work (not double-revert, not wedge). Still armed.
+		c.Redo();
+		Check( c.Editor().History().UndoDepth() == undoBefore + 1, "Redo moved the entry back to the undo stack" );
+		Check( c.Editor().History().RedoDepth() == 0, "redo stack drained after the single Redo" );
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "matC3" ) != nullptr,
+		       "Redo re-inserted matC3 into the live derived scene" );
+
+		// Repeated Cmd-Z (Undo again) must revert ONCE more, cleanly -- no
+		// double-revert / wedge artifact from the diagnosed-code stack transfer.
+		c.Undo();
+		Check( c.Editor().History().UndoDepth() == undoBefore, "the second Undo again drops to baseline" );
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "matC3" ) == nullptr,
+		       "the second Undo again removes matC3 (no double-revert artifact)" );
+
+		// Save -> reload clean: disarm force-code-three first (Save/reload should
+		// reflect a CLEAN state, matching Test 14/20's convention of disarming
+		// before an operation whose own correctness isn't what's under test).
+		pJob->SetForceCodeThree( false );
+		const char* saveAs = "agentlive_u2_c3_save.RISEscene";
+		std::remove( saveAs );
+		const SaveResult sr = c.RequestSave( std::string( saveAs ) );
+		Check( Succeeded( sr.status ), "save succeeds after the diagnosed-code Undo/Redo/Undo sequence" );
+		{
+			Job* fresh = new Job();
+			Check( fresh->LoadAsciiSceneViaCst( saveAs ), "the saved Document reloads cleanly (no wedge left behind)" );
+			Check( fresh->GetMaterials() && fresh->GetMaterials()->GetItem( "matC3" ) == nullptr,
+			       "the reloaded scene correctly lacks matC3 (matches the final undone state)" );
+			fresh->release();
+		}
+		std::remove( saveAs );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -2186,6 +2712,12 @@ int main()
 	TestOccAwareParamRemoveUndo();
 	TestArmedCodeThreeRevert();
 	TestUndoRedoAfterSaveMarksDirty();
+	TestChunkInsertUndoRedo();
+	TestChunkRemoveMiddleUndoRedo();
+	TestChunkInsertThenParamEditInterleavedLifo();
+	TestUndoInsertRefusedWhenReferenced();
+	TestRasterizerInsertUndoMatchesReload();
+	TestCodeThreeArmedChunkCrudUndoRedo();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

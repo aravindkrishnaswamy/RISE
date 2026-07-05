@@ -265,6 +265,42 @@ namespace RISE
 			//! `propertyValue`/`prevPropertyValue` = new/prior string values.
 			SetAgentCstParam,
 
+			//! Shared-undo U2: an AGENT-originated chunk INSERT (SceneEditController::ApplyAgentInsertChunk),
+			//! pushed AFTER the mutation has already landed via Job::ApplyCstInsertChunk (same "forward already
+			//! happened outside SceneEditor::Apply" shape as SetAgentCstParam -- see
+			//! SceneEditor::PushAgentChunkCrudEdit).  `propertyValue` = the EXACT chunk text bytes the agent
+			//! supplied (re-inserted verbatim on Redo, via the SAME Job::ApplyCstInsertChunk call the original
+			//! forward apply made -- deterministic because Undo restores the pre-insert Document byte-identically,
+			//! so a Redo's positioned insert lands the same way).  `objectName` = the inserted chunk's resolved
+			//! `name` param (may be empty for an unnamed film/rasterizer/camera-class chunk).
+			//! `cstEntityKind` = the inserted chunk's resolved keyword.  `agentChunkIndex` = the top-level
+			//! document index ApplyCstInsertChunk's [leadSep][chunk][trailSep] triple landed at, captured by the
+			//! controller immediately AFTER the insert (by resolving the new chunk's NodeId -> its index, minus
+			//! one for the leading separator).  Undo = remove EXACTLY those 3 items at that exact index via
+			//! Job::ApplyCstRemoveItemsAt (the EXACT-POSITION inverse -- NOT the general Cst::DocEraseChunkTidy
+			//! erase a manual remove_chunk uses, which is a heuristic single-adjacent-separator collapse that
+			//! -- by design -- leaves a residual blank line on a chunk with TWO fresh separators around it; see
+			//! AgentChunkCrudTest.cpp's T3).  ApplyCstRemoveItemsAt's own re-derive dry-run still refuses
+			//! honestly if something now REFERENCES the inserted chunk -- the derivability gate is unaffected
+			//! by which Document-splice mechanism reaches it.
+			AgentInsertChunk,
+
+			//! Shared-undo U2: an AGENT-originated chunk REMOVE (SceneEditController::ApplyAgentRemoveChunk),
+			//! pushed AFTER the mutation has already landed via Job::ApplyCstRemoveChunk.  `objectName` /
+			//! `cstEntityKind` = the removed chunk's resolved name/keyword (Redo re-removes through the SAME
+			//! Job::ApplyCstRemoveChunk call).  `propertyValue` = the EXACT verbatim bytes the controller captured
+			//! from the retained Document immediately BEFORE the erase -- the concatenation, in document order, of
+			//! every top-level item Cst::DocEraseChunkTidy actually dropped (the chunk itself, plus its own tidied
+			//! trailing separator when the erase collapsed one).  `agentChunkIndex` = the top-level document INDEX
+			//! the chunk occupied at capture time.  Undo = splice `propertyValue` back verbatim AT that exact index
+			//! via Job::ApplyCstRestoreChunkAt (the EXACT-POSITION inverse -- NOT the fresh-insert two-tier
+			//! heuristic ApplyCstInsertChunk uses, which is for NEW chunks with no prior position to restore).
+			//! `agentChunkWasRasterizer` records whether the removed chunk was itself a `*_rasterizer` chunk --
+			//! Undo passes the inverse of that as ApplyCstRestoreChunkAt's `restoreActiveRasterizer`, mirroring
+			//! ApplyCstInsertChunk's own P1-B rule (re-inserting ANY rasterizer chunk must NOT have the pre-erase
+			//! active rasterizer restored over it).
+			AgentRemoveChunk,
+
 			// Composite markers — bracket a user drag so undo
 			// collapses one drag into one history entry.
 			CompositeBegin,         ///< objectName = label for UI
@@ -336,6 +372,17 @@ namespace RISE
 		//! prior value; `prevPropertyValue` is meaningless when this is true.
 		bool           prevValueWasAbsent;
 
+		//! Shared-undo U2 (AgentRemoveChunk only): the top-level document index the removed chunk (and, if
+		//! tidied away with it, its own trailing separator) occupied at capture time -- the EXACT position
+		//! Undo's Job::ApplyCstRestoreChunkAt splices `propertyValue` back at.  See the op's own doc for the
+		//! full rationale (DocInsertItem-at-the-same-index is the documented byte-exact inverse of the erase).
+		int            agentChunkIndex;
+
+		//! Shared-undo U2 (AgentRemoveChunk only): true iff the removed chunk was itself a `*_rasterizer`
+		//! chunk -- Undo passes `!agentChunkWasRasterizer` as ApplyCstRestoreChunkAt's `restoreActiveRasterizer`,
+		//! mirroring ApplyCstInsertChunk's own P1-B rasterizer-activation rule.
+		bool           agentChunkWasRasterizer;
+
 		//! F2: monotonic id stamped by EditHistory::Push, immune to front-
 		//! trimming.  A transaction baseline records the next seq so rollback
 		//! can identify its edits even after the 1024-entry cap trims the front.
@@ -385,6 +432,8 @@ namespace RISE
 		, cameraTargetName()
 		, cstEntityKind()
 		, prevValueWasAbsent( false )
+		, agentChunkIndex( 0 )
+		, agentChunkWasRasterizer( false )
 		, historySeq( 0 )
 		, capturedTargetSerial( 0 )
 		, prevTransformState()

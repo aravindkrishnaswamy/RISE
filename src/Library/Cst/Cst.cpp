@@ -1006,6 +1006,17 @@ std::string SerializeCst( const Document& doc )
 	return s;
 }
 
+// Model-B shared-undo U2: item-level counterpart of SerializeCst -- serializes exactly ONE node (chunk or
+// trivia) to its verbatim bytes.  Delegates to the SAME anonymous-namespace Serialize() SerializeCst/SeqSerialize
+// use, so a caller composing several nodes back-to-back (e.g. the chunk + its tidied-away trailing separator)
+// reproduces exactly the substring SerializeCst would have shown at that position.
+std::string SerializeNode( const NodeRef& n )
+{
+	std::string s;
+	if( n ) Serialize( n, s );
+	return s;
+}
+
 //! The LIVE chunk-parser registry (item 5), shared by DeriveToJob and
 //! TraceReferences: one instance of every chunk parser the grammar supports,
 //! kept alive for the process (so each parser's descriptor + Finalize stay

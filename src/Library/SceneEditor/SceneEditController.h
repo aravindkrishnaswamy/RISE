@@ -987,6 +987,23 @@ namespace RISE
 			const String& entityName, const String& entityKind, const String& param,
 			String& outPrevValue, bool& outWasAbsent );
 
+		//! Shared-undo U2: capture the EXACT verbatim bytes + top-level document index of the chunk
+		//! `ApplyAgentRemoveChunk` is about to erase, BEFORE the coming `Job::ApplyCstRemoveChunk` call runs --
+		//! caller must hold mMutex (same hold as the coming apply -- no TOCTOU).  Resolves via the SAME
+		//! `DocFindByNameAnyRole` call + camera-unique-fallback rule Job's remove uses, so the captured chunk is
+		//! guaranteed to be the SAME one the remove is about to act on.  `outBytes` is the concatenation, in
+		//! document order, of the chunk's own text plus (if present) its immediately-following top-level item --
+		//! capturing BOTH unconditionally is deliberately conservative: `Job::ApplyCstRestoreChunkAt`'s caller
+		//! (SceneEditor's Undo arm) reinserts exactly whatever was captured here, so over-capturing a separator
+		//! that DocEraseChunkTidy will NOT end up tidying away would restore a byte-for-byte WRONG (extra-
+		//! separator) Document -- see SceneEditController.cpp for how the post-remove item-count diff trims
+		//! `outBytes` down to only the items ACTUALLY dropped.  `outWasRasterizer` records whether the resolved
+		//! chunk is itself a `*_rasterizer` chunk (mirrors ApplyCstInsertChunk's P1-B activation rule for Undo).
+		//! Returns false (no output written) if there is no retained Document or the target does not resolve.
+		bool CaptureAgentChunkForRemoveUndo_(
+			const String& target, const String& kind,
+			String& outBytes, int& outIndex, bool& outWasRasterizer );
+
 		//! Model-B F5 slice S2: the SHARED body of ApplyAgentInsertChunk /
 		//! ApplyAgentRemoveChunk -- the two verbs differ ONLY in which Job
 		//! primitive runs inside the parked critical section and in their

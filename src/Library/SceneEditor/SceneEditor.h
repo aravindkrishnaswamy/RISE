@@ -334,6 +334,32 @@ namespace RISE
 			const String& entityName, const String& entityKind, const String& param,
 			const String& newValue, const String& prevValue, bool prevValueWasAbsent );
 
+		//! Shared-undo U2: push an EditHistory record for an agent chunk-CRUD commit (insert OR remove) that
+		//! has ALREADY been applied to the retained Document (via Job::ApplyCstInsertChunk /
+		//! Job::ApplyCstRemoveChunk -- see SceneEditController::ApplyAgentChunkCrud_).  Same shape as
+		//! PushAgentCstParamEdit: the forward mutation already happened, so this only records what a later
+		//! Undo/Redo needs to revert/redo it.
+		//!
+		//! `isInsert` selects AgentInsertChunk / AgentRemoveChunk.  `chunkName`/`chunkKind` are the chunk's
+		//! resolved name/keyword (echoed by the Job call).  `chunkBytes` is: for an insert, the EXACT chunk
+		//! text the agent supplied (Redo replays it through Job::ApplyCstInsertChunk again); for a remove, the
+		//! EXACT verbatim bytes the CALLER captured from the Document immediately BEFORE the erase (the
+		//! concatenation of every top-level item Cst::DocEraseChunkTidy actually dropped) -- Undo splices this
+		//! back at `docIndex` via Job::ApplyCstRestoreChunkAt.  `docIndex` is meaningful for BOTH ops: for an
+		//! insert, the top-level index ApplyCstInsertChunk's [leadSep][chunk][trailSep] triple landed at
+		//! (captured by the CALLER immediately AFTER the insert) -- Undo removes exactly those 3 items at that
+		//! index via Job::ApplyCstRemoveItemsAt; for a remove, the index the chunk occupied at capture time
+		//! (BEFORE the erase) -- Undo restores at that index via Job::ApplyCstRestoreChunkAt.  `wasRasterizer`
+		//! is meaningful ONLY for a remove (ignored for an insert): whether the removed chunk was itself a
+		//! `*_rasterizer` chunk (see AgentRemoveChunk's doc).
+		//!
+		//! Does NOT call MarkEditEntityDirty / FireDirtyChangedIfTransitioned or touch mLastScope -- the caller
+		//! already calls MarkCstHeadDirty for the dirty side effect, matching PushAgentCstParamEdit.  Clears the
+		//! redo stack (ordinary new-edit semantics -- Push does this).
+		void PushAgentChunkCrudEdit(
+			bool isInsert, const String& chunkName, const String& chunkKind, const String& chunkBytes,
+			int docIndex, bool wasRasterizer );
+
 		//! True when anything MAY need saving since the last load /
 		//! save.  Conservative: it can be true when a Save would NoOp
 		//! (e.g. edit→undo re-marks dirty; Save then NoOps on
@@ -568,6 +594,16 @@ namespace RISE
 		//! Undo/Redo -- see SceneEditor.cpp for why the agent op cannot safely share the ungated GUI-property route.
 		//! P1-3 fix (round 1): same mutation-keyed return + `outDiagnosed` as RouteCstParamRemove_ above.
 		bool RouteCstParamEditChecked_( const char* entityName, const char* entityKind, const char* role, const char* value, bool* outDiagnosed = nullptr );
+
+		//! Shared-undo U2: route a chunk-CRUD Undo/Redo through Job's chunk-CRUD primitives.  `forInsertOp`
+		//! selects which op's inverse/redo table applies (AgentInsertChunk vs AgentRemoveChunk); `forward`
+		//! selects Redo-shape (re-apply the original verb) vs Undo-shape (apply its inverse).  Same
+		//! mutation-keyed return + `outDiagnosed` convention as RouteCstParamRemove_/RouteCstParamEditChecked_
+		//! above (r>=1 -- including a diagnosed code-3 -- reads as "the mutation landed" for the history-stack
+		//! bookkeeping).  See SceneEditor.cpp for the per-shape dispatch (insert-Undo = remove by name;
+		//! insert-Redo = re-insert captured bytes; remove-Undo = ApplyCstRestoreChunkAt at the captured index;
+		//! remove-Redo = re-remove by name).
+		bool RouteAgentChunkCrud_( const SceneEdit& edit, bool forInsertOp, bool forward, bool* outDiagnosed = nullptr );
 
 		//! P5 Slice 3 expansion (object): route a SetObjectShadowFlags edit to the standard_object
 		//! casts_shadows / receives_shadows bool params (bit0 = casts, bit1 = receives).  Two CST re-derives.

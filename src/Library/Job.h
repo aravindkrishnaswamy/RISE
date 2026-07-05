@@ -2892,6 +2892,20 @@ namespace RISE
 		                         char* outKeyword, unsigned int keywordMax,
 		                         char* outDiag, unsigned int diagMax );
 
+		//! Shared-undo U2: EXACT-POSITION inverse of ApplyCstRemoveChunk (an agent AgentRemoveChunk op's Undo).
+		//! Splices `bytesInOrder` back verbatim at top-level index `atIndex`, then realizes via the same
+		//! dry-run-guarded full re-derive tail.  Contract documented on the IJob virtual.  Returns 2/3
+		//! (replaced; rebind) / 0 (would-not-derive / malformed bytes).  Never 1.
+		int ApplyCstRestoreChunkAt( const char* bytesInOrder, int atIndex, bool restoreActiveRasterizer,
+		                            char* outDiag, unsigned int diagMax );
+
+		//! Shared-undo U2: EXACT-POSITION inverse of ApplyCstInsertChunk (an agent AgentInsertChunk op's
+		//! Undo).  Removes EXACTLY `count` top-level items starting at `atIndex` (the insert's own
+		//! [leadSep][chunk][trailSep] triple), then realizes via the same dry-run-guarded full re-derive
+		//! tail.  Contract documented on the IJob virtual.  Returns 2/3 (replaced; rebind) / 0
+		//! (would-not-derive / out-of-range).  Never 1.
+		int ApplyCstRemoveItemsAt( int atIndex, int count, char* outDiag, unsigned int diagMax );
+
 		//! P5: the retained canonical CST (null unless the scene was loaded via LoadAsciiSceneViaCst).
 		const RISE::Cst::Document*	GetCstDocument() const { return pCstDocument.get(); }
 

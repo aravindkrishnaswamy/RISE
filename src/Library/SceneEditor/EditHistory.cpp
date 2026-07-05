@@ -130,6 +130,8 @@ namespace
 		case SceneEdit::SetMaterialProperty:    return "Edit Material Property";
 		case SceneEdit::SetMediumProperty:      return "Edit Medium Property";
 		case SceneEdit::SetAgentCstParam:       return "Agent Edit";
+		case SceneEdit::AgentInsertChunk:       return "Agent Insert Chunk";
+		case SceneEdit::AgentRemoveChunk:       return "Agent Remove Chunk";
 		case SceneEdit::CompositeBegin:         return "Edit";
 		case SceneEdit::CompositeEnd:           return "Edit";
 		}

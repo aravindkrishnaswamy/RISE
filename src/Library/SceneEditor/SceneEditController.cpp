@@ -2883,6 +2883,42 @@ bool SceneEditController::CaptureAgentPriorParamValue_(
 	return true;
 }
 
+// Shared-undo U2: capture the exact bytes + top-level index of the chunk `ApplyAgentRemoveChunk` is about to
+// erase -- BEFORE the coming `Job::ApplyCstRemoveChunk` call mutates the Document.  Resolution mirrors Job's
+// own (DocFindByNameAnyRole with the SAME camera-unique-fallback rule), so the captured chunk is guaranteed to
+// be the one the remove is about to act on (both run under the SAME mMutex hold in ApplyAgentChunkCrud_ -- no
+// TOCTOU).  `outBytes` captures the chunk's own text PLUS the immediately-following top-level item (if any) --
+// unconditionally, regardless of whether DocEraseChunkTidy will actually end up tidying that neighbour away --
+// then the CALLER (ApplyAgentChunkCrud_, after the real remove has run) trims it down to only the items the
+// erase ACTUALLY dropped, by diffing the Document's item count before vs after.  Returns false (no capture) if
+// there is no retained Document or the target does not resolve -- the caller's ApplyCstRemoveChunk will
+// independently reject with a negative/0 code, so no mutation happens either.
+bool SceneEditController::CaptureAgentChunkForRemoveUndo_(
+	const String& target, const String& kind,
+	String& outBytes, int& outIndex, bool& outWasRasterizer )
+{
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return false;
+	const bool uniqueFallback = ( kind.size() > 1 && std::string( kind.c_str() ) == "camera" );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
+		*doc, target.c_str(), nullptr, kind.size() > 1 ? kind.c_str() : "", uniqueFallback );
+	if( id == 0 ) return false;
+	const int idx = RISE::Cst::DocIndexOfNodeId( *doc, id, nullptr );
+	if( idx < 0 ) return false;
+	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
+	if( !chunk ) return false;
+
+	std::string bytes = RISE::Cst::SerializeNode( chunk );
+	const RISE::Cst::NodeRef next = RISE::Cst::DocResolveNodeId( *doc, RISE::Cst::DocNodeIdAt( *doc, idx + 1 ) );
+	if( next ) bytes += RISE::Cst::SerializeNode( next );   // conservative over-capture; trimmed post-remove by the caller
+
+	outBytes  = String( bytes.c_str() );
+	outIndex  = idx;
+	const std::string& role = chunk->role;
+	outWasRasterizer = ( role.size() > 11 && role.compare( role.size() - 11, 11, "_rasterizer" ) == 0 );
+	return true;
+}
+
 // Facet 5 slice 1b: the render-thread-SAFE agent commit.  See the header for
 // the contract.  The ENTIRE ApplyCstParamEdit + rebind + version-bump runs
 // under mMutex while the render thread is parked, so no reader can observe
@@ -3275,6 +3311,23 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 		}
 	}
 
+	// Shared-undo U2: for a REMOVE, capture the exact bytes + position of the chunk about to be erased --
+	// BEFORE the coming Job::ApplyCstRemoveChunk call mutates the Document (no TOCTOU: both run under this
+	// same mMutex hold).  Also snapshot the pre-remove item count so the post-remove trim below knows exactly
+	// how many top-level items the erase ACTUALLY dropped (1 = chunk only; 2 = chunk + its tidied separator).
+	// `haveChunkCapture` false means the target didn't resolve -- ApplyCstRemoveChunk below will independently
+	// refuse (negative code), so no history push happens either.
+	String capturedBytes;
+	int    capturedIndex = 0;
+	bool   capturedWasRasterizer = false;
+	bool   haveChunkCapture = false;
+	int    preRemoveItemCount = 0;
+	if( !isInsert )
+	{
+		haveChunkCapture = CaptureAgentChunkForRemoveUndo_( a, b, capturedBytes, capturedIndex, capturedWasRasterizer );
+		preRemoveItemCount = RISE::Cst::DocItemCount( *mJob.GetCstDocument() );
+	}
+
 	// The Job primitive (parsing/resolution + duplicate/reference validation +
 	// dry-run-guarded full re-derive all live THERE, under this lock).
 	char kwBuf[128];   kwBuf[0] = '\0';
@@ -3299,6 +3352,51 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 	}
 	r.chunkKeyword = String( kwBuf );
 	r.chunkName    = String( nameBuf );
+
+	// Shared-undo U2: capture the FRESHLY-inserted chunk's exact top-level document index (only meaningful
+	// when the insert landed -- codes 2/3) so Undo can remove EXACTLY the 3 spliced items
+	// ([leadSep][chunk][trailSep]) at that index via Job::ApplyCstRemoveItemsAt, instead of the general
+	// Cst::DocEraseChunkTidy heuristic (which leaves a residual blank line on a fresh two-separator insert --
+	// see AgentChunkCrudTest.cpp's T3).  Resolve by (name, kind) when named; an UNNAMED chunk (film/
+	// rasterizer/camera-class) is a per-keyword singleton by ApplyCstInsertChunk's own duplicate-refusal rule,
+	// so DocFindByNameAnyRole's uniqueFallback (passing the EXACT keyword as the kind-suffix, which the "role
+	// == roleKindSuffix" exact-match arm resolves) finds it by position.  `insertedIndex` stays -1 (Undo will
+	// then defensively no-op-refuse) if resolution somehow fails -- should not happen for a chunk that was
+	// JUST inserted under this same lock hold.
+	int insertedIndex = -1;
+	if( isInsert && ( code == 2 || code == 3 ) )
+	{
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		if( doc )
+		{
+			const bool named = nameBuf[0] != '\0';
+			const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
+				*doc, named ? nameBuf : std::string(), nullptr, kwBuf, /*uniqueFallback*/ !named );
+			if( id != 0 ) insertedIndex = RISE::Cst::DocIndexOfNodeId( *doc, id, nullptr );
+		}
+	}
+
+	// Shared-undo U2: trim the conservative two-item over-capture down to only what the erase ACTUALLY
+	// dropped, by diffing the item count across the just-completed remove (only meaningful when the remove
+	// landed -- codes 2/3 below).  `droppedCount` is 1 (chunk only) or 2 (chunk + its tidied separator);
+	// re-serialize the (now-current, post-remove) Document is NOT an option here (the items are gone) -- but
+	// `capturedBytes` already holds BOTH items' text concatenated in order, so re-parsing it and re-emitting
+	// only the first `droppedCount` items' bytes yields exactly the substring that was actually removed.
+	if( !isInsert && haveChunkCapture && ( code == 2 || code == 3 ) )
+	{
+		const int postRemoveItemCount = RISE::Cst::DocItemCount( *mJob.GetCstDocument() );
+		const int droppedCount = preRemoveItemCount - postRemoveItemCount;
+		if( droppedCount == 1 )
+		{
+			// Only the chunk itself was dropped -- re-parse the two-item capture and keep just item 0's bytes.
+			const RISE::Cst::Document capDoc = RISE::Cst::ParseToCst( std::string( capturedBytes.c_str() ) );
+			const RISE::Cst::NodeRef  first  = RISE::Cst::DocResolveNodeId( capDoc, RISE::Cst::DocNodeIdAt( capDoc, 0 ) );
+			capturedBytes = String( RISE::Cst::SerializeNode( first ).c_str() );
+		}
+		// droppedCount == 2 (or, defensively, anything else): keep the full two-item capture as-is -- either
+		// it is exactly right (2) or the diff was unexpected (should not happen; erring toward the
+		// conservative superset is safer than under-capturing and losing bytes on Undo).
+	}
 
 	// A chunk CRUD that landed is ALWAYS a D2 full re-derive (codes 2/3): the
 	// Scene + managers were replaced, so re-point the editor's cached pointers
@@ -3408,6 +3506,42 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 	if( code == 2 || code == 3 )
 	{
 		mEditor.MarkCstHeadDirty( nameBuf, kwBuf[0] ? kwBuf : nullptr );
+
+		// Shared-undo U2: push an EditHistory record so this agent chunk-CRUD commit is a first-class
+		// undo/redo citizen -- the headline gap this slice closes (previously Cmd-Z skipped a chunk insert/
+		// remove entirely, and the chunk-CRUD-is-history-invisible hazard was the documented reason
+		// RouteCstParamEditChecked_ exists).  Pushed for EVERY mutating code, INCLUDING 3 (diagnosed-but-
+		// mutated), matching ApplyAgentParamEdit's own rationale: the Document WAS mutated (revision bumped,
+		// MarkCstHeadDirty above just marked it unsaved) -- an un-revertable mutated Document is strictly
+		// worse than a revertable one.  For an INSERT, `a` IS the chunk text the agent supplied (Redo replays
+		// it verbatim).  For a REMOVE, `haveChunkCapture` should always be true here (the capture ran under
+		// this same lock hold against the SAME Document ApplyCstRemoveChunk just resolved against to reach a
+		// mutating code); a defensive skip-with-log guards against ever pushing a garbage/empty capture.
+		if( isInsert )
+		{
+			// insertedIndex (if resolved) is the CHUNK's own index -- the splice's leading separator sits one
+			// position earlier (Job::ApplyCstInsertChunk always emits [leadSep][chunk][trailSep] in that
+			// order), so the triple's start index for ApplyCstRemoveItemsAt is insertedIndex - 1.  A resolution
+			// failure (insertedIndex < 0, should not happen for a chunk just inserted under this same lock)
+			// pushes 0 defensively -- Undo's ApplyCstRemoveItemsAt range-checks and refuses harmlessly rather
+			// than remove the wrong items.
+			const int tripleStart = ( insertedIndex >= 1 ) ? ( insertedIndex - 1 ) : 0;
+			mEditor.PushAgentChunkCrudEdit( /*isInsert*/ true, r.chunkName, r.chunkKeyword, a,
+			                                /*docIndex*/ tripleStart, /*wasRasterizer*/ false );
+		}
+		else if( haveChunkCapture )
+		{
+			mEditor.PushAgentChunkCrudEdit( /*isInsert*/ false, r.chunkName, r.chunkKeyword, capturedBytes,
+			                                capturedIndex, capturedWasRasterizer );
+		}
+		else
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: agent chunk remove on `%s` applied (code %d) but the prior-bytes capture "
+				"failed -- NO undo history record was pushed for this remove (should not happen: the apply just "
+				"resolved the same target under the same lock).",
+				a.c_str(), code );
+		}
 
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();

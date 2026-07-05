@@ -3447,6 +3447,68 @@ namespace RISE
 		//! diagnosed (still rebind; treat as failure).  Default 0 (only Job overrides).
 		//! NB: appended at the IJob tail per the append-only ABI convention.
 		virtual int ApplyCstParamRemoveChecked( const char* entityName, const char* entityKind, const char* role, int occ ) { return 0; }
+
+		//! Shared-undo U2: the EXACT-POSITION inverse of ApplyCstRemoveChunk, used ONLY by an agent
+		//! AgentRemoveChunk op's Undo (SceneEditor::ApplyRevertMutation).  Unlike ApplyCstInsertChunk (which
+		//! POSITIONS a FRESH chunk by declaration-tier heuristic, falling back to append-at-end), this splices
+		//! `bytesInOrder` back verbatim AT `atIndex` -- the top-level index captured by the controller
+		//! (SceneEditController::ApplyAgentChunkCrud_) from the retained Document immediately BEFORE the
+		//! original ApplyCstRemoveChunk call that erased it.  `bytesInOrder` is the CONCATENATION, in document
+		//! order, of every top-level item Cst::DocEraseChunkTidy actually dropped at that erase (the chunk
+		//! itself, plus its OWN tidied-away trailing separator when the erase collapsed one) -- reproducing
+		//! exactly the substring SerializeCst showed at [atIndex, atIndex+droppedCount) before the erase.  This
+		//! is parsed back into its constituent top-level items and DocInsertItem'd at `atIndex` in order, which
+		//! is the documented exact inverse of DocRemoveItem (Cst.h): the result is byte-identical to the
+		//! pre-erase Document.  Then realized via the SAME dry-run-guarded full re-derive tail every chunk-CRUD
+		//! verb uses (a still-invalid restore -- e.g. something removed in the interim now collides with the
+		//! restored chunk's name -- fails the dry-run and leaves the Document + live scene untouched).
+		//! `restoreActiveRasterizer` (default true): pass false when the restored chunk is itself a
+		//! `*_rasterizer` chunk, mirroring ApplyCstInsertChunk's own rule -- re-inserting ANY rasterizer chunk
+		//! changes the document's last-wins activation the same way a fresh insert does, so the pre-erase
+		//! active rasterizer must NOT be restored over it (live must match what a reload of the now-restored
+		//! Document would activate).
+		//! Out-param `outDiag` (nullable) carries the first dry-run diagnostic on a code-0 refusal.
+		//! Returns: 2 = restored + clean full re-derive (Scene + managers REPLACED -- caller MUST rebind);
+		//! 3 = restored + managers replaced BUT the re-derive diagnosed (rebind AND treat as failure);
+		//! 0 = refused, would-not-derive in context (dry-run diagnosed; nothing changed) -- ALSO returned for no
+		//! retained CST Document, empty bytes, or a malformed `bytesInOrder` (does not parse to at least one
+		//! top-level item).  Never 1 (a restored chunk is never incrementally re-derivable, matching
+		//! ApplyCstInsertChunk).  Default 0 (only Job overrides).
+		//! NB: appended at the IJob tail per the append-only ABI convention.
+		virtual int ApplyCstRestoreChunkAt( const char* bytesInOrder, int atIndex, bool restoreActiveRasterizer,
+		                                     char* outDiag, unsigned int diagMax )
+		{
+			if( outDiag && diagMax ) outDiag[0] = '\0';
+			return 0;
+		}
+
+		//! Shared-undo U2: the EXACT-POSITION inverse of ApplyCstInsertChunk, used ONLY by an agent
+		//! AgentInsertChunk op's Undo.  ApplyCstInsertChunk ALWAYS splices EXACTLY THREE top-level items
+		//! ([leadSep "\n"][chunk][trailSep "\n"]) at a single contiguous index `at` (whether positioned by the
+		//! declaration-tier heuristic or appended at the document end) -- so its exact inverse is removing
+		//! those same three items at that same index, NOT the general-purpose Cst::DocEraseChunkTidy
+		//! (Job::ApplyCstRemoveChunk's mechanism), which is a HEURISTIC erase for an arbitrary FILE-AUTHORED
+		//! chunk (at most ONE adjacent separator collapsed, glue-safety evaluated from the actual bytes) and
+		//! -- by design, per its own erase contract -- leaves a residual blank line when applied to a chunk
+		//! that had TWO fresh separators inserted around it (see AgentChunkCrudTest.cpp's T3, "one residual
+		//! lead \n vs the original" -- correctness over minimality is the RIGHT choice for an arbitrary
+		//! erase, but it means a plain remove is NOT byte-identical to the pre-insert Document).  This
+		//! primitive removes EXACTLY `count` top-level items starting at `atIndex` (Document-only splice via
+		//! repeated Cst::DocRemoveItem at the same index), then realizes via the SAME dry-run-guarded full
+		//! re-derive tail every chunk-CRUD verb uses.  `count` is always 3 for the sole caller (the insert's
+		//! own [lead][chunk][trail] triple), but the primitive itself has no reason to hardcode that.
+		//! Out-param `outDiag` (nullable) carries the first dry-run diagnostic on a code-0 refusal.
+		//! Returns: 2 = removed + clean full re-derive (Scene + managers REPLACED -- caller MUST rebind);
+		//! 3 = removed + managers replaced BUT the re-derive diagnosed (rebind AND treat as failure);
+		//! 0 = refused, would-not-derive in context (dry-run diagnosed; nothing changed) -- ALSO returned for
+		//! no retained CST Document, an out-of-range `atIndex`/`count`, or `count <= 0`.  Never 1 (matching
+		//! ApplyCstRemoveChunk).  Default 0 (only Job overrides).
+		//! NB: appended at the IJob tail per the append-only ABI convention.
+		virtual int ApplyCstRemoveItemsAt( int atIndex, int count, char* outDiag, unsigned int diagMax )
+		{
+			if( outDiag && diagMax ) outDiag[0] = '\0';
+			return 0;
+		}
 	};
 
 
