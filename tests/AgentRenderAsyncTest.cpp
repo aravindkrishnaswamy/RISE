@@ -1898,12 +1898,13 @@ static void RunMintClobberRedProveTest()
 	Check( agentRan.load( std::memory_order_acquire ), "the agent closure actually ran" );
 
 	// The interactive loop must resume normally afterward -- not wedged by
-	// the skip-and-continue this fix adds.  The skipped iteration consumed
-	// no edit of its own (isExplicitEdit's local scope ended with the
-	// `continue`, same as the pre-existing line-4473 bounce), so nudge a
-	// fresh edit via the public OnTimeScrub kick (mirrors this file's other
-	// tests' use of it as a pointer-free KickRender) and require at least
-	// one MORE interactive pass to complete.
+	// the skip-and-continue this fix adds.  This test doesn't assert
+	// anything about whether the ORIGINAL edit's own pass survives the
+	// bounce (Fix-round-5, below, is the dedicated red-prove for that) --
+	// it just needs to confirm the loop isn't permanently wedged, so it
+	// nudges a FRESH edit via the public OnTimeScrub kick (mirrors this
+	// file's other tests' use of it as a pointer-free KickRender) and
+	// requires at least one MORE interactive pass to complete.
 	const unsigned int countAfterAgent = controller.ForTest_GetRenderCount();
 	controller.OnTimeScrub( 0.01 );
 	Check( controller.ForTest_WaitForRenders( countAfterAgent + 1, 5000 ),
@@ -1917,7 +1918,121 @@ static void RunMintClobberRedProveTest()
 }
 
 //////////////////////////////////////////////////////////////////////
-// (r) Fix-round-3 CHURN RED-PROVE / permanent regression test: the
+// (r) Fix-round-5 LOST-EDIT WEDGE RED-PROVE: the mint-site re-check this
+//     file's own (q) test above exercises (RenderLoop wins the mMutex
+//     race against the agent worker's own park, and bounces via
+//     `continue` because mAgentRenderBlocksInteractive is set) has a
+//     SECOND consequence (q) doesn't check: by the time that bounce
+//     runs, the loop's own `mEditPending.exchange( false, ... )` at line
+//     ~4467 has ALREADY consumed the edit that woke this iteration
+//     (isExplicitEdit is its result).  Bouncing without restoring
+//     mEditPending drops that edit on the floor -- the agent worker's
+//     completion path clears mAgentRenderBlocksInteractive and
+//     notify_all()s, but never sets mEditPending, so the wake predicate
+//     stays false and RenderLoop parks forever.  The ORIGINAL edit's
+//     interactive pass never runs; render count stays wedged at whatever
+//     it was before the bounce.
+//
+//     This test reproduces exactly that: park RenderLoop in the pre-mint
+//     gap (via the initial-render edit Start() queues, same trigger (q)
+//     uses), submit an agent job so its mint + flag-set lands first,
+//     confirm both sides are genuinely parked on their own gates, then
+//     release ONLY RenderLoop's gate so it deterministically loses the
+//     re-check and bounces.  Release the worker's gate last so the
+//     agent completes and clears the interactive gate.  Unlike (q), this
+//     test does NOT nudge a fresh edit afterward -- it asserts the
+//     ORIGINAL (pre-bounce) edit's own interactive pass eventually runs
+//     with NO further external kick.  Pre-fix, this hangs/fails (render
+//     count never advances past 0); post-fix, restoring mEditPending on
+//     the bounce lets the next wake re-exchange it and the pass runs.
+//////////////////////////////////////////////////////////////////////
+static void RunLostEditWedgeRedProveTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (r) fix-round-5 RED-PROVE: a bounced mint-site re-check does not drop the edit that woke it ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_async_lostedit.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the lost-edit-wedge scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (lost-edit-wedge test)" );
+
+	MintSeamController controller( *pJob );
+	controller.Start();   // NOT suppressed -- Start() queues the initial-render edit that this test's original "edit" is; RenderLoop reaches the pre-mint hook trying to service it.
+
+	// Wait for RenderLoop to be parked in the pre-mint gap, exactly as (q)
+	// does -- this is the point where isExplicitEdit is already latched
+	// true (from the initial-render edit) and mEditPending has ALREADY
+	// been exchanged false for it.
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !controller.mintHookEntered.load( std::memory_order_acquire ) &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( controller.mintHookEntered.load( std::memory_order_acquire ), "RenderLoop is genuinely parked in the pre-mint gap servicing the initial-render edit" );
+
+	Check( controller.ForTest_GetRenderCount() == 0, "no interactive pass has run yet -- the original edit is still unserviced" );
+
+	// Submit an agent render NOW, while RenderLoop is parked pre-mint --
+	// its mint + flag-set lands before RenderLoop's own in-lock re-check
+	// runs, same setup as (q).
+	std::atomic<bool> agentRan{ false };
+	SceneEditController::RenderJobId agentJobId = SceneEditController::kInvalidRenderJobId;
+	const bool accepted = controller.SubmitAgentRenderAsync(
+		[&]() { agentRan.store( true, std::memory_order_release ); },
+		String( "lost_edit_wedge_probe" ), &agentJobId );
+	Check( accepted, "the agent submission is accepted while RenderLoop sits in the pre-mint gap" );
+	Check( agentJobId != SceneEditController::kInvalidRenderJobId, "the agent submission gets a real id" );
+
+	// Confirm the worker is genuinely parked on its OWN gate too, before
+	// mMutex, so releasing RenderLoop's gate next is guaranteed to let
+	// RenderLoop reach mMutex -- and lose the re-check -- first.
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !controller.workerHookEntered.load( std::memory_order_acquire ) &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( controller.workerHookEntered.load( std::memory_order_acquire ), "the agent worker is genuinely parked before mMutex, unable to contend for it yet" );
+
+	// Release RenderLoop's gate ONLY.  It reaches mMutex, re-checks
+	// mAgentRenderBlocksInteractive (true, set by the accepted submission),
+	// and bounces via `continue` -- pre-fix, silently dropping the
+	// already-exchanged isExplicitEdit; post-fix, restoring mEditPending
+	// before the bounce.
+	controller.releaseMintGate.store( true, std::memory_order_release );
+
+	// Give the bounce time to land, then release the worker so the agent
+	// job actually runs and clears mAgentRenderBlocksInteractive.
+	std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
+	controller.releaseWorkerGate.store( true, std::memory_order_release );
+
+	Check( controller.WaitForRenderJob( agentJobId, 5000 ), "WaitForRenderJob eventually observes the agent job's REAL completion" );
+	Check( agentRan.load( std::memory_order_acquire ), "the agent closure actually ran" );
+
+	// MONEY ASSERTION: with the agent gate now clear, RenderLoop's wake
+	// predicate must go true on ITS OWN -- from the RESTORED mEditPending,
+	// not from any external kick this test issues -- and the ORIGINAL
+	// edit's interactive pass must run.  Pre-fix (no restore), mEditPending
+	// stays false forever after the bounce and this wait times out with
+	// the render count stuck at 0 -- the exact "render count stuck at 1"
+	// (here: stuck at 0, since this test's edit is the FIRST one)
+	// symptom the reviewer's probe identified.  No OnTimeScrub / KickRender
+	// call appears anywhere below this point in the test.
+	Check( controller.ForTest_WaitForRenders( 1, 5000 ),
+	       "FIX-ROUND-5 MONEY ASSERTION: the original edit's interactive pass runs to completion with NO further external kick after the agent job releases the gate (the bounce restored mEditPending instead of dropping it)" );
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (r) lost-edit-wedge RED-PROVE: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (s) Fix-round-3 CHURN RED-PROVE / permanent regression test: the
 //     reviewer's repro -- churn N throwaway AgentSessions (mint,
 //     RenderAsync, destroy immediately) while a CONCURRENT interactive
 //     thread keeps kicking real render passes via OnTimeScrub.  This is
@@ -1932,7 +2047,7 @@ static void RunMintClobberRedProveTest()
 //////////////////////////////////////////////////////////////////////
 static void RunChurnConcurrentInteractiveTest()
 {
-	std::printf( "=== AgentRenderAsyncTest: (q) fix-round-3 RED-PROVE: session churn under a concurrent interactive stream (no UAF) ===\n" );
+	std::printf( "=== AgentRenderAsyncTest: (s) fix-round-3 RED-PROVE: session churn under a concurrent interactive stream (no UAF) ===\n" );
 
 	const std::string scenePath = WriteTemp( "rise_agent_async_churn.RISEscene", kScene );
 	Check( !scenePath.empty(), "wrote the churn scene to a temp file" );
@@ -1998,7 +2113,7 @@ static void RunChurnConcurrentInteractiveTest()
 	pJob->release();
 	std::remove( scenePath.c_str() );
 
-	std::printf( "=== (r) churn under concurrent interactive: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+	std::printf( "=== (s) churn under concurrent interactive: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
 int main()
@@ -2021,6 +2136,7 @@ int main()
 	RunProgressRestoredOnThrowTest();
 	RunInterleavedMintNoClobberTest();
 	RunMintClobberRedProveTest();
+	RunLostEditWedgeRedProveTest();
 	RunChurnConcurrentInteractiveTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );

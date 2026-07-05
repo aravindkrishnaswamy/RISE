@@ -4477,7 +4477,11 @@ void SceneEditController::RenderLoop()
 		// tick can never race the agent-render worker's window either.
 		// mEditPending was NOT consumed on this path (exchange above
 		// only fires when pred was satisfied), so looping back costs
-		// nothing -- the edit (if any) is still pending.
+		// nothing -- the edit (if any) is still pending.  Contrast with
+		// the mint-site re-check below (Fix-round-5): THAT site is
+		// reached after the exchange has already run and DID consume a
+		// pending edit whenever isExplicitEdit is true, so bouncing there
+		// needs an explicit restore this site does not.
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) continue;
 
 		// Property-scrub watchdog: if a scrub gesture began but no
@@ -4517,6 +4521,16 @@ void SceneEditController::RenderLoop()
 			if( s <= kPreviewScaleMin ) continue;
 			mPreviewScale.store( s / 2, std::memory_order_release );
 			mInRefinementPass = true;
+			// P2 (accepted, not fixed): if the mint-site re-check further
+			// below bounces this same iteration (mAgentRenderBlocksInteractive
+			// set), this halving already landed but the pass that would have
+			// rendered at the new scale is skipped for this iteration.  The
+			// next refinement tick halves again rather than rendering the
+			// skipped level once more -- self-healing (the preview still
+			// converges to kPreviewScaleMin, just one tick later than usual)
+			// and only reachable while an agent render overlaps a live
+			// idle-refinement walk-down, so it is left as-is rather than
+			// adding a second piece of state to track "redo this level".
 		}
 		else
 		{
@@ -4574,19 +4588,45 @@ void SceneEditController::RenderLoop()
 		// doc (mAgentRenderBlocksInteractive's declaration comment) claims
 		// is structurally impossible.  Re-check the flag HERE, inside the
 		// same mMutex hold this block mints under, immediately before the
-		// mint -- mirroring line 4473's own gate exactly (same flag, same
-		// `continue`-and-skip-this-iteration semantics: don't mint, don't
-		// flip mRendering, don't run DoOneRenderPass this iteration; the
-		// pending edit/refinement tick is picked back up next iteration
-		// exactly as a line-4473 bounce already handles).  This closes the
-		// window without changing what the flag means: it still gates
-		// "may an interactive pass mint/start", it now just gates it at
-		// the ONE site that actually mints, not only at an earlier
-		// snapshot that unlocked code could invalidate.
+		// mint.  This closes the window without changing what the flag
+		// means: it still gates "may an interactive pass mint/start", it
+		// now just gates it at the ONE site that actually mints, not only
+		// at an earlier snapshot that unlocked code could invalidate.
+		//
+		// Fix-round-5 (lost-edit wedge): UNLIKE the line-4473 bounce, this
+		// site's `continue` is NOT free.  The exchange at line 4467
+		// already consumed mEditPending (isExplicitEdit is its result) --
+		// by the time we reach this re-check, the flag is false regardless
+		// of whether the wake was a real edit.  Bouncing here without
+		// restoring it drops the edit on the floor: the agent worker's
+		// completion path (AgentRenderWorkerLoop_) clears
+		// mAgentRenderBlocksInteractive and notify_all()s, but never sets
+		// mEditPending, so the wake predicate stays false and this loop
+		// parks forever -- the user's edit never gets an interactive pass,
+		// and the viewport stays stale until some UNRELATED later edit
+		// happens to arrive.  Restore the flag before bouncing so the next
+		// wake re-exchanges it exactly as if this iteration never ran.
+		// Re-set it as an explicit edit (not a refinement tick): the
+		// original wake that produced `isExplicitEdit` here was itself
+		// either a real edit (true) or a refinement-tick timeout (false,
+		// and mEditPending was already false going in -- restoring false
+		// is a no-op). mLastEditTimeMs is untouched on purpose: it was
+		// already stamped at the ORIGINAL edit-submission call site (e.g.
+		// KickRender/OnTimeScrub), strictly before mEditPending was set --
+		// see KickRender's own comment for that happens-before edge -- so
+		// it is still correct for the retried iteration and restamping it
+		// here would just be a no-op race with a concurrent submitter.
 		RenderJobId thisPassJobId = kInvalidRenderJobId;
 		{
 			std::lock_guard<std::mutex> lk( mMutex );
-			if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) continue;
+			if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+			{
+				if( isExplicitEdit )
+				{
+					mEditPending.store( true, std::memory_order_release );
+				}
+				continue;
+			}
 			mCancelProgress.Reset();
 			mRendering.store( true, std::memory_order_release );
 			// Model-B F2 slice S1: render-identity bookkeeping.  Model-B
