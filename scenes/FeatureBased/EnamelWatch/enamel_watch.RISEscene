@@ -1092,13 +1092,25 @@ dielectric_material
 	scattering 100000
 }
 
+# Measured-silver (Johnson-Christy Ag) fume substrate.  SATIN, not a mirror:
+# alpha 0.14 (2026-07-05).  At alpha 0.03 the domed silver acted as a near-
+# perfect curved mirror and FOCUSED the uniform light-tent env into a bright
+# caustic pool -- a large "oval" that swam and reshaped oddly as the watch
+# rotated (user-caught; isolated to the env reflection, not the glint_key).
+# Real anOrdain silver is STAMPED (a satin, semi-specular finish), and the
+# enamel scatters slightly -- so the reflection is a soft, stable luminous
+# glow, not a sharp moving focus.  alpha 0.14 (satin) diffuses the caustic
+# into that natural glow while preserving the fume luminous depth, the
+# thickness-gradient (bright centre -> dark rim, which comes from absorption
+# not reflection sharpness), and the top-surface dimple twinkle (a separate
+# layer, unaffected).
 ggx_material
 {
 	name floor_silver
 	rd en_black
 	rs en_white
-	alphax 0.03
-	alphay 0.03
+	alphax 0.14
+	alphay 0.14
 	fresnel_mode conductor
 	ior Ag_n
 	extinction Ag_k
