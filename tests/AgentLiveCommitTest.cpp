@@ -237,9 +237,10 @@ public:
 	// Undo/Redo (RouteAgentChunkCrud_'s ApplyCstInsertChunk / ApplyCstRemoveChunk / ApplyCstRestoreChunkAt
 	// calls) all observe a genuinely-replaced-but-diagnosed Scene at every step of the round trip.
 	int ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned int keywordMax,
-	                         char* outName, unsigned int nameMax, char* outDiag, unsigned int diagMax ) override
+	                         char* outName, unsigned int nameMax, char* outDiag, unsigned int diagMax,
+	                         int* outInsertedAt = nullptr ) override
 	{
-		const int base = Job::ApplyCstInsertChunk( chunkText, outKeyword, keywordMax, outName, nameMax, outDiag, diagMax );
+		const int base = Job::ApplyCstInsertChunk( chunkText, outKeyword, keywordMax, outName, nameMax, outDiag, diagMax, outInsertedAt );
 		if( mForceCodeThree && base == 2 ) return 3;
 		return base;
 	}
@@ -2687,6 +2688,329 @@ static void TestCodeThreeArmedChunkCrudUndoRedo()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 28 (round-1 P1-A red-prove): insert a VARIANT-tagged overlay chunk
+// that legitimately shares (kind,name) with an EXISTING base chunk (matA) --
+// ApplyCstInsertChunk's own duplicate rule permits this (only an EXACT
+// (kind,name,variant) duplicate is refused).  Pre-fix, the controller
+// re-resolved the freshly-inserted chunk's index via DocFindByNameAnyRole,
+// which sees TWO (kind,name) matches (the base + the overlay) and -- with no
+// kind hint to narrow by (both are `lambertian_material`) -- correctly
+// returns 0 (ambiguous).  `insertedIndex` stayed -1, and the pre-fix fallback
+// `(insertedIndex >= 1) ? (insertedIndex - 1) : 0` pushed a FABRICATED index
+// of 0.  Undo then called ApplyCstRemoveItemsAt(0, 3) -- which bounds-checks
+// but (pre-P2-fix) has NO identity check -- silently deleting the document's
+// FIRST three top-level items (the `white` painter + part of `lum`), NOT the
+// overlay.  Post-fix: ApplyCstInsertChunk's own `outInsertedAt` out-param
+// reports the EXACT splice position, so Undo removes exactly the overlay
+// triple, byte-identical to pre-insert, with the base chunk and every
+// unrelated item (including the first three) completely untouched.
+//////////////////////////////////////////////////////////////////////
+static void TestVariantOverlayInsertUndoP1A()
+{
+	std::cout << "Test 28: insert a variant overlay sharing (kind,name) with a base chunk -> Undo removes ONLY the overlay, byte-exact (round-1 P1-A)..." << std::endl;
+
+	const char* tmp = "agentlive_p1a_variant.RISEscene";
+	Job* pJob = LoadScene( kU2Scene, tmp );
+	Check( pJob != nullptr, "U2 fixture scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const std::string preDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( preDoc.find( "matA" ) != std::string::npos, "matA (the base chunk this overlay will shadow) is present pre-edit" );
+
+		// Insert a VARIANT overlay of `matA` -- SAME (kind,name) as the existing base chunk,
+		// but tagged with a `variant` param, so ApplyCstInsertChunk's duplicate check exempts
+		// it (only an EXACT (kind,name,variant) triple is refused).  This is the scenario the
+		// P1-A bug's own doc names explicitly: "a variant-tagged overlay chunk legitimately
+		// shares its base chunk's (kind,name)".
+		const char* overlayChunk =
+			"lambertian_material\n{\nname matA\nvariant night\nreflectance white\n}\n";
+		const SceneEditController::AgentCommitResult ins = c.ApplyAgentInsertChunk( String( overlayChunk ), nullptr );
+		Check( ins.applied, "insert of the `matA` variant overlay applies" );
+		Check( ins.chunkName == String( "matA" ), "insert echoes the resolved (shared) name `matA`" );
+		const std::string postInsertDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postInsertDoc != preDoc, "the Document actually changed" );
+		{
+			// RED-PROVE premise: confirm the ambiguity DocFindByNameAnyRole would hit is real --
+			// two top-level chunks now carry the "material/matA" name path (base + overlay).
+			int occ = 0;
+			const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
+				*pJob->GetCstDocument(), "matA", &occ, "material", /*uniqueFallback*/ false );
+			Check( id == 0 && occ == 2,
+			       "RED-PROVE premise: post-insert, `matA` is ambiguous by (name,kind) alone (2 matches: base + overlay) -- "
+			       "the pre-fix post-hoc re-resolution this test guards against would have failed exactly this way" );
+		}
+
+		// Undo -> byte-identical to the pre-insert Document.  At the pre-fix parent, this
+		// instead deletes the Document's FIRST three top-level items (a fabricated index of
+		// 0), which would corrupt the `white` painter chunk and part of `lum` -- assert
+		// BOTH that we get the byte-identical restore AND that the base chunk (and the
+		// scene's first items) are untouched, so a regression back to the pre-fix behaviour
+		// is caught even if the byte-identity check alone were somehow satisfied by chance.
+		c.Undo();
+		const std::string postUndoDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postUndoDoc == preDoc, "Undo of the variant-overlay insert restores the Document BYTE-IDENTICAL to pre-insert" );
+		Check( postUndoDoc.find( "uniformcolor_painter" ) != std::string::npos && postUndoDoc.find( "name white" ) != std::string::npos,
+		       "the `white` painter chunk (one of the pre-fix fabricated-index victims) survives intact" );
+		Check( postUndoDoc.find( "name lum" ) != std::string::npos && postUndoDoc.find( "scale 5.0" ) != std::string::npos,
+		       "the `lum` luminaire chunk (another pre-fix fabricated-index victim) survives intact" );
+		Check( postUndoDoc.find( "variant night" ) == std::string::npos, "the overlay's `variant night` tag is gone (the overlay itself was removed)" );
+		{
+			int occ = 0;
+			const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
+				*pJob->GetCstDocument(), "matA", &occ, "material", /*uniqueFallback*/ false );
+			Check( id != 0 && occ == 1, "exactly ONE `matA` remains after Undo (the base -- unambiguous again)" );
+		}
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "matA" ) != nullptr,
+		       "the derived scene still resolves `matA` (the base) after Undo" );
+
+		// Redo -> re-inserts the overlay byte-exactly.
+		c.Redo();
+		const std::string postRedoDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postRedoDoc == postInsertDoc, "Redo of the variant-overlay insert re-inserts BYTE-EXACTLY" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 29 (round-1 P1-B red-prove): agent REMOVE -> an OUT-OF-BAND direct-Job
+// insert lands BEFORE the removed chunk's captured position (shifting every
+// index at/after it by +1, the same "independent mechanism" idiom Test 19
+// uses) -> Undo (of the remove) must be GLUE-SAFE: no `}`-immediately-
+// followed-by-non-whitespace adjacency anywhere in the restored Document
+// (the reviewer's scan), the Document still derives, and it survives a
+// save+reload cleanly.  Pre-fix, ApplyCstRestoreChunkAt spliced the captured
+// bytes verbatim at the now-stale (shifted) index with no glue-safety check;
+// this test's out-of-band insert is specifically an UNNAMED-chunk-adjacent
+// splice engineered so the left neighbour at the (post-shift) restore index
+// does NOT end in a newline, reproducing the `}<keyword>` glue the fix
+// targets.
+//////////////////////////////////////////////////////////////////////
+static void TestGlueSafeRestoreAfterOutOfBandShiftP1B()
+{
+	std::cout << "Test 29: agent remove + out-of-band shift -> Undo restore is GLUE-SAFE (round-1 P1-B)..." << std::endl;
+
+	const char* tmp = "agentlive_p1b_glue.RISEscene";
+	Job* pJob = LoadScene( kU2Scene, tmp );
+	Check( pJob != nullptr, "U2 fixture scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		// Agent removes matB (the middle material, sandwiched between matA and matC) --
+		// captures its exact bytes + position under the shared-undo U2 machinery.
+		const SceneEditController::AgentCommitResult rm =
+			c.ApplyAgentRemoveChunk( String( "matB" ), String( "material" ), nullptr );
+		Check( rm.applied, "remove_chunk on matB applies" );
+		const unsigned int undoDepthAfterRemove = c.Editor().History().UndoDepth();
+
+		// Out-of-band mechanism (Test-19-style: direct Job calls under RunPreviewRenderParked +
+		// manual rebind, NO history footprint of its own): insert a FRESH painter chunk -- a
+		// tier-0 (Painter/Function) declaration positions BEFORE every tier-1+ chunk (materials,
+		// geometry, objects, ...), landing right after the scene header stray tokens, i.e. BEFORE
+		// matB's captured position -- shifting every later top-level index (incl. matB's captured
+		// one) down by exactly the 3 items ApplyCstInsertChunk's [leadSep][chunk][trailSep] triple
+		// adds.  The shifted index then lands on the FIRST post-shift item at that position, whose
+		// preceding neighbour is NOT newline-terminated (a Chunk item's own serialized bytes end in
+		// `}`, not `\n` -- the inter-chunk separator is a SEPARATE Trivia item) unless the shift
+		// happens to land exactly on a Trivia boundary -- engineered below to land mid-chunk-run.
+		Check( c.RunPreviewRenderParked( [&]{
+			char kw[64]; char nm[64]; char diag[256];
+			const char* freshChunk = "uniformcolor_painter\n{\nname pShift\ncolor 0.2 0.2 0.2\n}\n";
+			const int insCode = pJob->ApplyCstInsertChunk( freshChunk, kw, sizeof( kw ), nm, sizeof( nm ), diag, sizeof( diag ) );
+			Check( insCode == 2 || insCode == 3, "the out-of-band shifting insert of `pShift` succeeds (no history pushed)" );
+
+			c.Editor().RebindScene( *pJob->GetScene() );
+			c.Editor().SetMaterialManager( pJob->GetMaterials() );
+			c.Editor().SetShaderManager( pJob->GetShaders() );
+			c.Editor().SetPainterManager( pJob->GetPainters() );
+			c.Editor().SetScalarPainterManager( pJob->GetScalarPainters() );
+			c.Editor().SetJob( pJob );
+		} ), "the parked out-of-band shifting insert + manual rebind ran" );
+		Check( c.Editor().History().UndoDepth() == undoDepthAfterRemove,
+		       "the out-of-band insert pushed NO history of its own -- the agent's remove entry is still the next one to pop" );
+
+		// Undo the ORIGINAL agent remove: the captured `agentChunkIndex` is now STALE (shifted by
+		// the out-of-band insert) -- the glue-safety fix must still produce a WELL-FORMED Document
+		// (no `}` immediately followed by a non-whitespace byte anywhere), even though byte-identity
+		// to the pre-remove Document is no longer the bar under a genuine shift.
+		c.Undo();
+		const std::string postUndoDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postUndoDoc.find( "matB" ) != std::string::npos, "matB's text is back in the Document after Undo" );
+		Check( postUndoDoc.find( "pShift" ) != std::string::npos, "the out-of-band `pShift` chunk survives the restore" );
+
+		// The reviewer's scan: no `}` immediately followed by a non-whitespace byte anywhere in
+		// the whole Document (that is exactly the `}lambertian_material`-style glue corruption
+		// the fix targets -- a NEWLINE, space, or end-of-string may follow `}`; a bare letter/
+		// digit/underscore immediately after `}` never should).
+		bool foundGlue = false;
+		size_t glueAt = std::string::npos;
+		for( size_t p = postUndoDoc.find( '}' ); p != std::string::npos; p = postUndoDoc.find( '}', p + 1 ) )
+		{
+			if( p + 1 < postUndoDoc.size() )
+			{
+				const char next = postUndoDoc[p + 1];
+				if( next != '\n' && next != '\r' && next != ' ' && next != '\t' )
+				{
+					foundGlue = true;
+					glueAt = p;
+					break;
+				}
+			}
+		}
+		Check( !foundGlue, "RED-PROVE: no `}`-followed-by-non-whitespace glue adjacency anywhere in the restored Document" );
+		if( foundGlue )
+			std::cout << "    glue found at byte " << glueAt << ": ..." << postUndoDoc.substr( glueAt, 24 ) << "..." << std::endl;
+
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "matB" ) != nullptr,
+		       "the derived scene resolves `matB` again after Undo" );
+		Check( pJob->GetPainters() && pJob->GetPainters()->GetItem( "pShift" ) != nullptr,
+		       "the derived scene still resolves the out-of-band `pShift` too" );
+
+		// Save + reload clean (no wedge, no corruption left behind).
+		const char* saveAs = "agentlive_p1b_glue_save.RISEscene";
+		std::remove( saveAs );
+		const SaveResult sr = c.RequestSave( std::string( saveAs ) );
+		Check( Succeeded( sr.status ), "save succeeds after the glue-safe restore" );
+		{
+			Job* fresh = new Job();
+			Check( fresh->LoadAsciiSceneViaCst( saveAs ), "the saved Document reloads CLEANLY (no wedge, no corruption)" );
+			Check( fresh->GetMaterials() && fresh->GetMaterials()->GetItem( "matB" ) != nullptr, "the reload resolves `matB`" );
+			Check( fresh->GetPainters() && fresh->GetPainters()->GetItem( "pShift" ) != nullptr, "the reload resolves `pShift`" );
+			fresh->release();
+		}
+		std::remove( saveAs );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 30 (round-1 P2 red-prove): agent INSERT -> an out-of-band shift
+// replaces the recorded triple's content with DIFFERENT (but still
+// well-formed, still-derivable) content -- specifically, deletes an
+// UNREFERENCED painter chunk positioned such that the deletion shifts the
+// inserted chunk's triple to start exactly where a DIFFERENT, unrelated
+// chunk (`matC`) now sits -> Undo must HONESTLY REFUSE (Document
+// byte-unchanged, the entry stays on the undo stack, the controller remains
+// usable) instead of silently deleting whatever three items now occupy that
+// position.  Pre-fix, ApplyCstRemoveItemsAt is a pure positional splice with
+// NO identity check -- since the wrong triple at the shifted position is
+// itself well-formed and unreferenced, its own dry-run derives CLEANLY, so
+// the pre-fix primitive would silently commit deleting matC (the WRONG
+// chunk) instead of refusing.  Post-fix, the caller's captured exact chunk
+// bytes (`SceneEdit::propertyValue`) are compared against whatever now sits
+// at the middle of the recorded triple BEFORE any Document mutation, and a
+// mismatch refuses with code 0.
+//////////////////////////////////////////////////////////////////////
+static void TestStaleIndexIdentityCheckRefusesP2()
+{
+	std::cout << "Test 30: agent insert + out-of-band shift onto DIFFERENT content -> Undo honestly REFUSES (round-1 P2)..." << std::endl;
+
+	const char* tmp = "agentlive_p2_identity.RISEscene";
+	Job* pJob = LoadScene( kU2Scene, tmp );
+	Check( pJob != nullptr, "U2 fixture scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		// Insert a fresh, UNREFERENCED material `matZ` -- declaration-tier positioning lands it
+		// appended after matC (materials have no consumers in kU2Scene to force an earlier slot),
+		// so its triple sits AFTER matC's own chunk.  Capture the pre-insert layout so we can find
+		// a shift that lands EXACTLY on matC's own position.
+		const std::string preInsertDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		const char* newChunk = "lambertian_material\n{\nname matZ\nreflectance white\n}\n";
+		const SceneEditController::AgentCommitResult ins = c.ApplyAgentInsertChunk( String( newChunk ), nullptr );
+		Check( ins.applied, "insert of `matZ` applies" );
+		const unsigned int undoDepthAfterInsert = c.Editor().History().UndoDepth();
+
+		// Locate matZ's recorded triple-start index via the SAME resolution the controller uses
+		// internally (round-1 P1-A's own out-param already proved this -- re-derive it here for
+		// the test's own bookkeeping by counting top-level items before/after via the Document).
+		const RISE::Cst::Document* docAfterInsert = pJob->GetCstDocument();
+		int occ = 0;
+		const RISE::Cst::NodeId matZId = RISE::Cst::DocFindByNameAnyRole( *docAfterInsert, "matZ", &occ, "material", false );
+		Check( matZId != 0 && occ == 1, "matZ resolves uniquely post-insert" );
+		const int matZIdx = RISE::Cst::DocIndexOfNodeId( *docAfterInsert, matZId, nullptr );
+		Check( matZIdx >= 1, "matZ has a valid top-level index (its own leading separator sits one before it)" );
+
+		// Out-of-band mechanism (Test-19-style: direct Job + RunPreviewRenderParked + manual
+		// rebind, no history footprint): remove `white` (the shared, UNREFERENCED-once-materials-
+		// are-gone... actually `white` IS referenced by matA/matB/matC/matZ's `reflectance`, so
+		// removing it would fail the dry-run) -- instead remove `matC` (a plain, unreferenced-
+		// by-anything-else material) OUTRIGHT, which shifts every index after it (incl. matZ's
+		// triple) DOWN by however many top-level items matC's erase drops (1 or 2).  After this
+		// shift, matZ's ORIGINAL recorded triple-start index now points at whatever used to sit
+		// AFTER matZ's own triple -- in this fixture, that is the Document's tail (nothing, or
+		// trailing trivia) since matZ was appended last; to land the stale index ON a DIFFERENT
+		// but well-formed chunk instead of past-the-end, remove `matA` (the FIRST material)
+		// instead -- shifting matZ's triple (and everything else) DOWN, so the ORIGINAL
+		// (pre-shift) triple-start index now addresses content that used to be one triple later:
+		// exactly `matB`'s triple survives the shift and slides into matZ's old slot's neighbourhood.
+		// The precise landing content does not matter for this test's assertion (any DIFFERENT,
+		// well-formed, derivable triple proves the point) -- what matters is that it is NOT matZ.
+		Check( c.RunPreviewRenderParked( [&]{
+			char kw[64]; char diag[256];
+			const int rmCode = pJob->ApplyCstRemoveChunk( "matA", "material", kw, sizeof( kw ), diag, sizeof( diag ) );
+			Check( rmCode == 2 || rmCode == 3, "the out-of-band removal of `matA` succeeds (no history pushed)" );
+
+			c.Editor().RebindScene( *pJob->GetScene() );
+			c.Editor().SetMaterialManager( pJob->GetMaterials() );
+			c.Editor().SetShaderManager( pJob->GetShaders() );
+			c.Editor().SetPainterManager( pJob->GetPainters() );
+			c.Editor().SetScalarPainterManager( pJob->GetScalarPainters() );
+			c.Editor().SetJob( pJob );
+		} ), "the parked out-of-band removal of `matA` + manual rebind ran" );
+		Check( c.Editor().History().UndoDepth() == undoDepthAfterInsert,
+		       "the out-of-band removal pushed NO history of its own -- the agent's insert entry is still the next one to pop" );
+
+		const std::string docBeforeUndoAttempt = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( docBeforeUndoAttempt.find( "name matA" ) == std::string::npos, "matA is confirmed gone (the out-of-band shift landed)" );
+		Check( docBeforeUndoAttempt.find( "name matZ" ) != std::string::npos, "matZ is still present (Undo hasn't run yet)" );
+
+		// Attempt Undo of the matZ insert: `agentChunkIndex` is now STALE (matA's removal shifted
+		// every later index).  The identity check must catch that whatever now sits at the
+		// recorded position is NOT matZ's chunk bytes, and refuse honestly -- Document
+		// byte-unchanged, entry stays on the undo stack, controller stays usable.
+		c.Undo();
+		const std::string docAfterUndoAttempt = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( docAfterUndoAttempt == docBeforeUndoAttempt,
+		       "RED-PROVE: the refused Undo left the Document BYTE-IDENTICAL (no partial/silent mutation, and specifically "
+		       "matZ was NOT wrongly deleted alongside whatever now occupies its old recorded index)" );
+		Check( docAfterUndoAttempt.find( "name matZ" ) != std::string::npos,
+		       "RED-PROVE: matZ (the chunk the agent actually inserted) is STILL present -- the identity-checked Undo "
+		       "refused rather than deleting whatever now sits at the stale index" );
+		Check( c.Editor().History().UndoDepth() == undoDepthAfterInsert,
+		       "RED-PROVE: the insert's entry is STILL on the undo stack (honest bookkeeping -- not silently dropped)" );
+		Check( c.Editor().History().RedoDepth() == 0, "the refused Undo did NOT move anything onto the redo stack" );
+
+		// Controller usable after: an unrelated edit still applies cleanly.
+		const SceneEditController::AgentCommitResult after =
+			c.ApplyAgentParamEdit( String( "lum" ), String( "lambertian_luminaire_material" ), String( "scale" ), String( "9.0" ), nullptr );
+		Check( after.applied, "the controller remains usable after the refused Undo (an unrelated edit still applies)" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -2718,6 +3042,9 @@ int main()
 	TestUndoInsertRefusedWhenReferenced();
 	TestRasterizerInsertUndoMatchesReload();
 	TestCodeThreeArmedChunkCrudUndoRedo();
+	TestVariantOverlayInsertUndoP1A();
+	TestGlueSafeRestoreAfterOutOfBandShiftP1B();
+	TestStaleIndexIdentityCheckRefusesP2();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

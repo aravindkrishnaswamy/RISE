@@ -1339,8 +1339,16 @@ bool SceneEditor::RouteAgentChunkCrud_( const SceneEdit& edit, bool forInsertOp,
 		// refuses honestly (r==0), leaving the Document untouched -- the derivability gate this whole slice
 		// exists to enforce (SAME guarantee ApplyCstRemoveChunk gives; just a different Document-splice
 		// mechanism to reach it).
+		// Round-1 P2: also pass `edit.propertyValue` (the agent's exact original chunk text) as
+		// `expectedChunkBytes` -- ApplyCstRemoveItemsAt is otherwise a pure positional splice with NO identity
+		// check, so an out-of-band mutation between this insert and its Undo that shifts `agentChunkIndex` to
+		// a STALE-but-in-range position (a different, unrelated triple now sitting there) would otherwise let
+		// the dry-run below happily commit deleting the WRONG content whenever that wrong triple happens to
+		// derive cleanly (any well-formed, unreferenced triple does).  A mismatch refuses honestly (r==0,
+		// Document byte-unchanged) instead.
 		char diagBuf[512]; diagBuf[0] = '\0';
-		r = mJob->ApplyCstRemoveItemsAt( edit.agentChunkIndex, /*count*/3, diagBuf, sizeof( diagBuf ) );
+		r = mJob->ApplyCstRemoveItemsAt( edit.agentChunkIndex, /*count*/3, diagBuf, sizeof( diagBuf ),
+		                                  edit.propertyValue.c_str() );
 	}
 	else if( !forInsertOp && !forward )
 	{

@@ -274,15 +274,21 @@ namespace RISE
 			//! so a Redo's positioned insert lands the same way).  `objectName` = the inserted chunk's resolved
 			//! `name` param (may be empty for an unnamed film/rasterizer/camera-class chunk).
 			//! `cstEntityKind` = the inserted chunk's resolved keyword.  `agentChunkIndex` = the top-level
-			//! document index ApplyCstInsertChunk's [leadSep][chunk][trailSep] triple landed at, captured by the
-			//! controller immediately AFTER the insert (by resolving the new chunk's NodeId -> its index, minus
-			//! one for the leading separator).  Undo = remove EXACTLY those 3 items at that exact index via
-			//! Job::ApplyCstRemoveItemsAt (the EXACT-POSITION inverse -- NOT the general Cst::DocEraseChunkTidy
-			//! erase a manual remove_chunk uses, which is a heuristic single-adjacent-separator collapse that
-			//! -- by design -- leaves a residual blank line on a chunk with TWO fresh separators around it; see
-			//! AgentChunkCrudTest.cpp's T3).  ApplyCstRemoveItemsAt's own re-derive dry-run still refuses
-			//! honestly if something now REFERENCES the inserted chunk -- the derivability gate is unaffected
-			//! by which Document-splice mechanism reaches it.
+			//! document index ApplyCstInsertChunk's [leadSep][chunk][trailSep] triple landed at -- ROUND-1 P1-A
+			//! FIX: this is now ApplyCstInsertChunk's OWN `outInsertedAt` out-param (the exact `at` the splice
+			//! itself used), NOT a post-hoc name/kind re-resolution -- a variant-tagged overlay chunk legitimately
+			//! shares its base chunk's (kind,name), so re-resolving "the chunk I just inserted" by name after the
+			//! fact can match MULTIPLE chunks and silently misreport the wrong index (the pre-fix bug: it fell
+			//! back to a FABRICATED index, and Undo then deleted the document's first three items).  `propertyValue`
+			//! (this op's chunk bytes) doubles as the P2 identity check's expected-bytes: Undo verifies the chunk
+			//! still at `agentChunkIndex + 1` byte-matches it before splicing.  Undo = remove EXACTLY those 3 items
+			//! at that exact index via Job::ApplyCstRemoveItemsAt (the EXACT-POSITION inverse -- NOT the general
+			//! Cst::DocEraseChunkTidy erase a manual remove_chunk uses, which is a heuristic single-adjacent-
+			//! separator collapse that -- by design -- leaves a residual blank line on a chunk with TWO fresh
+			//! separators around it; see AgentChunkCrudTest.cpp's T3).  ApplyCstRemoveItemsAt's own re-derive
+			//! dry-run still refuses honestly if something now REFERENCES the inserted chunk -- the derivability
+			//! gate is unaffected by which Document-splice mechanism reaches it.  Its identity check (round-1 P2)
+			//! ALSO refuses honestly if an out-of-band mutation shifted indices so `agentChunkIndex` is stale.
 			AgentInsertChunk,
 
 			//! Shared-undo U2: an AGENT-originated chunk REMOVE (SceneEditController::ApplyAgentRemoveChunk),

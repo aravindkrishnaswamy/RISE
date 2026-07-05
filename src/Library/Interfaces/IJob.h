@@ -3361,7 +3361,16 @@ namespace RISE
 		//! what a save+reload's last-wins derive would activate.
 		//! Out-params (each nullable): `outKeyword`/`outName` echo the parsed chunk's keyword + `name` param (filled
 		//! as soon as the chunk parses, so even a refusal identifies what was attempted); `outDiag` carries the FIRST
-		//! dry-run diagnostic (code 0) or a short refusal reason (codes -1/-2).
+		//! dry-run diagnostic (code 0) or a short refusal reason (codes -1/-2).  `outInsertedAt` (round-1 P1-A fix):
+		//! ONLY on a landed insert (codes 2/3) is set to the top-level Document index of the splice's OWN LEADING
+		//! ITEM -- i.e. exactly the `at` this call itself used for `DocInsertItem(d,at,leadItem)` (whichever branch
+		//! committed: the tier-positioned attempt, or the append-at-end fallback) -- NOT a post-hoc name/kind
+		//! re-resolution.  This is the ONLY reliable way for a caller to recover the exact 3-item splice position
+		//! for a later `ApplyCstRemoveItemsAt` inverse: a variant-tagged overlay chunk legitimately shares its base
+		//! chunk's (kind,name) (see the duplicate-refusal rule above), so re-resolving "the chunk I just inserted"
+		//! by (name,kind) after the fact can match MULTIPLE chunks and correctly fail to resolve -- silently
+		//! wrong-indexing a caller that then falls back to guessing.  Left UNTOUCHED (caller must pre-initialize,
+		//! e.g. to -1) on every non-landing code (0/-1/-2) and when null.
 		//! Returns: 2 = inserted + clean full re-derive (Scene + managers REPLACED -- caller MUST rebind);
 		//! 3 = inserted + managers replaced BUT the re-derive diagnosed (rebind AND treat as failure);
 		//! 0 = refused, would-not-derive in context (dry-run diagnosed; nothing changed) -- ALSO returned for
@@ -3375,9 +3384,12 @@ namespace RISE
 		//! Never 1: an insert is ALWAYS D2-class (a new entity cannot re-derive incrementally).
 		//! Default no-op returning 0 (legacy jobs have no retained CST); see Job override.
 		//! NB: appended at the IJob tail per the append-only ABI convention (preserves every prior vtable slot).
+		//! `outInsertedAt` was added by amending THIS virtual in place (not a new tail overload) -- it was
+		//! introduced on this same unpushed branch (S2 slice), so there are no external ABI consumers to break.
 		virtual int ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned int keywordMax,
 		                                 char* outName, unsigned int nameMax,
-		                                 char* outDiag, unsigned int diagMax )
+		                                 char* outDiag, unsigned int diagMax,
+		                                 int* outInsertedAt = nullptr )
 		{
 			// The default no-op still honours the out-param contract (buffers always NUL-terminated).
 			if( outKeyword && keywordMax ) outKeyword[0] = '\0';
@@ -3467,6 +3479,28 @@ namespace RISE
 		//! changes the document's last-wins activation the same way a fresh insert does, so the pre-erase
 		//! active rasterizer must NOT be restored over it (live must match what a reload of the now-restored
 		//! Document would activate).
+		//! GLUE-SAFETY (round-1 P1-B fix): `atIndex` is CLAMPED to the current Document's range but carries NO
+		//! identity check -- an out-of-band Document mutation between the original erase and this restore call
+		//! (another agent session; a script; the Test-19-style "independent mechanism" idiom) can shift indices,
+		//! so `atIndex` may land in a position whose LEFT NEIGHBOUR does not end in a newline (a hand-authored
+		//! chunk glued directly onto the end of the preceding one, or a different separator shape than the one
+		//! that used to sit there).  Splicing `bytesInOrder` verbatim at such an index would glue the restored
+		//! chunk's `keyword` token directly onto the neighbour's `}` (`}lambertian_material`) -- syntactically
+		//! recoverable today (the tokenizer is brace-forgiving) but a byte-exact-restore invariant violation and
+		//! latent corruption.  Mirroring Cst::DocEraseChunkTidy's own glue-safety reasoning (ItemEndsInNewline):
+		//! after clamping, if `atIndex > 0` and the item now at `atIndex - 1` does NOT end in a newline, a
+		//! synthesized pure-`"\n"` Trivia lead item is spliced in FIRST (ahead of `bytesInOrder`'s own items) so
+		//! the restored chunk always starts on a fresh line.  The right side does not need a symmetric check:
+		//! `bytesInOrder` is the caller's exact capture of what DocEraseChunkTidy actually dropped, which always
+		//! includes the chunk's OWN trailing separator when one existed (SceneEditController's capture comment:
+		//! "the chunk's own text PLUS the immediately-following top-level item"), so the restored run is already
+		//! newline-terminated on its own -- there is no missing trailing separator to synthesize.  In the
+		//! ordinary NO-SHIFT case (the common path -- nothing moved between erase and restore) the left neighbour
+		//! already ends in `\n` (that is what the original erase's own glue-safety proved true), so no synthetic
+		//! item is added and the restore stays byte-IDENTICAL to the pre-erase Document, matching
+		//! ApplyCstRemoveItemsAt's byte-identity bar. Under a genuine shift the bar relaxes from byte-identity to
+		//! glue-safety (a well-formed, non-corrupt Document) -- byte-identity to a Document state that no longer
+		//! exists is not a coherent goal once something else has changed it.
 		//! Out-param `outDiag` (nullable) carries the first dry-run diagnostic on a code-0 refusal.
 		//! Returns: 2 = restored + clean full re-derive (Scene + managers REPLACED -- caller MUST rebind);
 		//! 3 = restored + managers replaced BUT the re-derive diagnosed (rebind AND treat as failure);
@@ -3498,13 +3532,33 @@ namespace RISE
 		//! re-derive tail every chunk-CRUD verb uses.  `count` is always 3 for the sole caller (the insert's
 		//! own [lead][chunk][trail] triple), but the primitive itself has no reason to hardcode that.
 		//! Out-param `outDiag` (nullable) carries the first dry-run diagnostic on a code-0 refusal.
+		//! `expectedChunkBytes` (round-1 P2 fix, nullable -- null preserves the pre-fix positional-only splice for
+		//! any OTHER caller that cannot supply it): the caller's own captured exact bytes of the CHUNK item it
+		//! expects to still be sitting at the middle of the triple (`atIndex + 1`, the [lead][CHUNK][trail]
+		//! layout) -- i.e. `SceneEdit::propertyValue`'s chunk substring for an AgentInsertChunk Undo.  This
+		//! primitive has NO IDENTITY CHECK of its own beyond bounds -- it is a pure positional splice, so an
+		//! `atIndex` that is IN-RANGE but STALE (an out-of-band Document mutation shifted indices between the
+		//! insert and this Undo call -- e.g. another agent session, or a script, inserting/removing chunks ahead
+		//! of `atIndex` -- see AgentLiveCommitTest.cpp's Test 19 "independent mechanism" idiom for how such a
+		//! shift is manufactured) would otherwise splice-and-dry-run-validate whatever THREE items now occupy
+		//! [atIndex, atIndex+3) -- and the dry-run can DERIVE CLEANLY even when those are the WRONG three items
+		//! (any well-formed, unreferenced triple derives), silently deleting the wrong content.  When
+		//! `expectedChunkBytes` is non-null, the item at `atIndex + 1` is serialized (Cst::SerializeNode) and
+		//! byte-compared against it BEFORE the splice; a mismatch REFUSES with code 0 (Document byte-unchanged,
+		//! outDiag says "document changed since the edit was recorded") instead of removing whatever happens to
+		//! be there.
 		//! Returns: 2 = removed + clean full re-derive (Scene + managers REPLACED -- caller MUST rebind);
 		//! 3 = removed + managers replaced BUT the re-derive diagnosed (rebind AND treat as failure);
-		//! 0 = refused, would-not-derive in context (dry-run diagnosed; nothing changed) -- ALSO returned for
-		//! no retained CST Document, an out-of-range `atIndex`/`count`, or `count <= 0`.  Never 1 (matching
+		//! 0 = refused -- would-not-derive in context (dry-run diagnosed; nothing changed), OR an out-of-range
+		//! `atIndex`/`count`, `count <= 0`, no retained CST Document, OR (when `expectedChunkBytes` is supplied)
+		//! the chunk at `atIndex + 1` no longer byte-matches the caller's capture (STALE INDEX -- something else
+		//! moved the Document since the index was recorded; nothing changed).  Never 1 (matching
 		//! ApplyCstRemoveChunk).  Default 0 (only Job overrides).
-		//! NB: appended at the IJob tail per the append-only ABI convention.
-		virtual int ApplyCstRemoveItemsAt( int atIndex, int count, char* outDiag, unsigned int diagMax )
+		//! NB: appended at the IJob tail per the append-only ABI convention.  `expectedChunkBytes` was added by
+		//! amending THIS virtual in place (not a new tail overload) -- it was introduced on this same unpushed
+		//! branch (U2 slice), so there are no external ABI consumers to break.
+		virtual int ApplyCstRemoveItemsAt( int atIndex, int count, char* outDiag, unsigned int diagMax,
+		                                    const char* expectedChunkBytes = nullptr )
 		{
 			if( outDiag && diagMax ) outDiag[0] = '\0';
 			return 0;

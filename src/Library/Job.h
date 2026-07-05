@@ -2876,11 +2876,13 @@ namespace RISE
 
 		//! Model-B F5 slice S2 (agent chunk CRUD): INSERT one complete chunk into the retained Document and
 		//! REALIZE it via a full re-derive (dry-run-guarded: a failed dry-run leaves Document + live scene
-		//! byte-identical).  Contract + out-params documented on the IJob virtual.  Returns 2/3 (replaced;
-		//! rebind) / 0 (would-not-derive) / -1 (malformed chunk text) / -2 (duplicate (kind,name)).  Never 1.
+		//! byte-identical).  Contract + out-params (incl. round-1 P1-A's `outInsertedAt`) documented on the
+		//! IJob virtual.  Returns 2/3 (replaced; rebind) / 0 (would-not-derive) / -1 (malformed chunk text) /
+		//! -2 (duplicate (kind,name)).  Never 1.
 		int ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned int keywordMax,
 		                         char* outName, unsigned int nameMax,
-		                         char* outDiag, unsigned int diagMax );
+		                         char* outDiag, unsigned int diagMax,
+		                         int* outInsertedAt = nullptr );
 
 		//! Model-B F5 slice S2 (agent chunk CRUD): REMOVE the chunk resolved by bare name (+ optional kind
 		//! narrowing, same rules as ApplyCstParamEdit) via the TRIVIA-PRESERVING Cst::DocEraseChunkTidy, then
@@ -2893,18 +2895,22 @@ namespace RISE
 		                         char* outDiag, unsigned int diagMax );
 
 		//! Shared-undo U2: EXACT-POSITION inverse of ApplyCstRemoveChunk (an agent AgentRemoveChunk op's Undo).
-		//! Splices `bytesInOrder` back verbatim at top-level index `atIndex`, then realizes via the same
-		//! dry-run-guarded full re-derive tail.  Contract documented on the IJob virtual.  Returns 2/3
-		//! (replaced; rebind) / 0 (would-not-derive / malformed bytes).  Never 1.
+		//! Splices `bytesInOrder` back verbatim at top-level index `atIndex` (GLUE-SAFE per round-1 P1-B: a
+		//! synthesized "\n" lead item is inserted first when the left neighbour at a shifted `atIndex` does not
+		//! already end in a newline), then realizes via the same dry-run-guarded full re-derive tail.  Contract
+		//! documented on the IJob virtual.  Returns 2/3 (replaced; rebind) / 0 (would-not-derive / malformed
+		//! bytes).  Never 1.
 		int ApplyCstRestoreChunkAt( const char* bytesInOrder, int atIndex, bool restoreActiveRasterizer,
 		                            char* outDiag, unsigned int diagMax );
 
 		//! Shared-undo U2: EXACT-POSITION inverse of ApplyCstInsertChunk (an agent AgentInsertChunk op's
 		//! Undo).  Removes EXACTLY `count` top-level items starting at `atIndex` (the insert's own
 		//! [leadSep][chunk][trailSep] triple), then realizes via the same dry-run-guarded full re-derive
-		//! tail.  Contract documented on the IJob virtual.  Returns 2/3 (replaced; rebind) / 0
-		//! (would-not-derive / out-of-range).  Never 1.
-		int ApplyCstRemoveItemsAt( int atIndex, int count, char* outDiag, unsigned int diagMax );
+		//! tail.  Contract (incl. round-1 P2's `expectedChunkBytes` identity check) documented on the IJob
+		//! virtual.  Returns 2/3 (replaced; rebind) / 0 (would-not-derive / out-of-range / stale-index
+		//! byte-mismatch).  Never 1.
+		int ApplyCstRemoveItemsAt( int atIndex, int count, char* outDiag, unsigned int diagMax,
+		                           const char* expectedChunkBytes = nullptr );
 
 		//! P5: the retained canonical CST (null unless the scene was loaded via LoadAsciiSceneViaCst).
 		const RISE::Cst::Document*	GetCstDocument() const { return pCstDocument.get(); }

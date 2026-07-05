@@ -3333,13 +3333,22 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 	char kwBuf[128];   kwBuf[0] = '\0';
 	char nameBuf[256]; nameBuf[0] = '\0';
 	char diagBuf[512]; diagBuf[0] = '\0';
+	// Shared-undo U2 / round-1 P1-A: the top-level index of the splice's OWN LEADING ITEM, filled by
+	// ApplyCstInsertChunk itself (the EXACT `at` it used, whichever branch committed) -- NEVER a post-hoc
+	// name/kind re-resolution.  A re-resolve-by-(name,kind) after the fact is UNSOUND: a variant-tagged
+	// overlay chunk legitimately shares its base chunk's (kind,name) (ApplyCstInsertChunk's own duplicate
+	// rule permits it), so DocFindByNameAnyRole sees 2 matches and correctly returns 0 with no kind hint to
+	// narrow by -- there IS no principled fallback index in that case, so this stays -1 (Undo skips honestly)
+	// rather than guess.
+	int insertedAt = -1;
 	int code;
 	if( isInsert )
 	{
 		code = mJob.ApplyCstInsertChunk( a.c_str(),
 		                                 kwBuf, sizeof( kwBuf ),
 		                                 nameBuf, sizeof( nameBuf ),
-		                                 diagBuf, sizeof( diagBuf ) );
+		                                 diagBuf, sizeof( diagBuf ),
+		                                 &insertedAt );
 	}
 	else
 	{
@@ -3352,29 +3361,6 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 	}
 	r.chunkKeyword = String( kwBuf );
 	r.chunkName    = String( nameBuf );
-
-	// Shared-undo U2: capture the FRESHLY-inserted chunk's exact top-level document index (only meaningful
-	// when the insert landed -- codes 2/3) so Undo can remove EXACTLY the 3 spliced items
-	// ([leadSep][chunk][trailSep]) at that index via Job::ApplyCstRemoveItemsAt, instead of the general
-	// Cst::DocEraseChunkTidy heuristic (which leaves a residual blank line on a fresh two-separator insert --
-	// see AgentChunkCrudTest.cpp's T3).  Resolve by (name, kind) when named; an UNNAMED chunk (film/
-	// rasterizer/camera-class) is a per-keyword singleton by ApplyCstInsertChunk's own duplicate-refusal rule,
-	// so DocFindByNameAnyRole's uniqueFallback (passing the EXACT keyword as the kind-suffix, which the "role
-	// == roleKindSuffix" exact-match arm resolves) finds it by position.  `insertedIndex` stays -1 (Undo will
-	// then defensively no-op-refuse) if resolution somehow fails -- should not happen for a chunk that was
-	// JUST inserted under this same lock hold.
-	int insertedIndex = -1;
-	if( isInsert && ( code == 2 || code == 3 ) )
-	{
-		const RISE::Cst::Document* doc = mJob.GetCstDocument();
-		if( doc )
-		{
-			const bool named = nameBuf[0] != '\0';
-			const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
-				*doc, named ? nameBuf : std::string(), nullptr, kwBuf, /*uniqueFallback*/ !named );
-			if( id != 0 ) insertedIndex = RISE::Cst::DocIndexOfNodeId( *doc, id, nullptr );
-		}
-	}
 
 	// Shared-undo U2: trim the conservative two-item over-capture down to only what the erase ACTUALLY
 	// dropped, by diffing the item count across the just-completed remove (only meaningful when the remove
@@ -3519,15 +3505,27 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 		// mutating code); a defensive skip-with-log guards against ever pushing a garbage/empty capture.
 		if( isInsert )
 		{
-			// insertedIndex (if resolved) is the CHUNK's own index -- the splice's leading separator sits one
-			// position earlier (Job::ApplyCstInsertChunk always emits [leadSep][chunk][trailSep] in that
-			// order), so the triple's start index for ApplyCstRemoveItemsAt is insertedIndex - 1.  A resolution
-			// failure (insertedIndex < 0, should not happen for a chunk just inserted under this same lock)
-			// pushes 0 defensively -- Undo's ApplyCstRemoveItemsAt range-checks and refuses harmlessly rather
-			// than remove the wrong items.
-			const int tripleStart = ( insertedIndex >= 1 ) ? ( insertedIndex - 1 ) : 0;
-			mEditor.PushAgentChunkCrudEdit( /*isInsert*/ true, r.chunkName, r.chunkKeyword, a,
-			                                /*docIndex*/ tripleStart, /*wasRasterizer*/ false );
+			// P1-A fix: `insertedAt` is ApplyCstInsertChunk's OWN out-param -- the exact top-level index of
+			// the splice's leading item ([leadSep][chunk][trailSep], `insertedAt` == the lead separator's own
+			// index), never a post-hoc re-resolution.  It is ALWAYS >= 0 on a landed insert (codes 2/3 are the
+			// only way this branch is reached, and the primitive sets it unconditionally on both of its landing
+			// paths) -- but if it somehow were not (defensive; should not happen), pushing a GUESSED index
+			// would let a future Undo silently splice-and-remove the WRONG three items (no identity check at
+			// the primitive level beyond bounds).  SKIP the push honestly instead, matching the remove branch's
+			// own haveChunkCapture-false skip below.
+			if( insertedAt >= 0 )
+			{
+				mEditor.PushAgentChunkCrudEdit( /*isInsert*/ true, r.chunkName, r.chunkKeyword, a,
+				                                /*docIndex*/ insertedAt, /*wasRasterizer*/ false );
+			}
+			else
+			{
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditController: agent chunk insert of `%s` applied (code %d) but ApplyCstInsertChunk "
+					"did not report its committed splice index -- NO undo history record was pushed for this "
+					"insert (should not happen: the primitive sets it unconditionally on every landing code).",
+					r.chunkName.c_str(), code );
+			}
 		}
 		else if( haveChunkCapture )
 		{

@@ -10189,11 +10189,14 @@ namespace {
 // one residual blank line and never corrupts a neighbour's trivia.
 int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned int keywordMax,
                               char* outName, unsigned int nameMax,
-                              char* outDiag, unsigned int diagMax )
+                              char* outDiag, unsigned int diagMax,
+                              int* outInsertedAt )
 {
 	S2CopyOut( outKeyword, keywordMax, std::string() );
 	S2CopyOut( outName,    nameMax,    std::string() );
 	S2CopyOut( outDiag,    diagMax,    std::string() );
+	// outInsertedAt is left UNTOUCHED here (caller's pre-init, e.g. -1, stands) until a landed splice
+	// (codes 2/3 below) sets it to the EXACT `at` this call used -- never a guessed/re-resolved value.
 	if( !pCstDocument || !chunkText || !chunkText[0] ) {
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: no retained CST Document or empty chunk text; insert rejected" );
 		return 0;
@@ -10422,6 +10425,10 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 		const int code = RederiveCstDocumentFull_( std::move( d1 ), ctx, &firstDiag, /*restoreActiveRasterizer*/ !isRasterizerInsert );
 		if( code != 0 || at == endAt ) {
 			if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+			// P1-A: a LANDED positioned splice (2/3) committed its triple at `at` -- report it verbatim,
+			// no post-hoc name/kind resolution (which can under-match a variant overlay sharing its
+			// base's (kind,name) and silently misreport a wrong index).
+			if( ( code == 2 || code == 3 ) && outInsertedAt ) *outInsertedAt = at;
 			return code;
 		}
 	}
@@ -10442,6 +10449,9 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 		GlobalLog()->PrintEx( eLog_Event,
 			"Job::ApplyCstInsertChunk:: the positioned insert fell back to append-at-end, which landed; the `would not derive` diagnostics above came from the positioned attempt and are superseded" );
 	}
+	// P1-A: the append-at-end retry's OWN committed splice position is `endAt` (captured BEFORE either
+	// attempt inserted anything) -- report that, not `at` (the positioned attempt that failed).
+	if( ( code == 2 || code == 3 ) && outInsertedAt ) *outInsertedAt = endAt;
 	return code;
 }
 
@@ -10525,6 +10535,20 @@ int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
 // byte-for-byte, so re-inserting the SAME items at the SAME index restores the pre-erase Document exactly
 // (subject to the dry-run below proving the restored Document still derives -- e.g. nothing removed in the
 // interim now collides with the restored chunk's name).
+// Round-1 P1-B glue-safety helper: true iff the top-level item at `index` in `doc` serializes to bytes
+// whose LAST byte is a newline.  Mirrors Cst.cpp's own (internal-linkage) `ItemEndsInNewline` predicate --
+// that one is `static` and not exposed via Cst.h, so this is a local, deliberately identical reimplementation
+// via the PUBLIC RISE::Cst::SerializeNode surface (same O(one item's bytes) cost).  An out-of-range/absent
+// item is NOT newline-terminated.
+static bool JobItemEndsInNewline_( const RISE::Cst::Document& doc, int index )
+{
+	if( index < 0 || index >= RISE::Cst::DocItemCount( doc ) ) return false;
+	const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, index ) );
+	if( !it ) return false;
+	const std::string s = RISE::Cst::SerializeNode( it );
+	return !s.empty() && s.back() == '\n';
+}
+
 int Job::ApplyCstRestoreChunkAt( const char* bytesInOrder, int atIndex, bool restoreActiveRasterizer,
                                   char* outDiag, unsigned int diagMax )
 {
@@ -10554,9 +10578,30 @@ int Job::ApplyCstRestoreChunkAt( const char* bytesInOrder, int atIndex, bool res
 
 	const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
 	const int at = ( atIndex < 0 ) ? 0 : ( atIndex > nHead ? nHead : atIndex );
+
+	// Round-1 P1-B (glue-safety): an out-of-band Document mutation between the original erase and this
+	// restore can shift indices, landing `at` somewhere whose LEFT NEIGHBOUR does not end in a newline --
+	// splicing the restored bytes verbatim there would glue the restored chunk's keyword directly onto the
+	// neighbour's `}` (`}lambertian_material`).  Mirror Cst.cpp's DocEraseChunkTidy glue-safety reasoning:
+	// synthesize a pure-"\n" Trivia lead item ahead of the restore whenever `at > 0` and the item now at
+	// `at - 1` is not newline-terminated.  In the ordinary no-shift case the left neighbour already ends in
+	// `\n` (that is what the ORIGINAL erase's own glue-safety proved true), so nothing is synthesized and the
+	// restore stays byte-IDENTICAL to the pre-erase Document.  No symmetric right-side check is needed: the
+	// caller's capture (SceneEditController::CaptureAgentChunkForRemoveUndo_ / the post-remove trim in
+	// ApplyAgentChunkCrud_) always includes the chunk's own tidied-away trailing separator when one existed,
+	// so `items` already ends newline-terminated on its own.
 	RISE::Cst::Document d1 = *pCstDocument;
+	int spliceAt = at;
+	if( at > 0 && !JobItemEndsInNewline_( d1, at - 1 ) ) {
+		RISE::Cst::Document leadDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+		RISE::Cst::NodeRef  leadItem = RISE::Cst::DocResolveNodeId( leadDoc, RISE::Cst::DocNodeIdAt( leadDoc, 0 ) );
+		if( leadItem ) {
+			d1 = RISE::Cst::DocInsertItem( d1, spliceAt, leadItem );
+			++spliceAt;
+		}
+	}
 	for( size_t k = 0; k < items.size(); ++k )
-		d1 = RISE::Cst::DocInsertItem( d1, at + (int)k, items[k] );
+		d1 = RISE::Cst::DocInsertItem( d1, spliceAt + (int)k, items[k] );
 
 	char ctx[128];
 	std::snprintf( ctx, sizeof( ctx ), "restore_chunk_at %d", at );
@@ -10576,7 +10621,8 @@ int Job::ApplyCstRestoreChunkAt( const char* bytesInOrder, int atIndex, bool res
 // DESIGN -- leaving a residual blank line when applied to a chunk with TWO fresh separators around it), this
 // is exact: DocRemoveItem(DocInsertItem(doc,i,x),i) round-trips byte-for-byte (Cst.h), so removing the SAME
 // 3 items at the SAME index restores the pre-insert Document byte-identically.
-int Job::ApplyCstRemoveItemsAt( int atIndex, int count, char* outDiag, unsigned int diagMax )
+int Job::ApplyCstRemoveItemsAt( int atIndex, int count, char* outDiag, unsigned int diagMax,
+                                const char* expectedChunkBytes )
 {
 	S2CopyOut( outDiag, diagMax, std::string() );
 	if( !pCstDocument || count <= 0 ) {
@@ -10588,6 +10634,49 @@ int Job::ApplyCstRemoveItemsAt( int atIndex, int count, char* outDiag, unsigned 
 		S2CopyOut( outDiag, diagMax, "atIndex/count out of range for the current Document" );
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveItemsAt:: atIndex=%d count=%d out of range (document has %d items); remove rejected", atIndex, count, nHead );
 		return 0;
+	}
+
+	// Round-1 P2: this primitive is a PURE positional splice with NO identity check of its own -- an
+	// out-of-band Document mutation between the original insert and this Undo call can shift indices so
+	// `atIndex` is IN-RANGE but STALE (some OTHER 3 items now occupy [atIndex, atIndex+count)).  Those wrong
+	// items can derive cleanly (any well-formed, unreferenced triple does), so without this check the dry-run
+	// below would happily commit deleting the WRONG content.  When the caller supplies its own captured exact
+	// bytes of the chunk it expects to still be sitting at the middle of the [lead][chunk][trail] triple
+	// (`atIndex + 1` -- the layout ApplyCstInsertChunk always produces), refuse with an honest code-0
+	// diagnostic on a mismatch, BEFORE touching the Document.  Only meaningful for the documented triple shape
+	// (count == 3); a null `expectedChunkBytes` (or a non-triple `count`, defensively) preserves the pre-fix
+	// positional-only behaviour for any other caller.
+	//
+	// `expectedChunkBytes` is the caller's ORIGINAL agent-supplied chunk text (e.g. SceneEdit::propertyValue
+	// for an AgentInsertChunk record) -- NOT necessarily byte-identical to `SerializeNode` of the spliced
+	// chunk item verbatim, because ApplyCstInsertChunk's own contract only requires "nothing but
+	// pure-whitespace trivia around" the chunk (incidental leading/trailing whitespace in the caller's text is
+	// legal and gets parsed away).  Normalize BOTH sides the same way ApplyCstInsertChunk itself does --
+	// parse `expectedChunkBytes` and extract its own Chunk item -- then compare Chunk-to-Chunk via SerializeNode
+	// (which reproduces exact bytes for whatever was parsed, CST being lossless), so incidental whitespace
+	// differences outside the chunk proper never cause a false-positive mismatch refusal.
+	if( expectedChunkBytes && expectedChunkBytes[0] && count == 3 ) {
+		RISE::Cst::Document expDoc = RISE::Cst::ParseToCst( std::string( expectedChunkBytes ) );
+		RISE::Cst::NodeRef  expChunk;
+		{
+			const int n = RISE::Cst::DocItemCount( expDoc );
+			for( int i = 0; i < n && !expChunk; ++i ) {
+				const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( expDoc, RISE::Cst::DocNodeIdAt( expDoc, i ) );
+				if( it && it->kind == RISE::Cst::NodeKind::Chunk ) expChunk = it;
+			}
+		}
+		const std::string expectedBytes = expChunk ? RISE::Cst::SerializeNode( expChunk ) : std::string( expectedChunkBytes );
+
+		const RISE::Cst::NodeRef chunkAtPos =
+			RISE::Cst::DocResolveNodeId( *pCstDocument, RISE::Cst::DocNodeIdAt( *pCstDocument, atIndex + 1 ) );
+		const std::string actualBytes = chunkAtPos ? RISE::Cst::SerializeNode( chunkAtPos ) : std::string();
+		if( actualBytes != expectedBytes ) {
+			S2CopyOut( outDiag, diagMax, "document changed since the edit was recorded; undo skipped" );
+			GlobalLog()->PrintEx( eLog_Warning,
+				"Job::ApplyCstRemoveItemsAt:: the chunk at atIndex+1=%d no longer matches the captured bytes "
+				"(document changed since the edit was recorded); remove rejected", atIndex + 1 );
+			return 0;
+		}
 	}
 
 	RISE::Cst::Document d1 = *pCstDocument;
