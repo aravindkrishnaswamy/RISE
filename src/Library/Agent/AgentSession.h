@@ -310,10 +310,42 @@ namespace RISE
 			std::string                  note;       //!< index-only advisory: set when the skills ROOT DIRECTORY itself was not found (distinguishing a miswired root from a present-but-empty one; both give an empty index)
 		};
 
-		//! A headless, single-threaded read/validate session over a Job.
-		//! NOT thread-safe (slice 0a is deliberately single-threaded -- no
-		//! mutex).  Owns the Job iff it created it (LoadFromFile); a wrapped
-		//! Job (WrapJob) is non-owning.
+		//! A headless read/validate session over a Job.  Owns the Job iff it
+		//! created it (LoadFromFile); a wrapped Job (WrapJob) is non-owning.
+		//!
+		//! Fix-round-1 P3-a: the slice-0a doc above this line used to claim
+		//! "deliberately single-threaded -- no mutex" for the WHOLE class.
+		//! That has not been true since Model-B F2 slice S2a added
+		//! RenderAsync: this class now has a REAL, NARROW cross-thread
+		//! surface, and the actual contract is:
+		//!
+		//!   * mAsyncCacheMutex-guarded state (mLastPng, mLastSink,
+		//!     mAsyncOutstandingJobId) is the ONLY state touched from more
+		//!     than one thread -- written by the async worker thread
+		//!     (RenderCore_'s cache-population tail; RenderAsync's
+		//!     OutstandingGuard) and read/written by whatever thread calls
+		//!     ReadImage() / ReadImage(maxEdge) / RenderAsync /
+		//!     DrainAsyncRender_.  Every access to these three fields goes
+		//!     through mAsyncCacheMutex; there is no unguarded access
+		//!     anywhere in this class.
+		//!   * EVERYTHING ELSE (mJob, mController, mNextSessionLocalRenderJobId,
+		//!     ProposePatch / InsertChunk / RemoveChunk / Validate / the
+		//!     synchronous Render() family, AttachController) remains
+		//!     single-threaded-caller: call these from ONE thread at a time
+		//!     (typically the RPC dispatcher's serving thread), same as the
+		//!     original slice-0a contract -- no mutex protects them, and
+		//!     none is added by this fix.
+		//!   * LIFETIME across the async surface: RenderAsync's submitted
+		//!     closure captures a raw `this` and runs on the ATTACHED
+		//!     controller's dedicated worker thread, independent of this
+		//!     session's own call stack.  ~AgentSession and AttachController
+		//!     both call DrainAsyncRender_ BEFORE this object's identity
+		//!     changes (destruction, or a different/null controller) --
+		//!     see that method's doc.  A caller that constructs an
+		//!     AgentSession, attaches a controller, and may destroy the
+		//!     session (or detach) while an async render could still be in
+		//!     flight relies on this drain for correctness; it is automatic
+		//!     (no caller action required) as of this fix.
 		class AgentSession
 		{
 		public:
@@ -329,6 +361,19 @@ namespace RISE
 			//! agent).  Null `job` returns null.
 			static std::unique_ptr<AgentSession> WrapJob( IJobPriv* job );
 
+			//! Fix-round-1 P1-A: drains any OUTSTANDING async render before
+			//! this session is destroyed.  RenderAsync's submitted closure
+			//! captures a raw `this` and runs on the controller's dedicated
+			//! worker thread; without a drain, ~AgentSession could return
+			//! (and the caller could then destroy the controller / Job too)
+			//! while that closure is still running RenderCore_ on THIS,
+			//! now-being-destroyed, object -- a real, reachable
+			//! use-after-free (the shipped Mac GUI's live JSON-RPC panel
+			//! sequence: AgentRpcDispatcher owns a unique_ptr<AgentSession>;
+			//! ~AgentRpcDispatcher's implicit member-destruction runs before
+			//! RISEViewportBridge's -shutdown gets to
+			//! RISE_API_DestroySceneEditController).  See DrainAsyncRender_
+			//! for the mechanism (cancel-then-wait, bounded).
 			~AgentSession();
 
 			//! Facet 5 slice 1b: attach a LIVE SceneEditController so
@@ -345,6 +390,13 @@ namespace RISE
 			//! wraps (the caller's responsibility; a live GUI builds both over
 			//! one Job).  When NOT attached (the default / headless slice-0
 			//! mode), ProposePatch is byte-for-byte its prior behaviour.
+			//!
+			//! Fix-round-1 P1-A: drains any outstanding async render against
+			//! the CURRENTLY attached controller (if any) BEFORE switching --
+			//! detaching (or re-attaching to a DIFFERENT controller) while a
+			//! RenderAsync submission against the OLD controller is still in
+			//! flight would otherwise leave that closure racing a controller
+			//! this session no longer considers live.  See DrainAsyncRender_.
 			void AttachController( SceneEditController* controller );
 
 			//! True iff a live controller is attached (ProposePatch routes
@@ -671,6 +723,33 @@ namespace RISE
 			                                bool assumeParked = false,
 			                                std::uint64_t forcedJobId = 0 );
 
+			//! Fix-round-1 P1-A: cancel + bound-wait for any OUTSTANDING
+			//! async render submitted against the controller CURRENTLY
+			//! attached (mController, read/captured before any detach).
+			//! Called from ~AgentSession (BEFORE any member is torn down)
+			//! and from AttachController (BEFORE mController is reassigned
+			//! or cleared) -- both are the two places this session's
+			//! lifetime/identity can change out from under a still-running
+			//! RenderAsync closure.
+			//!
+			//! Mechanism: read mAsyncOutstandingJobId (under
+			//! mAsyncCacheMutex); if it names a job the controller still
+			//! considers outstanding, call
+			//! controller->CancelAgentRender_() (trips the SAME
+			//! CancellableProgressCallback the render's doRenderWork
+			//! installed -- see RenderCore_) then
+			//! controller->WaitForRenderJob(id, timeoutMs).  Cancelling
+			//! FIRST is what keeps this bounded in practice: the render
+			//! aborts at its next progress/block-boundary check rather than
+			//! running to natural completion, so the wait below is short
+			//! even for a slow render.  A no-op (returns immediately) when
+			//! there is no outstanding job, or the controller was already
+			//! null.  `timeoutMs` bounds the WaitForRenderJob call only --
+			//! generous default (mirrors SubmitAgentRenderSync's
+			//! fairness-wait default) since a real cancel should complete
+			//! promptly; a caller with tighter needs can pass less.
+			void DrainAsyncRender_( unsigned int timeoutMs = 30000 );
+
 			IJobPriv* mJob;    //!< the wrapped Job (owned iff mOwnsJob)
 			bool      mOwnsJob;
 
@@ -734,6 +813,19 @@ namespace RISE
 			//! worker populates the cache.  A plain std::mutex, not
 			//! reentrant -- mirrors the controller's own mMutex discipline.
 			mutable std::mutex mAsyncCacheMutex;
+
+			//! Fix-round-1 P1-A: the renderJobId of the MOST RECENT
+			//! RenderAsync submission that has not yet been observed
+			//! complete -- 0 when there is none outstanding (initial state,
+			//! or after DrainAsyncRender_ / a normal completion clears it).
+			//! Guarded by mAsyncCacheMutex (the SAME lock already used for
+			//! the async cache-population race -- this is touched from the
+			//! SAME two thread contexts: the submitting thread, which sets
+			//! it in RenderAsync, and the WORKER thread, which clears it at
+			//! the end of the submitted closure).  Read by DrainAsyncRender_
+			//! (~AgentSession / AttachController) to know whether there is
+			//! anything to cancel-and-wait for.
+			std::uint64_t mAsyncOutstandingJobId = 0;
 		};
 	}
 }

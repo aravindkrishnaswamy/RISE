@@ -170,11 +170,11 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mAgentRenderStop( false )
 , mAgentRenderPending( false )
 , mAgentRenderFn()
-, mAgentRenderClass( RenderClass::AgentPreview )
-, mAgentRenderClientLabel()
 , mAgentRenderJobId( kInvalidRenderJobId )
 , mAgentRenderException()
-, mAgentRenderCompletedGeneration( 0 )
+, mAgentRenderNextTicket( 0 )
+, mAgentRenderServingTicket( 0 )
+, mAgentRenderWaitingSyncCount( 0 )
 , mFullResW( 0 )
 , mFullResH( 0 )
 , mPreviewScale( 1 )
@@ -643,13 +643,44 @@ void SceneEditController::Stop()
 	// (or the dtor's unconditional Stop()) is a correct no-op here too,
 	// same idempotency shape as the mRenderThread teardown below.
 	// Same lost-wakeup discipline as the interactive-loop teardown:
-	// trip the stop flag, hold mMutex around the notify so a worker
-	// between its predicate check and the kernel park cannot miss it.
-	mAgentRenderStop.store( true, std::memory_order_release );
+	// trip the stop flag, hold the lock the WORKER ACTUALLY WAITS ON
+	// around the notify so a worker between its predicate check and the
+	// kernel park cannot miss it.
+	//
+	// Fix-round-1 P1-1: this used to lock mMutex here -- but
+	// AgentRenderWorkerLoop_'s wait (mAgentRenderCV.wait) blocks on
+	// mAgentRenderSlotMutex, NOT mMutex (see that CV's member doc).
+	// Holding the WRONG mutex around the notify gives no lost-wakeup
+	// guarantee at all for THIS wakeup (C++ only promises no missed
+	// wakeup when the notifier holds the SAME mutex the waiter blocks
+	// on) -- a worker between its predicate check and the kernel park
+	// could miss the notify and this Stop() would then hang forever on
+	// the join() below whenever that race actually landed.  Also flip
+	// the stop flag AFTER taking the slot lock so a submission that is
+	// mid-check (holding mAgentRenderSlotMutex, about to test the flag)
+	// is strictly ordered against this store.
 	{
-		std::lock_guard<std::mutex> lk( mMutex );
+		std::lock_guard<std::mutex> slotLk( mAgentRenderSlotMutex );
+		mAgentRenderStop.store( true, std::memory_order_release );
 	}
 	mAgentRenderCV.notify_all();
+	// Fix-round-1 P2-C: cancel an IN-FLIGHT agent render so Stop() does
+	// not stall for the render's full natural duration -- mirrors the
+	// interactive loop's own "trip cancel before joining" idiom just
+	// below.  Harmless no-op if no agent render is in flight (or if the
+	// worker hasn't installed the progress hook this cancels -- see
+	// CancelAgentRender_'s doc).
+	CancelAgentRender_();
+	// Fix-round-1 P1-1: also wake any SubmitAgentRenderSync callers
+	// currently queued on the fairness ticket (mAgentRenderDoneCV) --
+	// their wait predicate now ALSO checks mAgentRenderStop (see
+	// SubmitAgentRenderSync), so this notify lets a sync waiter that was
+	// queued before Stop() unblock with an honest refusal instead of
+	// waiting out its full timeoutMs.
+	{
+		std::lock_guard<std::mutex> slotLk( mAgentRenderSlotMutex );
+	}
+	mAgentRenderDoneCV.notify_all();
 	if( mAgentRenderThread.joinable() )
 	{
 		mAgentRenderThread.join();
@@ -2874,6 +2905,27 @@ void SceneEditController::CancelAndParkRender_( std::unique_lock<std::mutex>& lk
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 }
 
+// Fix-round-1 P2-C: trip the cancel signal for whatever is currently
+// running -- the interactive pass (mRendering) if any, AND (unconditionally,
+// since we have no direct visibility here into "is the agent worker's fn
+// actually calling Rasterize() right now") mCancelProgress itself, which
+// AgentRenderProgress() hands to the agent-render fn as its Job progress
+// callback.  This does NOT take mMutex and does NOT wait -- callers that
+// need "cancelled AND drained" call this THEN separately wait (Stop() joins
+// the worker thread; AgentSession::DrainAsyncRender_ calls
+// SceneEditController::WaitForRenderJob).  Safe to call with no render (of
+// either class) in flight: RequestCancel merely sets a flag that the next
+// RenderLoop pass's Reset() clears at pass-start (see that call site) -- it
+// does not linger and false-cancel a LATER, unrelated render, because
+// nothing runs between this call and Stop()'s join()/DrainAsyncRender_'s
+// wait that would start a NEW agent render into that stale cancelled state
+// (SubmitAgentRenderAsync is refused post-Stop() -- see the P1-1 fix -- and
+// DrainAsyncRender_ detaches before any further submission is possible).
+void SceneEditController::CancelAgentRender_()
+{
+	mCancelProgress.RequestCancel();
+}
+
 namespace {
 
 // Shared-undo U1: the value of a chunk's first `pname` param, mirroring the exact CST tree shape ParseChunk
@@ -3320,8 +3372,6 @@ bool SceneEditController::RunPreviewRenderParked(
 	const String&                clientLabel,
 	RenderJobId*                 outJobId )
 {
-	(void)clientLabel;   // not yet surfaced anywhere -- reserved for later observability
-
 	if( mTxnOpen )
 	{
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: preview render refused inside an open transaction (would stall the gesture)." );
@@ -3344,6 +3394,7 @@ bool SceneEditController::RunPreviewRenderParked(
 		mCurrentRenderJob.id          = jobId;
 		mCurrentRenderJob.renderClass = renderClass;
 		mCurrentRenderJob.active      = true;
+		mCurrentRenderJob.clientLabel = clientLabel;   // Fix-round-1 P3-c: now actually surfaced (was previously discarded via `(void)clientLabel`)
 	}
 
 	// outJobId is assigned BEFORE fn() runs, not after: the job record
@@ -3442,6 +3493,18 @@ void SceneEditController::AgentRenderWorkerLoop_()
 			std::unique_lock<std::mutex> renderLk( mMutex );
 			CancelAndParkRender_( renderLk );
 
+			// Fix-round-1 P2-C: clear any STALE cancel flag left by whatever
+			// just drained (the interactive pass CancelAndParkRender_ may
+			// have just cancelled, or a PRIOR agent render that itself was
+			// cancelled) before this fresh render's `fn` runs -- otherwise a
+			// cancel from an unrelated previous render would instantly
+			// self-cancel this new one.  Mirrors RenderLoop's own per-pass
+			// Reset() (see that call site).  Safe here: mMutex is held for
+			// the whole render (this is the ONLY place that can touch
+			// mCancelProgress until fn() returns), so no concurrent reader
+			// can observe a torn Reset-then-cancel window.
+			mCancelProgress.Reset();
+
 			// RAII: flips the job record's `active` false AND releases the
 			// interactive-loop gate on EVERY exit, including a throw out
 			// of `fn` -- mirrors RunPreviewRenderParked's ActiveFlipGuard,
@@ -3488,13 +3551,16 @@ void SceneEditController::AgentRenderWorkerLoop_()
 		// gate (see RenderLoop's pred / continue check).
 		mCV.notify_all();
 
-		// Free the slot + publish the exception + bump the completion
-		// generation, all under the narrow slot mutex, then notify.
+		// Free the slot + publish the exception, all under the narrow slot
+		// mutex, then notify.  (Fix-round-1 P3-b: this used to also bump
+		// mAgentRenderCompletedGeneration -- deleted; it was write-only
+		// dead state nothing ever read.  mAgentRenderServingTicket, bumped
+		// by SubmitAgentRenderSync's fairness wait below, already serves
+		// as the slot's monotonic occupancy counter.)
 		{
 			std::lock_guard<std::mutex> slotLk( mAgentRenderSlotMutex );
 			mAgentRenderException = caught;
 			mAgentRenderPending   = false;
-			++mAgentRenderCompletedGeneration;
 		}
 		mAgentRenderDoneCV.notify_all();
 	}
@@ -3519,10 +3585,38 @@ bool SceneEditController::SubmitAgentRenderAsync(
 	{
 		std::lock_guard<std::mutex> slotLk( mAgentRenderSlotMutex );
 
+		// Fix-round-1 P1-1: refuse HONESTLY once Stop() has been called
+		// (or is concurrently being called -- the flag is set under this
+		// SAME lock in Stop(), so this read is strictly ordered against
+		// that write).  Before this fix, a post-Stop() submission still
+		// flipped mAgentRenderPending true and handed the slot to a
+		// worker that may already have exited (or is about to) --
+		// SubmitAgentRenderSync's caller then waited on mAgentRenderDoneCV
+		// FOREVER (nobody left to notify it), and the slot stayed
+		// poisoned (mAgentRenderPending stuck true) for any later caller
+		// on this now-dead controller.
+		if( mAgentRenderStop.load( std::memory_order_acquire ) )
+		{
+			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent render submission refused -- controller stopped." );
+			return false;
+		}
+
 		if( mAgentRenderPending )
 		{
 			// Single-slot: a submission is already queued or running.
 			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent render submission refused -- another agent render is already queued or running (single-slot policy)." );
+			return false;
+		}
+
+		// Fix-round-1 P1-2: an async submitter must never jump a
+		// SYNCHRONOUS caller's fair place in line -- SubmitAgentRenderSync
+		// callers queue via a FIFO ticket (see that method) and are owed
+		// the NEXT free slot in arrival order.  Refuse here (rather than
+		// let this async submission win the slot out from under them)
+		// whenever one or more sync callers are currently waiting.
+		if( mAgentRenderWaitingSyncCount > 0 )
+		{
+			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent render submission refused -- queued waiters exist (fair-slot reservation for synchronous callers)." );
 			return false;
 		}
 
@@ -3554,6 +3648,7 @@ bool SceneEditController::SubmitAgentRenderAsync(
 			mCurrentRenderJob.id          = jobId;
 			mCurrentRenderJob.renderClass = RenderClass::AgentPreview;
 			mCurrentRenderJob.active      = true;
+			mCurrentRenderJob.clientLabel = clientLabel;   // Fix-round-1 P3-c: surface who submitted this job
 		}
 		{
 			// Model-B F2 slice S2a: claim the interactive-loop gate for
@@ -3567,11 +3662,9 @@ bool SceneEditController::SubmitAgentRenderAsync(
 		}
 
 		mAgentRenderFn          = std::move( fn );
-		mAgentRenderClass        = RenderClass::AgentPreview;
-		mAgentRenderClientLabel  = clientLabel;
-		mAgentRenderJobId        = jobId;
-		mAgentRenderException    = nullptr;
-		mAgentRenderPending      = true;
+		mAgentRenderJobId       = jobId;
+		mAgentRenderException   = nullptr;
+		mAgentRenderPending     = true;
 	}
 
 	if( outJobId ) *outJobId = jobId;
@@ -3580,7 +3673,8 @@ bool SceneEditController::SubmitAgentRenderAsync(
 	return true;
 }
 
-// The synchronous convenience wrapper: submit, then block until the
+// The synchronous convenience wrapper: FAIRLY wait for the slot (see the
+// header doc's fairness-ticket writeup), submit, then block until the
 // worker signals completion of THIS job (waiting on mAgentRenderDoneCV,
 // guarded by mAgentRenderSlotMutex, for the slot to free up), then
 // rethrow whatever exception the worker captured (if any) so this call's
@@ -3588,24 +3682,108 @@ bool SceneEditController::SubmitAgentRenderAsync(
 bool SceneEditController::SubmitAgentRenderSync(
 	std::function<void()> fn,
 	const String&         clientLabel,
-	RenderJobId*          outJobId )
+	RenderJobId*          outJobId,
+	unsigned int          timeoutMs )
 {
+	// Fix-round-1 P1-2: claim a FIFO ticket before attempting to submit,
+	// so a burst of concurrent async submitters cannot systematically
+	// starve this call (SubmitAgentRenderAsync refuses outright whenever
+	// mAgentRenderWaitingSyncCount > 0, so once we're in the queue no
+	// NEW async submission can steal the slot ahead of us -- only the
+	// occupant that was ALREADY running when we arrived can still finish
+	// first, which is correct FIFO behaviour, not starvation).
+	unsigned long long myTicket = 0;
+	{
+		std::lock_guard<std::mutex> slotLk( mAgentRenderSlotMutex );
+		myTicket = mAgentRenderNextTicket++;
+		++mAgentRenderWaitingSyncCount;
+	}
+
+	// RAII: whatever happens below (success, refusal, or a fairness-wait
+	// timeout), this ticket's turn must be released exactly once so the
+	// waiter behind it (if any) is never stranded.
+	struct TicketGuard {
+		SceneEditController& self;
+		bool                 released = false;
+		~TicketGuard() { Release(); }
+		void Release() {
+			if( released ) return;
+			released = true;
+			{
+				std::lock_guard<std::mutex> slotLk( self.mAgentRenderSlotMutex );
+				++self.mAgentRenderServingTicket;
+				--self.mAgentRenderWaitingSyncCount;
+			}
+			self.mAgentRenderDoneCV.notify_all();
+		}
+	} ticketGuard{ *this };
+
+	bool stoppedBeforeOurTurn = false;
+	{
+		std::unique_lock<std::mutex> slotLk( mAgentRenderSlotMutex );
+		const bool onTime = mAgentRenderDoneCV.wait_for( slotLk, std::chrono::milliseconds( timeoutMs ), [&]{
+			// Fix-round-1 P1-1: also wake (and give up) on Stop() --
+			// mirrors SubmitAgentRenderAsync's own stop refusal, so a
+			// sync waiter queued before Stop() is called unblocks
+			// honestly instead of waiting out its full timeoutMs.
+			return mAgentRenderStop.load( std::memory_order_acquire )
+				|| ( !mAgentRenderPending && myTicket == mAgentRenderServingTicket );
+		} );
+		if( !onTime )
+		{
+			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: SubmitAgentRenderSync fairness wait timed out after %ums.", timeoutMs );
+			return false;
+		}
+		stoppedBeforeOurTurn = mAgentRenderStop.load( std::memory_order_acquire );
+	}
+
+	// Fix-round-1 P1-2 bug fix (caught by this round's OWN red-prove test,
+	// RunFairSlotReservationTest, which measured 0/200 sync successes on
+	// the first pass): release OUR ticket HERE -- BEFORE calling
+	// SubmitAgentRenderAsync below, not after.  SubmitAgentRenderAsync
+	// refuses outright whenever mAgentRenderWaitingSyncCount > 0 (that IS
+	// the "don't let async jump a queued sync ticket" rule) -- but that
+	// count still includes OUR OWN outstanding ticket until we release
+	// it, so calling SubmitAgentRenderAsync while still "holding the
+	// queue" made every sync submission refuse ITSELF.  It is now
+	// genuinely our turn (the slot is free AND no other queued ticket is
+	// ahead of ours), so releasing before submitting is correct: no OTHER
+	// async submitter can have snuck in between our release and our
+	// submit (this is all single-threaded from here -- no window for
+	// another thread's SubmitAgentRenderAsync to run between these two
+	// lines on OUR thread), and no OTHER sync waiter can jump ahead
+	// either (mAgentRenderServingTicket only just advanced past ours, so
+	// the NEXT ticket holder's wait predicate requires !mAgentRenderPending
+	// too, which goes true only once our render finishes).
+	ticketGuard.Release();
+
+	if( stoppedBeforeOurTurn )
+	{
+		return false;   // SubmitAgentRenderAsync below would refuse anyway; fail fast with the same honest cause
+	}
+
 	RenderJobId jobId = kInvalidRenderJobId;
 	if( !SubmitAgentRenderAsync( std::move( fn ), clientLabel, &jobId ) )
 	{
 		return false;
 	}
+
 	if( outJobId ) *outJobId = jobId;
 
 	std::exception_ptr caught;
 	{
 		std::unique_lock<std::mutex> slotLk( mAgentRenderSlotMutex );
 		// Wait until the slot this submission occupied is no longer
-		// pending -- i.e. the worker has finished running it.  Since
-		// this is a synchronous call and the single-slot policy refuses
-		// concurrent submissions, mAgentRenderPending going false can
-		// only mean THIS job finished (no other submission could have
-		// been accepted in between to reuse the slot).
+		// pending -- i.e. the worker has finished running it.  This is
+		// UNBOUNDED (not governed by timeoutMs, which only bounds the
+		// fairness wait above) -- a caller that reached the front of the
+		// queue always gets its own render's result, however long the
+		// render takes, matching the pre-fix contract.  Note this can no
+		// longer alias onto a DIFFERENT later submission's completion:
+		// with the fairness fix, no other submission (sync OR async) can
+		// be accepted into the slot between our SubmitAgentRenderAsync
+		// call above and the worker picking it up, because the slot was
+		// free and immediately claimed by us.
 		mAgentRenderDoneCV.wait( slotLk, [&]{ return !mAgentRenderPending; } );
 		caught = mAgentRenderException;
 		mAgentRenderException = nullptr;
@@ -4267,6 +4445,7 @@ void SceneEditController::RenderLoop()
 				mCurrentRenderJob.id          = mNextRenderJobId += kControllerRenderJobIdStride;
 				mCurrentRenderJob.renderClass = RenderClass::Interactive;
 				mCurrentRenderJob.active      = true;
+				mCurrentRenderJob.clientLabel = String();   // Fix-round-1 P3-c: an Interactive-class job has no client label -- clear any stale value left by a prior AgentPreview job record
 			}
 		}
 

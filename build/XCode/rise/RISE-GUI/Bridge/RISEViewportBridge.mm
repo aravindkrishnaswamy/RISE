@@ -462,6 +462,23 @@ private:
     // (the lifetime-order invariant noted at the ivar declaration).
     // Idempotent: -shutdown may be called explicitly and again from
     // -dealloc; the nil guard makes the second call a no-op.
+    //
+    // Fix-round-1 P1-A belt-and-braces: explicitly detach the session's
+    // controller BEFORE deleting the dispatcher.  AgentSession's C++
+    // destructor (reached via the `delete` below, through
+    // ~AgentRpcDispatcher's implicit unique_ptr<AgentSession> teardown)
+    // now unconditionally drains any outstanding async render on its own —
+    // this call is not required for correctness — but calling
+    // AttachController(nullptr) here drains (cancel + bound-wait) while
+    // `_controller` is STILL VALID and this ordering is still explicit at
+    // the call site, rather than relying solely on the destructor reaching
+    // the same drain moments later against a controller that is ALSO
+    // mid-teardown.  Cheap (a null-check + a possible no-op wait) and
+    // removes any doubt about ordering for a future maintainer reading
+    // this method top-to-bottom.
+    if (_agentDispatcher && _agentDispatcher->Session()) {
+        _agentDispatcher->Session()->AttachController(nullptr);
+    }
     delete _agentDispatcher;
     _agentDispatcher = nullptr;
 

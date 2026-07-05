@@ -280,11 +280,21 @@ namespace RISE
 		//! is false when no render is presently in flight; `id`/`renderClass`
 		//! then reflect the MOST RECENTLY assigned job (stale, informational
 		//! only).
+		//!
+		//! Fix-round-1 P3-c: `clientLabel` echoes the diagnostic tag a
+		//! caller passed to SubmitAgentRenderAsync / SubmitAgentRenderSync
+		//! (empty for an Interactive-class job, which has no client label
+		//! concept).  Was write-only dead state (mAgentRenderClientLabel
+		//! was recorded but never read by anything) -- surfaced here so a
+		//! Status() consumer can tell WHICH agent submitted an in-flight
+		//! render, useful for S2b's gate predicate and for diagnosing which
+		//! caller is occupying the single slot.
 		struct RenderJobStatus
 		{
 			RenderJobId  id          = kInvalidRenderJobId;
 			RenderClass  renderClass = RenderClass::Interactive;
 			bool         active      = false;
+			String       clientLabel;
 		};
 
 		//! Facet 5 slice 1b: the structured result of a CONTROLLER-ROUTED
@@ -495,6 +505,22 @@ namespace RISE
 		//! depth-N queue.  Also refused (identical to RunPreviewRenderParked)
 		//! while an editor transaction is open.
 		//!
+		//! Fix-round-1 P1-1: also refused, honestly and immediately, once
+		//! Stop() has been (or is being) called -- mAgentRenderStop is
+		//! checked under the SAME mAgentRenderSlotMutex hold as the
+		//! single-slot check, so a submission racing Stop() either lands
+		//! cleanly BEFORE the stop flag is visible (and the worker will run
+		//! it -- Stop() joins the worker only AFTER it drains) or is
+		//! refused outright ("controller stopped") -- there is no window
+		//! where a submission is accepted into a slot the worker will never
+		//! service again.
+		//!
+		//! Fix-round-1 P1-2: also refused when one or more SYNCHRONOUS
+		//! callers (SubmitAgentRenderSync) are already WAITING for a fair
+		//! turn at the slot ("queued waiters exist") -- an async submitter
+		//! must never jump a waiting sync ticket.  See SubmitAgentRenderSync
+		//! for the fairness scheme this refusal protects.
+		//!
 		//! `fn` runs on the WORKER thread, not the caller's -- it must be
 		//! self-contained (no thread-affinity assumptions) and, like
 		//! RunPreviewRenderParked's `fn`, must not re-enter this controller
@@ -527,10 +553,47 @@ namespace RISE
 		//! direct synchronous call of `fn` -- callers that wrap this in
 		//! try/catch see the exact same exception a direct call would have
 		//! produced.
+		//!
+		//! Fix-round-1 P1-2 (fair reservation): under async-submission
+		//! contention, a naive "submit-or-reject" sync caller starves --
+		//! an async-spam loop wins the single-slot race almost every time
+		//! (measured ~0-2/200 sync successes).  Fix: a FIFO ticket queue,
+		//! ~40 lines, entirely under the existing mAgentRenderSlotMutex (no
+		//! new lock).  A sync call takes the NEXT ticket
+		//! (mAgentRenderNextTicket++) then waits until BOTH (a) the slot is
+		//! free (!mAgentRenderPending) AND (b) its ticket is the one
+		//! currently being served (ticket == mAgentRenderServingTicket) --
+		//! so sync waiters are served in the order they arrived, and an
+		//! async submitter that shows up while ANY sync ticket is
+		//! outstanding is refused outright by SubmitAgentRenderAsync
+		//! ("queued waiters exist") rather than allowed to jump the queue.
+		//! Async submitters themselves never take a ticket and never wait --
+		//! they keep the existing reject-if-busy semantics when no sync
+		//! waiter is queued.  On a successful wait, this caller submits via
+		//! SubmitAgentRenderAsync (now guaranteed to win the race -- no
+		//! async submitter can have snuck in ahead of it) then advances
+		//! mAgentRenderServingTicket so the NEXT queued sync waiter (if any)
+		//! is released.  The ticket is released (mAgentRenderServingTicket
+		//! advanced, waiters notified) on EVERY exit from the wait --
+		//! success, refusal, or a `timeoutMs` timeout -- so a timed-out
+		//! waiter never strands the queue for whoever is behind it.
+		//!
+		//! `timeoutMs` bounds the FAIRNESS WAIT ONLY (the queue-position
+		//! wait before this call is even allowed to submit) -- it does NOT
+		//! bound the render itself, which this call still waits for
+		//! unconditionally once submitted (matching the pre-fix contract:
+		//! a caller that reaches the front of the queue always gets its
+		//! render's result, however long the render takes).  Default is
+		//! generous (30000ms) since a caller that actually wants a tight
+		//! queueing deadline should pass one explicitly.  Returns false
+		//! (fn NEVER invoked) on a fairness-wait timeout, or on the same
+		//! refusal causes as SubmitAgentRenderAsync (open transaction,
+		//! Stop() called) discovered once this caller reaches the front.
 		bool SubmitAgentRenderSync(
 			std::function<void()> fn,
 			const String&         clientLabel,
-			RenderJobId*          outJobId );
+			RenderJobId*          outJobId,
+			unsigned int          timeoutMs = 30000 );
 
 		//! Model-B F2 slice S2a: status surface for a render job id.  For a
 		//! COORDINATOR (controller-minted, EVEN) id that matches the
@@ -566,6 +629,43 @@ namespace RISE
 		//! (no wait) -- use this for a non-blocking "is it done yet" check
 		//! that still validates the id.
 		bool WaitForRenderJob( RenderJobId id, unsigned int timeoutMs ) const;
+
+		//! Fix-round-1 P2-C: trip the cancel signal for an IN-FLIGHT agent
+		//! render, WITHOUT blocking.  Reuses the EXACT SAME
+		//! CancellableProgressCallback (mCancelProgress) the interactive
+		//! loop already uses -- safe to share because the two render
+		//! classes are MUTUALLY EXCLUSIVE in time (the agent worker holds
+		//! mMutex, via CancelAndParkRender_, for its render's whole
+		//! duration, so RenderLoop cannot be mid-pass -- and cannot call
+		//! mCancelProgress.Reset() -- while an agent render is in flight;
+		//! see RenderLoop's per-pass Reset() site, which only runs under a
+		//! BRIEF mMutex hold at pass-start, never contended against the
+		//! worker's render-duration hold).  For this to actually ABORT the
+		//! render (not just mark it cancelled), the render's progress
+		//! callback must be this controller's mCancelProgress -- see
+		//! AgentRenderProgress() below, which AgentSession's doRenderWork
+		//! installs on the Job before calling Rasterize() when a controller
+		//! is attached, exactly mirroring how the interactive rasterizer
+		//! gets it.  Safe to call whether or not a render is actually in
+		//! flight (a no-op cancel on an idle controller).  Called by
+		//! Stop() (so a slow agent render does not stall teardown
+		//! unboundedly) and by AgentSession's DrainAsyncRender_ (so a
+		//! session teardown mid-render completes promptly instead of
+		//! waiting for a possibly-long render to run to completion).
+		void CancelAgentRender_();
+
+		//! Fix-round-1 P2-C: the progress callback an agent render's
+		//! doRenderWork must install on the Job (via IJob::SetProgress)
+		//! before calling Rasterize(), and restore afterward, so
+		//! CancelAgentRender_ / Stop() can actually abort an in-flight
+		//! agent render instead of merely marking mCancelProgress cancelled
+		//! while the rasterizer's block-fetch loop keeps consuming tiles.
+		//! Returns mCancelProgress by address -- valid for the
+		//! controller's whole lifetime, so AgentSession (which borrows the
+		//! controller and never outlives it while attached) can hold the
+		//! pointer for the duration of one render without a dangling-ref
+		//! concern.  Null-safe by construction: this never returns null.
+		IProgressCallback* AgentRenderProgress() { return &mCancelProgress; }
 
 		//! @param job                     borrowed; caller keeps alive.
 		//!                                Must be IJobPriv (which IJob
@@ -1548,8 +1648,13 @@ namespace RISE
 		std::atomic<bool>           mAgentRenderStop;      // set by Stop(); wakes the worker to exit
 		bool                        mAgentRenderPending;   // a submission is queued or currently running -- guarded by mAgentRenderSlotMutex
 		std::function<void()>       mAgentRenderFn;        // the pending/running submission -- guarded by mAgentRenderSlotMutex
-		RenderClass                 mAgentRenderClass;
-		String                      mAgentRenderClientLabel;
+		// Fix-round-1 P3-c: mAgentRenderClass / mAgentRenderClientLabel
+		// (a second, slot-scoped copy of this bookkeeping) were DELETED --
+		// both were write-only dead state (set on every submit, never read
+		// by anything).  mCurrentRenderJob.renderClass / .clientLabel
+		// (guarded by mJobStatusMutex, populated at the SAME submit sites)
+		// already carry the identical information to the surface that
+		// actually reads it (GetRenderJobStatus / CurrentRenderJob).
 		RenderJobId                 mAgentRenderJobId;     // the id assigned to the CURRENT slot occupant -- guarded by mAgentRenderSlotMutex
 		//! Set by the worker just before it signals completion on
 		//! mAgentRenderDoneCV: true iff mAgentRenderFn threw.  Consumed
@@ -1562,16 +1667,42 @@ namespace RISE
 		//! submission (never allowed to linger past the slot it
 		//! belonged to).  Guarded by mAgentRenderSlotMutex.
 		std::exception_ptr          mAgentRenderException;
-		//! Bumped by the worker every time it finishes a submission
-		//! (success or throw) -- lets WaitForRenderJob distinguish "the
-		//! slot's occupant is still THIS job, still running" from "the
-		//! slot's occupant is THIS job, now finished" without racing a
-		//! generation-counter ABA (a NEW submission reusing the same slot
-		//! bumps this too, so a waiter for an OLD id that gets bumped away
-		//! by a newer submission still observes completion promptly
-		//! rather than blocking on a slot that no longer belongs to it).
-		//! Guarded by mAgentRenderSlotMutex.
-		unsigned int                mAgentRenderCompletedGeneration;
+
+		//! Fix-round-1 P1-2: FIFO fairness ticket scheme guarding the
+		//! single slot against systematic sync-caller starvation under
+		//! async-submission contention.  All THREE fields guarded by
+		//! mAgentRenderSlotMutex (same lock as the rest of the slot
+		//! bookkeeping -- no new lock).
+		//!
+		//!   mAgentRenderNextTicket    -- monotonic counter; a sync waiter
+		//!                                claims ticket = mAgentRenderNextTicket++
+		//!                                on arrival.
+		//!   mAgentRenderServingTicket -- the ticket currently allowed to
+		//!                                submit.  A sync waiter blocks
+		//!                                until BOTH the slot is free AND
+		//!                                its ticket == this value; on
+		//!                                taking its turn (successfully OR
+		//!                                on refusal/timeout -- see
+		//!                                SubmitAgentRenderSync) it
+		//!                                advances this by 1 and notifies,
+		//!                                releasing the NEXT queued waiter.
+		//!   mAgentRenderWaitingSyncCount -- how many sync callers are
+		//!                                CURRENTLY queued (claimed a
+		//!                                ticket, not yet released it).
+		//!                                SubmitAgentRenderAsync refuses
+		//!                                outright ("queued waiters exist")
+		//!                                whenever this is nonzero, so an
+		//!                                async submitter can never jump a
+		//!                                waiting sync ticket.
+		//!
+		//! Replaces the former mAgentRenderCompletedGeneration (write-only
+		//! dead state -- bumped by the worker, never read by anything):
+		//! mAgentRenderServingTicket already serves as a monotonic
+		//! generation counter for the slot's occupancy history, so a
+		//! second counter added nothing.
+		unsigned long long          mAgentRenderNextTicket;
+		unsigned long long          mAgentRenderServingTicket;
+		unsigned int                mAgentRenderWaitingSyncCount;
 
 		// Adaptive preview-resolution divisor.  1 = full camera res;
 		// 2 = half each axis = 1/4 the pixel work; 4 = 1/16; 8 = 1/64;

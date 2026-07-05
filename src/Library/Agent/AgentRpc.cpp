@@ -654,7 +654,15 @@ namespace RISE
 				//    a coordinator job.  A FAILED render (ok:false) still
 				//    carries a real renderJobId when the render actually
 				//    ran -- this field names "a call that ran", not "a call
-				//    that succeeded".)
+				//    that succeeded".  Fix-round-1 P3-d: {"async":true}
+				//    REQUIRES a LIVE in-app controller (a running GUI
+				//    session) -- `rise --agent-stdio` is headless (no
+				//    SceneEditController exists in that process), so async
+				//    is unreachable there by design; it refuses cleanly via
+				//    AgentSession::RenderAsync's own "no controller
+				//    attached" message rather than silently downgrading to
+				//    a synchronous render.  Use the non-async `render` verb
+				//    from `--agent-stdio`.)
 				//--------------------------------------------------------------
 				if( m == "render" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );

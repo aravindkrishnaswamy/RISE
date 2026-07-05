@@ -537,9 +537,90 @@ namespace RISE
 
 		AgentSession::~AgentSession()
 		{
-			safe_release( mLastSink );
+			// Fix-round-1 P1-A: drain BEFORE touching any member -- the
+			// controller-attached worker's RenderAsync closure captures a
+			// raw `this` and may still be running RenderCore_ on it right
+			// now.  DrainAsyncRender_ cancels (so the render aborts
+			// promptly rather than running to completion) then blocks
+			// until the controller reports the job no longer active, so by
+			// the time we reach the lines below, no other thread can be
+			// mid-call into this object.
+			DrainAsyncRender_();
+
+			// Fix-round-1 P1-A: take mAsyncCacheMutex for the sink release
+			// -- mLastSink is the SAME field the (now-drained, but let's be
+			// precise about what "drained" guarantees) worker thread writes
+			// under this lock at the tail of a successful async render (see
+			// RenderCore_'s cache-population tail).  DrainAsyncRender_
+			// above already guarantees no worker call into THIS object is
+			// still in flight, so this lock is technically uncontended by
+			// the time we get here -- but taking it anyway costs nothing
+			// and removes any doubt for a future maintainer who changes the
+			// drain's bound (e.g. a shorter timeout) without re-deriving
+			// this invariant from scratch.
+			{
+				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				safe_release( mLastSink );
+				mLastSink = nullptr;
+			}
 			if( mOwnsJob && mJob ) mJob->release();
 			mJob = nullptr;
+		}
+
+		// Fix-round-1 P1-A: see the header doc for the full contract.  Reads
+		// (and, on completion, clears) mAsyncOutstandingJobId under
+		// mAsyncCacheMutex, then -- OUTSIDE that lock (cancel/wait must not
+		// hold a lock the worker thread might need in order to make
+		// progress toward completing) -- cancels and bound-waits on the
+		// controller that was attached AT THE TIME the async render was
+		// submitted.
+		void AgentSession::DrainAsyncRender_( unsigned int timeoutMs )
+		{
+			std::uint64_t outstandingId = 0;
+			{
+				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				outstandingId = mAsyncOutstandingJobId;
+			}
+			if( outstandingId == 0 ) return;   // nothing outstanding -- common case, cheap check
+
+			// Fix-round-1 P1-A: mController is read here, OUTSIDE
+			// mAsyncCacheMutex -- this method is called from ~AgentSession
+			// (single-threaded teardown; nothing else touches mController by
+			// then) and from AttachController (which is documented
+			// single-caller / main-thread, same contract as the rest of this
+			// class's non-Render surface -- see the class's original
+			// "deliberately single-threaded" note, now narrowed by P3-a's
+			// doc fix to spell out exactly which calls are cross-thread).
+			SceneEditController* controllerAtSubmitTime = mController;
+			if( !controllerAtSubmitTime ) {
+				// No controller to ask (already detached some other way) --
+				// there is nothing this method can drain against.  Clear the
+				// stale id so a later drain doesn't keep retrying a job no
+				// controller will ever report on.
+				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				mAsyncOutstandingJobId = 0;
+				return;
+			}
+
+			// Cancel FIRST -- this is what keeps the wait below bounded in
+			// practice even for a slow render: the render aborts at its next
+			// progress/block-boundary check (see SceneEditController::
+			// CancelAgentRender_ + AgentSession::RenderCore_'s progress-hook
+			// install) instead of running to natural completion.
+			controllerAtSubmitTime->CancelAgentRender_();
+			controllerAtSubmitTime->WaitForRenderJob(
+				static_cast<SceneEditController::RenderJobId>( outstandingId ), timeoutMs );
+
+			// Whether the wait observed completion or timed out, this
+			// session is done trying to drain THIS id -- clear it so a
+			// second drain call (e.g. AttachController(nullptr) followed by
+			// ~AgentSession) is a fast no-op rather than re-issuing a cancel
+			// against a job the controller may have already recycled the
+			// slot out from under.
+			{
+				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				if( mAsyncOutstandingJobId == outstandingId ) mAsyncOutstandingJobId = 0;
+			}
 		}
 
 		std::unique_ptr<AgentSession> AgentSession::LoadFromFile( const std::string& path )
@@ -561,6 +642,16 @@ namespace RISE
 
 		void AgentSession::AttachController( SceneEditController* controller )
 		{
+			// Fix-round-1 P1-A: drain any outstanding async render against
+			// the OLD controller BEFORE swapping mController -- a RenderAsync
+			// closure captured `this` and (if still in flight) will call back
+			// into RenderCore_'s cache-population tail regardless of what
+			// mController points to by the time it finishes; draining first
+			// means that closure has ALREADY completed (or been cancelled to
+			// completion) before this session's notion of "which controller
+			// is live" changes out from under it.
+			DrainAsyncRender_();
+
 			// BORROWED: no addref/release -- the caller owns the controller and
 			// must outlive this session (or detach first).  Null detaches.
 			mController = controller;
@@ -1308,6 +1399,18 @@ namespace RISE
 			ICamera* activeCam = nullptr;
 			bool renderRan = false;
 			bool rendered = false;
+			// Fix-round-1 P2-C: true iff CancelAgentRender_ / Stop() tripped
+			// the controller's cancel signal DURING this specific render --
+			// checked right after Rasterize() returns, before the flag could
+			// be cleared by anything else (nothing else touches
+			// mCancelProgress while this worker holds mMutex -- see the
+			// worker loop's own Reset() site).  Job::Rasterize() has no
+			// cancelled/not-cancelled return value of its own (it always
+			// returns true once RasterizeScene is invoked, whether or not a
+			// block dispatcher aborted early) and the sink may hold a
+			// PARTIAL image at that point -- so this flag is the ONLY
+			// reliable signal that the render was actually cut short.
+			bool wasCancelled = false;
 			InMemoryRasterizerOutput* sink = nullptr;
 
 			// Unwind guard for OUR owning ref on `sink` (refcount 1 from
@@ -1435,7 +1538,34 @@ namespace RISE
 				// no extra addref here.
 				sink = new InMemoryRasterizerOutput();
 				rast->AddRasterizerOutput( sink );
+
+				// Fix-round-1 P2-C: when a LIVE controller is attached, install
+				// its mCancelProgress (via AgentRenderProgress()) as this Job's
+				// progress callback BEFORE Rasterize() -- this is what makes
+				// SceneEditController::CancelAgentRender_ / Stop() able to
+				// actually ABORT an in-flight agent render instead of merely
+				// flipping a flag nothing downstream ever consults.  Job::
+				// Rasterize forwards pGlobalProgress to the rasterizer via
+				// SetProgressCallback (see Job.cpp), and the block-fetch loop
+				// (PixelBasedRasterizerHelper.cpp) polls IsCancelled()/Progress()
+				// between blocks -- the SAME mechanism the interactive preview
+				// rasterizer already relies on for cancel-and-park.  Restored to
+				// null afterward: nothing else in this call path ever installs a
+				// progress callback on this Job (headless agent renders have
+				// never set one), so null is the correct "back to how it was"
+				// value, not just a convenient default.
+				if( mController ) {
+					mJob->SetProgress( mController->AgentRenderProgress() );
+				}
 				rendered = mJob->Rasterize();
+				if( mController ) {
+					// Read the cancel state BEFORE clearing the progress
+					// hook -- IsCancelRequested() is a query, not a
+					// consuming read, but keep the order symmetric with the
+					// install-then-run-then-uninstall shape above.
+					wasCancelled = mController->IsCancelRequested();
+					mJob->SetProgress( nullptr );
+				}
 				renderRan = true;
 
 				// ---- Restore, in reverse order, BEFORE unlocking (live mode)
@@ -1546,16 +1676,33 @@ namespace RISE
 				catch( const std::exception& e ) { thrownMessage = e.what(); }
 				catch( ... )                     { thrownMessage = "unknown exception"; }
 				if( !parked && thrownMessage.empty() ) {
-					// Refused (an editor transaction is open): the override
-					// window could not be safely parked against the
-					// interactive render thread.  Fall back to an UN-overridden
-					// render rather than risk racing the shared Film/camera
-					// state -- honest degradation, reported in `message`.
-					AgentRenderParams noOverride;
-					noOverride.samples = params.samples;
-					AgentRenderResult fallback = RenderCore_( noOverride );
-					fallback.message = "preview override skipped: an editor transaction is open (render ran without the override) -- " + fallback.message;
-					return fallback;
+					// Fix-round-1 P2-B: refused (an editor transaction is
+					// open) -- the override window could not be safely
+					// parked against the interactive render thread.
+					//
+					// DECIDED SEMANTICS: refuse HONESTLY and RETRIABLY.  The
+					// prior code fell back to an un-overridden render by
+					// re-entering RenderCore_(noOverride) -- but with a
+					// controller attached and no override requested, that
+					// recursive call lands in the `else if( mController )`
+					// no-override branch below, which routes through
+					// SubmitAgentRenderSync -- and SubmitAgentRenderSync
+					// refuses for the EXACT SAME reason (mTxnOpen), producing
+					// a confusing COMPOUND failure message rather than a
+					// clean signal.  This was dead code protecting against a
+					// race that no longer exists (S2a's mTxnOpen check is
+					// stable for the duration of one RenderCore_ call), not a
+					// real degrade path.  Mirror the edit verbs' retriable
+					// phrasing (see ApplyAgentParamEdit / ApplyAgentChunkCrud_'s
+					// "editor transaction in progress -- retry after the
+					// gesture completes") so a caller sees the identical
+					// wording whether it hit a param edit, a chunk edit, or a
+					// preview render.
+					res.ok          = false;
+					res.integrator  = mJob->GetActiveRasterizerName();
+					res.renderJobId = renderJobId;   // 0 here -- no render ran, matching the other pre-flight refusal paths in this function
+					res.message     = "editor transaction in progress -- retry after the gesture completes";
+					return res;
 				}
 				if( !thrownMessage.empty() ) {
 					res.ok          = false;
@@ -1643,6 +1790,25 @@ namespace RISE
 				return res;
 			}
 
+			// Fix-round-1 P2-C: a CANCELLED render (Stop() / a session
+			// teardown drain tripped the controller's cancel signal while
+			// this render was in flight) is reported HONESTLY as a clean
+			// failure, never as a partial-image success -- Job::Rasterize()
+			// has no cancelled/success distinction of its own, and the sink
+			// may well satisfy HasImage() with a partially-filled frame at
+			// this point (some blocks flushed before the abort landed).
+			// Checked BEFORE the renderRan/rendered/HasImage gate below so a
+			// cancelled render never falls through to "ok" just because
+			// SOME pixels got written.
+			if( wasCancelled ) {
+				safe_release( sink );
+				res.ok          = false;
+				res.integrator  = mJob->GetActiveRasterizerName();
+				res.renderJobId = renderJobId;
+				res.message     = "render cancelled";
+				return res;
+			}
+
 			if( !renderRan || !rendered || !sink || !sink->HasImage() ) {
 				safe_release( sink );
 				res.ok = false;
@@ -1703,37 +1869,46 @@ namespace RISE
 			// via RenderCore_'s `assumeParked` mode -- it must NOT re-enter
 			// the controller's routing (that would self-deadlock on
 			// mMutex, since this closure already runs INSIDE the worker's
-			// cancel-and-park hold).  The submitted closure captures `this`
-			// and `params` by value (both outlive the async call: `this`
-			// per AgentSession's normal lifetime contract, `params` copied
-			// into the lambda) -- RenderCore_'s EXISTING cache-population
-			// tail (mLastPng / mLastSink, guarded by mAsyncCacheMutex) runs
-			// on the worker thread and stashes the result there on a
-			// successful render, exactly as it already does for a
-			// synchronous call; a later ReadImage() call (from any thread)
-			// picks it up.  S2a's minimal surface exposes completion via
-			// RenderStatus/RenderWait + ReadImage rather than returning the
-			// full AgentRenderResult from this call (there is nothing to
-			// return yet at submit time -- the render hasn't run).
+			// cancel-and-park hold).  `assumeParked=true` skips RenderCore_'s
+			// own controller routing (this closure already runs INSIDE the
+			// worker's cancel-and-park hold, so routing again would
+			// self-deadlock); `forcedJobId` is left at its default 0 -- S2a's
+			// minimal surface does not thread the id INTO the result the
+			// worker discards (`r` below), only OUT via
+			// SubmitAgentRenderAsync's `outJobId` param, which the caller
+			// already has.  The cache-population tail inside RenderCore_
+			// (guarded by mAsyncCacheMutex) stashes mLastPng/mLastSink on a
+			// successful render, which is how ReadImage() picks up the async
+			// result once it completes.  S2a's minimal surface exposes
+			// completion via RenderStatus/RenderWait + ReadImage rather than
+			// returning the full AgentRenderResult from this call (there is
+			// nothing to return yet at submit time -- the render hasn't run).
+			//
+			// Fix-round-1 P1-A: the closure captures `this` and a BY-VALUE
+			// copy of `params` -- `this` does NOT unconditionally outlive
+			// the async render (that was the bug: an AgentRpcDispatcher /
+			// GUI teardown can destroy this AgentSession while the worker
+			// thread is still inside this closure).  ~AgentSession now
+			// DRAINS (cancel + bound-wait) any outstanding async job before
+			// any member is torn down -- see DrainAsyncRender_ -- which is
+			// what makes this capture safe in practice: the destructor does
+			// not return until this closure has finished running (or the
+			// controller reports it can no longer find the job).  This
+			// closure clears mAsyncOutstandingJobId in a `finally`-style
+			// RAII guard so the id is released whether the render succeeds,
+			// fails, throws (RenderCore_ itself never lets an exception
+			// escape -- see its own try/catch -- but the guard is
+			// unconditional regardless), or is cancelled by a drain.
 			SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
 			const bool accepted = mController->SubmitAgentRenderAsync(
 				[this, params]() {
-					// The closure captures `this` and a BY-VALUE copy of
-					// `params` -- both stay valid for the closure's whole
-					// run (this AgentSession outlives the async render per
-					// its normal lifetime contract; `params` is an owned
-					// copy).  `assumeParked=true` skips RenderCore_'s own
-					// controller routing (this closure already runs INSIDE
-					// the worker's cancel-and-park hold, so routing again
-					// would self-deadlock); `forcedJobId` is left at its
-					// default 0 -- S2a's minimal surface does not thread
-					// the id INTO the result the worker discards (`r`
-					// below), only OUT via SubmitAgentRenderAsync's
-					// `outJobId` param, which the caller already has.  The
-					// cache-population tail inside RenderCore_ (guarded by
-					// mAsyncCacheMutex) stashes mLastPng/mLastSink on a
-					// successful render, which is how ReadImage() picks up
-					// the async result once it completes.
+					struct OutstandingGuard {
+						AgentSession& self;
+						~OutstandingGuard() {
+							std::lock_guard<std::mutex> cacheLk( self.mAsyncCacheMutex );
+							self.mAsyncOutstandingJobId = 0;
+						}
+					} outstandingGuard{ *this };
 					const AgentRenderResult r = RenderCore_( params, /*assumeParked=*/true );
 					(void)r;
 				},
@@ -1744,6 +1919,22 @@ namespace RISE
 				out.accepted = false;
 				out.message  = "render refused: the agent-render worker is busy or an editor transaction is open -- retry shortly";
 				return out;
+			}
+
+			// Fix-round-1 P1-A: record the outstanding id BEFORE returning --
+			// from this point until the worker's OutstandingGuard clears it,
+			// a drain (~AgentSession / AttachController) knows there is a
+			// real in-flight closure holding a `this` pointer to cancel-and-
+			// wait for.  Safe even though the worker may already be running
+			// (or even finished) by the time we take this lock: the worker
+			// takes the SAME mAsyncCacheMutex to clear it, so there is no
+			// window where a drain sees a stale id that is actually already
+			// safe to ignore -- worst case it cancels/waits a job that is
+			// already done, which WaitForRenderJob reports as complete
+			// immediately.
+			{
+				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				mAsyncOutstandingJobId = static_cast<std::uint64_t>( jobId );
 			}
 
 			out.accepted    = true;
