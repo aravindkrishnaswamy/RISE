@@ -146,6 +146,8 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mSaving( false )
 , mCancelCount( 0 )
 , mRenderCount( 0 )
+, mNextRenderJobId( 1 )
+, mCurrentRenderJob()
 , mFullResW( 0 )
 , mFullResH( 0 )
 , mPreviewScale( 1 )
@@ -3211,6 +3213,31 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChun
 // changed; it only guarantees exclusivity while `fn` runs).
 bool SceneEditController::RunPreviewRenderParked( const std::function<void()>& fn )
 {
+	// Back-compat forwarder: the pre-slice-S1 callers (AgentSession's
+	// override-render window) don't care about render identity, so route
+	// through the identity-tracking overload with the class/label this
+	// method has always implicitly meant (an agent-driven preview render)
+	// and discard the assigned id.  Behaviourally IDENTICAL to the old
+	// body -- same mTxnOpen refusal, same cancel-and-park, same `fn`
+	// invocation under the same lock hold.
+	return RunPreviewRenderParked( fn, RenderClass::AgentPreview, String(), nullptr );
+}
+
+// Model-B F2 slice S1: identity-tracking variant.  The render-job record
+// lives under the SAME mMutex hold CancelAndParkRender_ already takes --
+// no new lock, no new synchronization primitive.  Behavior (the
+// mTxnOpen refusal, the cancel-and-park, `fn`'s single synchronous
+// invocation, the no-kick-on-return contract) is UNCHANGED from the base
+// overload; this only adds bookkeeping around the existing critical
+// section.
+bool SceneEditController::RunPreviewRenderParked(
+	const std::function<void()>& fn,
+	RenderClass                  renderClass,
+	const String&                clientLabel,
+	RenderJobId*                 outJobId )
+{
+	(void)clientLabel;   // not yet surfaced anywhere -- reserved for later observability
+
 	if( mTxnOpen )
 	{
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: preview render refused inside an open transaction (would stall the gesture)." );
@@ -3219,11 +3246,27 @@ bool SceneEditController::RunPreviewRenderParked( const std::function<void()>& f
 
 	std::unique_lock<std::mutex> lk( mMutex );
 	CancelAndParkRender_( lk );
+
+	const RenderJobId jobId = mNextRenderJobId++;
+	mCurrentRenderJob.id          = jobId;
+	mCurrentRenderJob.renderClass = renderClass;
+	mCurrentRenderJob.active      = true;
+
 	if( fn ) fn();
+
+	mCurrentRenderJob.active = false;
+	if( outJobId ) *outJobId = jobId;
+
 	// Unlock (end of scope) resumes the render loop's normal wait/cycle --
 	// no kick needed: we made no Document/scene edit, so the interactive
 	// loop's own refinement watchdog resumes exactly where it left off.
 	return true;
+}
+
+SceneEditController::RenderJobStatus SceneEditController::CurrentRenderJob() const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	return mCurrentRenderJob;
 }
 
 // Model-B F5 slice S2: the shared render-thread-SAFE chunk-CRUD commit.  This
@@ -3788,6 +3831,12 @@ void SceneEditController::RenderLoop()
 			std::lock_guard<std::mutex> lk( mMutex );
 			mCancelProgress.Reset();
 			mRendering.store( true, std::memory_order_release );
+			// Model-B F2 slice S1: render-identity bookkeeping at the SAME
+			// existing lock site -- no new synchronization.  This is the
+			// interactive preview pass, so RenderClass::Interactive always.
+			mCurrentRenderJob.id          = mNextRenderJobId++;
+			mCurrentRenderJob.renderClass = RenderClass::Interactive;
+			mCurrentRenderJob.active      = true;
 		}
 
 		DoOneRenderPass();
@@ -3800,6 +3849,7 @@ void SceneEditController::RenderLoop()
 		{
 			std::lock_guard<std::mutex> lk( mMutex );
 			mRendering.store( false, std::memory_order_release );
+			mCurrentRenderJob.active = false;   // Model-B F2 slice S1: same lock site as the store above
 		}
 		mCV.notify_all();
 

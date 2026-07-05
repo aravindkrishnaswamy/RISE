@@ -1455,8 +1455,21 @@ namespace RISE
 				restoreGuard.Disarm();
 			};
 
+			// Model-B F2 slice S1: render identity.  When this call actually
+			// routes through the controller's RunPreviewRenderParked, that
+			// call assigns the id (a real coordinator-tracked job); every
+			// other path (no controller, or a controller attached but this
+			// call has no override to park for) has no coordinator behind
+			// it, so this session's OWN local counter assigns one -- see
+			// AgentRenderResult::renderJobId's doc for the honesty contract
+			// (session-local ids are not comparable across sessions).
+			std::uint64_t renderJobId = 0;
+
 			if( mController && ( wantFilmOverride || wantCameraOverride ) ) {
-				if( !mController->RunPreviewRenderParked( doRenderWork ) ) {
+				SceneEditController::RenderJobId controllerJobId = 0;
+				if( !mController->RunPreviewRenderParked(
+						doRenderWork, SceneEditController::RenderClass::AgentPreview,
+						String(), &controllerJobId ) ) {
 					// Refused (an editor transaction is open): the override
 					// window could not be safely parked against the
 					// interactive render thread.  Fall back to an UN-overridden
@@ -1468,9 +1481,12 @@ namespace RISE
 					fallback.message = "preview override skipped: an editor transaction is open (render ran without the override) -- " + fallback.message;
 					return fallback;
 				}
+				renderJobId = static_cast<std::uint64_t>( controllerJobId );
 			} else {
 				doRenderWork();
+				renderJobId = mNextSessionLocalRenderJobId++;
 			}
+			res.renderJobId = renderJobId;
 
 			// P1-B (belt-and-braces, fail-loud): a camera override field that
 			// failed to apply means the requested pose was NOT achieved --

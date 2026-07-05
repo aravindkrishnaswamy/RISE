@@ -36,6 +36,7 @@
 #include "../Interfaces/ILogPrinter.h"
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <thread>
@@ -224,6 +225,45 @@ namespace RISE
 			SceneVariant = 9  ///< scene_variant overlays; picking one RE-DERIVES the scene with that variant active.
 		};
 
+		//! Model-B F2 slice S1: render IDENTITY.  A monotonic id assigned to
+		//! every render this controller (or a headless AgentSession wrapping
+		//! a plain Job) kicks off, plus which CLASS of render it is.  This
+		//! slice is bookkeeping ONLY -- no scheduling, threading, or
+		//! cancellation semantics change; it exists so later slices (async
+		//! render worker, pinned-vs-preview, gate retirement) have a stable
+		//! seam to hang off.  0 is the reserved "invalid/none" id -- the
+		//! counter starts at 1.
+		typedef std::uint64_t RenderJobId;
+		static constexpr RenderJobId kInvalidRenderJobId = 0;
+
+		//! What KIND of render a RenderJobId names.  Named for what EXISTS
+		//! TODAY only:
+		//!   Interactive  -- the controller's own RenderLoop pass (the
+		//!                   cancel-restart preview loop driving the
+		//!                   viewport).
+		//!   AgentPreview -- a caller-supplied lambda run synchronously
+		//!                   under RunPreviewRenderParked (today: the Agent
+		//!                   surface's transient film/camera-override
+		//!                   render).
+		//! Production-render tracking is explicitly OUT of scope for this
+		//! slice (see slice S4).
+		enum class RenderClass
+		{
+			Interactive  = 0,
+			AgentPreview = 1
+		};
+
+		//! Snapshot of the CURRENT render job, read under mMutex.  `active`
+		//! is false when no render is presently in flight; `id`/`renderClass`
+		//! then reflect the MOST RECENTLY assigned job (stale, informational
+		//! only).
+		struct RenderJobStatus
+		{
+			RenderJobId  id          = kInvalidRenderJobId;
+			RenderClass  renderClass = RenderClass::Interactive;
+			bool         active      = false;
+		};
+
 		//! Facet 5 slice 1b: the structured result of a CONTROLLER-ROUTED
 		//! agent commit (ApplyAgentParamEdit).  Mirrors the Agent surface's
 		//! AgentPatchResult 1:1 (folding Job::ApplyCstParamEdit's 0/1/2/3
@@ -368,6 +408,30 @@ namespace RISE
 		//! gesture (same rule as ApplyAgentParamEdit's mTxnOpen refusal).
 		//! Returns true iff `fn` ran.
 		bool RunPreviewRenderParked( const std::function<void()>& fn );
+
+		//! Model-B F2 slice S1: SAME as RunPreviewRenderParked above, plus
+		//! render-identity bookkeeping -- assigns a fresh monotonic
+		//! RenderJobId, records {id, renderClass, active=true} under the SAME
+		//! mMutex hold this method already takes for the cancel-and-park
+		//! (zero new synchronization), runs `fn`, then marks the job record
+		//! inactive before returning.  `clientLabel` is an optional free-form
+		//! diagnostic tag (e.g. the agent transport's session id) -- not
+		//! interpreted, purely for later observability.  `outJobId` (when
+		//! non-null) receives the assigned id -- but ONLY on the path that
+		//! actually runs `fn` (an id names a render that happened); on
+		//! refusal (mTxnOpen open, `fn` never invoked) `*outJobId` is left
+		//! UNTOUCHED and the counter does not advance.  Returns true iff
+		//! `fn` ran (identical refusal contract to the base overload).
+		bool RunPreviewRenderParked(
+			const std::function<void()>& fn,
+			RenderClass                  renderClass,
+			const String&                clientLabel,
+			RenderJobId*                 outJobId );
+
+		//! Model-B F2 slice S1: snapshot of the current render job under
+		//! mMutex.  See RenderJobStatus's doc for the "stale when inactive"
+		//! semantics.
+		RenderJobStatus CurrentRenderJob() const;
 
 		//! @param job                     borrowed; caller keeps alive.
 		//!                                Must be IJobPriv (which IJob
@@ -1218,6 +1282,19 @@ namespace RISE
 		std::string                 mLastSaveError;
 		std::atomic<unsigned int>   mCancelCount;
 		std::atomic<unsigned int>   mRenderCount;
+
+		// Model-B F2 slice S1: render-identity bookkeeping.  BOTH fields are
+		// guarded by the EXISTING mMutex above -- no new lock.  The counter
+		// starts at 1 (0 = kInvalidRenderJobId / "none assigned yet") and is
+		// SHARED across both RenderClass values (RunPreviewRenderParked's
+		// agent-preview path and RenderLoop's interactive pass both draw
+		// from it), so ids are globally ordered across classes on one
+		// controller.  mCurrentRenderJob is updated at the SAME lock sites
+		// that already existed for mRendering: RunPreviewRenderParked's
+		// cancel-and-park hold, and RenderLoop's two existing
+		// std::lock_guard blocks around mRendering.store(true/false).
+		RenderJobId     mNextRenderJobId;
+		RenderJobStatus mCurrentRenderJob;
 
 		// Adaptive preview-resolution divisor.  1 = full camera res;
 		// 2 = half each axis = 1/4 the pixel work; 4 = 1/16; 8 = 1/64;

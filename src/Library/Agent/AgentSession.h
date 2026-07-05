@@ -30,6 +30,7 @@
 #ifndef RISE_AGENT_AGENTSESSION_
 #define RISE_AGENT_AGENTSESSION_
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -248,6 +249,28 @@ namespace RISE
 			unsigned int               previewHeight = 0;
 			bool                       cameraOverridden = false;
 			std::string                message;
+			//! Model-B F2 slice S1 ADDITIVE wire field: the RenderJobId this
+			//! render was assigned (see SceneEditController::RenderJobId).
+			//! COORDINATOR-TRACKED (a controller is attached AND this call
+			//! actually routes through RunPreviewRenderParked -- i.e. a
+			//! width/height or camera override was requested): the id
+			//! SceneEditController::RunPreviewRenderParked assigned --
+			//! distinct and monotonically increasing across successive
+			//! coordinator-tracked AND interactive renders on the SAME
+			//! controller (one shared counter). EVERY OTHER CASE -- no
+			//! controller attached at all, OR a controller IS attached but
+			//! this particular call has no override to park for (so it never
+			//! reaches RunPreviewRenderParked and calls mJob->Rasterize()
+			//! directly): a SESSION-LOCAL counter on THIS AgentSession, also
+			//! starting at 1 and incrementing per render, so these callers
+			//! still observe distinct monotonically increasing ids -- there
+			//! is no multi-session or multi-controller coordinator behind
+			//! it, so don't read a session-local id as comparable across
+			//! sessions OR against a coordinator-tracked id from the SAME
+			//! session's OTHER render calls (the two counters are
+			//! independent). 0 is
+			//! never assigned to a real render (reserved "none").
+			std::uint64_t              renderJobId = 0;
 		};
 
 		//! Facet 5 slice S1: one entry of the skills INDEX -- `name` is the
@@ -578,6 +601,17 @@ namespace RISE
 			//! WITHOUT re-rendering.  Null before the first successful render.
 			//! Owned (released in the destructor and whenever replaced).
 			InMemoryRasterizerOutput* mLastSink = nullptr;
+
+			//! Model-B F2 slice S1: SESSION-LOCAL render-id counter, used
+			//! whenever this call does NOT route through a
+			//! SceneEditController's coordinator-tracked RunPreviewRenderParked
+			//! (no controller attached at all, OR a controller is attached
+			//! but this particular call has no film/camera override to park
+			//! for) -- see AgentRenderResult::renderJobId's doc for the full
+			//! coordinator-tracked-vs-session-local honesty contract.
+			//! Starts at 1 (0 reserved "none"), single-threaded like the
+			//! rest of this class -- no atomic needed.
+			std::uint64_t mNextSessionLocalRenderJobId = 1;
 		};
 	}
 }

@@ -44,7 +44,10 @@
 #include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Interfaces/IFilm.h"
 #include "../src/Library/SceneEditor/CameraIntrospection.h"
+#include "../src/Library/SceneEditor/SceneEditController.h"   // Model-B F2 slice S1: RenderJobId coordinator bookkeeping
 
+#include <atomic>      // Model-B F2 slice S1: TestController's simulated-render slice counter
+#include <chrono>      // Model-B F2 slice S1: TestController's simulated-render sleep
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -52,6 +55,7 @@
 #include <fstream>
 #include <stdexcept>   // P1-A red-prove: ThrowingRasterizeJob throws std::runtime_error
 #include <string>
+#include <thread>      // Model-B F2 slice S1: drive a Render(AgentRenderParams) from a background thread
 #include <vector>
 
 using namespace RISE;
@@ -122,6 +126,7 @@ static bool ReadPngDims( const std::vector<unsigned char>& b, unsigned int& w, u
 static void RunCameraOverrideTests();          // fwd decl -- defined below, called from main()
 static void RunRestoreOnThrowTest();           // P1-A red-prove -- defined below, called from main()
 static void RunMalformedCameraOverrideTests(); // P1-B -- defined below, called from main()
+static void RunRenderJobIdTests();             // Model-B F2 slice S1 -- defined below, called from main()
 
 static void RunCoreTests()
 {
@@ -775,12 +780,264 @@ static void RunMalformedCameraOverrideTests()
 	std::remove( scenePath.c_str() );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Model-B F2 slice S1: render IDENTITY (RenderJobId + coordinator
+// bookkeeping), ZERO behavior change.  Four sub-tests:
+//
+//   (a) Headless, no controller -- two sequential Render() calls yield
+//       DISTINCT, MONOTONICALLY INCREASING renderJobId (the session-local
+//       counter documented on AgentRenderResult::renderJobId).
+//
+//   (b) part 1, LIVE / RenderClass::Interactive -- the controller's OWN
+//       interactive RenderLoop pass is genuinely observable mid-flight
+//       from another thread (DoOneRenderPass runs OUTSIDE mMutex, between
+//       the two lock_guard bookkeeping blocks): a background poll catches
+//       CurrentRenderJob() reporting {active=true, RenderClass::
+//       Interactive} while a slowed simulated pass is in flight, then
+//       {active=false} after.  A RenderJobIdTestController subclass
+//       (mirroring AgentLiveCommitTest.cpp's TestController) overrides
+//       DoOneRenderPass with a cancel-checked simulated render so this is
+//       a REAL render thread, not a mock.
+//
+//   (b) part 2, LIVE / RenderClass::AgentPreview -- a render routed
+//       through RunPreviewRenderParked (forced via a camera-pose
+//       override, matching AgentSession::RenderCore_'s documented
+//       routing rule).  RunPreviewRenderParked holds mMutex across its
+//       WHOLE call BY DESIGN (the record lives under the SAME lock that
+//       critical section already took -- this slice's zero-new-
+//       synchronization mandate), so its active window is NOT observable
+//       from another thread without that thread blocking on the same
+//       mutex until the render finishes.  What IS safely checked: the
+//       result's renderJobId is nonzero and shares the SAME monotonic
+//       counter as part 1 (greater than whatever id the controller had
+//       already assigned), and the post-render snapshot correctly
+//       reports {inactive, that id, RenderClass::AgentPreview}.
+//
+//   (c) RED-PROVE: a deliberately "unwired" read of renderJobId (as if
+//       the id were never threaded through) would show 0 for both
+//       renders in (a) -- assert the SECOND call's id is nonzero AND
+//       different from the first, so a regression that drops the
+//       threading (leaves renderJobId at its 0 default) fails this test.
+//////////////////////////////////////////////////////////////////////
+
+// Mirrors AgentLiveCommitTest.cpp's TestController: a real render thread
+// whose DoOneRenderPass simulates work in cancel-checked slices so the
+// interactive loop cycles without needing a live IRasterizer, and so a
+// RunPreviewRenderParked call from another thread can be observed as
+// "active" via CurrentRenderJob() while it holds the park.
+class RenderJobIdTestController : public SceneEditController
+{
+public:
+	RenderJobIdTestController( IJobPriv& job, unsigned int simulatedRenderMs = 20 )
+	: SceneEditController( job, /*interactiveRasterizer*/0 )
+	, mSimulatedRenderMs( simulatedRenderMs )
+	{}
+
+protected:
+	void DoOneRenderPass() override
+	{
+		const unsigned int sliceMs = 2;
+		const unsigned int slices  = ( mSimulatedRenderMs + sliceMs - 1 ) / sliceMs;
+		for( unsigned int i = 0; i < slices; ++i )
+		{
+			if( IsCancelRequested() ) return;
+			std::this_thread::sleep_for( std::chrono::milliseconds( sliceMs ) );
+		}
+	}
+
+private:
+	unsigned int mSimulatedRenderMs;
+};
+
+static void RunRenderJobIdTests()
+{
+	std::printf( "=== AgentProposeRenderTest: Model-B F2 slice S1 (RenderJobId + coordinator bookkeeping) ===\n" );
+
+	//----------------------------------------------------------------------
+	// (a) + (c): headless, no controller -- distinct, monotonically
+	// increasing ids across sequential renders; RED-PROVE that both are
+	// nonzero and differ (catches "id never threaded, stays at 0 default").
+	//----------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_renderjobid_headless.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the headless render-id scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene directly (headless render-id test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the headless Job (render-id test)" );
+		if( session )
+		{
+			Check( !session->HasController(), "headless session has no attached controller (sets up the no-coordinator id path)" );
+
+			const AgentRenderResult r1 = session->Render( -1 );
+			Check( r1.ok, "headless render #1 succeeds" );
+			const AgentRenderResult r2 = session->Render( -1 );
+			Check( r2.ok, "headless render #2 succeeds" );
+
+			// RED-PROVE (c): both must be nonzero (a dropped-threading
+			// regression leaves renderJobId at its 0 default on BOTH
+			// calls, which would pass a weaker "r2 != r1" check alone if
+			// both were 0 -- so assert nonzero explicitly too).
+			Check( r1.renderJobId != 0, "headless render #1 reports a NONZERO renderJobId (RED-PROVE: catches an unthreaded id stuck at the 0 default)" );
+			Check( r2.renderJobId != 0, "headless render #2 reports a NONZERO renderJobId" );
+			Check( r2.renderJobId != r1.renderJobId, "sequential headless renders yield DISTINCT renderJobId values" );
+			Check( r2.renderJobId > r1.renderJobId, "sequential headless renders yield MONOTONICALLY INCREASING renderJobId values" );
+
+			// A third call keeps the sequence going (not just a 1->2 fluke).
+			const AgentRenderResult r3 = session->Render( -1 );
+			Check( r3.ok, "headless render #3 succeeds" );
+			Check( r3.renderJobId > r2.renderJobId, "a third headless render continues the monotonic sequence" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//----------------------------------------------------------------------
+	// (b) part 1: the INTERACTIVE render class's active window IS
+	// genuinely observable from another thread -- DoOneRenderPass runs
+	// OUTSIDE mMutex (between the two lock_guard bookkeeping blocks in
+	// RenderLoop; see SceneEditController.cpp), unlike
+	// RunPreviewRenderParked's agent-preview window, which holds mMutex
+	// for its ENTIRE duration (by design -- the record lives under the
+	// SAME lock that critical section already took, per this slice's
+	// zero-new-synchronization mandate). RenderJobIdTestController's
+	// slowed DoOneRenderPass (mSimulatedRenderMs) gives a wide,
+	// deterministic window for the poll below to land in.
+	//----------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_renderjobid_interactive.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the interactive render-id scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene directly (interactive render-id test)" );
+
+		RenderJobIdTestController controller( *pJob, /*simulatedRenderMs*/300 );
+		controller.Start();
+
+		// Poll CurrentRenderJob() for the window where the controller's
+		// OWN initial render pass (RenderLoop's Start-up "show something"
+		// pass) is active with RenderClass::Interactive -- the 300ms
+		// simulated pass gives a wide margin for the poll (started
+		// immediately after Start(), before waiting for completion) to
+		// land inside it.
+		bool observedInteractiveActive = false;
+		SceneEditController::RenderJobStatus observedInteractiveStatus;
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 5000 );
+			while( controller.ForTest_GetRenderCount() == 0 && std::chrono::steady_clock::now() < deadline )
+			{
+				const SceneEditController::RenderJobStatus st = controller.CurrentRenderJob();
+				if( st.active && st.renderClass == SceneEditController::RenderClass::Interactive )
+				{
+					observedInteractiveActive = true;
+					observedInteractiveStatus = st;
+					break;
+				}
+				std::this_thread::yield();
+			}
+		}
+		Check( controller.ForTest_WaitForRenders( 1, 3000 ), "the controller's initial interactive render completes" );
+
+		Check( observedInteractiveActive, "CurrentRenderJob() caught the INTERACTIVE render ACTIVE mid-flight (RenderClass::Interactive)" );
+		if( observedInteractiveActive )
+		{
+			Check( observedInteractiveStatus.id != SceneEditController::kInvalidRenderJobId,
+			       "the observed interactive job has a NONZERO id" );
+		}
+
+		const SceneEditController::RenderJobStatus afterInteractive = controller.CurrentRenderJob();
+		Check( !afterInteractive.active, "CurrentRenderJob() reports the job INACTIVE after the interactive pass completes" );
+		if( observedInteractiveActive )
+		{
+			Check( afterInteractive.id == observedInteractiveStatus.id,
+			       "the post-pass snapshot still names the SAME renderJobId observed mid-flight (stale-but-informational)" );
+		}
+
+		controller.Stop();
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//----------------------------------------------------------------------
+	// (b) part 2: the AGENT-PREVIEW class -- a controller is attached, and
+	// the render actually routes through RunPreviewRenderParked (forced
+	// via a camera-pose override, matching AgentSession::RenderCore_'s
+	// documented routing rule).  Because RunPreviewRenderParked holds
+	// mMutex across the WHOLE call (by design -- see part 1's doc), its
+	// "active" window is NOT observable from another thread without that
+	// thread itself blocking on the same mutex until the render finishes
+	// -- so the assertions here are the ones that ARE meaningful: the
+	// result's renderJobId is nonzero, DISTINCT from (and greater than)
+	// every id assigned so far on this controller (proving it shares the
+	// SAME monotonic counter as the interactive pass above -- one counter
+	// per controller, not a separate one per class), and the post-render
+	// snapshot correctly reports {inactive, that id, RenderClass::
+	// AgentPreview}.
+	//----------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_renderjobid_live.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the live render-id scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene directly (live render-id test)" );
+
+		RenderJobIdTestController controller( *pJob, /*simulatedRenderMs*/5 );
+		controller.Start();
+		Check( controller.ForTest_WaitForRenders( 1, 2000 ), "controller's initial interactive render fires" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the live Job" );
+		if( session )
+		{
+			session->AttachController( &controller );
+			Check( session->HasController(), "live session reports an attached controller" );
+
+			const SceneEditController::RenderJobStatus before = controller.CurrentRenderJob();
+
+			AgentRenderParams p;
+			p.camera.hasLocation = true;
+			p.camera.location    = "3.5 0 0";
+			p.camera.hasLookAt   = true;
+			p.camera.lookAt      = "0 0 0";
+			const AgentRenderResult liveResult = session->Render( p );
+
+			Check( liveResult.ok, "live camera-override render succeeds" );
+			Check( liveResult.renderJobId != 0, "live render reports a NONZERO renderJobId" );
+			Check( liveResult.renderJobId > before.id,
+			       "the agent-preview render's id is GREATER than whatever the controller's counter last assigned (ONE shared monotonic counter across BOTH render classes)" );
+
+			// AFTER the render completes, CurrentRenderJob() reports the
+			// job inactive, naming the SAME id/class the result reported --
+			// this snapshot IS safely observable (no race: the render
+			// thread released mMutex before Render() returned).
+			const SceneEditController::RenderJobStatus after = controller.CurrentRenderJob();
+			Check( !after.active, "CurrentRenderJob() reports the job INACTIVE after the render completes" );
+			Check( after.id == liveResult.renderJobId,
+			       "CurrentRenderJob()'s post-render snapshot names the SAME renderJobId the result reported" );
+			Check( after.renderClass == SceneEditController::RenderClass::AgentPreview,
+			       "CurrentRenderJob()'s post-render snapshot reports RenderClass::AgentPreview for the agent-routed render" );
+
+			session->AttachController( nullptr );
+		}
+
+		controller.Stop();
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	std::printf( "=== Model-B F2 slice S1: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunCoreTests();
 	RunCameraOverrideTests();
 	RunRestoreOnThrowTest();
 	RunMalformedCameraOverrideTests();
+	RunRenderJobIdTests();
 
 	std::printf( "=== AgentProposeRenderTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

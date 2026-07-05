@@ -635,12 +635,18 @@ namespace RISE
 				//--------------------------------------------------------------
 				// render {samples?,width?,height?,camera?} ->
 				//   {ok,width,height,meanR,meanG,meanB,integrator,
-				//    previewWidth,previewHeight,cameraOverridden,message}
+				//    previewWidth,previewHeight,cameraOverridden,message,
+				//    renderJobId}
 				//   (NOT the image bytes -- render stays lean; read_image
 				//    carries the base64 PNG.  `integrator` = the ACTIVE
 				//    rasterizer's chunk keyword, empty when none is active.
 				//    width/height/camera are the OPTIONAL preview-render
-				//    overrides -- absent = today's exact behaviour.)
+				//    overrides -- absent = today's exact behaviour.
+				//    `renderJobId` (Model-B F2 slice S1, ADDITIVE) is a
+				//    monotonically increasing id for this render -- see
+				//    AgentRenderResult::renderJobId's doc for the LIVE
+				//    (controller-tracked) vs headless (session-local)
+				//    semantics.)
 				//--------------------------------------------------------------
 				if( m == "render" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
@@ -707,6 +713,10 @@ namespace RISE
 					result.set( "previewHeight", JsonValue::MakeNumber( static_cast<double>( rr.previewHeight ) ) );
 					result.set( "cameraOverridden", JsonValue::MakeBool( rr.cameraOverridden ) );
 					result.set( "message", JsonValue::MakeString( rr.message ) );
+					// Model-B F2 slice S1 ADDITIVE wire field: see
+					// AgentRenderResult::renderJobId's doc for the LIVE vs
+					// headless id semantics.
+					result.set( "renderJobId", JsonValue::MakeNumber( static_cast<double>( rr.renderJobId ) ) );
 					return MakeSuccess( idValue, result );
 				}
 
