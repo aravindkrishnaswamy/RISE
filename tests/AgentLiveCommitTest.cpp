@@ -3011,6 +3011,281 @@ static void TestStaleIndexIdentityCheckRefusesP2()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 31 (round-2 P1 red-prove): the reviewer's exact repro shape -- a chunk
+// (matTarget) glued DIRECTLY (zero whitespace) onto its LEFT neighbour (matA),
+// so DocEraseChunkTidy's glue-safety walk (Cst.cpp, ItemEndsInNewline on the
+// item BEFORE the removed chunk) finds the preceding item does NOT end in a
+// newline and refuses to collapse matTarget's own trailing separator ->
+// droppedCount == 1 -> SceneEditController's post-remove trim keeps ONLY
+// matTarget's own chunk bytes (ending in `}`, never `\n`) as the Undo capture.
+// An out-of-band insert then shifts indices so a DIFFERENT, non-whitespace-
+// leading chunk lands immediately to the RIGHT of the restore point -> Undo
+// must still be glue-safe on the RIGHT side (the round-1 fix only guarded the
+// LEFT).  Pre-fix (round-1 only), this reproduces `}lambertian_luminaire_material`-
+// style glue; post-fix (round-2), the symmetric right-side synthesis catches it.
+//////////////////////////////////////////////////////////////////////
+static void TestGlueSafeRestoreRightSideAfterOutOfBandShiftP1Round2()
+{
+	std::cout << "Test 31: zero-whitespace-glued neighbour forces droppedCount==1 -> out-of-band shift -> Undo restore is RIGHT-side GLUE-SAFE (round-2 P1)..." << std::endl;
+
+	// matA's chunk ends `}` immediately followed (ZERO whitespace) by matTarget's
+	// chunk -- the reviewer's engineered glue-unsafe left neighbour.  matTarget is
+	// followed by the ORDINARY `\n`-separated matB, so a normal trailing separator
+	// exists there but -- per the glueSafe rule -- DocEraseChunkTidy will decline to
+	// collapse it (the check is on the PRECEDING item, i.e. matA's chunk, which does
+	// NOT end in `\n`), leaving it in the Document and giving droppedCount == 1.
+	const char* kGlueScene =
+		"RISE ASCII SCENE 7\n"
+		"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+		"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
+		"lambertian_material\n{\nname matA\nreflectance white\n}"
+		"lambertian_material\n{\nname matTarget\nreflectance white\n}\n"
+		"lambertian_material\n{\nname matB\nreflectance white\n}\n"
+		"sphere_geometry\n{\nname s\nradius 1\n}\n"
+		"standard_object\n{\nname obj\ngeometry s\nmaterial lum\n}\n";
+
+	const char* tmp = "agentlive_p1_round2_right_glue.RISEscene";
+	Job* pJob = LoadScene( kGlueScene, tmp );
+	Check( pJob != nullptr, "the zero-whitespace-glued fixture scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const int preRemoveCount = RISE::Cst::DocItemCount( *pJob->GetCstDocument() );
+
+		const SceneEditController::AgentCommitResult rm =
+			c.ApplyAgentRemoveChunk( String( "matTarget" ), String( "material" ), nullptr );
+		Check( rm.applied, "remove_chunk on the glue-unsafe-left-neighbour matTarget applies" );
+		const unsigned int undoDepthAfterRemove = c.Editor().History().UndoDepth();
+
+		const int postRemoveCount = RISE::Cst::DocItemCount( *pJob->GetCstDocument() );
+		Check( preRemoveCount - postRemoveCount == 1,
+		       "RED-PROVE PRECONDITION: the erase dropped exactly 1 item (droppedCount==1 -- matTarget's own "
+		       "trailing separator was NOT collapsed because its LEFT neighbour matA does not end in a newline), "
+		       "so the Undo capture is chunk-ONLY bytes ending in `}` with no trailing separator of its own" );
+
+		// Out-of-band mechanism (Test-19/29-style: direct Job call under RunPreviewRenderParked +
+		// manual rebind, NO history footprint): insert a fresh tier-0 Painter chunk, which positions
+		// BEFORE every tier-1+ chunk (materials, geometry, objects...) -- landing before matTarget's
+		// captured restore position and shifting every later top-level index (incl. the restore point)
+		// down by the 3 items ApplyCstInsertChunk's [leadSep][chunk][trailSep] triple adds.  After the
+		// shift, the item that lands immediately at the (shifted) restore point is matB's own chunk --
+		// its serialized bytes start with `lambertian_material`, i.e. NOT whitespace -- reproducing the
+		// reviewer's exact right-side glue hazard.
+		Check( c.RunPreviewRenderParked( [&]{
+			char kw[64]; char nm[64]; char diag[256];
+			const char* freshChunk = "uniformcolor_painter\n{\nname pShiftR2\ncolor 0.3 0.3 0.3\n}\n";
+			const int insCode = pJob->ApplyCstInsertChunk( freshChunk, kw, sizeof( kw ), nm, sizeof( nm ), diag, sizeof( diag ) );
+			Check( insCode == 2 || insCode == 3, "the out-of-band shifting insert of `pShiftR2` succeeds (no history pushed)" );
+
+			c.Editor().RebindScene( *pJob->GetScene() );
+			c.Editor().SetMaterialManager( pJob->GetMaterials() );
+			c.Editor().SetShaderManager( pJob->GetShaders() );
+			c.Editor().SetPainterManager( pJob->GetPainters() );
+			c.Editor().SetScalarPainterManager( pJob->GetScalarPainters() );
+			c.Editor().SetJob( pJob );
+		} ), "the parked out-of-band shifting insert + manual rebind ran" );
+		Check( c.Editor().History().UndoDepth() == undoDepthAfterRemove,
+		       "the out-of-band insert pushed NO history of its own -- the agent's remove entry is still the next one to pop" );
+
+		// Undo the ORIGINAL agent remove: the captured `agentChunkIndex` is now STALE (shifted by the
+		// out-of-band insert), and the capture itself is chunk-only (no trailing separator) -- exactly
+		// the shape that needs the ROUND-2 right-side synthesis to avoid `}`-followed-by-content glue.
+		c.Undo();
+		const std::string postUndoDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postUndoDoc.find( "matTarget" ) != std::string::npos, "matTarget's text is back in the Document after Undo" );
+		Check( postUndoDoc.find( "pShiftR2" ) != std::string::npos, "the out-of-band `pShiftR2` chunk survives the restore" );
+
+		// The reviewer's scan: no `}` immediately followed by a non-whitespace byte anywhere in the
+		// whole Document.
+		bool foundGlue = false;
+		size_t glueAt = std::string::npos;
+		for( size_t p = postUndoDoc.find( '}' ); p != std::string::npos; p = postUndoDoc.find( '}', p + 1 ) )
+		{
+			if( p + 1 < postUndoDoc.size() )
+			{
+				const char next = postUndoDoc[p + 1];
+				if( next != '\n' && next != '\r' && next != ' ' && next != '\t' )
+				{
+					foundGlue = true;
+					glueAt = p;
+					break;
+				}
+			}
+		}
+		Check( !foundGlue, "RED-PROVE: no `}`-followed-by-non-whitespace glue adjacency anywhere in the restored Document (round-2 right-side fix)" );
+		if( foundGlue )
+			std::cout << "    glue found at byte " << glueAt << ": ..." << postUndoDoc.substr( glueAt, 32 ) << "..." << std::endl;
+
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "matTarget" ) != nullptr,
+		       "the derived scene resolves `matTarget` again after Undo" );
+		Check( pJob->GetPainters() && pJob->GetPainters()->GetItem( "pShiftR2" ) != nullptr,
+		       "the derived scene still resolves the out-of-band `pShiftR2` too" );
+
+		// Save + reload clean (no wedge, no corruption left behind).
+		const char* saveAs = "agentlive_p1_round2_right_glue_save.RISEscene";
+		std::remove( saveAs );
+		const SaveResult sr = c.RequestSave( std::string( saveAs ) );
+		Check( Succeeded( sr.status ), "save succeeds after the glue-safe restore" );
+		{
+			Job* fresh = new Job();
+			Check( fresh->LoadAsciiSceneViaCst( saveAs ), "the saved Document reloads CLEANLY (no wedge, no corruption)" );
+			Check( fresh->GetMaterials() && fresh->GetMaterials()->GetItem( "matTarget" ) != nullptr, "the reload resolves `matTarget`" );
+			Check( fresh->GetPainters() && fresh->GetPainters()->GetItem( "pShiftR2" ) != nullptr, "the reload resolves `pShiftR2`" );
+			fresh->release();
+		}
+		std::remove( saveAs );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 32 (round-2 P1 red-prove): the SIMPLER common shape -- remove the LAST
+// top-level chunk in the Document (no trailing separator EVER existed, so
+// droppedCount == 1 unconditionally, per DocEraseChunkTidy's own "LAST-chunk"
+// comment: after the chunk drop there is no item left at `index` to collapse).
+// An out-of-band APPEND after it, then Undo, must still be glue-safe: the
+// appended chunk now sits immediately to the right of the restore point.
+//////////////////////////////////////////////////////////////////////
+static void TestGlueSafeRestoreLastChunkAppendP1Round2()
+{
+	std::cout << "Test 32: remove LAST chunk + out-of-band append -> Undo restore is GLUE-SAFE (round-2 P1)..." << std::endl;
+
+	// A scene whose file bytes end EXACTLY at the last chunk's closing `}` -- NO trailing
+	// newline at all after it -- so there is truly NO item left in the Document after `obj`
+	// once it is removed (DocEraseChunkTidy's own "LAST-chunk" comment: after the chunk drop
+	// there is no item AT `index` to collapse).  kU2Scene (used elsewhere in this file) has a
+	// trailing `\n` after its final chunk, which parses to a SEPARATE trailing Trivia item
+	// that DOES get collapsed alongside the chunk (droppedCount==2 there) -- deliberately
+	// avoided here to isolate the genuinely-no-separator-ever-existed shape.
+	const char* kLastChunkScene =
+		"RISE ASCII SCENE 7\n"
+		"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+		"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
+		"lambertian_material\n{\nname matA\nreflectance white\n}\n"
+		"sphere_geometry\n{\nname s\nradius 1\n}\n"
+		"standard_object\n{\nname obj\ngeometry s\nmaterial lum\n}";
+
+	const char* tmp = "agentlive_p1_round2_lastchunk.RISEscene";
+	Job* pJob = LoadScene( kLastChunkScene, tmp );
+	Check( pJob != nullptr, "the no-trailing-newline fixture scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		// `obj` (standard_object) is the LAST top-level chunk with NO trailing separator --
+		// remove it (nothing references it, so the dry-run derives cleanly).
+		const int preRemoveCount = RISE::Cst::DocItemCount( *pJob->GetCstDocument() );
+		const SceneEditController::AgentCommitResult rm =
+			c.ApplyAgentRemoveChunk( String( "obj" ), String( "object" ), nullptr );
+		Check( rm.applied, "remove_chunk on the LAST chunk (obj) applies" );
+		const unsigned int undoDepthAfterRemove = c.Editor().History().UndoDepth();
+
+		const int postRemoveCount = RISE::Cst::DocItemCount( *pJob->GetCstDocument() );
+		Check( preRemoveCount - postRemoveCount == 1,
+		       "RED-PROVE PRECONDITION: the erase dropped exactly 1 item (droppedCount==1 -- `obj` was the LAST "
+		       "top-level item, so no trailing separator ever existed to collapse or capture)" );
+
+		// Out-of-band mechanism: append a fresh chunk AFTER the (now-last) remaining item, landing
+		// exactly at the position `obj`'s restore will target -- no index SHIFT is even needed here
+		// (the new chunk is appended past the current end, i.e. at the same index the removed `obj`
+		// used to occupy), which is exactly the "remove the last chunk, append, Undo" common shape
+		// called out in the bug report.  ApplyCstInsertChunk ALWAYS synthesizes its own
+		// [leadSep][chunk][trailSep] triple (the lead separator is a pure `"\n"` Trivia), which would
+		// itself be glue-safe on the right of the restore point regardless of this fix -- so a plain
+		// ApplyCstInsertChunk append would NOT actually red-prove the bug.  To reproduce the reviewer's
+        	// literal "out-of-band append" shape (a chunk landing with ZERO separator immediately after
+		// the previous content, as a hand-authored append or an external tool's raw text splice would),
+		// insert normally and then strip the synthesized lead separator back out via
+		// ApplyCstRemoveItemsAt(insertedAt, 1, ...) -- a non-triple `count` bypasses that primitive's
+		// own identity check (documented as scoped to the triple shape only), so this is a clean,
+		// positional-only removal of just the one separator item, leaving `matAppendR2` glued directly
+		// onto the Document's tail with no separator of its own.
+		Check( c.RunPreviewRenderParked( [&]{
+			char kw[64]; char nm[64]; char diag[256];
+			const char* freshChunk = "lambertian_material\n{\nname matAppendR2\nreflectance white\n}\n";
+			int insertedAt = -1;
+			const int insCode = pJob->ApplyCstInsertChunk( freshChunk, kw, sizeof( kw ), nm, sizeof( nm ), diag, sizeof( diag ), &insertedAt );
+			Check( insCode == 2 || insCode == 3, "the out-of-band append of `matAppendR2` succeeds (no history pushed)" );
+			Check( insertedAt >= 0, "ApplyCstInsertChunk reports the triple's own leading index" );
+
+			char diag2[256];
+			const int stripCode = pJob->ApplyCstRemoveItemsAt( insertedAt, 1, diag2, sizeof( diag2 ), nullptr );
+			Check( stripCode == 2 || stripCode == 3,
+			       "stripping the synthesized lead separator (leaving matAppendR2 glued with ZERO separator) succeeds" );
+
+			c.Editor().RebindScene( *pJob->GetScene() );
+			c.Editor().SetMaterialManager( pJob->GetMaterials() );
+			c.Editor().SetShaderManager( pJob->GetShaders() );
+			c.Editor().SetPainterManager( pJob->GetPainters() );
+			c.Editor().SetScalarPainterManager( pJob->GetScalarPainters() );
+			c.Editor().SetJob( pJob );
+		} ), "the parked out-of-band append + manual rebind ran" );
+		Check( c.Editor().History().UndoDepth() == undoDepthAfterRemove,
+		       "the out-of-band append pushed NO history of its own -- the agent's remove entry is still the next one to pop" );
+
+		// Undo the ORIGINAL agent remove of `obj`: its capture is chunk-only bytes ending in `}`
+		// (never `\n`, per the LAST-chunk shape), and the out-of-band append now sits immediately to
+		// the right of the restore point -- exactly the shape needing the round-2 right-side synthesis.
+		c.Undo();
+		const std::string postUndoDoc = RISE::Cst::SerializeCst( *pJob->GetCstDocument() );
+		Check( postUndoDoc.find( "name obj" ) != std::string::npos, "`obj`'s text is back in the Document after Undo" );
+		Check( postUndoDoc.find( "matAppendR2" ) != std::string::npos, "the out-of-band `matAppendR2` chunk survives the restore" );
+
+		bool foundGlue = false;
+		size_t glueAt = std::string::npos;
+		for( size_t p = postUndoDoc.find( '}' ); p != std::string::npos; p = postUndoDoc.find( '}', p + 1 ) )
+		{
+			if( p + 1 < postUndoDoc.size() )
+			{
+				const char next = postUndoDoc[p + 1];
+				if( next != '\n' && next != '\r' && next != ' ' && next != '\t' )
+				{
+					foundGlue = true;
+					glueAt = p;
+					break;
+				}
+			}
+		}
+		Check( !foundGlue, "RED-PROVE: no `}`-followed-by-non-whitespace glue adjacency anywhere in the restored Document (round-2 right-side fix, last-chunk shape)" );
+		if( foundGlue )
+			std::cout << "    glue found at byte " << glueAt << ": ..." << postUndoDoc.substr( glueAt, 32 ) << "..." << std::endl;
+
+		Check( pJob->GetObjects() && pJob->GetObjects()->GetItem( "obj" ) != nullptr,
+		       "the derived scene resolves `obj` again after Undo" );
+		Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "matAppendR2" ) != nullptr,
+		       "the derived scene still resolves the out-of-band `matAppendR2` too" );
+
+		// Save + reload clean.
+		const char* saveAs = "agentlive_p1_round2_lastchunk_save.RISEscene";
+		std::remove( saveAs );
+		const SaveResult sr = c.RequestSave( std::string( saveAs ) );
+		Check( Succeeded( sr.status ), "save succeeds after the glue-safe restore" );
+		{
+			Job* fresh = new Job();
+			Check( fresh->LoadAsciiSceneViaCst( saveAs ), "the saved Document reloads CLEANLY (no wedge, no corruption)" );
+			Check( fresh->GetObjects() && fresh->GetObjects()->GetItem( "obj" ) != nullptr, "the reload resolves `obj`" );
+			Check( fresh->GetMaterials() && fresh->GetMaterials()->GetItem( "matAppendR2" ) != nullptr, "the reload resolves `matAppendR2`" );
+			fresh->release();
+		}
+		std::remove( saveAs );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -3045,6 +3320,8 @@ int main()
 	TestVariantOverlayInsertUndoP1A();
 	TestGlueSafeRestoreAfterOutOfBandShiftP1B();
 	TestStaleIndexIdentityCheckRefusesP2();
+	TestGlueSafeRestoreRightSideAfterOutOfBandShiftP1Round2();
+	TestGlueSafeRestoreLastChunkAppendP1Round2();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

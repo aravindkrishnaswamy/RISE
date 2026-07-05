@@ -3479,28 +3479,38 @@ namespace RISE
 		//! changes the document's last-wins activation the same way a fresh insert does, so the pre-erase
 		//! active rasterizer must NOT be restored over it (live must match what a reload of the now-restored
 		//! Document would activate).
-		//! GLUE-SAFETY (round-1 P1-B fix): `atIndex` is CLAMPED to the current Document's range but carries NO
-		//! identity check -- an out-of-band Document mutation between the original erase and this restore call
-		//! (another agent session; a script; the Test-19-style "independent mechanism" idiom) can shift indices,
-		//! so `atIndex` may land in a position whose LEFT NEIGHBOUR does not end in a newline (a hand-authored
-		//! chunk glued directly onto the end of the preceding one, or a different separator shape than the one
-		//! that used to sit there).  Splicing `bytesInOrder` verbatim at such an index would glue the restored
-		//! chunk's `keyword` token directly onto the neighbour's `}` (`}lambertian_material`) -- syntactically
-		//! recoverable today (the tokenizer is brace-forgiving) but a byte-exact-restore invariant violation and
-		//! latent corruption.  Mirroring Cst::DocEraseChunkTidy's own glue-safety reasoning (ItemEndsInNewline):
+		//! GLUE-SAFETY (round-1 P1-B fix + round-2 P1 fix, LEFT and RIGHT sides): `atIndex` is CLAMPED to the
+		//! current Document's range but carries NO identity check -- an out-of-band Document mutation between
+		//! the original erase and this restore call (another agent session; a script; the Test-19-style
+		//! "independent mechanism" idiom) can shift indices, so `atIndex` may land in a position whose LEFT
+		//! NEIGHBOUR does not end in a newline, or whose RIGHT NEIGHBOUR does not begin with whitespace.
+		//! Splicing `bytesInOrder` verbatim at such an index would glue the restored chunk's `keyword` token
+		//! directly onto the neighbour's `}` on the left (`}lambertian_material`), OR glue the neighbour's own
+		//! `keyword` token directly onto the restored chunk's trailing `}` on the right
+		//! (`}lambertian_luminaire_material`) -- syntactically recoverable today (the tokenizer is
+		//! brace-forgiving) but a byte-exact-restore invariant violation and latent corruption.  Mirroring
+		//! Cst::DocEraseChunkTidy's own glue-safety reasoning (ItemEndsInNewline / IsPureWhitespaceTrivia):
 		//! after clamping, if `atIndex > 0` and the item now at `atIndex - 1` does NOT end in a newline, a
 		//! synthesized pure-`"\n"` Trivia lead item is spliced in FIRST (ahead of `bytesInOrder`'s own items) so
-		//! the restored chunk always starts on a fresh line.  The right side does not need a symmetric check:
-		//! `bytesInOrder` is the caller's exact capture of what DocEraseChunkTidy actually dropped, which always
-		//! includes the chunk's OWN trailing separator when one existed (SceneEditController's capture comment:
-		//! "the chunk's own text PLUS the immediately-following top-level item"), so the restored run is already
-		//! newline-terminated on its own -- there is no missing trailing separator to synthesize.  In the
-		//! ordinary NO-SHIFT case (the common path -- nothing moved between erase and restore) the left neighbour
-		//! already ends in `\n` (that is what the original erase's own glue-safety proved true), so no synthetic
-		//! item is added and the restore stays byte-IDENTICAL to the pre-erase Document, matching
-		//! ApplyCstRemoveItemsAt's byte-identity bar. Under a genuine shift the bar relaxes from byte-identity to
-		//! glue-safety (a well-formed, non-corrupt Document) -- byte-identity to a Document state that no longer
-		//! exists is not a coherent goal once something else has changed it.
+		//! the restored chunk always starts on a fresh line.  SYMMETRICALLY on the right: `bytesInOrder` is NOT
+		//! always trailing-separator-terminated -- the controller's capture is trimmed to JUST the chunk's own
+		//! bytes (which always end in `}`, never `\n`, since the trailing newline when one exists is a
+		//! SEPARATE sibling Trivia item) whenever the original erase's `droppedCount == 1` (the removed chunk
+		//! was the LAST top-level item, so no trailing separator ever existed; or DocEraseChunkTidy found the
+		//! separator glue-unsafe to collapse and left it in the Document rather than folding it into the
+		//! capture).  So if the restored run's LAST item does not end in a newline AND an item is now sitting
+		//! at the (post-left-synthesis) splice point AND that item's FIRST byte is not whitespace, a synthesized
+		//! pure-`"\n"` Trivia item is appended AFTER `bytesInOrder`'s own items before splicing.  In the
+		//! ordinary NO-SHIFT case (the common path -- nothing moved between erase and restore) neither synthetic
+		//! item is added: the left neighbour already ends in `\n` (the original erase's own glue-safety proved
+		//! that), and on the right, the item now sitting at the splice point is either nothing (the chunk was
+		//! last) or the ORIGINAL untouched separator DocEraseChunkTidy declined to collapse -- which, being
+		//! pure whitespace by construction, always STARTS with a whitespace byte (space/tab, not necessarily
+		//! `\n`) even when it isn't newline-led, so the "first byte is whitespace" test (not "first byte is
+		//! `\n`") is what keeps the no-shift path byte-IDENTICAL to the pre-erase Document rather than
+		//! incorrectly inserting a `\n` that was never there.  Under a genuine shift the bar relaxes from
+		//! byte-identity to glue-safety (a well-formed, non-corrupt Document) -- byte-identity to a Document
+		//! state that no longer exists is not a coherent goal once something else has changed it.
 		//! Out-param `outDiag` (nullable) carries the first dry-run diagnostic on a code-0 refusal.
 		//! Returns: 2 = restored + clean full re-derive (Scene + managers REPLACED -- caller MUST rebind);
 		//! 3 = restored + managers replaced BUT the re-derive diagnosed (rebind AND treat as failure);

@@ -10549,6 +10549,20 @@ static bool JobItemEndsInNewline_( const RISE::Cst::Document& doc, int index )
 	return !s.empty() && s.back() == '\n';
 }
 
+// Round-2 P1 glue-safety helper (RIGHT-side twin of JobItemEndsInNewline_ above): true iff the top-level
+// item at `index` in `doc` serializes to bytes whose FIRST byte is ANY whitespace character (space, tab,
+// CR, or LF -- the same class DocEraseChunkTidy's IsPureWhitespaceTrivia treats as collapsible glue-safe
+// content, not just '\n').  An out-of-range/absent item counts as "starts with whitespace" (vacuously
+// glue-safe: there is nothing there to glue onto -- mirrors `at == nHead` being a no-splice-neighbour case).
+static bool JobItemStartsWithWhitespace_( const RISE::Cst::Document& doc, int index )
+{
+	if( index < 0 || index >= RISE::Cst::DocItemCount( doc ) ) return true;
+	const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, index ) );
+	if( !it ) return true;
+	const std::string s = RISE::Cst::SerializeNode( it );
+	return s.empty() || s.find_first_of( " \t\r\n", 0 ) == 0;
+}
+
 int Job::ApplyCstRestoreChunkAt( const char* bytesInOrder, int atIndex, bool restoreActiveRasterizer,
                                   char* outDiag, unsigned int diagMax )
 {
@@ -10579,17 +10593,14 @@ int Job::ApplyCstRestoreChunkAt( const char* bytesInOrder, int atIndex, bool res
 	const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
 	const int at = ( atIndex < 0 ) ? 0 : ( atIndex > nHead ? nHead : atIndex );
 
-	// Round-1 P1-B (glue-safety): an out-of-band Document mutation between the original erase and this
-	// restore can shift indices, landing `at` somewhere whose LEFT NEIGHBOUR does not end in a newline --
+	// Round-1 P1-B (glue-safety, LEFT side): an out-of-band Document mutation between the original erase and
+	// this restore can shift indices, landing `at` somewhere whose LEFT NEIGHBOUR does not end in a newline --
 	// splicing the restored bytes verbatim there would glue the restored chunk's keyword directly onto the
 	// neighbour's `}` (`}lambertian_material`).  Mirror Cst.cpp's DocEraseChunkTidy glue-safety reasoning:
 	// synthesize a pure-"\n" Trivia lead item ahead of the restore whenever `at > 0` and the item now at
 	// `at - 1` is not newline-terminated.  In the ordinary no-shift case the left neighbour already ends in
 	// `\n` (that is what the ORIGINAL erase's own glue-safety proved true), so nothing is synthesized and the
-	// restore stays byte-IDENTICAL to the pre-erase Document.  No symmetric right-side check is needed: the
-	// caller's capture (SceneEditController::CaptureAgentChunkForRemoveUndo_ / the post-remove trim in
-	// ApplyAgentChunkCrud_) always includes the chunk's own tidied-away trailing separator when one existed,
-	// so `items` already ends newline-terminated on its own.
+	// restore stays byte-IDENTICAL to the pre-erase Document.
 	RISE::Cst::Document d1 = *pCstDocument;
 	int spliceAt = at;
 	if( at > 0 && !JobItemEndsInNewline_( d1, at - 1 ) ) {
@@ -10600,6 +10611,46 @@ int Job::ApplyCstRestoreChunkAt( const char* bytesInOrder, int atIndex, bool res
 			++spliceAt;
 		}
 	}
+
+	// Round-2 P1 (glue-safety, RIGHT side -- symmetric twin of the LEFT-side check above): the caller's
+	// capture is NOT always trailing-separator-terminated.  `SceneEditController::ApplyAgentChunkCrud_` trims
+	// the conservative two-item over-capture down to JUST the chunk's own bytes whenever the erase's
+	// `droppedCount == 1` (the chunk was the LAST top-level item, so no trailing separator ever existed; OR
+	// `DocEraseChunkTidy` found the separator glue-UNSAFE to collapse and left it in the Document, still
+	// sitting at the removal point).  A Chunk node's serialized bytes always end in `}` (the trailing newline,
+	// when one exists, is a SEPARATE sibling Trivia item) -- so a chunk-only capture's last item does not end
+	// in `\n`.  If an out-of-band Document mutation then shifts indices so a non-whitespace-leading item (a
+	// hand-authored chunk's `keyword` token) now sits immediately at the (post-left-synthesis) splice point,
+	// splicing verbatim glues `}` directly onto it (`}lambertian_luminaire_material`) -- silently, since the
+	// tokenizer is brace-forgiving.  Mirror the left-side rule: if the restored run's LAST item is not
+	// newline-terminated AND there IS an item now sitting at the splice point AND that item's FIRST byte is
+	// NOT whitespace, append a synthesized pure-"\n" Trivia item after the restored run before committing.
+	//
+	// Why "not whitespace" (not "not '\n' specifically") is the correct right-side test, and why it preserves
+	// byte-identity in EVERY no-shift case: `DocEraseChunkTidy` only ever leaves the original separator in
+	// place (rather than collapsing it) when that separator is NOT glue-safe to drop -- either it isn't pure
+	// whitespace at all (impossible for a real inter-chunk separator; `IsPureWhitespaceTrivia` requires
+	// `" \t\r\n"` only) or the glue-safety walk found it unsafe.  In EVERY no-shift droppedCount==1 shape the
+	// item now sitting at the splice point is EITHER (a) nothing (`at == nHead`, chunk was last -- vacuously
+	// whitespace per the helper's out-of-range convention, no synthesis) or (b) the ORIGINAL, UNTOUCHED
+	// separator that was already sitting immediately after the chunk pre-remove -- and that separator, being
+	// pure whitespace by construction (` \t\r\n` only), ALWAYS starts with a whitespace byte (even if that
+	// byte is a space/tab rather than `\n`) -- so the "first byte is whitespace" test is false-negative-free
+	// for restoring byte-identity: no synthesis fires, and splicing the chunk-only capture directly ahead of
+	// that untouched separator reproduces the EXACT pre-remove adjacency (`}` immediately followed by the
+	// separator's own first character, whatever it was).  Synthesizing a lead '\n' there would be WRONG (it
+	// would insert a byte that was never in the pre-remove document).  The rule only fires when the item at
+	// the splice point begins with a genuine non-whitespace byte -- which only happens under an out-of-band
+	// shift that moved unrelated content there, i.e. exactly the corruption case this fix targets.
+	const std::string lastItemBytes = items.empty() ? std::string() : RISE::Cst::SerializeNode( items.back() );
+	const bool lastItemEndsInNewline = !lastItemBytes.empty() && lastItemBytes.back() == '\n';
+	if( !lastItemEndsInNewline && spliceAt < RISE::Cst::DocItemCount( d1 )
+	    && !JobItemStartsWithWhitespace_( d1, spliceAt ) ) {
+		RISE::Cst::Document trailDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+		RISE::Cst::NodeRef  trailItem = RISE::Cst::DocResolveNodeId( trailDoc, RISE::Cst::DocNodeIdAt( trailDoc, 0 ) );
+		if( trailItem ) items.push_back( trailItem );
+	}
+
 	for( size_t k = 0; k < items.size(); ++k )
 		d1 = RISE::Cst::DocInsertItem( d1, spliceAt + (int)k, items[k] );
 
