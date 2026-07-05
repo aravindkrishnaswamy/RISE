@@ -678,6 +678,13 @@ final class ChatViewModel: ObservableObject {
         outstandingChatRenderJobId = 0
         let line = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"render_cancel\"," +
                    "\"params\":{\"renderJobId\":\(jobId)}}"
+        // Response intentionally discarded: its `cancelled:true` means only
+        // "routed through a live controller", NOT "something was stopped"
+        // (see AgentRpc.cpp's render_cancel doc — `cancelled` mirrors
+        // `HasController()`, not whether a render was actually in flight);
+        // this call site already knows a job WAS outstanding (the guard
+        // above), and the fire-and-forget contract means we don't wait to
+        // find out whether it actually stopped.
         _ = vb.agentHandleLine(line)
     }
 
@@ -906,13 +913,17 @@ final class ChatViewModel: ObservableObject {
     /// the single-caller contract exactly), but the render itself runs on
     /// the controller's dedicated agent-render worker thread (submitted
     /// via `render{"async":true}`), so each individual `agentHandleLine`
-    /// call this method makes is fast (a submit, or a bounded short-
-    /// timeout render_wait poll) — never a multi-second blocking call.
-    /// Between slices we `await Task.sleep` for a small pause, which
-    /// SUSPENDS this Task and returns control to the run loop — that's
-    /// what keeps the UI responsive (button clicks, viewport interaction,
-    /// SwiftUI redraws all run in that gap), not any actual parallelism
-    /// against the dispatcher.
+    /// call this method makes is fast — a submit, or (S2b P2-2) a
+    /// render_wait(timeoutMs:0) POLL-ONCE call that hits
+    /// `WaitForRenderJob`'s "no wait" early return and so costs a single
+    /// mutex-guarded status read, near-instant rather than up to
+    /// timeoutMs — never a multi-second blocking call. Between slices we
+    /// `await Task.sleep` for a small pause, which SUSPENDS this Task and
+    /// returns control to the run loop — that's what keeps the UI
+    /// responsive (button clicks, viewport interaction, SwiftUI redraws
+    /// all run in that gap), not any actual parallelism against the
+    /// dispatcher.  See `executeRenderToolCallAsync`'s poll-loop comment
+    /// below for the full before/after of the per-cycle MainActor cost.
     ///
     /// CONTRACT WITH THE LLM: the taught `render` tool schema
     /// (AgentChatCodecs.cpp) has no `async` parameter — the LLM never
@@ -1001,19 +1012,40 @@ final class ChatViewModel: ObservableObject {
         outstandingChatRenderJobId = jobId
         defer { outstandingChatRenderJobId = 0 }
 
-        // Poll render_wait in SHORT slices, awaiting a brief sleep
-        // between each — see the method doc for why this keeps the UI
-        // responsive without violating HandleLine's single-caller
-        // contract.  250ms keeps any one MainActor-blocking slice small
-        // relative to human perception while not spamming the dispatcher;
-        // the outer loop has no fixed cap (a render legitimately can take
-        // a long time) — cancellation is what bounds it in practice: a
-        // Stop/scene-close/production-render-start sets stopRequested /
-        // cancels the Task / flips sceneEditable, and the check at the
-        // top of every slice below returns promptly (the render itself
-        // keeps running on the worker thread — cancelAnyOutstandingChatRender,
-        // called by all three of those paths, is what actually tells the
-        // controller to abort it).
+        // Poll render_wait(timeoutMs:0) — a POLL-ONCE call, not a bounded
+        // wait — separated by an `await Task.sleep`.  S2b P2-2: the prior
+        // shape passed `timeoutMs:250` to render_wait, and because
+        // `agentHandleLine` runs synchronously on the MainActor (see the
+        // method doc), that made each slice's MainActor-blocking cost up
+        // to 250ms — WaitForRenderJob's `wait_until` loop (SceneEditController.cpp)
+        // really does block the calling thread for up to `timeoutMs`
+        // waiting on its condvar.  At ~4Hz that read as UI jank for the
+        // render's whole duration (button clicks / viewport interaction /
+        // SwiftUI redraws all stalling on each slice).  `timeoutMs:0` hits
+        // WaitForRenderJob's explicit "poll-once contract: no wait" early
+        // return (`if( timeoutMs == 0 ) return false;` before any condvar
+        // wait) — so this `agentHandleLine` call is now a single mutex-
+        // guarded status read, not a wait, and the MainActor-blocking
+        // portion of each cycle is near-instant. The actual pacing between
+        // polls moves entirely to the `await Task.sleep` below, which
+        // SUSPENDS this Task and returns control to the run loop — same
+        // mechanism as before, just no longer sharing the interval with a
+        // blocking call. 250ms between polls keeps the dispatcher from
+        // being spammed while still reading as prompt; the outer loop has
+        // no fixed cap (a render legitimately can take a long time) —
+        // cancellation is what bounds it in practice: a Stop/scene-close/
+        // production-render-start sets stopRequested / cancels the Task /
+        // flips sceneEditable, and the check at the top of every slice
+        // below returns promptly (the render itself keeps running on the
+        // worker thread — cancelAnyOutstandingChatRender, called by all
+        // three of those paths, is what actually tells the controller to
+        // abort it).  Confirmed empirically (and by reading
+        // WaitForRenderJob/RenderWait/the render_wait RPC handler in
+        // AgentRpc.cpp) that timeoutMs:0 on an ALREADY-completed job still
+        // reports `completed:true` plus the cached `result` sub-object —
+        // the poll-once early return happens AFTER the "is it already
+        // done" check, not instead of it — so the final-result fetch
+        // below needs no separate call shape.
         let sliceMs: UInt64 = 250
         while true {
             if Task.isCancelled || stopRequested { return "" }
@@ -1026,7 +1058,7 @@ final class ChatViewModel: ObservableObject {
             guard !productionRenderActive() else { return "" }
 
             let waitLine = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"render_wait\"," +
-                "\"params\":{\"renderJobId\":\(jobId),\"timeoutMs\":\(sliceMs)}}"
+                "\"params\":{\"renderJobId\":\(jobId),\"timeoutMs\":0}}"
             let waitResponse = vb.agentHandleLine(waitLine)
             if let waitData = waitResponse.data(using: .utf8),
                let waitObj = (try? JSONSerialization.jsonObject(with: waitData)) as? [String: Any],
@@ -1053,7 +1085,9 @@ final class ChatViewModel: ObservableObject {
             }
             // Not yet complete (or a transient parse hiccup) — sleep
             // briefly, then loop.  The `await` here is what actually
-            // yields to the run loop between slices.
+            // yields to the run loop between slices, and is now the ONLY
+            // source of per-cycle delay (the poll itself above is near-
+            // instant — see this loop's leading comment).
             try? await Task.sleep(nanoseconds: sliceMs * 1_000_000)
         }
     }

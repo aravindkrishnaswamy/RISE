@@ -2937,10 +2937,37 @@ void SceneEditController::CancelAndParkRender_( std::unique_lock<std::mutex>& lk
 //     either genuinely still outstanding (correctly cancelled) or has
 //     already been retired (comparing-cleared by the worker's
 //     OutstandingGuard), never a DIFFERENT later render wearing the old
-//     id.  Best practice for a FUTURE caller of this method remains "cancel
-//     immediately followed by a wait for the SAME job id", exactly as both
-//     existing callers already do (Stop() joins the worker thread;
-//     DrainAsyncRender_ calls WaitForRenderJob, unbounded -- round-2 P1-1).
+//     id.
+//   * AgentSession::CancelAsyncRender caller (Model-B F2 slice S2b,
+//     THIRD caller): fire-and-forget from the Swift chat driver's
+//     `render_cancel` RPC verb (ChatViewModel.cancelAnyOutstandingChatRender),
+//     fired whenever a NEWER intent (Stop, a production render starting,
+//     the scene closing, a provider switch) needs to end an outstanding
+//     chat-driven agent render without waiting behind it.  Unlike the
+//     other two callers, this one does NOT follow up with a wait for the
+//     same job id -- it trips the flag and returns immediately (see
+//     AgentSession::CancelAsyncRender's and the RPC handler's own docs).
+//     Safe by the SAME broad argument that makes this method safe to call
+//     on an idle controller at all: at worst, a stale/racing cancel here
+//     trips mCancelProgress for whatever happens to be running RIGHT NOW
+//     -- which, in the fire-and-forget case, is either the render this
+//     call actually meant to cancel, or (in a narrow race window) some
+//     OTHER in-flight pass that starts an instant later. Cancelling an
+//     unrelated in-flight pass is routine self-healing churn in this
+//     codebase, not a correctness bug: the interactive viewport already
+//     calls RequestCancel() on every edit, and every rasterizer pass
+//     (interactive or agent) is written to restart cleanly after a
+//     cancel. So the worst case from this third caller is "a render
+//     restarts one pass sooner than it otherwise would have" -- the same
+//     harmless outcome the Stop()/DrainAsyncRender_ callers rely on,
+//     just without their own immediate follow-up wait.  Best practice for
+//     a FUTURE caller that DOES need "cancelled AND drained" remains
+//     "cancel immediately followed by a wait for the SAME job id", exactly
+//     as the first two callers already do (Stop() joins the worker
+//     thread; DrainAsyncRender_ calls WaitForRenderJob, unbounded --
+//     round-2 P1-1); a fire-and-forget caller like this third one is
+//     explicitly opting OUT of that guarantee because its use case
+//     (an interrupting newer intent) doesn't need it.
 void SceneEditController::CancelAgentRender_()
 {
 	mCancelProgress.RequestCancel();

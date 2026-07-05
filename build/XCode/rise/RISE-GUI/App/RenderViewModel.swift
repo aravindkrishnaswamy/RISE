@@ -206,8 +206,12 @@ final class RenderViewModel: ObservableObject {
     /// JSON-RPC panel) mutate the live scene RIGHT NOW?  THE single gate:
     /// both call sites — `ChatViewModel.sceneEditable` (wired in `init`
     /// below) and `sendAgentRequest` (the raw JSON-RPC debug panel) —
-    /// consume this ONE property.  There is exactly one case-list here;
-    /// neither call site re-implements or duplicates it.
+    /// consume this ONE property.  It in turn is built from
+    /// `isProductionRenderRunning`, the SINGLE source for the
+    /// `renderState` case-list — neither this property nor
+    /// `productionRenderActive` below hand-copies that list a second
+    /// time (see `isProductionRenderRunning`'s doc for the S2b P2-1
+    /// fix that single-sourced it).
     ///
     /// Only while the interactive viewport is the sole scene reader.
     /// During a production render (.rendering / .cancelling — the
@@ -223,7 +227,7 @@ final class RenderViewModel: ObservableObject {
     /// interleave with a render kick.
     ///
     /// Model-B F2 slice S2b ADDITIVE clause: `chat.isChatRenderOutstanding`
-    /// folds in truth the `renderState` switch above cannot see on its
+    /// folds in truth `isProductionRenderRunning` cannot see on its
     /// own — a chat-driven `render` tool call's async render runs on the
     /// controller's dedicated agent-render worker WITHOUT ever flipping
     /// `renderState` out of `.sceneLoaded`/`.completed` (that state
@@ -236,20 +240,25 @@ final class RenderViewModel: ObservableObject {
     /// rasterizer vs. chat-driven agent render) that share the same
     /// underlying "don't let two things touch the scene/controller at
     /// once" concern.
-    ///
-    /// The renderState switch's own semantics are DELIBERATELY left
-    /// completely intact this round (belt-and-suspenders, per the S2b
-    /// task scope) — a future slice may reconsider whether some of these
-    /// cases could instead be read directly off the coordinator once a
-    /// review round has proven this combined predicate correct; deleting
-    /// the redundancy is out of scope here.
     var isSceneEditableForAgents: Bool {
-        if chat.isChatRenderOutstanding { return false }
+        !chat.isChatRenderOutstanding && !isProductionRenderRunning
+    }
+
+    /// S2b P2-1: THE single source for the `renderState` case-list that
+    /// means "a production render is currently occupying the
+    /// controller/scene" — `.rendering`, `.cancelling`, `.loading`.
+    /// Both `isSceneEditableForAgents` above and `productionRenderActive`
+    /// below (wired into `ChatViewModel` in `init`) read this ONE
+    /// property instead of each hand-copying the same three-case
+    /// switch — the exact duplication the "one gate" goal exists to
+    /// kill, caught in S2b review as P2-1 (both copies lived on this
+    /// same type, so drift between them was a `case` away).
+    private var isProductionRenderRunning: Bool {
         switch renderState {
         case .rendering, .cancelling, .loading:
-            return false
-        default:
             return true
+        default:
+            return false
         }
     }
     @Published var hasAnimation: Bool = false
@@ -432,17 +441,12 @@ final class RenderViewModel: ObservableObject {
         // — see its doc on ChatViewModel for why the render tool call's own
         // poll loop needs this instead of the combined `isSceneEditableForAgents`
         // (which now also reports false for that SAME call's own outstanding
-        // render).  Re-derives the identical `renderState` cases directly
-        // rather than calling `isSceneEditableForAgents` and subtracting the
-        // chat-render clause back out.
+        // render).  S2b P2-1: forwards to `isProductionRenderRunning`, the
+        // SAME single-sourced case-list `isSceneEditableForAgents` reads —
+        // no second hand-copy of the `renderState` switch.
         chat.productionRenderActive = { [weak self] in
             guard let self else { return true }   // fail closed, matching sceneEditable's convention
-            switch self.renderState {
-            case .rendering, .cancelling, .loading:
-                return true
-            default:
-                return false
-            }
+            return self.isProductionRenderRunning
         }
         bridge.setLogBlock { [weak self] (level: RISELogLevel, message: String) in
             Task { @MainActor [weak self] in
