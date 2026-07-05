@@ -754,6 +754,83 @@ namespace RISE
 			RenderJobId*          outJobId,
 			unsigned int          queueTimeoutMs = 30000 );
 
+		//! Fix-round S4-1 (throw-path UAF): the shared, tested composition a
+		//! platform shell's production-render entry point (macOS
+		//! RISEBridge.mm's `-rasterize`/`-rasterizeAnimation`/
+		//! `-rasterizeRegion...`, Windows RenderEngine.cpp's
+		//! startRender/startAnimationRender) uses to route `doRasterize`
+		//! through `controller`'s SubmitProductionRenderSync -- see that
+		//! method's doc for the coordinator rationale.  Pulled out of the two
+		//! platform files (which had it duplicated byte-for-byte apart from
+		//! BOOL vs bool) into ONE place so the throw-path fix below only has
+		//! to be written, reviewed, and tested once.  Pure IProgressCallback
+		//! plumbing -- no AppKit/Qt dependency, so it is exercised directly by
+		//! tests/AgentRenderAsyncTest.cpp instead of only transitively via a
+		//! platform shell.
+		//!
+		//! NULL-safe: with `controller` == nullptr this just calls
+		//! `doRasterize` directly (the pre-S4 / headless behaviour).
+		//!
+		//! Progress/cancel composition: `job->GetProgress()` (read BEFORE any
+		//! install below) is whatever IProgressCallback the platform shell
+		//! already has installed for this render's lifetime (or nullptr, if
+		//! the shell deliberately skipped installing one when a controller is
+		//! attached -- see e.g. RenderEngine.cpp's startRender comment). This
+		//! controller's own mCancelProgress (AgentRenderProgress()) is
+		//! installed on the Job for the render's duration with that prior
+		//! value composed in as its `inner`
+		//! (CancellableProgressCallback::SetInner), so the platform's
+		//! progress UI / cancel button keeps working exactly as before while
+		//! the coordinator's own cancel (Stop() / CancelAgentRender_) ALSO
+		//! aborts a production render -- CancellableProgressCallback::Progress
+		//! refuses the instant EITHER source trips.
+		//!
+		//! Throw-path fix (Fix-round S4-1): BOTH the Job-slot restore (via
+		//! ProgressRestoreGuard) AND the mCancelProgress `inner` reset (via
+		//! InnerResetGuard) are RAII, armed immediately after the composed
+		//! callback is installed, so a throw out of `doRasterize` (OIDN
+		//! denoise is a documented real throw site) can never skip either
+		//! teardown step.  Before this fix, `coordProgress->SetInner(nullptr)`
+		//! was a plain statement AFTER the `doRasterize()` call with no guard
+		//! covering it -- a throw left mCancelProgress.mInner dangling at
+		//! whatever the platform shell's now-destroyed progress object was,
+		//! and the interactive loop installs &mCancelProgress on the Job
+		//! every pass (see RenderLoop's per-pass mCancelProgress.Reset(),
+		//! which only clears the cancel flag, NOT mInner), so the very next
+		//! interactive pass -- or a later agent render sharing the same
+		//! mCancelProgress -- would forward ticks through the dangling
+		//! pointer.
+		//!
+		//! Guard-destruction-order proof: the two RAII guards below fire back
+		//! to back on ONE thread with no lock of their own, but that is safe
+		//! REGARDLESS of which one is declared (and therefore destroyed)
+		//! first, because both destructors run INSIDE the caller's mMutex
+		//! hold. `fn` here is always invoked as the closure
+		//! SubmitProductionRenderSync/SubmitAgentRenderSync hands to
+		//! AgentRenderWorkerLoop_, which calls it at
+		//! `try { if( fn ) fn(); } catch( ... ) { caught = ...; }` with that
+		//! whole try/catch nested INSIDE `std::unique_lock<std::mutex>
+		//! renderLk( mMutex )` (acquired via CancelAndParkRender_ and held for
+		//! the render's WHOLE duration, released only after the try/catch
+		//! block exits) -- so stack unwinding out of `doRasterize()` runs
+		//! this function's local guard destructors, and the try/catch's own
+		//! catch-and-continue, all while renderLk is still held. The ONLY
+		//! other code that touches mCancelProgress is RenderLoop's per-pass
+		//! `mCancelProgress.Reset()`, which itself takes the SAME mMutex
+		//! before touching it. Mutual exclusion on mMutex therefore closes
+		//! the window completely: an interactive pass cannot install a fresh
+		//! inner or reset the cancel flag while this function's guards are
+		//! unwinding, no matter which guard is torn down first. (Order is
+		//! still chosen deliberately below: the Job-slot restore runs first,
+		//! pointing the Job away from coordProgress, then the inner clear
+		//! makes coordProgress itself inert -- belt-and-suspenders, not load-
+		//! bearing for correctness.)
+		static bool RunProductionRenderComposed(
+			IJobPriv&                     job,
+			SceneEditController*          controller,
+			const String&                clientLabel,
+			const std::function<bool()>& doRasterize );
+
 		//! Model-B F2 slice S2a: status surface for a render job id.  For a
 		//! COORDINATOR (controller-minted, EVEN) id that matches the
 		//! CURRENT or MOST-RECENTLY-COMPLETED job on this controller,

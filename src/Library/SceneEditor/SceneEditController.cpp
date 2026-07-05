@@ -3991,6 +3991,135 @@ bool SceneEditController::SubmitProductionRenderSync(
 		/*pinned=*/false, RenderClass::Production );
 }
 
+// Fix-round S4-1 (throw-path UAF): see the header doc on the declaration for
+// the full rationale, the guard-order proof, and what this replaces in the
+// two platform shells.
+bool SceneEditController::RunProductionRenderComposed(
+	IJobPriv&                     job,
+	SceneEditController*          controller,
+	const String&                 clientLabel,
+	const std::function<bool()>& doRasterize )
+{
+	if( !controller )
+	{
+		return doRasterize();
+	}
+
+	// RAII restore of the Job's progress-callback slot -- matches the house
+	// shape used throughout this file / AgentSession.cpp (Arm/Disarm,
+	// restore-on-every-exit-including-a-throw).
+	class ProgressRestoreGuard
+	{
+	public:
+		ProgressRestoreGuard( IJobPriv& j, IProgressCallback* priorValue )
+			: mJob( j ), mPriorValue( priorValue ), mArmed( false )
+		{
+		}
+
+		void Arm()    { mArmed = true; }
+		void Disarm() { mArmed = false; }
+
+		~ProgressRestoreGuard()
+		{
+			if( !mArmed ) return;
+			try {
+				mJob.SetProgress( mPriorValue );
+			}
+			catch( ... ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"SceneEditController::RunProductionRenderComposed: exception escaped the "
+					"production-render progress-hook restore -- the Job's progress callback may "
+					"be left stale" );
+			}
+		}
+
+	private:
+		ProgressRestoreGuard( const ProgressRestoreGuard& );             // deleted
+		ProgressRestoreGuard& operator=( const ProgressRestoreGuard& );  // deleted
+
+		IJobPriv&           mJob;
+		IProgressCallback*  mPriorValue;
+		bool                mArmed;
+	};
+
+	// Fix-round S4-1: the sibling guard the P1 review found missing --
+	// clears mCancelProgress's `inner` back to null on every exit, including
+	// a throw out of `doRasterize`, so the shared CancellableProgressCallback
+	// never outlives the platform-side progress object it was pointed at.
+	// Armed in the same breath as ProgressRestoreGuard, immediately after
+	// SetInner(prior) below -- see the declaration's header doc for the
+	// mMutex-exclusion proof that the destruction order between this guard
+	// and ProgressRestoreGuard doesn't matter for correctness.
+	class InnerResetGuard
+	{
+	public:
+		explicit InnerResetGuard( CancellableProgressCallback& c )
+			: mCoord( c ), mArmed( false )
+		{
+		}
+
+		void Arm()    { mArmed = true; }
+		void Disarm() { mArmed = false; }
+
+		~InnerResetGuard()
+		{
+			if( !mArmed ) return;
+			mCoord.SetInner( nullptr );
+		}
+
+	private:
+		InnerResetGuard( const InnerResetGuard& );             // deleted
+		InnerResetGuard& operator=( const InnerResetGuard& );  // deleted
+
+		CancellableProgressCallback& mCoord;
+		bool                         mArmed;
+	};
+
+	bool result = false;
+	SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
+	const bool submitted = controller->SubmitProductionRenderSync(
+		[&]() {
+			IProgressCallback* priorProgress = job.GetProgress();
+			CancellableProgressCallback* coordProgress = static_cast<CancellableProgressCallback*>(
+				controller->AgentRenderProgress() );
+			coordProgress->SetInner( priorProgress );
+
+			ProgressRestoreGuard progressGuard( job, priorProgress );
+			progressGuard.Arm();
+			InnerResetGuard innerGuard( *coordProgress );
+			innerGuard.Arm();
+
+			job.SetProgress( coordProgress );
+
+			result = doRasterize();
+
+			// Ordinary-path tail: explicit restore + Disarm, mirroring the
+			// house convention elsewhere in this file -- the destructors
+			// above are then no-ops here, only actually firing on a throw
+			// out of doRasterize().
+			job.SetProgress( priorProgress );
+			progressGuard.Disarm();
+			coordProgress->SetInner( nullptr );
+			innerGuard.Disarm();
+		},
+		clientLabel,
+		&jobId );
+
+	if( !submitted )
+	{
+		// Refused (open transaction, Stop() in progress/racing, or a
+		// fairness-wait timeout) -- fall back to a direct call so a
+		// production render is never silently dropped on the floor.  Mirrors
+		// the pre-S4 behaviour for the refusal case; the ordinary case above
+		// is what actually closes the concurrency gap.
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::RunProductionRenderComposed: production render submission to "
+			"the coordinator was refused -- falling back to a direct Rasterize() call." );
+		return doRasterize();
+	}
+	return result;
+}
+
 SceneEditController::RenderJobLookup SceneEditController::GetRenderJobStatus( RenderJobId id ) const
 {
 	RenderJobLookup out;

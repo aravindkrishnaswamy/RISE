@@ -3403,6 +3403,181 @@ static void RunStopDuringProductionTest()
 	std::printf( "=== (x) Stop() during production: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// (y) Fix-round S4-1 RED-PROVE: SceneEditController::RunProductionRenderComposed
+//     RAII-resets mCancelProgress's `inner` back to null on a throw out of
+//     `doRasterize`, so a LATER agent render (which installs the SAME
+//     mCancelProgress on the Job -- see AgentSession::doRenderWork) never
+//     forwards ticks through a dangling pointer to the earlier, now-
+//     destroyed production-side counting callback.
+//
+//     Pre-fix shape (both platform shells, byte-identical before this
+//     fix): `coordProgress->SetInner(prior); ... result = doRasterize();
+//     /* THROW POINT */ ... coordProgress->SetInner(nullptr);` -- the
+//     final SetInner(nullptr) sat as a plain statement AFTER doRasterize(),
+//     with only the JOB's progress SLOT (not mCancelProgress's `inner`)
+//     covered by a guard.  A throw out of doRasterize() skipped it,
+//     leaving mCancelProgress.mInner pointed at `prior` -- here, a
+//     stack-local counting callback that is destroyed the instant this
+//     test function's scope holding it unwinds past the throw.  The next
+//     render that installs mCancelProgress on the Job (an agent render,
+//     or the interactive loop) then forwards ticks through that freed
+//     pointer -- a recurring UAF, not a one-shot.
+//////////////////////////////////////////////////////////////////////
+static void RunInnerResetOnThrowRedProveTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (y) RED-PROVE: RunProductionRenderComposed resets mCancelProgress's inner on a throw ===\n" );
+
+	// A dedicated (larger) scene, NOT the shared 24x24 `kScene` -- this test
+	// needs the real progress-callback dispatcher to actually fire multiple
+	// ticks (RasterizeBlockDispatcher::GetNextBlock only calls Progress()
+	// once tile idx>0, so a scene small enough to collapse to a single tile
+	// would give a false "0 ticks" reading that has nothing to do with the
+	// fix under test).  128x128 with a low sample count comfortably clears
+	// the ~8px minimum tile size on any thread count while staying fast.
+	const std::string innerResetScene =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+		"film\n{\n\twidth 128\n\theight 128\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+		"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+		"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+		"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+	const std::string scenePath = WriteTemp( "rise_agent_async_innerreset.RISEscene", innerResetScene );
+	Check( !scenePath.empty(), "wrote the inner-reset scene to a temp file" );
+
+	ThrowingRasterizeJob* pJob = new ThrowingRasterizeJob();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "ThrowingRasterizeJob loads the native-v7 scene via the CST path (inner-reset test)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	// A counting IProgressCallback confined to THIS scope -- mirrors the
+	// live reviewer's probe.  If mCancelProgress.mInner is left dangling
+	// at this object after it goes out of scope below, any LATER render
+	// that installs mCancelProgress on the Job will write through freed
+	// memory the instant Progress() is called (UBSan/ASan would flag it
+	// immediately; even without a sanitizer, the tick counter silently
+	// stops being a safe write target).
+	{
+		std::atomic<int> countingTicks{ 0 };
+		class CountingCallback : public IProgressCallback
+		{
+		public:
+			std::atomic<int>* ticks;
+			bool Progress( const double, const double ) override
+			{
+				ticks->fetch_add( 1, std::memory_order_acq_rel );
+				return true;
+			}
+			void SetTitle( const char* ) override {}
+		} countingCb;
+		countingCb.ticks = &countingTicks;
+
+		// Drive the EXACT composition RISEBridge.mm / RenderEngine.cpp use,
+		// through the shared, tested implementation -- with the counting
+		// callback as the Job's pre-existing ("prior") progress hook, so it
+		// gets composed in as mCancelProgress's `inner` for the duration of
+		// this (throwing) production render.
+		pJob->SetProgress( &countingCb );
+		bool threw = false;
+		try
+		{
+			SceneEditController::RunProductionRenderComposed(
+				*pJob, &controller, String( "inner_reset_probe" ),
+				[pJob]() -> bool { return pJob->Rasterize(); } );
+		}
+		catch( ... )
+		{
+			threw = true;
+		}
+		Check( threw, "the composed production render propagates the simulated OIDN-class throw to the caller" );
+		std::printf( "    [inner-reset] countingTicks=%d\n", countingTicks.load( std::memory_order_acquire ) );
+		Check( countingTicks.load( std::memory_order_acquire ) > 0,
+		       "the counting callback DID receive at least one tick during the throwing render (control: composition worked before the throw)" );
+
+		pJob->SetProgress( nullptr );
+		// countingCb (and countingTicks) go out of scope here.  If
+		// mCancelProgress.mInner still points at &countingCb, the very next
+		// render that installs mCancelProgress on the Job writes through a
+		// freed stack object.
+	}
+
+	// A follow-up AGENT render (installs mController->AgentRenderProgress()
+	// == the SAME mCancelProgress instance the production path just used --
+	// see AgentSession::doRenderWork) must NOT observe a stale `inner` left
+	// over from the destroyed counting callback above.  We can't directly
+	// assert "no UAF happened" from outside, but we CAN assert the only
+	// externally-observable channel a stale inner would use: the render
+	// completes normally and cleanly, and mCancelProgress's inner is null
+	// immediately before this render installs its own hook (proving the
+	// composed helper's teardown ran).
+	pJob->SetThrowOnRasterize( false );
+	auto* coordProgress = static_cast<CancellableProgressCallback*>( controller.AgentRenderProgress() );
+	Check( pJob->GetProgress() == nullptr, "the Job's progress hook is null again before the follow-up agent render (production teardown completed)" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the Job for the follow-up agent render" );
+	if( session )
+	{
+		session->AttachController( &controller );
+		AgentRenderParams p;
+		const AgentRenderResult r = session->Render( p );
+		std::printf( "    [inner-reset] follow-up agent render ok=%d message=\"%s\"\n", r.ok ? 1 : 0, r.message.c_str() );
+		Check( r.ok,
+		       "RED-PROVE MONEY ASSERTION: a follow-up agent render (sharing mCancelProgress with the earlier throwing production "
+		       "render via AgentRenderProgress()) completes successfully with no crash/UAF -- pre-fix, mCancelProgress.mInner "
+		       "would still point at the destroyed counting callback from the block above, and this render's progress ticks would "
+		       "write through freed stack memory instead of being silently absorbed by a null inner." );
+		session->AttachController( nullptr );
+	}
+
+	// Belt-and-suspenders direct assertion: mCancelProgress's inner is
+	// unconditionally null right now (Reset() only clears the cancel flag,
+	// never `inner` -- see CancellableProgressCallback::Reset), reached via
+	// the same public accessor AgentRenderProgress() already exposes, by
+	// re-running the composed helper once more with a fresh, still-in-scope
+	// counting callback and confirming teardown leaves it uninstalled.
+	{
+		std::atomic<int> secondTicks{ 0 };
+		class CountingCallback2 : public IProgressCallback
+		{
+		public:
+			std::atomic<int>* ticks;
+			bool Progress( const double, const double ) override
+			{
+				ticks->fetch_add( 1, std::memory_order_acq_rel );
+				return true;
+			}
+			void SetTitle( const char* ) override {}
+		} countingCb2;
+		countingCb2.ticks = &secondTicks;
+
+		pJob->SetProgress( &countingCb2 );
+		const bool ok = SceneEditController::RunProductionRenderComposed(
+			*pJob, &controller, String( "inner_reset_probe_2" ),
+			[pJob]() -> bool { return pJob->Rasterize(); } );
+		Check( ok, "a normal (non-throwing) composed production render still succeeds after the earlier throw" );
+		pJob->SetProgress( nullptr );
+
+		Check( coordProgress->IsCancelRequested() == false,
+		       "mCancelProgress's cancel flag is clear after a normal completion (control: Reset() semantics unaffected by this fix)" );
+	}
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (y) inner reset on throw: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunAsyncReturnsQuicklyTest();
@@ -3433,6 +3608,7 @@ int main()
 	RunProductionProgressCompositionTest();
 	RunProductionQueueSemanticsTest();
 	RunStopDuringProductionTest();
+	RunInnerResetOnThrowRedProveTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

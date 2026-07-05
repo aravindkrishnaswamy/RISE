@@ -113,85 +113,35 @@ public:
 // calling `doRasterize` directly when no controller is attached (today's
 // pre-S4 behaviour).
 //
-// Progress/cancel composition: `progressCb` is whatever
-// IProgressCallback the caller already installed on the Job for this
-// render (ProgressCallbackAdapter, forwarding to the Qt progress signal
-// and honouring m_cancelFlag).  We swap the Job's installed callback for
-// the controller's own mCancelProgress (AgentRenderProgress()), pointing
-// its `inner` at `progressCb` for the duration of `doRasterize`, then
-// restore.  CancellableProgressCallback::Progress refuses (returns
-// false) the instant EITHER the controller's own cancel has tripped
-// (Stop() / a live agent-render cancel) OR the inner (Qt-side) callback
-// returns false -- both cancel sources compose correctly with neither
-// able to starve the other.  RAII-restored on every exit, including a
-// throw out of `doRasterize` (OIDN denoise is a documented real throw
-// site).
+// Fix-round S4-1 (throw-path UAF + P2 prior-value asymmetry): the actual
+// progress/cancel composition now lives ONCE in
+// SceneEditController::RunProductionRenderComposed -- see that method's
+// header doc for the full rationale, the RAII throw-path fix, and the
+// guard-order/mMutex-exclusion proof.  This wrapper's only remaining job
+// is reading the Job's CURRENT progress hook via job->GetProgress() as
+// the "prior" value to compose in as mCancelProgress's inner, exactly
+// like the macOS side -- NOT `progressCb` itself.  Passing `progressCb`
+// unconditionally as "prior" was wrong here: startRender/
+// startAnimationRender deliberately skip installing `progressCb` on the
+// Job when a controller is attached (see startRender's own comment), so
+// the real prior value the Job holds going into this render is whatever
+// SetProgress(nullptr) at the previous render's completion left behind
+// -- typically nullptr, not `progressCb`.  Reading GetProgress() here
+// keeps this call honest about what it is actually restoring, matching
+// macOS's behaviour, and makes RunProductionRenderComposed's inner-value
+// contract identical on both platforms.
 static bool RunProductionRenderThroughController(
     IJobPriv* job,
     SceneEditController* controller,
     const std::string& clientLabel,
-    IProgressCallback* progressCb,
+    IProgressCallback* /*progressCb*/,
     const std::function<bool()>& doRasterize)
 {
-    if (!controller) {
+    if (!job) {
         return doRasterize();
     }
-
-    class ProgressRestoreGuard {
-    public:
-        ProgressRestoreGuard(IJobPriv& j, IProgressCallback* priorValue)
-            : m_job(j), m_priorValue(priorValue), m_armed(false) {}
-        void Arm()    { m_armed = true; }
-        void Disarm() { m_armed = false; }
-        ~ProgressRestoreGuard() {
-            if (!m_armed) return;
-            try {
-                m_job.SetProgress(m_priorValue);
-            } catch (...) {
-                GlobalLog()->PrintEx(eLog_Error,
-                    "RenderEngine: exception escaped the production-render progress-hook restore "
-                    "-- the Job's progress callback may be left stale");
-            }
-        }
-    private:
-        ProgressRestoreGuard(const ProgressRestoreGuard&);
-        ProgressRestoreGuard& operator=(const ProgressRestoreGuard&);
-        IJobPriv&           m_job;
-        IProgressCallback*  m_priorValue;
-        bool                m_armed;
-    };
-
-    bool result = false;
-    SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
-    const bool submitted = controller->SubmitProductionRenderSync(
-        [&]() {
-            CancellableProgressCallback* coordProgress = static_cast<CancellableProgressCallback*>(
-                controller->AgentRenderProgress());
-            coordProgress->SetInner(progressCb);
-
-            ProgressRestoreGuard progressGuard(*job, progressCb);
-            progressGuard.Arm();
-            job->SetProgress(coordProgress);
-
-            result = doRasterize();
-
-            job->SetProgress(progressCb);
-            progressGuard.Disarm();
-            coordProgress->SetInner(nullptr);
-        },
-        RISE::String(clientLabel.c_str()),
-        &jobId);
-
-    if (!submitted) {
-        // Refused (open transaction, Stop() in progress/racing, or a
-        // fairness-wait timeout) -- fall back to a direct call so a
-        // production render is never silently dropped on the floor.
-        GlobalLog()->PrintEx(eLog_Warning,
-            "RenderEngine: production render submission to the coordinator was refused -- "
-            "falling back to a direct Rasterize() call.");
-        return doRasterize();
-    }
-    return result;
+    return SceneEditController::RunProductionRenderComposed(
+        *job, controller, RISE::String(clientLabel.c_str()), doRasterize);
 }
 
 // ============================================================

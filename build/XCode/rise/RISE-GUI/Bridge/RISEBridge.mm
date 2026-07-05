@@ -540,91 +540,30 @@ public:
 // this falls back to calling `doRasterize` directly on the calling
 // thread, i.e. today's pre-S4 behaviour.
 //
-// Progress/cancel composition: the Job already has whatever
-// IProgressCallback -setProgressBlock: installed (persistent for the
-// bridge's lifetime -- see that method).  A controller-routed render
-// must NOT lose that hook (the Swift progress bar / cancel button) NOR
-// bypass the controller's OWN cancel (Stop() / a live agent-render
-// cancel) -- so for the duration of `doRasterize` we swap the Job's
-// installed callback for the controller's mCancelProgress
-// (AgentRenderProgress()), pointing ITS `inner` at whatever was
-// installed before (CancellableProgressCallback::SetInner).
-// CancellableProgressCallback::Progress refuses (returns false) the
-// instant EITHER the controller's own cancel has tripped OR the inner
-// (GUI) callback returns false -- so both cancel sources compose
-// correctly with neither able to silently starve the other.  Restored
-// RAII-style (ProgressRestoreGuard shape, matching AgentSession.cpp's
-// house pattern) on every exit, including a throw out of `doRasterize`
-// (OIDN denoise is a documented real throw site).
+// Fix-round S4-1 (throw-path UAF): the actual progress/cancel
+// composition -- including the RAII teardown of both the Job's
+// progress slot AND mCancelProgress's `inner` on every exit, including
+// a throw out of `doRasterize` (OIDN denoise is a documented real
+// throw site) -- now lives ONCE in
+// SceneEditController::RunProductionRenderComposed (pure
+// IProgressCallback plumbing, no AppKit dependency, directly tested by
+// tests/AgentRenderAsyncTest.cpp).  This wrapper only adapts BOOL <->
+// bool at the Objective-C++ boundary.  See that method's header doc for
+// the full composition rationale and the guard-order/mMutex-exclusion
+// proof.
 static BOOL RunProductionRenderThroughController(
     IJobPriv* job,
     SceneEditController* controller,
     const String& clientLabel,
     std::function<BOOL()> doRasterize)
 {
-    if (!controller) {
+    if (!job) {
         return doRasterize();
     }
-
-    class ProgressRestoreGuard {
-    public:
-        ProgressRestoreGuard(IJobPriv& j, IProgressCallback* priorValue)
-            : mJob(j), mPriorValue(priorValue), mArmed(false) {}
-        void Arm()    { mArmed = true; }
-        void Disarm() { mArmed = false; }
-        ~ProgressRestoreGuard() {
-            if (!mArmed) return;
-            try {
-                mJob.SetProgress(mPriorValue);
-            } catch (...) {
-                GlobalLog()->PrintEx(eLog_Error,
-                    "RISEBridge: exception escaped the production-render progress-hook restore "
-                    "-- the Job's progress callback may be left stale");
-            }
-        }
-    private:
-        ProgressRestoreGuard(const ProgressRestoreGuard&);
-        ProgressRestoreGuard& operator=(const ProgressRestoreGuard&);
-        IJobPriv&           mJob;
-        IProgressCallback*  mPriorValue;
-        bool                mArmed;
-    };
-
-    BOOL result = NO;
-    SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
-    const bool submitted = controller->SubmitProductionRenderSync(
-        [&]() {
-            IProgressCallback* priorProgress = job->GetProgress();
-            CancellableProgressCallback* coordProgress = static_cast<CancellableProgressCallback*>(
-                controller->AgentRenderProgress());
-            coordProgress->SetInner(priorProgress);
-
-            ProgressRestoreGuard progressGuard(*job, priorProgress);
-            progressGuard.Arm();
-            job->SetProgress(coordProgress);
-
-            result = doRasterize();
-
-            job->SetProgress(priorProgress);
-            progressGuard.Disarm();
-            coordProgress->SetInner(nullptr);
-        },
-        clientLabel,
-        &jobId);
-
-    if (!submitted) {
-        // Refused (open transaction, Stop() in progress/racing, or a
-        // fairness-wait timeout) -- fall back to a direct call so a
-        // production render is never silently dropped on the floor.
-        // This mirrors the pre-S4 behaviour for the refusal case; the
-        // ordinary case above is what actually closes the concurrency
-        // gap.
-        GlobalLog()->PrintEx(eLog_Warning,
-            "RISEBridge: production render submission to the coordinator was refused -- "
-            "falling back to a direct Rasterize() call.");
-        return doRasterize();
-    }
-    return result;
+    return SceneEditController::RunProductionRenderComposed(
+        *job, controller, clientLabel,
+        [&doRasterize]() -> bool { return doRasterize() ? true : false; })
+        ? YES : NO;
 }
 
 // ============================================================
