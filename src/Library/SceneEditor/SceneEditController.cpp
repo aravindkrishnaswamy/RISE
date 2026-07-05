@@ -3991,19 +3991,28 @@ bool SceneEditController::SubmitProductionRenderSync(
 		/*pinned=*/false, RenderClass::Production );
 }
 
-// Fix-round S4-1 (throw-path UAF): see the header doc on the declaration for
-// the full rationale, the guard-order proof, and what this replaces in the
-// two platform shells.
+// Fix-round S4-1 (throw-path UAF) + Fix-round 2 (Windows cancel regression):
+// see the header doc on the declaration for the full rationale, the
+// guard-order proof, the prior-vs-inner contract, and what this replaces in
+// the two platform shells.
 bool SceneEditController::RunProductionRenderComposed(
 	IJobPriv&                     job,
 	SceneEditController*          controller,
 	const String&                 clientLabel,
+	IProgressCallback*            guiProgress,
 	const std::function<bool()>& doRasterize )
 {
 	if( !controller )
 	{
 		return doRasterize();
 	}
+
+	// Fix-round 2 (Windows cancel regression): capture the RESTORE value
+	// ONCE, here, at entry -- honest for both platforms.  This is "whatever
+	// the Job's progress slot held right before this render claimed it",
+	// not an assumption about what the platform's callback is.  See the
+	// declaration's header doc for the full prior-vs-inner contract.
+	IProgressCallback* const priorProgress = job.GetProgress();
 
 	// RAII restore of the Job's progress-callback slot -- matches the house
 	// shape used throughout this file / AgentSession.cpp (Arm/Disarm,
@@ -4079,10 +4088,12 @@ bool SceneEditController::RunProductionRenderComposed(
 	SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
 	const bool submitted = controller->SubmitProductionRenderSync(
 		[&]() {
-			IProgressCallback* priorProgress = job.GetProgress();
 			CancellableProgressCallback* coordProgress = static_cast<CancellableProgressCallback*>(
 				controller->AgentRenderProgress() );
-			coordProgress->SetInner( priorProgress );
+			// Fix-round 2: compose in the CALLER-SUPPLIED gui progress sink,
+			// not job.GetProgress() -- see the declaration's header doc for
+			// why those two are not interchangeable on Windows.
+			coordProgress->SetInner( guiProgress );
 
 			ProgressRestoreGuard progressGuard( job, priorProgress );
 			progressGuard.Arm();

@@ -3483,15 +3483,17 @@ static void RunInnerResetOnThrowRedProveTest()
 
 		// Drive the EXACT composition RISEBridge.mm / RenderEngine.cpp use,
 		// through the shared, tested implementation -- with the counting
-		// callback as the Job's pre-existing ("prior") progress hook, so it
-		// gets composed in as mCancelProgress's `inner` for the duration of
-		// this (throwing) production render.
+		// callback as BOTH the Job's pre-existing ("prior") progress hook
+		// AND the explicit `guiProgress` parameter (mirrors macOS, whose
+		// persistent BlockProgressCallback install means the two happen to
+		// be the same value -- see RunProductionRenderComposed's header doc
+		// for why Windows is NOT required to keep them equal).
 		pJob->SetProgress( &countingCb );
 		bool threw = false;
 		try
 		{
 			SceneEditController::RunProductionRenderComposed(
-				*pJob, &controller, String( "inner_reset_probe" ),
+				*pJob, &controller, String( "inner_reset_probe" ), &countingCb,
 				[pJob]() -> bool { return pJob->Rasterize(); } );
 		}
 		catch( ... )
@@ -3562,7 +3564,7 @@ static void RunInnerResetOnThrowRedProveTest()
 
 		pJob->SetProgress( &countingCb2 );
 		const bool ok = SceneEditController::RunProductionRenderComposed(
-			*pJob, &controller, String( "inner_reset_probe_2" ),
+			*pJob, &controller, String( "inner_reset_probe_2" ), &countingCb2,
 			[pJob]() -> bool { return pJob->Rasterize(); } );
 		Check( ok, "a normal (non-throwing) composed production render still succeeds after the earlier throw" );
 		pJob->SetProgress( nullptr );
@@ -3576,6 +3578,167 @@ static void RunInnerResetOnThrowRedProveTest()
 	std::remove( scenePath.c_str() );
 
 	std::printf( "=== (y) inner reset on throw: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (z) Fix-round 2 RED-PROVE: SceneEditController::RunProductionRenderComposed
+//     forwards ticks to an EXPLICIT `guiProgress` callback even when that
+//     callback is NOT pre-installed on the Job -- the exact Windows shape.
+//     RenderEngine.cpp's startRender/startAnimationRender deliberately skip
+//     `m_job->SetProgress(progressCb)` when a controller is attached (so the
+//     coordinator owns the Job's progress slot for the render's duration),
+//     which means job.GetProgress() reads nullptr at composition time.  The
+//     pre-fix implementation derived BOTH "inner" (what receives ticks) and
+//     "prior" (what gets restored) from that single job.GetProgress() read
+//     -- so on Windows inner was nullptr for the whole render,
+//     ProgressCallbackAdapter::Progress was never called, and the Windows
+//     Cancel button + progress/ETA UI went dead for every coordinator-routed
+//     production render.  This test drives the fixed, explicit-parameter
+//     signature with the callback withheld from the Job (mirroring
+//     Windows), and would read zero ticks on the pre-fix code path (which
+//     only had a way to receive job.GetProgress(), never a caller-supplied
+//     value).
+//////////////////////////////////////////////////////////////////////
+static void RunExplicitGuiProgressNotInstalledOnJobRedProveTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (z) RED-PROVE: explicit guiProgress reaches the render even when NOT installed on the Job (Windows shape) ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_production_windows_shape.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the windows-shape scene to a temp file" );
+
+	// A counting + cancellable callback that mirrors ProgressCallbackAdapter
+	// exactly: Progress() ticks a counter and returns `!cancelRequested`.
+	class CountingCancellableCallback : public IProgressCallback
+	{
+	public:
+		std::atomic<int>*  ticks;
+		std::atomic<bool>* cancelRequested;
+		bool Progress( const double, const double ) override
+		{
+			ticks->fetch_add( 1, std::memory_order_acq_rel );
+			return !cancelRequested->load( std::memory_order_acquire );
+		}
+		void SetTitle( const char* ) override {}
+	};
+
+	// ---- (z-1) progress ticks: the callback receives ticks during the
+	//      render despite never being installed on the Job.
+	{
+		SlowProgressJob* pJob = new SlowProgressJob();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "SlowProgressJob loads the native-v7 scene via the CST path (windows-shape test, z-1)" );
+
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		controller.Start( /*suppressInitialRender=*/true );
+
+		std::atomic<int>  guiTicks{ 0 };
+		std::atomic<bool> guiCancel{ false };
+		CountingCancellableCallback guiCb;
+		guiCb.ticks = &guiTicks;
+		guiCb.cancelRequested = &guiCancel;
+
+		// The Windows shape: the GUI callback is passed as the explicit
+		// `guiProgress` parameter WITHOUT ever calling pJob->SetProgress()
+		// first -- job.GetProgress() reads nullptr throughout, exactly as
+		// it does on Windows when a controller is attached (startRender
+		// deliberately skips the direct install; see that method's
+		// comment).
+		Check( pJob->GetProgress() == nullptr,
+		       "the Job's progress hook is null before the render -- guiCb was never installed on the Job (Windows shape control)" );
+
+		const bool ok = SceneEditController::RunProductionRenderComposed(
+			*pJob, &controller, String( "windows_shape_probe_z1" ), &guiCb,
+			[pJob]() -> bool { return pJob->Rasterize(); } );
+
+		Check( ok, "the composed production render completes successfully (z-1)" );
+		std::printf( "    [windows-shape] guiTicks=%d\n", guiTicks.load( std::memory_order_acquire ) );
+		Check( guiTicks.load( std::memory_order_acquire ) > 0,
+		       "RED-PROVE MONEY ASSERTION (z-1): the explicit guiProgress callback receives progress ticks during the render even "
+		       "though it was never installed on the Job -- pre-fix, RunProductionRenderComposed had no `guiProgress` parameter at "
+		       "all and instead composed in whatever job.GetProgress() returned (nullptr here), so this callback would receive "
+		       "ZERO ticks -- the exact Windows Cancel/progress-UI regression this fix-round closes." );
+
+		Check( pJob->GetProgress() == nullptr,
+		       "the Job's progress hook is restored to nullptr (the honest entry-time prior) after completion (z-1)" );
+		Check( static_cast<CancellableProgressCallback*>( controller.AgentRenderProgress() )->IsCancelRequested() == false,
+		       "mCancelProgress's cancel flag is clear after a normal completion (control, z-1)" );
+
+		controller.Stop();
+		pJob->release();
+	}
+
+	// ---- (z-2) cancel-button parity: flipping the GUI callback's own
+	//      cancel-return aborts the render promptly, even though that
+	//      callback was never installed on the Job directly (the Cancel
+	//      button's actual code path on Windows: ProgressCallbackAdapter
+	//      returns !m_cancelFlag, and m_cancelFlag is flipped by the
+	//      Cancel button handler independent of the coordinator).
+	{
+		SlowProgressJob* pJob = new SlowProgressJob();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "SlowProgressJob loads the native-v7 scene via the CST path (windows-shape test, z-2)" );
+
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		controller.Start( /*suppressInitialRender=*/true );
+
+		std::atomic<int>  guiTicks{ 0 };
+		std::atomic<bool> guiCancel{ false };
+		CountingCancellableCallback guiCb;
+		guiCb.ticks = &guiTicks;
+		guiCb.cancelRequested = &guiCancel;
+
+		std::atomic<bool> renderDone{ false };
+		bool renderResult = true;
+		std::thread productionThread( [&]() {
+			renderResult = SceneEditController::RunProductionRenderComposed(
+				*pJob, &controller, String( "windows_shape_probe_z2" ), &guiCb,
+				[pJob]() -> bool { return pJob->Rasterize(); } );
+			renderDone.store( true, std::memory_order_release );
+		} );
+
+		// Give the render a moment to genuinely start ticking (SlowProgressJob
+		// sleeps 5ms/tick for up to 50 ticks == 250ms total).
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+			while( guiTicks.load( std::memory_order_acquire ) == 0 &&
+			       std::chrono::steady_clock::now() < deadline ) {
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+			}
+		}
+		Check( guiTicks.load( std::memory_order_acquire ) > 0, "the render has genuinely started ticking before we request cancel (z-2)" );
+
+		// The Cancel-button path: flip the GUI callback's OWN cancel flag
+		// (NOT the coordinator's Stop()/CancelAgentRender_) and confirm the
+		// render aborts promptly -- this is the actual regression surface:
+		// pre-fix, this callback was never wired into the composed
+		// `inner` at all on the Windows shape, so this flag being flipped
+		// would have had no effect on the render whatsoever.
+		guiCancel.store( true, std::memory_order_release );
+
+		const bool joinedPromptly = RunWatchdogged( "the render thread joins promptly after guiCancel is requested", 3000, [&]() {
+			productionThread.join();
+		} );
+		Check( joinedPromptly, "the production render thread joins within the watchdog bound after guiCancel (z-2)" );
+
+		Check( pJob->mAborted,
+		       "RED-PROVE MONEY ASSERTION (z-2): flipping the explicit guiProgress callback's OWN cancel return aborts the "
+		       "production render promptly -- this is the Windows Cancel button's exact code path "
+		       "(ProgressCallbackAdapter::Progress returning !m_cancelFlag). Pre-fix, guiProgress had no route into the composed "
+		       "callback chain on the Windows shape (job.GetProgress() read nullptr), so this cancel signal would never reach the "
+		       "render at all." );
+		Check( !renderResult, "RunProductionRenderComposed reports failure for the cancelled render (z-2)" );
+
+		Check( pJob->GetProgress() == nullptr,
+		       "the Job's progress hook is restored to nullptr after the cancelled render completes (z-2)" );
+		Check( static_cast<CancellableProgressCallback*>( controller.AgentRenderProgress() )->IsCancelRequested() == false,
+		       "mCancelProgress's OWN cancel flag is untouched by a guiProgress-side cancel -- only the inner's return value "
+		       "carried the abort signal, matching CancellableProgressCallback::Progress's OR-of-both-sources semantics (control, z-2)" );
+
+		controller.Stop();
+		pJob->release();
+	}
+
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (z) explicit guiProgress not installed on Job: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
 int main()
@@ -3609,6 +3772,7 @@ int main()
 	RunProductionQueueSemanticsTest();
 	RunStopDuringProductionTest();
 	RunInnerResetOnThrowRedProveTest();
+	RunExplicitGuiProgressNotInstalledOnJobRedProveTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

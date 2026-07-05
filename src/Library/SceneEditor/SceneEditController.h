@@ -771,35 +771,69 @@ namespace RISE
 		//! NULL-safe: with `controller` == nullptr this just calls
 		//! `doRasterize` directly (the pre-S4 / headless behaviour).
 		//!
-		//! Progress/cancel composition: `job->GetProgress()` (read BEFORE any
-		//! install below) is whatever IProgressCallback the platform shell
-		//! already has installed for this render's lifetime (or nullptr, if
-		//! the shell deliberately skipped installing one when a controller is
-		//! attached -- see e.g. RenderEngine.cpp's startRender comment). This
-		//! controller's own mCancelProgress (AgentRenderProgress()) is
-		//! installed on the Job for the render's duration with that prior
-		//! value composed in as its `inner`
-		//! (CancellableProgressCallback::SetInner), so the platform's
-		//! progress UI / cancel button keeps working exactly as before while
-		//! the coordinator's own cancel (Stop() / CancelAgentRender_) ALSO
-		//! aborts a production render -- CancellableProgressCallback::Progress
-		//! refuses the instant EITHER source trips.
+		//! Fix-round 2 (Windows cancel regression): `guiProgress` is now an
+		//! EXPLICIT parameter -- the platform's own progress/cancel sink to
+		//! compose in as mCancelProgress's `inner` for this render's
+		//! duration.  This replaces the prior implicit assumption that
+		//! `job.GetProgress()` (read at composition time, on the render
+		//! worker thread) IS the platform's callback.  That assumption held
+		//! on macOS (RISEBridge.mm installs its BlockProgressCallback
+		//! PERSISTENTLY on the Job, so GetProgress() always returns it) but
+		//! NOT on Windows: RenderEngine.cpp's startRender/
+		//! startAnimationRender deliberately SKIP installing their
+		//! per-render ProgressCallbackAdapter on the Job when a controller
+		//! is attached (see startRender's own comment) -- so GetProgress()
+		//! read nullptr for the render's whole duration, `inner` was never
+		//! the platform's adapter, ProgressCallbackAdapter::Progress was
+		//! never called, and the Windows Cancel button + progress/ETA UI
+		//! went dead for every coordinator-routed production render.
+		//!
+		//! Two SEPARATE values are now used, on purpose:
+		//!   - `guiProgress` (this parameter) is composed in as `inner` --
+		//!     the thing that actually receives forwarded ticks and whose
+		//!     own cancel-by-return-false is honoured.  Callers pass their
+		//!     real progress sink here directly; there is no more guessing
+		//!     via GetProgress().
+		//!   - `prior = job.GetProgress()`, captured ONCE at entry to this
+		//!     function (before any install), is what gets RESTORED to the
+		//!     Job's progress slot on every exit.  This is deliberately NOT
+		//!     assumed to equal `guiProgress`: it is "whatever the Job's
+		//!     progress slot honestly held right before this render claimed
+		//!     it", which is the only thing a restore can correctly promise
+		//!     on EITHER platform.  On macOS this is the persistent
+		//!     BlockProgressCallback (equal to `guiProgress` there, since
+		//!     that IS what's installed).  On Windows this is typically
+		//!     nullptr (the slot startRender left it in after skipping the
+		//!     direct install), which is exactly what the Windows completion
+		//!     handler already re-asserts via its own `SetProgress(nullptr)`
+		//!     -- so the restore is a harmless no-op there, and the contract
+		//!     stays correct even if a future Windows change starts
+		//!     installing something on that slot.
+		//!
+		//! This controller's own mCancelProgress (AgentRenderProgress()) is
+		//! installed on the Job for the render's duration with `guiProgress`
+		//! composed in as its `inner` (CancellableProgressCallback::SetInner),
+		//! so the platform's progress UI / cancel button keeps working
+		//! exactly as before while the coordinator's own cancel (Stop() /
+		//! CancelAgentRender_) ALSO aborts a production render --
+		//! CancellableProgressCallback::Progress refuses the instant EITHER
+		//! source trips.
 		//!
 		//! Throw-path fix (Fix-round S4-1): BOTH the Job-slot restore (via
-		//! ProgressRestoreGuard) AND the mCancelProgress `inner` reset (via
-		//! InnerResetGuard) are RAII, armed immediately after the composed
-		//! callback is installed, so a throw out of `doRasterize` (OIDN
-		//! denoise is a documented real throw site) can never skip either
-		//! teardown step.  Before this fix, `coordProgress->SetInner(nullptr)`
-		//! was a plain statement AFTER the `doRasterize()` call with no guard
-		//! covering it -- a throw left mCancelProgress.mInner dangling at
-		//! whatever the platform shell's now-destroyed progress object was,
-		//! and the interactive loop installs &mCancelProgress on the Job
-		//! every pass (see RenderLoop's per-pass mCancelProgress.Reset(),
-		//! which only clears the cancel flag, NOT mInner), so the very next
-		//! interactive pass -- or a later agent render sharing the same
-		//! mCancelProgress -- would forward ticks through the dangling
-		//! pointer.
+		//! ProgressRestoreGuard, restoring `prior`) AND the mCancelProgress
+		//! `inner` reset (via InnerResetGuard) are RAII, armed immediately
+		//! after the composed callback is installed, so a throw out of
+		//! `doRasterize` (OIDN denoise is a documented real throw site) can
+		//! never skip either teardown step.  Before that fix,
+		//! `coordProgress->SetInner(nullptr)` was a plain statement AFTER the
+		//! `doRasterize()` call with no guard covering it -- a throw left
+		//! mCancelProgress.mInner dangling at whatever the platform shell's
+		//! now-destroyed progress object was, and the interactive loop
+		//! installs &mCancelProgress on the Job every pass (see RenderLoop's
+		//! per-pass mCancelProgress.Reset(), which only clears the cancel
+		//! flag, NOT mInner), so the very next interactive pass -- or a later
+		//! agent render sharing the same mCancelProgress -- would forward
+		//! ticks through the dangling pointer.
 		//!
 		//! Guard-destruction-order proof: the two RAII guards below fire back
 		//! to back on ONE thread with no lock of their own, but that is safe
@@ -829,6 +863,7 @@ namespace RISE
 			IJobPriv&                     job,
 			SceneEditController*          controller,
 			const String&                clientLabel,
+			IProgressCallback*            guiProgress,
 			const std::function<bool()>& doRasterize );
 
 		//! Model-B F2 slice S2a: status surface for a render job id.  For a

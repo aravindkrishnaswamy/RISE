@@ -551,17 +551,32 @@ public:
 // bool at the Objective-C++ boundary.  See that method's header doc for
 // the full composition rationale and the guard-order/mMutex-exclusion
 // proof.
+//
+// Fix-round 2 (Windows cancel regression): `guiProgress` is passed
+// through EXPLICITLY as the composed callback's `inner` -- this is
+// `_progressCallback`, the persistent BlockProgressCallback that
+// -setProgressBlock: installs on the Job for the app's whole lifetime
+// (see that method, ~line 759).  Because it is persistent, it is ALSO
+// what job->GetProgress() would read at composition time -- unlike
+// Windows, where startRender/startAnimationRender deliberately do not
+// install their per-render adapter on the Job when a controller is
+// attached.  Passing it explicitly here (rather than continuing to
+// rely on RunProductionRenderComposed re-deriving it via
+// job->GetProgress()) keeps both platform adapters symmetric under one
+// explicit contract instead of two platforms quietly relying on
+// different implicit ones.
 static BOOL RunProductionRenderThroughController(
     IJobPriv* job,
     SceneEditController* controller,
     const String& clientLabel,
+    IProgressCallback* guiProgress,
     std::function<BOOL()> doRasterize)
 {
     if (!job) {
         return doRasterize();
     }
     return SceneEditController::RunProductionRenderComposed(
-        *job, controller, clientLabel,
+        *job, controller, clientLabel, guiProgress,
         [&doRasterize]() -> bool { return doRasterize() ? true : false; })
         ? YES : NO;
 }
@@ -1185,7 +1200,7 @@ static BOOL RunProductionRenderThroughController(
 
     IJobPriv* job = _job;
     return RunProductionRenderThroughController(
-        _job, _viewportController, String("gui_rasterize"),
+        _job, _viewportController, String("gui_rasterize"), _progressCallback,
         [job]() -> BOOL { return job->Rasterize() ? YES : NO; });
 }
 
@@ -1220,7 +1235,7 @@ static BOOL RunProductionRenderThroughController(
 
     IJobPriv* job = _job;
     BOOL result = RunProductionRenderThroughController(
-        _job, _viewportController, String("gui_rasterize_animation"),
+        _job, _viewportController, String("gui_rasterize_animation"), _progressCallback,
         [job]() -> BOOL { return job->RasterizeAnimationUsingOptions() ? YES : NO; });
 
     // Finalize the video file after rendering completes.
@@ -1255,7 +1270,7 @@ static BOOL RunProductionRenderThroughController(
 
     IJobPriv* job = _job;
     return RunProductionRenderThroughController(
-        _job, _viewportController, String("gui_rasterize_region"),
+        _job, _viewportController, String("gui_rasterize_region"), _progressCallback,
         [job, left, top, right, bottom]() -> BOOL {
             return job->RasterizeRegion(left, top, right, bottom) ? YES : NO;
         });

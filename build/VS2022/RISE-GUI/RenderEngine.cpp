@@ -113,35 +113,46 @@ public:
 // calling `doRasterize` directly when no controller is attached (today's
 // pre-S4 behaviour).
 //
-// Fix-round S4-1 (throw-path UAF + P2 prior-value asymmetry): the actual
-// progress/cancel composition now lives ONCE in
+// Fix-round S4-1 (throw-path UAF) + Fix-round 2 (Windows cancel
+// regression): the actual progress/cancel composition lives ONCE in
 // SceneEditController::RunProductionRenderComposed -- see that method's
 // header doc for the full rationale, the RAII throw-path fix, and the
-// guard-order/mMutex-exclusion proof.  This wrapper's only remaining job
-// is reading the Job's CURRENT progress hook via job->GetProgress() as
-// the "prior" value to compose in as mCancelProgress's inner, exactly
-// like the macOS side -- NOT `progressCb` itself.  Passing `progressCb`
-// unconditionally as "prior" was wrong here: startRender/
-// startAnimationRender deliberately skip installing `progressCb` on the
-// Job when a controller is attached (see startRender's own comment), so
-// the real prior value the Job holds going into this render is whatever
-// SetProgress(nullptr) at the previous render's completion left behind
-// -- typically nullptr, not `progressCb`.  Reading GetProgress() here
-// keeps this call honest about what it is actually restoring, matching
-// macOS's behaviour, and makes RunProductionRenderComposed's inner-value
-// contract identical on both platforms.
+// prior-vs-inner contract.
+//
+// `progressCb` (this Windows render's own ProgressCallbackAdapter,
+// forwarding to RenderEngine::onProgress and returning !m_cancelFlag) is
+// now passed straight through as the EXPLICIT `guiProgress` parameter --
+// the thing RunProductionRenderComposed composes in as mCancelProgress's
+// `inner`.  The PRIOR fix-round-2 shape of this wrapper discarded
+// `progressCb` and instead re-derived "prior" by reading
+// job->GetProgress() -- which matched macOS (whose BlockProgressCallback
+// is installed PERSISTENTLY, so GetProgress() always returns it) but was
+// wrong here: startRender/startAnimationRender deliberately skip
+// installing `progressCb` on the Job when a controller is attached (see
+// startRender's own comment), specifically so RunProductionRenderComposed
+// owns the Job's progress slot for the render's duration. That meant
+// GetProgress() read nullptr, `inner` was never `progressCb`,
+// ProgressCallbackAdapter::Progress was never invoked, and the Windows
+// Cancel button + progress/ETA UI went dead for every coordinator-routed
+// production render -- the regression this fix-round closes.
+// RunProductionRenderComposed itself still separately captures
+// job->GetProgress() at entry as the value it RESTORES to the Job's
+// progress slot on exit (typically nullptr here, matching this file's own
+// `SetProgress(nullptr)` at each render's completion) -- see that
+// method's header doc for why "restore" and "inner" are deliberately two
+// different values.
 static bool RunProductionRenderThroughController(
     IJobPriv* job,
     SceneEditController* controller,
     const std::string& clientLabel,
-    IProgressCallback* /*progressCb*/,
+    IProgressCallback* progressCb,
     const std::function<bool()>& doRasterize)
 {
     if (!job) {
         return doRasterize();
     }
     return SceneEditController::RunProductionRenderComposed(
-        *job, controller, RISE::String(clientLabel.c_str()), doRasterize);
+        *job, controller, RISE::String(clientLabel.c_str()), progressCb, doRasterize);
 }
 
 // ============================================================
