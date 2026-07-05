@@ -374,6 +374,9 @@ namespace RISE
 		// Facet 5 slice 1a: the retained CST head's (uuid,revision) identity.  Inline, no-`override`
 		// convention like the other getters.
 		RISE::Cst::CstHeadVersion	GetCstHeadVersion() const			{ return mCstHeadVersion; }
+		// Model-B F2 slice S2a fix round 2 (P2-A): read-only accessor for pGlobalProgress -- see
+		// IJobPriv::GetProgress's doc.  Inline, no-`override` convention like the other getters.
+		IProgressCallback*			GetProgress() const					{ return pGlobalProgress; }
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.

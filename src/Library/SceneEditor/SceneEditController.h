@@ -569,14 +569,33 @@ namespace RISE
 		//! ("queued waiters exist") rather than allowed to jump the queue.
 		//! Async submitters themselves never take a ticket and never wait --
 		//! they keep the existing reject-if-busy semantics when no sync
-		//! waiter is queued.  On a successful wait, this caller submits via
-		//! SubmitAgentRenderAsync (now guaranteed to win the race -- no
-		//! async submitter can have snuck in ahead of it) then advances
-		//! mAgentRenderServingTicket so the NEXT queued sync waiter (if any)
-		//! is released.  The ticket is released (mAgentRenderServingTicket
+		//! waiter is queued.  The ticket is released (mAgentRenderServingTicket
 		//! advanced, waiters notified) on EVERY exit from the wait --
 		//! success, refusal, or a `timeoutMs` timeout -- so a timed-out
 		//! waiter never strands the queue for whoever is behind it.
+		//!
+		//! Round-2 P2-C (the gap the round-1 fix left open, now CLOSED):
+		//! round-1's own comment at the old call site claimed "release the
+		//! ticket, THEN call the public SubmitAgentRenderAsync -- this is
+		//! all single-threaded from here, no window for another thread's
+		//! SubmitAgentRenderAsync to run between these two lines" -- that
+		//! reasoning was wrong for a genuinely CONCURRENT caller: releasing
+		//! mAgentRenderSlotMutex between the ticket release and the
+		//! round-trip back into SubmitAgentRenderAsync gave a real async
+		//! submitter on ANOTHER thread a window to observe
+		//! mAgentRenderWaitingSyncCount drop to 0 and win the slot ahead of
+		//! the sync waiter whose fair turn it just was.  Fixed by inlining
+		//! the mint-and-claim (the private SubmitAgentRenderAsync_Locked
+		//! helper, shared with SubmitAgentRenderAsync) so this call NEVER
+		//! releases mAgentRenderSlotMutex between "it is now genuinely our
+		//! turn" and "the slot is now ours" -- the ticket release and the
+		//! slot claim happen under one continuous lock hold.  Verified by
+		//! AgentRenderAsyncTest.cpp's RunFairSlotReservationTest, tightened
+		//! from the round-1 ">90% of 200" threshold to "all but at most one
+		//! of 200" (the one allowance covers a legitimate fairness-wait
+		//! timeout under adversarial scheduling, not a lost race) --
+		//! red-proved by reverting to the round-1 round-trip call, which
+		//! regresses the measured success rate back toward the old bound.
 		//!
 		//! `timeoutMs` bounds the FAIRNESS WAIT ONLY (the queue-position
 		//! wait before this call is even allowed to submit) -- it does NOT
@@ -1281,6 +1300,32 @@ namespace RISE
 		//! mAgentRenderDoneCV.
 		void AgentRenderWorkerLoop_();
 
+		//! Round-2 P2-C: the mint-and-claim core SHARED by SubmitAgentRenderAsync
+		//! and SubmitAgentRenderSync -- everything from the post-mTxnOpen
+		//! Stop()/single-slot/fair-queue checks through setting
+		//! mAgentRenderPending=true, assuming the caller ALREADY HOLDS
+		//! mAgentRenderSlotMutex via `slotLk` (this method neither locks nor
+		//! unlocks it).  Factored out so SubmitAgentRenderSync can inline the
+		//! claim WITHOUT releasing mAgentRenderSlotMutex between releasing its
+		//! fairness ticket and claiming the slot -- see SubmitAgentRenderSync's
+		//! doc for the exact cross-thread window this closes (a concurrent
+		//! SubmitAgentRenderAsync call on ANOTHER thread could otherwise see
+		//! mAgentRenderWaitingSyncCount drop to 0 and win the slot in the gap).
+		//! Returns true iff the submission was accepted (mints into `*outJobId`);
+		//! false on any of the same refusal causes SubmitAgentRenderAsync
+		//! documents (Stop() called, slot occupied, `bypassFairQueueCheck` is
+		//! false and a fair-queue waiter is registered).  `bypassFairQueueCheck`
+		//! is true ONLY for SubmitAgentRenderSync's own call (it holds the lock
+		//! continuously from ticket-release through this claim, so ITS OWN
+		//! still-registered-until-a-moment-ago ticket must not self-refuse);
+		//! SubmitAgentRenderAsync passes false (the normal external-caller rule).
+		bool SubmitAgentRenderAsync_Locked(
+			std::unique_lock<std::mutex>& slotLk,
+			std::function<void()>         fn,
+			const String&                 clientLabel,
+			RenderJobId*                  outJobId,
+			bool                          bypassFairQueueCheck );
+
 		//! Cancel-and-park the render thread: trip the rasterizer cancel
 		//! flag if a pass is in flight (bumping mCancelCount), then wait on
 		//! mCV until mRendering is false -- i.e. the in-flight pass has
@@ -1639,6 +1684,49 @@ namespace RISE
 		// acquire mAgentRenderSlotMutex while still holding it (the worker
 		// and WaitForRenderJob both release one before acquiring the
 		// other).
+		//
+		// Round-2 P1-2 ADDS a fourth lock to this table, on the CALLER side
+		// (AgentSession::mAsyncCacheMutex -- a different class, but the two
+		// nest, so the ordering belongs in the same table): AgentSession::
+		// RenderAsync holds mAsyncCacheMutex across its ENTIRE call into
+		// SubmitAgentRenderAsync (which takes mAgentRenderSlotMutex
+		// internally, nesting mMutex/mJobStatusMutex under it per the rule
+		// above) plus the mAsyncOutstandingJobId publish that follows --
+		// see RenderAsync's own comment for why.  The SUBMIT-TIME order,
+		// OUTERMOST to INNERMOST:
+		//
+		//   AgentSession::mAsyncCacheMutex
+		//     -> SceneEditController::mAgentRenderSlotMutex
+		//          -> SceneEditController::mMutex           (brief, mAgentRenderBlocksInteractive)
+		//          -> SceneEditController::mJobStatusMutex
+		//
+		// (mMutex and mJobStatusMutex are siblings under mAgentRenderSlotMutex,
+		// never nested under each other -- see the three-lock note above.)
+		//
+		// A SEPARATE, LATER call chain nests mMutex and mAsyncCacheMutex in
+		// the OPPOSITE order -- the worker thread, mid-render, holds mMutex
+		// (via CancelAndParkRender_, for the render's whole duration) and
+		// its `fn()` -- RenderCore_'s cache-population tail, at the very
+		// end of a SUCCESSFUL render -- takes mAsyncCacheMutex while that
+		// mMutex hold is still live.  This is NOT a deadlock risk despite
+		// being the reverse order, because the two acquisitions can never
+		// be SIMULTANEOUS CONTENDERS for the same pair: the single-slot
+		// check inside SubmitAgentRenderAsync_Locked (mAgentRenderPending
+		// must be false to proceed) is only satisfied once the worker has
+		// already RELEASED mMutex for the render it just finished (the
+		// worker releases mMutex, at line ~3566, strictly BEFORE it clears
+		// mAgentRenderPending a few lines later under a fresh
+		// mAgentRenderSlotMutex acquisition) -- so by the time a NEW
+		// RenderAsync call's brief, nested mMutex acquisition can even be
+		// reached, no worker is holding mMutex from a PRIOR render, and the
+		// worker servicing THIS NEW submission cannot yet exist (it hasn't
+		// been woken). The two orderings therefore apply to disjoint
+		// instants in time, not to the same lock pair racing itself.
+		// DrainAsyncRender_ takes AT MOST one lock at a time (mAsyncCacheMutex
+		// to read/clear the id; separately, unlocked, calls into the
+		// controller's own CancelAgentRender_/WaitForRenderJob, which take
+		// their own internal locks with no AgentSession lock held) -- no
+		// ordering concern there.
 		std::thread                 mAgentRenderThread;
 		mutable std::mutex          mAgentRenderSlotMutex;
 		std::condition_variable     mAgentRenderCV;       // worker waits on this for {pending | stop} -- guarded by mAgentRenderSlotMutex

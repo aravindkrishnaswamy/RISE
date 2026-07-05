@@ -33,6 +33,7 @@
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Job.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
+#include "../src/Library/Interfaces/ILogPriv.h"   // round-2 P1-1 red-prove: capture the escalating cancel-ignored warning
 
 #include <atomic>
 #include <chrono>
@@ -41,6 +42,7 @@
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -989,9 +991,24 @@ static void RunFairSlotReservationTest()
 
 	std::printf( "  [fairness] sync successes: %d/%d ; async accepted=%d refused=%d\n",
 	             syncSuccesses, kSyncAttempts, asyncAccepted.load(), asyncRefused.load() );
-	Check( syncSuccesses > ( kSyncAttempts * 9 / 10 ),
-	       "RED-PROVE P1-2 MONEY ASSERTION: under async-spam contention, sync submitters succeed >90% of the time (200 attempts) -- "
-	       "pre-fix (naive submit-or-reject), the reviewer measured ~0-2/200 sync successes against the same spam pattern." );
+	// Round-2 P2-C tightened this from the round-1 ">90%" threshold: with
+	// the ticket-release-to-submit gap closed (SubmitAgentRenderSync now
+	// holds mAgentRenderSlotMutex continuously from its fairness wait's
+	// wake-up through the inline slot claim), NOTHING can steal a fairly-
+	// won turn out from under a sync waiter anymore -- the only
+	// remaining legitimate failure mode is Stop() landing exactly on this
+	// waiter's turn (not exercised by this test) or the 5000ms fairness
+	// wait itself timing out (a generous bound against a trivially-fast
+	// `fn` and a single-slot occupant, essentially never in practice).
+	// 100% minus that one-timeout allowance: require ALL BUT AT MOST ONE
+	// of the 200 attempts to succeed, rather than the loose >90% the
+	// round-1 fix left on the table.
+	Check( syncSuccesses >= ( kSyncAttempts - 1 ),
+	       "RED-PROVE P2-C MONEY ASSERTION: under async-spam contention, sync submitters succeed on ALL BUT AT MOST ONE of 200 attempts -- "
+	       "the ticket-release-to-submit gap is now fully closed (round-1 left a real cross-thread window here, verified by "
+	       "temporarily reverting to the round-trip SubmitAgentRenderAsync call, which regressed this back toward the old "
+	       "looser bound); pre-round-1-fix (naive submit-or-reject), the reviewer measured ~0-2/200 sync successes against "
+	       "the same spam pattern." );
 
 	controller.Stop();
 	pJob->release();
@@ -1195,6 +1212,369 @@ static void RunSessionDestroyedMidFlightTest()
 	std::printf( "=== (l) session destroyed mid-flight: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Round-2 P1-1 red-prove infrastructure: a Job whose Rasterize() ignores
+// cancellation entirely (models an MLT/VCM checkpoint gap or a wedged
+// OIDN call -- the exact case DrainAsyncRender_'s unbounded loop exists
+// for) plus a capturing ILogPrinter so the test can assert the
+// escalating "ignoring cancellation" warning actually fired.
+//////////////////////////////////////////////////////////////////////
+
+// Sleeps for the FULL requested duration in small slices, but -- unlike
+// SlowRasterizeJob -- deliberately never consults IsCancelRequested() or
+// any progress hook, so installing this controller's mCancelProgress as
+// the Job's progress callback (AgentSession::RenderCore_'s normal P2-C
+// install) has NO EFFECT: this render cannot be aborted early no matter
+// how many times CancelAgentRender_() is called.  Also participates in a
+// canary counter (same pattern as CanaryJob) so the test can prove
+// exactly when the worker is inside vs. outside this call.
+class CancelIgnoringSlowJob : public Job
+{
+public:
+	CancelIgnoringSlowJob( unsigned int totalMs, std::shared_ptr<std::atomic<int>> counter )
+	: Job(), mTotalMs( totalMs ), mCounter( std::move( counter ) ) {}
+	bool Rasterize() override
+	{
+		mCounter->fetch_add( 1, std::memory_order_acq_rel );
+		const unsigned int sliceMs = 10;
+		const unsigned int slices  = ( mTotalMs + sliceMs - 1 ) / sliceMs;
+		for( unsigned int i = 0; i < slices; ++i ) {
+			// No cancel check here -- that is the point of this class.
+			std::this_thread::sleep_for( std::chrono::milliseconds( sliceMs ) );
+		}
+		const bool ok = Job::Rasterize();
+		mCounter->fetch_sub( 1, std::memory_order_acq_rel );
+		return ok;
+	}
+private:
+	unsigned int mTotalMs;
+	std::shared_ptr<std::atomic<int>> mCounter;
+};
+
+// A minimal ILogPrinter that records every message containing `needle`
+// (case-sensitive substring match) into a shared, mutex-guarded vector --
+// installed once via GlobalLogPriv()->AddPrinter and never removed (this
+// test binary has no OTHER test that depends on log output being absent,
+// and RemoveAllPrinters would also silently kill the default stdout/file
+// printers for every test that runs AFTER this one in the same process).
+class CapturingLogPrinter : public virtual RISE::ILogPrinter, public virtual RISE::Implementation::Reference
+{
+public:
+	explicit CapturingLogPrinter( std::string needle ) : mNeedle( std::move( needle ) ) {}
+
+	void Print( const RISE::LogEvent& event ) override
+	{
+		const std::string msg( event.szMessage );
+		if( msg.find( mNeedle ) != std::string::npos ) {
+			std::lock_guard<std::mutex> lk( mMutex );
+			mMatches.push_back( msg );
+		}
+	}
+	void Flush() override {}
+
+	int MatchCount() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return static_cast<int>( mMatches.size() );
+	}
+	std::string LastMatch() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return mMatches.empty() ? std::string() : mMatches.back();
+	}
+
+protected:
+	~CapturingLogPrinter() override {}
+
+private:
+	std::string                mNeedle;
+	mutable std::mutex         mMutex;
+	std::vector<std::string>   mMatches;
+};
+
+//////////////////////////////////////////////////////////////////////
+// (m) Round-2 P1-1 RED-PROVE: DrainAsyncRender_ loops UNBOUNDED across
+//     MULTIPLE chunks against a render that ignores cancellation --
+//     ~AgentSession must block for the render's FULL natural duration
+//     (not just one chunk), the escalating warning must fire at least
+//     once, and the canary must show zero worker activity once the
+//     destructor has returned.  Chunk is set small (200ms) via the
+//     ForTest_ hook so a ~1s cancel-ignoring render forces several loop
+//     iterations without the test itself waiting out the 5000ms
+//     production default.
+//////////////////////////////////////////////////////////////////////
+static void RunUnboundedDrainLoopTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (m) P1-1 RED-PROVE: DrainAsyncRender_ loops unbounded across multiple chunks ===\n" );
+
+	CapturingLogPrinter* pCapOwned = new CapturingLogPrinter( "ignoring cancellation" );
+	RISE::GlobalLogPriv()->AddPrinter( pCapOwned );
+	// AddPrinter addref'd it (refcount 2: ours + the log's) -- keep a SEPARATE
+	// raw pointer for the rest of this function's reads (safe_release nulls
+	// its argument, so reusing pCapOwned after this line would silently read
+	// through a null pointer even though the underlying object is still
+	// alive, kept referenced by the log's printer list for the process's
+	// remaining lifetime -- this test never calls RemoveAllPrinters).
+	CapturingLogPrinter* pCap = pCapOwned;
+	safe_release( pCapOwned );   // drop OUR construction ref; pCap remains valid via the log's own reference
+
+	const std::string scenePath = WriteTemp( "rise_agent_async_unbounded_drain.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the unbounded-drain scene to a temp file" );
+
+	// A render whose natural duration (~1000ms) is comfortably more than
+	// one 200ms chunk -- if DrainAsyncRender_ only waited a single chunk
+	// (the pre-fix bug), it would give up and return at ~200ms while the
+	// worker is still genuinely inside Rasterize().
+	auto insideRasterize = std::make_shared<std::atomic<int>>( 0 );
+	CancelIgnoringSlowJob* pJob = new CancelIgnoringSlowJob( 1000, insideRasterize );
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "CancelIgnoringSlowJob loads the native-v7 scene via the CST path" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	AgentSession* rawSession = AgentSession::WrapJob( pJob ).release();
+	Check( rawSession != nullptr, "AgentSession::WrapJob wraps the cancel-ignoring Job" );
+	if( rawSession )
+	{
+		rawSession->AttachController( &controller );
+		rawSession->ForTest_SetDrainChunkMs( 200 );   // force multiple loop iterations against the ~1000ms render
+
+		AgentRenderParams p;
+		const AgentSession::AgentRenderAsyncResult ar = rawSession->RenderAsync( p );
+		Check( ar.accepted, "the cancel-ignoring async render is accepted" );
+
+		// Wait until the worker is genuinely inside Rasterize() before we
+		// destroy the session out from under it.
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+			while( insideRasterize->load( std::memory_order_acquire ) == 0 &&
+			       std::chrono::steady_clock::now() < deadline ) {
+				std::this_thread::sleep_for( std::chrono::milliseconds( 2 ) );
+			}
+		}
+		Check( insideRasterize->load( std::memory_order_acquire ) > 0, "the worker is genuinely inside the cancel-ignoring Rasterize() before we destroy the session" );
+
+		const auto t0 = std::chrono::steady_clock::now();
+		const bool destroyReturnedEventually = RunWatchdogged(
+			"~AgentSession draining a cancel-ignoring render (multi-chunk loop)", 5000,
+			[&]() { delete rawSession; } );
+		const auto t1 = std::chrono::steady_clock::now();
+		const long long destroyMs = std::chrono::duration_cast<std::chrono::milliseconds>( t1 - t0 ).count();
+
+		Check( destroyReturnedEventually, "~AgentSession eventually returns (within the watchdog's generous outer bound) even though the render ignores cancellation" );
+		std::printf( "  [unbounded-drain] ~AgentSession wall time against a cancel-ignoring ~1000ms render: %lldms\n", destroyMs );
+
+		// THE MONEY ASSERTION: the destructor blocked for close to the
+		// render's FULL natural duration -- i.e. MULTIPLE 200ms chunks --
+		// not just the first one.  A pre-fix (single bounded wait, discard
+		// the timeout) implementation would return at ~200ms; this asserts
+		// well beyond that, proving the loop kept re-cancelling and
+		// re-waiting rather than giving up early.
+		Check( destroyMs >= 700,
+		       "RED-PROVE P1-1 MONEY ASSERTION: ~AgentSession blocks for close to the render's FULL natural duration (>=700ms, several 200ms chunks) "
+		       "rather than returning after a single chunk (~200ms) -- this assertion would FAIL against the pre-fix code (a single bounded "
+		       "WaitForRenderJob(id, timeoutMs) whose result is discarded), which proceeds to free `this` after the first chunk while the "
+		       "cancel-ignoring worker is still genuinely inside Rasterize()." );
+
+		Check( insideRasterize->load( std::memory_order_acquire ) == 0,
+		       "RED-PROVE P1-1: by the time ~AgentSession has RETURNED, the worker is no longer inside Rasterize() -- "
+		       "the canary shows ZERO post-dtor worker activity (no UAF window left open)." );
+
+		Check( pCap->MatchCount() > 0,
+		       "RED-PROVE P1-1: the escalating 'ignoring cancellation' eLog_Warning fired at least once during the multi-chunk drain" );
+		if( pCap->MatchCount() > 0 ) {
+			std::printf( "  [unbounded-drain] last escalation warning: %s\n", pCap->LastMatch().c_str() );
+		}
+	}
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (m) unbounded drain loop: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (n) Round-2 P1-2 RED-PROVE: mAsyncOutstandingJobId is never left
+//     stale-nonzero after a completed async render (publish-before-clear
+//     ordering), and a completed session's teardown never spuriously
+//     cancels a DIFFERENT, concurrently-running interactive render.
+//////////////////////////////////////////////////////////////////////
+static void RunNoStaleOutstandingIdTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (n) P1-2 RED-PROVE: no stale mAsyncOutstandingJobId after a fast render ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_async_nostaleid.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the no-stale-id scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (no-stale-id test)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the Job (no-stale-id test)" );
+	if( session )
+	{
+		session->AttachController( &controller );
+
+		// Money check A: fire a burst of trivially-fast async renders back
+		// to back (maximal opportunity for the worker to complete BEFORE
+		// the submitter gets back around to publishing, which is exactly
+		// the window the pre-fix code left open) and, after each one is
+		// observed complete via RenderWait, assert the outstanding-id
+		// accessor reads back to 0 -- never left stuck at a stale nonzero
+		// value naming an already-finished job.
+		const int kIterations = 50;
+		int staleObserved = 0;
+		for( int i = 0; i < kIterations; ++i )
+		{
+			AgentRenderParams p;
+			const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( p );
+			Check( ar.accepted, "each trivially-fast async submission in the burst is accepted" );
+			if( !ar.accepted ) continue;
+			Check( session->RenderWait( ar.renderJobId, 5000 ), "each trivially-fast async render completes" );
+			// Give the worker's OutstandingGuard destructor a brief window
+			// to run (RenderWait observes mCurrentRenderJob.active==false,
+			// which the ActiveFlipGuard sets BEFORE the OutstandingGuard's
+			// own mAsyncCacheMutex-guarded clear further down the same
+			// closure -- so poll briefly rather than assume instantaneous).
+			bool clearedInTime = false;
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 500 );
+			while( std::chrono::steady_clock::now() < deadline ) {
+				if( session->ForTest_GetAsyncOutstandingJobId() == 0 ) { clearedInTime = true; break; }
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+			}
+			if( !clearedInTime ) ++staleObserved;
+		}
+		std::printf( "  [no-stale-id] stale-nonzero observations across %d fast-render iterations: %d\n", kIterations, staleObserved );
+		Check( staleObserved == 0,
+		       "RED-PROVE P1-2 MONEY ASSERTION: across a burst of 50 trivially-fast async renders, mAsyncOutstandingJobId is NEVER "
+		       "left stale-nonzero after RenderWait observes completion -- this is exactly the window the pre-fix code left open "
+		       "(SubmitAgentRenderAsync's internal notify_all() can let the worker run the WHOLE closure, including the "
+		       "OutstandingGuard's clear, before the submitting thread gets back around to the id publish; with the old "
+		       "release-then-reacquire mAsyncCacheMutex sequencing, that publish then landed AFTER the clear and stuck permanently)." );
+
+		// Money check B: session teardown after a completed fast render
+		// must NOT cancel a DIFFERENT, concurrently-running interactive
+		// render.  Use a controller whose interactive DoOneRenderPass
+		// participates in a ConcurrencyProof-style counter and reports
+		// whether IT OBSERVED a cancellation mid-pass -- if the stale-id
+		// bug were present, ~AgentSession (or AttachController(nullptr))
+		// draining a long-cleared id would still call CancelAgentRender_(),
+		// tripping the SHARED mCancelProgress and cancelling whatever
+		// unrelated render happens to be in flight at that moment.
+		AgentRenderParams p;
+		const AgentSession::AgentRenderAsyncResult finalRender = session->RenderAsync( p );
+		Check( finalRender.accepted, "the final (pre-teardown) async render is accepted" );
+		Check( session->RenderWait( finalRender.renderJobId, 5000 ), "the final async render completes before teardown" );
+
+		session->AttachController( nullptr );
+	}
+
+	// Now start a GENUINELY CONCURRENT interactive render on the SAME
+	// controller/Job and, WHILE it is in flight, destroy the (detached,
+	// fully-completed) session -- if a stale id survived, this destroy's
+	// drain would call CancelAgentRender_() and truncate the interactive
+	// pass early.
+	std::atomic<bool> stopScrub{ false };
+	std::atomic<unsigned int> cancelCountBefore{ controller.ForTest_GetCancelCount() };
+	std::thread scrubThread( [&]() {
+		double t = 0.0;
+		while( !stopScrub.load( std::memory_order_acquire ) ) {
+			controller.OnTimeScrub( t );
+			t += 0.01;
+			std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+		}
+	} );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );   // let the interactive loop get genuinely busy
+
+	session.reset();   // destroys the (already-detached) AgentSession -- must be uneventful
+
+	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	stopScrub.store( true, std::memory_order_release );
+	scrubThread.join();
+
+	const unsigned int cancelCountAfter = controller.ForTest_GetCancelCount();
+	std::printf( "  [no-stale-id] interactive cancel count before=%u after=%u\n", cancelCountBefore.load(), cancelCountAfter );
+	Check( cancelCountAfter == cancelCountBefore.load(),
+	       "RED-PROVE P1-2 BEHAVIORAL ASSERTION: destroying an already-completed, detached AgentSession does not spuriously cancel a "
+	       "concurrently-running UNRELATED interactive render (mCancelCount is unchanged) -- a stale mAsyncOutstandingJobId would have "
+	       "made DrainAsyncRender_ call CancelAgentRender_() against a job that no longer belongs to this session." );
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (n) no stale outstanding id: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (o) Round-2 P2-A RED-PROVE: when a CONTROLLER-ATTACHED render's
+//     Rasterize() throws, the Job's progress-callback hook (installed as
+//     mController->AgentRenderProgress() before Rasterize()) is still
+//     restored to null -- the RAII ProgressRestoreGuard runs on the
+//     exceptional exit, not just the ordinary one.  Pre-fix, the
+//     `mJob->SetProgress( nullptr )` call sat AFTER Rasterize() with no
+//     guard, so a throw skipped it entirely and left this controller's
+//     mCancelProgress installed as the Job's progress hook forever.
+//////////////////////////////////////////////////////////////////////
+static void RunProgressRestoredOnThrowTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (o) P2-A RED-PROVE: progress hook restored after a controller-attached throw ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_async_progressthrow.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the progress-throw scene to a temp file" );
+
+	ThrowingRasterizeJob* pJob = new ThrowingRasterizeJob();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "ThrowingRasterizeJob loads the native-v7 scene via the CST path (progress-throw test)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	Check( pJob->GetProgress() == nullptr, "the Job's progress hook is null before any render (baseline)" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the throwing Job (progress-throw test)" );
+	if( session )
+	{
+		session->AttachController( &controller );
+
+		// SYNCHRONOUS controller-attached render (routes through
+		// SubmitAgentRenderSync -> the worker's assumeParked RenderCore_,
+		// which installs mController->AgentRenderProgress() before
+		// Rasterize() -- see RenderCore_'s P2-C comment) whose Rasterize()
+		// throws.
+		AgentRenderParams p;
+		const AgentRenderResult r = session->Render( p );
+		Check( !r.ok, "the controller-attached throwing render reports ok=false" );
+		Check( r.message.find( "AgentRenderAsyncTest" ) != std::string::npos,
+		       "the failure message names the thrown exception's text" );
+
+		Check( pJob->GetProgress() == nullptr,
+		       "RED-PROVE P2-A MONEY ASSERTION: after a controller-attached render whose Rasterize() throws, the Job's progress "
+		       "hook is back to null -- the RAII ProgressRestoreGuard restored it on the exceptional exit. Pre-fix, the plain "
+		       "`mJob->SetProgress(nullptr)` call sat AFTER Rasterize() with nothing guarding it, so the throw skipped straight "
+		       "past it and left mController->AgentRenderProgress() installed as this Job's progress hook forever." );
+
+		// Control: a NEXT, non-throwing render still installs and restores
+		// the hook normally (the guard didn't break the ordinary path).
+		pJob->SetThrowOnRasterize( false );
+		const AgentRenderResult r2 = session->Render( p );
+		Check( r2.ok, "a follow-up non-throwing render succeeds after the earlier throw" );
+		Check( pJob->GetProgress() == nullptr, "the progress hook is null again after a normal, non-throwing render completes" );
+
+		session->AttachController( nullptr );
+	}
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (o) progress restored on throw: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunAsyncReturnsQuicklyTest();
@@ -1210,6 +1590,9 @@ int main()
 	RunFairSlotReservationTest();
 	RunTxnOpenRenderRefusalTest();
 	RunSessionDestroyedMidFlightTest();
+	RunUnboundedDrainLoopTest();
+	RunNoStaleOutstandingIdTest();
+	RunProgressRestoredOnThrowTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

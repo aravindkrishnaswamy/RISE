@@ -698,6 +698,35 @@ namespace RISE
 			                                      unsigned int& outWidth,
 			                                      unsigned int& outHeight ) const;
 
+			//! Round-2 P1-1 test hook: override DrainAsyncRender_'s per-chunk
+			//! wait duration for THIS session instance (default 0 = "use
+			//! whatever chunkMs the caller/default passes").  Exists so a
+			//! test can red-prove the UNBOUNDED cancel-then-wait LOOP (not
+			//! just the single-cancel common case) with a wall-clock time
+			//! the test suite can actually afford: a cancel-ignoring render
+			//! genuinely longer than one small chunk (e.g. chunk=200ms,
+			//! render=1s) proves the destructor blocks for the FULL
+			//! duration and the escalating warning fires, without the test
+			//! needing to wait out multiple 5000ms production-default
+			//! chunks.  Production code never calls this.
+			void ForTest_SetDrainChunkMs( unsigned int chunkMs ) { mDrainChunkMsForTest = chunkMs; }
+
+			//! Round-2 P1-2 test hook: read mAsyncOutstandingJobId directly
+			//! (under mAsyncCacheMutex, like every other access to this
+			//! field).  Exists so a test can red-prove the publish-before-
+			//! clear ordering fix: WITHOUT the fix, a trivially-fast async
+			//! render's completion could clear this field to 0 BEFORE the
+			//! submitting call ever published the real id, then have the
+			//! (too-late) publish leave it PERMANENTLY STUCK at a nonzero,
+			//! already-completed id -- observable here well after
+			//! RenderAsync/RenderWait have both returned.  Production code
+			//! never calls this.
+			std::uint64_t ForTest_GetAsyncOutstandingJobId() const
+			{
+				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				return mAsyncOutstandingJobId;
+			}
+
 		private:
 			AgentSession( IJobPriv* job, bool owns );
 			AgentSession( const AgentSession& );             // deleted
@@ -723,32 +752,72 @@ namespace RISE
 			                                bool assumeParked = false,
 			                                std::uint64_t forcedJobId = 0 );
 
-			//! Fix-round-1 P1-A: cancel + bound-wait for any OUTSTANDING
-			//! async render submitted against the controller CURRENTLY
-			//! attached (mController, read/captured before any detach).
-			//! Called from ~AgentSession (BEFORE any member is torn down)
-			//! and from AttachController (BEFORE mController is reassigned
-			//! or cleared) -- both are the two places this session's
-			//! lifetime/identity can change out from under a still-running
-			//! RenderAsync closure.
+			//! Fix-round-1 P1-A / round-2 P1-1: cancel + wait, UNBOUNDED, for
+			//! any OUTSTANDING async render submitted against the
+			//! controller CURRENTLY attached (mController, read/captured
+			//! before any detach).  Called from ~AgentSession (BEFORE any
+			//! member is torn down) and from AttachController (BEFORE
+			//! mController is reassigned or cleared) -- both are the two
+			//! places this session's lifetime/identity can change out from
+			//! under a still-running RenderAsync closure.
 			//!
-			//! Mechanism: read mAsyncOutstandingJobId (under
-			//! mAsyncCacheMutex); if it names a job the controller still
-			//! considers outstanding, call
+			//! Round-2 P1-1 fix: this used to wait a SINGLE bounded
+			//! WaitForRenderJob(id, timeoutMs) and proceed regardless of
+			//! whether that wait actually observed completion -- on a
+			//! timeout (a render whose deep loop -- an MLT/VCM checkpoint
+			//! gap, a wedged OIDN call -- does not poll the cancel flag
+			//! often enough to abort within timeoutMs), ~AgentSession
+			//! proceeded to free `this` while the worker could still be
+			//! INSIDE the closure that holds that raw pointer: a genuine
+			//! use-after-free gated only by a liveness timeout, not by
+			//! actual completion.  Correctness must not be bounded by a
+			//! timeout picked for the common case.
+			//!
+			//! Fixed shape: loop calling
 			//! controller->CancelAgentRender_() (trips the SAME
 			//! CancellableProgressCallback the render's doRenderWork
-			//! installed -- see RenderCore_) then
-			//! controller->WaitForRenderJob(id, timeoutMs).  Cancelling
-			//! FIRST is what keeps this bounded in practice: the render
-			//! aborts at its next progress/block-boundary check rather than
-			//! running to natural completion, so the wait below is short
-			//! even for a slow render.  A no-op (returns immediately) when
+			//! installed -- see RenderCore_) then waiting in `chunkMs`-sized
+			//! slices via controller->WaitForRenderJob(id, chunkMs) --
+			//! returning the instant a slice observes completion, and
+			//! otherwise RE-ISSUING the cancel and logging an ESCALATING
+			//! eLog_Warning ("agent render ignoring cancellation for Ns;
+			//! session teardown blocked") before waiting another slice.
+			//! UNBOUNDED BY DESIGN: freeing the session while a worker
+			//! closure is still touching it is strictly worse than a
+			//! blocked teardown (a hung destructor is debuggable and
+			//! visible in a stack trace; a UAF is neither).  In practice
+			//! this loop runs at most once -- cancelling makes the render
+			//! abort at its next progress/block-boundary check, which
+			//! live-measured (AgentRenderAsyncTest.cpp's Stop()-during-a-
+			//! render red-prove) takes 7-20ms, not tens of seconds -- the
+			//! loop only iterates more than once against a render that is
+			//! itself ignoring cancellation, which is exactly the case
+			//! this fix exists for.  A no-op (returns immediately) when
 			//! there is no outstanding job, or the controller was already
-			//! null.  `timeoutMs` bounds the WaitForRenderJob call only --
-			//! generous default (mirrors SubmitAgentRenderSync's
-			//! fairness-wait default) since a real cancel should complete
-			//! promptly; a caller with tighter needs can pass less.
-			void DrainAsyncRender_( unsigned int timeoutMs = 30000 );
+			//! null.  `chunkMs` is the size of EACH wait slice (not a
+			//! total bound) -- the prior `timeoutMs` parameter is
+			//! repurposed here rather than removed so the signature stays
+			//! honest about what it now controls; default 5000ms mirrors
+			//! the old default's order of magnitude for a caller that
+			//! doesn't care, while keeping any individual log-escalation
+			//! gap short.
+			//!
+			//! Round-2 P3-d scope note: this only drains a render submitted
+			//! through RenderAsync -- i.e. one that went through
+			//! SceneEditController::SubmitAgentRenderAsync and is tracked
+			//! by mAsyncOutstandingJobId.  A render that instead went
+			//! through Render(AgentRenderParams)'s OVERRIDE path
+			//! (RunPreviewRenderParked, used when a film-dims or
+			//! camera-pose override is requested) is OUTSIDE the
+			//! mAgentRenderSlotMutex ticket queue by design -- it runs
+			//! SYNCHRONOUSLY on the calling thread (the caller blocks for
+			//! the render's duration inside that same call), so there is no
+			//! separate worker-thread closure holding a raw `this` for this
+			//! method to drain: by the time Render(AgentRenderParams)
+			//! returns, that render is already fully complete.  Nothing to
+			//! do here for that path; it is mentioned only so a future
+			//! reader does not go looking for it in this method.
+			void DrainAsyncRender_( unsigned int chunkMs = 5000 );
 
 			IJobPriv* mJob;    //!< the wrapped Job (owned iff mOwnsJob)
 			bool      mOwnsJob;
@@ -826,6 +895,13 @@ namespace RISE
 			//! (~AgentSession / AttachController) to know whether there is
 			//! anything to cancel-and-wait for.
 			std::uint64_t mAsyncOutstandingJobId = 0;
+
+			//! Round-2 P1-1 test hook -- see ForTest_SetDrainChunkMs's doc.
+			//! 0 = disabled (DrainAsyncRender_ uses its own chunkMs argument
+			//! unmodified); single-threaded like the rest of this class's
+			//! non-Render surface -- set before the teardown/detach call
+			//! that will read it, never concurrently.
+			unsigned int mDrainChunkMsForTest = 0;
 		};
 	}
 }

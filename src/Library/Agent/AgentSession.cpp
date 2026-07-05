@@ -567,15 +567,21 @@ namespace RISE
 			mJob = nullptr;
 		}
 
-		// Fix-round-1 P1-A: see the header doc for the full contract.  Reads
-		// (and, on completion, clears) mAsyncOutstandingJobId under
-		// mAsyncCacheMutex, then -- OUTSIDE that lock (cancel/wait must not
-		// hold a lock the worker thread might need in order to make
-		// progress toward completing) -- cancels and bound-waits on the
-		// controller that was attached AT THE TIME the async render was
-		// submitted.
-		void AgentSession::DrainAsyncRender_( unsigned int timeoutMs )
+		// Fix-round-1 P1-A / round-2 P1-1: see the header doc for the full
+		// contract.  Reads (and, on eventual completion, clears)
+		// mAsyncOutstandingJobId under mAsyncCacheMutex, then -- OUTSIDE
+		// that lock (cancel/wait must not hold a lock the worker thread
+		// might need in order to make progress toward completing) --
+		// cancels and waits, UNBOUNDED, on the controller that was attached
+		// AT THE TIME the async render was submitted.
+		void AgentSession::DrainAsyncRender_( unsigned int chunkMs )
 		{
+			// Round-2 P1-1 test hook: ForTest_SetDrainChunkMs overrides the
+			// per-chunk wait for this instance when nonzero -- see that
+			// setter's doc.  Production callers never set it, so this is a
+			// no-op there.
+			if( mDrainChunkMsForTest != 0 ) chunkMs = mDrainChunkMsForTest;
+
 			std::uint64_t outstandingId = 0;
 			{
 				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
@@ -602,21 +608,42 @@ namespace RISE
 				return;
 			}
 
-			// Cancel FIRST -- this is what keeps the wait below bounded in
-			// practice even for a slow render: the render aborts at its next
-			// progress/block-boundary check (see SceneEditController::
-			// CancelAgentRender_ + AgentSession::RenderCore_'s progress-hook
-			// install) instead of running to natural completion.
-			controllerAtSubmitTime->CancelAgentRender_();
-			controllerAtSubmitTime->WaitForRenderJob(
-				static_cast<SceneEditController::RenderJobId>( outstandingId ), timeoutMs );
+			// Round-2 P1-1: loop cancel-then-wait in `chunkMs` slices until
+			// the wait ACTUALLY observes completion -- never proceed past
+			// this call on a bare timeout.  In the overwhelmingly common
+			// case this loop body runs exactly once: cancelling makes the
+			// render abort at its next progress/block-boundary check
+			// (see SceneEditController::CancelAgentRender_ + RenderCore_'s
+			// progress-hook install), live-measured at 7-20ms in
+			// AgentRenderAsyncTest.cpp's Stop()-during-a-render red-prove --
+			// nowhere near one chunk.  The loop only iterates more than
+			// once against a render that is itself ignoring cancellation
+			// (a coarse-grained integrator checkpoint gap, a wedged OIDN
+			// call) -- exactly the case this fix exists to make safe rather
+			// than merely bounded: re-issuing the cancel costs nothing (it
+			// is idempotent -- RequestCancel just (re-)sets a flag) and
+			// escalating the log warning gives an operator a live signal
+			// that teardown is genuinely blocked on a runaway render,
+			// rather than silently proceeding into a use-after-free.
+			unsigned int elapsedMs = 0;
+			for( ;; ) {
+				controllerAtSubmitTime->CancelAgentRender_();
+				const bool completed = controllerAtSubmitTime->WaitForRenderJob(
+					static_cast<SceneEditController::RenderJobId>( outstandingId ), chunkMs );
+				if( completed ) break;
 
-			// Whether the wait observed completion or timed out, this
-			// session is done trying to drain THIS id -- clear it so a
-			// second drain call (e.g. AttachController(nullptr) followed by
-			// ~AgentSession) is a fast no-op rather than re-issuing a cancel
-			// against a job the controller may have already recycled the
-			// slot out from under.
+				elapsedMs += chunkMs;
+				GlobalLog()->PrintEx( eLog_Warning,
+					"AgentSession::DrainAsyncRender_: agent render (job %llu) ignoring cancellation for %ums; "
+					"session teardown blocked (unbounded by design -- see DrainAsyncRender_'s doc).",
+					static_cast<unsigned long long>( outstandingId ), elapsedMs );
+			}
+
+			// The wait observed genuine completion (never a bare timeout) --
+			// clear the id so a second drain call (e.g. AttachController(nullptr)
+			// followed by ~AgentSession) is a fast no-op rather than
+			// re-issuing a cancel against a job the controller may have
+			// already recycled the slot out from under.
 			{
 				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
 				if( mAsyncOutstandingJobId == outstandingId ) mAsyncOutstandingJobId = 0;
@@ -1301,6 +1328,61 @@ namespace RISE
 				std::vector<CapturedCameraField>&    mCapturedCam;
 				bool                                 mArmed;
 			};
+
+			//! Round-2 P2-A: RAII restore of the Job's progress-callback hook,
+			//! matching RenderOverrideRestoreGuard's house shape (Arm/Disarm,
+			//! restore-on-every-exit-including-a-throw).  Before this fix,
+			//! doRenderWork's `mJob->SetProgress( mController->
+			//! AgentRenderProgress() ); rendered = mJob->Rasterize(); ...
+			//! mJob->SetProgress( nullptr );` left the SECOND SetProgress
+			//! call SKIPPED whenever Rasterize() threw (the exception
+			//! unwinds straight past it) -- the Job's progress hook stayed
+			//! pointed at this controller's mCancelProgress forever, a stale
+			//! cancel hook that could confuse whatever installs (or fails to
+			//! install) a progress callback on this Job for the NEXT render.
+			//! Arm() once installed; the destructor restores (to whatever
+			//! value was live before the install -- always nullptr on this
+			//! call path, see doRenderWork's own comment) on every exit,
+			//! ordinary or exceptional; the ordinary-path tail below calls
+			//! Disarm() after its own explicit restore so the destructor is
+			//! a no-op there (avoids a harmless but redundant double
+			//! SetProgress call), exactly mirroring RenderOverrideRestoreGuard.
+			class ProgressRestoreGuard
+			{
+			public:
+				ProgressRestoreGuard( IJobPriv& job, IProgressCallback* priorValue )
+					: mJob( job ), mPriorValue( priorValue ), mArmed( false )
+				{
+				}
+
+				void Arm()    { mArmed = true; }
+				void Disarm() { mArmed = false; }
+
+				~ProgressRestoreGuard()
+				{
+					if( !mArmed ) return;
+					try {
+						mJob.SetProgress( mPriorValue );
+					}
+					catch( ... ) {
+						// NEVER rethrow from a destructor (would terminate()
+						// if already unwinding from Rasterize()'s own
+						// exception).  Log so a future throw here is at
+						// least diagnosable.
+						GlobalLog()->PrintEx( eLog_Error,
+							"AgentSession::Render: exception escaped the progress-hook "
+							"restore -- the Job's progress callback may be left stale" );
+					}
+				}
+
+			private:
+				ProgressRestoreGuard( const ProgressRestoreGuard& );             // deleted
+				ProgressRestoreGuard& operator=( const ProgressRestoreGuard& );  // deleted
+
+				IJobPriv&           mJob;
+				IProgressCallback*  mPriorValue;
+				bool                mArmed;
+			};
 		}
 
 		AgentRenderResult AgentSession::Render( int samplesOverride )
@@ -1554,7 +1636,22 @@ namespace RISE
 				// progress callback on this Job (headless agent renders have
 				// never set one), so null is the correct "back to how it was"
 				// value, not just a convenient default.
+				//
+				// Round-2 P2-A: arm an RAII guard BEFORE the install so the
+				// restore runs on EVERY exit -- including an exception
+				// unwinding out of mJob->Rasterize() below (OIDN denoise is
+				// a documented real throw site).  Pre-fix, that throw skipped
+				// straight past the `mJob->SetProgress( nullptr )` call
+				// below, leaving this controller's mCancelProgress installed
+				// as the Job's progress hook forever -- a stale cancel hook
+				// that could poison whatever the NEXT render (a different
+				// controller-less caller, say) does with this Job's progress
+				// state.  The ordinary-path restore further down Disarm()s
+				// the guard so its destructor is a no-op there (avoids a
+				// harmless but redundant double SetProgress(nullptr) call).
+				ProgressRestoreGuard progressGuard( *mJob, /*priorValue=*/nullptr );
 				if( mController ) {
+					progressGuard.Arm();
 					mJob->SetProgress( mController->AgentRenderProgress() );
 				}
 				rendered = mJob->Rasterize();
@@ -1565,6 +1662,7 @@ namespace RISE
 					// install-then-run-then-uninstall shape above.
 					wasCancelled = mController->IsCancelRequested();
 					mJob->SetProgress( nullptr );
+					progressGuard.Disarm();
 				}
 				renderRan = true;
 
@@ -1889,26 +1987,87 @@ namespace RISE
 			// the async render (that was the bug: an AgentRpcDispatcher /
 			// GUI teardown can destroy this AgentSession while the worker
 			// thread is still inside this closure).  ~AgentSession now
-			// DRAINS (cancel + bound-wait) any outstanding async job before
-			// any member is torn down -- see DrainAsyncRender_ -- which is
-			// what makes this capture safe in practice: the destructor does
-			// not return until this closure has finished running (or the
-			// controller reports it can no longer find the job).  This
-			// closure clears mAsyncOutstandingJobId in a `finally`-style
-			// RAII guard so the id is released whether the render succeeds,
-			// fails, throws (RenderCore_ itself never lets an exception
-			// escape -- see its own try/catch -- but the guard is
-			// unconditional regardless), or is cancelled by a drain.
+			// DRAINS (cancel + wait, unbounded -- round-2 P1-1) any
+			// outstanding async job before any member is torn down -- see
+			// DrainAsyncRender_ -- which is what makes this capture safe in
+			// practice: the destructor does not return until this closure
+			// has finished running.
+			//
+			// Round-2 P1-2 fix: the closure needs to know ITS OWN jobId so
+			// its completion guard can CLEAR mAsyncOutstandingJobId only if
+			// it still names THIS closure's job (a compare, not an
+			// unconditional zero) -- otherwise a stale closure (one whose
+			// drain already timed out a cancel-ignoring render, if a future
+			// change ever reintroduced a bound) could clear a NEWER
+			// submission's id out from under a live drain.  The id is not
+			// known until AFTER SubmitAgentRenderAsync mints it below, so a
+			// plain by-value capture at lambda-construction time (before the
+			// call) cannot see it -- share a heap cell (shared_ptr, default
+			// 0 = "not yet known") that this function fills in AFTER
+			// SubmitAgentRenderAsync returns, and that the closure reads
+			// when it actually completes.  This is safe (not a second race)
+			// specifically because of the NEW lock ordering below: this
+			// function holds mAsyncCacheMutex across BOTH the
+			// SubmitAgentRenderAsync call AND the publish, so the worker's
+			// OutstandingGuard destructor -- which takes the SAME
+			// mAsyncCacheMutex to read the cell and compare -- cannot run
+			// until this function has already written the real id and
+			// released the lock, however fast the worker gets there.
+			auto ownJobIdCell = std::make_shared<std::uint64_t>( 0 );
 			SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
+
+			// Round-2 P1-2 fix: hold mAsyncCacheMutex across the WHOLE
+			// mint-and-publish sequence (SubmitAgentRenderAsync + the
+			// mAsyncOutstandingJobId write below) instead of releasing it
+			// between the two.  The old code released the lock as soon as
+			// SubmitAgentRenderAsync returned, then reacquired it to publish
+			// the id -- if the worker (which can start the instant
+			// SubmitAgentRenderAsync's internal notify_all() fires, i.e.
+			// WHILE still inside that call on this thread's stack) ran a
+			// trivially-fast closure to completion before this function got
+			// back around to the publish, the OutstandingGuard's clear (see
+			// below) landed on mAsyncOutstandingJobId==0 first and the
+			// SUBSEQUENT publish then left it permanently stuck at a
+			// nonzero, already-completed id -- a later drain would then
+			// call CancelAgentRender_() (tripping the SHARED mCancelProgress
+			// -- see that method's doc) against a controller that may by
+			// then be running a wholly UNRELATED interactive or agent
+			// render, spuriously cancelling it.
+			//
+			// LOCK ORDER -- this call site nests:
+			//   mAsyncCacheMutex (AgentSession)  ->  mAgentRenderSlotMutex (SceneEditController, taken INSIDE SubmitAgentRenderAsync)
+			//     -> (briefly, nested further) SceneEditController::mMutex, mJobStatusMutex
+			// Full table + the worker-side REVERSE nesting (mMutex -> mAsyncCacheMutex,
+			// inside RenderCore_'s cache-population tail) and why that reverse
+			// order is still deadlock-safe (the two orderings apply to
+			// disjoint instants, never simultaneous contenders for the same
+			// pair -- the single-slot check that gates this method's brief
+			// mMutex nesting only passes once the worker has already
+			// RELEASED mMutex for whatever render preceded this submission)
+			// is spelled out in full at SceneEditController.h, next to
+			// mAgentRenderSlotMutex's three-lock note.  DrainAsyncRender_ /
+			// the OutstandingGuard sites each take at most one of these
+			// locks at a time, so neither is a second nesting site to
+			// reason about here.
+			std::unique_lock<std::mutex> cacheLk( mAsyncCacheMutex );
+
 			const bool accepted = mController->SubmitAgentRenderAsync(
-				[this, params]() {
+				[this, params, ownJobIdCell]() {
 					struct OutstandingGuard {
-						AgentSession& self;
+						AgentSession&                       self;
+						std::shared_ptr<std::uint64_t>      ownJobIdCell;
 						~OutstandingGuard() {
 							std::lock_guard<std::mutex> cacheLk( self.mAsyncCacheMutex );
-							self.mAsyncOutstandingJobId = 0;
+							// Round-2 P1-2: compare-then-clear, not an
+							// unconditional zero -- only retire the id if it
+							// is still THIS closure's own job (cross-
+							// generation safety: a stale closure must never
+							// clear a newer submission's outstanding id).
+							if( self.mAsyncOutstandingJobId == *ownJobIdCell ) {
+								self.mAsyncOutstandingJobId = 0;
+							}
 						}
-					} outstandingGuard{ *this };
+					} outstandingGuard{ *this, ownJobIdCell };
 					const AgentRenderResult r = RenderCore_( params, /*assumeParked=*/true );
 					(void)r;
 				},
@@ -1921,21 +2080,15 @@ namespace RISE
 				return out;
 			}
 
-			// Fix-round-1 P1-A: record the outstanding id BEFORE returning --
-			// from this point until the worker's OutstandingGuard clears it,
-			// a drain (~AgentSession / AttachController) knows there is a
-			// real in-flight closure holding a `this` pointer to cancel-and-
-			// wait for.  Safe even though the worker may already be running
-			// (or even finished) by the time we take this lock: the worker
-			// takes the SAME mAsyncCacheMutex to clear it, so there is no
-			// window where a drain sees a stale id that is actually already
-			// safe to ignore -- worst case it cancels/waits a job that is
-			// already done, which WaitForRenderJob reports as complete
-			// immediately.
-			{
-				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
-				mAsyncOutstandingJobId = static_cast<std::uint64_t>( jobId );
-			}
+			// Publish BEFORE releasing mAsyncCacheMutex (still held from
+			// above) -- this is the fix: the worker's OutstandingGuard
+			// cannot observe (or clear) this id until this write has
+			// landed, because it takes the SAME lock.  Fill the shared
+			// cell too, so the closure's own eventual compare reads the
+			// real id rather than the placeholder 0.
+			*ownJobIdCell          = static_cast<std::uint64_t>( jobId );
+			mAsyncOutstandingJobId = static_cast<std::uint64_t>( jobId );
+			cacheLk.unlock();
 
 			out.accepted    = true;
 			out.renderJobId = static_cast<std::uint64_t>( jobId );
