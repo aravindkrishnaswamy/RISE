@@ -3312,6 +3312,24 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 			entityName.c_str(),
 			entityKind.size() <= 1 ? nullptr : entityKind.c_str() );
 
+		// Shared-undo follow-up (P2 fix): an agent commit that mutates an
+		// EMISSIVE material's slot (exitance / scale / any emission-affecting
+		// param) never used to bump the scene's light-topology generation --
+		// only the GUI property panel's SetMaterialProperty arm
+		// (MarkEditEntityDirty) did that.  A reused RayCaster's LightSampler
+		// alias table then kept the STALE selection weight from before the
+		// edit (light SELECTION biased toward the old emission footprint;
+		// per-sample Le stays live so the estimator itself is unbiased).
+		// Resolve material-ness from entityKind the same way MarkCstHeadDirty
+		// just did above; see BumpSceneLightGenerationForAgentParamEdit's doc
+		// for the conservative-bump rule on empty/unknown kinds.  Harmless to
+		// call unconditionally (codes 2/3 already got a fresh alias table via
+		// RebindEditorToJob above -- an extra bump there is a moot no-op, not
+		// a correctness issue).
+		mEditor.BumpSceneLightGenerationForAgentParamEdit(
+			entityName.c_str(),
+			entityKind.size() <= 1 ? nullptr : entityKind.c_str() );
+
 		// Shared-undo U1: push an EditHistory record so this agent edit is a
 		// first-class undo/redo citizen -- the headline gap this slice closes
 		// (previously an agent commit left NO history record, so a human

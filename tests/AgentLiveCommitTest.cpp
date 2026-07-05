@@ -1509,6 +1509,219 @@ static void TestAgentEditUndoRedo()
 	std::remove( tmp );
 }
 
+// A scene whose emissive luminaire material (`lum2`) is DECLARED but NOT
+// bound to any live object (`obj` binds the ordinary `plain` material
+// instead) -- isolates the SceneEditor-level bump this fix adds from the
+// PRE-EXISTING, independent closure-driven bump in
+// RISE::Cst::DeriveToJobIncremental (Cst.cpp's "Slice 3" closure-gated
+// invariant pass, `if( emitter ) pJob.BumpLightTopologyGeneration();`),
+// which ALSO bumps the SAME counter whenever an incremental re-derive
+// closure re-points a live OBJECT bound to an emissive material.  When the
+// edited material has NO bound object in its closure (this scene), that
+// pre-existing mechanism has nothing to iterate over and CANNOT fire --
+// so a generation bump here can ONLY come from the fix under test
+// (SceneEditor::BumpSceneLightGenerationForAgentParamEdit, wired into
+// SceneEditController::ApplyAgentParamEdit's forward commit and
+// SceneEditor::ApplyRevertMutation / ApplyForwardMutation's SetAgentCstParam
+// arms).  Using an object-bound emissive material here would give a FALSE
+// PASS pre-fix (the Cst.cpp mechanism alone would satisfy the assertion).
+static const char* kUnboundEmissiveScene =
+	"RISE ASCII SCENE 7\n"
+	"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+	"lambertian_material\n{\nname plain\nreflectance white\n}\n"
+	"lambertian_luminaire_material\n{\nname lum2\nexitance white\nscale 5.0\nmaterial none\n}\n"
+	"sphere_geometry\n{\nname s\nradius 1\n}\n"
+	"standard_object\n{\nname obj\ngeometry s\nmaterial plain\n}\n";
+
+//////////////////////////////////////////////////////////////////////
+// Test 11b (P2 fix): an agent-originated edit to an EMISSIVE material's
+// emission-affecting param (`lum2`'s `scale`, a lambertian_luminaire_material
+// with NO bound object -- see kUnboundEmissiveScene's doc for why) via a
+// CODE-1 (incremental) path must bump the scene's light-topology generation
+// -- else a reused RayCaster's LightSampler alias table keeps the STALE
+// selection weight from before the edit (light SELECTION biased toward the
+// old emission footprint; per-sample Le is still read live so the estimator
+// itself stays unbiased, but convergence is worse).  Undo and Redo of that
+// same edit must ALSO bump (SceneEditor::ApplyRevertMutation /
+// ApplyForwardMutation's SetAgentCstParam arms) -- the same alias-table
+// staleness applies to a reverted/redone emissive edit.
+//
+// RED-PROVE: at the pre-fix parent, ApplyAgentParamEdit / the Undo+Redo arms
+// never called BumpSceneLightGenerationIfMaterialEmits for the agent path,
+// and (per kUnboundEmissiveScene's doc) the independent Cst.cpp closure-gated
+// bump cannot fire here either (no object in the edit closure) -- so
+// GetLightTopologyGeneration() stays UNCHANGED across all three steps.
+//////////////////////////////////////////////////////////////////////
+static void TestAgentEmissiveEditBumpsLightGeneration()
+{
+	std::cout << "Test 11b: agent emissive-material edit bumps light-topology generation (P2 fix)..." << std::endl;
+
+	const char* tmp = "agentlive_lightgen.RISEscene";
+	Job* pJob = LoadScene( kUnboundEmissiveScene, tmp );
+	Check( pJob != nullptr, "unbound-emissive scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		//------------------------------------------------------------------
+		// (a) forward agent commit on `lum2` (emissive, UNBOUND) -- code-1 incremental.
+		//------------------------------------------------------------------
+		const unsigned int genBeforeApply = pJob->GetLightTopologyGeneration();
+		const SceneEditController::AgentCommitResult applied =
+			c.ApplyAgentParamEdit(
+				String( "lum2" ), String( "lambertian_luminaire_material" ),
+				String( "scale" ), String( "8.0" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( applied.applied && applied.rawCode == 1, "agent commit on the emissive material applies cleanly (code 1)" );
+		const unsigned int genAfterApply = pJob->GetLightTopologyGeneration();
+		Check( genAfterApply != genBeforeApply,
+		       "RED-PROVE: a code-1 agent edit on an EMISSIVE (unbound) material bumps the light-topology generation "
+		       "(at the pre-fix parent this stays UNCHANGED)" );
+
+		//------------------------------------------------------------------
+		// (b) Undo the same edit -- must ALSO bump.
+		//------------------------------------------------------------------
+		const unsigned int genBeforeUndo = pJob->GetLightTopologyGeneration();
+		c.Undo();
+		const unsigned int genAfterUndo = pJob->GetLightTopologyGeneration();
+		Check( genAfterUndo != genBeforeUndo,
+		       "RED-PROVE: Undo of the emissive-material edit ALSO bumps the light-topology generation" );
+
+		//------------------------------------------------------------------
+		// Redo -- must ALSO bump.
+		//------------------------------------------------------------------
+		const unsigned int genBeforeRedo = pJob->GetLightTopologyGeneration();
+		c.Redo();
+		const unsigned int genAfterRedo = pJob->GetLightTopologyGeneration();
+		Check( genAfterRedo != genBeforeRedo,
+		       "RED-PROVE: Redo of the emissive-material edit ALSO bumps the light-topology generation" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 11c (P2 fix, negative control): a NON-material agent edit with a
+// KNOWN kind (`standard_object`.`casts_shadows` on `obj`, a shadow-flag bool
+// -- not a spatial/material op) must NOT bump the light-topology generation.
+// `obj` is bound to the emissive `lum` material, so this also proves the
+// resolution keys off the EDITED entity's own kind, not merely "some emissive
+// material exists somewhere in the scene."
+//////////////////////////////////////////////////////////////////////
+// A scene with a SECOND, NON-emissive object (`obj2`, bound to a plain
+// `lambertian_material`) alongside the base `lum`-lit `obj`.  Test 11c edits
+// `obj2` specifically -- NOT `obj` -- so the assertion isolates "a known
+// non-material kind on a NON-emissive target must not bump" from an
+// unrelated pre-existing mechanism: Job's incremental CST re-derive of a
+// standard_object closure removes-then-re-adds the live object
+// (RISE::Cst::DeriveToJobIncremental), and Job::RemoveObject already bumps
+// the light-topology generation whenever the removed object's CURRENT
+// material is emissive (see Job.cpp's `wasEmissive` check in RemoveObject,
+// P2a) -- regardless of what the edit itself touched.  Editing `obj`
+// (bound to the emissive `lum`) would trip THAT pre-existing mechanism and
+// give a false failure unrelated to this fix; `obj2` (bound to the
+// non-emissive `plain`) does not.
+static const char* kMixedEmissiveScene =
+	"RISE ASCII SCENE 7\n"
+	"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+	"uniformcolor_painter\n{\nname grey\ncolor 0.5 0.5 0.5\n}\n"
+	"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
+	"lambertian_material\n{\nname plain\nreflectance white\n}\n"
+	"sphere_geometry\n{\nname s\nradius 1\n}\n"
+	"sphere_geometry\n{\nname s2\nradius 1\n}\n"
+	"standard_object\n{\nname obj\ngeometry s\nmaterial lum\n}\n"
+	"standard_object\n{\nname obj2\ngeometry s2\nmaterial plain\nposition 3 0 0\n}\n";
+
+static void TestAgentNonMaterialEditDoesNotBumpLightGeneration()
+{
+	std::cout << "Test 11c: agent non-material edit (known kind, non-emissive target) does NOT bump light-topology generation..." << std::endl;
+
+	const char* tmp = "agentlive_lightgen_nonmat.RISEscene";
+	Job* pJob = LoadScene( kMixedEmissiveScene, tmp );
+	Check( pJob != nullptr, "mixed-emissive scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const unsigned int genBefore = pJob->GetLightTopologyGeneration();
+		const SceneEditController::AgentCommitResult applied =
+			c.ApplyAgentParamEdit(
+				String( "obj2" ), String( "standard_object" ),
+				String( "casts_shadows" ), String( "false" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( applied.applied, "agent commit on the KNOWN non-material kind (non-emissive target) applies cleanly" );
+		const unsigned int genAfter = pJob->GetLightTopologyGeneration();
+		Check( genAfter == genBefore,
+		       "a KNOWN non-material-kind agent edit on a NON-emissive object (standard_object.casts_shadows) does NOT bump the light-topology generation" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 11d (P2 fix, documented conservative-bump behaviour): an agent edit
+// whose entityKind the caller passes as EMPTY/unrecognized must bump the
+// light-topology generation CONSERVATIVELY (see
+// SceneEditor::BumpSceneLightGenerationForAgentParamEdit's doc) -- a spurious
+// bump costs one alias-table rebuild; a missed bump on an actually-emissive
+// target would be a rendering-correctness bug.  Drives the SAME `lum.scale`
+// edit as 11b but with an empty entityKind, to isolate the "kind resolution"
+// behaviour from "is this actually a material" -- an unresolved kind must
+// bump regardless of what the entity turns out to be.
+//////////////////////////////////////////////////////////////////////
+static void TestAgentUnknownKindEditBumpsConservatively()
+{
+	std::cout << "Test 11d: unknown/empty-kind agent edit bumps light-topology generation conservatively..." << std::endl;
+
+	const char* tmp = "agentlive_lightgen_unknown.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		const unsigned int genBefore = pJob->GetLightTopologyGeneration();
+		// Empty entityKind on the `white` PAINTER (definitely non-emissive --
+		// painters have no material/emitter concept at all, and are outside
+		// the Cst.cpp closure-gated invariant pass's object-emitter loop
+		// entirely) -- isolates the conservative-bump rule cleanly: no other
+		// mechanism in the engine could explain a bump here, so any bump
+		// observed can ONLY be the fix's empty-kind fallback.
+		// ApplyAgentParamEdit's CST-entity resolution still finds `white` by
+		// name (DocFindByNameAnyRole tolerates an empty kind hint), but the
+		// AGENT CALLER did not tell us what kind of entity it is -- the
+		// conservative-bump rule must fire regardless of what it turns out
+		// to be.
+		const SceneEditController::AgentCommitResult applied =
+			c.ApplyAgentParamEdit(
+				String( "white" ), String( "" ),
+				String( "color" ), String( "0.9 0.9 0.9" ),
+				/*baseVersionOrNull*/ nullptr );
+		Check( applied.applied, "agent commit with an EMPTY entityKind applies cleanly" );
+		const unsigned int genAfter = pJob->GetLightTopologyGeneration();
+		Check( genAfter != genBefore,
+		       "an EMPTY/unrecognized entityKind bumps the light-topology generation CONSERVATIVELY, even for a "
+		       "definitely-non-emissive target (documented behaviour)" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
 //////////////////////////////////////////////////////////////////////
 // Test 12: the INTERLEAVING headline -- GUI edit A, agent edit B, GUI edit C;
 // Undo x3 must revert C, then B (the agent edit!), then A, in strict LIFO
@@ -3302,6 +3515,9 @@ int main()
 	TestMidTransactionAgentCommitRefused();
 	TestPreviewRenderParked();
 	TestAgentEditUndoRedo();
+	TestAgentEmissiveEditBumpsLightGeneration();
+	TestAgentNonMaterialEditDoesNotBumpLightGeneration();
+	TestAgentUnknownKindEditBumpsConservatively();
 	TestInterleavedLifoUndo();
 	TestAgentEditDefaultedSlotUndo();
 	TestCodeThreeUndo();

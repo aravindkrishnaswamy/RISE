@@ -307,6 +307,69 @@ namespace RISE
 			FireDirtyChangedIfTransitioned();
 		}
 
+		//! Shared-undo follow-up (agent emissive-material light-gen bump):
+		//! resolve whether an agent-originated CST param edit touched a
+		//! MATERIAL, and if so, bump the light-topology generation iff that
+		//! material is emissive (BumpSceneLightGenerationIfMaterialEmits).
+		//! This closes the same gap MarkEditEntityDirty's SetMaterialProperty
+		//! arm covers for the GUI property panel (SceneEditor.cpp ~910-924),
+		//! but for the agent path -- which never routes through that switch
+		//! (its forward commit lands via SceneEditController::
+		//! ApplyAgentParamEdit, its Undo/Redo arms via ApplyRevertMutation /
+		//! ApplyForwardMutation's dedicated SetAgentCstParam branches).
+		//! Without this bump, editing an emissive material's exitance/scale
+		//! through the agent (or undoing/redoing that edit) never advances
+		//! Scene::mLightTopologyGeneration, so a reused RayCaster's
+		//! LightSampler alias table keeps the STALE selection weight from
+		//! before the edit -- light SELECTION stays biased even though
+		//! per-sample Le is still read live (the estimator itself is
+		//! unbiased; only convergence rate suffers).  Bites ONLY on a
+		//! code-1 incremental apply -- a D2 full re-derive (codes 2/3)
+		//! rebuilds the Scene from scratch and gets a fresh alias table via
+		//! RebindEditorToJob, so bumping there too is harmless, just moot.
+		//!
+		//! `entityKind` uses the SAME kind-string vocabulary as
+		//! MarkCstHeadDirty ("material" / "*_material" for materials; other
+		//! known CST kinds -- "standard_object", "*_light", "*_camera",
+		//! camera, "*_medium" -- for everything else the agent can target).
+		//! Resolution rule, by design NARROWER than MarkCstHeadDirty's full
+		//! dispatch (this call only needs "is this a material"):
+		//!   - kind == "material" or kind ends with "_material": look the
+		//!     entity up by name in mMaterialManager and bump iff it's
+		//!     emissive (GetEmitter() != null).  A rename/retarget mid-edit
+		//!     that fails to resolve is treated as non-emissive (no bump) --
+		//!     symmetric with BumpSceneLightGenerationIfMaterialEmits's own
+		//!     null-tolerant contract.
+		//!   - kind is EMPTY or any other UNRECOGNIZED string (the agent can
+		//!     target painters, functions, rasterizer params, shaders --
+		//!     kinds outside the GUI's Category taxonomy, and also passes
+		//!     empty kind on some call shapes): bump CONSERVATIVELY.  A
+		//!     spurious bump costs one alias-table rebuild on the next
+		//!     render (cheap); a MISSED bump on an actually-emissive target
+		//!     is a rendering-correctness bug (stale light selection) --
+		//!     the tradeoff is deliberately asymmetric in favour of
+		//!     correctness.
+		//!   - kind is a KNOWN NON-material CST kind ("standard_object",
+		//!     "*_light", "*_camera"/camera, "*_medium"): no bump here.  A
+		//!     spatial edit on an emissive OBJECT is covered by
+		//!     BumpSceneLightGenerationIfEmitterSetChanged /
+		//!     BumpSceneLightGenerationIfMaterialEmits at the transform-op
+		//!     call sites (MarkEditEntityDirty's own dispatch); a light
+		//!     PROPERTY edit is covered by the SetLightProperty Undo arm's
+		//!     existing BumpSceneLightGeneration() call.  Those are
+		//!     DIFFERENT SceneEdit ops (SetObjectGeometry/SetLightProperty,
+		//!     not SetAgentCstParam) with their own bump call sites already
+		//!     in place -- this helper only needs to cover the
+		//!     SetAgentCstParam / ApplyAgentParamEdit surface.
+		//! Defined out-of-line in SceneEditor.cpp: the body calls
+		//! mMaterialManager->GetItem(), which needs IMaterialManager's full
+		//! definition -- this header only forward-declares that type (see
+		//! `class IMaterialManager* mMaterialManager` below), matching how
+		//! BumpSceneLightGenerationIfMaterialEmits is declared here / defined
+		//! in the .cpp.
+		void BumpSceneLightGenerationForAgentParamEdit(
+			const char* entityName, const char* entityKind );
+
 		//! Shared-undo U1: push an EditHistory record for an agent PARAM commit
 		//! that has ALREADY been applied to the retained Document (via
 		//! Job::ApplyCstParamEditChecked -- see

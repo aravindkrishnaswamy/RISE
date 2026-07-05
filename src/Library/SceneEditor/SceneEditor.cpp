@@ -107,6 +107,45 @@ void SceneEditor::BumpSceneLightGenerationIfMaterialEmits( const IMaterial* mat 
 	}
 }
 
+void SceneEditor::BumpSceneLightGenerationForAgentParamEdit(
+	const char* entityName, const char* entityKind )
+{
+	// Shared-undo follow-up (P2 fix): see the doc comment in SceneEditor.h --
+	// resolve material-ness from the CST chunk-kind string using the SAME
+	// vocabulary MarkCstHeadDirty's kind dispatch uses, then bump iff the
+	// resolved material is emissive (matching MarkEditEntityDirty's
+	// SetMaterialProperty arm, the GUI-path counterpart this closes the gap
+	// with).  Empty/unrecognized kinds bump CONSERVATIVELY -- a spurious
+	// bump costs one alias-table rebuild; a missed bump on an actually-
+	// emissive target is a rendering-correctness bug.
+	const std::string kind = entityKind ? entityKind : std::string();
+	auto endsWith = []( const std::string& s, const char* suffix ) {
+		const std::string suf( suffix );
+		return s.size() >= suf.size()
+		    && s.compare( s.size() - suf.size(), suf.size(), suf ) == 0;
+	};
+	const bool isKnownMaterialKind = ( kind == "material" || endsWith( kind, "_material" ) );
+	const bool isKnownOtherKind =
+		   kind == "standard_object"
+		|| kind == "camera" || endsWith( kind, "_camera" )
+		|| endsWith( kind, "_light" )
+		|| endsWith( kind, "_medium" );
+	if( isKnownMaterialKind )
+	{
+		if( mMaterialManager && entityName )
+		{
+			BumpSceneLightGenerationIfMaterialEmits(
+				mMaterialManager->GetItem( entityName ) );
+		}
+	}
+	else if( !isKnownOtherKind )
+	{
+		// Empty / unrecognized kind: bump conservatively (see the tradeoff
+		// note above and in the header doc comment).
+		BumpSceneLightGeneration();
+	}
+}
+
 SceneEditor::SceneEditor( IScenePriv& scene )
 : mScene( &scene )
 , mMaterialManager( 0 )
@@ -2205,6 +2244,12 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		if( diagnosed )
 			GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Undo:: agent edit on `%s`.`%s` reverted via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean revert",
 			                       edit.objectName.c_str(), edit.propertyName.c_str() );
+		// Shared-undo follow-up (P2 fix): mirror the forward commit's light-gen
+		// bump (SceneEditController::ApplyAgentParamEdit) on the Undo arm too --
+		// same stale-alias-table hazard applies to a REVERTED emissive-material
+		// edit.  See BumpSceneLightGenerationForAgentParamEdit's doc.
+		BumpSceneLightGenerationForAgentParamEdit(
+			edit.objectName.c_str(), kind );
 		mLastScope = Dirty_Camera;
 		return true;
 	}
@@ -2523,6 +2568,13 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 				GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Redo:: agent edit on `%s`.`%s` re-applied via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean redo",
 				                       edit.objectName.c_str(), edit.propertyName.c_str() );
 		}
+		// Shared-undo follow-up (P2 fix): mirror the forward commit's light-gen
+		// bump on the Redo arm too -- same stale-alias-table hazard applies to
+		// a RE-APPLIED emissive-material edit.  See
+		// BumpSceneLightGenerationForAgentParamEdit's doc.
+		BumpSceneLightGenerationForAgentParamEdit(
+			edit.objectName.c_str(),
+			edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr );
 		mLastScope = Dirty_Camera;
 		return true;
 	}
