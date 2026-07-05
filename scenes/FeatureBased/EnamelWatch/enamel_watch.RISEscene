@@ -1318,7 +1318,7 @@ standard_object
 	name				sdfhour
 	geometry			handhoursdf
 	material			white_hands
-	position			0 0 0.45
+	position			0 0 0.10
 	orientation		0 0 60
 }
 
@@ -1327,7 +1327,7 @@ standard_object
 	name				sdfminute
 	geometry			handminutesdf
 	material			white_hands
-	position			0 0 0.95
+	position			0 0 0.60
 	orientation		0 0 -60
 }
 
@@ -1336,7 +1336,7 @@ standard_object
 	name				sdfsec
 	geometry			handsecsdf
 	material			white_hands
-	position			0 0 1.18
+	position			0 0 0.83
 	orientation		0 0 -160
 }
 
@@ -1414,23 +1414,30 @@ timeline
 }
 
 ##################################################
-# Gently-domed sapphire crystal, anOrdain Model 1 profile (sphere-traced SDF
-# shell, authored in the watch's ABSOLUTE world frame; SDFGeometry.{h,cpp}).
+# LOW-domed sapphire crystal, anOrdain Model 1 profile (sphere-traced SDF
+# meniscus shell, authored in the watch's ABSOLUTE world frame; SDFGeometry).
 # The anOrdain wears a LOW sapphire that sits nearly flush in the thin polished
-# bezel (see the reference clip).  A ~1.5-unit shell between two concentric
-# spherical surfaces
-# over a flat seat at z=1.30; the outer apex rises to z~3.5 (a low dome),
-# so the dial is read through a gentle curve with only
-# mild edge refraction -- matching the clip.  A central inner-sphere subtract
-# carves the concave recess, leaving the solid glass flange that meets the
-# bezel (clean dome, no marker groove).
+# bezel.  A ~0.8-unit (0.63 mm) concentric meniscus between two spheres of
+# radius 272.36 / 271.56 (centre z=-270.26) over a flat seat at z=1.30; the
+# outer apex rises only to z=2.10 -- a 0.63 mm SAG (radius of curvature ~216 mm).
+#
+# WHY SO LOW (2026-07-04): an earlier revision domed the crystal to a z=3.5 apex
+# (1.74 mm sag).  At OBLIQUE viewing that tall dome presented a large curved
+# surface to the bright light-tent env and mirrored it across the whole dial --
+# a Fresnel washout that HID the dial (on a real low/AR crystal you still see
+# the dial at oblique angles; user-caught).  The low dome reflects a far smaller
+# solid angle of the surround, so the dial reads through at oblique angles as it
+# should.  The hand stack was lowered 0.35 units to keep ~0.45-unit clearance
+# under the lower inner surface (also more realistic than the old 1.2-unit
+# float).  A central inner-sphere subtract carves the concave recess; the box
+# floor (z=1.30) forms the flat flange that meets the bezel.
 ##################################################
 sdf_geometry
 {
 	name				crystalsdf
-	part				sphere union 0  0 0 -96.5  0 0 0  1 1 1  100 0 0  0
+	part				sphere union 0  0 0 -270.26  0 0 0  1 1 1  272.36 0 0  0
 	part				box intersect 0  0 0 3.65  0 0 0  1 1 1  22 22 2.35  0
-	part				sphere subtract 0  0 0 -96.5  0 0 0  1 1 1  98.5 0 0  0
+	part				sphere subtract 0  0 0 -270.26  0 0 0  1 1 1  271.56 0 0  0
 }
 
 standard_object
@@ -1459,7 +1466,7 @@ standard_object
 sdf_geometry
 {
 	name				pinsdf
-	part				cylinder union 0  0 0 1.02  90 0 0  1 1 1  0.85 0.16 0  0
+	part				cylinder union 0  0 0 0.67  90 0 0  1 1 1  0.85 0.16 0  0
 }
 
 uniformcolor_painter
