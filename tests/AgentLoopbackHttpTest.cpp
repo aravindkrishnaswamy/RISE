@@ -34,12 +34,33 @@
 //        healthy request succeeding immediately afterward).
 //    (f) clean shutdown: Stop() + thread join completes within a bounded
 //        time.
+//    (g) request-smuggling preconditions (RFC 7230 SS3.3.3, review P2):
+//        a request with TWO Content-Length headers -> 400; a request
+//        bearing a Transfer-Encoding header at all -> 400 (this server
+//        never does chunked). RED-PROVE: reverting the
+//        contentLengthCount/hasTransferEncoding checks in
+//        AgentLoopbackHttpServer.cpp flips both of these back to 200.
+//    (h) oversized header block (review P3-2): a 128 KB header block
+//        (with no terminating blank line) -> 431 Request Header Fields
+//        Too Large. RED-PROVE: before the fix, ReadUntilDoubleCrlf reused
+//        kMaxBodyBytes (8 MiB) as the header cap, so this same 128 KB
+//        input was still WITHIN the cap and the loop kept reading
+//        (eventually timing out rather than rejecting promptly); with the
+//        dedicated kMaxHeaderBytes (64 KiB) cap this is now rejected
+//        immediately.
+//    (i) shutdown-race stress guard (review P1-1): repeated Bind/
+//        Serve-thread/concurrent-connect/Stop cycles with no crash/hang --
+//        a behavioural stand-in for a TSan run (not available in this
+//        build; see the slice-3 final report) against the
+//        std::atomic<SOCKET> fix for the Stop()/Serve() data race on
+//        mListenSock.
 //
 //  POSIX-only (BSD sockets, pthread via std::thread). On Windows the
 //  whole body compiles to a trivial pass (matches every other
 //  fork/socket-based agentic-surface test in this suite) -- the Windows
 //  leg of AgentLoopbackHttpServer itself is UNCOMPILED/unverified here;
-//  see the slice-3 report for the owed follow-up.
+//  see the slice-3 final report for the owed follow-up (this now includes
+//  the WSAStartup wiring added in the review-fix round).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -421,6 +442,96 @@ int main()
 	}
 
 	//------------------------------------------------------------------
+	// (g) request-smuggling preconditions (review P2, RFC 7230 SS3.3.3).
+	//------------------------------------------------------------------
+	std::printf( "[smuggling] duplicate Content-Length / Transfer-Encoding are rejected\n" );
+	{
+		// Two Content-Length headers, even numerically identical ones --
+		// MUST be rejected outright, never "last one wins".
+		// RED-PROVE: reverting the contentLengthCount > 1 check in
+		// ServeOneConnection makes this request succeed with 200 (the
+		// second Content-Length silently overwrites the first).
+		const int s = ConnectLoopback( port );
+		Check( s >= 0, "connect for duplicate-Content-Length case" );
+		if( s >= 0 ) {
+			const std::string raw = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+			                         "Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}";
+			Check( SendAll( s, raw ), "sent a request with two Content-Length headers" );
+			HttpResponse r = ParseHttpResponse( ReadAllUntilClose( s ) );
+			Check( r.ok && r.status == 400, "duplicate Content-Length -> clean 400" );
+			close( s );
+		}
+	}
+	{
+		// A Transfer-Encoding header at all -- this server never speaks
+		// chunked, so its mere presence is rejected rather than silently
+		// ignored (an ignored Transfer-Encoding is the exact ambiguity a
+		// request-smuggling attack against a future front proxy would
+		// exploit). RED-PROVE: reverting the hasTransferEncoding check
+		// makes this request succeed with 200 (the header is parsed for
+		// nothing, and the body is still read strictly by Content-Length).
+		const int s = ConnectLoopback( port );
+		Check( s >= 0, "connect for Transfer-Encoding case" );
+		if( s >= 0 ) {
+			const std::string raw = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+			                         "Content-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n{}";
+			Check( SendAll( s, raw ), "sent a request bearing a Transfer-Encoding header" );
+			HttpResponse r = ParseHttpResponse( ReadAllUntilClose( s ) );
+			Check( r.ok && r.status == 400, "Transfer-Encoding present -> clean 400" );
+			close( s );
+		}
+	}
+
+	//------------------------------------------------------------------
+	// (h) oversized header block (review P3-2): the header cap is now a
+	// dedicated kMaxHeaderBytes (64 KiB), independent of kMaxBodyBytes
+	// (8 MiB).
+	//------------------------------------------------------------------
+	std::printf( "[header-cap] an oversized header block is rejected promptly\n" );
+	{
+		// 128 KB of header-shaped bytes (well over kMaxHeaderBytes, well
+		// under kMaxBodyBytes) with NO terminating blank line.
+		//
+		// RED-PROVE: before the fix, ReadUntilDoubleCrlf's cap here was
+		// kMaxBodyBytes (8 MiB), so 128 KB was still UNDER that cap and the
+		// read loop kept accumulating -- it only ever stopped via the
+		// server's 5s-per-recv socket timeout, which happens to ALSO map to
+		// a 431 response (ReadUntilDoubleCrlf returns false for "cap
+		// exceeded" and "timed out" alike), so a bare status-code check
+		// does not distinguish "rejected by the cap" from "rejected by an
+		// unrelated timeout" -- confirmed empirically: with the old 8 MiB
+		// cap this same request still returns 431, just ~5s later. The
+		// WALL-CLOCK bound below is what actually red-proves the fix: a
+		// cap-triggered rejection returns in well under a second (no
+		// recv() call even blocks -- the loop's size check fires between
+		// reads), while a timeout-triggered "431" takes ~5s.
+		const auto reqStart = std::chrono::steady_clock::now();
+		const int s = ConnectLoopback( port, 8000 );
+		Check( s >= 0, "connect for oversized-header-block case" );
+		if( s >= 0 ) {
+			std::string raw = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n";
+			// Pad with a single oversized (but well-formed-looking) header
+			// line comfortably past kMaxHeaderBytes (64 KiB).
+			raw += "X-Padding: " + std::string( 128 * 1024, 'a' ) + "\r\n";
+			Check( SendAll( s, raw ), "sent a request with a 128KB header block" );
+			HttpResponse r = ParseHttpResponse( ReadAllUntilClose( s ) );
+			const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now() - reqStart ).count();
+			Check( r.ok && r.status == 431, "128KB header block -> 431 Request Header Fields Too Large" );
+			Check( elapsedMs < 2000,
+			       "128KB header block rejected in well under the 5s recv timeout (i.e. by the SIZE cap, "
+			       "not by timing out -- the real red-prove for this fix)" );
+			close( s );
+		}
+	}
+	{
+		// A healthy request immediately after both new rejection classes
+		// proves neither wedged or crashed the server.
+		HttpResponse r = DoRequest( port, "POST", "/mcp", ReqInitialize( 98 ) );
+		Check( r.ok && r.status == 200, "server still answers a well-formed request after the smuggling/header-cap cases" );
+	}
+
+	//------------------------------------------------------------------
 	// (e) malformed-input fuzz (folded in here, before the concurrency
 	// case, so a crash from any of these is attributed precisely).
 	//------------------------------------------------------------------
@@ -557,6 +668,71 @@ int main()
 		}
 		Check( joined.load( std::memory_order_acquire ), "Serve() returned (and joined) within 5s of Stop()" );
 		if( joiner.joinable() ) joiner.join();
+	}
+
+	//------------------------------------------------------------------
+	// (i) shutdown-race stress guard (review P1-1: the mListenSock data
+	// race between Stop() -- called from this test's main thread -- and
+	// Serve()'s loop-guard + accept() -- running on a server thread).
+	//
+	// A code-level assertion isn't feasible here (no TSan target is wired
+	// into this repo's default make build -- confirmed no -fsanitize=
+	// flag/target exists under build/make/rise; noting that as owed rather
+	// than fabricating a check). This is a BEHAVIOURAL stand-in instead:
+	// repeatedly bind, start Serve() on its own thread, fire a burst of
+	// concurrent connections WHILE Stop() is called from this thread (so
+	// the close()-vs-accept()/loop-guard race in the .h/.cpp's doc is
+	// actually exercised every iteration, not just a clean start/stop with
+	// no traffic in flight), and join with a bounded watchdog. 50
+	// iterations, no crash/abort/hang, is the guard: with mListenSock back
+	// to a plain (non-atomic) SOCKET this same loop is a TSan-reportable
+	// data race (unchanged observable behaviour on most POSIX runs since
+	// closing a parked fd happens to unblock accept() today -- which is
+	// exactly why this needs a stress rerun rather than a single pass to
+	// have any chance of surfacing a scheduling-dependent regression).
+	//------------------------------------------------------------------
+	std::printf( "[stress] repeated bind/serve/concurrent-connect/stop cycles (P1-1 shutdown-race guard)\n" );
+	{
+		std::unique_ptr<AgentSession> stressSession = AgentSession::LoadFromFile( scenePath );
+		Check( stressSession != nullptr, "stress: reloaded the temp scene for the stress guard" );
+		AgentMcpAdapter stressAdapter( std::move( stressSession ), RISE::Agent::AgentAutonomy::Read );
+
+		bool allCyclesOk = true;
+		const int kCycles = 50;
+		for( int cycle = 0; cycle < kCycles; ++cycle ) {
+			AgentLoopbackHttpServer stressServer( &stressAdapter, "/mcp" );
+			if( !stressServer.Bind( 0 ) ) { allCyclesOk = false; break; }
+			const unsigned short stressPort = stressServer.BoundPort();
+
+			std::thread stressThread( [&]() { stressServer.Serve(); } );
+
+			// Fire a handful of connections concurrently with the Stop()
+			// call below, so at least some of them race accept()/the loop
+			// guard against the close()-then-store in Stop() -- exactly
+			// the window the atomic fix closes.
+			std::vector<std::thread> conns;
+			for( int c = 0; c < 4; ++c ) {
+				conns.emplace_back( [stressPort]() {
+					const int cs = ConnectLoopback( stressPort, 1000 );
+					if( cs >= 0 ) close( cs );   // connect-and-drop is enough to exercise accept()
+				} );
+			}
+
+			stressServer.Stop();
+
+			for( auto& t : conns ) t.join();
+
+			std::atomic<bool> stressJoined( false );
+			std::thread stressJoiner( [&]() { stressThread.join(); stressJoined.store( true, std::memory_order_release ); } );
+			const auto stressDeadline = std::chrono::steady_clock::now() + std::chrono::seconds( 3 );
+			while( !stressJoined.load( std::memory_order_acquire ) && std::chrono::steady_clock::now() < stressDeadline ) {
+				std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+			}
+			if( !stressJoined.load( std::memory_order_acquire ) ) { allCyclesOk = false; }
+			if( stressJoiner.joinable() ) stressJoiner.join();
+			if( !allCyclesOk ) break;
+		}
+		Check( allCyclesOk, "50 bind/serve/concurrent-connect/stop cycles: no crash, no hang, every Serve() thread joined promptly" );
 	}
 
 	std::remove( scenePath.c_str() );

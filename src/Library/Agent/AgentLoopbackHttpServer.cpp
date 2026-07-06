@@ -122,16 +122,30 @@ namespace
 		return true;
 	}
 
-	//! Sends the entirety of `data` on `sock`, looping over short writes.
-	//! Returns false on any send() failure/timeout (the caller has
-	//! nothing further to do but close -- there is no response-to-a-
-	//! response in HTTP/1.1).
+	//! Largest single send() call SendAll will issue. send()'s length
+	//! parameter is an `int` on both platforms' socket APIs, so handing it
+	//! `data.size() - sent` directly (as this used to) truncates or goes
+	//! negative once a body exceeds INT_MAX bytes -- unreachable today (the
+	//! largest body this server ever builds/reads is bounded well under
+	//! 1 MiB: kMaxBodyBytes caps the request side at 8 MiB, and no response
+	//! this adapter emits -- including a base64 PNG -- gets remotely close
+	//! to 2^31 bytes) but latent and cheap to close. Clamping every call to
+	//! this chunk size keeps the cast to `int` always in-range regardless
+	//! of how large `data` ever grows.
+	const std::size_t kSendChunkBytes = 1u << 20;   // 1 MiB
+
+	//! Sends the entirety of `data` on `sock`, looping over short writes
+	//! (and over the chunk cap above for very large bodies). Returns false
+	//! on any send() failure/timeout (the caller has nothing further to do
+	//! but close -- there is no response-to-a-response in HTTP/1.1).
 	bool SendAll( SOCKET sock, const std::string& data )
 	{
 		std::size_t sent = 0;
 		while( sent < data.size() ) {
+			const std::size_t remaining = data.size() - sent;
+			const std::size_t toSend = remaining < kSendChunkBytes ? remaining : kSendChunkBytes;
 			const int n = static_cast<int>( send( sock, data.data() + sent,
-			                                       static_cast<int>( data.size() - sent ), 0 ) );
+			                                       static_cast<int>( toSend ), 0 ) );
 			if( n <= 0 ) return false;
 			sent += static_cast<std::size_t>( n );
 		}
@@ -185,7 +199,7 @@ namespace
 AgentLoopbackHttpServer::AgentLoopbackHttpServer( AgentMcpAdapter* adapter, const std::string& path )
 	: mAdapter( adapter )
 	, mPath( path )
-	, mListenSock( kBadSocket )
+	, mListenSock( kBadSocket )   // std::atomic<SOCKET> -- see the .h's doc on the Stop()/Serve() shutdown race this guards
 	, mBoundPort( 0 )
 	, mBoundAddress()
 	, mStopRequested( false )
@@ -200,6 +214,37 @@ AgentLoopbackHttpServer::~AgentLoopbackHttpServer()
 
 bool AgentLoopbackHttpServer::Bind( unsigned short port )
 {
+#ifdef WIN32
+	// Winsock requires WSAStartup before the FIRST socket()/bind() call in
+	// the process, or every Winsock call fails outright -- every other
+	// in-tree socket consumer (prise_worker.cpp, drise_server.cpp, ...)
+	// calls SocketComm::InitializeSocketCommunications() (which wraps this
+	// same WSAStartup call, see SocketCommunications.cpp) before its first
+	// socket use, for exactly this reason. This server had no such call
+	// anywhere on its path (Bind() nor RunAgentHttp/main in
+	// commandconsole.cpp), so the Windows leg was dead on arrival -- the
+	// very first socket() call below would fail with an uninitialized-
+	// Winsock error. This class already writes its own self-contained
+	// socket code rather than reusing SocketComm's helpers (see the bind()
+	// call's comment below on why EstablishConnection isn't reused here),
+	// and SocketCommunications.cpp is not part of this Unix-make library
+	// target's object list (it is Windows/DRISE only in this tree's
+	// Filelist), so this calls WSAStartup directly rather than adding a
+	// cross-target Filelist dependency for one function. WSAStartup is
+	// refcounted by the OS (a matching WSACleanup is only owed if this
+	// process pairs it with a shutdown call, which -- matching
+	// prise_worker/drise_server's own posture of never calling
+	// CloseSocketCommunications() either -- it does not), so calling this
+	// once per Bind() is safe even if some other part of the process
+	// already initialized Winsock. This branch is written by symmetry with
+	// SocketCommunications.cpp's Windows leg; this codebase does not
+	// compile the Windows leg here today, so the call is owed a Windows
+	// compile check (see this slice's final report).
+	WSADATA wsaData;
+	const WORD wsaVersion = MAKEWORD( 2, 0 );
+	if( WSAStartup( wsaVersion, &wsaData ) != 0 ) return false;
+#endif
+
 #ifdef WIN32
 	SOCKET s = socket( AF_INET, SOCK_STREAM, IPPROTO_TCP );
 	if( s == INVALID_SOCKET ) return false;
@@ -269,40 +314,62 @@ bool AgentLoopbackHttpServer::Bind( unsigned short port )
 		mBoundAddress.clear();
 	}
 
-	mListenSock = s;
+	mListenSock.store( s, std::memory_order_release );
 	mStopRequested.store( false, std::memory_order_release );
 	return true;
 }
 
 bool AgentLoopbackHttpServer::IsBound() const
 {
-	return mListenSock != kBadSocket;
+	return mListenSock.load( std::memory_order_acquire ) != kBadSocket;
 }
 
 void AgentLoopbackHttpServer::Stop()
 {
 	mStopRequested.store( true, std::memory_order_release );
-	if( mListenSock != kBadSocket ) {
+
+	// Shutdown-race note (this is the fix for the TSan-confirmed data race
+	// between this method and Serve()'s loop-guard + accept(), both of
+	// which read mListenSock from the OTHER thread): close the fd FIRST,
+	// THEN store kBadSocket. Serve() loads mListenSock ONCE per iteration
+	// into a local, so whichever value it happens to observe is always a
+	// COMPLETE, valid one -- either the still-live fd (in which case the
+	// close() that just happened on it is exactly what unblocks a thread
+	// parked in accept() on that same fd on POSIX) or kBadSocket (in which
+	// case Serve()'s guard exits the loop before calling accept() at all).
+	// There is no ordering of the two stores/loads that lets Serve() see a
+	// torn value or call accept() on an already-closed-and-reused
+	// descriptor, because the close() always happens-before the
+	// kBadSocket store, and mListenSock is never written anywhere else.
+	const SOCKET toClose = mListenSock.load( std::memory_order_acquire );
+	if( toClose != kBadSocket ) {
 		// Closing the listen socket unblocks a thread parked in accept()
 		// on POSIX. (On Windows an in-progress WSAAccept can behave
 		// differently across versions -- see the Windows owed-check note
 		// in this slice's final report; this codebase does not compile
 		// the Windows leg today.)
-		CloseSock( mListenSock );
-		mListenSock = kBadSocket;
+		CloseSock( toClose );
+		mListenSock.store( kBadSocket, std::memory_order_release );
 	}
 }
 
 void AgentLoopbackHttpServer::Serve()
 {
 	while( !mStopRequested.load( std::memory_order_acquire ) ) {
-		if( mListenSock == kBadSocket ) break;
+		// Load ONCE per iteration into a local: the guard check and the
+		// accept() call below both use this same local SOCKET, never a
+		// second read of the atomic -- so a concurrent Stop() landing
+		// between the guard and the accept() call cannot hand this
+		// iteration two different values (see the atomic's doc in the .h
+		// and Stop()'s close-then-store ordering above).
+		const SOCKET listenSock = mListenSock.load( std::memory_order_acquire );
+		if( listenSock == kBadSocket ) break;
 
 #ifdef WIN32
-		SOCKET client = accept( mListenSock, nullptr, nullptr );
+		SOCKET client = accept( listenSock, nullptr, nullptr );
 		if( client == INVALID_SOCKET ) {
 #else
-		SOCKET client = accept( mListenSock, nullptr, nullptr );
+		SOCKET client = accept( listenSock, nullptr, nullptr );
 		if( client < 0 ) {
 #endif
 			if( mStopRequested.load( std::memory_order_acquire ) ) break;
@@ -366,13 +433,26 @@ std::string AgentLoopbackHttpServer::DispatchGuarded( const std::string& body )
 void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 {
 	std::string head, spill;
-	if( !ReadUntilDoubleCrlf( client, kMaxBodyBytes, head, spill ) ) {
+	// kMaxHeaderBytes (64 KiB), NOT kMaxBodyBytes (8 MiB) -- a dedicated,
+	// much smaller cap for the header block. Red-prove: before this fix
+	// the header-read loop reused kMaxBodyBytes, so a client sending 128 KB
+	// of header-shaped bytes with no terminating blank line was accepted
+	// (kept reading) for up to 8 MiB before rejection; a request whose
+	// header block alone exceeds 64 KiB is malformed by any realistic
+	// client this server expects (a same-machine MCP client) and is now
+	// rejected promptly with 431.
+	if( !ReadUntilDoubleCrlf( client, kMaxHeaderBytes, head, spill ) ) {
 		// Malformed / oversized headers, or the peer vanished before
 		// sending a complete header block. Nothing sane to respond with
-		// (we don't even reliably know it's HTTP) -- close cleanly.
-		const std::string resp = PlainError( "400 Bad Request", "malformed or incomplete request headers" );
+		// (we don't even reliably know it's HTTP) -- close cleanly. 431 is
+		// the correct HTTP status for "header block too large" (RFC 6585
+		// §5); a short-read/timeout/peer-close ahead of the cap is
+		// indistinguishable from an oversized header at this call site, so
+		// both are reported the same way (both are "never got a usable
+		// header block").
+		const std::string resp = PlainError( "431 Request Header Fields Too Large", "malformed, incomplete, or oversized request headers" );
 		SendAll( client, resp );
-		LogRequest( "?", "?", 400, head.size(), resp.size() );
+		LogRequest( "?", "?", 431, head.size(), resp.size() );
 		return;
 	}
 
@@ -404,8 +484,18 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 	// ---- Parse headers for Content-Length (the only header this v1
 	// transport reads; everything else -- including any future
 	// Authorization/Origin header slice 4 will add -- is out of scope
-	// here). ----
+	// here) -- PLUS two request-smuggling preconditions per RFC 7230
+	// §3.3.3: a request MUST NOT carry more than one Content-Length, and
+	// MUST NOT carry a Transfer-Encoding header at all (this server never
+	// advertises or accepts chunked encoding, so a client sending one is
+	// either confused or attempting request smuggling against a proxy
+	// this server might one day sit behind). Neither is exploitable
+	// TODAY -- there is no proxy in front of this loopback-only server --
+	// but closing both preconditions now is cheap and removes the
+	// precondition for good. ----
 	long long contentLength = -1;
+	int contentLengthCount = 0;
+	bool hasTransferEncoding = false;
 	{
 		std::size_t lineStart = firstCrlf;
 		while( lineStart != std::string::npos && lineStart + 2 <= head.size() ) {
@@ -419,7 +509,11 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 			if( colon != std::string::npos ) {
 				std::string key = hline.substr( 0, colon );
 				for( char& c : key ) c = static_cast<char>( std::tolower( static_cast<unsigned char>( c ) ) );
+				if( key == "transfer-encoding" ) {
+					hasTransferEncoding = true;
+				}
 				if( key == "content-length" ) {
+					++contentLengthCount;
 					std::string val = hline.substr( colon + 1 );
 					// trim leading/trailing whitespace
 					std::size_t a = val.find_first_not_of( " \t" );
@@ -447,6 +541,31 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 			}
 			lineStart = lineEnd;
 		}
+	}
+
+	if( hasTransferEncoding ) {
+		// This server never sends or accepts chunked transfer coding --
+		// ANY Transfer-Encoding header is out of scope, so reject rather
+		// than silently ignoring it (ignoring it is exactly the ambiguity
+		// a smuggling attack against a front proxy would exploit: the
+		// proxy honouring Transfer-Encoding while this backend honours
+		// Content-Length instead).
+		const std::string resp = PlainError( "400 Bad Request", "Transfer-Encoding is not supported" );
+		SendAll( client, resp );
+		LogRequest( method, path, 400, head.size(), resp.size() );
+		return;
+	}
+	if( contentLengthCount > 1 ) {
+		// RFC 7230 §3.3.3: a request with multiple Content-Length header
+		// fields (even if all agree numerically) is invalid and MUST be
+		// rejected -- the classic request-smuggling precondition is a
+		// front-end and back-end disagreeing on WHICH of several
+		// Content-Length values to honour. This server used to silently
+		// take "last one wins"; that is now a hard 400 instead.
+		const std::string resp = PlainError( "400 Bad Request", "duplicate Content-Length header" );
+		SendAll( client, resp );
+		LogRequest( method, path, 400, head.size(), resp.size() );
+		return;
 	}
 
 	const bool isPost = ( method == "POST" );

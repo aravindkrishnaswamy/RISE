@@ -142,10 +142,40 @@ namespace RISE
 			//! of scene text, nowhere near this size).
 			static const std::size_t kMaxBodyBytes = 8u * 1024u * 1024u;
 
+			//! Maximum accepted request HEADER block size in bytes (the
+			//! cap ReadUntilDoubleCrlf enforces while accumulating up to
+			//! the blank line before the body). Deliberately much smaller
+			//! than kMaxBodyBytes -- no real HTTP header block from any
+			//! client this server expects (a same-machine MCP client)
+			//! approaches even a small fraction of this; 64 KiB is a
+			//! generous ceiling against a hostile/broken peer that never
+			//! sends a terminating blank line, so the header-read loop
+			//! cannot be walked up anywhere near the 8 MiB body cap before
+			//! being rejected. See the .cpp for the red-prove this guards.
+			static const std::size_t kMaxHeaderBytes = 64u * 1024u;
+
 		private:
 			AgentMcpAdapter*    mAdapter;      //!< borrowed
 			std::string         mPath;         //!< the one servable POST path
-			SOCKET              mListenSock;
+
+			//! The listen socket. std::atomic<SOCKET> (NOT a plain SOCKET)
+			//! because Stop() (called from a thread OTHER than the one
+			//! running Serve(), per this class's documented threading
+			//! contract) writes it while Serve()'s loop guard and accept()
+			//! call read it on the server thread -- a plain SOCKET here is
+			//! a TSan-confirmed data race (undefined behaviour that only
+			//! "works" today because closing a parked fd happens to unblock
+			//! a concurrent accept() on POSIX). Stop() closes the fd FIRST,
+			//! THEN stores kBadSocket, so a racing load on the server
+			//! thread only ever observes either the still-valid fd (accept()
+			//! unblocks because the underlying descriptor was just closed)
+			//! or kBadSocket (the loop's guard exits before calling
+			//! accept() at all) -- never a torn/partial value. Serve() loads
+			//! this once per iteration into a local SOCKET and uses that
+			//! local for both the guard check and the accept() call, so a
+			//! second concurrent Stop() can't change the value out from
+			//! under a single iteration's use of it.
+			std::atomic<SOCKET> mListenSock;
 			unsigned short      mBoundPort;
 			std::string         mBoundAddress;   //!< dotted-quad, e.g. "127.0.0.1" -- see BoundAddress()'s doc
 			std::atomic<bool>   mStopRequested;
