@@ -90,6 +90,21 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
     RISEAgentChatRoleToolResults = 2,
 };
 
+/// One user-supplied reference image attachment (Model-B F5 chat image
+/// attachments) — mirrors RISE::Agent::ChatAttachment.  `mimeType` MUST
+/// be one of the four the provider APIs accept (image/png, image/jpeg,
+/// image/gif, image/webp) — the driver rejects anything else BEFORE
+/// constructing this (see ChatViewModel's attach flow); the C++ core
+/// passes an unrecognized mimeType through rather than gating on it
+/// (documented in AgentChatCodecs.h).  `base64Data` carries NO data-URL
+/// prefix.  NEVER LOG either field.
+@interface RISEAgentChatAttachment : NSObject
+- (instancetype)initWithMimeType:(NSString *)mimeType
+                       base64Data:(NSString *)base64Data;
+@property (nonatomic, readonly, copy) NSString *mimeType;
+@property (nonatomic, readonly, copy) NSString *base64Data;
+@end
+
 /// One tool call the model requested — an OPAQUE token.  The Swift
 /// driver reads `name` (for the "→ propose_patch …" activity line)
 /// and passes the token back verbatim to toolCallToJsonRpcLine: /
@@ -160,6 +175,12 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
 /// per conversation-turn before IterationCap trips).  For UX copy.
 @property (class, nonatomic, readonly) NSInteger maxToolRoundsPerTurn;
 
+/// Mirrors AgentChatLoop::kMaxLiveUserImages (user-attached reference
+/// images kept live across the whole conversation before the oldest is
+/// elided — see AgentChatLoop.h "USER IMAGE RETENTION").  For UX copy
+/// and for the panel's own per-message attach-count cap.
+@property (class, nonatomic, readonly) NSInteger maxLiveUserImages;
+
 /// Facet 5 slice S1: the "Available skills" section appended to every
 /// subsequent request's system prompt.  `indexText` is the rendered
 /// index (one "name -- hook" line per skill) the driver fetched ONCE
@@ -173,6 +194,16 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
 /// results — the designed Stop/interrupt path).  Empty or whitespace-
 /// only text is a documented no-op.
 - (void)addUserMessage:(NSString *)text;
+
+/// Append a user message carrying reference-image attachments
+/// alongside the text (Model-B F5 chat image attachments) — see
+/// AgentChatLoop.h "USER IMAGE RETENTION" for the persistence + cap
+/// policy.  `text` may be empty when `attachments` is non-empty (an
+/// attachment-only message); the no-op above still applies when BOTH
+/// are empty.  Same flush/reset behavior as the text-only overload.
+- (void)addUserMessage:(NSString *)text
+            attachments:(NSArray<RISEAgentChatAttachment *> *)attachments
+    NS_SWIFT_NAME(addUserMessage(_:attachments:));
 
 /// Build the next HTTP request.  `apiKey` goes into the auth header
 /// only — not retained, never logged.  Check `isEmpty` before sending.

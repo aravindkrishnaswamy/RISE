@@ -73,6 +73,30 @@
 //        ToolResults entries -- they are loop-generated; assistant
 //        entries keep the verbatim byte-preservation contract and are
 //        never touched.
+//      * USER IMAGE RETENTION (Model-B F5 chat image attachments): a
+//        SEPARATE, INDEPENDENT policy from the tool-result IMAGE
+//        RETENTION rule above -- user reference images are the
+//        modeling TARGET (the agent keeps comparing against them
+//        across turns), not a disposable render preview, so "keep only
+//        the newest" is the wrong rule here.  Instead: up to
+//        kMaxLiveUserImages (4) user-attached images stay live
+//        UN-ELIDED across the WHOLE conversation.  AddUserMessage's
+//        attachments overload elides the OLDEST already-live user
+//        image(s) -- across every earlier User entry, oldest entry
+//        first, oldest attachment within an entry first -- just enough
+//        to make room so the running live-image count never exceeds
+//        the cap once the new message's own images are added (an
+//        attachment that itself would still exceed the cap alone is
+//        simply added anyway -- the cap bounds STEADY-STATE growth, it
+//        never refuses an attach).  An elided attachment is replaced
+//        with the text placeholder "[reference image elided --
+//        re-attach if needed]" via the codec's RewriteElidedUserImages.
+//        Rewriting is legal ONLY for User entries this loop generated
+//        via MakeUserEntry; assistant entries are never touched.  The
+//        cap bounds per-turn token cost (a 1024px-edge JPEG runs
+//        ~100-400KB base64, re-sent on EVERY later request since the
+//        whole history replays) while keeping enough recent references
+//        live for a multi-turn modeling session to compare against.
 //      * CALLER-CONTRACT GUARDS (each refuses or ignores; none throw):
 //          - HandleResponse while the previous turn's tool calls are
 //            still pending returns ProviderError and records NOTHING
@@ -141,6 +165,16 @@ namespace RISE
 			//! IMAGE RETENTION rule in the file header).  Always false
 			//! for User/Assistant entries.
 			bool        carriesLiveImage = false;
+
+			//! Number of still-LIVE user-attached reference images this
+			//! User entry carries (see USER IMAGE RETENTION in the file
+			//! header) -- a SEPARATE counter from carriesLiveImage, which
+			//! only ever applies to ToolResults entries.  Decremented (via
+			//! the codec's RewriteElidedUserImages) as the running cap
+			//! elides the oldest live attachments first.  Always 0 for
+			//! Assistant/ToolResults entries and for a User entry with no
+			//! attachments.
+			int         liveUserImageCount = 0;
 		};
 
 		//! The sans-IO chat loop (see the file header for the contract).
@@ -152,6 +186,12 @@ namespace RISE
 			//! refuses with ProviderError("iteration cap...").  Round N
 			//! (N <= cap) succeeds; round cap+1 trips.
 			static const int kMaxToolRoundsPerTurn = 20;
+
+			//! Maximum user-attached reference images kept LIVE (un-
+			//! elided) across the WHOLE conversation -- see USER IMAGE
+			//! RETENTION in the file header.  Attaching beyond this cap
+			//! elides the oldest live one(s) first.
+			static const int kMaxLiveUserImages = 4;
 
 			//! Constructs with the Anthropic provider + its default model.
 			AgentChatLoop();
@@ -179,6 +219,18 @@ namespace RISE
 			//! (Anthropic hard-400s an empty text block): nothing is
 			//! appended, flushed, or reset.
 			void AddUserMessage( const std::string& text );
+
+			//! Append a user message carrying reference-image attachments
+			//! (Model-B F5 chat image attachments) alongside the text --
+			//! see USER IMAGE RETENTION in the file header for the
+			//! persistence + cap policy.  `text` may be empty when
+			//! `attachments` is non-empty (an attachment-only message);
+			//! the documented NO-OP rule above still holds when BOTH are
+			//! empty.  After appending, elides the oldest live user
+			//! image(s) across the transcript so the running live count
+			//! never exceeds kMaxLiveUserImages.
+			void AddUserMessage( const std::string& text,
+			                     const std::vector<ChatAttachment>& attachments );
 
 			//! Build the next HTTP request for the caller to perform.
 			//! `apiKey` is forwarded to the codec for the auth header only

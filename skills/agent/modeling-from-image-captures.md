@@ -3,36 +3,50 @@
 
 ## Honest capability check (read this before promising anything)
 
-As of this writing, **a user cannot attach an image to a chat message**,
-and **the agent cannot read an arbitrary image file from disk**.  Verify
-this hasn't changed before relying on it, but do not invent a path that
-doesn't exist:
+As of this writing, **a user CAN attach reference images directly to a
+chat message** (the picker button or a drag-and-drop onto the input
+row) -- the agent genuinely sees the photo, as a real multimodal image
+block/part on the wire, not a description of it.  Verify this hasn't
+regressed before relying on it, but also do not overclaim beyond what
+actually ships:
 
-- User messages are plain text end to end (the chat panel sends a
-  string; the wire format wraps it in exactly one text content block).
-  Images only ever appear as a TOOL RESULT -- specifically `read_image`,
-  which returns the last render's cached PNG, not anything the user
-  supplied.
-- There is no `read_file` verb or equivalent in the agent RPC surface.
-  The only file paths the agent can point at are scene-language `file`
-  parameters resolved by the RENDERER when a scene derives (e.g. a
-  `png_painter`'s `file`) -- the agent never sees those bytes directly,
-  it only sees the rendered result.
+- The chat panel's attach affordance downscales the image (long edge
+  1024px) and re-encodes it before sending -- a photo straight off a
+  phone is never sent at full resolution.  The four attachable types
+  are PNG, JPEG, GIF, and WEBP; anything else is rejected in the panel
+  with a visible message, not silently dropped.
+- Attached images PERSIST across turns up to a live cap (currently 4
+  across the whole conversation) -- the agent can keep comparing new
+  renders against a reference photo several turns later without the
+  user re-attaching it.  Attaching beyond the cap elides the OLDEST
+  live reference first (replaced by a placeholder note); if a
+  multi-turn session needs more than the cap allows, the user may need
+  to re-attach an earlier photo once it falls off.
+- **There is still no `read_file` verb or equivalent in the agent RPC
+  surface.**  The only file paths the agent can point at are
+  scene-language `file` parameters resolved by the RENDERER when a
+  scene derives (e.g. a `png_painter`'s `file`) -- the agent never sees
+  THOSE bytes directly, it only sees the rendered result.  This
+  distinction still matters for the reference-plane technique below:
+  a capture placed on disk and referenced by a scene chunk is NOT the
+  same path as a chat attachment, and the agent cannot inspect an
+  arbitrary disk path the way it can inspect a chat attachment.
+- `read_image` (the render-result tool result) is a SEPARATE mechanism
+  from chat attachments, with its own independent policy (only the
+  most recent render stays live) -- don't conflate the two when
+  reasoning about what's "in context."
 
-**What this means in practice:** the agent cannot look at the user's
-photos.  The workflow below is the honest one that works TODAY --
-reference captures live as texture files in the scene directory and get
-displayed IN THE RENDER via `png_painter`, so the user (who CAN see
-rendered images through the normal render/read_image loop) does the
-visual comparison, describing back to the agent what doesn't match.
-The agent's job is to ask good structured questions, place geometry
-based on the answers, and set up the comparison rendering -- not to
-directly perceive the photo.
-
-If the user has NOT placed an image file on disk where the scene can
-reference it, skip the reference-plane technique entirely and rely on
-the description-based flow (below) -- don't block on an image path
-that isn't there.
+**What this means in practice:** ask the user to attach 2-3 capture
+photos directly in chat rather than routing through the reference-plane
+texture trick FIRST -- it's simpler, the agent sees the actual photo,
+and it doesn't require the user to have a file already placed in the
+scene's media path.  Fall back to the structured-questions flow (below)
+only when the user hasn't got captures to attach, or when a capture has
+fallen off the live-image cap in a long session and re-attaching isn't
+convenient.  The reference-plane technique (placing a capture file on a
+textured quad IN the render) is still useful for a different purpose --
+letting the render itself put a side-by-side comparison in front of the
+user -- but it is no longer the ONLY way a capture reaches the agent.
 
 ## The workflow
 
@@ -54,10 +68,11 @@ Ask for (or ask the user to confirm they have):
   matters -- a photo with hard directional shadows or colored bounce
   light makes it hard to read the object's OWN base color.
 
-### 2. Structured questions when there's no way to pull the image in
+### 2. Structured questions (the FALLBACK, when there's no attached image)
 
-Since the agent cannot see the photo, ask per-view questions that map
-directly onto scene-authoring decisions:
+When the user hasn't attached captures (or an earlier one has fallen
+off the live-image cap and re-attaching isn't convenient), ask per-view
+questions that map directly onto scene-authoring decisions instead:
 
 - **Silhouette**: "From the front, is the outline closer to a cylinder,
   a tapered cone, or does it flare out then in (like a vase)?"
@@ -75,14 +90,19 @@ Turn each answer into ONE geometry/material decision at a time, using
 the blockout->refine workflow from object-modeling-recipes -- don't
 try to encode every answer into one giant chunk edit.
 
-### 3. The reference-plane technique (when a capture file IS on disk)
+### 3. The reference-plane technique (a secondary option, when a capture file IS on disk)
 
-If the user has placed a photo file in the scene's media path, put it
-on a bounded quad NEXT TO the blockout using `png_painter` +
-`clippedplane_geometry` -- now the reference and the work-in-progress
-render in the SAME frame, and the user (who can see the render via
-`read_image`) can compare them directly instead of tabbing between
-windows:
+Now that chat attachments work, this technique is no longer the primary
+way a capture reaches the agent -- prefer asking the user to attach the
+photo directly (section 1's captures, sent via the chat panel).  Reach
+for the reference-plane technique when the user separately has a photo
+file already placed in the scene's media path (not necessarily the same
+one they attached) and specifically wants it rendered INTO the frame for
+their own side-by-side comparison: put it on a bounded quad NEXT TO the
+blockout using `png_painter` + `clippedplane_geometry` -- the reference
+and the work-in-progress render in the SAME frame, and the user (who can
+see the render via `read_image`) can compare them directly instead of
+tabbing between windows:
 
 ```rise
 RISE ASCII SCENE 7
@@ -306,11 +326,20 @@ recipes can reach.
 - **No image import into a mesh.**  A capture can only appear IN a
   render as a flat texture on a plane (the reference-plane technique)
   -- it can never become geometry by itself.
-- **Proportions and colors are only as good as the description or the
-  reference-plane comparison.**  Without a scale reference in the
-  original capture, absolute size is a guess pinned to whatever the
-  user states.
-- **User image attachment and arbitrary file reads are not implemented
-  today** (see the capability check above) -- if this changes, this
-  section is the first thing to revisit; until then, don't tell a user
-  the agent can "look at" their photo directly.
+- **Proportions and colors are only as good as the attached photo's
+  resolution/framing or the user's description.**  Without a scale
+  reference in the original capture, absolute size is still a guess
+  pinned to whatever the user states -- attaching the photo doesn't by
+  itself give the agent a metric scale.
+- **Attached images are downscaled (long edge 1024px) before the agent
+  sees them** -- fine detail below that resolution (fine text, hairline
+  seams) may not be legible even though the agent can "see" the photo
+  in the broad-strokes sense this skill relies on.
+- **Only a bounded number of reference images stay live at once**
+  (the cap noted in the capability check above) -- a long multi-object
+  or multi-session modeling task may need the user to re-attach an
+  earlier photo once it's elided.  There is still **no arbitrary
+  file-read verb** -- the agent can only see images the user explicitly
+  attaches in chat, or (separately) the renderer's own output via
+  `read_image`; it still cannot browse the user's filesystem for a
+  photo on its own.

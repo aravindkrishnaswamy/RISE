@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // Facet 5 slice B2 — the LLM chat panel.
 //
@@ -104,12 +105,73 @@ struct ChatPanel: View {
                 }
             }
 
+            // Attachment error banner (rejected mimeType / unreadable
+            // file) — a user-visible message, never a silent drop.
+            if let error = chat.attachmentError {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle")
+                    Text(error)
+                    Spacer()
+                    Button {
+                        chat.attachmentError = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .font(.caption2)
+                .foregroundColor(.orange)
+            }
+
+            // Pending-attachment thumbnail strip (Model-B F5 chat image
+            // attachments) — shows what will go out with the NEXT send.
+            if !chat.pendingAttachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(chat.pendingAttachments) { attachment in
+                            ZStack(alignment: .topTrailing) {
+                                Image(nsImage: attachment.thumbnail)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                                    .frame(width: 40, height: 40)
+                                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                                Button {
+                                    chat.removePendingAttachment(attachment.id)
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundColor(.white)
+                                        .background(Circle().fill(Color.black.opacity(0.6)))
+                                }
+                                .buttonStyle(.borderless)
+                                .offset(x: 4, y: -4)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+
             // Input row.  Send / typing are additionally gated on the
             // scene being editable (B2 review round 1): during a
             // production render, tool calls would mutate Scene state
             // the render workers read off-main.  The driver enforces
-            // the same predicate; this is the visible layer.
+            // the same predicate; this is the visible layer.  Drag-and-
+            // drop an image file straight onto this row attaches it —
+            // the same accept/downscale/cap pipeline as the picker
+            // button.
             HStack(spacing: 6) {
+                Button {
+                    chat.attachImageFiles()
+                } label: {
+                    Image(systemName: "paperclip")
+                }
+                .buttonStyle(.borderless)
+                .disabled(chat.isBusy || viewModel.viewportBridge == nil
+                          || !viewModel.isSceneEditableForAgents
+                          || chat.pendingAttachments.count >= RISEAgentChatBridge.maxLiveUserImages)
+                .help("Attach reference image(s) — up to "
+                      + "\(RISEAgentChatBridge.maxLiveUserImages) per message")
+
                 TextField("Ask for a scene change…", text: $chat.inputText)
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
@@ -134,16 +196,56 @@ struct ChatPanel: View {
                     }
                     .disabled(viewModel.viewportBridge == nil
                               || !viewModel.isSceneEditableForAgents
-                              || chat.inputText.trimmingCharacters(
-                                     in: .whitespacesAndNewlines).isEmpty)
+                              || (chat.inputText.trimmingCharacters(
+                                     in: .whitespacesAndNewlines).isEmpty
+                                  && chat.pendingAttachments.isEmpty))
                     .help(viewModel.isSceneEditableForAgents
                           ? "Send this request to the model"
                           : "Chat is disabled while a production render is "
                             + "running — wait for it to finish")
                 }
             }
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                Self.loadDroppedURLs(providers) { urls in
+                    chat.handleDroppedFileURLs(urls)
+                }
+                return true
+            }
         }
         .padding(.top, 4)
+    }
+
+    /// Resolve a drop's NSItemProviders to file URLs off-main (the
+    /// provider loading API is completion-handler based, not async/
+    /// await), then hop back to main to hand them to the view model —
+    /// ChatViewModel is @MainActor, like the rest of this file's state.
+    private static func loadDroppedURLs(
+        _ providers: [NSItemProvider], completion: @escaping ([URL]) -> Void
+    ) {
+        let group = DispatchGroup()
+        var urls: [URL] = []
+        let lock = NSLock()
+        for provider in providers {
+            guard provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else { continue }
+            group.enter()
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                defer { group.leave() }
+                var url: URL?
+                if let data = item as? Data {
+                    url = URL(dataRepresentation: data, relativeTo: nil)
+                } else if let u = item as? URL {
+                    url = u
+                }
+                if let url {
+                    lock.lock()
+                    urls.append(url)
+                    lock.unlock()
+                }
+            }
+        }
+        group.notify(queue: .main) {
+            completion(urls)
+        }
     }
 }
 
@@ -154,9 +256,27 @@ private struct ChatTranscriptRow: View {
     var body: some View {
         switch entry.kind {
         case .user:
-            Text("\(Text("You").bold().foregroundColor(.accentColor))  \(entry.text)")
-                .font(.caption)
-                .textSelection(.enabled)
+            VStack(alignment: .leading, spacing: 4) {
+                if !entry.attachmentThumbnails.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(Array(entry.attachmentThumbnails.enumerated()), id: \.offset) { _, thumb in
+                            Image(nsImage: thumb)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 32, height: 32)
+                                .clipShape(RoundedRectangle(cornerRadius: 3))
+                        }
+                    }
+                }
+                if !entry.text.isEmpty {
+                    Text("\(Text("You").bold().foregroundColor(.accentColor))  \(entry.text)")
+                        .font(.caption)
+                        .textSelection(.enabled)
+                } else {
+                    Text("You").bold().foregroundColor(.accentColor)
+                        .font(.caption)
+                }
+            }
         case .assistant:
             Text(entry.text)
                 .font(.caption)

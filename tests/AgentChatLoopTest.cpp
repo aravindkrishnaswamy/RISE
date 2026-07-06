@@ -90,6 +90,20 @@
 //        direct Reset() clears transcript + pending + rounds but keeps
 //        the provider/model; TranscriptAt out of range returns the
 //        safe static empty entry.
+//    T22 User image attachments (Model-B F5 chat image attachments):
+//        BuildRequest carries user image blocks/parts BEFORE the text
+//        block/part on both providers, with exact mimeType/base64;
+//        an attachment-only (blank-text) message omits the empty text
+//        block/part; PERSISTENCE across turns (RED-PROVE: a naive
+//        reuse of the tool-result "most recent only" policy would
+//        have elided it by turn 2 -- it survives un-elided into turn
+//        3); THE CAP (kMaxLiveUserImages == 4) elides the OLDEST
+//        live image(s) first, one at a time or several at once, when
+//        a new attachment would exceed it; an image-bearing user turn
+//        replays byte-identically after a tool round (RECORD-OR-
+//        REFUSE unaffected); an arbitrary mimeType passes through the
+//        core layer faithfully (gating is documented as the Swift
+//        layer's job).
 //    Plus: ChatStepResult.assistantDisplayText on both success kinds,
 //    ChatErrorKind asserted on every error path (Parse, Http,
 //    Refusal, MaxTokens, IterationCap, Misuse, Provider), the system
@@ -2111,6 +2125,229 @@ static void TestLoopContractDetails()
 	}
 }
 
+//----------------------------------------------------------------------
+// T22: user image attachments -- provider wire shape, cross-turn
+// persistence (RED-PROVEs against the tool-result "most recent only"
+// policy), the live-image cap eliding the oldest first, and mime
+// pass-through.  See AgentChatLoop.h "USER IMAGE RETENTION".
+//----------------------------------------------------------------------
+static std::vector<unsigned char> FakeImageBytes( unsigned char fill, std::size_t n = 32 )
+{
+	return std::vector<unsigned char>( n, fill );
+}
+
+static void TestUserImageAttachments()
+{
+	std::printf( "T22: user image attachments (provider shape, persistence, cap)...\n" );
+
+	const std::string b64_1 = Base64Encode( FakeImageBytes( 0x11 ) );
+	const std::string b64_2 = Base64Encode( FakeImageBytes( 0x22 ) );
+	const std::string b64_3 = Base64Encode( FakeImageBytes( 0x33 ) );
+	const std::string b64_4 = Base64Encode( FakeImageBytes( 0x44 ) );
+	const std::string b64_5 = Base64Encode( FakeImageBytes( 0x55 ) );
+
+	// (a) Anthropic wire shape: image block(s) BEFORE the text block, in
+	// attachment order; media_type/data carried faithfully.
+	{
+		AgentChatLoop loop;
+		std::vector<ChatAttachment> atts;
+		atts.push_back( ChatAttachment{ "image/png", b64_1 } );
+		atts.push_back( ChatAttachment{ "image/jpeg", b64_2 } );
+		loop.AddUserMessage( "model this mug", atts );
+
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		JsonValue root = ParseBody( body );
+		const JsonValue& msgs = root.get( "messages" );
+		Check( msgs.size() == 1, "anthropic: one user message recorded" );
+		const JsonValue& content = msgs.at( 0 ).get( "content" );
+		Check( content.size() == 3,
+		       "anthropic: two image blocks + one trailing text block" );
+		Check( content.at( 0 ).get( "type" ).asString() == "image" &&
+		       content.at( 1 ).get( "type" ).asString() == "image" &&
+		       content.at( 2 ).get( "type" ).asString() == "text",
+		       "anthropic: BOTH images precede the text block, in order" );
+		Check( content.at( 0 ).get( "source" ).get( "media_type" ).asString() == "image/png" &&
+		       content.at( 0 ).get( "source" ).get( "data" ).asString() == b64_1,
+		       "anthropic: first image block carries its exact mimeType + base64" );
+		Check( content.at( 1 ).get( "source" ).get( "media_type" ).asString() == "image/jpeg" &&
+		       content.at( 1 ).get( "source" ).get( "data" ).asString() == b64_2,
+		       "anthropic: second image block carries its exact mimeType + base64" );
+		Check( content.at( 2 ).get( "text" ).asString() == "model this mug",
+		       "anthropic: the caption text rides in the trailing text block" );
+	}
+
+	// (b) Gemini wire shape: inlineData part(s) BEFORE the text part.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		std::vector<ChatAttachment> atts;
+		atts.push_back( ChatAttachment{ "image/webp", b64_1 } );
+		loop.AddUserMessage( "match this angle", atts );
+
+		JsonValue root = ParseBody( loop.BuildRequest( kApiKey ).body );
+		const JsonValue& contents = root.get( "contents" );
+		Check( contents.size() == 1, "gemini: one user content recorded" );
+		const JsonValue& parts = contents.at( 0 ).get( "parts" );
+		Check( parts.size() == 2, "gemini: one inlineData part + one trailing text part" );
+		Check( parts.at( 0 ).get( "inlineData" ).get( "mimeType" ).asString() == "image/webp" &&
+		       parts.at( 0 ).get( "inlineData" ).get( "data" ).asString() == b64_1,
+		       "gemini: the inlineData part carries its exact mimeType + base64" );
+		Check( parts.at( 1 ).get( "text" ).asString() == "match this angle",
+		       "gemini: the caption text rides in the trailing text part, AFTER the image" );
+	}
+
+	// (b2) An attachment-only message (no caption) omits the empty text
+	// block/part entirely -- Anthropic hard-400s an empty text block.
+	{
+		AgentChatLoop loop;
+		std::vector<ChatAttachment> atts;
+		atts.push_back( ChatAttachment{ "image/png", b64_1 } );
+		loop.AddUserMessage( "", atts );
+		Check( loop.TranscriptSize() == 1,
+		       "anthropic: an attachment-only message (blank text) is NOT a no-op" );
+		JsonValue root = ParseBody( loop.BuildRequest( kApiKey ).body );
+		const JsonValue& content = root.get( "messages" ).at( 0 ).get( "content" );
+		Check( content.size() == 1 && content.at( 0 ).get( "type" ).asString() == "image",
+		       "anthropic: attachment-only message carries ONLY the image block (no empty text block)" );
+
+		AgentChatLoop gloop;
+		gloop.SetProvider( ChatProvider::Gemini );
+		gloop.AddUserMessage( "", atts );
+		JsonValue groot = ParseBody( gloop.BuildRequest( kApiKey ).body );
+		const JsonValue& gparts = groot.get( "contents" ).at( 0 ).get( "parts" );
+		Check( gparts.size() == 1 && gparts.at( 0 ).has( "inlineData" ),
+		       "gemini: attachment-only message carries ONLY the inlineData part (no empty text part)" );
+	}
+
+	// (c) PERSISTENCE (RED-PROVE vs the tool-result policy): a user image
+	// attached in turn 1 is STILL present, un-elided, in turn 3's
+	// BuildRequest -- naively reusing the "most recent only" tool-result
+	// elision rule would have stripped it by turn 2's flush already.
+	{
+		AgentChatLoop loop;
+		std::vector<ChatAttachment> atts;
+		atts.push_back( ChatAttachment{ "image/png", b64_1 } );
+		loop.AddUserMessage( "turn one, reference photo", atts );
+		loop.AddUserMessage( "turn two, no image" );
+		loop.AddUserMessage( "turn three, still no image" );
+
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, b64_1 ) == 1,
+		       "the turn-1 reference image survives UN-ELIDED into turn 3's request" );
+		Check( body.find( "reference image elided" ) == std::string::npos,
+		       "no elision note appears -- the single attachment never crossed the cap" );
+	}
+
+	// (d) THE CAP: attaching a 5th image (cap is 4) elides the OLDEST
+	// live one first; the newest four stay live.
+	{
+		AgentChatLoop loop;
+		const std::string* b64s[5] = { &b64_1, &b64_2, &b64_3, &b64_4, &b64_5 };
+		for( int i = 0; i < 5; ++i ) {
+			std::vector<ChatAttachment> atts;
+			atts.push_back( ChatAttachment{ "image/png", *b64s[i] } );
+			loop.AddUserMessage( "photo " + std::to_string( i ), atts );
+		}
+		Check( AgentChatLoop::kMaxLiveUserImages == 4,
+		       "the documented cap is 4 (test assumes this constant)" );
+
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, b64_1 ) == 0,
+		       "the OLDEST (1st) attachment is elided once the 5th is attached" );
+		Check( CountOccurrences( body, b64_2 ) == 1 &&
+		       CountOccurrences( body, b64_3 ) == 1 &&
+		       CountOccurrences( body, b64_4 ) == 1 &&
+		       CountOccurrences( body, b64_5 ) == 1,
+		       "attachments 2 through 5 (the newest four) all stay live" );
+		Check( CountOccurrences( body, "reference image elided" ) == 1,
+		       "exactly one placeholder rides where the oldest image was" );
+
+		JsonValue root = ParseBody( body );
+		const JsonValue& msgs = root.get( "messages" );
+		Check( msgs.size() == 5, "all five user turns are recorded" );
+		const JsonValue& oldestContent = msgs.at( 0 ).get( "content" );
+		bool oldestHasImage = false, oldestHasPlaceholder = false;
+		for( std::size_t i = 0; i < oldestContent.size(); ++i ) {
+			if( oldestContent.at( i ).get( "type" ).asString() == "image" ) oldestHasImage = true;
+			if( oldestContent.at( i ).get( "type" ).asString() == "text" &&
+			    oldestContent.at( i ).get( "text" ).asString().find( "reference image elided" ) != std::string::npos )
+				oldestHasPlaceholder = true;
+		}
+		Check( !oldestHasImage && oldestHasPlaceholder,
+		       "the oldest entry's image block is gone, replaced by the elision placeholder" );
+		const JsonValue& newestContent = msgs.at( 4 ).get( "content" );
+		bool newestHasImage = false;
+		for( std::size_t i = 0; i < newestContent.size(); ++i )
+			if( newestContent.at( i ).get( "type" ).asString() == "image" ) newestHasImage = true;
+		Check( newestHasImage, "the newest (5th) entry still carries its live image block" );
+	}
+
+	// (d2) Attaching TWO images at once when only room for one remains:
+	// the cap elides just enough of the oldest, not everything.
+	{
+		AgentChatLoop loop;
+		for( int i = 0; i < 3; ++i ) {
+			std::vector<ChatAttachment> atts;
+			atts.push_back( ChatAttachment{ "image/png", *( i == 0 ? &b64_1 : i == 1 ? &b64_2 : &b64_3 ) } );
+			loop.AddUserMessage( "photo " + std::to_string( i ), atts );
+		}
+		// Cap is 4; 3 are live.  Attach 2 more in ONE message -> total
+		// would be 5, so exactly 1 (the oldest, b64_1) must be elided.
+		std::vector<ChatAttachment> two;
+		two.push_back( ChatAttachment{ "image/png", b64_4 } );
+		two.push_back( ChatAttachment{ "image/png", b64_5 } );
+		loop.AddUserMessage( "two more", two );
+
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, b64_1 ) == 0, "only the oldest is elided" );
+		Check( CountOccurrences( body, b64_2 ) == 1 && CountOccurrences( body, b64_3 ) == 1 &&
+		       CountOccurrences( body, b64_4 ) == 1 && CountOccurrences( body, b64_5 ) == 1,
+		       "the other four (including both images attached together) stay live" );
+	}
+
+	// (e) RECORD-OR-REFUSE / verbatim replay is unaffected: an image-
+	// bearing user turn survives a subsequent assistant tool-call round
+	// and still replays byte-identically on the next BuildRequest.
+	{
+		AgentChatLoop loop;
+		std::vector<ChatAttachment> atts;
+		atts.push_back( ChatAttachment{ "image/png", b64_1 } );
+		loop.AddUserMessage( "reference attached", atts );
+		const std::string firstBody = loop.BuildRequest( kApiKey ).body;
+
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_img_replay\",\"name\":\"read_document\",\"input\":{}}]",
+			"tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ToolCalls, "the model responded with a tool call" );
+		loop.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}" );
+
+		const std::string secondBody = loop.BuildRequest( kApiKey ).body;
+		JsonValue root = ParseBody( secondBody );
+		const JsonValue& userEntry = root.get( "messages" ).at( 0 );
+		Check( JsonSerialize( userEntry ) == JsonSerialize( ParseBody(
+		           "{\"role\":\"user\",\"content\":" +
+		           JsonSerialize( ParseBody( firstBody ).get( "messages" ).at( 0 ).get( "content" ) ) + "}" ) ),
+		       "the image-bearing user entry replays BYTE-IDENTICALLY after a tool round" );
+		Check( CountOccurrences( secondBody, b64_1 ) == 1,
+		       "the reference image still rides exactly once after the tool round" );
+	}
+
+	// (f) Mime pass-through: the core layer does not gate on mimeType
+	// (documented as Swift-layer gating) -- an arbitrary mimeType string
+	// still rides through faithfully rather than being silently dropped.
+	{
+		AgentChatLoop loop;
+		std::vector<ChatAttachment> atts;
+		atts.push_back( ChatAttachment{ "image/gif", b64_1 } );
+		loop.AddUserMessage( "gif capture", atts );
+		JsonValue root = ParseBody( loop.BuildRequest( kApiKey ).body );
+		Check( root.get( "messages" ).at( 0 ).get( "content" ).at( 0 )
+		           .get( "source" ).get( "media_type" ).asString() == "image/gif",
+		       "the core layer passes an arbitrary mimeType through faithfully (gating is the Swift layer's job)" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
@@ -2146,6 +2383,7 @@ int main()
 	TestDegenerateEmptyTurns();
 	TestGeminiRoleSpoofGate();
 	TestLoopContractDetails();
+	TestUserImageAttachments();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

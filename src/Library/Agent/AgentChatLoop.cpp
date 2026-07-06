@@ -138,19 +138,36 @@ namespace RISE
 			Reset();
 		}
 
+		namespace
+		{
+			bool IsBlank( const std::string& text )
+			{
+				for( std::size_t i = 0; i < text.size(); ++i ) {
+					const char c = text[i];
+					if( c != ' ' && c != '\t' && c != '\n' && c != '\r' ) return false;
+				}
+				return true;
+			}
+		}
+
 		void AgentChatLoop::AddUserMessage( const std::string& text )
 		{
-			// EMPTY / whitespace-only user text is a documented NO-OP
-			// (see the header): Anthropic hard-400s an empty text block,
-			// so recording one would poison every later request.  The
-			// caller sent nothing, so nothing is flushed or reset either
-			// -- the turn state stays exactly as it was.
-			bool blank = true;
-			for( std::size_t i = 0; i < text.size(); ++i ) {
-				const char c = text[i];
-				if( c != ' ' && c != '\t' && c != '\n' && c != '\r' ) { blank = false; break; }
-			}
-			if( blank ) return;
+			AddUserMessage( text, std::vector<ChatAttachment>() );
+		}
+
+		void AgentChatLoop::AddUserMessage( const std::string& text,
+		                                    const std::vector<ChatAttachment>& attachments )
+		{
+			// EMPTY / whitespace-only text with NO attachments is a
+			// documented NO-OP (see the header): Anthropic hard-400s an
+			// empty text block, so recording one would poison every later
+			// request.  The caller sent nothing, so nothing is flushed or
+			// reset either -- the turn state stays exactly as it was. An
+			// attachment-only message (blank text, non-empty attachments)
+			// is legitimate -- MakeUserEntry omits the empty text block
+			// for that case (see AgentChatCodecs.cpp) -- so the no-op only
+			// fires when BOTH are empty.
+			if( IsBlank( text ) && attachments.empty() ) return;
 
 			// Pending tool calls belong to the PREVIOUS assistant turn --
 			// flush them ahead of the new user message so the wire order
@@ -161,8 +178,32 @@ namespace RISE
 			ChatTranscriptEntry entry;
 			entry.role = ChatTranscriptEntry::Role::User;
 			entry.displayText = text;
-			entry.rawJson = mCodec->MakeUserEntry( text );
+			entry.rawJson = mCodec->MakeUserEntry( text, attachments );
+			entry.liveUserImageCount = static_cast<int>( attachments.size() );
 			mTranscript.push_back( entry );
+
+			// USER IMAGE RETENTION (see the file header): elide the oldest
+			// live user images across the WHOLE transcript, just enough
+			// that the running total never exceeds kMaxLiveUserImages.
+			// Walking oldest-first and only ever touching User entries
+			// (Assistant/ToolResults entries always carry
+			// liveUserImageCount == 0, so this loop never looks at them).
+			if( !attachments.empty() ) {
+				int totalLive = 0;
+				for( std::size_t i = 0; i < mTranscript.size(); ++i )
+					totalLive += mTranscript[i].liveUserImageCount;
+
+				int toElide = totalLive - kMaxLiveUserImages;
+				for( std::size_t i = 0; toElide > 0 && i < mTranscript.size(); ++i ) {
+					ChatTranscriptEntry& e = mTranscript[i];
+					if( e.role != ChatTranscriptEntry::Role::User || e.liveUserImageCount <= 0 )
+						continue;
+					const int elideHere = ( toElide < e.liveUserImageCount ) ? toElide : e.liveUserImageCount;
+					e.rawJson = mCodec->RewriteElidedUserImages( e.rawJson, elideHere );
+					e.liveUserImageCount -= elideHere;
+					toElide -= elideHere;
+				}
+			}
 
 			// A new conversation-turn: the tool-round cap starts over.
 			mToolRounds = 0;

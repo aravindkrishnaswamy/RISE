@@ -505,6 +505,17 @@ namespace RISE
 			const char* const kImageElidedNote =
 				"[image elided -- superseded by a newer render]";
 
+			//! The text that replaces an elided user reference-image
+			//! attachment once the live-image cap is exceeded -- see
+			//! AgentChatLoop.h "USER IMAGE RETENTION".  Deliberately
+			//! distinct wording from kImageElidedNote (a different policy:
+			//! capped-oldest-first, not most-recent-only) and actionable
+			//! ("re-attach if needed") since, unlike a read_image result
+			//! the loop can always regenerate by rendering again, a user
+			//! photo is gone for good unless the user attaches it again.
+			const char* const kUserImageElidedNote =
+				"[reference image elided -- re-attach if needed]";
+
 			JsonValue MakeTextBlock( const std::string& text )
 			{
 				JsonValue b = JsonValue::MakeObject();
@@ -595,6 +606,28 @@ namespace RISE
 			return IsImageResult( call, env.get( "result" ), b64 );
 		}
 
+		int ChatUserEntryLiveImageCount( const std::string& userEntryJson )
+		{
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( userEntryJson, root, perr ) || !root.isObject() ) return 0;
+
+			int count = 0;
+			// Anthropic shape: {"role":"user","content":[{"type":"image",...},...]}
+			const JsonValue& content = root.get( "content" );
+			if( content.isArray() ) {
+				for( std::size_t i = 0; i < content.size(); ++i )
+					if( content.at( i ).get( "type" ).asString() == "image" ) ++count;
+			}
+			// Gemini shape: {"role":"user","parts":[{"inlineData":{...}},...]}
+			const JsonValue& parts = root.get( "parts" );
+			if( parts.isArray() ) {
+				for( std::size_t i = 0; i < parts.size(); ++i )
+					if( parts.at( i ).get( "inlineData" ).isObject() ) ++count;
+			}
+			return count;
+		}
+
 		//======================================================================
 		// (3) AnthropicChatCodec
 		//======================================================================
@@ -603,14 +636,70 @@ namespace RISE
 
 		const char* AnthropicChatCodec::DefaultModelId() const { return "claude-sonnet-5"; }
 
-		std::string AnthropicChatCodec::MakeUserEntry( const std::string& text ) const
+		std::string AnthropicChatCodec::MakeUserEntry(
+			const std::string& text, const std::vector<ChatAttachment>& attachments ) const
 		{
 			JsonValue msg = JsonValue::MakeObject();
 			msg.set( "role", JsonValue::MakeString( "user" ) );
 			JsonValue content = JsonValue::MakeArray();
-			content.push_back( MakeTextBlock( text ) );
+			// Images FIRST, then the caption -- see the header note on
+			// MakeUserEntry (an empty attachments vector reproduces the
+			// pre-attachment byte shape exactly: one text block, nothing
+			// else, since the loop below then simply doesn't run).
+			for( std::size_t i = 0; i < attachments.size(); ++i ) {
+				JsonValue source = JsonValue::MakeObject();
+				source.set( "type", JsonValue::MakeString( "base64" ) );
+				source.set( "media_type", JsonValue::MakeString( attachments[i].mimeType ) );
+				source.set( "data", JsonValue::MakeString( attachments[i].base64Data ) );
+				JsonValue img = JsonValue::MakeObject();
+				img.set( "type", JsonValue::MakeString( "image" ) );
+				img.set( "source", source );
+				content.push_back( img );
+			}
+			// Anthropic hard-400s an EMPTY text block -- an attachment-
+			// only message (no caption) must therefore omit the text
+			// block entirely rather than send {"type":"text","text":""}.
+			// A text-only call (the common case) is unaffected: text is
+			// non-empty by the loop's blank-message no-op contract.
+			if( !text.empty() ) content.push_back( MakeTextBlock( text ) );
 			msg.set( "content", content );
 			return JsonSerialize( msg );
+		}
+
+		std::string AnthropicChatCodec::RewriteElidedUserImages(
+			const std::string& userEntryJson, int countToElide ) const
+		{
+			// Parse + regenerate is LEGAL here: this entry was produced by
+			// MakeUserEntry above (loop-generated), never by a provider --
+			// only assistant entries carry the byte-preservation contract.
+			if( countToElide <= 0 ) return userEntryJson;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( userEntryJson, root, perr ) || !root.isObject() ) return userEntryJson;
+			const JsonValue& content = root.get( "content" );
+			if( !content.isArray() ) return userEntryJson;
+
+			bool changed = false;
+			int remaining = countToElide;
+			JsonValue newContent = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < content.size(); ++i ) {
+				const JsonValue& b = content.at( i );
+				if( b.get( "type" ).asString() == "image" && remaining > 0 ) {
+					newContent.push_back( MakeTextBlock( kUserImageElidedNote ) );
+					--remaining;
+					changed = true;
+				}
+				else {
+					newContent.push_back( b );
+				}
+			}
+			if( !changed ) return userEntryJson;
+
+			JsonValue newRoot = JsonValue::MakeObject();
+			const std::vector<std::pair<std::string, JsonValue>>& mem = root.members();
+			for( std::size_t i = 0; i < mem.size(); ++i )
+				newRoot.set( mem[i].first, mem[i].first == "content" ? newContent : mem[i].second );
+			return JsonSerialize( newRoot );
 		}
 
 		std::string AnthropicChatCodec::PackToolResults(
@@ -943,16 +1032,80 @@ namespace RISE
 
 		const char* GeminiChatCodec::DefaultModelId() const { return "gemini-3.5-flash"; }
 
-		std::string GeminiChatCodec::MakeUserEntry( const std::string& text ) const
+		std::string GeminiChatCodec::MakeUserEntry(
+			const std::string& text, const std::vector<ChatAttachment>& attachments ) const
 		{
-			JsonValue part = JsonValue::MakeObject();
-			part.set( "text", JsonValue::MakeString( text ) );
 			JsonValue parts = JsonValue::MakeArray();
-			parts.push_back( part );
+			// Images FIRST, then the caption -- mirrors the Anthropic
+			// codec (see the interface doc on MakeUserEntry); an empty
+			// attachments vector reproduces the pre-attachment byte shape
+			// exactly (one text part, nothing else).
+			for( std::size_t i = 0; i < attachments.size(); ++i ) {
+				JsonValue blob = JsonValue::MakeObject();
+				blob.set( "mimeType", JsonValue::MakeString( attachments[i].mimeType ) );
+				blob.set( "data", JsonValue::MakeString( attachments[i].base64Data ) );
+				JsonValue part = JsonValue::MakeObject();
+				part.set( "inlineData", blob );
+				parts.push_back( part );
+			}
+			// An attachment-only message (no caption) omits the text part
+			// entirely rather than sending an empty-string text part --
+			// the inlineData part(s) already satisfy Gemini's non-empty-
+			// parts requirement.  A text-only call (the common case) is
+			// unaffected: text is non-empty by the loop's blank-message
+			// no-op contract.
+			if( !text.empty() ) {
+				JsonValue part = JsonValue::MakeObject();
+				part.set( "text", JsonValue::MakeString( text ) );
+				parts.push_back( part );
+			}
 			JsonValue msg = JsonValue::MakeObject();
 			msg.set( "role", JsonValue::MakeString( "user" ) );
 			msg.set( "parts", parts );
 			return JsonSerialize( msg );
+		}
+
+		std::string GeminiChatCodec::RewriteElidedUserImages(
+			const std::string& userEntryJson, int countToElide ) const
+		{
+			// Parse + regenerate is LEGAL here: this entry was produced by
+			// MakeUserEntry above (loop-generated), never by a provider --
+			// only model entries carry the byte-preservation contract.
+			// A FunctionResponsePart-style inlineData part carries only
+			// media (no text form), so elision replaces the WHOLE part
+			// with a plain text part (unlike the tool-result elision,
+			// which rewrites the response object in place -- there is no
+			// surrounding response object here to carry a note).
+			if( countToElide <= 0 ) return userEntryJson;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( userEntryJson, root, perr ) || !root.isObject() ) return userEntryJson;
+			const JsonValue& parts = root.get( "parts" );
+			if( !parts.isArray() ) return userEntryJson;
+
+			bool changed = false;
+			int remaining = countToElide;
+			JsonValue newParts = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < parts.size(); ++i ) {
+				const JsonValue& p = parts.at( i );
+				if( p.get( "inlineData" ).isObject() && remaining > 0 ) {
+					JsonValue textPart = JsonValue::MakeObject();
+					textPart.set( "text", JsonValue::MakeString( kUserImageElidedNote ) );
+					newParts.push_back( textPart );
+					--remaining;
+					changed = true;
+				}
+				else {
+					newParts.push_back( p );
+				}
+			}
+			if( !changed ) return userEntryJson;
+
+			JsonValue newRoot = JsonValue::MakeObject();
+			const std::vector<std::pair<std::string, JsonValue>>& mem = root.members();
+			for( std::size_t i = 0; i < mem.size(); ++i )
+				newRoot.set( mem[i].first, mem[i].first == "parts" ? newParts : mem[i].second );
+			return JsonSerialize( newRoot );
 		}
 
 		std::string GeminiChatCodec::PackToolResults(

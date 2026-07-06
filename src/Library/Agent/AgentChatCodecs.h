@@ -67,6 +67,24 @@
 //        not double-sent.  RewriteElidedImages later replaces such an
 //        image block/part with a short text note (the loop keeps only
 //        the MOST RECENT image live -- see AgentChatLoop.h).
+//      * USER ATTACHMENTS (Model-B F5 chat image attachments): a user
+//        message may carry reference images (photos the user wants the
+//        agent to model against), passed as ChatAttachment{mimeType,
+//        base64Data} to AddUserMessage / MakeUserEntry.  These are a
+//        SEPARATE mechanism from the read_image tool-result elision
+//        above -- independent policy, independent bookkeeping (see
+//        AgentChatLoop.h "USER IMAGE RETENTION").  MakeUserEntry places
+//        each attachment's image block/part BEFORE the text block/part
+//        (Anthropic content array / Gemini parts array order) -- both
+//        providers read multimodal content left-to-right, so the image
+//        precedes the caption that refers to it, matching how a human
+//        would present "here's a photo; do X with it".  An unsupported
+//        mimeType (anything outside the provider's allow-list -- see
+//        RewriteElidedUserImages) is the DRIVER's job to reject before
+//        it ever reaches this codec (Swift layer); the codec still
+//        degrades honestly (passes the mimeType through) rather than
+//        silently dropping it, since core-layer gating is optional by
+//        design (documented in the skill / CLAUDE.md deviation notes).
 //
 //    The nine tool definitions (mapping 1:1 to the AgentRpc verbs) are
 //    defined ONCE, provider-neutrally, in AgentChatCodecs.cpp; each
@@ -91,6 +109,21 @@ namespace RISE
 {
 	namespace Agent
 	{
+		//! One user-supplied reference image attached to a chat message
+		//! (Model-B F5 chat image attachments).  `mimeType` is a full
+		//! MIME string ("image/png", "image/jpeg", "image/gif",
+		//! "image/webp" -- Anthropic's exact allow-list; Gemini accepts
+		//! the same four via inlineData.mimeType); `base64Data` is the
+		//! already-encoded image payload, no data-URL prefix.  NEVER LOG
+		//! either field -- base64Data can be hundreds of KB and together
+		//! they are exactly the bytes the no-image-bytes-in-logs security
+		//! rule forbids.
+		struct ChatAttachment
+		{
+			std::string mimeType;
+			std::string base64Data;
+		};
+
 		//! A fully-described HTTP request the CALLER performs.  The codec
 		//! never talks to the network; it only fills this in.
 		struct ChatHttpRequest
@@ -186,9 +219,22 @@ namespace RISE
 			//! The default model id used when the loop is given none.
 			virtual const char* DefaultModelId() const = 0;
 
-			//! A provider-native transcript entry for a plain user text
-			//! message.
-			virtual std::string MakeUserEntry( const std::string& text ) const = 0;
+			//! A provider-native transcript entry for a user text message,
+			//! optionally carrying reference-image attachments (Model-B F5
+			//! chat image attachments).  Each attachment becomes a REAL
+			//! image block/part (Anthropic content-array image element;
+			//! Gemini inlineData part), placed BEFORE the text block/part
+			//! -- image(s) first, then the caption -- with an EMPTY
+			//! `attachments` producing byte-identical output to the
+			//! text-only overload below (so every existing call site is
+			//! unaffected).  `attachments` defaults to empty so text-only
+			//! callers need no change; the default is safe here because
+			//! every call site goes through the SAME static type
+			//! (IChatProviderCodec*), so the default resolves once,
+			//! consistently, never depending on the concrete codec.
+			virtual std::string MakeUserEntry(
+				const std::string& text,
+				const std::vector<ChatAttachment>& attachments = std::vector<ChatAttachment>() ) const = 0;
 
 			//! Pack ALL tool results of one assistant turn into ONE
 			//! provider-native user-turn entry.  Each element pairs the
@@ -222,6 +268,25 @@ namespace RISE
 			//! unchanged when it carries no image (or does not parse).
 			virtual std::string RewriteElidedImages( const std::string& packedEntryJson ) const = 0;
 
+			//! USER IMAGE RETENTION (see AgentChatLoop.h): elide the OLDEST
+			//! `countToElide` live image blocks/parts from a MakeUserEntry-
+			//! produced entry (in the order attachments were given -- index
+			//! 0 first), replacing each with the placeholder text
+			//! "[reference image elided -- re-attach if needed]".  Distinct
+			//! from RewriteElidedImages (which targets whole ToolResults
+			//! entries and always elides ALL of an entry's images): a
+			//! single user message can carry several attachments, of which
+			//! only SOME may need eliding when the running cap is crossed
+			//! by a small amount, so this takes a count rather than an
+			//! all-or-nothing switch.  `countToElide` >= the entry's live
+			//! image count elides all of them.  Legal ONLY on entries this
+			//! codec's MakeUserEntry produced (loop-generated, like
+			//! PackToolResults' output) -- never on assistant entries.
+			//! Returns the entry unchanged when countToElide <= 0 or the
+			//! entry carries no image.
+			virtual std::string RewriteElidedUserImages(
+				const std::string& userEntryJson, int countToElide ) const = 0;
+
 			//! Build the full HTTP request for the current conversation.
 			//! `apiKey` is used ONLY for the auth header -- it is not
 			//! retained, not placed in the body/url, and never logged.
@@ -246,10 +311,14 @@ namespace RISE
 		public:
 			virtual const char* ProviderName() const;
 			virtual const char* DefaultModelId() const;
-			virtual std::string MakeUserEntry( const std::string& text ) const;
+			virtual std::string MakeUserEntry(
+				const std::string& text,
+				const std::vector<ChatAttachment>& attachments = std::vector<ChatAttachment>() ) const;
 			virtual std::string PackToolResults(
 				const std::vector<std::pair<ChatToolCall, std::string>>& results ) const;
 			virtual std::string RewriteElidedImages( const std::string& packedEntryJson ) const;
+			virtual std::string RewriteElidedUserImages(
+				const std::string& userEntryJson, int countToElide ) const;
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -270,10 +339,14 @@ namespace RISE
 		public:
 			virtual const char* ProviderName() const;
 			virtual const char* DefaultModelId() const;
-			virtual std::string MakeUserEntry( const std::string& text ) const;
+			virtual std::string MakeUserEntry(
+				const std::string& text,
+				const std::vector<ChatAttachment>& attachments = std::vector<ChatAttachment>() ) const;
 			virtual std::string PackToolResults(
 				const std::vector<std::pair<ChatToolCall, std::string>>& results ) const;
 			virtual std::string RewriteElidedImages( const std::string& packedEntryJson ) const;
+			virtual std::string RewriteElidedUserImages(
+				const std::string& userEntryJson, int countToElide ) const;
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -291,6 +364,19 @@ namespace RISE
 		//! disagree about what counts as an image-bearing result.
 		bool ChatToolResultCarriesImage( const ChatToolCall& call,
 		                                 const std::string& rawJsonRpcResponseLine );
+
+		//! Number of LIVE (not-yet-elided) image blocks/parts in a
+		//! MakeUserEntry-produced user entry -- i.e. how many of its
+		//! attachments still carry a real image block/part rather than
+		//! the "[reference image elided ...]" placeholder.  PROVIDER-
+		//! AGNOSTIC: dispatches on the entry's own shape ("content"
+		//! array of {type:"image",...} elements for Anthropic; "parts"
+		//! array of {inlineData:...} elements for Gemini) rather than
+		//! needing a codec instance, so AgentChatLoop's cap bookkeeping
+		//! (USER IMAGE RETENTION) can call it uniformly regardless of
+		//! which codec produced the entry.  Returns 0 for a non-user
+		//! entry, or one that does not parse.
+		int ChatUserEntryLiveImageCount( const std::string& userEntryJson );
 	}
 }
 

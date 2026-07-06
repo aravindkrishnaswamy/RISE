@@ -45,6 +45,20 @@ static NSString *ToNS(const std::string& s) {
     return out ?: @"";
 }
 
+@implementation RISEAgentChatAttachment
+
+- (instancetype)initWithMimeType:(NSString *)mimeType
+                       base64Data:(NSString *)base64Data {
+    self = [super init];
+    if (self) {
+        _mimeType   = [mimeType copy];
+        _base64Data = [base64Data copy];
+    }
+    return self;
+}
+
+@end
+
 // Class extension: private initializer carrying the FULL C++
 // ChatToolCall (args + id-synthesis flag ride along invisibly), so
 // the opaque token round-trips everything result matching needs.
@@ -242,12 +256,29 @@ static NSString *ToNS(const std::string& s) {
     return static_cast<NSInteger>(Agent::AgentChatLoop::kMaxToolRoundsPerTurn);
 }
 
++ (NSInteger)maxLiveUserImages {
+    return static_cast<NSInteger>(Agent::AgentChatLoop::kMaxLiveUserImages);
+}
+
 - (void)setSkillIndex:(NSString *)indexText {
     _loop->SetSkillIndex(ToStd(indexText));
 }
 
 - (void)addUserMessage:(NSString *)text {
     _loop->AddUserMessage(ToStd(text));
+}
+
+- (void)addUserMessage:(NSString *)text
+            attachments:(NSArray<RISEAgentChatAttachment *> *)attachments {
+    std::vector<Agent::ChatAttachment> cppAttachments;
+    cppAttachments.reserve(attachments.count);
+    for (RISEAgentChatAttachment *a in attachments) {
+        Agent::ChatAttachment cppA;
+        cppA.mimeType   = ToStd(a.mimeType);
+        cppA.base64Data = ToStd(a.base64Data);
+        cppAttachments.push_back(cppA);
+    }
+    _loop->AddUserMessage(ToStd(text), cppAttachments);
 }
 
 - (RISEAgentChatRequest *)buildRequestWithApiKey:(NSString *)apiKey {

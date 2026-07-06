@@ -1,6 +1,9 @@
 import SwiftUI
 import Combine
 import Security
+import AppKit
+import CoreGraphics
+import UniformTypeIdentifiers
 
 // Facet 5 slice B2 — the LLM chat panel's driver.
 //
@@ -183,10 +186,45 @@ final class ChatViewModel: ObservableObject {
         let id = UUID()
         let kind: Kind
         let text: String
+        /// Small LOCAL thumbnails for images attached to a `.user` entry
+        /// (Model-B F5 chat image attachments) — shows what was actually
+        /// sent, without re-decoding the base64 that rode on the wire.
+        /// Always empty for every other kind.
+        var attachmentThumbnails: [NSImage] = []
+    }
+
+    /// One image queued to send with the NEXT message (Model-B F5 chat
+    /// image attachments) — composed by `attachImageFile(at:)` /
+    /// `attachImage(data:utType:)`, cleared on send/scene-close.
+    struct PendingAttachment: Identifiable {
+        let id = UUID()
+        /// The exact bytes that will be base64-encoded onto the wire —
+        /// already downscaled + re-encoded (see attachImage's doc for
+        /// the JPEG-vs-PNG choice).  NEVER LOG.
+        let encodedData: Data
+        let mimeType: String
+        /// Small in-memory thumbnail for the composer row — built once
+        /// at attach time from `encodedData` (not re-decoded per redraw).
+        let thumbnail: NSImage
     }
 
     @Published private(set) var transcript: [Entry] = []
     @Published var inputText: String = ""
+    /// Images queued to go out with the NEXT send() (Model-B F5 chat
+    /// image attachments) — populated by attachImageFile(at:), shown as
+    /// thumbnails in the composer, cleared on send / Stop-does-NOT-
+    /// clear-these (only send/sceneClosed/removePendingAttachment do —
+    /// a Stop is a mid-turn abort, not "throw away what I was about to
+    /// attach").  Capped at kMaxLiveUserImages per message — the SAME
+    /// cap the loop enforces across the whole conversation, so one
+    /// message can never itself force an immediate elision of ITS OWN
+    /// images.
+    @Published private(set) var pendingAttachments: [PendingAttachment] = []
+    /// Set by attachImageFile(at:) on a rejected mimeType or a decode
+    /// failure — a user-visible message, per the "reject unsupported
+    /// types with a message, not a silent drop" contract.  Cleared on
+    /// the next successful attach or explicitly by the panel.
+    @Published var attachmentError: String? = nil
     /// True while a turn's request/tool loop is in flight (Send
     /// disabled, Stop shown).
     @Published private(set) var isBusy: Bool = false
@@ -345,6 +383,46 @@ final class ChatViewModel: ObservableObject {
         "agentChat.modelId.\(p.rawValue)"
     }
 
+    // MARK: - Image attachments (Model-B F5)
+
+    /// The provider-accepted MIME allow-list, exactly as documented in
+    /// AgentChatCodecs.h (Anthropic's `media_type` list; Gemini accepts
+    /// the same four via `inlineData.mimeType`).  Anything outside this
+    /// set is rejected HERE, at the Swift layer, with a user-visible
+    /// message — the C++ core deliberately does not gate on mimeType
+    /// (see ChatAttachment's doc), so this is the one enforcement point.
+    private static let acceptedMimeTypes: Set<String> = [
+        "image/png", "image/jpeg", "image/gif", "image/webp",
+    ]
+
+    /// Long-edge bound for a downscaled attachment, in pixels.  1024 is
+    /// generous enough for the agent to read fine reference detail
+    /// (proportions, distinguishing features, color) while keeping
+    /// re-encoded JPEG payloads in the low hundreds of KB rather than
+    /// the multi-MB a modern phone photo starts at — the whole
+    /// conversation history re-sends on every turn, so attachment size
+    /// is a per-turn, not per-attach, token cost (see AgentChatLoop.h
+    /// "USER IMAGE RETENTION" for the cap that bounds the OTHER half of
+    /// that cost: how many stay live across turns).
+    private static let maxAttachmentEdge: CGFloat = 1024
+
+    /// JPEG re-encode quality for downscaled photographic attachments.
+    /// PNG-vs-JPEG reasoning: reference photos (the whole point of this
+    /// feature) are photographic content, where JPEG's DCT compression
+    /// beats PNG's lossless filter+deflate by a wide margin at a
+    /// perceptually-lossless quality — a 1024px-edge JPEG at 0.8 quality
+    /// typically lands in the 100-300KB range where the equivalent PNG
+    /// would run several times larger, and that size rides on EVERY
+    /// later request for as long as the image stays live (see the cap
+    /// above).  The exception: an attachment whose SOURCE carries an
+    /// alpha channel (a screenshot or a graphic with transparency, not a
+    /// camera photo) keeps PNG — JPEG has no alpha channel, so
+    /// re-encoding would either flatten transparency onto an arbitrary
+    /// background or lose it outright, and a UI screenshot is exactly
+    /// the case where flat-color regions make PNG's compression
+    /// competitive anyway.
+    private static let jpegQuality: CGFloat = 0.8
+
     init() {
         let storedProvider = UserDefaults.standard.string(forKey: Self.providerKey)
             .flatMap(AgentChatProviderChoice.init(rawValue:)) ?? .anthropic
@@ -369,6 +447,8 @@ final class ChatViewModel: ObservableObject {
         transcript = []
         clearErrorAffordances()
         consecutiveHttp400s = 0
+        pendingAttachments = []
+        attachmentError = nil
 
         let indexLine = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"read_skill\"}"
         chatBridge.setSkillIndex(
@@ -378,7 +458,9 @@ final class ChatViewModel: ObservableObject {
     /// The scene is closing (clearScene / reload): stop any in-flight
     /// turn and drop the tool executor so the driver cannot touch the
     /// torn-down dispatcher.  MUST be called before the viewport
-    /// bridge's shutdown.
+    /// bridge's shutdown.  Also clears any queued-but-unsent image
+    /// attachments (Model-B F5) — they were composed against the scene
+    /// that's going away, same as the text input clear right below.
     func sceneClosed() {
         cancelTurn()
         viewportBridge = nil
@@ -387,6 +469,8 @@ final class ChatViewModel: ObservableObject {
         inputText = ""
         clearErrorAffordances()
         consecutiveHttp400s = 0
+        pendingAttachments = []
+        attachmentError = nil
     }
 
     /// Render the read_skill (no name) JSON-RPC response into the
@@ -547,21 +631,178 @@ final class ChatViewModel: ObservableObject {
         return nil
     }
 
+    // MARK: - Image attachments (Model-B F5)
+
+    /// The picker affordance: choose one or more image files from disk
+    /// and queue them as pending attachments.  The must-have per the
+    /// slice brief; drag-drop (`handleDroppedFileURLs`) is the second,
+    /// cheaper-to-add affordance sharing the same pipeline below.
+    func attachImageFiles() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg, .gif, .webP]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.message = "Attach reference image(s)"
+        guard panel.runModal() == .OK else { return }
+        handleDroppedFileURLs(panel.urls)
+    }
+
+    /// Drag-and-drop entry point: the same accept/downscale/cap pipeline
+    /// as the picker, so both affordances behave identically.  Called by
+    /// ChatPanel's `.onDrop` handler with the file URLs SwiftUI already
+    /// resolved from the drop's item providers.
+    func handleDroppedFileURLs(_ urls: [URL]) {
+        for url in urls {
+            attachImageFile(at: url)
+        }
+    }
+
+    /// Load, validate, downscale, and queue one image file.  On any
+    /// rejection (unsupported type, unreadable/undecodable file) sets
+    /// `attachmentError` to a user-visible message and queues nothing —
+    /// never a silent drop.  Enforces the per-message cap
+    /// (kMaxLiveUserImages, the SAME constant the loop caps the WHOLE
+    /// conversation at) by refusing once the composer already holds that
+    /// many.
+    func attachImageFile(at url: URL) {
+        guard pendingAttachments.count < RISEAgentChatBridge.maxLiveUserImages else {
+            attachmentError = "You can attach up to \(RISEAgentChatBridge.maxLiveUserImages) "
+                + "images per message."
+            return
+        }
+
+        // Determine the SOURCE mimeType from the file's UTType (not the
+        // extension string) so a misnamed file is still classified
+        // correctly; reject anything outside the provider allow-list
+        // before touching image data.
+        let sourceType = UTType(filenameExtension: url.pathExtension.lowercased())
+        guard let mimeType = Self.mimeType(for: sourceType), Self.acceptedMimeTypes.contains(mimeType)
+        else {
+            attachmentError = "Unsupported image type"
+                + (url.pathExtension.isEmpty ? "" : " “.\(url.pathExtension)”")
+                + " — supported: PNG, JPEG, GIF, WEBP."
+            return
+        }
+
+        guard let data = try? Data(contentsOf: url), let sourceImage = NSImage(data: data) else {
+            attachmentError = "Couldn’t read “\(url.lastPathComponent)” as an image."
+            return
+        }
+
+        guard let encoded = Self.downscaleAndEncode(sourceImage) else {
+            attachmentError = "Couldn’t process “\(url.lastPathComponent)” for attaching."
+            return
+        }
+
+        attachmentError = nil
+        pendingAttachments.append(PendingAttachment(
+            encodedData: encoded.data, mimeType: encoded.mimeType, thumbnail: sourceImage))
+    }
+
+    /// Drop one queued attachment (the composer row's ✕ button).
+    func removePendingAttachment(_ id: UUID) {
+        pendingAttachments.removeAll { $0.id == id }
+    }
+
+    /// UTType → provider MIME string.  Returns nil for anything not in
+    /// the recognized set (the caller then rejects it) — this is
+    /// intentionally narrower than UTType's own broad image hierarchy,
+    /// since only these four have provider support (see
+    /// AgentChatCodecs.h's allow-list comment).
+    private static func mimeType(for type: UTType?) -> String? {
+        guard let type else { return nil }
+        if type.conforms(to: .png) { return "image/png" }
+        if type.conforms(to: .jpeg) { return "image/jpeg" }
+        if type.conforms(to: .gif) { return "image/gif" }
+        if type.conforms(to: .webP) { return "image/webp" }
+        return nil
+    }
+
+    /// Downscale `image` so its long edge is at most `maxAttachmentEdge`
+    /// (never upscales a smaller source) and re-encode it — JPEG at
+    /// `jpegQuality` for opaque content, PNG when the source carries an
+    /// alpha channel (see `jpegQuality`'s doc for the reasoning).
+    /// Returns nil only on a CoreGraphics failure (corrupt/unsupported
+    /// source data NSImage nonetheless decoded a representation for).
+    private static func downscaleAndEncode(
+        _ image: NSImage
+    ) -> (data: Data, mimeType: String)? {
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return nil
+        }
+
+        let srcWidth = CGFloat(cgImage.width)
+        let srcHeight = CGFloat(cgImage.height)
+        let longEdge = max(srcWidth, srcHeight)
+        let scale = longEdge > maxAttachmentEdge ? (maxAttachmentEdge / longEdge) : 1.0
+        let dstWidth = max(1, Int((srcWidth * scale).rounded()))
+        let dstHeight = max(1, Int((srcHeight * scale).rounded()))
+
+        let hasAlpha = cgImage.alphaInfo != .none
+            && cgImage.alphaInfo != .noneSkipFirst
+            && cgImage.alphaInfo != .noneSkipLast
+
+        // Draw into a freshly-sized bitmap context (box-filter-quality
+        // downscale via CoreGraphics' interpolation) even when scale is
+        // 1.0 — a single code path re-encodes every attachment at the
+        // chosen quality/format rather than special-casing "already
+        // small enough" (which would pass the ORIGINAL, un-recompressed
+        // bytes through — still correct, just a needless second code
+        // path for a marginal size win).
+        let colorSpace = hasAlpha ? CGColorSpaceCreateDeviceRGB() : CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo: CGBitmapInfo = hasAlpha
+            ? CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+            : CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue)
+        guard let context = CGContext(
+            data: nil, width: dstWidth, height: dstHeight,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: colorSpace, bitmapInfo: bitmapInfo.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .high
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: dstWidth, height: dstHeight))
+        guard let scaledImage = context.makeImage() else { return nil }
+
+        let rep = NSBitmapImageRep(cgImage: scaledImage)
+        if hasAlpha {
+            guard let png = rep.representation(using: .png, properties: [:]) else { return nil }
+            return (png, "image/png")
+        }
+        guard let jpeg = rep.representation(
+            using: .jpeg, properties: [.compressionFactor: jpegQuality]
+        ) else { return nil }
+        return (jpeg, "image/jpeg")
+    }
+
     // MARK: The turn driver
 
-    /// Send the composed input as a new user message and drive the
-    /// turn to completion.
+    /// Send the composed input (and any queued image attachments) as a
+    /// new user message and drive the turn to completion.  Either the
+    /// text or at least one attachment must be present — an
+    /// attachment-only message (no caption) is legitimate (Model-B F5).
     func send() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isBusy, viewportBridge != nil,
+        let attachments = pendingAttachments
+        guard !text.isEmpty || !attachments.isEmpty, !isBusy, viewportBridge != nil,
               sceneEditable() else { return }
         inputText = ""
+        pendingAttachments = []
+        attachmentError = nil
         clearErrorAffordances()
-        transcript.append(Entry(kind: .user, text: text))
+        transcript.append(Entry(
+            kind: .user, text: text,
+            attachmentThumbnails: attachments.map(\.thumbnail)))
         // AddUserMessage also flushes any tool calls abandoned by a
         // previous Stop with synthesized cancelled results — the
         // loop's designed interrupt recovery.
-        chatBridge.addUserMessage(text)
+        if attachments.isEmpty {
+            chatBridge.addUserMessage(text)
+        }
+        else {
+            chatBridge.addUserMessage(text, attachments: attachments.map {
+                RISEAgentChatAttachment(mimeType: $0.mimeType,
+                                        base64Data: $0.encodedData.base64EncodedString())
+            })
+        }
         startTurn()
     }
 
