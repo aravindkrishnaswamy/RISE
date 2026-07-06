@@ -16,6 +16,10 @@ struct ChatPanel: View {
     @EnvironmentObject var viewModel: RenderViewModel
     @ObservedObject var chat: ChatViewModel
     @State private var showSettings = false
+    /// True while a valid file drag hovers the input row — drives the
+    /// highlight border below so a drop target is visually obvious
+    /// (cheap `.onDrop(isTargeted:)` binding; no new pipeline).
+    @State private var isDropTargeted = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -205,7 +209,12 @@ struct ChatPanel: View {
                             + "running — wait for it to finish")
                 }
             }
-            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            .padding(4)
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(isDropTargeted ? Color.accentColor : Color.clear, lineWidth: 2)
+            )
+            .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
                 Self.loadDroppedURLs(providers) { urls in
                     chat.handleDroppedFileURLs(urls)
                 }

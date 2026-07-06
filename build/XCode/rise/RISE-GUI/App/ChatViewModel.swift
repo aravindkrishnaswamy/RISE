@@ -203,8 +203,12 @@ final class ChatViewModel: ObservableObject {
         /// the JPEG-vs-PNG choice).  NEVER LOG.
         let encodedData: Data
         let mimeType: String
-        /// Small in-memory thumbnail for the composer row — built once
-        /// at attach time from `encodedData` (not re-decoded per redraw).
+        /// A SMALL thumbnail for the composer row / transcript, built
+        /// once at attach time and bounded to `thumbnailEdge` on its long
+        /// edge (NOT the full-res source image) — the transcript is
+        /// append-only for the life of the conversation, so an unbounded
+        /// full-res `NSImage` per attachment would grow memory without
+        /// limit over a long session.
         let thumbnail: NSImage
     }
 
@@ -346,6 +350,21 @@ final class ChatViewModel: ObservableObject {
     /// applyProviderSelection / resetConversation) so a stale count
     /// can't trigger the reset offer on a fresh conversation.
     private var consecutiveHttp400s: Int = 0
+    /// Scene generation — bumped by every sceneOpened/sceneClosed.  A
+    /// detached image-attach encode (see `attachImageFile(at:)`) captures
+    /// this at attach-start and re-checks it on the main-actor hop before
+    /// appending to `pendingAttachments`: if the value moved, the scene
+    /// this attachment was composed against is already gone (a fresh
+    /// scene may have loaded, or the app may have gone scene-less), and
+    /// the result is dropped rather than leaking into whatever composer
+    /// is showing now.  Distinct from `turnGeneration` (which scopes a
+    /// CONVERSATION turn, not a scene's lifetime).  Deliberately NOT
+    /// bumped by `send()` (which also clears `pendingAttachments`) or by
+    /// `resetConversation()`/`applyProviderSelection()`: none of those
+    /// tear down the SCENE, so an attach still in flight when one of them
+    /// fires is still valid to land in the composer for the NEXT message
+    /// — only an actual scene teardown invalidates an in-flight attach.
+    private var sceneGeneration: Int = 0
 
     /// Model-B F2 slice S2b: the renderJobId of a chat-driven `render`
     /// tool call currently outstanding on the LIVE controller's async
@@ -403,8 +422,12 @@ final class ChatViewModel: ObservableObject {
     /// conversation history re-sends on every turn, so attachment size
     /// is a per-turn, not per-attach, token cost (see AgentChatLoop.h
     /// "USER IMAGE RETENTION" for the cap that bounds the OTHER half of
-    /// that cost: how many stay live across turns).
-    private static let maxAttachmentEdge: CGFloat = 1024
+    /// that cost: how many stay live across turns).  `nonisolated`: read
+    /// only from `downscaleAndEncode`, which itself is `nonisolated` so
+    /// it can run on the `Task.detached` background context in
+    /// `attachImageFile(at:)` — a MainActor-isolated constant could not
+    /// be referenced from there.
+    private nonisolated static let maxAttachmentEdge: CGFloat = 1024
 
     /// JPEG re-encode quality for downscaled photographic attachments.
     /// PNG-vs-JPEG reasoning: reference photos (the whole point of this
@@ -420,8 +443,22 @@ final class ChatViewModel: ObservableObject {
     /// re-encoding would either flatten transparency onto an arbitrary
     /// background or lose it outright, and a UI screenshot is exactly
     /// the case where flat-color regions make PNG's compression
-    /// competitive anyway.
-    private static let jpegQuality: CGFloat = 0.8
+    /// competitive anyway.  `nonisolated` for the same reason as
+    /// `maxAttachmentEdge` above.
+    private nonisolated static let jpegQuality: CGFloat = 0.8
+
+    /// Long-edge bound, in pixels, for the composer/transcript thumbnail
+    /// stored on `PendingAttachment` (and copied onto the transcript
+    /// `Entry` on send).  96 is comfortably above the 40×40 (composer
+    /// strip) / 32×32 (transcript row) display sizes ChatPanel draws at
+    /// @2x, so it stays crisp on Retina, while being tiny next to a
+    /// full-res source image — this bounds the append-only transcript's
+    /// memory instead of retaining `sourceImage` (which can be many
+    /// megapixels for a phone photo) for the life of the conversation.
+    /// `nonisolated`: read only from `makeThumbnail`, which itself is
+    /// `nonisolated` for the same background-context reason as
+    /// `maxAttachmentEdge` above.
+    private nonisolated static let thumbnailEdge: CGFloat = 96
 
     init() {
         let storedProvider = UserDefaults.standard.string(forKey: Self.providerKey)
@@ -442,6 +479,7 @@ final class ChatViewModel: ObservableObject {
     /// stays sans-IO; the driver does the fetch).
     func sceneOpened(viewportBridge vb: RISEViewportBridge) {
         cancelTurn()
+        sceneGeneration += 1
         viewportBridge = vb
         chatBridge.reset()
         transcript = []
@@ -463,6 +501,7 @@ final class ChatViewModel: ObservableObject {
     /// that's going away, same as the text input clear right below.
     func sceneClosed() {
         cancelTurn()
+        sceneGeneration += 1
         viewportBridge = nil
         chatBridge.reset()
         transcript = []
@@ -664,6 +703,41 @@ final class ChatViewModel: ObservableObject {
     /// (kMaxLiveUserImages, the SAME constant the loop caps the WHOLE
     /// conversation at) by refusing once the composer already holds that
     /// many.
+    ///
+    /// THREADING MODEL (P2-1 fix): the disk read (`Data(contentsOf:)`),
+    /// CoreGraphics decode, box-filter downscale, and JPEG/PNG re-encode
+    /// below can add up to real wall-clock time on a large source (a
+    /// modern phone photo is routinely 10-40MB) — doing that
+    /// SYNCHRONOUSLY on the MainActor, as this method used to, stalls
+    /// the whole UI for the duration, ×N for a multi-file drag-drop
+    /// batch.  This mirrors the render path's S2b fix (see
+    /// `executeRenderToolCallAsync`'s doc): the actual work moves to a
+    /// detached background context, and this method hops back to the
+    /// MainActor ONLY to append the finished attachment (or report an
+    /// error) — never to touch NSImage/CGContext/file I/O off-main
+    /// itself, which stays fully on the detached task.
+    ///
+    /// The extension/UTType accept-reject gate and the per-message cap
+    /// pre-check both run HERE, synchronously, before any dispatch —
+    /// they're cheap (no bytes touched yet) and let a rejection surface
+    /// immediately rather than after a round-trip through the background
+    /// queue.  The cap is CHECKED AGAIN on the main-actor hop after the
+    /// background work finishes, because a batch of attaches racing each
+    /// other (e.g. a 6-file drag-drop) can each pass the pre-check before
+    /// any of them has appended — the post-hop re-check is what actually
+    /// enforces the cap under concurrency; the pre-check is purely a
+    /// fast-path UX improvement (reject obviously-over-cap attempts
+    /// without paying for a decode first).
+    ///
+    /// STALE-COMPLETION GUARD: `sceneGeneration` is captured before the
+    /// detached work starts and re-checked on the main-actor hop.  If a
+    /// scene closed/switched while this attach's background work was in
+    /// flight, `sceneGeneration` will have moved (see `sceneOpened`/
+    /// `sceneClosed`) — the finished attachment is DROPPED rather than
+    /// appended to whatever composer is showing now, since it was
+    /// composed against a scene that no longer exists.  `attachmentError`
+    /// is likewise only set if the generation still matches (an error
+    /// about a stale attach isn't useful to show against a new scene).
     func attachImageFile(at url: URL) {
         guard pendingAttachments.count < RISEAgentChatBridge.maxLiveUserImages else {
             attachmentError = "You can attach up to \(RISEAgentChatBridge.maxLiveUserImages) "
@@ -671,12 +745,21 @@ final class ChatViewModel: ObservableObject {
             return
         }
 
-        // Determine the SOURCE mimeType from the file's UTType (not the
-        // extension string) so a misnamed file is still classified
-        // correctly; reject anything outside the provider allow-list
-        // before touching image data.
+        // Gate on the file's EXTENSION-derived UTType — this is an
+        // accept/reject check only ("is this a supported image type at
+        // all?"), not a content sniff: UTType(filenameExtension:) reads
+        // the extension string, so a file renamed to a different
+        // extension is classified by that renamed extension, not by its
+        // actual bytes.  That is fine here because this gate never
+        // decides what MIME type rides the wire — `downscaleAndEncode`
+        // below always re-encodes the decoded pixels itself and reports
+        // the MIME type that matches ITS OWN output format (JPEG for
+        // opaque content, PNG when alpha is present), so the sent bytes
+        // and the declared `media_type` are always mutually consistent
+        // regardless of what the source file was named.
         let sourceType = UTType(filenameExtension: url.pathExtension.lowercased())
-        guard let mimeType = Self.mimeType(for: sourceType), Self.acceptedMimeTypes.contains(mimeType)
+        guard let sourceMimeType = Self.mimeType(for: sourceType),
+              Self.acceptedMimeTypes.contains(sourceMimeType)
         else {
             attachmentError = "Unsupported image type"
                 + (url.pathExtension.isEmpty ? "" : " “.\(url.pathExtension)”")
@@ -684,19 +767,65 @@ final class ChatViewModel: ObservableObject {
             return
         }
 
-        guard let data = try? Data(contentsOf: url), let sourceImage = NSImage(data: data) else {
-            attachmentError = "Couldn’t read “\(url.lastPathComponent)” as an image."
+        let generation = sceneGeneration
+        let fileName = url.lastPathComponent
+
+        Task.detached { [weak self] in
+            // Everything in this block runs OFF the MainActor: disk I/O,
+            // CoreGraphics decode, downscale, re-encode, and thumbnail
+            // generation are all plain value-in/value-out work with no
+            // actor affinity of their own.
+            guard let data = try? Data(contentsOf: url), let sourceImage = NSImage(data: data) else {
+                await self?.finishAttach(
+                    generation: generation,
+                    result: .failure("Couldn’t read “\(fileName)” as an image."))
+                return
+            }
+            guard let encoded = Self.downscaleAndEncode(sourceImage) else {
+                await self?.finishAttach(
+                    generation: generation,
+                    result: .failure("Couldn’t process “\(fileName)” for attaching."))
+                return
+            }
+            let thumbnail = Self.makeThumbnail(fromScaled: encoded.scaledImage)
+            await self?.finishAttach(
+                generation: generation,
+                result: .success(PendingAttachment(
+                    encodedData: encoded.data, mimeType: encoded.mimeType, thumbnail: thumbnail)))
+        }
+    }
+
+    /// Outcome of the detached attach pipeline, handed back to the
+    /// MainActor by `finishAttach`.
+    private enum AttachOutcome {
+        case success(PendingAttachment)
+        case failure(String)
+    }
+
+    /// The MainActor-hop tail of `attachImageFile(at:)`.  Re-checks the
+    /// scene-generation stale-completion guard and the per-message cap
+    /// (both documented on `attachImageFile`'s doc) before mutating
+    /// `pendingAttachments`/`attachmentError`.
+    @MainActor
+    private func finishAttach(generation: Int, result: AttachOutcome) {
+        guard generation == sceneGeneration else {
+            // The scene this attachment was composed against is gone —
+            // drop it silently rather than leak it into a new scene's
+            // composer or report a stale error against it.
             return
         }
-
-        guard let encoded = Self.downscaleAndEncode(sourceImage) else {
-            attachmentError = "Couldn’t process “\(url.lastPathComponent)” for attaching."
-            return
+        switch result {
+        case .failure(let message):
+            attachmentError = message
+        case .success(let attachment):
+            guard pendingAttachments.count < RISEAgentChatBridge.maxLiveUserImages else {
+                attachmentError = "You can attach up to \(RISEAgentChatBridge.maxLiveUserImages) "
+                    + "images per message."
+                return
+            }
+            attachmentError = nil
+            pendingAttachments.append(attachment)
         }
-
-        attachmentError = nil
-        pendingAttachments.append(PendingAttachment(
-            encodedData: encoded.data, mimeType: encoded.mimeType, thumbnail: sourceImage))
     }
 
     /// Drop one queued attachment (the composer row's ✕ button).
@@ -724,9 +853,19 @@ final class ChatViewModel: ObservableObject {
     /// alpha channel (see `jpegQuality`'s doc for the reasoning).
     /// Returns nil only on a CoreGraphics failure (corrupt/unsupported
     /// source data NSImage nonetheless decoded a representation for).
-    private static func downscaleAndEncode(
+    /// `nonisolated`: this touches no actor state (pure value in/out over
+    /// CoreGraphics/AppKit APIs that are safe off-main), which is what
+    /// lets `attachImageFile(at:)` call it from inside a `Task.detached`
+    /// background context instead of blocking the MainActor.
+    /// Also returns the downscaled `CGImage` it built (bounded to
+    /// `maxAttachmentEdge`, i.e. at most 1024px on its long edge) so
+    /// `attachImageFile(at:)` can build the composer/transcript thumbnail
+    /// FROM THIS already-small image rather than from the full-res
+    /// source — see `makeThumbnail`'s doc for why that bound matters even
+    /// on its own failure path.
+    private nonisolated static func downscaleAndEncode(
         _ image: NSImage
-    ) -> (data: Data, mimeType: String)? {
+    ) -> (data: Data, mimeType: String, scaledImage: CGImage)? {
         guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             return nil
         }
@@ -765,12 +904,60 @@ final class ChatViewModel: ObservableObject {
         let rep = NSBitmapImageRep(cgImage: scaledImage)
         if hasAlpha {
             guard let png = rep.representation(using: .png, properties: [:]) else { return nil }
-            return (png, "image/png")
+            return (png, "image/png", scaledImage)
         }
         guard let jpeg = rep.representation(
             using: .jpeg, properties: [.compressionFactor: jpegQuality]
         ) else { return nil }
-        return (jpeg, "image/jpeg")
+        return (jpeg, "image/jpeg", scaledImage)
+    }
+
+    /// Build a SMALL thumbnail (long edge at most `thumbnailEdge`, never
+    /// upscaled) for the composer strip / transcript row — this is what
+    /// `PendingAttachment.thumbnail` actually stores, NOT the full-res
+    /// source (P3-a: an append-only transcript holding full-res
+    /// `NSImage`s per attachment is unbounded memory over a long
+    /// conversation).  Same CGContext draw-down approach as
+    /// `downscaleAndEncode` (safe to call off-main, unlike
+    /// `NSImage.lockFocus`-based drawing, which requires the main
+    /// thread).
+    ///
+    /// Takes the ALREADY-DOWNSCALED `scaledImage` `downscaleAndEncode`
+    /// returned (bounded to `maxAttachmentEdge`, at most 1024px) rather
+    /// than the raw source — this makes the memory bound hold even on
+    /// this function's own failure path: if the second (thumbnail-sized)
+    /// CGContext allocation fails, the fallback below returns the
+    /// 1024px-bounded image, never the full-res original, so the P3
+    /// memory bound cannot be silently defeated by a rare CoreGraphics
+    /// allocation failure under memory pressure — exactly the situation
+    /// where retaining a full-res fallback would be worst.
+    /// `nonisolated` for the same reason as `downscaleAndEncode`: called
+    /// from the `Task.detached` background context in
+    /// `attachImageFile(at:)`.
+    private nonisolated static func makeThumbnail(fromScaled cgImage: CGImage) -> NSImage {
+        let boundedFallback = NSImage(
+            cgImage: cgImage, size: CGSize(width: cgImage.width, height: cgImage.height))
+
+        let srcWidth = CGFloat(cgImage.width)
+        let srcHeight = CGFloat(cgImage.height)
+        let longEdge = max(srcWidth, srcHeight)
+        guard longEdge > thumbnailEdge else { return boundedFallback }
+        let scale = thumbnailEdge / longEdge
+        let dstWidth = max(1, Int((srcWidth * scale).rounded()))
+        let dstHeight = max(1, Int((srcHeight * scale).rounded()))
+
+        guard let context = CGContext(
+            data: nil, width: dstWidth, height: dstHeight,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue).rawValue
+        ) else {
+            return boundedFallback
+        }
+        context.interpolationQuality = .high
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: dstWidth, height: dstHeight))
+        guard let scaledThumbnail = context.makeImage() else { return boundedFallback }
+        return NSImage(cgImage: scaledThumbnail, size: CGSize(width: dstWidth, height: dstHeight))
     }
 
     // MARK: The turn driver
