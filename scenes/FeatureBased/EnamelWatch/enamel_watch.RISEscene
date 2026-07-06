@@ -821,6 +821,32 @@ uniformcolor_painter
 	name				pnt_ink
 	color				0.02 0.02 0.025
 }
+
+# Bright silver-WHITE furniture + hands -- bound on MEDIUM-saturated dials (green,
+# olive, amber) where neither gold nor dark reads well.  Rhodium/white-print look.
+uniformcolor_painter
+{
+	name				pnt_letterwhite
+	color				0.90 0.90 0.92
+}
+ggx_material
+{
+	name				white_furniture
+	rd				pnt_letterwhite
+	rs				pnt_white
+	alphax				0.12
+	alphay				0.12
+	fresnel_mode			schlick_f0
+}
+ggx_material
+{
+	name				light_hands
+	rd				pnt_letterwhite
+	rs				pnt_white
+	alphax				0.06
+	alphay				0.06
+	fresnel_mode			schlick_f0
+}
 uniformcolor_painter
 {
 	name				pnt_ink_f0
