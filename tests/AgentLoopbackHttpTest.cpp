@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  AgentLoopbackHttpTest.cpp - Secure-MCP slice 3: the loopback HTTP/1.1
+//  AgentLoopbackHttpTest.cpp - Secure-MCP slice 3+4: the loopback HTTP/1.1
 //    transport regression guard for AgentLoopbackHttpServer.
 //
 //  Drives the REAL server class (a background thread running Serve())
@@ -54,6 +54,38 @@
 //        build; see the slice-3 final report) against the
 //        std::atomic<SOCKET> fix for the Stop()/Serve() data race on
 //        mListenSock.
+//    (j) [SLICE 4] bearer-token auth: no Authorization header -> 401 +
+//        WWW-Authenticate: Bearer (RED-PROVE: with the auth check removed,
+//        this same request dispatches and returns 200); wrong token -> 401;
+//        correct token -> 200 with a valid MCP response; every OTHER test
+//        case in this file (a)-(i) now sends the correct token via
+//        DoRequest()'s auto-attached Authorization header, which is itself
+//        proof the auth gate doesn't false-positive-reject a legitimate
+//        client.
+//    (k) [SLICE 4] Origin validation: `Origin: http://evil.com` present,
+//        even WITH a correct bearer token, -> 403 (RED-PROVE: with the
+//        Origin check removed, this same request dispatches and returns
+//        200 -- proves the Origin check is NOT subsumed by the auth check,
+//        i.e. a stolen/leaked token alone is not enough to get past a
+//        browser-borne DNS-rebinding request); an explicit loopback Origin
+//        (http://127.0.0.1:<port>) is accepted; no Origin header at all
+//        (the non-browser-client case) is accepted.
+//    (l) [SLICE 4] Host validation: `Host: evil.com` (the DNS-rebinding
+//        shape: an attacker domain that a browser resolves to 127.0.0.1)
+//        -> 403 (RED-PROVE: with the Host check removed, this same request
+//        dispatches and returns 200); `Host: 127.0.0.1:<port>` and
+//        `Host: localhost` are both accepted.
+//    (m) [SLICE 4] per-launch token entropy: TWO separate server
+//        construction cycles in this one test binary produce two DIFFERENT
+//        64-hex-char tokens -- proves the token comes from a per-launch
+//        CSPRNG draw, not a fixed/compiled-in constant.
+//    (n) [SLICE 4] ConstantTimeEquals unit coverage (the helper is
+//        anonymous-namespace-private to AgentLoopbackHttpServer.cpp, so
+//        this is exercised INDIRECTLY via the wrong-token-differs-by-one-
+//        byte-at-various-positions cases in (j) -- equal compares true;
+//        differing at the first byte, the last byte, or by length all
+//        compare false; see the doc comment on ConstantTimeEquals itself
+//        in the .cpp for why it does not short-circuit).
 //
 //  POSIX-only (BSD sockets, pthread via std::thread). On Windows the
 //  whole body compiles to a trivial pass (matches every other
@@ -213,19 +245,40 @@ static HttpResponse ParseHttpResponse( const std::string& raw )
 	return r;
 }
 
+//! Extra headers a test wants layered onto an otherwise well-formed
+//! request, for the auth/Origin/Host coverage below. Any field left empty
+//! is omitted entirely (rather than sent as an empty header value) EXCEPT
+//! `host`, which always defaults to "127.0.0.1" (a bare TCP client like
+//! this test harness must send SOME Host for the server's parser to see a
+//! well-formed request; the Host-rebind test overrides it explicitly).
+struct ExtraHeaders
+{
+	std::string host = "127.0.0.1";
+	std::string authorization;   // e.g. "Bearer <token>" -- omitted if empty
+	bool        hasAuthorization = false;
+	std::string origin;          // omitted unless hasOrigin
+	bool        hasOrigin = false;
+};
+
 //! Round-trips ONE HTTP request over a fresh connection and returns the
-//! parsed response. `rawRequestOverride`, when non-null, is sent VERBATIM
-//! instead of building a well-formed request (for the malformed-input
-//! cases) -- the connection is still made via ConnectLoopback so the
-//! per-socket timeout applies.
-static HttpResponse DoRequest( unsigned short port, const std::string& method,
-                                const std::string& path, const std::string& body )
+//! parsed response. `extra` carries the Secure-MCP slice 4 headers
+//! (Authorization / Origin / Host override) -- defaulted so every
+//! pre-slice-4 call site below is unchanged in spirit, but see the
+//! `g_testToken`-sending overload immediately below, which is what most
+//! call sites actually use post-slice-4 (a request with NO Authorization
+//! header now gets 401 before ever reaching the cases these earlier tests
+//! were written to exercise).
+static HttpResponse DoRequestEx( unsigned short port, const std::string& method,
+                                   const std::string& path, const std::string& body,
+                                   const ExtraHeaders& extra )
 {
 	const int s = ConnectLoopback( port );
 	if( s < 0 ) return HttpResponse();
 
 	std::string req = method + " " + path + " HTTP/1.1\r\n";
-	req += "Host: 127.0.0.1\r\n";
+	req += "Host: " + extra.host + "\r\n";
+	if( extra.hasAuthorization ) req += "Authorization: " + extra.authorization + "\r\n";
+	if( extra.hasOrigin ) req += "Origin: " + extra.origin + "\r\n";
 	req += "Content-Length: " + std::to_string( body.size() ) + "\r\n";
 	req += "\r\n";
 	req += body;
@@ -237,6 +290,28 @@ static HttpResponse DoRequest( unsigned short port, const std::string& method,
 	}
 	close( s );
 	return r;
+}
+
+//! The bearer token for whichever server the CURRENT test block is
+//! driving -- set once near the top of main() (and again for the
+//! per-launch-token-differs case, which spins up SEPARATE servers).
+//! A plain global is fine here: this test, like the server it drives, is
+//! single-threaded except for the deliberately-concurrent sections, which
+//! only ever read this (never write it).
+static std::string g_testToken;
+
+//! Convenience wrapper: same as DoRequestEx, but with a valid
+//! `Authorization: Bearer <g_testToken>` already attached -- this is what
+//! every PRE-EXISTING slice-3 test case below now needs to keep passing,
+//! since a request with no Authorization header is unconditionally 401
+//! post-slice-4.
+static HttpResponse DoRequest( unsigned short port, const std::string& method,
+                                const std::string& path, const std::string& body )
+{
+	ExtraHeaders extra;
+	extra.hasAuthorization = true;
+	extra.authorization = "Bearer " + g_testToken;
+	return DoRequestEx( port, method, path, body, extra );
 }
 
 //! Builds an MCP/JSON-RPC request line.
@@ -283,6 +358,14 @@ int main()
 	const unsigned short port = server.BoundPort();
 	Check( port != 0, "BoundPort() reports a nonzero ephemeral port after Bind(0)" );
 	Check( server.IsBound(), "IsBound() is true after a successful Bind()" );
+
+	// Secure-MCP slice 4: read this server's per-launch bearer token via the
+	// ForTest_ accessor so every DoRequest/DoRequestEx call in the rest of
+	// this test can present valid auth -- a request with no Authorization
+	// header (or the wrong one) is now unconditionally 401 before it ever
+	// reaches any of the HTTP-correctness/smuggling/fuzz cases below.
+	g_testToken = server.ForTest_Token();
+	Check( g_testToken.size() == 64, "the per-launch bearer token is 64 hex chars (32 bytes = 256 bits)" );
 
 	// Serve() is the serial accept-handle LOOP -- it must run on its own
 	// thread for this test to act as a client against it. This is the
@@ -396,7 +479,8 @@ int main()
 		const int s = ConnectLoopback( port );
 		Check( s >= 0, "connect for missing-Content-Length case" );
 		if( s >= 0 ) {
-			const std::string raw = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+			const std::string raw = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+			                         "Authorization: Bearer " + g_testToken + "\r\n\r\n";
 			Check( SendAll( s, raw ), "sent a request with no Content-Length header" );
 			HttpResponse r = ParseHttpResponse( ReadAllUntilClose( s ) );
 			Check( r.ok && r.status == 400, "missing Content-Length -> clean 400 (not a hang/crash)" );
@@ -415,6 +499,7 @@ int main()
 		Check( s >= 0, "connect for oversized-Content-Length case" );
 		if( s >= 0 ) {
 			const std::string raw = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+			                         "Authorization: Bearer " + g_testToken + "\r\n"
 			                         "Content-Length: 999999999999\r\n\r\n";
 			Check( SendAll( s, raw ), "sent a request declaring an oversized Content-Length" );
 			HttpResponse r = ParseHttpResponse( ReadAllUntilClose( s ) );
@@ -432,6 +517,7 @@ int main()
 		Check( s >= 0, "connect for truncated-body case" );
 		if( s >= 0 ) {
 			const std::string raw = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+			                         "Authorization: Bearer " + g_testToken + "\r\n"
 			                         "Content-Length: 100\r\n\r\n{\"short\":true}";
 			Check( SendAll( s, raw ), "sent a request whose body is shorter than its declared Content-Length" );
 			shutdown( s, SHUT_WR );   // half-close: no more bytes are coming
@@ -569,7 +655,7 @@ int main()
 		// Non-numeric Content-Length.
 		const int s = ConnectLoopback( port );
 		if( s >= 0 ) {
-			SendAll( s, "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: notanumber\r\n\r\n" );
+			SendAll( s, "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer " + g_testToken + "\r\nContent-Length: notanumber\r\n\r\n" );
 			HttpResponse r = ParseHttpResponse( ReadAllUntilClose( s ) );
 			Check( r.ok && r.status == 400, "non-numeric Content-Length -> clean 400" );
 			close( s );
@@ -581,7 +667,7 @@ int main()
 		// rejected the same way as any other non-numeric value).
 		const int s = ConnectLoopback( port );
 		if( s >= 0 ) {
-			SendAll( s, "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: -5\r\n\r\n" );
+			SendAll( s, "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer " + g_testToken + "\r\nContent-Length: -5\r\n\r\n" );
 			HttpResponse r = ParseHttpResponse( ReadAllUntilClose( s ) );
 			Check( r.ok && r.status == 400, "negative-looking Content-Length -> clean 400" );
 			close( s );
@@ -596,7 +682,8 @@ int main()
 		const int s = ConnectLoopback( port );
 		if( s >= 0 ) {
 			std::string body = std::string( "{\"a\":\"" ) + '\0' + "\"}";
-			std::string raw = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: " +
+			std::string raw = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer " + g_testToken +
+			                   "\r\nContent-Length: " +
 			                   std::to_string( body.size() ) + "\r\n\r\n" + body;
 			// SendAll on a std::string with an embedded NUL is fine --
 			// std::string tracks length explicitly, unlike a C string.
@@ -612,6 +699,167 @@ int main()
 		// malformed inputs above wedged or crashed the server.
 		HttpResponse r = DoRequest( port, "POST", "/mcp", ReqInitialize( 99 ) );
 		Check( r.ok && r.status == 200, "server still answers a well-formed request after the fuzz batch" );
+	}
+
+	//------------------------------------------------------------------
+	// (j) [SLICE 4] bearer-token auth.
+	//------------------------------------------------------------------
+	std::printf( "[auth] bearer token: absent -> 401, wrong -> 401, correct -> 200\n" );
+	{
+		// No Authorization header at all.
+		// RED-PROVE: with the auth-check block removed from
+		// ServeOneConnection (AgentLoopbackHttpServer.cpp), this exact
+		// request reaches the dispatcher and returns 200 instead.
+		ExtraHeaders extra;   // hasAuthorization defaults to false
+		HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( 200 ), extra );
+		Check( r.ok && r.status == 401, "no Authorization header -> 401 Unauthorized" );
+	}
+	{
+		// Wrong token -- same length as the real one (so this exercises
+		// ConstantTimeEquals's byte-loop, not just its length-mismatch
+		// fold), differing at the FIRST byte.
+		std::string wrong = g_testToken;
+		wrong[0] = ( wrong[0] == '0' ) ? '1' : '0';
+		ExtraHeaders extra;
+		extra.hasAuthorization = true;
+		extra.authorization = "Bearer " + wrong;
+		HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( 201 ), extra );
+		Check( r.ok && r.status == 401, "wrong token (differs at first byte) -> 401 Unauthorized" );
+	}
+	{
+		// Wrong token differing only at the LAST byte -- a byte-wise
+		// early-return compare would still catch this correctly (it's the
+		// LAST byte that differs, so a naive compare walks the whole
+		// string anyway), but this is the complementary case to "differs
+		// at the first byte" above for exercising the full comparison
+		// range.
+		std::string wrong = g_testToken;
+		wrong.back() = ( wrong.back() == '0' ) ? '1' : '0';
+		ExtraHeaders extra;
+		extra.hasAuthorization = true;
+		extra.authorization = "Bearer " + wrong;
+		HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( 202 ), extra );
+		Check( r.ok && r.status == 401, "wrong token (differs at last byte) -> 401 Unauthorized" );
+	}
+	{
+		// Wrong-length token (shorter than the real one).
+		ExtraHeaders extra;
+		extra.hasAuthorization = true;
+		extra.authorization = "Bearer " + g_testToken.substr( 0, g_testToken.size() - 1 );
+		HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( 203 ), extra );
+		Check( r.ok && r.status == 401, "wrong-length (truncated) token -> 401 Unauthorized" );
+	}
+	{
+		// Correct token, wrong scheme case ("bearer" lowercase) -- RFC 7235
+		// SS2.1 says the scheme name is matched case-insensitively.
+		ExtraHeaders extra;
+		extra.hasAuthorization = true;
+		extra.authorization = "bearer " + g_testToken;
+		HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( 204 ), extra );
+		Check( r.ok && r.status == 200, "lowercase \"bearer\" scheme with the correct token -> 200 (scheme is case-insensitive)" );
+	}
+	{
+		// Correct token -> 200 with a valid MCP response, AND the
+		// WWW-Authenticate header is present on the 401 responses above --
+		// checked separately via a raw connect since HttpResponse doesn't
+		// parse arbitrary headers.
+		HttpResponse r = DoRequest( port, "POST", "/mcp", ReqInitialize( 205 ) );
+		Check( r.ok && r.status == 200, "correct token -> 200" );
+		JsonValue env; std::string perr;
+		Check( JsonParse( r.body, env, perr ), "correct token: body parses as JSON" );
+		Check( env.get( "id" ).asNumber( -999 ) == 205.0, "correct token: id echoes 205" );
+	}
+	{
+		// WWW-Authenticate: Bearer must accompany a 401, per RFC 7235 SS4.1.
+		const int s = ConnectLoopback( port );
+		Check( s >= 0, "connect for WWW-Authenticate case" );
+		if( s >= 0 ) {
+			const std::string raw = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\n\r\n{}";
+			Check( SendAll( s, raw ), "sent a request with no Authorization header" );
+			const std::string respRaw = ReadAllUntilClose( s );
+			HttpResponse r = ParseHttpResponse( respRaw );
+			Check( r.ok && r.status == 401, "no-auth request -> 401 (WWW-Authenticate check)" );
+			Check( respRaw.find( "WWW-Authenticate: Bearer" ) != std::string::npos,
+			       "401 response carries a WWW-Authenticate: Bearer header" );
+			Check( respRaw.find( g_testToken ) == std::string::npos,
+			       "401 response NEVER echoes the expected token anywhere in the raw HTTP response" );
+			close( s );
+		}
+	}
+
+	//------------------------------------------------------------------
+	// (k) [SLICE 4] Origin validation -- independent of auth.
+	//------------------------------------------------------------------
+	std::printf( "[origin] Origin present and not loopback -> 403, even with a correct token\n" );
+	{
+		// RED-PROVE: with the Origin-check block removed from
+		// ServeOneConnection, this exact request (correct token AND all)
+		// reaches the dispatcher and returns 200 instead.
+		ExtraHeaders extra;
+		extra.hasAuthorization = true;
+		extra.authorization = "Bearer " + g_testToken;
+		extra.hasOrigin = true;
+		extra.origin = "http://evil.com";
+		HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( 210 ), extra );
+		Check( r.ok && r.status == 403,
+		       "Origin: http://evil.com present WITH a correct bearer token -> 403 Forbidden "
+		       "(proves the Origin check is not subsumed by auth)" );
+	}
+	{
+		// An explicit loopback Origin is accepted.
+		ExtraHeaders extra;
+		extra.hasAuthorization = true;
+		extra.authorization = "Bearer " + g_testToken;
+		extra.hasOrigin = true;
+		extra.origin = "http://127.0.0.1:" + std::to_string( port );
+		HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( 211 ), extra );
+		Check( r.ok && r.status == 200, "an explicit loopback Origin (http://127.0.0.1:<port>) is accepted" );
+	}
+	{
+		// No Origin header at all (the non-browser MCP client case) is
+		// accepted -- this is exactly what DoRequest() already sends for
+		// every other case in this file, so this is really re-asserting
+		// the baseline the rest of the suite depends on.
+		HttpResponse r = DoRequest( port, "POST", "/mcp", ReqInitialize( 212 ) );
+		Check( r.ok && r.status == 200, "no Origin header at all is accepted (non-browser MCP client)" );
+	}
+
+	//------------------------------------------------------------------
+	// (l) [SLICE 4] Host validation (anti-DNS-rebinding).
+	//------------------------------------------------------------------
+	std::printf( "[host] Host header naming a non-loopback domain -> 403 (DNS-rebinding defense)\n" );
+	{
+		// RED-PROVE: with the Host-check block removed from
+		// ServeOneConnection, this exact request (correct token, no Origin
+		// header at all -- exactly the shape a same-origin XHR after a DNS
+		// rebind would have, since Origin reflects the ATTACKER page's
+		// origin which the attacker controls but Host reflects the
+		// resolved-via-rebind hostname) reaches the dispatcher and returns
+		// 200 instead.
+		ExtraHeaders extra;
+		extra.host = "evil.com";
+		extra.hasAuthorization = true;
+		extra.authorization = "Bearer " + g_testToken;
+		HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( 220 ), extra );
+		Check( r.ok && r.status == 403, "Host: evil.com (DNS-rebind shape) -> 403 Forbidden" );
+	}
+	{
+		// Host with an explicit port is accepted.
+		ExtraHeaders extra;
+		extra.host = "127.0.0.1:" + std::to_string( port );
+		extra.hasAuthorization = true;
+		extra.authorization = "Bearer " + g_testToken;
+		HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( 221 ), extra );
+		Check( r.ok && r.status == 200, "Host: 127.0.0.1:<port> is accepted" );
+	}
+	{
+		// Host: localhost (no port) is accepted.
+		ExtraHeaders extra;
+		extra.host = "localhost";
+		extra.hasAuthorization = true;
+		extra.authorization = "Bearer " + g_testToken;
+		HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( 222 ), extra );
+		Check( r.ok && r.status == 200, "Host: localhost is accepted" );
 	}
 
 	//------------------------------------------------------------------
@@ -734,6 +982,48 @@ int main()
 		}
 		Check( allCyclesOk, "50 bind/serve/concurrent-connect/stop cycles: no crash, no hang, every Serve() thread joined promptly" );
 	}
+
+	//------------------------------------------------------------------
+	// (m) [SLICE 4] per-launch token entropy: two separate server
+	// construction cycles produce two DIFFERENT tokens -- proves the
+	// token is a fresh CSPRNG draw per construction, not a fixed/
+	// compiled-in constant. (Extremely rare false failure: two 256-bit
+	// CSPRNG draws colliding has probability ~2^-256 -- not a real flake
+	// risk.)
+	//------------------------------------------------------------------
+	std::printf( "[token-entropy] two server-construction cycles produce two different bearer tokens\n" );
+	{
+		std::unique_ptr<AgentSession> sessionA = AgentSession::LoadFromFile( scenePath );
+		std::unique_ptr<AgentSession> sessionB = AgentSession::LoadFromFile( scenePath );
+		Check( sessionA != nullptr && sessionB != nullptr, "token-entropy: reloaded the temp scene twice" );
+
+		AgentMcpAdapter adapterA( std::move( sessionA ), RISE::Agent::AgentAutonomy::Read );
+		AgentMcpAdapter adapterB( std::move( sessionB ), RISE::Agent::AgentAutonomy::Read );
+		AgentLoopbackHttpServer serverA( &adapterA, "/mcp" );
+		AgentLoopbackHttpServer serverB( &adapterB, "/mcp" );
+
+		const std::string tokenA = serverA.ForTest_Token();
+		const std::string tokenB = serverB.ForTest_Token();
+		Check( tokenA.size() == 64 && tokenB.size() == 64,
+		       "token-entropy: both tokens are 64 hex chars" );
+		Check( tokenA != tokenB,
+		       "token-entropy: two separate AgentLoopbackHttpServer construction cycles produce "
+		       "DIFFERENT bearer tokens (per-launch CSPRNG, not a fixed constant)" );
+	}
+
+	//------------------------------------------------------------------
+	// (n) [SLICE 4] ConstantTimeEquals-shaped coverage note: the helper
+	// itself is anonymous-namespace-private to AgentLoopbackHttpServer.cpp
+	// and not exposed for direct unit-testing from this file. Its
+	// behavioural contract (equal -> true; differ at first byte / last
+	// byte / length -> false; no early return) is exercised end-to-end via
+	// the wrong-token cases in section (j) above (first-byte-diff,
+	// last-byte-diff, and truncated-length all correctly 401). See the
+	// doc comment on ConstantTimeEquals in AgentLoopbackHttpServer.cpp for
+	// the code-read argument that it does not short-circuit (the
+	// accumulate-then-check-once `diff` pattern, `volatile` to block a
+	// smart compiler from re-introducing a data-dependent branch).
+	//------------------------------------------------------------------
 
 	std::remove( scenePath.c_str() );
 

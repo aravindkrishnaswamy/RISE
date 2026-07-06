@@ -19,6 +19,25 @@
 #ifdef WIN32
 	#include <winsock.h>
 	typedef int socklen_t_compat;
+	// Windows CSPRNG (BCryptGenRandom) -- see GenerateBearerToken() below.
+	// This #include and the code path it guards are written BY SYMMETRY
+	// with the Darwin/Linux legs; this codebase does not compile the
+	// Windows leg of this file today (see the Bind()'s WSAStartup comment
+	// for the same posture on this file's Windows support), so this is an
+	// OWED, not a VERIFIED, code path -- see this slice's final report.
+	#include <bcrypt.h>
+#elif defined( __APPLE__ ) || defined( __FreeBSD__ ) || defined( __OpenBSD__ ) || defined( __NetBSD__ )
+	#include <unistd.h>
+	#include <sys/types.h>
+	#include <sys/socket.h>
+	#include <netinet/in.h>
+	#include <netinet/tcp.h>
+	#include <arpa/inet.h>
+	#include <errno.h>
+	#include <stdlib.h>   // arc4random_buf -- see GenerateBearerToken() below
+	typedef socklen_t socklen_t_compat;
+	static const SOCKET kBadSocket = -1;
+	#define RISE_AGENT_HTTP_HAVE_ARC4RANDOM 1
 #else
 	#include <unistd.h>
 	#include <sys/types.h>
@@ -27,6 +46,7 @@
 	#include <netinet/tcp.h>
 	#include <arpa/inet.h>
 	#include <errno.h>
+	#include <cstdio>   // /dev/urandom read -- see GenerateBearerToken() below
 	typedef socklen_t socklen_t_compat;
 	static const SOCKET kBadSocket = -1;
 #endif
@@ -184,9 +204,11 @@ namespace
 
 	//! Logs ONE line of request metadata -- method, path, status, and
 	//! byte sizes ONLY. NEVER the request or response BODY (that could
-	//! carry scene text, a base64 PNG, or -- once slice 4 lands -- a
-	//! bearer token): the logging hygiene for this transport starts now,
-	//! not when auth is added.
+	//! carry scene text, a base64 PNG, or a bearer token/Authorization
+	//! header value): this line has never included, and must never be
+	//! changed to include, any header VALUE -- only method/path/status/
+	//! sizes, so a REDACTED credential can never accidentally end up in
+	//! RISE_Log.txt.
 	void LogRequest( const std::string& method, const std::string& path,
 	                  int status, std::size_t reqBytes, std::size_t respBytes )
 	{
@@ -194,11 +216,266 @@ namespace
 			"agent-http: %s %s -> %d (req %zu bytes, resp %zu bytes)",
 			method.c_str(), path.c_str(), status, reqBytes, respBytes );
 	}
+
+	//////////////////////////////////////////////////////////////////
+	// Secure-MCP slice 4: per-launch bearer token + Origin/Host checks.
+	//////////////////////////////////////////////////////////////////
+
+	//! Number of raw random bytes behind the token (32 bytes = 256 bits
+	//! of entropy, comfortably over the 128-bit floor this slice targets)
+	//! -- hex-encoded below to 64 printable characters so it drops
+	//! straight into an `Authorization: Bearer <token>` header with no
+	//! escaping concerns.
+	const std::size_t kTokenRawBytes = 32;
+
+	//! Hex-encodes `raw` (lowercase, 2 chars per byte -- e.g. 32 bytes in,
+	//! 64 hex chars out). Used only for the bearer token, never for
+	//! anything logged.
+	std::string HexEncode( const unsigned char* raw, std::size_t n )
+	{
+		static const char kHexDigits[] = "0123456789abcdef";
+		std::string out;
+		out.resize( n * 2 );
+		for( std::size_t i = 0; i < n; ++i ) {
+			out[i * 2]     = kHexDigits[( raw[i] >> 4 ) & 0x0F];
+			out[i * 2 + 1] = kHexDigits[raw[i] & 0x0F];
+		}
+		return out;
+	}
+
+	//! Fills `raw[0..n)` with cryptographically-random bytes from the
+	//! platform CSPRNG. FATAL (aborts the process) on any failure to
+	//! obtain randomness -- there is no principled fallback: a "weak but
+	//! available" RNG here would silently downgrade the entire slice-4
+	//! security boundary to guessable, which is worse than refusing to
+	//! start. This is the ONLY place in this file real randomness is
+	//! sourced; nothing else in this codebase's agentic surface (the CST
+	//! head-version counter, MEMORY.md's note on the epoch/uuid minting)
+	//! uses a CSPRNG, so there was no existing in-tree helper to reuse.
+	void FillCryptoRandom( unsigned char* raw, std::size_t n )
+	{
+#if defined( WIN32 )
+		// BCryptGenRandom, the modern (Vista+) CNG CSPRNG entry point.
+		// BCRYPT_USE_SYSTEM_PREFERRED_RNG selects the OS default algorithm
+		// provider rather than opening/holding one explicitly -- the
+		// standard idiom for a one-shot fill. Written by symmetry; this
+		// codebase does not compile the Windows leg of this file today
+		// (see the #include<bcrypt.h> comment above) -- OWED, not verified.
+		const NTSTATUS status = BCryptGenRandom(
+			nullptr, raw, static_cast<ULONG>( n ),
+			BCRYPT_USE_SYSTEM_PREFERRED_RNG );
+		if( status != 0 /* STATUS_SUCCESS */ ) {
+			std::fprintf( stderr,
+				"FATAL: rise --agent-http: BCryptGenRandom failed (status 0x%lx) -- "
+				"cannot start the loopback HTTP transport without a real bearer "
+				"token. Refusing to fall back to a weak RNG.\n",
+				static_cast<unsigned long>( status ) );
+			std::abort();
+		}
+#elif defined( RISE_AGENT_HTTP_HAVE_ARC4RANDOM )
+		// Darwin/BSD: arc4random_buf is a CSPRNG, always available (no
+		// seeding step, no open-file-descriptor failure mode, unlike
+		// /dev/urandom) -- it cannot fail, hence no error path here.
+		arc4random_buf( raw, n );
+#else
+		// Linux and other POSIX platforms without arc4random_buf: read
+		// directly from /dev/urandom. Deliberately NOT /dev/random (which
+		// can block for "true" entropy accounting that modern kernels
+		// don't actually need for CSPRNG output) -- /dev/urandom has been
+		// cryptographically sound for this purpose since the kernel's
+		// CSPRNG is seeded (and Linux blocks /dev/urandom reads itself,
+		// pre-5.x, only until first seeding at boot, long before a user
+		// process like this one runs). A short read is retried; open
+		// failure or a read that returns <=0 is FATAL -- there is no safe
+		// fallback (see FillCryptoRandom's doc above).
+		std::FILE* f = std::fopen( "/dev/urandom", "rb" );
+		if( !f ) {
+			std::fprintf( stderr,
+				"FATAL: rise --agent-http: could not open /dev/urandom (%s) -- "
+				"cannot start the loopback HTTP transport without a real bearer "
+				"token. Refusing to fall back to a weak RNG.\n",
+				std::strerror( errno ) );
+			std::abort();
+		}
+		std::size_t got = 0;
+		while( got < n ) {
+			const std::size_t r = std::fread( raw + got, 1, n - got, f );
+			if( r == 0 ) {
+				std::fclose( f );
+				std::fprintf( stderr,
+					"FATAL: rise --agent-http: short/failed read from /dev/urandom -- "
+					"cannot start the loopback HTTP transport without a real bearer "
+					"token. Refusing to fall back to a weak RNG.\n" );
+				std::abort();
+			}
+			got += r;
+		}
+		std::fclose( f );
+#endif
+	}
+
+	//! Generates one fresh per-launch bearer token: kTokenRawBytes of
+	//! CSPRNG output, hex-encoded. Called exactly once, from this server's
+	//! constructor.
+	std::string GenerateBearerToken()
+	{
+		unsigned char raw[kTokenRawBytes];
+		FillCryptoRandom( raw, kTokenRawBytes );
+		std::string token = HexEncode( raw, kTokenRawBytes );
+		// Best-effort scrub of the raw bytes from the stack -- the hex
+		// string is the only copy that needs to survive. Not a strong
+		// guarantee (the compiler may still have left copies in registers/
+		// spill slots), but cheap and removes the most obvious residue.
+		std::memset( raw, 0, sizeof( raw ) );
+		return token;
+	}
+
+	//! Constant-time byte-for-byte comparison: does NOT short-circuit on
+	//! the first differing byte (unlike std::string::operator== or
+	//! memcmp, both of which are permitted -- and in practice observed --
+	//! to return as soon as a mismatch is found, leaking the length of
+	//! the matching PREFIX through a timing side channel). Every byte of
+	//! BOTH inputs is always touched; the result is accumulated via OR
+	//! into a single `diff` value that is only inspected once, at the
+	//! end, after the full loop has run.
+	//!
+	//! Length handling: if the lengths differ, this still walks the
+	//! SHORTER length's worth of bytes (comparing `a` against itself is
+	//! not an option -- there is nothing to compare a length mismatch
+	//! against without reading past one buffer's end) and then folds the
+	//! length difference into `diff` too, so a length mismatch is treated
+	//! as "differs" without an early return. The tiny remaining leak --
+	//! whether the two lengths are EQUAL at all -- is not a practical
+	//! concern for a fixed-length (64 hex char) token compared against an
+	//! attacker-controlled header value of arbitrary length: the length
+	//! check happens once per request, not once per byte, so it cannot be
+	//! used to binary-search individual token BYTES the way a byte-wise
+	//! early return could. This is the standard constant-time-compare
+	//! idiom (matches libsodium's sodium_memcmp / OpenSSL's
+	//! CRYPTO_memcmp shape); documented here rather than silently trusted
+	//! per this slice's requirement to spell out the exact guarantee.
+	bool ConstantTimeEquals( const std::string& a, const std::string& b )
+	{
+		const std::size_t lenA = a.size();
+		const std::size_t lenB = b.size();
+		const std::size_t minLen = ( lenA < lenB ) ? lenA : lenB;
+
+		volatile unsigned char diff = 0;
+		for( std::size_t i = 0; i < minLen; ++i ) {
+			diff |= static_cast<unsigned char>( a[i] ) ^ static_cast<unsigned char>( b[i] );
+		}
+		// Fold the length difference in too (still no early return, no
+		// branch on a per-byte comparison result -- just an OR of a
+		// nonzero-iff-unequal value computed from the two lengths).
+		diff |= static_cast<unsigned char>( ( lenA ^ lenB ) & 0xFF );
+		diff |= static_cast<unsigned char>( ( ( lenA ^ lenB ) >> 8 ) & 0xFF );
+
+		return diff == 0;
+	}
+
+	//! Case-insensitive ASCII match, used for the header NAME lookups
+	//! below (HTTP header names are case-insensitive per RFC 7230 §3.2)
+	//! and for the "Bearer" scheme token (RFC 7235 §2.1 says the scheme
+	//! name is compared case-insensitively; the credential itself is
+	//! compared exactly, via ConstantTimeEquals above).
+	bool EqualsIgnoreCase( const std::string& a, const std::string& b )
+	{
+		if( a.size() != b.size() ) return false;
+		for( std::size_t i = 0; i < a.size(); ++i ) {
+			if( std::tolower( static_cast<unsigned char>( a[i] ) ) !=
+			    std::tolower( static_cast<unsigned char>( b[i] ) ) ) return false;
+		}
+		return true;
+	}
+
+	//! Looks up header `name` (case-insensitive) in the raw header block
+	//! `head` (the same "METHOD path HTTP/1.1\r\nHeader: value\r\n...\r\n\r\n"
+	//! text ServeOneConnection already parses Content-Length out of).
+	//! Returns true and fills `outValue` (trimmed of leading/trailing
+	//! whitespace, matching the existing Content-Length trim logic) on
+	//! the FIRST matching header line; false if absent. Multiple
+	//! occurrences of Authorization/Origin/Host are not a smuggling
+	//! vector the way duplicate Content-Length is (this server doesn't
+	//! sit behind a proxy that could disagree on which one to honour), so
+	//! -- unlike Content-Length -- this does not reject on a duplicate;
+	//! it simply uses the first.
+	bool FindHeader( const std::string& head, const std::string& name, std::string& outValue )
+	{
+		const std::size_t firstCrlf = head.find( "\r\n" );
+		std::size_t lineStart = firstCrlf;
+		while( lineStart != std::string::npos && lineStart + 2 <= head.size() ) {
+			lineStart += 2;
+			const std::size_t lineEnd = head.find( "\r\n", lineStart );
+			if( lineEnd == std::string::npos ) break;
+			const std::string hline = head.substr( lineStart, lineEnd - lineStart );
+			if( hline.empty() ) break;   // the blank line before the body
+
+			const std::size_t colon = hline.find( ':' );
+			if( colon != std::string::npos ) {
+				const std::string key = hline.substr( 0, colon );
+				if( EqualsIgnoreCase( key, name ) ) {
+					std::string val = hline.substr( colon + 1 );
+					const std::size_t a = val.find_first_not_of( " \t" );
+					const std::size_t b = val.find_last_not_of( " \t\r" );
+					outValue = ( a == std::string::npos ) ? std::string() : val.substr( a, b - a + 1 );
+					return true;
+				}
+			}
+			lineStart = lineEnd;
+		}
+		return false;
+	}
+
+	//! True iff `host` (the value of a Host header, e.g. "127.0.0.1:9000"
+	//! or "localhost") names loopback -- with or without a trailing
+	//! ":<port>". This is the anti-DNS-rebinding Host check: a rebind
+	//! attack resolves an attacker-controlled DOMAIN name to 127.0.0.1,
+	//! but the browser still sends THAT domain as the Host header value
+	//! (Host reflects the URL the page navigated to, not the resolved
+	//! IP) -- so accepting only the literal loopback names here rejects
+	//! the rebind even though the TCP connection itself did land on
+	//! 127.0.0.1.
+	bool IsLoopbackHost( const std::string& host )
+	{
+		std::string hostOnly = host;
+		const std::size_t colon = hostOnly.find( ':' );
+		if( colon != std::string::npos ) hostOnly = hostOnly.substr( 0, colon );
+
+		return hostOnly == "127.0.0.1" || hostOnly == "localhost" || hostOnly == "[::1]" || hostOnly == "::1";
+	}
+
+	//! True iff `origin` (the value of an Origin header, e.g.
+	//! "http://127.0.0.1:9000" or "null") is an allowed loopback origin.
+	//! Per the MCP spec's anti-DNS-rebinding guidance: a non-browser MCP
+	//! client typically sends NO Origin header at all (handled by the
+	//! caller -- absence is accepted independently of this function); a
+	//! BROWSER tab's fetch/XHR to 127.0.0.1 always sends an Origin equal
+	//! to the PAGE's own origin (the attacking page, e.g.
+	//! "http://evil.com", in a DNS-rebinding attempt) -- so the only
+	//! Origins this allows are schemes/hosts that are themselves
+	//! loopback: http(s)://127.0.0.1[:port], http(s)://localhost[:port],
+	//! http(s)://[::1][:port]. Anything else (including "null", which a
+	//! sandboxed iframe or a local `file://` page can send) is rejected.
+	bool IsAllowedLoopbackOrigin( const std::string& origin )
+	{
+		// Strip the "scheme://" prefix if present so the host-matching
+		// logic can be shared with IsLoopbackHost. An Origin header is
+		// always "scheme://host[:port]" (never a bare host) per the Fetch
+		// spec, but this is defensive rather than assumed.
+		const std::size_t schemeEnd = origin.find( "://" );
+		if( schemeEnd == std::string::npos ) return false;   // e.g. "null" -- rejected
+		const std::string scheme = origin.substr( 0, schemeEnd );
+		if( !EqualsIgnoreCase( scheme, "http" ) && !EqualsIgnoreCase( scheme, "https" ) ) return false;
+
+		const std::string hostAndPort = origin.substr( schemeEnd + 3 );
+		return IsLoopbackHost( hostAndPort );
+	}
 }
 
 AgentLoopbackHttpServer::AgentLoopbackHttpServer( AgentMcpAdapter* adapter, const std::string& path )
 	: mAdapter( adapter )
 	, mPath( path )
+	, mBearerToken( GenerateBearerToken() )   // per-launch CSPRNG token -- see GenerateBearerToken()'s doc
 	, mListenSock( kBadSocket )   // std::atomic<SOCKET> -- see the .h's doc on the Stop()/Serve() shutdown race this guards
 	, mBoundPort( 0 )
 	, mBoundAddress()
@@ -227,9 +504,12 @@ bool AgentLoopbackHttpServer::Bind( unsigned short port )
 	// Winsock error. This class already writes its own self-contained
 	// socket code rather than reusing SocketComm's helpers (see the bind()
 	// call's comment below on why EstablishConnection isn't reused here),
-	// and SocketCommunications.cpp is not part of this Unix-make library
-	// target's object list (it is Windows/DRISE only in this tree's
-	// Filelist), so this calls WSAStartup directly rather than adding a
+	// and SocketCommunications.cpp is not part of librise's own object
+	// list (it lives under SRCDRISE in this tree's Filelist -- the DRISE
+	// distributed-render source list, built all-platforms for
+	// drise_server/drise_client/drise_submitter, NOT Windows-only -- but
+	// never linked into librise.a, which is what this agentic-surface code
+	// ships in), so this calls WSAStartup directly rather than adding a
 	// cross-target Filelist dependency for one function. WSAStartup is
 	// refcounted by the OS (a matching WSACleanup is only owed if this
 	// process pairs it with a shutdown call, which -- matching
@@ -481,10 +761,7 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 		return;
 	}
 
-	// ---- Parse headers for Content-Length (the only header this v1
-	// transport reads; everything else -- including any future
-	// Authorization/Origin header slice 4 will add -- is out of scope
-	// here) -- PLUS two request-smuggling preconditions per RFC 7230
+	// ---- Parse headers for Content-Length -- PLUS two request-smuggling preconditions per RFC 7230
 	// §3.3.3: a request MUST NOT carry more than one Content-Length, and
 	// MUST NOT carry a Transfer-Encoding header at all (this server never
 	// advertises or accepts chunked encoding, so a client sending one is
@@ -566,6 +843,98 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 		SendAll( client, resp );
 		LogRequest( method, path, 400, head.size(), resp.size() );
 		return;
+	}
+
+	// ---- Secure-MCP slice 4: Host -> Origin -> Auth, cheapest/fail-closed
+	// first, all BEFORE method/path dispatch and BEFORE any body byte is
+	// read. Each rejection is a distinct, clean HTTP status; none echoes
+	// the expected token or the reason the check chose (beyond the fixed,
+	// static message below) -- there is no oracle here for an attacker
+	// without the token, since none of these three checks can be passed
+	// without EITHER already knowing the token (irrelevant to Host/Origin)
+	// or already being a legitimate loopback, non-rebound, same-origin
+	// caller.
+	//
+	// (1) Host check: a DNS-rebinding attack points a hostile domain's DNS
+	// record at 127.0.0.1 and relies on the browser sending that domain
+	// name as Host -- reject any Host that isn't 127.0.0.1/localhost/::1
+	// (with or without a port). A request with NO Host header at all
+	// (technically invalid HTTP/1.1, but this is a hand-rolled parser, not
+	// a strict-mode one) is treated the same as an absent check would be
+	// for a non-browser client -- there's nothing to validate, so it is
+	// NOT rejected here (that would break a minimal raw-socket MCP client
+	// that omits Host, which many hand-rolled test/debug clients do); the
+	// security-relevant case is a rebind attack, which always DOES send a
+	// (wrong) Host.
+	{
+		std::string hostValue;
+		if( FindHeader( head, "Host", hostValue ) && !IsLoopbackHost( hostValue ) ) {
+			const std::string resp = PlainError( "403 Forbidden", "Host header does not name loopback" );
+			SendAll( client, resp );
+			LogRequest( method, path, 403, head.size(), resp.size() );
+			return;
+		}
+	}
+
+	// (2) Origin check: per the MCP spec's anti-DNS-rebinding guidance, if
+	// an Origin header is present at all it must be an explicit loopback
+	// origin. A non-browser MCP client (curl, a raw socket, a CLI tool)
+	// never sends Origin -- absent passes unconditionally. A BROWSER tab's
+	// fetch/XHR to 127.0.0.1 ALWAYS sends Origin equal to the calling
+	// page's own origin -- for a DNS-rebinding attack that is the
+	// attacker's page origin (e.g. "http://evil.com"), which is not a
+	// loopback origin and is rejected here regardless of whether the
+	// request also carries a valid bearer token (this check is
+	// independent of auth by design -- see section (k) of
+	// AgentLoopbackHttpTest.cpp).
+	{
+		std::string originValue;
+		if( FindHeader( head, "Origin", originValue ) && !IsAllowedLoopbackOrigin( originValue ) ) {
+			const std::string resp = PlainError( "403 Forbidden", "Origin is not an allowed loopback origin" );
+			SendAll( client, resp );
+			LogRequest( method, path, 403, head.size(), resp.size() );
+			return;
+		}
+	}
+
+	// (3) Bearer-token auth: every request MUST carry
+	// `Authorization: Bearer <token>` matching this server's per-launch
+	// token (see GenerateBearerToken()). The scheme name ("Bearer") is
+	// matched case-insensitively per RFC 7235 SS2.1; the token itself is
+	// compared with ConstantTimeEquals, never a short-circuiting
+	// operator==/memcmp. Absent header, wrong scheme, or wrong token are
+	// all folded into the same 401 -- distinguishing them would tell an
+	// attacker WHICH part of their guess was wrong, which is exactly the
+	// oracle a constant-time compare is trying to deny elsewhere in this
+	// same check.
+	{
+		std::string authValue;
+		bool authOk = false;
+		if( FindHeader( head, "Authorization", authValue ) ) {
+			const std::string kSchemePrefix = "Bearer ";
+			if( authValue.size() > kSchemePrefix.size() &&
+			    EqualsIgnoreCase( authValue.substr( 0, kSchemePrefix.size() ), kSchemePrefix ) ) {
+				const std::string presentedToken = authValue.substr( kSchemePrefix.size() );
+				authOk = ConstantTimeEquals( presentedToken, mBearerToken );
+			}
+		}
+		if( !authOk ) {
+			std::string resp = BuildHttpResponse( "401 Unauthorized", "text/plain", "missing or invalid bearer token" );
+			// WWW-Authenticate is the standard companion header to a 401
+			// (RFC 7235 SS4.1) -- inserted between the status line and the
+			// fixed Content-Type header BuildHttpResponse already wrote, by
+			// rebuilding rather than by adding a WWW-Authenticate parameter
+			// to BuildHttpResponse itself (this is the only response in this
+			// file that needs it, so a bespoke helper isn't warranted).
+			const std::string marker = "\r\nContent-Type:";
+			const std::size_t pos = resp.find( marker );
+			if( pos != std::string::npos ) {
+				resp.insert( pos, "\r\nWWW-Authenticate: Bearer" );
+			}
+			SendAll( client, resp );
+			LogRequest( method, path, 401, head.size(), resp.size() );
+			return;
+		}
 	}
 
 	const bool isPost = ( method == "POST" );

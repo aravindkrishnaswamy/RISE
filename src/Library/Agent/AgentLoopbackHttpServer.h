@@ -1,10 +1,10 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  AgentLoopbackHttpServer.h - Secure-MCP slice 3: a LOOPBACK-ONLY
+//  AgentLoopbackHttpServer.h - Secure-MCP slice 3+4: a LOOPBACK-ONLY
 //    HTTP/1.1 transport for AgentMcpAdapter (the same 12 agent verbs
 //    the stdio path serves, over a local TCP socket instead of a pipe).
 //
-//    INFRA ONLY -- NOT auth-secure yet.  This slice ships:
+//    Slice 3 shipped the infra:
 //      * a TCP listen socket bound EXPLICITLY to 127.0.0.1 (never
 //        INADDR_ANY / 0.0.0.0 -- see Bind()'s doc),
 //      * a minimal hand-rolled HTTP/1.1 request/response codec (no
@@ -18,14 +18,32 @@
 //        somehow entered twice at once (belt-and-suspenders against a
 //        future change accidentally threading this).
 //
-//    THIS SLICE HAS NO BEARER TOKEN AND NO ORIGIN CHECK.  Binding
-//    loopback-only means only a process ON THIS MACHINE can connect --
-//    that is a real (if coarse) boundary, but it is NOT a substitute for
-//    authentication: any other local user/process/browser tab that can
-//    reach 127.0.0.1 can drive the adapter.  Do not expose this beyond a
-//    single-user local dev workflow until Secure-MCP slice 4 (bearer
-//    token + Origin check) lands.  The `--agent-http` flag's help text
-//    and this server's startup banner both say so explicitly.
+//    Slice 4 (this revision) adds the actual security boundary on top
+//    of that infra:
+//      * a per-launch, cryptographically-random bearer token (see
+//        GenerateBearerToken() in the .cpp) that EVERY request must
+//        present via `Authorization: Bearer <token>`, checked in
+//        CONSTANT TIME (ConstantTimeEquals()) so a timing side-channel
+//        can't be used to guess the token byte-by-byte,
+//      * Origin validation: a request that carries an `Origin` header
+//        at all is rejected with 403 unless that Origin is an explicit
+//        localhost/127.0.0.1 origin -- a non-browser MCP client never
+//        sends Origin (passes), a browser tab (including one doing a
+//        DNS-rebinding attack against 127.0.0.1) always does (rejected),
+//      * Host validation: the `Host` header must name 127.0.0.1/localhost
+//        (with or without the bound port) -- the companion half of the
+//        anti-DNS-rebinding pair (a rebind attack points a hostile
+//        domain's DNS at 127.0.0.1 and relies on the browser sending
+//        THAT hostname as Host).
+//    Binding loopback-only was already a real (if coarse) boundary --
+//    only a process on this machine could connect at all -- but slice 3
+//    stopped there: any OTHER local user/process, or a browser tab via
+//    DNS rebinding, could still drive the adapter with no credential.
+//    With the token + Origin/Host checks in place, this is now a real
+//    (loopback-scoped) authentication boundary, not merely network
+//    isolation -- see the startup banner in commandconsole.cpp for the
+//    honest, still-limited claim (single-user local dev tool, not an
+//    internet-facing auth system).
 //
 //    Autonomy default: unlike the stdio transport's CLI-layer default
 //    (also Read), a caller embedding this server should treat an HTTP
@@ -34,7 +52,10 @@
 //    wrapped AgentMcpAdapter with the SAME `--agent-autonomy` resolution
 //    the stdio paths use (default Read; `--agent-autonomy=commit`
 //    overrides).  This class itself takes no autonomy opinion -- it just
-//    forwards a fully-constructed AgentMcpAdapter's HandleLine.
+//    forwards a fully-constructed AgentMcpAdapter's HandleLine.  Auth is
+//    ORTHOGONAL to autonomy: a valid bearer token gets a request past the
+//    transport's front door; autonomy still gates which verbs the
+//    adapter will actually execute once inside.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -89,6 +110,20 @@ namespace RISE
 
 			AgentLoopbackHttpServer( const AgentLoopbackHttpServer& ) = delete;
 			AgentLoopbackHttpServer& operator=( const AgentLoopbackHttpServer& ) = delete;
+
+			//! The per-launch bearer token every request must present via
+			//! `Authorization: Bearer <token>` (see GenerateBearerToken() in
+			//! the .cpp for the CSPRNG source). Generated once at
+			//! construction and held for the server's lifetime. Production
+			//! code has exactly one legitimate reader: the startup banner in
+			//! commandconsole.cpp, which prints it ONCE to stderr. Named
+			//! `ForTest_` per this codebase's test-accessor convention even
+			//! though the banner also uses it -- there is no separate
+			//! production getter, so the name documents "read sparingly and
+			//! never log/echo this", not "test-only capability". NEVER log
+			//! this, NEVER include it in a response body, NEVER write it to
+			//! the file log.
+			const std::string& ForTest_Token() const { return mBearerToken; }
 
 			//! Bind + listen on 127.0.0.1:`port` (INADDR_LOOPBACK explicitly
 			//! -- NEVER INADDR_ANY/0.0.0.0; see AgentLoopbackHttpServer.cpp
@@ -157,6 +192,7 @@ namespace RISE
 		private:
 			AgentMcpAdapter*    mAdapter;      //!< borrowed
 			std::string         mPath;         //!< the one servable POST path
+			std::string         mBearerToken;  //!< per-launch CSPRNG token; see ForTest_Token()
 
 			//! The listen socket. std::atomic<SOCKET> (NOT a plain SOCKET)
 			//! because Stop() (called from a thread OTHER than the one

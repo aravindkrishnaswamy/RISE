@@ -259,13 +259,15 @@ static int RunAgentMcpStdio( const char* sceneArg, RISE::Agent::AgentAutonomy au
 	return 0;
 }
 
-// Secure-MCP slice 3: `--agent-http[=PORT]` serves the SAME MCP envelope
+// Secure-MCP slice 3+4: `--agent-http[=PORT]` serves the SAME MCP envelope
 // (AgentMcpAdapter) over a LOOPBACK-ONLY HTTP/1.1 endpoint instead of
-// stdin/stdout, so a local MCP client can connect over HTTP. INFRA ONLY --
-// see AgentLoopbackHttpServer.h's file header for the full no-auth-yet
-// scope. `port` == 0 asks the OS for an ephemeral port (printed once bound,
-// to stderr -- stdout is not used as a framing channel by this transport
-// either, for the same console-hygiene reason RunAgentStdio suppresses it).
+// stdin/stdout, so a local MCP client can connect over HTTP. Slice 4 added a
+// per-launch bearer token plus Origin/Host validation on top of the slice-3
+// infra -- see AgentLoopbackHttpServer.h's file header for the full scope.
+// `port` == 0 asks the OS for an ephemeral port (printed once bound, along
+// with the bearer token, to stderr -- stdout is not used as a framing
+// channel by this transport either, for the same console-hygiene reason
+// RunAgentStdio suppresses it).
 //
 // Same `autonomy` contract as RunAgentStdio/RunAgentMcpStdio: resolved and
 // validated in main() before this function is called, and defaults to Read
@@ -293,16 +295,25 @@ static int RunAgentHttp( const char* sceneArg, RISE::Agent::AgentAutonomy autono
 		return 1;
 	}
 
-	// INSECURE-UNTIL-SLICE-4 banner: loud, unconditional, to stderr (stderr
-	// is the console-hygiene channel this transport uses for anything that
-	// is not a JSON-RPC/HTTP response body -- same split RunAgentStdio /
+	// Secure-MCP slice 4 banner: loud, unconditional, to stderr (stderr is
+	// the console-hygiene channel this transport uses for anything that is
+	// not a JSON-RPC/HTTP response body -- same split RunAgentStdio /
 	// RunAgentMcpStdio already use between stdout-as-protocol-pipe and
 	// stderr-as-diagnostics, just with the socket standing in for stdout
-	// here).
+	// here). The bearer token is printed EXACTLY ONCE, here, to stderr --
+	// never to stdout, never to the file log (GlobalLog's LogRequest call
+	// in AgentLoopbackHttpServer.cpp logs method/path/status/sizes only,
+	// never a header value). Whoever starts this process is the only
+	// party meant to see this token; anyone else reading it would have
+	// needed to already read this process's own stderr, at which point
+	// loopback-only network isolation was already moot.
 	std::cerr << "rise --agent-http: listening on http://127.0.0.1:" << server.BoundPort() << "/mcp\n"
-	          << "  WARNING: loopback only; NO AUTH YET (no bearer token, no Origin check --\n"
-	          << "  Secure-MCP slice 4). Any local process that can reach 127.0.0.1 can drive\n"
-	          << "  this endpoint. Do not rely on this as a security boundary.\n";
+	          << "  Bearer token: " << server.ForTest_Token() << "\n"
+	          << "  Every request must carry: Authorization: Bearer " << server.ForTest_Token() << "\n"
+	          << "  This endpoint is loopback-only (127.0.0.1) AND requires the token above --\n"
+	          << "  a real (if single-user, local-only) authentication boundary, not merely\n"
+	          << "  network isolation. It is still NOT an internet-facing auth system: do not\n"
+	          << "  port-forward or otherwise expose this beyond this machine.\n";
 
 	server.Serve();
 	return 0;
@@ -465,11 +476,12 @@ int main( int argc, char** argv )
 	bool cliArgError = false;
 	bool cliAgentStdio = false;	// Facet 5 slice 0c: JSON-RPC stdio transport
 	bool cliMcp = false;	// Secure-MCP slice 1: speak MCP (not raw JSON-RPC) over that same transport
-	// Secure-MCP slice 3: `--agent-http[=PORT]` -- loopback-only HTTP/1.1
-	// transport for the SAME MCP envelope (see AgentLoopbackHttpServer.h's
-	// file header for the INFRA-ONLY / no-auth-yet scope).  `cliAgentHttp`
-	// gates the branch; `cliAgentHttpPort` defaults to 8765 (0 = ask the OS
-	// for an ephemeral port).  Mutually exclusive with `--agent-stdio`
+	// Secure-MCP slice 3+4: `--agent-http[=PORT]` -- loopback-only HTTP/1.1
+	// transport for the SAME MCP envelope, now with a per-launch bearer
+	// token + Origin/Host validation (see AgentLoopbackHttpServer.h's file
+	// header for the full scope).  `cliAgentHttp` gates the branch;
+	// `cliAgentHttpPort` defaults to 8765 (0 = ask the OS for an ephemeral
+	// port).  Mutually exclusive with `--agent-stdio`
 	// (checked loudly below, after the full parse) -- a caller almost
 	// certainly meant only one transport, and silently picking one would
 	// hide a genuine invocation mistake.
