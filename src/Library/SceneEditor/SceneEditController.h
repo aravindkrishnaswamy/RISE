@@ -465,6 +465,14 @@ namespace RISE
 		//! decision here -- the Owner-only-may-resolve gate is enforced by
 		//! AgentSession, which knows its own authority, not by the
 		//! controller, which does not track per-proposal ownership).
+		//! Honest status as of slice 5a: `sessionLabel` is plumbed end-to-end
+		//! (this struct, StageProposal, AgentSession::AgentProposalEntry) but
+		//! every EXISTING call site (ProposePatch/InsertChunk/RemoveChunk's
+		//! External-authority branches) leaves it default-empty -- today's
+		//! AgentSession has no session-identifying name/label member to
+		//! stamp in.  RESERVED for slice 5b, which is expected to give wire-
+		//! constructed External sessions a real caller-supplied label and
+		//! populate this field from it.
 		struct AgentProposal
 		{
 			std::uint64_t       id = 0;         //!< monotonic, unique within this controller's lifetime; never 0 (0 = "not found" sentinel)
@@ -479,19 +487,49 @@ namespace RISE
 			//! RemoveChunk fields (kind==RemoveChunk only); `target`/`entityKind`
 			//! above double as RemoveChunk's (target,kind) -- no separate fields.
 			RISE::Cst::CstHeadVersion baseVersion;   //!< the head this proposal was staged against
-			String              sessionLabel;        //!< diagnostic: which session staged it (caller-supplied)
+			//! S5a hardening: when false (the common case -- the proposing
+			//! session did not pin an explicit baseHeadVersion), `baseVersion`
+			//! above is IGNORED by the caller and StageProposal stamps it
+			//! itself, under mMutex, from the controller's OWN current head --
+			//! this is what closes the unlocked-read race (see StageProposal's
+			//! doc).  When true, the caller already supplied a real
+			//! caller-pinned baseVersion (an explicit baseHeadVersion argument
+			//! to propose_patch/insert_chunk/remove_chunk) and StageProposal
+			//! passes it through untouched.
+			bool                hasExplicitBaseVersion = false;
+			String              sessionLabel;        //!< diagnostic: which session staged it (caller-supplied); RESERVED -- every 5a call site leaves this default-empty, see struct doc above
 			String              status;              //!< "pending" / "applied" / "rejected" / "conflict"
 		};
 
 		//! Secure-MCP slice 5a: STAGE one proposal (INERT -- no Document
-		//! mutation, no render kick, no EditHistory record).  `baseVersion`
-		//! is the head the proposing session read before building this
-		//! edit; re-checked (not here, but) inside ResolveProposal at
-		//! approval time.  Returns the freshly-minted, never-0 proposal id.
-		//! Thread-safe under mMutex (no cancel-and-park needed: staging
-		//! touches only the queue, never the Document or the live Scene, so
-		//! there is nothing for the render thread to race).
-		std::uint64_t StageProposal( const AgentProposal& proposal );
+		//! mutation, no render kick, no EditHistory record).
+		//!
+		//! `baseVersion` is the head this proposal is checked against at
+		//! approval time (ResolveProposal).  S5a hardening round: the CALLER
+		//! (AgentSession) no longer pre-reads the controller's head-version
+		//! itself to populate this field -- that read raced this same
+		//! controller's render thread / a concurrent commit against the
+		//! non-atomic 16-byte CstHeadVersion, outside any lock.  Instead:
+		//! when `proposal.hasExplicitBaseVersion` is false, StageProposal
+		//! stamps `baseVersion` from `mJob.GetCstHeadVersion()` ITSELF, under
+		//! the SAME mMutex hold used to mint the id and enqueue -- so the
+		//! captured baseVersion is atomically "the head at the instant this
+		//! proposal joined the queue", with no window for a torn read or a
+		//! stale value.  When `hasExplicitBaseVersion` is true (the caller
+		//! pinned a real baseHeadVersion argument), `proposal.baseVersion` is
+		//! passed through untouched -- that value did not come from an
+		//! unlocked read here; it is whatever the caller's own (separately
+		//! guarded) provenance was.
+		//!
+		//! Returns the freshly-minted, never-0 proposal id.  Thread-safe
+		//! under mMutex (no cancel-and-park needed: staging touches only the
+		//! queue, never the Document or the live Scene, so there is nothing
+		//! for the render thread to race).  Use `outStagedVersion` to read
+		//! back the exact baseVersion that was stamped/kept -- this is the
+		//! value the caller should surface as the "staged" response's
+		//! headVersion, again with no separate unlocked read.
+		std::uint64_t StageProposal( const AgentProposal& proposal,
+		                             RISE::Cst::CstHeadVersion* outStagedVersion = nullptr );
 
 		//! Secure-MCP slice 5a: a snapshot of every proposal currently on
 		//! the queue (pending AND resolved -- resolved proposals stay

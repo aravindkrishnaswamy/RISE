@@ -68,27 +68,29 @@ namespace RISE
 			External    //!< a remote/other agent: mutating verbs STAGE a proposal (inert) instead of committing; may NOT resolve (approve/reject) ANY proposal, including its own.
 		};
 
-		//! Secure-MCP slice 5a: the per-verb-call posture this SESSION
-		//! applies its AgentAuthority under.  A third posture alongside the
-		//! existing Read/Commit shape (mirroring, at the session layer, the
-		//! same three-way split AgentRpc.h's transport-layer AgentAutonomy
-		//! will grow a wire-facing `propose` posture for in slice 5b) --
-		//! kept as a SEPARATE enum (not a reuse of AgentRpc's AgentAutonomy)
-		//! because AgentSession.h must not take a header dependency on the
-		//! transport layer (AgentRpc.h already depends on AgentSession.h;
-		//! the reverse would be circular-by-convention even though the
-		//! includes would technically compile).
+		//! RESERVED for slice 5b -- NOT YET CONSULTED.  This enum exists so
+		//! 5b's wire-facing transport has a session-layer posture type ready
+		//! to wire up (mirroring, at the session layer, the same three-way
+		//! split AgentRpc.h's transport-layer AgentAutonomy will grow a
+		//! wire-facing `propose` posture for) -- kept as a SEPARATE enum
+		//! (not a reuse of AgentRpc's AgentAutonomy) because AgentSession.h
+		//! must not take a header dependency on the transport layer
+		//! (AgentRpc.h already depends on AgentSession.h; the reverse would
+		//! be circular-by-convention even though the includes would
+		//! technically compile).
 		//!
-		//! Read is accepted here for API completeness / a future caller that
-		//! wants to construct a read-only session directly, but slice 5a's
-		//! ProposePatch/InsertChunk/RemoveChunk do not special-case it beyond
-		//! the existing behaviour those calls already have when nothing here
-		//! refuses them; it is not exercised by anything in this slice.
+		//! Honest status as of slice 5a: NO AgentSession member stores a
+		//! value of this type, and NOTHING branches on it -- in 5a, staging
+		//! vs. direct-commit is gated ENTIRELY by AgentAuthority (Owner vs
+		//! External; see ProposePatch/InsertChunk/RemoveChunk).  This type
+		//! is forward-declared for 5b, which is expected to add the member +
+		//! the branch; until then, do not assume constructing a session
+		//! implies any particular autonomy posture is in effect.
 		enum class AgentSessionAutonomy
 		{
 			Read,
-			Propose,   //!< mutating verbs STAGE (never commit) -- the posture an External-authority session runs under
-			Commit     //!< mutating verbs commit directly (today's behaviour) -- the posture an Owner-authority session runs under
+			Propose,   //!< reserved: the posture an External-authority session will run under once 5b wires this in
+			Commit     //!< reserved: the posture an Owner-authority session will run under once 5b wires this in
 		};
 
 		//! Secure-MCP slice 5a: the structured result of a STAGED
@@ -714,7 +716,7 @@ namespace RISE
 				std::string               value;
 				std::string               chunkText;
 				RISE::Cst::CstHeadVersion baseVersion;
-				std::string               sessionLabel;
+				std::string               sessionLabel;  //!< RESERVED for slice 5b -- always empty in 5a; no session-identifying name/label exists yet to stamp in (see SceneEditController::AgentProposal's doc)
 				std::string               status;        //!< "pending" / "applied" / "rejected" / "conflict"
 			};
 

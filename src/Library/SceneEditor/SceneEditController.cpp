@@ -3436,14 +3436,32 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChun
 // ResolveProposal -- staging against a since-moved head is fine; it is
 // APPLYING against a since-moved head that would be unsafe), no EditHistory
 // record (an inert proposal is not yet a commit).
+//
+// S5a hardening round: baseVersion is stamped from mJob.GetCstHeadVersion()
+// HERE, under the SAME mMutex hold that mints the id and enqueues -- not
+// pre-read unlocked by the caller (AgentSession) beforehand.  mJob is a
+// reference (IJobPriv&), always valid, so reading it here is exactly the
+// same "head read under mMutex" contract ApplyAgentParamEdit's own doc
+// requires (see that method's comment block, ~line 3193): no torn 16-byte
+// read against a concurrent commit / render-thread write on another thread.
 //////////////////////////////////////////////////////////////////////
-std::uint64_t SceneEditController::StageProposal( const AgentProposal& proposal )
+std::uint64_t SceneEditController::StageProposal( const AgentProposal& proposal,
+                                                   RISE::Cst::CstHeadVersion* outStagedVersion )
 {
 	std::lock_guard<std::mutex> lk( mMutex );
 	AgentProposal p = proposal;
 	p.id     = mNextProposalId++;
 	p.status = String( "pending" );
+	if( !p.hasExplicitBaseVersion )
+	{
+		// The common case: the proposing session did not pin an explicit
+		// baseHeadVersion, so the head-at-stage-time IS the base -- read it
+		// now, under mMutex, instead of trusting whatever (potentially
+		// racy) value the caller put in proposal.baseVersion.
+		p.baseVersion = mJob.GetCstHeadVersion();
+	}
 	const std::uint64_t id = p.id;
+	if( outStagedVersion ) *outStagedVersion = p.baseVersion;
 	mProposals.push_back( p );
 	return id;
 }

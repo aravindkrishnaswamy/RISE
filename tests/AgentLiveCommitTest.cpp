@@ -3964,6 +3964,174 @@ static void TestChunkCrudStaging()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 39: S5a hardening round -- RED-PROVE that an External session's
+// staged baseVersion is a COHERENT head value, never a torn/impossible one,
+// even under heavy concurrent commits.  Before this hardening,
+// AgentSession::ProposePatch/InsertChunk/RemoveChunk's External-staging
+// branches read mJob->GetCstHeadVersion() UNLOCKED (no mMutex) to populate
+// the staged proposal's baseVersion -- a data race on the non-atomic
+// 16-byte CstHeadVersion against the controller's render thread / a
+// concurrent Owner commit, both of which write it UNDER mMutex (see
+// SceneEditController::ApplyAgentParamEdit's doc, ~line 3193: "every head
+// read is under mMutex").  The fix moves the read INTO
+// SceneEditController::StageProposal itself, under the SAME mMutex hold
+// that mints the proposal id and enqueues -- so the capture is now
+// STRUCTURALLY race-free (the read literally cannot tear or observe a
+// half-written value; the lock excludes every other head writer/reader).
+//
+// This is a genuine data race, so it is inherently timing-dependent to
+// catch via a black-box symptom (a torn 16-byte struct on x86_64/ARM64
+// rarely manifests as a crash; it would show up as a nonsensical
+// revision -- e.g. one that never corresponds to any commit the test
+// thread actually observed, or one "from the future" relative to the
+// last commit the staging thread's snapshot could have seen).  The
+// RED-PROVE here is: hammer many concurrent Owner commits (each bumping
+// the revision under mMutex) against many concurrent External stages (each
+// exercising the now-locked capture) and assert EVERY staged baseVersion:
+//   (a) carries the SAME uuid as the live Job's retained head (never {0,0}
+//       or a foreign uuid -- would indicate a torn/garbage read), and
+//   (b) has a revision that is <= the highest revision any thread had
+//       observed as "committed" AT THE TIME the stage call returned (never
+//       "from the future" -- would indicate a torn read landing past where
+//       any real commit had gotten to).
+// Structural argument (documented per the task's RED-PROVE contract, since
+// a torn read on this platform/struct is not reliably forced from a test):
+// StageProposal's capture is now INSIDE the same std::lock_guard<mMutex>
+// that performs the id-mint + enqueue, and every commit path
+// (ApplyAgentParamEdit et al.) both READS and WRITES mCstHeadVersion only
+// while holding that identical mMutex (see SceneEditController.cpp
+// ApplyAgentParamEdit's "Cancel-and-park...THEN hold mMutex across the
+// WHOLE commit" comment) -- so by mutual exclusion alone, no interleaving
+// exists where StageProposal's read observes a partially-written
+// CstHeadVersion.  The stress loop below is belt-and-suspenders: it did
+// not reproduce a failure pre-fix on this platform either (torn reads on a
+// 16-byte POD via two int64 stores/loads are legal-but-rare under TSan-free
+// stress on arm64/x86_64), so the suite-green + the structural argument
+// together are what the task's "best-effort" RED-PROVE calls for.
+//////////////////////////////////////////////////////////////////////
+static void TestExternalStageBaseVersionCoherentUnderConcurrency()
+{
+	std::cout << "Test 39: RED-PROVE -- external-stage baseVersion is coherent (never torn/future) under concurrent commits..." << std::endl;
+
+	const char* tmp = "agentlive_stage_basever_stress.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/5 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> owner = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		std::unique_ptr<Agent::AgentSession> ext   = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		owner->AttachController( &c );
+		ext->AttachController( &c );
+
+		const RISE::Cst::CstHeadVersion startHead = pJob->GetCstHeadVersion();
+		Check( startHead.uuid != 0, "the live head has a real (non-zero) uuid before the storm" );
+
+		const int kIters = 300;
+		std::atomic<std::uint64_t> highestCommittedRevision( startHead.revision );
+		std::atomic<int> commitOk( 0 );
+		std::atomic<int> stageOk( 0 );
+		std::atomic<int> incoherentUuid( 0 );
+		std::atomic<int> futureRevision( 0 );
+
+		// Owner thread: hammer DIRECT commits (bumping mCstHeadVersion.revision
+		// under the controller's mMutex on every clean apply) -- this is the
+		// concurrent writer the External-stage read used to race.
+		std::thread ownerThread( [&]{
+			for( int i = 0; i < kIters; ++i )
+			{
+				char v[32];
+				std::snprintf( v, sizeof(v), "%.3f", 2.0 + ( i % 7 ) );
+				Agent::AgentSetPatch p;
+				p.target = "lum";
+				p.kind   = "lambertian_luminaire_material";
+				p.param  = "scale";
+				p.value  = v;
+				const Agent::AgentPatchResult r = owner->ProposePatch( p );
+				if( r.applied )
+				{
+					commitOk.fetch_add( 1 );
+					// Publish the just-committed revision as a lower bound any
+					// LATER stage call is allowed to see -- a racy stage read
+					// that lags is fine (that's a legitimate "stale but
+					// coherent" snapshot); one that's ahead of every commit
+					// this thread itself just made would be a "from the
+					// future" impossible value.
+					std::uint64_t prev = highestCommittedRevision.load();
+					while( r.headVersion.revision > prev &&
+					       !highestCommittedRevision.compare_exchange_weak( prev, r.headVersion.revision ) ) {}
+				}
+			}
+		} );
+
+		// External thread: hammer STAGE calls (no explicit baseVersion) --
+		// each one exercises StageProposal's now-locked capture.
+		std::thread extThread( [&]{
+			for( int i = 0; i < kIters; ++i )
+			{
+				Agent::AgentSetPatch p;
+				p.target = "lum";
+				p.kind   = "lambertian_luminaire_material";
+				p.param  = "scale";
+				p.value  = "5.5";   // value irrelevant -- never approved, only staged
+				const Agent::AgentPatchResult r = ext->ProposePatch( p );
+				if( r.status == "staged" )
+				{
+					stageOk.fetch_add( 1 );
+					if( r.headVersion.uuid != startHead.uuid ) incoherentUuid.fetch_add( 1 );
+					// Allow a small race window: the owner thread's
+					// publish (above) happens AFTER its ProposePatch call
+					// returns, so a stage that interleaved between the
+					// owner's internal commit and its publish could
+					// legitimately see a revision the bound hasn't
+					// published yet.  Poll briefly for the bound to catch
+					// up before judging "from the future" -- this keeps the
+					// assertion honest (a REAL torn/garbage read will not
+					// self-correct by waiting) without making the test
+					// flaky on the ordinary publish-lag race.
+					std::uint64_t bound = highestCommittedRevision.load();
+					for( int spin = 0; r.headVersion.revision > bound && spin < 1000; ++spin )
+					{
+						std::this_thread::yield();
+						bound = highestCommittedRevision.load();
+					}
+					if( r.headVersion.revision > bound ) futureRevision.fetch_add( 1 );
+				}
+			}
+		} );
+
+		ownerThread.join();
+		extThread.join();
+
+		std::cout << "    commitOk=" << commitOk.load() << " stageOk=" << stageOk.load()
+		          << " incoherentUuid=" << incoherentUuid.load()
+		          << " futureRevision=" << futureRevision.load() << std::endl;
+
+		Check( commitOk.load() > 0, "owner thread landed at least one clean commit" );
+		Check( stageOk.load() > 0, "external thread staged at least one proposal" );
+		Check( incoherentUuid.load() == 0,
+		       "RED-PROVE: every staged baseVersion carries the SAME uuid as the live head (never torn/foreign)" );
+		Check( futureRevision.load() == 0,
+		       "RED-PROVE: no staged baseVersion is a revision 'from the future' relative to any commit observed" );
+
+		// The controller is still alive and the queue is internally
+		// consistent after the storm (structural sanity, not just the
+		// per-call checks above).
+		Check( c.IsRunning(), "render thread still running after the stage/commit storm" );
+		const std::vector<Agent::AgentSession::AgentProposalEntry> listed = owner->ListProposals();
+		Check( (int)listed.size() == stageOk.load(), "ListProposals count matches the number of successful stages" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -4009,6 +4177,7 @@ int main()
 	TestTwoProposalsSameParamSecondIsStale();
 	TestAuthorityMatrixRefusals();
 	TestChunkCrudStaging();
+	TestExternalStageBaseVersionCoherentUnderConcurrency();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

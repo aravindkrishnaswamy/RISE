@@ -870,23 +870,27 @@ namespace RISE
 					            "controller is attached -- staging needs a live Owner to resolve against";
 					return r;
 				}
-				// The controller and this session wrap the SAME Job (a hard
-				// invariant of AttachController -- see its doc), so mJob's
-				// head-version IS the controller's current head-version; no
-				// new controller accessor is needed to read it.
-				const RISE::Cst::CstHeadVersion curHead = mJob ? mJob->GetCstHeadVersion() : RISE::Cst::CstHeadVersion{};
+				// S5a hardening: do NOT pre-read mJob->GetCstHeadVersion()
+				// here -- that would race the controller's render thread /
+				// a concurrent commit against the non-atomic 16-byte
+				// CstHeadVersion, outside mMutex.  When the patch pins an
+				// explicit baseVersion, hand it through untouched; otherwise
+				// let StageProposal itself stamp the head-at-stage-time,
+				// atomically, under its OWN mMutex hold (see its doc).
 				SceneEditController::AgentProposal p;
 				p.kind        = SceneEditController::AgentProposalKind::ParamEdit;
 				p.target      = String( patch.target.c_str() );
 				p.entityKind  = String( patch.kind.c_str() );
 				p.param       = String( patch.param.c_str() );
 				p.value       = String( patch.value.c_str() );
-				p.baseVersion = patch.hasBaseVersion ? patch.baseVersion : curHead;
-				const std::uint64_t id = mController->StageProposal( p );
+				p.hasExplicitBaseVersion = patch.hasBaseVersion;
+				if( patch.hasBaseVersion ) p.baseVersion = patch.baseVersion;
+				RISE::Cst::CstHeadVersion stagedHead{};
+				const std::uint64_t id = mController->StageProposal( p, &stagedHead );
 				r.applied = false;
 				r.rawCode = 0;
 				r.status  = "staged";
-				r.headVersion = curHead;
+				r.headVersion = stagedHead;
 				char buf[128];
 				std::snprintf( buf, sizeof( buf ), "proposal %llu staged (pending owner approval)",
 					static_cast<unsigned long long>( id ) );
@@ -1145,16 +1149,20 @@ namespace RISE
 					            "controller is attached -- staging needs a live Owner to resolve against";
 					return r;
 				}
-				const RISE::Cst::CstHeadVersion curHead = mJob ? mJob->GetCstHeadVersion() : RISE::Cst::CstHeadVersion{};
+				// S5a hardening: see ProposePatch's identical comment --
+				// no unlocked head pre-read; StageProposal stamps it under
+				// its own mMutex hold when no explicit base was supplied.
 				SceneEditController::AgentProposal p;
 				p.kind        = SceneEditController::AgentProposalKind::InsertChunk;
 				p.chunkText   = String( chunkText.c_str() );
-				p.baseVersion = baseOrNull ? *baseOrNull : curHead;
-				const std::uint64_t id = mController->StageProposal( p );
+				p.hasExplicitBaseVersion = ( baseOrNull != nullptr );
+				if( baseOrNull ) p.baseVersion = *baseOrNull;
+				RISE::Cst::CstHeadVersion stagedHead{};
+				const std::uint64_t id = mController->StageProposal( p, &stagedHead );
 				r.applied = false;
 				r.rawCode = 0;
 				r.status  = "staged";
-				r.headVersion = curHead;
+				r.headVersion = stagedHead;
 				char buf[128];
 				std::snprintf( buf, sizeof( buf ), "proposal %llu staged (pending owner approval)",
 					static_cast<unsigned long long>( id ) );
@@ -1251,17 +1259,21 @@ namespace RISE
 					            "controller is attached -- staging needs a live Owner to resolve against";
 					return r;
 				}
-				const RISE::Cst::CstHeadVersion curHead = mJob ? mJob->GetCstHeadVersion() : RISE::Cst::CstHeadVersion{};
+				// S5a hardening: see ProposePatch's identical comment --
+				// no unlocked head pre-read; StageProposal stamps it under
+				// its own mMutex hold when no explicit base was supplied.
 				SceneEditController::AgentProposal p;
 				p.kind        = SceneEditController::AgentProposalKind::RemoveChunk;
 				p.target      = String( target.c_str() );
 				p.entityKind  = String( kind.c_str() );
-				p.baseVersion = baseOrNull ? *baseOrNull : curHead;
-				const std::uint64_t id = mController->StageProposal( p );
+				p.hasExplicitBaseVersion = ( baseOrNull != nullptr );
+				if( baseOrNull ) p.baseVersion = *baseOrNull;
+				RISE::Cst::CstHeadVersion stagedHead{};
+				const std::uint64_t id = mController->StageProposal( p, &stagedHead );
 				r.applied = false;
 				r.rawCode = 0;
 				r.status  = "staged";
-				r.headVersion = curHead;
+				r.headVersion = stagedHead;
 				char buf[128];
 				std::snprintf( buf, sizeof( buf ), "proposal %llu staged (pending owner approval)",
 					static_cast<unsigned long long>( id ) );
