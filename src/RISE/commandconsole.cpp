@@ -28,6 +28,7 @@
 #include "../Library/Utilities/Log/StreamPrinter.h"
 #include "../Library/Agent/AgentSession.h"
 #include "../Library/Agent/AgentRpc.h"
+#include "../Library/Agent/AgentMcpAdapter.h"
 #include "../Library/Interfaces/ILogPriv.h"
 #include "../Library/Interfaces/IOptions.h"
 #include "../Library/Interfaces/IJobPriv.h"
@@ -207,6 +208,48 @@ static int RunAgentStdio( const char* sceneArg )
 	return 0;
 }
 
+// Secure-MCP slice 1: `--agent-stdio --mcp` speaks the Model Context
+// Protocol over the SAME line-delimited stdin/stdout transport as
+// `--agent-stdio` alone, but through AgentMcpAdapter instead of
+// AgentRpcDispatcher directly -- a PURE envelope translation layer over
+// the identical 12 agent verbs (initialize / tools/list / tools/call
+// replace the raw JSON-RPC method names an MCP client would otherwise
+// have to know).  Same stdout hygiene as RunAgentStdio (the caller's
+// early argv pre-scan already covers `--mcp` alongside `--agent-stdio`,
+// so the banner/log suppression applies identically).
+//
+// MCP notifications (a request with no `id` field at all, e.g.
+// `notifications/initialized`) get NO response line -- HandleLine
+// signals that by returning an EMPTY string; this loop must skip writing
+// a line in that case rather than emitting a blank line (which would
+// itself be an invalid/ambiguous frame on the protocol pipe).
+static int RunAgentMcpStdio( const char* sceneArg )
+{
+	std::unique_ptr<RISE::Agent::AgentSession> session;
+	if( sceneArg && sceneArg[0] ) {
+		session = RISE::Agent::AgentSession::LoadFromFile( sceneArg );
+		if( !session ) {
+			std::cerr << "rise --agent-stdio --mcp: could not load scene '" << sceneArg
+			          << "' (not native-v7, or a derive error); continuing with no head.\n";
+		}
+	}
+
+	RISE::Agent::AgentMcpAdapter adapter( std::move( session ) );
+
+	std::string line;
+	while( std::getline( std::cin, line ) ) {
+		bool allWs = true;
+		for( char c : line ) { if( c != ' ' && c != '\t' && c != '\r' ) { allWs = false; break; } }
+		if( allWs ) continue;
+
+		const std::string response = adapter.HandleLine( line );
+		if( response.empty() ) continue;   // a true MCP notification -- no response line
+		std::cout << response << "\n";
+		std::cout.flush();
+	}
+	return 0;
+}
+
 int main( int argc, char** argv )
 {
 	// Facet 5 slice 0c: pre-scan argv for `--agent-stdio` BEFORE anything is
@@ -337,6 +380,7 @@ int main( int argc, char** argv )
 	double cliFilmPixelAR = 0.0;
 	bool cliArgError = false;
 	bool cliAgentStdio = false;	// Facet 5 slice 0c: JSON-RPC stdio transport
+	bool cliMcp = false;	// Secure-MCP slice 1: speak MCP (not raw JSON-RPC) over that same transport
 	const char* sceneArg = 0;
 	for( int ai = 1; ai < argc; ai++ ) {
 		const char* a = argv[ai];
@@ -369,6 +413,8 @@ int main( int argc, char** argv )
 
 		if( strcmp(a, "--agent-stdio") == 0 ) {
 			cliAgentStdio = true;
+		} else if( strcmp(a, "--mcp") == 0 ) {
+			cliMcp = true;
 		} else if( strcmp(a, "--width") == 0 ) {
 			consumeIntFlag( "--width", cliFilmWidth );
 		} else if( strcmp(a, "--height") == 0 ) {
@@ -389,9 +435,13 @@ int main( int argc, char** argv )
 	// (LoadFromFile), so it does not use the `pJob` created above -- release
 	// that here and hand control to the stdio loop, which owns its lifetime.
 	// EOF on stdin -> clean exit 0.
+	// Secure-MCP slice 1: `--mcp` (only meaningful alongside `--agent-stdio`)
+	// swaps the raw-JSON-RPC loop for the MCP-envelope loop over the SAME
+	// stdin/stdout transport -- same session construction, same stdout
+	// hygiene, different dispatcher.
 	if( cliAgentStdio ) {
 		safe_release( pJob );
-		const int rc = RunAgentStdio( sceneArg );
+		const int rc = cliMcp ? RunAgentMcpStdio( sceneArg ) : RunAgentStdio( sceneArg );
 		GlobalLogCleanupAndShutdown();
 		return rc;
 	}

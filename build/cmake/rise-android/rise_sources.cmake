@@ -229,6 +229,7 @@ set(RISE_LIB_SOURCES
     # SRCLIBCAMERA
     "${RISE_LIB}/Agent/AgentChatCodecs.cpp"
     "${RISE_LIB}/Agent/AgentChatLoop.cpp"
+    "${RISE_LIB}/Agent/AgentMcpAdapter.cpp"
     "${RISE_LIB}/Agent/AgentRpc.cpp"
     "${RISE_LIB}/Agent/AgentSession.cpp"
     "${RISE_LIB}/Agent/Base64.cpp"

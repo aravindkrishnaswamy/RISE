@@ -37,6 +37,7 @@ SRCDRISE =\
 SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Agent/AgentChatCodecs.cpp		\
 	$(PATHLIBRARY)Agent/AgentChatLoop.cpp			\
+	$(PATHLIBRARY)Agent/AgentMcpAdapter.cpp		\
 	$(PATHLIBRARY)Agent/AgentRpc.cpp			\
 	$(PATHLIBRARY)Agent/AgentSession.cpp		\
 	$(PATHLIBRARY)Agent/Base64.cpp				\
