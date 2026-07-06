@@ -3,7 +3,7 @@
 //  AgentAutonomyPolicyTest.cpp - Secure-MCP slice 2: the headless
 //    autonomy-policy regression guard.
 //
-//  Four in-process/subprocess suites:
+//  Six in-process/subprocess suites:
 //
 //    (a) READ posture (in-process AgentRpcDispatcher constructed with
 //        AgentAutonomy::Read): all 3 mutating verbs (propose_patch,
@@ -37,6 +37,25 @@
 //        over the REAL wire; RED-PROVE `--agent-autonomy=banana`
 //        (malformed) exits nonzero with a loud stderr usage error rather
 //        than silently defaulting to either posture.
+//
+//    (e) RED-PROVE deny-by-default (the load-bearing hardening item): a
+//        HYPOTHETICAL verb name that is on NEITHER the read-safe allowlist
+//        NOR the dispatch table -- simulating a future verb #13 that
+//        mutates the Document but was never classified -- is REFUSED
+//        (kAutonomyRefused, -32011) under Read, exactly like a real
+//        mutating verb, even though nobody ever added it to any
+//        blacklist.  Under Commit the SAME unknown verb name instead
+//        falls through to the ordinary "method not found" (-32601) path,
+//        proving the two codes are still distinguishable and the refusal
+//        under Read is a POLICY gate, not an accidental byproduct of the
+//        verb being unrecognized.
+//
+//    (f) Launch-flag parsing loud failures (subprocess): a BARE
+//        `--agent-autonomy` (no `=value` at all) and the SPACE form
+//        `--agent-autonomy read` both exit nonzero with a loud stderr
+//        message naming the flag -- RED-PROVING neither silently falls
+//        back to the default `read` posture nor silently swallows the
+//        next token as the scene path.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -280,6 +299,78 @@ static void TestReadPosture()
 	Check( !ReadDoc( rpc, 16 ).empty(), "read_document still works under Read at the end of the suite" );
 
 	std::remove( scenePath.c_str() );
+}
+
+//----------------------------------------------------------------------
+// (e) RED-PROVE deny-by-default: a HYPOTHETICAL, never-classified verb
+// name (simulating a future verb #13) is refused under Read even though
+// it appears on no allow-list AND no deny-list -- it simply isn't
+// IsReadSafeVerb.  Under Commit the identical unknown name instead falls
+// through to "method not found", proving the Read refusal is a genuine
+// policy gate rather than an artifact of the verb being unrecognized.
+//----------------------------------------------------------------------
+static void TestDenyByDefaultForUnclassifiedVerb()
+{
+	std::printf( "--- (e) RED-PROVE deny-by-default for an unclassified verb ---\n" );
+
+	// A verb name that exists in NEITHER AgentRpc.cpp's dispatch table NOR
+	// any allow/deny list -- standing in for a future mutating verb that
+	// was added to HandleLine's dispatch but never classified read-safe.
+	const char* const kHypotheticalVerb = "delete_everything_v13";
+
+	const std::string scenePathRead   = WriteTemp( "rise_autonomy_denybydefault_read.RISEscene", kScene );
+	const std::string scenePathCommit = WriteTemp( "rise_autonomy_denybydefault_commit.RISEscene", kScene );
+	Check( !scenePathRead.empty() && !scenePathCommit.empty(), "wrote both deny-by-default scenes" );
+
+	std::unique_ptr<AgentSession> sessionRead   = AgentSession::LoadFromFile( scenePathRead );
+	std::unique_ptr<AgentSession> sessionCommit = AgentSession::LoadFromFile( scenePathCommit );
+	Check( sessionRead != nullptr && sessionCommit != nullptr, "both deny-by-default sessions load" );
+	if( !sessionRead || !sessionCommit ) return;
+
+	AgentRpcDispatcher rpcRead( std::move( sessionRead ), AgentAutonomy::Read );
+	AgentRpcDispatcher rpcCommit( std::move( sessionCommit ), AgentAutonomy::Commit );
+
+	// --- Under Read: the unclassified verb is REFUSED (-32011), not
+	// "method not found" (-32601) -- deny-by-default proves itself: this
+	// verb was never added to any mutating-verb blacklist (it doesn't
+	// exist anywhere in AgentRpc.cpp), yet Read still refuses it because
+	// it fails the read-safe allowlist check. ---
+	{
+		const std::string resp = rpcRead.HandleLine(
+			Req( 1, kHypotheticalVerb, JsonValue::MakeObject() ) );
+		JsonValue env = ParseResponse( resp, 1 );
+		Check( env.has( "error" ), "RED-PROVE: unclassified verb under Read is a JSON-RPC error" );
+		const JsonValue& err = env.get( "error" );
+		Check( err.get( "code" ).asNumber( 0 ) == -32011.0,
+		       "RED-PROVE: unclassified verb under Read is refused with kAutonomyRefused (-32011), "
+		       "NOT method-not-found -- proving deny-by-default (it was never blacklisted, it simply "
+		       "isn't on the read-safe allowlist)" );
+		Check( err.get( "data" ).get( "verb" ).asString() == kHypotheticalVerb,
+		       "RED-PROVE: refusal data.verb names the unclassified verb" );
+		Check( err.get( "data" ).get( "autonomy" ).asString() == "read",
+		       "RED-PROVE: refusal data.autonomy == \"read\"" );
+	}
+
+	// --- Under Commit: the SAME unclassified verb name is NOT refused by
+	// the autonomy gate (Commit never gates) -- it falls through to the
+	// ordinary "method not found" path, since the verb genuinely doesn't
+	// exist in the dispatch table.  This proves the two error codes stay
+	// distinguishable: Read's refusal above is a POLICY decision, not a
+	// side effect of the verb being unrecognized. ---
+	{
+		const std::string resp = rpcCommit.HandleLine(
+			Req( 1, kHypotheticalVerb, JsonValue::MakeObject() ) );
+		JsonValue env = ParseResponse( resp, 1 );
+		Check( env.has( "error" ), "unclassified verb under Commit is still a JSON-RPC error (unimplemented verb)" );
+		const JsonValue& err = env.get( "error" );
+		Check( err.get( "code" ).asNumber( 0 ) == -32601.0,
+		       "unclassified verb under Commit is \"method not found\" (-32601), NOT the autonomy-refusal "
+		       "code -- Commit performs no gating at all, so this distinguishes the Read result above as "
+		       "a genuine policy refusal rather than coincidental overlap between the two error paths" );
+	}
+
+	std::remove( scenePathRead.c_str() );
+	std::remove( scenePathCommit.c_str() );
 }
 
 //----------------------------------------------------------------------
@@ -607,6 +698,48 @@ static void TestLaunchFlagParsing()
 		       "malformed-flag failure does NOT emit a JSON-RPC frame on stdout (fails before the loop starts)" );
 	}
 
+	// --- (f) RED-PROVE: a BARE `--agent-autonomy` (no `=value` at all)
+	// exits nonzero with a loud stderr usage error -- the pre-hardening
+	// behaviour silently dropped this token entirely (fell through every
+	// flag branch unmatched, consumed nothing) and proceeded with the
+	// DEFAULT `read` posture as if the flag had never been given. ---
+	{
+		std::vector<std::string> args;
+		args.push_back( "--agent-stdio" );
+		args.push_back( "--agent-autonomy" );
+		args.push_back( scenePath );
+		std::string outStdout, outStderr;
+		const int rc = RunChild( args, std::string(), outStdout, outStderr );
+		Check( rc != 0, "RED-PROVE: bare `--agent-autonomy` (no '=value') exits NONZERO (not silently dropped)" );
+		Check( outStderr.find( "--agent-autonomy" ) != std::string::npos,
+		       "RED-PROVE: bare-flag stderr names the offending flag" );
+		Check( outStdout.empty() || outStdout.find( "jsonrpc" ) == std::string::npos,
+		       "bare-flag failure does NOT emit a JSON-RPC frame on stdout (fails before the loop starts)" );
+	}
+
+	// --- (f) RED-PROVE: the SPACE form `--agent-autonomy read` (as
+	// opposed to the documented `--agent-autonomy=read`) exits nonzero
+	// with a loud stderr usage error.  Pre-hardening this was WORSE than a
+	// no-op: the bare `--agent-autonomy` token was silently dropped AND
+	// the following `read` token was silently consumed as the positional
+	// scene-file argument (displacing the real scene path), so the
+	// process would have gone on to fail with a confusing "could not load
+	// scene 'read'" error instead of a clear flag-usage message. ---
+	{
+		std::vector<std::string> args;
+		args.push_back( "--agent-stdio" );
+		args.push_back( "--agent-autonomy" );
+		args.push_back( "read" );
+		args.push_back( scenePath );
+		std::string outStdout, outStderr;
+		const int rc = RunChild( args, std::string(), outStdout, outStderr );
+		Check( rc != 0, "RED-PROVE: space form `--agent-autonomy read` exits NONZERO (not silently accepted)" );
+		Check( outStderr.find( "--agent-autonomy" ) != std::string::npos,
+		       "RED-PROVE: space-form stderr names the offending flag" );
+		Check( outStdout.empty() || outStdout.find( "jsonrpc" ) == std::string::npos,
+		       "space-form failure does NOT emit a JSON-RPC frame on stdout (fails before the loop starts)" );
+	}
+
 	std::remove( scenePath.c_str() );
 }
 
@@ -624,6 +757,7 @@ int main()
 	std::printf( "=== AgentAutonomyPolicyTest (Secure-MCP slice 2: headless autonomy policy) ===\n" );
 
 	TestReadPosture();
+	TestDenyByDefaultForUnclassifiedVerb();
 	TestCommitPostureMatchesDefault();
 	TestMcpLayer();
 	TestLaunchFlagParsing();

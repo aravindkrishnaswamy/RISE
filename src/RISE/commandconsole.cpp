@@ -459,6 +459,23 @@ int main( int argc, char** argv )
 				std::cerr << "ERROR: --agent-autonomy requires 'read' or 'commit'; got `" << val << "`.\n";
 				cliArgError = true;
 			}
+		} else if( strncmp( a, "--agent-autonomy", strlen( "--agent-autonomy" ) ) == 0 ) {
+			// Hardening (loud-never-silent): this catches every malformed
+			// spelling that ISN'T the `--agent-autonomy=<value>` prefix
+			// matched above -- a BARE `--agent-autonomy` with no `=value`
+			// at all, and the SPACE form `--agent-autonomy read` (whose
+			// bare first token falls in here, and whose second token would
+			// otherwise be silently swallowed as the positional scene
+			// argument -- a strictly worse silent failure than merely
+			// ignoring the flag).  This flag is `=value`-only by design
+			// (unlike the space-separated --width/--height/--pixel-ar
+			// flags below); the fix is a single loud usage error naming
+			// the exact accepted form, matching this flag's own documented
+			// "always loud, never silent" contract instead of quietly
+			// falling through to the default posture.
+			std::cerr << "ERROR: --agent-autonomy requires the form `--agent-autonomy=read` or "
+			             "`--agent-autonomy=commit`; got `" << a << "`.\n";
+			cliArgError = true;
 		} else if( strcmp(a, "--width") == 0 ) {
 			consumeIntFlag( "--width", cliFilmWidth );
 		} else if( strcmp(a, "--height") == 0 ) {

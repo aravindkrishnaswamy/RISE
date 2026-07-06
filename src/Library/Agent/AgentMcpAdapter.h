@@ -143,7 +143,11 @@ namespace RISE
 			AgentMcpAdapter& operator=( const AgentMcpAdapter& );  // deleted
 
 			std::unique_ptr<AgentRpcDispatcher> mDispatcher;
-			AgentAutonomy                       mAutonomy;
+			// Secure-MCP slice 2 hardening: const -- same rationale as
+			// AgentRpcDispatcher::mAutonomy (see AgentRpc.h): copy-assign
+			// is already deleted below, so this adds no new restriction,
+			// only forecloses a future setter reintroducing mutability.
+			const AgentAutonomy                 mAutonomy;
 		};
 	}
 }

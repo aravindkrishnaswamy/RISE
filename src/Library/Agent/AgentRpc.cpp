@@ -51,18 +51,36 @@ namespace RISE
 			// posture forbids mutation" with a retriable scene-state outcome.
 			const int kAutonomyRefused = -32011;
 
-			//! Secure-MCP slice 2: the verb names refused under
-			//! AgentAutonomy::Read -- the ONE list the choke point in
-			//! HandleLine consults.  Every other verb (read_document,
-			//! read_schema, read_skill, validate, render, render_status,
-			//! render_wait, render_cancel, read_image) stays available: see
-			//! the AgentRpc.h file header for why `render` in particular is
-			//! allowed (it never mutates the retained Document).
-			bool IsMutatingVerb( const std::string& method )
+			//! Secure-MCP slice 2 hardening: the gate is now DENY-BY-
+			//! DEFAULT -- an explicit allowlist of the 9 READ-SAFE verb
+			//! names (read_document, read_schema, read_skill, validate,
+			//! render, render_status, render_wait, render_cancel,
+			//! read_image), the ONE list the choke point in HandleLine
+			//! consults.  Anything NOT on this list -- including the 3
+			//! known-mutating verbs (propose_patch, insert_chunk,
+			//! remove_chunk) AND any FUTURE verb added to the dispatch
+			//! below without also being added here -- is refused under
+			//! AgentAutonomy::Read.  This is the deliberate polarity flip
+			//! from the pre-hardening `IsMutatingVerb` allow-list-of-
+			//! mutators: that shape was FAIL-OPEN (a new mutating verb #13
+			//! would be silently PERMITTED under Read until someone
+			//! remembered to add it to the mutating list).  Fail-closed
+			//! means a new verb is refused-under-read by construction --
+			//! the author must consciously classify it read-safe by
+			//! adding it here, not merely forget to blacklist it.  See
+			//! the AgentRpc.h file header for why `render` in particular
+			//! is read-safe (it never mutates the retained Document).
+			bool IsReadSafeVerb( const std::string& method )
 			{
-				return method == "propose_patch" ||
-				       method == "insert_chunk"  ||
-				       method == "remove_chunk";
+				return method == "read_document"  ||
+				       method == "read_schema"     ||
+				       method == "read_skill"      ||
+				       method == "validate"        ||
+				       method == "render"          ||
+				       method == "render_status"   ||
+				       method == "render_wait"     ||
+				       method == "render_cancel"   ||
+				       method == "read_image";
 			}
 
 			//! The severity token for a diagnostic.
@@ -468,14 +486,20 @@ namespace RISE
 						return MakeError( idValue, kInvalidParams, "Invalid params: 'params' must be an object" );
 				}
 
-				// (5b) Secure-MCP slice 2: the ONE choke point for the
-				// launch-time autonomy policy -- checked BEFORE any per-verb
-				// block, against the small fixed set of mutating verb names.
-				// Under AgentAutonomy::Read this is a POLICY refusal, never a
+				// (5b) Secure-MCP slice 2 hardening: the ONE choke point for
+				// the launch-time autonomy policy -- checked BEFORE any
+				// per-verb block, DENY-BY-DEFAULT against the fixed
+				// allowlist of 9 read-safe verb names (IsReadSafeVerb).  A
+				// verb that is not on the read-safe list is refused under
+				// Read -- this covers the 3 known-mutating verbs AND any
+				// future verb that reaches dispatch without being
+				// consciously classified read-safe (the fail-closed
+				// property this hardening exists for).  Under
+				// AgentAutonomy::Read this is a POLICY refusal, never a
 				// scene-state outcome -- see MakeAutonomyRefusedError's doc
 				// for why it is a distinct JSON-RPC error code/shape rather
 				// than a "rejected"/"conflict" success result.
-				if( mAutonomy == AgentAutonomy::Read && IsMutatingVerb( m ) ) {
+				if( mAutonomy == AgentAutonomy::Read && !IsReadSafeVerb( m ) ) {
 					return MakeAutonomyRefusedError( idValue, m );
 				}
 

@@ -186,20 +186,34 @@
 //
 //    Secure-MCP slice 2 (headless autonomy policy): AgentAutonomy is a
 //    LAUNCH-TIME-ONLY posture -- never settable by the model, a scene
-//    file, or any request parameter.  `Read` refuses the three mutating
-//    verbs (propose_patch, insert_chunk, remove_chunk) at ONE choke point
-//    inside HandleLine, BEFORE their per-verb blocks, with a distinct
-//    JSON-RPC error code (kAutonomyRefused == -32011, an unused app-range
-//    code alongside the standard set above) + a structured `data`
-//    field {verb, autonomy:"read"} -- deliberately NOT the "rejected"/
-//    "conflict" status shape propose_patch's own result uses for a scene-
-//    state outcome, because a policy refusal must never be mistaken for a
-//    retriable scene conflict.  render (and every other read/observe verb:
-//    read_document, read_schema, read_skill, validate, render_status,
-//    render_wait, render_cancel, read_image) is DELIBERATELY allowed under
-//    `Read` -- it does not mutate the retained Document, and rendering is
-//    the core value of a read-only observer session.  `Commit` is today's
-//    behaviour: no refusal, every verb dispatches as before.
+//    file, or any request parameter.  Post-hardening, the choke point is
+//    DENY-BY-DEFAULT: `Read` allows ONLY the 9-verb read-safe allowlist
+//    (read_document, read_schema, read_skill, validate, render,
+//    render_status, render_wait, render_cancel, read_image -- IsReadSafeVerb
+//    in AgentRpc.cpp) and refuses EVERYTHING else, including the 3 known-
+//    mutating verbs (propose_patch, insert_chunk, remove_chunk), any
+//    unrecognized/typo'd method name, and any FUTURE verb added to the
+//    dispatch below without also being added to the read-safe list.  This
+//    is a deliberate polarity flip from the pre-hardening design (an
+//    allow-list of the 3 mutating verb NAMES, checked first) which was
+//    FAIL-OPEN: a new mutating verb #13 would have been silently permitted
+//    under Read until someone remembered to blacklist it.  One
+//    consequence worth calling out: an unrecognized method under Read now
+//    surfaces as kAutonomyRefused rather than kMethodNotFound (a Commit
+//    dispatcher, or a recognized-but-unsafe verb under Read, still
+//    distinguishes the two) -- consistent with "deny unless proven safe"
+//    rather than leaking method-existence to a read-only caller.  The
+//    refusal itself carries a distinct JSON-RPC error code
+//    (kAutonomyRefused == -32011, an unused app-range code alongside the
+//    standard set above) + a structured `data` field {verb,
+//    autonomy:"read"} -- deliberately NOT the "rejected"/"conflict" status
+//    shape propose_patch's own result uses for a scene-state outcome,
+//    because a policy refusal must never be mistaken for a retriable scene
+//    conflict.  render (and every other verb on the read-safe allowlist)
+//    is DELIBERATELY allowed under `Read` -- it does not mutate the
+//    retained Document, and rendering is the core value of a read-only
+//    observer session.  `Commit` is today's behaviour: no refusal, every
+//    verb dispatches as before.
 //
 //    Class default vs. binary default (READ THIS BEFORE CHANGING EITHER):
 //    the C++ DEFAULT for a dispatcher constructed WITHOUT the autonomy
@@ -263,15 +277,19 @@ namespace RISE
 
 			//! Handle ONE JSON-RPC request line, returning the response line
 			//! (no trailing newline -- the caller frames lines).  NEVER
-			//! throws: a malformed line -> -32700, an unknown method ->
-			//! -32601, a bad params shape -> -32602, an internal failure /
-			//! escaped exception -> -32603.  A JSON-RPC NOTIFICATION (a
-			//! request with no `id`) still gets a response line in slice 0c
-			//! (the stdio transport is strictly request/response; true
-			//! fire-and-forget notifications are not part of this set).
-			//! Secure-MCP slice 2: under AgentAutonomy::Read, the three
-			//! mutating verbs return kAutonomyRefused (-32011) instead of
-			//! dispatching -- see the file header's policy-refusal doc.
+			//! throws: a malformed line -> -32700, an unknown method under
+			//! Commit (or any recognized-but-unsafe method under Read that
+			//! still doesn't exist) -> -32601, a bad params shape -> -32602,
+			//! an internal failure / escaped exception -> -32603.  A
+			//! JSON-RPC NOTIFICATION (a request with no `id`) still gets a
+			//! response line in slice 0c (the stdio transport is strictly
+			//! request/response; true fire-and-forget notifications are not
+			//! part of this set).  Secure-MCP slice 2 hardening: under
+			//! AgentAutonomy::Read, any method NOT on the 9-verb read-safe
+			//! allowlist (IsReadSafeVerb) -- the 3 mutating verbs, an
+			//! unrecognized method, or any future verb not yet classified --
+			//! returns kAutonomyRefused (-32011) instead of dispatching; see
+			//! the file header's policy-refusal doc.
 			std::string HandleLine( const std::string& jsonRpcRequest );
 
 			//! The wrapped session (for a host that wants direct access; the
@@ -289,7 +307,13 @@ namespace RISE
 			AgentRpcDispatcher& operator=( const AgentRpcDispatcher& );  // deleted
 
 			std::unique_ptr<AgentSession> mSession;
-			AgentAutonomy                 mAutonomy;
+			// Secure-MCP slice 2 hardening: const -- compiler-enforced
+			// immutability of the launch-time posture. Copy-assign is
+			// already deleted above, so a const member introduces no new
+			// restriction on this class's usable operations; it just
+			// forecloses a future setter from reintroducing a way to
+			// change the posture after construction.
+			const AgentAutonomy            mAutonomy;
 		};
 	}
 }
