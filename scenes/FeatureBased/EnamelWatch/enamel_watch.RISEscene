@@ -812,6 +812,39 @@ ggx_material
 	fresnel_mode			schlick_f0
 }
 
+# Blued-steel DARK furniture + hands -- bound on LIGHT dials for legibility
+# (swap the `furniture` object to furniture_dark and the hands to dark_hands;
+# used by the light tear-sheet colourways).  Near-black with a subtle polished
+# sheen, like blued/blackened steel markings on a pale enamel dial.
+uniformcolor_painter
+{
+	name				pnt_ink
+	color				0.02 0.02 0.025
+}
+uniformcolor_painter
+{
+	name				pnt_ink_f0
+	color				0.07 0.07 0.08
+}
+ggx_material
+{
+	name				furniture_dark
+	rd				pnt_ink
+	rs				pnt_ink_f0
+	alphax				0.12
+	alphay				0.12
+	fresnel_mode			schlick_f0
+}
+ggx_material
+{
+	name				dark_hands
+	rd				pnt_ink
+	rs				pnt_ink_f0
+	alphax				0.06
+	alphay				0.06
+	fresnel_mode			schlick_f0
+}
+
 plymesh_geometry
 {
 	name				furnituregeom
@@ -1197,23 +1230,23 @@ homogeneous_medium
 piecewise_linear_function
 {
 	name chrome_abs
-	cp 400 52
-	cp 420 54
-	cp 440 56
-	cp 460 48
-	cp 480 26
-	cp 500 9
-	cp 515 3.5
-	cp 530 2.8
-	cp 550 4
-	cp 570 11
-	cp 590 24
-	cp 610 34
-	cp 630 38
-	cp 650 42
-	cp 680 36
-	cp 700 28
-	cp 720 22
+	cp 400 54
+	cp 420 56
+	cp 440 58
+	cp 460 50
+	cp 480 32
+	cp 500 16
+	cp 515 10
+	cp 530 9
+	cp 550 11
+	cp 570 18
+	cp 590 28
+	cp 610 36
+	cp 630 41
+	cp 650 45
+	cp 680 39
+	cp 700 31
+	cp 720 25
 }
 
 homogeneous_medium
@@ -1299,23 +1332,23 @@ homogeneous_medium
 piecewise_linear_function
 {
 	name iron_amber_abs
-	cp 400 52
-	cp 420 48
-	cp 440 42
-	cp 460 32
-	cp 480 22
-	cp 500 13
-	cp 515 9
-	cp 530 6
-	cp 550 4
-	cp 570 3
-	cp 590 2.6
-	cp 610 2.5
-	cp 630 2.4
-	cp 650 2.4
-	cp 680 2.4
-	cp 700 2.4
-	cp 720 2.4
+	cp 400 54
+	cp 420 50
+	cp 440 44
+	cp 460 34
+	cp 480 24
+	cp 500 16
+	cp 515 12
+	cp 530 9
+	cp 550 7.5
+	cp 570 7
+	cp 590 6.8
+	cp 610 6.5
+	cp 630 6.5
+	cp 650 6.5
+	cp 680 6.5
+	cp 700 6.5
+	cp 720 6.5
 }
 
 homogeneous_medium
