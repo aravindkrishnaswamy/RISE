@@ -1163,23 +1163,23 @@ homogeneous_medium
 piecewise_linear_function
 {
 	name cobalt_abs
-	cp 400 4
-	cp 420 3
+	cp 400 5
+	cp 420 3.5
 	cp 440 2.5
-	cp 460 3
-	cp 480 7
-	cp 500 18
-	cp 515 32
-	cp 530 46
-	cp 550 40
-	cp 570 44
-	cp 590 50
-	cp 610 46
-	cp 630 50
-	cp 650 52
-	cp 680 44
-	cp 700 36
-	cp 720 30
+	cp 460 2.8
+	cp 480 5
+	cp 500 10
+	cp 515 16
+	cp 530 24
+	cp 550 26
+	cp 570 34
+	cp 590 44
+	cp 610 48
+	cp 630 52
+	cp 650 54
+	cp 680 54
+	cp 700 52
+	cp 720 50
 }
 
 homogeneous_medium
@@ -1197,23 +1197,23 @@ homogeneous_medium
 piecewise_linear_function
 {
 	name chrome_abs
-	cp 400 40
-	cp 420 44
-	cp 440 48
-	cp 460 38
-	cp 480 20
-	cp 500 8
+	cp 400 52
+	cp 420 54
+	cp 440 56
+	cp 460 48
+	cp 480 26
+	cp 500 9
 	cp 515 3.5
 	cp 530 2.8
-	cp 550 3.5
-	cp 570 9
-	cp 590 22
-	cp 610 38
-	cp 630 48
-	cp 650 52
-	cp 680 46
-	cp 700 38
-	cp 720 32
+	cp 550 4
+	cp 570 11
+	cp 590 24
+	cp 610 34
+	cp 630 38
+	cp 650 42
+	cp 680 36
+	cp 700 28
+	cp 720 22
 }
 
 homogeneous_medium
@@ -1231,22 +1231,22 @@ homogeneous_medium
 piecewise_linear_function
 {
 	name copper_abs
-	cp 400 10
+	cp 400 8
 	cp 420 5
 	cp 440 3
 	cp 460 2.5
 	cp 480 2.8
-	cp 500 4
-	cp 515 6
-	cp 530 10
-	cp 550 18
-	cp 570 28
-	cp 590 36
-	cp 610 44
+	cp 500 3.5
+	cp 515 5
+	cp 530 7
+	cp 550 11
+	cp 570 18
+	cp 590 28
+	cp 610 40
 	cp 630 50
-	cp 650 54
-	cp 680 56
-	cp 700 57
+	cp 650 56
+	cp 680 58
+	cp 700 58
 	cp 720 58
 }
 
@@ -1265,23 +1265,23 @@ homogeneous_medium
 piecewise_linear_function
 {
 	name manganese_abs
-	cp 400 6
-	cp 420 4
-	cp 440 3
-	cp 460 5
-	cp 480 14
+	cp 400 10
+	cp 420 7
+	cp 440 5
+	cp 460 8
+	cp 480 16
 	cp 500 30
-	cp 515 42
-	cp 530 50
-	cp 550 46
-	cp 570 36
-	cp 590 24
-	cp 610 15
-	cp 630 8
-	cp 650 5
-	cp 680 3.5
-	cp 700 4
-	cp 720 5
+	cp 515 34
+	cp 530 40
+	cp 550 38
+	cp 570 30
+	cp 590 20
+	cp 610 12
+	cp 630 6
+	cp 650 3.5
+	cp 680 2.5
+	cp 700 2.5
+	cp 720 2.5
 }
 
 homogeneous_medium
@@ -1340,6 +1340,82 @@ ggx_material
 	fresnel_mode conductor
 	ior Au_n
 	extinction Au_k
+}
+
+##################################################
+# OPAQUE GRAND-FEU PALETTE (2026-07-05) -- mechanism (B): opacified enamel.
+# Grand feu WHITE / IVORY / BLACK / opaque BLUE (Jaquet Droz, Moritz Grossmann,
+# Chronoswiss, and the opaque cells of Patek/Vacheron cloisonne) are NOT
+# translucent-over-substrate: the colour lives in a DENSE volume-SCATTERING glass
+# body (tin/zirconia opacifier) whose metal is never seen through.  Physically
+# this is the SAME bounded slab as the fume, with the sigma_s (scattering) knob
+# turned UP.  Two regime differences from the translucent curves above:
+#   (1) multiple scattering AMPLIFIES a small sigma_a contrast into saturated
+#       colour, so the opaque colorant curves are GENTLE (low contrast), not the
+#       high-contrast single-pass fume curves;
+#   (2) sigma_s ~15 makes the slab opaque (the silver dome no longer reads, so an
+#       opaque dial is UNIFORM -- no fume gradient), and black is a pure absorber
+#       (sigma_s 0).  Bind one of these on `enamel` instead of a fume medium; the
+#       substrate is hidden so `en_dome`/floor choice no longer matters.  OIDN is
+#       needed (multiple-scattering media are noisy).  Validated swatch:
+#       scenes/FeatureBased/EnamelWatch/enamel_grandfeu_opaque.RISEscene.
+##################################################
+
+# Gentle cobalt (opaque blue): small contrast, blue passes, red mildly absorbed.
+piecewise_linear_function
+{
+	name cobalt_op
+	cp 400 0.6
+	cp 440 0.3
+	cp 470 0.4
+	cp 500 1.2
+	cp 530 3.0
+	cp 560 4.5
+	cp 600 6.0
+	cp 650 6.5
+	cp 700 5.0
+	cp 720 4.2
+}
+# Gentle warm ivory: absorb a touch more blue than red.
+piecewise_linear_function
+{
+	name ivory_op
+	cp 400 0.55
+	cp 460 0.42
+	cp 520 0.28
+	cp 580 0.18
+	cp 650 0.12
+	cp 720 0.10
+}
+homogeneous_medium
+{
+	name gf_white
+	absorption			0.02 0.02 0.02
+	scattering			15.0 15.0 15.0
+	phase				isotropic
+}
+homogeneous_medium
+{
+	name gf_ivory
+	absorption			0.3 0.3 0.3
+	scattering			15.0 15.0 15.0
+	absorption_spectral	ivory_op
+	phase				isotropic
+}
+homogeneous_medium
+{
+	name gf_black
+	absorption			45.0 45.0 45.0
+	scattering			0.0 0.0 0.0
+	phase				isotropic
+}
+homogeneous_medium
+{
+	name gf_blue
+	absorption			2.0 1.5 0.4
+	scattering			15.0 15.0 15.0
+	absorption_spectral	cobalt_op
+	phase				isotropic
 }
 
 dielectric_material

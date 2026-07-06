@@ -133,6 +133,25 @@ slight blue tilt as size drops toward the Rayleigh end.
 > data surfaces; the moderate Mie forward peak for these sizes is g≈0.4–0.7, used only
 > to sanity-check the tabulated lobe, not as the model.)
 
+> **VALIDATED 2026-07-05 (opaque grand feu renders):** the σ_s-knob prediction is
+> now confirmed end-to-end. The SAME bounded slab (Dielectric → HomogeneousMedium →
+> reflective substrate) that renders translucent fumé renders **opaque grand feu**
+> when σ_s is turned up — proven on a black-floor stress swatch (a bright white disc
+> over a *black* substrate ⇒ the scattering body, not the metal, makes the white) and
+> on the watch (a uniform opaque cobalt-blue dial, dome no longer visible). **No new
+> engine code was needed** — G1's spectral medium + scattering already covers it.
+> Two authoring lessons that are NOT obvious from the physics table: **(1) opaque
+> colour is a different tuning regime than translucent** — multiple scattering
+> *amplifies* a small σ_a contrast into saturated colour, so opaque colorant curves
+> must be GENTLE (σ_a ~0.3–6), the opposite of the high-contrast (σ_a ~2.5→56)
+> single-pass fumé curves; a translucent-strength curve under high σ_s renders dark
+> and desaturated (colour lost in multiple-scattering noise). **(2) Black grand feu
+> is a pure absorber** (σ_s 0, high σ_a) — cleaner and less noisy than a dark
+> scattering body. Multiple-scattering media are noisy → OIDN is expected. Recipe +
+> media (`gf_white/gf_ivory/gf_black/gf_blue`) live in the palette of
+> `enamel_watch.RISEscene`; showcase = `enamel_grandfeu_opaque.RISEscene`. HG-`g` /
+> Mie-derived phase remains the future upgrade over the isotropic v1 phase.
+
 ---
 
 ## 2. Enamel techniques and their optical behavior
