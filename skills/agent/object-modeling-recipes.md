@@ -20,7 +20,7 @@ not listed here.
 | `cylinder_geometry` | pipes, poles, mug bodies, legs | cheap analytic | default `axis` is `x` (lies on its side); `height` centers on the origin along that axis |
 | `torus_geometry` | rings, handles, chain links | cheap analytic | ring axis is always Y (lies flat in XZ by default); `minorratio` is the tube radius as a FRACTION of `majorradius`, not an absolute size |
 | `ellipsoid_geometry` | eggs, squashed balls, gems | cheap analytic | `radii` is per-axis semi-axes (like a scaled sphere baked into the geometry, not a `standard_object.scale`) |
-| `infiniteplane_geometry` | floors, walls, backdrops | cheap analytic, unbounded | needs a `position`/`orientation` to place and tilt -- default lies in XY facing +Z |
+| `infiniteplane_geometry` | floors, walls, backdrops | cheap analytic, unbounded | the CHUNK itself only takes `name`/`xtile`/`ytile` -- placement/tilt comes from the enclosing `standard_object`'s `position`/`orientation` (universal for every geometry chunk); default lies in XY facing +Z before that transform |
 | `clippedplane_geometry` | bounded floors, area-light quads, framed backdrops | cheap analytic | four explicit corners; vertex WINDING picks which side renders/emits |
 | `csg_object` | booleans of two already-declared objects | cost of both operands + one more test | **no `scale` parameter** -- size the operands, not the CSG result |
 | `sdf_geometry` | melded/filleted/tapered organic shapes (fillets, cones, capsules, smooth unions) that no analytic primitive covers | sphere-traced -- more expensive per-hit than an analytic primitive, cost scales with `maxsteps` | inline `part` lines compose in order; the FIRST part must be `union` or `smin` (the field starts empty); see the lamp recipe below for the field layout |
@@ -370,16 +370,34 @@ second-angle check from the observe loop confirms all four legs are
 genuinely under the corners, not collapsed into one silhouette from
 the authored camera).
 
-## Recipe 3: a lamp (`sdf_geometry roundcone` for the tapered shade)
+## Recipe 3: a lamp (CSG-clipped `sdf_geometry roundcone` for the tapered shade)
 
-No analytic primitive here tapers from a wide base to a narrow top --
-`sdf_geometry`'s `roundcone` primitive does exactly that, stacked over
-a cylinder base and pole.  `part` field layout: `<prim> <op> <k>  <pos
-xyz>  <euler xyz deg>  <scale xyz>  <a b c>  <round>`.  For
-`roundcone`, `a`/`b`/`c` are `<r1> <r2> <h>` -- the primitive grows
-along LOCAL +Y from `y=0` (radius `r1`, the WIDE base) to `y=h` (radius
-`r2`, the narrow top), so no extra orientation flip is needed to sit
-it wide-end-down on the pole.
+No analytic primitive tapers from a wide base to a narrow top, and
+`sdf_geometry`'s `roundcone` primitive on its own is the WRONG shape
+for a lampshade -- `roundcone` is Quilez's rounded-CAPSULE-like cone:
+both ends are hemispherical caps (radius `r1` at the wide end, `r2` at
+the narrow end), so used bare it renders as a teardrop/balloon-on-a-
+stick, not a lamp -- there is no flat rim at the bottom and no flat
+disc at the top, which is exactly what a human eye needs to read
+"lampshade" instead of "rounded blob".  The fix is a `csg_object`
+INTERSECTION with a `box_geometry`: the box's flat faces slice off both
+rounded caps, leaving only the straight tapered SIDE wall of the cone
+with flat top and bottom cuts -- a genuine frustum silhouette.  This
+was verified by rendering both the bare-roundcone version (confirmed:
+reads as a teardrop/balloon from every angle) and the CSG-clipped
+version (confirmed: reads as a lamp from two angles, see below) --
+don't skip the CSG step and assume the bare primitive is "close enough".
+
+`part` field layout: `<prim> <op> <k>  <pos xyz>  <euler xyz deg>
+<scale xyz>  <a b c>  <round>`.  For `roundcone`, `a`/`b`/`c` are `<r1>
+<r2> <h>` -- the primitive grows along LOCAL +Y from `y=0` (radius
+`r1`, the WIDE base) to `y=h` (radius `r2`, the narrow top).  Size the
+clipping box's `height` slightly less than the roundcone's `h` (e.g.
+`0.5` box height against a `h=0.5` roundcone with rounded caps that
+bulge past each end) so the intersection cuts INTO the rounded caps
+rather than leaving a sliver of curvature at the rim -- the box's
+`width`/`depth` just need to exceed `2*r1` so they don't clip the
+tapered sides themselves, only the caps.
 
 ```rise
 RISE ASCII SCENE 7
@@ -497,18 +515,45 @@ standard_object
 	position	0 0.7 0
 }
 
-# Shade: r1=0.35 (wide base) tapering to r2=0.15 (narrow top) over
-# h=0.4 -- the lampshade silhouette no analytic primitive gives directly.
+# Shade core: r1=0.35 (wide base) tapering to r2=0.15 (narrow top) over
+# h=0.5 -- bare, this is a rounded-cap teardrop, NOT a lampshade.
 sdf_geometry
 {
-	name	shade
-	part	roundcone union 0  0 0 0  0 0 0  1 1 1  0.35 0.15 0.4  0.0
+	name	shade_taper
+	part	roundcone union 0  0 0 0  0 0 0  1 1 1  0.35 0.15 0.5  0.0
 }
 
 standard_object
 {
+	name		obj_shade_taper
+	geometry	shade_taper
+}
+
+# Clip box: flat faces slice off the roundcone's rounded caps top and
+# bottom, leaving a straight-sided frustum.  width/depth (0.9) clear
+# 2*r1 (0.7) so only the caps are cut, not the tapered sides; height
+# (0.5) matches the roundcone's h so both caps get cut into.
+box_geometry
+{
+	name	shade_clip
+	width	0.9
+	height	0.5
+	depth	0.9
+}
+
+standard_object
+{
+	name		obj_shade_clip
+	geometry	shade_clip
+	position	0 0.25 0
+}
+
+csg_object
+{
 	name		obj_shade
-	geometry	shade
+	obja		obj_shade_taper
+	objb		obj_shade_clip
+	operation	intersection
 	material	mat_shade
 	position	0 1.3 0
 }
@@ -522,13 +567,18 @@ directional_light
 }
 ```
 
-Rendered, this reads as a lamp: a wide flat foot, a thin pole, and a
-rounded tapered shade sitting on top -- three stacked primitives that
-individually are unremarkable but compose into a recognizable object.
-Confirm the shade isn't floating: its `position.y` should be close to
-the pole's top (`pole position.y + pole height/2`), and its local
-`y=0` (the WIDE end) should coincide with that meeting point given
-`roundcone` grows in +Y from there.
+Rendered at 256px from two angles (a 3/4 front view and a near-top-down
+rear view), this reads as a lamp: a wide flat foot, a thin pole, and a
+straight-sided conical shade with a visible flat disc at the top and a
+flat rim at the bottom -- three stacked parts that individually are
+unremarkable but compose into a recognizable object.  Confirm the
+shade isn't floating: its `position.y` should be close to the pole's
+top (`pole position.y + pole height/2`), and the taper's local `y=0`
+(the WIDE end, pre-clip) should coincide with that meeting point.  If
+the render still shows a rounded/bulging cap instead of a flat rim,
+the clip box isn't cutting deep enough -- shrink its `height` (or grow
+its Y `position` overlap into the roundcone's caps) until the
+curvature is gone.
 
 ## Traps specific to object modeling
 
@@ -536,11 +586,17 @@ the pole's top (`pole position.y + pole height/2`), and its local
    parameter like `cylinder_geometry` has.  To stand a torus up (a
    mug handle, a ring on its edge), rotate it with `orientation`;
    90 about X or Z both work depending which way you want the ring
-   facing.
+   facing.  Don't over-rotate by pattern-matching the mug recipe: a
+   FLAT collar/ring lying in XZ (a pawn's collar, a disk-shaped ring
+   resting on a surface) wants the DEFAULT orientation with no rotation
+   at all; it's only a STANDING handle (the mug recipe's ring-on-its-
+   edge) that needs the 90-degree rotate.
 2. **`sdf_geometry`'s first `part` line must be `union` or `smin`** --
    the field starts empty, so `subtract`/`intersect` as the first
-   operation leaves nothing to subtract from/intersect with (parses,
-   derives, but sphere-traces an empty/degenerate field).
+   operation leaves nothing to subtract from/intersect with.  This is
+   a HARD parse-time failure, not a silent bad render: `ParsePartLines`
+   rejects it with an explicit `eLog_Error` naming the offending part
+   line, and the chunk refuses to derive.
 3. **Reuse geometry across objects instead of redeclaring it** -- a
    table's four legs, a fence's posts, a railing's balusters are all
    ONE geometry chunk referenced by N `standard_object`s at N

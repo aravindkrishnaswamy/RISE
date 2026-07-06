@@ -144,8 +144,11 @@ standard_object
 
 # The reference capture as a texture on a bounded quad -- swap the
 # `file` for the user's actual capture path once it's in the media
-# path; this snippet uses a texture already shipped in the repo so it
-# is self-contained.
+# path.  This snippet uses a texture already shipped in the repo at a
+# path relative to the repo root, which resolves here only because
+# this snippet is run from repo root (see the note below the snippet);
+# a real session should substitute an ABSOLUTE path to the user's
+# capture instead of relying on a relative one resolving by luck.
 png_painter
 {
 	name	pnt_reference
@@ -212,11 +215,33 @@ directional_light
 ```
 
 `png_painter`'s `file` resolves the same way any scene-language file
-path does -- first as literally given (so a path relative to the
-process's working directory, or an absolute path, needs no extra
-configuration), then through any configured media-path search roots.
-It does NOT require `RISE_MEDIA_PATH` to be set if the given path
-already resolves as-is.
+path does -- first as literally given (relative to the process's
+current working directory, or absolute), then through any configured
+media-path search roots.  The snippet above uses the relative path
+`textures/cel.png`, which only resolves without extra configuration
+when the process's cwd IS the repo root (true in CI: the test suite
+runs from repo root, and this is why the snippet works there
+unmodified).  **In a real agent session the cwd is very likely
+something else**, and a relative path that doesn't resolve as-is and
+isn't found on any configured media-path root does NOT fail the
+render -- `MediaPathLocator::Find` logs an error and gives up,
+returning the path unresolved; the PNG reader then gets nothing to
+read and the texture silently comes back empty.  The render still
+completes with `ok:true` and no diagnostic anywhere in the result --
+you get a scene that quietly has no reference image on the quad, and
+nothing tells you that happened.
+
+To avoid this: **use an ABSOLUTE path** for the user's reference
+capture (or copy the capture next to the scene file and set
+`RISE_MEDIA_PATH`/cwd accordingly so a relative path resolves).  Then,
+regardless of which you chose, **verify the reference actually
+appears** in the first render that includes the quad -- render at a
+small size, `read_image`, and look at the reference quad's rectangle
+for actual photo content (edges, color variation, a recognizable
+silhouette) rather than a flat, featureless patch.  A flat patch where
+the photo should be means the texture didn't load -- fix the path
+before trusting anything about the comparison, since a missing texture
+gives you no other signal that something is wrong.
 
 ### 4. Canonical-view matching
 
