@@ -184,6 +184,36 @@
 //    optimistic-concurrency gate landed in slice 1a (above); an auth token
 //    and networking beyond the stdin/stdout pipe the CLI wires remain slice 1b+.
 //
+//    Secure-MCP slice 2 (headless autonomy policy): AgentAutonomy is a
+//    LAUNCH-TIME-ONLY posture -- never settable by the model, a scene
+//    file, or any request parameter.  `Read` refuses the three mutating
+//    verbs (propose_patch, insert_chunk, remove_chunk) at ONE choke point
+//    inside HandleLine, BEFORE their per-verb blocks, with a distinct
+//    JSON-RPC error code (kAutonomyRefused == -32011, an unused app-range
+//    code alongside the standard set above) + a structured `data`
+//    field {verb, autonomy:"read"} -- deliberately NOT the "rejected"/
+//    "conflict" status shape propose_patch's own result uses for a scene-
+//    state outcome, because a policy refusal must never be mistaken for a
+//    retriable scene conflict.  render (and every other read/observe verb:
+//    read_document, read_schema, read_skill, validate, render_status,
+//    render_wait, render_cancel, read_image) is DELIBERATELY allowed under
+//    `Read` -- it does not mutate the retained Document, and rendering is
+//    the core value of a read-only observer session.  `Commit` is today's
+//    behaviour: no refusal, every verb dispatches as before.
+//
+//    Class default vs. binary default (READ THIS BEFORE CHANGING EITHER):
+//    the C++ DEFAULT for a dispatcher constructed WITHOUT the autonomy
+//    argument is `Commit`, for back-compat with every existing in-process
+//    construction -- the GUI's live agent dispatcher
+//    (RISEViewportBridge.mm's `new AgentRpcDispatcher(std::move(session))`)
+//    and every pre-slice-2 test construct this way and MUST keep today's
+//    unrestricted behaviour without an edit.  The `rise --agent-stdio` CLI
+//    binary's OWN default is the INVERSE -- `read` -- unless the caller
+//    explicitly passes `--agent-autonomy=commit`; the CLI passes the enum
+//    value explicitly either way (see commandconsole.cpp), it never relies
+//    on the class default.  So: "the BINARY defaults to read; the CLASS
+//    defaults to commit-for-back-compat."
+//
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
 //
@@ -203,6 +233,15 @@ namespace RISE
 	{
 		class AgentSession;
 
+		//! Secure-MCP slice 2: the launch-time autonomy posture a headless
+		//! (or embedding) session runs with.  See the file header above for
+		//! the full class-default-vs-binary-default rationale.
+		enum class AgentAutonomy
+		{
+			Read,     //!< mutating verbs (propose_patch/insert_chunk/remove_chunk) refused; render + every other read/observe verb still work.
+			Commit    //!< today's behaviour: every verb dispatches unrestricted. The C++ constructor DEFAULT (back-compat).
+		};
+
 		//! A JSON-RPC 2.0 dispatcher holding an AgentSession.  Owns the
 		//! session (constructed from one).  NOT thread-safe (slice 0c is
 		//! single-threaded, matching AgentSession).
@@ -212,7 +251,14 @@ namespace RISE
 			//! Take ownership of `session` (may be null -- then every
 			//! session-backed method returns a -32603 "no session" error, so
 			//! a malformed launch still speaks valid JSON-RPC).
-			explicit AgentRpcDispatcher( std::unique_ptr<AgentSession> session );
+			//! `autonomy` defaults to Commit -- see the file header's
+			//! class-default-vs-binary-default note: every EXISTING call
+			//! site (the GUI's live dispatcher, every pre-slice-2 test)
+			//! constructs without this argument and must keep today's
+			//! unrestricted behaviour verbatim.  `rise --agent-stdio` passes
+			//! the value explicitly (defaulting to Read at the CLI layer).
+			explicit AgentRpcDispatcher( std::unique_ptr<AgentSession> session,
+			                             AgentAutonomy autonomy = AgentAutonomy::Commit );
 			~AgentRpcDispatcher();
 
 			//! Handle ONE JSON-RPC request line, returning the response line
@@ -223,17 +269,27 @@ namespace RISE
 			//! request with no `id`) still gets a response line in slice 0c
 			//! (the stdio transport is strictly request/response; true
 			//! fire-and-forget notifications are not part of this set).
+			//! Secure-MCP slice 2: under AgentAutonomy::Read, the three
+			//! mutating verbs return kAutonomyRefused (-32011) instead of
+			//! dispatching -- see the file header's policy-refusal doc.
 			std::string HandleLine( const std::string& jsonRpcRequest );
 
 			//! The wrapped session (for a host that wants direct access; the
 			//! CLI does not need it).  May be null.
 			AgentSession* Session() { return mSession.get(); }
 
+			//! The autonomy posture this dispatcher was constructed with
+			//! (Secure-MCP slice 2). Exposed so a wrapping adapter (e.g.
+			//! AgentMcpAdapter) can annotate tools/list without duplicating
+			//! the policy.
+			AgentAutonomy Autonomy() const { return mAutonomy; }
+
 		private:
 			AgentRpcDispatcher( const AgentRpcDispatcher& );             // deleted
 			AgentRpcDispatcher& operator=( const AgentRpcDispatcher& );  // deleted
 
 			std::unique_ptr<AgentSession> mSession;
+			AgentAutonomy                 mAutonomy;
 		};
 	}
 }

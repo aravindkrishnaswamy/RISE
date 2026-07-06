@@ -43,6 +43,28 @@ namespace RISE
 			const int kInvalidParams  = -32602;
 			const int kInternalError  = -32603;
 
+			// Secure-MCP slice 2: an app-range (unused-by-the-JSON-RPC-spec)
+			// error code for a POLICY refusal under AgentAutonomy::Read --
+			// deliberately distinct from every standard code above AND from
+			// propose_patch's own "rejected"/"conflict" SUCCESS-result
+			// shapes, so an agent cannot confuse "this session's launch
+			// posture forbids mutation" with a retriable scene-state outcome.
+			const int kAutonomyRefused = -32011;
+
+			//! Secure-MCP slice 2: the verb names refused under
+			//! AgentAutonomy::Read -- the ONE list the choke point in
+			//! HandleLine consults.  Every other verb (read_document,
+			//! read_schema, read_skill, validate, render, render_status,
+			//! render_wait, render_cancel, read_image) stays available: see
+			//! the AgentRpc.h file header for why `render` in particular is
+			//! allowed (it never mutates the retained Document).
+			bool IsMutatingVerb( const std::string& method )
+			{
+				return method == "propose_patch" ||
+				       method == "insert_chunk"  ||
+				       method == "remove_chunk";
+			}
+
 			//! The severity token for a diagnostic.
 			const char* SeverityName( AgentDiagnostic::Severity s )
 			{
@@ -72,6 +94,31 @@ namespace RISE
 				JsonValue err = JsonValue::MakeObject();
 				err.set( "code", JsonValue::MakeNumber( static_cast<double>( code ) ) );
 				err.set( "message", JsonValue::MakeString( message ) );
+
+				JsonValue env = JsonValue::MakeObject();
+				env.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+				env.set( "id", id );
+				env.set( "error", err );
+				return JsonSerialize( env );
+			}
+
+			//! Secure-MCP slice 2: build the AgentAutonomy::Read policy-
+			//! refusal error envelope for mutating verb `verb` -- code
+			//! kAutonomyRefused, a message naming the launch posture and how
+			//! to escape it, and a structured `data` field {verb,
+			//! autonomy:"read"} so a programmatic caller can branch on the
+			//! refusal without string-matching the message.
+			std::string MakeAutonomyRefusedError( const JsonValue& id, const std::string& verb )
+			{
+				JsonValue err = JsonValue::MakeObject();
+				err.set( "code", JsonValue::MakeNumber( static_cast<double>( kAutonomyRefused ) ) );
+				err.set( "message", JsonValue::MakeString(
+					"refused: this session runs with --agent-autonomy=read; mutating verbs are "
+					"unavailable (relaunch with --agent-autonomy=commit)" ) );
+				JsonValue data = JsonValue::MakeObject();
+				data.set( "verb", JsonValue::MakeString( verb ) );
+				data.set( "autonomy", JsonValue::MakeString( "read" ) );
+				err.set( "data", data );
 
 				JsonValue env = JsonValue::MakeObject();
 				env.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
@@ -367,8 +414,10 @@ namespace RISE
 			}
 		}
 
-		AgentRpcDispatcher::AgentRpcDispatcher( std::unique_ptr<AgentSession> session )
+		AgentRpcDispatcher::AgentRpcDispatcher( std::unique_ptr<AgentSession> session,
+		                                        AgentAutonomy autonomy )
 			: mSession( std::move( session ) )
+			, mAutonomy( autonomy )
 		{
 		}
 
@@ -417,6 +466,17 @@ namespace RISE
 					if( p->isObject() ) params = *p;
 					else if( !p->isNull() )
 						return MakeError( idValue, kInvalidParams, "Invalid params: 'params' must be an object" );
+				}
+
+				// (5b) Secure-MCP slice 2: the ONE choke point for the
+				// launch-time autonomy policy -- checked BEFORE any per-verb
+				// block, against the small fixed set of mutating verb names.
+				// Under AgentAutonomy::Read this is a POLICY refusal, never a
+				// scene-state outcome -- see MakeAutonomyRefusedError's doc
+				// for why it is a distinct JSON-RPC error code/shape rather
+				// than a "rejected"/"conflict" success result.
+				if( mAutonomy == AgentAutonomy::Read && IsMutatingVerb( m ) ) {
+					return MakeAutonomyRefusedError( idValue, m );
 				}
 
 				AgentSession* s = mSession.get();

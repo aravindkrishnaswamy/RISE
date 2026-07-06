@@ -176,7 +176,12 @@ double DoHighIntensityPerformanceRating2( double* pStdDev )
 //
 // The trust boundary is the OS process (design §7.2); slice 0c adds NO
 // auth token and NO networking -- stdin/stdout only.
-static int RunAgentStdio( const char* sceneArg )
+//
+// Secure-MCP slice 2: `autonomy` is the launch-time posture resolved from
+// `--agent-autonomy` BEFORE this function is ever called (main() parses
+// and validates it loudly, exiting on a malformed value) -- it is NEVER
+// re-derived here or settable by anything the loop reads from stdin.
+static int RunAgentStdio( const char* sceneArg, RISE::Agent::AgentAutonomy autonomy )
 {
 	std::unique_ptr<RISE::Agent::AgentSession> session;
 	if( sceneArg && sceneArg[0] ) {
@@ -190,7 +195,7 @@ static int RunAgentStdio( const char* sceneArg )
 		}
 	}
 
-	RISE::Agent::AgentRpcDispatcher dispatcher( std::move( session ) );
+	RISE::Agent::AgentRpcDispatcher dispatcher( std::move( session ), autonomy );
 
 	std::string line;
 	while( std::getline( std::cin, line ) ) {
@@ -223,7 +228,9 @@ static int RunAgentStdio( const char* sceneArg )
 // signals that by returning an EMPTY string; this loop must skip writing
 // a line in that case rather than emitting a blank line (which would
 // itself be an invalid/ambiguous frame on the protocol pipe).
-static int RunAgentMcpStdio( const char* sceneArg )
+// Secure-MCP slice 2: same `autonomy` contract as RunAgentStdio above --
+// resolved and validated in main() before this function is called.
+static int RunAgentMcpStdio( const char* sceneArg, RISE::Agent::AgentAutonomy autonomy )
 {
 	std::unique_ptr<RISE::Agent::AgentSession> session;
 	if( sceneArg && sceneArg[0] ) {
@@ -234,7 +241,7 @@ static int RunAgentMcpStdio( const char* sceneArg )
 		}
 	}
 
-	RISE::Agent::AgentMcpAdapter adapter( std::move( session ) );
+	RISE::Agent::AgentMcpAdapter adapter( std::move( session ), autonomy );
 
 	std::string line;
 	while( std::getline( std::cin, line ) ) {
@@ -364,9 +371,25 @@ int main( int argc, char** argv )
 	// Parse CLI flags first to extract Film overrides + the positional
 	// scene-file argument.  Supported flags (any order, anywhere on the
 	// command line):
-	//   --width N         override Film width (pixels; positive integer)
-	//   --height N        override Film height (pixels; positive integer)
-	//   --pixel-ar X      override Film pixel aspect ratio (positive float)
+	//   --width N               override Film width (pixels; positive integer)
+	//   --height N              override Film height (pixels; positive integer)
+	//   --pixel-ar X            override Film pixel aspect ratio (positive float)
+	//   --agent-autonomy=read|commit
+	//                           (only meaningful with --agent-stdio) the
+	//                           headless launch-time posture: `read` refuses
+	//                           propose_patch/insert_chunk/remove_chunk with a
+	//                           structured policy error (render and every
+	//                           other read/observe verb still work -- render
+	//                           does not mutate the document, so it stays
+	//                           available even under `read`); `commit` is
+	//                           today's unrestricted behaviour. DEFAULT (flag
+	//                           omitted) is `read` -- an agent must opt IN to
+	//                           mutation explicitly. An unrecognized value
+	//                           (anything but exactly "read" or "commit") is a
+	//                           loud launch-time failure (exit 1), never a
+	//                           silent default. This flag is LAUNCH-TIME ONLY:
+	//                           nothing reachable from stdin (a request
+	//                           parameter, a scene file) can change it.
 	// Values are applied AFTER LoadAsciiScene returns, so they replace
 	// whatever the scene file authored.  This is how agents render test
 	// scenes at lower resolution without editing scene files.
@@ -381,6 +404,17 @@ int main( int argc, char** argv )
 	bool cliArgError = false;
 	bool cliAgentStdio = false;	// Facet 5 slice 0c: JSON-RPC stdio transport
 	bool cliMcp = false;	// Secure-MCP slice 1: speak MCP (not raw JSON-RPC) over that same transport
+	// Secure-MCP slice 2: the headless autonomy posture.  DEFAULT (no flag
+	// at all) is Read -- the INVERSE of AgentRpcDispatcher's own C++
+	// constructor default (Commit, for back-compat with the GUI's live
+	// in-process dispatcher and every pre-slice-2 test) -- see AgentRpc.h's
+	// class-default-vs-binary-default doc.  `--agent-autonomy=commit`
+	// restores today's unrestricted behaviour; any OTHER value (including
+	// a missing `=value`, empty value, or unrecognized token) is a LOUD
+	// launch-time failure, never a silent fallback to either posture.
+	RISE::Agent::AgentAutonomy cliAutonomy = RISE::Agent::AgentAutonomy::Read;
+	const char* kAutonomyFlagPrefix = "--agent-autonomy=";
+	const std::size_t kAutonomyFlagPrefixLen = strlen( kAutonomyFlagPrefix );
 	const char* sceneArg = 0;
 	for( int ai = 1; ai < argc; ai++ ) {
 		const char* a = argv[ai];
@@ -415,6 +449,16 @@ int main( int argc, char** argv )
 			cliAgentStdio = true;
 		} else if( strcmp(a, "--mcp") == 0 ) {
 			cliMcp = true;
+		} else if( strncmp( a, kAutonomyFlagPrefix, kAutonomyFlagPrefixLen ) == 0 ) {
+			const std::string val = a + kAutonomyFlagPrefixLen;
+			if( val == "read" ) {
+				cliAutonomy = RISE::Agent::AgentAutonomy::Read;
+			} else if( val == "commit" ) {
+				cliAutonomy = RISE::Agent::AgentAutonomy::Commit;
+			} else {
+				std::cerr << "ERROR: --agent-autonomy requires 'read' or 'commit'; got `" << val << "`.\n";
+				cliArgError = true;
+			}
 		} else if( strcmp(a, "--width") == 0 ) {
 			consumeIntFlag( "--width", cliFilmWidth );
 		} else if( strcmp(a, "--height") == 0 ) {
@@ -444,7 +488,7 @@ int main( int argc, char** argv )
 	// hygiene, different dispatcher.
 	if( cliAgentStdio ) {
 		safe_release( pJob );
-		const int rc = cliMcp ? RunAgentMcpStdio( sceneArg ) : RunAgentStdio( sceneArg );
+		const int rc = cliMcp ? RunAgentMcpStdio( sceneArg, cliAutonomy ) : RunAgentStdio( sceneArg, cliAutonomy );
 		GlobalLogCleanupAndShutdown();
 		return rc;
 	}

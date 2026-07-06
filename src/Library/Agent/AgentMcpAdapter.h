@@ -62,6 +62,26 @@
 //    drop-in alternative entry point next to AgentRpcDispatcher, not a
 //    wrapper needing one constructed externally.
 //
+//    Secure-MCP slice 2 (headless autonomy policy): the OPTIONAL
+//    `autonomy` constructor argument flows straight through to the
+//    wrapped AgentRpcDispatcher -- this adapter performs NO independent
+//    policy check.  A `tools/call` on a mutating verb (propose_patch/
+//    insert_chunk/remove_chunk) under AgentAutonomy::Read surfaces the
+//    wrapped dispatcher's kAutonomyRefused JSON-RPC error through the
+//    SAME "tool-execution error" path every other wrapped-verb error
+//    already takes: a SUCCESS envelope whose CallToolResult carries
+//    isError:true and a text block with the refusal's structured error
+//    JSON -- NOT a top-level JSON-RPC protocol error.  This matches MCP's
+//    documented split (see the class doc above): the tool NAME and
+//    argument SHAPE were valid, so this is not a protocol failure, but
+//    invoking it was refused, so it is not a clean result either.
+//    `tools/list` additionally ANNOTATES (never hides) the three mutating
+//    tools' descriptions under Read with a leading
+//    "[REFUSED under --agent-autonomy=read: ...]" note -- the tool stays
+//    fully visible (with its real inputSchema) so a client can still
+//    explain to its user what the tool WOULD do and why it is currently
+//    unavailable, rather than silently disappearing from the list.
+//
 //    Single-threaded, matching AgentRpcDispatcher / AgentSession: one
 //    call to HandleLine at a time, no concurrent use.
 //
@@ -75,6 +95,8 @@
 #ifndef RISE_AGENT_AGENTMCPADAPTER_
 #define RISE_AGENT_AGENTMCPADAPTER_
 
+#include "AgentRpc.h"   // AgentAutonomy (small header; the enum + dispatcher decl only)
+
 #include <memory>
 #include <string>
 
@@ -83,7 +105,6 @@ namespace RISE
 	namespace Agent
 	{
 		class AgentSession;
-		class AgentRpcDispatcher;
 
 		//! An MCP-over-stdio envelope adapter wrapping an AgentRpcDispatcher.
 		//! See the file header above for the full method mapping.
@@ -93,8 +114,13 @@ namespace RISE
 			//! Take ownership of `session` (may be null -- exactly like
 			//! AgentRpcDispatcher, a malformed launch still speaks valid
 			//! MCP/JSON-RPC; every session-backed tool call reports a
-			//! tool-execution error until a head exists).
-			explicit AgentMcpAdapter( std::unique_ptr<AgentSession> session );
+			//! tool-execution error until a head exists).  `autonomy`
+			//! defaults to Commit -- SAME back-compat rationale as
+			//! AgentRpcDispatcher's own constructor (see AgentRpc.h): every
+			//! existing call site keeps today's unrestricted behaviour
+			//! without an edit.
+			explicit AgentMcpAdapter( std::unique_ptr<AgentSession> session,
+			                          AgentAutonomy autonomy = AgentAutonomy::Commit );
 			~AgentMcpAdapter();
 
 			//! Handle ONE line of MCP JSON-RPC input.  Returns the response
@@ -117,6 +143,7 @@ namespace RISE
 			AgentMcpAdapter& operator=( const AgentMcpAdapter& );  // deleted
 
 			std::unique_ptr<AgentRpcDispatcher> mDispatcher;
+			AgentAutonomy                       mAutonomy;
 		};
 	}
 }

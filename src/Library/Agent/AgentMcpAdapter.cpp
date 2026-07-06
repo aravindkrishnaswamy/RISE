@@ -160,6 +160,18 @@ namespace RISE
 				return tool;
 			}
 
+			//! Secure-MCP slice 2: the mutating-verb refusal note prepended
+			//! to propose_patch/insert_chunk/remove_chunk's descriptions
+			//! under AgentAutonomy::Read.  DECIDED: annotate, don't hide --
+			//! the tool stays fully visible (real inputSchema, callable
+			//! shape) so a client can still explain to its user what the
+			//! tool would do and why it is currently refused, rather than
+			//! the tool silently disappearing from tools/list.
+			const std::string kAutonomyReadNote =
+				"[REFUSED under --agent-autonomy=read: this session is read-only; "
+				"calling this tool returns a policy-refusal error (relaunch with "
+				"--agent-autonomy=commit to enable it)] ";
+
 			//! Build the `tools/list` result: the 12 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
@@ -167,9 +179,13 @@ namespace RISE
 			//! width/height, camera vector shapes, the async-refused-headless
 			//! note, pinned semantics, samples clamp, the ODD/EVEN id-space
 			//! split, the baseHeadVersion conflict protocol, retriable).
-			JsonValue BuildToolsList()
+			//! Secure-MCP slice 2: under AgentAutonomy::Read, the three
+			//! mutating tools' descriptions are ANNOTATED (prefixed with
+			//! kAutonomyReadNote) rather than hidden -- see the note's doc.
+			JsonValue BuildToolsList( AgentAutonomy autonomy )
 			{
 				JsonValue tools = JsonValue::MakeArray();
+				const bool readOnly = ( autonomy == AgentAutonomy::Read );
 
 				// read_document
 				tools.push_back( MakeTool( "read_document",
@@ -229,7 +245,7 @@ namespace RISE
 					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
 					std::vector<std::string> required;
 					required.push_back( "target" ); required.push_back( "param" ); required.push_back( "value" );
-					tools.push_back( MakeTool( "propose_patch",
+					const std::string desc = ( readOnly ? kAutonomyReadNote : std::string() ) + std::string(
 						"Set one parameter on one named entity in the retained scene document. "
 						"REQUIRES a scene to be loaded. Returns {applied,rawCode,status,retriable,"
 						"headVersion,message}: applied is true ONLY for a clean apply; status is "
@@ -241,8 +257,8 @@ namespace RISE
 						"meaningful only for status=\"rejected\": true means the refusal is "
 						"TRANSIENT (e.g. an open editor transaction in a live GUI session) and "
 						"resubmitting the identical patch later can succeed; false means retrying "
-						"verbatim can never succeed. headVersion is always the head AFTER this call.",
-						ObjectProp( "", props, required ) ) );
+						"verbatim can never succeed. headVersion is always the head AFTER this call." );
+					tools.push_back( MakeTool( "propose_patch", desc, ObjectProp( "", props, required ) ) );
 				}
 
 				// insert_chunk
@@ -251,15 +267,15 @@ namespace RISE
 					props.set( "chunkText", StringProp( "Exactly ONE complete chunk -- a `keyword { ... }` block with braces on their own lines -- to add to the scene. Headers, directives, and multi-chunk text are rejected." ) );
 					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
 					std::vector<std::string> required; required.push_back( "chunkText" );
-					tools.push_back( MakeTool( "insert_chunk",
+					const std::string desc = ( readOnly ? kAutonomyReadNote : std::string() ) + std::string(
 						"Add one complete chunk to the scene document and realize it via a "
 						"dry-run-guarded full re-derive (a failed dry-run leaves the document AND "
 						"the live scene byte-identical -- no half-applied state). REQUIRES a scene "
 						"to be loaded. Same result gating as propose_patch ({applied,rawCode,"
 						"status,retriable,headVersion,message}) plus the parsed chunk's `name`/"
 						"`kind` echo. A duplicate (kind,name) against an existing chunk is rejected "
-						"with a clean message.",
-						ObjectProp( "", props, required ) ) );
+						"with a clean message." );
+					tools.push_back( MakeTool( "insert_chunk", desc, ObjectProp( "", props, required ) ) );
 				}
 
 				// remove_chunk
@@ -269,14 +285,14 @@ namespace RISE
 					props.set( "kind",   StringProp( "OPTIONAL chunk KIND keyword to disambiguate a cross-category name clash (same resolution rules as propose_patch's `kind`)." ) );
 					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
 					std::vector<std::string> required; required.push_back( "target" );
-					tools.push_back( MakeTool( "remove_chunk",
+					const std::string desc = ( readOnly ? kAutonomyReadNote : std::string() ) + std::string(
 						"Remove the chunk resolved by bare name (+ optional kind) from the scene "
 						"document via a trivia-preserving erase. REQUIRES a scene to be loaded. "
 						"Same result gating as propose_patch, plus the removed chunk's `name`/`kind` "
 						"echo. An unknown target is rejected; an ambiguous name is rejected with a "
 						"disambiguation hint; a target still REFERENCED by another chunk fails the "
-						"dry-run and is rejected with the diagnostic (document left byte-identical).",
-						ObjectProp( "", props, required ) ) );
+						"dry-run and is rejected with the diagnostic (document left byte-identical)." );
+					tools.push_back( MakeTool( "remove_chunk", desc, ObjectProp( "", props, required ) ) );
 				}
 
 				// render
@@ -439,8 +455,9 @@ namespace RISE
 			}
 		}
 
-		AgentMcpAdapter::AgentMcpAdapter( std::unique_ptr<AgentSession> session )
-			: mDispatcher( new AgentRpcDispatcher( std::move( session ) ) )
+		AgentMcpAdapter::AgentMcpAdapter( std::unique_ptr<AgentSession> session, AgentAutonomy autonomy )
+			: mDispatcher( new AgentRpcDispatcher( std::move( session ), autonomy ) )
+			, mAutonomy( autonomy )
 		{
 		}
 
@@ -580,7 +597,7 @@ namespace RISE
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
 					JsonValue result = JsonValue::MakeObject();
-					result.set( "tools", BuildToolsList() );
+					result.set( "tools", BuildToolsList( mAutonomy ) );
 					return MakeSuccess( idValue, result );
 				}
 
