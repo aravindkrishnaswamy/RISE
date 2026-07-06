@@ -227,6 +227,10 @@
 		A6E7B082000000000000C0DE /* AgentMcpAdapter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */; };
 		A6E7B083000000000000C0DE /* AgentMcpAdapter.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E082000000000000C0DE /* AgentMcpAdapter.h */; };
 		A6E7B084000000000000C0DE /* AgentMcpAdapter.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E082000000000000C0DE /* AgentMcpAdapter.h */; };
+		A6E7B091000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */; };
+		A6E7B092000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */; };
+		A6E7B093000000000000C0DE /* AgentLoopbackHttpServer.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */; };
+		A6E7B094000000000000C0DE /* AgentLoopbackHttpServer.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */; };
 		A6E7B041000000000000C0DE /* Base64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E041000000000000C0DE /* Base64.cpp */; };
 		A6E7B042000000000000C0DE /* Base64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E041000000000000C0DE /* Base64.cpp */; };
 		A6E7B043000000000000C0DE /* Base64.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E042000000000000C0DE /* Base64.h */; };
@@ -2105,6 +2109,8 @@
 		A6E7E032000000000000C0DE /* AgentRpc.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentRpc.h; sourceTree = "<group>"; };
 		A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentMcpAdapter.cpp; sourceTree = "<group>"; };
 		A6E7E082000000000000C0DE /* AgentMcpAdapter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentMcpAdapter.h; sourceTree = "<group>"; };
+		A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentLoopbackHttpServer.cpp; sourceTree = "<group>"; };
+		A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentLoopbackHttpServer.h; sourceTree = "<group>"; };
 		A6E7E041000000000000C0DE /* Base64.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Base64.cpp; sourceTree = "<group>"; };
 		A6E7E042000000000000C0DE /* Base64.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Base64.h; sourceTree = "<group>"; };
 		A6E7E051000000000000C0DE /* Json.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Json.cpp; sourceTree = "<group>"; };
@@ -3126,6 +3132,8 @@
 				A6E7E032000000000000C0DE /* AgentRpc.h */,
 				A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */,
 				A6E7E082000000000000C0DE /* AgentMcpAdapter.h */,
+				A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */,
+				A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */,
 				A6E7E041000000000000C0DE /* Base64.cpp */,
 				A6E7E042000000000000C0DE /* Base64.h */,
 				A6E7E051000000000000C0DE /* Json.cpp */,
@@ -4301,6 +4309,7 @@
 				A6E7B023000000000000C0DE /* InMemoryRasterizerOutput.h in Headers */,
 				A6E7B033000000000000C0DE /* AgentRpc.h in Headers */,
 				A6E7B083000000000000C0DE /* AgentMcpAdapter.h in Headers */,
+				A6E7B093000000000000C0DE /* AgentLoopbackHttpServer.h in Headers */,
 				A6E7B063000000000000C0DE /* AgentChatCodecs.h in Headers */,
 				A6E7B073000000000000C0DE /* AgentChatLoop.h in Headers */,
 				A6E7B043000000000000C0DE /* Base64.h in Headers */,
@@ -5017,6 +5026,7 @@
 				A6E7B021000000000000C0DE /* InMemoryRasterizerOutput.cpp in Sources */,
 				A6E7B031000000000000C0DE /* AgentRpc.cpp in Sources */,
 				A6E7B081000000000000C0DE /* AgentMcpAdapter.cpp in Sources */,
+				A6E7B091000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */,
 				A6E7B061000000000000C0DE /* AgentChatCodecs.cpp in Sources */,
 				A6E7B071000000000000C0DE /* AgentChatLoop.cpp in Sources */,
 				A6E7B041000000000000C0DE /* Base64.cpp in Sources */,
@@ -5423,6 +5433,7 @@
 				A6E7B022000000000000C0DE /* InMemoryRasterizerOutput.cpp in Sources */,
 				A6E7B032000000000000C0DE /* AgentRpc.cpp in Sources */,
 				A6E7B082000000000000C0DE /* AgentMcpAdapter.cpp in Sources */,
+				A6E7B092000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */,
 				A6E7B062000000000000C0DE /* AgentChatCodecs.cpp in Sources */,
 				A6E7B072000000000000C0DE /* AgentChatLoop.cpp in Sources */,
 				A6E7B042000000000000C0DE /* Base64.cpp in Sources */,
@@ -5433,6 +5444,7 @@
 				A6E7B024000000000000C0DE /* InMemoryRasterizerOutput.h in Sources */,
 				A6E7B034000000000000C0DE /* AgentRpc.h in Sources */,
 				A6E7B084000000000000C0DE /* AgentMcpAdapter.h in Sources */,
+				A6E7B094000000000000C0DE /* AgentLoopbackHttpServer.h in Sources */,
 				A6E7B064000000000000C0DE /* AgentChatCodecs.h in Sources */,
 				A6E7B074000000000000C0DE /* AgentChatLoop.h in Sources */,
 				A6E7B044000000000000C0DE /* Base64.h in Sources */,

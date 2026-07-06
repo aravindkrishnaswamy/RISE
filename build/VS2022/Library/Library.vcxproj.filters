@@ -549,6 +549,9 @@
     <ClCompile Include="..\..\..\src\Library\Agent\AgentChatLoop.cpp">
       <Filter>Agent</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\AgentLoopbackHttpServer.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Agent\AgentMcpAdapter.cpp">
       <Filter>Agent</Filter>
     </ClCompile>
@@ -1741,6 +1744,9 @@
       <Filter>Agent</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Agent\AgentChatLoop.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\AgentLoopbackHttpServer.h">
       <Filter>Agent</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Agent\AgentMcpAdapter.h">

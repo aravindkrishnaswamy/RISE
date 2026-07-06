@@ -17,6 +17,7 @@
 //
 #include <iostream>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -29,6 +30,7 @@
 #include "../Library/Agent/AgentSession.h"
 #include "../Library/Agent/AgentRpc.h"
 #include "../Library/Agent/AgentMcpAdapter.h"
+#include "../Library/Agent/AgentLoopbackHttpServer.h"
 #include "../Library/Interfaces/ILogPriv.h"
 #include "../Library/Interfaces/IOptions.h"
 #include "../Library/Interfaces/IJobPriv.h"
@@ -257,6 +259,55 @@ static int RunAgentMcpStdio( const char* sceneArg, RISE::Agent::AgentAutonomy au
 	return 0;
 }
 
+// Secure-MCP slice 3: `--agent-http[=PORT]` serves the SAME MCP envelope
+// (AgentMcpAdapter) over a LOOPBACK-ONLY HTTP/1.1 endpoint instead of
+// stdin/stdout, so a local MCP client can connect over HTTP. INFRA ONLY --
+// see AgentLoopbackHttpServer.h's file header for the full no-auth-yet
+// scope. `port` == 0 asks the OS for an ephemeral port (printed once bound,
+// to stderr -- stdout is not used as a framing channel by this transport
+// either, for the same console-hygiene reason RunAgentStdio suppresses it).
+//
+// Same `autonomy` contract as RunAgentStdio/RunAgentMcpStdio: resolved and
+// validated in main() before this function is called, and defaults to Read
+// at the CLI layer -- an HTTP endpoint is reachable by ANY local process
+// that can connect to 127.0.0.1, so treating it as at least as untrusted as
+// the stdio transport (arguably more so, since stdio requires the caller to
+// have spawned this exact process) is the conservative default.
+static int RunAgentHttp( const char* sceneArg, RISE::Agent::AgentAutonomy autonomy, unsigned short port )
+{
+	std::unique_ptr<RISE::Agent::AgentSession> session;
+	if( sceneArg && sceneArg[0] ) {
+		session = RISE::Agent::AgentSession::LoadFromFile( sceneArg );
+		if( !session ) {
+			std::cerr << "rise --agent-http: could not load scene '" << sceneArg
+			          << "' (not native-v7, or a derive error); continuing with no head.\n";
+		}
+	}
+
+	RISE::Agent::AgentMcpAdapter adapter( std::move( session ), autonomy );
+	RISE::Agent::AgentLoopbackHttpServer server( &adapter );
+
+	if( !server.Bind( port ) ) {
+		std::cerr << "ERROR: rise --agent-http: failed to bind 127.0.0.1:" << port
+		          << " (port in use, or another bind failure).\n";
+		return 1;
+	}
+
+	// INSECURE-UNTIL-SLICE-4 banner: loud, unconditional, to stderr (stderr
+	// is the console-hygiene channel this transport uses for anything that
+	// is not a JSON-RPC/HTTP response body -- same split RunAgentStdio /
+	// RunAgentMcpStdio already use between stdout-as-protocol-pipe and
+	// stderr-as-diagnostics, just with the socket standing in for stdout
+	// here).
+	std::cerr << "rise --agent-http: listening on http://127.0.0.1:" << server.BoundPort() << "/mcp\n"
+	          << "  WARNING: loopback only; NO AUTH YET (no bearer token, no Origin check --\n"
+	          << "  Secure-MCP slice 4). Any local process that can reach 127.0.0.1 can drive\n"
+	          << "  this endpoint. Do not rely on this as a security boundary.\n";
+
+	server.Serve();
+	return 0;
+}
+
 int main( int argc, char** argv )
 {
 	// Facet 5 slice 0c: pre-scan argv for `--agent-stdio` BEFORE anything is
@@ -265,9 +316,17 @@ int main( int argc, char** argv )
 	// the RISE_MEDIA_PATH warning, and (below) the GlobalLog console sink are
 	// all gated / redirected off stdout.  The authoritative flag parse still
 	// happens later; this early scan only decides "is stdout a protocol pipe".
+	// Secure-MCP slice 3: `--agent-http[=PORT]` doesn't use stdout as its
+	// protocol channel (that's the socket), but the SAME console-hygiene
+	// gate is worth reusing here too -- the banner / RISE_MEDIA_PATH warning
+	// are noise a caller scripting this transport doesn't want either, and
+	// the GlobalLog console-sink redirect (stderr only) matches this
+	// transport's own startup-banner/warning choice to use stderr.
 	bool agentMode = false;
 	for( int ai = 1; ai < argc; ai++ ) {
 		if( strcmp( argv[ai], "--agent-stdio" ) == 0 ) { agentMode = true; break; }
+		if( strcmp( argv[ai], "--agent-http" ) == 0 ||
+		    strncmp( argv[ai], "--agent-http=", strlen( "--agent-http=" ) ) == 0 ) { agentMode = true; break; }
 	}
 
 	// Setup the media path locator
@@ -283,9 +342,11 @@ int main( int argc, char** argv )
 		std::cout << "on setting this path." << std::endl;
 		std::cout << std::endl;
 	} else {
-		// Agent mode: keep stdout clean, but the guidance is still useful --
-		// route it to stderr so a caller diagnosing missing resources sees it.
-		std::cerr << "rise --agent-stdio: 'RISE_MEDIA_PATH' is not set; "
+		// Agent mode (stdio OR http -- this message is shared across both
+		// transports, see `agentMode`'s pre-scan above): keep stdout clean,
+		// but the guidance is still useful -- route it to stderr so a
+		// caller diagnosing missing resources sees it.
+		std::cerr << "rise --agent-stdio/--agent-http: 'RISE_MEDIA_PATH' is not set; "
 		             "some resources may not load unless explicitly pathed.\n";
 	}
 
@@ -404,6 +465,18 @@ int main( int argc, char** argv )
 	bool cliArgError = false;
 	bool cliAgentStdio = false;	// Facet 5 slice 0c: JSON-RPC stdio transport
 	bool cliMcp = false;	// Secure-MCP slice 1: speak MCP (not raw JSON-RPC) over that same transport
+	// Secure-MCP slice 3: `--agent-http[=PORT]` -- loopback-only HTTP/1.1
+	// transport for the SAME MCP envelope (see AgentLoopbackHttpServer.h's
+	// file header for the INFRA-ONLY / no-auth-yet scope).  `cliAgentHttp`
+	// gates the branch; `cliAgentHttpPort` defaults to 8765 (0 = ask the OS
+	// for an ephemeral port).  Mutually exclusive with `--agent-stdio`
+	// (checked loudly below, after the full parse) -- a caller almost
+	// certainly meant only one transport, and silently picking one would
+	// hide a genuine invocation mistake.
+	bool cliAgentHttp = false;
+	unsigned short cliAgentHttpPort = 8765;
+	const char* kAgentHttpFlagPrefix = "--agent-http=";
+	const std::size_t kAgentHttpFlagPrefixLen = strlen( kAgentHttpFlagPrefix );
 	// Secure-MCP slice 2: the headless autonomy posture.  DEFAULT (no flag
 	// at all) is Read -- the INVERSE of AgentRpcDispatcher's own C++
 	// constructor default (Commit, for back-compat with the GUI's live
@@ -449,6 +522,27 @@ int main( int argc, char** argv )
 			cliAgentStdio = true;
 		} else if( strcmp(a, "--mcp") == 0 ) {
 			cliMcp = true;
+		} else if( strcmp(a, "--agent-http") == 0 ) {
+			cliAgentHttp = true;   // port stays at its default (8765)
+		} else if( strncmp( a, kAgentHttpFlagPrefix, kAgentHttpFlagPrefixLen ) == 0 ) {
+			cliAgentHttp = true;
+			const std::string val = a + kAgentHttpFlagPrefixLen;
+			char* endp = nullptr;
+			errno = 0;
+			const long v = val.empty() ? -1 : strtol( val.c_str(), &endp, 10 );
+			// Strict: the WHOLE remainder after '=' must be digits (endp at
+			// the string's end), non-negative, and fit in an unsigned short
+			// (0..65535 -- 0 means "OS-assigned ephemeral port", handled by
+			// AgentLoopbackHttpServer::Bind). Anything else (empty, a
+			// trailing non-digit, a negative sign, or a value out of range)
+			// is a loud launch-time failure -- matching --agent-autonomy's
+			// own "always loud, never silent" contract for this flag family.
+			if( val.empty() || endp != val.c_str() + val.size() || v < 0 || v > 65535 ) {
+				std::cerr << "ERROR: --agent-http requires a port in [0,65535]; got `" << val << "`.\n";
+				cliArgError = true;
+			} else {
+				cliAgentHttpPort = static_cast<unsigned short>( v );
+			}
 		} else if( strncmp( a, kAutonomyFlagPrefix, kAutonomyFlagPrefixLen ) == 0 ) {
 			const std::string val = a + kAutonomyFlagPrefixLen;
 			if( val == "read" ) {
@@ -459,20 +553,33 @@ int main( int argc, char** argv )
 				std::cerr << "ERROR: --agent-autonomy requires 'read' or 'commit'; got `" << val << "`.\n";
 				cliArgError = true;
 			}
-		} else if( strncmp( a, "--agent-autonomy", strlen( "--agent-autonomy" ) ) == 0 ) {
-			// Hardening (loud-never-silent): this catches every malformed
-			// spelling that ISN'T the `--agent-autonomy=<value>` prefix
-			// matched above -- a BARE `--agent-autonomy` with no `=value`
-			// at all, and the SPACE form `--agent-autonomy read` (whose
-			// bare first token falls in here, and whose second token would
-			// otherwise be silently swallowed as the positional scene
-			// argument -- a strictly worse silent failure than merely
-			// ignoring the flag).  This flag is `=value`-only by design
-			// (unlike the space-separated --width/--height/--pixel-ar
-			// flags below); the fix is a single loud usage error naming
-			// the exact accepted form, matching this flag's own documented
-			// "always loud, never silent" contract instead of quietly
-			// falling through to the default posture.
+		} else if( strcmp( a, "--agent-autonomy" ) == 0 ) {
+			// Hardening (loud-never-silent): this catches the BARE
+			// `--agent-autonomy` token with no `=value` at all -- the SPACE
+			// form `--agent-autonomy read` (whose bare first token matches
+			// here, and whose second token would otherwise be silently
+			// swallowed as the positional scene argument -- a strictly
+			// worse silent failure than merely ignoring the flag).  This
+			// flag is `=value`-only by design (unlike the space-separated
+			// --width/--height/--pixel-ar flags below); the fix is a
+			// single loud usage error naming the exact accepted form,
+			// matching this flag's own documented "always loud, never
+			// silent" contract instead of quietly falling through to the
+			// default posture.
+			//
+			// Fold-in (Secure-MCP slice 3): this used to be a strncmp
+			// PREFIX match against every spelling that wasn't the
+			// `--agent-autonomy=` form above -- which also (mis)matched
+			// an unrelated flag that merely SHARES the prefix, e.g. a
+			// hypothetical `--agent-autonomy-verbose` would have been
+			// silently swallowed as a malformed `--agent-autonomy` rather
+			// than falling through to the positional-argument branch (or
+			// a future flag's own handler).  An exact `strcmp` matches
+			// ONLY the bare token, so any longer flag that happens to
+			// start with this prefix is left for its own branch (or, if
+			// none claims it, the ordinary "unrecognized flag" silence
+			// the loop already has for non-flag tokens -- unchanged by
+			// this fix).
 			std::cerr << "ERROR: --agent-autonomy requires the form `--agent-autonomy=read` or "
 			             "`--agent-autonomy=commit`; got `" << a << "`.\n";
 			cliArgError = true;
@@ -492,6 +599,17 @@ int main( int argc, char** argv )
 	if( cliMcp && !cliAgentStdio ) {
 		std::cerr << "WARNING: --mcp requires --agent-stdio; ignoring.\n";
 	}
+	// Secure-MCP slice 3: `--agent-http` and `--agent-stdio` are two
+	// DIFFERENT transports for the same underlying agent surface -- a
+	// caller passing both almost certainly meant exactly one of them, and
+	// picking one silently would mask a genuine invocation mistake (e.g. a
+	// script that meant to switch transports but left the old flag in).
+	// Loud failure, matching this flag family's "always loud, never
+	// silent" contract.
+	if( cliAgentHttp && cliAgentStdio ) {
+		std::cerr << "ERROR: --agent-http and --agent-stdio are mutually exclusive; pick one transport.\n";
+		return 1;
+	}
 
 	// Facet 5 slice 0c: `--agent-stdio` replaces the interactive `render`/
 	// `quit` console with a JSON-RPC 2.0 read-eval-print loop over stdin/
@@ -506,6 +624,16 @@ int main( int argc, char** argv )
 	if( cliAgentStdio ) {
 		safe_release( pJob );
 		const int rc = cliMcp ? RunAgentMcpStdio( sceneArg, cliAutonomy ) : RunAgentStdio( sceneArg, cliAutonomy );
+		GlobalLogCleanupAndShutdown();
+		return rc;
+	}
+	// Secure-MCP slice 3: `--agent-http[=PORT]` -- same MCP envelope, over a
+	// loopback HTTP/1.1 socket instead of stdin/stdout. Same pJob release +
+	// GlobalLogCleanupAndShutdown discipline as the stdio branch above (this
+	// path builds its own AgentSession too and does not touch `pJob`).
+	if( cliAgentHttp ) {
+		safe_release( pJob );
+		const int rc = RunAgentHttp( sceneArg, cliAutonomy, cliAgentHttpPort );
 		GlobalLogCleanupAndShutdown();
 		return rc;
 	}

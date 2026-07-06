@@ -252,7 +252,7 @@ namespace RISE
 		//! the full class-default-vs-binary-default rationale.
 		enum class AgentAutonomy
 		{
-			Read,     //!< mutating verbs (propose_patch/insert_chunk/remove_chunk) refused; render + every other read/observe verb still work.
+			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image) dispatches; every other method, including the 3 known-mutating verbs (propose_patch/insert_chunk/remove_chunk) and any future unclassified verb, is refused.
 			Commit    //!< today's behaviour: every verb dispatches unrestricted. The C++ constructor DEFAULT (back-compat).
 		};
 

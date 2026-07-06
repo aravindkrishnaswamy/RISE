@@ -134,6 +134,7 @@
     <ClCompile Include="..\..\..\src\Library\Animation\Timeline.cpp" />
     <ClCompile Include="..\..\..\src\Library\Agent\AgentChatCodecs.cpp" />
     <ClCompile Include="..\..\..\src\Library\Agent\AgentChatLoop.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Agent\AgentLoopbackHttpServer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Agent\AgentMcpAdapter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Agent\AgentRpc.cpp" />
     <ClCompile Include="..\..\..\src\Library\Agent\AgentSession.cpp" />
@@ -515,6 +516,7 @@
     <ClInclude Include="..\..\..\src\Library\Agent\AgentDiagnostic.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\AgentChatCodecs.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\AgentChatLoop.h" />
+    <ClInclude Include="..\..\..\src\Library\Agent\AgentLoopbackHttpServer.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\AgentMcpAdapter.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\AgentRpc.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\AgentSession.h" />
