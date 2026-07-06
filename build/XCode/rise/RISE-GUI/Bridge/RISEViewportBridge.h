@@ -36,6 +36,22 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
     RISEViewportToolRollCamera       = 8
 };
 
+/// Secure-MCP slice 5c: the result of -startAgentHostedServerWithLabel:.
+/// `ok` false means the server did not start (bind failure, or a server
+/// was already running -- see that method's doc for the idempotent-
+/// refusal contract); `port`/`bearerToken` are meaningful only when `ok`
+/// is true.
+@interface RISEAgentHostedServerInfo : NSObject
+@property (nonatomic, readonly) BOOL ok;
+@property (nonatomic, readonly) NSUInteger port;
+/// The per-launch bearer token an external MCP client must present via
+/// `Authorization: Bearer <token>`.  NEVER LOG THIS — the Swift caller
+/// must only ever put it in a copyable text field, never in an
+/// NSLog/print/os_log call.
+@property (nonatomic, readonly, copy) NSString *bearerToken;
+@property (nonatomic, readonly, copy) NSString *message;
+@end
+
 @interface RISEViewportBridge : NSObject
 
 /// Construct over an existing RISEBridge.  The RISEBridge must have
@@ -471,6 +487,87 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// returned so the Swift caller always parses a valid response.
 - (NSString *)agentHandleLine:(NSString *)jsonRpcRequest
     NS_SWIFT_NAME(agentHandleLine(_:));
+
+#pragma mark - Secure-MCP slice 5c: GUI-hosted external MCP endpoint
+
+/// Start a LOOPBACK-ONLY MCP HTTP server (the same
+/// RISE::Agent::AgentLoopbackHttpServer the headless `rise --agent-http`
+/// CLI transport hosts) bound to THIS bridge's LIVE Job + live
+/// SceneEditController, so a real external MCP client (Claude Code, or
+/// any other MCP host) can connect and PROPOSE edits into the scene
+/// that's actually open in this window -- the counterpart to the
+/// in-process Owner dispatcher `agentHandleLine` already drives.
+///
+/// AUTHORITY / AUTONOMY: constructs a NEW, SEPARATE AgentSession over
+/// the SAME Job this bridge wraps (WrapJob), AttachController's it to
+/// this bridge's live `_controller` (so a staged proposal lands on the
+/// SAME queue the Owner dispatcher's ListProposals/ResolveProposal
+/// verbs read), sets its authority to External (mutating verbs STAGE,
+/// never commit), labels it via SetSessionLabel (see `sessionLabel`
+/// below), and wraps it in an AgentMcpAdapter constructed with
+/// AgentAutonomy::Propose (the wire-layer posture that pairs with
+/// External authority -- see AgentRpc.h's file header). This is a
+/// SEPARATE AgentRpcDispatcher instance from the one -agentHandleLine
+/// drives (that one is Owner-authority + Commit-autonomy, constructed
+/// at init time over its OWN AgentSession) -- see the .mm's
+/// "two-dispatcher-one-controller" doc comment for the full threading
+/// argument for why two independent dispatcher instances sharing one
+/// controller is safe.
+///
+/// THREADING: the server's serial accept-handle loop runs on a
+/// dedicated background thread this method spawns (std::thread,
+/// detached-by-ownership -- joined by -stopAgentHostedServer or
+/// -shutdown, never detached-and-abandoned). Every request that
+/// thread handles calls HandleLine on the EXTERNAL dispatcher, which
+/// (for a mutating verb) calls SceneEditController::StageProposal --
+/// guarded by the controller's OWN mMutex, the SAME lock the render
+/// thread and every OTHER controller entry point (SetProperty,
+/// ApplyAgentParamEdit, the Owner dispatcher's own calls) already
+/// serialize on. list_proposals / resolve_proposal called from the
+/// GUI's Owner dispatcher (via -agentHandleLine, always the main
+/// thread) and a concurrent external stage are therefore safe by the
+/// SAME pre-existing mutex discipline 5a/5b already proved -- nothing
+/// new is introduced here beyond a second caller thread.
+///
+/// IDEMPOTENT: calling this while a server is already running returns
+/// `ok=false` with an explanatory message and does NOT start a second
+/// server (a fresh call after -stopAgentHostedServer starts a new one
+/// with a FRESH per-launch token, per AgentLoopbackHttpServer's own
+/// per-construction-token contract).
+///
+/// `sessionLabel` is stamped onto the External AgentSession via
+/// SetSessionLabel BEFORE Bind() -- so every proposal any external
+/// client stages through this server carries it (see
+/// SceneEditController::AgentProposal::sessionLabel's doc). Pass ""
+/// for the generic default; the Swift caller passes a fixed
+/// "external-mcp" label today (see StartAgentHostedServer's Swift-side
+/// caller for why a per-connection id isn't threaded further: the
+/// server is single-adapter-instance, not per-connection-session).
+///
+/// Returns immediately (Bind() is synchronous and fast; Serve() runs
+/// on the spawned thread) -- never blocks for a client connection.
+- (RISEAgentHostedServerInfo *)startAgentHostedServerWithLabel:(NSString *)sessionLabel
+    NS_SWIFT_NAME(startAgentHostedServer(sessionLabel:));
+
+/// Stop the hosted server started by -startAgentHostedServerWithLabel:
+/// (a no-op, not an error, if none is running). Signals the server's
+/// Stop() (unblocks the accept-loop thread's accept() call) and JOINS
+/// that thread before returning -- so by the time this method returns,
+/// no external-dispatcher HandleLine call can still be in flight and
+/// it is safe to proceed to tear down the controller/Job (see -shutdown,
+/// which calls this FIRST, before the agent dispatcher / controller
+/// teardown, for exactly that reason).
+- (void)stopAgentHostedServer;
+
+/// True iff a hosted server is currently running (bound + serving).
+@property (nonatomic, readonly) BOOL isAgentHostedServerRunning;
+
+/// The bound port / bearer token of the CURRENTLY RUNNING hosted
+/// server (0 / "" when not running) -- lets the Swift settings panel
+/// re-display these after e.g. a view re-render without re-starting
+/// the server.
+@property (nonatomic, readonly) NSUInteger agentHostedServerPort;
+@property (nonatomic, readonly, copy) NSString *agentHostedServerToken;
 
 @end
 

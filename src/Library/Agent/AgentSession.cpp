@@ -885,6 +885,10 @@ namespace RISE
 				p.value       = String( patch.value.c_str() );
 				p.hasExplicitBaseVersion = patch.hasBaseVersion;
 				if( patch.hasBaseVersion ) p.baseVersion = patch.baseVersion;
+				// Secure-MCP slice 5c: stamp this session's diagnostic label
+				// (see SetSessionLabel's doc) -- "" for every pre-5c session,
+				// byte-for-byte unchanged behaviour.
+				p.sessionLabel = String( mSessionLabel.c_str() );
 				RISE::Cst::CstHeadVersion stagedHead{};
 				const std::uint64_t id = mController->StageProposal( p, &stagedHead );
 				r.applied = false;
@@ -1157,6 +1161,8 @@ namespace RISE
 				p.chunkText   = String( chunkText.c_str() );
 				p.hasExplicitBaseVersion = ( baseOrNull != nullptr );
 				if( baseOrNull ) p.baseVersion = *baseOrNull;
+				// Secure-MCP slice 5c: see ProposePatch's identical comment.
+				p.sessionLabel = String( mSessionLabel.c_str() );
 				RISE::Cst::CstHeadVersion stagedHead{};
 				const std::uint64_t id = mController->StageProposal( p, &stagedHead );
 				r.applied = false;
@@ -1268,6 +1274,8 @@ namespace RISE
 				p.entityKind  = String( kind.c_str() );
 				p.hasExplicitBaseVersion = ( baseOrNull != nullptr );
 				if( baseOrNull ) p.baseVersion = *baseOrNull;
+				// Secure-MCP slice 5c: see ProposePatch's identical comment.
+				p.sessionLabel = String( mSessionLabel.c_str() );
 				RISE::Cst::CstHeadVersion stagedHead{};
 				const std::uint64_t id = mController->StageProposal( p, &stagedHead );
 				r.applied = false;

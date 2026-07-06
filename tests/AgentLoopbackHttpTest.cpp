@@ -122,6 +122,11 @@
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/Json.h"
 #include "../src/Library/Agent/Base64.h"
+#include "../src/Library/Job.h"                        // Secure-MCP slice 5c end-to-end test
+#include "../src/Library/SceneEditor/SceneEditController.h"  // Secure-MCP slice 5c end-to-end test
+#include "../src/Library/Interfaces/IMaterial.h"        // Secure-MCP slice 5c end-to-end test
+#include "../src/Library/Interfaces/IMaterialManager.h" // Secure-MCP slice 5c end-to-end test
+#include "../src/Library/Interfaces/IEmitter.h"         // Secure-MCP slice 5c end-to-end test
 
 #include <atomic>
 #include <chrono>
@@ -360,6 +365,243 @@ static std::string ReqToolCall( double id, const std::string& name, const JsonVa
 	params.set( "name", JsonValue::MakeString( name ) );
 	params.set( "arguments", args );
 	return Req( id, "tools/call", params );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Secure-MCP slice 5c: a SceneEditController subclass whose
+// DoOneRenderPass is a fast no-op-ish sleep loop (mirrors
+// AgentLiveCommitTest.cpp's own TestController) -- gives StageProposal /
+// ListProposals / ResolveProposal a REAL render thread + REAL mMutex to
+// serialize against, without needing an actual rasterizer wired up.
+//////////////////////////////////////////////////////////////////////
+class Slice5cTestController : public SceneEditController
+{
+public:
+	explicit Slice5cTestController( IJobPriv& job, unsigned int simulatedRenderMs = 10 )
+	: SceneEditController( job, /*interactiveRasterizer*/0 )
+	, mSimulatedRenderMs( simulatedRenderMs )
+	{}
+
+protected:
+	void DoOneRenderPass() override
+	{
+		const unsigned int sliceMs = 2;
+		const unsigned int slices  = ( mSimulatedRenderMs + sliceMs - 1 ) / sliceMs;
+		for( unsigned int i = 0; i < slices; ++i ) {
+			if( IsCancelRequested() ) return;
+			std::this_thread::sleep_for( std::chrono::milliseconds( sliceMs ) );
+		}
+	}
+
+private:
+	unsigned int mSimulatedRenderMs;
+};
+
+//////////////////////////////////////////////////////////////////////
+// Secure-MCP slice 5c: THE end-to-end topology 5b couldn't test
+// headlessly (no controller) -- now with a real live TestController:
+//
+//   1. An External-authority AgentSession WrapJob's the SAME Job a
+//      TestController is attached to, is AttachController'd to it, gets
+//      a session label, and is wrapped in an AgentMcpAdapter (Propose
+//      autonomy) fronted by a REAL AgentLoopbackHttpServer on its own
+//      thread -- exactly the shape RISEViewportBridge's
+//      -startAgentHostedServerWithLabel: builds in the GUI.
+//   2. A REAL HTTP client (raw socket, like every other case in this
+//      file) POSTs tools/call propose_patch through that server -- this
+//      is "an external HTTP client stages a proposal that lands in the
+//      LIVE controller's queue".
+//   3. A SECOND, Owner-authority AgentSession (mirroring the GUI's
+//      in-process `_agentDispatcher`) wraps the SAME Job, is
+//      AttachController'd to the SAME controller, and lists + resolves
+//      that proposal DIRECTLY (in-process, no HTTP) -- exactly like the
+//      GUI's agentHandleLine path.
+//   4. The live scene actually changes: LumR() reads the material's
+//      derived emissive value before and after approval.
+//
+// Also covers: sessionLabel populated end-to-end (the staged proposal,
+// read back via the OWNER's ListProposals, carries the label the
+// External session was constructed with) -- and the two-dispatcher-one-
+// controller concurrency claim (external-server-thread stages ‖ a
+// concurrent GUI-style edit on the owner side), watchdogged.
+//////////////////////////////////////////////////////////////////////
+static void TestGuiHostedServerEndToEnd()
+{
+	std::printf( "=== Secure-MCP slice 5c: GUI-hosted server end-to-end (external stages into a live scene, owner approves) ===\n" );
+
+	// `exitance white` (color 1 1 1) so averageRadiantExitance().r == scale
+	// exactly -- matches AgentLiveCommitTest.cpp's kBaseScene convention.
+	const char* const kMatScene =
+		"RISE ASCII SCENE 7\n"
+		"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\n"
+		"lambertian_luminaire_material\n{\nname lum\nexitance white\nscale 5.0\nmaterial none\n}\n"
+		"sphere_geometry\n{\nname s\nradius 1\n}\n"
+		"standard_object\n{\nname obj\ngeometry s\nmaterial lum\n}\n";
+
+	const std::string scenePath = WriteTemp( "rise_agent_http_5c_test.RISEscene", kMatScene );
+	Check( !scenePath.empty(), "5c: wrote the end-to-end scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "5c: base scene loads via the CST path" );
+
+	auto lumScale = [&]() -> double {
+		IMaterial* m = pJob->GetMaterials() ? pJob->GetMaterials()->GetItem( "lum" ) : 0;
+		if( !m || !m->GetEmitter() ) return -1.0;
+		return (double)m->GetEmitter()->averageRadiantExitance().r;
+	};
+
+	{
+		Slice5cTestController controller( *pJob, /*simulatedRenderMs*/10 );
+		controller.Start();
+
+		// ---- (1) the GUI-hosted EXTERNAL server, over the SAME live
+		// controller, labelled -- mirrors -startAgentHostedServerWithLabel:.
+		std::unique_ptr<AgentSession> extSession =
+			AgentSession::WrapJob( pJob, AgentAuthority::External );
+		Check( extSession != nullptr, "5c: external AgentSession constructed (WrapJob)" );
+		extSession->AttachController( &controller );
+		extSession->SetSessionLabel( "external-http" );
+
+		AgentMcpAdapter extAdapter( std::move( extSession ), RISE::Agent::AgentAutonomy::Propose );
+		AgentLoopbackHttpServer extServer( &extAdapter, "/mcp" );
+		Check( extServer.Bind( 0 ), "5c: external server Bind(0) succeeds" );
+		const unsigned short extPort = extServer.BoundPort();
+		const std::string extToken = extServer.ForTest_Token();
+		std::thread extServerThread( [&]() { extServer.Serve(); } );
+
+		// ---- (2) a REAL external HTTP client stages a propose_patch.
+		{
+			ExtraHeaders extra;
+			extra.hasAuthorization = true;
+			extra.authorization = "Bearer " + extToken;
+			JsonValue args = JsonValue::MakeObject();
+			args.set( "target", JsonValue::MakeString( "lum" ) );
+			args.set( "kind",   JsonValue::MakeString( "lambertian_luminaire_material" ) );
+			args.set( "param",  JsonValue::MakeString( "scale" ) );
+			args.set( "value",  JsonValue::MakeString( "13.0" ) );
+			HttpResponse r = DoRequestEx( extPort, "POST", "/mcp",
+				ReqToolCall( 1, "propose_patch", args ), extra );
+			Check( r.ok && r.status == 200, "5c: external tools/call(propose_patch) -> HTTP 200" );
+			JsonValue env; std::string perr;
+			Check( JsonParse( r.body, env, perr ), "5c: external propose_patch response parses as JSON" );
+			const JsonValue& result = env.get( "result" );
+			Check( !result.get( "isError" ).asBool( true ),
+			       "5c: external propose_patch is NOT a tool-execution error (isError == false)" );
+		}
+		Check( lumScale() > 4.9 && lumScale() < 5.1,
+		       "5c: RED-PROVE the stage is INERT -- the live scene's scale is STILL ~5.0 "
+		       "(would already be ~13.0 if External committed instead of staging)" );
+
+		// ---- (3) the OWNER session (mirrors the GUI's in-process
+		// _agentDispatcher) lists + resolves it IN-PROCESS, no HTTP.
+		std::unique_ptr<AgentSession> ownerSession =
+			AgentSession::WrapJob( pJob, AgentAuthority::Owner );
+		Check( ownerSession != nullptr, "5c: owner AgentSession constructed (WrapJob)" );
+		ownerSession->AttachController( &controller );
+
+		const std::vector<AgentSession::AgentProposalEntry> listed = ownerSession->ListProposals();
+		Check( listed.size() == 1, "5c: owner's ListProposals sees exactly the one staged proposal" );
+		std::uint64_t proposalId = 0;
+		if( listed.size() == 1 ) {
+			proposalId = listed[0].id;
+			Check( listed[0].status == "pending", "5c: the staged proposal's status is \"pending\"" );
+			Check( listed[0].kind == "param_edit", "5c: the staged proposal's kind is \"param_edit\"" );
+			Check( listed[0].sessionLabel == "external-http",
+			       "5c: sessionLabel WIRED END-TO-END -- the proposal staged by the labelled "
+			       "External session carries \"external-http\" when read back via the owner's "
+			       "ListProposals (RED-PROVE: this was always \"\" before slice 5c)" );
+		}
+
+		Check( proposalId != 0, "5c: a nonzero proposal id was staged" );
+		if( proposalId != 0 ) {
+			const AgentSession::AgentResolveResult rr =
+				ownerSession->ResolveProposal( proposalId, /*approve=*/true );
+			Check( rr.ok, "5c: owner ResolveProposal(approve) runs" );
+			Check( rr.status == "applied", "5c: resolve status is \"applied\"" );
+		}
+
+		Check( lumScale() > 12.9 && lumScale() < 13.1,
+		       "5c: THE LIVE SCENE ACTUALLY CHANGED -- scale is now ~13.0 after owner approval "
+		       "(external staged it; owner approved it; the render-thread-guarded live controller "
+		       "queue carried it end-to-end)" );
+
+		// ---- (4) two-dispatcher-one-controller concurrency: fire a
+		// second external stage CONCURRENTLY with an owner-side resolve
+		// of a THIRD proposal, watchdogged (no deadlock/corruption).
+		std::unique_ptr<AgentSession> extSession2 =
+			AgentSession::WrapJob( pJob, AgentAuthority::External );
+		extSession2->AttachController( &controller );
+		extSession2->SetSessionLabel( "external-http" );
+		Agent::AgentSetPatch p3;
+		p3.target = "lum"; p3.kind = "lambertian_luminaire_material";
+		p3.param  = "scale"; p3.value = "21.0";
+		const AgentPatchResult thirdStage = extSession2->ProposePatch( p3 );
+		Check( thirdStage.status == "staged", "5c: a third proposal stages cleanly before the concurrency stress" );
+
+		std::atomic<bool> raceDone( false );
+		std::thread raceExternal( [&]() {
+			// A burst of external stages via the HTTP server, concurrent
+			// with the owner resolving below.
+			for( int i = 0; i < 20; ++i ) {
+				ExtraHeaders extra;
+				extra.hasAuthorization = true;
+				extra.authorization = "Bearer " + extToken;
+				JsonValue args = JsonValue::MakeObject();
+				args.set( "target", JsonValue::MakeString( "lum" ) );
+				args.set( "kind",   JsonValue::MakeString( "lambertian_luminaire_material" ) );
+				args.set( "param",  JsonValue::MakeString( "scale" ) );
+				args.set( "value",  JsonValue::MakeString( "7.0" ) );
+				DoRequestEx( extPort, "POST", "/mcp", ReqToolCall( 100 + i, "propose_patch", args ), extra );
+			}
+			raceDone.store( true, std::memory_order_release );
+		} );
+		// Owner-side: resolve the third proposal + repeatedly list, racing
+		// the external stages above -- exercises the controller's mMutex
+		// from both the hosted-server thread and this (owner) thread at
+		// the same time, matching the two-dispatcher-one-controller model.
+		std::uint64_t thirdId = 0;
+		for( const auto& e : ownerSession->ListProposals() ) if( e.status == "pending" && e.value == "21.0" ) thirdId = e.id;
+		Check( thirdId != 0, "5c: found the third proposal's id before the concurrency stress" );
+		bool sawNoCrash = true;
+		for( int i = 0; i < 20; ++i ) {
+			(void)ownerSession->ListProposals();
+			std::this_thread::sleep_for( std::chrono::milliseconds( 2 ) );
+		}
+		if( thirdId != 0 ) {
+			const AgentSession::AgentResolveResult rrThird = ownerSession->ResolveProposal( thirdId, /*approve=*/true );
+			sawNoCrash = sawNoCrash && rrThird.ok;
+		}
+
+		// Bounded join -- fail loudly rather than hang the suite if the
+		// race produced a deadlock.
+		{
+			std::atomic<bool> joined( false );
+			std::thread joiner( [&]() { raceExternal.join(); joined.store( true, std::memory_order_release ); } );
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds( 10 );
+			while( !joined.load( std::memory_order_acquire ) && std::chrono::steady_clock::now() < deadline ) {
+				std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+			}
+			Check( joined.load( std::memory_order_acquire ),
+			       "5c: the concurrent external-stage burst thread joined within 10s (no deadlock)" );
+			if( joiner.joinable() ) joiner.join();
+		}
+		Check( raceDone.load( std::memory_order_acquire ), "5c: the external-stage burst completed" );
+		Check( sawNoCrash, "5c: owner-side resolve during the concurrent external-stage burst succeeded, no corruption" );
+
+		// ---- teardown, in the documented order: stop the external
+		// server (join) BEFORE detaching sessions / stopping the
+		// controller -- mirrors -shutdown's ordering in RISEViewportBridge.mm.
+		extServer.Stop();
+		if( extServerThread.joinable() ) extServerThread.join();
+		ownerSession->AttachController( nullptr );
+		extSession2->AttachController( nullptr );
+		controller.Stop();
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== Secure-MCP slice 5c: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
 int main()
@@ -1123,6 +1365,11 @@ int main()
 	//------------------------------------------------------------------
 
 	std::remove( scenePath.c_str() );
+
+	// Secure-MCP slice 5c: the GUI-hosted-server end-to-end topology --
+	// self-contained (its own scene/controller/servers), run after the
+	// slice-3/4 transport-correctness cases above.
+	TestGuiHostedServerEndToEnd();
 
 	std::printf( "=== AgentLoopbackHttpTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

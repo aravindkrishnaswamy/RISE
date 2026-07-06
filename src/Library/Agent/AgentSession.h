@@ -462,6 +462,25 @@ namespace RISE
 			//! changed after construction.
 			AgentAuthority Authority() const { return mAuthority; }
 
+			//! Secure-MCP slice 5c: a human-readable, caller-supplied label
+			//! naming WHO this session speaks for -- stamped into every
+			//! AgentProposal this session stages (ProposePatch/InsertChunk/
+			//! RemoveChunk's External-authority branches) so ListProposals /
+			//! the GUI's proposals panel can show which session proposed a
+			//! given edit.  Unlike mAuthority this is NOT wire-immutable: it
+			//! is set POST-construction (the GUI-hosted loopback transport
+			//! constructs the session first, then labels it once it knows
+			//! which connection/client it is serving -- see
+			//! RISEViewportBridge.mm's StartAgentHostedServer).  Purely
+			//! diagnostic -- never consulted by any gating decision (the
+			//! Owner-only-may-resolve gate is authority-based, not label-
+			//! based).  Defaults to "" (every existing construction site --
+			//! LoadFromFile/WrapJob, the headless CLI transports -- leaves
+			//! this unset and StageProposal keeps stamping an empty label,
+			//! byte-for-byte the pre-5c behaviour).
+			const std::string& SessionLabel() const { return mSessionLabel; }
+			void SetSessionLabel( const std::string& label ) { mSessionLabel = label; }
+
 			//! Fix-round-1 P1-A: drains any OUTSTANDING async render before
 			//! this session is destroyed.  RenderAsync's submitted closure
 			//! captures a raw `this` and runs on the controller's dedicated
@@ -691,7 +710,7 @@ namespace RISE
 				std::string               value;
 				std::string               chunkText;
 				RISE::Cst::CstHeadVersion baseVersion;
-				std::string               sessionLabel;  //!< diagnostic: which session staged it. Plumbed end-to-end since 5a (this struct, StageProposal, SceneEditController::AgentProposal) but still always empty as of 5b -- 5a shipped with no session-identifying name/label to stamp in, and 5b (the wire-facing External-session transport) shipped without wiring one either. RESERVED: populated once 5c's GUI-hosted transport gives an external session a real caller-supplied label to stamp in here (see SceneEditController::AgentProposal's doc)
+				std::string               sessionLabel;  //!< diagnostic: which session staged it. Plumbed end-to-end since 5a (this struct, StageProposal, SceneEditController::AgentProposal); "" through 5a/5b (no session-identifying name/label existed yet to stamp in). Secure-MCP slice 5c: populated whenever the staging session had SetSessionLabel() called on it -- the GUI-hosted loopback transport labels its External session (e.g. "external-http") at server-start time, so a proposal staged by a real remote MCP client now carries a human-readable "who proposed this" string; a session that never calls SetSessionLabel (every pre-5c construction site) still stages "" (unchanged).
 				std::string               status;        //!< "pending" / "applied" / "rejected" / "conflict"
 			};
 
@@ -1121,6 +1140,13 @@ namespace RISE
 			//! every existing factory call site (LoadFromFile/WrapJob's
 			//! default parameter) -- see those methods' docs.
 			const AgentAuthority mAuthority;
+
+			//! Secure-MCP slice 5c: see SessionLabel()/SetSessionLabel()'s
+			//! doc.  "" until a caller (the GUI-hosted transport) sets one;
+			//! single-threaded like the rest of this class's non-Render
+			//! surface (set once at server-start time, before any request
+			//! is served, and never mutated concurrently with a stage).
+			std::string mSessionLabel;
 
 			//! Facet 5 slice 1b: the attached LIVE controller (null = headless
 			//! direct-Job mode).  BORROWED (never released); the caller owns it.

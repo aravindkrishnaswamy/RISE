@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import Combine
 
 // Facet 5 slice B2 — the LLM chat panel.
 //
@@ -49,6 +50,15 @@ struct ChatPanel: View {
                     ChatSettingsView(chat: chat)
                 }
             }
+
+            // Secure-MCP slice 5c: pending proposals from an EXTERNAL
+            // agent (staged via the GUI-hosted MCP endpoint above) that
+            // need your approval before they touch the scene.  Present
+            // regardless of whether hosting is CURRENTLY on — a
+            // proposal already staged stays visible/resolvable even
+            // after the toggle is switched off (the queue lives on the
+            // controller, not on the hosted-server connection).
+            ProposalsPanel(chat: chat)
 
             // Transcript.
             ScrollViewReader { proxy in
@@ -254,6 +264,148 @@ struct ChatPanel: View {
         }
         group.notify(queue: .main) {
             completion(urls)
+        }
+    }
+}
+
+/// Secure-MCP slice 5c: the pending-proposals list — an external MCP
+/// client's staged edits, approved/rejected here through the OWNER
+/// dispatcher (ChatViewModel.resolveProposal, NOT the external server).
+/// A disclosure group so it stays out of the way when empty/collapsed;
+/// auto-expands the FIRST time a proposal appears so a new arrival is
+/// never missed silently.
+private struct ProposalsPanel: View {
+    @ObservedObject var chat: ChatViewModel
+    @State private var isExpanded = false
+    @State private var hasAutoExpandedOnce = false
+
+    /// Poll cadence while the section is visible (expanded) — cheap
+    /// (a single synchronous in-process HandleLine call against the
+    /// controller's in-memory queue), so a sub-second interval is fine;
+    /// matches the RenderViewModel Timer pattern used elsewhere in this
+    /// app rather than a Combine/async-sleep loop.
+    private static let pollInterval: TimeInterval = 1.0
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: 4) {
+                if chat.pendingProposals.isEmpty {
+                    Text("No proposals.")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(chat.pendingProposals) { proposal in
+                        ProposalRow(chat: chat, proposal: proposal)
+                    }
+                }
+            }
+            .padding(.top, 2)
+            .onAppear { chat.refreshProposals() }
+            .onReceive(Timer.publish(every: Self.pollInterval, on: .main, in: .common).autoconnect()) { _ in
+                chat.refreshProposals()
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "tray.and.arrow.down")
+                    .imageScale(.small)
+                Text("Proposals")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+                let pendingCount = chat.pendingProposals.filter { $0.status == "pending" }.count
+                if pendingCount > 0 {
+                    Text("\(pendingCount)")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.accentColor))
+                }
+                Spacer()
+            }
+        }
+        .font(.caption)
+        // Always refresh once when the panel first appears (even
+        // collapsed) so the pending-count badge is accurate without
+        // requiring the user to expand it first.
+        .onAppear { chat.refreshProposals() }
+        .onChange(of: chat.pendingProposals.count) { _, newCount in
+            if newCount > 0 && !hasAutoExpandedOnce {
+                isExpanded = true
+                hasAutoExpandedOnce = true
+            }
+        }
+    }
+}
+
+/// One proposal row: a summary line + Approve/Reject (pending) or a
+/// terminal status label (applied/rejected/conflict, shown briefly —
+/// see ChatViewModel.refreshProposals' linger window).
+private struct ProposalRow: View {
+    @ObservedObject var chat: ChatViewModel
+    let proposal: ChatViewModel.ProposalEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Text(proposal.kind)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundColor(.secondary)
+                if !proposal.sessionLabel.isEmpty {
+                    Text("· \(proposal.sessionLabel)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                statusLabel
+            }
+            Text(proposal.summary)
+                .font(.caption)
+                .textSelection(.enabled)
+                .lineLimit(2)
+            if proposal.status == "pending" {
+                HStack(spacing: 8) {
+                    Button {
+                        chat.resolveProposal(id: proposal.id, approve: true)
+                    } label: {
+                        Label("Approve", systemImage: "checkmark")
+                    }
+                    .help("Apply this edit to the live scene")
+                    Button(role: .destructive) {
+                        chat.resolveProposal(id: proposal.id, approve: false)
+                    } label: {
+                        Label("Reject", systemImage: "xmark")
+                    }
+                    .help("Discard this proposal without applying it")
+                    Spacer()
+                }
+            }
+        }
+        .padding(6)
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+    }
+
+    @ViewBuilder
+    private var statusLabel: some View {
+        switch proposal.status {
+        case "applied":
+            Label("Applied", systemImage: "checkmark.circle.fill")
+                .foregroundColor(.green)
+                .font(.caption2)
+        case "rejected":
+            Label("Rejected", systemImage: "xmark.circle.fill")
+                .foregroundColor(.secondary)
+                .font(.caption2)
+        case "conflict":
+            Label("Conflict", systemImage: "exclamationmark.triangle.fill")
+                .foregroundColor(.orange)
+                .font(.caption2)
+        default:
+            EmptyView()
         }
     }
 }
@@ -470,6 +622,94 @@ private struct ChatSettingsView: View {
 
             Divider()
 
+            // Secure-MCP slice 5c: the GUI-hosted external MCP endpoint.
+            // Off by default (no server, no external access). When ON,
+            // a SEPARATE process (a real MCP client — e.g. Claude Code
+            // pointed at this URL) can connect over loopback HTTP and
+            // PROPOSE edits into THIS scene; a human (you) still has to
+            // Approve them in the Proposals section of the chat panel
+            // before they touch the scene. Honest security framing: this
+            // is loopback-only + a per-launch bearer token (the same
+            // boundary `rise --agent-http` documents), not an internet-
+            // facing auth system — anyone who can run a process on THIS
+            // Mac as you could already edit the scene directly, so this
+            // toggle's real exposure is "another program on my own
+            // machine can suggest edits", not "the internet can reach my
+            // scene".
+            VStack(alignment: .leading, spacing: 4) {
+                Text("External agent (MCP) connections")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Toggle("Allow external agent (MCP) connections", isOn: Binding(
+                    get: { chat.isHostingExternalAgent },
+                    set: { newValue in
+                        if newValue { chat.startExternalHosting() }
+                        else { chat.stopExternalHosting() }
+                    }
+                ))
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                .disabled(viewModel.viewportBridge == nil)
+                .help("A local MCP client (e.g. Claude Code) can connect and "
+                      + "PROPOSE edits you approve below — it can never commit "
+                      + "directly.")
+
+                if let error = chat.hostedServerError {
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if chat.isHostingExternalAgent {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 4) {
+                            Text("URL:")
+                                .foregroundColor(.secondary)
+                            Text("http://127.0.0.1:\(chat.hostedServerPort)/mcp")
+                                .font(.system(.caption2, design: .monospaced))
+                                .textSelection(.enabled)
+                            Button {
+                                Self.copyToPasteboard("http://127.0.0.1:\(chat.hostedServerPort)/mcp")
+                            } label: {
+                                Image(systemName: "doc.on.doc")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Copy the URL")
+                        }
+                        HStack(spacing: 4) {
+                            Text("Token:")
+                                .foregroundColor(.secondary)
+                            Text(chat.hostedServerToken)
+                                .font(.system(.caption2, design: .monospaced))
+                                .textSelection(.enabled)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Button {
+                                Self.copyToPasteboard(chat.hostedServerToken)
+                            } label: {
+                                Image(systemName: "doc.on.doc")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Copy the bearer token — paste it into your "
+                                  + "MCP client's config. This token is not "
+                                  + "logged anywhere; treat it like a password "
+                                  + "for the duration this toggle stays on.")
+                        }
+                        Text("Every request must present this token via "
+                             + "\u{201c}Authorization: Bearer <token>\u{201d}. "
+                             + "A new token is generated each time you turn "
+                             + "this on.")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.leading, 2)
+                }
+            }
+
+            Divider()
+
             // Developer: the Agent (JSON-RPC) panel is the raw-wire debug
             // surface against the LIVE controller (propose_patch etc. go
             // straight through agentHandleLine) — it predates and is now
@@ -501,5 +741,15 @@ private struct ChatSettingsView: View {
 
     private func applySelection() {
         chat.applyProviderSelection(draftProvider, modelId: draftModelId)
+    }
+
+    /// Secure-MCP slice 5c: copy the URL / bearer token to the general
+    /// pasteboard. NEVER logs the value — this is the ONE place either
+    /// value should ever leave `ChatViewModel`'s published state besides
+    /// the read-only Text views above it.
+    private static func copyToPasteboard(_ value: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(value, forType: .string)
     }
 }

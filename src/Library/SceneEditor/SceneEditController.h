@@ -465,14 +465,16 @@ namespace RISE
 		//! decision here -- the Owner-only-may-resolve gate is enforced by
 		//! AgentSession, which knows its own authority, not by the
 		//! controller, which does not track per-proposal ownership).
-		//! Honest status as of slice 5b: `sessionLabel` is plumbed end-to-end
-		//! (this struct, StageProposal, AgentSession::AgentProposalEntry) but
-		//! every EXISTING call site (ProposePatch/InsertChunk/RemoveChunk's
-		//! External-authority branches) leaves it default-empty -- neither 5a
-		//! nor 5b's wire-facing External-session transport gave a session a
-		//! session-identifying name/label member to stamp in.  RESERVED: this
-		//! is expected to be populated once 5c's GUI-hosted transport labels
-		//! external sessions with a real caller-supplied identifier.
+		//! Status as of slice 5c: `sessionLabel` is plumbed end-to-end (this
+		//! struct, StageProposal, AgentSession::AgentProposalEntry) and is
+		//! now POPULATED whenever the staging AgentSession had
+		//! SetSessionLabel() called on it -- the GUI-hosted loopback
+		//! transport labels its External session at server-start time (e.g.
+		//! "external-http"), so a proposal staged by a real remote MCP
+		//! client carries a human-readable "who proposed this" string here.
+		//! Every pre-5c construction site (headless CLI transports,
+		//! LoadFromFile/WrapJob callers that never call SetSessionLabel)
+		//! still stages "" -- unchanged.
 		struct AgentProposal
 		{
 			std::uint64_t       id = 0;         //!< monotonic, unique within this controller's lifetime; never 0 (0 = "not found" sentinel)
@@ -497,7 +499,7 @@ namespace RISE
 			//! to propose_patch/insert_chunk/remove_chunk) and StageProposal
 			//! passes it through untouched.
 			bool                hasExplicitBaseVersion = false;
-			String              sessionLabel;        //!< diagnostic: which session staged it (caller-supplied); RESERVED -- still empty at every call site as of 5b, see struct doc above
+			String              sessionLabel;        //!< diagnostic: which session staged it (caller-supplied via AgentSession::SetSessionLabel); "" when the staging session never set one -- see struct doc above
 			String              status;              //!< "pending" / "applied" / "rejected" / "conflict"
 		};
 

@@ -252,6 +252,175 @@ final class ChatViewModel: ObservableObject {
     /// re-derives the key-source caption.
     @Published private(set) var keyStateEpoch: Int = 0
 
+    // MARK: - Secure-MCP slice 5c: GUI-hosted external MCP endpoint +
+    // proposals panel.  See `startExternalHosting()` / `stopExternalHosting()`
+    // and the "Proposals panel" section further below.
+
+    /// True while the GUI is hosting a loopback MCP HTTP server an
+    /// EXTERNAL client (a separate process — e.g. Claude Code configured
+    /// with this endpoint) can connect to and PROPOSE edits into this
+    /// scene.  Off by default: no server, no external access, matching
+    /// the "opt-in, honest security UX" contract the settings toggle
+    /// documents.
+    @Published private(set) var isHostingExternalAgent: Bool = false
+    /// The bound loopback port, meaningful only while `isHostingExternalAgent`.
+    @Published private(set) var hostedServerPort: Int = 0
+    /// The per-launch bearer token an external client must present.
+    /// Shown in-UI (copyable) so the user can paste it into their
+    /// client's MCP config — NEVER logged (see ChatSettingsView / the
+    /// bridge's own doc for the same rule stated at every layer this
+    /// value passes through).
+    @Published private(set) var hostedServerToken: String = ""
+    /// Set when -startAgentHostedServerWithLabel: refuses (bind
+    /// failure, or an internal-error guard) — surfaced as a one-line
+    /// settings-panel error rather than silently doing nothing.
+    @Published private(set) var hostedServerError: String? = nil
+
+    /// Start hosting.  No-op (leaves `hostedServerError` set) if there is
+    /// no live viewport bridge (no scene open) or the bridge refuses
+    /// (already hosting, or a bind failure).
+    func startExternalHosting() {
+        guard let vb = viewportBridge else {
+            hostedServerError = "No scene is open."
+            return
+        }
+        let info = vb.startAgentHostedServer(sessionLabel: "external-mcp")
+        if info.ok {
+            isHostingExternalAgent = true
+            hostedServerPort = Int(info.port)
+            hostedServerToken = info.bearerToken
+            hostedServerError = nil
+        } else {
+            hostedServerError = info.message
+        }
+    }
+
+    /// Stop hosting (a no-op if not currently hosting).  Also called by
+    /// `sceneClosed()` — the server borrows the live controller/Job, so
+    /// it must not outlive the scene it was hosting against (the
+    /// bridge's own `-shutdown` ALSO stops it defensively, but stopping
+    /// here too keeps this view model's published state from lying
+    /// about a server that the bridge is about to tear down anyway).
+    func stopExternalHosting() {
+        viewportBridge?.stopAgentHostedServer()
+        isHostingExternalAgent = false
+        hostedServerPort = 0
+        hostedServerToken = ""
+        hostedServerError = nil
+    }
+
+    // MARK: - Secure-MCP slice 5c: proposals panel
+
+    /// One entry of `pendingProposals` — the Swift-facing rendering of
+    /// list_proposals' wire shape (AgentRpc.h).  `summary` is a single
+    /// human-readable line built from whichever fields are populated
+    /// for this proposal's `kind` (param_edit vs insert_chunk /
+    /// remove_chunk) — the panel shows this instead of separate
+    /// per-field rows.
+    struct ProposalEntry: Identifiable {
+        let id: UInt64
+        let kind: String
+        let sessionLabel: String
+        let status: String
+        let summary: String
+    }
+
+    /// The proposals panel's current listing — pending AND recently
+    /// resolved (resolved entries are dropped from THIS array a few
+    /// seconds after they leave "pending"; see `refreshProposals()`).
+    @Published private(set) var pendingProposals: [ProposalEntry] = []
+    /// proposalId -> the Date it was first observed leaving "pending"
+    /// (applied/rejected/conflict) — drives the "show briefly, then
+    /// drop" behaviour for resolved entries without a separate timer
+    /// per row.
+    private var resolvedProposalObservedAt: [UInt64: Date] = [:]
+    /// How long a resolved proposal stays visible in the panel before
+    /// being dropped on the next refresh.
+    private static let resolvedProposalLingerSeconds: TimeInterval = 4.0
+
+    /// Poll list_proposals through the OWNER dispatcher (agentHandleLine
+    /// — the SAME in-process path the chat driver and the raw JSON-RPC
+    /// debug panel use), NOT the external hosted server. Cheap: a single
+    /// synchronous HandleLine call returning the controller's in-memory
+    /// queue — safe to call from a timer at a modest interval (see
+    /// ChatPanel's ProposalsPanel, which drives this on a few-times-a-
+    /// second Timer while the section is expanded, and once on appear).
+    /// A no-op (clears the list) when there is no live viewport bridge.
+    func refreshProposals() {
+        guard let vb = viewportBridge else {
+            pendingProposals = []
+            resolvedProposalObservedAt = [:]
+            return
+        }
+        let line = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"list_proposals\"}"
+        let response = vb.agentHandleLine(line)
+        guard let data = response.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = root["result"] as? [String: Any],
+              let proposals = result["proposals"] as? [[String: Any]] else {
+            pendingProposals = []
+            return
+        }
+
+        let now = Date()
+        var next: [ProposalEntry] = []
+        var nextObservedAt: [UInt64: Date] = [:]
+        for p in proposals {
+            guard let idNumber = p["id"] as? NSNumber else { continue }
+            let id = idNumber.uint64Value
+            let kind = p["kind"] as? String ?? ""
+            let status = p["status"] as? String ?? ""
+            let sessionLabel = p["sessionLabel"] as? String ?? ""
+
+            if status != "pending" {
+                // Carry forward (or start) the observed-resolved timestamp;
+                // drop it from the panel once it has lingered long enough.
+                let observedAt = resolvedProposalObservedAt[id] ?? now
+                if now.timeIntervalSince(observedAt) > Self.resolvedProposalLingerSeconds {
+                    continue
+                }
+                nextObservedAt[id] = observedAt
+            }
+
+            let summary: String
+            switch kind {
+            case "insert_chunk":
+                let chunkText = (p["chunkText"] as? String) ?? ""
+                let firstLine = chunkText.split(separator: "\n").first.map(String.init) ?? chunkText
+                summary = "insert: \(firstLine)"
+            case "remove_chunk":
+                let target = p["target"] as? String ?? ""
+                let entityKind = p["entityKind"] as? String ?? ""
+                summary = entityKind.isEmpty ? "remove: \(target)" : "remove: \(target) (\(entityKind))"
+            default:
+                let target = p["target"] as? String ?? ""
+                let param = p["param"] as? String ?? ""
+                let value = p["value"] as? String ?? ""
+                summary = "\(target).\(param) = \(value)"
+            }
+
+            next.append(ProposalEntry(
+                id: id, kind: kind, sessionLabel: sessionLabel, status: status, summary: summary))
+        }
+        pendingProposals = next
+        resolvedProposalObservedAt = nextObservedAt
+    }
+
+    /// Approve or reject proposal `id` through the OWNER dispatcher (the
+    /// Owner-only + Commit-only gates on resolve_proposal — see
+    /// AgentRpc.h — mean this MUST go through `_agentDispatcher`, never
+    /// the external hosted server's own dispatcher, which would be
+    /// refused outright). Refreshes the listing immediately afterward so
+    /// the panel reflects the new status without waiting for the next
+    /// timer tick.
+    func resolveProposal(id: UInt64, approve: Bool) {
+        guard let vb = viewportBridge else { return }
+        let line = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"resolve_proposal\"," +
+                   "\"params\":{\"proposalId\":\(id),\"approve\":\(approve ? "true" : "false")}}"
+        _ = vb.agentHandleLine(line)
+        refreshProposals()
+    }
+
     /// Process-memory-only cache of the resolved API key, per provider.
     ///
     /// WHY: `resolveApiKey()` used to hit the Keychain
@@ -487,6 +656,17 @@ final class ChatViewModel: ObservableObject {
         consecutiveHttp400s = 0
         pendingAttachments = []
         attachmentError = nil
+        // Secure-MCP slice 5c: a freshly-opened scene never inherits a
+        // "hosting"/proposals state from whatever was showing for the
+        // PREVIOUS scene — the bridge itself is a fresh instance (no
+        // server running on it yet either), so this is a state-only
+        // reset, not an actual stop.
+        isHostingExternalAgent = false
+        hostedServerPort = 0
+        hostedServerToken = ""
+        hostedServerError = nil
+        pendingProposals = []
+        resolvedProposalObservedAt = [:]
 
         let indexLine = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"read_skill\"}"
         chatBridge.setSkillIndex(
@@ -501,6 +681,13 @@ final class ChatViewModel: ObservableObject {
     /// that's going away, same as the text input clear right below.
     func sceneClosed() {
         cancelTurn()
+        // Secure-MCP slice 5c: stop the hosted server (if any) BEFORE
+        // dropping `viewportBridge` below — stopExternalHosting() reads
+        // it to call -stopAgentHostedServer, which the bridge's own
+        // -shutdown will ALSO call defensively, but stopping here first
+        // means this view model's published state is never stale by the
+        // time the panel re-renders for the (about to be gone) scene.
+        stopExternalHosting()
         sceneGeneration += 1
         viewportBridge = nil
         chatBridge.reset()
@@ -510,6 +697,8 @@ final class ChatViewModel: ObservableObject {
         consecutiveHttp400s = 0
         pendingAttachments = []
         attachmentError = nil
+        pendingProposals = []
+        resolvedProposalObservedAt = [:]
     }
 
     /// Render the read_skill (no name) JSON-RPC response into the
