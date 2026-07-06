@@ -443,6 +443,101 @@ namespace RISE
 			const String& kind,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
 
+		//! Secure-MCP slice 5a: which verb-kind a staged AgentProposal replays
+		//! on approval.  Mirrors the three existing agent commit entry points
+		//! 1:1 -- there is no fourth kind because those are the only three
+		//! mutating verbs the Agent surface exposes.
+		enum class AgentProposalKind
+		{
+			ParamEdit    = 0,   //!< replays via ApplyAgentParamEdit (entity/kind/param/value)
+			InsertChunk  = 1,   //!< replays via ApplyAgentInsertChunk (chunkText)
+			RemoveChunk  = 2    //!< replays via ApplyAgentRemoveChunk (target/kind)
+		};
+
+		//! Secure-MCP slice 5a: ONE staged (inert) proposal from an
+		//! External-authority AgentSession.  Carries EXACTLY the args the
+		//! corresponding ApplyAgent* verb needs to replay the edit unchanged
+		//! at approval time, plus the bookkeeping ResolveProposal needs: the
+		//! head-version the proposal was staged AGAINST (re-checked at
+		//! approval -- the hard optimistic-concurrency invariant, see
+		//! ResolveProposal's doc) and a human-readable label naming which
+		//! session staged it (diagnostic only; not used for any gating
+		//! decision here -- the Owner-only-may-resolve gate is enforced by
+		//! AgentSession, which knows its own authority, not by the
+		//! controller, which does not track per-proposal ownership).
+		struct AgentProposal
+		{
+			std::uint64_t       id = 0;         //!< monotonic, unique within this controller's lifetime; never 0 (0 = "not found" sentinel)
+			AgentProposalKind   kind = AgentProposalKind::ParamEdit;
+			//! ParamEdit fields (kind==ParamEdit only).
+			String              target;
+			String              entityKind;
+			String              param;
+			String              value;
+			//! InsertChunk fields (kind==InsertChunk only).
+			String              chunkText;
+			//! RemoveChunk fields (kind==RemoveChunk only); `target`/`entityKind`
+			//! above double as RemoveChunk's (target,kind) -- no separate fields.
+			RISE::Cst::CstHeadVersion baseVersion;   //!< the head this proposal was staged against
+			String              sessionLabel;        //!< diagnostic: which session staged it (caller-supplied)
+			String              status;              //!< "pending" / "applied" / "rejected" / "conflict"
+		};
+
+		//! Secure-MCP slice 5a: STAGE one proposal (INERT -- no Document
+		//! mutation, no render kick, no EditHistory record).  `baseVersion`
+		//! is the head the proposing session read before building this
+		//! edit; re-checked (not here, but) inside ResolveProposal at
+		//! approval time.  Returns the freshly-minted, never-0 proposal id.
+		//! Thread-safe under mMutex (no cancel-and-park needed: staging
+		//! touches only the queue, never the Document or the live Scene, so
+		//! there is nothing for the render thread to race).
+		std::uint64_t StageProposal( const AgentProposal& proposal );
+
+		//! Secure-MCP slice 5a: a snapshot of every proposal currently on
+		//! the queue (pending AND resolved -- resolved proposals stay
+		//! visible for audit rather than being purged; see the class doc).
+		//! Thread-safe under mMutex.
+		std::vector<AgentProposal> ListProposals() const;
+
+		//! Secure-MCP slice 5a: resolve proposal `id` by APPROVING (`approve
+		//! = true`) or REJECTING (`approve = false`) it.
+		//!
+		//! REJECT is unconditional: status -> "rejected", no mutation, no
+		//! re-check.
+		//!
+		//! APPROVE re-checks `proposal.baseVersion` against the controller's
+		//! CURRENT head-version, UNDER THE SAME mMutex hold used for the
+		//! whole resolve -- THE HARD INVARIANT this slice exists for: a
+		//! proposal staged against a head that has since moved (an
+		//! intervening edit bumped the revision, OR the Job itself was torn
+		//! down and replaced -- a fresh uuid) is marked "conflict" and is
+		//! NOT applied, no matter how long it has sat on the queue.  On a
+		//! version match, the proposal is replayed through the EXACT SAME
+		//! ApplyAgent{ParamEdit,InsertChunk,RemoveChunk} entry point a
+		//! direct (non-staged) commit would use -- so an approved proposal
+		//! is indistinguishable, from EditHistory's point of view, from an
+		//! Owner committing the same edit directly: it gets a normal undo
+		//! record, a normal dirty mark, a normal re-render kick.
+		//!
+		//! Returns false (no such id, or already resolved -- resolving an
+		//! already-applied/rejected/conflict proposal is refused rather
+		//! than silently re-run) with the queue left untouched; true
+		//! otherwise, with `outResult` filled from the replay (meaningful
+		//! only when `approve` was true AND the version check passed --
+		//! i.e. a real apply actually ran; a reject or a conflict leaves
+		//! `outResult` default-constructed since no ApplyAgent* call was
+		//! made).
+		//!
+		//! CALLER CONTRACT (enforced ONE LAYER UP, in AgentSession, not
+		//! here): the controller has no notion of "authority" -- it cannot
+		//! tell an Owner-authority caller from an External one.  The
+		//! Owner-only-may-resolve gate is AgentSession::ResolveProposal's
+		//! job (it refuses outright for an External-authority session
+		//! before ever reaching this method).  This method is therefore
+		//! callable by anything holding a controller pointer; treat it as a
+		//! privileged operation at the layer that DOES know who is calling.
+		bool ResolveProposal( std::uint64_t id, bool approve, AgentCommitResult* outResult = nullptr );
+
 		//! Facet 5 (preview-render safety): run `fn` with the render thread
 		//! CANCEL-AND-PARKED under mMutex -- for a caller that needs to
 		//! transiently mutate LIVE, non-Document state that the interactive
@@ -1951,6 +2046,29 @@ namespace RISE
 		std::condition_variable     mCV;
 		std::atomic<bool>           mRunning;
 		std::atomic<bool>           mEditPending;
+
+		//! Secure-MCP slice 5a: the proposal queue.  Guarded by mMutex --
+		//! the SAME lock ApplyAgent{ParamEdit,InsertChunk,RemoveChunk} take,
+		//! so ResolveProposal's base-version re-check-then-apply is one
+		//! atomic critical section with no window for a concurrent commit
+		//! (staged OR direct) to move the head between the check and the
+		//! apply.  Never purged -- a resolved (applied/rejected/conflict)
+		//! proposal stays on the queue for audit; this controller's lifetime
+		//! is one Job/one scene-load, so the queue's lifetime is naturally
+		//! bounded (a fresh Job + fresh controller starts a fresh, empty
+		//! queue -- see StageProposal's / the class doc's reload-invalidation
+		//! note: LoadAsciiSceneViaCst refuses a second load on the same Job,
+		//! so in practice "reload" means a brand-new Job + brand-new
+		//! controller, which starts with an empty mProposals by construction;
+		//! there is no in-place reload path on this controller to reset
+		//! against).
+		std::vector<AgentProposal> mProposals;
+		//! Monotonic proposal-id counter; starts at 1 (0 is the "not found"
+		//! sentinel returned by StageProposal only if ever called before
+		//! construction — never in practice, since the counter is a plain
+		//! member initialized at construction).  Guarded by mMutex, same as
+		//! mProposals.
+		std::uint64_t               mNextProposalId = 1;
 		//! One-shot, set by Start( true ) before the render thread is
 		//! spawned and consumed by RenderLoop on entry.  When set, the
 		//! loop skips its initial "show something on Start" pass so the

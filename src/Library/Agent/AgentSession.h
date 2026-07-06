@@ -49,6 +49,63 @@ namespace RISE
 
 	namespace Agent
 	{
+		//! Secure-MCP slice 5a: a construction-time, WIRE-IMMUTABLE flag
+		//! naming who this session speaks for -- the local human operating
+		//! the GUI (Owner) or a remote/external agent proposing edits for a
+		//! human to review (External).  Distinct from AgentAutonomy
+		//! (AgentRpc.h), which is a TRANSPORT-layer verb-dispatch gate (all-
+		//! or-nothing: which JSON-RPC methods this dispatcher will even
+		//! attempt); AgentAuthority is a SESSION-layer identity consulted by
+		//! ProposePatch/InsertChunk/RemoveChunk themselves to decide whether
+		//! a mutating call COMMITS directly or only STAGES a proposal for an
+		//! Owner to resolve.  The wire-level plumbing that lets a remote
+		//! transport construct an External session and expose
+		//! list_proposals/resolve_proposal verbs is slice 5b -- this slice is
+		//! the headless C++ core only.
+		enum class AgentAuthority
+		{
+			Owner,      //!< the local human / the GUI itself: mutating verbs COMMIT directly (today's behaviour, byte-for-byte). The default -- every EXISTING construction site keeps committing without a code change.
+			External    //!< a remote/other agent: mutating verbs STAGE a proposal (inert) instead of committing; may NOT resolve (approve/reject) ANY proposal, including its own.
+		};
+
+		//! Secure-MCP slice 5a: the per-verb-call posture this SESSION
+		//! applies its AgentAuthority under.  A third posture alongside the
+		//! existing Read/Commit shape (mirroring, at the session layer, the
+		//! same three-way split AgentRpc.h's transport-layer AgentAutonomy
+		//! will grow a wire-facing `propose` posture for in slice 5b) --
+		//! kept as a SEPARATE enum (not a reuse of AgentRpc's AgentAutonomy)
+		//! because AgentSession.h must not take a header dependency on the
+		//! transport layer (AgentRpc.h already depends on AgentSession.h;
+		//! the reverse would be circular-by-convention even though the
+		//! includes would technically compile).
+		//!
+		//! Read is accepted here for API completeness / a future caller that
+		//! wants to construct a read-only session directly, but slice 5a's
+		//! ProposePatch/InsertChunk/RemoveChunk do not special-case it beyond
+		//! the existing behaviour those calls already have when nothing here
+		//! refuses them; it is not exercised by anything in this slice.
+		enum class AgentSessionAutonomy
+		{
+			Read,
+			Propose,   //!< mutating verbs STAGE (never commit) -- the posture an External-authority session runs under
+			Commit     //!< mutating verbs commit directly (today's behaviour) -- the posture an Owner-authority session runs under
+		};
+
+		//! Secure-MCP slice 5a: the structured result of a STAGED
+		//! propose_patch / insert_chunk / remove_chunk call (External
+		//! authority + Propose autonomy, with a live controller attached).
+		//! Deliberately narrow -- a stage is INERT, so there is no
+		//! rawCode/status tri-state to fold; `staged` is true iff the
+		//! controller accepted the stage (always true when this path is
+		//! actually taken -- StageProposal cannot itself fail), `proposalId`
+		//! is the id an Owner session later passes to ResolveProposal, and
+		//! `message` is a human-readable confirmation.
+		struct AgentProposeResult
+		{
+			bool          staged = false;
+			std::uint64_t proposalId = 0;
+			std::string   message;
+		};
 		//! A STRUCTURED set-param patch (slice 0b: set only -- no text-patch,
 		//! no add/remove chunk; those are later slices).  Locates a named
 		//! entity in the retained CST Document and sets one of its params to a
@@ -403,13 +460,30 @@ namespace RISE
 			//! return a session that OWNS that Job.  Returns null when the
 			//! scene fails to load (not native-v7, or a derive error) so a
 			//! caller can distinguish "no session" from an empty document.
-			static std::unique_ptr<AgentSession> LoadFromFile( const std::string& path );
+			//! Secure-MCP slice 5a: `authority` defaults to Owner -- EVERY
+			//! EXISTING call site (the CLI's headless loader, every
+			//! pre-slice-5a test) keeps committing directly without a code
+			//! change.  Pass External to construct a test/CLI seam for the
+			//! staging path this slice adds (the real wire-level External
+			//! construction path -- a remote transport -- is slice 5b).
+			static std::unique_ptr<AgentSession> LoadFromFile( const std::string& path,
+			                                                    AgentAuthority authority = AgentAuthority::Owner );
 
 			//! Wrap an EXISTING Job (non-owning: the caller keeps ownership
 			//! and must outlive the session).  Used when the GUI / a host
 			//! already holds a CST-loaded Job (L2: the GUI is just another
-			//! agent).  Null `job` returns null.
-			static std::unique_ptr<AgentSession> WrapJob( IJobPriv* job );
+			//! agent).  Null `job` returns null.  Secure-MCP slice 5a:
+			//! `authority` defaults to Owner (see LoadFromFile's doc for the
+			//! back-compat rationale) -- the GUI's own construction sites
+			//! are unaffected; an External-authority session over a live
+			//! controller is the two-session pattern this slice's tests use.
+			static std::unique_ptr<AgentSession> WrapJob( IJobPriv* job,
+			                                               AgentAuthority authority = AgentAuthority::Owner );
+
+			//! Secure-MCP slice 5a: this session's construction-time
+			//! authority (Owner / External).  Wire-immutable -- never
+			//! changed after construction.
+			AgentAuthority Authority() const { return mAuthority; }
 
 			//! Fix-round-1 P1-A: drains any OUTSTANDING async render before
 			//! this session is destroyed.  RenderAsync's submitted closure
@@ -550,6 +624,33 @@ namespace RISE
 			//! `headVersion` is populated (post-commit on a clean apply; the current
 			//! head on reject/diagnosed/conflict).  Absent baseVersion -> the edit is
 			//! UNCONDITIONAL (slice-0 back-compat).
+			//!
+			//! Secure-MCP slice 5a: the authority x autonomy matrix.  This
+			//! session's construction-time Authority() gates what happens
+			//! BEFORE any of the above:
+			//!   * Owner              -> unchanged: falls straight through to
+			//!            the direct-commit / LIVE-controller-commit behaviour
+			//!            documented above (byte-for-byte, zero regression).
+			//!   * External + a live controller attached -> STAGES the edit
+			//!            instead of committing it: the controller's queue
+			//!            gets a new AgentProposal (INERT -- no Document
+			//!            mutation, no EditHistory record, no render kick),
+			//!            and this call returns applied=false,
+			//!            status="staged", `message` naming the proposalId
+			//!            (also embedded so a caller need not additionally
+			//!            call the C-API's own StageProposal accessor) --
+			//!            an Owner-authority session resolves it later via
+			//!            ResolveProposal.  `headVersion` is the CURRENT
+			//!            (unchanged) head, same convention as a reject.
+			//!   * External + NO controller attached (headless) -> REFUSED:
+			//!            applied=false, status="rejected", `message`
+			//!            explains staging needs a live Owner to resolve
+			//!            against.  A headless External session has nowhere
+			//!            to stage TO (no queue exists without a
+			//!            controller), so this is a hard refusal, not a
+			//!            silent commit -- the "external commits with no
+			//!            human gate" hole this slice closes must not have a
+			//!            headless back door.
 			AgentPatchResult ProposePatch( const AgentSetPatch& patch );
 
 			//! Model-B F5 slice S2 (insert_chunk): ADD one complete chunk (a
@@ -568,6 +669,11 @@ namespace RISE
 			//! kick); headless calls Job::ApplyCstInsertChunk directly with
 			//! the same conflict gate here.  `baseOrNull` is the OPTIONAL
 			//! optimistic-concurrency precondition (see ProposePatch).
+			//! Secure-MCP slice 5a: subject to the SAME authority x autonomy
+			//! matrix as ProposePatch (see that method's doc) -- an External-
+			//! authority session with a live controller attached STAGES this
+			//! insert instead of committing it (applied=false,
+			//! status="staged"); with no controller attached it is refused.
 			AgentChunkResult InsertChunk( const std::string& chunkText,
 			                              const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
@@ -582,9 +688,77 @@ namespace RISE
 			//! ambiguous -> rejected with a disambiguation hint; a target
 			//! still REFERENCED by another chunk fails the dry-run and is
 			//! rejected with the diagnostic, head byte-identical.
+			//! Secure-MCP slice 5a: subject to the SAME authority x autonomy
+			//! matrix as ProposePatch (see that method's doc) -- an External-
+			//! authority session with a live controller attached STAGES this
+			//! remove instead of committing it (applied=false,
+			//! status="staged"); with no controller attached it is refused.
 			AgentChunkResult RemoveChunk( const std::string& target,
 			                              const std::string& kind = std::string(),
 			                              const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! Secure-MCP slice 5a: one entry of ListProposals -- a wire-
+			//! friendly flattening of SceneEditController::AgentProposal (see
+			//! that struct's doc for field meaning; `kind` here is the
+			//! string form "param_edit"/"insert_chunk"/"remove_chunk" rather
+			//! than the controller's internal enum, so this header does not
+			//! need to expose SceneEditController's type to a caller that
+			//! only wants the read-only listing).
+			struct AgentProposalEntry
+			{
+				std::uint64_t             id = 0;
+				std::string               kind;          //!< "param_edit" / "insert_chunk" / "remove_chunk"
+				std::string               target;
+				std::string               entityKind;
+				std::string               param;
+				std::string               value;
+				std::string               chunkText;
+				RISE::Cst::CstHeadVersion baseVersion;
+				std::string               sessionLabel;
+				std::string               status;        //!< "pending" / "applied" / "rejected" / "conflict"
+			};
+
+			//! Secure-MCP slice 5a: list every proposal staged on the
+			//! ATTACHED controller's queue (pending and resolved -- resolved
+			//! proposals stay visible for audit).  CONTROLLER-ATTACHED ONLY:
+			//! a headless session has no shared queue to list against and
+			//! returns an empty vector.  Callable by ANY authority (listing
+			//! is a read, not a mutation or a resolve) -- the Owner-only
+			//! gate applies to ResolveProposal, not to this.
+			std::vector<AgentProposalEntry> ListProposals() const;
+
+			//! Secure-MCP slice 5a: the structured result of ResolveProposal.
+			struct AgentResolveResult
+			{
+				bool        ok = false;        //!< true iff the resolve actually ran (id found, this session's authority permits it); false leaves `message` explaining why
+				std::string status;            //!< "applied" / "rejected" / "conflict" -- meaningful only when ok
+				AgentPatchResult   paramResult;    //!< filled iff ok && the resolved proposal was a ParamEdit
+				AgentChunkResult   chunkResult;     //!< filled iff ok && the resolved proposal was Insert/RemoveChunk
+				std::string message;
+			};
+
+			//! Secure-MCP slice 5a: approve or reject the proposal named by
+			//! `proposalId` on the ATTACHED controller's queue.
+			//!
+			//! OWNER-ONLY GATE (enforced HERE, not trusted to the caller):
+			//! an External-authority session may NOT resolve ANY proposal --
+			//! not even one it staged itself.  This is the "external cannot
+			//! approve its own proposal" invariant: refused with `ok=false`
+			//! before the controller is even consulted.
+			//!
+			//! CONTROLLER-ATTACHED ONLY: a headless session has no shared
+			//! queue to resolve against; refused with `ok=false`.
+			//!
+			//! On a real resolve, delegates to
+			//! SceneEditController::ResolveProposal -- see that method's doc
+			//! for the hard base-version re-check-then-apply invariant.
+			//! `approve=false` (reject) never re-checks anything and never
+			//! mutates.  `approve=true` (approve) re-checks the STAGED
+			//! baseVersion against the controller's CURRENT head atomically
+			//! with the apply; a stale proposal (the head moved since it was
+			//! staged, including via a reload that minted a fresh uuid)
+			//! resolves to status="conflict" and is NOT applied.
+			AgentResolveResult ResolveProposal( std::uint64_t proposalId, bool approve );
 
 			//! render + read_image (slice 0b): render the current head into an
 			//! in-memory sRGB PNG and return the bytes + film dims.  Headless
@@ -869,7 +1043,7 @@ namespace RISE
 			}
 
 		private:
-			AgentSession( IJobPriv* job, bool owns );
+			AgentSession( IJobPriv* job, bool owns, AgentAuthority authority );
 			AgentSession( const AgentSession& );             // deleted
 			AgentSession& operator=( const AgentSession& );  // deleted
 
@@ -962,6 +1136,14 @@ namespace RISE
 
 			IJobPriv* mJob;    //!< the wrapped Job (owned iff mOwnsJob)
 			bool      mOwnsJob;
+
+			//! Secure-MCP slice 5a: this session's construction-time
+			//! authority.  const -- compiler-enforced immutability of the
+			//! launch-time identity, mirroring AgentRpcDispatcher::mAutonomy's
+			//! own const-member pattern (AgentRpc.h).  Defaults to Owner via
+			//! every existing factory call site (LoadFromFile/WrapJob's
+			//! default parameter) -- see those methods' docs.
+			const AgentAuthority mAuthority;
 
 			//! Facet 5 slice 1b: the attached LIVE controller (null = headless
 			//! direct-Job mode).  BORROWED (never released); the caller owns it.

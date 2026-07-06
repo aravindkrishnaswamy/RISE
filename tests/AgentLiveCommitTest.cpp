@@ -3499,6 +3499,471 @@ static void TestGlueSafeRestoreLastChunkAppendP1Round2()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Secure-MCP slice 5a: proposal staging + owner-approval state machine.
+// Two AgentSessions (sessionOwner: Owner authority; sessionExt: External
+// authority) WrapJob the SAME live Job and AttachController the SAME
+// controller -- mirroring Test 8's dispatcher wiring, but with two actors
+// instead of one, exactly the "external proposes, GUI owner approves"
+// shape this slice implements.
+//////////////////////////////////////////////////////////////////////
+static void TestProposalStagingBasics()
+{
+	std::cout << "Test 33: External propose stages (inert); owner approves -> applies; owner rejects -> no mutation..." << std::endl;
+
+	const char* tmp = "agentlive_proposal_basics.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> owner = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		std::unique_ptr<Agent::AgentSession> ext   = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		Check( owner != nullptr && ext != nullptr, "both sessions wrap the live Job" );
+		owner->AttachController( &c );
+		ext->AttachController( &c );
+		Check( owner->Authority() == Agent::AgentAuthority::Owner, "owner session reports Owner authority" );
+		Check( ext->Authority() == Agent::AgentAuthority::External, "external session reports External authority" );
+
+		//------------------------------------------------------------------
+		// (a) External ProposePatch STAGES -- the document is UNCHANGED.
+		//------------------------------------------------------------------
+		const double before = LumR( *pJob );
+		Agent::AgentSetPatch p;
+		p.target = "lum";
+		p.kind   = "lambertian_luminaire_material";
+		p.param  = "scale";
+		p.value  = "9.25";
+		Agent::AgentPatchResult pr = ext->ProposePatch( p );
+		Check( !pr.applied, "RED-PROVE: external propose does NOT apply (would be true if staging were skipped)" );
+		Check( pr.status == "staged", "external propose reports status=\"staged\"" );
+		Check( LumR( *pJob ) == before, "RED-PROVE: the document is UNCHANGED after an external stage (would move to ~9.25 if it committed)" );
+
+		const std::vector<Agent::AgentSession::AgentProposalEntry> listed = owner->ListProposals();
+		Check( listed.size() == 1, "ListProposals shows exactly the one staged proposal" );
+		Check( !listed.empty() && listed[0].status == "pending", "the staged proposal is \"pending\"" );
+		Check( !listed.empty() && listed[0].kind == "param_edit", "the staged proposal is kind=\"param_edit\"" );
+		Check( !listed.empty() && listed[0].target == "lum", "the staged proposal echoes the target" );
+		const std::uint64_t proposalId = listed.empty() ? 0 : listed[0].id;
+		Check( proposalId != 0, "the staged proposal carries a non-zero id" );
+
+		//------------------------------------------------------------------
+		// (b) Owner approves -> the edit APPLIES now; EditHistory citizen
+		// (a controller Undo reverts it).
+		//------------------------------------------------------------------
+		Agent::AgentSession::AgentResolveResult rr = owner->ResolveProposal( proposalId, /*approve=*/true );
+		Check( rr.ok, "owner ResolveProposal(approve) runs" );
+		Check( rr.status == "applied", "approved proposal resolves to status=\"applied\"" );
+		Check( rr.paramResult.applied, "the folded paramResult reports applied=true" );
+		Check( LumR( *pJob ) > 8.5 && LumR( *pJob ) < 10.0, "the approved proposal's edit reached the live scene (~9.25)" );
+		Check( c.HasUnsavedChanges(), "the approved proposal marked the editor dirty" );
+
+		c.Undo();
+		Check( LumR( *pJob ) > 4.5 && LumR( *pJob ) < 5.5, "controller Undo reverted the approved proposal's edit (~5.0, the original) -- proof it is a normal EditHistory citizen" );
+		c.Redo();
+		Check( LumR( *pJob ) > 8.5 && LumR( *pJob ) < 10.0, "Redo re-applies it" );
+
+		//------------------------------------------------------------------
+		// (c) A second stage, this time REJECTED by the owner -> no mutation.
+		//------------------------------------------------------------------
+		const double beforeReject = LumR( *pJob );
+		Agent::AgentSetPatch p2 = p;
+		p2.value = "1.0";
+		Agent::AgentPatchResult pr2 = ext->ProposePatch( p2 );
+		Check( pr2.status == "staged", "second external propose also stages" );
+		const std::vector<Agent::AgentSession::AgentProposalEntry> listed2 = owner->ListProposals();
+		std::uint64_t secondId = 0;
+		for( const auto& e : listed2 ) if( e.status == "pending" ) secondId = e.id;
+		Check( secondId != 0, "the second proposal is found pending" );
+		Agent::AgentSession::AgentResolveResult rrReject = owner->ResolveProposal( secondId, /*approve=*/false );
+		Check( rrReject.ok, "owner ResolveProposal(reject) runs" );
+		Check( rrReject.status == "rejected", "rejected proposal resolves to status=\"rejected\"" );
+		Check( LumR( *pJob ) == beforeReject, "RED-PROVE: reject left the document UNCHANGED (would move to ~1.0 if applied)" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Secure-MCP slice 5a: the stale-approve invariant -- an owner's OWN direct
+// edit moves the head between stage and approve; ResolveProposal must
+// re-check and refuse to clobber.
+//////////////////////////////////////////////////////////////////////
+static void TestStaleApproveConflict()
+{
+	std::cout << "Test 34: stale approve (head moved between stage and approve) -> conflict, no apply..." << std::endl;
+
+	const char* tmp = "agentlive_proposal_stale.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> owner = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		std::unique_ptr<Agent::AgentSession> ext   = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		owner->AttachController( &c );
+		ext->AttachController( &c );
+
+		Agent::AgentSetPatch p;
+		p.target = "lum";
+		p.kind   = "lambertian_luminaire_material";
+		p.param  = "scale";
+		p.value  = "6.0";
+		Agent::AgentPatchResult pr = ext->ProposePatch( p );
+		Check( pr.status == "staged", "external propose stages" );
+		std::uint64_t id = 0;
+		for( const auto& e : owner->ListProposals() ) if( e.status == "pending" ) id = e.id;
+		Check( id != 0, "the proposal is pending" );
+
+		// The OWNER makes a direct, intervening edit (a real head-moving
+		// commit through the SAME controller) BETWEEN stage and approve.
+		Agent::AgentSetPatch ownerEdit;
+		ownerEdit.target = "lum";
+		ownerEdit.kind   = "lambertian_luminaire_material";
+		ownerEdit.param  = "scale";
+		ownerEdit.value  = "2.0";
+		Agent::AgentPatchResult ownerPr = owner->ProposePatch( ownerEdit );
+		Check( ownerPr.applied, "the owner's intervening direct edit applies (Owner authority commits directly, unchanged)" );
+		Check( LumR( *pJob ) > 1.5 && LumR( *pJob ) < 2.5, "the live scene now reflects the owner's intervening edit (~2.0)" );
+
+		// Approve the STALE proposal -- RED-PROVE: without the base-version
+		// re-check inside ResolveProposal, this would clobber the owner's
+		// intervening edit with the stale 6.0.
+		const double beforeApprove = LumR( *pJob );
+		Agent::AgentSession::AgentResolveResult rr = owner->ResolveProposal( id, /*approve=*/true );
+		Check( rr.ok, "resolve runs (the id is found)" );
+		Check( rr.status == "conflict", "RED-PROVE: stale approve resolves to status=\"conflict\" (would be \"applied\" without the re-check)" );
+		Check( LumR( *pJob ) == beforeApprove, "RED-PROVE: the conflict left the live scene UNCHANGED at the owner's edit (would move to ~6.0 without the re-check)" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Secure-MCP slice 5a: reload invalidation.  A genuine SceneEditController
+// reload mints a fresh Job (LoadAsciiSceneViaCst refuses a second load on
+// the SAME Job -- there is no in-place reload hook to fake this against
+// the SAME controller), so this test proves the invariant the way it
+// actually manifests: a baseVersion carrying a DIFFERENT uuid (as a fresh
+// load would mint) is a conflict at approval time even though the
+// revision number might otherwise coincide -- the reload-collision guard
+// CstHeadVersion::operator== requires BOTH fields to match.
+//////////////////////////////////////////////////////////////////////
+static void TestReloadInvalidatesStaleProposal()
+{
+	std::cout << "Test 35: a proposal staged against a DIFFERENT uuid (simulating a reload) -> conflict on approve..." << std::endl;
+
+	const char* tmp = "agentlive_proposal_reload.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	// A second, independent Job load mints a genuinely DIFFERENT uuid
+	// (Job::LoadAsciiSceneViaCst's NextCstHeadUuid() is a process-global
+	// monotonic counter -- see Job.cpp) -- this stands in for "the uuid a
+	// reload of the SAME file would mint", without needing an in-place
+	// reload hook the controller does not expose.
+	const char* tmp2 = "agentlive_proposal_reload_other.RISEscene";
+	Job* otherJob = LoadScene( kBaseScene, tmp2 );
+	Check( otherJob != nullptr, "a second, independent Job load succeeds" );
+	if( otherJob )
+	{
+		Check( otherJob->GetCstHeadVersion().uuid != pJob->GetCstHeadVersion().uuid,
+		       "the second load minted a DIFFERENT uuid (the reload-collision guard, Facet 5 slice 1a)" );
+	}
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> owner = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		std::unique_ptr<Agent::AgentSession> ext   = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		owner->AttachController( &c );
+		ext->AttachController( &c );
+
+		// Stage a patch whose baseVersion is EXPLICITLY the other Job's
+		// head (a foreign uuid) -- as if the proposing agent had read a
+		// head that (from this controller's point of view) no longer
+		// exists because the scene was reloaded.
+		Agent::AgentSetPatch p;
+		p.target = "lum";
+		p.kind   = "lambertian_luminaire_material";
+		p.param  = "scale";
+		p.value  = "8.0";
+		p.hasBaseVersion = true;
+		p.baseVersion = otherJob ? otherJob->GetCstHeadVersion() : RISE::Cst::CstHeadVersion{};
+		Agent::AgentPatchResult pr = ext->ProposePatch( p );
+		Check( pr.status == "staged", "external propose stages even against a foreign baseVersion (staging never checks it)" );
+		std::uint64_t id = 0;
+		for( const auto& e : owner->ListProposals() ) if( e.status == "pending" ) id = e.id;
+		Check( id != 0, "the proposal is pending" );
+
+		const double before = LumR( *pJob );
+		Agent::AgentSession::AgentResolveResult rr = owner->ResolveProposal( id, /*approve=*/true );
+		Check( rr.ok, "resolve runs" );
+		Check( rr.status == "conflict", "RED-PROVE: approving against a foreign (reload-simulating) uuid resolves to \"conflict\" (would be \"applied\" without the uuid check)" );
+		Check( LumR( *pJob ) == before, "the live scene is unchanged after the reload-invalidated conflict" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+	if( otherJob ) otherJob->release();
+	std::remove( tmp2 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Secure-MCP slice 5a: two proposals staged against the SAME param;
+// approving the first shifts the head, so approving the second (still
+// carrying the ORIGINAL baseVersion) is a conflict.
+//////////////////////////////////////////////////////////////////////
+static void TestTwoProposalsSameParamSecondIsStale()
+{
+	std::cout << "Test 36: stage A, stage B (same param); approve A applies; approve B -> conflict (B's base is now stale)..." << std::endl;
+
+	const char* tmp = "agentlive_proposal_twoprop.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> owner = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		std::unique_ptr<Agent::AgentSession> ext   = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		owner->AttachController( &c );
+		ext->AttachController( &c );
+
+		Agent::AgentSetPatch pa;
+		pa.target = "lum";
+		pa.kind   = "lambertian_luminaire_material";
+		pa.param  = "scale";
+		pa.value  = "3.0";
+		Agent::AgentPatchResult prA = ext->ProposePatch( pa );
+		Check( prA.status == "staged", "proposal A stages" );
+
+		Agent::AgentSetPatch pb = pa;
+		pb.value = "4.0";
+		Agent::AgentPatchResult prB = ext->ProposePatch( pb );
+		Check( prB.status == "staged", "proposal B stages (against the SAME pre-A head, since staging never mutates)" );
+
+		const std::vector<Agent::AgentSession::AgentProposalEntry> listed = owner->ListProposals();
+		Check( listed.size() == 2, "both proposals are on the queue" );
+		std::uint64_t idA = 0, idB = 0;
+		for( const auto& e : listed ) { if( e.value == "3.0" ) idA = e.id; if( e.value == "4.0" ) idB = e.id; }
+		Check( idA != 0 && idB != 0, "both proposal ids resolved by their staged value" );
+
+		Agent::AgentSession::AgentResolveResult rrA = owner->ResolveProposal( idA, /*approve=*/true );
+		Check( rrA.ok && rrA.status == "applied", "approve A applies (A's base was the head at stage time -- still current)" );
+		Check( LumR( *pJob ) > 2.5 && LumR( *pJob ) < 3.5, "the live scene reflects A (~3.0)" );
+
+		Agent::AgentSession::AgentResolveResult rrB = owner->ResolveProposal( idB, /*approve=*/true );
+		Check( rrB.ok, "resolve B runs" );
+		Check( rrB.status == "conflict", "RED-PROVE: approve B -> conflict (B's base is now stale -- A's apply moved the head)" );
+		Check( LumR( *pJob ) > 2.5 && LumR( *pJob ) < 3.5, "the live scene is UNCHANGED by B's conflict (still ~3.0, not 4.0)" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Secure-MCP slice 5a: the authority x autonomy matrix refusals.
+//   * External + Commit-shaped call (no staging bypass) + a live controller
+//     attached still only ever STAGES -- there is no way to ask an
+//     External session to commit directly; ProposePatch/InsertChunk/
+//     RemoveChunk always route it through the stage branch.  This is
+//     itself the "External never commits" proof (folded into the basics
+//     test's RED-PROVE above); this test covers the TWO remaining matrix
+//     cells: External+Propose+NO controller (headless) -> refused, and
+//     External attempting to RESOLVE (even its own proposal) -> refused.
+//   * Owner + a live controller -> still commits directly (regression
+//     guard: byte-for-byte unchanged from every pre-existing test above).
+//////////////////////////////////////////////////////////////////////
+static void TestAuthorityMatrixRefusals()
+{
+	std::cout << "Test 37: authority matrix -- external headless propose refused; external resolve (even own) refused; owner unaffected..." << std::endl;
+
+	// (a) External + Propose + NO controller (headless) -> refused, not a
+	// silent commit.  This is the "no headless back door" hole this slice
+	// closes: a headless External session has no queue to stage TO.
+	{
+		const char* tmp = "agentlive_proposal_headless_ext.RISEscene";
+		{ std::ofstream o( tmp ); o << kBaseScene; }
+		std::unique_ptr<Agent::AgentSession> headlessExt =
+			Agent::AgentSession::LoadFromFile( std::string( tmp ), Agent::AgentAuthority::External );
+		Check( headlessExt != nullptr, "a headless External session loads" );
+		if( headlessExt )
+		{
+			Check( headlessExt->Authority() == Agent::AgentAuthority::External, "reports External authority" );
+			Check( !headlessExt->HasController(), "headless -- no controller attached" );
+			Agent::AgentSetPatch p;
+			p.target = "lum";
+			p.kind   = "lambertian_luminaire_material";
+			p.param  = "scale";
+			p.value  = "42.0";
+			Agent::AgentPatchResult pr = headlessExt->ProposePatch( p );
+			Check( !pr.applied, "headless external propose does not apply" );
+			Check( pr.status == "rejected", "RED-PROVE: headless external propose is REFUSED, status=\"rejected\" (would be \"staged\" or \"applied\" without the no-controller refusal)" );
+		}
+		headlessExt.reset();
+		std::remove( tmp );
+	}
+
+	// (b) External resolving -- even its OWN proposal -- is refused; and
+	// (c) Owner + a live controller still commits directly (unchanged).
+	{
+		const char* tmp = "agentlive_proposal_matrix.RISEscene";
+		Job* pJob = LoadScene( kBaseScene, tmp );
+		Check( pJob != nullptr, "base scene loads via the CST path" );
+		if( !pJob ) return;
+
+		{
+			TestController c( *pJob, /*simulatedRenderMs*/20 );
+			c.Start();
+			Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+			std::unique_ptr<Agent::AgentSession> owner = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+			std::unique_ptr<Agent::AgentSession> ext   = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+			owner->AttachController( &c );
+			ext->AttachController( &c );
+
+			// (c) Owner + live controller -> commits directly, unchanged.
+			Agent::AgentSetPatch ownerPatch;
+			ownerPatch.target = "lum";
+			ownerPatch.kind   = "lambertian_luminaire_material";
+			ownerPatch.param  = "scale";
+			ownerPatch.value  = "11.0";
+			Agent::AgentPatchResult ownerPr = owner->ProposePatch( ownerPatch );
+			Check( ownerPr.applied, "owner + live controller still commits directly (unchanged regression guard)" );
+			Check( ownerPr.status == "applied", "owner propose status is \"applied\", not \"staged\"" );
+			Check( LumR( *pJob ) > 10.0 && LumR( *pJob ) < 12.0, "owner's direct commit reached the live scene (~11.0)" );
+
+			// (b) External stages, then tries to resolve its OWN proposal.
+			Agent::AgentSetPatch extPatch;
+			extPatch.target = "lum";
+			extPatch.kind   = "lambertian_luminaire_material";
+			extPatch.param  = "scale";
+			extPatch.value  = "13.0";
+			Agent::AgentPatchResult extPr = ext->ProposePatch( extPatch );
+			Check( extPr.status == "staged", "external propose stages" );
+			std::uint64_t id = 0;
+			for( const auto& e : ext->ListProposals() ) if( e.status == "pending" ) id = e.id;
+			Check( id != 0, "external session's OWN ListProposals sees the pending proposal (listing is authority-agnostic)" );
+
+			const double beforeSelfResolve = LumR( *pJob );
+			Agent::AgentSession::AgentResolveResult rr = ext->ResolveProposal( id, /*approve=*/true );
+			Check( !rr.ok, "RED-PROVE: external resolving its OWN proposal is REFUSED (ok=false) -- would be ok=true/applied without the owner-only gate" );
+			Check( LumR( *pJob ) == beforeSelfResolve, "the live scene is unchanged after the refused self-resolve" );
+
+			// Owner CAN resolve it.
+			Agent::AgentSession::AgentResolveResult rrOwner = owner->ResolveProposal( id, /*approve=*/true );
+			Check( rrOwner.ok && rrOwner.status == "applied", "the owner CAN resolve the same proposal the external session was refused for" );
+			Check( LumR( *pJob ) > 12.0 && LumR( *pJob ) < 14.0, "the owner's approval on the external's behalf reached the live scene (~13.0)" );
+
+			c.Stop();
+		}
+		pJob->release();
+		std::remove( tmp );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// Secure-MCP slice 5a: insert_chunk / remove_chunk staging variants --
+// mirror the param-edit basics test, proving the chunk-CRUD verbs stage +
+// approve + apply correctly too (not just propose_patch).
+//////////////////////////////////////////////////////////////////////
+static void TestChunkCrudStaging()
+{
+	std::cout << "Test 38: insert_chunk / remove_chunk staging (stage -> inert; approve -> applies via the real chunk-CRUD path)..." << std::endl;
+
+	const char* tmp = "agentlive_proposal_chunkcrud.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> owner = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		std::unique_ptr<Agent::AgentSession> ext   = Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		owner->AttachController( &c );
+		ext->AttachController( &c );
+
+		//------------------------------------------------------------------
+		// insert_chunk: stage a new, uniquely-named material; unchanged
+		// until approved.
+		//------------------------------------------------------------------
+		const std::string newMatChunk =
+			"uniformcolor_painter\n{\nname stagedPainter\ncolor 0.25 0.25 0.25\n}\n";
+		Agent::AgentChunkResult insR = ext->InsertChunk( newMatChunk );
+		Check( !insR.applied, "external insert_chunk does not apply" );
+		Check( insR.status == "staged", "external insert_chunk reports status=\"staged\"" );
+		Check( pJob->GetPainters() && pJob->GetPainters()->GetItem( "stagedPainter" ) == nullptr,
+		       "RED-PROVE: the staged painter does NOT exist in the live scene yet (would exist if staging were skipped)" );
+
+		std::uint64_t insertId = 0;
+		for( const auto& e : owner->ListProposals() ) if( e.status == "pending" && e.kind == "insert_chunk" ) insertId = e.id;
+		Check( insertId != 0, "the staged insert is listed with kind=\"insert_chunk\"" );
+
+		Agent::AgentSession::AgentResolveResult insResolve = owner->ResolveProposal( insertId, /*approve=*/true );
+		Check( insResolve.ok && insResolve.status == "applied", "owner approves the staged insert -> applied" );
+		Check( insResolve.chunkResult.applied, "the folded chunkResult reports applied=true" );
+		Check( pJob->GetPainters() && pJob->GetPainters()->GetItem( "stagedPainter" ) != nullptr,
+		       "the approved insert's chunk now resolves in the live scene" );
+		Check( c.HasUnsavedChanges(), "the approved insert marked the editor dirty" );
+
+		// EditHistory citizen: Undo reverts the approved insert.
+		c.Undo();
+		Check( pJob->GetPainters() && pJob->GetPainters()->GetItem( "stagedPainter" ) == nullptr,
+		       "controller Undo reverted the approved chunk insert -- proof it is a normal EditHistory citizen" );
+		c.Redo();
+		Check( pJob->GetPainters() && pJob->GetPainters()->GetItem( "stagedPainter" ) != nullptr,
+		       "Redo re-applies the chunk insert" );
+
+		//------------------------------------------------------------------
+		// remove_chunk: stage removing the just-inserted (now-live, unreferenced)
+		// painter; unchanged until approved.
+		//------------------------------------------------------------------
+		Agent::AgentChunkResult remR = ext->RemoveChunk( "stagedPainter", "uniformcolor_painter" );
+		Check( !remR.applied, "external remove_chunk does not apply" );
+		Check( remR.status == "staged", "external remove_chunk reports status=\"staged\"" );
+		Check( pJob->GetPainters() && pJob->GetPainters()->GetItem( "stagedPainter" ) != nullptr,
+		       "RED-PROVE: the painter STILL exists after staging the remove (would be gone if staging were skipped)" );
+
+		std::uint64_t removeId = 0;
+		for( const auto& e : owner->ListProposals() ) if( e.status == "pending" && e.kind == "remove_chunk" ) removeId = e.id;
+		Check( removeId != 0, "the staged remove is listed with kind=\"remove_chunk\"" );
+
+		Agent::AgentSession::AgentResolveResult remResolve = owner->ResolveProposal( removeId, /*approve=*/true );
+		Check( remResolve.ok && remResolve.status == "applied", "owner approves the staged remove -> applied" );
+		Check( pJob->GetPainters() && pJob->GetPainters()->GetItem( "stagedPainter" ) == nullptr,
+		       "the approved remove's chunk is gone from the live scene" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -3538,6 +4003,12 @@ int main()
 	TestStaleIndexIdentityCheckRefusesP2();
 	TestGlueSafeRestoreRightSideAfterOutOfBandShiftP1Round2();
 	TestGlueSafeRestoreLastChunkAppendP1Round2();
+	TestProposalStagingBasics();
+	TestStaleApproveConflict();
+	TestReloadInvalidatesStaleProposal();
+	TestTwoProposalsSameParamSecondIsStale();
+	TestAuthorityMatrixRefusals();
+	TestChunkCrudStaging();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

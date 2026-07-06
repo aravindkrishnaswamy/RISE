@@ -3426,6 +3426,133 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChun
 	return ApplyAgentChunkCrud_( /*isInsert*/ false, target, kind, baseVersionOrNull );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Secure-MCP slice 5a: proposal staging + owner-approval state machine.
+//
+// StageProposal is deliberately CHEAP and INERT: it only appends to
+// mProposals under mMutex -- no cancel-and-park (nothing here touches the
+// Document or the live Scene, so there is nothing for the render thread to
+// race), no conflict check (that happens once, at APPROVAL time in
+// ResolveProposal -- staging against a since-moved head is fine; it is
+// APPLYING against a since-moved head that would be unsafe), no EditHistory
+// record (an inert proposal is not yet a commit).
+//////////////////////////////////////////////////////////////////////
+std::uint64_t SceneEditController::StageProposal( const AgentProposal& proposal )
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	AgentProposal p = proposal;
+	p.id     = mNextProposalId++;
+	p.status = String( "pending" );
+	const std::uint64_t id = p.id;
+	mProposals.push_back( p );
+	return id;
+}
+
+std::vector<SceneEditController::AgentProposal> SceneEditController::ListProposals() const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	return mProposals;   // copy out under the lock -- the caller's snapshot is stable
+}
+
+bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, AgentCommitResult* outResult )
+{
+	// The whole resolve -- find, re-check, and (on approve) apply -- runs
+	// under ONE mMutex hold, so there is no window between "the base
+	// version matched" and "the apply actually ran" for a concurrent commit
+	// (staged or direct, on any thread) to move the head out from under us.
+	// ApplyAgent{ParamEdit,InsertChunk,RemoveChunk} below take mMutex
+	// THEMSELVES (cancel-and-park + the whole commit), so we must NOT hold
+	// mMutex while calling them -- mMutex is a plain, non-recursive
+	// std::mutex (re-entering it is an immediate self-deadlock, not a
+	// stall-and-retry; see CancelAndParkRender_'s doc).  So this method
+	// takes mMutex ONLY for the find + status-transition step, releases it,
+	// then (on a version match) calls the normal ApplyAgent* entry point --
+	// which takes mMutex again for its OWN cancel-and-park critical section.
+	//
+	// This does NOT reopen the TOCTOU window the single-lock design above
+	// was written to close: the invariant that matters is "the version we
+	// COMPARE is the version we APPLY AGAINST", and ApplyAgent* re-derives
+	// that itself -- baseVersionOrNull is passed straight through to the
+	// SAME optimistic-concurrency gate a direct (non-staged) commit already
+	// uses, checked UNDER ApplyAgent*'s OWN mMutex hold, atomically with
+	// its own apply.  A second mover between our pre-check here and
+	// ApplyAgent*'s internal check is not a bug: it is caught by
+	// ApplyAgent*'s own gate and folded into this method's conflict
+	// handling below, exactly as if OUR pre-check had raced it.  What we do
+	// here first (a cheap pre-check before even attempting the call) is
+	// belt-and-suspenders for a fast, honest status on the COMMON case
+	// (proposal already known-stale) without ever needing to hold mMutex
+	// across a nested ApplyAgent* call.
+	AgentProposal snapshot;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		bool found = false;
+		for( auto& p : mProposals )
+		{
+			if( p.id == id )
+			{
+				if( p.status != String( "pending" ) ) return false;   // already resolved -- refuse a second resolve
+				snapshot = p;
+				found = true;
+				break;
+			}
+		}
+		if( !found ) return false;
+
+		if( !approve )
+		{
+			for( auto& p : mProposals ) if( p.id == id ) { p.status = String( "rejected" ); break; }
+			return true;   // *outResult left default-constructed -- no apply ran
+		}
+	}
+
+	// APPROVE: re-check the base version against the CURRENT head.  This is
+	// the hard invariant -- a stale proposal must NEVER apply, no matter how
+	// long it sat on the queue.  ApplyAgent* below performs this SAME check
+	// internally (baseVersionOrNull, non-null), atomically with its own
+	// apply, under ITS mMutex hold -- so passing snapshot.baseVersion
+	// through is both the honest re-check this slice promises AND reuses
+	// the exact, already-reviewed conflict gate rather than duplicating it.
+	AgentCommitResult cr;
+	switch( snapshot.kind )
+	{
+		case AgentProposalKind::ParamEdit:
+			cr = ApplyAgentParamEdit( snapshot.target, snapshot.entityKind, snapshot.param, snapshot.value, &snapshot.baseVersion );
+			break;
+		case AgentProposalKind::InsertChunk:
+			cr = ApplyAgentInsertChunk( snapshot.chunkText, &snapshot.baseVersion );
+			break;
+		case AgentProposalKind::RemoveChunk:
+			cr = ApplyAgentRemoveChunk( snapshot.target, snapshot.entityKind, &snapshot.baseVersion );
+			break;
+	}
+
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		for( auto& p : mProposals )
+		{
+			if( p.id == id )
+			{
+				// Fold ApplyAgent*'s own result into the proposal's final
+				// status: a clean apply -> "applied"; a version conflict
+				// (caught by ApplyAgent*'s own gate) -> "conflict"; anything
+				// else (rejected / diagnosed pre-flight refusal surfaced by
+				// the underlying call) -> "conflict" is reserved for the
+				// version-mismatch case specifically, so map those other
+				// outcomes to "rejected" -- they are not what this
+				// invariant is about, but they are still NOT an apply.
+				if( cr.applied )                         p.status = String( "applied" );
+				else if( cr.status == String( "conflict" ) ) p.status = String( "conflict" );
+				else                                      p.status = String( "rejected" );
+				break;
+			}
+		}
+	}
+
+	if( outResult ) *outResult = cr;
+	return true;
+}
+
 // Facet 5 (preview-render safety): park the render thread and run a
 // NON-mutating (from the Document's point of view) callback under mMutex.
 // Same mTxnOpen refusal as the agent commit paths (parking here would stall

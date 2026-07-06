@@ -530,8 +530,8 @@ namespace RISE
 			return r;
 		}
 
-		AgentSession::AgentSession( IJobPriv* job, bool owns )
-			: mJob( job ), mOwnsJob( owns )
+		AgentSession::AgentSession( IJobPriv* job, bool owns, AgentAuthority authority )
+			: mJob( job ), mOwnsJob( owns ), mAuthority( authority )
 		{
 		}
 
@@ -650,7 +650,7 @@ namespace RISE
 			}
 		}
 
-		std::unique_ptr<AgentSession> AgentSession::LoadFromFile( const std::string& path )
+		std::unique_ptr<AgentSession> AgentSession::LoadFromFile( const std::string& path, AgentAuthority authority )
 		{
 			IJobPriv* job = nullptr;
 			if( !RISE_CreateJobPriv( &job ) || !job ) return nullptr;
@@ -658,13 +658,13 @@ namespace RISE
 				job->release();
 				return nullptr;
 			}
-			return std::unique_ptr<AgentSession>( new AgentSession( job, /*owns=*/true ) );
+			return std::unique_ptr<AgentSession>( new AgentSession( job, /*owns=*/true, authority ) );
 		}
 
-		std::unique_ptr<AgentSession> AgentSession::WrapJob( IJobPriv* job )
+		std::unique_ptr<AgentSession> AgentSession::WrapJob( IJobPriv* job, AgentAuthority authority )
 		{
 			if( !job ) return nullptr;
-			return std::unique_ptr<AgentSession>( new AgentSession( job, /*owns=*/false ) );
+			return std::unique_ptr<AgentSession>( new AgentSession( job, /*owns=*/false, authority ) );
 		}
 
 		void AgentSession::AttachController( SceneEditController* controller )
@@ -847,6 +847,52 @@ namespace RISE
 		AgentPatchResult AgentSession::ProposePatch( const AgentSetPatch& patch )
 		{
 			AgentPatchResult r;
+
+			// Secure-MCP slice 5a: the authority gate, enforced HERE -- not
+			// trusted to any caller-side flag -- BEFORE the existing LIVE-mode
+			// commit branch below.  This is the choke point that closes the
+			// "external commits with no human gate" hole: an External-authority
+			// session NEVER reaches ApplyAgentParamEdit / ApplyCstParamEditChecked
+			// directly; it either STAGES (a live controller is attached, so
+			// there is a queue + an Owner to resolve against) or is REFUSED
+			// outright (headless -- nowhere to stage to).  An Owner-authority
+			// session falls straight through, unchanged, to the existing
+			// LIVE-mode / direct-Job behaviour below.
+			if( mAuthority == AgentAuthority::External )
+			{
+				if( !mController )
+				{
+					r.applied = false;
+					r.rawCode = 0;
+					r.status  = "rejected";
+					r.headVersion = HeadVersion();
+					r.message = "propose_patch refused: this session is External-authority and no live "
+					            "controller is attached -- staging needs a live Owner to resolve against";
+					return r;
+				}
+				// The controller and this session wrap the SAME Job (a hard
+				// invariant of AttachController -- see its doc), so mJob's
+				// head-version IS the controller's current head-version; no
+				// new controller accessor is needed to read it.
+				const RISE::Cst::CstHeadVersion curHead = mJob ? mJob->GetCstHeadVersion() : RISE::Cst::CstHeadVersion{};
+				SceneEditController::AgentProposal p;
+				p.kind        = SceneEditController::AgentProposalKind::ParamEdit;
+				p.target      = String( patch.target.c_str() );
+				p.entityKind  = String( patch.kind.c_str() );
+				p.param       = String( patch.param.c_str() );
+				p.value       = String( patch.value.c_str() );
+				p.baseVersion = patch.hasBaseVersion ? patch.baseVersion : curHead;
+				const std::uint64_t id = mController->StageProposal( p );
+				r.applied = false;
+				r.rawCode = 0;
+				r.status  = "staged";
+				r.headVersion = curHead;
+				char buf[128];
+				std::snprintf( buf, sizeof( buf ), "proposal %llu staged (pending owner approval)",
+					static_cast<unsigned long long>( id ) );
+				r.message = buf;
+				return r;
+			}
 
 			// Facet 5 slice 1b: LIVE mode.  When a controller is attached, the
 			// session shares a Job with a running interactive editor, so the
@@ -1084,6 +1130,38 @@ namespace RISE
 		{
 			AgentChunkResult r;
 
+			// Secure-MCP slice 5a: the SAME authority gate as ProposePatch
+			// (see that method's doc for the full rationale) -- enforced
+			// before the existing LIVE-mode commit branch.
+			if( mAuthority == AgentAuthority::External )
+			{
+				if( !mController )
+				{
+					r.applied = false;
+					r.rawCode = 0;
+					r.status  = "rejected";
+					r.headVersion = HeadVersion();
+					r.message = "insert_chunk refused: this session is External-authority and no live "
+					            "controller is attached -- staging needs a live Owner to resolve against";
+					return r;
+				}
+				const RISE::Cst::CstHeadVersion curHead = mJob ? mJob->GetCstHeadVersion() : RISE::Cst::CstHeadVersion{};
+				SceneEditController::AgentProposal p;
+				p.kind        = SceneEditController::AgentProposalKind::InsertChunk;
+				p.chunkText   = String( chunkText.c_str() );
+				p.baseVersion = baseOrNull ? *baseOrNull : curHead;
+				const std::uint64_t id = mController->StageProposal( p );
+				r.applied = false;
+				r.rawCode = 0;
+				r.status  = "staged";
+				r.headVersion = curHead;
+				char buf[128];
+				std::snprintf( buf, sizeof( buf ), "proposal %llu staged (pending owner approval)",
+					static_cast<unsigned long long>( id ) );
+				r.message = buf;
+				return r;
+			}
+
 			// LIVE mode: delegate wholesale to the controller's render-safe
 			// path (park + conflict gate + Job primitive + rebind + dirty +
 			// kick), exactly as ProposePatch does.  Map its AgentCommitResult
@@ -1159,6 +1237,38 @@ namespace RISE
 			AgentChunkResult r;
 			r.name = target;
 
+			// Secure-MCP slice 5a: the SAME authority gate as ProposePatch /
+			// InsertChunk (see ProposePatch's doc for the full rationale).
+			if( mAuthority == AgentAuthority::External )
+			{
+				if( !mController )
+				{
+					r.applied = false;
+					r.rawCode = 0;
+					r.status  = "rejected";
+					r.headVersion = HeadVersion();
+					r.message = "remove_chunk refused: this session is External-authority and no live "
+					            "controller is attached -- staging needs a live Owner to resolve against";
+					return r;
+				}
+				const RISE::Cst::CstHeadVersion curHead = mJob ? mJob->GetCstHeadVersion() : RISE::Cst::CstHeadVersion{};
+				SceneEditController::AgentProposal p;
+				p.kind        = SceneEditController::AgentProposalKind::RemoveChunk;
+				p.target      = String( target.c_str() );
+				p.entityKind  = String( kind.c_str() );
+				p.baseVersion = baseOrNull ? *baseOrNull : curHead;
+				const std::uint64_t id = mController->StageProposal( p );
+				r.applied = false;
+				r.rawCode = 0;
+				r.status  = "staged";
+				r.headVersion = curHead;
+				char buf[128];
+				std::snprintf( buf, sizeof( buf ), "proposal %llu staged (pending owner approval)",
+					static_cast<unsigned long long>( id ) );
+				r.message = buf;
+				return r;
+			}
+
 			// LIVE mode: delegate to the controller (see InsertChunk).
 			if( mController )
 			{
@@ -1217,6 +1327,135 @@ namespace RISE
 			r.kind = kwBuf;
 			FoldChunkCode( r, code, /*isInsert*/ false, target, diagBuf, /*kindWasPassed*/ !kind.empty() );
 			r.headVersion = mJob->GetCstHeadVersion();
+			return r;
+		}
+
+		namespace
+		{
+			//! Secure-MCP slice 5a: SceneEditController::AgentProposalKind ->
+			//! the wire-friendly string ListProposals reports.
+			const char* ProposalKindName( SceneEditController::AgentProposalKind k )
+			{
+				switch( k )
+				{
+					case SceneEditController::AgentProposalKind::ParamEdit:   return "param_edit";
+					case SceneEditController::AgentProposalKind::InsertChunk: return "insert_chunk";
+					case SceneEditController::AgentProposalKind::RemoveChunk: return "remove_chunk";
+				}
+				return "param_edit";
+			}
+		}
+
+		std::vector<AgentSession::AgentProposalEntry> AgentSession::ListProposals() const
+		{
+			std::vector<AgentProposalEntry> out;
+			// CONTROLLER-ATTACHED ONLY: a headless session has no shared queue
+			// (the queue lives on SceneEditController -- see that class's doc)
+			// to list against.  Empty, not an error: "no proposals" and "no
+			// queue to ask" look the same to a caller that just wants a list.
+			if( !mController ) return out;
+
+			const std::vector<SceneEditController::AgentProposal> proposals = mController->ListProposals();
+			out.reserve( proposals.size() );
+			for( const SceneEditController::AgentProposal& p : proposals )
+			{
+				AgentProposalEntry e;
+				e.id           = p.id;
+				e.kind         = ProposalKindName( p.kind );
+				e.target       = p.target.c_str();
+				e.entityKind   = p.entityKind.c_str();
+				e.param        = p.param.c_str();
+				e.value        = p.value.c_str();
+				e.chunkText    = p.chunkText.c_str();
+				e.baseVersion  = p.baseVersion;
+				e.sessionLabel = p.sessionLabel.c_str();
+				e.status       = p.status.c_str();
+				out.push_back( e );
+			}
+			return out;
+		}
+
+		AgentSession::AgentResolveResult AgentSession::ResolveProposal( std::uint64_t proposalId, bool approve )
+		{
+			AgentResolveResult r;
+
+			// OWNER-ONLY GATE, enforced HERE -- an External-authority session
+			// may not resolve ANY proposal, including one it staged itself.
+			// This is the "external approving its own proposal" invariant:
+			// refused before the controller (which has no notion of
+			// per-session authority -- see SceneEditController::
+			// ResolveProposal's doc) is even consulted.
+			if( mAuthority != AgentAuthority::Owner )
+			{
+				r.ok = false;
+				r.message = "resolve_proposal refused: only an Owner-authority session may approve or reject "
+				            "a proposal (an External session may not resolve ANY proposal, including its own)";
+				return r;
+			}
+
+			// CONTROLLER-ATTACHED ONLY: there is no queue to resolve against
+			// without a live controller.
+			if( !mController )
+			{
+				r.ok = false;
+				r.message = "resolve_proposal refused: no live controller attached -- there is no proposal queue";
+				return r;
+			}
+
+			SceneEditController::AgentCommitResult cr;
+			const bool found = mController->ResolveProposal( proposalId, approve, &cr );
+			if( !found )
+			{
+				r.ok = false;
+				r.message = "resolve_proposal refused: no pending proposal with that id (unknown id, or it was already resolved)";
+				return r;
+			}
+
+			r.ok = true;
+			if( !approve )
+			{
+				r.status  = "rejected";
+				r.message = "proposal rejected (no mutation)";
+				return r;
+			}
+
+			// Fold the underlying apply's outcome (mirrors ProposePatch /
+			// InsertChunk / RemoveChunk's own 1:1 AgentCommitResult mapping --
+			// see those methods for the rationale of each field).  We do not
+			// know here which of the two result SHAPES (param-edit vs
+			// chunk-CRUD) applies without asking the controller which kind
+			// this proposal was, so re-derive it from the queue snapshot
+			// (cheap; ListProposals is O(n) and this runs once per resolve,
+			// not per hot loop).
+			SceneEditController::AgentProposalKind kind = SceneEditController::AgentProposalKind::ParamEdit;
+			{
+				const std::vector<SceneEditController::AgentProposal> all = mController->ListProposals();
+				for( const SceneEditController::AgentProposal& p : all )
+					if( p.id == proposalId ) { kind = p.kind; break; }
+			}
+
+			r.status = cr.status.c_str();
+			if( kind == SceneEditController::AgentProposalKind::ParamEdit )
+			{
+				r.paramResult.applied     = cr.applied;
+				r.paramResult.retriable   = cr.retriable;
+				r.paramResult.rawCode     = cr.rawCode;
+				r.paramResult.status      = cr.status.c_str();
+				r.paramResult.headVersion = cr.headVersion;
+				r.paramResult.message     = cr.message.c_str();
+			}
+			else
+			{
+				r.chunkResult.applied     = cr.applied;
+				r.chunkResult.retriable   = cr.retriable;
+				r.chunkResult.rawCode     = cr.rawCode;
+				r.chunkResult.status      = cr.status.c_str();
+				r.chunkResult.headVersion = cr.headVersion;
+				r.chunkResult.message     = cr.message.c_str();
+				r.chunkResult.name        = cr.chunkName.c_str();
+				r.chunkResult.kind        = cr.chunkKeyword.c_str();
+			}
+			r.message = cr.message.c_str();
 			return r;
 		}
 
