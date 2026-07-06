@@ -659,26 +659,43 @@ void SceneEditController::StopInteractive()
 
 void SceneEditController::Stop()
 {
-	// Model-B F2 slice S4 fix round 4: the interactive-loop half now
-	// lives in StopInteractive() (see its header doc) so a platform
-	// shell that only wants to pause the viewport ahead of a production
-	// render can do so WITHOUT permanently retiring the agent-render
-	// worker below.  Full Stop() still does both, in the same order the
-	// monolithic version used to -- interactive loop first, then the
-	// agent worker -- so this is a behavior-preserving split for every
-	// existing Stop() caller (in particular the destructor).
-	StopInteractive();
-
+	// Model-B F2 slice S4 fix round 5: THE ORDER BELOW IS LOAD-BEARING --
+	// agent-worker retirement MUST run to completion BEFORE
+	// StopInteractive()'s interactive teardown, not after.
+	//
+	// Fix round 4 put StopInteractive() first and the agent-worker
+	// retirement second, on the (incorrect) claim that this preserved
+	// the pre-split monolithic order.  It did not: the monolithic Stop()
+	// always retired the agent worker FIRST (stop flag -> notifies ->
+	// CancelAgentRender_ -> join) and only THEN did the interactive
+	// teardown (cancel + mMutex notify + join mRenderThread).  With
+	// StopInteractive() first, its RequestCancel() (which shares
+	// mCancelProgress with the agent path) can abort the slot's
+	// occupying render early, freeing the slot, BEFORE mAgentRenderStop
+	// is set -- so a SubmitAgentRenderSync caller already queued on the
+	// fairness ticket can see "slot free && my turn" go true and proceed
+	// to run a FULL render during teardown instead of observing the stop
+	// flag and refusing honestly.  This was caught by
+	// RunQueuedSyncWaiterUnblocksOnStopTest (test (h) in
+	// tests/AgentRenderAsyncTest.cpp): with the round-4 order, the
+	// queued waiter's eventual result was a stray success instead of the
+	// expected honest refusal, deterministically (3/3 on a quiet
+	// machine).  Restoring "agent worker first, then StopInteractive()"
+	// makes the queued waiter observe mAgentRenderStop before the
+	// interactive cancel can ever free the slot it's waiting on, exactly
+	// as the original monolithic Stop() guaranteed.
+	//
 	// Model-B F2 slice S2a: the agent-render worker is INDEPENDENT of
 	// mRunning/the interactive loop's Start()/Stop() lifecycle (it is
 	// spawned unconditionally in the ctor -- see that comment), so its
-	// teardown must NOT be gated behind the mRunning CAS above, or a
-	// caller that never called Start() (headless-controller agent-only
-	// use) would leak the joinable thread past ~SceneEditController's
-	// Stop() call.  Guarded instead by mAgentRenderThread.joinable(),
-	// which is false after the first Stop() -- so a second Stop() call
-	// (or the dtor's unconditional Stop()) is a correct no-op here too,
-	// same idempotency shape as the mRenderThread teardown above.
+	// teardown must NOT be gated behind StopInteractive()'s mRunning CAS,
+	// or a caller that never called Start() (headless-controller
+	// agent-only use) would leak the joinable thread past
+	// ~SceneEditController's Stop() call.  Guarded instead by
+	// mAgentRenderThread.joinable(), which is false after the first
+	// Stop() -- so a second Stop() call (or the dtor's unconditional
+	// Stop()) is a correct no-op here too, same idempotency shape as the
+	// mRenderThread teardown inside StopInteractive().
 	// Same lost-wakeup discipline as the interactive-loop teardown:
 	// trip the stop flag, hold the lock the WORKER ACTUALLY WAITS ON
 	// around the notify so a worker between its predicate check and the
@@ -703,17 +720,20 @@ void SceneEditController::Stop()
 	mAgentRenderCV.notify_all();
 	// Fix-round-1 P2-C: cancel an IN-FLIGHT agent render so Stop() does
 	// not stall for the render's full natural duration -- mirrors the
-	// interactive loop's own "trip cancel before joining" idiom just
-	// below.  Harmless no-op if no agent render is in flight (or if the
-	// worker hasn't installed the progress hook this cancels -- see
-	// CancelAgentRender_'s doc).
+	// interactive loop's own "trip cancel before joining" idiom in
+	// StopInteractive() below.  Harmless no-op if no agent render is in
+	// flight (or if the worker hasn't installed the progress hook this
+	// cancels -- see CancelAgentRender_'s doc).
 	CancelAgentRender_();
 	// Fix-round-1 P1-1: also wake any SubmitAgentRenderSync callers
 	// currently queued on the fairness ticket (mAgentRenderDoneCV) --
 	// their wait predicate now ALSO checks mAgentRenderStop (see
 	// SubmitAgentRenderSync), so this notify lets a sync waiter that was
 	// queued before Stop() unblock with an honest refusal instead of
-	// waiting out its full timeoutMs.
+	// waiting out its full timeoutMs.  Because this runs BEFORE
+	// StopInteractive() below, the waiter observes mAgentRenderStop no
+	// later than it observes the slot freeing up -- see the load-bearing
+	// order note at the top of this function.
 	{
 		std::lock_guard<std::mutex> slotLk( mAgentRenderSlotMutex );
 	}
@@ -722,6 +742,16 @@ void SceneEditController::Stop()
 	{
 		mAgentRenderThread.join();
 	}
+
+	// Model-B F2 slice S4 fix round 4: the interactive-loop half lives in
+	// StopInteractive() (see its header doc) so a platform shell that
+	// only wants to pause the viewport ahead of a production render can
+	// do so WITHOUT permanently retiring the agent-render worker above.
+	// Full Stop() does both, agent worker FIRST as established above,
+	// THEN the interactive teardown -- see the load-bearing order note
+	// at the top of this function for why the order (not just the union
+	// of the two teardowns) matters.
+	StopInteractive();
 }
 
 bool SceneEditController::IsRunning() const

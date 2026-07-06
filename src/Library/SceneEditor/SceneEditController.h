@@ -1016,8 +1016,23 @@ namespace RISE
 		//! is correct there because the controller itself is going away.
 		//! It is very likely NOT what a platform shell wants to call
 		//! merely to pause the interactive viewport ahead of a production
-		//! render -- see StopInteractive() above for that case.  Calls
-		//! StopInteractive() first, then tears down the agent worker.
+		//! render -- see StopInteractive() above for that case.
+		//!
+		//! ORDER IS LOAD-BEARING: retires the agent worker (stop flag ->
+		//! notifies -> cancel -> join) FIRST, and only THEN calls
+		//! StopInteractive() for the interactive-loop tail.  A queued
+		//! SubmitAgentRenderSync caller's wait predicate checks both
+		//! "slot free" and "my turn" -- if the interactive cancel ran
+		//! first, it could free the occupying render's slot (shared
+		//! mCancelProgress) before mAgentRenderStop is observably set,
+		//! letting the queued waiter's predicate go true and run a full
+		//! render during teardown instead of refusing.  Retiring the
+		//! agent worker first guarantees the stop flag is set (and
+		//! waiters woken to re-check it) before the interactive teardown
+		//! can free anyone's slot.  See
+		//! RunQueuedSyncWaiterUnblocksOnStopTest (test (h) in
+		//! tests/AgentRenderAsyncTest.cpp), which fails deterministically
+		//! under the reversed order.
 		void Stop();
 
 		bool IsRunning() const;
