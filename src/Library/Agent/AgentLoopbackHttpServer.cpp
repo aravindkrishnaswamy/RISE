@@ -342,18 +342,25 @@ namespace
 	//! Length handling: if the lengths differ, this still walks the
 	//! SHORTER length's worth of bytes (comparing `a` against itself is
 	//! not an option -- there is nothing to compare a length mismatch
-	//! against without reading past one buffer's end) and then folds the
-	//! length difference into `diff` too, so a length mismatch is treated
-	//! as "differs" without an early return. The tiny remaining leak --
-	//! whether the two lengths are EQUAL at all -- is not a practical
-	//! concern for a fixed-length (64 hex char) token compared against an
-	//! attacker-controlled header value of arbitrary length: the length
-	//! check happens once per request, not once per byte, so it cannot be
-	//! used to binary-search individual token BYTES the way a byte-wise
-	//! early return could. This is the standard constant-time-compare
-	//! idiom (matches libsodium's sodium_memcmp / OpenSSL's
-	//! CRYPTO_memcmp shape); documented here rather than silently trusted
-	//! per this slice's requirement to spell out the exact guarantee.
+	//! against without reading past one buffer's end) and then folds
+	//! `(lenA != lenB)` into `diff` too, so a length mismatch is treated
+	//! as "differs" without an early return. That fold is a branch on
+	//! LENGTH, never on byte CONTENT -- length is not the secret here:
+	//! the token is a fixed 64 hex chars and an attacker already knows
+	//! that from this very file/the startup banner's format, so which
+	//! length bucket a guess falls into leaks nothing about the token's
+	//! BYTES. (An earlier version of this fold packed `lenA ^ lenB`'s low
+	//! 16 bits into `diff` instead of a plain `!=` -- correct for the
+	//! lengths this server ever actually sees today since colliding on a
+	//! multiple of 65536 requires a length past kMaxHeaderBytes, which
+	//! 431s before this function is even reached, but WRONG in general:
+	//! two lengths exactly 65536 apart XOR to a value whose low 16 bits
+	//! are zero, folding away to "equal" for the length check. `!=`
+	//! yields a plain 0/1 with no such blind spot, for any lengths,
+	//! forever.) This is the standard constant-time-compare idiom
+	//! (matches libsodium's sodium_memcmp / OpenSSL's CRYPTO_memcmp
+	//! shape); documented here rather than silently trusted per this
+	//! slice's requirement to spell out the exact guarantee.
 	bool ConstantTimeEquals( const std::string& a, const std::string& b )
 	{
 		const std::size_t lenA = a.size();
@@ -365,10 +372,10 @@ namespace
 			diff |= static_cast<unsigned char>( a[i] ) ^ static_cast<unsigned char>( b[i] );
 		}
 		// Fold the length difference in too (still no early return, no
-		// branch on a per-byte comparison result -- just an OR of a
-		// nonzero-iff-unequal value computed from the two lengths).
-		diff |= static_cast<unsigned char>( ( lenA ^ lenB ) & 0xFF );
-		diff |= static_cast<unsigned char>( ( ( lenA ^ lenB ) >> 8 ) & 0xFF );
+		// branch on a per-byte comparison result -- see the doc comment
+		// above for why a length-only `!=` is sound here for ANY pair of
+		// lengths, not just ones within kMaxHeaderBytes of each other).
+		diff |= static_cast<unsigned char>( lenA != lenB );
 
 		return diff == 0;
 	}
@@ -435,13 +442,53 @@ namespace
 	//! IP) -- so accepting only the literal loopback names here rejects
 	//! the rebind even though the TCP connection itself did land on
 	//! 127.0.0.1.
+	//!
+	//! Host-label parsing: a bracketed IPv6 literal `[::1]:port` puts its
+	//! own colons INSIDE the brackets, so "strip everything from the
+	//! first colon" truncates it to a single `[` -- wrong. Handle the
+	//! bracketed form explicitly (find the closing `]`, the port -- if
+	//! any -- starts after a colon immediately following it); otherwise
+	//! this is the bare `host[:port]` form, where a SINGLE colon (if any)
+	//! separates host from port (a bare, unbracketed `::1` has embedded
+	//! colons too -- see the dedicated bare-`::1` check below, which
+	//! matches the label before deciding "everything after the first
+	//! colon must be a port").
+	//!
+	//! Bind() only ever opens an AF_INET (IPv4) listener -- there is no
+	//! IPv6 listen path in this server today -- so a Host of `[::1]` or
+	//! `::1` can never actually be this same connection's own address;
+	//! this branch is defensive/future-proofing for if an IPv6 listener
+	//! is ever added, not a live path.
+	//!
+	//! "localhost" is matched case-INSENSITIVELY (RFC 7230 host names
+	//! are case-insensitive; `Host: Localhost` / `LOCALHOST` are
+	//! legitimate loopback references, not a spoof) via EqualsIgnoreCase,
+	//! the same helper used for header names and the Bearer scheme.
+	//! "127.0.0.1" and the IPv6 literal forms are digits/colons only, so
+	//! case does not apply to them.
 	bool IsLoopbackHost( const std::string& host )
 	{
 		std::string hostOnly = host;
+
+		if( !hostOnly.empty() && hostOnly[0] == '[' ) {
+			// Bracketed literal: "[<addr>]" optionally followed by ":<port>".
+			const std::size_t closeBracket = hostOnly.find( ']' );
+			if( closeBracket == std::string::npos ) return false;   // malformed -- no closing bracket
+			hostOnly = hostOnly.substr( 1, closeBracket - 1 );       // the address between the brackets
+			return hostOnly == "::1";
+		}
+
+		// Bare form. A bare IPv6 "::1" contains colons that are NOT a
+		// port separator, so check for it (exactly, no port possible in
+		// unbracketed form -- RFC 3986 requires brackets around an IPv6
+		// host precisely to make a trailing ":port" unambiguous) before
+		// assuming a colon means "host:port".
+		if( hostOnly == "::1" ) return true;
+
 		const std::size_t colon = hostOnly.find( ':' );
 		if( colon != std::string::npos ) hostOnly = hostOnly.substr( 0, colon );
 
-		return hostOnly == "127.0.0.1" || hostOnly == "localhost" || hostOnly == "[::1]" || hostOnly == "::1";
+		return hostOnly == "127.0.0.1" || EqualsIgnoreCase( hostOnly, "localhost" );
 	}
 
 	//! True iff `origin` (the value of an Origin header, e.g.
@@ -470,6 +517,11 @@ namespace
 		const std::string hostAndPort = origin.substr( schemeEnd + 3 );
 		return IsLoopbackHost( hostAndPort );
 	}
+}
+
+bool AgentLoopbackHttpServer::ForTest_ConstantTimeEquals( const std::string& a, const std::string& b )
+{
+	return ConstantTimeEquals( a, b );
 }
 
 AgentLoopbackHttpServer::AgentLoopbackHttpServer( AgentMcpAdapter* adapter, const std::string& path )

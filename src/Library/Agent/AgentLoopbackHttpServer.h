@@ -125,6 +125,21 @@ namespace RISE
 			//! the file log.
 			const std::string& ForTest_Token() const { return mBearerToken; }
 
+			//! Test-only forwarder to the anonymous-namespace-private
+			//! ConstantTimeEquals() in the .cpp (see its doc comment there
+			//! for the full constant-time-compare contract). Exposed as a
+			//! static class member -- rather than making the free function
+			//! itself non-anonymous-namespace -- so production code still
+			//! has exactly zero callers outside this translation unit; this
+			//! is purely a seam for AgentLoopbackHttpTest.cpp to unit-test
+			//! the length-fold behaviour directly (e.g. two lengths an
+			//! exact multiple of 65536 apart), which end-to-end HTTP
+			//! requests through this server cannot exercise (a request
+			//! carrying a header/body anywhere near that size is already
+			//! rejected by the 64 KiB / 8 MiB caps before reaching the
+			//! token comparison).
+			static bool ForTest_ConstantTimeEquals( const std::string& a, const std::string& b );
+
 			//! Bind + listen on 127.0.0.1:`port` (INADDR_LOOPBACK explicitly
 			//! -- NEVER INADDR_ANY/0.0.0.0; see AgentLoopbackHttpServer.cpp
 			//! for the loopback-bind proof this guards).  `port` == 0 asks

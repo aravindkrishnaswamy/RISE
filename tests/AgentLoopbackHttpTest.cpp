@@ -85,7 +85,28 @@
 //        byte-at-various-positions cases in (j) -- equal compares true;
 //        differing at the first byte, the last byte, or by length all
 //        compare false; see the doc comment on ConstantTimeEquals itself
-//        in the .cpp for why it does not short-circuit).
+//        in the .cpp for why it does not short-circuit) PLUS a DIRECT unit
+//        check via the ForTest_ConstantTimeEquals() seam
+//        [SLICE 4 HARDENING] added specifically for the 65536-length-fold
+//        regression below (o).
+//    (o) [SLICE 4 HARDENING] IsLoopbackHost case-insensitivity + IPv6-
+//        bracket parsing: `Host: Localhost` / `Host: LOCALHOST` -> 200
+//        (RED-PROVE: pre-fix, the case-sensitive `== "localhost"` compare
+//        403'd these); `Host: 127.0.0.1.evil.com` still -> 403 (regression
+//        guard -- proves the fix didn't loosen this into a suffix/prefix
+//        match); `Origin: http://LOCALHOST:<port>` -> 200 (the Origin path
+//        delegates host-parsing to the same fixed function).
+//    (p) [SLICE 4 HARDENING] ConstantTimeEquals length-fold: a direct unit
+//        check (via ForTest_ConstantTimeEquals(), a test-only forwarder --
+//        see the .h) that two strings whose lengths differ by an EXACT
+//        multiple of 65536 (64 vs 65600) compare UNEQUAL. RED-PROVE:
+//        pre-fix, the length fold packed only the low 16 bits of
+//        `lenA ^ lenB`, which are all zero for a 65536 stride, so this
+//        exact pair folded to "equal" -- unreachable via a live HTTP
+//        request today (65600 > kMaxHeaderBytes, so a real request that
+//        long 431s before reaching the token compare) but a landmine
+//        against a future header-cap increase; this unit test exercises
+//        the helper directly, independent of that cap.
 //
 //  POSIX-only (BSD sockets, pthread via std::thread). On Windows the
 //  whole body compiles to a trivial pass (matches every other
@@ -860,6 +881,82 @@ int main()
 		extra.authorization = "Bearer " + g_testToken;
 		HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( 222 ), extra );
 		Check( r.ok && r.status == 200, "Host: localhost is accepted" );
+	}
+
+	//------------------------------------------------------------------
+	// (o) [SLICE 4 HARDENING] IsLoopbackHost case-insensitivity + the
+	// suffix-reject regression guard (P2/P3-2).
+	//------------------------------------------------------------------
+	std::printf( "[host-case] Host header naming loopback in mixed/upper case is accepted\n" );
+	{
+		// RED-PROVE: before the EqualsIgnoreCase fix, `hostOnly == "localhost"`
+		// was a case-SENSITIVE compare, so this 403'd.
+		ExtraHeaders extra;
+		extra.host = "Localhost";
+		extra.hasAuthorization = true;
+		extra.authorization = "Bearer " + g_testToken;
+		HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( 230 ), extra );
+		Check( r.ok && r.status == 200, "Host: Localhost (mixed case) is accepted" );
+	}
+	{
+		ExtraHeaders extra;
+		extra.host = "LOCALHOST";
+		extra.hasAuthorization = true;
+		extra.authorization = "Bearer " + g_testToken;
+		HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( 231 ), extra );
+		Check( r.ok && r.status == 200, "Host: LOCALHOST (all caps) is accepted" );
+	}
+	{
+		// Regression guard: the case-insensitivity fix must NOT loosen the
+		// match into a suffix/prefix check -- a hostile domain that merely
+		// CONTAINS "127.0.0.1" as a substring/prefix is still rejected.
+		ExtraHeaders extra;
+		extra.host = "127.0.0.1.evil.com";
+		extra.hasAuthorization = true;
+		extra.authorization = "Bearer " + g_testToken;
+		HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( 232 ), extra );
+		Check( r.ok && r.status == 403,
+		       "Host: 127.0.0.1.evil.com is still rejected (no suffix-match regression)" );
+	}
+	std::printf( "[origin-case] Origin header naming loopback in upper case is accepted\n" );
+	{
+		// The Origin path delegates host-parsing to the same IsLoopbackHost,
+		// so the case-insensitivity fix must flow through here too.
+		ExtraHeaders extra;
+		extra.hasAuthorization = true;
+		extra.authorization = "Bearer " + g_testToken;
+		extra.hasOrigin = true;
+		extra.origin = "http://LOCALHOST:" + std::to_string( port );
+		HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( 233 ), extra );
+		Check( r.ok && r.status == 200, "Origin: http://LOCALHOST:<port> (upper case) is accepted" );
+	}
+
+	//------------------------------------------------------------------
+	// (p) [SLICE 4 HARDENING] ConstantTimeEquals length-fold (P3-1) --
+	// direct unit check via the ForTest_ConstantTimeEquals() seam.
+	//------------------------------------------------------------------
+	std::printf( "[constant-time] length fold does not alias at a 65536-multiple stride\n" );
+	{
+		// RED-PROVE: the pre-fix fold packed only the low 16 bits of
+		// (lenA ^ lenB) into `diff`; 65600 - 64 == 65536, whose low 16 bits
+		// are all zero, so the pre-fix version returned true (wrongly
+		// "equal") for this exact pair. The fixed `lenA != lenB` fold
+		// returns false for ANY differing length, this stride included.
+		const std::string shortStr( 64, 'a' );
+		const std::string longStr( 65600, 'a' );
+		Check( !AgentLoopbackHttpServer::ForTest_ConstantTimeEquals( shortStr, longStr ),
+		       "ConstantTimeEquals(64 bytes, 65600 bytes) -> false (65536-multiple length-fold fix)" );
+		Check( !AgentLoopbackHttpServer::ForTest_ConstantTimeEquals( longStr, shortStr ),
+		       "ConstantTimeEquals(65600 bytes, 64 bytes) -> false (argument order doesn't matter)" );
+		// Sanity: equal-length equal-content still compares true, and
+		// equal-length differing-content still compares false -- the fold
+		// fix must not have broken the ordinary cases.
+		Check( AgentLoopbackHttpServer::ForTest_ConstantTimeEquals( shortStr, shortStr ),
+		       "ConstantTimeEquals(same string, same string) -> true" );
+		std::string shortStrDiff = shortStr;
+		shortStrDiff[0] = 'b';
+		Check( !AgentLoopbackHttpServer::ForTest_ConstantTimeEquals( shortStr, shortStrDiff ),
+		       "ConstantTimeEquals(same length, differs at byte 0) -> false" );
 	}
 
 	//------------------------------------------------------------------
