@@ -153,6 +153,68 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
+	// ping -- MCP spec: the server MUST respond with an empty object
+	// result.  RED-PROVE: this fails without the handler (falls through to
+	// the -32601 method-not-found fallback instead of a success envelope).
+	//----------------------------------------------------------------------
+	std::printf( "[ping] MUST respond with an empty object result\n" );
+	{
+		const std::string resp = mcp.HandleLine( Req( 4, "ping", JsonValue::MakeObject() ) );
+		JsonValue env = ParseResponse( resp, 4 );
+		Check( !env.has( "error" ), "ping is a JSON-RPC success (not -32601 method-not-found)" );
+		Check( env.has( "result" ), "ping response has a result field" );
+		const JsonValue& result = env.get( "result" );
+		Check( result.isObject(), "ping result is a JSON object" );
+		Check( result.members().size() == 0, "ping result is EMPTY ({}), per the MCP spec" );
+	}
+
+	//----------------------------------------------------------------------
+	// id:null -- a PRESENT-but-null `id` is a REQUEST (must be answered,
+	// with `id` echoed back as null), NOT a notification.  This is the one
+	// place a plausible future "fix" (treating any falsy/absent id as a
+	// notification) would silently break the JSON-RPC/MCP spec: the
+	// notification test above keys strictly on the ABSENCE of the `id`
+	// field, and this test proves id:null is different from id-absent.
+	//----------------------------------------------------------------------
+	std::printf( "[id:null] a present-but-null id is a REQUEST, not a notification\n" );
+	{
+		JsonValue req = JsonValue::MakeObject();
+		req.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+		req.set( "id", JsonValue::MakeNull() );
+		req.set( "method", JsonValue::MakeString( "tools/list" ) );
+		req.set( "params", JsonValue::MakeObject() );
+		const std::string resp = mcp.HandleLine( JsonSerialize( req ) );
+		Check( !resp.empty(), "id:null tools/list gets a REAL response line (not silently dropped like a notification)" );
+
+		JsonValue env; std::string perr;
+		Check( JsonParse( resp, env, perr ), "id:null response parses as JSON" );
+		Check( env.isObject(), "id:null response is a JSON object" );
+		Check( env.get( "jsonrpc" ).asString() == "2.0", "id:null response carries jsonrpc==2.0" );
+		Check( env.has( "id" ), "id:null response HAS an id field" );
+		Check( env.get( "id" ).isNull(), "id:null response echoes id back as null (not omitted, not a fabricated number)" );
+		Check( !env.has( "error" ), "id:null tools/list is a JSON-RPC success" );
+		Check( env.get( "result" ).get( "tools" ).size() == 12, "id:null tools/list result carries all 12 tools" );
+	}
+	{
+		// Same id:null contract for `ping`, cross-checking both fixes
+		// together: the response is a full envelope (not dropped), the id
+		// is echoed as null, and the result is the mandated empty object.
+		JsonValue req = JsonValue::MakeObject();
+		req.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+		req.set( "id", JsonValue::MakeNull() );
+		req.set( "method", JsonValue::MakeString( "ping" ) );
+		const std::string resp = mcp.HandleLine( JsonSerialize( req ) );
+		Check( !resp.empty(), "id:null ping gets a REAL response line" );
+
+		JsonValue env; std::string perr;
+		Check( JsonParse( resp, env, perr ), "id:null ping response parses as JSON" );
+		Check( env.has( "id" ) && env.get( "id" ).isNull(), "id:null ping response echoes id back as null" );
+		Check( !env.has( "error" ), "id:null ping is a JSON-RPC success" );
+		Check( env.get( "result" ).isObject() && env.get( "result" ).members().size() == 0,
+		       "id:null ping result is the empty object" );
+	}
+
+	//----------------------------------------------------------------------
 	// notifications/initialized -- RED-PROVE: must be SILENT (empty
 	// response), which the harness distinguishes from "responds with
 	// something".  A naive always-respond implementation would return a

@@ -17,6 +17,10 @@
 //                                         doc for why this differs from
 //                                         AgentRpcDispatcher's respond-to-
 //                                         everything convention)
+//      MCP `ping`                    -> liveness check; MCP spec mandates
+//                                        the server respond with an empty
+//                                        object result ({}), handled here
+//                                        directly (no dispatch).
 //      MCP `tools/list`              -> the 12 verbs, each as an MCP Tool
 //                                        {name, description, inputSchema}
 //      MCP `tools/call {name,args}`  -> builds an internal JSON-RPC

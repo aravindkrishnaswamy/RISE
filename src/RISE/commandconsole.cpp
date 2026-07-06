@@ -428,6 +428,9 @@ int main( int argc, char** argv )
 	if( cliArgError ) {
 		return 1;	// Fail fast — don't render with a malformed override.
 	}
+	if( cliMcp && !cliAgentStdio ) {
+		std::cerr << "WARNING: --mcp requires --agent-stdio; ignoring.\n";
+	}
 
 	// Facet 5 slice 0c: `--agent-stdio` replaces the interactive `render`/
 	// `quit` console with a JSON-RPC 2.0 read-eval-print loop over stdin/

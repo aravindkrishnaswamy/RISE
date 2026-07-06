@@ -567,6 +567,15 @@ namespace RISE
 				}
 
 				//----------------------------------------------------------
+				// ping -> MCP spec: the server MUST respond with an empty
+				// object result (no capability/session semantics attached;
+				// a bare liveness check).
+				//----------------------------------------------------------
+				if( m == "ping" ) {
+					return MakeSuccess( idValue, JsonValue::MakeObject() );
+				}
+
+				//----------------------------------------------------------
 				// tools/list -> the 12 verbs as MCP tools.
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
