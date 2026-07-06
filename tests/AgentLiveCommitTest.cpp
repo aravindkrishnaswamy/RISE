@@ -4132,6 +4132,206 @@ static void TestExternalStageBaseVersionCoherentUnderConcurrency()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 40 (Secure-MCP slice 5b): the WIRE round-trip for list_proposals /
+// resolve_proposal -- Test 33 (TestProposalStagingBasics) proved the C++
+// AgentSession::ListProposals/ResolveProposal core end to end; this test
+// proves the SAME state machine over raw JSON-RPC lines through
+// AgentRpcDispatcher::HandleLine, mirroring Test 8's "live dispatcher path"
+// pattern but with TWO dispatchers (an Owner one and an External one) over
+// the SAME live Job + controller -- exactly the external-proposes/owner-
+// approves topology a real GUI-hosted loopback server + external MCP
+// client would realize.
+//
+//   (a) an EXTERNAL dispatcher's wire propose_patch -> {applied:false,
+//       status:"staged"} -- the document is unchanged.
+//   (b) the OWNER dispatcher's wire list_proposals -> the one pending entry,
+//       with the real field shapes (kind, target, param, value, status).
+//   (c) the OWNER dispatcher's wire resolve_proposal{approve:true} ->
+//       {resolved:true, status:"applied"} and the live scene actually moved.
+//   (d) the EXTERNAL dispatcher calling wire resolve_proposal on a fresh
+//       stage -> {resolved:false} (Owner-only, refused at the SESSION layer
+//       -- this External dispatcher runs at AgentAutonomy::Commit, so the
+//       call REACHES AgentSession, which is what proves the session-layer
+//       gate independent of the wire-autonomy gate Test (g) in
+//       AgentAutonomyPolicyTest.cpp proves separately).
+//////////////////////////////////////////////////////////////////////
+static void TestProposalWireRoundTrip()
+{
+	std::cout << "Test 40: proposal wire round-trip (list_proposals/resolve_proposal over JSON-RPC)..." << std::endl;
+
+	const char* tmp = "agentlive_proposal_wire.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		// Owner dispatcher: Owner-authority session, Commit autonomy (the
+		// in-process GUI shape -- unaffected by this slice).
+		std::unique_ptr<Agent::AgentSession> ownerSess =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		Check( ownerSess != nullptr, "owner session wraps the live Job" );
+		if( ownerSess ) ownerSess->AttachController( &c );
+		Agent::AgentRpcDispatcher ownerDisp( std::move( ownerSess ), Agent::AgentAutonomy::Commit );
+
+		// External dispatcher: External-authority session, Commit autonomy
+		// AT THE WIRE LAYER -- deliberately NOT Propose here, so that
+		// propose_patch/resolve_proposal REACH AgentSession unconditionally
+		// and this test isolates the SESSION-layer (authority) gating from
+		// the wire-layer (autonomy) gating Test (g) in
+		// AgentAutonomyPolicyTest.cpp already covers. A real external wire
+		// client is constructed at Propose autonomy (see commandconsole.cpp's
+		// AuthorityForAutonomy) -- both gates independently refuse
+		// resolve_proposal for it either way (see (d) below).
+		std::unique_ptr<Agent::AgentSession> extSess =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		Check( extSess != nullptr, "external session wraps the live Job" );
+		if( extSess ) extSess->AttachController( &c );
+		Agent::AgentRpcDispatcher extDisp( std::move( extSess ), Agent::AgentAutonomy::Commit );
+
+		//------------------------------------------------------------------
+		// (a) EXTERNAL wire propose_patch -> staged, document unchanged.
+		//------------------------------------------------------------------
+		const double before = LumR( *pJob );
+		const std::string proposeResp = extDisp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"propose_patch\",\"params\":"
+			"{\"target\":\"lum\",\"kind\":\"lambertian_luminaire_material\",\"param\":\"scale\",\"value\":\"6.5\"}}" );
+		Agent::JsonValue proposeResult;
+		Check( JsonResultObj( proposeResp, proposeResult ), "wire propose_patch (External) returns a JSON-RPC result object" );
+		const Agent::JsonValue* applied = proposeResult.find( "applied" );
+		Check( applied && applied->isBool() && !applied->asBool(), "wire propose_patch (External) reports applied=false" );
+		const Agent::JsonValue* status = proposeResult.find( "status" );
+		Check( status && status->isString() && status->asString() == "staged",
+		       "wire propose_patch (External) reports status=\"staged\"" );
+		Check( LumR( *pJob ) == before, "RED-PROVE: the document is UNCHANGED after the wire-staged propose_patch" );
+
+		//------------------------------------------------------------------
+		// (b) OWNER wire list_proposals -> the one pending entry, real shape.
+		//------------------------------------------------------------------
+		const std::string listResp = ownerDisp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"list_proposals\",\"params\":{}}" );
+		Agent::JsonValue listResult;
+		Check( JsonResultObj( listResp, listResult ), "wire list_proposals (Owner) returns a JSON-RPC result object" );
+		const Agent::JsonValue* proposalsArr = listResult.find( "proposals" );
+		Check( proposalsArr && proposalsArr->isArray() && proposalsArr->size() == 1,
+		       "wire list_proposals (Owner) shows exactly the one staged proposal" );
+		std::uint64_t proposalId = 0;
+		if( proposalsArr && proposalsArr->isArray() && proposalsArr->size() == 1 ) {
+			const Agent::JsonValue& entry = proposalsArr->at( 0 );
+			const Agent::JsonValue* kind   = entry.find( "kind" );
+			const Agent::JsonValue* target = entry.find( "target" );
+			const Agent::JsonValue* param  = entry.find( "param" );
+			const Agent::JsonValue* value  = entry.find( "value" );
+			const Agent::JsonValue* pstat  = entry.find( "status" );
+			const Agent::JsonValue* pid    = entry.find( "id" );
+			Check( kind && kind->isString() && kind->asString() == "param_edit", "listed proposal kind==\"param_edit\"" );
+			Check( target && target->isString() && target->asString() == "lum", "listed proposal echoes target==\"lum\"" );
+			Check( param && param->isString() && param->asString() == "scale", "listed proposal echoes param==\"scale\"" );
+			Check( value && value->isString() && value->asString() == "6.5", "listed proposal echoes value==\"6.5\"" );
+			Check( pstat && pstat->isString() && pstat->asString() == "pending", "listed proposal status==\"pending\"" );
+			Check( pid && pid->isNumber() && pid->asNumber() != 0.0, "listed proposal carries a non-zero id" );
+			if( pid ) proposalId = static_cast<std::uint64_t>( pid->asNumber() );
+		}
+		Check( proposalId != 0, "captured a real proposal id from the wire listing" );
+
+		//------------------------------------------------------------------
+		// (c) OWNER wire resolve_proposal{approve:true} -> applied; the live
+		// scene actually moved.
+		//------------------------------------------------------------------
+		char resolveLine[256];
+		std::snprintf( resolveLine, sizeof( resolveLine ),
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"resolve_proposal\",\"params\":"
+			"{\"proposalId\":%llu,\"approve\":true}}",
+			static_cast<unsigned long long>( proposalId ) );
+		const std::string resolveResp = ownerDisp.HandleLine( resolveLine );
+		Agent::JsonValue resolveResult;
+		Check( JsonResultObj( resolveResp, resolveResult ), "wire resolve_proposal (Owner, approve) returns a JSON-RPC result object" );
+		const Agent::JsonValue* resolved = resolveResult.find( "resolved" );
+		Check( resolved && resolved->isBool() && resolved->asBool(), "wire resolve_proposal (Owner, approve) reports resolved=true" );
+		const Agent::JsonValue* rstatus = resolveResult.find( "status" );
+		Check( rstatus && rstatus->isString() && rstatus->asString() == "applied",
+		       "wire resolve_proposal (Owner, approve) reports status=\"applied\"" );
+		const Agent::JsonValue* rhv = resolveResult.find( "headVersion" );
+		Check( rhv && rhv->isObject(), "wire resolve_proposal (Owner, approve) carries a headVersion object" );
+		if( rhv ) {
+			const Agent::JsonValue* u = rhv->find( "uuid" );
+			Check( u && u->isNumber() && u->asNumber() != 0.0,
+			       "wire resolve_proposal's headVersion carries a real (non-zero) uuid -- not the {0,0} refusal sentinel" );
+		}
+		const double afterApprove = LumR( *pJob );
+		Check( afterApprove > 6.0 && afterApprove < 7.0, "the approved proposal's edit reached the LIVE scene (~6.5)" );
+		Check( c.HasUnsavedChanges(), "the wire-approved proposal marked the editor dirty" );
+
+		//------------------------------------------------------------------
+		// (d) A fresh stage, then the EXTERNAL dispatcher tries to wire
+		// resolve_proposal it itself -> refused at the SESSION layer
+		// (resolved:false) even though this dispatcher's own autonomy is
+		// Commit (so the call reaches AgentSession unimpeded by the wire
+		// gate) -- isolating AgentSession::ResolveProposal's Owner-only
+		// check as the thing that actually refuses it.
+		//------------------------------------------------------------------
+		const std::string proposeResp2 = extDisp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"propose_patch\",\"params\":"
+			"{\"target\":\"lum\",\"kind\":\"lambertian_luminaire_material\",\"param\":\"scale\",\"value\":\"2.0\"}}" );
+		Agent::JsonValue proposeResult2;
+		Check( JsonResultObj( proposeResp2, proposeResult2 ), "second wire propose_patch (External) returns a result object" );
+		std::uint64_t secondId = 0;
+		{
+			const std::string listResp2 = ownerDisp.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"list_proposals\",\"params\":{}}" );
+			Agent::JsonValue listResult2;
+			Check( JsonResultObj( listResp2, listResult2 ), "second wire list_proposals (Owner) returns a result object" );
+			const Agent::JsonValue* arr2 = listResult2.find( "proposals" );
+			if( arr2 && arr2->isArray() ) {
+				for( std::size_t i = 0; i < arr2->size(); ++i ) {
+					const Agent::JsonValue& e = arr2->at( i );
+					const Agent::JsonValue* pstat = e.find( "status" );
+					const Agent::JsonValue* pid   = e.find( "id" );
+					if( pstat && pstat->isString() && pstat->asString() == "pending" && pid && pid->isNumber() )
+						secondId = static_cast<std::uint64_t>( pid->asNumber() );
+				}
+			}
+		}
+		Check( secondId != 0, "found the second pending proposal via the wire listing" );
+
+		char resolveLine2[256];
+		std::snprintf( resolveLine2, sizeof( resolveLine2 ),
+			"{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"resolve_proposal\",\"params\":"
+			"{\"proposalId\":%llu,\"approve\":true}}",
+			static_cast<unsigned long long>( secondId ) );
+		const double beforeExternalResolveAttempt = LumR( *pJob );
+		const std::string extResolveResp = extDisp.HandleLine( resolveLine2 );
+		Agent::JsonValue extResolveResult;
+		Check( JsonResultObj( extResolveResp, extResolveResult ), "External wire resolve_proposal returns a JSON-RPC result object (not a protocol error)" );
+		const Agent::JsonValue* extResolved = extResolveResult.find( "resolved" );
+		Check( extResolved && extResolved->isBool() && !extResolved->asBool(),
+		       "RED-PROVE: External wire resolve_proposal reports resolved=false (Owner-only, refused at the SESSION layer)" );
+		Check( LumR( *pJob ) == beforeExternalResolveAttempt,
+		       "RED-PROVE: the External resolve attempt left the document UNCHANGED (would move to ~2.0 if it had applied)" );
+
+		// The still-pending proposal can still be approved by the OWNER.
+		char resolveLine3[256];
+		std::snprintf( resolveLine3, sizeof( resolveLine3 ),
+			"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"resolve_proposal\",\"params\":"
+			"{\"proposalId\":%llu,\"approve\":false}}",
+			static_cast<unsigned long long>( secondId ) );
+		const std::string ownerRejectResp = ownerDisp.HandleLine( resolveLine3 );
+		Agent::JsonValue ownerRejectResult;
+		Check( JsonResultObj( ownerRejectResp, ownerRejectResult ), "owner wire resolve_proposal(reject) returns a result object" );
+		const Agent::JsonValue* ownerRejectResolved = ownerRejectResult.find( "resolved" );
+		Check( ownerRejectResolved && ownerRejectResolved->isBool() && ownerRejectResolved->asBool(),
+		       "the OWNER's wire resolve_proposal(reject) on the SAME proposal succeeds (resolved=true) -- the External attempt above was a clean no-op, not a state corruption" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -4178,6 +4378,7 @@ int main()
 	TestAuthorityMatrixRefusals();
 	TestChunkCrudStaging();
 	TestExternalStageBaseVersionCoherentUnderConcurrency();
+	TestProposalWireRoundTrip();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

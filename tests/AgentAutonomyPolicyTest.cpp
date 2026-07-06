@@ -57,6 +57,17 @@
 //        back to the default `read` posture nor silently swallows the
 //        next token as the scene path.
 //
+//    (g) Secure-MCP slice 5b: AgentAutonomy::Propose -- propose_patch is
+//        refused at the DISPATCHER under Read (kAutonomyRefused, never
+//        reaches AgentSession) but REACHES the session under Propose (a
+//        JSON-RPC success envelope, whatever AgentSession itself decides);
+//        list_proposals stays read-safe under all three postures (a
+//        headless session reports an empty array, not an error);
+//        resolve_proposal is refused at the dispatcher under BOTH Read and
+//        Propose (with autonomy-specific refusal data) and only reaches
+//        the session under Commit. The External-authority STAGE path
+//        itself (a live controller attached) is AgentProposalWireTest.
+//
 //////////////////////////////////////////////////////////////////////
 
 #include "../src/Library/Agent/AgentSession.h"
@@ -374,6 +385,157 @@ static void TestDenyByDefaultForUnclassifiedVerb()
 }
 
 //----------------------------------------------------------------------
+// Secure-MCP slice 5b: AgentAutonomy::Propose -- the wire posture reaches
+// AgentSession for the 3 mutating verbs (propose_patch/insert_chunk/
+// remove_chunk) rather than refusing them at the dispatcher choke point,
+// but list_proposals stays read-safe under EVERY posture and
+// resolve_proposal stays refused under BOTH Read and Propose (Commit-only).
+// This test drives a HEADLESS session (no controller attached) under all
+// three postures -- deliberately exercising the honest "External + no
+// controller -> refused" leaf from AgentSession::ProposePatch's own doc
+// (the same leaf RunAgentHttp's headless-CLI-propose limitation hits),
+// distinct from the wire-level GATE this test's job is to red-prove: a
+// propose_patch under Propose autonomy must actually REACH the session
+// (and get the SESSION's own refusal message, not the dispatcher's
+// kAutonomyRefused) -- versus under Read, where it never reaches the
+// session at all (kAutonomyRefused fires first). The staging-actually-
+// works path (a live controller attached) is AgentProposalWireTest.
+//----------------------------------------------------------------------
+static void TestProposePosture()
+{
+	std::printf( "--- (g) AgentAutonomy::Propose posture (Secure-MCP slice 5b) ---\n" );
+
+	const std::string scenePathRead    = WriteTemp( "rise_autonomy_propose_read.RISEscene", kScene );
+	const std::string scenePathPropose = WriteTemp( "rise_autonomy_propose_propose.RISEscene", kScene );
+	const std::string scenePathCommit  = WriteTemp( "rise_autonomy_propose_commit.RISEscene", kScene );
+	Check( !scenePathRead.empty() && !scenePathPropose.empty() && !scenePathCommit.empty(),
+	       "wrote all three propose-posture scenes" );
+
+	std::unique_ptr<AgentSession> sessionRead    = AgentSession::LoadFromFile( scenePathRead );
+	std::unique_ptr<AgentSession> sessionPropose = AgentSession::LoadFromFile( scenePathPropose );
+	std::unique_ptr<AgentSession> sessionCommit  = AgentSession::LoadFromFile( scenePathCommit );
+	Check( sessionRead != nullptr && sessionPropose != nullptr && sessionCommit != nullptr,
+	       "all three propose-posture sessions load" );
+	if( !sessionRead || !sessionPropose || !sessionCommit ) return;
+
+	AgentRpcDispatcher rpcRead(    std::move( sessionRead ),    AgentAutonomy::Read );
+	AgentRpcDispatcher rpcPropose( std::move( sessionPropose ), AgentAutonomy::Propose );
+	AgentRpcDispatcher rpcCommit(  std::move( sessionCommit ),  AgentAutonomy::Commit );
+
+	auto proposeRadius = [&]( AgentRpcDispatcher& d, double id ) -> JsonValue {
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "target", JsonValue::MakeString( "sph" ) );
+		params.set( "param",  JsonValue::MakeString( "radius" ) );
+		params.set( "value",  JsonValue::MakeString( "0.3" ) );
+		const std::string resp = d.HandleLine( Req( id, "propose_patch", params ) );
+		return ParseResponse( resp, id );
+	};
+
+	// --- Under Read: propose_patch refused at the DISPATCHER (kAutonomyRefused). ---
+	{
+		JsonValue env = proposeRadius( rpcRead, 1 );
+		Check( env.has( "error" ), "propose_patch under Read is refused" );
+		Check( env.get( "error" ).get( "code" ).asNumber( 0 ) == -32011.0,
+		       "propose_patch under Read carries kAutonomyRefused (-32011) -- refused BEFORE reaching the session" );
+	}
+
+	// --- Under Propose: propose_patch REACHES the session (headless, no
+	// controller attached here) -- it is NOT the dispatcher's
+	// kAutonomyRefused; it is the SESSION's own honest headless refusal
+	// (AgentSession::ProposePatch's "External + NO controller -> REFUSED"
+	// leaf, reached via a plain Owner-authority AgentSession::LoadFromFile
+	// default in THIS test -- see the note below). ---
+	{
+		JsonValue env = proposeRadius( rpcPropose, 2 );
+		Check( !env.has( "error" ),
+		       "RED-PROVE: propose_patch under Propose is a JSON-RPC SUCCESS envelope (dispatched, not "
+		       "refused at the wire choke point) -- it reached AgentSession" );
+		const JsonValue& result = env.get( "result" );
+		// NOTE: AgentSession::LoadFromFile's default authority is Owner (this
+		// test constructs sessionPropose with the 1-arg LoadFromFile, matching
+		// every pre-5b call site) -- so under Propose autonomy alone, with an
+		// Owner-authority session, the edit actually APPLIES (Owner always
+		// commits directly, regardless of the wire's autonomy posture; see
+		// AgentRpc.h's file header for why these two knobs are chosen
+		// TOGETHER at a real construction site, e.g. commandconsole.cpp's
+		// AuthorityForAutonomy, which this unit test intentionally bypasses
+		// to isolate the DISPATCHER gate in isolation from the session's
+		// authority). The load-bearing proof here is that dispatch reached
+		// the session AT ALL under Propose (a real error would still be
+		// !env.has("error") since ProposePatch's result is a structured
+		// success payload either way) -- the External+controller STAGE path
+		// itself is proven by AgentProposalWireTest.
+		Check( result.get( "applied" ).asBool( false ) == true,
+		       "propose_patch under Propose + Owner-authority session applies (dispatch gate passed; "
+		       "authority is a SEPARATE knob -- see AgentProposalWireTest for the External+stage path)" );
+	}
+
+	// --- Under Commit: propose_patch applies (today's unrestricted behaviour). ---
+	{
+		JsonValue env = proposeRadius( rpcCommit, 3 );
+		Check( !env.has( "error" ), "propose_patch under Commit is a success" );
+		Check( env.get( "result" ).get( "applied" ).asBool( false ) == true,
+		       "propose_patch under Commit applies" );
+	}
+
+	// --- list_proposals is read-safe under EVERY posture (headless -> empty
+	// array, not an error, under all three). ---
+	{
+		const std::string respRead    = rpcRead.HandleLine(    Req( 4, "list_proposals", JsonValue::MakeObject() ) );
+		const std::string respPropose = rpcPropose.HandleLine( Req( 4, "list_proposals", JsonValue::MakeObject() ) );
+		const std::string respCommit  = rpcCommit.HandleLine(  Req( 4, "list_proposals", JsonValue::MakeObject() ) );
+		JsonValue envRead    = ParseResponse( respRead,    4 );
+		JsonValue envPropose = ParseResponse( respPropose, 4 );
+		JsonValue envCommit  = ParseResponse( respCommit,  4 );
+		Check( !envRead.has( "error" ),    "list_proposals works under Read" );
+		Check( !envPropose.has( "error" ), "list_proposals works under Propose" );
+		Check( !envCommit.has( "error" ),  "list_proposals works under Commit" );
+		Check( envRead.get( "result" ).get( "proposals" ).isArray() &&
+		       envRead.get( "result" ).get( "proposals" ).size() == 0,
+		       "list_proposals reports an EMPTY array for a headless (no-controller) session, not an error" );
+	}
+
+	// --- resolve_proposal is refused under BOTH Read and Propose (at the
+	// dispatcher), and reaches the session under Commit (where it then gets
+	// a clean "no such id" refusal from AgentSession -- there was never
+	// anything staged in this headless test). ---
+	{
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "proposalId", JsonValue::MakeNumber( 1.0 ) );
+		params.set( "approve",    JsonValue::MakeBool( true ) );
+
+		JsonValue envRead = ParseResponse(
+			rpcRead.HandleLine( Req( 5, "resolve_proposal", params ) ), 5 );
+		Check( envRead.has( "error" ), "resolve_proposal under Read is refused at the dispatcher" );
+		Check( envRead.get( "error" ).get( "code" ).asNumber( 0 ) == -32011.0,
+		       "resolve_proposal under Read carries kAutonomyRefused (-32011)" );
+
+		JsonValue envPropose = ParseResponse(
+			rpcPropose.HandleLine( Req( 5, "resolve_proposal", params ) ), 5 );
+		Check( envPropose.has( "error" ),
+		       "RED-PROVE: resolve_proposal under Propose is ALSO refused at the dispatcher "
+		       "(deliberately excluded from Propose's mutating-verb extension)" );
+		Check( envPropose.get( "error" ).get( "code" ).asNumber( 0 ) == -32011.0,
+		       "resolve_proposal under Propose carries kAutonomyRefused (-32011), the SAME code as Read" );
+		Check( envPropose.get( "error" ).get( "data" ).get( "autonomy" ).asString() == "propose",
+		       "resolve_proposal's Propose refusal names autonomy=\"propose\" (distinct from Read's "
+		       "own refusal, which names \"read\")" );
+
+		JsonValue envCommit = ParseResponse(
+			rpcCommit.HandleLine( Req( 5, "resolve_proposal", params ) ), 5 );
+		Check( !envCommit.has( "error" ),
+		       "resolve_proposal under Commit REACHES the session (not refused at the dispatcher)" );
+		Check( envCommit.get( "result" ).get( "resolved" ).asBool( true ) == false,
+		       "resolve_proposal under Commit, with nothing ever staged, gets a clean session-level "
+		       "refusal (resolved:false, unknown id) -- not a dispatcher policy refusal" );
+	}
+
+	std::remove( scenePathRead.c_str() );
+	std::remove( scenePathPropose.c_str() );
+	std::remove( scenePathCommit.c_str() );
+}
+
+//----------------------------------------------------------------------
 // (b) COMMIT posture: byte-identical to a no-param (class-default)
 // dispatcher.
 //----------------------------------------------------------------------
@@ -472,43 +634,60 @@ static void TestMcpLayer()
 
 	// tools/list under Read: the 3 mutating tools stay PRESENT (not
 	// hidden) but their description carries the annotation note; every
-	// other tool's description is unannotated.
+	// other tool's description is unannotated -- EXCEPT resolve_proposal
+	// (Secure-MCP slice 5b), which carries its OWN distinct annotation
+	// (kResolveProposalOwnerOnlyNote, "[OWNER-ONLY:...") since it is
+	// refused for a session-authority reason, not the generic
+	// "--agent-autonomy=read" reason the other three share.
 	{
 		const std::string resp = mcpRead.HandleLine( Req( 2, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 2 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 12,
-		       "tools/list under Read STILL lists all 12 tools (mutating tools are ANNOTATED, not hidden)" );
+		Check( tools.isArray() && tools.size() == 14,
+		       "tools/list under Read STILL lists all 14 tools (mutating tools are ANNOTATED, not hidden)" );
 
 		bool sawProposePatch = false, sawInsertChunk = false, sawRemoveChunk = false;
-		bool sawRender = false;
+		bool sawRender = false, sawListProposals = false, sawResolveProposal = false;
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const JsonValue& t = tools.at( i );
 			const std::string name = t.get( "name" ).asString();
 			const std::string desc = t.get( "description" ).asString();
 			const bool annotated = desc.find( "[REFUSED under --agent-autonomy=read" ) != std::string::npos;
+			const bool ownerOnlyAnnotated = desc.find( "[OWNER-ONLY:" ) != std::string::npos;
 			if( annotated ) ++annotatedCount;
 			if( name == "propose_patch" ) { sawProposePatch = true; Check( annotated, "propose_patch tool description is ANNOTATED under Read" ); }
 			if( name == "insert_chunk" )  { sawInsertChunk  = true; Check( annotated, "insert_chunk tool description is ANNOTATED under Read" ); }
 			if( name == "remove_chunk" )  { sawRemoveChunk  = true; Check( annotated, "remove_chunk tool description is ANNOTATED under Read" ); }
 			if( name == "render" )        { sawRender       = true; Check( !annotated, "render tool description is NOT annotated under Read (it is allowed)" ); }
+			if( name == "list_proposals" ) {
+				sawListProposals = true;
+				Check( !annotated && !ownerOnlyAnnotated, "list_proposals tool description is NOT annotated under Read (read-safe under every posture)" );
+			}
+			if( name == "resolve_proposal" ) {
+				sawResolveProposal = true;
+				Check( !annotated, "resolve_proposal is NOT annotated with the generic read-refusal note (it has its own)" );
+				Check( ownerOnlyAnnotated, "resolve_proposal tool description IS annotated with the OWNER-ONLY note under Read" );
+			}
 		}
-		Check( sawProposePatch && sawInsertChunk && sawRemoveChunk && sawRender,
-		       "all 3 mutating tools + render were found in tools/list under Read" );
-		Check( annotatedCount == 3, "EXACTLY 3 tool descriptions are annotated under Read (the mutating set, no more no less)" );
+		Check( sawProposePatch && sawInsertChunk && sawRemoveChunk && sawRender && sawListProposals && sawResolveProposal,
+		       "all 3 mutating tools + render + list_proposals + resolve_proposal were found in tools/list under Read" );
+		Check( annotatedCount == 3, "EXACTLY 3 tool descriptions carry the generic read-refusal note under Read (the mutating set, no more no less; resolve_proposal has its own distinct note)" );
 	}
 
-	// tools/list under Commit: no annotation anywhere.
+	// tools/list under Commit: no annotation anywhere (including
+	// resolve_proposal's OWNER-ONLY note, since Commit is the ONE posture
+	// where resolve_proposal actually reaches the session).
 	{
 		const std::string resp = mcpCommit.HandleLine( Req( 3, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 3 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 12, "tools/list under Commit lists all 12 tools" );
+		Check( tools.isArray() && tools.size() == 14, "tools/list under Commit lists all 14 tools" );
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const std::string desc = tools.at( i ).get( "description" ).asString();
 			if( desc.find( "[REFUSED under --agent-autonomy=read" ) != std::string::npos ) ++annotatedCount;
+			if( desc.find( "[OWNER-ONLY:" ) != std::string::npos ) ++annotatedCount;
 		}
 		Check( annotatedCount == 0, "RED-PROVE: NO tool descriptions are annotated under Commit" );
 	}
@@ -758,6 +937,7 @@ int main()
 
 	TestReadPosture();
 	TestDenyByDefaultForUnclassifiedVerb();
+	TestProposePosture();
 	TestCommitPostureMatchesDefault();
 	TestMcpLayer();
 	TestLaunchFlagParsing();

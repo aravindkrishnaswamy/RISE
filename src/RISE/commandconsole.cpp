@@ -183,11 +183,30 @@ double DoHighIntensityPerformanceRating2( double* pStdDev )
 // `--agent-autonomy` BEFORE this function is ever called (main() parses
 // and validates it loudly, exiting on a malformed value) -- it is NEVER
 // re-derived here or settable by anything the loop reads from stdin.
+//
+// Secure-MCP slice 5b: the ONE place the wire-level AgentAutonomy posture
+// maps to AgentSession's own AgentAuthority (Owner/External) -- see
+// AgentRpc.h's file header, "Secure-MCP slice 5b (`Propose` autonomy)", for
+// the full three-way mapping this implements: Read -> Owner (nothing
+// mutating-shaped reaches the session either way, so authority is moot;
+// Owner is the harmless default), Propose -> External (a proposing wire
+// client stages rather than commits), Commit -> Owner (today's unrestricted
+// in-process behaviour, e.g. the GUI's own dispatcher, which never passes
+// through this CLI-only helper at all). Shared by every headless transport
+// (RunAgentStdio, RunAgentMcpStdio, RunAgentHttp) so the mapping cannot
+// drift between them.
+static RISE::Agent::AgentAuthority AuthorityForAutonomy( RISE::Agent::AgentAutonomy autonomy )
+{
+	return ( autonomy == RISE::Agent::AgentAutonomy::Propose )
+		? RISE::Agent::AgentAuthority::External
+		: RISE::Agent::AgentAuthority::Owner;
+}
+
 static int RunAgentStdio( const char* sceneArg, RISE::Agent::AgentAutonomy autonomy )
 {
 	std::unique_ptr<RISE::Agent::AgentSession> session;
 	if( sceneArg && sceneArg[0] ) {
-		session = RISE::Agent::AgentSession::LoadFromFile( sceneArg );
+		session = RISE::Agent::AgentSession::LoadFromFile( sceneArg, AuthorityForAutonomy( autonomy ) );
 		// A failed load is NOT fatal: report it on stderr and continue with a
 		// null session (read_schema-less methods still error cleanly) so a CI
 		// caller gets structured errors rather than a silent process death.
@@ -219,11 +238,19 @@ static int RunAgentStdio( const char* sceneArg, RISE::Agent::AgentAutonomy auton
 // Protocol over the SAME line-delimited stdin/stdout transport as
 // `--agent-stdio` alone, but through AgentMcpAdapter instead of
 // AgentRpcDispatcher directly -- a PURE envelope translation layer over
-// the identical 12 agent verbs (initialize / tools/list / tools/call
+// the identical 14 agent verbs (initialize / tools/list / tools/call
 // replace the raw JSON-RPC method names an MCP client would otherwise
 // have to know).  Same stdout hygiene as RunAgentStdio (the caller's
 // early argv pre-scan already covers `--mcp` alongside `--agent-stdio`,
 // so the banner/log suppression applies identically).
+//
+// Secure-MCP slice 5b: same HONEST LIMITATION as RunAgentHttp below --
+// `--agent-autonomy=propose` builds an External-authority session
+// (AuthorityForAutonomy) but this function's session is headless (no
+// AttachController call anywhere on this path), so a headless propose
+// over stdio refuses every mutating verb outright (no controller = no
+// queue to stage to). See RunAgentHttp's doc for the full rationale and
+// the slice-5c GUI-hosted-server plan that actually makes `propose` useful.
 //
 // MCP notifications (a request with no `id` field at all, e.g.
 // `notifications/initialized`) get NO response line -- HandleLine
@@ -236,7 +263,7 @@ static int RunAgentMcpStdio( const char* sceneArg, RISE::Agent::AgentAutonomy au
 {
 	std::unique_ptr<RISE::Agent::AgentSession> session;
 	if( sceneArg && sceneArg[0] ) {
-		session = RISE::Agent::AgentSession::LoadFromFile( sceneArg );
+		session = RISE::Agent::AgentSession::LoadFromFile( sceneArg, AuthorityForAutonomy( autonomy ) );
 		if( !session ) {
 			std::cerr << "rise --agent-stdio --mcp: could not load scene '" << sceneArg
 			          << "' (not native-v7, or a derive error); continuing with no head.\n";
@@ -275,11 +302,37 @@ static int RunAgentMcpStdio( const char* sceneArg, RISE::Agent::AgentAutonomy au
 // that can connect to 127.0.0.1, so treating it as at least as untrusted as
 // the stdio transport (arguably more so, since stdio requires the caller to
 // have spawned this exact process) is the conservative default.
+//
+// Secure-MCP slice 5b HONEST LIMITATION: `--agent-autonomy=propose` builds
+// an External-authority AgentSession (AuthorityForAutonomy above) so a
+// mutating verb reaches AgentSession::ProposePatch/InsertChunk/RemoveChunk
+// -- but THIS function's session is built via LoadFromFile, which loads a
+// HEADLESS Job with no SceneEditController ever attached
+// (session->AttachController is never called anywhere on this path). An
+// External session with NO live controller has no proposal queue to stage
+// TO (see AgentSession::ProposePatch's doc, "External + NO controller
+// attached (headless) -> REFUSED") -- so `--agent-http --agent-autonomy=
+// propose` against a scene loaded straight from a file will REFUSE every
+// propose_patch/insert_chunk/remove_chunk call, honestly, rather than
+// silently doing nothing useful. This is not a bug to route around here:
+// the whole point of `propose` is a human Owner who can later approve the
+// staged edit, and a bare CLI process parsing a scene file has no such
+// human attached to a controller. The REAL propose-and-approve topology is
+// the in-app GUI hosting this SAME loopback HTTP server against its OWN
+// live SceneEditController (RISEViewportBridge.mm's in-process dispatcher
+// today; a GUI-hosted --agent-http External endpoint is the slice-5c
+// integration) -- an external wire client proposes into that live
+// controller's queue, and the GUI's owner-authority session (or a future
+// in-app "review proposals" panel) resolves it. `--agent-autonomy=propose`
+// against `rise --agent-http <scene-file>` today is therefore honest but
+// not yet USEFUL beyond proving the wire verbs + refusal path -- see the
+// AgentProposalWireTest red-prove, which attaches a controller itself (the
+// way a future GUI host will) to exercise the path that actually stages.
 static int RunAgentHttp( const char* sceneArg, RISE::Agent::AgentAutonomy autonomy, unsigned short port )
 {
 	std::unique_ptr<RISE::Agent::AgentSession> session;
 	if( sceneArg && sceneArg[0] ) {
-		session = RISE::Agent::AgentSession::LoadFromFile( sceneArg );
+		session = RISE::Agent::AgentSession::LoadFromFile( sceneArg, AuthorityForAutonomy( autonomy ) );
 		if( !session ) {
 			std::cerr << "rise --agent-http: could not load scene '" << sceneArg
 			          << "' (not native-v7, or a derive error); continuing with no head.\n";
@@ -446,22 +499,33 @@ int main( int argc, char** argv )
 	//   --width N               override Film width (pixels; positive integer)
 	//   --height N              override Film height (pixels; positive integer)
 	//   --pixel-ar X            override Film pixel aspect ratio (positive float)
-	//   --agent-autonomy=read|commit
-	//                           (only meaningful with --agent-stdio) the
-	//                           headless launch-time posture: `read` refuses
-	//                           propose_patch/insert_chunk/remove_chunk with a
+	//   --agent-autonomy=read|propose|commit
+	//                           (meaningful with --agent-stdio / --agent-http)
+	//                           the headless launch-time posture: `read`
+	//                           refuses propose_patch/insert_chunk/
+	//                           remove_chunk/resolve_proposal with a
 	//                           structured policy error (render and every
-	//                           other read/observe verb still work -- render
-	//                           does not mutate the document, so it stays
-	//                           available even under `read`); `commit` is
-	//                           today's unrestricted behaviour. DEFAULT (flag
+	//                           other read/observe verb, including
+	//                           list_proposals, still work -- none of them
+	//                           mutate the document, so they stay available
+	//                           even under `read`); `propose` (Secure-MCP
+	//                           slice 5b) lets propose_patch/insert_chunk/
+	//                           remove_chunk THROUGH to the session, which
+	//                           constructs as AgentAuthority::External (see
+	//                           AuthorityForAutonomy above) -- so a mutating
+	//                           call STAGES a proposal instead of committing
+	//                           one; resolve_proposal stays refused (Owner-
+	//                           only; see AgentRpc.h); `commit` is today's
+	//                           unrestricted behaviour (AgentAuthority::Owner
+	//                           -- every verb commits directly). DEFAULT (flag
 	//                           omitted) is `read` -- an agent must opt IN to
 	//                           mutation explicitly. An unrecognized value
-	//                           (anything but exactly "read" or "commit") is a
-	//                           loud launch-time failure (exit 1), never a
-	//                           silent default. This flag is LAUNCH-TIME ONLY:
-	//                           nothing reachable from stdin (a request
-	//                           parameter, a scene file) can change it.
+	//                           (anything but exactly "read", "propose", or
+	//                           "commit") is a loud launch-time failure (exit
+	//                           1), never a silent default. This flag is
+	//                           LAUNCH-TIME ONLY: nothing reachable from
+	//                           stdin (a request parameter, a scene file) can
+	//                           change it.
 	// Values are applied AFTER LoadAsciiScene returns, so they replace
 	// whatever the scene file authored.  This is how agents render test
 	// scenes at lower resolution without editing scene files.
@@ -559,10 +623,12 @@ int main( int argc, char** argv )
 			const std::string val = a + kAutonomyFlagPrefixLen;
 			if( val == "read" ) {
 				cliAutonomy = RISE::Agent::AgentAutonomy::Read;
+			} else if( val == "propose" ) {
+				cliAutonomy = RISE::Agent::AgentAutonomy::Propose;
 			} else if( val == "commit" ) {
 				cliAutonomy = RISE::Agent::AgentAutonomy::Commit;
 			} else {
-				std::cerr << "ERROR: --agent-autonomy requires 'read' or 'commit'; got `" << val << "`.\n";
+				std::cerr << "ERROR: --agent-autonomy requires 'read', 'propose', or 'commit'; got `" << val << "`.\n";
 				cliArgError = true;
 			}
 		} else if( strcmp( a, "--agent-autonomy" ) == 0 ) {
@@ -592,8 +658,8 @@ int main( int argc, char** argv )
 			// none claims it, the ordinary "unrecognized flag" silence
 			// the loop already has for non-flag tokens -- unchanged by
 			// this fix).
-			std::cerr << "ERROR: --agent-autonomy requires the form `--agent-autonomy=read` or "
-			             "`--agent-autonomy=commit`; got `" << a << "`.\n";
+			std::cerr << "ERROR: --agent-autonomy requires the form `--agent-autonomy=read`, "
+			             "`--agent-autonomy=propose`, or `--agent-autonomy=commit`; got `" << a << "`.\n";
 			cliArgError = true;
 		} else if( strcmp(a, "--width") == 0 ) {
 			consumeIntFlag( "--width", cliFilmWidth );

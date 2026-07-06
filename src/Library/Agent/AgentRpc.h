@@ -140,6 +140,62 @@
 //                                            base64-encoding; no re-render.
 //                                            `width`/`height` report the dims of
 //                                            the returned image.)
+//      list_proposals {}                 -> {proposals:[{id,kind,target,entityKind,
+//                                            param,value,chunkText,baseVersion:
+//                                            {uuid,revision},sessionLabel,status},...]}
+//                                           (Secure-MCP slice 5b: the queue of every
+//                                            AgentProposal staged on the ATTACHED
+//                                            controller -- pending AND resolved
+//                                            (resolved entries stay for audit).
+//                                            READ-SAFE: available under ANY autonomy
+//                                            posture, including Read -- listing is a
+//                                            read of the same scene the caller is
+//                                            already editing, not a mutation.
+//                                            CONTROLLER-ATTACHED ONLY: a headless
+//                                            session (no live controller) reports an
+//                                            empty array, not an error -- "no queue
+//                                            to list" and "empty queue" look the
+//                                            same to a caller that just wants a
+//                                            list.  No session at all -> the usual
+//                                            "no session loaded" internal error.)
+//      resolve_proposal {proposalId,approve:bool}
+//                                        -> {resolved:bool,status:string,headVersion,
+//                                            message}
+//                                           (Secure-MCP slice 5b: approve or reject
+//                                            a staged proposal.  OWNER-ONLY: routes
+//                                            to AgentSession::ResolveProposal, which
+//                                            refuses (resolved=false) when THIS
+//                                            session's authority is not Owner --
+//                                            an External session may not resolve
+//                                            ANY proposal, including one it staged
+//                                            itself (see AgentSession::
+//                                            ResolveProposal's doc).  `status` is
+//                                            "applied"/"rejected"/"conflict" on a
+//                                            real resolve (approve re-checks the
+//                                            proposal's staged baseVersion against
+//                                            the controller's CURRENT head under
+//                                            the same lock -- a proposal staged
+//                                            against a head that has since moved
+//                                            resolves to "conflict", not applied);
+//                                            empty when `resolved` is false.
+//                                            `headVersion` is the head AFTER the
+//                                            call on a real resolve (whatever the
+//                                            underlying ApplyAgent* replay reports
+//                                            on approve; the CURRENT head,
+//                                            unmoved, on reject) and {0,0} when
+//                                            `resolved` is false (an Owner-only
+//                                            refusal or an unknown id has no head
+//                                            to report -- there was nothing to
+//                                            apply). NOT read-safe (refused under
+//                                            Read even for an Owner session --
+//                                            resolving is a mutating-adjacent
+//                                            verb; see the autonomy-posture note
+//                                            below for why this is still coherent
+//                                            with "Owner isn't autonomy-gated the
+//                                            same way": an Owner's IN-PROCESS
+//                                            dispatcher is constructed at Commit,
+//                                            so this gate is a non-issue for the
+//                                            real GUI topology.)
 //
 //    Model-B F2 slice S2a/S2b (async render): render{"async":true} submits to
 //    the ATTACHED controller's dedicated agent-render worker and returns
@@ -215,6 +271,48 @@
 //    observer session.  `Commit` is today's behaviour: no refusal, every
 //    verb dispatches as before.
 //
+//    Secure-MCP slice 5b (`Propose` autonomy): a THIRD posture, between
+//    Read and Commit.  Under `Propose`, the read-safe 9-verb allowlist
+//    still passes (same as Read) PLUS list_proposals (also read-safe under
+//    every posture, see below) PLUS the 3 mutating verbs (propose_patch,
+//    insert_chunk, remove_chunk) are let THROUGH to the wrapped
+//    AgentSession rather than refused at this dispatcher's choke point --
+//    see IsProposeSafeVerb in AgentRpc.cpp.  Crucially, this dispatcher-
+//    layer gate does NOT itself decide whether a mutating verb commits or
+//    stages: that is AgentSession::mAuthority's job (AgentSession.h's
+//    Owner/External split), one layer down.  `Propose` autonomy is the
+//    WIRE POSTURE that pairs with an External-authority session (see
+//    commandconsole.cpp's RunAgentHttp/RunAgentMcpStdio, which construct
+//    AgentAuthority::External exactly when --agent-autonomy=propose is
+//    passed): the mutating verb reaches AgentSession::ProposePatch/
+//    InsertChunk/RemoveChunk, and THAT method's own authority check stages
+//    it (a live controller attached) or refuses it (headless, no
+//    controller -- see AgentSession.h's doc).  So the three-way mapping is:
+//    `Read` autonomy pairs with Owner OR External authority (nothing
+//    mutating-shaped reaches the session either way, so authority is moot);
+//    `Propose` autonomy pairs with External authority (mutating verbs reach
+//    the session, which STAGES rather than commits); `Commit` autonomy
+//    pairs with Owner authority (mutating verbs reach the session, which
+//    COMMITS directly).  These two knobs are chosen TOGETHER at the SAME
+//    construction site (never independently) -- Owner authority + Propose-
+//    shaped wire gating, or External authority + Commit-shaped wire gating,
+//    are combinations no shipped construction site produces, since either
+//    would be incoherent (an Owner staging its own edits for itself to
+//    approve, or an External session's edits reaching the dispatcher with
+//    no staging gate at the wire layer at all).
+//
+//    resolve_proposal is DELIBERATELY left OFF the Propose-safe set --
+//    reachable ONLY under `Commit` (the posture the in-process Owner
+//    dispatcher runs at).  This is intentional defense in depth, not a
+//    scope gap: AgentSession::ResolveProposal ALSO refuses outright for any
+//    non-Owner-authority session (see that method's doc), so an External
+//    session calling resolve_proposal is refused twice over regardless of
+//    which autonomy posture its transport happens to run at -- the
+//    dispatcher-layer omission just means the refusal for an External/
+//    Propose caller is the CHEAPER kAutonomyRefused (-32011) policy
+//    refusal rather than a round-trip into AgentSession only to be told the
+//    same "Owner-only" no.
+//
 //    Class default vs. binary default (READ THIS BEFORE CHANGING EITHER):
 //    the C++ DEFAULT for a dispatcher constructed WITHOUT the autonomy
 //    argument is `Commit`, for back-compat with every existing in-process
@@ -252,7 +350,16 @@ namespace RISE
 		//! the full class-default-vs-binary-default rationale.
 		enum class AgentAutonomy
 		{
-			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image) dispatches; every other method, including the 3 known-mutating verbs (propose_patch/insert_chunk/remove_chunk) and any future unclassified verb, is refused.
+			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/list_proposals) dispatches; every other method, including the 3 known-mutating verbs (propose_patch/insert_chunk/remove_chunk), resolve_proposal, and any future unclassified verb, is refused.
+			//! Secure-MCP slice 5b: the read-safe allowlist PLUS the 3 mutating
+			//! verbs (propose_patch/insert_chunk/remove_chunk) dispatch -- but
+			//! dispatching only reaches AgentSession, whose OWN Owner/External
+			//! authority decides staging-vs-commit (see the file header's
+			//! Propose-autonomy doc).  resolve_proposal is deliberately NOT
+			//! included -- it stays Commit-only (see the file header).  Pairs
+			//! with an External-authority session at the construction site
+			//! (commandconsole.cpp); never used with an Owner-authority session.
+			Propose,
 			Commit    //!< today's behaviour: every verb dispatches unrestricted. The C++ constructor DEFAULT (back-compat).
 		};
 

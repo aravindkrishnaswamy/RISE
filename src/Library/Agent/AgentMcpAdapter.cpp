@@ -172,7 +172,20 @@ namespace RISE
 				"calling this tool returns a policy-refusal error (relaunch with "
 				"--agent-autonomy=commit to enable it)] ";
 
-			//! Build the `tools/list` result: the 12 existing AgentRpc verbs,
+			//! Secure-MCP slice 5b: the sibling annotation for resolve_proposal
+			//! specifically, prepended under EITHER Read or Propose (it is
+			//! refused under both -- see AgentRpc.h's file header for why it is
+			//! deliberately excluded from Propose's extended allowlist).
+			//! Distinct wording from kAutonomyReadNote: "relaunch with commit"
+			//! is not this tool's real escape hatch for an external/proposing
+			//! session (only the document owner can ever resolve a proposal,
+			//! regardless of this transport's own posture).
+			const std::string kResolveProposalOwnerOnlyNote =
+				"[OWNER-ONLY: refused for any non-owner session, at every autonomy posture except "
+				"Commit (the posture the document owner's own session runs at) -- an external/"
+				"proposing session can list and poll proposals but never approve or reject one] ";
+
+			//! Build the `tools/list` result: the 14 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
 			//! comments for the gotchas an external MCP client needs (paired
@@ -182,10 +195,23 @@ namespace RISE
 			//! Secure-MCP slice 2: under AgentAutonomy::Read, the three
 			//! mutating tools' descriptions are ANNOTATED (prefixed with
 			//! kAutonomyReadNote) rather than hidden -- see the note's doc.
+			//! Secure-MCP slice 5b: resolve_proposal is annotated (with the
+			//! DISTINCT kResolveProposalOwnerOnlyNote) under BOTH Read and
+			//! Propose -- it is refused at the dispatcher under either posture
+			//! (see AgentRpc.h); the 3 mutating tools' kAutonomyReadNote
+			//! annotation, by contrast, applies ONLY under Read (Propose lets
+			//! them reach the session, which stages rather than refuses).
 			JsonValue BuildToolsList( AgentAutonomy autonomy )
 			{
 				JsonValue tools = JsonValue::MakeArray();
 				const bool readOnly = ( autonomy == AgentAutonomy::Read );
+				// Secure-MCP slice 5b: resolve_proposal is refused (at the
+				// dispatcher) under Read AND Propose -- only Commit lets it
+				// through to AgentSession (whose OWN Owner-only gate is the
+				// second, session-layer refusal for a non-Owner session that
+				// somehow reaches it -- see AgentRpc.h's file header).
+				const bool resolveProposalRefused =
+					( autonomy == AgentAutonomy::Read || autonomy == AgentAutonomy::Propose );
 
 				// read_document
 				tools.push_back( MakeTool( "read_document",
@@ -394,6 +420,42 @@ namespace RISE
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 
+				// list_proposals (Secure-MCP slice 5b)
+				{
+					tools.push_back( MakeTool( "list_proposals",
+						"List every proposal staged on the live scene's proposal queue (pending AND "
+						"resolved -- resolved entries stay for audit). Returns "
+						"{proposals:[{id,kind,target,entityKind,param,value,chunkText,baseVersion,"
+						"sessionLabel,status},...]}: `kind` is one of \"param_edit\"/\"insert_chunk\"/"
+						"\"remove_chunk\"; `status` is \"pending\"/\"applied\"/\"rejected\"/\"conflict\". "
+						"READ-ONLY and available regardless of this session's autonomy posture -- "
+						"listing the queue is not a mutation. Requires a scene to be loaded with a live "
+						"controller attached (a headless CLI session with no in-app GUI owner returns "
+						"an empty list, not an error -- there is no queue to list against).",
+						ObjectProp( "", JsonValue::MakeObject(), std::vector<std::string>() ) ) );
+				}
+
+				// resolve_proposal (Secure-MCP slice 5b)
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "proposalId", NumberProp( "The id of a proposal returned by list_proposals." ) );
+					props.set( "approve", BoolProp( "true to approve (apply the staged edit now, re-checking its baseVersion against the current head); false to reject (no mutation)." ) );
+					std::vector<std::string> required;
+					required.push_back( "proposalId" ); required.push_back( "approve" );
+					const std::string desc = ( resolveProposalRefused ? kResolveProposalOwnerOnlyNote : std::string() ) + std::string(
+						"Approve or reject a staged proposal. OWNER-ONLY: this call is refused for any "
+						"session that is not the document owner, including a session resolving a "
+						"proposal it staged itself -- an external/proposing agent can list and poll "
+						"proposals but never approve or reject one. Returns {resolved,status,"
+						"headVersion,message}: resolved is true only when this session's authority "
+						"permitted the resolve to run at all; status is \"applied\"/\"rejected\"/"
+						"\"conflict\" on a real resolve (approve RE-CHECKS the proposal's staged "
+						"baseVersion against the current head -- a proposal staged against a head that "
+						"has since moved resolves to \"conflict\", not applied) and is empty when "
+						"resolved is false." );
+					tools.push_back( MakeTool( "resolve_proposal", desc, ObjectProp( "", props, required ) ) );
+				}
+
 				return tools;
 			}
 
@@ -440,7 +502,7 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 12 tool names this adapter recognizes --
+			//! The list of the 14 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
@@ -448,7 +510,8 @@ namespace RISE
 					"read_document", "read_schema", "read_skill", "validate",
 					"propose_patch", "insert_chunk", "remove_chunk",
 					"render", "render_status", "render_wait", "render_cancel",
-					"read_image"
+					"read_image",
+					"list_proposals", "resolve_proposal"
 				};
 				for( const char* n : kNames ) if( name == n ) return true;
 				return false;
@@ -593,7 +656,7 @@ namespace RISE
 				}
 
 				//----------------------------------------------------------
-				// tools/list -> the 12 verbs as MCP tools.
+				// tools/list -> the 14 verbs as MCP tools.
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
 					JsonValue result = JsonValue::MakeObject();

@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  AgentLoopbackHttpServer.h - Secure-MCP slice 3+4: a LOOPBACK-ONLY
-//    HTTP/1.1 transport for AgentMcpAdapter (the same 12 agent verbs
+//    HTTP/1.1 transport for AgentMcpAdapter (the same 14 agent verbs
 //    the stdio path serves, over a local TCP socket instead of a pipe).
 //
 //    Slice 3 shipped the infra:

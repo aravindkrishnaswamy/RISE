@@ -3,9 +3,9 @@
 //  AgentMcpAdapter.h - a PURE MCP (Model Context Protocol) envelope
 //    adapter over AgentRpcDispatcher (Secure-MCP slice 1).
 //
-//    RISE already speaks its OWN JSON-RPC 2.0 dispatch for the 12 agent
+//    RISE already speaks its OWN JSON-RPC 2.0 dispatch for the 14 agent
 //    verbs (AgentRpc.h's AgentRpcDispatcher::HandleLine).  This adapter
-//    wraps that dispatcher and re-frames the SAME 12 verbs as MCP tools,
+//    wraps that dispatcher and re-frames the SAME 14 verbs as MCP tools,
 //    so an MCP client (Claude Code, or any other MCP host) can drive
 //    RISE over `rise --agent-stdio --mcp <scene>`.  ZERO changes to
 //    AgentRpcDispatcher / AgentSession / verb semantics -- this is
@@ -21,7 +21,7 @@
 //                                        the server respond with an empty
 //                                        object result ({}), handled here
 //                                        directly (no dispatch).
-//      MCP `tools/list`              -> the 12 verbs, each as an MCP Tool
+//      MCP `tools/list`              -> the 14 verbs, each as an MCP Tool
 //                                        {name, description, inputSchema}
 //      MCP `tools/call {name,args}`  -> builds an internal JSON-RPC
 //                                        request line for the named verb,

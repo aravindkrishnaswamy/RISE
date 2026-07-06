@@ -80,7 +80,32 @@ namespace RISE
 				       method == "render_status"   ||
 				       method == "render_wait"     ||
 				       method == "render_cancel"   ||
-				       method == "read_image";
+				       method == "read_image"      ||
+				       // Secure-MCP slice 5b: list_proposals is a READ, not a
+				       // mutation or a resolve -- it lists the SAME scene's
+				       // staged-proposal queue a caller is already allowed to
+				       // read via read_document.  Available under every
+				       // autonomy posture, including Read (see AgentRpc.h's
+				       // file header for the full read-exposure rationale:
+				       // the loopback transport is already token-gated, so the
+				       // proposal queue isn't secret to an authenticated
+				       // co-editing client).
+				       method == "list_proposals";
+			}
+
+			//! Secure-MCP slice 5b: the additional verbs `Propose` autonomy lets
+			//! through beyond the read-safe allowlist above -- the 3 known-
+			//! mutating verbs.  Dispatching them under Propose does NOT itself
+			//! commit anything: it only lets the call REACH AgentSession, whose
+			//! own Owner/External authority decides staging-vs-commit (see
+			//! AgentRpc.h's file header, "Secure-MCP slice 5b (`Propose`
+			//! autonomy)").  Deliberately excludes resolve_proposal -- see that
+			//! doc for why it stays Commit-only.
+			bool IsProposeSafeVerb( const std::string& method )
+			{
+				return method == "propose_patch" ||
+				       method == "insert_chunk"  ||
+				       method == "remove_chunk";
 			}
 
 			//! The severity token for a diagnostic.
@@ -136,6 +161,37 @@ namespace RISE
 				JsonValue data = JsonValue::MakeObject();
 				data.set( "verb", JsonValue::MakeString( verb ) );
 				data.set( "autonomy", JsonValue::MakeString( "read" ) );
+				err.set( "data", data );
+
+				JsonValue env = JsonValue::MakeObject();
+				env.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+				env.set( "id", id );
+				env.set( "error", err );
+				return JsonSerialize( env );
+			}
+
+			//! Secure-MCP slice 5b: the sibling refusal for AgentAutonomy::Propose
+			//! -- used ONLY for resolve_proposal, the one verb deliberately left
+			//! off Propose's extended allowlist (see IsProposeSafeVerb's doc and
+			//! AgentRpc.h's file header).  Same shape as MakeAutonomyRefusedError
+			//! above (kAutonomyRefused, structured {verb,autonomy} data) so a
+			//! caller can branch on it identically; `autonomy:"propose"` and a
+			//! message naming resolve_proposal specifically (an Owner-only verb,
+			//! not something --agent-autonomy=commit alone would fix for an
+			//! External session -- so this message does NOT suggest relaunching
+			//! at commit, unlike the Read refusal, which would genuinely unblock
+			//! the caller).
+			std::string MakeProposeAutonomyRefusedError( const JsonValue& id, const std::string& verb )
+			{
+				JsonValue err = JsonValue::MakeObject();
+				err.set( "code", JsonValue::MakeNumber( static_cast<double>( kAutonomyRefused ) ) );
+				err.set( "message", JsonValue::MakeString(
+					"refused: this session runs with --agent-autonomy=propose; resolve_proposal is "
+					"Owner-only (an External/propose session may not resolve ANY proposal, including "
+					"its own -- the document owner resolves it from their own Commit-posture session)" ) );
+				JsonValue data = JsonValue::MakeObject();
+				data.set( "verb", JsonValue::MakeString( verb ) );
+				data.set( "autonomy", JsonValue::MakeString( "propose" ) );
 				err.set( "data", data );
 
 				JsonValue env = JsonValue::MakeObject();
@@ -486,20 +542,40 @@ namespace RISE
 						return MakeError( idValue, kInvalidParams, "Invalid params: 'params' must be an object" );
 				}
 
-				// (5b) Secure-MCP slice 2 hardening: the ONE choke point for
-				// the launch-time autonomy policy -- checked BEFORE any
-				// per-verb block, DENY-BY-DEFAULT against the fixed
-				// allowlist of 9 read-safe verb names (IsReadSafeVerb).  A
-				// verb that is not on the read-safe list is refused under
-				// Read -- this covers the 3 known-mutating verbs AND any
-				// future verb that reaches dispatch without being
-				// consciously classified read-safe (the fail-closed
-				// property this hardening exists for).  Under
-				// AgentAutonomy::Read this is a POLICY refusal, never a
-				// scene-state outcome -- see MakeAutonomyRefusedError's doc
-				// for why it is a distinct JSON-RPC error code/shape rather
-				// than a "rejected"/"conflict" success result.
+				// (5b) Secure-MCP slice 2 hardening (extended by slice 5b): the
+				// ONE choke point for the launch-time autonomy policy --
+				// checked BEFORE any per-verb block, DENY-BY-DEFAULT against
+				// the fixed allowlist of read-safe verb names (IsReadSafeVerb,
+				// now 10 -- the original 9 plus list_proposals).  A verb that
+				// is not on the read-safe list is refused under Read -- this
+				// covers the 3 known-mutating verbs, resolve_proposal, AND any
+				// future verb that reaches dispatch without being consciously
+				// classified read-safe (the fail-closed property this
+				// hardening exists for).  Under AgentAutonomy::Read this is a
+				// POLICY refusal, never a scene-state outcome -- see
+				// MakeAutonomyRefusedError's doc for why it is a distinct
+				// JSON-RPC error code/shape rather than a "rejected"/
+				// "conflict" success result.
+				//
+				// Secure-MCP slice 5b: AgentAutonomy::Propose extends the
+				// read-safe set with the 3 mutating verbs (IsProposeSafeVerb)
+				// -- letting them REACH AgentSession, whose own Owner/External
+				// authority decides staging-vs-commit (see AgentRpc.h's file
+				// header).  resolve_proposal is deliberately excluded from
+				// Propose's extension -- it is refused here with the Propose-
+				// specific message (MakeProposeAutonomyRefusedError) rather
+				// than falling through to the generic Read-flavoured one,
+				// since "relaunch with --agent-autonomy=commit" is not this
+				// verb's actual escape hatch for an External session (only the
+				// document owner, at their own Commit-posture session, can
+				// resolve a proposal -- see AgentSession::ResolveProposal's
+				// doc for the session-layer gate this mirrors).
 				if( mAutonomy == AgentAutonomy::Read && !IsReadSafeVerb( m ) ) {
+					return MakeAutonomyRefusedError( idValue, m );
+				}
+				if( mAutonomy == AgentAutonomy::Propose &&
+				    !IsReadSafeVerb( m ) && !IsProposeSafeVerb( m ) ) {
+					if( m == "resolve_proposal" ) return MakeProposeAutonomyRefusedError( idValue, m );
 					return MakeAutonomyRefusedError( idValue, m );
 				}
 
@@ -1071,6 +1147,99 @@ namespace RISE
 					result.set( "byteLength", JsonValue::MakeNumber( static_cast<double>( png.size() ) ) );
 					result.set( "width",  JsonValue::MakeNumber( static_cast<double>( imgW ) ) );
 					result.set( "height", JsonValue::MakeNumber( static_cast<double>( imgH ) ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// list_proposals {} -> {proposals:[{id,kind,target,entityKind,
+				//                        param,value,chunkText,baseVersion,
+				//                        sessionLabel,status},...]}
+				//   Secure-MCP slice 5b: the queue of every AgentProposal staged
+				//   on the ATTACHED controller (pending + resolved -- resolved
+				//   entries stay for audit).  READ-SAFE (see IsReadSafeVerb):
+				//   available under every autonomy posture.  CONTROLLER-
+				//   ATTACHED ONLY: a headless session reports an empty array,
+				//   not an error.  REQUIRES a session (the usual "no session
+				//   loaded" internal error otherwise, matching every other
+				//   session-backed verb in this dispatch).
+				//--------------------------------------------------------------
+				if( m == "list_proposals" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const std::vector<AgentSession::AgentProposalEntry> proposals = s->ListProposals();
+					JsonValue arr = JsonValue::MakeArray();
+					for( const AgentSession::AgentProposalEntry& p : proposals ) {
+						JsonValue pj = JsonValue::MakeObject();
+						pj.set( "id",           JsonValue::MakeNumber( static_cast<double>( p.id ) ) );
+						pj.set( "kind",         JsonValue::MakeString( p.kind ) );
+						pj.set( "target",       JsonValue::MakeString( p.target ) );
+						pj.set( "entityKind",   JsonValue::MakeString( p.entityKind ) );
+						pj.set( "param",        JsonValue::MakeString( p.param ) );
+						pj.set( "value",        JsonValue::MakeString( p.value ) );
+						pj.set( "chunkText",    JsonValue::MakeString( p.chunkText ) );
+						pj.set( "baseVersion",  HeadVersionJson( p.baseVersion ) );
+						pj.set( "sessionLabel", JsonValue::MakeString( p.sessionLabel ) );
+						pj.set( "status",       JsonValue::MakeString( p.status ) );
+						arr.push_back( pj );
+					}
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "proposals", arr );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// resolve_proposal {proposalId, approve:bool} ->
+				//   {resolved:bool, status:string, headVersion, message}
+				//   Secure-MCP slice 5b: approve or reject a staged proposal.
+				//   OWNER-ONLY -- routes to AgentSession::ResolveProposal, which
+				//   refuses (resolved=false) for a non-Owner-authority session,
+				//   including one resolving its own proposal.  NOT on the
+				//   read-safe allowlist (refused under Read) and deliberately
+				//   NOT on Propose's extension (refused under Propose too, with
+				//   a Propose-specific message -- see the autonomy choke point
+				//   above); reachable only under Commit, the posture the
+				//   in-process Owner dispatcher runs at.
+				//--------------------------------------------------------------
+				if( m == "resolve_proposal" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* pid = params.find( "proposalId" );
+					const JsonValue* appr = params.find( "approve" );
+					if( !pid || !pid->isNumber() || !appr || !appr->isBool() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'proposalId' (number) and 'approve' (boolean) are required" );
+					}
+					const double pidD = pid->asNumber();
+					// Same exact-double-integer bound as every other id/version
+					// field in this file (2^53, the largest exactly-representable
+					// integer double) -- guards the narrowing cast below against
+					// UB on a hostile/huge value, matching the project-wide
+					// explicit-range idiom (not std::isfinite; see the 'samples'
+					// parse earlier in this file for the -ffast-math rationale).
+					if( !( pidD >= 0.0 && pidD <= 9007199254740992.0 ) ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'proposalId' must be a finite, non-negative number" );
+					}
+					const std::uint64_t proposalId = static_cast<std::uint64_t>( pidD );
+					const bool approve = appr->asBool();
+
+					const AgentSession::AgentResolveResult rr = s->ResolveProposal( proposalId, approve );
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "resolved", JsonValue::MakeBool( rr.ok ) );
+					result.set( "status",   JsonValue::MakeString( rr.status ) );
+					// headVersion: exactly one of paramResult/chunkResult is
+					// populated on a real APPROVE (AgentSession::ResolveProposal
+					// fills whichever shape matches the proposal's kind; see
+					// its doc) -- `status` is only set on the populated one
+					// (both default to "", never a real status string), so its
+					// non-emptiness cleanly selects which struct to read.  A
+					// refusal (rr.ok == false) or a straight REJECT (no
+					// ApplyAgent* replay ran) leaves BOTH empty, so this falls
+					// through to chunkResult's default {0,0} -- the honest
+					// "no head to report" case either way.
+					const RISE::Cst::CstHeadVersion hv =
+						!rr.paramResult.status.empty() ? rr.paramResult.headVersion
+						                                : rr.chunkResult.headVersion;
+					result.set( "headVersion", HeadVersionJson( hv ) );
+					result.set( "message", JsonValue::MakeString( rr.message ) );
 					return MakeSuccess( idValue, result );
 				}
 
