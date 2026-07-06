@@ -1424,21 +1424,27 @@ namespace RISE
 			}
 
 			r.ok = true;
-			if( !approve )
-			{
-				r.status  = "rejected";
-				r.message = "proposal rejected (no mutation)";
-				return r;
-			}
 
-			// Fold the underlying apply's outcome (mirrors ProposePatch /
-			// InsertChunk / RemoveChunk's own 1:1 AgentCommitResult mapping --
-			// see those methods for the rationale of each field).  We do not
-			// know here which of the two result SHAPES (param-edit vs
-			// chunk-CRUD) applies without asking the controller which kind
-			// this proposal was, so re-derive it from the queue snapshot
-			// (cheap; ListProposals is O(n) and this runs once per resolve,
-			// not per hot loop).
+			// Fold the underlying outcome into the wire-visible result shape
+			// (mirrors ProposePatch / InsertChunk / RemoveChunk's own 1:1
+			// AgentCommitResult mapping -- see those methods for the
+			// rationale of each field).  Done UNIFORMLY for both approve AND
+			// reject -- Secure-MCP slice 5b fix round (P2-2): a reject used
+			// to return early here with paramResult/chunkResult left
+			// default-constructed, so AgentRpc.cpp's wire selector (which
+			// reads whichever of the two carries a non-empty `status`) fell
+			// through to chunkResult's default headVersion {0,0} -- silently
+			// colliding with the "no session / unknown id" sentinel, even
+			// though SceneEditController::ResolveProposal's reject branch
+			// (see that method's doc) now populates `cr.headVersion` with
+			// the REAL current head.  We do not know here which of the two
+			// result SHAPES (param-edit vs chunk-CRUD) applies without
+			// asking the controller which kind this proposal was, so
+			// re-derive it from the queue snapshot (cheap; ListProposals is
+			// O(n) and this runs once per resolve, not per hot loop) --
+			// resolved proposals stay in the queue for audit, so this lookup
+			// finds the entry whether this is a reject, an approve, or a
+			// conflict.
 			SceneEditController::AgentProposalKind kind = SceneEditController::AgentProposalKind::ParamEdit;
 			{
 				const std::vector<SceneEditController::AgentProposal> all = mController->ListProposals();

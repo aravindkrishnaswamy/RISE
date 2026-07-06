@@ -172,6 +172,29 @@ namespace RISE
 				"calling this tool returns a policy-refusal error (relaunch with "
 				"--agent-autonomy=commit to enable it)] ";
 
+			//! Secure-MCP slice 5b fix round (P2-1): the sibling annotation for
+			//! propose_patch/insert_chunk/remove_chunk under
+			//! AgentAutonomy::Propose specifically.  Under Propose these three
+			//! tools REACH the session (unlike Read, where kAutonomyReadNote's
+			//! tool is refused before dispatch) -- but for an External-
+			//! authority session with a live controller attached, the call
+			//! STAGES a proposal rather than committing it outright.  Without
+			//! this note, an external MCP agent calling propose_patch under
+			//! Propose sees a description byte-identical to Commit's and has
+			//! no textual signal that its edit needs a human's approval before
+			//! it takes effect -- the exact "teaching-text gap" this note
+			//! closes.  Distinct wording from BOTH kAutonomyReadNote (that one
+			//! says "refused"; this one says "staged, not committed") and
+			//! kResolveProposalOwnerOnlyNote (that one is about who may
+			//! resolve; this one is about what THIS call itself does).
+			const std::string kAutonomyProposeNote =
+				"[NOTE under --agent-autonomy=propose: this call STAGES a proposal for the "
+				"document owner to approve/reject rather than committing directly -- the "
+				"response's status will be \"staged\" (pending), not \"applied\"; poll "
+				"list_proposals for the staged entry's status (pending -> applied/rejected/"
+				"conflict), and expect the owner to approve it in their own GUI/session "
+				"via resolve_proposal, which THIS session may never call] ";
+
 			//! Secure-MCP slice 5b: the sibling annotation for resolve_proposal
 			//! specifically, prepended under EITHER Read or Propose (it is
 			//! refused under both -- see AgentRpc.h's file header for why it is
@@ -201,10 +224,19 @@ namespace RISE
 			//! (see AgentRpc.h); the 3 mutating tools' kAutonomyReadNote
 			//! annotation, by contrast, applies ONLY under Read (Propose lets
 			//! them reach the session, which stages rather than refuses).
+			//! Secure-MCP slice 5b fix round (P2-1): under AgentAutonomy::
+			//! Propose, the SAME 3 mutating tools instead get the DISTINCT
+			//! kAutonomyProposeNote -- they are not refused (readOnly is
+			//! false), but they no longer commit directly either, so leaving
+			//! their description bare (Commit-identical) would hide that from
+			//! an external caller.  Read/Propose/Commit are mutually
+			//! exclusive, so exactly one of {kAutonomyReadNote,
+			//! kAutonomyProposeNote, no note} applies per tool per posture.
 			JsonValue BuildToolsList( AgentAutonomy autonomy )
 			{
 				JsonValue tools = JsonValue::MakeArray();
 				const bool readOnly = ( autonomy == AgentAutonomy::Read );
+				const bool proposeOnly = ( autonomy == AgentAutonomy::Propose );
 				// Secure-MCP slice 5b: resolve_proposal is refused (at the
 				// dispatcher) under Read AND Propose -- only Commit lets it
 				// through to AgentSession (whose OWN Owner-only gate is the
@@ -271,17 +303,20 @@ namespace RISE
 					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
 					std::vector<std::string> required;
 					required.push_back( "target" ); required.push_back( "param" ); required.push_back( "value" );
-					const std::string desc = ( readOnly ? kAutonomyReadNote : std::string() ) + std::string(
+					const std::string desc = ( readOnly ? kAutonomyReadNote : proposeOnly ? kAutonomyProposeNote : std::string() ) + std::string(
 						"Set one parameter on one named entity in the retained scene document. "
 						"REQUIRES a scene to be loaded. Returns {applied,rawCode,status,retriable,"
 						"headVersion,message}: applied is true ONLY for a clean apply; status is "
 						"the authoritative gate, one of \"applied\" (clean success), \"rejected\" "
 						"(refused, head byte-identical), \"diagnosed\" (the document WAS mutated but "
 						"the full re-derive emitted diagnostics -- treat as FAILURE, not success), "
-						"or \"conflict\" (a stale baseHeadVersion precondition -- head untouched; "
-						"re-read read_document and retry against the new headVersion). retriable is "
-						"meaningful only for status=\"rejected\": true means the refusal is "
-						"TRANSIENT (e.g. an open editor transaction in a live GUI session) and "
+						"\"conflict\" (a stale baseHeadVersion precondition -- head untouched; "
+						"re-read read_document and retry against the new headVersion), or \"staged\" "
+						"(this session's authority does not commit directly -- the edit was queued "
+						"for a human owner to approve/reject via resolve_proposal; poll "
+						"list_proposals to see it move from pending to applied/rejected/conflict). "
+						"retriable is meaningful only for status=\"rejected\": true means the refusal "
+						"is TRANSIENT (e.g. an open editor transaction in a live GUI session) and "
 						"resubmitting the identical patch later can succeed; false means retrying "
 						"verbatim can never succeed. headVersion is always the head AFTER this call." );
 					tools.push_back( MakeTool( "propose_patch", desc, ObjectProp( "", props, required ) ) );
@@ -293,13 +328,14 @@ namespace RISE
 					props.set( "chunkText", StringProp( "Exactly ONE complete chunk -- a `keyword { ... }` block with braces on their own lines -- to add to the scene. Headers, directives, and multi-chunk text are rejected." ) );
 					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
 					std::vector<std::string> required; required.push_back( "chunkText" );
-					const std::string desc = ( readOnly ? kAutonomyReadNote : std::string() ) + std::string(
+					const std::string desc = ( readOnly ? kAutonomyReadNote : proposeOnly ? kAutonomyProposeNote : std::string() ) + std::string(
 						"Add one complete chunk to the scene document and realize it via a "
 						"dry-run-guarded full re-derive (a failed dry-run leaves the document AND "
 						"the live scene byte-identical -- no half-applied state). REQUIRES a scene "
 						"to be loaded. Same result gating as propose_patch ({applied,rawCode,"
-						"status,retriable,headVersion,message}) plus the parsed chunk's `name`/"
-						"`kind` echo. A duplicate (kind,name) against an existing chunk is rejected "
+						"status,retriable,headVersion,message}, including the \"staged\" status -- "
+						"see propose_patch's description) plus the parsed chunk's `name`/`kind` "
+						"echo. A duplicate (kind,name) against an existing chunk is rejected "
 						"with a clean message." );
 					tools.push_back( MakeTool( "insert_chunk", desc, ObjectProp( "", props, required ) ) );
 				}
@@ -311,11 +347,12 @@ namespace RISE
 					props.set( "kind",   StringProp( "OPTIONAL chunk KIND keyword to disambiguate a cross-category name clash (same resolution rules as propose_patch's `kind`)." ) );
 					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
 					std::vector<std::string> required; required.push_back( "target" );
-					const std::string desc = ( readOnly ? kAutonomyReadNote : std::string() ) + std::string(
+					const std::string desc = ( readOnly ? kAutonomyReadNote : proposeOnly ? kAutonomyProposeNote : std::string() ) + std::string(
 						"Remove the chunk resolved by bare name (+ optional kind) from the scene "
 						"document via a trivia-preserving erase. REQUIRES a scene to be loaded. "
-						"Same result gating as propose_patch, plus the removed chunk's `name`/`kind` "
-						"echo. An unknown target is rejected; an ambiguous name is rejected with a "
+						"Same result gating as propose_patch (including the \"staged\" status -- see "
+						"propose_patch's description), plus the removed chunk's `name`/`kind` echo. "
+						"An unknown target is rejected; an ambiguous name is rejected with a "
 						"disambiguation hint; a target still REFERENCED by another chunk fails the "
 						"dry-run and is rejected with the diagnostic (document left byte-identical)." );
 					tools.push_back( MakeTool( "remove_chunk", desc, ObjectProp( "", props, required ) ) );

@@ -3520,7 +3520,23 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 		if( !approve )
 		{
 			for( auto& p : mProposals ) if( p.id == id ) { p.status = String( "rejected" ); break; }
-			return true;   // *outResult left default-constructed -- no apply ran
+			// Secure-MCP slice 5b fix round (P2-2): a reject never applies
+			// anything, but the caller-visible AgentCommitResult must still
+			// report the REAL current head -- leaving it default-constructed
+			// {0,0} is indistinguishable from the "no session / unknown id"
+			// sentinel a caller uses to detect a refusal that never even
+			// found the proposal.  mMutex is still held here (this whole
+			// find+reject block runs under the SAME lock acquired above), so
+			// this is a safe, non-torn read of the 16-byte CstHeadVersion --
+			// no concurrent commit on another thread can be mutating it
+			// mid-read.
+			if( outResult )
+			{
+				outResult->status      = String( "rejected" );
+				outResult->headVersion = mJob.GetCstHeadVersion();
+				outResult->message     = String( "proposal rejected (no mutation)" );
+			}
+			return true;   // apply never ran -- applied/rawCode/retriable stay at their defaults (false/0/false)
 		}
 	}
 

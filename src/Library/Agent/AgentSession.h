@@ -68,31 +68,6 @@ namespace RISE
 			External    //!< a remote/other agent: mutating verbs STAGE a proposal (inert) instead of committing; may NOT resolve (approve/reject) ANY proposal, including its own.
 		};
 
-		//! RESERVED for slice 5b -- NOT YET CONSULTED.  This enum exists so
-		//! 5b's wire-facing transport has a session-layer posture type ready
-		//! to wire up (mirroring, at the session layer, the same three-way
-		//! split AgentRpc.h's transport-layer AgentAutonomy will grow a
-		//! wire-facing `propose` posture for) -- kept as a SEPARATE enum
-		//! (not a reuse of AgentRpc's AgentAutonomy) because AgentSession.h
-		//! must not take a header dependency on the transport layer
-		//! (AgentRpc.h already depends on AgentSession.h; the reverse would
-		//! be circular-by-convention even though the includes would
-		//! technically compile).
-		//!
-		//! Honest status as of slice 5a: NO AgentSession member stores a
-		//! value of this type, and NOTHING branches on it -- in 5a, staging
-		//! vs. direct-commit is gated ENTIRELY by AgentAuthority (Owner vs
-		//! External; see ProposePatch/InsertChunk/RemoveChunk).  This type
-		//! is forward-declared for 5b, which is expected to add the member +
-		//! the branch; until then, do not assume constructing a session
-		//! implies any particular autonomy posture is in effect.
-		enum class AgentSessionAutonomy
-		{
-			Read,
-			Propose,   //!< reserved: the posture an External-authority session will run under once 5b wires this in
-			Commit     //!< reserved: the posture an Owner-authority session will run under once 5b wires this in
-		};
-
 		//! Secure-MCP slice 5a: the structured result of a STAGED
 		//! propose_patch / insert_chunk / remove_chunk call (External
 		//! authority + Propose autonomy, with a live controller attached).
@@ -716,7 +691,7 @@ namespace RISE
 				std::string               value;
 				std::string               chunkText;
 				RISE::Cst::CstHeadVersion baseVersion;
-				std::string               sessionLabel;  //!< RESERVED for slice 5b -- always empty in 5a; no session-identifying name/label exists yet to stamp in (see SceneEditController::AgentProposal's doc)
+				std::string               sessionLabel;  //!< diagnostic: which session staged it. Plumbed end-to-end since 5a (this struct, StageProposal, SceneEditController::AgentProposal) but still always empty as of 5b -- 5a shipped with no session-identifying name/label to stamp in, and 5b (the wire-facing External-session transport) shipped without wiring one either. RESERVED: populated once 5c's GUI-hosted transport gives an external session a real caller-supplied label to stamp in here (see SceneEditController::AgentProposal's doc)
 				std::string               status;        //!< "pending" / "applied" / "rejected" / "conflict"
 			};
 

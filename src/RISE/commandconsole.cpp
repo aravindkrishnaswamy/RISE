@@ -367,6 +367,12 @@ static int RunAgentHttp( const char* sceneArg, RISE::Agent::AgentAutonomy autono
 	          << "  a real (if single-user, local-only) authentication boundary, not merely\n"
 	          << "  network isolation. It is still NOT an internet-facing auth system: do not\n"
 	          << "  port-forward or otherwise expose this beyond this machine.\n";
+	if( autonomy == RISE::Agent::AgentAutonomy::Commit ) {
+		std::cerr << "  --agent-autonomy=commit: this HTTP client has FULL OWNER AUTHORITY -- it\n"
+		          << "  commits edits directly (same trust level as the in-app GUI), not staged\n"
+		          << "  proposals a human must approve. Only opt into commit for a client you\n"
+		          << "  trust as much as yourself.\n";
+	}
 
 	server.Serve();
 	return 0;

@@ -465,14 +465,14 @@ namespace RISE
 		//! decision here -- the Owner-only-may-resolve gate is enforced by
 		//! AgentSession, which knows its own authority, not by the
 		//! controller, which does not track per-proposal ownership).
-		//! Honest status as of slice 5a: `sessionLabel` is plumbed end-to-end
+		//! Honest status as of slice 5b: `sessionLabel` is plumbed end-to-end
 		//! (this struct, StageProposal, AgentSession::AgentProposalEntry) but
 		//! every EXISTING call site (ProposePatch/InsertChunk/RemoveChunk's
-		//! External-authority branches) leaves it default-empty -- today's
-		//! AgentSession has no session-identifying name/label member to
-		//! stamp in.  RESERVED for slice 5b, which is expected to give wire-
-		//! constructed External sessions a real caller-supplied label and
-		//! populate this field from it.
+		//! External-authority branches) leaves it default-empty -- neither 5a
+		//! nor 5b's wire-facing External-session transport gave a session a
+		//! session-identifying name/label member to stamp in.  RESERVED: this
+		//! is expected to be populated once 5c's GUI-hosted transport labels
+		//! external sessions with a real caller-supplied identifier.
 		struct AgentProposal
 		{
 			std::uint64_t       id = 0;         //!< monotonic, unique within this controller's lifetime; never 0 (0 = "not found" sentinel)
@@ -497,7 +497,7 @@ namespace RISE
 			//! to propose_patch/insert_chunk/remove_chunk) and StageProposal
 			//! passes it through untouched.
 			bool                hasExplicitBaseVersion = false;
-			String              sessionLabel;        //!< diagnostic: which session staged it (caller-supplied); RESERVED -- every 5a call site leaves this default-empty, see struct doc above
+			String              sessionLabel;        //!< diagnostic: which session staged it (caller-supplied); RESERVED -- still empty at every call site as of 5b, see struct doc above
 			String              status;              //!< "pending" / "applied" / "rejected" / "conflict"
 		};
 

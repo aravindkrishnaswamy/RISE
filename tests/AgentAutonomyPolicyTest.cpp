@@ -29,7 +29,12 @@
 //        mutating tools' descriptions with the
 //        "[REFUSED under --agent-autonomy=read" note while KEEPING them
 //        in the list (not hidden) -- RED-PROVE both halves: the note is
-//        present under Read AND absent under Commit.
+//        present under Read AND absent under Commit.  Secure-MCP slice 5b
+//        fix round (P2-1): tools/list under Propose instead annotates the
+//        SAME 3 tools with the DISTINCT "[NOTE under --agent-autonomy=
+//        propose" staging note (never the Read refusal note) -- RED-PROVE
+//        it is present under Propose, absent under Commit, and that
+//        propose_patch's own description documents "staged" as a status.
 //
 //    (d) Launch-flag parsing: real-subprocess smoke (fork/pipe/execl,
 //        mirroring AgentStdioSmokeTest.cpp's pattern) --
@@ -598,17 +603,22 @@ static void TestMcpLayer()
 {
 	std::printf( "--- (c) MCP layer: tools/call refusal + tools/list annotation ---\n" );
 
-	const std::string scenePathRead   = WriteTemp( "rise_autonomy_mcp_read.RISEscene", kScene );
-	const std::string scenePathCommit = WriteTemp( "rise_autonomy_mcp_commit.RISEscene", kScene );
-	Check( !scenePathRead.empty() && !scenePathCommit.empty(), "wrote both MCP-layer scenes" );
+	const std::string scenePathRead    = WriteTemp( "rise_autonomy_mcp_read.RISEscene", kScene );
+	const std::string scenePathCommit  = WriteTemp( "rise_autonomy_mcp_commit.RISEscene", kScene );
+	const std::string scenePathPropose = WriteTemp( "rise_autonomy_mcp_propose.RISEscene", kScene );
+	Check( !scenePathRead.empty() && !scenePathCommit.empty() && !scenePathPropose.empty(),
+	       "wrote all three MCP-layer scenes" );
 
-	std::unique_ptr<AgentSession> sessionRead   = AgentSession::LoadFromFile( scenePathRead );
-	std::unique_ptr<AgentSession> sessionCommit = AgentSession::LoadFromFile( scenePathCommit );
-	Check( sessionRead != nullptr && sessionCommit != nullptr, "both MCP sessions load" );
-	if( !sessionRead || !sessionCommit ) return;
+	std::unique_ptr<AgentSession> sessionRead    = AgentSession::LoadFromFile( scenePathRead );
+	std::unique_ptr<AgentSession> sessionCommit  = AgentSession::LoadFromFile( scenePathCommit );
+	std::unique_ptr<AgentSession> sessionPropose = AgentSession::LoadFromFile( scenePathPropose );
+	Check( sessionRead != nullptr && sessionCommit != nullptr && sessionPropose != nullptr,
+	       "all three MCP sessions load" );
+	if( !sessionRead || !sessionCommit || !sessionPropose ) return;
 
-	AgentMcpAdapter mcpRead( std::move( sessionRead ), AgentAutonomy::Read );
-	AgentMcpAdapter mcpCommit( std::move( sessionCommit ), AgentAutonomy::Commit );
+	AgentMcpAdapter mcpRead(    std::move( sessionRead ),    AgentAutonomy::Read );
+	AgentMcpAdapter mcpCommit(  std::move( sessionCommit ),  AgentAutonomy::Commit );
+	AgentMcpAdapter mcpPropose( std::move( sessionPropose ), AgentAutonomy::Propose );
 
 	// tools/call propose_patch under Read -> isError:true, NOT a protocol error.
 	{
@@ -706,8 +716,73 @@ static void TestMcpLayer()
 		       "tools/call(propose_patch) under Commit carries isError:false (applies cleanly)" );
 	}
 
+	// Secure-MCP slice 5b fix round (P2-1) RED-PROVE: tools/list under
+	// Propose annotates the SAME 3 mutating tools with the DISTINCT
+	// staging note (kAutonomyProposeNote, "...STAGES a proposal..."), never
+	// the Read-only refusal note, and the staging note is ABSENT under
+	// Commit -- this is the coverage hole the P2-1 review finding named:
+	// under Propose, propose_patch/insert_chunk/remove_chunk's descriptions
+	// used to be byte-identical to Commit's, giving an external MCP agent
+	// no textual clue that its edit only STAGES rather than commits.
+	{
+		const std::string resp = mcpPropose.HandleLine( Req( 5, "tools/list", JsonValue::MakeObject() ) );
+		JsonValue env = ParseResponse( resp, 5 );
+		const JsonValue& tools = env.get( "result" ).get( "tools" );
+		Check( tools.isArray() && tools.size() == 14, "tools/list under Propose lists all 14 tools" );
+
+		bool sawProposePatch = false, sawInsertChunk = false, sawRemoveChunk = false;
+		int proposeNotedCount = 0, readNotedCount = 0;
+		for( std::size_t i = 0; i < tools.size(); ++i ) {
+			const JsonValue& t = tools.at( i );
+			const std::string name = t.get( "name" ).asString();
+			const std::string desc = t.get( "description" ).asString();
+			const bool proposeNoted = desc.find( "[NOTE under --agent-autonomy=propose" ) != std::string::npos;
+			const bool readNoted    = desc.find( "[REFUSED under --agent-autonomy=read" ) != std::string::npos;
+			if( proposeNoted ) ++proposeNotedCount;
+			if( readNoted )    ++readNotedCount;
+			if( name == "propose_patch" ) {
+				sawProposePatch = true;
+				Check( proposeNoted, "propose_patch tool description carries the propose-staging note under Propose" );
+				Check( !readNoted, "propose_patch tool description does NOT carry the read-refusal note under Propose" );
+				Check( desc.find( "\"staged\"" ) != std::string::npos,
+				       "propose_patch's own description documents \"staged\" as a possible status value" );
+			}
+			if( name == "insert_chunk" ) {
+				sawInsertChunk = true;
+				Check( proposeNoted, "insert_chunk tool description carries the propose-staging note under Propose" );
+			}
+			if( name == "remove_chunk" ) {
+				sawRemoveChunk = true;
+				Check( proposeNoted, "remove_chunk tool description carries the propose-staging note under Propose" );
+			}
+		}
+		Check( sawProposePatch && sawInsertChunk && sawRemoveChunk,
+		       "all 3 mutating tools were found in tools/list under Propose" );
+		Check( proposeNotedCount == 3,
+		       "RED-PROVE: EXACTLY 3 tool descriptions carry the propose-staging note under Propose" );
+		Check( readNotedCount == 0,
+		       "RED-PROVE: NO tool description carries the Read-only refusal note under Propose" );
+	}
+
+	// RED-PROVE the converse: under Commit, none of the 3 mutating tools
+	// carry the propose-staging note either (already covered generically by
+	// the "annotatedCount == 0 under Commit" check above for the read note
+	// + owner-only note; this asserts the THIRD note is equally absent).
+	{
+		const std::string resp = mcpCommit.HandleLine( Req( 6, "tools/list", JsonValue::MakeObject() ) );
+		JsonValue env = ParseResponse( resp, 6 );
+		const JsonValue& tools = env.get( "result" ).get( "tools" );
+		int proposeNotedCount = 0;
+		for( std::size_t i = 0; i < tools.size(); ++i ) {
+			const std::string desc = tools.at( i ).get( "description" ).asString();
+			if( desc.find( "[NOTE under --agent-autonomy=propose" ) != std::string::npos ) ++proposeNotedCount;
+		}
+		Check( proposeNotedCount == 0, "RED-PROVE: NO tool descriptions carry the propose-staging note under Commit" );
+	}
+
 	std::remove( scenePathRead.c_str() );
 	std::remove( scenePathCommit.c_str() );
+	std::remove( scenePathPropose.c_str() );
 }
 
 //----------------------------------------------------------------------

@@ -3583,6 +3583,17 @@ static void TestProposalStagingBasics()
 		Check( rrReject.ok, "owner ResolveProposal(reject) runs" );
 		Check( rrReject.status == "rejected", "rejected proposal resolves to status=\"rejected\"" );
 		Check( LumR( *pJob ) == beforeReject, "RED-PROVE: reject left the document UNCHANGED (would move to ~1.0 if applied)" );
+		// Secure-MCP slice 5b fix round (P2-2) RED-PROVE, C++ level: the
+		// reject's headVersion is the REAL current head (a non-zero uuid),
+		// not the {0,0} default a caller would confuse for "no session /
+		// unknown id" -- whichever of paramResult/chunkResult carries the
+		// non-empty status (this proposal is a param edit) is where the
+		// wire layer (AgentRpc.cpp) reads headVersion from.
+		Check( rrReject.paramResult.status == "rejected",
+		       "rejected proposal's paramResult.status == \"rejected\" (this is a param-edit proposal)" );
+		Check( rrReject.paramResult.headVersion.uuid != 0,
+		       "RED-PROVE: rejected proposal's paramResult.headVersion carries a real (non-zero) uuid, "
+		       "not the {0,0} sentinel" );
 
 		c.Stop();
 	}
@@ -4155,6 +4166,13 @@ static void TestExternalStageBaseVersionCoherentUnderConcurrency()
 //       call REACHES AgentSession, which is what proves the session-layer
 //       gate independent of the wire-autonomy gate Test (g) in
 //       AgentAutonomyPolicyTest.cpp proves separately).
+//   (e) Secure-MCP slice 5b fix round (P2-2) RED-PROVE: the OWNER's wire
+//       resolve_proposal{approve:false} (reject) on that same still-pending
+//       proposal reports headVersion as the REAL current head (a non-zero
+//       uuid), NOT the {0,0} sentinel that used to collide with the "no
+//       session / unknown id" refusal shape -- AgentRpc.h documents "the
+//       CURRENT head, unmoved, on reject" and this is the first assertion
+//       that actually checks it.
 //////////////////////////////////////////////////////////////////////
 static void TestProposalWireRoundTrip()
 {
@@ -4325,6 +4343,31 @@ static void TestProposalWireRoundTrip()
 		const Agent::JsonValue* ownerRejectResolved = ownerRejectResult.find( "resolved" );
 		Check( ownerRejectResolved && ownerRejectResolved->isBool() && ownerRejectResolved->asBool(),
 		       "the OWNER's wire resolve_proposal(reject) on the SAME proposal succeeds (resolved=true) -- the External attempt above was a clean no-op, not a state corruption" );
+
+		//------------------------------------------------------------------
+		// Secure-MCP slice 5b fix round (P2-2) RED-PROVE: a REJECT's
+		// headVersion is the REAL current head, not the {0,0} sentinel a
+		// caller would otherwise confuse for "no session / unknown id".
+		// AgentRpc.h documents "the CURRENT head, unmoved, on reject" --
+		// SceneEditController::ResolveProposal's reject branch used to
+		// return with *outResult left default-constructed, so this field
+		// was silently {0,0} until the fix landed.
+		//------------------------------------------------------------------
+		const Agent::JsonValue* ownerRejectStatus = ownerRejectResult.find( "status" );
+		Check( ownerRejectStatus && ownerRejectStatus->isString() && ownerRejectStatus->asString() == "rejected",
+		       "the OWNER's wire resolve_proposal(reject) reports status=\"rejected\"" );
+		const Agent::JsonValue* ownerRejectHv = ownerRejectResult.find( "headVersion" );
+		Check( ownerRejectHv && ownerRejectHv->isObject(), "wire resolve_proposal(reject) carries a headVersion object" );
+		if( ownerRejectHv ) {
+			const Agent::JsonValue* u = ownerRejectHv->find( "uuid" );
+			Check( u && u->isNumber() && u->asNumber() != 0.0,
+			       "RED-PROVE: wire resolve_proposal(reject)'s headVersion carries a real (non-zero) uuid -- "
+			       "the REAL current head, NOT the {0,0} sentinel (P2-2: the reject branch used to leave "
+			       "*outResult default-constructed, silently reporting {0,0} instead of the documented "
+			       "\"current head, unmoved\")" );
+		}
+		Check( LumR( *pJob ) == beforeExternalResolveAttempt,
+		       "the current-head reject readback did not itself move the live scene (still the pre-reject value)" );
 
 		c.Stop();
 	}

@@ -1226,15 +1226,18 @@ namespace RISE
 					result.set( "resolved", JsonValue::MakeBool( rr.ok ) );
 					result.set( "status",   JsonValue::MakeString( rr.status ) );
 					// headVersion: exactly one of paramResult/chunkResult is
-					// populated on a real APPROVE (AgentSession::ResolveProposal
-					// fills whichever shape matches the proposal's kind; see
-					// its doc) -- `status` is only set on the populated one
-					// (both default to "", never a real status string), so its
-					// non-emptiness cleanly selects which struct to read.  A
-					// refusal (rr.ok == false) or a straight REJECT (no
-					// ApplyAgent* replay ran) leaves BOTH empty, so this falls
-					// through to chunkResult's default {0,0} -- the honest
-					// "no head to report" case either way.
+					// populated on any REAL resolve -- approve, reject, OR
+					// conflict (AgentSession::ResolveProposal fills whichever
+					// shape matches the proposal's kind for all three
+					// outcomes as of the Secure-MCP slice 5b fix round P2-2;
+					// see its doc) -- `status` is only set on the populated
+					// one (both default to "", never a real status string),
+					// so its non-emptiness cleanly selects which struct to
+					// read.  A refusal (rr.ok == false -- e.g. an unknown id,
+					// or a non-Owner session) leaves BOTH empty, so this
+					// falls through to chunkResult's default {0,0} -- the
+					// honest "no head to report" case, distinct from a real
+					// reject's now-populated, non-zero current head.
 					const RISE::Cst::CstHeadVersion hv =
 						!rr.paramResult.status.empty() ? rr.paramResult.headVersion
 						                                : rr.chunkResult.headVersion;
