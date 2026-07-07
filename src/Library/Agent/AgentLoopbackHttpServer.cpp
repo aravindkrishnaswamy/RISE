@@ -433,6 +433,22 @@ namespace
 		return false;
 	}
 
+	//! True iff every character in `s` is an ASCII digit and `s` is
+	//! non-empty. Used below to validate a Host/Origin ":<port>" suffix
+	//! -- the port's numeric value is never actually parsed here (the
+	//! caller already knows the port it bound; this function is purely
+	//! an allow/reject gate), just checked for syntax, so trailing
+	//! garbage like ":notaport" or ":8765extra" is rejected rather than
+	//! silently truncated at the first colon.
+	bool IsAllDigits( const std::string& s )
+	{
+		if( s.empty() ) return false;
+		for( std::size_t i = 0; i < s.size(); ++i ) {
+			if( !std::isdigit( static_cast<unsigned char>( s[i] ) ) ) return false;
+		}
+		return true;
+	}
+
 	//! True iff `host` (the value of a Host header, e.g. "127.0.0.1:9000"
 	//! or "localhost") names loopback -- with or without a trailing
 	//! ":<port>". This is the anti-DNS-rebinding Host check: a rebind
@@ -466,6 +482,14 @@ namespace
 	//! the same helper used for header names and the Bearer scheme.
 	//! "127.0.0.1" and the IPv6 literal forms are digits/colons only, so
 	//! case does not apply to them.
+	//!
+	//! Any trailing garbage after the host[:port] is rejected outright --
+	//! a bracketed literal must be followed by nothing or exactly
+	//! ":<all-digit port>", and a bare host's optional ":<port>" suffix
+	//! must likewise be all-digit with nothing trailing. This closes
+	//! malformed forms like "[::1]evil", "[::1]:notaport", and
+	//! "127.0.0.1:PORT.evil.com" that a naive "find the first colon /
+	//! closing bracket" parse would otherwise silently accept.
 	bool IsLoopbackHost( const std::string& host )
 	{
 		std::string hostOnly = host;
@@ -474,8 +498,17 @@ namespace
 			// Bracketed literal: "[<addr>]" optionally followed by ":<port>".
 			const std::size_t closeBracket = hostOnly.find( ']' );
 			if( closeBracket == std::string::npos ) return false;   // malformed -- no closing bracket
-			hostOnly = hostOnly.substr( 1, closeBracket - 1 );       // the address between the brackets
-			return hostOnly == "::1";
+			const std::string addr = hostOnly.substr( 1, closeBracket - 1 );   // the address between the brackets
+			if( addr != "::1" ) return false;
+
+			// Everything after the closing bracket must be either
+			// nothing at all, or ":<all-digit port>" with nothing
+			// trailing -- reject "[::1]evil", "[::1]]", "[::1]:",
+			// "[::1]:notaport", "[::1]:8765extra".
+			const std::string trailer = hostOnly.substr( closeBracket + 1 );
+			if( trailer.empty() ) return true;
+			if( trailer[0] != ':' ) return false;
+			return IsAllDigits( trailer.substr( 1 ) );
 		}
 
 		// Bare form. A bare IPv6 "::1" contains colons that are NOT a
@@ -486,7 +519,14 @@ namespace
 		if( hostOnly == "::1" ) return true;
 
 		const std::size_t colon = hostOnly.find( ':' );
-		if( colon != std::string::npos ) hostOnly = hostOnly.substr( 0, colon );
+		if( colon != std::string::npos ) {
+			// Whatever follows the (single, host-terminating) colon must
+			// be an all-digit, non-empty port with nothing trailing --
+			// reject "127.0.0.1:", "127.0.0.1:notaport",
+			// "127.0.0.1:8765extra", "127.0.0.1:PORT.evil.com".
+			if( !IsAllDigits( hostOnly.substr( colon + 1 ) ) ) return false;
+			hostOnly = hostOnly.substr( 0, colon );
+		}
 
 		return hostOnly == "127.0.0.1" || EqualsIgnoreCase( hostOnly, "localhost" );
 	}

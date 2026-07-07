@@ -1174,6 +1174,93 @@ int main()
 	}
 
 	//------------------------------------------------------------------
+	// (q) [SECURE-MCP SLICE 4 FOLLOW-UP, P3] IsLoopbackHost rejects
+	// trailing garbage after the host[:port] label -- both the bracketed
+	// IPv6 form and the bare form. Pre-fix, IsLoopbackHost truncated at
+	// the closing `]` or the first colon and never checked what (if
+	// anything) followed, so e.g. "[::1]evil" and "127.0.0.1:notaport"
+	// both matched the loopback label and returned 200. This is a
+	// robustness/correctness fix on an already fail-closed path (the
+	// Host LABEL itself still has to exact-match; a real DNS-rebind
+	// attacker sends `Host: evil.com`, never `Host: 127.0.0.1evil.com`),
+	// not a security bypass.
+	//------------------------------------------------------------------
+	std::printf( "[host-malformed] IsLoopbackHost rejects trailing garbage after host[:port]\n" );
+	{
+		// RED-PROVE (documented, not re-executed here): against the
+		// pre-fix IsLoopbackHost, every "malformed rejected" case below
+		// returned 200 instead of 403 -- confirmed by hand-reverting the
+		// bracket/port tightening locally and re-running this exact block
+		// (all 9 flip to 200), then restoring the fix. See the commit
+		// message / session notes for the reverted-code transcript.
+		struct MalformedCase { const char* host; const char* label; };
+		const MalformedCase kRejected[] = {
+			{ "[::1]evil",                    "[::1]evil (trailing garbage after bracket)" },
+			{ "[::1]extra",                   "[::1]extra (trailing garbage after bracket)" },
+			{ "[::1]:notaport",               "[::1]:notaport (non-numeric port)" },
+			{ "[::1]:8765extra",              "[::1]:8765extra (garbage after numeric port)" },
+			{ "[::1]]",                       "[::1]] (extra closing bracket)" },
+			{ "127.0.0.1:notaport",           "127.0.0.1:notaport (non-numeric port)" },
+			{ "127.0.0.1:",                   "127.0.0.1: (empty port)" },
+			{ "127.0.0.1:8765evil.com",       "127.0.0.1:8765evil.com (garbage after numeric port)" },
+			{ "127.0.0.1:PORT.evil.com",      "127.0.0.1:PORT.evil.com (non-numeric, dotted trailer)" },
+			{ "[::1]:",                       "[::1]: (empty port)" },
+		};
+		int reqId = 240;
+		for( const auto& c : kRejected ) {
+			ExtraHeaders extra;
+			extra.host = c.host;
+			extra.hasAuthorization = true;
+			extra.authorization = "Bearer " + g_testToken;
+			HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( reqId++ ), extra );
+			Check( r.ok && r.status == 403, std::string( "Host: " ) + c.label + " -> 403 Forbidden" );
+		}
+	}
+	std::printf( "[host-malformed-crash] previously-fuzzed unclosed/degenerate bracket forms stay fail-closed, no crash\n" );
+	{
+		// These already 403'd pre-fix (the closing-bracket-not-found
+		// early return) -- re-asserted here so the tightened parse
+		// doesn't regress the crash-fuzz property the 5c review checked.
+		const char* kCrashFuzz[] = { "[", "[]", "[::1", "]evil" };
+		int reqId = 250;
+		for( const char* h : kCrashFuzz ) {
+			ExtraHeaders extra;
+			extra.host = h;
+			extra.hasAuthorization = true;
+			extra.authorization = "Bearer " + g_testToken;
+			HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( reqId++ ), extra );
+			Check( r.ok && r.status == 403,
+			       std::string( "Host: \"" ) + h + "\" (crash-fuzz form) -> 403 Forbidden, no crash" );
+		}
+	}
+	std::printf( "[host-valid-regression] well-formed loopback Host/Origin values still accepted\n" );
+	{
+		// Regression guard for the tightened parse: every previously-valid
+		// shape (bare, ported, case-varied, and now also the bracketed
+		// IPv6 forms actually reaching the dispatcher) must still return
+		// 200.
+		struct ValidCase { std::string host; const char* label; };
+		const std::vector<ValidCase> kValid = {
+			{ "127.0.0.1",                          "127.0.0.1" },
+			{ "127.0.0.1:" + std::to_string( port ), "127.0.0.1:<port>" },
+			{ "localhost",                           "localhost" },
+			{ "localhost:" + std::to_string( port ), "localhost:<port>" },
+			{ "Localhost",                           "Localhost (mixed case)" },
+			{ "[::1]",                               "[::1]" },
+			{ "[::1]:" + std::to_string( port ),     "[::1]:<port>" },
+		};
+		int reqId = 260;
+		for( const auto& c : kValid ) {
+			ExtraHeaders extra;
+			extra.host = c.host;
+			extra.hasAuthorization = true;
+			extra.authorization = "Bearer " + g_testToken;
+			HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( reqId++ ), extra );
+			Check( r.ok && r.status == 200, std::string( "Host: " ) + c.label + " is accepted" );
+		}
+	}
+
+	//------------------------------------------------------------------
 	// (p) [SLICE 4 HARDENING] ConstantTimeEquals length-fold (P3-1) --
 	// direct unit check via the ForTest_ConstantTimeEquals() seam.
 	//------------------------------------------------------------------
