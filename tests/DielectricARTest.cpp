@@ -44,6 +44,8 @@
 #include "../src/Library/Interfaces/ISPF.h"
 #include "../src/Library/Interfaces/IObject.h"
 #include "../src/Library/Materials/DielectricSPF.h"
+#include "../src/Library/RISE_API.h"
+#include "../src/Library/Interfaces/IJob.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -176,6 +178,22 @@ int main()
 		if( Rar >= Rbar ) obliqueBelow = false;
 	}
 	Check( obliqueBelow, "AR < bare at moderate oblique angles (mu=1.0..0.6)", 0, 0 );
+
+	// --- Revert-proof: the legacy single-film scalar AR construction overloads
+	// must survive the N-layer (array) evolution.  RISE_API.h and IJob are the
+	// external construction boundary; resolving the overload set to the exact
+	// 3-scalar single-film signature fails to COMPILE if the overload is dropped.
+	{
+		bool (*legacyAPI)( IMaterial**, const IScalarPainter&, const IScalarPainter&,
+		                   const IScalarPainter&, const bool, const Scalar, const Scalar, const Scalar )
+			= &RISE_API_CreateDielectricMaterial;
+		Check( legacyAPI != 0, "legacy single-film scalar RISE_API_CreateDielectricMaterial overload exists", 0, 0 );
+
+		bool (IJob::*legacyJob)( const char*, const char*, const char*, const char*, const bool,
+		                         const Scalar, const Scalar, const Scalar )
+			= &IJob::AddDielectricMaterial;
+		Check( legacyJob != 0, "legacy single-film scalar IJob::AddDielectricMaterial overload exists", 0, 0 );
+	}
 
 	// ---------------------------------------------------------------
 	// PART 1b - the N-LAYER stack path (ReflectanceConductorStack).

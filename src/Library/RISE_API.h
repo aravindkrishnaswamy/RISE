@@ -637,6 +637,23 @@ namespace RISE
 								const unsigned int arNLayers = 0	///< [in] Number of AR layers (0 = no coating)
 								);
 
+	//! Legacy single-film AR overload.  Builds a one-layer stack and forwards to
+	//! the N-layer form above, so pre-N-layer external callers (scalar ar film
+	//! ior/extinction/thickness) still compile.  A `0.0` double binds to Scalar
+	//! (not the array form's `const Scalar*`), so real single-film calls resolve
+	//! here unambiguously.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateDielectricMaterial(
+								IMaterial** ppi,				///< [out] Pointer to recieve the material
+								const IScalarPainter& tau,		///< [in] Transmittance (per-channel + spectral)
+								const IScalarPainter& rIndex,	///< [in] Index of refraction
+								const IScalarPainter& scat,		///< [in] Scattering function (Phong cone or HG)
+								const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+								const Scalar arFilmN,			///< [in] Single AR film real index
+								const Scalar arFilmK,			///< [in] Single AR film extinction
+								const Scalar arFilmThickness	///< [in] Single AR film thickness, nm
+								);
+
 	//! Creates a SubSurface Scattering material.  ior / absorption /
 	//! scattering are physical scalars carried by `IScalarPainter`
 	//! — see docs/ISCALARPAINTER_REFACTOR.md.

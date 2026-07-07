@@ -819,6 +819,28 @@ namespace RISE
 								const unsigned int arNLayers = 0	///< [in] Number of AR layers (0 = no coating)
 									) = 0;
 
+		//! Legacy single-film AR convenience -- one-layer stack -> the N-layer
+		//! virtual above.  NON-virtual (no vtable change), so pre-N-layer callers
+		//! passing scalar ar film ior/extinction/thickness still compile.  A 0.0
+		//! double binds to Scalar, not the array form's const Scalar*, so real
+		//! single-film calls resolve here unambiguously.
+		bool AddDielectricMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* tau,				///< [in] Transmittance painter
+									const char* rIndex,				///< [in] Index of refraction
+									const char* scat,				///< [in] Scattering function (either Phong or HG)
+									const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+									const Scalar arFilmN,			///< [in] Single AR film real index
+									const Scalar arFilmK,			///< [in] Single AR film extinction
+									const Scalar arFilmThickness	///< [in] Single AR film thickness, nm
+									)
+		{
+			const Scalar n[1]  = { arFilmN };
+			const Scalar k[1]  = { arFilmK };
+			const Scalar th[1] = { arFilmThickness };
+			return AddDielectricMaterial( name, tau, rIndex, scat, hg, n, k, th, 1u );
+		}
+
 		//! Adds a SubSurface Scattering material
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddSubSurfaceScatteringMaterial(

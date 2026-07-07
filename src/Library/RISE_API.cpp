@@ -1730,6 +1730,24 @@ namespace RISE
 		return true;
 	}
 
+	// Legacy single-film AR overload -> one-layer stack -> N-layer form above.
+	bool RISE_API_CreateDielectricMaterial(
+								IMaterial** ppi,
+								const IScalarPainter& tau,
+								const IScalarPainter& rIndex,
+								const IScalarPainter& scat,
+								const bool hg,
+								const Scalar arFilmN,
+								const Scalar arFilmK,
+								const Scalar arFilmThickness
+								)
+	{
+		const Scalar n[1]  = { arFilmN };
+		const Scalar k[1]  = { arFilmK };
+		const Scalar th[1] = { arFilmThickness };
+		return RISE_API_CreateDielectricMaterial( ppi, tau, rIndex, scat, hg, n, k, th, 1u );
+	}
+
 	//! Creates a SubSurface Scattering material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateSubSurfaceScatteringMaterial(

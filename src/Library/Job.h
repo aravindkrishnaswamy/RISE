@@ -2261,6 +2261,7 @@ namespace RISE
 		// Job* would fail to compile even though the inline wrapper
 		// exists in IJob.  The `using` brings the base-class overloads
 		// into Job's scope, restoring overload resolution.
+		using IJob::AddDielectricMaterial;
 		using IJob::SetMLTRasterizer;
 		using IJob::SetMLTSpectralRasterizer;
 
