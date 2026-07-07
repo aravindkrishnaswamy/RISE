@@ -30,6 +30,14 @@ namespace RISE
 		const Vector3& v = ray.Dir();
 		Scalar a = v.y * v.y + v.z * v.z;
 
+		// Ray parallel to the cylinder axis (a==0): it holds a constant distance
+		// from the axis and never crosses the side wall -> miss.  Mirrors
+		// IntersectCappedSolid's `A > NEARZERO`; without it inva=1/a=inf makes
+		// t=NaN, and the NaN ranges slip past every comparison as a false hit.
+		if( a < NEARZERO ) {
+			return;
+		}
+
 		const Point3&  o = ray.origin;
 		Scalar oc1 = o.y - yCenter;
 		Scalar oc2 = o.z - zCenter;
@@ -79,6 +87,14 @@ namespace RISE
 
 		const Vector3& v = ray.Dir();
 		Scalar a = v.z * v.z + v.x * v.x;
+
+		// Ray parallel to the cylinder axis (a==0): it holds a constant distance
+		// from the axis and never crosses the side wall -> miss.  Mirrors
+		// IntersectCappedSolid's `A > NEARZERO`; without it inva=1/a=inf makes
+		// t=NaN, and the NaN ranges slip past every comparison as a false hit.
+		if( a < NEARZERO ) {
+			return;
+		}
 
 		const Point3&  o = ray.origin;
 		Scalar oc1 = o.z - zCenter;
@@ -130,6 +146,14 @@ namespace RISE
 
 		const Vector3& v = ray.Dir();
 		Scalar a = v.x * v.x + v.y * v.y;
+
+		// Ray parallel to the cylinder axis (a==0): it holds a constant distance
+		// from the axis and never crosses the side wall -> miss.  Mirrors
+		// IntersectCappedSolid's `A > NEARZERO`; without it inva=1/a=inf makes
+		// t=NaN, and the NaN ranges slip past every comparison as a false hit.
+		if( a < NEARZERO ) {
+			return;
+		}
 
 		const Point3&  o = ray.origin;
 		Scalar oc1 = o.x - xCenter;
