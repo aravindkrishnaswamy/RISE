@@ -226,6 +226,8 @@ static void TestDiagnostics()
 		{ "dens0",     "density 0\n" },				// inert domain -> chunk diagnostic
 		{ "negspread", "spread -1\n" },				// inert domain
 		{ "scale0",    "scale 1 0 1\n" },			// zero stretch component
+		{ "ovf_dens",  "density 1e999\n" },			// overflow: strtod ERANGE -> string-layer reject
+		{ "ovf_cov",   "coverage 1e999\n" },		// overflow
 	};
 
 	for( unsigned int i = 0; i < sizeof(bad)/sizeof(bad[0]); i++ )

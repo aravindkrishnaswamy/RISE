@@ -711,7 +711,11 @@ namespace RISE
 						return false;	// nan / inf / infinity spellings
 					}
 					char* end = 0;
+					errno = 0;
 					strtod( tok, &end );
+					if( errno == ERANGE ) {
+						return false;	// overflow/underflow (e.g. 1e999 -> HUGE_VAL); reject at the STRING layer (value-level isfinite is unreliable under -ffast-math), mirroring the ar_layer parser
+					}
 					if( end == tok ) {
 						return false;	// token does not start as a number
 					}
