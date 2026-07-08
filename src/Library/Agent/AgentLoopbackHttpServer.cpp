@@ -182,11 +182,19 @@ namespace
 	//! Sends the entirety of `data` on `sock`, looping over short writes
 	//! (and over the chunk cap above for very large bodies). Returns false
 	//! on any send() failure/timeout (the caller has nothing further to do
-	//! but close -- there is no response-to-a-response in HTTP/1.1).
-	bool SendAll( SOCKET sock, const std::string& data )
+	//! but close -- there is no response-to-a-response in HTTP/1.1) OR if
+	//! `deadline` (a FIXED wall-clock point, checked before every send()
+	//! call -- see kDefaultTotalResponseWriteDeadlineMs's doc) has passed.
+	//! Symmetric with ReadExactly's per-recv deadline check on the read
+	//! side: a peer that accepts a few bytes every few seconds -- each
+	//! individual send() well inside SO_SNDTIMEO (kSocketTimeoutMs), so
+	//! that alone never fires -- still cannot hold this loop open past
+	//! `deadline`, no matter how slowly it drains its receive buffer.
+	bool SendAll( SOCKET sock, const std::string& data, const std::chrono::steady_clock::time_point& deadline )
 	{
 		std::size_t sent = 0;
 		while( sent < data.size() ) {
+			if( std::chrono::steady_clock::now() >= deadline ) return false;
 			const std::size_t remaining = data.size() - sent;
 			const std::size_t toSend = remaining < kSendChunkBytes ? remaining : kSendChunkBytes;
 			const int n = static_cast<int>( send( sock, data.data() + sent,
@@ -323,7 +331,12 @@ namespace
 	//! the re-parse here is a cheap, defensive re-derivation, not a new
 	//! failure mode: if it somehow failed anyway, `idValue` simply stays
 	//! its default-constructed null, which is still a valid (if less
-	//! helpful) JSON-RPC id.
+	//! helpful) JSON-RPC id. The echoed `id` is gated to
+	//! isNumber()||isString()||isNull() -- the JSON-RPC-legal id types --
+	//! the SAME gate AgentMcpAdapter::HandleLine applies to every OTHER
+	//! response this server ever emits; a client sending a non-scalar `id`
+	//! (an object/array/bool) would otherwise get it echoed back verbatim,
+	//! producing a spec-noncompliant response from this one code path.
 	std::string MakeRateLimitExceededError( const std::string& originalBody, const std::string& toolName )
 	{
 		JsonValue idValue;   // default-constructed == null
@@ -331,7 +344,9 @@ namespace
 			JsonValue reqEnv;
 			std::string perr;
 			if( JsonParse( originalBody, reqEnv, perr ) && reqEnv.isObject() ) {
-				if( const JsonValue* idVal = reqEnv.find( "id" ) ) idValue = *idVal;
+				if( const JsonValue* idVal = reqEnv.find( "id" ) ) {
+					if( idVal->isNumber() || idVal->isString() || idVal->isNull() ) idValue = *idVal;
+				}
 			}
 		}
 
@@ -715,6 +730,7 @@ AgentLoopbackHttpServer::AgentLoopbackHttpServer( AgentMcpAdapter* adapter, cons
 	, mStopRequested( false )
 	, mInsideHandleLine( false )
 	, mTotalRequestDeadlineMs( kDefaultTotalRequestDeadlineMs )
+	, mTotalResponseWriteDeadlineMs( kDefaultTotalResponseWriteDeadlineMs )
 	, mRateWindowStartMs( 0 )
 	, mRateWindowCount( 0 )
 	, mRateWindowValid( false )
@@ -725,6 +741,16 @@ AgentLoopbackHttpServer::AgentLoopbackHttpServer( AgentMcpAdapter* adapter, cons
 void AgentLoopbackHttpServer::ForTest_SetTotalRequestDeadlineMs( int ms )
 {
 	mTotalRequestDeadlineMs = ms;
+}
+
+void AgentLoopbackHttpServer::ForTest_SetTotalResponseWriteDeadlineMs( int ms )
+{
+	mTotalResponseWriteDeadlineMs = ms;
+}
+
+std::chrono::steady_clock::time_point AgentLoopbackHttpServer::MakeResponseWriteDeadline() const
+{
+	return std::chrono::steady_clock::now() + std::chrono::milliseconds( mTotalResponseWriteDeadlineMs );
 }
 
 void AgentLoopbackHttpServer::ForTest_SetRateLimitClockFn( std::int64_t (*fn)() )
@@ -1029,7 +1055,7 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 		// correct status for "the server gave up waiting for the rest of
 		// the request".
 		const std::string resp = PlainError( "408 Request Timeout", "request exceeded the server's total read deadline" );
-		SendAll( client, resp );
+		SendAll( client, resp, MakeResponseWriteDeadline() );
 		LogRequest( "?", "?", 408, head.size(), resp.size() );
 		return;
 	}
@@ -1043,7 +1069,7 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 		// both are reported the same way (both are "never got a usable
 		// header block").
 		const std::string resp = PlainError( "431 Request Header Fields Too Large", "malformed, incomplete, or oversized request headers" );
-		SendAll( client, resp );
+		SendAll( client, resp, MakeResponseWriteDeadline() );
 		LogRequest( "?", "?", 431, head.size(), resp.size() );
 		return;
 	}
@@ -1068,7 +1094,7 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 
 	if( method.empty() || path.empty() || httpVersion.empty() ) {
 		const std::string resp = PlainError( "400 Bad Request", "malformed request line" );
-		SendAll( client, resp );
+		SendAll( client, resp, MakeResponseWriteDeadline() );
 		LogRequest( method.empty() ? "?" : method, path.empty() ? "?" : path, 400, head.size(), resp.size() );
 		return;
 	}
@@ -1140,7 +1166,7 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 		// proxy honouring Transfer-Encoding while this backend honours
 		// Content-Length instead).
 		const std::string resp = PlainError( "400 Bad Request", "Transfer-Encoding is not supported" );
-		SendAll( client, resp );
+		SendAll( client, resp, MakeResponseWriteDeadline() );
 		LogRequest( method, path, 400, head.size(), resp.size() );
 		return;
 	}
@@ -1152,7 +1178,7 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 		// Content-Length values to honour. This server used to silently
 		// take "last one wins"; that is now a hard 400 instead.
 		const std::string resp = PlainError( "400 Bad Request", "duplicate Content-Length header" );
-		SendAll( client, resp );
+		SendAll( client, resp, MakeResponseWriteDeadline() );
 		LogRequest( method, path, 400, head.size(), resp.size() );
 		return;
 	}
@@ -1182,7 +1208,7 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 		std::string hostValue;
 		if( FindHeader( head, "Host", hostValue ) && !IsLoopbackHost( hostValue ) ) {
 			const std::string resp = PlainError( "403 Forbidden", "Host header does not name loopback" );
-			SendAll( client, resp );
+			SendAll( client, resp, MakeResponseWriteDeadline() );
 			LogRequest( method, path, 403, head.size(), resp.size() );
 			return;
 		}
@@ -1203,7 +1229,7 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 		std::string originValue;
 		if( FindHeader( head, "Origin", originValue ) && !IsAllowedLoopbackOrigin( originValue ) ) {
 			const std::string resp = PlainError( "403 Forbidden", "Origin is not an allowed loopback origin" );
-			SendAll( client, resp );
+			SendAll( client, resp, MakeResponseWriteDeadline() );
 			LogRequest( method, path, 403, head.size(), resp.size() );
 			return;
 		}
@@ -1243,7 +1269,7 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 			if( pos != std::string::npos ) {
 				resp.insert( pos, "\r\nWWW-Authenticate: Bearer" );
 			}
-			SendAll( client, resp );
+			SendAll( client, resp, MakeResponseWriteDeadline() );
 			LogRequest( method, path, 401, head.size(), resp.size() );
 			return;
 		}
@@ -1253,27 +1279,27 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 
 	if( !isPost ) {
 		const std::string resp = PlainError( "405 Method Not Allowed", "only POST is served" );
-		SendAll( client, resp );
+		SendAll( client, resp, MakeResponseWriteDeadline() );
 		LogRequest( method, path, 405, head.size(), resp.size() );
 		return;
 	}
 
 	if( path != mPath ) {
 		const std::string resp = PlainError( "404 Not Found", "unknown path" );
-		SendAll( client, resp );
+		SendAll( client, resp, MakeResponseWriteDeadline() );
 		LogRequest( method, path, 404, head.size(), resp.size() );
 		return;
 	}
 
 	if( contentLength == -1 ) {
 		const std::string resp = PlainError( "400 Bad Request", "missing Content-Length" );
-		SendAll( client, resp );
+		SendAll( client, resp, MakeResponseWriteDeadline() );
 		LogRequest( method, path, 400, head.size(), resp.size() );
 		return;
 	}
 	if( contentLength == -2 ) {
 		const std::string resp = PlainError( "400 Bad Request", "malformed Content-Length" );
-		SendAll( client, resp );
+		SendAll( client, resp, MakeResponseWriteDeadline() );
 		LogRequest( method, path, 400, head.size(), resp.size() );
 		return;
 	}
@@ -1283,7 +1309,7 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 		// pre-validated to be digits-only) -- kept as defense in depth
 		// rather than trusting the parse implicitly.
 		const std::string resp = PlainError( "400 Bad Request", "invalid Content-Length" );
-		SendAll( client, resp );
+		SendAll( client, resp, MakeResponseWriteDeadline() );
 		LogRequest( method, path, 400, head.size(), resp.size() );
 		return;
 	}
@@ -1295,7 +1321,7 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 		// for it or exhaust memory -- see AgentLoopbackHttpTest.cpp's
 		// oversized-body case.
 		const std::string resp = PlainError( "413 Payload Too Large", "Content-Length exceeds the server cap" );
-		SendAll( client, resp );
+		SendAll( client, resp, MakeResponseWriteDeadline() );
 		LogRequest( method, path, 413, head.size(), resp.size() );
 		return;
 	}
@@ -1317,7 +1343,7 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 			// (a slow-loris drip can just as easily target the body as the
 			// headers).
 			const std::string resp = PlainError( "408 Request Timeout", "request exceeded the server's total read deadline" );
-			SendAll( client, resp );
+			SendAll( client, resp, MakeResponseWriteDeadline() );
 			LogRequest( method, path, 408, head.size() + body.size(), resp.size() );
 			return;
 		}
@@ -1327,7 +1353,7 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 			// rejection, no hang (bounded by the per-recv socket
 			// timeout set in Serve()), no crash.
 			const std::string resp = PlainError( "400 Bad Request", "truncated request body" );
-			SendAll( client, resp );
+			SendAll( client, resp, MakeResponseWriteDeadline() );
 			LogRequest( method, path, 400, head.size() + need, resp.size() );
 			return;
 		}
@@ -1343,7 +1369,7 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 		if( IsMutatingMcpToolCall( body, rateLimitToolName ) && !CheckAndConsumeMutatingRateLimit() ) {
 			const std::string rpcErr = MakeRateLimitExceededError( body, rateLimitToolName );
 			const std::string resp = BuildHttpResponse( "200 OK", "application/json", rpcErr );
-			SendAll( client, resp );
+			SendAll( client, resp, MakeResponseWriteDeadline() );
 			LogRequest( method, path, 200, head.size() + need, resp.size() );
 			return;
 		}
@@ -1361,6 +1387,6 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 	// rather than leaving the client's HTTP request hanging forever.
 	const std::string responseBody = adapterResponse.empty() ? std::string( "{}" ) : adapterResponse;
 	const std::string httpResp = BuildHttpResponse( "200 OK", "application/json", responseBody );
-	SendAll( client, httpResp );
+	SendAll( client, httpResp, MakeResponseWriteDeadline() );
 	LogRequest( method, path, 200, head.size() + need, httpResp.size() );
 }

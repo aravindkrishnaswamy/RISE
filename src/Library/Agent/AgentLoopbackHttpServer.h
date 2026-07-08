@@ -68,6 +68,7 @@
 #define RISE_AGENT_AGENTLOOPBACKHTTPSERVER_
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <string>
 
@@ -218,14 +219,39 @@ namespace RISE
 			//! HandleLine, which includes `render` -- a legitimate
 			//! multi-second-or-longer path-traced render is normal, SERVER-
 			//! side latency, not an attacker-controlled receive-pacing
-			//! attack) or the response write. 15s is generously above any
-			//! realistic time a same-machine MCP client needs to finish
-			//! SENDING a request (the body cap above is 8 MiB; even a
-			//! pathologically slow loopback link finishes that transfer in
-			//! a small fraction of 15s), so a well-behaved client should
-			//! never observe this. See ForTest_SetTotalRequestDeadlineMs to
-			//! shrink it for a test.
+			//! attack) or the response write (that is the SEPARATE
+			//! kDefaultTotalResponseWriteDeadlineMs below). 15s is
+			//! generously above any realistic time a same-machine MCP
+			//! client needs to finish SENDING a request (the body cap
+			//! above is 8 MiB; even a pathologically slow loopback link
+			//! finishes that transfer in a small fraction of 15s), so a
+			//! well-behaved client should never observe this. See
+			//! ForTest_SetTotalRequestDeadlineMs to shrink it for a test.
 			static const int kDefaultTotalRequestDeadlineMs = 15000;
+
+			//! Secure-MCP slice 6 fix round: the symmetric counterpart to
+			//! kDefaultTotalRequestDeadlineMs above, covering the RESPONSE
+			//! WRITE phase instead of the request read phase. Read-side
+			//! slow-loris (a peer dripping request bytes so slowly that no
+			//! single recv() ever times out, but the total read never
+			//! finishes) was closed by the deadline above; a peer can just
+			//! as easily mount the SAME attack on the write side -- accept
+			//! a response (e.g. read_image's base64 PNG, potentially large)
+			//! so slowly that no single send() ever hits SO_SNDTIMEO
+			//! (kSocketTimeoutMs in the .cpp), but the total write never
+			//! finishes, holding this single-threaded SERIAL server's one
+			//! connection slot open indefinitely. SendAll takes a deadline
+			//! of this same shape (a FIXED wall-clock point, checked before
+			//! every send() call, set once per response) so a slow-read
+			//! peer is cut off the same way a slow-send peer is on the read
+			//! side. A fresh deadline is computed right before EACH
+			//! SendAll call (not reused from the read-phase deadline above,
+			//! and not shared across the whole connection) so a legitimate
+			//! multi-second dispatch (a real render) never eats into the
+			//! write budget, and vice versa. See
+			//! ForTest_SetTotalResponseWriteDeadlineMs to shrink it for a
+			//! test.
+			static const int kDefaultTotalResponseWriteDeadlineMs = 15000;
 
 			//! Secure-MCP slice 6: the mutating-verb rate limit -- a simple
 			//! FIXED WINDOW (not sliding/token-bucket) counter: every
@@ -268,6 +294,12 @@ namespace RISE
 			//! class is single-threaded per its own documented contract, so
 			//! there is no concurrent Serve() to race).
 			void ForTest_SetTotalRequestDeadlineMs( int ms );
+
+			//! Test seam: shrinks (or restores, passing
+			//! kDefaultTotalResponseWriteDeadlineMs) the per-response total
+			//! write deadline above. Same call-timing/threading contract as
+			//! ForTest_SetTotalRequestDeadlineMs.
+			void ForTest_SetTotalResponseWriteDeadlineMs( int ms );
 
 			//! Test seam: overrides the millisecond wall-clock source the
 			//! mutating-verb rate limiter reads (see kMutatingRateLimitWindowMs).
@@ -332,6 +364,13 @@ namespace RISE
 			//! starts or between test sections, never concurrently with it.
 			int mTotalRequestDeadlineMs;
 
+			//! Secure-MCP slice 6 fix round: the (test-overridable) total
+			//! per-response write deadline -- see
+			//! kDefaultTotalResponseWriteDeadlineMs's doc. Same plain-int,
+			//! single-threaded-access rationale as mTotalRequestDeadlineMs
+			//! above.
+			int mTotalResponseWriteDeadlineMs;
+
 			//! Secure-MCP slice 6: the mutating-verb fixed-window rate
 			//! limiter's state -- see kMutatingRateLimitWindowMs's doc.
 			//! mRateWindowStartMs is the millisecond timestamp (per
@@ -369,6 +408,14 @@ namespace RISE
 			//! object body -- HTTP request/response is not fire-and-forget
 			//! the way the stdio transport's notification line can be).
 			std::string DispatchGuarded( const std::string& body );
+
+			//! Secure-MCP slice 6 fix round: a FRESH total-write deadline
+			//! (now + mTotalResponseWriteDeadlineMs) -- see
+			//! kDefaultTotalResponseWriteDeadlineMs's doc for why this is
+			//! computed anew immediately before EACH SendAll call rather
+			//! than threaded through from the request-read deadline or
+			//! shared across the whole connection.
+			std::chrono::steady_clock::time_point MakeResponseWriteDeadline() const;
 
 			//! Secure-MCP slice 6: consults + ADVANCES the mutating-verb
 			//! fixed-window rate limiter (mRateWindowStartMs/mRateWindowCount,

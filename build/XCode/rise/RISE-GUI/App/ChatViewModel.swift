@@ -386,7 +386,7 @@ final class ChatViewModel: ObservableObject {
                 nextObservedAt[id] = observedAt
             }
 
-            let summary: String
+            var summary: String
             switch kind {
             case "insert_chunk":
                 let chunkText = (p["chunkText"] as? String) ?? ""
@@ -401,6 +401,15 @@ final class ChatViewModel: ObservableObject {
                 let param = p["param"] as? String ?? ""
                 let value = p["value"] as? String ?? ""
                 summary = "\(target).\(param) = \(value)"
+            }
+
+            // Secure-MCP slice 6 fix round: the wire's per-proposal echo
+            // cap (see AgentRpc.cpp's ClipProposalFieldEcho) marks
+            // `truncated:true` whenever `value`/`chunkText` was clipped for
+            // the listing -- surface that here so the owner never mistakes
+            // a clipped preview for the whole (never-clipped) stored text.
+            if (p["truncated"] as? Bool) == true {
+                summary += " (truncated)"
             }
 
             next.append(ProposalEntry(

@@ -310,22 +310,66 @@ namespace RISE
 			//! response, WITHOUT touching the stored proposal itself).
 			const std::size_t kProposalFieldEchoCapBytes = 16u * 1024u;
 
-			//! Clips `s` in place to at most kProposalFieldEchoCapBytes bytes
-			//! and returns whether it was actually clipped. A byte-length
-			//! cap (not a UTF-8-aware one): the payloads this bounds
-			//! (propose_patch's `value`, insert_chunk/remove_chunk's
-			//! `chunkText`) are RISE scene-language text, which this
-			//! codebase already treats as a byte string everywhere else
-			//! (e.g. the JSON codec's own string handling) -- a clip that
-			//! lands mid multi-byte UTF-8 sequence is a cosmetic listing-
-			//! preview artifact, not a correctness issue, since `truncated`
-			//! tells the caller this is a prefix, not the whole value, and
-			//! the STORED proposal (read back in full on approval) is never
-			//! touched by this function.
+			//! Clips `s` in place to AT MOST kProposalFieldEchoCapBytes bytes
+			//! (never over the cap, but a few bytes under it is fine -- see
+			//! the boundary walk-back below) and returns whether it was
+			//! actually clipped. This IS a correctness issue, not merely a
+			//! cosmetic one, for any strict UTF-8 consumer of list_proposals'
+			//! JSON: a byte-boundary-only clip landing mid multi-byte
+			//! sequence emits an invalid UTF-8 byte (a lone lead byte, or an
+			//! orphaned continuation byte) inside a JSON string -- confirmed
+			//! to blank the Mac owner-approval panel entirely (strict
+			//! JSONSerialization decode failure on ChatViewModel's
+			//! refreshProposals), i.e. an untrusted External client could
+			//! deny the owner their review UI. After the byte-length resize,
+			//! this walks the tail back to the nearest UTF-8 CHARACTER
+			//! boundary and drops any trailing incomplete sequence, so the
+			//! result is ALWAYS valid UTF-8. `truncated` is still true
+			//! whenever ANY clip happened here (the byte-length clip, the
+			//! boundary walk-back, or both) -- the caller only needs to know
+			//! "this is a prefix, not the whole value"; the STORED proposal
+			//! (read back in full on approval) is never touched by this
+			//! function.
 			bool ClipProposalFieldEcho( std::string& s )
 			{
 				if( s.size() <= kProposalFieldEchoCapBytes ) return false;
 				s.resize( kProposalFieldEchoCapBytes );
+
+				// UTF-8 boundary walk-back. Scan back at most 4 bytes (the
+				// longest possible UTF-8 sequence) from the new tail,
+				// skipping continuation bytes (10xxxxxx) until a non-
+				// continuation byte is found. That byte is either ASCII
+				// (0xxxxxxx, always a valid boundary on its own) or a lead
+				// byte (110xxxxx/1110xxxx/11110xxx) whose declared sequence
+				// length we compare against how many bytes actually remain
+				// (`back`) -- if the sequence needs more than `back` bytes,
+				// it was truncated mid-character, so drop it (and any
+				// continuation bytes already walked past) by resizing back
+				// to the lead byte's index. This only ever removes bytes
+				// (never adds), so the result stays <= the cap.
+				const std::size_t n = s.size();
+				const std::size_t scanBack = ( n < 4u ) ? n : 4u;
+				for( std::size_t back = 1; back <= scanBack; ++back )
+				{
+					const std::size_t idx = n - back;
+					const unsigned char b = static_cast<unsigned char>( s[idx] );
+					if( ( b & 0xC0 ) == 0x80 ) continue;   // continuation byte -- keep walking back
+
+					std::size_t seqLen = 1;
+					if( ( b & 0x80 ) == 0x00 )      seqLen = 1;   // ASCII
+					else if( ( b & 0xE0 ) == 0xC0 ) seqLen = 2;
+					else if( ( b & 0xF0 ) == 0xE0 ) seqLen = 3;
+					else if( ( b & 0xF8 ) == 0xF0 ) seqLen = 4;
+					else { s.resize( idx ); return true; }   // not a valid lead byte -- drop it and its trailing bytes too
+
+					if( seqLen > back ) s.resize( idx );   // sequence runs off the clipped end -- drop the incomplete tail
+					return true;
+				}
+				// All `scanBack` scanned bytes were continuation bytes --
+				// more than the 3 that can ever trail a single lead byte,
+				// so the input was already malformed here; drop the whole
+				// scanned tail defensively rather than emit it as-is.
+				s.resize( n - scanBack );
 				return true;
 			}
 

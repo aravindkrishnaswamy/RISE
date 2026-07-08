@@ -740,6 +740,19 @@ static void TestMutatingRateLimitAndTotalDeadline()
 		       "slice6(b): render is NOT rate-limited (no top-level error at all) even though the mutating "
 		       "window is exhausted -- the limiter only ever counts mutating verb names" );
 
+		// Secure-MCP slice 6 fix round P3-1: a SECOND read-safe verb --
+		// list_proposals -- gets the same exemption, so a misclassified
+		// read verb (one wrongly added to IsMutatingMcpToolCall's list)
+		// would be caught even if `render` alone happened to still pass.
+		HttpResponse listOk = DoRequestEx( port, "POST", "/mcp",
+			ReqToolCall( 9002, "list_proposals", JsonValue::MakeObject() ), extra );
+		Check( listOk.ok && listOk.status == 200, "slice6(b): a read-safe verb (list_proposals) still gets HTTP 200 in the SAME exhausted window" );
+		JsonValue listEnv; std::string lerr;
+		Check( JsonParse( listOk.body, listEnv, lerr ), "slice6(b): list_proposals response body parses as JSON" );
+		Check( !listEnv.has( "error" ),
+		       "slice6(b): list_proposals is NOT rate-limited (no top-level error at all) even though the "
+		       "mutating window is exhausted -- the limiter only ever counts mutating verb names" );
+
 		server.Stop();
 		if( serverThread.joinable() ) serverThread.join();
 	}

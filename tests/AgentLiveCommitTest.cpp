@@ -4660,6 +4660,339 @@ static void TestProposalListingTruncation()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Secure-MCP slice 6 fix round P1-TEST: the byte-length echo cap must
+// walk back to a UTF-8 CHARACTER boundary, not clip on a raw byte
+// boundary -- a clip landing mid multi-byte sequence emits invalid
+// UTF-8 inside list_proposals' JSON (confirmed to blank the Mac owner-
+// approval panel's strict JSONSerialization decode). This is a
+// self-contained structural validator (not exhaustive Unicode
+// validation -- just enough to catch a lone lead byte or an orphaned
+// continuation byte at/near the tail, which is exactly what a raw
+// byte-boundary clip mid-sequence produces).
+//////////////////////////////////////////////////////////////////////
+static bool IsStructurallyValidUtf8( const std::string& s )
+{
+	std::size_t i = 0;
+	const std::size_t n = s.size();
+	while( i < n )
+	{
+		const unsigned char b = static_cast<unsigned char>( s[i] );
+		std::size_t seqLen;
+		if( ( b & 0x80 ) == 0x00 )      seqLen = 1;
+		else if( ( b & 0xE0 ) == 0xC0 ) seqLen = 2;
+		else if( ( b & 0xF0 ) == 0xE0 ) seqLen = 3;
+		else if( ( b & 0xF8 ) == 0xF0 ) seqLen = 4;
+		else return false;   // invalid lead byte (stray continuation or 0xF8-0xFF)
+
+		if( i + seqLen > n ) return false;   // sequence runs off the end -- truncated tail
+		for( std::size_t k = 1; k < seqLen; ++k ) {
+			if( ( static_cast<unsigned char>( s[i + k] ) & 0xC0 ) != 0x80 ) return false;
+		}
+		i += seqLen;
+	}
+	return true;
+}
+
+static void TestProposalListingUtf8BoundarySafety()
+{
+	std::cout << "Test 43: list_proposals echo cap walks back to a UTF-8 boundary (Secure-MCP slice 6 fix round P1)..." << std::endl;
+
+	const char* tmp = "agentlive_proposal_utf8boundary.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "utf8-boundary: base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/5 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "utf8-boundary: initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> ownerSess =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		Check( ownerSess != nullptr, "utf8-boundary: owner session wraps the live Job" );
+		if( ownerSess ) ownerSess->AttachController( &c );
+		Agent::AgentRpcDispatcher ownerDisp( std::move( ownerSess ), Agent::AgentAutonomy::Commit );
+
+		std::unique_ptr<Agent::AgentSession> extSess =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		Check( extSess != nullptr, "utf8-boundary: external session wraps the live Job" );
+		if( extSess ) extSess->AttachController( &c );
+		Agent::AgentRpcDispatcher extDisp( std::move( extSess ), Agent::AgentAutonomy::Commit );
+
+		//------------------------------------------------------------------
+		// Build a chunkText whose bytes are an ASCII prefix (valid RISE
+		// scene syntax + a comment marker) followed by a long run of the
+		// 2-byte UTF-8 character U+00E9 ("e" acute, 0xC3 0xA9), SIZED so
+		// the 16384-byte echo-cap boundary (index kCap-1 = 16383) lands
+		// EXACTLY on the LEAD byte (0xC3) of one of those pairs -- i.e.
+		// the byte-length clip alone would keep the lead byte but drop
+		// its continuation byte, producing an invalid trailing sequence.
+		//------------------------------------------------------------------
+		const std::size_t kCap = 16u * 1024u;   // must match AgentRpc.cpp's kProposalFieldEchoCapBytes
+		std::string prefix = "uniformcolor_painter\n{\nname utf8pad\ncolor 0.25 0.5 0.75\n#pad:";
+		// Flip prefix parity (append one filler byte) if needed so that
+		// (kCap - 1 - prefix.size()) is even -- i.e. the e-run's lead
+		// bytes (at prefix.size() + 2*i) can land exactly on index kCap-1.
+		if( ( ( kCap - 1 - prefix.size() ) % 2 ) != 0 ) prefix += "#";
+		Check( prefix.size() < kCap - 1, "utf8-boundary: constructed prefix fits well before the cap boundary" );
+		const std::size_t offsetIntoRun = ( kCap - 1 ) - prefix.size();   // even, by construction above
+		const std::size_t pairsToBoundary = offsetIntoRun / 2 + 1;       // pairs needed so index kCap-1 is a lead byte
+		const std::size_t totalPairs = pairsToBoundary + 64;             // plenty of padding past the boundary too
+
+		std::string chunkText = prefix;
+		for( std::size_t i = 0; i < totalPairs; ++i ) chunkText += "\xC3\xA9";   // U+00E9 "e" acute, 2 bytes each
+		chunkText += "\n}\n";
+
+		Check( chunkText.size() > kCap, "utf8-boundary: constructed chunkText exceeds the 16 KiB echo cap" );
+		Check( static_cast<unsigned char>( chunkText[kCap - 1] ) == 0xC3,
+		       "utf8-boundary: byte index kCap-1 of the constructed text is the LEAD byte of a 2-byte "
+		       "sequence -- a raw byte-boundary clip would keep it and drop its continuation byte" );
+
+		const Agent::JsonValue chunkTextJson = Agent::JsonValue::MakeString( chunkText );
+		const std::string chunkTextEscaped = Agent::JsonSerialize( chunkTextJson );
+
+		std::string insertLine = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"insert_chunk\",\"params\":{\"chunkText\":";
+		insertLine += chunkTextEscaped;
+		insertLine += "}}";
+		const std::string insertResp = extDisp.HandleLine( insertLine );
+		Agent::JsonValue insertResult;
+		Check( JsonResultObj( insertResp, insertResult ), "utf8-boundary: external insert_chunk returns a result object" );
+		const Agent::JsonValue* insertStatus = insertResult.find( "status" );
+		Check( insertStatus && insertStatus->isString() && insertStatus->asString() == "staged",
+		       "utf8-boundary: the large insert_chunk stages cleanly" );
+
+		//------------------------------------------------------------------
+		// list_proposals' echo must be VALID UTF-8, <= the cap, and still
+		// flagged truncated -- the stored proposal is untouched.
+		//------------------------------------------------------------------
+		const std::string listResp = ownerDisp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"list_proposals\",\"params\":{}}" );
+		Agent::JsonValue listResult;
+		Check( JsonResultObj( listResp, listResult ), "utf8-boundary: list_proposals returns a result object" );
+		const Agent::JsonValue* arr = listResult.find( "proposals" );
+		Check( arr && arr->isArray() && arr->size() == 1, "utf8-boundary: exactly one staged proposal is listed" );
+		std::uint64_t proposalId = 0;
+		if( arr && arr->isArray() && arr->size() == 1 ) {
+			const Agent::JsonValue& e = arr->at( 0 );
+			const Agent::JsonValue* truncated = e.find( "truncated" );
+			Check( truncated && truncated->isBool() && truncated->asBool(),
+			       "utf8-boundary: the listing carries truncated:true for the oversized chunkText" );
+			const Agent::JsonValue* echoedChunkText = e.find( "chunkText" );
+			Check( echoedChunkText && echoedChunkText->isString(), "utf8-boundary: chunkText is echoed as a string" );
+			if( echoedChunkText && echoedChunkText->isString() ) {
+				const std::string& echoed = echoedChunkText->asString();
+				Check( echoed.size() <= kCap,
+				       "utf8-boundary: the echoed chunkText is AT MOST 16 KiB (may be a few bytes under, "
+				       "not necessarily exactly == kCap, since the boundary walk-back may drop a partial "
+				       "trailing sequence)" );
+				const unsigned char lastByte = echoed.empty() ? 0 : static_cast<unsigned char>( echoed.back() );
+				Check( !echoed.empty() && !( lastByte >= 0xC0 ),
+				       "RED-PROVE: the echoed chunkText's last byte is NOT a UTF-8 lead byte (0xC0-0xFF) -- "
+				       "a raw byte-boundary clip would leave a lone lead byte with its continuation dropped" );
+				Check( IsStructurallyValidUtf8( echoed ),
+				       "RED-PROVE: the echoed chunkText decodes as structurally valid UTF-8 end to end" );
+			}
+			const Agent::JsonValue* pid = e.find( "id" );
+			if( pid && pid->isNumber() ) proposalId = static_cast<std::uint64_t>( pid->asNumber() );
+		}
+		Check( proposalId != 0, "utf8-boundary: captured the staged proposal's id" );
+
+		//------------------------------------------------------------------
+		// Approve it -- the FULL (never-clipped) stored text must apply,
+		// proving the walk-back never touched the STORED proposal, only
+		// the listing echo.
+		//------------------------------------------------------------------
+		if( proposalId != 0 ) {
+			char resolveLine[128];
+			std::snprintf( resolveLine, sizeof( resolveLine ),
+				"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"resolve_proposal\",\"params\":"
+				"{\"proposalId\":%llu,\"approve\":true}}",
+				static_cast<unsigned long long>( proposalId ) );
+			const std::string resolveResp = ownerDisp.HandleLine( resolveLine );
+			Agent::JsonValue resolveResult;
+			Check( JsonResultObj( resolveResp, resolveResult ), "utf8-boundary: resolve_proposal(approve) returns a result object" );
+			const Agent::JsonValue* rstatus = resolveResult.find( "status" );
+			Check( rstatus && rstatus->isString() && rstatus->asString() == "applied",
+			       "utf8-boundary: the FULL stored chunkText (never clipped) parsed and applied cleanly" );
+		}
+		IPainter* pnt = pJob->GetPainters() ? pJob->GetPainters()->GetItem( "utf8pad" ) : nullptr;
+		Check( pnt != nullptr,
+		       "utf8-boundary: the \"utf8pad\" painter the FULL stored chunkText declares exists in the live scene" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Secure-MCP slice 6 fix round P2-1: prove the history-eviction filter
+// (StageProposal's "evict the single oldest RESOLVED entry once
+// mProposals.size() >= kMaxProposalHistory" step) never evicts a
+// still-PENDING proposal, even one held at the FRONT of the vector
+// (the oldest position, and therefore the first eviction candidate if
+// the status filter were ever weakened to ignore status entirely).
+//////////////////////////////////////////////////////////////////////
+static void TestProposalHistoryEvictionSurvivesPending()
+{
+	std::cout << "Test 44: proposal history eviction never evicts a pending proposal (Secure-MCP slice 6 fix round P2-1)..." << std::endl;
+
+	const char* tmp = "agentlive_proposal_historyevict.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "history-evict: base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/5 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "history-evict: initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> ownerSess =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		Check( ownerSess != nullptr, "history-evict: owner session wraps the live Job" );
+		if( ownerSess ) ownerSess->AttachController( &c );
+		Agent::AgentRpcDispatcher ownerDisp( std::move( ownerSess ), Agent::AgentAutonomy::Commit );
+
+		std::unique_ptr<Agent::AgentSession> extSess =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		Check( extSess != nullptr, "history-evict: external session wraps the live Job" );
+		if( extSess ) extSess->AttachController( &c );
+		Agent::AgentRpcDispatcher extDisp( std::move( extSess ), Agent::AgentAutonomy::Commit );
+
+		//------------------------------------------------------------------
+		// Stage ONE proposal and hold it PENDING at the FRONT (oldest
+		// position) of mProposals -- never resolved through this test.
+		//------------------------------------------------------------------
+		const std::string heldStageResp = extDisp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"propose_patch\",\"params\":"
+			"{\"target\":\"lum\",\"kind\":\"lambertian_luminaire_material\",\"param\":\"scale\",\"value\":\"5.0\"}}" );
+		Agent::JsonValue heldStageResult;
+		Check( JsonResultObj( heldStageResp, heldStageResult ), "history-evict: the held proposal stages cleanly" );
+		const Agent::JsonValue* heldStatus = heldStageResult.find( "status" );
+		Check( heldStatus && heldStatus->isString() && heldStatus->asString() == "staged",
+		       "history-evict: the held proposal's status is \"staged\"" );
+
+		std::uint64_t heldId = 0;
+		{
+			const std::string listResp = ownerDisp.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"list_proposals\",\"params\":{}}" );
+			Agent::JsonValue listResult;
+			Check( JsonResultObj( listResp, listResult ), "history-evict: list_proposals returns a result object" );
+			const Agent::JsonValue* arr = listResult.find( "proposals" );
+			Check( arr && arr->isArray() && arr->size() == 1, "history-evict: exactly the held proposal is listed so far" );
+			if( arr && arr->isArray() && arr->size() == 1 ) {
+				const Agent::JsonValue* pid = arr->at( 0 ).find( "id" );
+				if( pid && pid->isNumber() ) heldId = static_cast<std::uint64_t>( pid->asNumber() );
+			}
+		}
+		Check( heldId != 0, "history-evict: captured the held pending proposal's id" );
+
+		//------------------------------------------------------------------
+		// Grow mProposals well past kMaxProposalHistory (256) via
+		// stage+reject cycling -- each cycle adds exactly one RESOLVED
+		// (rejected) entry after the held pending one, so the eviction
+		// filter has plenty of resolved candidates to evict OTHER than
+		// the held entry.
+		//------------------------------------------------------------------
+		const std::size_t kMaxHistory = SceneEditController::kMaxProposalHistory;
+		const std::size_t cycles = kMaxHistory + 40;   // comfortably past the cap, several evictions occur
+		bool allCyclesOk = true;
+		for( std::size_t i = 0; i < cycles; ++i ) {
+			char stageLine[256];
+			std::snprintf( stageLine, sizeof( stageLine ),
+				"{\"jsonrpc\":\"2.0\",\"id\":%zu,\"method\":\"propose_patch\",\"params\":"
+				"{\"target\":\"lum\",\"kind\":\"lambertian_luminaire_material\",\"param\":\"scale\",\"value\":\"%zu.0\"}}",
+				100 + i, 10 + ( i % 50 ) );
+			const std::string stageResp = extDisp.HandleLine( stageLine );
+			Agent::JsonValue stageResult;
+			std::uint64_t cycId = 0;
+			if( JsonResultObj( stageResp, stageResult ) ) {
+				const Agent::JsonValue* st = stageResult.find( "status" );
+				if( !st || !st->isString() || st->asString() != "staged" ) allCyclesOk = false;
+			} else {
+				allCyclesOk = false;
+			}
+			// Find the just-staged proposal's id via list_proposals (it is
+			// always the LAST entry -- the held one is oldest/first, and
+			// nothing else is ever left pending).
+			const std::string listResp = ownerDisp.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":9999,\"method\":\"list_proposals\",\"params\":{}}" );
+			Agent::JsonValue listResult;
+			if( JsonResultObj( listResp, listResult ) ) {
+				const Agent::JsonValue* arr = listResult.find( "proposals" );
+				if( arr && arr->isArray() && arr->size() > 0 ) {
+					const Agent::JsonValue& last = arr->at( arr->size() - 1 );
+					const Agent::JsonValue* pid = last.find( "id" );
+					if( pid && pid->isNumber() ) cycId = static_cast<std::uint64_t>( pid->asNumber() );
+				}
+			}
+			if( cycId != 0 ) {
+				char resolveLine[160];
+				std::snprintf( resolveLine, sizeof( resolveLine ),
+					"{\"jsonrpc\":\"2.0\",\"id\":%zu,\"method\":\"resolve_proposal\",\"params\":"
+					"{\"proposalId\":%llu,\"approve\":false}}",
+					200 + i, static_cast<unsigned long long>( cycId ) );
+				ownerDisp.HandleLine( resolveLine );
+			} else {
+				allCyclesOk = false;
+			}
+		}
+		Check( allCyclesOk, "history-evict: all stage+reject cycles completed cleanly" );
+
+		//------------------------------------------------------------------
+		// RED-PROVE: the held pending proposal SURVIVES -- still listable
+		// (with status "pending") and still resolvable, even though
+		// mProposals has been driven well past kMaxProposalHistory and the
+		// held entry has sat at the OLDEST position the entire time (the
+		// first eviction candidate a status-blind filter would pick).
+		//------------------------------------------------------------------
+		bool heldStillListed = false;
+		{
+			const std::string listResp = ownerDisp.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"list_proposals\",\"params\":{}}" );
+			Agent::JsonValue listResult;
+			Check( JsonResultObj( listResp, listResult ), "history-evict: final list_proposals returns a result object" );
+			const Agent::JsonValue* arr = listResult.find( "proposals" );
+			Check( arr && arr->isArray(), "history-evict: final list_proposals carries a proposals array" );
+			if( arr && arr->isArray() ) {
+				for( std::size_t i = 0; i < arr->size(); ++i ) {
+					const Agent::JsonValue& e = arr->at( i );
+					const Agent::JsonValue* pid = e.find( "id" );
+					if( pid && pid->isNumber() && static_cast<std::uint64_t>( pid->asNumber() ) == heldId ) {
+						heldStillListed = true;
+						const Agent::JsonValue* st = e.find( "status" );
+						Check( st && st->isString() && st->asString() == "pending",
+						       "RED-PROVE: the held proposal's status is still \"pending\" after the history churn" );
+						break;
+					}
+				}
+			}
+		}
+		Check( heldStillListed, "RED-PROVE: the held pending proposal is STILL LISTED after growing history past "
+		       "kMaxProposalHistory entirely via OTHER (resolved) entries -- a status-blind eviction filter would "
+		       "have evicted it first, since it sat at the oldest position throughout" );
+
+		if( heldStillListed ) {
+			char resolveLine[160];
+			std::snprintf( resolveLine, sizeof( resolveLine ),
+				"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"resolve_proposal\",\"params\":"
+				"{\"proposalId\":%llu,\"approve\":false}}",
+				static_cast<unsigned long long>( heldId ) );
+			const std::string resolveResp = ownerDisp.HandleLine( resolveLine );
+			Agent::JsonValue resolveResult;
+			Check( JsonResultObj( resolveResp, resolveResult ), "history-evict: resolving the held proposal returns a result object" );
+			const Agent::JsonValue* resolved = resolveResult.find( "resolved" );
+			Check( resolved && resolved->isBool() && resolved->asBool(),
+			       "RED-PROVE: the held pending proposal is STILL RESOLVABLE after the history churn" );
+		}
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -4709,6 +5042,8 @@ int main()
 	TestProposalWireRoundTrip();
 	TestProposalQueueCapRedProve();
 	TestProposalListingTruncation();
+	TestProposalListingUtf8BoundarySafety();
+	TestProposalHistoryEvictionSurvivesPending();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;
