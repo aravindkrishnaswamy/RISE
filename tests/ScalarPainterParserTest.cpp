@@ -426,6 +426,23 @@ static void TestRejectInlineScalarOverflow()
 	Check( jgo != nullptr, "GGX finite tangent_rotation (0.5) still loads" );
 	if( jgo ) safe_release( jgo );
 	(void)ggxCol;
+
+	// PBR-MR scalar FACTORS (metallic / roughness / specular_factor /
+	// anisotropy_factor) also fall back to atof() in resolveOrSynth -- an inline
+	// non-finite value synthesised a non-finite uniform-colour painter.
+	const char* pbrInf =
+		"uniformcolor_painter\n{\n\tname bc\n\tcolor 0.8 0.8 0.8\n}\n"
+		"pbr_metallic_roughness_material\n{\n\tname pbr_inf\n\tbase_color bc\n\tmetallic 0.0\n\troughness inf\n}\n";
+	IJobPriv* jp = LoadScene( pbrInf, "pbr_inf" );
+	Check( jp == nullptr, "PBR-MR `roughness inf` REJECTED" );
+	if( jp ) safe_release( jp );
+
+	const char* pbrOk =
+		"uniformcolor_painter\n{\n\tname bc\n\tcolor 0.8 0.8 0.8\n}\n"
+		"pbr_metallic_roughness_material\n{\n\tname pbr_ok\n\tbase_color bc\n\tmetallic 0.0\n\troughness 0.3\n}\n";
+	IJobPriv* jpo = LoadScene( pbrOk, "pbr_ok" );
+	Check( jpo != nullptr, "PBR-MR finite roughness (0.3) still loads" );
+	if( jpo ) safe_release( jpo );
 }
 
 int main()

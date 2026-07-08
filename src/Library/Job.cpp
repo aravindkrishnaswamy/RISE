@@ -3798,6 +3798,24 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 		GlobalLog()->PrintEx( eLog_Error, "pbrmetallicroughness_material `%s`: `anisotropy_rotation` must be a finite rotation (got `%s`)", name, anisotropy_rotation );
 		return false;
 	}
+	// The scalar factors (metallic / roughness / specular_factor / anisotropy_factor)
+	// fall back to atof() in resolveOrSynth below when not a painter name, so an
+	// inline non-finite value would synthesise a non-finite uniform-colour painter.
+	// Reject those up front (a painter NAME is not flagged; "none" is not flagged).
+	{
+		const struct { const char* v; const char* role; } pbrScalars[] = {
+			{ metallic,          "metallic"          },
+			{ roughness,         "roughness"         },
+			{ specular_factor,   "specular_factor"   },
+			{ anisotropy_factor, "anisotropy_factor" },
+		};
+		for( unsigned int i = 0; i < sizeof(pbrScalars)/sizeof(pbrScalars[0]); ++i ) {
+			if( ScalarLiteralIsNonFinite( pbrScalars[i].v ) ) {
+				GlobalLog()->PrintEx( eLog_Error, "pbrmetallicroughness_material `%s`: `%s` must be a finite scalar (got `%s`)", name, pbrScalars[i].role, pbrScalars[i].v );
+				return false;
+			}
+		}
+	}
 	// Resolve the base_color painter.  Must already exist.
 	if( !pPntManager->GetItem( base_color ) ) {
 		GlobalLog()->PrintEx( eLog_Error,
