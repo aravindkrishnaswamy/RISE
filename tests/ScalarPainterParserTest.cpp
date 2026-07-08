@@ -443,6 +443,22 @@ static void TestRejectInlineScalarOverflow()
 	IJobPriv* jpo = LoadScene( pbrOk, "pbr_ok" );
 	Check( jpo != nullptr, "PBR-MR finite roughness (0.3) still loads" );
 	if( jpo ) safe_release( jpo );
+
+	// Light-shaderop sibling: arealight_shaderop `N` (Phong/directionality
+	// exponent) is Reference-kind and falls back to atof() -> non-finite exponent.
+	const char* alInf =
+		"uniformcolor_painter\n{\n\tname em\n\tcolor 1 1 1\n}\n"
+		"arealight_shaderop\n{\n\tname al_inf\n\temission em\n\tlocation 0 0 5\n\tmake_dir 0 0 0\n\tsamples 4\n\twidth 1\n\theight 1\n\tpower 10\n\tN inf\n\tcache false\n}\n";
+	IJobPriv* jal = LoadScene( alInf, "al_inf" );
+	Check( jal == nullptr, "arealight_shaderop `N inf` REJECTED" );
+	if( jal ) safe_release( jal );
+
+	const char* alOk =
+		"uniformcolor_painter\n{\n\tname em\n\tcolor 1 1 1\n}\n"
+		"arealight_shaderop\n{\n\tname al_ok\n\temission em\n\tlocation 0 0 5\n\tmake_dir 0 0 0\n\tsamples 4\n\twidth 1\n\theight 1\n\tpower 10\n\tN 1.0\n\tcache false\n}\n";
+	IJobPriv* jalo = LoadScene( alOk, "al_ok" );
+	Check( jalo != nullptr, "arealight_shaderop finite N (1.0) still loads" );
+	if( jalo ) safe_release( jalo );
 }
 
 int main()

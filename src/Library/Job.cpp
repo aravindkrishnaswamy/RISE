@@ -6241,6 +6241,14 @@ bool Job::AddAreaLightShaderOp(
 		)
 
 {
+	// N (Phong/directionality exponent) is Reference-kind and falls back to atof()
+	// below when not a painter name, so an inline non-finite value would synthesise
+	// a non-finite exponent painter.  Reject up front (painter name / "none" not flagged).
+	if( ScalarLiteralIsNonFinite( N ) ) {
+		GlobalLog()->PrintEx( eLog_Error, "arealight_shaderop `%s`: `N` must be a finite exponent (got `%s`)", name, N );
+		return false;
+	}
+
 	IPainter* pEmm = pPntManager->GetItem( emm );
 	if( !pEmm ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::AddAreaLightShaderOp: Painter not found '%s'", emm );
