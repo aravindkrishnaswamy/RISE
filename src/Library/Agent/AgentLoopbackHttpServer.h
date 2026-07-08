@@ -204,6 +204,88 @@ namespace RISE
 			//! being rejected. See the .cpp for the red-prove this guards.
 			static const std::size_t kMaxHeaderBytes = 64u * 1024u;
 
+			//! Secure-MCP slice 6: the per-connection TOTAL wall-clock
+			//! deadline (milliseconds) covering the READ phase ONLY --
+			//! from ServeOneConnection's entry (right after accept()) until
+			//! the full request (header block + declared body) has been
+			//! received. NOT a per-recv timeout (that is kSocketTimeoutMs
+			//! in the .cpp, unrelated and unchanged): a per-recv timeout
+			//! resets on every byte a peer sends, so a "slow-loris" drip --
+			//! one byte every few seconds, forever -- never trips it. This
+			//! deadline is checked against a FIXED wall-clock point set once
+			//! at connection start, so no amount of dripping can extend it.
+			//! Deliberately does NOT cover dispatch (AgentMcpAdapter::
+			//! HandleLine, which includes `render` -- a legitimate
+			//! multi-second-or-longer path-traced render is normal, SERVER-
+			//! side latency, not an attacker-controlled receive-pacing
+			//! attack) or the response write. 15s is generously above any
+			//! realistic time a same-machine MCP client needs to finish
+			//! SENDING a request (the body cap above is 8 MiB; even a
+			//! pathologically slow loopback link finishes that transfer in
+			//! a small fraction of 15s), so a well-behaved client should
+			//! never observe this. See ForTest_SetTotalRequestDeadlineMs to
+			//! shrink it for a test.
+			static const int kDefaultTotalRequestDeadlineMs = 15000;
+
+			//! Secure-MCP slice 6: the mutating-verb rate limit -- a simple
+			//! FIXED WINDOW (not sliding/token-bucket) counter: every
+			//! kMutatingRateLimitWindowMs milliseconds the count resets to
+			//! zero; a mutating tools/call (propose_patch/insert_chunk/
+			//! remove_chunk/resolve_proposal -- see IsMutatingMcpToolCall in
+			//! the .cpp) increments it, and the (kMutatingRateLimitMaxCalls+1)th
+			//! call within the SAME window is refused with a structured
+			//! JSON-RPC error (kMutatingRateLimitExceeded, defined in the
+			//! .cpp) instead of reaching the adapter at all. Read-safe verbs
+			//! (render, read_document, ...) are NEVER counted or limited.
+			//! Enforced HERE, in the HTTP TRANSPORT, rather than in
+			//! AgentMcpAdapter/AgentRpcDispatcher (which also serve `rise
+			//! --agent-stdio`): this class is constructed ONLY for the two
+			//! HTTP entry points (RunAgentHttp's CLI transport and the
+			//! GUI-hosted loopback server in RISEViewportBridge.mm) and
+			//! NEVER for stdio, so placing the limiter's state here bounds
+			//! it to exactly the transport this slice is scoped to change,
+			//! by construction -- no autonomy/posture flag needed to keep
+			//! the stdio (GUI owner) path unaffected. Loopback + per-launch
+			//! bearer token means every request through one server instance
+			//! is the SAME authenticated client, so one GLOBAL (not
+			//! per-connection) window is the right shape -- a hostile or
+			//! malfunctioning client cannot reset the window by opening a
+			//! fresh TCP connection (this server has no keep-alive; every
+			//! request is already a fresh connection).  60/min is generously
+			//! above any legitimate interactive or agentic edit cadence
+			//! (an LLM-driven propose loop issuing a mutating call roughly
+			//! once per turn) while still bounding a runaway/hostile client's
+			//! ability to hammer the mutating verbs.
+			static const int kMutatingRateLimitWindowMs = 60000;
+			static const int kMutatingRateLimitMaxCalls = 60;
+
+			//! Test seam: shrinks (or restores, passing
+			//! kDefaultTotalRequestDeadlineMs) the per-connection total
+			//! request deadline above -- lets a test exercise the slow-loris
+			//! cutoff with a short, real wait instead of a real 15-second
+			//! one. Affects connections accepted AFTER this call; safe to
+			//! call before Serve() starts or between test sections (this
+			//! class is single-threaded per its own documented contract, so
+			//! there is no concurrent Serve() to race).
+			void ForTest_SetTotalRequestDeadlineMs( int ms );
+
+			//! Test seam: overrides the millisecond wall-clock source the
+			//! mutating-verb rate limiter reads (see kMutatingRateLimitWindowMs).
+			//! `fn` is called with no arguments and must return a
+			//! monotonically-nondecreasing millisecond count; pass nullptr
+			//! (the default, restored by ForTest_ResetRateLimitClock) to use
+			//! the real steady_clock-based source. A deterministic function
+			//! lets a test roll the fixed window across its boundary without
+			//! a real 60-second sleep.
+			void ForTest_SetRateLimitClockFn( std::int64_t (*fn)() );
+
+			//! Test seam: resets the mutating-verb rate limiter to an empty
+			//! window (as if this server instance had just been
+			//! constructed) -- lets a test start a rate-limit scenario from
+			//! a clean slate regardless of how many mutating calls earlier
+			//! test sections in the SAME process/instance already made.
+			void ForTest_ResetRateLimit();
+
 		private:
 			AgentMcpAdapter*    mAdapter;      //!< borrowed
 			std::string         mPath;         //!< the one servable POST path
@@ -241,6 +323,36 @@ namespace RISE
 			//! socket round trip.
 			std::atomic<bool>   mInsideHandleLine;
 
+			//! Secure-MCP slice 6: the (test-overridable) total per-connection
+			//! request-read deadline -- see kDefaultTotalRequestDeadlineMs's
+			//! doc. Plain int (not atomic): only ever read/written on
+			//! whichever single thread calls Serve()/ServeOneConnection, per
+			//! this class's documented single-caller serving contract; the
+			//! ForTest_ setter is documented to be called only before Serve()
+			//! starts or between test sections, never concurrently with it.
+			int mTotalRequestDeadlineMs;
+
+			//! Secure-MCP slice 6: the mutating-verb fixed-window rate
+			//! limiter's state -- see kMutatingRateLimitWindowMs's doc.
+			//! mRateWindowStartMs is the millisecond timestamp (per
+			//! mRateLimitClockFn) the CURRENT window began;
+			//! mRateWindowCount is how many mutating calls have landed in
+			//! it so far; mRateWindowValid is false until the FIRST
+			//! mutating call (or a ForTest_ResetRateLimit) starts a real
+			//! window -- distinguishes "no window yet, start one now" from
+			//! "window started at timestamp 0", which would otherwise be
+			//! ambiguous for an injected test clock that legitimately
+			//! begins counting at 0. Same single-threaded-access rationale
+			//! as mTotalRequestDeadlineMs above -- no atomics needed.
+			std::int64_t mRateWindowStartMs;
+			int          mRateWindowCount;
+			bool         mRateWindowValid;
+
+			//! Test seam target for ForTest_SetRateLimitClockFn: nullptr
+			//! (the production default) reads the real steady_clock; a test
+			//! override replaces it with a deterministic source.
+			std::int64_t (*mRateLimitClockFn)();
+
 			//! Accept and fully service ONE connection (read request,
 			//! dispatch, write response, close). Never throws -- any
 			//! internal failure degrades to closing the connection
@@ -257,6 +369,17 @@ namespace RISE
 			//! object body -- HTTP request/response is not fire-and-forget
 			//! the way the stdio transport's notification line can be).
 			std::string DispatchGuarded( const std::string& body );
+
+			//! Secure-MCP slice 6: consults + ADVANCES the mutating-verb
+			//! fixed-window rate limiter (mRateWindowStartMs/mRateWindowCount,
+			//! per mRateLimitClockFn) and returns whether this call is
+			//! allowed. Rolls the window forward (resetting the count to 0)
+			//! if the current window has expired, THEN increments the count
+			//! and compares against kMutatingRateLimitMaxCalls -- so this is
+			//! a combined check-and-consume, called at most once per
+			//! request that ServeOneConnection has already classified as a
+			//! mutating tools/call (see IsMutatingMcpToolCall in the .cpp).
+			bool CheckAndConsumeMutatingRateLimit();
 		};
 	}
 }

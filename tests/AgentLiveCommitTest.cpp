@@ -55,6 +55,8 @@
 #include "../src/Library/Interfaces/IMaterial.h"
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Interfaces/IEmitter.h"
+#include "../src/Library/Interfaces/IPainter.h"
+#include "../src/Library/Interfaces/IPainterManager.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
@@ -4375,6 +4377,289 @@ static void TestProposalWireRoundTrip()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Secure-MCP slice 6: the pending-proposal queue cap
+// (SceneEditController::kMaxPendingProposals) -- fill it to the cap via
+// External wire propose_patch calls, prove the NEXT one is refused with a
+// DISTINCT top-level JSON-RPC error (kProposalQueueFull, -32012 -- NOT a
+// status="rejected" success envelope, which would be indistinguishable
+// from a per-entity refusal), prove insert_chunk is refused the SAME way
+// while the queue is still full (same gate, different verb), then prove
+// resolving exactly ONE pending proposal frees exactly one slot -- the
+// next stage succeeds again. RED-PROVE: temporarily removing the
+// kMaxPendingProposals check in SceneEditController::StageProposal makes
+// the overflow propose_patch/insert_chunk calls both succeed (status=
+// "staged") instead of erroring, failing this test's core assertions.
+//////////////////////////////////////////////////////////////////////
+static void TestProposalQueueCapRedProve()
+{
+	std::cout << "Test 41: proposal pending-queue cap (Secure-MCP slice 6 RED-PROVE)..." << std::endl;
+
+	const char* tmp = "agentlive_proposal_queuecap.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "queue-cap: base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/5 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "queue-cap: initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> ownerSess =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		Check( ownerSess != nullptr, "queue-cap: owner session wraps the live Job" );
+		if( ownerSess ) ownerSess->AttachController( &c );
+		Agent::AgentRpcDispatcher ownerDisp( std::move( ownerSess ), Agent::AgentAutonomy::Commit );
+
+		std::unique_ptr<Agent::AgentSession> extSess =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		Check( extSess != nullptr, "queue-cap: external session wraps the live Job" );
+		if( extSess ) extSess->AttachController( &c );
+		Agent::AgentRpcDispatcher extDisp( std::move( extSess ), Agent::AgentAutonomy::Commit );
+
+		//------------------------------------------------------------------
+		// Fill the pending queue to EXACTLY kMaxPendingProposals.
+		//------------------------------------------------------------------
+		const std::size_t cap = SceneEditController::kMaxPendingProposals;
+		bool allStaged = true;
+		for( std::size_t i = 0; i < cap; ++i ) {
+			char line[256];
+			std::snprintf( line, sizeof( line ),
+				"{\"jsonrpc\":\"2.0\",\"id\":%zu,\"method\":\"propose_patch\",\"params\":"
+				"{\"target\":\"lum\",\"kind\":\"lambertian_luminaire_material\",\"param\":\"scale\",\"value\":\"%zu.0\"}}",
+				i + 1, i + 10 );
+			const std::string resp = extDisp.HandleLine( line );
+			Agent::JsonValue result;
+			if( !JsonResultObj( resp, result ) ) { allStaged = false; continue; }
+			const Agent::JsonValue* status = result.find( "status" );
+			if( !status || !status->isString() || status->asString() != "staged" ) allStaged = false;
+		}
+		Check( allStaged, "queue-cap: filled the pending queue to kMaxPendingProposals, every stage a clean \"staged\" success" );
+
+		//------------------------------------------------------------------
+		// The (cap+1)th propose_patch is REFUSED with a top-level JSON-RPC
+		// error, not a success envelope.
+		//------------------------------------------------------------------
+		const std::string overflowResp = extDisp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":9000,\"method\":\"propose_patch\",\"params\":"
+			"{\"target\":\"lum\",\"kind\":\"lambertian_luminaire_material\",\"param\":\"scale\",\"value\":\"99.0\"}}" );
+		Agent::JsonValue overflowEnv;
+		std::string perr;
+		Check( Agent::JsonParse( overflowResp, overflowEnv, perr ), "queue-cap: overflow propose_patch response parses as JSON" );
+		Check( overflowEnv.has( "error" ),
+		       "RED-PROVE: the (cap+1)th propose_patch is a TOP-LEVEL JSON-RPC error, not the normal "
+		       "success-envelope result shape every prior stage returned" );
+		if( overflowEnv.has( "error" ) ) {
+			const Agent::JsonValue& err = overflowEnv.get( "error" );
+			const Agent::JsonValue* code = err.find( "code" );
+			Check( code && code->isNumber() && code->asNumber() == -32012.0,
+			       "RED-PROVE: the overflow error carries the distinct kProposalQueueFull code (-32012), "
+			       "not kAutonomyRefused (-32011) or a standard JSON-RPC code" );
+			const Agent::JsonValue* data = err.find( "data" );
+			Check( data && data->isObject(), "overflow error carries a structured data object" );
+			if( data ) {
+				const Agent::JsonValue* verb = data->find( "verb" );
+				Check( verb && verb->isString() && verb->asString() == "propose_patch",
+				       "overflow error's data.verb names propose_patch" );
+			}
+		}
+
+		//------------------------------------------------------------------
+		// insert_chunk is refused the SAME way while the queue is still
+		// full -- same gate (StageProposal), different verb.
+		//------------------------------------------------------------------
+		const std::string overflowInsertResp = extDisp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":9001,\"method\":\"insert_chunk\",\"params\":"
+			"{\"chunkText\":\"uniformcolor_painter\\n{\\nname overflow_pad\\ncolor 1 1 1\\n}\\n\"}}" );
+		Agent::JsonValue overflowInsertEnv;
+		Check( Agent::JsonParse( overflowInsertResp, overflowInsertEnv, perr ), "queue-cap: overflow insert_chunk response parses as JSON" );
+		Check( overflowInsertEnv.has( "error" ),
+		       "insert_chunk is ALSO refused as a top-level error while the queue is full (same StageProposal gate)" );
+		if( overflowInsertEnv.has( "error" ) ) {
+			const Agent::JsonValue& err = overflowInsertEnv.get( "error" );
+			const Agent::JsonValue* code = err.find( "code" );
+			Check( code && code->isNumber() && code->asNumber() == -32012.0,
+			       "overflow insert_chunk error ALSO carries kProposalQueueFull (-32012)" );
+		}
+
+		//------------------------------------------------------------------
+		// list_proposals still shows EXACTLY `cap` entries -- the refused
+		// overflow attempts never enqueued anything (fail-closed, not a
+		// silent partial add).
+		//------------------------------------------------------------------
+		std::uint64_t firstPendingId = 0;
+		{
+			const std::string listResp = ownerDisp.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":9002,\"method\":\"list_proposals\",\"params\":{}}" );
+			Agent::JsonValue listResult;
+			Check( JsonResultObj( listResp, listResult ), "queue-cap: list_proposals returns a result object" );
+			const Agent::JsonValue* arr = listResult.find( "proposals" );
+			Check( arr && arr->isArray() && arr->size() == cap,
+			       "queue-cap: list_proposals shows EXACTLY kMaxPendingProposals entries -- "
+			       "the refused overflow attempts never enqueued" );
+			if( arr && arr->isArray() && arr->size() > 0 ) {
+				const Agent::JsonValue& e = arr->at( 0 );
+				const Agent::JsonValue* pid = e.find( "id" );
+				if( pid && pid->isNumber() ) firstPendingId = static_cast<std::uint64_t>( pid->asNumber() );
+			}
+		}
+		Check( firstPendingId != 0, "queue-cap: captured the first pending proposal's id" );
+
+		//------------------------------------------------------------------
+		// Resolve exactly ONE pending proposal -> frees exactly one slot.
+		//------------------------------------------------------------------
+		if( firstPendingId != 0 ) {
+			char resolveLine[160];
+			std::snprintf( resolveLine, sizeof( resolveLine ),
+				"{\"jsonrpc\":\"2.0\",\"id\":9003,\"method\":\"resolve_proposal\",\"params\":"
+				"{\"proposalId\":%llu,\"approve\":false}}",
+				static_cast<unsigned long long>( firstPendingId ) );
+			const std::string resolveResp = ownerDisp.HandleLine( resolveLine );
+			Agent::JsonValue resolveResult;
+			Check( JsonResultObj( resolveResp, resolveResult ), "queue-cap: resolve (reject) of the first proposal returns a result object" );
+			const Agent::JsonValue* resolved = resolveResult.find( "resolved" );
+			Check( resolved && resolved->isBool() && resolved->asBool(), "queue-cap: resolving the first pending proposal succeeds" );
+		}
+
+		//------------------------------------------------------------------
+		// Now a fresh propose_patch succeeds again -- proves exactly one
+		// slot was freed (not zero, not "still full").
+		//------------------------------------------------------------------
+		const std::string restageResp = extDisp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":9004,\"method\":\"propose_patch\",\"params\":"
+			"{\"target\":\"lum\",\"kind\":\"lambertian_luminaire_material\",\"param\":\"scale\",\"value\":\"77.0\"}}" );
+		Agent::JsonValue restageResult;
+		Check( JsonResultObj( restageResp, restageResult ),
+		       "queue-cap: after resolving one proposal, a fresh propose_patch returns a normal result object (not refused)" );
+		const Agent::JsonValue* restageStatus = restageResult.find( "status" );
+		Check( restageStatus && restageStatus->isString() && restageStatus->asString() == "staged",
+		       "queue-cap: the freed slot lets a new proposal stage successfully" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Secure-MCP slice 6: list_proposals' per-proposal echo cap (16 KiB on
+// `value`/`chunkText`). A large insert_chunk chunkText is echoed back
+// CLIPPED with truncated:true in the LISTING; the STORED proposal keeps
+// the FULL text untouched -- proven by approving it and observing that
+// the full chunk (name + trailing padding, well past 16 KiB) actually
+// parsed and landed in the live scene (a clipped/truncated text would be
+// missing its closing brace and FAIL to parse, never reaching
+// status="applied").
+//////////////////////////////////////////////////////////////////////
+static void TestProposalListingTruncation()
+{
+	std::cout << "Test 42: list_proposals per-proposal echo truncation (Secure-MCP slice 6)..." << std::endl;
+
+	const char* tmp = "agentlive_proposal_truncation.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "truncation: base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/5 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "truncation: initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> ownerSess =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		Check( ownerSess != nullptr, "truncation: owner session wraps the live Job" );
+		if( ownerSess ) ownerSess->AttachController( &c );
+		Agent::AgentRpcDispatcher ownerDisp( std::move( ownerSess ), Agent::AgentAutonomy::Commit );
+
+		std::unique_ptr<Agent::AgentSession> extSess =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		Check( extSess != nullptr, "truncation: external session wraps the live Job" );
+		if( extSess ) extSess->AttachController( &c );
+		Agent::AgentRpcDispatcher extDisp( std::move( extSess ), Agent::AgentAutonomy::Commit );
+
+		// A valid, single insert_chunk chunk (a uniformcolor_painter),
+		// padded with trailing `#` line comments so its TEXT exceeds the
+		// 16 KiB echo cap while still parsing as exactly ONE chunk (the
+		// comments are trivia, not additional chunks).
+		std::string chunkText = "uniformcolor_painter\n{\nname bigpad\ncolor 0.25 0.5 0.75\n";
+		const std::string padLine = "# padding-line-to-exceed-the-16KiB-echo-cap-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n";
+		while( chunkText.size() < 20u * 1024u ) chunkText += padLine;
+		chunkText += "}\n";
+		Check( chunkText.size() > 16u * 1024u, "truncation: constructed chunkText exceeds the 16 KiB echo cap" );
+
+		// JSON-escape the chunk text for the wire via Json.h's own
+		// serializer rather than hand-rolling escaping.
+		const Agent::JsonValue chunkTextJson = Agent::JsonValue::MakeString( chunkText );
+		const std::string chunkTextEscaped = Agent::JsonSerialize( chunkTextJson );
+
+		std::string insertLine = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"insert_chunk\",\"params\":{\"chunkText\":";
+		insertLine += chunkTextEscaped;
+		insertLine += "}}";
+		const std::string insertResp = extDisp.HandleLine( insertLine );
+		Agent::JsonValue insertResult;
+		Check( JsonResultObj( insertResp, insertResult ), "truncation: external insert_chunk returns a result object" );
+		const Agent::JsonValue* insertStatus = insertResult.find( "status" );
+		Check( insertStatus && insertStatus->isString() && insertStatus->asString() == "staged",
+		       "truncation: the large insert_chunk stages cleanly (staging is inert -- no size cap on the stored proposal)" );
+
+		//------------------------------------------------------------------
+		// list_proposals' echo is CLIPPED + flagged; the STORED proposal
+		// (verified below, via approval) is untouched.
+		//------------------------------------------------------------------
+		const std::string listResp = ownerDisp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"list_proposals\",\"params\":{}}" );
+		Agent::JsonValue listResult;
+		Check( JsonResultObj( listResp, listResult ), "truncation: list_proposals returns a result object" );
+		const Agent::JsonValue* arr = listResult.find( "proposals" );
+		Check( arr && arr->isArray() && arr->size() == 1, "truncation: exactly one staged proposal is listed" );
+		std::uint64_t proposalId = 0;
+		if( arr && arr->isArray() && arr->size() == 1 ) {
+			const Agent::JsonValue& e = arr->at( 0 );
+			const Agent::JsonValue* truncated = e.find( "truncated" );
+			Check( truncated && truncated->isBool() && truncated->asBool(),
+			       "truncation: the listing carries truncated:true for the oversized chunkText" );
+			const Agent::JsonValue* echoedChunkText = e.find( "chunkText" );
+			Check( echoedChunkText && echoedChunkText->isString() && echoedChunkText->asString().size() == 16u * 1024u,
+			       "truncation: the echoed chunkText is clipped to EXACTLY 16 KiB" );
+			const Agent::JsonValue* pid = e.find( "id" );
+			if( pid && pid->isNumber() ) proposalId = static_cast<std::uint64_t>( pid->asNumber() );
+		}
+		Check( proposalId != 0, "truncation: captured the staged proposal's id" );
+
+		//------------------------------------------------------------------
+		// Approve it -- the FULL (never-truncated) stored text must apply.
+		//------------------------------------------------------------------
+		if( proposalId != 0 ) {
+			char resolveLine[128];
+			std::snprintf( resolveLine, sizeof( resolveLine ),
+				"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"resolve_proposal\",\"params\":"
+				"{\"proposalId\":%llu,\"approve\":true}}",
+				static_cast<unsigned long long>( proposalId ) );
+			const std::string resolveResp = ownerDisp.HandleLine( resolveLine );
+			Agent::JsonValue resolveResult;
+			Check( JsonResultObj( resolveResp, resolveResult ), "truncation: resolve_proposal(approve) returns a result object" );
+			const Agent::JsonValue* resolved = resolveResult.find( "resolved" );
+			Check( resolved && resolved->isBool() && resolved->asBool(), "truncation: the approve resolves" );
+			const Agent::JsonValue* rstatus = resolveResult.find( "status" );
+			Check( rstatus && rstatus->isString() && rstatus->asString() == "applied",
+			       "RED-PROVE: the FULL chunkText parsed and applied cleanly -- a clipped-at-16KiB chunk "
+			       "would be missing its closing brace and FAIL to parse (status would NOT be \"applied\")" );
+		}
+
+		// The chunk landed with its FULL content: the named painter this
+		// (never-truncated) chunk declares actually exists in the live
+		// derived scene.
+		IPainter* pnt = pJob->GetPainters() ? pJob->GetPainters()->GetItem( "bigpad" ) : nullptr;
+		Check( pnt != nullptr,
+		       "truncation: the \"bigpad\" painter the FULL stored chunkText declares exists in the live scene -- "
+		       "proof the STORED proposal (not the clipped listing echo) is what actually applied" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -4422,6 +4707,8 @@ int main()
 	TestChunkCrudStaging();
 	TestExternalStageBaseVersionCoherentUnderConcurrency();
 	TestProposalWireRoundTrip();
+	TestProposalQueueCapRedProve();
+	TestProposalListingTruncation();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

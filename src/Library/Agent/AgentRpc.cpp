@@ -52,6 +52,27 @@ namespace RISE
 			// posture forbids mutation" with a retriable scene-state outcome.
 			const int kAutonomyRefused = -32011;
 
+			//! Secure-MCP slice 6 (limits hardening): a distinct app-range
+			//! code for "the attached controller's pending-proposal queue is
+			//! full" -- see SceneEditController::kMaxPendingProposals's doc.
+			//! Deliberately its OWN code, not a reuse of kAutonomyRefused:
+			//! this is a resource/backpressure refusal (the queue needs
+			//! draining), not a policy refusal (the launch posture forbids
+			//! the verb) -- a caller that wants to distinguish "relaunch
+			//! with more authority" from "wait / ask the Owner to resolve
+			//! some proposals" needs the two to be tellable apart
+			//! programmatically, not just by message text.
+			const int kProposalQueueFull = -32012;
+
+			// NOTE: -32013 (kMutatingRateLimitExceeded) is the next code in
+			// this app-range family -- reserved for and defined in
+			// AgentLoopbackHttpServer.cpp, which enforces the mutating-verb
+			// fixed-window rate limit at the HTTP TRANSPORT layer, before a
+			// request ever reaches this dispatcher (see that file's doc for
+			// why the limiter lives there instead of here). Not redeclared
+			// in this file to avoid an unused-constant warning in a
+			// translation unit that never triggers it.
+
 			//! Secure-MCP slice 2 hardening: the gate is now DENY-BY-
 			//! DEFAULT -- an explicit allowlist of the 9 READ-SAFE verb
 			//! names (read_document, read_schema, read_skill, validate,
@@ -202,6 +223,36 @@ namespace RISE
 				return JsonSerialize( env );
 			}
 
+			//! Secure-MCP slice 6: the queue-full refusal error envelope for
+			//! propose_patch/insert_chunk/remove_chunk -- built when the
+			//! wrapped AgentSession's result carries queueFull==true (see
+			//! AgentPatchResult::queueFull / AgentChunkResult::queueFull's
+			//! doc). A distinct top-level JSON-RPC error (kProposalQueueFull),
+			//! NOT the normal success-envelope result shape those three verbs
+			//! otherwise always return -- same posture as
+			//! MakeAutonomyRefusedError above: a resource-backpressure
+			//! refusal must be tellable apart from a scene-state outcome
+			//! (status="rejected"/"conflict"), not folded into it, so a
+			//! programmatic caller can retry-after-resolve rather than
+			//! mistake this for a permanent per-entity rejection.
+			std::string MakeProposalQueueFullError( const JsonValue& id, const std::string& verb )
+			{
+				JsonValue err = JsonValue::MakeObject();
+				err.set( "code", JsonValue::MakeNumber( static_cast<double>( kProposalQueueFull ) ) );
+				err.set( "message", JsonValue::MakeString(
+					"refused: the pending-proposal queue is full -- the Owner must resolve "
+					"(approve/reject) some pending proposals before another can be staged" ) );
+				JsonValue data = JsonValue::MakeObject();
+				data.set( "verb", JsonValue::MakeString( verb ) );
+				err.set( "data", data );
+
+				JsonValue env = JsonValue::MakeObject();
+				env.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+				env.set( "id", id );
+				env.set( "error", err );
+				return JsonSerialize( env );
+			}
+
 			//! Facet 5 slice 1a: a head-version as a nested JSON object
 			//! {uuid:number, revision:number}.  JSON numbers are doubles, but a
 			//! monotonic counter starting at 1 stays well under 2^53, so both
@@ -250,6 +301,32 @@ namespace RISE
 				outBase.uuid     = static_cast<std::uint64_t>( ud );
 				outBase.revision = static_cast<std::uint64_t>( rd );
 				return 1;
+			}
+
+			//! Secure-MCP slice 6: the per-proposal echo cap list_proposals
+			//! enforces on the `value` and `chunkText` fields -- see the
+			//! call site's doc for the full rationale (bounds an unbounded-
+			//! size caller-supplied payload from ballooning list_proposals'
+			//! response, WITHOUT touching the stored proposal itself).
+			const std::size_t kProposalFieldEchoCapBytes = 16u * 1024u;
+
+			//! Clips `s` in place to at most kProposalFieldEchoCapBytes bytes
+			//! and returns whether it was actually clipped. A byte-length
+			//! cap (not a UTF-8-aware one): the payloads this bounds
+			//! (propose_patch's `value`, insert_chunk/remove_chunk's
+			//! `chunkText`) are RISE scene-language text, which this
+			//! codebase already treats as a byte string everywhere else
+			//! (e.g. the JSON codec's own string handling) -- a clip that
+			//! lands mid multi-byte UTF-8 sequence is a cosmetic listing-
+			//! preview artifact, not a correctness issue, since `truncated`
+			//! tells the caller this is a prefix, not the whole value, and
+			//! the STORED proposal (read back in full on approval) is never
+			//! touched by this function.
+			bool ClipProposalFieldEcho( std::string& s )
+			{
+				if( s.size() <= kProposalFieldEchoCapBytes ) return false;
+				s.resize( kProposalFieldEchoCapBytes );
+				return true;
 			}
 
 			//! Model-B F5 slice S2: serialize an AgentChunkResult (insert_chunk /
@@ -760,6 +837,11 @@ namespace RISE
 						sp.hasBaseVersion = ( b == 1 );
 					}
 					const AgentPatchResult pr = s->ProposePatch( sp );
+					// Secure-MCP slice 6: a queue-full refusal is a distinct
+					// top-level JSON-RPC error, not the normal success-
+					// envelope result shape -- see MakeProposalQueueFullError's
+					// doc.
+					if( pr.queueFull ) return MakeProposalQueueFullError( idValue, "propose_patch" );
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "applied", JsonValue::MakeBool( pr.applied ) );
 					result.set( "rawCode", JsonValue::MakeNumber( static_cast<double>( pr.rawCode ) ) );
@@ -792,6 +874,9 @@ namespace RISE
 					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
 					const AgentChunkResult cr =
 						s->InsertChunk( chunkText->asString(), ( b == 1 ) ? &base : nullptr );
+					// Secure-MCP slice 6: see propose_patch's identical
+					// queue-full check above.
+					if( cr.queueFull ) return MakeProposalQueueFullError( idValue, "insert_chunk" );
 					return MakeSuccess( idValue, ChunkResultJson( cr ) );
 				}
 
@@ -822,6 +907,9 @@ namespace RISE
 					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
 					const AgentChunkResult cr =
 						s->RemoveChunk( target->asString(), kind, ( b == 1 ) ? &base : nullptr );
+					// Secure-MCP slice 6: see propose_patch's identical
+					// queue-full check above.
+					if( cr.queueFull ) return MakeProposalQueueFullError( idValue, "remove_chunk" );
 					return MakeSuccess( idValue, ChunkResultJson( cr ) );
 				}
 
@@ -1153,8 +1241,8 @@ namespace RISE
 
 				//--------------------------------------------------------------
 				// list_proposals {} -> {proposals:[{id,kind,target,entityKind,
-				//                        param,value,chunkText,baseVersion,
-				//                        sessionLabel,status},...]}
+				//                        param,value,chunkText,truncated,
+				//                        baseVersion,sessionLabel,status},...]}
 				//   Secure-MCP slice 5b: the queue of every AgentProposal staged
 				//   on the ATTACHED controller (pending + resolved -- resolved
 				//   entries stay for audit).  READ-SAFE (see IsReadSafeVerb):
@@ -1163,20 +1251,43 @@ namespace RISE
 				//   not an error.  REQUIRES a session (the usual "no session
 				//   loaded" internal error otherwise, matching every other
 				//   session-backed verb in this dispatch).
+				//
+				//   Secure-MCP slice 6: `value` and `chunkText` are each
+				//   clipped to kProposalFieldEchoCapBytes (16 KiB) in THIS
+				//   LISTING ONLY -- a caller can stage an arbitrarily large
+				//   propose_patch `value` or insert_chunk/remove_chunk
+				//   `chunkText` (there is no size cap on those params
+				//   themselves), and an unbounded echo of every such payload
+				//   on every list_proposals call would let a queue of a few
+				//   large proposals balloon this response arbitrarily. The
+				//   STORED proposal (what ResolveProposal replays on
+				//   approval) is NEVER touched -- s->ListProposals() above
+				//   already returned the full, untouched text; the clip
+				//   happens here, on a local copy, purely for the wire echo.
+				//   `truncated` (additive) is true iff EITHER field was
+				//   actually clipped for this entry, so a client can tell "this
+				//   is a prefix" apart from "this is the whole value" without
+				//   comparing byte lengths itself.
 				//--------------------------------------------------------------
 				if( m == "list_proposals" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
 					const std::vector<AgentSession::AgentProposalEntry> proposals = s->ListProposals();
 					JsonValue arr = JsonValue::MakeArray();
 					for( const AgentSession::AgentProposalEntry& p : proposals ) {
+						std::string valueEcho = p.value;
+						std::string chunkTextEcho = p.chunkText;
+						const bool valueClipped = ClipProposalFieldEcho( valueEcho );
+						const bool chunkClipped = ClipProposalFieldEcho( chunkTextEcho );
+
 						JsonValue pj = JsonValue::MakeObject();
 						pj.set( "id",           JsonValue::MakeNumber( static_cast<double>( p.id ) ) );
 						pj.set( "kind",         JsonValue::MakeString( p.kind ) );
 						pj.set( "target",       JsonValue::MakeString( p.target ) );
 						pj.set( "entityKind",   JsonValue::MakeString( p.entityKind ) );
 						pj.set( "param",        JsonValue::MakeString( p.param ) );
-						pj.set( "value",        JsonValue::MakeString( p.value ) );
-						pj.set( "chunkText",    JsonValue::MakeString( p.chunkText ) );
+						pj.set( "value",        JsonValue::MakeString( valueEcho ) );
+						pj.set( "chunkText",    JsonValue::MakeString( chunkTextEcho ) );
+						pj.set( "truncated",    JsonValue::MakeBool( valueClipped || chunkClipped ) );
 						pj.set( "baseVersion",  HeadVersionJson( p.baseVersion ) );
 						pj.set( "sessionLabel", JsonValue::MakeString( p.sessionLabel ) );
 						pj.set( "status",       JsonValue::MakeString( p.status ) );

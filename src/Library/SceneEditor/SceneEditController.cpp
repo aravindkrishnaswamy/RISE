@@ -3449,6 +3449,23 @@ std::uint64_t SceneEditController::StageProposal( const AgentProposal& proposal,
                                                    RISE::Cst::CstHeadVersion* outStagedVersion )
 {
 	std::lock_guard<std::mutex> lk( mMutex );
+
+	// Secure-MCP slice 6: the PENDING-depth cap, checked FIRST and BEFORE
+	// touching mNextProposalId or mProposals at all -- a full queue is a
+	// clean refusal (return 0, nothing enqueued, nothing mutated), never a
+	// silent prune of someone else's still-pending proposal. See
+	// kMaxPendingProposals's doc for why 32 is a generous backstop, not a
+	// limit a well-behaved client should expect to hit.
+	std::size_t pendingCount = 0;
+	for( const AgentProposal& existing : mProposals )
+	{
+		if( existing.status == String( "pending" ) ) ++pendingCount;
+	}
+	if( pendingCount >= kMaxPendingProposals )
+	{
+		return 0;   // refused -- 0 is never a real id (see the doc above)
+	}
+
 	AgentProposal p = proposal;
 	p.id     = mNextProposalId++;
 	p.status = String( "pending" );
@@ -3462,6 +3479,28 @@ std::uint64_t SceneEditController::StageProposal( const AgentProposal& proposal,
 	}
 	const std::uint64_t id = p.id;
 	if( outStagedVersion ) *outStagedVersion = p.baseVersion;
+
+	// Secure-MCP slice 6: the TOTAL-storage cap. If accepting this new
+	// proposal would push mProposals past kMaxProposalHistory, evict the
+	// SINGLE OLDEST resolved (non-pending) entry first -- bounding the
+	// audit trail's storage without ever discarding a still-pending
+	// proposal. An evictable resolved entry is GUARANTEED to exist here:
+	// pendingCount was just proven < kMaxPendingProposals <= kMaxProposalHistory,
+	// so if mProposals.size() is already at the history cap, at least
+	// (kMaxProposalHistory - kMaxPendingProposals + 1) of those entries are
+	// resolved, not pending.
+	if( mProposals.size() >= kMaxProposalHistory )
+	{
+		for( std::vector<AgentProposal>::iterator it = mProposals.begin(); it != mProposals.end(); ++it )
+		{
+			if( it->status != String( "pending" ) )
+			{
+				mProposals.erase( it );
+				break;
+			}
+		}
+	}
+
 	mProposals.push_back( p );
 	return id;
 }

@@ -8,10 +8,13 @@
 #include "AgentLoopbackHttpServer.h"
 
 #include "AgentMcpAdapter.h"
+#include "Json.h"          // Secure-MCP slice 6: mutating-verb rate-limit detection peeks at {method,params.name}
 #include "../Interfaces/ILog.h"
 
 #include <cctype>
 #include <cerrno>
+#include <chrono>          // Secure-MCP slice 6: total-request deadline + rate-limit window clocks
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -96,15 +99,27 @@ namespace
 #endif
 	}
 
+	//! Secure-MCP slice 6: the outcome of a bounded read helper below.
+	//! Distinguishes WHY a read stopped short of success so the caller can
+	//! pick the honest HTTP status: CapExceeded -> 431/413-shaped rejection
+	//! (unchanged from pre-slice-6 behaviour), DeadlineExceeded -> the NEW
+	//! 408 Request Timeout (the total-request-deadline cutoff -- see
+	//! kDefaultTotalRequestDeadlineMs's doc), Failed -> peer closed/reset/
+	//! per-recv-timed-out (unchanged -- a clean rejection, no hang, no
+	//! crash).
+	enum class ReadOutcome { Ok, CapExceeded, DeadlineExceeded, Failed };
+
 	//! Reads from `sock` until `needle` ("\r\n\r\n") is found (returning
 	//! everything up to and including it in `outHead`, with any bytes read
 	//! PAST the needle left in `outSpill` for the caller to treat as the
-	//! start of the body) or `capBytes` is exceeded (returns false -- the
-	//! caller maps that to a 431-equivalent clean rejection) or the peer
-	//! closes / times out (returns false). Never throws, never grows
-	//! unbounded.
-	bool ReadUntilDoubleCrlf( SOCKET sock, std::size_t capBytes,
-	                          std::string& outHead, std::string& outSpill )
+	//! start of the body), `capBytes` is exceeded (CapExceeded), `deadline`
+	//! (a FIXED wall-clock point set once at connection start -- see
+	//! kDefaultTotalRequestDeadlineMs's doc on why this is a total budget,
+	//! not a per-recv one) has passed (DeadlineExceeded), or the peer
+	//! closes / times out (Failed). Never throws, never grows unbounded.
+	ReadOutcome ReadUntilDoubleCrlf( SOCKET sock, std::size_t capBytes,
+	                                 const std::chrono::steady_clock::time_point& deadline,
+	                                 std::string& outHead, std::string& outSpill )
 	{
 		outHead.clear();
 		outSpill.clear();
@@ -115,32 +130,41 @@ namespace
 			if( pos != std::string::npos ) {
 				outHead = buf.substr( 0, pos + 4 );
 				outSpill = buf.substr( pos + 4 );
-				return true;
+				return ReadOutcome::Ok;
 			}
-			if( buf.size() > capBytes ) return false;
+			if( buf.size() > capBytes ) return ReadOutcome::CapExceeded;
+			// Secure-MCP slice 6: checked BEFORE every recv() (not just
+			// once) so a peer that drips one byte every few seconds --
+			// each individual recv() well inside kSocketTimeoutMs, so the
+			// per-recv timeout alone never fires -- still cannot hold this
+			// loop open past `deadline`, no matter how many small reads it
+			// takes to get here.
+			if( std::chrono::steady_clock::now() >= deadline ) return ReadOutcome::DeadlineExceeded;
 			const int n = static_cast<int>( recv( sock, chunk, sizeof( chunk ), 0 ) );
-			if( n <= 0 ) return false;   // peer closed, error, or timeout
+			if( n <= 0 ) return ReadOutcome::Failed;   // peer closed, error, or per-recv timeout
 			buf.append( chunk, static_cast<std::size_t>( n ) );
 		}
 	}
 
 	//! Reads exactly `need` more bytes into `inOut` (which may already
-	//! hold `already` spilled-over bytes from the header read), appending
-	//! to whatever `inOut` already holds. Returns false on short
-	//! read/timeout/peer-close before `need` total bytes are collected --
-	//! the caller treats that as a clean malformed-request drop, never a
-	//! hang (bounded by the per-recv socket timeout) and never a crash.
-	bool ReadExactly( SOCKET sock, std::string& inOut, std::size_t need )
+	//! hold spilled-over bytes from the header read), appending to
+	//! whatever `inOut` already holds. Same DeadlineExceeded/Failed split
+	//! as ReadUntilDoubleCrlf above (no CapExceeded here -- the caller
+	//! already capped `need` itself, against kMaxBodyBytes, before ever
+	//! calling this).
+	ReadOutcome ReadExactly( SOCKET sock, std::string& inOut, std::size_t need,
+	                         const std::chrono::steady_clock::time_point& deadline )
 	{
 		char chunk[4096];
 		while( inOut.size() < need ) {
+			if( std::chrono::steady_clock::now() >= deadline ) return ReadOutcome::DeadlineExceeded;
 			const std::size_t want = need - inOut.size();
 			const int toRead = static_cast<int>( want < sizeof( chunk ) ? want : sizeof( chunk ) );
 			const int n = static_cast<int>( recv( sock, chunk, toRead, 0 ) );
-			if( n <= 0 ) return false;
+			if( n <= 0 ) return ReadOutcome::Failed;
 			inOut.append( chunk, static_cast<std::size_t>( n ) );
 		}
-		return true;
+		return ReadOutcome::Ok;
 	}
 
 	//! Largest single send() call SendAll will issue. send()'s length
@@ -216,6 +240,122 @@ namespace
 		GlobalLog()->PrintEx( eLog_Event,
 			"agent-http: %s %s -> %d (req %zu bytes, resp %zu bytes)",
 			method.c_str(), path.c_str(), status, reqBytes, respBytes );
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// Secure-MCP slice 6: mutating-verb rate limit (see the .h's
+	// kMutatingRateLimitWindowMs doc for the full placement rationale).
+	//////////////////////////////////////////////////////////////////
+
+	//! The rate limiter's default real millisecond clock source: the
+	//! process-monotonic steady_clock, so a system-clock adjustment
+	//! (NTP step, user changing the wall clock) can never shrink or
+	//! stretch the fixed window. Used unless a test has installed an
+	//! override via ForTest_SetRateLimitClockFn.
+	std::int64_t RealNowMs()
+	{
+		return std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch() ).count();
+	}
+
+	//! Secure-MCP slice 6: the numeric error code for a rate-limited
+	//! mutating call -- the next code in the -320xx app-range family
+	//! alongside AgentRpc.cpp's kAutonomyRefused (-32011) / kProposalQueueFull
+	//! (-32012). Defined HERE, not in AgentRpc.h/.cpp, because this refusal
+	//! is enforced entirely at the HTTP TRANSPORT layer, before a request
+	//! ever reaches AgentRpcDispatcher -- this file has (and should keep)
+	//! no dependency on AgentRpc.h; AgentRpc.h carries a cross-reference
+	//! comment documenting this value for discoverability.
+	const int kMutatingRateLimitExceeded = -32013;
+
+	//! True iff `body` is an MCP `tools/call` request naming one of the
+	//! mutating verbs this rate limiter counts against
+	//! (propose_patch/insert_chunk/remove_chunk/resolve_proposal). This
+	//! server only ever fronts AgentMcpAdapter (see the class doc), so
+	//! every request body it ever dispatches is MCP-shaped: the actual
+	//! verb name for a tool invocation always lives at params.name (see
+	//! AgentMcpAdapter.h's method-mapping table) -- `initialize`/`ping`/
+	//! `tools/list`/anything else is never mutating regardless of body
+	//! shape, so only `method == "tools/call"` bodies are inspected
+	//! further. A body that fails to parse, or doesn't have the expected
+	//! shape, returns false (NOT mutating, for this check's purposes) --
+	//! it is not this check's job to diagnose a malformed request; that
+	//! happens honestly, one level down, in AgentMcpAdapter::HandleLine's
+	//! own JSON-RPC parse, which this rate-limit pre-check never
+	//! prevents from running (a false negative here just means "not
+	//! rate-limited", never "not dispatched").
+	bool IsMutatingMcpToolCall( const std::string& body, std::string& outToolName )
+	{
+		JsonValue env;
+		std::string err;
+		if( !JsonParse( body, env, err ) || !env.isObject() ) return false;
+
+		const JsonValue* methodVal = env.find( "method" );
+		if( !methodVal || !methodVal->isString() || methodVal->asString() != "tools/call" ) return false;
+
+		const JsonValue* paramsVal = env.find( "params" );
+		if( !paramsVal || !paramsVal->isObject() ) return false;
+
+		const JsonValue* nameVal = paramsVal->find( "name" );
+		if( !nameVal || !nameVal->isString() ) return false;
+
+		const std::string name = nameVal->asString();
+		if( name == "propose_patch" || name == "insert_chunk" ||
+		    name == "remove_chunk"  || name == "resolve_proposal" ) {
+			outToolName = name;
+			return true;
+		}
+		return false;
+	}
+
+	//! Builds the JSON-RPC top-level error response for a request refused
+	//! by the mutating-verb rate limiter, echoing `originalBody`'s `id`
+	//! field VERBATIM (whatever JSON type the client sent: number, string,
+	//! or null) so the response is a well-formed JSON-RPC reply the client
+	//! can match to its request -- the SAME shape AgentRpc.cpp's
+	//! MakeError/MakeAutonomyRefusedError produce, but built here (rather
+	//! than calling into AgentRpc.cpp, which this file has no dependency
+	//! on and should not gain one for this) because this refusal fires
+	//! BEFORE the request ever reaches that dispatcher. `originalBody` is
+	//! guaranteed by the only caller (ServeOneConnection, immediately
+	//! after IsMutatingMcpToolCall returned true on this SAME string) to
+	//! already parse as a JSON object with an `id` field of some kind --
+	//! the re-parse here is a cheap, defensive re-derivation, not a new
+	//! failure mode: if it somehow failed anyway, `idValue` simply stays
+	//! its default-constructed null, which is still a valid (if less
+	//! helpful) JSON-RPC id.
+	std::string MakeRateLimitExceededError( const std::string& originalBody, const std::string& toolName )
+	{
+		JsonValue idValue;   // default-constructed == null
+		{
+			JsonValue reqEnv;
+			std::string perr;
+			if( JsonParse( originalBody, reqEnv, perr ) && reqEnv.isObject() ) {
+				if( const JsonValue* idVal = reqEnv.find( "id" ) ) idValue = *idVal;
+			}
+		}
+
+		char msg[256];
+		std::snprintf( msg, sizeof( msg ),
+			"refused: mutating-verb rate limit exceeded (max %d calls per %d ms) -- "
+			"retry after the current window rolls over",
+			AgentLoopbackHttpServer::kMutatingRateLimitMaxCalls,
+			AgentLoopbackHttpServer::kMutatingRateLimitWindowMs );
+
+		JsonValue err = JsonValue::MakeObject();
+		err.set( "code", JsonValue::MakeNumber( static_cast<double>( kMutatingRateLimitExceeded ) ) );
+		err.set( "message", JsonValue::MakeString( msg ) );
+		JsonValue data = JsonValue::MakeObject();
+		data.set( "verb", JsonValue::MakeString( toolName ) );
+		data.set( "retryAfterMs", JsonValue::MakeNumber(
+			static_cast<double>( AgentLoopbackHttpServer::kMutatingRateLimitWindowMs ) ) );
+		err.set( "data", data );
+
+		JsonValue env = JsonValue::MakeObject();
+		env.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+		env.set( "id", idValue );
+		env.set( "error", err );
+		return JsonSerialize( env );
 	}
 
 	//////////////////////////////////////////////////////////////////
@@ -574,7 +714,48 @@ AgentLoopbackHttpServer::AgentLoopbackHttpServer( AgentMcpAdapter* adapter, cons
 	, mBoundAddress()
 	, mStopRequested( false )
 	, mInsideHandleLine( false )
+	, mTotalRequestDeadlineMs( kDefaultTotalRequestDeadlineMs )
+	, mRateWindowStartMs( 0 )
+	, mRateWindowCount( 0 )
+	, mRateWindowValid( false )
+	, mRateLimitClockFn( nullptr )
 {
+}
+
+void AgentLoopbackHttpServer::ForTest_SetTotalRequestDeadlineMs( int ms )
+{
+	mTotalRequestDeadlineMs = ms;
+}
+
+void AgentLoopbackHttpServer::ForTest_SetRateLimitClockFn( std::int64_t (*fn)() )
+{
+	mRateLimitClockFn = fn;
+}
+
+void AgentLoopbackHttpServer::ForTest_ResetRateLimit()
+{
+	mRateWindowStartMs = 0;
+	mRateWindowCount = 0;
+	mRateWindowValid = false;
+}
+
+bool AgentLoopbackHttpServer::CheckAndConsumeMutatingRateLimit()
+{
+	const std::int64_t nowMs = mRateLimitClockFn ? mRateLimitClockFn() : RealNowMs();
+
+	// Roll the window forward: either this is the very first mutating
+	// call this server instance has ever seen (mRateWindowValid still
+	// false), or the current window's kMutatingRateLimitWindowMs has
+	// elapsed since it started. Either way, the new window starts NOW,
+	// with a fresh count.
+	if( !mRateWindowValid || ( nowMs - mRateWindowStartMs ) >= kMutatingRateLimitWindowMs ) {
+		mRateWindowStartMs = nowMs;
+		mRateWindowCount = 0;
+		mRateWindowValid = true;
+	}
+
+	++mRateWindowCount;
+	return mRateWindowCount <= kMutatingRateLimitMaxCalls;
 }
 
 AgentLoopbackHttpServer::~AgentLoopbackHttpServer()
@@ -660,7 +841,21 @@ bool AgentLoopbackHttpServer::Bind( unsigned short port )
 		return false;
 	}
 
-	if( listen( s, 16 ) < 0 ) {
+	// Secure-MCP slice 6: a small, EXPLICIT listen backlog. This server's
+	// accept-handle loop (Serve()) is serial BY DESIGN -- see the class
+	// doc's "Threading contract" -- so steady-state concurrency here is
+	// always exactly 1 connection in flight; the backlog only matters for
+	// the BURST case (several connections arriving faster than one at a
+	// time can be accepted+drained). 8 is generous for that burst case (a
+	// same-machine MCP client, or the small number of concurrent bursts
+	// this test suite itself fires -- see AgentLoopbackHttpTest.cpp's
+	// serialization section) while still bounding how many half-open
+	// connections a hostile/broken local peer can queue up against this
+	// loopback-only, single-consumer server before the OS starts refusing
+	// new ones outright (a queue that size is far cheaper to reason about
+	// than an unbounded or needlessly large one, even though this backlog
+	// was never the bottleneck the serial design relies on).
+	if( listen( s, 8 ) < 0 ) {
 		CloseSock( s );
 		return false;
 	}
@@ -802,6 +997,18 @@ std::string AgentLoopbackHttpServer::DispatchGuarded( const std::string& body )
 
 void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 {
+	// Secure-MCP slice 6: the TOTAL per-connection request-read deadline --
+	// a FIXED wall-clock point computed ONCE here, right after accept(),
+	// and threaded through every bounded read below (header block, then
+	// body). See kDefaultTotalRequestDeadlineMs's doc in the .h for why
+	// this exists alongside (not instead of) the per-recv kSocketTimeoutMs
+	// set in Serve(): a per-recv timeout resets on every byte a peer sends,
+	// so a slow-loris drip (one byte every few seconds, forever) never
+	// trips it; this fixed deadline cannot be extended by dripping, no
+	// matter how the reads are paced.
+	const std::chrono::steady_clock::time_point requestDeadline =
+		std::chrono::steady_clock::now() + std::chrono::milliseconds( mTotalRequestDeadlineMs );
+
 	std::string head, spill;
 	// kMaxHeaderBytes (64 KiB), NOT kMaxBodyBytes (8 MiB) -- a dedicated,
 	// much smaller cap for the header block. Red-prove: before this fix
@@ -811,7 +1018,22 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 	// header block alone exceeds 64 KiB is malformed by any realistic
 	// client this server expects (a same-machine MCP client) and is now
 	// rejected promptly with 431.
-	if( !ReadUntilDoubleCrlf( client, kMaxHeaderBytes, head, spill ) ) {
+	const ReadOutcome headOutcome = ReadUntilDoubleCrlf( client, kMaxHeaderBytes, requestDeadline, head, spill );
+	if( headOutcome == ReadOutcome::DeadlineExceeded ) {
+		// Secure-MCP slice 6 RED-PROVE target: a peer dripping bytes slowly
+		// enough that every individual recv() lands well inside
+		// kSocketTimeoutMs (so the per-recv timeout alone never fires)
+		// still gets cut off here once the TOTAL read has run past
+		// mTotalRequestDeadlineMs -- see AgentLoopbackHttpTest.cpp's
+		// slow-loris section. 408 Request Timeout (RFC 7231 SS6.5.7) is the
+		// correct status for "the server gave up waiting for the rest of
+		// the request".
+		const std::string resp = PlainError( "408 Request Timeout", "request exceeded the server's total read deadline" );
+		SendAll( client, resp );
+		LogRequest( "?", "?", 408, head.size(), resp.size() );
+		return;
+	}
+	if( headOutcome != ReadOutcome::Ok ) {
 		// Malformed / oversized headers, or the peer vanished before
 		// sending a complete header block. Nothing sane to respond with
 		// (we don't even reliably know it's HTTP) -- close cleanly. 431 is
@@ -1088,7 +1310,18 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 		// the JSON parser.
 		body.resize( need );
 	} else if( body.size() < need ) {
-		if( !ReadExactly( client, body, need ) ) {
+		const ReadOutcome bodyOutcome = ReadExactly( client, body, need, requestDeadline );
+		if( bodyOutcome == ReadOutcome::DeadlineExceeded ) {
+			// Secure-MCP slice 6: same total-deadline cutoff as the header
+			// read above, now covering the body half of the read phase too
+			// (a slow-loris drip can just as easily target the body as the
+			// headers).
+			const std::string resp = PlainError( "408 Request Timeout", "request exceeded the server's total read deadline" );
+			SendAll( client, resp );
+			LogRequest( method, path, 408, head.size() + body.size(), resp.size() );
+			return;
+		}
+		if( bodyOutcome != ReadOutcome::Ok ) {
 			// Truncated body: Content-Length promised more than the peer
 			// actually sent (or it timed out / closed mid-body). Clean
 			// rejection, no hang (bounded by the per-recv socket
@@ -1096,6 +1329,22 @@ void AgentLoopbackHttpServer::ServeOneConnection( SOCKET client )
 			const std::string resp = PlainError( "400 Bad Request", "truncated request body" );
 			SendAll( client, resp );
 			LogRequest( method, path, 400, head.size() + need, resp.size() );
+			return;
+		}
+	}
+
+	// ---- Secure-MCP slice 6: mutating-verb rate limit, checked AFTER the
+	// full request is read (so we have the body to inspect) and BEFORE
+	// dispatch. See the .h's kMutatingRateLimitWindowMs doc for the full
+	// placement rationale (transport-level, HTTP-only, deliberately never
+	// reached by `rise --agent-stdio`). ----
+	{
+		std::string rateLimitToolName;
+		if( IsMutatingMcpToolCall( body, rateLimitToolName ) && !CheckAndConsumeMutatingRateLimit() ) {
+			const std::string rpcErr = MakeRateLimitExceededError( body, rateLimitToolName );
+			const std::string resp = BuildHttpResponse( "200 OK", "application/json", rpcErr );
+			SendAll( client, resp );
+			LogRequest( method, path, 200, head.size() + need, resp.size() );
 			return;
 		}
 	}

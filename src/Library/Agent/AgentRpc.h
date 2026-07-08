@@ -141,12 +141,14 @@
 //                                            `width`/`height` report the dims of
 //                                            the returned image.)
 //      list_proposals {}                 -> {proposals:[{id,kind,target,entityKind,
-//                                            param,value,chunkText,baseVersion:
-//                                            {uuid,revision},sessionLabel,status},...]}
+//                                            param,value,chunkText,truncated,
+//                                            baseVersion:{uuid,revision},
+//                                            sessionLabel,status},...]}
 //                                           (Secure-MCP slice 5b: the queue of every
 //                                            AgentProposal staged on the ATTACHED
 //                                            controller -- pending AND resolved
-//                                            (resolved entries stay for audit).
+//                                            (resolved entries stay for audit, up
+//                                            to the slice 6 storage bound below).
 //                                            READ-SAFE: available under ANY autonomy
 //                                            posture, including Read -- listing is a
 //                                            read of the same scene the caller is
@@ -157,7 +159,14 @@
 //                                            to list" and "empty queue" look the
 //                                            same to a caller that just wants a
 //                                            list.  No session at all -> the usual
-//                                            "no session loaded" internal error.)
+//                                            "no session loaded" internal error.
+//                                            Secure-MCP slice 6 (additive): `value`
+//                                            and `chunkText` are each clipped to 16
+//                                            KiB in THIS LISTING ONLY (the stored
+//                                            proposal is untouched -- approving it
+//                                            still applies the FULL text); `truncated`
+//                                            is true iff this entry's listing was
+//                                            actually clipped.)
 //      resolve_proposal {proposalId,approve:bool}
 //                                        -> {resolved:bool,status:string,headVersion,
 //                                            message}
@@ -268,6 +277,17 @@
 //    conflict.  render (and every other verb on the read-safe allowlist)
 //    is DELIBERATELY allowed under `Read` -- it does not mutate the
 //    retained Document, and rendering is the core value of a read-only
+//
+//    Secure-MCP slice 6 (limits hardening): two SIBLING app-range codes in
+//    the same -320xx family as kAutonomyRefused, each a distinct
+//    RESOURCE/BACKPRESSURE refusal rather than a policy or scene-state
+//    outcome: kProposalQueueFull (-32012, AgentRpc.cpp) when
+//    propose_patch/insert_chunk/remove_chunk would stage past
+//    SceneEditController::kMaxPendingProposals; kMutatingRateLimitExceeded
+//    (-32013, AgentLoopbackHttpServer.cpp -- enforced at the HTTP
+//    TRANSPORT layer, before a request reaches this dispatcher, so it is
+//    deliberately NOT reachable via `rise --agent-stdio`) when a mutating
+//    verb exceeds the fixed-window call-rate cap.
 //    observer session.  `Commit` is today's behaviour: no refusal, every
 //    verb dispatches as before.
 //

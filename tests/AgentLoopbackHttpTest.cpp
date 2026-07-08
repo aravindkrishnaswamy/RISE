@@ -130,6 +130,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -160,6 +161,7 @@ static void Check( bool c, const std::string& w )
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <csignal>
 
 // Same tiny inline native-v7 scene the other agentic-surface tests use.
 static const char* const kScene =
@@ -604,8 +606,306 @@ static void TestGuiHostedServerEndToEnd()
 	std::printf( "=== Secure-MCP slice 5c: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Secure-MCP slice 6 test seam: a deterministic millisecond clock the
+// mutating-verb rate limiter can be pointed at via
+// AgentLoopbackHttpServer::ForTest_SetRateLimitClockFn -- lets the
+// window-rollover case below advance the fixed window WITHOUT a real
+// 60-second sleep. A plain global (not thread-local) is fine here: the
+// test thread only ever WRITES it strictly BEFORE issuing the next
+// request (whose full synchronous round-trip over the loopback socket is
+// what the server's single serving thread reads it AFTER) -- the
+// request/response round-trip is itself the happens-before edge, so
+// there is no data race despite the value crossing threads.
+//////////////////////////////////////////////////////////////////////
+static std::atomic<std::int64_t> g_fakeRateLimitClockMs( 0 );
+static std::int64_t FakeRateLimitClockMs() { return g_fakeRateLimitClockMs.load( std::memory_order_relaxed ); }
+
+//////////////////////////////////////////////////////////////////////
+// Secure-MCP slice 6: the mutating-verb fixed-window rate limit + the
+// per-connection total-request read deadline. Self-contained (its own
+// scene + server constructions) so it doesn't perturb the request counts
+// the sections in main() above already rely on.
+//
+//   (a) the first kMutatingRateLimitMaxCalls mutating calls in a window
+//       are NOT rate-limited; the (max+1)th IS, with a distinct top-level
+//       JSON-RPC error (kMutatingRateLimitExceeded, -32013) that echoes
+//       the original request's id. RED-PROVE target: removing
+//       AgentLoopbackHttpServer::CheckAndConsumeMutatingRateLimit's cap
+//       check would let this same (max+1)th call dispatch normally
+//       instead.
+//   (b) a READ-SAFE verb (render) is UNAFFECTED even in the SAME
+//       exhausted window -- the limiter counts ONLY mutating tools/call
+//       names.
+//   (c) the fixed window ROLLS OVER: using the injected fake clock, a
+//       call made exactly kMutatingRateLimitWindowMs after the window
+//       started succeeds again, proving this is a genuine fixed-window
+//       counter (reset on rollover), not a permanent one-shot cap.
+//   (d) [total-request deadline] a per-byte "slow-loris" drip whose
+//       INDIVIDUAL gaps are well inside the 5s per-recv socket timeout,
+//       but whose TOTAL time exceeds a (test-shrunk)
+//       mTotalRequestDeadlineMs, is cut off with 408 Request Timeout --
+//       RED-PROVE target: the per-recv timeout ALONE (pre-slice-6
+//       behaviour) would let this same drip keep the connection alive
+//       indefinitely (bounded only by however long the test is willing to
+//       keep dripping). A normal, non-dripped request against the SAME
+//       short deadline still succeeds -- the deadline doesn't
+//       false-positive-reject ordinary traffic.
+//////////////////////////////////////////////////////////////////////
+static void TestMutatingRateLimitAndTotalDeadline()
+{
+	std::printf( "=== Secure-MCP slice 6: mutating-verb rate limit + total-request deadline ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_http_slice6_test.RISEscene", kScene );
+	Check( !scenePath.empty(), "slice6: wrote the smoke scene to a temp file" );
+
+	//------------------------------------------------------------------
+	// (a)+(b): window cap + read-safe-verb exemption.
+	//------------------------------------------------------------------
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+		Check( session != nullptr, "slice6(a): AgentSession::LoadFromFile loaded the temp scene" );
+		// Read autonomy: propose_patch is refused downstream (kAutonomyRefused)
+		// regardless of the rate limiter -- irrelevant here, since the
+		// limiter is a TRANSPORT-layer check that fires BEFORE dispatch,
+		// purely off the request's {method, params.name} shape. Using Read
+		// (no live controller) keeps this section self-contained and
+		// proves the limiter counts a mutating CALL ATTEMPT, not a
+		// mutating call that actually succeeded downstream.
+		AgentMcpAdapter adapter( std::move( session ), RISE::Agent::AgentAutonomy::Read );
+		AgentLoopbackHttpServer server( &adapter, "/mcp" );
+		Check( server.Bind( 0 ), "slice6(a): server Bind(0) succeeds" );
+		const unsigned short port = server.BoundPort();
+		const std::string token = server.ForTest_Token();
+		std::thread serverThread( [&]() { server.Serve(); } );
+
+		ExtraHeaders extra;
+		extra.hasAuthorization = true;
+		extra.authorization = "Bearer " + token;
+
+		JsonValue args = JsonValue::MakeObject();
+		args.set( "target", JsonValue::MakeString( "sph" ) );
+		args.set( "param",  JsonValue::MakeString( "radius" ) );
+		args.set( "value",  JsonValue::MakeString( "0.9" ) );
+
+		bool allowedOk = true;
+		for( int i = 0; i < AgentLoopbackHttpServer::kMutatingRateLimitMaxCalls; ++i ) {
+			HttpResponse r = DoRequestEx( port, "POST", "/mcp",
+				ReqToolCall( i + 1, "propose_patch", args ), extra );
+			if( !r.ok || r.status != 200 ) { allowedOk = false; break; }
+			JsonValue env; std::string perr;
+			if( !JsonParse( r.body, env, perr ) ) { allowedOk = false; break; }
+			// Each of these first kMutatingRateLimitMaxCalls calls may
+			// still be a NORMAL kAutonomyRefused tool-execution error (a
+			// SUCCESS envelope whose CallToolResult carries isError:true,
+			// per Read autonomy) -- that is NOT this test's concern. Only
+			// a TOP-LEVEL JSON-RPC error carrying the rate-limit code
+			// would mean this call was wrongly throttled.
+			if( env.has( "error" ) ) {
+				const JsonValue& err = env.get( "error" );
+				const JsonValue* code = err.find( "code" );
+				if( code && code->isNumber() && code->asNumber() == -32013.0 ) { allowedOk = false; break; }
+			}
+		}
+		Check( allowedOk, "slice6(a): the first kMutatingRateLimitMaxCalls mutating calls in the window are NOT rate-limited" );
+
+		// The (max+1)th mutating call in the SAME window IS rate-limited.
+		HttpResponse overflow = DoRequestEx( port, "POST", "/mcp",
+			ReqToolCall( 9000, "propose_patch", args ), extra );
+		Check( overflow.ok && overflow.status == 200,
+		       "slice6(a): the rate-limited response is still HTTP 200 (the JSON-RPC error rides inside 200, "
+		       "matching every other dispatcher-level error on this transport)" );
+		JsonValue overflowEnv; std::string operr;
+		Check( JsonParse( overflow.body, overflowEnv, operr ), "slice6(a): rate-limited response body parses as JSON" );
+		Check( overflowEnv.has( "error" ),
+		       "RED-PROVE: the (max+1)th mutating call in the window is a top-level JSON-RPC error" );
+		if( overflowEnv.has( "error" ) ) {
+			const JsonValue& err = overflowEnv.get( "error" );
+			const JsonValue* code = err.find( "code" );
+			Check( code && code->isNumber() && code->asNumber() == -32013.0,
+			       "RED-PROVE: the rate-limit error carries the distinct kMutatingRateLimitExceeded code (-32013)" );
+		}
+		const JsonValue* idv = overflowEnv.find( "id" );
+		Check( idv && idv->isNumber() && idv->asNumber() == 9000.0,
+		       "the rate-limit error echoes the ORIGINAL request's id (9000)" );
+
+		// (b) a READ-SAFE verb is UNAFFECTED -- unlimited, even in the SAME
+		// exhausted window.
+		HttpResponse readOk = DoRequestEx( port, "POST", "/mcp",
+			ReqToolCall( 9001, "render", JsonValue::MakeObject() ), extra );
+		Check( readOk.ok && readOk.status == 200, "slice6(b): a read-safe verb (render) still gets HTTP 200 in the SAME exhausted window" );
+		JsonValue readEnv; std::string rerr;
+		Check( JsonParse( readOk.body, readEnv, rerr ), "slice6(b): render response body parses as JSON" );
+		Check( !readEnv.has( "error" ),
+		       "slice6(b): render is NOT rate-limited (no top-level error at all) even though the mutating "
+		       "window is exhausted -- the limiter only ever counts mutating verb names" );
+
+		server.Stop();
+		if( serverThread.joinable() ) serverThread.join();
+	}
+
+	//------------------------------------------------------------------
+	// (c) window rollover, via the injected fake clock.
+	//------------------------------------------------------------------
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+		Check( session != nullptr, "slice6(c): AgentSession::LoadFromFile loaded the temp scene" );
+		AgentMcpAdapter adapter( std::move( session ), RISE::Agent::AgentAutonomy::Read );
+		AgentLoopbackHttpServer server( &adapter, "/mcp" );
+		Check( server.Bind( 0 ), "slice6(c): server Bind(0) succeeds" );
+		const unsigned short port = server.BoundPort();
+		const std::string token = server.ForTest_Token();
+
+		g_fakeRateLimitClockMs.store( 0, std::memory_order_relaxed );
+		server.ForTest_SetRateLimitClockFn( &FakeRateLimitClockMs );
+		server.ForTest_ResetRateLimit();
+
+		std::thread serverThread( [&]() { server.Serve(); } );
+
+		ExtraHeaders extra;
+		extra.hasAuthorization = true;
+		extra.authorization = "Bearer " + token;
+		JsonValue args = JsonValue::MakeObject();
+		args.set( "target", JsonValue::MakeString( "sph" ) );
+		args.set( "param",  JsonValue::MakeString( "radius" ) );
+		args.set( "value",  JsonValue::MakeString( "0.9" ) );
+
+		// Fill the window at fake-time 0.
+		bool fillOk = true;
+		for( int i = 0; i < AgentLoopbackHttpServer::kMutatingRateLimitMaxCalls; ++i ) {
+			HttpResponse r = DoRequestEx( port, "POST", "/mcp",
+				ReqToolCall( i + 1, "propose_patch", args ), extra );
+			if( !r.ok || r.status != 200 ) { fillOk = false; break; }
+		}
+		Check( fillOk, "slice6(c): filled the window at fake-time 0" );
+
+		// Still within the SAME window (fake time unchanged) -> refused.
+		{
+			HttpResponse r = DoRequestEx( port, "POST", "/mcp",
+				ReqToolCall( 500, "propose_patch", args ), extra );
+			JsonValue env; std::string perr;
+			Check( r.ok && r.status == 200 && JsonParse( r.body, env, perr ) && env.has( "error" ),
+			       "slice6(c): still within the SAME (unrolled) window, the next mutating call is refused" );
+		}
+
+		// Advance the fake clock past kMutatingRateLimitWindowMs -> the
+		// window rolls over -> a mutating call succeeds again.
+		g_fakeRateLimitClockMs.store(
+			static_cast<std::int64_t>( AgentLoopbackHttpServer::kMutatingRateLimitWindowMs ),
+			std::memory_order_relaxed );
+		{
+			HttpResponse r = DoRequestEx( port, "POST", "/mcp",
+				ReqToolCall( 501, "propose_patch", args ), extra );
+			JsonValue env; std::string perr;
+			Check( r.ok && r.status == 200 && JsonParse( r.body, env, perr ) && !env.has( "error" ),
+			       "slice6(c): AFTER the fake clock advances past kMutatingRateLimitWindowMs, a fresh window "
+			       "starts and the SAME verb succeeds again (a top-level error here would mean the window "
+			       "never rolled over)" );
+		}
+
+		server.Stop();
+		if( serverThread.joinable() ) serverThread.join();
+		// Restore the real clock for any server constructed after this
+		// point in the process (defensive -- every OTHER section in this
+		// file constructs its own fresh server instance, each defaulting
+		// to the real clock, but this leaves no doubt).
+		server.ForTest_SetRateLimitClockFn( nullptr );
+	}
+
+	//------------------------------------------------------------------
+	// (d) total-request read deadline: slow-loris drip vs. normal traffic.
+	//------------------------------------------------------------------
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+		Check( session != nullptr, "slice6(d): AgentSession::LoadFromFile loaded the temp scene" );
+		AgentMcpAdapter adapter( std::move( session ), RISE::Agent::AgentAutonomy::Read );
+		AgentLoopbackHttpServer server( &adapter, "/mcp" );
+		Check( server.Bind( 0 ), "slice6(d): server Bind(0) succeeds" );
+		const unsigned short port = server.BoundPort();
+		const std::string token = server.ForTest_Token();
+
+		// Shrink the deadline for a fast test -- the PRODUCTION default
+		// (kDefaultTotalRequestDeadlineMs, 15s) is exercised structurally
+		// by this same code path; only the NUMBER is test-shrunk.
+		const int kTestDeadlineMs = 300;
+		server.ForTest_SetTotalRequestDeadlineMs( kTestDeadlineMs );
+
+		std::thread serverThread( [&]() { server.Serve(); } );
+
+		// (d.1) RED-PROVE: a drip whose individual gaps (20ms) are each
+		// WELL inside the 5s per-recv socket timeout, but whose TOTAL time
+		// (well past kTestDeadlineMs) is not -- cut off with 408.
+		{
+			const int s = ConnectLoopback( port, 5000 );
+			Check( s >= 0, "slice6(d): connected for the slow-loris drip case" );
+			if( s >= 0 ) {
+				const std::string body = ReqToolCall( 1, "render", JsonValue::MakeObject() );
+				const std::string req = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+				                         "Authorization: Bearer " + token + "\r\n"
+				                         "Content-Length: " + std::to_string( body.size() ) + "\r\n\r\n" + body;
+
+				// Split into ~24 pieces so 24 * 20ms = ~480ms total,
+				// comfortably past the 300ms deadline while staying a fast
+				// test; each individual gap (20ms) is nowhere near the 5s
+				// per-recv timeout.
+				// NOTE: once the deadline trips server-side, Serve() closes
+				// this connection immediately after ServeOneConnection
+				// returns -- this drip loop's LATER SendAll calls are
+				// therefore EXPECTED to start failing (the peer is
+				// already gone) partway through sending; that's the point
+				// of this test, not a failure. Only the final response
+				// status matters below.
+				const std::size_t kPieces = 24;
+				const std::size_t pieceLen = ( req.size() + kPieces - 1 ) / kPieces;
+				for( std::size_t off = 0; off < req.size(); off += pieceLen ) {
+					const std::size_t len = std::min( pieceLen, req.size() - off );
+					if( !SendAll( s, req.substr( off, len ) ) ) break;   // server already closed -- expected once the deadline trips
+					std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+				}
+				HttpResponse r = ParseHttpResponse( ReadAllUntilClose( s ) );
+				Check( r.ok && r.status == 408,
+				       "RED-PROVE: a per-piece drip whose TOTAL time exceeds the (test-shrunk) total request "
+				       "deadline is cut off with 408 Request Timeout, even though every individual gap (20ms) "
+				       "is nowhere near the 5s per-recv socket timeout" );
+				close( s );
+			}
+		}
+
+		// (d.2) a NORMAL (non-dripped) request against the SAME short
+		// deadline still succeeds -- the deadline doesn't
+		// false-positive-reject ordinary traffic.
+		{
+			ExtraHeaders extra;
+			extra.hasAuthorization = true;
+			extra.authorization = "Bearer " + token;
+			HttpResponse r = DoRequestEx( port, "POST", "/mcp", ReqInitialize( 2 ), extra );
+			Check( r.ok && r.status == 200,
+			       "slice6(d): a normal, non-dripped request still succeeds under the same short total deadline" );
+		}
+
+		server.Stop();
+		if( serverThread.joinable() ) serverThread.join();
+	}
+
+	std::remove( scenePath.c_str() );
+	std::printf( "=== Secure-MCP slice 6: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
+	// Secure-MCP slice 6's total-request-deadline test (d) deliberately
+	// drives a scenario where the SERVER closes a connection (408, on
+	// deadline expiry) WHILE this same process's client-side drip loop is
+	// still mid-send -- a subsequent send() on that now-peer-closed socket
+	// raises SIGPIPE, whose default disposition is to terminate the whole
+	// process. Every other test in this file only ever has the CLIENT
+	// side close early (never write-after-peer-close), so this is new as
+	// of that test; ignoring SIGPIPE process-wide (the standard idiom for
+	// networking code -- send() then reports EPIPE via its return value,
+	// which this file's SendAll() already checks) is the correct fix,
+	// not a workaround local to that one test.
+	std::signal( SIGPIPE, SIG_IGN );
+
 	std::printf( "=== AgentLoopbackHttpTest (Secure-MCP slice 3: loopback HTTP transport) ===\n" );
 
 	const std::string scenePath = WriteTemp( "rise_agent_http_test.RISEscene", kScene );
@@ -1457,6 +1757,10 @@ int main()
 	// self-contained (its own scene/controller/servers), run after the
 	// slice-3/4 transport-correctness cases above.
 	TestGuiHostedServerEndToEnd();
+
+	// Secure-MCP slice 6: mutating-verb rate limit + total-request
+	// deadline -- self-contained (its own scene/server constructions).
+	TestMutatingRateLimitAndTotalDeadline();
 
 	std::printf( "=== AgentLoopbackHttpTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -174,6 +174,21 @@ namespace RISE
 			std::string status;              //!< "applied" (clean) / "rejected" (head intact) / "diagnosed" (mutated but re-derive diagnosed) / "conflict" (stale baseVersion, head intact)
 			RISE::Cst::CstHeadVersion headVersion;   //!< the head-version AFTER the call (post-commit on success; current head on reject/diagnosed/conflict)
 			std::string message;
+			//! Secure-MCP slice 6: set true ONLY for an External-authority
+			//! stage attempt that SceneEditController::StageProposal refused
+			//! because the attached controller's PENDING proposal queue is
+			//! already at SceneEditController::kMaxPendingProposals (see
+			//! that constant's doc). `status` is "rejected" and `applied` is
+			//! false in this case too, exactly like any other permanent
+			//! reject -- but the wire layer (AgentRpc.cpp) checks THIS flag
+			//! specifically to surface a distinct, structured top-level
+			//! JSON-RPC error (kProposalQueueFull) instead of the normal
+			//! success-envelope result shape, so a programmatic caller can
+			//! branch on "the queue is full, resolve some proposals first"
+			//! without string-matching `message`. Always false on every
+			//! other path (LIVE-mode commit, headless direct-Job, a
+			//! successful stage).
+			bool        queueFull = false;
 		};
 
 		//! Model-B F5 slice S2: the structured result of InsertChunk /
@@ -200,6 +215,11 @@ namespace RISE
 			std::string message;
 			std::string name;   //!< the chunk's `name` param / the remove target
 			std::string kind;   //!< the chunk keyword (e.g. "omni_light")
+			//! Secure-MCP slice 6: SAME meaning as AgentPatchResult::queueFull
+			//! (see its doc) -- set true only for an External-authority
+			//! insert_chunk/remove_chunk stage refused by StageProposal's
+			//! kMaxPendingProposals gate.
+			bool        queueFull = false;
 		};
 
 		//! Preview-render (F5 the cheap multi-angle observe loop): an OPTIONAL
@@ -769,25 +789,32 @@ namespace RISE
 			//! uses the AUTHORED sample count.  The bytes of a SUCCESSFUL
 			//! render are cached for ReadImage().
 			//!
-			//! LIVE-MODE SAFETY (investigated for the preview-render work,
-			//! documented honestly rather than silently papered over): this
-			//! entry point calls mJob->Rasterize() DIRECTLY, with NO park
-			//! against a live SceneEditController's interactive render thread
-			//! -- that gap PRE-DATES preview-render and is UNCHANGED here (this
-			//! call takes no params to override, so there is nothing new to
-			//! race).  It is unserialized against DoOneRenderPass, which reads
-			//! + transiently mutates the SAME shared Scene/Film/cameras for its
-			//! own preview-scale pass.  A production-grade fix is the
-			//! `RenderCoordinator` design (docs/gui/RENDER_COORDINATOR.md,
-			//! status: DESIGN, no code) -- out of scope here.  The scoped fix
-			//! landed by THIS work is narrower and real: Render(AgentRenderParams)
-			//! below parks the render thread (SceneEditController::
-			//! RunPreviewRenderParked) for the WINDOW where it mutates the
-			//! shared Film dims / camera pose, because those two specific
-			//! mutations are what preview-render newly introduces on a path
-			//! that previously made none.  A plain Render(-1) (or an
-			//! all-absent-params Render(AgentRenderParams)) does not take that
-			//! park, matching its pre-existing behavior exactly.
+			//! LIVE-MODE SAFETY (investigated for the preview-render work;
+			//! updated for Model-B F2 slice S2a, which CLOSED the race this
+			//! comment used to document as pre-existing/unchanged -- see
+			//! RenderCore_'s "S2a CLOSES the pre-existing race" comment in
+			//! AgentSession.cpp for the fix itself): when a controller IS
+			//! attached, EVERY controller-attached render this method makes
+			//! -- override or not -- now runs on the controller's dedicated
+			//! agent-render worker under the SAME cancel-and-park critical
+			//! section the interactive render loop respects
+			//! (SceneEditController::SubmitAgentRenderSync for the no-
+			//! override case, RunPreviewRenderParked for the override case),
+			//! never unserialized against DoOneRenderPass.  Empirically
+			//! max-concurrency-1: the controller's single agent-render slot
+			//! means a render already in flight causes a NEW submission
+			//! (sync or async, pinned or not) to be REFUSED rather than
+			//! racing it -- see SubmitAgentRenderAsync's `pinned` doc.  Only
+			//! a TRULY HEADLESS session (no controller attached at all --
+			//! e.g. `rise --agent-stdio` with no live GUI) still calls
+			//! mJob->Rasterize() directly, which is correct there: there is
+			//! no interactive render thread in that topology to race in the
+			//! first place.  A plain Render(-1) (or an all-absent-params
+			//! Render(AgentRenderParams)) is routed through this SAME
+			//! controller-attached path when a controller exists; it only
+			//! skips the FILM-DIMS/CAMERA override-mutation window (the
+			//! preview-render-specific park), not the render-serialization
+			//! path itself.
 			AgentRenderResult Render( int samplesOverride = -1 );
 
 			//! Preview-render (F5 the cheap multi-angle observe loop): the SAME

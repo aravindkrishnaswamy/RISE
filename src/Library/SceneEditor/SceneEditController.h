@@ -503,6 +503,27 @@ namespace RISE
 			String              status;              //!< "pending" / "applied" / "rejected" / "conflict"
 		};
 
+		//! Secure-MCP slice 6: the PENDING-queue depth cap StageProposal
+		//! enforces -- see mProposals's doc for the full rationale. 32 is
+		//! generously above any realistic legitimate backlog (a human Owner
+		//! reviewing proposals one at a time; even a batch-authoring agent
+		//! staging a scene's worth of edits tops out at a handful before an
+		//! Owner would reasonably resolve some), so this cap exists purely
+		//! as a fail-closed backstop against a runaway/hostile External
+		//! client staging proposals faster than any Owner could plausibly
+		//! resolve them, not as a limit a well-behaved client should expect
+		//! to bump into.
+		static const std::size_t kMaxPendingProposals = 32;
+
+		//! Secure-MCP slice 6: the TOTAL storage cap (pending + resolved)
+		//! StageProposal enforces -- see mProposals's doc. 8x
+		//! kMaxPendingProposals: generous enough that a normal session's
+		//! full resolved-audit history is very unlikely to be evicted while
+		//! still relevant, while guaranteeing this vector can never grow
+		//! past a fixed, small bound no matter how long the controller
+		//! (and an attached external session) stays alive.
+		static const std::size_t kMaxProposalHistory = 8 * kMaxPendingProposals;
+
 		//! Secure-MCP slice 5a: STAGE one proposal (INERT -- no Document
 		//! mutation, no render kick, no EditHistory record).
 		//!
@@ -523,8 +544,14 @@ namespace RISE
 		//! unlocked read here; it is whatever the caller's own (separately
 		//! guarded) provenance was.
 		//!
-		//! Returns the freshly-minted, never-0 proposal id.  Thread-safe
-		//! under mMutex (no cancel-and-park needed: staging touches only the
+		//! Returns the freshly-minted, never-0 proposal id -- OR 0 (Secure-
+		//! MCP slice 6) if the PENDING queue is already at kMaxPendingProposals:
+		//! a REFUSAL, not a silent drop -- nothing is enqueued, mNextProposalId
+		//! is not consumed, and `outStagedVersion` (if provided) is left
+		//! UNTOUCHED. The caller (AgentSession::ProposePatch/InsertChunk/
+		//! RemoveChunk) maps a 0 return to a distinct queue-full result
+		//! rather than treating it as a normal stage. Thread-safe under
+		//! mMutex (no cancel-and-park needed: staging touches only the
 		//! queue, never the Document or the live Scene, so there is nothing
 		//! for the render thread to race).  Use `outStagedVersion` to read
 		//! back the exact baseVersion that was stamped/kept -- this is the
@@ -2092,16 +2119,42 @@ namespace RISE
 		//! so ResolveProposal's base-version re-check-then-apply is one
 		//! atomic critical section with no window for a concurrent commit
 		//! (staged OR direct) to move the head between the check and the
-		//! apply.  Never purged -- a resolved (applied/rejected/conflict)
-		//! proposal stays on the queue for audit; this controller's lifetime
-		//! is one Job/one scene-load, so the queue's lifetime is naturally
-		//! bounded (a fresh Job + fresh controller starts a fresh, empty
-		//! queue -- see StageProposal's / the class doc's reload-invalidation
-		//! note: LoadAsciiSceneViaCst refuses a second load on the same Job,
-		//! so in practice "reload" means a brand-new Job + brand-new
-		//! controller, which starts with an empty mProposals by construction;
-		//! there is no in-place reload path on this controller to reset
-		//! against).
+		//! apply.  A resolved (applied/rejected/conflict) proposal is KEPT
+		//! on the queue for audit rather than purged at resolve time -- but
+		//! see Secure-MCP slice 6 below, which bounds how far that audit
+		//! trail can grow: this controller's lifetime is one Job/one
+		//! scene-load (LoadAsciiSceneViaCst refuses a second load on the
+		//! same Job, so "reload" in practice means a brand-new Job + brand-
+		//! new controller, which starts with an empty mProposals by
+		//! construction), but a single long-running session hosting an
+		//! attached external MCP client for hours could otherwise grow this
+		//! vector without limit.
+		//!
+		//! Secure-MCP slice 6 (limits hardening): TWO independent caps, both
+		//! enforced in StageProposal --
+		//!   * kMaxPendingProposals bounds how many entries may be
+		//!     status=="pending" AT ONCE.  StageProposal REFUSES (returns 0,
+		//!     never enqueuing) a new proposal once the pending count is
+		//!     already at the cap -- fail-closed: it does NOT silently drop
+		//!     or overwrite anyone's existing pending proposal, it just
+		//!     declines to add a new one until the Owner resolves (approves
+		//!     or rejects) enough of the existing backlog. This is what
+		//!     stops an unbounded backlog of NEVER-RESOLVED proposals from
+		//!     accumulating (a resolve requires an Owner-authority session
+		//!     to actively act; nothing else drains "pending").
+		//!   * kMaxProposalHistory bounds the TOTAL size of this vector
+		//!     (pending + resolved).  Once at that cap, StageProposal evicts
+		//!     the SINGLE OLDEST resolved (non-pending) entry before
+		//!     appending the new one -- so the audit trail is a bounded
+		//!     sliding window of the most recent history rather than
+		//!     unbounded, while a pending entry is NEVER evicted to make
+		//!     room (only resolved entries are eviction candidates). Given
+		//!     kMaxPendingProposals <= kMaxProposalHistory, whenever the
+		//!     total is at the history cap there is ALWAYS at least one
+		//!     resolved entry to evict (pending count is bounded strictly
+		//!     below the history cap by the sibling gate above), so this
+		//!     eviction can never stall or need to fall back to dropping a
+		//!     pending proposal.
 		std::vector<AgentProposal> mProposals;
 		//! Monotonic proposal-id counter; starts at 1 (0 is the "not found"
 		//! sentinel returned by StageProposal only if ever called before

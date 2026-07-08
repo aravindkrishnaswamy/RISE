@@ -892,6 +892,25 @@ namespace RISE
 				p.sessionLabel = String( mSessionLabel.c_str() );
 				RISE::Cst::CstHeadVersion stagedHead{};
 				const std::uint64_t id = mController->StageProposal( p, &stagedHead );
+				if( id == 0 )
+				{
+					// Secure-MCP slice 6: StageProposal refused -- the
+					// attached controller's PENDING proposal queue is
+					// already at kMaxPendingProposals. Nothing was
+					// enqueued (stagedHead was left untouched by
+					// StageProposal), so headVersion here reads the
+					// CURRENT head fresh, same as every other permanent
+					// reject in this function.
+					r.applied    = false;
+					r.rawCode    = 0;
+					r.status     = "rejected";
+					r.queueFull  = true;
+					r.headVersion = HeadVersion();
+					r.message = "propose_patch refused: the pending-proposal queue is full -- "
+					            "the Owner must resolve (approve/reject) some pending proposals "
+					            "before another can be staged";
+					return r;
+				}
 				r.applied = false;
 				r.rawCode = 0;
 				r.status  = "staged";
@@ -1166,6 +1185,20 @@ namespace RISE
 				p.sessionLabel = String( mSessionLabel.c_str() );
 				RISE::Cst::CstHeadVersion stagedHead{};
 				const std::uint64_t id = mController->StageProposal( p, &stagedHead );
+				if( id == 0 )
+				{
+					// Secure-MCP slice 6: see ProposePatch's identical
+					// queue-full branch for the full rationale.
+					r.applied    = false;
+					r.rawCode    = 0;
+					r.status     = "rejected";
+					r.queueFull  = true;
+					r.headVersion = HeadVersion();
+					r.message = "insert_chunk refused: the pending-proposal queue is full -- "
+					            "the Owner must resolve (approve/reject) some pending proposals "
+					            "before another can be staged";
+					return r;
+				}
 				r.applied = false;
 				r.rawCode = 0;
 				r.status  = "staged";
@@ -1279,6 +1312,20 @@ namespace RISE
 				p.sessionLabel = String( mSessionLabel.c_str() );
 				RISE::Cst::CstHeadVersion stagedHead{};
 				const std::uint64_t id = mController->StageProposal( p, &stagedHead );
+				if( id == 0 )
+				{
+					// Secure-MCP slice 6: see ProposePatch's identical
+					// queue-full branch for the full rationale.
+					r.applied    = false;
+					r.rawCode    = 0;
+					r.status     = "rejected";
+					r.queueFull  = true;
+					r.headVersion = HeadVersion();
+					r.message = "remove_chunk refused: the pending-proposal queue is full -- "
+					            "the Owner must resolve (approve/reject) some pending proposals "
+					            "before another can be staged";
+					return r;
+				}
 				r.applied = false;
 				r.rawCode = 0;
 				r.status  = "staged";
