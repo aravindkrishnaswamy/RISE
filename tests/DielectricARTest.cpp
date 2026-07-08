@@ -46,6 +46,7 @@
 #include "../src/Library/Materials/DielectricSPF.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Interfaces/IJob.h"
+#include "../src/Library/Interfaces/IMaterial.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -193,6 +194,46 @@ int main()
 		                         const Scalar, const Scalar, const Scalar )
 			= &IJob::AddDielectricMaterial;
 		Check( legacyJob != 0, "legacy single-film scalar IJob::AddDielectricMaterial overload exists", 0, 0 );
+	}
+
+	// The scalar overload must preserve NO-COATING semantics: a thickness <= 0
+	// means bare Fresnel (nLayers=0), matching the pre-N-layer scalar form and the
+	// parser's `if(ar_thick>0)` legacy handling -- it must NOT build a 1-layer
+	// zero-thickness/zero-index film (the ctor documents nLayers==0 as the
+	// bit-identical bare-Fresnel contract).  We verify both branches of the guard
+	// construct a valid material; a *behavioural* discrimination isn't feasible
+	// here (DielectricSPF::ScatterNM is stochastic and it does not override the
+	// deterministic EvaluateKrayNM), so correctness rests on the guard matching
+	// those two proven references + the full-suite regression gate.
+	{
+		IScalarPainter *tauP = nullptr, *iorP = nullptr, *scatP = nullptr;
+		RISE_API_CreateUniformScalarPainter( &tauP,  1.0 );
+		RISE_API_CreateUniformScalarPainter( &iorP,  kSapph );
+		RISE_API_CreateUniformScalarPainter( &scatP, 100000.0 );
+
+		// (a) thickness <= 0 -> no-coating branch builds a valid material.
+		IMaterial* mNo = nullptr;
+		const bool okNo = RISE_API_CreateDielectricMaterial( &mNo, *tauP, *iorP, *scatP, false, 0.0, 0.0, 0.0 );
+		Check( okNo && mNo != nullptr, "scalar AR (0,0,0) -> no-coating branch builds a valid material", 0, 0 );
+		if( mNo ) mNo->release();
+
+		// (b) thickness > 0 -> single-layer AR branch builds a valid material.
+		IMaterial* mAr = nullptr;
+		const bool okAr = RISE_API_CreateDielectricMaterial( &mAr, *tauP, *iorP, *scatP, false, kMgF2, 0.0, kArD );
+		Check( okAr && mAr != nullptr, "scalar AR (MgF2,0,lambda/4) -> single-layer branch builds a valid material", 0, 0 );
+		if( mAr ) mAr->release();
+
+		// (c) Integer-zero (0,0,0) resolves unambiguously -- removing the int
+		// overload makes this call ambiguous (int->Scalar vs int->null Scalar*)
+		// and this test FAILS TO COMPILE.  Thickness 0 => no coating.
+		IMaterial* mInt0 = nullptr;
+		const bool okInt = RISE_API_CreateDielectricMaterial( &mInt0, *tauP, *iorP, *scatP, false, 0, 0, 0 );
+		Check( okInt && mInt0 != nullptr, "integer-zero (0,0,0) AR call is unambiguous + builds no-coating", 0, 0 );
+		if( mInt0 ) mInt0->release();
+
+		if( tauP )  tauP->release();
+		if( iorP )  iorP->release();
+		if( scatP ) scatP->release();
 	}
 
 	// ---------------------------------------------------------------

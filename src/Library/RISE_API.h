@@ -637,11 +637,12 @@ namespace RISE
 								const unsigned int arNLayers = 0	///< [in] Number of AR layers (0 = no coating)
 								);
 
-	//! Legacy single-film AR overload.  Builds a one-layer stack and forwards to
-	//! the N-layer form above, so pre-N-layer external callers (scalar ar film
-	//! ior/extinction/thickness) still compile.  A `0.0` double binds to Scalar
-	//! (not the array form's `const Scalar*`), so real single-film calls resolve
-	//! here unambiguously.
+	//! Legacy single-film AR overload.  Forwards to the N-layer form, so pre-
+	//! N-layer external callers (scalar ar film ior/extinction/thickness) still
+	//! compile.  A `0.0` double binds to Scalar (not the array form's
+	//! `const Scalar*`), so real single-film calls resolve here.  NO-COATING:
+	//! arFilmThickness <= 0 forwards nLayers=0 (bare Fresnel), matching the old
+	//! scalar form -- it does NOT build a zero-thickness film.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateDielectricMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
@@ -652,6 +653,22 @@ namespace RISE
 								const Scalar arFilmN,			///< [in] Single AR film real index
 								const Scalar arFilmK,			///< [in] Single AR film extinction
 								const Scalar arFilmThickness	///< [in] Single AR film thickness, nm
+								);
+
+	//! Legacy integer-zero disambiguator for the single-film overload.  Old
+	//! `(..., 0, 0, 0)` calls with INTEGER literals are ambiguous between the
+	//! scalar overload and the array form's null-pointer conversion; this exact
+	//! int overload resolves them (and, thickness 0, means no coating).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateDielectricMaterial(
+								IMaterial** ppi,				///< [out] Pointer to recieve the material
+								const IScalarPainter& tau,		///< [in] Transmittance (per-channel + spectral)
+								const IScalarPainter& rIndex,	///< [in] Index of refraction
+								const IScalarPainter& scat,		///< [in] Scattering function (Phong cone or HG)
+								const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+								const int arFilmN,				///< [in] Single AR film real index
+								const int arFilmK,				///< [in] Single AR film extinction
+								const int arFilmThickness		///< [in] Single AR film thickness, nm
 								);
 
 	//! Creates a SubSurface Scattering material.  ior / absorption /
