@@ -54,6 +54,26 @@ using namespace RISE::Implementation;
 // Forward declarations for scalar-painter resolution helpers — full
 // definitions live alongside the first `AddDielectricMaterial` and
 // are shared by every material conversion in this file.
+// True IFF s parses as a NON-FINITE number (nan/inf spelling, or ERANGE overflow).
+// A non-numeric value (e.g. a painter name like "pnt_zero", which the legacy atof
+// path turns into 0) returns FALSE and is left untouched.  Used to reject non-finite
+// inline values for Reference-kind material scalars (g, roughness) that bypass the
+// descriptor's AllTokensAreFiniteNumbers gate; value-level isfinite is unreliable
+// under -ffast-math, so this is a STRING-layer check.
+static bool ScalarLiteralIsNonFinite( const char* s )
+{
+	if( !s ) return false;
+	char* end = nullptr;
+	errno = 0;
+	(void)std::strtod( s, &end );
+	if( end == s ) return false;		// not a number (painter name / garbage) -> not our concern
+	if( errno == ERANGE ) return true;	// overflow / underflow (e.g. 1e999)
+	const char* p = s;
+	while( *p == ' ' || *p == '\t' ) ++p;
+	const char* t = ( *p == '+' || *p == '-' ) ? p + 1 : p;
+	return ( t[0] == 'n' || t[0] == 'N' || t[0] == 'i' || t[0] == 'I' );	// strtod parsed nan/inf
+}
+
 static IScalarPainter* ResolveScalarPainterArg(
 	IScalarPainterManager* mgr,
 	const char* value,
@@ -2871,6 +2891,13 @@ bool Job::AddSubSurfaceScatteringMaterial(
 		return false;
 	}
 
+	if( ScalarLiteralIsNonFinite( g ) || ScalarLiteralIsNonFinite( roughness ) ) {
+		GlobalLog()->PrintEx( eLog_Error, "subsurfacescattering_material `%s`: `g` / `roughness` must be finite (got g=`%s`, roughness=`%s`)", name, g, roughness );
+		safe_release( pIOR );
+		safe_release( pAbsorption );
+		safe_release( pScattering );
+		return false;
+	}
 	double gVal = atof(g);
 	double roughnessVal = atof(roughness);
 
@@ -2910,6 +2937,13 @@ bool Job::AddRandomWalkSSSMaterial(
 		return false;
 	}
 
+	if( ScalarLiteralIsNonFinite( g ) || ScalarLiteralIsNonFinite( roughness ) ) {
+		GlobalLog()->PrintEx( eLog_Error, "randomwalksss_material `%s`: `g` / `roughness` must be finite (got g=`%s`, roughness=`%s`)", name, g, roughness );
+		safe_release( pIOR );
+		safe_release( pAbsorption );
+		safe_release( pScattering );
+		return false;
+	}
 	double gVal = atof(g);
 	double roughnessVal = atof(roughness);
 	unsigned int maxBouncesVal = atoi(maxBounces);
@@ -3249,6 +3283,11 @@ bool Job::AddDonnerJensenSkinBSSRDFMaterial(
 		}
 	}
 
+	if( ScalarLiteralIsNonFinite( roughness ) ) {
+		GlobalLog()->PrintEx( eLog_Error, "material `%s`: `roughness` must be finite (got `%s`)", name, roughness );
+		for( int j=0; j<9; ++j ) safe_release( all_dj[j] );
+		return false;
+	}
 	const double roughnessVal = atof( roughness );
 
 	IMaterial* pMaterial = 0;

@@ -379,12 +379,34 @@ static void TestRejectInlineScalarOverflow()
 	Check( jn == nullptr, "inline scalar nan (ior 1 1 nan) REJECTED" );
 	if( jn ) safe_release( jn );
 
+	// Sibling: SSS `g` / `roughness` are Reference-kind too but were parsed via
+	// plain atof() (no ERANGE, no nan/inf detection) -- now routed through the
+	// same string-layer ParseFiniteScalarLiteral check.
+	const char* sssG =
+		"subsurfacescattering_material\n{\n\tname sss_g\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg inf\n\troughness 0.0\n}\n";
+	IJobPriv* jg = LoadScene( sssG, "sss_g" );
+	Check( jg == nullptr, "SSS `g inf` REJECTED (atof sibling)" );
+	if( jg ) safe_release( jg );
+
+	const char* sssR =
+		"subsurfacescattering_material\n{\n\tname sss_r\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0.0\n\troughness 1e999\n}\n";
+	IJobPriv* jr = LoadScene( sssR, "sss_r" );
+	Check( jr == nullptr, "SSS `roughness 1e999` REJECTED (atof sibling)" );
+	if( jr ) safe_release( jr );
+
 	// Control: a finite inline ior still loads (fix must not reject good input).
 	const char* okm =
 		"dielectric_material\n{\n\tname ok_mat\n\ttau 1.0\n\tior 1.55\n\tscattering 100000\n}\n";
 	IJobPriv* jok = LoadScene( okm, "ok_mat" );
 	Check( jok != nullptr, "finite inline ior (1.55) still loads" );
 	if( jok ) safe_release( jok );
+
+	// Control: a finite SSS with g/roughness still loads.
+	const char* sssOk =
+		"subsurfacescattering_material\n{\n\tname sss_ok\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0.5\n\troughness 0.2\n}\n";
+	IJobPriv* jso = LoadScene( sssOk, "sss_ok" );
+	Check( jso != nullptr, "finite SSS (g 0.5, roughness 0.2) still loads" );
+	if( jso ) safe_release( jso );
 }
 
 int main()
