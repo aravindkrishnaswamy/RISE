@@ -1957,9 +1957,17 @@ namespace RISE
 					JsonValue args;
 					std::string aerr;
 					const std::string argText = fn.get( "arguments" ).asString();
-					c.argsJson = ( JsonParse( argText, args, aerr ) && args.isObject() )
-						? JsonSerialize( args )
-						: std::string( "{}" );
+					if( !JsonParse( argText, args, aerr ) || !args.isObject() ) {
+						// RECORD-OR-REFUSE: a tool_call whose arguments did not
+						// parse as a JSON object must not be recorded and then
+						// executed with fabricated empty args -- refuse the
+						// WHOLE response instead of silently degrading to "{}".
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"openai tool_call \"" + c.name + "\" carries malformed arguments JSON -- "
+							"refusing the turn (executing it would fabricate empty args)" );
+						return out;
+					}
+					c.argsJson = JsonSerialize( args );
 					calls.push_back( c );
 				}
 			}
@@ -1981,9 +1989,23 @@ namespace RISE
 				return out;
 			}
 			else if( finishReason == "stop" ) {
-				if( !msg.find( "content" ) ) {
-					out.step = MakeProviderError( ChatErrorKind::Provider,
-						"openai ended the turn with no content -- refusing the degenerate turn" );
+				// content:null (key present, value JSON null) is as degenerate
+				// as an absent content key -- a bare `!msg.find("content")`
+				// only tests key PRESENCE and misses it, producing a silent
+				// blank assistant bubble.  Check both, and when OpenAI's
+				// structured-refusal field (message.refusal, a string) is
+				// present, surface ITS text so the user sees why.
+				const JsonValue* contentField = msg.find( "content" );
+				if( !contentField || contentField->isNull() ) {
+					const JsonValue* refusal = msg.find( "refusal" );
+					if( refusal && refusal->isString() && !refusal->asString().empty() ) {
+						out.step = MakeProviderError( ChatErrorKind::Refusal,
+							"openai declined this request: " + refusal->asString() );
+					}
+					else {
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"openai ended the turn with no content -- refusing the degenerate turn" );
+					}
 					return out;
 				}
 				out.step.kind = ChatStepResult::Kind::FinalText;

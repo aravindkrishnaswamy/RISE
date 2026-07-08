@@ -28,7 +28,7 @@ import UniformTypeIdentifiers
 /// Minimal generic-password Keychain wrapper for the chat panel's
 /// per-provider API keys.
 ///   service: "RISE Agent Chat"
-///   account: the provider name ("anthropic" / "gemini")
+///   account: the provider name ("anthropic" / "gemini" / "openai")
 /// Update-or-add semantics on write; delete when the field is cleared.
 enum AgentChatKeychain {
     static let service = "RISE Agent Chat"

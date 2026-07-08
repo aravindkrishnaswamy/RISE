@@ -53,10 +53,14 @@
 //        id-less Anthropic tool_use (Gemini instead SYNTHESIZES ids
 //        for id-less calls), DUPLICATE call ids on either provider
 //        (ids are the result-matching key and must be unique), a
-//        malformed (non-object) Gemini functionCall value, a Gemini
-//        candidate whose content.role is present and not "model" (a
-//        spoofed role would join BuildRequest's user merge on
-//        replay), and degenerate empty-content final turns.  Never
+//        malformed (non-object) Gemini functionCall value, an OpenAI
+//        tool_call whose function.arguments string does not parse as
+//        a JSON object (executing it would fabricate empty args), a
+//        Gemini candidate whose content.role is present and not
+//        "model" (a spoofed role would join BuildRequest's user merge
+//        on replay), and degenerate empty-content final turns
+//        (including an OpenAI content:null stop turn, which surfaces
+//        the structured message.refusal text when present).  Never
 //        "salvage" part of such a body: the raw echo would replay
 //        the un-answerable call blocks on every later request.
 //      * All tool results for one assistant turn are packed into ONE
