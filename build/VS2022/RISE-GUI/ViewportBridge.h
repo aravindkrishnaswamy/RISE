@@ -16,6 +16,7 @@
 #include <QImage>
 #include <QString>
 #include <QVector>
+#include <memory>
 
 class RenderEngine;
 
@@ -23,6 +24,9 @@ namespace RISE {
     class SceneEditController;
     class IRayCaster;
     class IRasterizer;
+    namespace Agent {
+        class AgentRpcDispatcher;
+    }
 }
 class ViewportPreviewSink;
 
@@ -283,6 +287,11 @@ public:
 
     bool requestProductionRender();
 
+    /// Execute one Agent JSON-RPC request against the live scene.
+    /// Mirrors macOS RISEViewportBridge.agentHandleLine and is the
+    /// bridge the Windows chat panel uses for model-requested tools.
+    QString agentHandleLine(const QString& jsonRpcRequest);
+
     // Properties panel ------------------------------------------------
 
     /// Mirrors RISE::SceneEditController::PanelMode.  Drives which
@@ -411,6 +420,7 @@ private:
     RISE::IRayCaster*          m_polishCaster = nullptr;  // polish caster, max-recursion 2 (one bounce of glossy / refl / refr)
     RISE::IRasterizer*         m_interactiveRasterizer = nullptr;
     ViewportPreviewSink*       m_previewSink = nullptr;
+    std::unique_ptr<RISE::Agent::AgentRpcDispatcher> m_agentDispatcher;
     bool                       m_running = false;
 };
 

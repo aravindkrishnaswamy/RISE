@@ -11,6 +11,7 @@
 #include "RenderWidget.h"
 #include "HDRRenderWidget.h"
 #include "ControlsWidget.h"
+#include "ChatPanel.h"
 #include "LogWidget.h"
 #include "SceneEditor.h"
 #include "ViewportBridge.h"
@@ -54,6 +55,8 @@ MainWindow::MainWindow(QWidget* parent)
     m_renderWidget = new RenderWidget();
     m_hdrRenderWidget = new HDRRenderWidget();  // L5b — Windows HDR
     m_controlsWidget = new ControlsWidget();
+    m_chatPanel = new ChatPanel();
+    m_chatPanel->hide();
     m_logWidget = new LogWidget();
     m_sceneEditor = new SceneEditor();
 
@@ -69,11 +72,18 @@ MainWindow::MainWindow(QWidget* parent)
     m_productionPaneStack->addWidget(m_hdrRenderWidget);  // index 1 — HDR
     m_productionPaneStack->setCurrentIndex(0);
 
-    // Bottom splitter: controls (260px) | log
+    auto* controlsColumn = new QWidget();
+    auto* controlsColumnLayout = new QVBoxLayout(controlsColumn);
+    controlsColumnLayout->setContentsMargins(0, 0, 0, 0);
+    controlsColumnLayout->setSpacing(0);
+    controlsColumnLayout->addWidget(m_controlsWidget);
+    controlsColumnLayout->addWidget(m_chatPanel);
+
+    // Bottom splitter: controls/chat (320px) | log
     m_bottomSplitter = new QSplitter(Qt::Horizontal);
-    m_bottomSplitter->addWidget(m_controlsWidget);
+    m_bottomSplitter->addWidget(controlsColumn);
     m_bottomSplitter->addWidget(m_logWidget);
-    m_bottomSplitter->setSizes({260, 600});
+    m_bottomSplitter->setSizes({320, 600});
     m_bottomSplitter->setStretchFactor(0, 0);
     m_bottomSplitter->setStretchFactor(1, 1);
 
@@ -136,6 +146,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_controlsWidget, &ControlsWidget::renderClicked, this, &MainWindow::onRender);
     connect(m_controlsWidget, &ControlsWidget::renderAnimationClicked, this, &MainWindow::onRenderAnimation);
     connect(m_controlsWidget, &ControlsWidget::cancelClicked, this, &MainWindow::onCancel);
+    connect(m_controlsWidget, &ControlsWidget::chatClicked, this, &MainWindow::onChatToggle);
 
     // The active named animation is picked in the right-side panel's
     // "Animation" accordion category — no dropdown wiring needed here.
@@ -633,6 +644,22 @@ void MainWindow::onCancel()
     m_engine->cancelRender();
 }
 
+void MainWindow::onChatToggle()
+{
+    m_chatVisible = !m_chatVisible;
+    if (m_chatPanel) {
+        m_chatPanel->setVisible(m_chatVisible);
+    }
+    if (m_rightSplitter) {
+        const int h = m_rightSplitter->height();
+        if (m_chatVisible) {
+            m_rightSplitter->setSizes({qMax(220, h - 460), 460});
+        } else {
+            m_rightSplitter->setSizes({qMax(220, h - 280), 280});
+        }
+    }
+}
+
 // ============================================================
 // State & UI updates
 // ============================================================
@@ -727,6 +754,7 @@ void MainWindow::onStateChanged(int newState)
     if (m_viewportWidget)   m_viewportWidget->setEnabled(interacting);
     if (m_viewportTimeline) m_viewportTimeline->setEnabled(interacting);
     if (m_viewportProps)    m_viewportProps->setEnabled(interacting);
+    if (m_chatPanel)        m_chatPanel->setSceneEditable(interacting && m_viewportBridge != nullptr);
 
     // Gizmo overlay gate — narrower than `interacting` (which also
     // hides during `.loading` / `.cancelling` transitions).  Only
@@ -840,6 +868,10 @@ void MainWindow::rebuildViewportForLoadedScene()
     teardownViewport();
 
     m_viewportBridge = new ViewportBridge(m_engine, this);
+    if (m_chatPanel) {
+        m_chatPanel->setViewportBridge(m_viewportBridge);
+        m_chatPanel->setSceneEditable(true);
+    }
 
     m_viewportToolbar  = new ViewportToolbar();
     m_viewportToolbar->setBridge(m_viewportBridge);
@@ -961,6 +993,12 @@ void MainWindow::rebuildViewportForLoadedScene()
 void MainWindow::teardownViewport()
 {
     if (!m_viewportBridge) return;
+
+    if (m_chatPanel) {
+        m_chatPanel->setViewportBridge(nullptr);
+        m_chatPanel->hide();
+        m_chatVisible = false;
+    }
 
     // Close any looping preview-play (and its open scrub bracket) through the
     // normal path before the bridge it drives goes away — don't rely on

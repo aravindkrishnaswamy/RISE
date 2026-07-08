@@ -24,6 +24,8 @@
 #include "Utilities/Reference.h"
 #include "SceneEditor/SceneEditController.h"
 #include "Rendering/InteractivePelRasterizer.h"
+#include "Agent/AgentSession.h"
+#include "Agent/AgentRpc.h"
 
 using namespace RISE;
 
@@ -157,6 +159,15 @@ ViewportBridge::ViewportBridge(RenderEngine* engine, QObject* parent)
         RISE_API_SceneEditController_SetPreviewSink(m_controller, m_previewSink);
     }
 
+    {
+        std::unique_ptr<Agent::AgentSession> session =
+            Agent::AgentSession::WrapJob(pJob);
+        if (session) {
+            session->AttachController(m_controller);
+        }
+        m_agentDispatcher.reset(new Agent::AgentRpcDispatcher(std::move(session)));
+    }
+
     // Phase 6.5: hook up the C dirty-changed callback.  userData
     // is a __raw pointer to this; the controller's listener
     // outlives the trampoline (we detach in the destructor before
@@ -211,6 +222,10 @@ ViewportBridge::~ViewportBridge()
     if (m_engine) {
         m_engine->attachSceneEditController(nullptr);
     }
+    if (m_agentDispatcher && m_agentDispatcher->Session()) {
+        m_agentDispatcher->Session()->AttachController(nullptr);
+    }
+    m_agentDispatcher.reset();
     if (m_controller) {
         // Phase 6.5: detach the dirty-changed C callback BEFORE the
         // controller (and its std::function listener) goes away so
@@ -461,6 +476,21 @@ bool ViewportBridge::requestProductionRender()
 {
     if (!m_controller) return false;
     return RISE_API_SceneEditController_RequestProductionRender(m_controller);
+}
+
+QString ViewportBridge::agentHandleLine(const QString& jsonRpcRequest)
+{
+    static const char* const kNoDispatcher =
+        "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":"
+        "{\"code\":-32603,\"message\":\"internal error: agent dispatcher unavailable\"}}";
+    if (!m_agentDispatcher) {
+        return QString::fromUtf8(kNoDispatcher);
+    }
+
+    const QByteArray utf8 = jsonRpcRequest.toUtf8();
+    const std::string response =
+        m_agentDispatcher->HandleLine(std::string(utf8.constData(), static_cast<std::size_t>(utf8.size())));
+    return QString::fromUtf8(response.c_str());
 }
 
 ViewportBridge::PanelMode ViewportBridge::panelMode() const
