@@ -4,6 +4,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include "pch.h"
 #include "AgentLoopbackHttpServer.h"
 
 #include "AgentMcpAdapter.h"
@@ -671,16 +672,13 @@ bool AgentLoopbackHttpServer::Bind( unsigned short port )
 	socklen_t_compat boundLen = sizeof( bound );
 	if( getsockname( s, reinterpret_cast<struct sockaddr*>( &bound ), &boundLen ) == 0 ) {
 		mBoundPort = ntohs( bound.sin_port );
-		char addrBuf[INET_ADDRSTRLEN] = {0};
 #ifdef WIN32
-		// inet_ntop is available on Vista+ winsock2; this codebase's
-		// Windows leg is uncompiled today (see the owed-check note), so
-		// this branch is written by symmetry, not verified.
-		inet_ntop( AF_INET, &bound.sin_addr, addrBuf, sizeof( addrBuf ) );
+		mBoundAddress = "127.0.0.1";
 #else
+		char addrBuf[INET_ADDRSTRLEN] = {0};
 		inet_ntop( AF_INET, &bound.sin_addr, addrBuf, sizeof( addrBuf ) );
-#endif
 		mBoundAddress = addrBuf;
+#endif
 	} else {
 		mBoundPort = port;
 		mBoundAddress.clear();

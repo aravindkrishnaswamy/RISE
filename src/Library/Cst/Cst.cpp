@@ -17,6 +17,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include "pch.h"
 #include "Cst.h"
 #include "../Interfaces/IJob.h"
 #include "../Interfaces/IJobPriv.h"      // GetObjects() (manager access for the slice-3 stable-object apply)

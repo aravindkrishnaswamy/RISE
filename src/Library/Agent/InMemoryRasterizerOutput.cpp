@@ -4,6 +4,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include "pch.h"
 #include "InMemoryRasterizerOutput.h"
 
 #include "../Interfaces/IRasterImage.h"
