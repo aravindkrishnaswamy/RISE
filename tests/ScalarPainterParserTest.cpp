@@ -363,6 +363,22 @@ static void TestRejectInlineScalarOverflow()
 	Check( j3 == nullptr, "inline scalar overflow (ior 1 1 1e999) REJECTED" );
 	if( j3 ) safe_release( j3 );
 
+	// Non-finite SPELLINGS (inf / nan) also bypass the descriptor's
+	// AllTokensAreFiniteNumbers gate (Reference-kind slots) and reach
+	// ResolveScalarPainterArg; strtod succeeds on them WITHOUT errno==ERANGE, so
+	// the string-layer spelling check must reject them too.
+	const char* inf1 =
+		"dielectric_material\n{\n\tname inf_single\n\ttau 1.0\n\tior inf\n\tscattering 100000\n}\n";
+	IJobPriv* ji = LoadScene( inf1, "inf_single" );
+	Check( ji == nullptr, "inline scalar inf (ior inf) REJECTED" );
+	if( ji ) safe_release( ji );
+
+	const char* nan3 =
+		"dielectric_material\n{\n\tname nan_triple\n\ttau 1.0\n\tior 1 1 nan\n\tscattering 100000\n}\n";
+	IJobPriv* jn = LoadScene( nan3, "nan_triple" );
+	Check( jn == nullptr, "inline scalar nan (ior 1 1 nan) REJECTED" );
+	if( jn ) safe_release( jn );
+
 	// Control: a finite inline ior still loads (fix must not reject good input).
 	const char* okm =
 		"dielectric_material\n{\n\tname ok_mat\n\ttau 1.0\n\tior 1.55\n\tscattering 100000\n}\n";

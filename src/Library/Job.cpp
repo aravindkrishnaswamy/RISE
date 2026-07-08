@@ -2662,6 +2662,23 @@ static IScalarPainter* ResolveScalarPainterArg(
 		return true;
 	};
 
+	// Reject non-finite SPELLINGS (nan / inf / infinity) at the STRING layer.
+	// These Reference-kind painter slots bypass the descriptor's
+	// AllTokensAreFiniteNumbers gate (it runs only for Double/Vec/UInt kinds), and
+	// value-level isfinite/isnan is unreliable under -ffast-math -- so the same
+	// spelling check must live here.  (errno==ERANGE below only catches overflow
+	// like 1e999; strtod("inf")/strtod("nan") set no errno.)  Runs AFTER the
+	// named-painter lookup above, so a painter literally named "inf" is unaffected.
+	for( const char* q = value; *q; ) {
+		while( *q == ' ' || *q == '\t' ) ++q;
+		if( !*q ) break;
+		const char* t = ( *q == '+' || *q == '-' ) ? q + 1 : q;
+		if( t[0] == 'n' || t[0] == 'N' || t[0] == 'i' || t[0] == 'I' ) {
+			return nullptr;	// nan / inf / infinity -> reject loudly; caller diagnoses
+		}
+		while( *q && *q != ' ' && *q != '\t' ) ++q;
+	}
+
 	// 3-double inline triple — more specific, tried first.
 	{
 		char* end1 = nullptr;
