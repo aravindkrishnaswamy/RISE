@@ -38,6 +38,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include "pch.h"
 #include "AgentSession.h"
 #include "SchemaGen.h"
 #include "InMemoryRasterizerOutput.h"
