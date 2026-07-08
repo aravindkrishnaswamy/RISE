@@ -78,9 +78,12 @@
 //        all three codecs (header-splice defense; the OpenAI Bearer
 //        value included); multibyte UTF-8 model ids percent-escape
 //        per byte.
-//    T19 Degenerate empty-content final turns (Anthropic content:[] +
-//        end_turn; Gemini STOP with missing/empty parts) are refused,
-//        recording nothing.
+//    T19 Degenerate blank-content final turns are refused across both
+//        providers, recording nothing: empty content (Anthropic
+//        content:[] + end_turn; Gemini STOP with missing/empty parts)
+//        AND a non-empty content/parts array whose only text is
+//        whitespace-only or absent (text-less blocks); a real text
+//        block still yields FinalText (positive controls).
 //    T20 Gemini role-spoof gate: a candidate whose content.role is
 //        present and != "model" (string or not, calls or text) is
 //        refused outright -- otherwise the verbatim echo joins
