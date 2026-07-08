@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <cerrno>   // ERANGE: reject overflowed inline material scalars
 #include "Geometry/SDFGeometry.h"
 #include <cstring>
 #define _USE_MATH_DEFINES
@@ -2664,6 +2665,7 @@ static IScalarPainter* ResolveScalarPainterArg(
 	// 3-double inline triple — more specific, tried first.
 	{
 		char* end1 = nullptr;
+		errno = 0;
 		const double r = std::strtod( value, &end1 );
 		if( end1 != value ) {
 			char* end2 = nullptr;
@@ -2672,6 +2674,9 @@ static IScalarPainter* ResolveScalarPainterArg(
 				char* end3 = nullptr;
 				const double b = std::strtod( end2, &end3 );
 				if( end3 != end2 && onlyTrailingWhitespace( end3 ) ) {
+					if( errno == ERANGE ) {
+						return nullptr;	// inline numeric overflow (e.g. 1e999) -> reject loudly; caller diagnoses
+					}
 					if( requireSingle && !( r == g && g == b ) ) {
 						return nullptr;
 					}
@@ -2692,8 +2697,12 @@ static IScalarPainter* ResolveScalarPainterArg(
 	// Single-double scalar.
 	{
 		char* end = nullptr;
+		errno = 0;
 		const double v = std::strtod( value, &end );
 		if( end != value && onlyTrailingWhitespace( end ) ) {
+			if( errno == ERANGE ) {
+				return nullptr;	// inline numeric overflow -> reject loudly
+			}
 			IScalarPainter* p = nullptr;
 			RISE_API_CreateUniformScalarPainter( &p, Scalar( v ) );
 			return p;

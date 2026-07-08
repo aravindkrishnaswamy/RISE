@@ -345,6 +345,32 @@ static void TestRejectPolynomialGarbage()
 	if( pJob ) safe_release( pJob );
 }
 
+static void TestRejectInlineScalarOverflow()
+{
+	std::cout << "TestRejectInlineScalarOverflow" << std::endl;
+	// A material scalar resolved via Job::ResolveScalarPainterArg with an inline
+	// numeric value that OVERFLOWS (strtod -> HUGE_VAL, errno==ERANGE) must be
+	// REJECTED loudly, not silently bound as an inf painter.
+	const char* ovf1 =
+		"dielectric_material\n{\n\tname ovf_single\n\ttau 1.0\n\tior 1e999\n\tscattering 100000\n}\n";
+	IJobPriv* j1 = LoadScene( ovf1, "ovf_single" );
+	Check( j1 == nullptr, "inline scalar overflow (ior 1e999) REJECTED" );
+	if( j1 ) safe_release( j1 );
+
+	const char* ovf3 =
+		"dielectric_material\n{\n\tname ovf_triple\n\ttau 1.0\n\tior 1 1 1e999\n\tscattering 100000\n}\n";
+	IJobPriv* j3 = LoadScene( ovf3, "ovf_triple" );
+	Check( j3 == nullptr, "inline scalar overflow (ior 1 1 1e999) REJECTED" );
+	if( j3 ) safe_release( j3 );
+
+	// Control: a finite inline ior still loads (fix must not reject good input).
+	const char* okm =
+		"dielectric_material\n{\n\tname ok_mat\n\ttau 1.0\n\tior 1.55\n\tscattering 100000\n}\n";
+	IJobPriv* jok = LoadScene( okm, "ok_mat" );
+	Check( jok != nullptr, "finite inline ior (1.55) still loads" );
+	if( jok ) safe_release( jok );
+}
+
 int main()
 {
 	std::cout << "ScalarPainterParserTest" << std::endl;
@@ -359,6 +385,7 @@ int main()
 	TestRejectMultipleForms();
 	TestRejectUnderspecifiedValues();
 	TestRejectPolynomialGarbage();
+	TestRejectInlineScalarOverflow();
 	std::cout << "\nResults: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }
