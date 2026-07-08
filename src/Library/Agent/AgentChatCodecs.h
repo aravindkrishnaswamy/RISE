@@ -53,14 +53,21 @@
 //        id-less Anthropic tool_use (Gemini instead SYNTHESIZES ids
 //        for id-less calls), DUPLICATE call ids on either provider
 //        (ids are the result-matching key and must be unique), a
-//        malformed (non-object) Gemini functionCall value, an OpenAI
-//        tool_call whose function.arguments string does not parse as
-//        a JSON object (executing it would fabricate empty args), a
-//        Gemini candidate whose content.role is present and not
-//        "model" (a spoofed role would join BuildRequest's user merge
-//        on replay), and degenerate empty-content final turns
-//        (including an OpenAI content:null stop turn, which surfaces
-//        the structured message.refusal text when present).  Never
+//        malformed (non-object) Gemini functionCall value, an
+//        Anthropic tool_use whose "input" key is PRESENT but not a
+//        JSON object (including an explicit "input":null) or a
+//        Gemini functionCall whose "args" key is PRESENT but not a
+//        JSON object (including an explicit "args":null) -- an
+//        ABSENT input/args key is each provider's legal no-args
+//        shape and still maps to "{}"; only a present-but-non-object
+//        value refuses -- an OpenAI tool_call whose function.arguments
+//        string does not parse as a JSON object (all three: executing
+//        it would fabricate empty args), a Gemini candidate whose
+//        content.role is present and not "model" (a spoofed role
+//        would join BuildRequest's user merge on replay), and
+//        degenerate empty-content final turns (including an OpenAI
+//        content:null OR content:"" stop turn, which surfaces the
+//        structured message.refusal text when present).  Never
 //        "salvage" part of such a body: the raw echo would replay
 //        the un-answerable call blocks on every later request.
 //      * All tool results for one assistant turn are packed into ONE
@@ -404,11 +411,15 @@ namespace RISE
 		//! the "[reference image elided ...]" placeholder.  PROVIDER-
 		//! AGNOSTIC: dispatches on the entry's own shape ("content"
 		//! array of {type:"image",...} elements for Anthropic; "parts"
-		//! array of {inlineData:...} elements for Gemini) rather than
-		//! needing a codec instance, so AgentChatLoop's cap bookkeeping
-		//! (USER IMAGE RETENTION) can call it uniformly regardless of
-		//! which codec produced the entry.  Returns 0 for a non-user
-		//! entry, or one that does not parse.
+		//! array of {inlineData:...} elements for Gemini; "content" array
+		//! of {type:"image_url",...} elements for OpenAI, gated on
+		//! role=="user" so it does not double-count the Anthropic
+		//! {type:"image"} count above on a shape that happens to reuse
+		//! the "content" key) rather than needing a codec instance, so
+		//! AgentChatLoop's cap bookkeeping (USER IMAGE RETENTION) can
+		//! call it uniformly regardless of which codec produced the
+		//! entry.  Returns 0 for a non-user entry, or one that does not
+		//! parse.
 		int ChatUserEntryLiveImageCount( const std::string& userEntryJson );
 	}
 }

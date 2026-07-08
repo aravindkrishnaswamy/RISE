@@ -118,10 +118,11 @@
 //    T25 OpenAI dead-ends: finish_reason "length" -> errorKind
 //        MaxTokens, finish_reason "content_filter" -> errorKind Refusal,
 //        with DISTINCT actionable messages (mirrors T10).
-//    T26 OpenAI content:null degenerate turns (content KEY PRESENT but
-//        value null -- distinct from an absent key) refuse rather than
-//        emit a blank FinalText; the structured-refusal `message.refusal`
-//        field, when present, is surfaced in the error text; malformed
+//    T26 OpenAI content:null / content:"" degenerate turns (content KEY
+//        PRESENT but value null, or present as an EMPTY STRING -- both
+//        distinct from an absent key) refuse rather than emit a blank
+//        FinalText; the structured-refusal `message.refusal` field, when
+//        present, is surfaced in the error text; malformed
 //        function.arguments refuse the WHOLE turn rather than silently
 //        degrading to fabricated "{}" args.
 //    T27 OpenAI read_image handling: the base64 is stripped from the
@@ -132,6 +133,26 @@
 //        part in attachment order with the exact data: URI shape; an
 //        attachment-only message omits the empty text block (mirrors
 //        T22's provider-shape checks).
+//    T29 Review-round-2 P1-1: an Anthropic tool_use whose "input" key is
+//        PRESENT but not a JSON object (a string, or an explicit
+//        "input":null) refuses the WHOLE response -- executing it would
+//        fabricate empty args (mirrors T26's OpenAI malformed-arguments
+//        gate); an ABSENT "input" key is Anthropic's legal no-args shape
+//        and still maps to argsJson "{}".
+//    T30 Review-round-2 P1-2: the same gate on Gemini -- a functionCall
+//        whose "args" key is PRESENT but not a JSON object (a string, or
+//        an explicit "args":null) refuses the WHOLE response; an ABSENT
+//        "args" key is Gemini's legal no-args shape and still maps to
+//        argsJson "{}".
+//    T31 Review-round-2 P2-4 defensive sibling audit: explicit JSON null
+//        in shapes NOT covered by T19/T26 (Anthropic top-level
+//        "content":null; a null candidates[0] element on Gemini; a null
+//        candidates[0].content; a null candidates[0].content.parts) all
+//        flow through the existing degenerate-turn gates without a
+//        crash and without a silent blank turn -- JsonValue's accessors
+//        are defensive by construction (a wrong-typed get/find/at always
+//        returns a safe default), so no NEW gate was needed for these;
+//        this test locks that in as a regression guard.
 //    Plus: ChatStepResult.assistantDisplayText on both success kinds,
 //    ChatErrorKind asserted on every error path (Parse, Http,
 //    Refusal, MaxTokens, IterationCap, Misuse, Provider), the system
@@ -180,7 +201,19 @@
 //  role case), and notably "the next request carries only the user
 //  message (merge untouched)" PASSED vacuously -- the spoofed turn had
 //  merged into ONE user content, demonstrating the exact conversation
-//  collapse the gate exists to prevent.
+//  collapse the gate exists to prevent.  Provider-review round-2
+//  additions: (j) the suite was run with the Anthropic malformed-input
+//  gate reverted to the old silent-degrade `input.isObject() ? ... :
+//  "{}"` -> exactly NINE T29 checks failed (the whole non-object-input
+//  case incl. transcript/pending/next-request checks + both explicit
+//  input:null checks); (k) the same revert on the Gemini args gate ->
+//  exactly NINE T30 checks failed (the mirror set); (l) the OpenAI
+//  degenerate-turn gate reverted to null-only (no empty-string arm) ->
+//  exactly EIGHT T26 checks failed (both content:"" cases: the
+//  no-refusal-field arm and the structured-refusal arm).  In each case
+//  the absent-input/args happy-path checks PASSED under the revert
+//  (absent keys mapped to "{}" before and after -- the gates narrow
+//  only present-but-non-object values).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -2676,6 +2709,7 @@ static void TestOpenAIRefusalGates()
 		       "a non-function tool_call type -> ProviderError" );
 		Check( st.errorMessage.find( "non-function" ) != std::string::npos,
 		       "the refusal names the malformed/non-function tool_call" );
+		Check( loop.TranscriptSize() == 1, "the non-function-type turn records nothing" );
 	}
 
 	// role != "assistant" (a spoofed role -- would otherwise be recorded
@@ -2772,7 +2806,7 @@ static void TestOpenAIDeadEnds()
 //----------------------------------------------------------------------
 static void TestOpenAIContentNullAndMalformedArgs()
 {
-	std::printf( "T26: OpenAI content:null degenerate turn + malformed tool_call arguments...\n" );
+	std::printf( "T26: OpenAI content:null/content:\"\" degenerate turn + malformed tool_call arguments...\n" );
 
 	// content:null, finish_reason stop, no tool_calls, NO refusal field:
 	// a bare `!msg.find("content")` (key-PRESENCE-only) would miss this --
@@ -2789,6 +2823,42 @@ static void TestOpenAIContentNullAndMalformedArgs()
 		Check( st.errorMessage.find( "no content" ) != std::string::npos,
 		       "the refusal names the degenerate no-content turn" );
 		Check( loop.TranscriptSize() == 1, "the degenerate content:null turn records nothing" );
+	}
+
+	// content:"" (key present, value an EMPTY STRING), finish_reason stop,
+	// no tool_calls: as degenerate as content:null/absent -- P2-3 of
+	// review round 2.  Without this arm the gate above (`isNull()` only)
+	// misses it and it yields a silent blank FinalText bubble.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "hi" );
+		ChatStepResult st = loop.HandleResponse( 200, OpenAIFixture( "\"\"", "", "stop" ) );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "content:\"\" + finish_reason stop -> ProviderError (not a blank FinalText)" );
+		Check( st.errorKind == ChatErrorKind::Provider,
+		       "content:\"\" with no refusal field -> errorKind Provider" );
+		Check( st.errorMessage.find( "no content" ) != std::string::npos,
+		       "the refusal names the degenerate no-content turn" );
+		Check( loop.TranscriptSize() == 1, "the degenerate content:\"\" turn records nothing" );
+	}
+
+	// content:"" WITH OpenAI's structured-refusal field: surface ITS text
+	// too (same gate as content:null).
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "hi" );
+		const std::string fx =
+			"{\"id\":\"chatcmpl_refusal2\",\"choices\":[{\"index\":0,\"message\":"
+			"{\"role\":\"assistant\",\"content\":\"\",\"refusal\":\"Blocked by policy.\"},"
+			"\"finish_reason\":\"stop\"}]}";
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "content:\"\" + refusal field -> ProviderError" );
+		Check( st.errorKind == ChatErrorKind::Refusal,
+		       "content:\"\" structured refusal -> errorKind Refusal" );
+		Check( st.errorMessage.find( "Blocked by policy." ) != std::string::npos,
+		       "the refusal TEXT is surfaced so the user sees why" );
+		Check( loop.TranscriptSize() == 1, "the refused turn records nothing" );
 	}
 
 	// content:null WITH OpenAI's structured-refusal field: surface ITS
@@ -2971,6 +3041,221 @@ static void TestOpenAIUserAttachments()
 	}
 }
 
+//----------------------------------------------------------------------
+// T29: Anthropic malformed tool_use.input refusal (P1-1 of review round
+//      2) -- a PRESENT-but-non-object "input" (a string, or an explicit
+//      "input":null) refuses the WHOLE response rather than fabricating
+//      "{}" and executing with empty args; an ABSENT "input" key is
+//      Anthropic's legal no-args shape and still maps to argsJson "{}".
+//----------------------------------------------------------------------
+static void TestAnthropicMalformedInput()
+{
+	std::printf( "T29: Anthropic malformed tool_use.input refusal + absent-input legal no-args...\n" );
+
+	// Present-but-non-object input (a string): refuse the whole turn.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "hi" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_badinput\",\"name\":\"validate\","
+			"\"input\":\"NOT-AN-OBJECT\"}]", "tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "anthropic non-object tool_use.input -> ProviderError (whole turn refused)" );
+		Check( st.errorKind == ChatErrorKind::Provider,
+		       "malformed input -> errorKind Provider" );
+		Check( st.errorMessage.find( "validate" ) != std::string::npos,
+		       "the refusal names the offending tool" );
+		Check( st.errorMessage.find( "input" ) != std::string::npos,
+		       "the refusal names the malformed input" );
+		Check( loop.TranscriptSize() == 1, "the malformed-input turn records nothing" );
+		Check( loop.PendingToolCalls().empty(),
+		       "no call is pended -- it was never recorded as an executable tool_call" );
+
+		// The next request is clean (no trace of the refused turn).
+		Check( loop.BuildRequest( kApiKey ).body.find( "toolu_badinput" ) == std::string::npos,
+		       "the next BuildRequest carries NO trace of the refused tool_use" );
+	}
+
+	// Explicit "input":null is ALSO present-and-non-object -> refuse
+	// (distinct from an absent key, exercised below).
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "hi" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_nullinput\",\"name\":\"render\","
+			"\"input\":null}]", "tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "anthropic explicit input:null -> ProviderError (present-and-non-object)" );
+		Check( loop.TranscriptSize() == 1, "the null-input turn records nothing" );
+	}
+
+	// Absent "input" key entirely: Anthropic's legal no-args shape --
+	// still maps to argsJson "{}" and the call executes normally.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "hi" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_noinput\",\"name\":\"read_document\"}]",
+			"tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ToolCalls && st.toolCalls.size() == 1,
+		       "anthropic absent input -> a legal no-args ToolCalls turn" );
+		if( st.toolCalls.size() == 1 )
+			Check( st.toolCalls[0].argsJson == "{}",
+			       "anthropic absent input maps to argsJson \"{}\"" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T30: Gemini malformed functionCall.args refusal (P1-2 of review round
+//      2) -- mirrors T29 on the Gemini wire shape.
+//----------------------------------------------------------------------
+static void TestGeminiMalformedArgs()
+{
+	std::printf( "T30: Gemini malformed functionCall.args refusal + absent-args legal no-args...\n" );
+
+	// Present-but-non-object args (a string): refuse the whole turn.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "hi" );
+		const std::string fx = GeminiFixture(
+			"{\"parts\":[{\"functionCall\":{\"id\":\"fc_badargs\",\"name\":\"validate\","
+			"\"args\":\"NOT-AN-OBJECT\"}}],\"role\":\"model\"}", "STOP" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "gemini non-object functionCall.args -> ProviderError (whole turn refused)" );
+		Check( st.errorKind == ChatErrorKind::Provider,
+		       "malformed args -> errorKind Provider" );
+		Check( st.errorMessage.find( "validate" ) != std::string::npos,
+		       "the refusal names the offending tool" );
+		Check( st.errorMessage.find( "args" ) != std::string::npos,
+		       "the refusal names the malformed args" );
+		Check( loop.TranscriptSize() == 1, "the malformed-args turn records nothing" );
+		Check( loop.PendingToolCalls().empty(),
+		       "no call is pended -- it was never recorded as an executable tool_call" );
+
+		// The next request is clean (no trace of the refused turn).
+		Check( loop.BuildRequest( kApiKey ).body.find( "fc_badargs" ) == std::string::npos,
+		       "the next BuildRequest carries NO trace of the refused functionCall" );
+	}
+
+	// Explicit "args":null is ALSO present-and-non-object -> refuse
+	// (distinct from an absent key, exercised below).
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "hi" );
+		const std::string fx = GeminiFixture(
+			"{\"parts\":[{\"functionCall\":{\"id\":\"fc_nullargs\",\"name\":\"render\","
+			"\"args\":null}}],\"role\":\"model\"}", "STOP" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "gemini explicit args:null -> ProviderError (present-and-non-object)" );
+		Check( loop.TranscriptSize() == 1, "the null-args turn records nothing" );
+	}
+
+	// Absent "args" key entirely: Gemini's legal no-args shape -- still
+	// maps to argsJson "{}" and the call executes normally.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "hi" );
+		const std::string fx = GeminiFixture(
+			"{\"parts\":[{\"functionCall\":{\"id\":\"fc_noargs\",\"name\":\"read_document\"}}],"
+			"\"role\":\"model\"}", "STOP" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ToolCalls && st.toolCalls.size() == 1,
+		       "gemini absent args -> a legal no-args ToolCalls turn" );
+		if( st.toolCalls.size() == 1 )
+			Check( st.toolCalls[0].argsJson == "{}",
+			       "gemini absent args maps to argsJson \"{}\"" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T31: P2-4 defensive sibling audit -- explicit JSON null in shapes NOT
+//      already covered by T13/T19/T26 flows through the existing
+//      degenerate-turn / no-content-array gates without a crash and
+//      without a silent blank turn.  JsonValue's find/get/at/asString
+//      accessors are defensive by construction (a wrong-typed access
+//      always returns a safe static default with empty child
+//      containers), so tracing every site confirmed NO NEW gate is
+//      needed here -- this test locks that finding in as a regression
+//      guard.
+//----------------------------------------------------------------------
+static void TestNullShapeDefensiveAudit()
+{
+	std::printf( "T31: P2-4 defensive audit (explicit null in untested shapes, no crash)...\n" );
+
+	// Anthropic: top-level "content":null (rather than the T19-covered
+	// "content":[]).  !content.isArray() catches Null exactly like an
+	// absent key would.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "hi" );
+		const std::string fx =
+			"{\"id\":\"msg_nullcontent\",\"type\":\"message\",\"role\":\"assistant\","
+			"\"model\":\"claude-sonnet-5\",\"content\":null,\"stop_reason\":\"end_turn\"}";
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "anthropic top-level content:null -> ProviderError (no crash, no blank FinalText)" );
+		Check( st.errorMessage.find( "no content array" ) != std::string::npos,
+		       "the refusal names the missing content array" );
+		Check( loop.TranscriptSize() == 1, "the null-content turn records nothing" );
+	}
+
+	// Gemini: candidates[0] is itself a JSON null element (not an
+	// object).  cand.get(...) on a Null-typed value is safe (empty
+	// backing containers) -- falls through to the no-content-parts
+	// refusal without touching a null pointer.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "hi" );
+		const std::string fx = "{\"candidates\":[null]}";
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "gemini null candidates[0] element -> ProviderError (no crash)" );
+		Check( loop.TranscriptSize() == 1, "the null-candidate turn records nothing" );
+	}
+
+	// Gemini: candidates[0].content explicit null (rather than absent).
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "hi" );
+		const std::string fx = GeminiFixture( "null", "STOP" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "gemini candidates[0].content:null -> ProviderError (no crash)" );
+		Check( st.errorMessage.find( "no content parts" ) != std::string::npos,
+		       "the refusal names the missing content parts" );
+		Check( loop.TranscriptSize() == 1, "the null-content turn records nothing" );
+	}
+
+	// Gemini: candidates[0].content.parts explicit null (content is a
+	// real object with a role, but parts is null rather than absent).
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "hi" );
+		const std::string fx = GeminiFixture( "{\"role\":\"model\",\"parts\":null}", "STOP" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "gemini content.parts:null -> ProviderError (no crash)" );
+		Check( st.errorMessage.find( "no content parts" ) != std::string::npos,
+		       "the refusal names the missing content parts" );
+		Check( loop.TranscriptSize() == 1, "the null-parts turn records nothing" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
@@ -3015,6 +3300,9 @@ int main()
 	TestOpenAIContentNullAndMalformedArgs();
 	TestOpenAIImageElision();
 	TestOpenAIUserAttachments();
+	TestAnthropicMalformedInput();
+	TestGeminiMalformedArgs();
+	TestNullShapeDefensiveAudit();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

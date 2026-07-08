@@ -1010,8 +1010,26 @@ namespace RISE
 							return out;
 						}
 					}
-					const JsonValue& input = block.get( "input" );
-					c.argsJson = input.isObject() ? JsonSerialize( input ) : std::string( "{}" );
+					// RECORD-OR-REFUSE: an ABSENT "input" key is Anthropic's
+					// legal no-args tool_use shape (maps to "{}"); a PRESENT
+					// "input" that is not an object (including an explicit
+					// "input":null) must not be recorded and then executed
+					// with fabricated empty args -- refuse the WHOLE
+					// response instead (mirrors the OpenAI malformed-
+					// arguments gate below).
+					if( block.has( "input" ) ) {
+						const JsonValue& input = block.get( "input" );
+						if( !input.isObject() ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"anthropic tool_use block \"" + c.name + "\" carries a non-object "
+								"\"input\" -- refusing the turn (executing it would fabricate empty args)" );
+							return out;
+						}
+						c.argsJson = JsonSerialize( input );
+					}
+					else {
+						c.argsJson = "{}";
+					}
 					calls.push_back( c );
 				}
 				// thinking / other block kinds: not displayed; the raw echo
@@ -1556,8 +1574,27 @@ namespace RISE
 					}
 					usedIds.push_back( c.id );
 					c.name = fc->get( "name" ).asString();
-					const JsonValue& args = fc->get( "args" );
-					c.argsJson = args.isObject() ? JsonSerialize( args ) : std::string( "{}" );
+					// RECORD-OR-REFUSE: an ABSENT "args" key is Gemini's
+					// legal no-args functionCall shape (maps to "{}"); a
+					// PRESENT "args" that is not an object (including an
+					// explicit "args":null) must not be recorded and then
+					// executed with fabricated empty args -- refuse the
+					// WHOLE response instead (mirrors the Anthropic
+					// malformed-input gate above / the OpenAI malformed-
+					// arguments gate below).
+					if( fc->has( "args" ) ) {
+						const JsonValue& args = fc->get( "args" );
+						if( !args.isObject() ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"gemini functionCall \"" + c.name + "\" carries non-object "
+								"\"args\" -- refusing the turn (executing it would fabricate empty args)" );
+							return out;
+						}
+						c.argsJson = JsonSerialize( args );
+					}
+					else {
+						c.argsJson = "{}";
+					}
 					calls.push_back( c );
 				}
 			}
@@ -1992,11 +2029,15 @@ namespace RISE
 				// content:null (key present, value JSON null) is as degenerate
 				// as an absent content key -- a bare `!msg.find("content")`
 				// only tests key PRESENCE and misses it, producing a silent
-				// blank assistant bubble.  Check both, and when OpenAI's
+				// blank assistant bubble.  A present EMPTY-STRING content is
+				// the same degenerate shape (no tool_calls, nothing for the
+				// user to read) -- without this check it would still yield a
+				// blank FinalText bubble.  Check all three, and when OpenAI's
 				// structured-refusal field (message.refusal, a string) is
 				// present, surface ITS text so the user sees why.
 				const JsonValue* contentField = msg.find( "content" );
-				if( !contentField || contentField->isNull() ) {
+				if( !contentField || contentField->isNull() ||
+				    ( contentField->isString() && contentField->asString().empty() ) ) {
 					const JsonValue* refusal = msg.find( "refusal" );
 					if( refusal && refusal->isString() && !refusal->asString().empty() ) {
 						out.step = MakeProviderError( ChatErrorKind::Refusal,
