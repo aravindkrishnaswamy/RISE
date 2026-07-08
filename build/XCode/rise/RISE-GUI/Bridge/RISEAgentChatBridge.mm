@@ -229,16 +229,23 @@ static NSString *ToNS(const std::string& s) {
 
 - (void)setProvider:(RISEAgentChatProvider)provider
             modelId:(NSString * _Nullable)modelId {
-    const Agent::ChatProvider p = (provider == RISEAgentChatProviderGemini)
-        ? Agent::ChatProvider::Gemini
-        : Agent::ChatProvider::Anthropic;
+    Agent::ChatProvider p = Agent::ChatProvider::Anthropic;
+    if (provider == RISEAgentChatProviderGemini) {
+        p = Agent::ChatProvider::Gemini;
+    } else if (provider == RISEAgentChatProviderOpenAI) {
+        p = Agent::ChatProvider::OpenAI;
+    }
     _loop->SetProvider(p, ToStd(modelId));
 }
 
 - (RISEAgentChatProvider)provider {
-    return (_loop->Provider() == Agent::ChatProvider::Gemini)
-        ? RISEAgentChatProviderGemini
-        : RISEAgentChatProviderAnthropic;
+    if (_loop->Provider() == Agent::ChatProvider::Gemini) {
+        return RISEAgentChatProviderGemini;
+    }
+    if (_loop->Provider() == Agent::ChatProvider::OpenAI) {
+        return RISEAgentChatProviderOpenAI;
+    }
+    return RISEAgentChatProviderAnthropic;
 }
 
 - (NSString *)modelId {
@@ -248,6 +255,9 @@ static NSString *ToNS(const std::string& s) {
 + (NSString *)defaultModelIdForProvider:(RISEAgentChatProvider)provider {
     if (provider == RISEAgentChatProviderGemini) {
         return ToNS(Agent::GeminiChatCodec().DefaultModelId());
+    }
+    if (provider == RISEAgentChatProviderOpenAI) {
+        return ToNS(Agent::OpenAIChatCodec().DefaultModelId());
     }
     return ToNS(Agent::AnthropicChatCodec().DefaultModelId());
 }

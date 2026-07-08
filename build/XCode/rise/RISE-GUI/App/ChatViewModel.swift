@@ -107,6 +107,7 @@ enum AgentChatKeychain {
 enum AgentChatProviderChoice: String, CaseIterable, Identifiable {
     case anthropic
     case gemini
+    case openai
 
     var id: String { rawValue }
 
@@ -114,6 +115,7 @@ enum AgentChatProviderChoice: String, CaseIterable, Identifiable {
         switch self {
         case .anthropic: return "Anthropic"
         case .gemini:    return "Gemini"
+        case .openai:    return "ChatGPT"
         }
     }
 
@@ -121,6 +123,7 @@ enum AgentChatProviderChoice: String, CaseIterable, Identifiable {
         switch self {
         case .anthropic: return .anthropic
         case .gemini:    return .gemini
+        case .openai:    return .openAI
         }
     }
 
@@ -137,6 +140,7 @@ enum AgentChatProviderChoice: String, CaseIterable, Identifiable {
         switch self {
         case .anthropic: return ["ANTHROPIC_API_KEY"]
         case .gemini:    return ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+        case .openai:    return ["OPENAI_API_KEY"]
         }
     }
 
@@ -631,7 +635,7 @@ final class ChatViewModel: ObservableObject {
 
     init() {
         let storedProvider = UserDefaults.standard.string(forKey: Self.providerKey)
-            .flatMap(AgentChatProviderChoice.init(rawValue:)) ?? .anthropic
+            .flatMap(AgentChatProviderChoice.init(rawValue:)) ?? .openai
         let storedModelId = UserDefaults.standard.string(
             forKey: Self.modelIdKey(storedProvider)) ?? ""
         provider = storedProvider

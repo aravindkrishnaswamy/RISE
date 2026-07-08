@@ -49,6 +49,7 @@ NS_ASSUME_NONNULL_BEGIN
 typedef NS_ENUM(NSInteger, RISEAgentChatProvider) {
     RISEAgentChatProviderAnthropic = 0,
     RISEAgentChatProviderGemini    = 1,
+    RISEAgentChatProviderOpenAI    = 2,
 };
 
 /// Mirrors RISE::Agent::ChatStepResult::Kind.
@@ -148,7 +149,7 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
 
 @interface RISEAgentChatBridge : NSObject
 
-/// Constructs with the Anthropic provider + its default model
+/// Constructs with the ChatGPT/OpenAI provider + its default model
 /// (mirrors AgentChatLoop's default construction).
 - (instancetype)init;
 

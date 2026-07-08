@@ -286,6 +286,124 @@ static void CheckKeyOnlyInAuthHeader( const ChatHttpRequest& req, const char* au
 	Check( !leaked, std::string( label ) + ": key appears in NO other header" );
 }
 
+static void CheckKeyOnlyInBearerHeader( const ChatHttpRequest& req, const char* authHeader,
+                                        const char* label )
+{
+	Check( req.url.find( kApiKey ) == std::string::npos,
+	       std::string( label ) + ": key does NOT appear in the url" );
+	Check( req.body.find( kApiKey ) == std::string::npos,
+	       std::string( label ) + ": key does NOT appear in the body" );
+	bool sawAuth = false;
+	bool leaked = false;
+	const std::string expected = std::string( "Bearer " ) + kApiKey;
+	for( std::size_t i = 0; i < req.headers.size(); ++i ) {
+		const std::string& name = req.headers[i].first;
+		const std::string& value = req.headers[i].second;
+		if( name == authHeader ) {
+			sawAuth = true;
+			Check( value == expected,
+			       std::string( label ) + ": " + authHeader + " carries the bearer key" );
+			continue;
+		}
+		if( name.find( kApiKey ) != std::string::npos ||
+		    value.find( kApiKey ) != std::string::npos ) leaked = true;
+	}
+	Check( sawAuth, std::string( label ) + ": the " + authHeader + " header is present" );
+	Check( !leaked, std::string( label ) + ": key appears in NO other header" );
+}
+
+//----------------------------------------------------------------------
+// T0: OpenAI / ChatGPT default request shape + key-leak check.
+//----------------------------------------------------------------------
+static void TestOpenAIRequestShape()
+{
+	std::printf( "T0: OpenAI/ChatGPT default request shape + key-leak check...\n" );
+	AgentChatLoop loop;
+	Check( loop.Provider() == ChatProvider::OpenAI, "default provider is ChatGPT/OpenAI" );
+	Check( loop.ModelId() == "gpt-5.5", "default OpenAI model id is gpt-5.5" );
+
+	loop.AddUserMessage( "Make the sphere red" );
+	const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+	Check( req.url == "https://api.openai.com/v1/chat/completions",
+	       "url is the OpenAI Chat Completions endpoint" );
+	CheckKeyOnlyInBearerHeader( req, "authorization", "T0" );
+
+	JsonValue root = ParseBody( req.body );
+	Check( root.isObject(), "body parses as JSON" );
+	Check( root.get( "model" ).asString() == "gpt-5.5", "body carries the default model id" );
+	Check( root.get( "max_completion_tokens" ).asNumber() == 16000.0,
+	       "body carries max_completion_tokens 16000" );
+	const JsonValue& messages = root.get( "messages" );
+	Check( messages.isArray() && messages.size() == 2, "body carries system + user messages" );
+	Check( messages.at( 0 ).get( "role" ).asString() == "system" &&
+	       messages.at( 0 ).get( "content" ).asString().find( "CO-EDIT" ) != std::string::npos,
+	       "system prompt rides as the first message" );
+	Check( messages.at( 1 ).get( "role" ).asString() == "user" &&
+	       messages.at( 1 ).get( "content" ).asString() == "Make the sphere red",
+	       "user text rides as a Chat Completions user message" );
+
+	const JsonValue& tools = root.get( "tools" );
+	Check( tools.isArray() && tools.size() == 9, "body carries exactly nine OpenAI tools" );
+	bool sawReadDocument = false;
+	for( std::size_t i = 0; i < tools.size(); ++i ) {
+		const JsonValue& fn = tools.at( i ).get( "function" );
+		if( fn.get( "name" ).asString() == "read_document" ) {
+			sawReadDocument = true;
+			Check( tools.at( i ).get( "type" ).asString() == "function",
+			       "OpenAI tool entry type is function" );
+			Check( fn.get( "parameters" ).isObject(),
+			       "OpenAI function tool carries parameters object" );
+		}
+	}
+	Check( sawReadDocument, "OpenAI tool list includes read_document" );
+}
+
+//----------------------------------------------------------------------
+// T0b: OpenAI tool_calls parse + role:"tool" result packing.
+//----------------------------------------------------------------------
+static void TestOpenAIToolLoop()
+{
+	std::printf( "T0b: OpenAI tool_calls parse + tool result packing...\n" );
+	AgentChatLoop loop;
+	loop.AddUserMessage( "Read the scene" );
+
+	const std::string fixture =
+		"{\"id\":\"chatcmpl_fixture\",\"object\":\"chat.completion\","
+		"\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
+		"\"content\":\"Reading it now.\",\"tool_calls\":[{\"id\":\"call_doc\","
+		"\"type\":\"function\",\"function\":{\"name\":\"read_document\","
+		"\"arguments\":\"{\\\"kind\\\":\\\"scene\\\"}\"}}]},"
+		"\"finish_reason\":\"tool_calls\"}]}";
+	ChatStepResult st = loop.HandleResponse( 200, fixture );
+	Check( st.kind == ChatStepResult::Kind::ToolCalls && st.toolCalls.size() == 1,
+	       "OpenAI tool_calls fixture -> one ToolCall" );
+	if( st.toolCalls.size() != 1 ) return;
+	Check( st.toolCalls[0].id == "call_doc", "OpenAI tool_call id is captured" );
+	Check( st.toolCalls[0].name == "read_document", "OpenAI function name is captured" );
+	Check( st.toolCalls[0].argsJson.find( "\"kind\":\"scene\"" ) != std::string::npos,
+	       "OpenAI function arguments string parses to argsJson" );
+	Check( st.assistantDisplayText == "Reading it now.",
+	       "OpenAI assistant content is available as interim display text" );
+
+	loop.AddToolResult( st.toolCalls[0],
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"document\":\"RISE ASCII SCENE\"}}" );
+	const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+	CheckKeyOnlyInBearerHeader( req, "authorization", "T0b-followup" );
+	JsonValue root = ParseBody( req.body );
+	const JsonValue& messages = root.get( "messages" );
+	Check( messages.size() == 4, "OpenAI follow-up carries system, user, assistant, tool" );
+	const JsonValue& asst = messages.at( 2 );
+	Check( asst.get( "role" ).asString() == "assistant" &&
+	       asst.get( "tool_calls" ).at( 0 ).get( "id" ).asString() == "call_doc",
+	       "OpenAI assistant tool_calls echo back on the next request" );
+	const JsonValue& tool = messages.at( 3 );
+	Check( tool.get( "role" ).asString() == "tool" &&
+	       tool.get( "tool_call_id" ).asString() == "call_doc",
+	       "OpenAI tool result answers with role:tool + matching tool_call_id" );
+	Check( tool.get( "content" ).asString().find( "RISE ASCII SCENE" ) != std::string::npos,
+	       "OpenAI role:tool content carries the JSON-RPC result" );
+}
+
 //----------------------------------------------------------------------
 // T1: Anthropic request shape + key-leak check.
 //----------------------------------------------------------------------
@@ -293,7 +411,8 @@ static void TestAnthropicRequestShape()
 {
 	std::printf( "T1: Anthropic request shape + key-leak check...\n" );
 	AgentChatLoop loop;
-	Check( loop.Provider() == ChatProvider::Anthropic, "default provider is Anthropic" );
+	loop.SetProvider( ChatProvider::Anthropic );
+	Check( loop.Provider() == ChatProvider::Anthropic, "provider is Anthropic" );
 	Check( loop.ModelId() == "claude-sonnet-5", "default Anthropic model id" );
 
 	loop.AddUserMessage( "Make the sphere red" );
@@ -453,6 +572,7 @@ static void TestAnthropicToolLoop( AgentRpcDispatcher& rpc )
 {
 	std::printf( "T2: Anthropic tool loop end-to-end (live dispatcher)...\n" );
 	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Anthropic );
 	loop.AddUserMessage( "Recolor the sphere albedo to red" );
 
 	const std::string fixture = AnthropicFixture(
@@ -525,6 +645,7 @@ static void TestInsertChunkToolLoop( AgentRpcDispatcher& rpc )
 {
 	std::printf( "T2b: insert_chunk tool loop end-to-end (live dispatcher)...\n" );
 	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Anthropic );
 	loop.AddUserMessage( "Add a key light above the sphere" );
 
 	const std::string fixture = AnthropicFixture(
@@ -588,6 +709,7 @@ static void TestAnthropicReadImagePacking( AgentRpcDispatcher& rpc )
 {
 	std::printf( "T3: read_image packs a REAL PNG as an image block...\n" );
 	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Anthropic );
 	loop.AddUserMessage( "Render the scene and show me" );
 
 	// Round 1: render (for real -- 24x24 at 8 spp).
@@ -672,6 +794,7 @@ static void TestParallelToolUse( AgentRpcDispatcher& rpc )
 {
 	std::printf( "T8: parallel tool_use -> both results in ONE user message...\n" );
 	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Anthropic );
 	loop.AddUserMessage( "Read the scene and re-render it" );
 
 	const std::string fx = AnthropicFixture(
@@ -877,6 +1000,7 @@ static void TestVerbatimEcho()
 {
 	std::printf( "T5: assistant content echoes byte-preserved (signature intact)...\n" );
 	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Anthropic );
 	loop.AddUserMessage( "Think about the scene" );
 
 	// Deliberately quirky formatting inside the content array (a space
@@ -968,6 +1092,7 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 	// is packed as an ERROR tool result -- gracefully self-correcting.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "hi" );
 		const std::string fx = AnthropicFixture(
 			"[{\"type\":\"tool_use\",\"id\":\"toolu_bogus\",\"name\":\"no_such_tool\",\"input\":{}}]",
@@ -1006,6 +1131,7 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 	// tool_use_id:"" must never reach the wire.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "hi" );
 		const std::string fx = AnthropicFixture(
 			"[{\"type\":\"tool_use\",\"name\":\"render\",\"input\":{}}]", "tool_use" );
@@ -1020,6 +1146,7 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 	// Non-200 with a provider error body.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "hi" );
 		ChatStepResult st = loop.HandleResponse( 429,
 			"{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"rate limited\"}}" );
@@ -1034,6 +1161,7 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 	// one turn; the next one trips; AddUserMessage resets the counter.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "loop forever" );
 		const std::string fx = AnthropicFixture(
 			"[{\"type\":\"tool_use\",\"id\":\"toolu_spin\",\"name\":\"read_document\",\"input\":{}}]",
@@ -1081,6 +1209,7 @@ static void TestFlushSynthesis( AgentRpcDispatcher& rpc )
 	// user message answering BOTH ids, and the transcript is NOT poisoned.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "read and render" );
 		const std::string fx = AnthropicFixture(
 			"[{\"type\":\"tool_use\",\"id\":\"toolu_ansA\",\"name\":\"read_document\",\"input\":{}},"
@@ -1128,6 +1257,7 @@ static void TestFlushSynthesis( AgentRpcDispatcher& rpc )
 	// synthesis, flushed BEFORE the new user message.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "render it" );
 		const std::string fx = AnthropicFixture(
 			"[{\"type\":\"tool_use\",\"id\":\"toolu_int1\",\"name\":\"render\",\"input\":{}}]",
@@ -1153,6 +1283,7 @@ static void TestFlushSynthesis( AgentRpcDispatcher& rpc )
 	// (c) Unknown-id and duplicate AddToolResult are IGNORED (first wins).
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "two reads" );
 		const std::string fx = AnthropicFixture(
 			"[{\"type\":\"tool_use\",\"id\":\"toolu_c1\",\"name\":\"read_document\",\"input\":{}},"
@@ -1198,6 +1329,7 @@ static void TestFlushSynthesis( AgentRpcDispatcher& rpc )
 	// records nothing; resolving the pending call recovers.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "go" );
 		const std::string fx = AnthropicFixture(
 			"[{\"type\":\"tool_use\",\"id\":\"toolu_dbl\",\"name\":\"read_document\",\"input\":{}}]",
@@ -1235,6 +1367,7 @@ static void TestStopReasonDeadEnds()
 	// Anthropic stop_reason max_tokens.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "hi" );
 		ChatStepResult st = loop.HandleResponse( 200, AnthropicFixture(
 			"[{\"type\":\"text\",\"text\":\"a truncated repl\"}]", "max_tokens" ) );
@@ -1249,6 +1382,7 @@ static void TestStopReasonDeadEnds()
 	// Anthropic stop_reason refusal -- a DIFFERENT message.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "hi" );
 		ChatStepResult st = loop.HandleResponse( 200, AnthropicFixture(
 			"[]", "refusal" ) );
@@ -1388,6 +1522,7 @@ static void TestHostileDispositionGates()
 	// Anthropic: tool_use blocks + stop_reason end_turn.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "hi" );
 		const std::string fx = AnthropicFixture(
 			"[{\"type\":\"text\",\"text\":\"Sneaky.\"},"
@@ -1475,6 +1610,7 @@ static void TestImageElision()
 	// --- Anthropic ---
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "show me twice" );
 		const char* ids[] = { "toolu_imgA", "toolu_imgB" };
 		const std::string* envs[] = { &envA, &envB };
@@ -1582,6 +1718,7 @@ static void TestImageElision()
 	// image block; the earlier one is packed PRE-ELIDED at pack time. ---
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "show me both" );
 		const std::string fx = AnthropicFixture(
 			"[{\"type\":\"tool_use\",\"id\":\"toolu_two1\",\"name\":\"read_image\",\"input\":{}},"
@@ -1702,6 +1839,7 @@ static void TestFastMathGuards()
 	// JSON-RPC line is built.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "hi" );
 		const std::string fx = AnthropicFixture(
 			"[{\"type\":\"tool_use\",\"id\":\"toolu_inf\",\"name\":\"render\","
@@ -1810,6 +1948,7 @@ static void TestDuplicateIdRefusal()
 	// synthesize a second result for the SAME id -> permanent 400.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "hi" );
 		const std::string fx = AnthropicFixture(
 			"[{\"type\":\"tool_use\",\"id\":\"toolu_dup\",\"name\":\"read_document\",\"input\":{}},"
@@ -1944,6 +2083,7 @@ static void TestDegenerateEmptyTurns()
 	// Anthropic: content [] + end_turn.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "hi" );
 		ChatStepResult st = loop.HandleResponse( 200, AnthropicFixture( "[]", "end_turn" ) );
 		Check( st.kind == ChatStepResult::Kind::ProviderError,
@@ -2059,6 +2199,7 @@ static void TestLoopContractDetails()
 	// (Anthropic hard-400s an empty text block).
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "" );
 		loop.AddUserMessage( " \t\r\n " );
 		Check( loop.TranscriptSize() == 0,
@@ -2150,6 +2291,7 @@ static void TestUserImageAttachments()
 	// attachment order; media_type/data carried faithfully.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		std::vector<ChatAttachment> atts;
 		atts.push_back( ChatAttachment{ "image/png", b64_1 } );
 		atts.push_back( ChatAttachment{ "image/jpeg", b64_2 } );
@@ -2200,6 +2342,7 @@ static void TestUserImageAttachments()
 	// block/part entirely -- Anthropic hard-400s an empty text block.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		std::vector<ChatAttachment> atts;
 		atts.push_back( ChatAttachment{ "image/png", b64_1 } );
 		loop.AddUserMessage( "", atts );
@@ -2225,6 +2368,7 @@ static void TestUserImageAttachments()
 	// elision rule would have stripped it by turn 2's flush already.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		std::vector<ChatAttachment> atts;
 		atts.push_back( ChatAttachment{ "image/png", b64_1 } );
 		loop.AddUserMessage( "turn one, reference photo", atts );
@@ -2242,6 +2386,7 @@ static void TestUserImageAttachments()
 	// live one first; the newest four stay live.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		const std::string* b64s[5] = { &b64_1, &b64_2, &b64_3, &b64_4, &b64_5 };
 		for( int i = 0; i < 5; ++i ) {
 			std::vector<ChatAttachment> atts;
@@ -2286,6 +2431,7 @@ static void TestUserImageAttachments()
 	// the cap elides just enough of the oldest, not everything.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		for( int i = 0; i < 3; ++i ) {
 			std::vector<ChatAttachment> atts;
 			atts.push_back( ChatAttachment{ "image/png", *( i == 0 ? &b64_1 : i == 1 ? &b64_2 : &b64_3 ) } );
@@ -2310,6 +2456,7 @@ static void TestUserImageAttachments()
 	// and still replays byte-identically on the next BuildRequest.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		std::vector<ChatAttachment> atts;
 		atts.push_back( ChatAttachment{ "image/png", b64_1 } );
 		loop.AddUserMessage( "reference attached", atts );
@@ -2338,6 +2485,7 @@ static void TestUserImageAttachments()
 	// still rides through faithfully rather than being silently dropped.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		std::vector<ChatAttachment> atts;
 		atts.push_back( ChatAttachment{ "image/gif", b64_1 } );
 		loop.AddUserMessage( "gif capture", atts );
@@ -2361,6 +2509,8 @@ int main()
 	if( !session ) { std::printf( "cannot continue without a session\n" ); return 1; }
 	AgentRpcDispatcher rpc( std::move( session ) );
 
+	TestOpenAIRequestShape();
+	TestOpenAIToolLoop();
 	TestAnthropicRequestShape();
 	TestAnthropicToolLoop( rpc );
 	TestInsertChunkToolLoop( rpc );

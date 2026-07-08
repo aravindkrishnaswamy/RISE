@@ -9,7 +9,7 @@
 //    parse raw response bodies -- the caller (the GUI, or a test)
 //    performs the actual HTTP round-trip and feeds the body back.
 //
-//    Two implementations:
+//    Three implementations:
 //      * AnthropicChatCodec -- the Anthropic Messages API
 //        (POST https://api.anthropic.com/v1/messages, auth via the
 //        `x-api-key` header + `anthropic-version: 2023-06-01`).
@@ -23,6 +23,9 @@
 //        functionResponse {id,name,response,parts[]} where parts is an
 //        array of FunctionResponsePart {inlineData:{mimeType,data}}
 //        ("Ordered Parts that constitute a function response").
+//      * OpenAIChatCodec -- OpenAI Chat Completions
+//        (POST https://api.openai.com/v1/chat/completions, auth via
+//        `Authorization: Bearer ...`), surfaced in the GUI as ChatGPT.
 //
 //    KEY DESIGN RULES (see AgentChatLoop.h for the loop contract):
 //      * The API key appears ONLY in the auth header the codec emits --
@@ -212,7 +215,7 @@ namespace RISE
 		public:
 			virtual ~IChatProviderCodec() {}
 
-			//! A short human name ("anthropic" / "gemini"), used to prefix
+			//! A short human name ("anthropic" / "gemini" / "openai"), used to prefix
 			//! HTTP-error messages (see ParseResponse's non-200 path).
 			virtual const char* ProviderName() const = 0;
 
@@ -335,6 +338,32 @@ namespace RISE
 		//! page); the surrounding generateContent envelope against
 		//! ai.google.dev/api/generate-content.
 		class GeminiChatCodec : public IChatProviderCodec
+		{
+		public:
+			virtual const char* ProviderName() const;
+			virtual const char* DefaultModelId() const;
+			virtual std::string MakeUserEntry(
+				const std::string& text,
+				const std::vector<ChatAttachment>& attachments = std::vector<ChatAttachment>() ) const;
+			virtual std::string PackToolResults(
+				const std::vector<std::pair<ChatToolCall, std::string>>& results ) const;
+			virtual std::string RewriteElidedImages( const std::string& packedEntryJson ) const;
+			virtual std::string RewriteElidedUserImages(
+				const std::string& userEntryJson, int countToElide ) const;
+			virtual ChatHttpRequest BuildRequest(
+				const std::string& modelId,
+				const std::string& apiKey,
+				const std::string& systemPrompt,
+				const std::vector<std::string>& rawEntries ) const;
+			virtual ChatParsedResponse ParseResponse(
+				long httpStatus, const std::string& rawBody ) const;
+		};
+
+		//! OpenAI Chat Completions codec (see file header).  The GUI
+		//! labels this provider "ChatGPT"; the wire endpoint is OpenAI's
+		//! chat/completions API because its messages/tool_calls transcript
+		//! shape matches this loop's provider-native raw-entry model.
+		class OpenAIChatCodec : public IChatProviderCodec
 		{
 		public:
 			virtual const char* ProviderName() const;

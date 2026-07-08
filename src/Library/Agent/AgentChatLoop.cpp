@@ -91,6 +91,8 @@ namespace RISE
 			{
 				if( provider == ChatProvider::Gemini )
 					return std::unique_ptr<IChatProviderCodec>( new GeminiChatCodec() );
+				if( provider == ChatProvider::OpenAI )
+					return std::unique_ptr<IChatProviderCodec>( new OpenAIChatCodec() );
 				return std::unique_ptr<IChatProviderCodec>( new AnthropicChatCodec() );
 			}
 		}
@@ -109,8 +111,8 @@ namespace RISE
 		}
 
 		AgentChatLoop::AgentChatLoop() :
-			mCodec( MakeCodec( ChatProvider::Anthropic ) ),
-			mProvider( ChatProvider::Anthropic ),
+			mCodec( MakeCodec( ChatProvider::OpenAI ) ),
+			mProvider( ChatProvider::OpenAI ),
 			mModelId( mCodec->DefaultModelId() ),
 			mToolRounds( 0 )
 		{

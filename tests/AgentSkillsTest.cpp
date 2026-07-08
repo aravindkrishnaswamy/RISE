@@ -477,6 +477,7 @@ static void TestChatLoopWiring()
 	// Anthropic: nine tools (S2 added insert_chunk/remove_chunk), read_skill present with a schema.
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
@@ -507,10 +508,31 @@ static void TestChatLoopWiring()
 		Check( saw, "gemini functionDeclarations include read_skill" );
 	}
 
+	// OpenAI/ChatGPT: nine function tools, read_skill present.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::OpenAI );
+		loop.AddUserMessage( "hello" );
+		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
+		const JsonValue& tools = root.get( "tools" );
+		Check( tools.isArray() && tools.size() == 9, "openai body carries nine tools" );
+		bool saw = false;
+		for( std::size_t i = 0; i < tools.size(); ++i ) {
+			const JsonValue& fn = tools.at( i ).get( "function" );
+			if( tools.at( i ).get( "type" ).asString() == "function" &&
+			    fn.get( "name" ).asString() == "read_skill" ) {
+				saw = true;
+				Check( fn.get( "parameters" ).isObject(), "openai read_skill has parameters" );
+			}
+		}
+		Check( saw, "openai tools include read_skill" );
+	}
+
 	// SetSkillIndex: "" omits the section; a set index appears verbatim
 	// in the NEXT BuildRequest's system prompt (base prompt unchanged).
 	{
 		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "hello" );
 
 		loop.SetSkillIndex( "" );
@@ -550,6 +572,7 @@ static void TestToolRound( AgentRpcDispatcher& rpc )
 	std::printf( "S5: read_skill tool round (fixture -> dispatcher -> next body)...\n" );
 
 	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Anthropic );
 	loop.AddUserMessage( "How do I author a scene?" );
 
 	// A canned Anthropic tool_use turn requesting the skeleton skill.

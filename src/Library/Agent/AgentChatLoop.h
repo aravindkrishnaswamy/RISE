@@ -140,7 +140,8 @@ namespace RISE
 		enum class ChatProvider
 		{
 			Anthropic,
-			Gemini
+			Gemini,
+			OpenAI
 		};
 
 		//! One transcript entry as the GUI sees it.  `rawJson` is the
@@ -193,7 +194,7 @@ namespace RISE
 			//! elides the oldest live one(s) first.
 			static const int kMaxLiveUserImages = 4;
 
-			//! Constructs with the Anthropic provider + its default model.
+			//! Constructs with the ChatGPT/OpenAI provider + its default model.
 			AgentChatLoop();
 			~AgentChatLoop();
 

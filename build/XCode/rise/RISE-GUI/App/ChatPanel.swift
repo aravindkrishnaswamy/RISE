@@ -477,7 +477,7 @@ private struct ChatSettingsView: View {
     @EnvironmentObject var viewModel: RenderViewModel
     @ObservedObject var chat: ChatViewModel
 
-    @State private var draftProvider: AgentChatProviderChoice = .anthropic
+    @State private var draftProvider: AgentChatProviderChoice = .openai
     @State private var draftModelId: String = ""
     @State private var draftKey: String = ""
     @State private var confirmSwitch = false
