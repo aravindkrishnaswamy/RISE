@@ -3504,6 +3504,10 @@ bool Job::AddGGXMaterial(
 	const char* film_thickness
 	)
 {
+	if( ScalarLiteralIsNonFinite( tangent_rotation ) ) {
+		GlobalLog()->PrintEx( eLog_Error, "ggx_material `%s`: `tangent_rotation` must be a finite rotation (got `%s`)", name, tangent_rotation );
+		return false;
+	}
 	IPainter* pRd = pPntManager->GetItem(diffuse);
 	IPainter* pRs = pPntManager->GetItem(specular);
 
@@ -3639,6 +3643,10 @@ bool Job::AddGGXEmissiveMaterial(
 	const char* film_thickness
 	)
 {
+	if( ScalarLiteralIsNonFinite( tangent_rotation ) ) {
+		GlobalLog()->PrintEx( eLog_Error, "ggx_emissive_material `%s`: `tangent_rotation` must be a finite rotation (got `%s`)", name, tangent_rotation );
+		return false;
+	}
 	IPainter* pRd = pPntManager->GetItem(diffuse);
 	IPainter* pRs = pPntManager->GetItem(specular);
 
@@ -3786,6 +3794,10 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 	const char* anisotropy_rotation
 	)
 {
+	if( ScalarLiteralIsNonFinite( anisotropy_rotation ) ) {
+		GlobalLog()->PrintEx( eLog_Error, "pbrmetallicroughness_material `%s`: `anisotropy_rotation` must be a finite rotation (got `%s`)", name, anisotropy_rotation );
+		return false;
+	}
 	// Resolve the base_color painter.  Must already exist.
 	if( !pPntManager->GetItem( base_color ) ) {
 		GlobalLog()->PrintEx( eLog_Error,

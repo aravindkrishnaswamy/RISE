@@ -407,6 +407,25 @@ static void TestRejectInlineScalarOverflow()
 	IJobPriv* jso = LoadScene( sssOk, "sss_ok" );
 	Check( jso != nullptr, "finite SSS (g 0.5, roughness 0.2) still loads" );
 	if( jso ) safe_release( jso );
+
+	// Sibling: GGX tangent_rotation (and the twin ggx_emissive / PBR anisotropy_
+	// rotation) synthesise a uniform-colour painter from atof() -- an inline
+	// non-finite value was accepted.  Now guarded up front with the same helper.
+	const char* ggxCol = "uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n";
+	const char* ggxInf =
+		"uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n"
+		"ggx_material\n{\n\tname ggx_inf\n\trd col\n\trs col\n\talphax 0.1\n\talphay 0.1\n\tior 0.15\n\textinction 3.5\n\ttangent_rotation inf\n}\n";
+	IJobPriv* jgi = LoadScene( ggxInf, "ggx_inf" );
+	Check( jgi == nullptr, "GGX `tangent_rotation inf` REJECTED" );
+	if( jgi ) safe_release( jgi );
+
+	const char* ggxOk =
+		"uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n"
+		"ggx_material\n{\n\tname ggx_ok\n\trd col\n\trs col\n\talphax 0.1\n\talphay 0.1\n\tior 0.15\n\textinction 3.5\n\ttangent_rotation 0.5\n}\n";
+	IJobPriv* jgo = LoadScene( ggxOk, "ggx_ok" );
+	Check( jgo != nullptr, "GGX finite tangent_rotation (0.5) still loads" );
+	if( jgo ) safe_release( jgo );
+	(void)ggxCol;
 }
 
 int main()
