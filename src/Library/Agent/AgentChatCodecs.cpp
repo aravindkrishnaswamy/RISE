@@ -1084,12 +1084,16 @@ namespace RISE
 				return out;
 			}
 			else if( stopReason == "end_turn" ) {
-				if( content.size() == 0 ) {
-					// A degenerate empty-content final turn: recording
-					// {"content":[]} poisons the echo (the API rejects an
-					// assistant message with no content blocks).
+				if( ChatContentIsBlank( text ) ) {
+					// A degenerate final turn with no readable text.  The
+					// empty-array case (content:[]) also poisons the echo (the
+					// API rejects an assistant message with no content blocks);
+					// but a NON-empty array whose only text is blank/absent (a
+					// whitespace-only text block, or nothing but non-text
+					// blocks) is equally a silent blank bubble to the user --
+					// testing the extracted `text` for blankness catches both.
 					out.step = MakeProviderError( ChatErrorKind::Provider,
-						"anthropic ended the turn with an EMPTY content array -- refusing the degenerate turn" );
+						"anthropic ended the turn with no readable text -- refusing the degenerate turn" );
 					return out;
 				}
 				out.step.kind = ChatStepResult::Kind::FinalText;
@@ -1644,12 +1648,17 @@ namespace RISE
 				out.step.toolCalls = calls;
 			}
 			else if( finishReason == "STOP" || finishReason.empty() ) {
-				if( !parts.isArray() || parts.size() == 0 ) {
-					// A degenerate final turn with missing/empty content:
-					// recording it would echo a partless (or parts:null)
-					// model turn that poisons every later request.
+				if( ChatContentIsBlank( text ) ) {
+					// A degenerate final turn with no readable text.  A
+					// missing/empty parts array (parts:null or []) poisons the
+					// echo (a partless model turn is invalid on replay); a
+					// NON-empty parts array whose only text is blank/absent (a
+					// whitespace-only text part, or nothing but non-text parts
+					// such as inlineData) is equally a silent blank bubble --
+					// testing the extracted `text` for blankness catches both
+					// (text is "" when parts is not an array).
 					out.step = MakeProviderError( ChatErrorKind::Provider,
-						"gemini candidate carries no content parts -- refusing the degenerate empty turn" );
+						"gemini candidate carries no readable text -- refusing the degenerate turn" );
 					return out;
 				}
 				out.step.kind = ChatStepResult::Kind::FinalText;

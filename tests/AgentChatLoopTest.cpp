@@ -2182,14 +2182,18 @@ static void TestHeaderAndUrlSanitizing()
 }
 
 //----------------------------------------------------------------------
-// T19: degenerate empty-content final turns are refused (P3-4) --
-//      recording them poisons the echo (Anthropic rejects an assistant
-//      message with no content blocks; a partless Gemini model turn is
-//      equally invalid on replay).
+// T19: degenerate blank-content final turns are refused (P3-4, extended
+//      to whitespace-only / text-less-but-non-empty content by the
+//      cross-codec blank-text audit) -- recording an empty-content turn
+//      poisons the echo (Anthropic rejects an assistant message with no
+//      content blocks; a partless Gemini model turn is equally invalid
+//      on replay), and a non-empty-but-text-less turn is a silent blank
+//      bubble.  Both providers now gate on the extracted text being
+//      blank (ChatContentIsBlank), mirroring the OpenAI codec (T26).
 //----------------------------------------------------------------------
 static void TestDegenerateEmptyTurns()
 {
-	std::printf( "T19: degenerate empty-content final turns are refused...\n" );
+	std::printf( "T19: degenerate blank-content final turns are refused (all providers)...\n" );
 
 	// Anthropic: content [] + end_turn.
 	{
@@ -2199,9 +2203,34 @@ static void TestDegenerateEmptyTurns()
 		ChatStepResult st = loop.HandleResponse( 200, AnthropicFixture( "[]", "end_turn" ) );
 		Check( st.kind == ChatStepResult::Kind::ProviderError,
 		       "anthropic empty content + end_turn -> ProviderError" );
-		Check( st.errorMessage.find( "EMPTY content" ) != std::string::npos,
-		       "the refusal names the empty content array" );
+		Check( st.errorMessage.find( "no readable text" ) != std::string::npos,
+		       "the refusal names the degenerate no-text turn" );
 		Check( loop.TranscriptSize() == 1, "the degenerate anthropic turn records NOTHING" );
+	}
+
+	// Anthropic: NON-empty content whose only text block is whitespace-only
+	// -- previously slipped through the size()==0 gate to a blank bubble.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "hi" );
+		ChatStepResult st = loop.HandleResponse( 200,
+			AnthropicFixture( "[{\"type\":\"text\",\"text\":\"  \\n\"}]", "end_turn" ) );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "anthropic whitespace-only text block + end_turn -> ProviderError" );
+		Check( loop.TranscriptSize() == 1, "the whitespace-only anthropic turn records NOTHING" );
+	}
+
+	// Anthropic POSITIVE CONTROL: a real text block still yields FinalText.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "hi" );
+		ChatStepResult st = loop.HandleResponse( 200,
+			AnthropicFixture( "[{\"type\":\"text\",\"text\":\"Hello.\"}]", "end_turn" ) );
+		Check( st.kind == ChatStepResult::Kind::FinalText,
+		       "anthropic real text + end_turn -> FinalText (not over-refused)" );
+		Check( loop.TranscriptSize() == 2, "a real anthropic answer records the user+assistant turn" );
 	}
 
 	// Gemini: finishReason STOP with NO content at all.
@@ -2213,8 +2242,8 @@ static void TestDegenerateEmptyTurns()
 			"{\"candidates\":[{\"finishReason\":\"STOP\",\"index\":0}]}" );
 		Check( st.kind == ChatStepResult::Kind::ProviderError,
 		       "gemini STOP with missing content -> ProviderError" );
-		Check( st.errorMessage.find( "no content parts" ) != std::string::npos,
-		       "the refusal names the missing parts" );
+		Check( st.errorMessage.find( "no readable text" ) != std::string::npos,
+		       "the refusal names the degenerate no-text turn" );
 		Check( loop.TranscriptSize() == 1, "the missing-content gemini turn records NOTHING" );
 	}
 
@@ -2228,6 +2257,31 @@ static void TestDegenerateEmptyTurns()
 		Check( st.kind == ChatStepResult::Kind::ProviderError,
 		       "gemini STOP with empty parts -> ProviderError" );
 		Check( loop.TranscriptSize() == 1, "the empty-parts gemini turn records NOTHING" );
+	}
+
+	// Gemini: NON-empty parts whose only text part is whitespace-only --
+	// previously slipped through the size()==0 gate to a blank bubble.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "hi" );
+		ChatStepResult st = loop.HandleResponse( 200, GeminiFixture(
+			"{\"parts\":[{\"text\":\"   \"}],\"role\":\"model\"}", "STOP" ) );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "gemini whitespace-only text part + STOP -> ProviderError" );
+		Check( loop.TranscriptSize() == 1, "the whitespace-only gemini turn records NOTHING" );
+	}
+
+	// Gemini POSITIVE CONTROL: a real text part still yields FinalText.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "hi" );
+		ChatStepResult st = loop.HandleResponse( 200, GeminiFixture(
+			"{\"parts\":[{\"text\":\"Hi there.\"}],\"role\":\"model\"}", "STOP" ) );
+		Check( st.kind == ChatStepResult::Kind::FinalText,
+		       "gemini real text + STOP -> FinalText (not over-refused)" );
+		Check( loop.TranscriptSize() == 2, "a real gemini answer records the user+assistant turn" );
 	}
 }
 
@@ -2804,12 +2858,14 @@ static void TestOpenAIDeadEnds()
 }
 
 //----------------------------------------------------------------------
-// T26: OpenAI content:null degenerate turns (the content-null gate fix)
-//      and malformed function.arguments (the malformed-args refusal fix).
+// T26: OpenAI degenerate "stop" turns whose extracted text is blank
+//      (null / "" / whitespace-only / empty-array / text-less-array)
+//      are refused, an array WITH text still answers, and malformed
+//      function.arguments refuse the whole turn (the malformed-args fix).
 //----------------------------------------------------------------------
 static void TestOpenAIContentNullAndMalformedArgs()
 {
-	std::printf( "T26: OpenAI content:null/content:\"\" degenerate turn + malformed tool_call arguments...\n" );
+	std::printf( "T26: OpenAI degenerate blank-content stop turns + malformed tool_call arguments...\n" );
 
 	// content:null, finish_reason stop, no tool_calls, NO refusal field:
 	// a bare `!msg.find("content")` (key-PRESENCE-only) would miss this --
@@ -3297,8 +3353,8 @@ static void TestNullShapeDefensiveAudit()
 		ChatStepResult st = loop.HandleResponse( 200, fx );
 		Check( st.kind == ChatStepResult::Kind::ProviderError,
 		       "gemini candidates[0].content:null -> ProviderError (no crash)" );
-		Check( st.errorMessage.find( "no content parts" ) != std::string::npos,
-		       "the refusal names the missing content parts" );
+		Check( st.errorMessage.find( "no readable text" ) != std::string::npos,
+		       "the refusal names the degenerate no-text turn" );
 		Check( loop.TranscriptSize() == 1, "the null-content turn records nothing" );
 	}
 
@@ -3312,8 +3368,8 @@ static void TestNullShapeDefensiveAudit()
 		ChatStepResult st = loop.HandleResponse( 200, fx );
 		Check( st.kind == ChatStepResult::Kind::ProviderError,
 		       "gemini content.parts:null -> ProviderError (no crash)" );
-		Check( st.errorMessage.find( "no content parts" ) != std::string::npos,
-		       "the refusal names the missing content parts" );
+		Check( st.errorMessage.find( "no readable text" ) != std::string::npos,
+		       "the refusal names the degenerate no-text turn" );
 		Check( loop.TranscriptSize() == 1, "the null-parts turn records nothing" );
 	}
 }
