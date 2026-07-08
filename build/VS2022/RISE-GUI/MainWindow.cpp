@@ -588,6 +588,16 @@ void MainWindow::onClear()
 
 void MainWindow::onRender()
 {
+    // P2-4: explicit gate mirroring the Mac 80d7e0f8 productionRenderStarting.
+    // Cancels any in-flight chat turn (and an outstanding async chat-render
+    // job) BEFORE the production rasterizer runs.  Do not remove this even
+    // though onStateChanged's setSceneEditable(false) also disables the chat
+    // panel below — that disable only takes effect on the NEXT event-loop
+    // turn, which is too late to stop a chat turn already suspended in an
+    // HTTP await or a render_wait poll from resuming into a production
+    // render that is now reading Scene state off-main.
+    if (m_chatPanel) m_chatPanel->productionRenderStarting();
+
     // Stop the viewport's render thread BEFORE the production
     // rasterizer runs — they'd race against the same scene state
     // otherwise.  The viewport restarts in onStateChanged when
@@ -623,6 +633,11 @@ void MainWindow::onRender()
 
 void MainWindow::onRenderAnimation()
 {
+    // P2-4: same explicit gate as onRender() above (mirrors the Mac
+    // 80d7e0f8 productionRenderStarting) — keep even though onStateChanged
+    // also disables the chat panel; see onRender()'s comment for why.
+    if (m_chatPanel) m_chatPanel->productionRenderStarting();
+
     // Derive video output path from scene file.  The animation export is
     // a ProRes 4444 (HDR10) master, which must live in a QuickTime (.mov)
     // container — so derive a .mov name directly.  (VideoEncoder also
