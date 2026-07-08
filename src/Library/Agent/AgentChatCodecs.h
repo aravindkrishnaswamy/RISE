@@ -65,9 +65,13 @@
 //        it would fabricate empty args), a Gemini candidate whose
 //        content.role is present and not "model" (a spoofed role
 //        would join BuildRequest's user merge on replay), and
-//        degenerate empty-content final turns (including an OpenAI
-//        content:null OR content:"" stop turn, which surfaces the
-//        structured message.refusal text when present).  Never
+//        degenerate empty-content final turns (an OpenAI "stop"
+//        turn whose extracted text is blank -- absent/null/
+//        empty-string/whitespace-only content, OR a content ARRAY
+//        that is empty or carries no "text" parts, the shape a
+//        non-conformant OpenAI-compatible proxy can send -- which
+//        surfaces the structured message.refusal text when present).
+//        Never
 //        "salvage" part of such a body: the raw echo would replay
 //        the un-answerable call blocks on every later request.
 //      * All tool results for one assistant turn are packed into ONE

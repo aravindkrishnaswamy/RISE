@@ -639,6 +639,18 @@ namespace RISE
 				return block;
 			}
 
+			//! True when `text` is empty or contains only ASCII whitespace --
+			//! nothing a user could read.  Mirrors AgentChatLoop's user-side
+			//! IsBlank (kept local: the codec is a separate TU).
+			bool ChatContentIsBlank( const std::string& text )
+			{
+				for( std::size_t i = 0; i < text.size(); ++i ) {
+					const char c = text[i];
+					if( c != ' ' && c != '\t' && c != '\n' && c != '\r' ) return false;
+				}
+				return true;
+			}
+
 			std::string JsonObjectContentToText( const JsonValue& content )
 			{
 				if( content.isString() ) return content.asString();
@@ -2026,18 +2038,23 @@ namespace RISE
 				return out;
 			}
 			else if( finishReason == "stop" ) {
-				// content:null (key present, value JSON null) is as degenerate
-				// as an absent content key -- a bare `!msg.find("content")`
-				// only tests key PRESENCE and misses it, producing a silent
-				// blank assistant bubble.  A present EMPTY-STRING content is
-				// the same degenerate shape (no tool_calls, nothing for the
-				// user to read) -- without this check it would still yield a
-				// blank FinalText bubble.  Check all three, and when OpenAI's
-				// structured-refusal field (message.refusal, a string) is
-				// present, surface ITS text so the user sees why.
-				const JsonValue* contentField = msg.find( "content" );
-				if( !contentField || contentField->isNull() ||
-				    ( contentField->isString() && contentField->asString().empty() ) ) {
+				// A "stop" turn with no tool_calls is degenerate when it
+				// carries no readable text -- it would otherwise emit a silent
+				// blank (or whitespace-only) assistant bubble.  `text` is the
+				// fully extracted content (JsonObjectContentToText already
+				// handles the string, null, and content-ARRAY shapes), so a
+				// single blank test on it catches every degenerate shape
+				// uniformly: absent/null/empty-string content (documented
+				// OpenAI), a whitespace-only string, AND an array that is empty
+				// or has no "text"-typed parts (a non-conformant
+				// OpenAI-compatible proxy -- content is string|null in the real
+				// schema, but a proxy can send anything).  Whitespace-only is
+				// refused deliberately, matching the user-side IsBlank policy:
+				// a blank bubble is never a useful answer and a clean refusal
+				// lets the caller retry.  When OpenAI's structured-refusal
+				// field (message.refusal, a string) is present, surface ITS
+				// text so the user sees why.
+				if( ChatContentIsBlank( text ) ) {
 					const JsonValue* refusal = msg.find( "refusal" );
 					if( refusal && refusal->isString() && !refusal->asString().empty() ) {
 						out.step = MakeProviderError( ChatErrorKind::Refusal,

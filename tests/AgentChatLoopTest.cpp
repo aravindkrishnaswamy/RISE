@@ -118,11 +118,14 @@
 //    T25 OpenAI dead-ends: finish_reason "length" -> errorKind
 //        MaxTokens, finish_reason "content_filter" -> errorKind Refusal,
 //        with DISTINCT actionable messages (mirrors T10).
-//    T26 OpenAI content:null / content:"" degenerate turns (content KEY
-//        PRESENT but value null, or present as an EMPTY STRING -- both
-//        distinct from an absent key) refuse rather than emit a blank
-//        FinalText; the structured-refusal `message.refusal` field, when
-//        present, is surfaced in the error text; malformed
+//    T26 OpenAI degenerate "stop" turns refuse rather than emit a blank
+//        FinalText whenever the extracted text is blank: content null, an
+//        EMPTY STRING, a WHITESPACE-ONLY string, an empty ARRAY [], or an
+//        array with no "text" parts (the shape a non-conformant
+//        OpenAI-compatible proxy can send); a content array WITH a real
+//        text part still yields FinalText (positive control -- no
+//        over-refusal); the structured-refusal `message.refusal` field,
+//        when present, is surfaced in the error text; malformed
 //        function.arguments refuse the WHOLE turn rather than silently
 //        degrading to fabricated "{}" args.
 //    T27 OpenAI read_image handling: the base64 is stripped from the
@@ -2899,6 +2902,65 @@ static void TestOpenAIContentNullAndMalformedArgs()
 		Check( loop.TranscriptSize() == 1, "the malformed-args turn records nothing" );
 		Check( loop.PendingToolCalls().empty(),
 		       "no call is pended -- it was never recorded as an executable tool_call" );
+	}
+
+	// content as an empty ARRAY [], finish_reason stop, no tool_calls: the
+	// real OpenAI schema types content string|null, but an "OpenAI-
+	// compatible" third-party/proxy can send a content array.  An empty
+	// array (or one with no "text" parts) extracts to blank text -- the
+	// same silent-blank-bubble class the null/"" gate closes.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "hi" );
+		ChatStepResult st = loop.HandleResponse( 200, OpenAIFixture( "[]", "", "stop" ) );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "content:[] + finish_reason stop -> ProviderError (not a blank FinalText)" );
+		Check( st.errorKind == ChatErrorKind::Provider,
+		       "content:[] with no refusal field -> errorKind Provider" );
+		Check( st.errorMessage.find( "no content" ) != std::string::npos,
+		       "the refusal names the degenerate no-content turn" );
+		Check( loop.TranscriptSize() == 1, "the degenerate content:[] turn records nothing" );
+	}
+
+	// content as an array carrying ONLY a non-text part (e.g. an image
+	// block) -- also extracts to blank text and is refused.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "hi" );
+		ChatStepResult st = loop.HandleResponse( 200,
+			OpenAIFixture( "[{\"type\":\"image_url\",\"image_url\":{\"url\":\"x\"}}]", "", "stop" ) );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "content:[non-text part only] + stop -> ProviderError" );
+		Check( loop.TranscriptSize() == 1, "the text-less content array records nothing" );
+	}
+
+	// content:" " (present, NON-empty, whitespace-only string): asString()
+	// is not empty, but there is nothing to read -- refused deliberately,
+	// matching the user-side IsBlank policy (P3 of the round-3 chip).
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "hi" );
+		ChatStepResult st = loop.HandleResponse( 200, OpenAIFixture( "\"   \\t\\n\"", "", "stop" ) );
+		Check( st.kind == ChatStepResult::Kind::ProviderError,
+		       "content:\"whitespace only\" + stop -> ProviderError (not a whitespace bubble)" );
+		Check( st.errorMessage.find( "no content" ) != std::string::npos,
+		       "the refusal names the degenerate no-content turn" );
+		Check( loop.TranscriptSize() == 1, "the whitespace-only turn records nothing" );
+	}
+
+	// POSITIVE CONTROL: a content array WITH a real text part must STILL
+	// produce a FinalText -- the blank gate must not over-refuse a
+	// legitimate array-shaped answer.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "hi" );
+		ChatStepResult st = loop.HandleResponse( 200,
+			OpenAIFixture( "[{\"type\":\"text\",\"text\":\"Done.\"}]", "", "stop" ) );
+		Check( st.kind == ChatStepResult::Kind::FinalText,
+		       "content:[{text:\"Done.\"}] + stop -> FinalText (not over-refused)" );
+		Check( st.finalText.find( "Done." ) != std::string::npos,
+		       "the array's text part is surfaced as the final text" );
+		Check( loop.TranscriptSize() == 2, "a real answer records the user+assistant turn" );
 	}
 }
 
