@@ -1730,52 +1730,9 @@ namespace RISE
 		return true;
 	}
 
-	// Legacy single-film AR overload -> one-layer stack -> N-layer form above.
-	bool RISE_API_CreateDielectricMaterial(
-								IMaterial** ppi,
-								const IScalarPainter& tau,
-								const IScalarPainter& rIndex,
-								const IScalarPainter& scat,
-								const bool hg,
-								const Scalar arFilmN,
-								const Scalar arFilmK,
-								const Scalar arFilmThickness
-								)
-	{
-		// A thickness <= 0 means NO coating (bare Fresnel), matching the
-		// pre-N-layer scalar form and the parser's legacy `if(ar_thick>0)`
-		// handling.  Forwarding a 1-layer zero-thickness stack would take
-		// DielectricSPF's arStack.nLayers>0 path and feed an invalid
-		// zero-index/zero-thickness film to the TMM; forward nLayers=0 instead.
-		if( arFilmThickness <= 0.0 ) {
-			return RISE_API_CreateDielectricMaterial( ppi, tau, rIndex, scat, hg,
-				(const Scalar*)0, (const Scalar*)0, (const Scalar*)0, 0u );
-		}
-		const Scalar n[1]  = { arFilmN };
-		const Scalar k[1]  = { arFilmK };
-		const Scalar th[1] = { arFilmThickness };
-		return RISE_API_CreateDielectricMaterial( ppi, tau, rIndex, scat, hg, n, k, th, 1u );
-	}
-
-	// Legacy integer-zero disambiguator.  Old `(..., 0, 0, 0)` calls with INTEGER
-	// literals are otherwise ambiguous between the scalar overload (int->Scalar)
-	// and the array form (int 0 -> null const Scalar*).  Cast to Scalar and
-	// forward: `(0,0,0)` resolves here by exact int match, then thickness 0 ->
-	// no-coating.
-	bool RISE_API_CreateDielectricMaterial(
-								IMaterial** ppi,
-								const IScalarPainter& tau,
-								const IScalarPainter& rIndex,
-								const IScalarPainter& scat,
-								const bool hg,
-								const int arFilmN,
-								const int arFilmK,
-								const int arFilmThickness
-								)
-	{
-		return RISE_API_CreateDielectricMaterial( ppi, tau, rIndex, scat, hg,
-			Scalar( arFilmN ), Scalar( arFilmK ), Scalar( arFilmThickness ) );
-	}
+	// The legacy single-film AR overload is now a SFINAE template defined inline
+	// in RISE_API.h (it must accept any arithmetic spelling incl. mixed int/double
+	// -- a fixed Scalar/int overload pair leaves mixed calls ambiguous).
 
 	//! Creates a SubSurface Scattering material
 	/// \return TRUE if successful, FALSE otherwise

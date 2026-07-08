@@ -20,6 +20,7 @@
 // Interface includes
 //////////////////////////////////////////////////////////
 #include "Interfaces/IBezierPatchGeometry.h"
+#include <type_traits>   // SFINAE for the arithmetic AR-film overload
 #include "Interfaces/IBilinearPatchGeometry.h"
 #include "Interfaces/ICamera.h"
 #include "Interfaces/IDetectorSphere.h"
@@ -637,39 +638,42 @@ namespace RISE
 								const unsigned int arNLayers = 0	///< [in] Number of AR layers (0 = no coating)
 								);
 
-	//! Legacy single-film AR overload.  Forwards to the N-layer form, so pre-
-	//! N-layer external callers (scalar ar film ior/extinction/thickness) still
-	//! compile.  A `0.0` double binds to Scalar (not the array form's
-	//! `const Scalar*`), so real single-film calls resolve here.  NO-COATING:
-	//! arFilmThickness <= 0 forwards nLayers=0 (bare Fresnel), matching the old
-	//! scalar form -- it does NOT build a zero-thickness film.
+	//! Legacy single-film AR overload.  Accepts ANY arithmetic spelling of the
+	//! three AR-film scalars -- all-double, all-int `(0,0,0)`, OR MIXED (e.g.
+	//! `(1.38, 0, 99.6)` with an integer extinction) -- and forwards to the
+	//! N-layer array form, so pre-N-layer external callers still compile
+	//! regardless of literal types.  It is a single SFINAE template (constrained
+	//! to arithmetic args) rather than a set of fixed overloads: a fixed
+	//! `(Scalar,Scalar,Scalar)` + `(int,int,int)` pair leaves mixed spellings with
+	//! no best match, whereas a template is an exact match for every combination
+	//! and -- being non-pointer -- never competes with the array form.
+	//! NO-COATING: arFilmThickness <= 0 => nLayers=0 (bare Fresnel), matching the
+	//! pre-N-layer scalar form; it does NOT build a zero-thickness/zero-index film.
 	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateDielectricMaterial(
+	template< typename ARN, typename ARK, typename ART,
+	          typename = typename std::enable_if< std::is_arithmetic<ARN>::value &&
+	                                              std::is_arithmetic<ARK>::value &&
+	                                              std::is_arithmetic<ART>::value >::type >
+	inline bool RISE_API_CreateDielectricMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
 								const IScalarPainter& tau,		///< [in] Transmittance (per-channel + spectral)
 								const IScalarPainter& rIndex,	///< [in] Index of refraction
 								const IScalarPainter& scat,		///< [in] Scattering function (Phong cone or HG)
 								const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
-								const Scalar arFilmN,			///< [in] Single AR film real index
-								const Scalar arFilmK,			///< [in] Single AR film extinction
-								const Scalar arFilmThickness	///< [in] Single AR film thickness, nm
-								);
-
-	//! Legacy integer-zero disambiguator for the single-film overload.  Old
-	//! `(..., 0, 0, 0)` calls with INTEGER literals are ambiguous between the
-	//! scalar overload and the array form's null-pointer conversion; this exact
-	//! int overload resolves them (and, thickness 0, means no coating).
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateDielectricMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IScalarPainter& tau,		///< [in] Transmittance (per-channel + spectral)
-								const IScalarPainter& rIndex,	///< [in] Index of refraction
-								const IScalarPainter& scat,		///< [in] Scattering function (Phong cone or HG)
-								const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
-								const int arFilmN,				///< [in] Single AR film real index
-								const int arFilmK,				///< [in] Single AR film extinction
-								const int arFilmThickness		///< [in] Single AR film thickness, nm
-								);
+								const ARN arFilmN,				///< [in] Single AR film real index
+								const ARK arFilmK,				///< [in] Single AR film extinction
+								const ART arFilmThickness		///< [in] Single AR film thickness, nm
+								)
+	{
+		if( Scalar( arFilmThickness ) <= Scalar( 0 ) ) {
+			return RISE_API_CreateDielectricMaterial( ppi, tau, rIndex, scat, hg,
+				(const Scalar*)0, (const Scalar*)0, (const Scalar*)0, 0u );
+		}
+		const Scalar n[1]  = { Scalar( arFilmN ) };
+		const Scalar k[1]  = { Scalar( arFilmK ) };
+		const Scalar th[1] = { Scalar( arFilmThickness ) };
+		return RISE_API_CreateDielectricMaterial( ppi, tau, rIndex, scat, hg, n, k, th, 1u );
+	}
 
 	//! Creates a SubSurface Scattering material.  ior / absorption /
 	//! scattering are physical scalars carried by `IScalarPainter`

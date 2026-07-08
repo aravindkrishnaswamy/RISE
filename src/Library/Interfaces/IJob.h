@@ -21,6 +21,7 @@
 #define IJOB_
 
 #include "IReference.h"
+#include <type_traits>   // SFINAE for the arithmetic AR-film convenience
 #include "IPainter.h"           // for SpectrumKind enum (Landing 3)
 #include "IProgressCallback.h"
 #include "IJobRasterizerOutput.h"
@@ -819,50 +820,37 @@ namespace RISE
 								const unsigned int arNLayers = 0	///< [in] Number of AR layers (0 = no coating)
 									) = 0;
 
-		//! Legacy single-film AR convenience -> the N-layer virtual above.
-		//! NON-virtual (no vtable change), so pre-N-layer callers passing scalar
-		//! ar film ior/extinction/thickness still compile.  A 0.0 double binds to
-		//! Scalar, not the array form's const Scalar*, so real single-film calls
-		//! resolve here.  NO-COATING: arFilmThickness <= 0 forwards nLayers=0
-		//! (bare Fresnel), matching the old scalar form -- not a zero-thickness film.
+		//! Legacy single-film AR convenience -> the N-layer virtual above.  A
+		//! single SFINAE template (constrained to arithmetic args) so ANY spelling
+		//! of the three AR-film scalars compiles -- all-double, all-int `(0,0,0)`,
+		//! or MIXED `(1.38, 0, 99.6)`.  A fixed Scalar/int overload pair would leave
+		//! mixed calls with no best match; a template is exact for every combo and,
+		//! being non-pointer, never competes with the array-form virtual.
+		//! NON-virtual (no vtable change).  NO-COATING: arFilmThickness <= 0 =>
+		//! nLayers=0 (bare Fresnel), not a zero-thickness/zero-index film.
+		template< typename ARN, typename ARK, typename ART,
+		          typename = typename std::enable_if< std::is_arithmetic<ARN>::value &&
+		                                              std::is_arithmetic<ARK>::value &&
+		                                              std::is_arithmetic<ART>::value >::type >
 		bool AddDielectricMaterial(
 									const char* name,				///< [in] Name of the material
 									const char* tau,				///< [in] Transmittance painter
 									const char* rIndex,				///< [in] Index of refraction
 									const char* scat,				///< [in] Scattering function (either Phong or HG)
 									const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
-									const Scalar arFilmN,			///< [in] Single AR film real index
-									const Scalar arFilmK,			///< [in] Single AR film extinction
-									const Scalar arFilmThickness	///< [in] Single AR film thickness, nm
+									const ARN arFilmN,				///< [in] Single AR film real index
+									const ARK arFilmK,				///< [in] Single AR film extinction
+									const ART arFilmThickness		///< [in] Single AR film thickness, nm
 									)
 		{
-			if( arFilmThickness <= 0.0 ) {
+			if( Scalar( arFilmThickness ) <= Scalar( 0 ) ) {
 				return AddDielectricMaterial( name, tau, rIndex, scat, hg,
 					(const Scalar*)0, (const Scalar*)0, (const Scalar*)0, 0u );
 			}
-			const Scalar n[1]  = { arFilmN };
-			const Scalar k[1]  = { arFilmK };
-			const Scalar th[1] = { arFilmThickness };
+			const Scalar n[1]  = { Scalar( arFilmN ) };
+			const Scalar k[1]  = { Scalar( arFilmK ) };
+			const Scalar th[1] = { Scalar( arFilmThickness ) };
 			return AddDielectricMaterial( name, tau, rIndex, scat, hg, n, k, th, 1u );
-		}
-
-		//! Legacy integer-zero disambiguator for the single-film convenience.
-		//! Old `(..., 0, 0, 0)` integer-literal calls are ambiguous between the
-		//! scalar overload and the array form's null-pointer conversion; this
-		//! exact int overload resolves them (thickness 0 -> no coating).
-		bool AddDielectricMaterial(
-									const char* name,				///< [in] Name of the material
-									const char* tau,				///< [in] Transmittance painter
-									const char* rIndex,				///< [in] Index of refraction
-									const char* scat,				///< [in] Scattering function (either Phong or HG)
-									const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
-									const int arFilmN,				///< [in] Single AR film real index
-									const int arFilmK,				///< [in] Single AR film extinction
-									const int arFilmThickness		///< [in] Single AR film thickness, nm
-									)
-		{
-			return AddDielectricMaterial( name, tau, rIndex, scat, hg,
-				Scalar( arFilmN ), Scalar( arFilmK ), Scalar( arFilmThickness ) );
 		}
 
 		//! Adds a SubSurface Scattering material

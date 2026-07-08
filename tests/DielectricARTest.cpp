@@ -180,60 +180,51 @@ int main()
 	}
 	Check( obliqueBelow, "AR < bare at moderate oblique angles (mu=1.0..0.6)", 0, 0 );
 
-	// --- Revert-proof: the legacy single-film scalar AR construction overloads
-	// must survive the N-layer (array) evolution.  RISE_API.h and IJob are the
-	// external construction boundary; resolving the overload set to the exact
-	// 3-scalar single-film signature fails to COMPILE if the overload is dropped.
-	{
-		bool (*legacyAPI)( IMaterial**, const IScalarPainter&, const IScalarPainter&,
-		                   const IScalarPainter&, const bool, const Scalar, const Scalar, const Scalar )
-			= &RISE_API_CreateDielectricMaterial;
-		Check( legacyAPI != 0, "legacy single-film scalar RISE_API_CreateDielectricMaterial overload exists", 0, 0 );
-
-		bool (IJob::*legacyJob)( const char*, const char*, const char*, const char*, const bool,
-		                         const Scalar, const Scalar, const Scalar )
-			= &IJob::AddDielectricMaterial;
-		Check( legacyJob != 0, "legacy single-film scalar IJob::AddDielectricMaterial overload exists", 0, 0 );
-	}
-
-	// The scalar overload must preserve NO-COATING semantics: a thickness <= 0
-	// means bare Fresnel (nLayers=0), matching the pre-N-layer scalar form and the
-	// parser's `if(ar_thick>0)` legacy handling -- it must NOT build a 1-layer
-	// zero-thickness/zero-index film (the ctor documents nLayers==0 as the
-	// bit-identical bare-Fresnel contract).  We verify both branches of the guard
-	// construct a valid material; a *behavioural* discrimination isn't feasible
-	// here (DielectricSPF::ScatterNM is stochastic and it does not override the
-	// deterministic EvaluateKrayNM), so correctness rests on the guard matching
-	// those two proven references + the full-suite regression gate.
+	// --- Revert-proof: the legacy single-film AR convenience (RISE_API + IJob)
+	// must accept EVERY arithmetic spelling of the three film scalars -- all-double,
+	// all-int (0,0,0), AND MIXED (e.g. an integer extinction, (1.38, 0, 99.6)) --
+	// unambiguously.  A fixed Scalar + int overload pair left mixed spellings with
+	// no best match; the SFINAE arithmetic template fixes that.  Each call below is
+	// a COMPILE-TIME proof: if the template is removed or mis-constrained, the call
+	// is ambiguous / ill-formed and this test fails to BUILD.  NO-COATING: a
+	// thickness <= 0 forwards nLayers=0 (bare Fresnel), matching the parser's
+	// if(ar_thick>0) legacy handling and the ctor's nLayers==0 contract.  (A
+	// *behavioural* no-coating check isn't feasible: DielectricSPF::ScatterNM is
+	// stochastic and it doesn't override the deterministic EvaluateKrayNM, so no
+	// deterministic reflectance readout exists through the constructed material.)
 	{
 		IScalarPainter *tauP = nullptr, *iorP = nullptr, *scatP = nullptr;
 		RISE_API_CreateUniformScalarPainter( &tauP,  1.0 );
 		RISE_API_CreateUniformScalarPainter( &iorP,  kSapph );
 		RISE_API_CreateUniformScalarPainter( &scatP, 100000.0 );
 
-		// (a) thickness <= 0 -> no-coating branch builds a valid material.
-		IMaterial* mNo = nullptr;
-		const bool okNo = RISE_API_CreateDielectricMaterial( &mNo, *tauP, *iorP, *scatP, false, 0.0, 0.0, 0.0 );
-		Check( okNo && mNo != nullptr, "scalar AR (0,0,0) -> no-coating branch builds a valid material", 0, 0 );
-		if( mNo ) mNo->release();
-
-		// (b) thickness > 0 -> single-layer AR branch builds a valid material.
-		IMaterial* mAr = nullptr;
-		const bool okAr = RISE_API_CreateDielectricMaterial( &mAr, *tauP, *iorP, *scatP, false, kMgF2, 0.0, kArD );
-		Check( okAr && mAr != nullptr, "scalar AR (MgF2,0,lambda/4) -> single-layer branch builds a valid material", 0, 0 );
-		if( mAr ) mAr->release();
-
-		// (c) Integer-zero (0,0,0) resolves unambiguously -- removing the int
-		// overload makes this call ambiguous (int->Scalar vs int->null Scalar*)
-		// and this test FAILS TO COMPILE.  Thickness 0 => no coating.
-		IMaterial* mInt0 = nullptr;
-		const bool okInt = RISE_API_CreateDielectricMaterial( &mInt0, *tauP, *iorP, *scatP, false, 0, 0, 0 );
-		Check( okInt && mInt0 != nullptr, "integer-zero (0,0,0) AR call is unambiguous + builds no-coating", 0, 0 );
-		if( mInt0 ) mInt0->release();
-
+		IMaterial *mAllD=nullptr, *mNoD=nullptr, *mAllI=nullptr, *mMixK=nullptr, *mMixT=nullptr;
+		const bool a = RISE_API_CreateDielectricMaterial( &mAllD, *tauP,*iorP,*scatP, false, kMgF2, 0.0, kArD );   // all-double coating
+		const bool b = RISE_API_CreateDielectricMaterial( &mNoD,  *tauP,*iorP,*scatP, false, 0.0, 0.0, 0.0 );      // all-double no-coating
+		const bool c = RISE_API_CreateDielectricMaterial( &mAllI, *tauP,*iorP,*scatP, false, 0, 0, 0 );           // all-int (was ambiguous vs array)
+		const bool d = RISE_API_CreateDielectricMaterial( &mMixK, *tauP,*iorP,*scatP, false, kMgF2, 0, kArD );    // MIXED integer extinction
+		const bool e = RISE_API_CreateDielectricMaterial( &mMixT, *tauP,*iorP,*scatP, false, 0, 0.0, 0 );         // MIXED no-coating
+		Check( a && mAllD, "AR all-double coating (MgF2,0.0,lambda/4) builds", 0, 0 );
+		Check( b && mNoD,  "AR all-double no-coating (0.0,0.0,0.0) builds", 0, 0 );
+		Check( c && mAllI, "AR all-int (0,0,0) builds unambiguously", 0, 0 );
+		Check( d && mMixK, "AR MIXED integer extinction (MgF2,0,lambda/4) builds unambiguously", 0, 0 );
+		Check( e && mMixT, "AR MIXED (0,0.0,0) no-coating builds unambiguously", 0, 0 );
+		if( mAllD ) mAllD->release();
+		if( mNoD )  mNoD->release();
+		if( mAllI ) mAllI->release();
+		if( mMixK ) mMixK->release();
+		if( mMixT ) mMixT->release();
 		if( tauP )  tauP->release();
 		if( iorP )  iorP->release();
 		if( scatP ) scatP->release();
+
+		// IJob mirrors it: taking the member-template's address at a MIXED
+		// (Scalar,int,Scalar) signature is a compile-time proof (no Job instance
+		// needed) that IJob's convenience handles mixed spellings too.
+		bool (IJob::*jobMixed)( const char*, const char*, const char*, const char*, const bool,
+		                        const Scalar, const int, const Scalar )
+			= &IJob::AddDielectricMaterial;
+		Check( jobMixed != 0, "IJob::AddDielectricMaterial handles MIXED (Scalar,int,Scalar)", 0, 0 );
 	}
 
 	// ---------------------------------------------------------------
