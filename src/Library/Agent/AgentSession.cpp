@@ -1967,7 +1967,8 @@ namespace RISE
 
 			std::vector<std::array<unsigned char, 3> > BuildObjectMapPaletteBytes(
 				std::size_t count, const std::vector<std::array<unsigned char, 3> >& reserved,
-				unsigned int* outMinDistanceUsed = nullptr )
+				unsigned int* outMinDistanceUsed = nullptr,
+				unsigned int goldenTries = 4096 /* test seam: 0 forces the exhaustive branch */ )
 			{
 				// 24 hand-picked, mutually well-separated triples (Trubetskoy-
 				// style distinct-colour set), excluding (0,0,0) background and
@@ -1992,6 +1993,19 @@ namespace RISE
 					     | ( static_cast<std::uint32_t>( c[1] ) <<  8 )
 					     |   static_cast<std::uint32_t>( c[2] );
 				};
+
+				// The RESERVED colours (background, UNKNOWN) are interned up
+				// front so NO acceptance path can ever hand an object the
+				// literal background/unknown bytes.  This matters ONLY for the
+				// exhaustive last-resort scan below, which deliberately skips
+				// farEnough (the golden ladder's reserved check): that scan
+				// starts at rgb=0 == the reserved background, which round-trips
+				// and was never in the set -- pre-fix, the FIRST id to reach
+				// the exhaustive path was deterministically painted as
+				// background (closing-review P1).
+				for( std::size_t r = 0; r < reserved.size(); ++r ) {
+					takenKeys.insert( keyOf( reserved[r] ) );
+				}
 
 				std::vector<std::array<unsigned char, 3> > out;
 				out.reserve( count );
@@ -2025,7 +2039,7 @@ namespace RISE
 						c = kBase[i];
 						return true;
 					}
-					for( unsigned int tries = 0; tries < 4096; ++tries ) {
+					for( unsigned int tries = 0; tries < goldenTries; ++tries ) {
 						const double h = std::fmod( 0.11 + static_cast<double>( i + tries ) * kGolden, 1.0 );
 						const double s = sats[ ( i + tries ) % 2 ];
 						const double v = vals[ ( i + tries ) % 3 ];
@@ -2170,7 +2184,8 @@ namespace RISE
 		void AgentSession::ForTest_BuildObjectMapPaletteBytes(
 			std::size_t count,
 			std::vector<std::array<unsigned char, 3> >& outBytes,
-			unsigned int& outMinDistanceUsed )
+			unsigned int& outMinDistanceUsed,
+			unsigned int forTestGoldenTries )
 		{
 			// Same reserved set the production BuildObjectMapPalette uses
 			// (background + UNKNOWN) so the test measures the identical
@@ -2181,7 +2196,8 @@ namespace RISE
 			reserved.push_back( background );
 			reserved.push_back( unknown );
 			outMinDistanceUsed = 24;
-			outBytes = BuildObjectMapPaletteBytes( count, reserved, &outMinDistanceUsed );
+			outBytes = BuildObjectMapPaletteBytes( count, reserved, &outMinDistanceUsed,
+			                                       forTestGoldenTries );
 		}
 
 		AgentRenderResult AgentSession::Render( int samplesOverride )

@@ -854,6 +854,47 @@ static void RunPaletteExhaustionUnitTest()
 }
 
 //----------------------------------------------------------------------
+// Closing-review P1: the EXHAUSTIVE last-resort scan (the branch below
+// every golden-walk relaxation) starts at rgb=0 -- which IS the reserved
+// background byte (0,0,0), round-trippable and (pre-fix) never interned
+// in takenKeys.  The first id to reach that branch was therefore painted
+// as LITERAL BACKGROUND, indistinguishable from "no object" in the PNG.
+// The 2000-entry test above never reaches the exhaustive branch (the
+// golden walk at min-L1 1 places everything), so this test STARVES the
+// walk via the seam's forTestGoldenTries=0: ids past the 24-entry base
+// list then take the exhaustive scan directly.
+//----------------------------------------------------------------------
+static void RunExhaustiveBranchReservedTest()
+{
+	std::printf( "=== AgentObjectMapTest: exhaustive-branch reserved-colour exclusion (closing P1) ===\n" );
+	const std::size_t N = 30;   // 24 base entries + 6 forced-exhaustive ids
+	std::vector<std::array<unsigned char, 3> > bytes;
+	unsigned int minDist = 24;
+	AgentSession::ForTest_BuildObjectMapPaletteBytes( N, bytes, minDist, /*forTestGoldenTries*/0 );
+	Check( bytes.size() == N, "generator returns exactly N=30 triples with a starved golden walk" );
+
+	// The reserved set the production path uses.
+	const std::array<unsigned char, 3> background = { { 0, 0, 0 } };
+	const std::array<unsigned char, 3> unknown    = { { 255, 0, 255 } };
+
+	bool noReserved = true;
+	bool allUnique  = true;
+	std::set<std::uint32_t> keys;
+	for( std::size_t i = 0; i < bytes.size(); ++i ) {
+		if( bytes[i] == background || bytes[i] == unknown ) { noReserved = false; }
+		const std::uint32_t k = ( (std::uint32_t)bytes[i][0] << 16 )
+		                      | ( (std::uint32_t)bytes[i][1] <<  8 )
+		                      |   (std::uint32_t)bytes[i][2];
+		if( !keys.insert( k ).second ) { allUnique = false; }
+	}
+	Check( noReserved,
+	       "MONEY ASSERTION (closing P1): NO palette entry equals the reserved background (0,0,0) or UNKNOWN (255,0,255) -- "
+	       "the exhaustive scan skips interned reserved bytes (pre-fix, the first exhaustive id painted as background)" );
+	Check( allUnique, "the forced-exhaustive entries remain byte-unique" );
+	Check( minDist == 1, "the exhaustive branch reports the collapsed min-L1 of 1" );
+}
+
+//----------------------------------------------------------------------
 // P3-a: an ASYNC objectmap render through the coordinator produces the SAME
 // result fields (INCLUDING the legend) as the equivalent SYNC render.
 //----------------------------------------------------------------------
@@ -920,6 +961,7 @@ int main()
 	RunUnknownColorRedProve();
 	RunEmissiveVisibilityTest();
 	RunPaletteExhaustionUnitTest();
+	RunExhaustiveBranchReservedTest();
 	RunAsyncObjectMapTest();
 
 	std::printf( "\nAgentObjectMapTest: %d passed, %d failed\n", g_pass, g_fail );

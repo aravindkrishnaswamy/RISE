@@ -1250,10 +1250,17 @@ namespace RISE
 			//! degraded).  Static (references no member state) so a unit test
 			//! can request a large count and assert byte-uniqueness + roundtrip
 			//! + degrade-flag WITHOUT rendering a 2000-object scene.
+			//! `forTestGoldenTries` (default = the production 4096) starves
+			//! the golden walk when 0, so every id past the base list takes
+			//! the EXHAUSTIVE last-resort scan -- the branch the closing-
+			//! review P1 lived in (the scan starts at rgb=0, which IS the
+			//! reserved background byte; the reserved set must be interned
+			//! in takenKeys up front or that id paints as background).
 			static void ForTest_BuildObjectMapPaletteBytes(
 				std::size_t count,
 				std::vector<std::array<unsigned char, 3> >& outBytes,
-				unsigned int& outMinDistanceUsed );
+				unsigned int& outMinDistanceUsed,
+				unsigned int forTestGoldenTries = 4096 );
 
 		private:
 			AgentSession( IJobPriv* job, bool owns, AgentAuthority authority );
