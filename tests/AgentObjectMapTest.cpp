@@ -60,6 +60,7 @@
 #include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"
 #include "../src/Library/Rendering/InteractivePelRasterizer.h"
+#include "../src/Library/SceneEditor/SceneEditController.h"   // P3-a: async+objectmap through the coordinator harness
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/Color/Color.h"
@@ -67,13 +68,16 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace RISE;
@@ -142,6 +146,26 @@ static const char* const kSceneAdjacent =
 	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
 	"standard_object\n{\n\tname sph_front\n\tgeometry geo\n\tmaterial mat\n\tposition -0.35 0 0.6\n}\n\n"
 	"standard_object\n{\n\tname sph_back\n\tgeometry geo\n\tmaterial mat\n\tposition 0.35 0 0\n}\n";
+
+// A DIRECTLY-VISIBLE EMISSIVE object (a glowing sphere as an area light --
+// the common RISE pattern) at screen center, plus one non-emissive sphere off
+// to the side.  Sorted names: lamp (id 0, center, emissive), side (id 1).
+// Exercises the P1 fix: the objectmap caster must SEE luminaires (an emitter
+// is a real world-visible, selectable object) while the draft/material-preview
+// caster must STILL hide them (studio-preview semantics unchanged).
+static const char* const kSceneEmissive =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"uniformcolor_painter\n{\n\tname emit\n\tcolor 1 1 1\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname lampmat\n\texitance emit\n\tmaterial mat\n\tscale 1.0\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+	"standard_object\n{\n\tname lamp\n\tgeometry geo\n\tmaterial lampmat\n\tposition 0 0 0\n}\n\n"
+	"standard_object\n{\n\tname side\n\tgeometry geo\n\tmaterial mat\n\tposition -1.7 0 0\n}\n";
 
 // A single CSG union of two spheres -> a single composite root object.
 static const char* const kSceneCsg =
@@ -716,6 +740,174 @@ static void RunUnknownColorRedProve()
 	pJob->release();
 }
 
+//----------------------------------------------------------------------
+// P1: a directly-visible EMISSIVE object segments into the objectmap
+// (the objectmap caster SEES luminaires), while a DRAFT render of the same
+// scene STILL hides it (studio-preview semantics unchanged).
+//----------------------------------------------------------------------
+static void RunEmissiveVisibilityTest()
+{
+	std::printf( "=== AgentObjectMapTest: emissive object visibility (P1) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_emit.RISEscene", kSceneEmissive );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "emissive scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "emissive session" ); return; }
+
+	// --- objectmap: the emissive `lamp` IS a legend entry with pixelCount>0,
+	// and the center pixel byte-matches its legend colour. ---
+	AgentRenderParams p;
+	p.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult r = session->Render( p );
+	Check( r.ok && r.renderMode == "objectmap", "objectmap render of the emissive scene succeeds" );
+	Check( r.legend.size() == 2, "the emissive scene has exactly two world-visible objects (lamp, side)" );
+
+	const LegendEntry* lamp = FindLegend( r, "lamp" );
+	Check( lamp != nullptr, "the emissive object `lamp` appears in the legend (NOT dropped as a luminaire)" );
+	if( lamp ) {
+		Check( lamp->pixelCount > 0,
+		       "MONEY ASSERTION (P1): the directly-visible emissive object has pixelCount > 0 (it segments into the map, not background)" );
+	}
+
+	Decoded dec;
+	Check( DecodePng( r.png, dec ), "emissive objectmap PNG decodes" );
+	if( dec.w == 64 && dec.h == 64 && lamp ) {
+		unsigned char cb[3];
+		HexToBytes( lamp->colorHex, cb );
+		const Px& center = dec.at( 32, 32 );
+		Check( center[0] == cb[0] && center[1] == cb[1] && center[2] == cb[2],
+		       "MONEY ASSERTION (P1): the center pixel (over the emissive lamp) byte-matches lamp's legend colorHex" );
+		Check( center[3] != 0, "the emissive lamp's center pixel is opaque (a real hit, not background)" );
+	}
+
+	// --- draft: the SAME luminaire is STILL hidden (studio-preview default
+	// showLuminaires=false is unchanged).  Its center pixel is background
+	// (transparent), while the non-emissive `side` sphere still renders. ---
+	AgentRenderParams pd;
+	pd.quality = AgentRenderQuality::Draft;
+	AgentRenderResult rd = session->Render( pd );
+	Check( rd.ok && rd.renderMode == "draft", "draft render of the emissive scene succeeds" );
+
+	Decoded draftDec;
+	Check( DecodePng( rd.png, draftDec ), "draft PNG decodes" );
+	if( draftDec.w == 64 && draftDec.h == 64 ) {
+		const Px& center = draftDec.at( 32, 32 );
+		Check( center[3] == 0,
+		       "MONEY ASSERTION (P1 pin): a DRAFT render STILL hides the luminaire -- its center pixel is background/transparent (preview semantics unchanged)" );
+		// Sanity: the draft render is not simply all-background -- the
+		// non-emissive `side` sphere renders (some pixel is opaque).
+		std::uint64_t opaque = 0;
+		for( std::size_t i = 0; i < draftDec.px.size(); ++i )
+			if( draftDec.px[i][3] != 0 ) ++opaque;
+		Check( opaque > 0, "the draft render is not all-background: the non-emissive `side` sphere renders" );
+	}
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// P2-1: the objectmap identity-palette generator, at a large object count,
+// degrades ONLY the min-L1 separation while keeping BYTE-UNIQUENESS and
+// ROUNDTRIP unconditionally.  Unit-tests BuildObjectMapPaletteBytes directly
+// (via the AgentSession::ForTest_ seam) so no 2000-object scene is needed.
+//----------------------------------------------------------------------
+static void RunPaletteExhaustionUnitTest()
+{
+	std::printf( "=== AgentObjectMapTest: palette exhaustion invariants (P2-1) ===\n" );
+	const std::size_t N = 2000;
+	std::vector<std::array<unsigned char, 3> > bytes;
+	unsigned int minDist = 24;
+	AgentSession::ForTest_BuildObjectMapPaletteBytes( N, bytes, minDist );
+	Check( bytes.size() == N, "generator returns exactly N=2000 triples" );
+
+	// (a) BYTE-UNIQUENESS: no two ids share a colour.
+	std::set<std::uint32_t> keys;
+	bool allUnique = true;
+	for( std::size_t i = 0; i < bytes.size(); ++i ) {
+		const std::uint32_t k = ( (std::uint32_t)bytes[i][0] << 16 )
+		                      | ( (std::uint32_t)bytes[i][1] <<  8 )
+		                      |   (std::uint32_t)bytes[i][2];
+		if( !keys.insert( k ).second ) { allUnique = false; break; }
+	}
+	Check( allUnique, "MONEY ASSERTION (P2-1): all 2000 palette colours are BYTE-UNIQUE (no duplicates even under exhaustion)" );
+
+	// (b) ROUNDTRIP: every colour's half-LSB-centered linear pre-image
+	// re-encodes (truncating sRGB*255) back to the exact byte.
+	bool allRoundtrip = true;
+	for( std::size_t i = 0; i < bytes.size() && allRoundtrip; ++i ) {
+		for( int ch = 0; ch < 3; ++ch ) {
+			const unsigned char b = bytes[i][ch];
+			const Scalar L = ColorUtils::SRGBTransferFunctionInverse( ( (Scalar)b + 0.5 ) / 255.0 );
+			Scalar enc = ColorUtils::SRGBTransferFunction( L < 0 ? 0 : ( L > 1 ? 1 : L ) );
+			if( enc > 1.0 ) enc = 1.0;
+			const unsigned char back = (unsigned char)( enc * 255.0 );
+			if( back != b ) { allRoundtrip = false; break; }
+		}
+	}
+	Check( allRoundtrip, "every one of the 2000 palette colours ROUND-TRIPS through the sRGB encode (quantizer contract holds under exhaustion)" );
+
+	// (c) the degrade flag TRIPS: at 2000 objects the default 24 separation is
+	// exhausted, so the generator relaxed below it (but stayed positive).
+	Check( minDist < 24,
+	       "MONEY ASSERTION (P2-1): at 2000 objects the min-L1 separation DEGRADED below the default 24 (the honest-note trigger)" );
+	Check( minDist >= 1, "the degraded separation is still positive (>= 1)" );
+}
+
+//----------------------------------------------------------------------
+// P3-a: an ASYNC objectmap render through the coordinator produces the SAME
+// result fields (INCLUDING the legend) as the equivalent SYNC render.
+//----------------------------------------------------------------------
+static void RunAsyncObjectMapTest()
+{
+	std::printf( "=== AgentObjectMapTest: async + objectmap through the coordinator (P3-a) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_async.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "async-objmap scene loads" ); return; }
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { controller.Stop(); pJob->release(); Check( false, "async-objmap session" ); return; }
+	session->AttachController( &controller );
+
+	// SYNC reference objectmap render.
+	AgentRenderParams p;
+	p.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult syncR = session->Render( p );
+	Check( syncR.ok && syncR.renderMode == "objectmap", "SYNC objectmap render succeeds (reference)" );
+
+	// ASYNC objectmap render + wait, then fetch the cached result.
+	const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( p );
+	Check( ar.accepted && ar.renderJobId != 0, "async objectmap submission is accepted with a nonzero id" );
+	const bool completed = session->RenderWait( ar.renderJobId, 10000 );
+	Check( completed, "the async objectmap render completes within the timeout" );
+
+	const AgentSession::AgentLastAsyncRenderResult last = session->LastAsyncRenderResult( ar.renderJobId );
+	Check( last.found, "the async objectmap render's cached result is retrievable" );
+
+	if( last.found ) {
+		const AgentRenderResult& asyncR = last.result;
+		// Same result-field set INCLUDING the legend: an async objectmap must
+		// not silently drop the segmentation the sync path produces.
+		Check( asyncR.ok == syncR.ok, "async objectmap ok == sync ok" );
+		Check( asyncR.renderMode == "objectmap", "async result renderMode is \"objectmap\" (legend-bearing mode)" );
+		Check( asyncR.width == syncR.width && asyncR.height == syncR.height, "async objectmap dims == sync dims" );
+		Check( asyncR.legend.size() == syncR.legend.size() && asyncR.legend.size() == 3,
+		       "MONEY ASSERTION (P3-a): the async objectmap legend has the SAME entry count as the sync render (INCLUDING legend, not dropped)" );
+		bool legendSame = ( asyncR.legend.size() == syncR.legend.size() );
+		for( std::size_t i = 0; legendSame && i < syncR.legend.size(); ++i )
+			legendSame = ( asyncR.legend[i].name == syncR.legend[i].name
+			            && asyncR.legend[i].colorHex == syncR.legend[i].colorHex
+			            && asyncR.legend[i].pixelCount == syncR.legend[i].pixelCount );
+		Check( legendSame, "the async objectmap legend is entry-for-entry identical to the sync legend (name+colorHex+pixelCount)" );
+	}
+
+	session->AttachController( nullptr );
+	controller.Stop();
+	pJob->release();
+}
+
 int main()
 {
 	RunCoreTests();
@@ -726,6 +918,9 @@ int main()
 	RunDownscaleGuardTest();
 	RunExactnessRedProve();
 	RunUnknownColorRedProve();
+	RunEmissiveVisibilityTest();
+	RunPaletteExhaustionUnitTest();
+	RunAsyncObjectMapTest();
 
 	std::printf( "\nAgentObjectMapTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

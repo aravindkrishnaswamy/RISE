@@ -97,6 +97,14 @@ namespace RISE
 			//! `const ObjectMapPalette*` and increments these from the
 			//! parallel block workers.
 			mutable std::vector<std::atomic<std::uint32_t> > counts;
+
+			//! The smallest min-L1 colour separation the palette generator
+			//! had to relax to (== the default 24 when it never degraded).
+			//! Below the default it means the legend colours are still
+			//! byte-UNIQUE but visually closer than usual -- the render
+			//! result appends an honest "match by exact byte, not by eye"
+			//! note (Toolkit slice 3a fix-round P2-1).
+			unsigned int minColorDistance = 24;
 		};
 
 		//! Toolkit slice 3a (objectmap): construct an EPHEMERAL preview

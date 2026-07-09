@@ -76,6 +76,7 @@
 #include <stdexcept>  // Fix-round (offscreen isolation): ForTest_ThrowBeforeRasterize's std::runtime_error
 #include <fstream>  // Facet 5 slice S1: read-only skill-file reads
 #include <iterator> // Facet 5 slice S1: istreambuf_iterator for whole-file reads
+#include <unordered_set>  // Toolkit slice 3a fix-round P2-1: objectmap palette byte-uniqueness set
 
 // Facet 5 slice S1: directory enumeration for the skills index (the one
 // place the Library scans a directory; read-only).
@@ -1948,8 +1949,25 @@ namespace RISE
 			//! `reserved` colour (background + UNKNOWN).  A fixed high-contrast
 			//! base list covers the common small-count case; a deterministic
 			//! golden-ratio hue walk (alternating value/saturation) extends it.
+			//!
+			//! TWO NON-NEGOTIABLE INVARIANTS, held for EVERY emitted colour even
+			//! when the palette is exhausted at large counts:
+			//!   * BYTE-UNIQUENESS -- no two ids ever share a triple (legend
+			//!     matching is by exact byte, so a dup would make two objects
+			//!     indistinguishable in the map).  Achievable to ~16.7M colours.
+			//!   * ROUNDTRIP -- the half-LSB-centered linear pre-image re-encodes
+			//!     to the exact byte (the quantizer contract).
+			//! Only the MIN-L1 SEPARATION degrades under pressure: the walk
+			//! retries the whole palette at 24 -> 12 -> 6 -> 1, keeping the two
+			//! invariants above at every relaxation.  `outMinDistanceUsed` (when
+			//! non-null) reports the smallest separation that was actually
+			//! needed (== kDefaultMinL1 when the palette never degraded), so the
+			//! caller can append an honest "closer than default" note.
+			const unsigned int kDefaultMinL1 = 24;
+
 			std::vector<std::array<unsigned char, 3> > BuildObjectMapPaletteBytes(
-				std::size_t count, const std::vector<std::array<unsigned char, 3> >& reserved )
+				std::size_t count, const std::vector<std::array<unsigned char, 3> >& reserved,
+				unsigned int* outMinDistanceUsed = nullptr )
 			{
 				// 24 hand-picked, mutually well-separated triples (Trubetskoy-
 				// style distinct-colour set), excluding (0,0,0) background and
@@ -1963,16 +1981,26 @@ namespace RISE
 					{ { 255, 255, 255 } }, { { 100, 100, 255 } }, { { 255, 100, 100 } }, { { 100, 255, 100 } }
 				};
 				const std::size_t  kBaseCount = sizeof( kBase ) / sizeof( kBase[0] );
-				const unsigned int kMinL1     = 24;
+
+				// A packed-byte set of every triple already accepted, so
+				// byte-uniqueness is enforced in O(1) regardless of the L1
+				// relaxation level (the L1 walk can, at min-L1==1, still hand
+				// back a same-byte candidate -- the set is what forbids it).
+				std::unordered_set<std::uint32_t> takenKeys;
+				auto keyOf = []( const std::array<unsigned char, 3>& c ) -> std::uint32_t {
+					return ( static_cast<std::uint32_t>( c[0] ) << 16 )
+					     | ( static_cast<std::uint32_t>( c[1] ) <<  8 )
+					     |   static_cast<std::uint32_t>( c[2] );
+				};
 
 				std::vector<std::array<unsigned char, 3> > out;
 				out.reserve( count );
 
-				auto farEnough = [&]( const std::array<unsigned char, 3>& c ) -> bool {
+				auto farEnough = [&]( const std::array<unsigned char, 3>& c, unsigned int minL1 ) -> bool {
 					for( std::size_t r = 0; r < reserved.size(); ++r )
-						if( ObjectMapL1( c, reserved[r] ) < kMinL1 ) return false;
+						if( ObjectMapL1( c, reserved[r] ) < minL1 ) return false;
 					for( std::size_t a = 0; a < out.size(); ++a )
-						if( ObjectMapL1( c, out[a] ) < kMinL1 ) return false;
+						if( ObjectMapL1( c, out[a] ) < minL1 ) return false;
 					return true;
 				};
 
@@ -1980,41 +2008,83 @@ namespace RISE
 				const double sats[2]  = { 0.90, 0.62 };
 				const double vals[3]  = { 0.98, 0.72, 0.86 };
 
-				for( std::size_t i = 0; i < count; ++i ) {
-					std::array<unsigned char, 3> c = { { 0, 0, 0 } };
-					bool placed = false;
-					// Accept a candidate only if it is both well-separated AND
-					// round-trippable (see ObjectMapByteRoundtrips) -- the latter
-					// keeps the quantizer contract true by construction.  Base
-					// entries carrying a 255 component (e.g. {255,225,25}) fall
-					// through to the golden-hue walk, whose values never exceed
-					// v=0.98 -> 250 and so always round-trip.
-					if( i < kBaseCount && farEnough( kBase[i] ) && ObjectMapBytesRoundtrip( kBase[i] ) ) {
+				// ≤~200-object FAST PATH (allocation-identical to the pre-fix
+				// code at the target scale): try base list, then the 4096-try
+				// golden walk, at the DEFAULT separation.  A placed colour is
+				// interned in `takenKeys`.  If EVERY colour places here (the
+				// common case), we never touch the degrade machinery.
+				unsigned int minDistanceUsed = kDefaultMinL1;
+
+				auto tryPlaceAt = [&]( std::size_t i, unsigned int minL1,
+				                       std::array<unsigned char, 3>& c ) -> bool {
+					// Base entry (only at the default separation -- once we are
+					// relaxing, the base list is already exhausted by definition).
+					if( minL1 == kDefaultMinL1 && i < kBaseCount
+					    && takenKeys.find( keyOf( kBase[i] ) ) == takenKeys.end()
+					    && farEnough( kBase[i], minL1 ) && ObjectMapBytesRoundtrip( kBase[i] ) ) {
 						c = kBase[i];
-						placed = true;
+						return true;
 					}
-					for( unsigned int tries = 0; tries < 4096 && !placed; ++tries ) {
+					for( unsigned int tries = 0; tries < 4096; ++tries ) {
 						const double h = std::fmod( 0.11 + static_cast<double>( i + tries ) * kGolden, 1.0 );
 						const double s = sats[ ( i + tries ) % 2 ];
 						const double v = vals[ ( i + tries ) % 3 ];
 						const std::array<unsigned char, 3> cand = ObjectMapHsvToBytes( h, s, v );
-						if( farEnough( cand ) && ObjectMapBytesRoundtrip( cand ) ) {
+						if( takenKeys.find( keyOf( cand ) ) == takenKeys.end()
+						    && farEnough( cand, minL1 ) && ObjectMapBytesRoundtrip( cand ) ) {
 							c = cand;
-							placed = true;
+							return true;
+						}
+					}
+					return false;
+				};
+
+				for( std::size_t i = 0; i < count; ++i ) {
+					std::array<unsigned char, 3> c = { { 0, 0, 0 } };
+					bool placed = tryPlaceAt( i, kDefaultMinL1, c );
+
+					// DEGRADE: relax ONLY the separation, keeping uniqueness +
+					// roundtrip.  We retry the golden walk for THIS id at each
+					// smaller threshold; if even min-L1==1 can't place, fall to
+					// an exhaustive scan of the whole cube for the first unused,
+					// round-trippable byte (guaranteed to exist below ~16.7M ids).
+					if( !placed ) {
+						static const unsigned int kRelaxSteps[] = { 12, 6, 1 };
+						for( std::size_t s = 0; s < sizeof( kRelaxSteps ) / sizeof( kRelaxSteps[0] ) && !placed; ++s ) {
+							if( tryPlaceAt( i, kRelaxSteps[s], c ) ) {
+								placed = true;
+								if( kRelaxSteps[s] < minDistanceUsed ) minDistanceUsed = kRelaxSteps[s];
+							}
 						}
 					}
 					if( !placed ) {
-						// Exhausted the search (only reachable at an
-						// unreasonable object count that saturates the cube at
-						// L1>=kMinL1).  Honest best-effort: emit the plain
-						// golden candidate.  The legend colorHex still reports
-						// the ACTUAL emitted bytes, so decoding stays exact
-						// even if two objects happen to share a colour.
-						const double h = std::fmod( 0.11 + static_cast<double>( i ) * kGolden, 1.0 );
-						c = ObjectMapHsvToBytes( h, 0.90, 0.90 );
+						// Exhaustive last resort: the first byte triple not yet
+						// taken that round-trips.  Guarantees uniqueness even
+						// past the point where ANY positive separation is
+						// achievable (this is where `takenKeys` is the SOLE
+						// uniqueness authority -- the golden ladder above relies
+						// on farEnough for it; this scan does not).  minDistanceUsed
+						// collapses to 1 (colours are byte-unique but may be
+						// visually adjacent).
+						for( unsigned int rgb = 0; rgb < 0x1000000u && !placed; ++rgb ) {
+							std::array<unsigned char, 3> cand = { {
+								static_cast<unsigned char>( ( rgb >> 16 ) & 0xFF ),
+								static_cast<unsigned char>( ( rgb >>  8 ) & 0xFF ),
+								static_cast<unsigned char>(   rgb         & 0xFF ) } };
+							if( takenKeys.find( keyOf( cand ) ) == takenKeys.end()
+							    && ObjectMapBytesRoundtrip( cand ) ) {
+								c = cand;
+								placed = true;
+								minDistanceUsed = 1;
+							}
+						}
 					}
+
+					takenKeys.insert( keyOf( c ) );
 					out.push_back( c );
 				}
+
+				if( outMinDistanceUsed ) *outMinDistanceUsed = minDistanceUsed;
 				return out;
 			}
 
@@ -2046,12 +2116,18 @@ namespace RISE
 				// NOT independently hit, so they must not appear in the legend.
 				// Filtering here keeps the palette, registry, id-space, and
 				// per-id atomic tally all consistent over the visible set only.
+				// P3-b: resolve each object POINTER once here and carry it
+				// forward in `objs` (parallel to `names`), so the registry loop
+				// below reuses it instead of a second GetItem per object.
 				std::vector<std::string> names;
+				std::vector<IObjectPriv*> objs;
 				names.reserve( collector.names.size() );
+				objs.reserve( collector.names.size() );
 				for( std::size_t i = 0; i < collector.names.size(); ++i ) {
 					IObjectPriv* obj = objMgr ? objMgr->GetItem( collector.names[i].c_str() ) : 0;
 					if( obj && static_cast<const IObject*>( obj )->IsWorldVisible() ) {
 						names.push_back( collector.names[i] );
+						objs.push_back( obj );
 					}
 				}
 				const std::size_t count = names.size();
@@ -2062,19 +2138,20 @@ namespace RISE
 				std::vector<std::array<unsigned char, 3> > reserved;
 				reserved.push_back( background );
 				reserved.push_back( unknown );
+				unsigned int minDistanceUsed = 24;
 				const std::vector<std::array<unsigned char, 3> > assigned =
-					BuildObjectMapPaletteBytes( count, reserved );
+					BuildObjectMapPaletteBytes( count, reserved, &minDistanceUsed );
 
 				out.names = names;
 				out.bytes = assigned;
+				out.minColorDistance = minDistanceUsed;
 				out.linearColors.resize( count );
 				out.registry.clear();
 				out.registry.reserve( count );
 				for( std::size_t id = 0; id < count; ++id ) {
 					out.linearColors[id] = ObjectMapLinearFromBytes( assigned[id] );
-					IObjectPriv* obj = objMgr ? objMgr->GetItem( names[id].c_str() ) : 0;
-					if( obj ) {
-						out.registry[ static_cast<const IObject*>( obj ) ] = static_cast<std::uint32_t>( id );
+					if( objs[id] ) {
+						out.registry[ static_cast<const IObject*>( objs[id] ) ] = static_cast<std::uint32_t>( id );
 					}
 				}
 				out.unknownBytes  = unknown;
@@ -2088,6 +2165,23 @@ namespace RISE
 					out.counts[i].store( 0u, std::memory_order_relaxed );
 				}
 			}
+		}
+
+		void AgentSession::ForTest_BuildObjectMapPaletteBytes(
+			std::size_t count,
+			std::vector<std::array<unsigned char, 3> >& outBytes,
+			unsigned int& outMinDistanceUsed )
+		{
+			// Same reserved set the production BuildObjectMapPalette uses
+			// (background + UNKNOWN) so the test measures the identical
+			// generator behaviour.
+			const std::array<unsigned char, 3> background = { { 0, 0, 0 } };
+			const std::array<unsigned char, 3> unknown    = { { 255, 0, 255 } };
+			std::vector<std::array<unsigned char, 3> > reserved;
+			reserved.push_back( background );
+			reserved.push_back( unknown );
+			outMinDistanceUsed = 24;
+			outBytes = BuildObjectMapPaletteBytes( count, reserved, &outMinDistanceUsed );
 		}
 
 		AgentRenderResult AgentSession::Render( int samplesOverride )
@@ -3252,6 +3346,18 @@ namespace RISE
 				}
 				if( params.quality == AgentRenderQuality::Draft && res.ok ) {
 					res.message += " (objectmap ignores quality -- it has a single fidelity)";
+				}
+				// P2-1: at large object counts the palette exhausts its default
+				// separation and degrades ONLY the min-L1 distance (colours stay
+				// byte-UNIQUE and round-trippable).  Tell the agent honestly so
+				// it matches legend entries by exact byte, not by eye.
+				if( res.ok && objectMapPalette.minColorDistance < 24 ) {
+					char note[192];
+					std::snprintf( note, sizeof( note ),
+						" (legend colours are byte-unique but closer than the default separation "
+						"-- %zu objects exhausted the palette; match by exact colorHex byte, not by eye)",
+						objectMapPalette.names.size() );
+					res.message += note;
 				}
 
 				// Assemble the legend from the palette + the atomic tally

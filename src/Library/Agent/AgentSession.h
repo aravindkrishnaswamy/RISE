@@ -30,6 +30,7 @@
 #ifndef RISE_AGENT_AGENTSESSION_
 #define RISE_AGENT_AGENTSESSION_
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -1240,6 +1241,19 @@ namespace RISE
 			//! before the Render() call that will observe it, never
 			//! concurrently.
 			void ForTest_SetThrowBeforeRasterize( bool on ) { mThrowBeforeRasterizeForTest = on; }
+
+			//! Toolkit slice 3a fix-round P2-1 test hook: exercise the objectmap
+			//! identity-palette generator standalone (it is otherwise a file-
+			//! static in AgentSession.cpp).  Fills `outBytes` with `count`
+			//! byte triples and `outMinDistanceUsed` with the smallest L1
+			//! separation the generator had to relax to (== 24 when it never
+			//! degraded).  Static (references no member state) so a unit test
+			//! can request a large count and assert byte-uniqueness + roundtrip
+			//! + degrade-flag WITHOUT rendering a 2000-object scene.
+			static void ForTest_BuildObjectMapPaletteBytes(
+				std::size_t count,
+				std::vector<std::array<unsigned char, 3> >& outBytes,
+				unsigned int& outMinDistanceUsed );
 
 		private:
 			AgentSession( IJobPriv* job, bool owns, AgentAuthority authority );

@@ -417,11 +417,21 @@ class InteractiveMaterialPreviewRayCaster :
 	public RayCaster
 {
 public:
-	InteractiveMaterialPreviewRayCaster( const IShader& shader )
+	//! `showLuminaires` defaults FALSE so the material-preview / draft
+	//! factory behaviour is byte-identical to before (a directly-visible
+	//! emitter is suppressed to background, matching the studio-preview
+	//! look).  The objectmap factory passes TRUE: an emissive object is a
+	//! real, selectable, world-visible object that MUST appear in the
+	//! identity segmentation (otherwise RayCaster forces bHit=false for
+	//! eRayView rays hitting an emitter -- BEFORE the ObjectIdShader runs --
+	//! and the object silently renders as background with a permanent
+	//! pixelCount:0 legend entry).
+	explicit InteractiveMaterialPreviewRayCaster( const IShader& shader,
+	                                              const bool showLuminaires = false )
 	: RayCaster( /*seeRadianceMap*/false,
 				 /*maxR*/1,
 				 shader,
-				 /*showLuminaires*/false )
+				 /*showLuminaires*/showLuminaires )
 	{}
 
 protected:
@@ -587,7 +597,13 @@ bool RISE::Implementation::CreateInteractiveObjectMapPipeline(
 	}
 
 	IShader* pShader = new ObjectIdShader( palette );
-	IRayCaster* pCaster = new InteractiveMaterialPreviewRayCaster( *pShader );
+	// showLuminaires=true: emissive objects are world-visible, selectable
+	// objects that MUST segment into the objectmap.  With the material-
+	// preview default (false) RayCaster forces bHit=false for a primary ray
+	// hitting an emitter BEFORE the ObjectIdShader runs, so the emissive
+	// object would vanish into background and its legend entry would be a
+	// permanent unexplained pixelCount:0.
+	IRayCaster* pCaster = new InteractiveMaterialPreviewRayCaster( *pShader, /*showLuminaires*/true );
 	pShader->release();
 
 	// Default preview config, progressive OFF -- a single exact pass.  We

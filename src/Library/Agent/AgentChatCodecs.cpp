@@ -238,7 +238,7 @@ namespace RISE
 						"\"quality\":{\"type\":\"string\",\"enum\":[\"draft\",\"production\"],\"description\":"
 						"\"Optional, default \\\"production\\\" (today's exact behaviour). \\\"draft\\\" renders through a wholly SEPARATE, cheap studio-preview pipeline (same fixed shader the GUI's live interactive editor uses) that IGNORES the scene's authored materials and lighting -- geometry/composition/camera framing are representative, materials/lighting/exposure/colour are NOT. Samples are capped at 4 under draft. Check the result's `renderMode` field to see which pipeline ran; `integrator` does not change with `quality`.\"},"
 						"\"mode\":{\"type\":\"string\",\"enum\":[\"beauty\",\"objectmap\"],\"description\":"
-						"\"Optional, default \\\"beauty\\\". \\\"objectmap\\\" renders a flat per-object IDENTITY segmentation -- each scene object a distinct high-contrast colour, no lighting/materials -- and adds a `legend` array of {name,colorHex,pixelCount} to the result. Use it to reason about which object is where and how much of the frame each covers. Read the objectmap image at NATIVE size (do NOT pass read_image maxEdge -- downscaling box-blends the identity colours and corrupts colorHex matching). quality/samples are ignored under objectmap (one fidelity). Orthogonal to quality (objectmap = geometry identity, draft = cheap shading); check renderMode==\\\"objectmap\\\" in the result.\"}"
+						"\"Optional, default \\\"beauty\\\". \\\"objectmap\\\" renders a flat per-object IDENTITY segmentation -- each scene object a distinct high-contrast colour, no lighting/materials -- and adds a `legend` array of {name,colorHex,pixelCount} to the result. Use it to reason about which object is where and how much of the frame each covers. Read the objectmap image at NATIVE size (do NOT pass read_image maxEdge -- downscaling box-blends the identity colours and corrupts colorHex matching). quality/samples are ignored under objectmap (one fidelity). Orthogonal to quality (objectmap = geometry identity, draft = cheap shading); check renderMode==\\\"objectmap\\\" in the result. A generator-synthesized legend name (e.g. grid[0,1] from an instance_array) identifies the instance but is NOT a CST chunk -- to EDIT it, target the generator chunk (strip the [i,j] suffix, e.g. grid), not the instance name.\"}"
 					"}}"
 				},
 				{
@@ -250,7 +250,11 @@ namespace RISE
 					"TOKEN ECONOMY: pass maxEdge ~192 for a modeling/placement check -- the "
 					"image is downscaled (no re-render) before being sent to you, so a "
 					"quick look costs far fewer tokens than the full-resolution image. "
-					"Omit maxEdge only for the final, full-detail look once you're done.",
+					"Omit maxEdge only for the final, full-detail look once you're done. "
+					"EXCEPTION -- objectmap: if the last render was mode:\"objectmap\", read at "
+					"NATIVE size (omit maxEdge). Downscaling box-blends the flat identity "
+					"colours and corrupts the exact-byte legend match; the ~192 economy "
+					"pattern applies to beauty/draft renders only.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"maxEdge\":{\"type\":\"number\",\"description\":"
 						"\"Optional long-edge bound in pixels, clamped to [16,1024]. Downscales (box filter, aspect-preserving, never upscales) the cached image before sending -- no re-render. Use ~192 for cheap modeling checks.\"}"

@@ -76,7 +76,13 @@
 //                                            box-downscale blends identity colours
 //                                            and breaks legend matching.  `legend`
 //                                            is present ONLY for an objectmap
-//                                            render.
+//                                            render.  A generator-synthesized legend
+//                                            name (e.g. "grid[0,1]" from an
+//                                            instance_array) identifies the instance
+//                                            in the map but is NOT a CST chunk -- to
+//                                            EDIT it, target the GENERATOR chunk
+//                                            (strip the "[i,j]" suffix: "grid"), not
+//                                            the instance name.
 //                                           (`integrator` is the ACTIVE rasterizer's
 //                                            registered type name = its scene-file
 //                                            chunk keyword, e.g.
@@ -200,7 +206,12 @@
 //                                            preserving, never upscales -- before
 //                                            base64-encoding; no re-render.
 //                                            `width`/`height` report the dims of
-//                                            the returned image.)
+//                                            the returned image.  Toolkit slice 3a:
+//                                            after an objectmap render, read at
+//                                            NATIVE size -- OMIT maxEdge, since a
+//                                            box-downscale blends the flat identity
+//                                            colours and breaks the exact-byte
+//                                            legend match.)
 //      read_viewport {maxEdge?}          -> {available:bool, reason:string,
 //                                            png_base64:string, byteLength:number,
 //                                            width:number, height:number}
