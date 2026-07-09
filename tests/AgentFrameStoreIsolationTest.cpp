@@ -473,6 +473,75 @@ static void RunThrowDuringOverrideTest()
 	std::remove( scenePath.c_str() );
 }
 
+// Round-2 P3 follow-up: the NO-OVERRIDE throw path.  The override case
+// (above) is the one that exposed the P1-A UAF -- because
+// RenderOverrideRestoreGuard's SetFilm reallocates a FrameStore on unwind.
+// The no-override path has no SetFilm restore, so the guard-order bug does
+// not bite the same way; but the FrameStoreIsolationGuard destructor still
+// runs on a throw here (it installed a private store), and this locks in
+// that it restores the display store's identity + leaves it alive without
+// the film-restore machinery in play.
+static void RunThrowNoOverrideTest()
+{
+	std::printf( "=== AgentFrameStoreIsolationTest: no-override throw (guard-only restore) ===\n" );
+
+	const std::string scenePath = WriteTemp(
+		"agent_framestore_isolation_throw_noov.RISEscene", BuildScene( kPtRasterizer ) );
+	Check( !scenePath.empty(), "throw-no-override: scratch scene file written" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "throw-no-override: scene loads via the CST path" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "throw-no-override: AgentSession::WrapJob wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); return; }
+
+	IRasterizer* rast = pJob->GetRasterizer();
+	Implementation::Rasterizer* concreteRast = rast ? dynamic_cast<Implementation::Rasterizer*>( rast ) : nullptr;
+	Check( concreteRast != nullptr, "throw-no-override: active rasterizer is an Implementation::Rasterizer" );
+	if( !concreteRast ) { pJob->release(); return; }
+
+	Implementation::FrameStore* displayStore = concreteRast->GetFrameStore();
+	Check( displayStore != nullptr, "throw-no-override: rasterizer has a canonical FrameStore before any render" );
+	if( !displayStore ) { pJob->release(); return; }
+
+	const IScenePriv* scenePriv = pJob->GetScene();
+	const IFilm* film = scenePriv ? scenePriv->GetFilm() : nullptr;
+	const unsigned int origW = film ? film->GetWidth()  : 0;
+	const unsigned int origH = film ? film->GetHeight() : 0;
+	const uint64_t genBefore = displayStore->Generation();
+
+	// Arm the seam, then run a NO-OVERRIDE render (default params -> the
+	// private-store install is OUR explicit one; no SetFilm realloc).
+	session->ForTest_SetThrowBeforeRasterize( true );
+
+	AgentRenderResult res;
+	bool escaped = false;
+	try { res = session->Render( -1 ); }
+	catch( ... ) { escaped = true; }
+
+	Check( !escaped, "throw-no-override: the forced throw did NOT escape RenderCore_ as a raw C++ exception" );
+	Check( !res.ok, "throw-no-override: render reports ok=false (the seam fired)" );
+	Check( true, "throw-no-override: process did NOT crash (SIGABRT/UAF)" );
+	Check( concreteRast->GetFrameStore() == displayStore,
+		"throw-no-override: rasterizer's FrameStore identity is restored to the captured display store" );
+	Check( displayStore->Generation() == genBefore,
+		"throw-no-override: canonical FrameStore Generation() did NOT advance" );
+	Check( static_cast<unsigned int>( displayStore->Width() )  == origW &&
+	       static_cast<unsigned int>( displayStore->Height() ) == origH,
+		"throw-no-override: the display FrameStore is still ALIVE with its original dims (no UAF)" );
+
+	// Usable after: disarm and confirm a clean follow-up render.
+	session->ForTest_SetThrowBeforeRasterize( false );
+	AgentRenderResult clean = session->Render( -1 );
+	Check( clean.ok, "throw-no-override: a follow-up non-throwing Render() succeeds after the throw+restore" );
+
+	std::printf( "=== no-override throw: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentFrameStoreIsolationTest ===\n" );
@@ -499,6 +568,7 @@ int main()
 	RunIsolationProbe( "mlt", kMltRasterizer );
 
 	RunThrowDuringOverrideTest();
+	RunThrowNoOverrideTest();
 
 	std::printf( "=== AgentFrameStoreIsolationTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
