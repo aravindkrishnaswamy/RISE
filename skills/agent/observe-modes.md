@@ -24,8 +24,11 @@ answers (checking whether an edit landed by re-rendering production).
 1. **`read_viewport`** -- free, no render at all; only works when a live
    GUI controller is attached and has produced at least one frame.
 2. **`query_object_at` / `render {mode:"objectmap"}`** -- about one
-   small identity render (fixed single-fidelity, no samples/quality to
-   tune); use `query_object_at` for a single pixel's answer, the full
+   identity render at the EFFECTIVE dims (the scene's authored dims
+   unless you pass paired `width`/`height` -- do pass small ones, e.g.
+   128x128, or a large authored film makes this step needlessly
+   expensive); fixed single-fidelity, no samples/quality to tune. Use
+   `query_object_at` for a single pixel's answer, the full
    `mode:"objectmap"` render when you need the whole-frame survey (the
    legend for every visible object at once).
 3. **`render {quality:"draft"}`** -- a real render through a cheap
@@ -62,7 +65,13 @@ mention (viewport, objectmap/query).
    when the palette is exhausted the result's `message` says so
    explicitly. Read an objectmap render's PNG at NATIVE size (omit
    `maxEdge` on `read_image`) -- downscaling box-blends the flat ids
-   and breaks the legend match.
+   and breaks the legend match. A pixel that matches NO legend entry
+   is the reserved BACKGROUND: RGB `000000` at alpha 0 (never assigned
+   to an object); the magenta `FF00FF` sentinel plus an `<unmapped>`
+   legend entry mark the should-not-happen unregistered-object case.
+   Pixel coordinates: `(0,0)` is the TOP-LEFT corner and y grows
+   DOWNWARD, for both `query_object_at {x,y}` and the decoded PNG's
+   row order -- they always agree.
 3. **`read_viewport` does not exist on a headless session.**
    `available:false` with `reason:"no_controller"` (no live GUI at
    all) or `"no_frame_yet"` (a viewport exists but hasn't rendered
@@ -73,8 +82,9 @@ mention (viewport, objectmap/query).
    verbatim so you can tell instances apart on screen, but to EDIT
    that instance you target the GENERATOR chunk (strip the `[i,j]`
    suffix), not the instance name.
-5. **`width`/`height` overrides must be paired, on every one of these
-   verbs.** Passing only one is silently ignored (not rejected) and
+5. **`width`/`height` overrides must be paired (on `render` and
+   `query_object_at`; `read_viewport`/`read_image` take `maxEdge`
+   instead).** Passing only one is silently ignored (not rejected) and
    the call proceeds at the scene's authored dims -- always pass BOTH,
    clamped `[16,512]`, and confirm the override took by reading
    `previewWidth`/`previewHeight` (`render`) or `width`/`height`
