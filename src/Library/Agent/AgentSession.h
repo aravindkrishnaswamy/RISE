@@ -266,6 +266,28 @@ namespace RISE
 			Draft         //!< a cheap, ephemeral studio-preview render -- see the class doc above
 		};
 
+		//! Toolkit slice 3a: `render`'s optional SEGMENTATION selector,
+		//! orthogonal to `quality`.  `Beauty` (the default) is today's EXACT
+		//! behaviour -- radiance (production) or studio-preview (draft)
+		//! shading.  `ObjectMap` renders through a wholly SEPARATE,
+		//! EPHEMERAL identity pipeline (CreateInteractiveObjectMapPipeline)
+		//! that paints each hit object a FLAT, high-contrast identity colour
+		//! (no lighting, no materials) and returns a per-object colour
+		//! `legend` (see AgentRenderResult::legend).  It answers "which
+		//! object is at which pixel" for spatial reasoning; it says NOTHING
+		//! about appearance.  An objectmap render has exactly ONE fidelity:
+		//! `quality` is IGNORED under ObjectMap (and any `samples` override
+		//! is ignored too -- the exact per-pixel identity requires the
+		//! single-ray path; see AgentRenderResult::renderMode's doc for the
+		//! honesty contract, and read the returned PNG at NATIVE size --
+		//! read_image's maxEdge box-downscale BLENDS identity colours and
+		//! corrupts legend matching).
+		enum class AgentRenderTarget
+		{
+			Beauty,     //!< radiance / studio-preview shading (default)
+			ObjectMap   //!< flat per-object identity segmentation + legend
+		};
+
 		//! Preview-render params (all optional; every field at its default
 		//! reproduces EXACTLY today's Render(-1) behaviour -- wire-additive).
 		//! `width`/`height` are a TRANSIENT film-dims override (both must be
@@ -323,6 +345,30 @@ namespace RISE
 			//! exactly as the production path does (all four are Job/Scene-
 			//! level state, not rasterizer-specific).
 			AgentRenderQuality   quality = AgentRenderQuality::Production;
+			//! Toolkit slice 3a: Beauty (default) = today's exact
+			//! behaviour, strictly additive.  ObjectMap routes this ONE
+			//! render through the ephemeral identity pipeline (see
+			//! AgentRenderTarget's doc) and populates
+			//! AgentRenderResult::legend.  Composes with
+			//! width/height/camera exactly as Beauty does (all Job/Scene-
+			//! level state); `quality` and `samples` are IGNORED under
+			//! ObjectMap (honestly noted in the result message).
+			AgentRenderTarget    renderTarget = AgentRenderTarget::Beauty;
+		};
+
+		//! Toolkit slice 3a: one entry of an objectmap render's colour
+		//! LEGEND -- the mapping a caller uses to decode the segmentation
+		//! PNG.  `name` is the object's manager name (its scene-file chunk
+		//! `name`, or the `<gen>[i,j]` synthesized name for an
+		//! instance_array element); `colorHex` is the EXACT "#RRGGBB" 8-bit
+		//! sRGB byte triple that object's pixels carry in the PNG (byte-for-
+		//! byte -- match on these bytes, at NATIVE image size); `pixelCount`
+		//! is how many pixels that object covers in this render.
+		struct LegendEntry
+		{
+			std::string   name;
+			std::string   colorHex;     //!< "#RRGGBB", the exact PNG bytes
+			std::uint32_t pixelCount = 0;
 		};
 
 		//! The structured result of Render: the rendered head as PNG bytes
@@ -435,7 +481,18 @@ namespace RISE
 			//! exposure, and colour are NOT) -- never judge those from a
 			//! draft image; render at quality:"production" (the default)
 			//! or use ReadViewport for what the user actually sees.
+			//! Toolkit slice 3a adds a THIRD value "objectmap" (set when
+			//! params.renderTarget == ObjectMap) -- a flat per-object
+			//! identity segmentation, distinct from both beauty modes; the
+			//! `legend` below is populated only for this mode.
 			std::string                renderMode;
+			//! Toolkit slice 3a: the object-colour legend of an OBJECTMAP
+			//! render -- one LegendEntry per registered scene object,
+			//! plus a trailing "<unmapped>" entry IFF any hit pixel
+			//! resolved to no registered object.  EMPTY for every beauty
+			//! (production/draft) render.  Entries are in deterministic
+			//! (sorted-object-name) order.  See LegendEntry's doc.
+			std::vector<LegendEntry>   legend;
 		};
 
 		//! Facet 5 slice S1: one entry of the skills INDEX -- `name` is the

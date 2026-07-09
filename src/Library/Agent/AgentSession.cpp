@@ -51,6 +51,10 @@
 #include "../Interfaces/IFilm.h"
 #include "../Interfaces/ICamera.h"
 #include "../Interfaces/ICameraManager.h"
+#include "../Interfaces/IObjectManager.h"   // Toolkit slice 3a (objectmap): enumerate scene objects for the identity registry
+#include "../Interfaces/IObject.h"          // Toolkit slice 3a (objectmap): const IObject* registry key
+#include "../Interfaces/IEnumCallback.h"    // Toolkit slice 3a (objectmap): EnumerateItemNames collector
+#include "../Utilities/Color/ColorUtils.h"  // Toolkit slice 3a (objectmap): SRGBTransferFunctionInverse for the linear pre-image
 #include "../Interfaces/ILog.h"   // P1-A: RenderOverrideRestoreGuard's defensive log-and-swallow
 #include "../Rendering/FrameStore.h"   // offscreen isolation: FrameStoreIsolationGuard's private throwaway FrameStore
 #include "../Rendering/Rasterizer.h"   // offscreen isolation: concrete GetFrameStore/SetFrameStore/AcceptsFrameStorePush (not on IRasterizer)
@@ -1838,6 +1842,252 @@ namespace RISE
 				Implementation::FrameStore* mCaptured;
 				bool                        mArmed;
 			};
+
+			// ---- Toolkit slice 3a (objectmap): palette + registry construction ----
+			//
+			// The exact colour contract (see ObjectMapPalette's header doc):
+			// the shader emits a LINEAR pre-image L per channel so the final
+			// encode -- (unsigned char)(SRGBTransferFunction(clamp01(L))*255)
+			// (PNGWriter::WriteColor -> Integerize<sRGBPel>, a TRUNCATING
+			// cast) -- lands on EXACTLY the reserved byte.  Targeting the
+			// half-LSB center (B+0.5)/255 gives a half-LSB margin on both
+			// sides, so the truncation is robust.
+
+			inline Scalar ObjectMapLinearFromByte( unsigned char b )
+			{
+				return ColorUtils::SRGBTransferFunctionInverse(
+					( static_cast<Scalar>( b ) + 0.5 ) / 255.0 );
+			}
+
+			inline RISEPel ObjectMapLinearFromBytes( const std::array<unsigned char, 3>& b )
+			{
+				return RISEPel( ObjectMapLinearFromByte( b[0] ),
+				                ObjectMapLinearFromByte( b[1] ),
+				                ObjectMapLinearFromByte( b[2] ) );
+			}
+
+			//! Does byte `b`'s half-LSB-centered linear pre-image re-encode
+			//! (forward sRGB + truncating *255) back to EXACTLY `b`?  This is
+			//! the quantizer contract, evaluated with the SAME arithmetic the
+			//! encode path uses.  Under -ffast-math the sole non-roundtrippable
+			//! value is 255: its target (255.5/255) exceeds 1.0 so the
+			//! pre-image clamps to 1.0, and SRGBTransferFunction(1.0)*255 can
+			//! land a hair below 255.0 and truncate to 254 -- there is no
+			//! half-LSB headroom above white.  The palette generator rejects
+			//! such bytes so the identity colours are exact BY CONSTRUCTION.
+			inline bool ObjectMapByteRoundtrips( unsigned char b )
+			{
+				const Scalar L  = ObjectMapLinearFromByte( b );
+				const Scalar Lc = L < 0 ? 0 : ( L > 1 ? 1 : L );
+				Scalar enc = ColorUtils::SRGBTransferFunction( Lc );
+				if( enc > 1.0 ) enc = 1.0;
+				const unsigned char back = static_cast<unsigned char>( enc * 255.0 );   // TRUNCATING, matching Integerize<sRGBPel>
+				return back == b;
+			}
+
+			inline bool ObjectMapBytesRoundtrip( const std::array<unsigned char, 3>& c )
+			{
+				return ObjectMapByteRoundtrips( c[0] )
+				    && ObjectMapByteRoundtrips( c[1] )
+				    && ObjectMapByteRoundtrips( c[2] );
+			}
+
+			std::string ObjectMapColorHex( const std::array<unsigned char, 3>& b )
+			{
+				char buf[8];
+				std::snprintf( buf, sizeof( buf ), "#%02X%02X%02X",
+				               static_cast<unsigned>( b[0] ),
+				               static_cast<unsigned>( b[1] ),
+				               static_cast<unsigned>( b[2] ) );
+				return std::string( buf );
+			}
+
+			unsigned int ObjectMapL1( const std::array<unsigned char, 3>& a,
+			                          const std::array<unsigned char, 3>& b )
+			{
+				const int dr = static_cast<int>( a[0] ) - static_cast<int>( b[0] );
+				const int dg = static_cast<int>( a[1] ) - static_cast<int>( b[1] );
+				const int db = static_cast<int>( a[2] ) - static_cast<int>( b[2] );
+				return static_cast<unsigned int>(
+					( dr < 0 ? -dr : dr ) + ( dg < 0 ? -dg : dg ) + ( db < 0 ? -db : db ) );
+			}
+
+			//! HSV (h in [0,1), s/v in [0,1]) -> 8-bit sRGB byte triple, for
+			//! the golden-ratio hue walk that extends the base palette beyond
+			//! its hand-picked entries.  Rounds to nearest byte.
+			std::array<unsigned char, 3> ObjectMapHsvToBytes( double h, double s, double v )
+			{
+				h -= std::floor( h );
+				const double hp = h * 6.0;
+				const int    i  = static_cast<int>( std::floor( hp ) ) % 6;
+				const double f  = hp - std::floor( hp );
+				const double p  = v * ( 1.0 - s );
+				const double q  = v * ( 1.0 - s * f );
+				const double t  = v * ( 1.0 - s * ( 1.0 - f ) );
+				double r = 0, g = 0, b = 0;
+				switch( i ) {
+					case 0: r = v; g = t; b = p; break;
+					case 1: r = q; g = v; b = p; break;
+					case 2: r = p; g = v; b = t; break;
+					case 3: r = p; g = q; b = v; break;
+					case 4: r = t; g = p; b = v; break;
+					default: r = v; g = p; b = q; break;
+				}
+				auto toByte = []( double x ) -> unsigned char {
+					int iv = static_cast<int>( x * 255.0 + 0.5 );
+					if( iv < 0 ) iv = 0;
+					if( iv > 255 ) iv = 255;
+					return static_cast<unsigned char>( iv );
+				};
+				std::array<unsigned char, 3> out = { { toByte( r ), toByte( g ), toByte( b ) } };
+				return out;
+			}
+
+			//! Assign `count` well-separated 8-bit sRGB byte triples, each at
+			//! least L1 kMinL1 from every prior assignment AND from every
+			//! `reserved` colour (background + UNKNOWN).  A fixed high-contrast
+			//! base list covers the common small-count case; a deterministic
+			//! golden-ratio hue walk (alternating value/saturation) extends it.
+			std::vector<std::array<unsigned char, 3> > BuildObjectMapPaletteBytes(
+				std::size_t count, const std::vector<std::array<unsigned char, 3> >& reserved )
+			{
+				// 24 hand-picked, mutually well-separated triples (Trubetskoy-
+				// style distinct-colour set), excluding (0,0,0) background and
+				// (255,0,255) UNKNOWN.
+				static const std::array<unsigned char, 3> kBase[] = {
+					{ { 230,  25,  75 } }, { {  60, 180,  75 } }, { { 255, 225,  25 } }, { {   0, 130, 200 } },
+					{ { 245, 130,  48 } }, { { 145,  30, 180 } }, { {  70, 240, 240 } }, { { 240,  50, 230 } },
+					{ { 210, 245,  60 } }, { { 250, 190, 190 } }, { {   0, 128, 128 } }, { { 230, 190, 255 } },
+					{ { 170, 110,  40 } }, { { 255, 250, 200 } }, { { 128,   0,   0 } }, { { 170, 255, 195 } },
+					{ { 128, 128,   0 } }, { { 255, 215, 180 } }, { {   0,   0, 128 } }, { { 128, 128, 128 } },
+					{ { 255, 255, 255 } }, { { 100, 100, 255 } }, { { 255, 100, 100 } }, { { 100, 255, 100 } }
+				};
+				const std::size_t  kBaseCount = sizeof( kBase ) / sizeof( kBase[0] );
+				const unsigned int kMinL1     = 24;
+
+				std::vector<std::array<unsigned char, 3> > out;
+				out.reserve( count );
+
+				auto farEnough = [&]( const std::array<unsigned char, 3>& c ) -> bool {
+					for( std::size_t r = 0; r < reserved.size(); ++r )
+						if( ObjectMapL1( c, reserved[r] ) < kMinL1 ) return false;
+					for( std::size_t a = 0; a < out.size(); ++a )
+						if( ObjectMapL1( c, out[a] ) < kMinL1 ) return false;
+					return true;
+				};
+
+				const double kGolden  = 0.6180339887498949;
+				const double sats[2]  = { 0.90, 0.62 };
+				const double vals[3]  = { 0.98, 0.72, 0.86 };
+
+				for( std::size_t i = 0; i < count; ++i ) {
+					std::array<unsigned char, 3> c = { { 0, 0, 0 } };
+					bool placed = false;
+					// Accept a candidate only if it is both well-separated AND
+					// round-trippable (see ObjectMapByteRoundtrips) -- the latter
+					// keeps the quantizer contract true by construction.  Base
+					// entries carrying a 255 component (e.g. {255,225,25}) fall
+					// through to the golden-hue walk, whose values never exceed
+					// v=0.98 -> 250 and so always round-trip.
+					if( i < kBaseCount && farEnough( kBase[i] ) && ObjectMapBytesRoundtrip( kBase[i] ) ) {
+						c = kBase[i];
+						placed = true;
+					}
+					for( unsigned int tries = 0; tries < 4096 && !placed; ++tries ) {
+						const double h = std::fmod( 0.11 + static_cast<double>( i + tries ) * kGolden, 1.0 );
+						const double s = sats[ ( i + tries ) % 2 ];
+						const double v = vals[ ( i + tries ) % 3 ];
+						const std::array<unsigned char, 3> cand = ObjectMapHsvToBytes( h, s, v );
+						if( farEnough( cand ) && ObjectMapBytesRoundtrip( cand ) ) {
+							c = cand;
+							placed = true;
+						}
+					}
+					if( !placed ) {
+						// Exhausted the search (only reachable at an
+						// unreasonable object count that saturates the cube at
+						// L1>=kMinL1).  Honest best-effort: emit the plain
+						// golden candidate.  The legend colorHex still reports
+						// the ACTUAL emitted bytes, so decoding stays exact
+						// even if two objects happen to share a colour.
+						const double h = std::fmod( 0.11 + static_cast<double>( i ) * kGolden, 1.0 );
+						c = ObjectMapHsvToBytes( h, 0.90, 0.90 );
+					}
+					out.push_back( c );
+				}
+				return out;
+			}
+
+			//! Build the full ObjectMapPalette from the scene's ObjectManager:
+			//! enumerate object names in deterministic (sorted, per
+			//! GenericManager's std::map) order, assign each a separated
+			//! identity colour + its linear pre-image, map the manager's stored
+			//! IObjectPriv* (== RayIntersection::pObject) to its id, and size
+			//! the zero-initialized atomic tally (one per id + 1 for UNKNOWN).
+			void BuildObjectMapPalette( IObjectManager* objMgr,
+			                            RISE::Implementation::ObjectMapPalette& out )
+			{
+				struct NameCollector : public IEnumCallback<const char*>
+				{
+					std::vector<std::string> names;
+					bool operator()( const char* const& n ) override
+					{
+						if( n ) names.push_back( std::string( n ) );
+						return true;
+					}
+				} collector;
+				if( objMgr ) objMgr->EnumerateItemNames( collector );
+
+				// Legend semantics: ONE entry per WORLD-VISIBLE object -- the
+				// objects a ray can actually land on and the agent can select.
+				// A composite's operands (a CSGObject's children are
+				// SetWorldVisible(false) by AssignObjects, and re-report the
+				// composite root as ri.pObject) are ObjectManager items but are
+				// NOT independently hit, so they must not appear in the legend.
+				// Filtering here keeps the palette, registry, id-space, and
+				// per-id atomic tally all consistent over the visible set only.
+				std::vector<std::string> names;
+				names.reserve( collector.names.size() );
+				for( std::size_t i = 0; i < collector.names.size(); ++i ) {
+					IObjectPriv* obj = objMgr ? objMgr->GetItem( collector.names[i].c_str() ) : 0;
+					if( obj && static_cast<const IObject*>( obj )->IsWorldVisible() ) {
+						names.push_back( collector.names[i] );
+					}
+				}
+				const std::size_t count = names.size();
+
+				const std::array<unsigned char, 3> background = { { 0, 0, 0 } };
+				const std::array<unsigned char, 3> unknown    = { { 255, 0, 255 } };   // magenta
+
+				std::vector<std::array<unsigned char, 3> > reserved;
+				reserved.push_back( background );
+				reserved.push_back( unknown );
+				const std::vector<std::array<unsigned char, 3> > assigned =
+					BuildObjectMapPaletteBytes( count, reserved );
+
+				out.names = names;
+				out.bytes = assigned;
+				out.linearColors.resize( count );
+				out.registry.clear();
+				out.registry.reserve( count );
+				for( std::size_t id = 0; id < count; ++id ) {
+					out.linearColors[id] = ObjectMapLinearFromBytes( assigned[id] );
+					IObjectPriv* obj = objMgr ? objMgr->GetItem( names[id].c_str() ) : 0;
+					if( obj ) {
+						out.registry[ static_cast<const IObject*>( obj ) ] = static_cast<std::uint32_t>( id );
+					}
+				}
+				out.unknownBytes  = unknown;
+				out.unknownLinear = ObjectMapLinearFromBytes( unknown );
+
+				// vector<atomic> is movable but not copyable; move-assign a
+				// freshly sized one, then zero each slot explicitly (pre-C++20
+				// the atomic default ctor leaves the value uninitialized).
+				out.counts = std::vector<std::atomic<std::uint32_t> >( count + 1 );
+				for( std::size_t i = 0; i < out.counts.size(); ++i ) {
+					out.counts[i].store( 0u, std::memory_order_relaxed );
+				}
+			}
 		}
 
 		AgentRenderResult AgentSession::Render( int samplesOverride )
@@ -1921,7 +2171,14 @@ namespace RISE
 			// AgentRenderResult::renderMode's doc for why the two fields
 			// answer different questions.
 			const bool isDraft = ( params.quality == AgentRenderQuality::Draft );
-			res.renderMode = isDraft ? "draft" : "production";
+			// Toolkit slice 3a: objectmap is a THIRD, orthogonal render
+			// target (a flat per-object identity segmentation).  It routes
+			// through its OWN ephemeral pipeline (like draft, never the
+			// production rasterizer) and has exactly one fidelity -- so it
+			// takes priority over the beauty renderMode string, and `quality`
+			// / `samples` are honestly ignored under it (noted below).
+			const bool isObjectMap = ( params.renderTarget == AgentRenderTarget::ObjectMap );
+			res.renderMode = isObjectMap ? "objectmap" : ( isDraft ? "draft" : "production" );
 
 			// Round-3 additive wire field: report the ACTIVE rasterizer's
 			// registered type name (= its scene-file chunk keyword, e.g.
@@ -1947,7 +2204,12 @@ namespace RISE
 			// non-null whenever isDraft is false -- or (b) is made
 			// null-tolerant explicitly (origSamples just below).
 			IRasterizer* rast = mJob->GetRasterizer();
-			if( !isDraft && !rast ) {
+			// Round-2 P2-A / Toolkit slice 3a: the "!rast" bail-out applies
+			// ONLY to the production BEAUTY branch -- both the draft and the
+			// objectmap paths run through their own ephemeral pipelines and
+			// never dereference the production rasterizer, so a rasterizer-
+			// less head must still be able to run either.
+			if( !isDraft && !isObjectMap && !rast ) {
 				res.ok = false;
 				res.message = "no active rasterizer";
 				return res;
@@ -2001,6 +2263,12 @@ namespace RISE
 			bool draftSamplesApplied   = false;
 			bool draftSamplesCapped    = false;
 			int  draftEffectiveSamples = 0;
+			// Toolkit slice 3a (objectmap): the per-render identity palette +
+			// registry + atomic pixel tally, built INSIDE doObjectMapRenderWork
+			// (on the render thread, before RasterizeScene) and read AFTER the
+			// render to assemble res.legend.  Lives in this scope so it
+			// outlives the render lambda.  Empty/unused in every beauty render.
+			Implementation::ObjectMapPalette objectMapPalette;
 			bool renderRan = false;
 			bool rendered = false;
 			// Fix-round-1 P2-C: true iff CancelAgentRender_ / Stop() tripped
@@ -2281,8 +2549,105 @@ namespace RISE
 				restoreGuard.Disarm();
 			};
 
+			// Toolkit slice 3a (objectmap): the EPHEMERAL identity render
+			// body.  Structurally a sibling of doDraftRenderWork -- a fresh
+			// throwaway pipeline, the agent's own sink, shared film/camera
+			// overrides, controller-owned cancel wiring -- but its shader
+			// emits each hit object's flat identity colour (from the palette
+			// built here, on the render thread, before RasterizeScene) and it
+			// NEVER installs a sampling kernel or a samples override (the
+			// EXACTNESS INVARIANT: every pixel must take IntegratePixel's
+			// single-ray branch so its identity byte is un-blended).  Never
+			// references the production rasterizer, its FrameStore, or
+			// mJob->RemoveRasterizerOutputs().
+			auto doObjectMapRenderWork = [&]()
+			{
+				// Build the identity registry + palette FIRST (read-only over
+				// the live ObjectManager; on this render thread, before any
+				// RasterizeScene).  `objectMapPalette` lives in RenderCore_'s
+				// scope so it outlives this lambda for the legend assembly.
+				BuildObjectMapPalette( mJob->GetObjects(), objectMapPalette );
+
+				IRasterizer* ephemeralRast = nullptr;
+				IRayCaster*  objCaster     = nullptr;
+				if( !Implementation::CreateInteractiveObjectMapPipeline(
+						&ephemeralRast, &objCaster, objectMapPalette ) )
+				{
+					return;   // rendered/renderRan stay false -- shared tail reports "render failed"
+				}
+				// RAII release of the two factory refs (each an owning
+				// reference the caller must release exactly once) -- runs on
+				// every exit, including an exception unwinding out of
+				// RasterizeScene() below.  No production state is touched.
+				struct EphemeralPipelineGuard
+				{
+					IRasterizer*& r; IRayCaster*& p;
+					~EphemeralPipelineGuard() { safe_release( r ); safe_release( p ); }
+				} pipelineGuard{ ephemeralRast, objCaster };
+
+				// Film-dims / camera-pose overrides compose exactly as in the
+				// draft path (Job/Scene state the ephemeral pipeline reads
+				// through *scenePriv).  No FrameStore-identity constraint here.
+				RenderOverrideRestoreGuard restoreGuard( *mJob,
+					overrodeFilm, origFilmW, origFilmH, origFilmPAR,
+					activeCam, capturedCam );
+				restoreGuard.Arm();
+
+				sink = new InMemoryRasterizerOutput();
+				ephemeralRast->AddRasterizerOutput( sink );
+
+				applyFilmOverride();
+				applyCameraOverride();
+
+				if( cameraOverrideFailed ) {
+					// FAIL LOUD, same contract as the other branches.
+					return;
+				}
+
+				// EXACTNESS INVARIANT: deliberately NO SetSampleCountOverride
+				// and NO sampling kernel -- a freshly constructed
+				// InteractivePelRasterizer has pSampling == null, so every
+				// pixel takes the single-ray (no jitter, no filter) branch,
+				// the only path that yields an exact per-pixel identity byte.
+				// `params.samples` is intentionally ignored (honestly noted in
+				// the result message in RenderCore_'s tail).
+
+				if( mController ) {
+					ephemeralRast->SetProgressCallback( mController->AgentRenderProgress() );
+				}
+
+				// Test-only seam (shared contract with the other branches).
+				if( mThrowBeforeRasterizeForTest ) {
+					throw std::runtime_error(
+						"AgentSession::ForTest_ThrowBeforeRasterize: test-only forced throw immediately before RasterizeScene() (objectmap path)" );
+				}
+
+				const IScenePriv* scenePriv = mJob->GetScene();
+				if( scenePriv ) {
+					IRasterizeSequence* pSeq = nullptr;
+					if( mController ) {
+						RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
+					}
+					ephemeralRast->RasterizeScene( *scenePriv, 0, pSeq );
+					safe_release( pSeq );
+
+					if( mController ) {
+						wasCancelled = mController->IsCancelRequested();
+					}
+					renderRan = true;
+					rendered  = true;
+				}
+
+				restoreFilmAndCameraOverridesOrdinary();
+				restoreGuard.Disarm();
+			};
+
 			auto doRenderWork = [&]()
 			{
+				if( isObjectMap ) {
+					doObjectMapRenderWork();
+					return;
+				}
 				if( isDraft ) {
 					doDraftRenderWork();
 					return;
@@ -2873,7 +3238,47 @@ namespace RISE
 			// `isDraft` rather than sharing one code path.  See
 			// AgentRenderParams::quality's doc for the draft sample-cap
 			// honesty contract.
-			if( isDraft ) {
+			if( isObjectMap ) {
+				// Toolkit slice 3a: an objectmap render has exactly ONE
+				// fidelity -- a single ray per pixel (the EXACTNESS
+				// INVARIANT).  `samples` and `quality` are both honestly
+				// ignored here (note: this branch is reached BEFORE the
+				// production `else` that dereferences `rast`, so a
+				// rasterizer-less head is safe).
+				res.samplesOverridden = false;
+				res.effectiveSamples  = 1;
+				if( wantSamplesOverride && res.ok ) {
+					res.message += " (objectmap ignores the samples override -- an identity render is exactly 1 spp for per-pixel exactness)";
+				}
+				if( params.quality == AgentRenderQuality::Draft && res.ok ) {
+					res.message += " (objectmap ignores quality -- it has a single fidelity)";
+				}
+
+				// Assemble the legend from the palette + the atomic tally
+				// (single-threaded now the render is done).  One entry per
+				// registered object in deterministic (sorted-name) id order,
+				// plus a trailing "<unmapped>" entry IFF any hit pixel
+				// resolved to no registered object.
+				res.legend.clear();
+				res.legend.reserve( objectMapPalette.names.size() + 1 );
+				for( std::size_t id = 0; id < objectMapPalette.names.size(); ++id ) {
+					LegendEntry e;
+					e.name       = objectMapPalette.names[id];
+					e.colorHex   = ObjectMapColorHex( objectMapPalette.bytes[id] );
+					e.pixelCount = objectMapPalette.counts[id].load( std::memory_order_relaxed );
+					res.legend.push_back( e );
+				}
+				const std::uint32_t unknownCount = objectMapPalette.counts.empty()
+					? 0u
+					: objectMapPalette.counts[ objectMapPalette.names.size() ].load( std::memory_order_relaxed );
+				if( unknownCount > 0 ) {
+					LegendEntry e;
+					e.name       = "<unmapped>";
+					e.colorHex   = ObjectMapColorHex( objectMapPalette.unknownBytes );
+					e.pixelCount = unknownCount;
+					res.legend.push_back( e );
+				}
+			} else if( isDraft ) {
 				res.samplesOverridden = draftSamplesApplied;
 				res.effectiveSamples  = draftEffectiveSamples;
 				if( draftSamplesCapped && res.ok ) {

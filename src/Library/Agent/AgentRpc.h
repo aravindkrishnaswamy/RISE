@@ -57,10 +57,26 @@
 //                                            disambiguation hint; a still-referenced
 //                                            target fails the dry-run -> rejected with
 //                                            the diagnostic, head byte-identical.)
-//      render       {samples?,width?,height?,camera?,pinned?,quality?}
+//      render       {samples?,width?,height?,camera?,pinned?,quality?,mode?}
 //                                        -> {ok,width,height,meanR,meanG,meanB,integrator,
 //                                            previewWidth,previewHeight,cameraOverridden,message,
-//                                            renderJobId,samplesOverridden,effectiveSamples,renderMode}
+//                                            renderJobId,samplesOverridden,effectiveSamples,renderMode,
+//                                            legend?}
+//                                           (Toolkit slice 3a: `mode` (OPTIONAL
+//                                            string, "beauty"|"objectmap",
+//                                            default "beauty") selects the render
+//                                            TARGET.  "objectmap" paints each hit
+//                                            object a flat identity colour and adds
+//                                            a `legend` array of {name,colorHex,
+//                                            pixelCount} to the result --
+//                                            renderMode reads "objectmap";
+//                                            `quality`/`samples` are ignored (one
+//                                            fidelity).  Read the objectmap PNG at
+//                                            NATIVE size -- read_image's maxEdge
+//                                            box-downscale blends identity colours
+//                                            and breaks legend matching.  `legend`
+//                                            is present ONLY for an objectmap
+//                                            render.
 //                                           (`integrator` is the ACTIVE rasterizer's
 //                                            registered type name = its scene-file
 //                                            chunk keyword, e.g.

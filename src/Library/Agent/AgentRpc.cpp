@@ -431,6 +431,28 @@ namespace RISE
 				// the head's ACTIVE (production) rasterizer regardless of
 				// which mode this render actually used.
 				result.set( "renderMode", JsonValue::MakeString( rr.renderMode ) );
+				// Toolkit slice 3a ADDITIVE wire field: the object-colour
+				// `legend` of an OBJECTMAP render.  Emitted ONLY when this
+				// render was an objectmap (renderMode=="objectmap") -- a
+				// CONDITIONAL key, but sync `render` and `render_wait` both
+				// serialize through THIS function, so their key sets stay
+				// identical to each other (the S2b contract); the existing
+				// render-result tests probe specific keys, never assert an
+				// exact key set, so a beauty render simply omitting `legend`
+				// keeps them green.  Each entry is {name,colorHex,pixelCount};
+				// read the objectmap PNG at NATIVE size (read_image's maxEdge
+				// box-downscale blends identity colours and breaks matching).
+				if( rr.renderMode == "objectmap" ) {
+					JsonValue legend = JsonValue::MakeArray();
+					for( std::size_t i = 0; i < rr.legend.size(); ++i ) {
+						JsonValue e = JsonValue::MakeObject();
+						e.set( "name",       JsonValue::MakeString( rr.legend[i].name ) );
+						e.set( "colorHex",   JsonValue::MakeString( rr.legend[i].colorHex ) );
+						e.set( "pixelCount", JsonValue::MakeNumber( static_cast<double>( rr.legend[i].pixelCount ) ) );
+						legend.push_back( e );
+					}
+					result.set( "legend", legend );
+				}
 				return result;
 			}
 
@@ -1115,6 +1137,31 @@ namespace RISE
 						}
 						else if( !qv->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'quality' must be a string" );
+					}
+
+					// Toolkit slice 3a ADDITIVE param: {"mode":"beauty"|
+					// "objectmap"} -> AgentRenderParams::renderTarget.  Absent
+					// or "beauty" is today's EXACT behaviour (strictly
+					// additive); "objectmap" routes this ONE render through the
+					// ephemeral identity pipeline and returns a per-object
+					// `legend` in the result -- see AgentRenderTarget's doc.
+					// `quality`/`samples` are ignored under objectmap (noted in
+					// the result message).  Any other string (or a non-string,
+					// non-null value) is a clean -32602.
+					if( const JsonValue* mv = params.find( "mode" ) ) {
+						if( mv->isString() ) {
+							const std::string ms = mv->asString();
+							if( ms == "objectmap" ) {
+								rparams.renderTarget = AgentRenderTarget::ObjectMap;
+							} else if( ms == "beauty" ) {
+								rparams.renderTarget = AgentRenderTarget::Beauty;
+							} else {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'mode' must be \"beauty\" or \"objectmap\"" );
+							}
+						}
+						else if( !mv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'mode' must be a string" );
 					}
 
 					if( wantAsync ) {

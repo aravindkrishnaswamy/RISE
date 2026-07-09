@@ -26,13 +26,21 @@
 #ifndef RISE_INTERACTIVEPELRASTERIZER_
 #define RISE_INTERACTIVEPELRASTERIZER_
 
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <unordered_map>
+#include <vector>
+
 #include "PixelBasedPelRasterizer.h"
+#include "../Utilities/Color/Color.h"   // RISEPel for the Toolkit slice 3a objectmap palette
 
 namespace RISE
 {
 	class ISampling2D;
 	class IRayCaster;
 	class IRasterizer;
+	class IObject;
 
 	namespace Implementation
 	{
@@ -50,6 +58,70 @@ namespace RISE
 			IRasterizer** ppRasterizer,
 			IRayCaster** ppPreviewCaster,
 			IRayCaster** ppPolishCaster );
+
+		//! Toolkit slice 3a (objectmap): the per-render object-identity
+		//! palette + registry + pixel tally shared between the caller
+		//! (AgentSession, which BUILDS it from the scene's ObjectManager
+		//! BEFORE the render, on the render thread, and READS the tally
+		//! AFTER) and the ObjectIdShader that
+		//! CreateInteractiveObjectMapPipeline installs.  Built once and
+		//! left immutable for the duration of one render EXCEPT for
+		//! `counts`, which the shader bumps concurrently (the interactive
+		//! rasterizer family renders multi-threaded via the block
+		//! ThreadPool -- so the tally is std::atomic per entry).
+		//!
+		//! COLOR CONTRACT: `bytes[id]` is the FINAL 8-bit sRGB byte triple
+		//! (== the PNG bytes == the legend colorHex).  `linearColors[id]`
+		//! is the LINEAR pre-image RISEPel the shader emits, chosen so the
+		//! forward sRGB encode (SRGBTransferFunction + truncating *255)
+		//! lands on EXACTLY `bytes[id]` (half-LSB margin both sides).
+		struct ObjectMapPalette
+		{
+			//! Scene IObject* (as seen on RayIntersection::pObject) ->
+			//! dense id in [0, names.size()).  A primary-ray hit whose
+			//! pObject is null or absent here decodes to the reserved
+			//! UNKNOWN color and tallies into the last `counts` slot.
+			std::unordered_map<const IObject*, std::uint32_t> registry;
+
+			//! Per-id data (parallel; size == the registered-object count).
+			std::vector<std::string>                     names;        //!< the object's manager name (legend label)
+			std::vector<RISEPel>                         linearColors; //!< the linear pre-image the shader emits
+			std::vector<std::array<unsigned char, 3> >   bytes;        //!< the final sRGB byte triple (legend colorHex)
+
+			//! The reserved UNKNOWN color (pObject null / not registered).
+			RISEPel                                      unknownLinear;
+			std::array<unsigned char, 3>                 unknownBytes;
+
+			//! Per-id pixel tally, size == names.size()+1 (the last slot
+			//! is the UNKNOWN tally).  mutable + atomic: the shader holds a
+			//! `const ObjectMapPalette*` and increments these from the
+			//! parallel block workers.
+			mutable std::vector<std::atomic<std::uint32_t> > counts;
+		};
+
+		//! Toolkit slice 3a (objectmap): construct an EPHEMERAL preview
+		//! pipeline whose shader emits each hit object's flat identity
+		//! colour (from `palette`) instead of shaded radiance -- a
+		//! segmentation render.  Sibling of
+		//! CreateInteractiveMaterialPreviewPipeline: the returned pointers
+		//! are refcounted ownership references for the caller to release.
+		//!
+		//! `palette` is BORROWED -- the caller owns it and it MUST outlive
+		//! the render (the installed shader captures its address).
+		//!
+		//! EXACTNESS INVARIANT: the returned rasterizer is left with NO
+		//! sampling kernel and the caller MUST NOT install one nor call
+		//! SetSampleCountOverride(>1) -- that is what routes every pixel
+		//! through PixelBasedPelRasterizer::IntegratePixel's single-ray
+		//! (no jitter, no filter) branch, the ONLY path that guarantees an
+		//! exact, un-blended per-pixel identity byte.  A single ray caster
+		//! suffices (there is no AO / polish pass for an id render), so
+		//! unlike the material-preview factory this returns just the
+		//! rasterizer + its one caster.
+		bool CreateInteractiveObjectMapPipeline(
+			IRasterizer** ppRasterizer,
+			IRayCaster** ppCaster,
+			const ObjectMapPalette& palette );
 
 		class InteractivePelRasterizer : public PixelBasedPelRasterizer
 		{
