@@ -67,6 +67,12 @@ static bool ScalarLiteralIsNonFinite( const char* s )
 	errno = 0;
 	(void)std::strtod( s, &end );
 	if( end == s ) return false;		// not a number (painter name / garbage) -> not our concern
+	// strtod must have consumed the WHOLE token (only trailing whitespace remains),
+	// else it merely matched a nan/inf PREFIX of a longer painter name -- e.g. "inf"
+	// of "inflection_map", "nan" of "nan_mask".  Those are NAMES, not non-finite
+	// numbers, and must reach the painter lookup, so do not flag them.
+	while( *end == ' ' || *end == '\t' ) ++end;
+	if( *end != '\0' ) return false;
 	if( errno == ERANGE ) return true;	// overflow / underflow (e.g. 1e999)
 	const char* p = s;
 	while( *p == ' ' || *p == '\t' ) ++p;
@@ -2944,9 +2950,21 @@ bool Job::AddRandomWalkSSSMaterial(
 		safe_release( pScattering );
 		return false;
 	}
+	// max_bounces is Reference-kind (bypasses the descriptor's finite gate) but is a
+	// non-negative integer count; atoi() silently yields 0 on inf/nan/misspelled input.
+	char* mbEnd = nullptr;
+	errno = 0;
+	const long mb = std::strtol( maxBounces, &mbEnd, 10 );
+	if( mbEnd == maxBounces || mb < 0 || errno == ERANGE ) {
+		GlobalLog()->PrintEx( eLog_Error, "randomwalksss_material `%s`: `max_bounces` must be a non-negative integer (got `%s`)", name, maxBounces );
+		safe_release( pIOR );
+		safe_release( pAbsorption );
+		safe_release( pScattering );
+		return false;
+	}
 	double gVal = atof(g);
 	double roughnessVal = atof(roughness);
-	unsigned int maxBouncesVal = atoi(maxBounces);
+	unsigned int maxBouncesVal = (unsigned int)mb;
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateRandomWalkSSSMaterial( &pMaterial, *pIOR, *pAbsorption, *pScattering, gVal, roughnessVal, maxBouncesVal );

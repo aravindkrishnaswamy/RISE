@@ -459,6 +459,31 @@ static void TestRejectInlineScalarOverflow()
 	IJobPriv* jalo = LoadScene( alOk, "al_ok" );
 	Check( jalo != nullptr, "arealight_shaderop finite N (1.0) still loads" );
 	if( jalo ) safe_release( jalo );
+
+	// A painter whose NAME merely has a nan/inf PREFIX (inflection_map, nan_mask)
+	// must NOT be rejected by the non-finite guard -- strtod matches the prefix but
+	// the token isn't a whole number, so it reaches the painter lookup and resolves.
+	const char* pnPrefix =
+		"uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n"
+		"uniformcolor_painter\n{\n\tname inflection_map\n\tcolor 0.1 0.1 0.1\n}\n"
+		"ggx_material\n{\n\tname ggx_pn\n\trd col\n\trs col\n\talphax 0.1\n\talphay 0.1\n\tior 0.15\n\textinction 3.5\n\ttangent_rotation inflection_map\n}\n";
+	IJobPriv* jpn = LoadScene( pnPrefix, "ggx_pn" );
+	Check( jpn != nullptr, "painter named `inflection_map` (inf-prefix) NOT wrongly rejected" );
+	if( jpn ) safe_release( jpn );
+
+	// randomwalk_sss_material max_bounces (Reference-kind) was atoi()'d, so inf /
+	// nan / misspelled silently became 0.  Now validated as a non-negative integer.
+	const char* rwInf =
+		"randomwalk_sss_material\n{\n\tname rw_inf\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n\tmax_bounces inf\n}\n";
+	IJobPriv* jri = LoadScene( rwInf, "rw_inf" );
+	Check( jri == nullptr, "randomwalk `max_bounces inf` REJECTED" );
+	if( jri ) safe_release( jri );
+
+	const char* rwOk =
+		"randomwalk_sss_material\n{\n\tname rw_ok\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n\tmax_bounces 32\n}\n";
+	IJobPriv* jro = LoadScene( rwOk, "rw_ok" );
+	Check( jro != nullptr, "randomwalk finite max_bounces (32) still loads" );
+	if( jro ) safe_release( jro );
 }
 
 int main()
