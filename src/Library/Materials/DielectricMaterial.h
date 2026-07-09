@@ -38,9 +38,9 @@ namespace RISE
 
 		public:
 			DielectricMaterial( const IScalarPainter& tau_, const IScalarPainter& ri, const IScalarPainter& scat, const bool hg,
-				Scalar arN = 0, Scalar arK = 0, Scalar arThickness = 0 )
+				const Scalar* arN = 0, const Scalar* arK = 0, const Scalar* arThickness = 0, int arNLayers = 0 )
 			{
-				pSPF = new DielectricSPF( tau_, ri, scat, hg, arN, arK, arThickness );
+				pSPF = new DielectricSPF( tau_, ri, scat, hg, arN, arK, arThickness, arNLayers );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 			}
 
@@ -84,9 +84,10 @@ namespace RISE
 			//! Baked construction-time scalars read-back for the snapshot
 			//! clone (HG-phase flag + anodization/AR-film params; no setters).
 			inline bool   GetHG()                   const { return pSPF->GetHG(); }
-			inline Scalar GetAnodizationN()         const { return pSPF->GetAnodizationN(); }
-			inline Scalar GetAnodizationK()         const { return pSPF->GetAnodizationK(); }
-			inline Scalar GetAnodizationThickness() const { return pSPF->GetAnodizationThickness(); }
+			inline int           GetARLayerCount()  const { return pSPF->GetARLayerCount(); }
+			inline const Scalar* GetARLayerN()      const { return pSPF->GetARLayerN(); }
+			inline const Scalar* GetARLayerK()      const { return pSPF->GetARLayerK(); }
+			inline const Scalar* GetARLayerT()      const { return pSPF->GetARLayerT(); }
 			inline void SetTransmittance( const IScalarPainter& v ) { pSPF->SetTransmittance( v ); }
 			inline void SetIOR( const IScalarPainter& v )           { pSPF->SetIOR( v ); }
 			inline void SetScattering( const IScalarPainter& v )    { pSPF->SetScattering( v ); }

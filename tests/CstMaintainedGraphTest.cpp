@@ -358,6 +358,34 @@ int main()
 		}
 	}
 
+	// [vitreous-enamel surfaces] the enamel merge's new reference edges are graph-
+	// visible and dimension-precise: homogeneous_medium.absorption_spectral /
+	// .scattering_spectral -> Function1D curve, standard_object.modifier ->
+	// glint_modifier, and object.interior_medium -> the medium.  Editing the curve
+	// must pull the medium AND (transitively) the object into the closure; editing
+	// the modifier must pull the object.
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"piecewise_linear_function\n{\nname curve\ncp 400 0.5\ncp 700 1.5\n}\n"
+			"homogeneous_medium\n{\nname med\nabsorption 0.1 0.1 0.1\nscattering 0.0 0.0 0.0\nphase isotropic\nabsorption_spectral curve\nscattering_spectral curve\n}\n"
+			"glint_modifier\n{\nname gl\ndensity 100\ncoverage 0.3\nfill 0.5\nspread 8\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\nmodifier gl\ninterior_medium med\n}\n" );
+		const ReferenceGraph g = BuildReferenceGraph( doc );
+		const NodeId curve = DocFindByName( doc, "piecewise_linear_function/curve" );
+		const NodeId gl    = DocFindByName( doc, "glint_modifier/gl" );
+		if( curve != 0 && gl != 0 ) {
+			Check( SameClosure( DocEditClosure( curve, g ), DocEditClosure( doc, curve ) ), "enamel: (id, graph) == (doc, id) for the spectral curve seed" );
+			Check( DocEditClosure( curve, g ).size() == 3, "enamel: closure(curve) = {curve, med, o} = 3 (medium via absorption/scattering_spectral, object via interior_medium)" );
+			Check( DocEditClosure( gl, g ).size() == 2, "enamel: closure(glint gl) = {gl, o} = 2 (object via the modifier slot)" );
+		} else {
+			std::printf( "  (skip vitreous-enamel surfaces: glint_modifier / piecewise_linear_function did not parse)\n" );
+		}
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

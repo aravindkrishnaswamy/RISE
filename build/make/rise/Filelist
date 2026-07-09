@@ -363,6 +363,7 @@ SRCLIBSCENEMANAGEMENT =\
 # Intersection modifiers
 SRCLIBMODIFIERS =\
 	$(PATHLIBRARY)Modifiers/BumpMap.cpp							\
+	$(PATHLIBRARY)Modifiers/GlintModifier.cpp					\
 	$(PATHLIBRARY)Modifiers/NormalMap.cpp
 
 # Raster Images

@@ -20,6 +20,7 @@
 // Interface includes
 //////////////////////////////////////////////////////////
 #include "Interfaces/IBezierPatchGeometry.h"
+#include <type_traits>   // SFINAE for the arithmetic AR-film overload
 #include "Interfaces/IBilinearPatchGeometry.h"
 #include "Interfaces/ICamera.h"
 #include "Interfaces/IDetectorSphere.h"
@@ -64,6 +65,7 @@
 #include "Interfaces/IShaderOpManager.h"
 #include "Interfaces/IPhaseFunction.h"
 #include "Interfaces/IMedium.h"
+#include "Interfaces/IFunction1D.h"
 #include "Interfaces/ITriangleMeshGeometry.h"
 #include "Interfaces/ITriangleMeshLoader.h"
 #include "Interfaces/ITwoColorOperator.h"
@@ -320,7 +322,8 @@ namespace RISE
 								IGeometry** ppi,				///< [out] Pointer to recieve the geometry
 								const char axis,				///< [in] (x|y|z) Which axis the cylinder is sitting on
 								const Scalar radius,			///< [in] Radius of the cylinder
-								const Scalar height			///< [in] Height of the cylinder
+								const Scalar height,			///< [in] Height of the cylinder
+								const bool capped = true		///< [in] TRUE: closed solid (end caps); FALSE: open tube
 								);
 
 	//! Creates an infinite plane that passes through the origin
@@ -629,10 +632,48 @@ namespace RISE
 								const IScalarPainter& rIndex,	///< [in] Index of refraction
 								const IScalarPainter& scat,		///< [in] Scattering function (Phong cone or HG)
 								const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
-								const Scalar arN = 0,			///< [in] AR coating film real index (0 = no coating)
-								const Scalar arK = 0,			///< [in] AR coating film extinction (~0)
-								const Scalar arThickness = 0	///< [in] AR coating thickness, nm (0 = no coating)
+								const Scalar* arN = 0,			///< [in] AR coating layer real indices, ambient->substrate (0/null = no coating)
+								const Scalar* arK = 0,			///< [in] AR coating layer extinctions (~0; null => all 0)
+								const Scalar* arThickness = 0,	///< [in] AR coating layer thicknesses, nm
+								const unsigned int arNLayers = 0	///< [in] Number of AR layers (0 = no coating)
 								);
+
+	//! Legacy single-film AR overload.  Accepts ANY arithmetic spelling of the
+	//! three AR-film scalars -- all-double, all-int `(0,0,0)`, OR MIXED (e.g.
+	//! `(1.38, 0, 99.6)` with an integer extinction) -- and forwards to the
+	//! N-layer array form, so pre-N-layer external callers still compile
+	//! regardless of literal types.  It is a single SFINAE template (constrained
+	//! to arithmetic args) rather than a set of fixed overloads: a fixed
+	//! `(Scalar,Scalar,Scalar)` + `(int,int,int)` pair leaves mixed spellings with
+	//! no best match, whereas a template is an exact match for every combination
+	//! and -- being non-pointer -- never competes with the array form.
+	//! NO-COATING: arFilmThickness <= 0 => nLayers=0 (bare Fresnel), matching the
+	//! pre-N-layer scalar form; it does NOT build a zero-thickness/zero-index film.
+	/// \return TRUE if successful, FALSE otherwise
+	template< typename ARN, typename ARK, typename ART,
+	          typename = typename std::enable_if< std::is_arithmetic<ARN>::value &&
+	                                              std::is_arithmetic<ARK>::value &&
+	                                              std::is_arithmetic<ART>::value >::type >
+	inline bool RISE_API_CreateDielectricMaterial(
+								IMaterial** ppi,				///< [out] Pointer to recieve the material
+								const IScalarPainter& tau,		///< [in] Transmittance (per-channel + spectral)
+								const IScalarPainter& rIndex,	///< [in] Index of refraction
+								const IScalarPainter& scat,		///< [in] Scattering function (Phong cone or HG)
+								const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+								const ARN arFilmN,				///< [in] Single AR film real index
+								const ARK arFilmK,				///< [in] Single AR film extinction
+								const ART arFilmThickness		///< [in] Single AR film thickness, nm
+								)
+	{
+		if( Scalar( arFilmThickness ) <= Scalar( 0 ) ) {
+			return RISE_API_CreateDielectricMaterial( ppi, tau, rIndex, scat, hg,
+				(const Scalar*)0, (const Scalar*)0, (const Scalar*)0, 0u );
+		}
+		const Scalar n[1]  = { Scalar( arFilmN ) };
+		const Scalar k[1]  = { Scalar( arFilmK ) };
+		const Scalar th[1] = { Scalar( arFilmThickness ) };
+		return RISE_API_CreateDielectricMaterial( ppi, tau, rIndex, scat, hg, n, k, th, 1u );
+	}
 
 	//! Creates a SubSurface Scattering material.  ior / absorption /
 	//! scattering are physical scalars carried by `IScalarPainter`
@@ -1917,6 +1958,27 @@ namespace RISE
 								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
 								const IPainter& painter,		///< [in] Linear-RGB normal-map painter
 								const Scalar scale				///< [in] glTF normalTexture.scale
+								);
+
+	//! Creates a discrete-facet glint modifier: an object-space cell
+	//! hash places sparse mirror-like micro-facets (jittered centre +
+	//! radius test, Bernoulli existence); a hit on a facet has its
+	//! shading normal replaced by the facet's Rayleigh-tilted normal,
+	//! making the EXISTING materials twinkle (enamel flecks, metallic
+	//! flake, snow, glitter).  See Modifiers/GlintModifier.h and
+	//! docs/ENAMEL_SPARKLE_BRDF.md.  Parameters MUST be finite — the
+	//! ctor goes inert on garbage (volatile-laundered check), but the
+	//! caller owns loud rejection.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGlintModifier(
+								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
+								const Scalar density,			///< [in] cells per object-space unit (facet pitch = 1/density); <= 0 inert
+								const Scalar coverage,			///< [in] per-cell facet existence probability [0,1]
+								const Scalar fill,				///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 inert
+								const Scalar spread,			///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 inert
+								const Vector3& scale,			///< [in] anisotropic cell stretch (1,1,1 = isotropic; Worley convention pt*scale+shift)
+								const Vector3& shift,			///< [in] cell-space offset
+								const unsigned int seed			///< [in] hash seed (distinct fleck fields on otherwise identical objects)
 								);
 
 
@@ -3220,6 +3282,28 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const RISEPel& sigma_a,				///< [in] Absorption coefficient
 								const RISEPel& sigma_s,				///< [in] Scattering coefficient
 								const RISEPel& emission,			///< [in] Volumetric emission
+								const IPhaseFunction& phase			///< [in] Phase function for scattering
+								);
+
+	//! Creates a homogeneous participating medium with optional
+	//! per-wavelength coefficient curves for the spectral (NM) path
+	//! (G1, vitreous enamel).  \a sigma_a_spectral / \a sigma_s_spectral
+	//! may be null; when both are null the medium is byte-identical to
+	//! RISE_API_CreateHomogeneousMediumWithEmission.  The RGB triples
+	//! drive the RGB/preview path; the curves drive the spectral path.
+	//! Curve output is clamped to non-negative in the spectral path.
+	//! NOTE: give each curve at least two control points — a
+	//! single-point IFunction1D evaluates to 1.0 everywhere (the
+	//! PiecewiseLinearFunction degenerate convention), silently giving a
+	//! sigma=1.0/unit medium rather than the intended value.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHomogeneousMediumSpectral(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& sigma_a,				///< [in] Absorption coefficient (RGB preview)
+								const RISEPel& sigma_s,				///< [in] Scattering coefficient (RGB preview)
+								const RISEPel& emission,			///< [in] Volumetric emission
+								const IFunction1D* sigma_a_spectral,///< [in] sigma_a(lambda) curve, or null
+								const IFunction1D* sigma_s_spectral,///< [in] sigma_s(lambda) curve, or null
 								const IPhaseFunction& phase			///< [in] Phase function for scattering
 								);
 

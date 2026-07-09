@@ -49,9 +49,33 @@ HomogeneousMedium::HomogeneousMedium(
 	m_pPhase->addref();
 }
 
+HomogeneousMedium::HomogeneousMedium(
+	const RISEPel& sigma_a,
+	const RISEPel& sigma_s,
+	const RISEPel& emission,
+	const IFunction1D* sigma_a_spectral,
+	const IFunction1D* sigma_s_spectral,
+	const IPhaseFunction& phase
+	) :
+  m_sigma_a( sigma_a ),
+  m_sigma_s( sigma_s ),
+  m_sigma_t( sigma_a + sigma_s ),
+  m_emission( emission ),
+  m_sigma_t_max( ColorMath::MaxValue( sigma_a + sigma_s ) ),
+  m_pPhase( &phase ),
+  m_sigma_a_spectral( sigma_a_spectral ),
+  m_sigma_s_spectral( sigma_s_spectral )
+{
+	m_pPhase->addref();
+	if( m_sigma_a_spectral ) m_sigma_a_spectral->addref();
+	if( m_sigma_s_spectral ) m_sigma_s_spectral->addref();
+}
+
 HomogeneousMedium::~HomogeneousMedium()
 {
 	safe_release( m_pPhase );
+	safe_release( m_sigma_a_spectral );
+	safe_release( m_sigma_s_spectral );
 }
 
 void HomogeneousMedium::SetAbsorption( const RISEPel& v )
@@ -93,13 +117,30 @@ MediumCoefficientsNM HomogeneousMedium::GetCoefficientsNM(
 	const Scalar nm
 	) const
 {
-	// For homogeneous RGB medium, use the luminance-weighted
-	// average of the channels as the spectral approximation.
-	// A true spectral medium would query a spectral extinction
-	// function here.
 	MediumCoefficientsNM c;
-	c.sigma_t = ColorMath::Luminance( m_sigma_t );
-	c.sigma_s = ColorMath::Luminance( m_sigma_s );
+	if( m_sigma_a_spectral || m_sigma_s_spectral ) {
+		// G1: genuine per-wavelength coefficients.  A null curve
+		// contributes zero for that coefficient (a pure-absorber
+		// colorant leaves the scattering curve null).  Homogeneous:
+		// position is ignored.  Clamp to physical non-negativity: a
+		// curve authored with a negative control point would otherwise
+		// give sigma_t < 0, so EvalTransmittanceNM = exp(-sigma_t*d) > 1
+		// (unphysical energy gain) while SampleDistanceNM treats it as
+		// non-scattering — an inconsistency.  Author error, guarded here
+		// so both NM paths agree.
+		const Scalar sa = m_sigma_a_spectral ? fmax( m_sigma_a_spectral->Evaluate( nm ), 0.0 ) : 0.0;
+		const Scalar ss = m_sigma_s_spectral ? fmax( m_sigma_s_spectral->Evaluate( nm ), 0.0 ) : 0.0;
+		c.sigma_s = ss;
+		c.sigma_t = sa + ss;
+	} else {
+		// Luminance fallback for RGB-authored media: use the
+		// luminance-weighted average of the channels as the spectral
+		// approximation.  Byte-identical to the pre-G1 behaviour.
+		c.sigma_t = ColorMath::Luminance( m_sigma_t );
+		c.sigma_s = ColorMath::Luminance( m_sigma_s );
+	}
+	// Emission is not yet spectrally authored; use its luminance in both
+	// paths (unchanged from pre-G1).
 	c.emission = ColorMath::Luminance( m_emission );
 	return c;
 }
@@ -164,7 +205,10 @@ Scalar HomogeneousMedium::SampleDistanceNM(
 	bool& scattered
 	) const
 {
-	const Scalar sigma_t_nm = ColorMath::Luminance( m_sigma_t );
+	// Per-wavelength extinction: the G1 spectral curve when present,
+	// else the luminance fallback (GetCoefficientsNM encapsulates the
+	// choice, keeping sampling / transmittance / pdf consistent).
+	const Scalar sigma_t_nm = GetCoefficientsNM( ray.origin, nm ).sigma_t;
 
 	if( sigma_t_nm <= 0.0 ) {
 		scattered = false;
@@ -209,7 +253,10 @@ Scalar HomogeneousMedium::EvalTransmittanceNM(
 	const Scalar nm
 	) const
 {
-	const Scalar sigma_t_nm = ColorMath::Luminance( m_sigma_t );
+	// Per-wavelength extinction (G1 spectral curve or luminance
+	// fallback); shares GetCoefficientsNM with the sampler so
+	// transmittance and distance pdf never drift.
+	const Scalar sigma_t_nm = GetCoefficientsNM( ray.origin, nm ).sigma_t;
 	return exp( -sigma_t_nm * dist );
 }
 

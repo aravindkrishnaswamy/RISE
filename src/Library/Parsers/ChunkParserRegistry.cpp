@@ -35,6 +35,9 @@
 #include <algorithm>
 #include <cstring>   // Phase 6.2: strstr for sentinel detection
 #include <cstdio>    // Phase 6.2: sscanf in OnOverrideObjectFinalized
+#include <cstdlib>   // strtod for the ar_layer numeric parse
+#include <cerrno>    // ERANGE overflow detection for ar_layer values
+#include "../Materials/DielectricSPF.h"   // DielectricSPF::kMaxARLayers (ar_layer cap)
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "AsciiCommandParser.h"
@@ -82,6 +85,40 @@ using namespace RISE::Implementation;
 // legacy hal() QMC sequence `mh` lived ONLY in the deleted streaming TU,
 // AsciiSceneParser.cpp, and was deleted with it in Slice 6c -- this TU
 // never touched MultiHalton.)
+
+// Max scene-file line length for the file-backed data-curve readers below
+// (carried from the deleted streaming TU, AsciiSceneParser.cpp).
+#define MAX_CHARS_PER_LINE		8192
+
+// Read a data file into its meaningful lines, tolerant of comments and
+// blank lines.  Skips blank / whitespace-only lines and lines whose first
+// non-blank character is '#'.  Returns false (the caller logs) if the file
+// cannot be opened.  Each returned line still contains its trailing
+// newline; callers sscanf their own column format from it and validate the
+// conversion count, so a malformed or non-numeric line is skipped rather
+// than — as the historical `while( !feof(f) ) { fscanf(...); push; }` loops
+// did — spinning forever on a comment line (fscanf matches nothing and does
+// not advance) or pushing uninitialized / duplicated values at EOF.
+static bool ReadDataFileLines( const String& filename, std::vector<std::string>& outLines )
+{
+	FILE* f = fopen( GlobalMediaPathLocator().Find( filename ).c_str(), "r" );
+	if( !f ) {
+		return false;
+	}
+	char buf[MAX_CHARS_PER_LINE];
+	while( fgets( buf, sizeof( buf ), f ) ) {
+		const char* p = buf;
+		while( *p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' ) {
+			++p;
+		}
+		if( *p == '\0' || *p == '#' ) {
+			continue;   // blank / whitespace-only / comment line
+		}
+		outLines.push_back( std::string( buf ) );
+	}
+	fclose( f );
+	return true;
+}
 
 inline bool string_split( const String& s, String& first, String& second, const char ch )
 {
@@ -213,6 +250,12 @@ namespace RISE
 			//! scalar material slots (roughness, exponent, etc.).
 			//!
 			//! `paramName` is just for diagnostic messages.
+			//!
+			//! DEAD CODE (no callers; the live resolver is Job.cpp's
+			//! ResolveScalarPainterArg).  If ever revived, its inline strtod
+			//! path must gain the same non-finite rejection (nan/inf spellings +
+			//! ERANGE overflow) the live path has, or it reintroduces the
+			//! non-finite-scalar bug.  Kept only as a reference.
 			[[maybe_unused]] static IScalarPainter* ResolveScalarPainter(
 				IJob& pJob,
 				const std::string& value,
@@ -454,6 +497,53 @@ namespace RISE
 			// text is the one layer where the rejection cannot be optimized
 			// out.  Also closes String::toDouble's uninitialized return on
 			// entirely non-numeric tokens.
+			// On an ERANGE strtod result, classify the consumed token [tok,end) as
+			// UNDERFLOW (-> finite 0/subnormal) vs OVERFLOW (-> non-finite HUGE_VAL)
+			// at the STRING layer.  An exponent-SIGN heuristic alone is spoofable --
+			// a 320-digit mantissa with `e-1` still overflows to +inf yet carries
+			// `e-` in the token -- so compute the SIGN of the token's net magnitude:
+			// the order of the leading significant digit plus the explicit exponent
+			// (decimal digits count in powers of 10; C99 hex-float mantissa digits
+			// count 4 bits each against the BINARY `p` exponent).  ERANGE guarantees
+			// the value is hundreds of orders outside [DBL_MIN, DBL_MAX], so the +-3
+			// bit slop of the leading hex digit can never flip the sign.
+			// KEEP IN LOCKSTEP with the identical helper in Job.cpp.
+			static bool ERangeTokenIsUnderflow( const char* tok, const char* end )
+			{
+				const char* p = ( tok < end && ( *tok == '+' || *tok == '-' ) ) ? tok + 1 : tok;
+				bool isHex = false;
+				if( end - p > 1 && p[0] == '0' && ( p[1] == 'x' || p[1] == 'X' ) ) { isHex = true; p += 2; }
+				long order = 0;                    // order of the leading significant digit
+				bool seenSig = false, seenPoint = false;
+				long intDigits = 0, fracZeros = 0;
+				for( ; p < end; ++p ) {
+					const char c = *p;
+					if( c == '.' && !seenPoint ) { seenPoint = true; continue; }
+					const bool dig = isHex ? !!isxdigit( (unsigned char)c ) : !!isdigit( (unsigned char)c );
+					if( !dig ) break;                       // exponent marker
+					if( !seenSig ) {
+						if( c == '0' ) { if( seenPoint ) ++fracZeros; continue; }
+						seenSig = true;
+						if( !seenPoint ) intDigits = 1; else order = -( fracZeros + 1 );
+					} else if( !seenPoint ) {
+						++intDigits;
+					}
+				}
+				if( !seenSig ) return true;        // literal zero never ERANGEs; harmless
+				if( intDigits > 0 ) order = intDigits - 1;
+				long expVal = 0;
+				if( p < end && ( ( !isHex && ( *p == 'e' || *p == 'E' ) ) || ( isHex && ( *p == 'p' || *p == 'P' ) ) ) ) {
+					++p;
+					long sign = 1;
+					if( p < end && ( *p == '+' || *p == '-' ) ) { if( *p == '-' ) sign = -1; ++p; }
+					long v = 0;
+					for( ; p < end && isdigit( (unsigned char)*p ); ++p ) { if( v < 100000000L ) v = v * 10 + ( *p - '0' ); }
+					expVal = sign * v;
+				}
+				const long net = isHex ? ( 4 * order + expVal ) : ( order + expVal );
+				return net < 0;
+			}
+
 			inline bool AllTokensAreFiniteNumbers( const char* sz )
 			{
 				if( !sz ) {
@@ -477,7 +567,17 @@ namespace RISE
 						return false;	// nan / inf / infinity spellings
 					}
 					char* end = 0;
+					errno = 0;
 					strtod( tok, &end );
+					if( errno == ERANGE ) {
+						// ERANGE covers overflow (-> non-finite HUGE_VAL) AND underflow
+						// (-> finite 0/subnormal, e.g. 5e-400).  Only overflow is
+						// non-finite; classify at the STRING layer by net-magnitude
+						// sign (exponent-sign alone is spoofable -- see the helper).
+						if( !ERangeTokenIsUnderflow( tok, end ) ) {
+							return false;	// overflow (e.g. 1e999 -> HUGE_VAL); reject at the STRING layer (value-level isfinite is unreliable under -ffast-math), mirroring the ar_layer parser
+						}
+					}
 					if( end == tok ) {
 						return false;	// token does not start as a number
 					}
@@ -956,18 +1056,19 @@ namespace RISE
 					// Optional file-loaded spectrum (pairs)
 					if( bag.Has( "file" ) ) {
 						std::string fname = bag.GetString( "file" );
-						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
-						if( f ) {
-							while( !feof( f ) ) {
-								double nm, amp;
-								fscanf( f, "%lf %lf", &nm, &amp );
-								wavelengths.push_back( nm );
-								amplitudes.push_back( amp );
-							}
-							fclose( f );
-						} else {
+						std::vector<std::string> fileLines;
+						if( !ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
 							return false;
+						}
+						for( const std::string& ln : fileLines ) {
+							double nm = 0.0, amp = 0.0;
+							if( sscanf( ln.c_str(), "%lf %lf", &nm, &amp ) == 2 ) {
+								wavelengths.push_back( nm );
+								amplitudes.push_back( amp );
+							} else {
+								GlobalLog()->PrintEx( eLog_Warning, "spectral file:: skipping malformed line in `%s`", fname.c_str() );
+							}
 						}
 					}
 
@@ -976,10 +1077,13 @@ namespace RISE
 						std::string fname = bag.GetString( "nmfile" );
 						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
 						if( f ) {
-							while( !feof( f ) ) {
-								double nm;
-								fscanf( f, "%lf", &nm );
-								wavelengths.push_back( nm );
+							char nmbuf[MAX_CHARS_PER_LINE];
+							while( fgets( nmbuf, sizeof( nmbuf ), f ) ) {
+								const char* q = nmbuf;
+								while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
+								if( *q == '\0' || *q == '#' ) continue;
+								double nm = 0.0;
+								if( sscanf( nmbuf, "%lf", &nm ) == 1 ) wavelengths.push_back( nm );
 							}
 							fclose( f );
 						} else {
@@ -993,10 +1097,13 @@ namespace RISE
 						std::string fname = bag.GetString( "ampfile" );
 						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
 						if( f ) {
-							while( !feof( f ) ) {
-								double amp;
-								fscanf( f, "%lf", &amp );
-								amplitudes.push_back( amp );
+							char ampbuf[MAX_CHARS_PER_LINE];
+							while( fgets( ampbuf, sizeof( ampbuf ), f ) ) {
+								const char* q = ampbuf;
+								while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
+								if( *q == '\0' || *q == '#' ) continue;
+								double amp = 0.0;
+								if( sscanf( ampbuf, "%lf", &amp ) == 1 ) amplitudes.push_back( amp );
 							}
 							fclose( f );
 						} else {
@@ -1005,6 +1112,10 @@ namespace RISE
 						}
 					}
 
+					if( amplitudes.empty() || wavelengths.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: no samples (empty / all-comment file, no inline cp)", name.c_str() );
+						return false;
+					}
 					return pJob.AddSpectralColorPainter( name.c_str(), &amplitudes[0], &wavelengths[0], nmbegin, nmend, static_cast<unsigned int>(amplitudes.size()), scale );
 				}
 
@@ -1122,12 +1233,14 @@ namespace RISE
 							return false;
 						}
 						std::vector<std::pair<Scalar, Scalar>> samples;
-						while( !feof( f ) ) {
+						char spbuf[MAX_CHARS_PER_LINE];
+						while( fgets( spbuf, sizeof( spbuf ), f ) ) {
+							const char* q = spbuf;
+							while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
+							if( *q == '\0' || *q == '#' ) continue;
 							double nm = 0.0, val = 0.0;
-							if( fscanf( f, "%lf %lf", &nm, &val ) == 2 ) {
+							if( sscanf( spbuf, "%lf %lf", &nm, &val ) == 2 ) {
 								samples.emplace_back( Scalar( nm ), Scalar( val ) );
-							} else {
-								break;
 							}
 						}
 						fclose( f );
@@ -2530,17 +2643,17 @@ namespace RISE
 					// Optional file-loaded generators
 					if( bag.Has( "file" ) ) {
 						std::string fname = bag.GetString( "file" );
-						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
-						if( f ) {
-							while( !feof( f ) ) {
-								double x, y;
+						std::vector<std::string> fileLines;
+						if( ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
+							for( const std::string& ln : fileLines ) {
+								double x = 0.0, y = 0.0;
 								char painter[256] = {0};
-								fscanf( f, "%lf %lf %255s", &x, &y, painter );
-								ptx.push_back( x );
-								pty.push_back( y );
-								painters.push_back( painter );
+								if( sscanf( ln.c_str(), "%lf %lf %255s", &x, &y, painter ) == 3 ) {
+									ptx.push_back( x );
+									pty.push_back( y );
+									painters.push_back( painter );
+								}
 							}
-							fclose( f );
 						}
 					}
 
@@ -2607,20 +2720,20 @@ namespace RISE
 					// Optional file-loaded generators (count-prefixed)
 					if( bag.Has( "file" ) ) {
 						std::string fname = bag.GetString( "file" );
-						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
-						if( f ) {
-							int num=0;
-							fscanf( f, "%d", &num );
-							for( int i=0; i<num; i++ ) {
-								double x, y, z;
+						std::vector<std::string> fileLines;
+						if( ReadDataFileLines( String( fname.c_str() ), fileLines ) && !fileLines.empty() ) {
+							int num = 0;
+							sscanf( fileLines[0].c_str(), "%d", &num );
+							for( int i = 1; i <= num && i < (int)fileLines.size(); ++i ) {
+								double x = 0.0, y = 0.0, z = 0.0;
 								char painter[256] = {0};
-								fscanf( f, "%lf %lf %lf %255s", &x, &y, &z, painter );
-								ptx.push_back( x );
-								pty.push_back( y );
-								ptz.push_back( z );
-								painters.push_back( painter );
+								if( sscanf( fileLines[i].c_str(), "%lf %lf %lf %255s", &x, &y, &z, painter ) == 4 ) {
+									ptx.push_back( x );
+									pty.push_back( y );
+									ptz.push_back( z );
+									painters.push_back( painter );
+								}
 							}
-							fclose( f );
 						}
 					}
 
@@ -2823,21 +2936,26 @@ namespace RISE
 					// Optional file-loaded function (pairs)
 					if( bag.Has( "file" ) ) {
 						std::string fname = bag.GetString( "file" );
-						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
-						if( f ) {
-							while( !feof( f ) ) {
-								double x, y;
-								fscanf( f, "%lf %lf", &x, &y );
-								cp_x.push_back( x );
-								cp_y.push_back( y );
-							}
-							fclose( f );
-						} else {
+						std::vector<std::string> fileLines;
+						if( !ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
 							return false;
 						}
+						for( const std::string& ln : fileLines ) {
+							double x = 0.0, y = 0.0;
+							if( sscanf( ln.c_str(), "%lf %lf", &x, &y ) == 2 ) {
+								cp_x.push_back( x );
+								cp_y.push_back( y );
+							} else {
+								GlobalLog()->PrintEx( eLog_Warning, "piecewise_linear_function:: skipping malformed line in `%s`", fname.c_str() );
+							}
+						}
 					}
 
+					if( cp_x.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error, "piecewise_linear_function `%s`: no control points (empty / all-comment file, no inline cp)", name.c_str() );
+						return false;
+					}
 					return pJob.AddPiecewiseLinearFunction( name.c_str(), &cp_x[0], &cp_y[0], static_cast<unsigned int>(cp_x.size()), bUseLUTs, lutsize );
 				}
 
@@ -2877,13 +2995,23 @@ namespace RISE
 						cp_y.push_back( String(y) );
 					}
 
+					if( cp_x.empty() ) {
+						// A row-less 2D function is well-defined at runtime:
+						// PiecewiseLinearFunction2D::getYValueFromFunction falls
+						// back to the constant 1.0 whenever it holds fewer than
+						// two rows.  Scenes use the empty form as a placeholder
+						// (e.g. a displacement slot bound but not yet authored),
+						// so warn loudly rather than refuse.
+						GlobalLog()->PrintEx( eLog_Warning, "piecewise_linear_function2d `%s`: no control points -- evaluates as the constant 1.0", name.c_str() );
+					}
+
 					// Setup the array of strings
 					char** func = new char*[cp_x.size()];
 					for( unsigned int i=0; i<cp_x.size(); i++ ) {
 						func[i] = (char*)(&(*(cp_y[i].begin())));
 					}
 
-					bool bRet = pJob.AddPiecewiseLinearFunction2D( name.c_str(), &cp_x[0], func, static_cast<unsigned int>(cp_x.size()) );
+					bool bRet = pJob.AddPiecewiseLinearFunction2D( name.c_str(), cp_x.empty() ? 0 : &cp_x[0], func, static_cast<unsigned int>(cp_x.size()) );
 
 					delete [] func;
 
@@ -3028,10 +3156,71 @@ namespace RISE
 					std::string scat = bag.GetString( "scattering", "10000" );
 					bool hg          = bag.GetBool(   "henyey-greenstein", false );
 
-					const double ar_ior   = bag.GetDouble( "ar_film_ior",        0.0 );
-					const double ar_thick = bag.GetDouble( "ar_film_thickness",  0.0 );
-					const double ar_ext   = bag.GetDouble( "ar_film_extinction", 0.0 );
-					return pJob.AddDielectricMaterial( name.c_str(), tau.c_str(), ior.c_str(), scat.c_str(), hg, ar_ior, ar_ext, ar_thick );
+					// AR coating layers in AMBIENT -> SUBSTRATE order (outermost,
+					// air-side, first).  Preferred form: repeatable
+					// `ar_layer <n> <thickness_nm> [k]` -> a broadband multi-
+					// layer stack that reflects faint AND colour-neutral (a
+					// single layer leaves the characteristic purple bloom).
+					// Bound to the engine cap (DielectricSPF::kMaxARLayers, itself
+					// static_assert-tied to ThinFilm::kMaxFilms) so this reject
+					// limit can never drift from what the TMM actually evaluates.
+					// Reject a too-deep stack rather than silently truncating it.
+					const std::size_t kMaxARLayers = (std::size_t)RISE::Implementation::DielectricSPF::kMaxARLayers;
+					std::vector<Scalar> arN, arK, arT;
+					const std::vector<std::string>& layerLines = bag.GetRepeatable( "ar_layer" );
+					if( layerLines.size() > kMaxARLayers ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"dielectric_material `%s`: %u ar_layer lines exceeds the %u-layer maximum",
+							name.c_str(), (unsigned int)layerLines.size(), (unsigned int)kMaxARLayers );
+						return false;
+					}
+					for( std::size_t i = 0; i < layerLines.size(); ++i ) {
+						// Reject nan/inf spellings and non-numeric junk at the STRING
+						// layer (value-level isfinite is unreliable under -ffast-math;
+						// see AllTokensAreFiniteNumbers), then count + range-check the
+						// numbers (errno/ERANGE catches overflow like 1e999).
+						if( !AllTokensAreFiniteNumbers( layerLines[i].c_str() ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"dielectric_material `%s`: ar_layer %u (`%s`) has a non-finite or non-numeric token",
+								name.c_str(), (unsigned int)i, layerLines[i].c_str() );
+							return false;
+						}
+						double vals[3] = { 0.0, 0.0, 0.0 }; int cnt = 0; bool overflow = false;
+						for( const char* p = layerLines[i].c_str(); ; ) {
+							while( *p == ' ' || *p == '\t' ) ++p;
+							if( !*p || *p == '#' ) break;
+							errno = 0; char* end = 0;
+							const double v = strtod( p, &end );
+							if( end == p ) break;
+							if( errno == ERANGE ) overflow = true;
+							if( cnt < 3 ) vals[cnt] = v;
+							++cnt; p = end;
+						}
+						// A layer is `<n>0 <thickness_nm>0 [k>=0]`: exactly 2-3 finite
+						// numbers, positive index + thickness (a zero-thickness layer
+						// is a spurious extra interface), non-negative extinction.
+						if( cnt < 2 || cnt > 3 || overflow ||
+						    vals[0] <= 0.0 || vals[1] <= 0.0 || ( cnt == 3 && vals[2] < 0.0 ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"dielectric_material `%s`: ar_layer %u (`%s`) must be `<n>0 <thickness_nm>0 [k>=0]`",
+								name.c_str(), (unsigned int)i, layerLines[i].c_str() );
+							return false;
+						}
+						arN.push_back( (Scalar)vals[0] ); arT.push_back( (Scalar)vals[1] ); arK.push_back( (Scalar)( cnt == 3 ? vals[2] : 0.0 ) );
+					}
+					// Legacy single-layer form, honoured only when no ar_layer
+					// lines are present (back-compat, bit-identical).
+					if( arN.empty() ) {
+						const double ar_ior   = bag.GetDouble( "ar_film_ior",        0.0 );
+						const double ar_thick = bag.GetDouble( "ar_film_thickness",  0.0 );
+						const double ar_ext   = bag.GetDouble( "ar_film_extinction", 0.0 );
+						if( ar_thick > 0.0 ) {
+							arN.push_back( (Scalar)ar_ior ); arT.push_back( (Scalar)ar_thick ); arK.push_back( (Scalar)ar_ext );
+						}
+					}
+					const unsigned int nLayers = (unsigned int)arN.size();
+					return pJob.AddDielectricMaterial( name.c_str(), tau.c_str(), ior.c_str(), scat.c_str(), hg,
+						nLayers ? arN.data() : 0, nLayers ? arK.data() : 0, nLayers ? arT.data() : 0, nLayers );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3044,9 +3233,10 @@ namespace RISE
 						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "10000"; }
-						{ auto& p = P(); p.name = "ar_film_ior";        p.kind = ValueKind::Double; p.description = "Anti-reflective coating film index (e.g. MgF2 1.38). 0 = no coating (bare Fresnel)."; p.defaultValueHint = "0"; }
-						{ auto& p = P(); p.name = "ar_film_thickness";  p.kind = ValueKind::Double; p.description = "AR coating physical thickness, nm (e.g. MgF2 quarter-wave ~99.6 at 550nm). 0 = no coating."; p.defaultValueHint = "0"; }
-						{ auto& p = P(); p.name = "ar_film_extinction"; p.kind = ValueKind::Double; p.description = "AR coating film extinction k (~0 for a transparent AR dielectric)."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "ar_layer";           p.kind = ValueKind::String; p.repeatable = true; p.description = "One anti-reflective coating layer (repeatable, AMBIENT->SUBSTRATE / air-side first): `<n> <thickness_nm> [k]`, all positive (k optional, >=0).  One layer = the classic MgF2 quarter-wave (drops glare but leaves a purple bloom); a multi-layer broadband stack (e.g. quarter/half/quarter) reflects far fainter AND colour-neutral, as on real premium AR.  At most 8 layers (more is a parse error)."; }
+						{ auto& p = P(); p.name = "ar_film_ior";        p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR film index (e.g. MgF2 1.38); prefer ar_layer.  Honoured only when no ar_layer lines are present. 0 = no coating."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "ar_film_thickness";  p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR thickness, nm (MgF2 quarter-wave ~99.6 at 550nm); prefer ar_layer. 0 = no coating."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "ar_film_extinction"; p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR film extinction k (~0 for a transparent AR); prefer ar_layer."; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
 						AddVariantTagParam( cd );
 						return cd;
@@ -3079,8 +3269,12 @@ namespace RISE
 						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
 						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption coefficient"; }
 						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; }
-						{ auto& p = P(); p.name = "g";          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Henyey-Greenstein g"; }
-						{ auto& p = P(); p.name = "roughness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness"; }
+						// g / roughness are BAKED construction-time scalars (the SPF
+						// holds plain doubles) -- Double kind engages the registry's
+						// finite-numeric string gate; a painter name here previously
+						// slipped through and silently atof'd to 0.0.
+						{ auto& p = P(); p.name = "g";          p.kind = ValueKind::Double; p.description = "Henyey-Greenstein g (baked scalar)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "roughness";  p.kind = ValueKind::Double; p.description = "Surface roughness (baked scalar)"; p.defaultValueHint = "0.0"; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3113,9 +3307,11 @@ namespace RISE
 						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
 						{ auto& p = P(); p.name = "absorption";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption"; }
 						{ auto& p = P(); p.name = "scattering";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering"; }
-						{ auto& p = P(); p.name = "g";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Henyey-Greenstein g"; }
-						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness"; }
-						{ auto& p = P(); p.name = "max_bounces"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Max volume bounces per ray"; }
+						// g / roughness / max_bounces are BAKED construction-time
+						// scalars (see the subsurfacescattering_material note).
+						{ auto& p = P(); p.name = "g";           p.kind = ValueKind::Double; p.description = "Henyey-Greenstein g (baked scalar)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Double; p.description = "Surface roughness (baked scalar)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "max_bounces"; p.kind = ValueKind::UInt;   p.description = "Max volume bounces per ray (baked count)"; p.defaultValueHint = "64"; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3418,15 +3614,19 @@ namespace RISE
 						cd.keyword = "donner_jensen_skin_bssrdf_material"; cd.category = ChunkCategory::Material;
 						cd.description = "Donner & Jensen 2008 spectral skin BSSRDF.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						// roughness is NOT in this list -- it is a BAKED construction-
+						// time scalar (plain double through the ctor), declared Double
+						// below so the finite-numeric string gate applies.
 						static const char* painterRefs[] = {
 							"melanin_fraction","melanin_blend","hemoglobin_epidermis","carotene_fraction",
 							"hemoglobin_dermis","epidermis_thickness","ior_epidermis","ior_dermis",
-							"blood_oxygenation","roughness"
+							"blood_oxygenation"
 						};
 						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						for (const char* n : painterRefs) {
 							auto& p = P(); p.name = n; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Skin-model painter parameter";
 						}
+						{ auto& p = P(); p.name = "roughness"; p.kind = ValueKind::Double; p.description = "Surface roughness (baked scalar)"; p.defaultValueHint = "0.35"; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4640,21 +4840,23 @@ namespace RISE
 					std::string name = bag.GetString( "name",   "noname" );
 					double radius    = bag.GetDouble( "radius", 1.0 );
 					double height    = bag.GetDouble( "height", 1.0 );
+					bool   capped    = bag.GetBool( "capped", true );
 					std::string axisStr = bag.GetString( "axis", "x" );
 					char axis        = axisStr.empty() ? 'x' : axisStr[0];
-					return pJob.AddCylinderGeometry( name.c_str(), axis, radius, height );
+					return pJob.AddCylinderGeometry( name.c_str(), axis, radius, height, capped );
 				}
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "cylinder_geometry"; cd.category = ChunkCategory::Geometry;
-						cd.description = "Implicit cylinder.";
+						cd.description = "Implicit cylinder.  Default is a CLOSED SOLID (two end-cap disks) so an interior_medium bound to it is actually entered; set capped FALSE for a legacy open-ended tube (a camera ray along the axis then crosses no surface).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "axis";   p.kind = ValueKind::Enum;   p.enumValues = {"x","y","z"}; p.description = "Cylinder axis"; p.defaultValueHint = "x"; }
 						{ auto& p = P(); p.name = "radius"; p.kind = ValueKind::Double; p.description = "Cylinder radius"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "height"; p.kind = ValueKind::Double; p.description = "Cylinder height"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "capped"; p.kind = ValueKind::Bool;   p.description = "TRUE: closed solid with end-cap disks (enterable by an interior_medium); FALSE: open-ended tube (side wall only)"; p.defaultValueHint = "TRUE"; }
 						return cd;
 					}();
 					return d;
@@ -5781,6 +5983,81 @@ namespace RISE
 				}
 			};
 
+			struct GlintModifierAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					double density   = bag.GetDouble( "density",  5.0 );
+					double coverage  = bag.GetDouble( "coverage", 0.15 );
+					double fill      = bag.GetDouble( "fill",     0.6 );
+					double spread    = bag.GetDouble( "spread",   2.0 );
+					double scale[3]  = { 1.0, 1.0, 1.0 };
+					double shift[3]  = { 0.0, 0.0, 0.0 };
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+					unsigned int seed = bag.GetUInt( "seed", 0 );
+
+					// The descriptor layer already hard-rejects non-finite /
+					// non-numeric tokens (AllTokensAreFiniteNumbers) -- the
+					// load-bearing gate for this chunk (the modifier ctor's
+					// laundered backstop only goes silently inert).  Here we
+					// add DOMAIN diagnostics: values that make the modifier
+					// pointless fail LOUDLY (an authored no-op chunk is a
+					// mistake, not an intent), and out-of-range fractions
+					// warn about the clamp they will receive.
+					if( !(density > 0.0) || !(coverage > 0.0) || !(fill > 0.0) || !(spread > 0.0) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"glint_modifier `%s`: density/coverage/fill/spread must all be > 0 (got %g/%g/%g/%g) -- these values would make the modifier inert",
+							name.c_str(), density, coverage, fill, spread );
+						return false;
+					}
+					if( coverage > 1.0 ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"glint_modifier `%s`: coverage %g clamps to 1.0", name.c_str(), coverage );
+					}
+					if( fill > 1.0 ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"glint_modifier `%s`: fill %g clamps to 1.0 (facet radius may not exceed the half-cell)", name.c_str(), fill );
+					}
+					if( !(scale[0] > 0.0) || !(scale[1] > 0.0) || !(scale[2] > 0.0) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"glint_modifier `%s`: scale components must be > 0 (got %g %g %g)",
+							name.c_str(), scale[0], scale[1], scale[2] );
+						return false;
+					}
+
+					return pJob.AddGlintModifier( name.c_str(), density, coverage, fill, spread, scale, shift, seed );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "glint_modifier"; cd.category = ChunkCategory::Modifier;
+						cd.description = "Discrete-facet glint modifier: an object-space cell hash "
+							"places sparse mirror-like micro-facets (jittered centre + radius test, "
+							"per-cell existence probability); a hit landing on a facet has its "
+							"shading normal replaced by the facet's Rayleigh-tilted normal, so the "
+							"object's EXISTING material twinkles as the view/light sweeps -- enamel "
+							"flecks, metallic-flake paint, snow sparkle, glitter.  Facets are pinned "
+							"to the surface (object-space hash): they flash because the geometry "
+							"moves, never because the pattern swims.  Attach via the object's "
+							"`modifier` parameter.  See docs/ENAMEL_SPARKLE_BRDF.md.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "density";  p.kind = ValueKind::Double;     p.description = "Cells per object-space unit; facet pitch = 1/density units.  Anchor to the physical fleck pitch (e.g. 180um flecks on a dial with ~1.08 units/mm => density ~5)"; p.defaultValueHint = "5.0"; }
+						{ auto& p = P(); p.name = "coverage"; p.kind = ValueKind::Double;     p.description = "Per-cell facet existence probability (0,1]; with `fill` this sets the areal facet fraction"; p.defaultValueHint = "0.15"; }
+						{ auto& p = P(); p.name = "fill";     p.kind = ValueKind::Double;     p.description = "Facet disc radius as a fraction of the half-cell (0,1]; the sphere-slice test varies apparent facet sizes naturally"; p.defaultValueHint = "0.6"; }
+						{ auto& p = P(); p.name = "spread";   p.kind = ValueKind::Double;     p.description = "Facet tilt Rayleigh scale in DEGREES (single-digit typical; the twinkle's angular sensitivity)"; p.defaultValueHint = "2.0"; }
+						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::DoubleVec3; p.description = "Anisotropic cell stretch (Worley convention pt*scale+shift); elongated cells give a streak lay"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";    p.kind = ValueKind::DoubleVec3; p.description = "Cell-space offset"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "seed";     p.kind = ValueKind::UInt;       p.description = "Hash seed -- distinct fleck fields on otherwise identical objects"; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			//////////////////////////////////////////
 			// Participating media
 			//////////////////////////////////////////
@@ -5795,6 +6072,17 @@ namespace RISE
 					bag.GetVec3( "absorption", sigma_a );
 					bag.GetVec3( "scattering", sigma_s );
 
+					// Optional per-wavelength coefficient curves (G1,
+					// vitreous enamel): names of registered IFunction1D
+					// (e.g. piecewise_linear_function) curves for the
+					// spectral (NM) path.  BOTH empty => RGB-only (luminance
+					// fallback), byte-identical to pre-G1.  If EITHER is
+					// bound the NM path is curve-driven (an unbound
+					// coefficient is zero in NM; Job warns on a non-zero
+					// RGB sibling).
+					std::string absorption_spectral = bag.GetString( "absorption_spectral", "" );
+					std::string scattering_spectral = bag.GetString( "scattering_spectral", "" );
+
 					// Composite phase token: "isotropic" or "hg <g>".
 					std::string phase_type = "isotropic";
 					double      phase_g    = 0.0;
@@ -5807,6 +6095,13 @@ namespace RISE
 						if( n >= 2 ) phase_g    = g;
 					}
 
+					if( !absorption_spectral.empty() || !scattering_spectral.empty() ) {
+						const double emission[3] = { 0, 0, 0 };
+						return pJob.AddHomogeneousMediumSpectral( name.c_str(), sigma_a, sigma_s, emission,
+							absorption_spectral.c_str(), scattering_spectral.c_str(),
+							phase_type.c_str(), phase_g );
+					}
+
 					return pJob.AddHomogeneousMedium( name.c_str(), sigma_a, sigma_s, phase_type.c_str(), phase_g );
 				}
 
@@ -5817,8 +6112,10 @@ namespace RISE
 						cd.description = "Uniform participating medium.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::DoubleVec3; p.description = "Absorption coefficient (R G B)"; p.defaultValueHint = "0 0 0"; }
-						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::DoubleVec3; p.description = "Scattering coefficient (R G B)"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::DoubleVec3; p.description = "Absorption coefficient (R G B), RGB/preview path"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::DoubleVec3; p.description = "Scattering coefficient (R G B), RGB/preview path"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "absorption_spectral"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Name of a sigma_a(lambda) IFunction1D curve (e.g. piecewise_linear_function) for the spectral NM path.  Once EITHER spectral curve is bound the NM path is curve-driven: an unbound coefficient is ZERO in NM (bind both curves, or accept zero).  Only when BOTH are empty does NM fall back to RGB luminance"; }
+						{ auto& p = P(); p.name = "scattering_spectral"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Name of a sigma_s(lambda) IFunction1D curve for the spectral NM path.  Once EITHER spectral curve is bound the NM path is curve-driven: an unbound coefficient is ZERO in NM (bind both curves, or accept zero).  Only when BOTH are empty does NM fall back to RGB luminance"; }
 						{ auto& p = P(); p.name = "phase";      p.kind = ValueKind::String;     p.description = "Phase function: either `isotropic` or `hg <g>` (Henyey-Greenstein with asymmetry g)"; p.tupleKinds = {ValueKind::Enum, ValueKind::Double}; p.enumValues = {"isotropic","hg"}; p.defaultValueHint = "isotropic"; }
 						return cd;
 					}();
@@ -7486,10 +7783,13 @@ namespace RISE
 						GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", filename.c_str() );
 						return false;
 					}
-					while( !feof( f ) ) {
-						double v;
-						fscanf( f, "%lf", &v );
-						out.push_back( v );
+					char lcbuf[MAX_CHARS_PER_LINE];
+					while( fgets( lcbuf, sizeof( lcbuf ), f ) ) {
+						const char* q = lcbuf;
+						while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
+						if( *q == '\0' || *q == '#' ) continue;
+						double v = 0.0;
+						if( sscanf( lcbuf, "%lf", &v ) == 1 ) out.push_back( v );
 					}
 					fclose( f );
 					return true;
@@ -7549,13 +7849,18 @@ namespace RISE
 						const std::string filename = bag.GetString("rgb_spd");
 						FILE* f = fopen( GlobalMediaPathLocator().Find(String(filename.c_str())).c_str(), "r" );
 						if( f ) {
-							while( !feof( f ) ) {
-								double nm, r, g, b;
-								fscanf( f, "%lf %lf %lf %lf", &nm, &r, &g, &b );
-								spd_wavelengths.push_back( nm );
-								spd_r.push_back( r );
-								spd_g.push_back( g );
-								spd_b.push_back( b );
+							char rgbbuf[MAX_CHARS_PER_LINE];
+							while( fgets( rgbbuf, sizeof( rgbbuf ), f ) ) {
+								const char* q = rgbbuf;
+								while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
+								if( *q == '\0' || *q == '#' ) continue;
+								double nm = 0.0, r = 0.0, g = 0.0, b = 0.0;
+								if( sscanf( rgbbuf, "%lf %lf %lf %lf", &nm, &r, &g, &b ) == 4 ) {
+									spd_wavelengths.push_back( nm );
+									spd_r.push_back( r );
+									spd_g.push_back( g );
+									spd_b.push_back( b );
+								}
 							}
 							fclose( f );
 						} else {
@@ -9675,6 +9980,7 @@ namespace RISE
 		// Modifiers
 		add( "bumpmap_modifier",                      new BumpmapModifierAsciiChunkParser() );
 		add( "normal_map_modifier",                   new NormalMapModifierAsciiChunkParser() );
+		add( "glint_modifier",                        new GlintModifierAsciiChunkParser() );
 
 		// Media
 		add( "homogeneous_medium",                    new HomogeneousMediumAsciiChunkParser() );

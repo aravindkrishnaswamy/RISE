@@ -44,17 +44,39 @@ namespace RISE
 			const IScalarPainter*		pScat;			// Scattering function (Phong cone width or HG asymmetry)
 			const bool					bHG;			// Use Henyey-Greenstein phase function scattering
 
-			// Optional anti-reflective thin-film COATING (data-based).  When
-			// arThickness > 0 the bare air<->medium Fresnel reflectance is
-			// replaced by the single-film Airy reflectance of an (ambient /
-			// AR-film / substrate) stack via ThinFilm::ReflectanceConductor:
-			// e.g. a MgF2 (n~1.38) quarter-wave (~100 nm) coating drops a
-			// sapphire crystal's 7.7%/surface glare to ~0.5% with the
-			// characteristic purple bloom.  Default 0 => NO coating =>
-			// bit-identical bare-Fresnel dielectric (back-compat).
-			const Scalar				arN;			// AR film real index (0 = none)
-			const Scalar				arK;			// AR film extinction (~0)
-			const Scalar				arThickness;	// AR film thickness nm (0 = none)
+			// Optional anti-reflective thin-film COATING (data-based),
+			// generalized to an N-LAYER stack.  When arStack.nLayers > 0 the
+			// bare air<->medium Fresnel reflectance is replaced by the Airy
+			// (1 layer) / characteristic-matrix TMM (N layers) reflectance of
+			// an (ambient / film-1 / ... / film-N / substrate) stack via
+			// ThinFilm::ReflectanceConductorStack.  A single MgF2 (n~1.38)
+			// quarter-wave (~100 nm) layer drops a sapphire crystal's
+			// 7.7%/surface glare to ~0.5% but leaves the characteristic single-
+			// layer PURPLE bloom; a multi-layer broadband stack reflects far
+			// fainter AND colour-neutral (as real premium AR coatings do).
+			// nLayers == 0 => NO coating => bit-identical bare-Fresnel
+			// dielectric (back-compat).  Layers are authored in AMBIENT ->
+			// SUBSTRATE order (outermost, air-side, first).
+		public:
+			//! Max stack-allocated AR layers; must match ThinFilm::kMaxFilms
+			//! (a static_assert in DielectricSPF.cpp enforces it).  Public so
+			//! the .cpp's file-local stack helper and the static_assert can see
+			//! the cap and the POD layer type.
+			static const int			kMaxARLayers = 8;
+			struct ARStack
+			{
+				int		nLayers;					//!< 0 = no coating
+				Scalar	n[kMaxARLayers];			//!< real index, ambient->substrate
+				Scalar	k[kMaxARLayers];			//!< extinction (>=0)
+				Scalar	t[kMaxARLayers];			//!< thickness, nm
+			};
+		protected:
+			const ARStack				arStack;
+
+			//! Copies up to kMaxARLayers (n,k,t) triples into an ARStack.
+			//! Null arrays or nLayers<=0 yield an empty (no-coating) stack.
+			static ARStack BuildARStack( const Scalar* n, const Scalar* k,
+			                             const Scalar* t, int nLayers );
 
 			Scalar GenerateScatteredRay(
 				ScatteredRay& dielectric,									///< [out] Scattered dielectric ray
@@ -88,7 +110,8 @@ namespace RISE
 				const IScalarPainter& ri,
 				const IScalarPainter& s,
 				const bool hg,
-				Scalar arN_ = 0, Scalar arK_ = 0, Scalar arThickness_ = 0
+				const Scalar* arN_ = 0, const Scalar* arK_ = 0, const Scalar* arThickness_ = 0,
+				int arNLayers_ = 0
 				);
 
 			//! Read-back + rebind for the interactive editor.
@@ -100,9 +123,10 @@ namespace RISE
 			//! are fixed at construction.  Used by the snapshot clone to
 			//! faithfully reconstruct the material.
 			inline bool   GetHG()                 const { return bHG; }
-			inline Scalar GetAnodizationN()       const { return arN; }
-			inline Scalar GetAnodizationK()       const { return arK; }
-			inline Scalar GetAnodizationThickness() const { return arThickness; }
+			inline int           GetARLayerCount() const { return arStack.nLayers; }
+			inline const Scalar* GetARLayerN()     const { return arStack.n; }
+			inline const Scalar* GetARLayerK()     const { return arStack.k; }
+			inline const Scalar* GetARLayerT()     const { return arStack.t; }
 			void SetTransmittance( const IScalarPainter& v );
 			void SetIOR( const IScalarPainter& v );
 			void SetScattering( const IScalarPainter& v );

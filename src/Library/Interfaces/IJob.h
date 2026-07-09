@@ -21,6 +21,7 @@
 #define IJOB_
 
 #include "IReference.h"
+#include <type_traits>   // SFINAE for the arithmetic AR-film convenience
 #include "IPainter.h"           // for SpectrumKind enum (Landing 3)
 #include "IProgressCallback.h"
 #include "IJobRasterizerOutput.h"
@@ -814,10 +815,44 @@ namespace RISE
 									const char* rIndex,				///< [in] Index of refraction
 									const char* scat,				///< [in] Scattering function (either Phong or HG)
 									const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
-								const Scalar arN = 0,			///< [in] AR coating film real index (0 = no coating)
-								const Scalar arK = 0,			///< [in] AR coating film extinction (~0)
-								const Scalar arThickness = 0	///< [in] AR coating thickness, nm (0 = no coating)
+								const Scalar* arN = 0,			///< [in] AR coating layer real indices, ambient->substrate (0/null = no coating)
+								const Scalar* arK = 0,			///< [in] AR coating layer extinctions (~0; null => all 0)
+								const Scalar* arThickness = 0,	///< [in] AR coating layer thicknesses, nm
+								const unsigned int arNLayers = 0	///< [in] Number of AR layers (0 = no coating)
 									) = 0;
+
+		//! Legacy single-film AR convenience -> the N-layer virtual above.  A
+		//! single SFINAE template (constrained to arithmetic args) so ANY spelling
+		//! of the three AR-film scalars compiles -- all-double, all-int `(0,0,0)`,
+		//! or MIXED `(1.38, 0, 99.6)`.  A fixed Scalar/int overload pair would leave
+		//! mixed calls with no best match; a template is exact for every combo and,
+		//! being non-pointer, never competes with the array-form virtual.
+		//! NON-virtual (no vtable change).  NO-COATING: arFilmThickness <= 0 =>
+		//! nLayers=0 (bare Fresnel), not a zero-thickness/zero-index film.
+		template< typename ARN, typename ARK, typename ART,
+		          typename = typename std::enable_if< std::is_arithmetic<ARN>::value &&
+		                                              std::is_arithmetic<ARK>::value &&
+		                                              std::is_arithmetic<ART>::value >::type >
+		bool AddDielectricMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* tau,				///< [in] Transmittance painter
+									const char* rIndex,				///< [in] Index of refraction
+									const char* scat,				///< [in] Scattering function (either Phong or HG)
+									const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+									const ARN arFilmN,				///< [in] Single AR film real index
+									const ARK arFilmK,				///< [in] Single AR film extinction
+									const ART arFilmThickness		///< [in] Single AR film thickness, nm
+									)
+		{
+			if( Scalar( arFilmThickness ) <= Scalar( 0 ) ) {
+				return AddDielectricMaterial( name, tau, rIndex, scat, hg,
+					(const Scalar*)0, (const Scalar*)0, (const Scalar*)0, 0u );
+			}
+			const Scalar n[1]  = { Scalar( arFilmN ) };
+			const Scalar k[1]  = { Scalar( arFilmK ) };
+			const Scalar th[1] = { Scalar( arFilmThickness ) };
+			return AddDielectricMaterial( name, tau, rIndex, scat, hg, n, k, th, 1u );
+		}
 
 		//! Adds a SubSurface Scattering material
 		/// \return TRUE if successful, FALSE otherwise
@@ -1173,7 +1208,8 @@ namespace RISE
 									const char* name,				///< [in] Name of the geometry
 									const char axis,				///< [in] (x|y|z) Which axis the cylinder is sitting on
 									const double radius,			///< [in] Radius of the cylinder
-									const double height			///< [in] Height of the cylinder
+									const double height,			///< [in] Height of the cylinder
+									const bool capped = true		///< [in] TRUE: closed solid (end caps, default); FALSE: open tube.  Defaulted so pre-cap 4-arg callers keep compiling.
 									) = 0;
 
 		//! Adds an infinite plane that passes through the origin
@@ -1452,6 +1488,25 @@ namespace RISE
 			const char* name,										///< [in] Name of the medium
 			const double sigma_a[3],								///< [in] Absorption coefficient (linear RGB)
 			const double sigma_s[3],								///< [in] Scattering coefficient (linear RGB)
+			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
+			) = 0;
+
+		//! Adds a homogeneous participating medium with optional
+		//! per-wavelength coefficient curves for the spectral (NM) path
+		//! (G1, vitreous enamel).  \a absorption_spectral /
+		//! \a scattering_spectral are names of registered IFunction1D
+		//! curves (lambda->value), or null/"" for none.  When both are
+		//! absent the medium matches AddHomogeneousMedium (plus the
+		//! emission term).  The RGB triples drive the RGB/preview path.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddHomogeneousMediumSpectral(
+			const char* name,										///< [in] Name of the medium
+			const double sigma_a[3],								///< [in] Absorption coefficient (RGB preview)
+			const double sigma_s[3],								///< [in] Scattering coefficient (RGB preview)
+			const double emission[3],								///< [in] Volumetric emission (RGB)
+			const char* absorption_spectral,						///< [in] Name of sigma_a(lambda) IFunction1D, or null/""
+			const char* scattering_spectral,						///< [in] Name of sigma_s(lambda) IFunction1D, or null/""
 			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
 			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
 			) = 0;
@@ -3260,6 +3315,28 @@ namespace RISE
 			const double scale						///< [in] New environment radiance scale
 			) = 0;
 
+		//! Adds a discrete-facet glint modifier (sparse mirror-like
+		//! micro-facets pinned to the surface by an object-space cell
+		//! hash; a hit on a facet has its shading normal replaced by
+		//! the facet's tilted normal so the existing materials twinkle
+		//! — enamel flecks, metallic flake, snow, glitter).  See
+		//! Modifiers/GlintModifier.h for the model and parameter
+		//! semantics; all values must be FINITE (callers own loud
+		//! rejection; the modifier goes inert on garbage).
+		//! (Appended at the interface END per the vtable end-append
+		//! convention, hence its distance from the sibling modifier
+		//! adders.)
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddGlintModifier(
+			const char* name,										///< [in] Name of the modifier
+			const double density,									///< [in] cells per object-space unit (facet pitch = 1/density); <= 0 inert
+			const double coverage,									///< [in] per-cell facet existence probability [0,1]
+			const double fill,										///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 inert
+			const double spread,									///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 inert
+			const double scale[3],									///< [in] anisotropic cell stretch (1,1,1 = isotropic; Worley convention pt*scale+shift)
+			const double shift[3],									///< [in] cell-space offset
+			const unsigned int seed									///< [in] hash seed (distinct fleck fields on otherwise identical objects)
+			) = 0;
 		//! P5 Slice 3 (edit-model pivot): apply ONE param-value edit to the retained CST Document, then re-derive
 		//! (incrementally for the common case; a FULL document re-derive for variant / animated / instance_array
 		//! scenes).  `entityName` = the chunk's bare name (unique-or-refuse); `entityKind` = a keyword-suffix that

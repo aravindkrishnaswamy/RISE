@@ -19,8 +19,13 @@
 //      T(t) = exp(-sigma_t * t)   (per-channel Beer-Lambert)
 //
 //  SPECTRAL MODE:
-//    In spectral (NM) mode, extinction at the given wavelength is
-//    used directly — no channel selection needed.
+//    In spectral (NM) mode, GetCoefficientsNM evaluates genuine
+//    per-wavelength sigma_a(lambda)/sigma_s(lambda) from the optional
+//    m_sigma_*_spectral IFunction1D curves when either is bound (G1,
+//    vitreous enamel); with neither bound it falls back to the
+//    luminance of the RGB triples (byte-identical to pre-G1).  The
+//    distance sampler and transmittance both read sigma_t(lambda)
+//    through GetCoefficientsNM so the two paths cannot drift.
 //
 //  Aligned with Blender/Cycles homogeneous volume integration in
 //  volume_integrate_homogeneous()
@@ -39,6 +44,7 @@
 #define HOMOGENEOUS_MEDIUM_
 
 #include "../Interfaces/IMedium.h"
+#include "../Interfaces/IFunction1D.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/ISampler.h"
 #include "../Utilities/Color/ColorMath.h"
@@ -62,6 +68,21 @@ namespace RISE
 
 		const IPhaseFunction* m_pPhase;		///< Phase function (ref-counted)
 
+		// Optional per-wavelength coefficient curves (G1, vitreous
+		// enamel).  When either is non-null, the NM (spectral) path
+		// evaluates genuine sigma_a(lambda)/sigma_s(lambda) from these
+		// curves; when BOTH are null the NM path uses the luminance
+		// fallback (byte-identical to pre-G1 behaviour).  A null curve
+		// with the sibling non-null contributes ZERO for that
+		// coefficient in spectral mode (a pure-absorber colorant leaves
+		// the scattering curve null).  The RGB path
+		// (GetCoefficients/EvalTransmittance/SampleDistance) is
+		// unaffected and continues to use the RGB triples above for the
+		// interactive/RGB preview.  Both are addref'd in the ctor and
+		// released in the dtor.
+		const IFunction1D* m_sigma_a_spectral = nullptr;	///< sigma_a(lambda) [1/m], nullable
+		const IFunction1D* m_sigma_s_spectral = nullptr;	///< sigma_s(lambda) [1/m], nullable
+
 		virtual ~HomogeneousMedium();
 
 	public:
@@ -79,6 +100,22 @@ namespace RISE
 			const RISEPel& sigma_s,			///< [in] Scattering coefficient
 			const RISEPel& emission,		///< [in] Volumetric emission
 			const IPhaseFunction& phase		///< [in] Phase function for scattering
+			);
+
+		/// Construct with optional per-wavelength coefficient curves for
+		/// the spectral (NM) path.  \a sigma_a_spectral / \a sigma_s_spectral
+		/// may be null (=> that coefficient is zero in spectral mode; if
+		/// BOTH are null the NM path falls back to the luminance of the RGB
+		/// triples).  The RGB triples still drive the RGB rendering/preview
+		/// path.  Non-null curves are addref'd here and released on
+		/// destruction.
+		HomogeneousMedium(
+			const RISEPel& sigma_a,				///< [in] Absorption coefficient (RGB preview)
+			const RISEPel& sigma_s,				///< [in] Scattering coefficient (RGB preview)
+			const RISEPel& emission,			///< [in] Volumetric emission
+			const IFunction1D* sigma_a_spectral,///< [in] sigma_a(lambda) curve, or null
+			const IFunction1D* sigma_s_spectral,///< [in] sigma_s(lambda) curve, or null
+			const IPhaseFunction& phase			///< [in] Phase function for scattering
 			);
 
 		MediumCoefficients GetCoefficients(
@@ -131,6 +168,9 @@ namespace RISE
 		inline const RISEPel& GetAbsorption() const { return m_sigma_a; }
 		inline const RISEPel& GetScattering() const { return m_sigma_s; }
 		inline const RISEPel& GetEmission()   const { return m_emission; }
+		//! Spectral coefficient curves (null when the medium is RGB-only).
+		inline const IFunction1D* GetAbsorptionSpectral() const { return m_sigma_a_spectral; }
+		inline const IFunction1D* GetScatteringSpectral() const { return m_sigma_s_spectral; }
 		void SetAbsorption( const RISEPel& v );
 		void SetScattering( const RISEPel& v );
 		void SetEmission( const RISEPel& v );

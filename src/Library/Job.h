@@ -1074,9 +1074,10 @@ namespace RISE
 									const char* rIndex,				///< [in] Index of refraction
 									const char* scat,				///< [in] Scattering function (either Phong or HG)
 									const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
-									const Scalar arN,
-									const Scalar arK,
-									const Scalar arThickness
+									const Scalar* arN,
+									const Scalar* arK,
+									const Scalar* arThickness,
+									const unsigned int arNLayers
 									);
 
 		//! Creates a SubSurface Scattering material
@@ -1383,7 +1384,8 @@ namespace RISE
 									const char* name,				///< [in] Name of the geometry
 									const char axis,				///< [in] (x|y|z) Which axis the cylinder is sitting on
 									const double radius,			///< [in] Radius of the cylinder
-									const double height			///< [in] Height of the cylinder
+									const double height,			///< [in] Height of the cylinder
+									const bool capped = true		///< [in] TRUE: closed solid (end caps, default); FALSE: open tube.  Defaulted so pre-cap 4-arg callers keep compiling.
 									);
 
 		//! Creates an infinite plane that passes through the origin
@@ -1659,6 +1661,21 @@ namespace RISE
 			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
 			);
 
+		//! Adds a homogeneous participating medium with optional
+		//! per-wavelength spectral coefficient curves (G1).  Not marked
+		//! 'override' — Job's IJob overrides are intentionally
+		//! unannotated (house style; see CLAUDE.md).
+		bool AddHomogeneousMediumSpectral(
+			const char* name,										///< [in] Name of the medium
+			const double sigma_a[3],								///< [in] Absorption coefficient (RGB preview)
+			const double sigma_s[3],								///< [in] Scattering coefficient (RGB preview)
+			const double emission[3],								///< [in] Volumetric emission (RGB)
+			const char* absorption_spectral,						///< [in] Name of sigma_a(lambda) IFunction1D, or null/""
+			const char* scattering_spectral,						///< [in] Name of sigma_s(lambda) IFunction1D, or null/""
+			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
+			);
+
 		//! Adds a heterogeneous participating medium driven by volume data
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddHeterogeneousMedium(
@@ -1753,6 +1770,21 @@ namespace RISE
 			const char* name,										///< [in] Name of the modifier
 			const char* painter,									///< [in] Linear-RGB normal-map painter
 			const double scale										///< [in] glTF normalTexture.scale
+			);
+
+		//! Creates a discrete-facet glint modifier.  See IJob.h for the doc.
+		//! (Overrides the IJob virtual; unmarked to match this file's
+		//! no-`override` style.)
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddGlintModifier(
+			const char* name,										///< [in] Name of the modifier
+			const double density,									///< [in] cells per object-space unit; <= 0 inert
+			const double coverage,									///< [in] per-cell facet existence probability [0,1]
+			const double fill,										///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 inert
+			const double spread,									///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 inert
+			const double scale[3],									///< [in] anisotropic cell stretch
+			const double shift[3],									///< [in] cell-space offset
+			const unsigned int seed									///< [in] hash seed
 			);
 
 		//
@@ -2283,6 +2315,7 @@ namespace RISE
 		// Job* would fail to compile even though the inline wrapper
 		// exists in IJob.  The `using` brings the base-class overloads
 		// into Job's scope, restoring overload resolution.
+		using IJob::AddDielectricMaterial;
 		using IJob::SetMLTRasterizer;
 		using IJob::SetMLTSpectralRasterizer;
 

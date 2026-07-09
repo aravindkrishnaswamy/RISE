@@ -225,20 +225,22 @@ static void TestCylinder()
 	std::cout << "Testing CylinderGeometry..." << std::endl;
 	const Scalar r = 1.0, h = 2.0;
 
-	// Constructor: CylinderGeometry(chAxis, radius, height)
+	// Constructor: CylinderGeometry(chAxis, radius, height, capped).
+	// This test targets the SIDE-WALL derivative frame, so use the open tube
+	// (capped=false); cap derivatives are covered by CappedCylinderTest.
 	{
-		CylinderGeometry* g = new CylinderGeometry( 'y', r, h );
+		CylinderGeometry* g = new CylinderGeometry( 'y', r, h, false );
 		CheckViaRay( *g, Point3( 3, 0, 0 ),   Vector3(-1, 0, 0), "Y-cyl +X" );
 		CheckViaRay( *g, Point3( 0, 0.5, 3 ), Vector3( 0, 0,-1), "Y-cyl off-mid +Z" );
 		g->release();
 	}
 	{
-		CylinderGeometry* g = new CylinderGeometry( 'x', r, h );
+		CylinderGeometry* g = new CylinderGeometry( 'x', r, h, false );
 		CheckViaRay( *g, Point3( 0, 3, 0 ),   Vector3( 0,-1, 0), "X-cyl +Y" );
 		g->release();
 	}
 	{
-		CylinderGeometry* g = new CylinderGeometry( 'z', r, h );
+		CylinderGeometry* g = new CylinderGeometry( 'z', r, h, false );
 		CheckViaRay( *g, Point3( 3, 0, 0 ),   Vector3(-1, 0, 0), "Z-cyl +X" );
 		g->release();
 	}

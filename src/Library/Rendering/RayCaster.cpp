@@ -53,6 +53,36 @@ static const RISE::Scalar RC_RR_THRESHOLD = 0.01;
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	// Analog no-scatter survival weight (mirrors PathTracingIntegrator's
+	// PTSurvivalWeight).  SampleDistance{,NM} is an ANALOG estimator: reaching
+	// the surface / escaping WITHOUT a scatter event is a stochastic SURVIVAL
+	// outcome whose probability already carries the Beer-Lambert factor.
+	// Multiplying throughput by the full per-channel Tr again would double-count
+	// attenuation (a pure absorber would render exp(-2*sigma_a*d), ~2x too
+	// thick).  The correct weight is Tr / pSurvival, where pSurvival is the
+	// DETERMINISTIC no-scatter survival pdf from
+	// IMedium::EvalDistancePdf( ray, dist, /*scattered=*/false, dist ).
+	//
+	// For a HomogeneousMedium this is byte-identical to the previous
+	// MinValue(Tr) form: EvalDistancePdf(false) returns exp(-sigma_t_max*dist) =
+	// MinValue(EvalTransmittance).  For a HeterogeneousMedium, EvalTransmittance
+	// is a STOCHASTIC ratio-tracking estimate, so MinValue(EvalTransmittance)
+	// would be a random denominator (biased ratio-of-random-estimates);
+	// HeterogeneousMedium overrides EvalDistancePdf with a deterministic Simpson
+	// optical depth, so Tr / pSurvival is the correct unbiased weight there.
+	// A non-positive survival pdf means "no attenuation to apply" -> identity.
+	inline RISE::RISEPel RayCasterSurvivalWeight(
+		const RISE::RISEPel& Tr, const RISE::Scalar pSurvival )
+	{
+		if( pSurvival > 0 ) {
+			return Tr * ( RISE::Scalar( 1 ) / pSurvival );
+		}
+		return RISE::RISEPel( 1, 1, 1 );
+	}
+}
+
 RayCaster::RayCaster(
 	const bool seeRadianceMap,
 	const unsigned int maxR,
@@ -375,6 +405,21 @@ bool RayCaster::CastRay(
 	const IObject* pMediumObject = 0;
 	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
 
+	// G6: stamp the ambient (incident-medium) IOR so a GGX conductor shaded via
+	// the RayCaster shader path sees the surrounding medium's IOR rather than
+	// hardcoded air.  Read before SetCurrentObject (which does not push).  Guard
+	// to air (1.0).
+	{
+		const Scalar ambIOR = ior_stack.top();
+		ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+	}
+
+	// Strategy-selection factor for a no-scatter outcome (see the EQ-MIS block
+	// below).  Declared in the outer scope because the survival sites that
+	// consume it (surface-hit / escape) live outside the if(pMedium) block.
+	// 0.5 only in the DT no-scatter branch under equiangular MIS; 1.0 otherwise.
+	Scalar noScatterPdfScale = 1.0;
+
 	if( pMedium )
 	{
 		const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
@@ -514,7 +559,13 @@ bool RayCaster::CastRay(
 						combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 						useExplicitThroughput = true;
 					}
-					// If not scattered: no equiangular counterpart, weight = 1
+					else
+					{
+						// No-scatter outcome under equiangular MIS: reachable only
+						// via this delta-tracking strategy (chosen with prob 0.5).
+						// The survival sites divide by the extra 0.5.
+						noScatterPdfScale = 0.5;
+					}
 				}
 				else
 				{
@@ -864,9 +915,15 @@ bool RayCaster::CastRay(
 		// Apply shade by calling the appropriate shader
 		SelectShader( ri ).Shade( rc, ri, *this, rs, c, ior_stack );
 
-		// Apply medium transmittance to surface shading result
+		// Analog no-scatter survival weight (see RayCasterSurvivalWeight):
+		// reaching this surface without a scatter event is a survival outcome
+		// whose probability already carries Beer-Lambert, so weight by
+		// Tr / pSurvival (deterministic no-scatter survival pdf), NOT the full
+		// Tr (which would double-count attenuation).
 		if( pMedium ) {
-			c = c * pMedium->EvalTransmittance( ray, ri.geometric.range );
+			c = c * RayCasterSurvivalWeight(
+				pMedium->EvalTransmittance( ray, ri.geometric.range ),
+				noScatterPdfScale * pMedium->EvalDistancePdf( ray, ri.geometric.range, false, ri.geometric.range ) );
 		}
 
 		if( distance ) {
@@ -877,9 +934,12 @@ bool RayCaster::CastRay(
 	} else if( pRadianceMap ) {
 		c = pRadianceMap->GetRadiance( ray, rast );
 
-		// Apply medium transmittance for background
+		// Analog no-scatter survival weight for the escape-to-background path
+		// (Tr / pSurvival, not full Tr — see above).
 		if( pMedium ) {
-			c = c * pMedium->EvalTransmittance( ray, RISE_INFINITY );
+			c = c * RayCasterSurvivalWeight(
+				pMedium->EvalTransmittance( ray, RISE_INFINITY ),
+				noScatterPdfScale * pMedium->EvalDistancePdf( ray, RISE_INFINITY, false, RISE_INFINITY ) );
 		}
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadiance( ray, rast );
@@ -923,9 +983,12 @@ bool RayCaster::CastRay(
 			}
 		}
 
-		// Apply medium transmittance for environment
+		// Analog no-scatter survival weight for the escape-to-environment path
+		// (Tr / pSurvival, not full Tr — see above).
 		if( pMedium ) {
-			c = c * pMedium->EvalTransmittance( ray, RISE_INFINITY );
+			c = c * RayCasterSurvivalWeight(
+				pMedium->EvalTransmittance( ray, RISE_INFINITY ),
+				noScatterPdfScale * pMedium->EvalDistancePdf( ray, RISE_INFINITY, false, RISE_INFINITY ) );
 		}
 
 		if( distance && bConsiderRMapAsBackground ) {
@@ -1017,6 +1080,21 @@ bool RayCaster::CastRayNM(
 	// Medium transport (spectral variant)
 	const IObject* pMediumObject = 0;
 	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
+
+	// G6: stamp the ambient (incident-medium) IOR (per-wavelength n(λ) in NM) so
+	// a GGX conductor shaded via the RayCaster spectral shader path uses the
+	// surrounding medium's IOR rather than hardcoded air.  Read before
+	// SetCurrentObject (which does not push).  Guard to air (1.0).
+	{
+		const Scalar ambIOR = ior_stack.top();
+		ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+	}
+
+	// Strategy-selection factor for a no-scatter outcome (see the EQ-MIS block
+	// below).  Declared in the outer scope because the survival sites that
+	// consume it (surface-hit / escape) live outside the if(pMedium) block.
+	// 0.5 only in the DT no-scatter branch under equiangular MIS; 1.0 otherwise.
+	Scalar noScatterPdfScale_NM = 1.0;
 
 	if( pMedium )
 	{
@@ -1121,6 +1199,12 @@ bool RayCaster::CastRayNM(
 						}
 						combinedPdf_NM = 0.5 * pdf_dt + 0.5 * pdf_eq;
 						useExplicitThroughput_NM = true;
+					}
+					else
+					{
+						// No-scatter outcome under equiangular MIS: reachable only
+						// via this delta-tracking strategy (chosen with prob 0.5).
+						noScatterPdfScale_NM = 0.5;
 					}
 				}
 				else
@@ -1387,9 +1471,22 @@ bool RayCaster::CastRayNM(
 		// Apply shade by calling the appropriate shader
 		c = SelectShader( ri ).ShadeNM( rc, ri, *this, rs, nm, ior_stack );
 
-		// Apply medium transmittance to surface shading result
+		// Analog no-scatter survival: reaching this surface without a scatter
+		// event is a survival outcome whose probability already carries
+		// Beer-Lambert.  The correct weight is Tr / pSurvival, where pSurvival is
+		// the DETERMINISTIC no-scatter survival pdf EvalDistancePdfNM(false).  For
+		// a HomogeneousMedium both equal exp(-sigma_t(nm)*d), so the weight is
+		// exactly 1 (byte-identical to applying no factor).  For a
+		// HeterogeneousMedium, EvalTransmittanceNM is a STOCHASTIC ratio-tracking
+		// estimate while EvalDistancePdfNM is a deterministic Simpson optical
+		// depth, so the ratio is the correct unbiased weight (NOT unity).
 		if( pMedium ) {
-			c *= pMedium->EvalTransmittanceNM( ray, ri.geometric.range, nm );
+			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, ri.geometric.range, nm );
+			const Scalar pSurvival = noScatterPdfScale_NM * pMedium->EvalDistancePdfNM(
+				ray, ri.geometric.range, false, ri.geometric.range, nm );
+			if( pSurvival > 0 ) {
+				c = c * ( Tr / pSurvival );
+			}
 		}
 
 		if( distance ) {
@@ -1400,8 +1497,16 @@ bool RayCaster::CastRayNM(
 	} else if( pRadianceMap ) {
 		c = pRadianceMap->GetRadianceNM( ray, rast, nm );
 
+		// Analog no-scatter survival weight for the escape-to-background path:
+		// Tr / pSurvival (deterministic no-scatter survival pdf; = 1 for
+		// homogeneous, correct for heterogeneous — see the surface-hit case).
 		if( pMedium ) {
-			c *= pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
+			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
+			const Scalar pSurvival = noScatterPdfScale_NM * pMedium->EvalDistancePdfNM(
+				ray, RISE_INFINITY, false, RISE_INFINITY, nm );
+			if( pSurvival > 0 ) {
+				c = c * ( Tr / pSurvival );
+			}
 		}
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadianceNM( ray, rast, nm );
@@ -1445,8 +1550,16 @@ bool RayCaster::CastRayNM(
 			}
 		}
 
+		// Analog no-scatter survival weight for the escape-to-environment path:
+		// Tr / pSurvival (deterministic no-scatter survival pdf; = 1 for
+		// homogeneous, correct for heterogeneous — see the surface-hit case).
 		if( pMedium ) {
-			c *= pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
+			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
+			const Scalar pSurvival = noScatterPdfScale_NM * pMedium->EvalDistancePdfNM(
+				ray, RISE_INFINITY, false, RISE_INFINITY, nm );
+			if( pSurvival > 0 ) {
+				c = c * ( Tr / pSurvival );
+			}
 		}
 
 		if( distance && bConsiderRMapAsBackground ) {

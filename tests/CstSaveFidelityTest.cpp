@@ -212,6 +212,25 @@ int main()
 		Check( SerializeCst( DocRemoveItem( d, DocItemCount(d) ) ) == t, "J: DocRemoveItem past the end is a no-op" );
 	}
 
+	// N. Repeatable `ar_layer` lines (the vitreous-enamel N-layer AR stack) round-trip
+	//    byte-exactly, and an edit elsewhere in the same chunk leaves every ar_layer
+	//    occurrence verbatim (repeatable params are ParamsList lines like any other --
+	//    lock that in for the merge's new repeatable surface).
+	{
+		const std::string t =
+			"RISE ASCII SCENE 7\nscalar_painter\n{\nname tau\nvalue 1.0\n}\n"
+			"scalar_painter\n{\nname ior\nvalue 1.55\n}\n"
+			"scalar_painter\n{\nname sc\nvalue 1000000\n}\n"
+			"dielectric_material\n{\nname glass\ntau tau\nior ior\nscattering sc\n"
+			"ar_layer 1.38 99.6 0.0   # MgF2\nar_layer 2.35 58.7 0.0   # ZrO2\n}\n";
+		Check( SerializeCst( ParseToCst( t ) ) == t, "N: repeatable ar_layer round-trip is byte-exact" );
+		const std::string exp = Replace1( t, "tau tau", "tau ior" );
+		const std::string got = EditOne( t, "dielectric_material/glass", "tau", 0, "ior" );
+		Check( got == exp, "N: editing a sibling param leaves both ar_layer lines (and comments) verbatim" );
+		Check( got.find( "ar_layer 1.38 99.6 0.0   # MgF2" ) != std::string::npos &&
+		       got.find( "ar_layer 2.35 58.7 0.0   # ZrO2" ) != std::string::npos, "N: both ar_layer occurrences survive" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", s_pass, s_fail );
 	return s_fail == 0 ? 0 : 1;
 }

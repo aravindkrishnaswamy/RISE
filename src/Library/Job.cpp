@@ -12,6 +12,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <cerrno>    // errno / ERANGE for non-finite + overflow rejection
+#include <climits>   // UINT_MAX for max_bounces validation
 #include "Scene.h"   // P2a: bump light-topology generation on Job-level emitter/env edits
 #include "Managers/LightManager.h"   // H3: self-invalidating light add/remove
 #include "Managers/GenericManager.h" // D35 record-during-derive sinks (media bypass the GenericManager chokepoint, so hook mediaMap here)
@@ -135,6 +137,108 @@ using namespace RISE::Implementation;
 // Forward declarations for scalar-painter resolution helpers — full
 // definitions live alongside the first `AddDielectricMaterial` and
 // are shared by every material conversion in this file.
+// On an ERANGE strtod result, classify the consumed token [tok,end) as
+// UNDERFLOW (-> finite 0/subnormal) vs OVERFLOW (-> non-finite HUGE_VAL)
+// at the STRING layer.  An exponent-SIGN heuristic alone is spoofable --
+// a 320-digit mantissa with `e-1` still overflows to +inf yet carries
+// `e-` in the token -- so compute the SIGN of the token's net magnitude:
+// the order of the leading significant digit plus the explicit exponent
+// (decimal digits count in powers of 10; C99 hex-float mantissa digits
+// count 4 bits each against the BINARY `p` exponent).  ERANGE guarantees
+// the value is hundreds of orders outside [DBL_MIN, DBL_MAX], so the +-3
+// bit slop of the leading hex digit can never flip the sign.
+// KEEP IN LOCKSTEP with the identical helper in ChunkParserRegistry.cpp.
+static bool ERangeTokenIsUnderflow( const char* tok, const char* end )
+{
+	const char* p = ( tok < end && ( *tok == '+' || *tok == '-' ) ) ? tok + 1 : tok;
+	bool isHex = false;
+	if( end - p > 1 && p[0] == '0' && ( p[1] == 'x' || p[1] == 'X' ) ) { isHex = true; p += 2; }
+	long order = 0;                    // order of the leading significant digit
+	bool seenSig = false, seenPoint = false;
+	long intDigits = 0, fracZeros = 0;
+	for( ; p < end; ++p ) {
+		const char c = *p;
+		if( c == '.' && !seenPoint ) { seenPoint = true; continue; }
+		const bool dig = isHex ? !!isxdigit( (unsigned char)c ) : !!isdigit( (unsigned char)c );
+		if( !dig ) break;                       // exponent marker
+		if( !seenSig ) {
+			if( c == '0' ) { if( seenPoint ) ++fracZeros; continue; }
+			seenSig = true;
+			if( !seenPoint ) intDigits = 1; else order = -( fracZeros + 1 );
+		} else if( !seenPoint ) {
+			++intDigits;
+		}
+	}
+	if( !seenSig ) return true;        // literal zero never ERANGEs; harmless
+	if( intDigits > 0 ) order = intDigits - 1;
+	long expVal = 0;
+	if( p < end && ( ( !isHex && ( *p == 'e' || *p == 'E' ) ) || ( isHex && ( *p == 'p' || *p == 'P' ) ) ) ) {
+		++p;
+		long sign = 1;
+		if( p < end && ( *p == '+' || *p == '-' ) ) { if( *p == '-' ) sign = -1; ++p; }
+		long v = 0;
+		for( ; p < end && isdigit( (unsigned char)*p ); ++p ) { if( v < 100000000L ) v = v * 10 + ( *p - '0' ); }
+		expVal = sign * v;
+	}
+	const long net = isHex ? ( 4 * order + expVal ) : ( order + expVal );
+	return net < 0;
+}
+
+// True IFF s parses as a NON-FINITE number (nan/inf spelling, or ERANGE overflow).
+// A non-numeric value (e.g. a painter name like "pnt_zero", which the legacy atof
+// path turns into 0) returns FALSE and is left untouched.  Used to reject non-finite
+// inline values for Reference-kind material scalars (g, roughness) that bypass the
+// descriptor's AllTokensAreFiniteNumbers gate; value-level isfinite is unreliable
+// under -ffast-math, so this is a STRING-layer check.
+static bool ScalarLiteralIsNonFinite( const char* s )
+{
+	if( !s ) return false;
+	char* end = nullptr;
+	errno = 0;
+	(void)std::strtod( s, &end );
+	if( end == s ) return false;		// strtod consumed nothing -> not a number (painter name / garbage)
+	// strtod DID parse a numeric prefix; this returns true iff that value is
+	// non-finite (nan/inf spelling or ERANGE overflow), regardless of what trails
+	// -- a trailing "# comment" or junk still yields a non-finite atof() value, so
+	// `inf # comment`, `1e999 # comment`, and `1e999x` are all flagged.  NOTE: this
+	// also flags a longer identifier with a nan/inf prefix (e.g. "inflection_map",
+	// which strtod reads as "inf"); callers whose slot accepts a painter NAME must
+	// therefore consult the painter manager FIRST and apply this only on the inline
+	// fallback (a registered name never reaches here).
+	if( errno == ERANGE ) {
+		// ERANGE is set on overflow (-> non-finite HUGE_VAL) AND underflow (-> finite
+		// 0/subnormal, e.g. 5e-400).  Only overflow is non-finite.  Classify at the
+		// STRING layer by net-magnitude sign over the consumed token [s, end) --
+		// an exponent-sign scan alone is spoofable by a huge mantissa with a small
+		// negative exponent (`1<320 zeros>e-1` -> +inf).  See ERangeTokenIsUnderflow.
+		return !ERangeTokenIsUnderflow( s, end );	// overflow -> non-finite
+	}
+	const char* p = s;
+	while( *p == ' ' || *p == '\t' ) ++p;
+	const char* t = ( *p == '+' || *p == '-' ) ? p + 1 : p;
+	return ( t[0] == 'n' || t[0] == 'N' || t[0] == 'i' || t[0] == 'I' );	// strtod parsed nan/inf
+}
+
+// True iff `s` is a COMPLETE, finite numeric literal: strtod consumes a non-empty
+// prefix, the value is finite (not a nan/inf spelling, not an ERANGE overflow), and
+// only whitespace or a `#` comment trails the consumed token.  STRICTER than
+// !ScalarLiteralIsNonFinite -- it also rejects finite junk that atof() would silently
+// coerce (`0.5rad`->0.5, `nope`->0, a mistyped painter name `roughnes_tex`->0).
+// Callers whose slot also accepts a painter NAME must consult the painter manager(s)
+// FIRST and apply this only to the inline-scalar fallback (a registered name / the
+// "none" sentinel is a painter and never reaches here).
+static bool ScalarLiteralIsFiniteNumber( const char* s )
+{
+	if( !s || *s == '\0' ) return false;
+	if( ScalarLiteralIsNonFinite( s ) ) return false;	// nan / inf / overflow
+	char* end = nullptr;
+	errno = 0;
+	(void)std::strtod( s, &end );
+	if( end == s ) return false;						// no numeric prefix (name / garbage)
+	while( *end == ' ' || *end == '\t' ) ++end;		// tolerate trailing ws / # comment
+	return ( *end == '\0' || *end == '#' );
+}
+
 static IScalarPainter* ResolveScalarPainterArg(
 	IScalarPainterManager* mgr,
 	const char* value,
@@ -2767,9 +2871,27 @@ static IScalarPainter* ResolveScalarPainterArg(
 		return true;
 	};
 
+	// Reject non-finite SPELLINGS (nan / inf / infinity) at the STRING layer.
+	// These Reference-kind painter slots bypass the descriptor's
+	// AllTokensAreFiniteNumbers gate (it runs only for Double/Vec/UInt kinds), and
+	// value-level isfinite/isnan is unreliable under -ffast-math -- so the same
+	// spelling check must live here.  (errno==ERANGE below only catches overflow
+	// like 1e999; strtod("inf")/strtod("nan") set no errno.)  Runs AFTER the
+	// named-painter lookup above, so a painter literally named "inf" is unaffected.
+	for( const char* q = value; *q; ) {
+		while( *q == ' ' || *q == '\t' ) ++q;
+		if( !*q ) break;
+		const char* t = ( *q == '+' || *q == '-' ) ? q + 1 : q;
+		if( t[0] == 'n' || t[0] == 'N' || t[0] == 'i' || t[0] == 'I' ) {
+			return nullptr;	// nan / inf / infinity -> reject loudly; caller diagnoses
+		}
+		while( *q && *q != ' ' && *q != '\t' ) ++q;
+	}
+
 	// 3-double inline triple — more specific, tried first.
 	{
 		char* end1 = nullptr;
+		errno = 0;
 		const double r = std::strtod( value, &end1 );
 		if( end1 != value ) {
 			char* end2 = nullptr;
@@ -2778,6 +2900,9 @@ static IScalarPainter* ResolveScalarPainterArg(
 				char* end3 = nullptr;
 				const double b = std::strtod( end2, &end3 );
 				if( end3 != end2 && onlyTrailingWhitespace( end3 ) ) {
+					if( errno == ERANGE ) {
+						return nullptr;	// inline numeric overflow (e.g. 1e999) -> reject loudly; caller diagnoses
+					}
 					if( requireSingle && !( r == g && g == b ) ) {
 						return nullptr;
 					}
@@ -2798,8 +2923,12 @@ static IScalarPainter* ResolveScalarPainterArg(
 	// Single-double scalar.
 	{
 		char* end = nullptr;
+		errno = 0;
 		const double v = std::strtod( value, &end );
 		if( end != value && onlyTrailingWhitespace( end ) ) {
+			if( errno == ERANGE ) {
+				return nullptr;	// inline numeric overflow -> reject loudly
+			}
 			IScalarPainter* p = nullptr;
 			RISE_API_CreateUniformScalarPainter( &p, Scalar( v ) );
 			return p;
@@ -2890,9 +3019,10 @@ bool Job::AddDielectricMaterial(
 							const char* rIndex,				///< [in] Index of refraction
 							const char* scat,				///< [in] Scattering function (either Phong or HG)
 							const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
-							const Scalar arN,
-							const Scalar arK,
-							const Scalar arThickness
+							const Scalar* arN,
+							const Scalar* arK,
+							const Scalar* arThickness,
+							const unsigned int arNLayers
 							)
 {
 	// tau/ior/scattering are all physical scalars carried by
@@ -2913,7 +3043,7 @@ bool Job::AddDielectricMaterial(
 	}
 
 	IMaterial* pMaterial = 0;
-	RISE_API_CreateDielectricMaterial( &pMaterial, *pTau, *pIor, *pScat, hg, arN, arK, arThickness );
+	RISE_API_CreateDielectricMaterial( &pMaterial, *pTau, *pIor, *pScat, hg, arN, arK, arThickness, arNLayers );
 
 	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
@@ -2950,6 +3080,18 @@ bool Job::AddSubSurfaceScatteringMaterial(
 		return false;
 	}
 
+	// g / roughness are BAKED into the SPF as plain doubles -- a painter
+	// name here is NOT plumbed (it used to pass validation and silently
+	// atof to 0.0), so only finite numeric literals are accepted.
+	const bool gBad = !ScalarLiteralIsFiniteNumber( g );
+	const bool rBad = !ScalarLiteralIsFiniteNumber( roughness );
+	if( gBad || rBad ) {
+		GlobalLog()->PrintEx( eLog_Error, "subsurfacescattering_material `%s`: `g` / `roughness` are baked scalars and must be finite numbers -- painter names are not supported here (got g=`%s`, roughness=`%s`)", name, g, roughness );
+		safe_release( pIOR );
+		safe_release( pAbsorption );
+		safe_release( pScattering );
+		return false;
+	}
 	double gVal = atof(g);
 	double roughnessVal = atof(roughness);
 
@@ -2989,9 +3131,33 @@ bool Job::AddRandomWalkSSSMaterial(
 		return false;
 	}
 
+	// g / roughness are BAKED plain doubles (see subsurfacescattering_material).
+	const bool gBad = !ScalarLiteralIsFiniteNumber( g );
+	const bool rBad = !ScalarLiteralIsFiniteNumber( roughness );
+	if( gBad || rBad ) {
+		GlobalLog()->PrintEx( eLog_Error, "randomwalksss_material `%s`: `g` / `roughness` are baked scalars and must be finite numbers -- painter names are not supported here (got g=`%s`, roughness=`%s`)", name, g, roughness );
+		safe_release( pIOR );
+		safe_release( pAbsorption );
+		safe_release( pScattering );
+		return false;
+	}
+	// max_bounces is Reference-kind (bypasses the descriptor's finite gate) but is a
+	// non-negative integer count; atoi() silently yields 0 on inf/nan/misspelled input.
+	char* mbEnd = nullptr;
+	errno = 0;
+	const long mb = std::strtol( maxBounces, &mbEnd, 10 );
+	const char* mbTail = mbEnd;
+	while( *mbTail == ' ' || *mbTail == '\t' ) ++mbTail;	// tolerate trailing whitespace / # comment
+	if( mbEnd == maxBounces || ( *mbTail != '\0' && *mbTail != '#' ) || mb < 0 || errno == ERANGE || (unsigned long)mb > UINT_MAX ) {
+		GlobalLog()->PrintEx( eLog_Error, "randomwalksss_material `%s`: `max_bounces` must be a non-negative integer <= UINT_MAX (got `%s`)", name, maxBounces );
+		safe_release( pIOR );
+		safe_release( pAbsorption );
+		safe_release( pScattering );
+		return false;
+	}
 	double gVal = atof(g);
 	double roughnessVal = atof(roughness);
-	unsigned int maxBouncesVal = atoi(maxBounces);
+	unsigned int maxBouncesVal = (unsigned int)mb;
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateRandomWalkSSSMaterial( &pMaterial, *pIOR, *pAbsorption, *pScattering, gVal, roughnessVal, maxBouncesVal );
@@ -3328,6 +3494,12 @@ bool Job::AddDonnerJensenSkinBSSRDFMaterial(
 		}
 	}
 
+	// roughness is a BAKED plain double (see subsurfacescattering_material).
+	if( !ScalarLiteralIsFiniteNumber( roughness ) ) {
+		GlobalLog()->PrintEx( eLog_Error, "material `%s`: `roughness` is a baked scalar and must be a finite number -- painter names are not supported here (got `%s`)", name, roughness );
+		for( int j=0; j<9; ++j ) safe_release( all_dj[j] );
+		return false;
+	}
 	const double roughnessVal = atof( roughness );
 
 	IMaterial* pMaterial = 0;
@@ -3544,6 +3716,10 @@ bool Job::AddGGXMaterial(
 	const char* film_thickness
 	)
 {
+	if( !ScalarLiteralIsFiniteNumber( tangent_rotation ) && pPntManager->GetItem( tangent_rotation ) == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error, "ggx_material `%s`: `tangent_rotation` must be a finite rotation or a painter name (got `%s`)", name, tangent_rotation );
+		return false;
+	}
 	IPainter* pRd = pPntManager->GetItem(diffuse);
 	IPainter* pRs = pPntManager->GetItem(specular);
 
@@ -3679,6 +3855,10 @@ bool Job::AddGGXEmissiveMaterial(
 	const char* film_thickness
 	)
 {
+	if( !ScalarLiteralIsFiniteNumber( tangent_rotation ) && pPntManager->GetItem( tangent_rotation ) == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error, "ggx_emissive_material `%s`: `tangent_rotation` must be a finite rotation or a painter name (got `%s`)", name, tangent_rotation );
+		return false;
+	}
 	IPainter* pRd = pPntManager->GetItem(diffuse);
 	IPainter* pRs = pPntManager->GetItem(specular);
 
@@ -3826,6 +4006,28 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 	const char* anisotropy_rotation
 	)
 {
+	if( !ScalarLiteralIsFiniteNumber( anisotropy_rotation ) && pPntManager->GetItem( anisotropy_rotation ) == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error, "pbrmetallicroughness_material `%s`: `anisotropy_rotation` must be a finite rotation or a painter name (got `%s`)", name, anisotropy_rotation );
+		return false;
+	}
+	// The scalar factors (metallic / roughness / specular_factor / anisotropy_factor)
+	// fall back to atof() in resolveOrSynth below when not a painter name, so an
+	// inline non-finite value would synthesise a non-finite uniform-colour painter.
+	// Reject those up front (a painter NAME is not flagged; "none" is not flagged).
+	{
+		const struct { const char* v; const char* role; } pbrScalars[] = {
+			{ metallic,          "metallic"          },
+			{ roughness,         "roughness"         },
+			{ specular_factor,   "specular_factor"   },
+			{ anisotropy_factor, "anisotropy_factor" },
+		};
+		for( unsigned int i = 0; i < sizeof(pbrScalars)/sizeof(pbrScalars[0]); ++i ) {
+			if( !ScalarLiteralIsFiniteNumber( pbrScalars[i].v ) && pPntManager->GetItem( pbrScalars[i].v ) == 0 ) {
+				GlobalLog()->PrintEx( eLog_Error, "pbrmetallicroughness_material `%s`: `%s` must be a finite scalar or a painter name (got `%s`)", name, pbrScalars[i].role, pbrScalars[i].v );
+				return false;
+			}
+		}
+	}
 	// Resolve the base_color painter.  Must already exist.
 	if( !pPntManager->GetItem( base_color ) ) {
 		GlobalLog()->PrintEx( eLog_Error,
@@ -4354,11 +4556,12 @@ bool Job::AddCylinderGeometry(
 							 const char* name,				///< [in] Name of the geometry
 							 const char axis,				///< [in] (x|y|z) Which axis the cylinder is sitting on
 							 const double radius,			///< [in] Radius of the cylinder
-							 const double height			///< [in] Height of the cylinder
+							 const double height,			///< [in] Height of the cylinder
+							 const bool capped				///< [in] TRUE: closed solid (end caps); FALSE: open tube
 							 )
 {
 	IGeometry* pGeometry = 0;
-	RISE_API_CreateCylinderGeometry( &pGeometry, axis, radius, height );
+	RISE_API_CreateCylinderGeometry( &pGeometry, axis, radius, height, capped );
 
 	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
@@ -5276,6 +5479,28 @@ bool Job::AddNormalMapModifier(
 	return ok;
 }
 
+bool Job::AddGlintModifier(
+	const char* name,										///< [in] Name of the modifier
+	const double density,									///< [in] cells per object-space unit; <= 0 inert
+	const double coverage,									///< [in] per-cell facet existence probability [0,1]
+	const double fill,										///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 inert
+	const double spread,									///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 inert
+	const double scale[3],									///< [in] anisotropic cell stretch
+	const double shift[3],									///< [in] cell-space offset
+	const unsigned int seed									///< [in] hash seed
+	)
+{
+	IRayIntersectionModifier* pModifier = 0;
+	RISE_API_CreateGlintModifier( &pModifier, density, coverage, fill, spread,
+		Vector3( scale[0], scale[1], scale[2] ),
+		Vector3( shift[0], shift[1], shift[2] ),
+		seed );
+
+	const bool ok = RegisterOrDiag( pModManager, pModifier, name, "modifier" );
+	safe_release( pModifier );
+	return ok;
+}
+
 //
 // Adding objects
 //
@@ -5464,6 +5689,110 @@ bool Job::AddHomogeneousMedium(
 	// (they live in mediaMap), so the "unique within their kind" contract that
 	// every manager-backed Job::Add* now enforces is honored explicitly here
 	// (previously a duplicate medium silently LAST-won and reported success).
+	if( mediaMap.find( name ) != mediaMap.end() ) {
+		DiagDuplicateName( "medium", name );
+		safe_release( pMedium );
+		return false;
+	}
+	mediaMap[name] = pMedium;
+	if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( pMedium ) );   // D35: PRODUCED medium (mediaMap bypasses GenericManager)
+
+	return true;
+}
+
+bool Job::AddHomogeneousMediumSpectral(
+	const char* name,										///< [in] Name of the medium
+	const double sigma_a[3],								///< [in] Absorption coefficient (RGB preview)
+	const double sigma_s[3],								///< [in] Scattering coefficient (RGB preview)
+	const double emission[3],								///< [in] Volumetric emission (RGB)
+	const char* absorption_spectral,						///< [in] Name of sigma_a(lambda) IFunction1D, or null/""
+	const char* scattering_spectral,						///< [in] Name of sigma_s(lambda) IFunction1D, or null/""
+	const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+	const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
+	)
+{
+	// Resolve the optional spectral coefficient curves by name.  A null /
+	// empty / "none" reference means "no curve" for that coefficient.
+	// Per HomogeneousMedium::GetCoefficientsNM, once EITHER curve is bound
+	// the NM path is curve-driven and a null sibling contributes ZERO for
+	// its coefficient (NOT the RGB triple's luminance — that whole-chunk
+	// fallback only fires when BOTH curves are null, a state this adder is
+	// never called in since the parser routes here only when at least one
+	// ref is present).  GetItem returns a BORROWED reference; the medium
+	// ctor addrefs it, so we must not release it here.  A name that is
+	// given but not found is author error and fails the add (do NOT
+	// silently drop the intended spectral behaviour).
+	bool refError = false;
+	auto resolveCurve = [&]( const char* ref ) -> IFunction1D* {
+		if( !ref || ref[0] == '\0' || strcmp( ref, "none" ) == 0 ) {
+			return 0;
+		}
+		IFunction1D* f = pFunc1DManager->GetItem( ref );
+		if( !f ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddHomogeneousMediumSpectral:: spectral curve `%s` not found", ref );
+			refError = true;
+		}
+		return f;
+	};
+	IFunction1D* pAbsSpectral = resolveCurve( absorption_spectral );
+	IFunction1D* pScaSpectral = resolveCurve( scattering_spectral );
+	if( refError ) {
+		return false;
+	}
+
+	// Partial-binding ergonomic guard: if exactly ONE spectral curve is
+	// bound while the OTHER coefficient's RGB triple is non-zero, that
+	// non-zero RGB value is silently ZERO in the spectral (NM) render
+	// (curve-driven path, null sibling => 0).  That is a silent no-op
+	// foot-gun for an author who expected the RGB value to keep absorbing
+	// / scattering in spectral mode.  Warn (non-fatal) rather than accept
+	// the surprise; the intended fix is to bind both curves.
+	auto anyNonZero = [&]( const double c[3] ) {
+		return c[0] != 0.0 || c[1] != 0.0 || c[2] != 0.0;
+	};
+	if( pAbsSpectral && !pScaSpectral && anyNonZero( sigma_s ) ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddHomogeneousMediumSpectral:: medium `%s` binds absorption_spectral but not "
+			"scattering_spectral; its RGB scattering (%g %g %g) is ZERO in the spectral (NM) "
+			"render.  Bind scattering_spectral (or set scattering 0 0 0) to silence this.",
+			name, sigma_s[0], sigma_s[1], sigma_s[2] );
+	}
+	if( pScaSpectral && !pAbsSpectral && anyNonZero( sigma_a ) ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddHomogeneousMediumSpectral:: medium `%s` binds scattering_spectral but not "
+			"absorption_spectral; its RGB absorption (%g %g %g) is ZERO in the spectral (NM) "
+			"render.  Bind absorption_spectral (or set absorption 0 0 0) to silence this.",
+			name, sigma_a[0], sigma_a[1], sigma_a[2] );
+	}
+
+	// Create the phase function
+	IPhaseFunction* pPhase = 0;
+
+	if( strcmp( phase_type, "isotropic" ) == 0 ) {
+		RISE_API_CreateIsotropicPhaseFunction( &pPhase );
+	} else if( strcmp( phase_type, "hg" ) == 0 ) {
+		RISE_API_CreateHenyeyGreensteinPhaseFunction( &pPhase, phase_g );
+	} else {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddHomogeneousMediumSpectral:: Unknown phase function type `%s`", phase_type );
+		return false;
+	}
+
+	// Create the medium
+	IMedium* pMedium = 0;
+	RISE_API_CreateHomogeneousMediumSpectral( &pMedium,
+		RISEPel( sigma_a[0], sigma_a[1], sigma_a[2] ),
+		RISEPel( sigma_s[0], sigma_s[1], sigma_s[2] ),
+		RISEPel( emission[0], emission[1], emission[2] ),
+		pAbsSpectral, pScaSpectral,
+		*pPhase );
+
+	safe_release( pPhase );
+
+	// Store in our map.  Reject a duplicate name: media bypass GenericManager
+	// (they live in mediaMap), so the "unique within their kind" contract that
+	// every manager-backed Job::Add* now enforces is honored explicitly here
+	// (matches AddHomogeneousMedium above).
 	if( mediaMap.find( name ) != mediaMap.end() ) {
 		DiagDuplicateName( "medium", name );
 		safe_release( pMedium );
@@ -6121,6 +6450,14 @@ bool Job::AddAreaLightShaderOp(
 		)
 
 {
+	// N (Phong/directionality exponent) is Reference-kind and falls back to atof()
+	// below when not a painter name, so an inline non-finite value would synthesise
+	// a non-finite exponent painter.  Reject up front (painter name / "none" not flagged).
+	if( !ScalarLiteralIsFiniteNumber( N ) && pPntManager->GetItem( N ) == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error, "arealight_shaderop `%s`: `N` must be a finite exponent (got `%s`)", name, N );
+		return false;
+	}
+
 	IPainter* pEmm = pPntManager->GetItem( emm );
 	if( !pEmm ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::AddAreaLightShaderOp: Painter not found '%s'", emm );

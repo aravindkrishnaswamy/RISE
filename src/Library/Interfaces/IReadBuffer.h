@@ -35,10 +35,16 @@ namespace RISE
 		//
 
 		//
-		// Getters - These getters some some kind of information from the buffer
-		//           All getters automatically advance the pointer, if you try to
-		//			 read past the end, it will just return 0, null or some 
-		//           equivalent in DEBUG
+		// Getters - These getters read some kind of information from the buffer
+		//           and automatically advance the cursor.  Over-read contract
+		//           (enforced in ALL builds, not just DEBUG): a read past the
+		//           end returns 0 (or false for getBytes) and advances the
+		//           cursor to the end, so a loop-until-cursor-at-end caller
+		//           terminates.  getBytes additionally copies whatever bytes
+		//           remain and zero-fills the rest of the destination — it
+		//           never reads out of bounds nor leaves the destination
+		//           uninitialised.  A read buffer with no backing (e.g. an
+		//           unopenable file) is treated as empty (returns 0 / false).
 		//
 
 		virtual char getChar() = 0;

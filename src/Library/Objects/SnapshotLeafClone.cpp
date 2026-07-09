@@ -94,7 +94,7 @@ const IMaterial* RISE::Implementation::CloneMaterialForSnapshot( const IMaterial
 	if( const DielectricMaterial* m = dynamic_cast<const DielectricMaterial*>( mat ) ) {
 		return NewClone( new DielectricMaterial(
 			m->GetTransmittance(), m->GetIOR(), m->GetScattering(), m->GetHG(),
-			m->GetAnodizationN(), m->GetAnodizationK(), m->GetAnodizationThickness() ) );
+			m->GetARLayerN(), m->GetARLayerK(), m->GetARLayerT(), m->GetARLayerCount() ) );
 	}
 	if( const IsotropicPhongMaterial* m = dynamic_cast<const IsotropicPhongMaterial*>( mat ) ) {
 		return NewClone( new IsotropicPhongMaterial( m->GetRd(), m->GetRs(), m->GetExponent() ) );
@@ -261,13 +261,22 @@ const IMedium* RISE::Implementation::CloneMediumForSnapshot( const IMedium* medi
 	// HomogeneousMedium is editor-mutable in place (SetAbsorption /
 	// SetScattering / SetEmission) — reconstruct it from public coefficient
 	// accessors.  The phase function is addref-shared by the factory (it is
-	// not property-edited in place).
+	// not property-edited in place), and so are the optional sigma(lambda)
+	// spectral curves — a spectral medium cloned through the RGB-only
+	// factory would silently lose its curves and fall back to the RGB
+	// preview coefficients in NM renders.
 	if( const HomogeneousMedium* m = dynamic_cast<const HomogeneousMedium*>( medium ) ) {
 		const IPhaseFunction* phase = m->GetPhaseFunction();
 		if( phase ) {
 			IMedium* clone = 0;
-			RISE_API_CreateHomogeneousMediumWithEmission( &clone,
-				m->GetAbsorption(), m->GetScattering(), m->GetEmission(), *phase );
+			if( m->GetAbsorptionSpectral() || m->GetScatteringSpectral() ) {
+				RISE_API_CreateHomogeneousMediumSpectral( &clone,
+					m->GetAbsorption(), m->GetScattering(), m->GetEmission(),
+					m->GetAbsorptionSpectral(), m->GetScatteringSpectral(), *phase );
+			} else {
+				RISE_API_CreateHomogeneousMediumWithEmission( &clone,
+					m->GetAbsorption(), m->GetScattering(), m->GetEmission(), *phase );
+			}
 			if( clone ) {
 				GlobalLog()->PrintNew( clone, __FILE__, __LINE__, "snapshot homogeneous medium clone" );
 				return clone;

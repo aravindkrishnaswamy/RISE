@@ -460,6 +460,8 @@
 		F24B730D2F52A632008304C4 /* WardIsotropicGaussianSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F091C069C42900069C9E5 /* WardIsotropicGaussianSPF.h */; };
 		F24B730E2F52A632008304C4 /* BumpMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F091E069C42900069C9E5 /* BumpMap.cpp */; };
 		F24B730F2F52A632008304C4 /* BumpMap.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F091F069C42900069C9E5 /* BumpMap.h */; };
+		F2617A0D2F9A000100610005 /* GlintModifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610001 /* GlintModifier.cpp */; };
+		F2617A0D2F9A000100610006 /* GlintModifier.h in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610002 /* GlintModifier.h */; };
 		F24B73102F52A632008304C4 /* InterpolatedNoise.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0921069C42900069C9E5 /* InterpolatedNoise.cpp */; };
 		F24B73112F52A632008304C4 /* InterpolatedNoise.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0922069C42900069C9E5 /* InterpolatedNoise.h */; };
 		F24B73122F52A632008304C4 /* Noise.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0923069C42900069C9E5 /* Noise.h */; };
@@ -1162,6 +1164,8 @@
 		F27F0B84069C42910069C9E5 /* WardIsotropicGaussianSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F091C069C42900069C9E5 /* WardIsotropicGaussianSPF.h */; };
 		F27F0B85069C42910069C9E5 /* BumpMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F091E069C42900069C9E5 /* BumpMap.cpp */; };
 		F27F0B86069C42910069C9E5 /* BumpMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F091F069C42900069C9E5 /* BumpMap.h */; };
+		F2617A0D2F9A000100610003 /* GlintModifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610001 /* GlintModifier.cpp */; };
+		F2617A0D2F9A000100610004 /* GlintModifier.h in Headers */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610002 /* GlintModifier.h */; };
 		F27F0B87069C42910069C9E5 /* InterpolatedNoise.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0921069C42900069C9E5 /* InterpolatedNoise.cpp */; };
 		F27F0B88069C42910069C9E5 /* InterpolatedNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0922069C42900069C9E5 /* InterpolatedNoise.h */; };
 		F27F0B89069C42910069C9E5 /* Noise.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0923069C42900069C9E5 /* Noise.h */; };
@@ -2331,6 +2335,8 @@
 		F27F091C069C42900069C9E5 /* WardIsotropicGaussianSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = WardIsotropicGaussianSPF.h; sourceTree = "<group>"; };
 		F27F091E069C42900069C9E5 /* BumpMap.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = BumpMap.cpp; sourceTree = "<group>"; };
 		F27F091F069C42900069C9E5 /* BumpMap.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BumpMap.h; sourceTree = "<group>"; };
+		F2617A0D2F9A000100610001 /* GlintModifier.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GlintModifier.cpp; sourceTree = "<group>"; };
+		F2617A0D2F9A000100610002 /* GlintModifier.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GlintModifier.h; sourceTree = "<group>"; };
 		F27F0921069C42900069C9E5 /* InterpolatedNoise.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = InterpolatedNoise.cpp; sourceTree = "<group>"; };
 		F27F0922069C42900069C9E5 /* InterpolatedNoise.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = InterpolatedNoise.h; sourceTree = "<group>"; };
 		F27F0923069C42900069C9E5 /* Noise.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Noise.h; sourceTree = "<group>"; };
@@ -3486,6 +3492,8 @@
 			children = (
 				F27F091E069C42900069C9E5 /* BumpMap.cpp */,
 				F27F091F069C42900069C9E5 /* BumpMap.h */,
+				F2617A0D2F9A000100610001 /* GlintModifier.cpp */,
+				F2617A0D2F9A000100610002 /* GlintModifier.h */,
 				F2C0F001069C42900069C9E5 /* NormalMap.cpp */,
 				F2C0F002069C42900069C9E5 /* NormalMap.h */,
 			);
@@ -4538,6 +4546,7 @@
 				F27F0B82069C42910069C9E5 /* WardIsotropicGaussianMaterial.h in Headers */,
 				F27F0B84069C42910069C9E5 /* WardIsotropicGaussianSPF.h in Headers */,
 				F27F0B86069C42910069C9E5 /* BumpMap.h in Headers */,
+				F2617A0D2F9A000100610004 /* GlintModifier.h in Headers */,
 				F2C0F021069C42910069C9E5 /* NormalMap.h in Headers */,
 				F27F0B88069C42910069C9E5 /* InterpolatedNoise.h in Headers */,
 				F27F0B89069C42910069C9E5 /* Noise.h in Headers */,
@@ -5116,6 +5125,7 @@
 				F27F0B80069C42910069C9E5 /* WardIsotropicGaussianBRDF.cpp in Sources */,
 				F27F0B83069C42910069C9E5 /* WardIsotropicGaussianSPF.cpp in Sources */,
 				F27F0B85069C42910069C9E5 /* BumpMap.cpp in Sources */,
+				F2617A0D2F9A000100610003 /* GlintModifier.cpp in Sources */,
 				F2C0F020069C42910069C9E5 /* NormalMap.cpp in Sources */,
 				F27F0B87069C42910069C9E5 /* InterpolatedNoise.cpp in Sources */,
 				F27F0B8C069C42910069C9E5 /* PerlinNoise1D.cpp in Sources */,
@@ -5710,6 +5720,8 @@
 				F24B730D2F52A632008304C4 /* WardIsotropicGaussianSPF.h in Sources */,
 				F24B730E2F52A632008304C4 /* BumpMap.cpp in Sources */,
 				F24B730F2F52A632008304C4 /* BumpMap.h in Sources */,
+				F2617A0D2F9A000100610005 /* GlintModifier.cpp in Sources */,
+				F2617A0D2F9A000100610006 /* GlintModifier.h in Sources */,
 				F2C0F010069C42900069C9E5 /* NormalMap.cpp in Sources */,
 				F2C0F011069C42900069C9E5 /* NormalMap.h in Sources */,
 				F24B73102F52A632008304C4 /* InterpolatedNoise.cpp in Sources */,
@@ -6231,17 +6243,14 @@
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
-					"$(HOME)/working/deps/openpgl-0.7.1/include",
 				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				OPTIMIZATION_CFLAGS = "-O0";
 				OTHER_CPLUSPLUSFLAGS = (
@@ -6291,17 +6300,14 @@
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
-					"$(HOME)/working/deps/openpgl-0.7.1/include",
 				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
@@ -6350,17 +6356,14 @@
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
-					"$(HOME)/working/deps/openpgl-0.7.1/include",
 				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
@@ -6532,17 +6535,14 @@
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
-					"$(HOME)/working/deps/openpgl-0.7.1/include",
 				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LLVM_LTO = YES;
 				OTHER_CPLUSPLUSFLAGS = (
@@ -6674,7 +6674,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
-					"$(HOME)/working/deps/openpgl-0.7.1/include",
 					"$(SRCROOT)/../../../src/Library/**",
 					/opt/homebrew/include/OpenEXR,
 					/opt/homebrew/include/Imath,
@@ -6684,11 +6683,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
@@ -6793,7 +6790,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
-					"$(HOME)/working/deps/openpgl-0.7.1/include",
 					"$(SRCROOT)/../../../src/Library/**",
 					/opt/homebrew/include/OpenEXR,
 					/opt/homebrew/include/Imath,
@@ -6803,11 +6799,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LLVM_LTO = YES_THIN;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
@@ -6912,7 +6906,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
-					"$(HOME)/working/deps/openpgl-0.7.1/include",
 					"$(SRCROOT)/../../../src/Library/**",
 					/opt/homebrew/include/OpenEXR,
 					/opt/homebrew/include/Imath,
@@ -6922,11 +6915,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LLVM_LTO = YES_THIN;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
@@ -7031,7 +7022,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
-					"$(HOME)/working/deps/openpgl-0.7.1/include",
 					"$(SRCROOT)/../../../src/Library/**",
 					/opt/homebrew/include/OpenEXR,
 					/opt/homebrew/include/Imath,
@@ -7041,11 +7031,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LLVM_LTO = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;

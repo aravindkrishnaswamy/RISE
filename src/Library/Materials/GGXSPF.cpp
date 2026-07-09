@@ -246,7 +246,7 @@ void GGXSPF::Scatter(
 							// wavelength-independent.  ThinFilm.h stays painter-free via this functor.
 							const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );
 							auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
-								n0 = Scalar(1); k0 = Scalar(0);
+								n0 = ri.ambientIOR; k0 = Scalar(0); // G6 ambient medium IOR (default 1.0 = air)
 								n1 = pFilmIOR->GetValueAtNM( ri, nm );
 								k1 = pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
 								n2 = pIOR->GetValueAtNM( ri, nm );
@@ -262,8 +262,12 @@ void GGXSPF::Scatter(
 							const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 							const RISEPel iorPel( iorT.v[0], iorT.v[1], iorT.v[2] );
 							const RISEPel extPel( extT.v[0], extT.v[1], extT.v[2] );
+							// G6: ambient (incident) medium IOR from the hit context
+							// (default 1.0 = air; the surrounding dielectric's n when the
+							// conductor is buried, e.g. silver under enamel glass).
+							const RISEPel niPel( ri.ambientIOR, ri.ambientIOR, ri.ambientIOR );
 							F = specColor * Optics::CalculateConductorReflectance<RISEPel>(
-								ri.ray.Dir(), m, RISEPel(1,1,1),
+								ri.ray.Dir(), m, niPel,
 								iorPel, extPel );
 						}
 
@@ -338,7 +342,7 @@ void GGXSPF::Scatter(
 					// Dispersion-correct per-lambda stack (twin of the single-scatter site).
 					const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );
 					auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
-						n0 = Scalar(1); k0 = Scalar(0);
+						n0 = ri.ambientIOR; k0 = Scalar(0); // G6 ambient medium IOR (default 1.0 = air)
 						n1 = pFilmIOR->GetValueAtNM( ri, nm );
 						k1 = pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
 						n2 = pIOR->GetValueAtNM( ri, nm );
@@ -358,7 +362,8 @@ void GGXSPF::Scatter(
 					const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 					const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 					const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
-					const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
+					const RISEPel niPel( ri.ambientIOR, ri.ambientIOR, ri.ambientIOR ); // G6 ambient IOR (default 1.0 = air)
+					const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, niPel, ior, ext );
 					// specColor INSIDE the average (tinted per-bounce reflectance
 					// specColor*F_avg compounds; matches single-scatter specColor*fresnel).
 					const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( specColor * F_avg, Eavg );
@@ -493,11 +498,12 @@ void GGXSPF::ScatterNM(
 							// the half-vector cosine |wi·m| (== wiDotM, already
 							// positive here).  Substrate n,k = pIOR/pExtinction;
 							// film n,k,thickness = the dedicated slots; ambient
-							// = air (1+0i).  MUST stay identical to
+							// = ri.ambientIOR (G6: incident medium n(λ); default
+							// 1.0 = air), k=0.  MUST stay identical to
 							// GGXBRDF::valueNM (the HWSS companion path).
 							const Scalar Rfilm = ThinFilm::ReflectanceConductor(
 								wiDotM, nm,
-								1.0, 0.0,
+								ri.ambientIOR, 0.0,
 								pFilmIOR->GetValueAtNM(ri,nm), ( pFilmExtinction ? pFilmExtinction->GetValueAtNM(ri,nm) : Scalar(0) ),
 								pFilmThickness->GetValueAtNM(ri,nm),
 								pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
@@ -505,8 +511,11 @@ void GGXSPF::ScatterNM(
 						}
 						else
 						{
+							// G6: ambient (incident) medium IOR from the hit context —
+							// in NM this is the true per-wavelength n(λ) DielectricSPF
+							// pushed, so it is dispersion-correct.  Default 1.0 = air.
 							const Scalar fresnel = Optics::CalculateConductorReflectance(
-								ri.ray.Dir(), m, 1.0,
+								ri.ray.Dir(), m, ri.ambientIOR,
 								pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
 							F = specColor * fresnel;
 						}
@@ -578,7 +587,7 @@ void GGXSPF::ScatterNM(
 					// Thin-film multiscatter tail at the hero wavelength (thin-film
 					// hemispherical F_avg).  Twin of GGXBRDF::valueNM.
 					const Scalar F_avg = ThinFilm::FresnelAvgConductor(
-						nm, 1.0, 0.0,
+						nm, ri.ambientIOR, 0.0, // G6 ambient medium n(λ), k=0 (default 1.0 = air)
 						pFilmIOR->GetValueAtNM(ri,nm), ( pFilmExtinction ? pFilmExtinction->GetValueAtNM(ri,nm) : Scalar(0) ),
 						pFilmThickness->GetValueAtNM(ri,nm),
 						pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
@@ -594,7 +603,9 @@ void GGXSPF::ScatterNM(
 				{
 					const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
 					const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
-					const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
+					// G6: ambient medium IOR from the hit context (per-wavelength n(λ)
+					// in NM; default 1.0 = air).
+					const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, ri.ambientIOR, iorVal, extVal );
 					// specColor INSIDE the average (tinted per-bounce reflectance
 					// specColor*F_avg compounds; matches single-scatter specColor*fresnel).
 					const Scalar specColor = pSpecular->GetColorNM(ri,nm);

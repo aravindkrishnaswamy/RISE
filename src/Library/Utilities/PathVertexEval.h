@@ -121,6 +121,14 @@ namespace RISE
 			ri.ptObjIntersec   = vertex.ptObjIntersec;
 			ri.vColor          = vertex.vColor;
 			ri.bHasVertexColor = vertex.bHasVertexColor;
+			// G6: replay the enclosing (ambient) medium IOR captured at trace
+			// time (BDPTVertex::mediumIOR = IORStack::top() at hit production;
+			// SetCurrentObject does NOT push, so this is the medium the ray was
+			// travelling through — the ambient index for the conductor Fresnel).
+			// This is the shared BDPT + VCM connection-time BSDF-eval path, so a
+			// single stamp here covers value()/valueNM() for both integrators.
+			// Guard a non-positive stored IOR to air (1.0).
+			ri.ambientIOR      = ( vertex.mediumIOR > 0.0 ) ? vertex.mediumIOR : 1.0;
 		}
 
 		//////////////////////////////////////////////////////////////////////

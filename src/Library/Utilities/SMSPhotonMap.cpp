@@ -265,6 +265,11 @@ namespace
 
 			ScatteredRayContainer scattered;
 			IndependentSampler samplerWrapper( rng );
+			// G6: stamp the enclosing-medium IOR so a GGX conductor buried in a
+			// dielectric (e.g. silver under enamel) evaluates Fresnel against the
+			// surrounding medium, not air.  Air scenes stay byte-identical (1.0).
+			const Scalar ambIOR = ior_stack.top();
+			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
 			pSPF->Scatter( ri.geometric, samplerWrapper, scattered, ior_stack );
 
 			// Classical caustic pattern: a hit with a non-delta BSDF

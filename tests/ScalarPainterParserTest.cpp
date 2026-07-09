@@ -345,6 +345,269 @@ static void TestRejectPolynomialGarbage()
 	if( pJob ) safe_release( pJob );
 }
 
+static void TestRejectInlineScalarOverflow()
+{
+	std::cout << "TestRejectInlineScalarOverflow" << std::endl;
+	// A material scalar resolved via Job::ResolveScalarPainterArg with an inline
+	// numeric value that OVERFLOWS (strtod -> HUGE_VAL, errno==ERANGE) must be
+	// REJECTED loudly, not silently bound as an inf painter.
+	const char* ovf1 =
+		"dielectric_material\n{\n\tname ovf_single\n\ttau 1.0\n\tior 1e999\n\tscattering 100000\n}\n";
+	IJobPriv* j1 = LoadScene( ovf1, "ovf_single" );
+	Check( j1 == nullptr, "inline scalar overflow (ior 1e999) REJECTED" );
+	if( j1 ) safe_release( j1 );
+
+	const char* ovf3 =
+		"dielectric_material\n{\n\tname ovf_triple\n\ttau 1.0\n\tior 1 1 1e999\n\tscattering 100000\n}\n";
+	IJobPriv* j3 = LoadScene( ovf3, "ovf_triple" );
+	Check( j3 == nullptr, "inline scalar overflow (ior 1 1 1e999) REJECTED" );
+	if( j3 ) safe_release( j3 );
+
+	// Non-finite SPELLINGS (inf / nan) also bypass the descriptor's
+	// AllTokensAreFiniteNumbers gate (Reference-kind slots) and reach
+	// ResolveScalarPainterArg; strtod succeeds on them WITHOUT errno==ERANGE, so
+	// the string-layer spelling check must reject them too.
+	const char* inf1 =
+		"dielectric_material\n{\n\tname inf_single\n\ttau 1.0\n\tior inf\n\tscattering 100000\n}\n";
+	IJobPriv* ji = LoadScene( inf1, "inf_single" );
+	Check( ji == nullptr, "inline scalar inf (ior inf) REJECTED" );
+	if( ji ) safe_release( ji );
+
+	const char* nan3 =
+		"dielectric_material\n{\n\tname nan_triple\n\ttau 1.0\n\tior 1 1 nan\n\tscattering 100000\n}\n";
+	IJobPriv* jn = LoadScene( nan3, "nan_triple" );
+	Check( jn == nullptr, "inline scalar nan (ior 1 1 nan) REJECTED" );
+	if( jn ) safe_release( jn );
+
+	// Sibling: SSS `g` / `roughness` are Reference-kind too but were parsed via
+	// plain atof() (no ERANGE, no nan/inf detection) -- now routed through the
+	// same string-layer ParseFiniteScalarLiteral check.
+	const char* sssG =
+		"subsurfacescattering_material\n{\n\tname sss_g\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg inf\n\troughness 0.0\n}\n";
+	IJobPriv* jg = LoadScene( sssG, "sss_g" );
+	Check( jg == nullptr, "SSS `g inf` REJECTED (atof sibling)" );
+	if( jg ) safe_release( jg );
+
+	const char* sssR =
+		"subsurfacescattering_material\n{\n\tname sss_r\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0.0\n\troughness 1e999\n}\n";
+	IJobPriv* jr = LoadScene( sssR, "sss_r" );
+	Check( jr == nullptr, "SSS `roughness 1e999` REJECTED (atof sibling)" );
+	if( jr ) safe_release( jr );
+
+	// Control: a finite inline ior still loads (fix must not reject good input).
+	const char* okm =
+		"dielectric_material\n{\n\tname ok_mat\n\ttau 1.0\n\tior 1.55\n\tscattering 100000\n}\n";
+	IJobPriv* jok = LoadScene( okm, "ok_mat" );
+	Check( jok != nullptr, "finite inline ior (1.55) still loads" );
+	if( jok ) safe_release( jok );
+
+	// Control: a finite SSS with g/roughness still loads.
+	const char* sssOk =
+		"subsurfacescattering_material\n{\n\tname sss_ok\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0.5\n\troughness 0.2\n}\n";
+	IJobPriv* jso = LoadScene( sssOk, "sss_ok" );
+	Check( jso != nullptr, "finite SSS (g 0.5, roughness 0.2) still loads" );
+	if( jso ) safe_release( jso );
+
+	// Sibling: GGX tangent_rotation (and the twin ggx_emissive / PBR anisotropy_
+	// rotation) synthesise a uniform-colour painter from atof() -- an inline
+	// non-finite value was accepted.  Now guarded up front with the same helper.
+	const char* ggxCol = "uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n";
+	const char* ggxInf =
+		"uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n"
+		"ggx_material\n{\n\tname ggx_inf\n\trd col\n\trs col\n\talphax 0.1\n\talphay 0.1\n\tior 0.15\n\textinction 3.5\n\ttangent_rotation inf\n}\n";
+	IJobPriv* jgi = LoadScene( ggxInf, "ggx_inf" );
+	Check( jgi == nullptr, "GGX `tangent_rotation inf` REJECTED" );
+	if( jgi ) safe_release( jgi );
+
+	const char* ggxOk =
+		"uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n"
+		"ggx_material\n{\n\tname ggx_ok\n\trd col\n\trs col\n\talphax 0.1\n\talphay 0.1\n\tior 0.15\n\textinction 3.5\n\ttangent_rotation 0.5\n}\n";
+	IJobPriv* jgo = LoadScene( ggxOk, "ggx_ok" );
+	Check( jgo != nullptr, "GGX finite tangent_rotation (0.5) still loads" );
+	if( jgo ) safe_release( jgo );
+	(void)ggxCol;
+
+	// PBR-MR scalar FACTORS (metallic / roughness / specular_factor /
+	// anisotropy_factor) also fall back to atof() in resolveOrSynth -- an inline
+	// non-finite value synthesised a non-finite uniform-colour painter.
+	const char* pbrInf =
+		"uniformcolor_painter\n{\n\tname bc\n\tcolor 0.8 0.8 0.8\n}\n"
+		"pbr_metallic_roughness_material\n{\n\tname pbr_inf\n\tbase_color bc\n\tmetallic 0.0\n\troughness inf\n}\n";
+	IJobPriv* jp = LoadScene( pbrInf, "pbr_inf" );
+	Check( jp == nullptr, "PBR-MR `roughness inf` REJECTED" );
+	if( jp ) safe_release( jp );
+
+	const char* pbrOk =
+		"uniformcolor_painter\n{\n\tname bc\n\tcolor 0.8 0.8 0.8\n}\n"
+		"pbr_metallic_roughness_material\n{\n\tname pbr_ok\n\tbase_color bc\n\tmetallic 0.0\n\troughness 0.3\n}\n";
+	IJobPriv* jpo = LoadScene( pbrOk, "pbr_ok" );
+	Check( jpo != nullptr, "PBR-MR finite roughness (0.3) still loads" );
+	if( jpo ) safe_release( jpo );
+
+	// Light-shaderop sibling: arealight_shaderop `N` (Phong/directionality
+	// exponent) is Reference-kind and falls back to atof() -> non-finite exponent.
+	const char* alInf =
+		"uniformcolor_painter\n{\n\tname em\n\tcolor 1 1 1\n}\n"
+		"arealight_shaderop\n{\n\tname al_inf\n\temission em\n\tlocation 0 0 5\n\tmake_dir 0 0 0\n\tsamples 4\n\twidth 1\n\theight 1\n\tpower 10\n\tN inf\n\tcache false\n}\n";
+	IJobPriv* jal = LoadScene( alInf, "al_inf" );
+	Check( jal == nullptr, "arealight_shaderop `N inf` REJECTED" );
+	if( jal ) safe_release( jal );
+
+	const char* alOk =
+		"uniformcolor_painter\n{\n\tname em\n\tcolor 1 1 1\n}\n"
+		"arealight_shaderop\n{\n\tname al_ok\n\temission em\n\tlocation 0 0 5\n\tmake_dir 0 0 0\n\tsamples 4\n\twidth 1\n\theight 1\n\tpower 10\n\tN 1.0\n\tcache false\n}\n";
+	IJobPriv* jalo = LoadScene( alOk, "al_ok" );
+	Check( jalo != nullptr, "arealight_shaderop finite N (1.0) still loads" );
+	if( jalo ) safe_release( jalo );
+
+	// A painter whose NAME merely has a nan/inf PREFIX (inflection_map, nan_mask)
+	// must NOT be rejected by the non-finite guard -- strtod matches the prefix but
+	// the token isn't a whole number, so it reaches the painter lookup and resolves.
+	const char* pnPrefix =
+		"uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n"
+		"uniformcolor_painter\n{\n\tname inflection_map\n\tcolor 0.1 0.1 0.1\n}\n"
+		"ggx_material\n{\n\tname ggx_pn\n\trd col\n\trs col\n\talphax 0.1\n\talphay 0.1\n\tior 0.15\n\textinction 3.5\n\ttangent_rotation inflection_map\n}\n";
+	IJobPriv* jpn = LoadScene( pnPrefix, "ggx_pn" );
+	Check( jpn != nullptr, "painter named `inflection_map` (inf-prefix) NOT wrongly rejected" );
+	if( jpn ) safe_release( jpn );
+
+	// randomwalk_sss_material max_bounces (Reference-kind) was atoi()'d, so inf /
+	// nan / misspelled silently became 0.  Now validated as a non-negative integer.
+	const char* rwInf =
+		"randomwalk_sss_material\n{\n\tname rw_inf\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n\tmax_bounces inf\n}\n";
+	IJobPriv* jri = LoadScene( rwInf, "rw_inf" );
+	Check( jri == nullptr, "randomwalk `max_bounces inf` REJECTED" );
+	if( jri ) safe_release( jri );
+
+	const char* rwOk =
+		"randomwalk_sss_material\n{\n\tname rw_ok\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n\tmax_bounces 32\n}\n";
+	IJobPriv* jro = LoadScene( rwOk, "rw_ok" );
+	Check( jro != nullptr, "randomwalk finite max_bounces (32) still loads" );
+	if( jro ) safe_release( jro );
+
+	// Non-finite followed by a # comment or junk must STILL be caught (inline
+	// comments are tolerated syntax; atof would yield inf).  Inline (unregistered)
+	// tangent_rotation on a lookup-first slot.
+	const char* rotComment =
+		"uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n"
+		"ggx_material\n{\n\tname ggx_c\n\trd col\n\trs col\n\talphax 0.1\n\talphay 0.1\n\tior 0.15\n\textinction 3.5\n\ttangent_rotation inf # deg\n}\n";
+	IJobPriv* jrc = LoadScene( rotComment, "ggx_c" );
+	Check( jrc == nullptr, "GGX `tangent_rotation inf # comment` REJECTED" );
+	if( jrc ) safe_release( jrc );
+
+	const char* rotJunk =
+		"uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n"
+		"ggx_material\n{\n\tname ggx_j\n\trd col\n\trs col\n\talphax 0.1\n\talphay 0.1\n\tior 0.15\n\textinction 3.5\n\ttangent_rotation 1e999x\n}\n";
+	IJobPriv* jrj = LoadScene( rotJunk, "ggx_j" );
+	Check( jrj == nullptr, "GGX `tangent_rotation 1e999x` REJECTED" );
+	if( jrj ) safe_release( jrj );
+
+	// max_bounces must reject a partial token (32junk) and a value that overflows
+	// unsigned int (4294967296 > UINT_MAX), not silently truncate/wrap.
+	const char* mbJunk =
+		"randomwalk_sss_material\n{\n\tname rw_j\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n\tmax_bounces 32junk\n}\n";
+	IJobPriv* jmj = LoadScene( mbJunk, "rw_j" );
+	Check( jmj == nullptr, "randomwalk `max_bounces 32junk` REJECTED" );
+	if( jmj ) safe_release( jmj );
+
+	const char* mbBig =
+		"randomwalk_sss_material\n{\n\tname rw_big\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n\tmax_bounces 4294967296\n}\n";
+	IJobPriv* jmb = LoadScene( mbBig, "rw_big" );
+	Check( jmb == nullptr, "randomwalk `max_bounces 4294967296` (>UINT_MAX) REJECTED" );
+	if( jmb ) safe_release( jmb );
+
+	// UNDERFLOW (5e-400) sets ERANGE but is a FINITE 0.0 -- it must NOT be rejected
+	// as non-finite (only overflow is).
+	const char* ufOk =
+		"randomwalk_sss_material\n{\n\tname rw_uf\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 5e-400\n\troughness 0.0\n\tmax_bounces 32\n}\n";
+	IJobPriv* juf = LoadScene( ufOk, "rw_uf" );
+	Check( juf != nullptr, "underflow `g 5e-400` (finite 0) NOT rejected" );
+	if( juf ) safe_release( juf );
+
+	// OVERFLOW with trailing junk that itself contains `e-` (1e999e-5): strtod
+	// consumes `1e999` (overflow, atof -> +inf); the underflow scan must look only
+	// at the consumed token, not the trailing `e-5`, so this is still REJECTED.
+	const char* ofJunk =
+		"uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n"
+		"ggx_material\n{\n\tname ggx_of\n\trd col\n\trs col\n\talphax 0.1\n\talphay 0.1\n\tior 0.15\n\textinction 3.5\n\ttangent_rotation 1e999e-5\n}\n";
+	IJobPriv* jof = LoadScene( ofJunk, "ggx_of" );
+	Check( jof == nullptr, "overflow-with-junk `1e999e-5` REJECTED (scan bounded to token)" );
+	if( jof ) safe_release( jof );
+
+	// FINITE-BUT-INVALID junk (atof would silently coerce): a finite numeric prefix
+	// with a trailing unit (`0.5rad`->0.5) and a mistyped painter name that resolves
+	// to no painter (`roughnes_tex`->0.0) must both be REJECTED, not coerced.
+	const char* rotUnit =
+		"uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n"
+		"ggx_material\n{\n\tname ggx_ru\n\trd col\n\trs col\n\talphax 0.1\n\talphay 0.1\n\tior 0.15\n\textinction 3.5\n\ttangent_rotation 0.5rad\n}\n";
+	IJobPriv* jru = LoadScene( rotUnit, "ggx_ru" );
+	Check( jru == nullptr, "GGX `tangent_rotation 0.5rad` (finite+unit junk) REJECTED" );
+	if( jru ) safe_release( jru );
+
+	const char* rotTypo =
+		"uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n"
+		"ggx_material\n{\n\tname ggx_rt\n\trd col\n\trs col\n\talphax 0.1\n\talphay 0.1\n\tior 0.15\n\textinction 3.5\n\ttangent_rotation roughnes_tex\n}\n";
+	IJobPriv* jrt = LoadScene( rotTypo, "ggx_rt" );
+	Check( jrt == nullptr, "GGX `tangent_rotation roughnes_tex` (unregistered name) REJECTED" );
+	if( jrt ) safe_release( jrt );
+
+	// SSS g/roughness are BAKED scalars (plain doubles through the ctor).  Junk
+	// (`nope`) is rejected, and so is a REGISTERED painter name: the old
+	// lookup-first tolerance passed validation and then silently atof'd the
+	// painter NAME to g = 0.0 -- silent physical drift, now a loud refusal.
+	const char* sssJunk =
+		"subsurfacescattering_material\n{\n\tname sss_j\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg nope\n\troughness 0.0\n}\n";
+	IJobPriv* jsj = LoadScene( sssJunk, "sss_j" );
+	Check( jsj == nullptr, "SSS `g nope` (not a number) REJECTED" );
+	if( jsj ) safe_release( jsj );
+
+	const char* sssName =
+		"scalar_painter\n{\n\tname pnt_zero\n\tvalue 0.0\n}\n"
+		"subsurfacescattering_material\n{\n\tname sss_n\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg pnt_zero\n\troughness 0.0\n}\n";
+	IJobPriv* jsn = LoadScene( sssName, "sss_n" );
+	Check( jsn == nullptr, "SSS `g pnt_zero` (painter name on a BAKED scalar field) REJECTED -- no silent atof-to-0" );
+	if( jsn ) safe_release( jsn );
+
+	// C99 hex-float exponents: a hex UNDERFLOW (`0x1p-5000` -> finite 0) must load,
+	// a hex OVERFLOW (`0x1p5000` -> +inf) must be rejected -- the ERANGE scan reads
+	// the `p-`/`p` binary exponent, not just decimal `e-`.
+	const char* hexUf =
+		"subsurfacescattering_material\n{\n\tname sss_hu\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0x1p-5000\n\troughness 0.0\n}\n";
+	IJobPriv* jhu = LoadScene( hexUf, "sss_hu" );
+	Check( jhu != nullptr, "SSS hex-underflow `g 0x1p-5000` (finite 0) NOT rejected" );
+	if( jhu ) safe_release( jhu );
+
+	const char* hexOf =
+		"subsurfacescattering_material\n{\n\tname sss_ho\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0x1p5000\n\troughness 0.0\n}\n";
+	IJobPriv* jho = LoadScene( hexOf, "sss_ho" );
+	Check( jho == nullptr, "SSS hex-overflow `g 0x1p5000` (+inf) REJECTED" );
+	if( jho ) safe_release( jho );
+
+	// Spoof guard: a HUGE mantissa with a small NEGATIVE exponent still
+	// overflows to +inf (`1<320 zeros>e-1`) yet carries `e-` inside the
+	// consumed token -- an exponent-SIGN heuristic misreads that as
+	// underflow.  Net-magnitude classification must reject it.  The mirror
+	// (tiny fractional mantissa, POSITIVE exponent, no `e-` anywhere) is a
+	// genuine finite underflow and must load.
+	{
+		const std::string big = std::string( "1" ) + std::string( 320, '0' ) + "e-1";
+		const std::string spoof = std::string(
+			"subsurfacescattering_material\n{\n\tname sss_sp\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg " )
+			+ big + "\n\troughness 0.0\n}\n";
+		IJobPriv* jsp = LoadScene( spoof.c_str(), "sss_sp" );
+		Check( jsp == nullptr, "SSS huge-mantissa `g 1<320 zeros>e-1` (+inf despite `e-`) REJECTED" );
+		if( jsp ) safe_release( jsp );
+
+		const std::string tiny = std::string( "0." ) + std::string( 400, '0' ) + "1e5";
+		const std::string mirror = std::string(
+			"subsurfacescattering_material\n{\n\tname sss_tf\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg " )
+			+ tiny + "\n\troughness 0.0\n}\n";
+		IJobPriv* jtf = LoadScene( mirror.c_str(), "sss_tf" );
+		Check( jtf != nullptr, "SSS tiny-mantissa `g 0.<400 zeros>1e5` (finite underflow, positive exponent) NOT rejected" );
+		if( jtf ) safe_release( jtf );
+	}
+}
+
 int main()
 {
 	std::cout << "ScalarPainterParserTest" << std::endl;
@@ -359,6 +622,7 @@ int main()
 	TestRejectMultipleForms();
 	TestRejectUnderspecifiedValues();
 	TestRejectPolynomialGarbage();
+	TestRejectInlineScalarOverflow();
 	std::cout << "\nResults: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

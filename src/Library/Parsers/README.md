@@ -103,7 +103,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Materials | 25 | `lambertian_material`, `dielectric_material`, `ggx_material`, `pbr_metallic_roughness_material`, `sheen_material`, `composite_material` |
 | Cameras | 8 | `scene_options`, `camera_defaults`, `film` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
 | Geometry | 22 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `path_instances_geometry` |
-| Modifiers | 2 | `bumpmap_modifier`, `normal_map_modifier` |
+| Modifiers | 3 | `bumpmap_modifier`, `normal_map_modifier`, `glint_modifier` |
 | Media | 4 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium`, `global_medium` |
 | Objects | 3 | `standard_object`, `csg_object`, `override_object` |
 | Shader ops | 13 | `pathtracing_shaderop`, `mis_pathtracing_shaderop` (legacy alias), `finalgather_shaderop`, `directlighting_shaderop`, `arealight_shaderop`, `alpha_test_shaderop` |
@@ -117,7 +117,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Scene variants | 2 | `scene_variant`, `active_scene_variant` (the CST named-overlay feature) |
 | Global config | 1 | `light_rr_threshold` (standalone RR-threshold chunk, mirrors `global_medium`) |
 
-**Total: 157 unique chunk keywords** (the per-family counts above sum to 157; `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` but is its own keyword). Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list — this table is a summary, not the source of truth.
+**Total: 158 unique chunk keywords** (the per-family counts above sum to 158; `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` but is its own keyword). Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list — this table is a summary, not the source of truth.
 
 `realistic_camera` is intentionally **not** registered — the keyword is reserved for the future multi-element lens-system camera (see [docs/CAMERAS_ROADMAP.md](../../../docs/CAMERAS_ROADMAP.md) Phase 4). Until that lands, scenes that want photographic depth-of-field use `thinlens_camera`.
 

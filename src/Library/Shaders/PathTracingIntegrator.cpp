@@ -138,6 +138,7 @@ namespace
 		Scalar	combinedPdf;			///< MIS-combined PDF (0 unless useExplicitThroughput)
 		bool	useExplicitThroughput;	///< true => medWeight = Tr * sigma_s / combinedPdf
 		bool	zeroContrib;			///< true => equiangular landed at zero-density; no surface fallthrough
+		Scalar	noScatterPdfScale;		///< strategy-selection factor for the no-scatter outcome: 0.5 in the equiangular-MIS regime (a no-scatter outcome can only arise from the DT strategy, chosen with prob 0.5, so its true mixture probability is 0.5*pSurvival), 1.0 in the pure-DT / analog / no-positional-light regime. Consumed at the no-scatter survival sites as Tr / (noScatterPdfScale * pSurvival).
 	};
 
 	//
@@ -163,6 +164,7 @@ namespace
 		out.combinedPdf = 0;
 		out.useExplicitThroughput = false;
 		out.zeroContrib = false;
+		out.noScatterPdfScale = 1.0;
 
 		const bool useEquiangularMIS = (pLS && pLS->GetPositionalLightCount() > 0);
 		if( !useEquiangularMIS )
@@ -268,7 +270,15 @@ namespace
 				out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 				out.useExplicitThroughput = true;
 			}
-			// If not scattered: transmission has no equiangular counterpart; weight = 1.
+			else
+			{
+				// No-scatter outcome under equiangular MIS.  Equiangular ONLY
+				// proposes scatter events, so a no-scatter outcome can arise
+				// ONLY from this delta-tracking strategy, which is chosen with
+				// prob 0.5.  Its true mixture probability is 0.5*pSurvival, so
+				// the no-scatter survival sites must divide by that extra 0.5.
+				out.noScatterPdfScale = 0.5;
+			}
 		}
 		else
 		{
@@ -338,6 +348,7 @@ namespace
 		out.combinedPdf = 0;
 		out.useExplicitThroughput = false;
 		out.zeroContrib = false;
+		out.noScatterPdfScale = 1.0;
 
 		const bool useEquiangularMIS = (pLS && pLS->GetPositionalLightCount() > 0);
 		if( !useEquiangularMIS )
@@ -437,6 +448,14 @@ namespace
 				}
 				out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 				out.useExplicitThroughput = true;
+			}
+			else
+			{
+				// No-scatter outcome under equiangular MIS: reachable only via
+				// this delta-tracking strategy (chosen with prob 0.5).  See the
+				// RGB variant for the rationale — the survival sites divide by
+				// the extra 0.5.
+				out.noScatterPdfScale = 0.5;
 			}
 		}
 		else
@@ -946,6 +965,41 @@ namespace
 	inline RISEPel PTDivByScalar( const RISEPel& v, const Scalar d ) { return v * ( Scalar( 1 ) / d ); }
 	inline Scalar  PTDivByScalar( const Scalar  v, const Scalar d ) { return v / d; }
 
+	// Analog no-scatter survival weight.  SampleDistance is an ANALOG
+	// estimator: reaching the surface (or escaping) WITHOUT scattering is a
+	// stochastic survival event whose probability already carries the
+	// Beer-Lambert factor.  Multiplying throughput by Tr again would
+	// double-count attenuation (a pure absorber would render exp(-2*sigma_a*d)).
+	// The correct weight is Tr / pSurvival, where pSurvival is the
+	// DETERMINISTIC no-scatter survival pdf obtained from
+	// IMedium::EvalDistancePdf[NM]( ray, dist, /*scattered=*/false, dist ).
+	//
+	// Why the deterministic pdf and NOT MinValue(EvalTransmittance): for a
+	// HomogeneousMedium the two are identical -- EvalDistancePdf(false) returns
+	// exp(-sigma_t_max*d) = MinValue(Tr) (Pel) and EvalDistancePdfNM(false)
+	// returns exp(-sigma_t(lambda)*d) = EvalTransmittanceNM (so the NM weight is
+	// exactly 1).  For a HeterogeneousMedium, however, EvalTransmittance is a
+	// STOCHASTIC ratio-tracking estimate, so MinValue(EvalTransmittance) would
+	// be a random denominator (a biased ratio-of-random-estimates).
+	// HeterogeneousMedium overrides EvalDistancePdf[NM] with a deterministic
+	// Simpson-quadrature optical depth, so pSurvival is deterministic there too
+	// and the weight Tr / pSurvival is the correct unbiased no-scatter weight.
+	// The numerator stays the per-channel unbiased transmittance estimate Tr.
+	//
+	// Guard: divide only when pSurvival > 0 (a non-positive survival pdf means
+	// "no attenuation to apply"); otherwise return the value-type multiplicative
+	// identity (1).
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTSurvivalWeight(
+		const typename SpectralValueTraits<Tag>::value_type& Tr,
+		const Scalar pSurvival )
+	{
+		if( pSurvival > 0 ) {
+			return PTDivByScalar( Tr, pSurvival );
+		}
+		return PTValueOne<Tag>();
+	}
+
 	// Medium scattering coefficients reduced to what the throughput math
 	// needs: the value_type scattering coefficient sigma_s, plus a scalar
 	// extinction used for the gate + denominator (Pel -> max channel of
@@ -991,6 +1045,25 @@ namespace
 	inline Scalar PTEvalTransmittance<NMTag>(
 		const IMedium* pMedium, const Ray& ray, const Scalar dist, const NMTag& tag )
 	{ return pMedium->EvalTransmittanceNM( ray, dist, tag.nm ); }
+
+	// Deterministic no-scatter survival pdf along a ray segment: the
+	// denominator of PTSurvivalWeight.  Pel routes to EvalDistancePdf, NM to
+	// EvalDistancePdfNM.  For HomogeneousMedium this equals MinValue(Tr) (Pel)
+	// / EvalTransmittanceNM (NM); for HeterogeneousMedium it is the deterministic
+	// Simpson optical depth (NOT the stochastic EvalTransmittance).
+	template<class Tag>
+	inline Scalar PTEvalNoScatterSurvivalPdf(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist, const Tag& tag );
+
+	template<>
+	inline Scalar PTEvalNoScatterSurvivalPdf<PelTag>(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist, const PelTag& )
+	{ return pMedium->EvalDistancePdf( ray, dist, /*scattered=*/false, dist ); }
+
+	template<>
+	inline Scalar PTEvalNoScatterSurvivalPdf<NMTag>(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist, const NMTag& tag )
+	{ return pMedium->EvalDistancePdfNM( ray, dist, /*scattered=*/false, dist, tag.nm ); }
 
 	// Volume distance sampling with optional equiangular MIS.
 	template<class Tag>
@@ -1664,20 +1737,32 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				}
 				else if( !scattered && bHit )
 				{
-					// Surface hit through medium: apply transmittance
+					// Surface hit through medium (analog no-scatter survival).
+					// SampleDistance already drew "reach the surface"; that
+					// survival event carries Beer-Lambert.  Apply only the
+					// per-channel weight Tr / pSurvival (deterministic no-scatter
+					// survival pdf; = 1 for monochrome/NM homogeneous) so we don't
+					// double-count attenuation.
 					const Value Tr = PTEvalTransmittance<Tag>(
 						pCurrentMedium, currentRay, ri.geometric.range, tag );
-					throughput = throughput * Tr;
+					const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
+						pCurrentMedium, currentRay, ri.geometric.range, tag );
+					throughput = throughput * PTSurvivalWeight<Tag>( Tr, pSurvival );
 				}
 				else if( !scattered && !bHit )
 				{
-					// Ray escapes the scene through the medium: apply the
-					// residual transmittance along the escape segment before
-					// the env radiance below multiplies into throughput
-					// (PBRT-v4 beta *= T_maj before the `if (!si)` branch).
+					// Ray escapes the scene through the medium (analog
+					// no-scatter survival).  The escape survival event already
+					// carries the Beer-Lambert factor via its probability, so
+					// apply only the per-channel weight Tr / pSurvival
+					// (deterministic no-scatter survival pdf; = 1 for
+					// monochrome/NM homogeneous) before the env radiance below
+					// multiplies into throughput — not Tr again.
 					const Value Tr = PTEvalTransmittance<Tag>(
 						pCurrentMedium, currentRay, maxDist, tag );
-					throughput = throughput * Tr;
+					const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
+						pCurrentMedium, currentRay, maxDist, tag );
+					throughput = throughput * PTSurvivalWeight<Tag>( Tr, pSurvival );
 				}
 			}
 
@@ -1756,6 +1841,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		const IObject* pMediumObject = 0;
 		const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
 			iorStack, &scene, pMediumObject );
+
+		// G6: stamp the ambient (incident-medium) IOR from the stack so the GGX
+		// conductor Fresnel evaluated in BOTH SPF::Scatter and BRDF::value sees
+		// the surrounding medium (e.g. enamel glass) rather than hardcoded air.
+		// Read BEFORE SetCurrentObject so top() is the medium the ray was
+		// travelling through.  Guard a non-positive stack top to air (1.0).
+		{
+			const Scalar ambIOR = iorStack.top();
+			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+		}
 
 		// Apply intersection modifier (bump maps etc.)
 		if( ri.pModifier ) {
@@ -3255,11 +3350,16 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		}
 		else if( ri.geometric.bHit )
 		{
-			// Surface hit through medium: transmittance is applied
-			// inside IntegrateFromHit on subsequent bounces.  For the
-			// first bounce we need to note it here — but IntegrateFromHit
-			// starts with throughput=1.  We scale the result instead.
+			// Surface hit through medium (analog no-scatter survival).
+			// SampleDistance already drew "reach the surface"; that survival
+			// event carries Beer-Lambert.  IntegrateFromHit starts with
+			// throughput=1, so we scale its result by only the per-channel weight
+			// Tr / pSurvival (deterministic no-scatter survival pdf; = 1 for
+			// monochrome/NM homogeneous) rather than Tr, which would double-count
+			// attenuation.
 			const Value Tr = PTEvalTransmittance<Tag>(
+				pCurrentMedium, cameraRay, ri.geometric.range, tag );
+			const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
 				pCurrentMedium, cameraRay, ri.geometric.range, tag );
 
 			if( !ri.geometric.bHit ) {
@@ -3273,15 +3373,21 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				0, 0, 0, 0, 0, 0,
 				pAOV, tag );
 
-			return Tr * hitResult;
+			return PTSurvivalWeight<Tag>( Tr, pSurvival ) * hitResult;
 		}
 		else
 		{
 			// !scattered && !ri.geometric.bHit: the camera ray escapes the
-			// scene through the medium.  Capture the residual transmittance
-			// along the escape segment so the env radiance below is
-			// correctly attenuated (PBRT-v4 beta *= T_maj).
-			escapeTr = PTEvalTransmittance<Tag>( pCurrentMedium, cameraRay, maxDist, tag );
+			// scene through the medium (analog no-scatter survival).  The
+			// escape survival event already carries the Beer-Lambert factor via
+			// its probability, so store only the per-channel weight Tr /
+			// pSurvival (deterministic no-scatter survival pdf; = 1 for
+			// monochrome/NM homogeneous) for the env radiance below —
+			// multiplying the full Tr would double-count attenuation.
+			const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, cameraRay, maxDist, tag );
+			const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
+				pCurrentMedium, cameraRay, maxDist, tag );
+			escapeTr = PTSurvivalWeight<Tag>( Tr, pSurvival );
 		}
 	}
 
@@ -3645,7 +3751,16 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				}
 				else if( !scattered && bHit )
 				{
-					// Apply per-wavelength transmittance
+					// HWSS no-scatter survival reweight (G1-c): the free-flight distance
+					// was sampled once at the HERO wavelength, so the no-scatter (survival)
+					// event carries the hero survival pdf.  Each bundle wavelength's Tr_w
+					// is reweighted by Tr_w / (noScatterPdfScale * pSurvivalHero) -- NOT
+					// multiplied by Tr_w, which double-counts Beer-Lambert (the survival
+					// probability already encodes the attenuation).  = 1 for a gray bundle;
+					// mirrors the non-HWSS PTSurvivalWeight scalar sites (~3376).
+					const Scalar pSurvivalHero = mso.noScatterPdfScale *
+						pCurrentMedium->EvalDistancePdfNM(
+							currentRay, ri.geometric.range, /*scattered=*/false, ri.geometric.range, heroNM );
 					for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 					{
 						if( swl.terminated[w] ) {
@@ -3653,14 +3768,17 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						}
 						const Scalar Tr = pCurrentMedium->EvalTransmittanceNM(
 							currentRay, ri.geometric.range, swl.lambda[w] );
-						throughputComp[w] *= Tr;
+						throughputComp[w] *= ( pSurvivalHero > 0.0 ) ? ( Tr / pSurvivalHero ) : Tr;
 					}
 				}
 				else if( !scattered && !bHit )
 				{
-					// Ray escapes the scene through the medium: apply the
-					// per-wavelength residual transmittance before the env
-					// contribution below (PBRT-v4 beta *= T_maj).
+					// HWSS-2 bounce-loop escape: no-scatter survival reweight (G1-c),
+					// same as HWSS-1 but the segment is the full escape distance maxDist
+					// (PBRT-v4 beta *= T_maj, now survival-corrected per wavelength).
+					const Scalar pSurvivalHero = mso.noScatterPdfScale *
+						pCurrentMedium->EvalDistancePdfNM(
+							currentRay, maxDist, /*scattered=*/false, maxDist, heroNM );
 					for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 					{
 						if( swl.terminated[w] ) {
@@ -3668,7 +3786,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						}
 						const Scalar Tr = pCurrentMedium->EvalTransmittanceNM(
 							currentRay, maxDist, swl.lambda[w] );
-						throughputComp[w] *= Tr;
+						throughputComp[w] *= ( pSurvivalHero > 0.0 ) ? ( Tr / pSurvivalHero ) : Tr;
 					}
 				}
 			}
@@ -3730,6 +3848,15 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		const IObject* pMediumObject = 0;
 		const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
 			iorStack, &scene, pMediumObject );
+
+		// G6 (HWSS): stamp the ambient (incident-medium) IOR from the stack
+		// (per-wavelength n(λ) in the spectral path) so the GGX conductor Fresnel
+		// in SPF::ScatterNM and BRDF::valueNM sees the surrounding medium rather
+		// than hardcoded air.  Read BEFORE SetCurrentObject; guard to air (1.0).
+		{
+			const Scalar ambIOR = iorStack.top();
+			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+		}
 
 		if( ri.pModifier ) {
 			ri.pModifier->Modify( ri.geometric );
@@ -4347,9 +4474,15 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 		}
 		else if( ri.geometric.bHit )
 		{
-			// Surface hit through medium: IntegrateFromHitHWSS handles
-			// per-wavelength transmittance internally.  For the first
-			// bounce, apply transmittance here and scale results.
+			// HWSS-3 camera-first-bounce surface-hit: no-scatter survival reweight
+			// (G1-c).  IntegrateFromHitHWSS fills result[w] from throughput=1; we
+			// then scale by Tr_w / (noScatterPdfScale * pSurvivalHero) -- the HERO
+			// survival pdf, since the free-flight was sampled at heroNM -- NOT the
+			// full Tr_w (which double-counts Beer-Lambert).  HWSS twin of the
+			// non-HWSS camera surface site at ~3376.
+			const Scalar pSurvivalHero = mso.noScatterPdfScale *
+				pCurrentMedium->EvalDistancePdfNM(
+					cameraRay, ri.geometric.range, /*scattered=*/false, ri.geometric.range, heroNM );
 			Scalar Tr[SampledWavelengths::N];
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 			{
@@ -4364,19 +4497,25 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 				0, 0, 0, 0, 0, 0, result, pAOV );
 
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
-				result[w] *= Tr[w];
+				result[w] *= ( pSurvivalHero > 0.0 ) ? ( Tr[w] / pSurvivalHero ) : Tr[w];
 			}
 			return;
 		}
 		else
 		{
-			// Ray escapes the scene through the medium: capture the
-			// per-wavelength residual transmittance along the escape
-			// segment for the env contribution below (PBRT-v4 beta *= T_maj).
+			// HWSS-4 camera-first-bounce escape: no-scatter survival reweight
+			// (G1-c).  The escape survival event carries the hero survival pdf, so
+			// escapeTr holds Tr_w / (noScatterPdfScale * pSurvivalHero) for the env
+			// contribution below -- not the full Tr_w (which double-counts
+			// Beer-Lambert).  HWSS twin of the non-HWSS camera escape at ~3390.
+			const Scalar pSurvivalHero = mso.noScatterPdfScale *
+				pCurrentMedium->EvalDistancePdfNM(
+					cameraRay, maxDist, /*scattered=*/false, maxDist, heroNM );
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
-				escapeTr[w] = swl.terminated[w] ? Scalar(0) :
+				const Scalar Tr = swl.terminated[w] ? Scalar(0) :
 					pCurrentMedium->EvalTransmittanceNM(
 						cameraRay, maxDist, swl.lambda[w] );
+				escapeTr[w] = ( pSurvivalHero > 0.0 ) ? ( Tr / pSurvivalHero ) : Tr;
 			}
 		}
 	}

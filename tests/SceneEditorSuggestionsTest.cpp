@@ -1,6 +1,6 @@
 // SceneEditorSuggestionsTest — exercises the scene grammar, cursor
 // context resolver, and suggestion engine.  Asserts the core contract:
-// all 157 chunk keywords are enumerable, context resolution picks the
+// all 158 chunk keywords are enumerable, context resolution picks the
 // right scope in representative scene fragments, and the suggestion
 // engine returns chunk keywords at scene root and rejects already-
 // authored non-repeatable parameters inside a block.  (Bump the count
@@ -31,10 +31,10 @@ void TestGrammarCoverage()
 	std::cout << "GrammarCoverage\n";
 	const SceneGrammar& g = SceneGrammar::Instance();
 	const auto& kws = g.AllChunkKeywords();
-	// The parser registry holds 157 chunk types; the EXPECT below carries the
+	// The parser registry holds 158 chunk types; the EXPECT below carries the
 	// full per-addition history.  Bump this count when adding new chunks; the
 	// alphabetised registration in CreateAllChunkParsers() is the source of truth.
-	EXPECT( kws.size() == 157 );	// 2026-05 Camera/Film/Output split: + `film`; 2026-05 painters: + composite_function2d_painter + polynomial_function2d_painter; 2026-05 IScalarPainter refactor: + scalar_painter; Phase 6.2 round-trip save: + override_object; 2026-06 auto-rasterizer dispatcher: + auto_rasterizer (Phase 1); 2026-06 auto-rasterizer Phase 1b: + auto_spectral_rasterizer; 2026-06 SDF geometry: + sdf_geometry; 2026-06 procedural general sweeps: + sweep_geometry + path_instances_geometry; 2026-06 temper-comparison: + function2d_painter; 2026-06 general patterning: + expression_function2d + cartesian_disk_geometry (retired guilloche_disk_geometry AND guilloche_oxide_painter: dials are an expression_function2d displaced onto cartesian_disk_geometry, and the oxide heat-tint is in-scene expression_function2d math); 2026-06 named animation paths: + animation (the named-animation grouping chunk); 2026-06 CST v6->v7 migrator: + global_medium (the v7 form of `> set global_medium`); 2026-06 scene variants: + scene_variant + active_scene_variant; 2026-06 CST v6->v7 cutover: + light_rr_threshold
+	EXPECT( kws.size() == 158 );	// 2026-05 Camera/Film/Output split: + `film`; 2026-05 painters: + composite_function2d_painter + polynomial_function2d_painter; 2026-05 IScalarPainter refactor: + scalar_painter; Phase 6.2 round-trip save: + override_object; 2026-06 auto-rasterizer dispatcher: + auto_rasterizer (Phase 1); 2026-06 auto-rasterizer Phase 1b: + auto_spectral_rasterizer; 2026-06 SDF geometry: + sdf_geometry; 2026-06 procedural general sweeps: + sweep_geometry + path_instances_geometry; 2026-06 temper-comparison: + function2d_painter; 2026-06 general patterning: + expression_function2d + cartesian_disk_geometry (retired guilloche_disk_geometry AND guilloche_oxide_painter: dials are an expression_function2d displaced onto cartesian_disk_geometry, and the oxide heat-tint is in-scene expression_function2d math); 2026-06 named animation paths: + animation (the named-animation grouping chunk); 2026-06 CST v6->v7 migrator: + global_medium (the v7 form of `> set global_medium`); 2026-06 scene variants: + scene_variant + active_scene_variant; 2026-06 CST v6->v7 cutover: + light_rr_threshold; 2026-07 discrete-facet glints: + glint_modifier
 
 	// Every chunk must have a non-empty descriptor (Phase 1c invariant:
 	// Describe() is pure-virtual, so every registered parser has its own
@@ -45,7 +45,7 @@ void TestGrammarCoverage()
 		if( !d->keyword.empty() )     ++chunks_with_keyword;
 		if( !d->parameters.empty() )  ++chunks_with_parameters;
 	}
-	// 156 unique descriptors -- 157 keyword entries, but the mis_pathtracing_shaderop alias shares a
+	// 157 unique descriptors -- 158 keyword entries, but the mis_pathtracing_shaderop alias shares a
 	// parser with pathtracing_shaderop and therefore the same descriptor;
 	// both appear in AllChunks() as two entries pointing at one descriptor).
 	EXPECT( chunks_with_keyword == kws.size() );
@@ -156,7 +156,7 @@ void TestSuggestChunkKeywordsAtRoot()
 	SuggestionEngine engine;
 	const std::string buf = "RISE ASCII SCENE 7\n\n";
 	auto sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
-	EXPECT( sugs.size() == 157 );	// 2026-05 Camera/Film/Output split: + `film`; 2026-05 painters: + composite_function2d_painter + polynomial_function2d_painter; 2026-05 IScalarPainter refactor: + scalar_painter; Phase 6.2 round-trip save: + override_object; 2026-06 auto-rasterizer dispatcher: + auto_rasterizer (Phase 1); 2026-06 auto-rasterizer Phase 1b: + auto_spectral_rasterizer; 2026-06 SDF geometry: + sdf_geometry; 2026-06 procedural general sweeps: + sweep_geometry + path_instances_geometry; 2026-06 temper-comparison: + function2d_painter; 2026-06 general patterning: + expression_function2d + cartesian_disk_geometry (retired guilloche_disk_geometry AND guilloche_oxide_painter: dials are an expression_function2d displaced onto cartesian_disk_geometry, and the oxide heat-tint is in-scene expression_function2d math); 2026-06 named animation paths: + animation (the named-animation grouping chunk); 2026-06 CST v6->v7 migrator: + global_medium (the v7 form of `> set global_medium`); 2026-06 scene variants: + scene_variant + active_scene_variant; 2026-06 CST v6->v7 cutover: + light_rr_threshold
+	EXPECT( sugs.size() == 158 );	// 2026-05 Camera/Film/Output split: + `film`; 2026-05 painters: + composite_function2d_painter + polynomial_function2d_painter; 2026-05 IScalarPainter refactor: + scalar_painter; Phase 6.2 round-trip save: + override_object; 2026-06 auto-rasterizer dispatcher: + auto_rasterizer (Phase 1); 2026-06 auto-rasterizer Phase 1b: + auto_spectral_rasterizer; 2026-06 SDF geometry: + sdf_geometry; 2026-06 procedural general sweeps: + sweep_geometry + path_instances_geometry; 2026-06 temper-comparison: + function2d_painter; 2026-06 general patterning: + expression_function2d + cartesian_disk_geometry (retired guilloche_disk_geometry AND guilloche_oxide_painter: dials are an expression_function2d displaced onto cartesian_disk_geometry, and the oxide heat-tint is in-scene expression_function2d math); 2026-06 named animation paths: + animation (the named-animation grouping chunk); 2026-06 CST v6->v7 migrator: + global_medium (the v7 form of `> set global_medium`); 2026-06 scene variants: + scene_variant + active_scene_variant; 2026-06 CST v6->v7 cutover: + light_rr_threshold; 2026-07 discrete-facet glints: + glint_modifier
 	bool found_ambient = false;
 	for( const Suggestion& s : sugs ) {
 		if( s.insertText == "ambient_light" ) { found_ambient = true; break; }

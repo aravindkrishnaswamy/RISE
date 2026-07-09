@@ -503,8 +503,20 @@ bool SDFGeometry::March( const Point3& o, const Vector3& dir, const Scalar tStar
 	// originating band first, then pick the side from a point that is unambiguously
 	// inside or outside.  This is the SDF analogue of how the analytic primitives
 	// reject the t~=0 self-intersection root and return the next surface.
+	//
+	// Gate the step-off on the ray ORIGIN sitting in the band, NOT the clipped
+	// start `d0`.  A continuation ray is spawned on the surface, so its ORIGIN is
+	// in the band and must be stepped past.  A PRIMARY (camera/eye) ray merely
+	// ENTERS the bbox from far away: when the surface COINCIDES with the bbox face
+	// -- a FLAT heightfield, whose surface z IS the bbox top -- the clipped start
+	// `tStart` lands in the +-band by coincidence.  Stepping THAT off marches
+	// straight past the entry surface to the far side, so the ray tunnels through
+	// (a refractive dielectric over a substrate then never gets entered and renders
+	// solid black).  Map(origin) tells them apart: ~0 for a spawned-on-surface
+	// continuation ray, large for a primary ray clipped to the bbox.
 	const Scalar surfBand = m_eps * Scalar(2);
-	if( std::fabs( d0 ) <= surfBand ) {
+	const Scalar dOrigin  = Map( o );
+	if( std::fabs( dOrigin ) <= surfBand ) {
 		bool cleared = false;
 		for( int e = 0; e < 64; ++e ) {
 			t += m_eps * Scalar(4);

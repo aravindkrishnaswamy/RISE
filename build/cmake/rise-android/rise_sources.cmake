@@ -320,6 +320,7 @@ set(RISE_LIB_SOURCES
 
     # SRCLIBMODIFIERS
     "${RISE_LIB}/Modifiers/BumpMap.cpp"
+    "${RISE_LIB}/Modifiers/GlintModifier.cpp"
     "${RISE_LIB}/Modifiers/NormalMap.cpp"
 
     # SRCLIBRASTERIMAGES
