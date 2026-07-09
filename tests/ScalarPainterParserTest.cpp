@@ -551,20 +551,21 @@ static void TestRejectInlineScalarOverflow()
 	Check( jrt == nullptr, "GGX `tangent_rotation roughnes_tex` (unregistered name) REJECTED" );
 	if( jrt ) safe_release( jrt );
 
-	// SSS g/roughness are pure scalars, but a REGISTERED painter name (pnt_zero, a
-	// scalar_painter) is tolerated via the legacy atof->0 path -- lookup-first.  Pure
-	// junk (`nope`) that is neither a number nor a painter is REJECTED.
+	// SSS g/roughness are BAKED scalars (plain doubles through the ctor).  Junk
+	// (`nope`) is rejected, and so is a REGISTERED painter name: the old
+	// lookup-first tolerance passed validation and then silently atof'd the
+	// painter NAME to g = 0.0 -- silent physical drift, now a loud refusal.
 	const char* sssJunk =
 		"subsurfacescattering_material\n{\n\tname sss_j\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg nope\n\troughness 0.0\n}\n";
 	IJobPriv* jsj = LoadScene( sssJunk, "sss_j" );
-	Check( jsj == nullptr, "SSS `g nope` (neither number nor painter) REJECTED" );
+	Check( jsj == nullptr, "SSS `g nope` (not a number) REJECTED" );
 	if( jsj ) safe_release( jsj );
 
 	const char* sssName =
 		"scalar_painter\n{\n\tname pnt_zero\n\tvalue 0.0\n}\n"
 		"subsurfacescattering_material\n{\n\tname sss_n\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg pnt_zero\n\troughness 0.0\n}\n";
 	IJobPriv* jsn = LoadScene( sssName, "sss_n" );
-	Check( jsn != nullptr, "SSS `g pnt_zero` (registered scalar_painter) NOT rejected" );
+	Check( jsn == nullptr, "SSS `g pnt_zero` (painter name on a BAKED scalar field) REJECTED -- no silent atof-to-0" );
 	if( jsn ) safe_release( jsn );
 
 	// C99 hex-float exponents: a hex UNDERFLOW (`0x1p-5000` -> finite 0) must load,

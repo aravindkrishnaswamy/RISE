@@ -523,7 +523,19 @@ namespace RISE
 					errno = 0;
 					strtod( tok, &end );
 					if( errno == ERANGE ) {
-						return false;	// overflow/underflow (e.g. 1e999 -> HUGE_VAL); reject at the STRING layer (value-level isfinite is unreliable under -ffast-math), mirroring the ar_layer parser
+						// ERANGE covers overflow (-> non-finite HUGE_VAL) AND underflow
+						// (-> finite 0/subnormal, e.g. 5e-400).  Only overflow is
+						// non-finite.  Distinguish at the STRING layer exactly like
+						// Job.cpp's ScalarLiteralIsNonFinite: an underflow literal
+						// carries a NEGATIVE decimal (`e-`) or C99 hex-float (`p-`)
+						// exponent within the consumed token; overflow does not.
+						bool underflow = false;
+						for( const char* q = tok; q < end; ++q ) {
+							if( ( *q == 'e' || *q == 'E' || *q == 'p' || *q == 'P' ) && q + 1 < end && q[1] == '-' ) { underflow = true; break; }
+						}
+						if( !underflow ) {
+							return false;	// overflow (e.g. 1e999 -> HUGE_VAL); reject at the STRING layer (value-level isfinite is unreliable under -ffast-math), mirroring the ar_layer parser
+						}
 					}
 					if( end == tok ) {
 						return false;	// token does not start as a number
@@ -3216,8 +3228,12 @@ namespace RISE
 						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
 						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption coefficient"; }
 						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; }
-						{ auto& p = P(); p.name = "g";          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Henyey-Greenstein g"; }
-						{ auto& p = P(); p.name = "roughness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness"; }
+						// g / roughness are BAKED construction-time scalars (the SPF
+						// holds plain doubles) -- Double kind engages the registry's
+						// finite-numeric string gate; a painter name here previously
+						// slipped through and silently atof'd to 0.0.
+						{ auto& p = P(); p.name = "g";          p.kind = ValueKind::Double; p.description = "Henyey-Greenstein g (baked scalar)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "roughness";  p.kind = ValueKind::Double; p.description = "Surface roughness (baked scalar)"; p.defaultValueHint = "0.0"; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3250,9 +3266,11 @@ namespace RISE
 						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
 						{ auto& p = P(); p.name = "absorption";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption"; }
 						{ auto& p = P(); p.name = "scattering";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering"; }
-						{ auto& p = P(); p.name = "g";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Henyey-Greenstein g"; }
-						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness"; }
-						{ auto& p = P(); p.name = "max_bounces"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Max volume bounces per ray"; }
+						// g / roughness / max_bounces are BAKED construction-time
+						// scalars (see the subsurfacescattering_material note).
+						{ auto& p = P(); p.name = "g";           p.kind = ValueKind::Double; p.description = "Henyey-Greenstein g (baked scalar)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Double; p.description = "Surface roughness (baked scalar)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "max_bounces"; p.kind = ValueKind::UInt;   p.description = "Max volume bounces per ray (baked count)"; p.defaultValueHint = "64"; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3555,15 +3573,19 @@ namespace RISE
 						cd.keyword = "donner_jensen_skin_bssrdf_material"; cd.category = ChunkCategory::Material;
 						cd.description = "Donner & Jensen 2008 spectral skin BSSRDF.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						// roughness is NOT in this list -- it is a BAKED construction-
+						// time scalar (plain double through the ctor), declared Double
+						// below so the finite-numeric string gate applies.
 						static const char* painterRefs[] = {
 							"melanin_fraction","melanin_blend","hemoglobin_epidermis","carotene_fraction",
 							"hemoglobin_dermis","epidermis_thickness","ior_epidermis","ior_dermis",
-							"blood_oxygenation","roughness"
+							"blood_oxygenation"
 						};
 						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						for (const char* n : painterRefs) {
 							auto& p = P(); p.name = n; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Skin-model painter parameter";
 						}
+						{ auto& p = P(); p.name = "roughness"; p.kind = ValueKind::Double; p.description = "Surface roughness (baked scalar)"; p.defaultValueHint = "0.35"; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();

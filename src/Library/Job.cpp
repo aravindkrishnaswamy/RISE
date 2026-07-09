@@ -3039,12 +3039,13 @@ bool Job::AddSubSurfaceScatteringMaterial(
 		return false;
 	}
 
-	const bool gBad = !ScalarLiteralIsFiniteNumber( g )
-		&& pScalarPntManager->GetItem( g ) == 0 && pPntManager->GetItem( g ) == 0;
-	const bool rBad = !ScalarLiteralIsFiniteNumber( roughness )
-		&& pScalarPntManager->GetItem( roughness ) == 0 && pPntManager->GetItem( roughness ) == 0;
+	// g / roughness are BAKED into the SPF as plain doubles -- a painter
+	// name here is NOT plumbed (it used to pass validation and silently
+	// atof to 0.0), so only finite numeric literals are accepted.
+	const bool gBad = !ScalarLiteralIsFiniteNumber( g );
+	const bool rBad = !ScalarLiteralIsFiniteNumber( roughness );
 	if( gBad || rBad ) {
-		GlobalLog()->PrintEx( eLog_Error, "subsurfacescattering_material `%s`: `g` / `roughness` must be a finite number or a painter name (got g=`%s`, roughness=`%s`)", name, g, roughness );
+		GlobalLog()->PrintEx( eLog_Error, "subsurfacescattering_material `%s`: `g` / `roughness` are baked scalars and must be finite numbers -- painter names are not supported here (got g=`%s`, roughness=`%s`)", name, g, roughness );
 		safe_release( pIOR );
 		safe_release( pAbsorption );
 		safe_release( pScattering );
@@ -3089,12 +3090,11 @@ bool Job::AddRandomWalkSSSMaterial(
 		return false;
 	}
 
-	const bool gBad = !ScalarLiteralIsFiniteNumber( g )
-		&& pScalarPntManager->GetItem( g ) == 0 && pPntManager->GetItem( g ) == 0;
-	const bool rBad = !ScalarLiteralIsFiniteNumber( roughness )
-		&& pScalarPntManager->GetItem( roughness ) == 0 && pPntManager->GetItem( roughness ) == 0;
+	// g / roughness are BAKED plain doubles (see subsurfacescattering_material).
+	const bool gBad = !ScalarLiteralIsFiniteNumber( g );
+	const bool rBad = !ScalarLiteralIsFiniteNumber( roughness );
 	if( gBad || rBad ) {
-		GlobalLog()->PrintEx( eLog_Error, "randomwalksss_material `%s`: `g` / `roughness` must be a finite number or a painter name (got g=`%s`, roughness=`%s`)", name, g, roughness );
+		GlobalLog()->PrintEx( eLog_Error, "randomwalksss_material `%s`: `g` / `roughness` are baked scalars and must be finite numbers -- painter names are not supported here (got g=`%s`, roughness=`%s`)", name, g, roughness );
 		safe_release( pIOR );
 		safe_release( pAbsorption );
 		safe_release( pScattering );
@@ -3453,9 +3453,9 @@ bool Job::AddDonnerJensenSkinBSSRDFMaterial(
 		}
 	}
 
-	if( !ScalarLiteralIsFiniteNumber( roughness )
-		&& pScalarPntManager->GetItem( roughness ) == 0 && pPntManager->GetItem( roughness ) == 0 ) {
-		GlobalLog()->PrintEx( eLog_Error, "material `%s`: `roughness` must be a finite number or a painter name (got `%s`)", name, roughness );
+	// roughness is a BAKED plain double (see subsurfacescattering_material).
+	if( !ScalarLiteralIsFiniteNumber( roughness ) ) {
+		GlobalLog()->PrintEx( eLog_Error, "material `%s`: `roughness` is a baked scalar and must be a finite number -- painter names are not supported here (got `%s`)", name, roughness );
 		for( int j=0; j<9; ++j ) safe_release( all_dj[j] );
 		return false;
 	}
