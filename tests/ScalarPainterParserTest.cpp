@@ -533,6 +533,54 @@ static void TestRejectInlineScalarOverflow()
 	IJobPriv* jof = LoadScene( ofJunk, "ggx_of" );
 	Check( jof == nullptr, "overflow-with-junk `1e999e-5` REJECTED (scan bounded to token)" );
 	if( jof ) safe_release( jof );
+
+	// FINITE-BUT-INVALID junk (atof would silently coerce): a finite numeric prefix
+	// with a trailing unit (`0.5rad`->0.5) and a mistyped painter name that resolves
+	// to no painter (`roughnes_tex`->0.0) must both be REJECTED, not coerced.
+	const char* rotUnit =
+		"uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n"
+		"ggx_material\n{\n\tname ggx_ru\n\trd col\n\trs col\n\talphax 0.1\n\talphay 0.1\n\tior 0.15\n\textinction 3.5\n\ttangent_rotation 0.5rad\n}\n";
+	IJobPriv* jru = LoadScene( rotUnit, "ggx_ru" );
+	Check( jru == nullptr, "GGX `tangent_rotation 0.5rad` (finite+unit junk) REJECTED" );
+	if( jru ) safe_release( jru );
+
+	const char* rotTypo =
+		"uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n"
+		"ggx_material\n{\n\tname ggx_rt\n\trd col\n\trs col\n\talphax 0.1\n\talphay 0.1\n\tior 0.15\n\textinction 3.5\n\ttangent_rotation roughnes_tex\n}\n";
+	IJobPriv* jrt = LoadScene( rotTypo, "ggx_rt" );
+	Check( jrt == nullptr, "GGX `tangent_rotation roughnes_tex` (unregistered name) REJECTED" );
+	if( jrt ) safe_release( jrt );
+
+	// SSS g/roughness are pure scalars, but a REGISTERED painter name (pnt_zero, a
+	// scalar_painter) is tolerated via the legacy atof->0 path -- lookup-first.  Pure
+	// junk (`nope`) that is neither a number nor a painter is REJECTED.
+	const char* sssJunk =
+		"subsurfacescattering_material\n{\n\tname sss_j\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg nope\n\troughness 0.0\n}\n";
+	IJobPriv* jsj = LoadScene( sssJunk, "sss_j" );
+	Check( jsj == nullptr, "SSS `g nope` (neither number nor painter) REJECTED" );
+	if( jsj ) safe_release( jsj );
+
+	const char* sssName =
+		"scalar_painter\n{\n\tname pnt_zero\n\tvalue 0.0\n}\n"
+		"subsurfacescattering_material\n{\n\tname sss_n\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg pnt_zero\n\troughness 0.0\n}\n";
+	IJobPriv* jsn = LoadScene( sssName, "sss_n" );
+	Check( jsn != nullptr, "SSS `g pnt_zero` (registered scalar_painter) NOT rejected" );
+	if( jsn ) safe_release( jsn );
+
+	// C99 hex-float exponents: a hex UNDERFLOW (`0x1p-5000` -> finite 0) must load,
+	// a hex OVERFLOW (`0x1p5000` -> +inf) must be rejected -- the ERANGE scan reads
+	// the `p-`/`p` binary exponent, not just decimal `e-`.
+	const char* hexUf =
+		"subsurfacescattering_material\n{\n\tname sss_hu\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0x1p-5000\n\troughness 0.0\n}\n";
+	IJobPriv* jhu = LoadScene( hexUf, "sss_hu" );
+	Check( jhu != nullptr, "SSS hex-underflow `g 0x1p-5000` (finite 0) NOT rejected" );
+	if( jhu ) safe_release( jhu );
+
+	const char* hexOf =
+		"subsurfacescattering_material\n{\n\tname sss_ho\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0x1p5000\n\troughness 0.0\n}\n";
+	IJobPriv* jho = LoadScene( hexOf, "sss_ho" );
+	Check( jho == nullptr, "SSS hex-overflow `g 0x1p5000` (+inf) REJECTED" );
+	if( jho ) safe_release( jho );
 }
 
 int main()

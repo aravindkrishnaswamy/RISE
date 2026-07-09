@@ -83,8 +83,10 @@ static bool ScalarLiteralIsNonFinite( const char* s )
 		// underflow literal carries a NEGATIVE exponent; overflow does not.  Scan
 		// ONLY the token strtod consumed ([s, end)) so trailing junk (e.g. the `e-`
 		// in `1e999xe-5`, whose atof is still +inf) cannot spoof it as underflow.
+		// Both decimal (`e-`/`E-`) and C99 hex-float (`p-`/`P-`) exponent markers
+		// are recognised so `0x1p-5000` is treated as (finite) underflow too.
 		for( const char* q = s; q < end; ++q ) {
-			if( ( *q == 'e' || *q == 'E' ) && q + 1 < end && q[1] == '-' ) return false;	// underflow -> finite
+			if( ( *q == 'e' || *q == 'E' || *q == 'p' || *q == 'P' ) && q + 1 < end && q[1] == '-' ) return false;	// underflow -> finite
 		}
 		return true;	// overflow -> non-finite
 	}
@@ -92,6 +94,26 @@ static bool ScalarLiteralIsNonFinite( const char* s )
 	while( *p == ' ' || *p == '\t' ) ++p;
 	const char* t = ( *p == '+' || *p == '-' ) ? p + 1 : p;
 	return ( t[0] == 'n' || t[0] == 'N' || t[0] == 'i' || t[0] == 'I' );	// strtod parsed nan/inf
+}
+
+// True iff `s` is a COMPLETE, finite numeric literal: strtod consumes a non-empty
+// prefix, the value is finite (not a nan/inf spelling, not an ERANGE overflow), and
+// only whitespace or a `#` comment trails the consumed token.  STRICTER than
+// !ScalarLiteralIsNonFinite -- it also rejects finite junk that atof() would silently
+// coerce (`0.5rad`->0.5, `nope`->0, a mistyped painter name `roughnes_tex`->0).
+// Callers whose slot also accepts a painter NAME must consult the painter manager(s)
+// FIRST and apply this only to the inline-scalar fallback (a registered name / the
+// "none" sentinel is a painter and never reaches here).
+static bool ScalarLiteralIsFiniteNumber( const char* s )
+{
+	if( !s || *s == '\0' ) return false;
+	if( ScalarLiteralIsNonFinite( s ) ) return false;	// nan / inf / overflow
+	char* end = nullptr;
+	errno = 0;
+	(void)std::strtod( s, &end );
+	if( end == s ) return false;						// no numeric prefix (name / garbage)
+	while( *end == ' ' || *end == '\t' ) ++end;		// tolerate trailing ws / # comment
+	return ( *end == '\0' || *end == '#' );
 }
 
 static IScalarPainter* ResolveScalarPainterArg(
@@ -2911,8 +2933,12 @@ bool Job::AddSubSurfaceScatteringMaterial(
 		return false;
 	}
 
-	if( ScalarLiteralIsNonFinite( g ) || ScalarLiteralIsNonFinite( roughness ) ) {
-		GlobalLog()->PrintEx( eLog_Error, "subsurfacescattering_material `%s`: `g` / `roughness` must be finite (got g=`%s`, roughness=`%s`)", name, g, roughness );
+	const bool gBad = !ScalarLiteralIsFiniteNumber( g )
+		&& pScalarPntManager->GetItem( g ) == 0 && pPntManager->GetItem( g ) == 0;
+	const bool rBad = !ScalarLiteralIsFiniteNumber( roughness )
+		&& pScalarPntManager->GetItem( roughness ) == 0 && pPntManager->GetItem( roughness ) == 0;
+	if( gBad || rBad ) {
+		GlobalLog()->PrintEx( eLog_Error, "subsurfacescattering_material `%s`: `g` / `roughness` must be a finite number or a painter name (got g=`%s`, roughness=`%s`)", name, g, roughness );
 		safe_release( pIOR );
 		safe_release( pAbsorption );
 		safe_release( pScattering );
@@ -2957,8 +2983,12 @@ bool Job::AddRandomWalkSSSMaterial(
 		return false;
 	}
 
-	if( ScalarLiteralIsNonFinite( g ) || ScalarLiteralIsNonFinite( roughness ) ) {
-		GlobalLog()->PrintEx( eLog_Error, "randomwalksss_material `%s`: `g` / `roughness` must be finite (got g=`%s`, roughness=`%s`)", name, g, roughness );
+	const bool gBad = !ScalarLiteralIsFiniteNumber( g )
+		&& pScalarPntManager->GetItem( g ) == 0 && pPntManager->GetItem( g ) == 0;
+	const bool rBad = !ScalarLiteralIsFiniteNumber( roughness )
+		&& pScalarPntManager->GetItem( roughness ) == 0 && pPntManager->GetItem( roughness ) == 0;
+	if( gBad || rBad ) {
+		GlobalLog()->PrintEx( eLog_Error, "randomwalksss_material `%s`: `g` / `roughness` must be a finite number or a painter name (got g=`%s`, roughness=`%s`)", name, g, roughness );
 		safe_release( pIOR );
 		safe_release( pAbsorption );
 		safe_release( pScattering );
@@ -3317,8 +3347,9 @@ bool Job::AddDonnerJensenSkinBSSRDFMaterial(
 		}
 	}
 
-	if( ScalarLiteralIsNonFinite( roughness ) ) {
-		GlobalLog()->PrintEx( eLog_Error, "material `%s`: `roughness` must be finite (got `%s`)", name, roughness );
+	if( !ScalarLiteralIsFiniteNumber( roughness )
+		&& pScalarPntManager->GetItem( roughness ) == 0 && pPntManager->GetItem( roughness ) == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error, "material `%s`: `roughness` must be a finite number or a painter name (got `%s`)", name, roughness );
 		for( int j=0; j<9; ++j ) safe_release( all_dj[j] );
 		return false;
 	}
@@ -3538,8 +3569,8 @@ bool Job::AddGGXMaterial(
 	const char* film_thickness
 	)
 {
-	if( ScalarLiteralIsNonFinite( tangent_rotation ) && pPntManager->GetItem( tangent_rotation ) == 0 ) {
-		GlobalLog()->PrintEx( eLog_Error, "ggx_material `%s`: `tangent_rotation` must be a finite rotation (got `%s`)", name, tangent_rotation );
+	if( !ScalarLiteralIsFiniteNumber( tangent_rotation ) && pPntManager->GetItem( tangent_rotation ) == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error, "ggx_material `%s`: `tangent_rotation` must be a finite rotation or a painter name (got `%s`)", name, tangent_rotation );
 		return false;
 	}
 	IPainter* pRd = pPntManager->GetItem(diffuse);
@@ -3677,8 +3708,8 @@ bool Job::AddGGXEmissiveMaterial(
 	const char* film_thickness
 	)
 {
-	if( ScalarLiteralIsNonFinite( tangent_rotation ) && pPntManager->GetItem( tangent_rotation ) == 0 ) {
-		GlobalLog()->PrintEx( eLog_Error, "ggx_emissive_material `%s`: `tangent_rotation` must be a finite rotation (got `%s`)", name, tangent_rotation );
+	if( !ScalarLiteralIsFiniteNumber( tangent_rotation ) && pPntManager->GetItem( tangent_rotation ) == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error, "ggx_emissive_material `%s`: `tangent_rotation` must be a finite rotation or a painter name (got `%s`)", name, tangent_rotation );
 		return false;
 	}
 	IPainter* pRd = pPntManager->GetItem(diffuse);
@@ -3828,8 +3859,8 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 	const char* anisotropy_rotation
 	)
 {
-	if( ScalarLiteralIsNonFinite( anisotropy_rotation ) && pPntManager->GetItem( anisotropy_rotation ) == 0 ) {
-		GlobalLog()->PrintEx( eLog_Error, "pbrmetallicroughness_material `%s`: `anisotropy_rotation` must be a finite rotation (got `%s`)", name, anisotropy_rotation );
+	if( !ScalarLiteralIsFiniteNumber( anisotropy_rotation ) && pPntManager->GetItem( anisotropy_rotation ) == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error, "pbrmetallicroughness_material `%s`: `anisotropy_rotation` must be a finite rotation or a painter name (got `%s`)", name, anisotropy_rotation );
 		return false;
 	}
 	// The scalar factors (metallic / roughness / specular_factor / anisotropy_factor)
@@ -3844,8 +3875,8 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 			{ anisotropy_factor, "anisotropy_factor" },
 		};
 		for( unsigned int i = 0; i < sizeof(pbrScalars)/sizeof(pbrScalars[0]); ++i ) {
-			if( ScalarLiteralIsNonFinite( pbrScalars[i].v ) && pPntManager->GetItem( pbrScalars[i].v ) == 0 ) {
-				GlobalLog()->PrintEx( eLog_Error, "pbrmetallicroughness_material `%s`: `%s` must be a finite scalar (got `%s`)", name, pbrScalars[i].role, pbrScalars[i].v );
+			if( !ScalarLiteralIsFiniteNumber( pbrScalars[i].v ) && pPntManager->GetItem( pbrScalars[i].v ) == 0 ) {
+				GlobalLog()->PrintEx( eLog_Error, "pbrmetallicroughness_material `%s`: `%s` must be a finite scalar or a painter name (got `%s`)", name, pbrScalars[i].role, pbrScalars[i].v );
 				return false;
 			}
 		}
@@ -6278,7 +6309,7 @@ bool Job::AddAreaLightShaderOp(
 	// N (Phong/directionality exponent) is Reference-kind and falls back to atof()
 	// below when not a painter name, so an inline non-finite value would synthesise
 	// a non-finite exponent painter.  Reject up front (painter name / "none" not flagged).
-	if( ScalarLiteralIsNonFinite( N ) && pPntManager->GetItem( N ) == 0 ) {
+	if( !ScalarLiteralIsFiniteNumber( N ) && pPntManager->GetItem( N ) == 0 ) {
 		GlobalLog()->PrintEx( eLog_Error, "arealight_shaderop `%s`: `N` must be a finite exponent (got `%s`)", name, N );
 		return false;
 	}
