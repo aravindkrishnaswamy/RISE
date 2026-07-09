@@ -38,7 +38,7 @@ Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scen
 - `Job::SetPrimaryAcceleration()` replaces the object manager. Calling it after adding objects discards them. Default since 2026-05 is **top-level BVH4** (SAH-binned, BVH4 SIMD collapse — same `BVH<>` template as the per-mesh accelerator) with leaf cap 4 and depth cap 32. Pre-2026-05 was no top-level structure (linear loop). Constructor flag `bUseBSPtree` is the historical name; semantically it now means "build a top-level BVH" (the BSPTreeSAH path was removed when ObjectManager moved to `BVH<>`). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Top-Level Acceleration (TLAS)" and the BVH retrospective Tier D1 entry.
 - Most scene elements are named and stored in managers. Parser chunks usually resolve dependencies by name through those managers.
 - `Job::InitializeContainers()` installs `"none"` defaults for a null material and null painter, and also creates several default shader ops.
-- The scene parser currently expects the header `RISE ASCII SCENE 6`. v5 scenes (legacy: width/height/pixelAR authored inside camera chunks) must be migrated — see the `Build And Test` → `Migrate a v5 scene to v6` recipe below for the script invocation, properties (idempotent, multi-camera handling, macro/CRLF preservation), and when NOT to use it. The parser emits a clear error pointing at the same recipe if it loads a v5 scene.
+- The scene parser currently expects the header `RISE ASCII SCENE 7` (post-CST-cutover; the version-agnostic CST loader still accepts the transitional `6` on read, so un-migrated scenes keep loading). v5 scenes (legacy: width/height/pixelAR authored inside camera chunks) must be migrated — see the `Build And Test` → `Migrate a v5 scene to v6` recipe below for the script invocation, properties (idempotent, multi-camera handling, macro/CRLF preservation), and when NOT to use it. The parser emits a clear error pointing at the same recipe if it loads a v5 scene.
 - In `.RISEscene` files, chunk braces must appear on their own lines.
 - Parser support for macros, math expressions, embedded commands, and `FOR` / `ENDFOR` loops is implemented centrally in `AsciiSceneParser.cpp`.
 - Tests are standalone executables, not a framework-based suite.
@@ -132,18 +132,18 @@ camera) chunk, run the migration tool:
 
 ```sh
 # One file
-python tools/migrate_scenes_v5_to_v6.py path/to/scene.RISEscene
+python tools/migrate_scenes_v5_to_v7.py path/to/scene.RISEscene
 
 # A whole directory (recursive; modifies in place)
-python tools/migrate_scenes_v5_to_v6.py path/to/dir/
+python tools/migrate_scenes_v5_to_v7.py path/to/dir/
 
 # Default: migrate every scene under scenes/
-python tools/migrate_scenes_v5_to_v6.py
+python tools/migrate_scenes_v5_to_v7.py
 ```
 
 What the script does to each v5 file:
 
-1. Bumps the header from `RISE ASCII SCENE 5` → `RISE ASCII SCENE 6`.
+1. Bumps the header from `RISE ASCII SCENE 5` → `RISE ASCII SCENE 7` (post-CST-cutover default; the reader still accepts `6`).
 2. Lifts every `width` / `height` / `pixelAR` line out of every
    `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`,
    `fisheye_camera`, and `orthographic_camera` chunk.

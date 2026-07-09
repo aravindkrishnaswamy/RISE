@@ -35,6 +35,17 @@ SRCDRISE =\
 
 # Utilities
 SRCLIBUTILITIES =\
+	$(PATHLIBRARY)Agent/AgentChatCodecs.cpp		\
+	$(PATHLIBRARY)Agent/AgentChatLoop.cpp			\
+	$(PATHLIBRARY)Agent/AgentLoopbackHttpServer.cpp	\
+	$(PATHLIBRARY)Agent/AgentMcpAdapter.cpp		\
+	$(PATHLIBRARY)Agent/AgentRpc.cpp			\
+	$(PATHLIBRARY)Agent/AgentSession.cpp		\
+	$(PATHLIBRARY)Agent/Base64.cpp				\
+	$(PATHLIBRARY)Agent/InMemoryRasterizerOutput.cpp	\
+	$(PATHLIBRARY)Agent/Json.cpp				\
+	$(PATHLIBRARY)Agent/SchemaGen.cpp			\
+	$(PATHLIBRARY)Cst/Cst.cpp					\
 	$(PATHLIBRARY)Utilities/Color/Color.cpp						\
 	$(PATHLIBRARY)Utilities/Color/ColorUtils.cpp				\
 	$(PATHLIBRARY)Utilities/Color/RGBToSpectrumTable.cpp		\
@@ -207,7 +218,8 @@ SRCLIBGEOMETRY = \
 # Objects
 SRCLIBOBJECT = \
 	$(PATHLIBRARY)Objects/CSGObject.cpp							\
-	$(PATHLIBRARY)Objects/Object.cpp
+	$(PATHLIBRARY)Objects/Object.cpp							\
+	$(PATHLIBRARY)Objects/SnapshotLeafClone.cpp
 
 
 # Ray primitive intersections
@@ -389,10 +401,9 @@ SRCLIBANIMATION =\
 # Parsers
 SRCLIBPARSERS =\
 	$(PATHLIBRARY)Parsers/AsciiCommandParser.cpp				\
-	$(PATHLIBRARY)Parsers/AsciiSceneParser.cpp					\
+	$(PATHLIBRARY)Parsers/ChunkParserRegistry.cpp				\
 	$(PATHLIBRARY)Parsers/AsciiScriptParser.cpp					\
 	$(PATHLIBRARY)Parsers/MathExpressionEvaluator.cpp			\
-	$(PATHLIBRARY)Parsers/RawTokenCapture.cpp					\
 	$(PATHLIBRARY)Options.cpp
 
 # Scene-editor suggestion engine
@@ -416,9 +427,7 @@ SRCLIBSCENEEDITOR =\
 	$(PATHLIBRARY)SceneEditor/MaterialIntrospection.cpp				\
 	$(PATHLIBRARY)SceneEditor/MediaIntrospection.cpp				\
 	$(PATHLIBRARY)SceneEditor/ChunkDescriptorRegistry.cpp			\
-	$(PATHLIBRARY)SceneEditor/SourceSpanIndex.cpp					\
 	$(PATHLIBRARY)SceneEditor/TransformSnapshot.cpp					\
-	$(PATHLIBRARY)SceneEditor/OverrideSpanIndex.cpp					\
 	$(PATHLIBRARY)SceneEditor/DirtyTracker.cpp						\
 	$(PATHLIBRARY)SceneEditor/SaveEngine.cpp
 

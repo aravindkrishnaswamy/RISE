@@ -213,7 +213,7 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 		return result;
 	}
 
-	if( !pJob->LoadAsciiScene( scenePath ) ) {
+	if( !pJob->LoadAsciiSceneViaCst( scenePath ) ) {
 		safe_release( pJob );
 		return result;
 	}
@@ -634,9 +634,9 @@ static void RunEnvTopologyTestWithRasterizers(
 	// them by name — RISE chunk parsing resolves named-painter refs
 	// at parse time, not at scene-finalisation.  Put scene FIRST,
 	// rasterizer SECOND.
-	const std::string ptScene   = std::string("RISE ASCII SCENE 6\n") + sceneCommonBlock + rasterizerPT;
-	const std::string bdptScene = std::string("RISE ASCII SCENE 6\n") + sceneCommonBlock + rasterizerBDPT;
-	const std::string vcmScene  = std::string("RISE ASCII SCENE 6\n") + sceneCommonBlock + rasterizerVCM;
+	const std::string ptScene   = std::string("RISE ASCII SCENE 7\n") + sceneCommonBlock + rasterizerPT;
+	const std::string bdptScene = std::string("RISE ASCII SCENE 7\n") + sceneCommonBlock + rasterizerBDPT;
+	const std::string vcmScene  = std::string("RISE ASCII SCENE 7\n") + sceneCommonBlock + rasterizerVCM;
 
 	const std::string ptPath   = WriteSceneToTempFile( ptScene.c_str(),   "pt"   );
 	const std::string bdptPath = WriteSceneToTempFile( bdptScene.c_str(), "bdpt" );

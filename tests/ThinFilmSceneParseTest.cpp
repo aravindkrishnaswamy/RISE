@@ -8,7 +8,7 @@
 //    This piece wires `fresnel_mode thinfilm` + the `film_ior` /
 //    `film_extinction` / `film_thickness` IScalarPainter slots through:
 //
-//      ggx_material chunk descriptor  (AsciiSceneParser.cpp)
+//      ggx_material chunk descriptor
 //        -> Job::AddGGXMaterial        (Job.cpp; ResolveOrDiagnoseScalar
 //                                       + ResolveFresnelMode + presence
 //                                       contract)
@@ -52,7 +52,6 @@
 
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
-#include "../src/Library/Interfaces/ISceneParser.h"
 #include "../src/Library/Interfaces/IMaterial.h"
 #include "../src/Library/Interfaces/IBSDF.h"
 #include "../src/Library/Materials/GGXMaterial.h"
@@ -104,18 +103,14 @@ namespace
 		return path;
 	}
 
-	// Parse a scene file into a fresh Job.  Returns the ParseAndLoadScene
+	// Load a scene file into a fresh Job.  Returns the load
 	// result; `job` is left holding whatever was loaded.
 	bool ParseSceneFile( const std::string& path, Job& job )
 	{
-		ISceneParser* parser = 0;
-		if( !RISE_API_CreateAsciiSceneParser( &parser, path.c_str() ) || !parser ) {
-			return false;
-		}
-		parser->addref();
-		const bool ok = parser->ParseAndLoadScene( job );
-		parser->release();
-		return ok;
+		// Model-B P5 Slice 6c-3b: load via the canonical CST path (native-v7).
+		// The rejection cases (malformed / missing-slot -> false) hold: DeriveToJob
+		// refuses-all on a bad chunk exactly as the legacy parser hard-failed.
+		return job.LoadAsciiSceneViaCst( path.c_str() );
 	}
 
 	// A minimal-but-complete thin-film GGX scene.  Inline scalar_painters
@@ -125,7 +120,7 @@ namespace
 	std::string ThinFilmGGXScene( double thickness, bool includeThickness )
 	{
 		std::string s;
-		s += "RISE ASCII SCENE 6\n";
+		s += "RISE ASCII SCENE 7\n";
 		s += "uniformcolor_painter\n{\nname rd\ncolor 0.0 0.0 0.0\n}\n";
 		s += "uniformcolor_painter\n{\nname rs\ncolor 1.0 1.0 1.0\n}\n";
 		s += "scalar_painter\n{\nname sub_n\nvalue 0.5\n}\n";			// Ti-ish substrate n
@@ -199,7 +194,7 @@ static void TestThinFilmParsesAndWires()
 	job->addref();
 
 	const bool parsed = ParseSceneFile( path, *job );
-	Check( parsed, "scene with thinfilm ggx_material + 3 film painters parses (ParseAndLoadScene == true)" );
+	Check( parsed, "scene with thinfilm ggx_material + 3 film painters parses (load == true)" );
 
 	// Pull the registered material back out and confirm it has a BSDF.
 	IMaterial* mat = job->GetMaterials() ? job->GetMaterials()->GetItem( "ti_heattint" ) : 0;
@@ -223,7 +218,7 @@ static void TestCookTorranceThinFilmRejected()
 	std::cout << "\n[2a] cooktorrance_material + fresnel_mode thinfilm is rejected\n";
 
 	std::string s;
-	s += "RISE ASCII SCENE 6\n";
+	s += "RISE ASCII SCENE 7\n";
 	s += "uniformcolor_painter\n{\nname rd\ncolor 0.2 0.2 0.2\n}\n";
 	s += "uniformcolor_painter\n{\nname rs\ncolor 0.8 0.8 0.8\n}\n";
 	s += "scalar_painter\n{\nname facets\nvalue 0.15\n}\n";

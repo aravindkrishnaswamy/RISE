@@ -301,6 +301,22 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
 /// RISEBridge.  Callers MUST NOT release it.
 - (void *)opaqueInteractiveViewportFrameStore;
 
+/// Model-B F2 slice S4: register (or clear, passing NULL) the LIVE
+/// `RISE::SceneEditController*` this bridge's production-render entry
+/// points (`-rasterize`, `-rasterizeAnimation`,
+/// `-rasterizeRegionLeft:top:right:bottom:`) should route through.
+/// RISEViewportBridge owns the controller and is the sole caller: it
+/// registers immediately after `RISE_API_CreateSceneEditController`
+/// succeeds in `-initWithHostBridge:`, and clears (passes NULL) at the
+/// very start of `-shutdown`, BEFORE destroying the controller — so
+/// this bridge can never dereference a dangling pointer.  NULL-safe by
+/// construction on the read side too: with no controller registered
+/// (no scene loaded yet, or between an old viewport bridge's shutdown
+/// and a new one's init), the production entry points fall back to
+/// calling `Job::Rasterize()` directly, exactly as they did before this
+/// slice — headless / no-viewport callers are unaffected.
+- (void)attachSceneEditController:(nullable void *)opaqueController;
+
 @end
 
 NS_ASSUME_NONNULL_END

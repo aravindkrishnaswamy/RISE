@@ -19,6 +19,7 @@
 #define IASCII_CHUNKPARSER_
 
 #include <vector>
+#include <string>
 
 #include "ChunkDescriptor.h"
 #include "../Utilities/RString.h"
@@ -71,6 +72,50 @@ namespace RISE
 		// parameter that is in the descriptor flows automatically.
 		[[nodiscard]] virtual bool Finalize( const ParseStateBag& bag, IJob& pJob ) const = 0;
 	};
+
+	// Validates `params` against `desc` and populates `bag` with the typed
+	// values -- the descriptor-driven parameter dispatch that ParseChunk uses
+	// internally, exposed so the CST derive path (src/Library/Cst) binds
+	// through the SAME live validation as the legacy parser rather than a
+	// second, drifting validator. Returns false on any of three conditions:
+	// a line with no space separating name from value (NOT logged); an
+	// undeclared parameter name (logged); or a numeric-kind param whose value
+	// has a non-finite (nan/inf) OR non-numeric token (logged). On success
+	// `bag` holds the values for a subsequent Finalize().
+	// Separating this validate+populate step from Finalize is what lets a
+	// caller validate every chunk first and apply none on a VALIDATION failure
+	// (an apply-time Finalize failure -- e.g. an unresolved reference -- is a
+	// separate concern the caller handles when it invokes Finalize).
+	[[nodiscard]] bool DispatchChunkParameters( const ChunkDescriptor& desc, ParseStateBag& bag, const IAsciiChunkParser::ParamsList& params );
+
+	// Resets the chunk parsers' cross-chunk parse state -- the file-scope caches
+	// some Finalize()s read/write WITHIN one scene (the uniformcolor_painter
+	// colour cache that translucent_material's energy-conservation check reads,
+	// the camera/scene-option default carry-over, the camera-name dedup set).
+	// The legacy ParseAndLoadScene called this at the START of every parse
+	// (streaming loader deleted, Model-B P5 Slice 6c); the CST derive path --
+	// Cst::DeriveToJob, today's sole caller -- MUST do the same before deriving,
+	// so that state does not leak between successive derives -- the redesign's
+	// edit -> re-derive loop runs DeriveToJob repeatedly. Without it, deriving
+	// scene A then scene B can give B a Job that a fresh parse of B would not
+	// (e.g. spurious energy-auto-scaled painters).
+	//
+	// `resetTopLevelState` mirrors the private ClearParseState(bool): the
+	// deleted streaming loader passed `false` on a recursive `> load` / `> run`
+	// parse so the camera-name dedup set survived across the nested file; the
+	// default `true` (used by the CST derive path, i.e. every live call) resets
+	// it.  The `false` path is currently unused (no callers); retained pending
+	// deletion.
+	void ClearChunkParserState( bool resetTopLevelState = true );
+
+	// Returns the camera name the most recent camera-chunk Finalize allocated
+	// (the private ChunkParsers::LastAllocatedCameraName).  HISTORICAL: the
+	// streaming loader's OnEntityChunkFinalized hook (deleted with the loader,
+	// Slice 6c) read it to key an unnamed camera's source span under the same
+	// auto-allocated name the runtime scene uses; the source-span index itself
+	// went in Slice 6d.  Currently unused (no callers); retained pending
+	// deletion.
+	const std::string& LastAllocatedCameraName();
 }
 
 #endif

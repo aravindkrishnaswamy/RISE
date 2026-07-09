@@ -422,16 +422,19 @@ namespace RISE
 			return pBackObj->ClearAll();
 		}
 
-		//! Loading an ascii scene description
+		//! P5 (Model-B, Slice 6c-2): default scene-load entry -- routes a native-v7 scene to the CST
+		//! path (retains the Document for edit/save/variant).  As of Slice 6c-3a an un-migrated scene
+		//! HARD-FAILS (returns false + a migrator pointer in the log); there is NO legacy fallback.
+		//! Slice 6c-3c deleted the legacy LoadAsciiScene passthrough -- this is the only managed load entry.
 		/// \return TRUE if successful, FALSE otherwise
-		bool LoadAsciiScene(
+		bool LoadAsciiSceneAuto(
 			System::String& filename							///< [in] Name of the file containing the scene
 			)
 		{
 			IntPtr intptr = Marshal::StringToHGlobalAnsi(&filename);
 			const char* szfilename = (const char*)(intptr).ToPointer();
-			
-			bool ret = pBackObj->LoadAsciiScene( szfilename );
+
+			bool ret = pBackObj->LoadAsciiSceneAuto( szfilename );
 
 			Marshal::FreeCoTaskMem( intptr );
 			return ret;

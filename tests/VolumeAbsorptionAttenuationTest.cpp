@@ -287,7 +287,7 @@ static PixelRGB RenderCentralBlock( const std::string& sceneText, const char* ta
 		return result;
 	}
 
-	if( !pJob->LoadAsciiScene( scenePath.c_str() ) ) {
+	if( !pJob->LoadAsciiSceneAuto( scenePath.c_str() ) ) {
 		safe_release( pJob );
 		return result;
 	}
@@ -1170,7 +1170,7 @@ static std::string BuildGlobalMediumScene(
 		"\tmaterial emitwall\n"
 		"}\n"
 		"\n"
-		"> set global_medium gmed\n";
+		"global_medium\n{\nmedium gmed\n}\n";
 	return ss.str();
 }
 
@@ -1612,7 +1612,7 @@ static std::string BuildGlobalMediumMirrorScene( int samples, double sa, bool hw
 		// the mirror).  Reflected path length mirror->wall = 3.
 		"standard_object\n{\n\tname themirror\n\tgeometry mirrorgeom\n\tposition 0 0 1\n\tmaterial mirror\n}\n\n"
 		"standard_object\n{\n\tname backwall\n\tgeometry wallgeom\n\tposition 0 0 -2\n\tmaterial emitwall\n}\n\n"
-		"> set global_medium gmed\n";
+		"global_medium\n{\nmedium gmed\n}\n";
 	return ss.str();
 }
 

@@ -127,9 +127,9 @@ namespace RISE
 			typedef std::map<const IObject*, PointSetOctree*> PointSetMap;
 			// Known scene-immutability exception: pointsets are lazily built on first
 			// access because construction requires ray tracing the scene. Access is
-			// serialized by create_mutex (double-checked locking), so this is thread-safe.
+			// serialized by create_mutex (one std::lock_guard'd find-or-build), thread-safe.
 			mutable PointSetMap	pointsets;
-			const RMutex		create_mutex;
+			mutable RMutex		create_mutex;
 
 			// --- Profile computation helpers ---
 			static Scalar ComputeSkinBaselineAbsorption( const Scalar nm );

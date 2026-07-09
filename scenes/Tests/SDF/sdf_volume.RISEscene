@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # SDF + participating-medium test.  A glass SDF "peanut" (two spheres melded by a
 # smooth-min) bounds a colored fog interior.  Camera rays refract through the
 # ray-marched dielectric boundary; the IOR-stack medium tracking relies on the

@@ -6,8 +6,9 @@
 //    - DirtyTracker basic ops (MarkDirty, Contains, Snapshot, Clear).
 //    - SceneEditor::Apply marks transform ops dirty; property ops
 //      do NOT mark dirty (V1 scope).
-//    - Undo / Redo of transform ops mark dirty (the save engine's
-//      matrix-equality compare resolves the "no-op rewrite" case).
+//    - Undo / Redo of transform ops mark dirty (SaveEngine's whole-file
+//      byte-equality NoOp resolves the "no-op rewrite" case; the pre-CST
+//      §9.4 matrix-equality compare is gone).
 //    - ScaleObjectFromAnchor populates SceneEditor::ScaleFromAnchorSet()
 //      (pinned 2.8 always-matrix policy).
 //    - ClearDirtyState() resets both.
@@ -64,7 +65,7 @@ static IJobPriv* LoadTwoObjectScene( const char* tag )
         "/tmp/dirty_tracker_test_%s_%d.RISEscene", tag, (int)::getpid() );
     std::ofstream ofs( path );
     if( !ofs.is_open() ) return nullptr;
-    ofs << "RISE ASCII SCENE 6\n"
+    ofs << "RISE ASCII SCENE 7\n"
         << "sphere_geometry\n{\n    name sph\n    radius 1.0\n}\n"
         << "standard_object\n{\n    name objA\n    geometry sph\n    position 0 0 0\n}\n"
         << "standard_object\n{\n    name objB\n    geometry sph\n    position 5 0 0\n}\n";
@@ -75,7 +76,7 @@ static IJobPriv* LoadTwoObjectScene( const char* tag )
         std::remove( path );
         return nullptr;
     }
-    const bool ok = pJob->LoadAsciiScene( path );
+    const bool ok = pJob->LoadAsciiSceneViaCst( path );
     std::remove( path );
     if( !ok ) { safe_release( pJob ); return nullptr; }
     return pJob;

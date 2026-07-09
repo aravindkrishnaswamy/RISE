@@ -52,7 +52,7 @@ extlib/*/*.vcxproj.filters
 /scenes/Internal
 /models/risemesh/internal
 
-# Python bytecode caches (tools/migrate_scenes_v5_to_v6.py etc.)
+# Python bytecode caches (tools/migrate_scenes_v5_to_v7.py etc.)
 __pycache__/
 *.pyc
 

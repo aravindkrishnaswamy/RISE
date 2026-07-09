@@ -118,7 +118,7 @@ static RISE::Implementation::RayCaster* ActiveCaster( IJobPriv* pJob )
 // sphere, an object bound to the base material + shaderA, and a PT
 // rasterizer that installs a global radiance map at scale 2.0.
 static const char* kScene =
-    "RISE ASCII SCENE 6\n"
+    "RISE ASCII SCENE 7\n"
     "uniformcolor_painter\n{\n"
     "    name pnt_white\n"
     "    color 1.0 1.0 1.0\n"
@@ -174,7 +174,7 @@ static IJobPriv* LoadScene( const char* tag )
         std::remove( path );
         return nullptr;
     }
-    const bool ok = pJob->LoadAsciiScene( path );
+    const bool ok = pJob->LoadAsciiSceneViaCst( path );
     std::remove( path );
     if( !ok ) {
         safe_release( pJob );

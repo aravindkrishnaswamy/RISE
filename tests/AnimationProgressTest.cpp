@@ -150,7 +150,7 @@ static std::string BuildScene( const char* rasterizerChunk )
 	// Marker line first, then the shader graph, then the rasterizer chunk
 	// and the shared scene body — matches AutoRasterizerTest's proven
 	// composition order.
-	std::string s( "RISE ASCII SCENE 6\n" );
+	std::string s( "RISE ASCII SCENE 7\n" );
 	s += kShader;
 	s += rasterizerChunk;
 	s += "\n";
@@ -214,7 +214,7 @@ static void RunAnimationCase( const char* label, const char* rasterizerChunk,
 		return;
 	}
 
-	bool loaded = pJob->LoadAsciiScene( path.c_str() );
+	bool loaded = pJob->LoadAsciiSceneViaCst( path.c_str() );
 	Check( loaded, std::string(label) + ": scene loaded" );
 	if( !loaded ) { safe_release( pJob ); return; }
 
@@ -277,7 +277,7 @@ static void RunSingleFrameCase( const char* label, const char* rasterizerChunk,
 		Check( false, std::string(label) + ": job created" );
 		return;
 	}
-	if( !pJob->LoadAsciiScene( path.c_str() ) ) {
+	if( !pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
 		Check( false, std::string(label) + ": scene loaded" );
 		safe_release( pJob );
 		return;

@@ -23,6 +23,8 @@
 #include "../../Sampling/HaltonPoints.h"
 #include "../../RISE_API.h"
 #include "../../Interfaces/ILog.h"
+#include "../../Utilities/Color/RGBSpectra.h"	// RGBUnboundedSpectrum (RGB->spectral uplift for PerformOperationNM)
+#include <mutex>									// std::lock_guard (exception-safe create_mutex)
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -747,14 +749,26 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 	}
 
 	// --- Pass 1: Lazy octree construction ---
-	PointSetMap::iterator it = pointsets.find( ri.pObject );
+	// ALL access to `pointsets` (a std::map, NOT thread-safe) is serialized by a
+	// std::lock_guard on create_mutex spanning the whole find-or-build; the guard
+	// unlocks on EVERY exit -- normal return, the CanBeAreaLight sentinel, AND a
+	// bad_alloc from the large build -- so a build OOM can never leave the mutex
+	// held and deadlock the render.  A prior double-checked-locking variant did an UNLOCKED
+	// find() that raced with the locked insert below: the unlocked read could
+	// observe a torn / half-inserted node -- a data race on std::map, i.e.
+	// undefined behavior.  This is the latent-UB / exception-safety fix for the
+	// find-or-build itself; the build's run-to-run NON-DETERMINISM (the one-time
+	// build runs on whichever thread wins the race, so it used to capture that
+	// thread's RNG state and the trigger pixel's frame) is fixed SEPARATELY below
+	// by the dedicated build RNG + sample-point frame (see the REPRODUCIBILITY
+	// comments and SSSBuildDeterminismTest).  The one-time build runs inside the
+	// lock; the expensive octree Evaluate (Pass 2) runs OUTSIDE the lock on the
+	// now-immutable octree, so render threads still evaluate in parallel.
 	PointSetOctree* ps = 0;
-
-	if( it == pointsets.end() )
 	{
-		create_mutex.lock();
-		PointSetMap::iterator again = pointsets.find( ri.pObject );
-		if( again == pointsets.end() )
+		std::lock_guard<RMutex> guard( create_mutex );
+		PointSetMap::iterator it = pointsets.find( ri.pObject );
+		if( it == pointsets.end() )
 		{
 			// SSS point-set generation uniformly samples the object's SURFACE via
 			// UniformRandomPoint/GetArea.  A geometry that cannot honour that contract
@@ -765,7 +779,6 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 			if( pSSSGeom && !pSSSGeom->CanBeAreaLight() ) {
 				GlobalLog()->PrintEasyWarning( "DonnerJensenSkinSSSShaderOp:: object geometry cannot be uniformly surface-sampled (CanBeAreaLight() == false); subsurface scattering is unsupported on it -- skipping (no SSS contribution)." );
 				pointsets[ri.pObject] = 0;	// cache null sentinel: warn once per object, skip the bogus build on every later hit
-				create_mutex.unlock();
 				c = RISEPel( 0.0 );
 				return;
 			}
@@ -795,25 +808,76 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 
 			MultiHalton mh;
 
+			// REPRODUCIBILITY (1 of 2): a dedicated fixed-seed RNG for the irradiance
+			// capture, independent of the render thread's scheduling-dependent
+			// rc.random.  The build runs once, on whichever thread first wins the
+			// find-or-build race above, so consuming that thread's rc.random STATE made
+			// the captured irradiance vary run-to-run.  buildRc leaves pSampler null so
+			// the irradiance shade falls back to buildRng, not the (also
+			// scheduling-dependent) QMC sampler; the shade reads only {random,
+			// pSampler, pass} from the CONTEXT, so the 3-arg ctor carries all it needs.
+			// (The OTHER half of the fix is the sample-point geometric frame set on
+			// newri below -- without it the build still craters: for a delta light the
+			// RNG here does not even affect the value, but the frame does.)
+			RandomNumberGenerator buildRng( 0x9E3779B9u );	// fixed seed (golden ratio)
+			RuntimeContext buildRc( buildRng, rc.pass, rc.bThreaded );
+
 			for( unsigned int i = 0; i < numPoints; i++ )
 			{
 				PointSetOctree::SamplePoint sp;
 				Vector3 normal;
+				Point2 sampleCoord;
 				Point3 random_variables(
 					mh.mod1(mh.halton(0,i)),
 					mh.mod1(mh.halton(1,i)),
 					mh.mod1(mh.halton(2,i)) );
 
-				ri.pObject->UniformRandomPoint( &sp.ptPosition, &normal, 0, random_variables );
+				ri.pObject->UniformRandomPoint( &sp.ptPosition, &normal, &sampleCoord, random_variables );
 
 				RayIntersection newri( ri );
 				newri.geometric.ray = Ray( sp.ptPosition, -normal );
 				newri.geometric.bHit = true;
 				newri.geometric.ptIntersection = sp.ptPosition;
 				newri.geometric.vNormal = normal;
+				// REPRODUCIBILITY (2 of 2) + correctness: `RayIntersection newri( ri )`
+				// above copied the TRIGGERING pixel's full geometric.  A uniform surface
+				// sample carries only position + normal + uv, so represent THAT and clear
+				// every trigger-pixel field the irradiance shade can read -- otherwise the
+				// capture is both WRONG (shaded with the trigger's frame/coords) and
+				// NON-DETERMINISTIC (the trigger is whichever thread/sample first hits the
+				// object).  Fields the shade reads:
+				//   onb           - BSDF reflect-side test (LambertianBRDF onb.w()) + aniso frame
+				//   ptCoord       - 2D-textured reflectance
+				//   ptObjIntersec - 3D-solid-textured reflectance: the sample's OBJECT-space
+				//                   point.  UniformRandomPoint returns the WORLD point, so map
+				//                   it back through the object inverse transform (as
+				//                   DirectVolumeRenderingShader does) -- exact even for a
+				//                   transformed object, matching a normal camera-ray hit.
+				//   rast          - optimal-MIS tile -> null tile (DETERMINISTIC under optimal-
+				//                   MIS; the build's auxiliary samples then feed accumulator
+				//                   tile (0,0) while it trains -- pre-existing and off-by-
+				//                   default: the build is not a camera path, and fed a
+				//                   scheduling-dependent tile before)
+				//   txFootprint   - mip LOD (cleared: a build sample has no ray differentials)
+				//   bHas{TexCoord1,VertexColor,Tangent} - per-vertex MESH attributes a random
+				//                   surface point does not carry; cleared so painters use
+				//                   their no-data defaults
+				// The surface cosine uses vNormal (set above); vGeomNormal is set for frame
+				// consistency (not read on the Lambertian path).  This frame leak is the
+				// dominant non-determinism source; with buildRng the build is fully
+				// reproducible.
+				newri.geometric.vGeomNormal = normal;
+				newri.geometric.onb.CreateFromW( normal );
+				newri.geometric.ptCoord = sampleCoord;
+				newri.geometric.ptObjIntersec = Point3Ops::Transform( ri.pObject->GetFinalInverseTransformMatrix(), sp.ptPosition );
+				newri.geometric.rast = nullRasterizerState;
+				newri.geometric.txFootprint = TextureFootprint();
+				newri.geometric.bHasTexCoord1 = false;
+				newri.geometric.bHasVertexColor = false;
+				newri.geometric.bHasTangent = false;
 				newri.geometric.ray.Advance( 1e-8 );
 
-				shader.Shade( rc, newri, caster, rs, sp.irrad, ior_stack );
+				shader.Shade( buildRc, newri, caster, rs, sp.irrad, ior_stack );
 
 				if( ColorMath::MaxValue(sp.irrad) > 0 )
 				{
@@ -835,13 +899,8 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 		}
 		else
 		{
-			ps = again->second;
+			ps = it->second;
 		}
-		create_mutex.unlock();
-	}
-	else
-	{
-		ps = it->second;
 	}
 
 	// --- Pass 2: Hierarchical octree evaluation ---
@@ -906,8 +965,28 @@ Scalar DonnerJensenSkinSSSShaderOp::PerformOperationNM(
 	const ScatteredRayContainer* pScat
 	) const
 {
-	// TODO: spectral version
-	return 0;
+	// Spectral path: evaluate the full RGB skin BSSRDF (this reuses the
+	// per-object irradiance octree -- built once and shared across all
+	// wavelengths) and uplift the RGB exitant radiance to wavelength `nm`
+	// via the same chroma-preserving JH uplift the RGB painters use for
+	// GetColorNM.  The prior `return 0` stub rendered every skin object
+	// BLACK under the *_spectral_* rasterizers.
+	//
+	// NOTE: this skin model is physically spectral (per-wavelength
+	// melanin / haemoglobin / carotene absorption -- ComputePerLayer-
+	// Coefficients(nm)), but its diffusion profile is tabulated at RGB
+	// (m_Rd_table, the R=615/G=550/B=465 nm channels) and the irradiance
+	// octree is RGB-valued, so a true per-lambda evaluation would need a
+	// per-wavelength profile plus a per-wavelength irradiance cache.
+	// Uplifting the RGB result keeps the spectral render matching the RGB
+	// appearance (the uplift round-trips through the CMFs) and reuses the
+	// existing tabulation; the per-lambda diffusion radius is RGB-
+	// resolution, not re-derived -- documented approximation, true
+	// spectral skin is future work.  RGBUnboundedSpectrum (not Albedo):
+	// exitant radiance is >= 0 and may exceed 1.
+	RISEPel c;
+	PerformOperation( rc, ri, caster, rs, c, ior_stack, pScat );
+	return RGBUnboundedSpectrum::FromRGB( c ).Eval( nm );
 }
 
 void DonnerJensenSkinSSSShaderOp::ResetRuntimeData() const

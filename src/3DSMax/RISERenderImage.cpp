@@ -240,7 +240,12 @@ int RiseRenderer::RenderImage( RiseRendererParams& rp, TimeValue t, Bitmap* tobm
 			RISE::PathGuidingConfig(), RISE::AdaptiveSamplingConfig(), RISE::StabilityConfig() );
 	} else {
 		prog->SetTitle( "Loading renderer settings and materials" );
-		if( !pJob->LoadAsciiScene( szRenderSettingsFile ) ) {
+		// Slice 6c-3a: the .RISEscene settings-file load is STUBBED.  The additive-load LoadAsciiScene path was
+		// retired in the Model-B CST cutover (this VS2005 3DSMax sidecar is legacy + not built here).  Log a
+		// clear reason and let the existing abort branch fire -- author the renderer/materials in a native-v7
+		// scene loaded through the main app.  (git history preserves the old additive-load behavior.)
+		RISE::GlobalLog()->PrintEx( RISE::eLog_Error, "3DSMax settings-file load (%s) is unsupported -- the legacy .RISEscene loader was retired in the Model-B CST cutover; author the renderer/materials in a native-v7 scene loaded through the main app", szRenderSettingsFile );
+		if( true ) {
 			MessageBox( hwnd, "Failed to properly load the renderer/material settings file, aborting render", GetString(IDS_RENDRISETITLE), MB_OK );
 			safe_release( pJob );
 			return 0;
@@ -499,7 +504,12 @@ int RiseRenderer::RenderImage( RiseRendererParams& rp, TimeValue t, Bitmap* tobm
 	// Load the supplementary file
 	if( _access( this->szSupplementarySettingsFile, 0 ) == 0 ) {
 		prog->SetTitle( "Loading supplementary scene file" );
-		if( !pJob->LoadAsciiScene( this->szSupplementarySettingsFile ) ) {
+		// Slice 6c-3a: the supplementary .RISEscene load is STUBBED (same reason as the render-settings site
+		// above).  The additive-load LoadAsciiScene path was retired in the Model-B CST cutover; this VS2005
+		// 3DSMax sidecar is legacy + not built here.  Log a clear reason and let the existing abort branch fire.
+		// (git history preserves the old additive-load behavior.)
+		RISE::GlobalLog()->PrintEx( RISE::eLog_Error, "3DSMax supplementary settings-file load (%s) is unsupported -- the legacy .RISEscene loader was retired in the Model-B CST cutover; author the renderer/materials in a native-v7 scene loaded through the main app", this->szSupplementarySettingsFile );
+		if( true ) {
 			MessageBox( hwnd, "Failed to properly load the supplementary settings file, aborting render", GetString(IDS_RENDRISETITLE), MB_OK );
 			safe_release( pJob );
 			return 0;

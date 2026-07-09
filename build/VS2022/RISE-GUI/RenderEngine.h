@@ -27,6 +27,7 @@
 
 namespace RISE {
     class IJobPriv;
+    class SceneEditController;
     struct Rect;
     namespace Implementation { class ViewportFrameStore; }
 }
@@ -85,6 +86,23 @@ public:
     /// share the same in-memory scene.  The handle is owned by this
     /// engine; callers must not retain or release.
     void* opaqueJobHandle() const;
+
+    /// Model-B F2 slice S4: register (or clear, passing nullptr) the LIVE
+    /// `RISE::SceneEditController*` this engine's production-render entry
+    /// points (startRender / startAnimationRender) should route through,
+    /// so a production render can never overlap the interactive loop or
+    /// an agent render inside Job::Rasterize().  ViewportBridge is the
+    /// sole caller: it registers immediately after
+    /// RISE_API_CreateSceneEditController succeeds in its constructor,
+    /// and clears (passes nullptr) at the START of its destructor,
+    /// BEFORE destroying the controller — mirrors the macOS
+    /// RISEBridge/-attachSceneEditController: contract exactly.
+    /// NULL-safe by construction on the read side: with no controller
+    /// registered (no viewport bridge yet, or between one's destruction
+    /// and the next one's construction), the production entry points
+    /// fall back to calling Job::Rasterize() directly, exactly as they
+    /// did before this slice.
+    void attachSceneEditController(void* opaqueController);
 
 signals:
     void stateChanged(RenderEngine::State newState);
@@ -212,6 +230,12 @@ private:
     void ensureProductionVFSAttachedToRasterizer();
 
     RISE::IJobPriv* m_job = nullptr;
+    // Model-B F2 slice S4: borrowed, nullptr-safe.  Registered by
+    // ViewportBridge (via attachSceneEditController) once its
+    // SceneEditController exists; cleared back to nullptr before that
+    // controller is destroyed.  See attachSceneEditController's header
+    // doc for the full lifetime contract.
+    RISE::SceneEditController* m_viewportController = nullptr;
     std::atomic<bool> m_cancelFlag{false};
     State m_state = Idle;
     QString m_loadedFilePath;

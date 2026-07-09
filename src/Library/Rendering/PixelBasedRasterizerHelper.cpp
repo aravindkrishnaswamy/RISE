@@ -50,6 +50,7 @@ PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
   pSampling( 0 ),
   pPixelFilter( 0 ),
   useZSobol( false ),
+  pSamplingStashedByOverride( 0 ),
   pFilteredFilm( 0 ),
   pFilteredScratch( 0 ),
   mPersistentImage( 0 ),
@@ -74,6 +75,13 @@ PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
 PixelBasedRasterizerHelper::~PixelBasedRasterizerHelper( )
 {
 	safe_release( pSampling );
+	// Model-B F2 S3 fix round (P1): the stash owns a reference exactly
+	// like `pSampling` does whenever it is non-null (transferred in by
+	// SetSampleCountOverride(1), never a fresh addref) -- if a scene is
+	// torn down while a 1-spp override is still in flight (no matching
+	// restore ever ran), this is the only remaining owner and must
+	// release it here, same as `pSampling` itself just above.
+	safe_release( pSamplingStashedByOverride );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
 	safe_release( pFilteredFilm );
@@ -2281,6 +2289,20 @@ void PixelBasedRasterizerHelper::SubSampleRays( ISampling2D* pSampling_, IPixelF
 
 		pSampling = pSampling_;
 		pSampling->addref();
+
+		// Model-B F2 slice S4 fold-in (P3): defensive no-op insurance --
+		// no caller reaches here with a stash still parked (a real kernel
+		// author always calls this BEFORE any SetSampleCountOverride, or
+		// AFTER the override cycle has already restored/cleared the
+		// stash), but a future caller that installs a fresh kernel while
+		// SetSampleCountOverride's stash is still outstanding would
+		// otherwise leak the stashed reference AND leave a dangling
+		// stash for a later samples>1 restore to wrongly reinstall over
+		// this freshly-authored kernel.  Clearing it here makes "a fresh
+		// SubSampleRays always wins" true unconditionally instead of
+		// true-by-absence-of-callers-that-violate-it.
+		safe_release( pSamplingStashedByOverride );
+		pSamplingStashedByOverride = 0;
 	}
 
 	if( pPixelFilter_ )
@@ -2292,4 +2314,78 @@ void PixelBasedRasterizerHelper::SubSampleRays( ISampling2D* pSampling_, IPixelF
 			pPixelFilter->addref();
 		}
 	}
+}
+
+// Model-B F2 S3 fix round (P1) -- see the header doc for the full contract
+// and the worked double-override sequences.  `samples` < 1 is a no-op
+// (never applied); `samples` == 1 STASHES a live `pSampling` into
+// `pSamplingStashedByOverride` (ownership transfer, not a fresh release)
+// instead of releasing it outright, so the kernel TYPE survives the
+// "null == implicit 1 SPP" convention this branch still honours for the
+// render path itself; `samples` > 1 mutates the EXISTING kernel in place
+// when one is already installed (preserves the scene-authored kernel
+// TYPE), else REINSTALLS a stashed kernel when one is parked (the restore-
+// after-a-1-override path -- this is the P1 fix), else installs a fresh
+// MultiJittered kernel (mirrors InteractivePelRasterizer::SetSampleCount's
+// own from-scratch choice) only when neither a live kernel nor a stash is
+// available.
+bool PixelBasedRasterizerHelper::SetSampleCountOverride( int samples )
+{
+	if( samples < 1 ) return false;
+
+	if( samples == 1 )
+	{
+		if( pSampling )
+		{
+			// Ownership transfer: `pSampling` already holds our one
+			// reference; move it to the stash without addref/release so
+			// GetSampleCountOverride's "null pSampling == 1 SPP" read
+			// stays honest while a stash is outstanding.  The
+			// safe_release just below is a DEFENSIVE no-op, unreachable
+			// in the current call graph: this branch only fires when
+			// `pSampling` itself is non-null, and every path that parks
+			// a stash first drains `pSampling` to null (see the
+			// samples>1 branches below), so a pre-existing stash can
+			// never coexist with a live `pSampling` by the time control
+			// reaches here.  Kept as insurance against a future caller
+			// that reaches this branch with both non-null.
+			safe_release( pSamplingStashedByOverride );
+			pSamplingStashedByOverride = pSampling;
+			pSampling = 0;
+		}
+		return true;
+	}
+
+	if( pSampling )
+	{
+		pSampling->SetNumSamples( static_cast<unsigned int>( samples ) );
+		return true;
+	}
+
+	if( pSamplingStashedByOverride )
+	{
+		// P1 fix: reinstall the stashed kernel instead of silently
+		// constructing a fresh MultiJittered one -- this is what
+		// recovers the ORIGINAL kernel type across a
+		// samples=N -> samples=1 -> samples=M restore sequence.
+		// Ownership transfers back to `pSampling`; no addref/release
+		// needed since the stash already held the only reference.
+		pSampling = pSamplingStashedByOverride;
+		pSamplingStashedByOverride = 0;
+		pSampling->SetNumSamples( static_cast<unsigned int>( samples ) );
+		return true;
+	}
+
+	ISampling2D* pNewSampling = 0;
+	RISE_API_CreateMultiJitteredSampling2D( &pNewSampling, 1.0, 1.0 );
+	if( !pNewSampling ) return false;   // defensive -- the factory is not documented to fail, but never crash on a null return
+	pNewSampling->SetNumSamples( static_cast<unsigned int>( samples ) );
+	SubSampleRays( pNewSampling, 0 );
+	pNewSampling->release();   // SubSampleRays addref'd its own copy
+	return true;
+}
+
+int PixelBasedRasterizerHelper::GetSampleCountOverride() const
+{
+	return pSampling ? static_cast<int>( pSampling->GetNumSamples() ) : 1;
 }

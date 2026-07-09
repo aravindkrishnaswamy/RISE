@@ -191,6 +191,54 @@
 		F24B722B2F52A632008304C4 /* GeometryUtilities.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0836069C428F0069C9E5 /* GeometryUtilities.h */; };
 		F24B722C2F52A632008304C4 /* InfinitePlaneGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0837069C428F0069C9E5 /* InfinitePlaneGeometry.cpp */; };
 		F24B722D2F52A632008304C4 /* InfinitePlaneGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0838069C428F0069C9E5 /* InfinitePlaneGeometry.h */; };
+		5DF0B001000000000000C0DE /* SDFGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E011000000000000C0DE /* SDFGeometry.cpp */; };
+		5DF0B002000000000000C0DE /* SDFGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E012000000000000C0DE /* SDFGeometry.h */; };
+		5C57B001000000000000C0DE /* Cst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E011000000000000C0DE /* Cst.cpp */; };
+		5C57B002000000000000C0DE /* Cst.h in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E012000000000000C0DE /* Cst.h */; };
+		5C57B003000000000000C0DE /* Cst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E011000000000000C0DE /* Cst.cpp */; };
+		5C57B004000000000000C0DE /* Cst.h in Headers */ = {isa = PBXBuildFile; fileRef = 5C57E012000000000000C0DE /* Cst.h */; };
+		A6E7B001000000000000C0DE /* AgentSession.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E001000000000000C0DE /* AgentSession.cpp */; };
+		A6E7B002000000000000C0DE /* AgentSession.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E001000000000000C0DE /* AgentSession.cpp */; };
+		A6E7B003000000000000C0DE /* SchemaGen.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E002000000000000C0DE /* SchemaGen.cpp */; };
+		A6E7B004000000000000C0DE /* SchemaGen.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E002000000000000C0DE /* SchemaGen.cpp */; };
+		A6E7B011000000000000C0DE /* AgentDiagnostic.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E011000000000000C0DE /* AgentDiagnostic.h */; };
+		A6E7B012000000000000C0DE /* AgentDiagnostic.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E011000000000000C0DE /* AgentDiagnostic.h */; };
+		A6E7B013000000000000C0DE /* AgentSession.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E012000000000000C0DE /* AgentSession.h */; };
+		A6E7B014000000000000C0DE /* AgentSession.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E012000000000000C0DE /* AgentSession.h */; };
+		A6E7B015000000000000C0DE /* SchemaGen.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E013000000000000C0DE /* SchemaGen.h */; };
+		A6E7B016000000000000C0DE /* SchemaGen.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E013000000000000C0DE /* SchemaGen.h */; };
+		A6E7B021000000000000C0DE /* InMemoryRasterizerOutput.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */; };
+		A6E7B022000000000000C0DE /* InMemoryRasterizerOutput.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */; };
+		A6E7B023000000000000C0DE /* InMemoryRasterizerOutput.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E022000000000000C0DE /* InMemoryRasterizerOutput.h */; };
+		A6E7B024000000000000C0DE /* InMemoryRasterizerOutput.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E022000000000000C0DE /* InMemoryRasterizerOutput.h */; };
+		A6E7B061000000000000C0DE /* AgentChatCodecs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E061000000000000C0DE /* AgentChatCodecs.cpp */; };
+		A6E7B062000000000000C0DE /* AgentChatCodecs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E061000000000000C0DE /* AgentChatCodecs.cpp */; };
+		A6E7B063000000000000C0DE /* AgentChatCodecs.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E062000000000000C0DE /* AgentChatCodecs.h */; };
+		A6E7B064000000000000C0DE /* AgentChatCodecs.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E062000000000000C0DE /* AgentChatCodecs.h */; };
+		A6E7B071000000000000C0DE /* AgentChatLoop.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E071000000000000C0DE /* AgentChatLoop.cpp */; };
+		A6E7B072000000000000C0DE /* AgentChatLoop.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E071000000000000C0DE /* AgentChatLoop.cpp */; };
+		A6E7B073000000000000C0DE /* AgentChatLoop.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E072000000000000C0DE /* AgentChatLoop.h */; };
+		A6E7B074000000000000C0DE /* AgentChatLoop.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E072000000000000C0DE /* AgentChatLoop.h */; };
+		A6E7B031000000000000C0DE /* AgentRpc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E031000000000000C0DE /* AgentRpc.cpp */; };
+		A6E7B032000000000000C0DE /* AgentRpc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E031000000000000C0DE /* AgentRpc.cpp */; };
+		A6E7B033000000000000C0DE /* AgentRpc.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E032000000000000C0DE /* AgentRpc.h */; };
+		A6E7B034000000000000C0DE /* AgentRpc.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E032000000000000C0DE /* AgentRpc.h */; };
+		A6E7B081000000000000C0DE /* AgentMcpAdapter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */; };
+		A6E7B082000000000000C0DE /* AgentMcpAdapter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */; };
+		A6E7B083000000000000C0DE /* AgentMcpAdapter.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E082000000000000C0DE /* AgentMcpAdapter.h */; };
+		A6E7B084000000000000C0DE /* AgentMcpAdapter.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E082000000000000C0DE /* AgentMcpAdapter.h */; };
+		A6E7B091000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */; };
+		A6E7B092000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */; };
+		A6E7B093000000000000C0DE /* AgentLoopbackHttpServer.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */; };
+		A6E7B094000000000000C0DE /* AgentLoopbackHttpServer.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */; };
+		A6E7B041000000000000C0DE /* Base64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E041000000000000C0DE /* Base64.cpp */; };
+		A6E7B042000000000000C0DE /* Base64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E041000000000000C0DE /* Base64.cpp */; };
+		A6E7B043000000000000C0DE /* Base64.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E042000000000000C0DE /* Base64.h */; };
+		A6E7B044000000000000C0DE /* Base64.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E042000000000000C0DE /* Base64.h */; };
+		A6E7B051000000000000C0DE /* Json.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E051000000000000C0DE /* Json.cpp */; };
+		A6E7B052000000000000C0DE /* Json.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E051000000000000C0DE /* Json.cpp */; };
+		A6E7B053000000000000C0DE /* Json.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E052000000000000C0DE /* Json.h */; };
+		A6E7B054000000000000C0DE /* Json.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E052000000000000C0DE /* Json.h */; };
 		F24B722E2F52A632008304C4 /* SphereGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0839069C428F0069C9E5 /* SphereGeometry.cpp */; };
 		F24B722F2F52A632008304C4 /* SphereGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F083A069C428F0069C9E5 /* SphereGeometry.h */; };
 		F24B72302F52A632008304C4 /* SphericalUVGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F083B069C428F0069C9E5 /* SphericalUVGenerator.cpp */; };
@@ -316,8 +364,6 @@
 		F24B72AB2F52A632008304C4 /* PointLight.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BA069C428F0069C9E5 /* PointLight.h */; };
 		F24B72AC2F52A632008304C4 /* SpotLight.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BB069C428F0069C9E5 /* SpotLight.cpp */; };
 		F24B72AD2F52A632008304C4 /* SpotLight.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BC069C428F0069C9E5 /* SpotLight.h */; };
-		F24B72AE2F52A632008304C4 /* DAGObjectManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BF069C42900069C9E5 /* DAGObjectManager.cpp */; };
-		F24B72AF2F52A632008304C4 /* DAGObjectManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C0069C42900069C9E5 /* DAGObjectManager.h */; };
 		F24B72B02F52A632008304C4 /* DeletedCallbackDispatcher.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C1069C42900069C9E5 /* DeletedCallbackDispatcher.h */; };
 		F24B72B12F52A632008304C4 /* Function1DManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C2069C42900069C9E5 /* Function1DManager.h */; };
 		F24B72B22F52A632008304C4 /* Function2DManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C3069C42900069C9E5 /* Function2DManager.h */; };
@@ -428,7 +474,9 @@
 		F24B73192F52A632008304C4 /* CSGObject.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F092B069C42900069C9E5 /* CSGObject.cpp */; };
 		F24B731A2F52A632008304C4 /* CSGObject.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F092C069C42900069C9E5 /* CSGObject.h */; };
 		F24B731B2F52A632008304C4 /* Object.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F092D069C42900069C9E5 /* Object.cpp */; };
+		FEEDC10E0000000000000002 /* SnapshotLeafClone.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */; };
 		F24B731C2F52A632008304C4 /* Object.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F092E069C42900069C9E5 /* Object.h */; };
+		FEEDC10E0000000000000005 /* SnapshotLeafClone.h in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000004 /* SnapshotLeafClone.h */; };
 		F24B731D2F52A632008304C4 /* Octree.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F092F069C42900069C9E5 /* Octree.h */; };
 		F24B731E2F52A632008304C4 /* OctreeNode.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0930069C42900069C9E5 /* OctreeNode.h */; };
 		F24B731F2F52A632008304C4 /* Options.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0931069C42900069C9E5 /* Options.cpp */; };
@@ -462,8 +510,7 @@
 		F24B733B2F52A632008304C4 /* Voronoi3DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F094E069C42900069C9E5 /* Voronoi3DPainter.h */; };
 		F24B733C2F52A632008304C4 /* AsciiCommandParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0950069C42900069C9E5 /* AsciiCommandParser.cpp */; };
 		F24B733D2F52A632008304C4 /* AsciiCommandParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0951069C42900069C9E5 /* AsciiCommandParser.h */; };
-		F24B733E2F52A632008304C4 /* AsciiSceneParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0952069C42900069C9E5 /* AsciiSceneParser.cpp */; };
-		F24B733F2F52A632008304C4 /* AsciiSceneParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0953069C42900069C9E5 /* AsciiSceneParser.h */; };
+		F24B733E2F52A632008304FF /* ChunkParserRegistry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0952069C42900069CFFF /* ChunkParserRegistry.cpp */; };
 		F24B73402F52A632008304C4 /* AsciiScriptParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0954069C42900069C9E5 /* AsciiScriptParser.cpp */; };
 		F24B73412F52A632008304C4 /* AsciiScriptParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0955069C42900069C9E5 /* AsciiScriptParser.h */; };
 		F24B73422F52A632008304C4 /* MathExpressionEvaluator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */; };
@@ -1026,8 +1073,6 @@
 		F27F0B24069C42910069C9E5 /* PointLight.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08BA069C428F0069C9E5 /* PointLight.h */; };
 		F27F0B25069C42910069C9E5 /* SpotLight.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BB069C428F0069C9E5 /* SpotLight.cpp */; };
 		F27F0B26069C42910069C9E5 /* SpotLight.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08BC069C428F0069C9E5 /* SpotLight.h */; };
-		F27F0B28069C42910069C9E5 /* DAGObjectManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BF069C42900069C9E5 /* DAGObjectManager.cpp */; };
-		F27F0B29069C42910069C9E5 /* DAGObjectManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C0069C42900069C9E5 /* DAGObjectManager.h */; };
 		F27F0B2A069C42910069C9E5 /* DeletedCallbackDispatcher.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C1069C42900069C9E5 /* DeletedCallbackDispatcher.h */; };
 		F27F0B2B069C42910069C9E5 /* Function1DManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C2069C42900069C9E5 /* Function1DManager.h */; };
 		F27F0B2C069C42910069C9E5 /* Function2DManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C3069C42900069C9E5 /* Function2DManager.h */; };
@@ -1133,7 +1178,9 @@
 		F27F0B90069C42910069C9E5 /* CSGObject.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F092B069C42900069C9E5 /* CSGObject.cpp */; };
 		F27F0B91069C42910069C9E5 /* CSGObject.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F092C069C42900069C9E5 /* CSGObject.h */; };
 		F27F0B92069C42910069C9E5 /* Object.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F092D069C42900069C9E5 /* Object.cpp */; };
+		FEEDC10E0000000000000003 /* SnapshotLeafClone.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */; };
 		F27F0B93069C42910069C9E5 /* Object.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F092E069C42900069C9E5 /* Object.h */; };
+		FEEDC10E0000000000000006 /* SnapshotLeafClone.h in Headers */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000004 /* SnapshotLeafClone.h */; };
 		F27F0B94069C42910069C9E5 /* Octree.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F092F069C42900069C9E5 /* Octree.h */; };
 		F27F0B95069C42910069C9E5 /* OctreeNode.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0930069C42900069C9E5 /* OctreeNode.h */; };
 		F27F0B96069C42910069C9E5 /* Options.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0931069C42900069C9E5 /* Options.cpp */; };
@@ -1167,8 +1214,7 @@
 		F27F0BB2069C42910069C9E5 /* Voronoi3DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F094E069C42900069C9E5 /* Voronoi3DPainter.h */; };
 		F27F0BB3069C42910069C9E5 /* AsciiCommandParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0950069C42900069C9E5 /* AsciiCommandParser.cpp */; };
 		F27F0BB4069C42910069C9E5 /* AsciiCommandParser.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0951069C42900069C9E5 /* AsciiCommandParser.h */; };
-		F27F0BB5069C42910069C9E5 /* AsciiSceneParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0952069C42900069C9E5 /* AsciiSceneParser.cpp */; };
-		F27F0BB6069C42910069C9E5 /* AsciiSceneParser.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0953069C42900069C9E5 /* AsciiSceneParser.h */; };
+		F27F0BB5069C42910069CFFF /* ChunkParserRegistry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0952069C42900069CFFF /* ChunkParserRegistry.cpp */; };
 		F27F0BB7069C42910069C9E5 /* AsciiScriptParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0954069C42900069C9E5 /* AsciiScriptParser.cpp */; };
 		F27F0BB8069C42910069C9E5 /* AsciiScriptParser.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0955069C42900069C9E5 /* AsciiScriptParser.h */; };
 		F27F0BB9069C42910069C9E5 /* MathExpressionEvaluator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */; };
@@ -1804,22 +1850,12 @@
 		FCA01000000000000000A002 /* ICameraManager.h in Headers */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A003 /* ICameraManager.h */; };
 		FCA01000000000000000A004 /* CameraManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A006 /* CameraManager.h */; };
 		FCA01000000000000000A005 /* CameraManager.h in Headers */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A006 /* CameraManager.h */; };
-		FECC0001000000000000F003 /* RawTokenCapture.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0001000000000000F001 /* RawTokenCapture.cpp */; };
-		FECC0001000000000000F004 /* RawTokenCapture.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0001000000000000F002 /* RawTokenCapture.h */; };
-		FECC0001000000000000F005 /* RawTokenCapture.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0001000000000000F001 /* RawTokenCapture.cpp */; };
-		FECC0001000000000000F006 /* RawTokenCapture.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0001000000000000F002 /* RawTokenCapture.h */; };
-		FECC0002000000000000F103 /* SourceSpanIndex.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F101 /* SourceSpanIndex.h */; };
-		FECC0002000000000000F104 /* SourceSpanIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F102 /* SourceSpanIndex.cpp */; };
-		FECC0002000000000000F105 /* SourceSpanIndex.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F101 /* SourceSpanIndex.h */; };
-		FECC0002000000000000F106 /* SourceSpanIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F102 /* SourceSpanIndex.cpp */; };
+		FECC0006000000000000F603 /* FileIdentity.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0006000000000000F601 /* FileIdentity.h */; };
+		FECC0006000000000000F605 /* FileIdentity.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0006000000000000F601 /* FileIdentity.h */; };
 		FECC0002000000000000F203 /* TransformSnapshot.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F201 /* TransformSnapshot.h */; };
 		FECC0002000000000000F204 /* TransformSnapshot.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F202 /* TransformSnapshot.cpp */; };
 		FECC0002000000000000F205 /* TransformSnapshot.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F201 /* TransformSnapshot.h */; };
 		FECC0002000000000000F206 /* TransformSnapshot.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F202 /* TransformSnapshot.cpp */; };
-		FECC0003000000000000F303 /* OverrideSpanIndex.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0003000000000000F301 /* OverrideSpanIndex.h */; };
-		FECC0003000000000000F304 /* OverrideSpanIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0003000000000000F302 /* OverrideSpanIndex.cpp */; };
-		FECC0003000000000000F305 /* OverrideSpanIndex.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0003000000000000F301 /* OverrideSpanIndex.h */; };
-		FECC0003000000000000F306 /* OverrideSpanIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0003000000000000F302 /* OverrideSpanIndex.cpp */; };
 		FECC0004000000000000F403 /* DirtyTracker.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0004000000000000F401 /* DirtyTracker.h */; };
 		FECC0004000000000000F404 /* DirtyTracker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0004000000000000F402 /* DirtyTracker.cpp */; };
 		FECC0004000000000000F405 /* DirtyTracker.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0004000000000000F401 /* DirtyTracker.h */; };
@@ -2058,6 +2094,31 @@
 		F27F0836069C428F0069C9E5 /* GeometryUtilities.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GeometryUtilities.h; sourceTree = "<group>"; };
 		F27F0837069C428F0069C9E5 /* InfinitePlaneGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = InfinitePlaneGeometry.cpp; sourceTree = "<group>"; };
 		F27F0838069C428F0069C9E5 /* InfinitePlaneGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = InfinitePlaneGeometry.h; sourceTree = "<group>"; };
+		5DF0E011000000000000C0DE /* SDFGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SDFGeometry.cpp; sourceTree = "<group>"; };
+		5DF0E012000000000000C0DE /* SDFGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SDFGeometry.h; sourceTree = "<group>"; };
+		5C57E011000000000000C0DE /* Cst.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Cst.cpp; sourceTree = "<group>"; };
+		5C57E012000000000000C0DE /* Cst.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Cst.h; sourceTree = "<group>"; };
+		A6E7E001000000000000C0DE /* AgentSession.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentSession.cpp; sourceTree = "<group>"; };
+		A6E7E002000000000000C0DE /* SchemaGen.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SchemaGen.cpp; sourceTree = "<group>"; };
+		A6E7E011000000000000C0DE /* AgentDiagnostic.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentDiagnostic.h; sourceTree = "<group>"; };
+		A6E7E012000000000000C0DE /* AgentSession.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentSession.h; sourceTree = "<group>"; };
+		A6E7E013000000000000C0DE /* SchemaGen.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SchemaGen.h; sourceTree = "<group>"; };
+		A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = InMemoryRasterizerOutput.cpp; sourceTree = "<group>"; };
+		A6E7E022000000000000C0DE /* InMemoryRasterizerOutput.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = InMemoryRasterizerOutput.h; sourceTree = "<group>"; };
+		A6E7E061000000000000C0DE /* AgentChatCodecs.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentChatCodecs.cpp; sourceTree = "<group>"; };
+		A6E7E062000000000000C0DE /* AgentChatCodecs.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentChatCodecs.h; sourceTree = "<group>"; };
+		A6E7E071000000000000C0DE /* AgentChatLoop.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentChatLoop.cpp; sourceTree = "<group>"; };
+		A6E7E072000000000000C0DE /* AgentChatLoop.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentChatLoop.h; sourceTree = "<group>"; };
+		A6E7E031000000000000C0DE /* AgentRpc.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentRpc.cpp; sourceTree = "<group>"; };
+		A6E7E032000000000000C0DE /* AgentRpc.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentRpc.h; sourceTree = "<group>"; };
+		A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentMcpAdapter.cpp; sourceTree = "<group>"; };
+		A6E7E082000000000000C0DE /* AgentMcpAdapter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentMcpAdapter.h; sourceTree = "<group>"; };
+		A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentLoopbackHttpServer.cpp; sourceTree = "<group>"; };
+		A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentLoopbackHttpServer.h; sourceTree = "<group>"; };
+		A6E7E041000000000000C0DE /* Base64.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Base64.cpp; sourceTree = "<group>"; };
+		A6E7E042000000000000C0DE /* Base64.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Base64.h; sourceTree = "<group>"; };
+		A6E7E051000000000000C0DE /* Json.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Json.cpp; sourceTree = "<group>"; };
+		A6E7E052000000000000C0DE /* Json.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Json.h; sourceTree = "<group>"; };
 		F27F0839069C428F0069C9E5 /* SphereGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SphereGeometry.cpp; sourceTree = "<group>"; };
 		F27F083A069C428F0069C9E5 /* SphereGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SphereGeometry.h; sourceTree = "<group>"; };
 		F27F083B069C428F0069C9E5 /* SphericalUVGenerator.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SphericalUVGenerator.cpp; sourceTree = "<group>"; };
@@ -2183,8 +2244,6 @@
 		F27F08BA069C428F0069C9E5 /* PointLight.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PointLight.h; sourceTree = "<group>"; };
 		F27F08BB069C428F0069C9E5 /* SpotLight.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SpotLight.cpp; sourceTree = "<group>"; };
 		F27F08BC069C428F0069C9E5 /* SpotLight.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SpotLight.h; sourceTree = "<group>"; };
-		F27F08BF069C42900069C9E5 /* DAGObjectManager.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DAGObjectManager.cpp; sourceTree = "<group>"; };
-		F27F08C0069C42900069C9E5 /* DAGObjectManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DAGObjectManager.h; sourceTree = "<group>"; };
 		F27F08C1069C42900069C9E5 /* DeletedCallbackDispatcher.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DeletedCallbackDispatcher.h; sourceTree = "<group>"; };
 		F27F08C2069C42900069C9E5 /* Function1DManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function1DManager.h; sourceTree = "<group>"; };
 		F27F08C3069C42900069C9E5 /* Function2DManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function2DManager.h; sourceTree = "<group>"; };
@@ -2290,7 +2349,9 @@
 		F27F092B069C42900069C9E5 /* CSGObject.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CSGObject.cpp; sourceTree = "<group>"; };
 		F27F092C069C42900069C9E5 /* CSGObject.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CSGObject.h; sourceTree = "<group>"; };
 		F27F092D069C42900069C9E5 /* Object.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Object.cpp; sourceTree = "<group>"; };
+		FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SnapshotLeafClone.cpp; sourceTree = "<group>"; };
 		F27F092E069C42900069C9E5 /* Object.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Object.h; sourceTree = "<group>"; };
+		FEEDC10E0000000000000004 /* SnapshotLeafClone.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SnapshotLeafClone.h; sourceTree = "<group>"; };
 		F27F092F069C42900069C9E5 /* Octree.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Octree.h; sourceTree = "<group>"; };
 		F27F0930069C42900069C9E5 /* OctreeNode.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = OctreeNode.h; sourceTree = "<group>"; };
 		F27F0931069C42900069C9E5 /* Options.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Options.cpp; sourceTree = "<group>"; };
@@ -2324,8 +2385,7 @@
 		F27F094E069C42900069C9E5 /* Voronoi3DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Voronoi3DPainter.h; sourceTree = "<group>"; };
 		F27F0950069C42900069C9E5 /* AsciiCommandParser.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AsciiCommandParser.cpp; sourceTree = "<group>"; };
 		F27F0951069C42900069C9E5 /* AsciiCommandParser.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AsciiCommandParser.h; sourceTree = "<group>"; };
-		F27F0952069C42900069C9E5 /* AsciiSceneParser.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AsciiSceneParser.cpp; sourceTree = "<group>"; };
-		F27F0953069C42900069C9E5 /* AsciiSceneParser.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AsciiSceneParser.h; sourceTree = "<group>"; };
+		F27F0952069C42900069CFFF /* ChunkParserRegistry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ChunkParserRegistry.cpp; sourceTree = "<group>"; };
 		F27F0954069C42900069C9E5 /* AsciiScriptParser.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AsciiScriptParser.cpp; sourceTree = "<group>"; };
 		F27F0955069C42900069C9E5 /* AsciiScriptParser.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AsciiScriptParser.h; sourceTree = "<group>"; };
 		F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = MathExpressionEvaluator.cpp; sourceTree = "<group>"; };
@@ -2810,14 +2870,9 @@
 		FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterToScalarAdapter.h; sourceTree = "<group>"; };
 		FCA01000000000000000A003 /* ICameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICameraManager.h; sourceTree = "<group>"; };
 		FCA01000000000000000A006 /* CameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CameraManager.h; sourceTree = "<group>"; };
-		FECC0001000000000000F001 /* RawTokenCapture.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RawTokenCapture.cpp; sourceTree = "<group>"; };
-		FECC0001000000000000F002 /* RawTokenCapture.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RawTokenCapture.h; sourceTree = "<group>"; };
-		FECC0002000000000000F101 /* SourceSpanIndex.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SourceSpanIndex.h; sourceTree = "<group>"; };
-		FECC0002000000000000F102 /* SourceSpanIndex.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SourceSpanIndex.cpp; sourceTree = "<group>"; };
+		FECC0006000000000000F601 /* FileIdentity.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FileIdentity.h; sourceTree = "<group>"; };
 		FECC0002000000000000F201 /* TransformSnapshot.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TransformSnapshot.h; sourceTree = "<group>"; };
 		FECC0002000000000000F202 /* TransformSnapshot.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TransformSnapshot.cpp; sourceTree = "<group>"; };
-		FECC0003000000000000F301 /* OverrideSpanIndex.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = OverrideSpanIndex.h; sourceTree = "<group>"; };
-		FECC0003000000000000F302 /* OverrideSpanIndex.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = OverrideSpanIndex.cpp; sourceTree = "<group>"; };
 		FECC0004000000000000F401 /* DirtyTracker.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DirtyTracker.h; sourceTree = "<group>"; };
 		FECC0004000000000000F402 /* DirtyTracker.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DirtyTracker.cpp; sourceTree = "<group>"; };
 		FECC0005000000000000F501 /* SaveEngine.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SaveEngine.h; sourceTree = "<group>"; };
@@ -2951,6 +3006,8 @@
 				F27F07F6069C428F0069C9E5 /* BSPTreeNode.h */,
 				F27F07F7069C428F0069C9E5 /* Cameras */,
 				F27F0808069C428F0069C9E5 /* Functions */,
+				A6E70000000000000000C0DE /* Agent */,
+				5C570000000000000000C0DE /* Cst */,
 				F27F081C069C428F0069C9E5 /* Geometry */,
 				F2D1A100069C42900069C9E5 /* Importers */,
 				F27F0851069C428F0069C9E5 /* Interfaces */,
@@ -3054,6 +3111,43 @@
 				F27F081B069C428F0069C9E5 /* Resultant.h */,
 			);
 			path = Functions;
+			sourceTree = "<group>";
+		};
+		5C570000000000000000C0DE /* Cst */ = {
+			isa = PBXGroup;
+			children = (
+				5C57E011000000000000C0DE /* Cst.cpp */,
+				5C57E012000000000000C0DE /* Cst.h */,
+			);
+			path = Cst;
+			sourceTree = "<group>";
+		};
+		A6E70000000000000000C0DE /* Agent */ = {
+			isa = PBXGroup;
+			children = (
+				A6E7E001000000000000C0DE /* AgentSession.cpp */,
+				A6E7E012000000000000C0DE /* AgentSession.h */,
+				A6E7E011000000000000C0DE /* AgentDiagnostic.h */,
+				A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */,
+				A6E7E022000000000000C0DE /* InMemoryRasterizerOutput.h */,
+				A6E7E061000000000000C0DE /* AgentChatCodecs.cpp */,
+				A6E7E062000000000000C0DE /* AgentChatCodecs.h */,
+				A6E7E071000000000000C0DE /* AgentChatLoop.cpp */,
+				A6E7E072000000000000C0DE /* AgentChatLoop.h */,
+				A6E7E031000000000000C0DE /* AgentRpc.cpp */,
+				A6E7E032000000000000C0DE /* AgentRpc.h */,
+				A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */,
+				A6E7E082000000000000C0DE /* AgentMcpAdapter.h */,
+				A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */,
+				A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */,
+				A6E7E041000000000000C0DE /* Base64.cpp */,
+				A6E7E042000000000000C0DE /* Base64.h */,
+				A6E7E051000000000000C0DE /* Json.cpp */,
+				A6E7E052000000000000C0DE /* Json.h */,
+				A6E7E002000000000000C0DE /* SchemaGen.cpp */,
+				A6E7E013000000000000C0DE /* SchemaGen.h */,
+			);
+			path = Agent;
 			sourceTree = "<group>";
 		};
 		F27F081C069C428F0069C9E5 /* Geometry */ = {
@@ -3254,8 +3348,6 @@
 		F27F08BE069C42900069C9E5 /* Managers */ = {
 			isa = PBXGroup;
 			children = (
-				F27F08BF069C42900069C9E5 /* DAGObjectManager.cpp */,
-				F27F08C0069C42900069C9E5 /* DAGObjectManager.h */,
 				F27F08C1069C42900069C9E5 /* DeletedCallbackDispatcher.h */,
 				FCA01000000000000000A006 /* CameraManager.h */,
 				F27F08C2069C42900069C9E5 /* Function1DManager.h */,
@@ -3450,7 +3542,9 @@
 				F27F092B069C42900069C9E5 /* CSGObject.cpp */,
 				F27F092C069C42900069C9E5 /* CSGObject.h */,
 				F27F092D069C42900069C9E5 /* Object.cpp */,
+				FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */,
 				F27F092E069C42900069C9E5 /* Object.h */,
+				FEEDC10E0000000000000004 /* SnapshotLeafClone.h */,
 			);
 			path = Objects;
 			sourceTree = "<group>";
@@ -3540,14 +3634,11 @@
 			children = (
 				F27F0950069C42900069C9E5 /* AsciiCommandParser.cpp */,
 				F27F0951069C42900069C9E5 /* AsciiCommandParser.h */,
-				F27F0952069C42900069C9E5 /* AsciiSceneParser.cpp */,
-				F27F0953069C42900069C9E5 /* AsciiSceneParser.h */,
+				F27F0952069C42900069CFFF /* ChunkParserRegistry.cpp */,
 				F27F0954069C42900069C9E5 /* AsciiScriptParser.cpp */,
 				F27F0955069C42900069C9E5 /* AsciiScriptParser.h */,
 				F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */,
 				F27F0957069C42900069C9E5 /* MathExpressionEvaluator.h */,
-				FECC0001000000000000F001 /* RawTokenCapture.cpp */,
-				FECC0001000000000000F002 /* RawTokenCapture.h */,
 				F27F0958069C42900069C9E5 /* StdOutProgress.h */,
 				F2CD000100000000000000A1 /* ChunkDescriptor.h */,
 				F2CD000200000000000000A1 /* ChunkParserRegistry.h */,
@@ -4139,12 +4230,9 @@
 				F2EE001900000000000000A1 /* RasterizerIntrospection.cpp */,
 				F2EE002000000000000000A1 /* ChunkDescriptorRegistry.h */,
 				F2EE002100000000000000A1 /* ChunkDescriptorRegistry.cpp */,
-				FECC0002000000000000F101 /* SourceSpanIndex.h */,
-				FECC0002000000000000F102 /* SourceSpanIndex.cpp */,
+				FECC0006000000000000F601 /* FileIdentity.h */,
 				FECC0002000000000000F201 /* TransformSnapshot.h */,
 				FECC0002000000000000F202 /* TransformSnapshot.cpp */,
-				FECC0003000000000000F301 /* OverrideSpanIndex.h */,
-				FECC0003000000000000F302 /* OverrideSpanIndex.cpp */,
 				FECC0004000000000000F401 /* DirtyTracker.h */,
 				FECC0004000000000000F402 /* DirtyTracker.cpp */,
 				FECC0005000000000000F501 /* SaveEngine.h */,
@@ -4223,6 +4311,18 @@
 				F27F0AA3069C42910069C9E5 /* GeometryUtilities.h in Headers */,
 				F27F0AA5069C42910069C9E5 /* InfinitePlaneGeometry.h in Headers */,
 				5DF0B004000000000000C0DE /* SDFGeometry.h in Headers */,
+				5C57B004000000000000C0DE /* Cst.h in Headers */,
+				A6E7B011000000000000C0DE /* AgentDiagnostic.h in Headers */,
+				A6E7B013000000000000C0DE /* AgentSession.h in Headers */,
+				A6E7B023000000000000C0DE /* InMemoryRasterizerOutput.h in Headers */,
+				A6E7B033000000000000C0DE /* AgentRpc.h in Headers */,
+				A6E7B083000000000000C0DE /* AgentMcpAdapter.h in Headers */,
+				A6E7B093000000000000C0DE /* AgentLoopbackHttpServer.h in Headers */,
+				A6E7B063000000000000C0DE /* AgentChatCodecs.h in Headers */,
+				A6E7B073000000000000C0DE /* AgentChatLoop.h in Headers */,
+				A6E7B043000000000000C0DE /* Base64.h in Headers */,
+				A6E7B053000000000000C0DE /* Json.h in Headers */,
+				A6E7B015000000000000C0DE /* SchemaGen.h in Headers */,
 				F27F0AA7069C42910069C9E5 /* SphereGeometry.h in Headers */,
 				F27F0AA9069C42910069C9E5 /* SphericalUVGenerator.h in Headers */,
 				F24C54622F84597B009AF16D /* GGXBRDF.h in Headers */,
@@ -4375,7 +4475,6 @@
 				F27F0B22069C42910069C9E5 /* DirectionalLight.h in Headers */,
 				F27F0B24069C42910069C9E5 /* PointLight.h in Headers */,
 				F27F0B26069C42910069C9E5 /* SpotLight.h in Headers */,
-				F27F0B29069C42910069C9E5 /* DAGObjectManager.h in Headers */,
 				F27F0B2A069C42910069C9E5 /* DeletedCallbackDispatcher.h in Headers */,
 				F27F0B2B069C42910069C9E5 /* Function1DManager.h in Headers */,
 				F27F0B2C069C42910069C9E5 /* Function2DManager.h in Headers */,
@@ -4456,6 +4555,7 @@
 				F27F0B8F069C42910069C9E5 /* SmoothedNoise.h in Headers */,
 				F27F0B91069C42910069C9E5 /* CSGObject.h in Headers */,
 				F27F0B93069C42910069C9E5 /* Object.h in Headers */,
+				FEEDC10E0000000000000006 /* SnapshotLeafClone.h in Headers */,
 				F27F0B94069C42910069C9E5 /* Octree.h in Headers */,
 				F27F0B95069C42910069C9E5 /* OctreeNode.h in Headers */,
 				F27F0B97069C42910069C9E5 /* Options.h in Headers */,
@@ -4495,10 +4595,8 @@
 				F27F0BB2069C42910069C9E5 /* Voronoi3DPainter.h in Headers */,
 				F2C5D5E72F716C5000546C97 /* BDPTPelRasterizer.h in Headers */,
 				F27F0BB4069C42910069C9E5 /* AsciiCommandParser.h in Headers */,
-				F27F0BB6069C42910069C9E5 /* AsciiSceneParser.h in Headers */,
 				F27F0BB8069C42910069C9E5 /* AsciiScriptParser.h in Headers */,
 				F27F0BBA069C42910069C9E5 /* MathExpressionEvaluator.h in Headers */,
-				FECC0001000000000000F006 /* RawTokenCapture.h in Headers */,
 				F27F0BBB069C42910069C9E5 /* StdOutProgress.h in Headers */,
 				F2CD000100000000000000C1 /* ChunkDescriptor.h in Headers */,
 				F2CD000200000000000000C1 /* ChunkParserRegistry.h in Headers */,
@@ -4517,9 +4615,8 @@
 				F2EE001600000000000000C1 /* LightIntrospection.h in Headers */,
 				F2EE001800000000000000C1 /* RasterizerIntrospection.h in Headers */,
 				F2EE002000000000000000C1 /* ChunkDescriptorRegistry.h in Headers */,
-				FECC0002000000000000F105 /* SourceSpanIndex.h in Headers */,
+				FECC0006000000000000F603 /* FileIdentity.h in Headers */,
 				FECC0002000000000000F205 /* TransformSnapshot.h in Headers */,
-				FECC0003000000000000F305 /* OverrideSpanIndex.h in Headers */,
 				FECC0004000000000000F405 /* DirtyTracker.h in Headers */,
 				FECC0005000000000000F505 /* SaveEngine.h in Headers */,
 				F2EE002200000000000000C1 /* FilmIntrospection.h in Headers */,
@@ -4933,6 +5030,17 @@
 				F27F0AA2069C42910069C9E5 /* GeometryUtilities.cpp in Sources */,
 				F27F0AA4069C42910069C9E5 /* InfinitePlaneGeometry.cpp in Sources */,
 				5DF0B003000000000000C0DE /* SDFGeometry.cpp in Sources */,
+				5C57B003000000000000C0DE /* Cst.cpp in Sources */,
+				A6E7B001000000000000C0DE /* AgentSession.cpp in Sources */,
+				A6E7B021000000000000C0DE /* InMemoryRasterizerOutput.cpp in Sources */,
+				A6E7B031000000000000C0DE /* AgentRpc.cpp in Sources */,
+				A6E7B081000000000000C0DE /* AgentMcpAdapter.cpp in Sources */,
+				A6E7B091000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */,
+				A6E7B061000000000000C0DE /* AgentChatCodecs.cpp in Sources */,
+				A6E7B071000000000000C0DE /* AgentChatLoop.cpp in Sources */,
+				A6E7B041000000000000C0DE /* Base64.cpp in Sources */,
+				A6E7B051000000000000C0DE /* Json.cpp in Sources */,
+				A6E7B003000000000000C0DE /* SchemaGen.cpp in Sources */,
 				F27F0AA6069C42910069C9E5 /* SphereGeometry.cpp in Sources */,
 				F27F0AA8069C42910069C9E5 /* SphericalUVGenerator.cpp in Sources */,
 				F27F0AAA069C42910069C9E5 /* TorusGeometry.cpp in Sources */,
@@ -4973,7 +5081,6 @@
 				F27F0B23069C42910069C9E5 /* PointLight.cpp in Sources */,
 				F27F0B25069C42910069C9E5 /* SpotLight.cpp in Sources */,
 				F2C7C8F62F78B0A70030CB78 /* PathGuidingField.cpp in Sources */,
-				F27F0B28069C42910069C9E5 /* DAGObjectManager.cpp in Sources */,
 				F27F0B2F069C42910069C9E5 /* LightManager.cpp in Sources */,
 				F2D9B1532F8FA60F0077A171 /* VCMIntegrator.cpp in Sources */,
 				F2D9B1542F8FA60F0077A171 /* VCMRecurrence.cpp in Sources */,
@@ -5026,6 +5133,7 @@
 				F27F0B8E069C42910069C9E5 /* PerlinNoise3D.cpp in Sources */,
 				F27F0B90069C42910069C9E5 /* CSGObject.cpp in Sources */,
 				F27F0B92069C42910069C9E5 /* Object.cpp in Sources */,
+				FEEDC10E0000000000000003 /* SnapshotLeafClone.cpp in Sources */,
 				F27F0B96069C42910069C9E5 /* Options.cpp in Sources */,
 				F27F0B98069C42910069C9E5 /* BlackBodyPainter.cpp in Sources */,
 				F24C543B2F7B30B3009AF16D /* EnvironmentSampler.cpp in Sources */,
@@ -5048,10 +5156,9 @@
 				F2C5D58E2F6ED30E00546C97 /* SubSurfaceScatteringBSDF.cpp in Sources */,
 				F2C5D58F2F6ED30E00546C97 /* SubSurfaceScatteringSPF.cpp in Sources */,
 				F27F0BB3069C42910069C9E5 /* AsciiCommandParser.cpp in Sources */,
-				F27F0BB5069C42910069C9E5 /* AsciiSceneParser.cpp in Sources */,
+				F27F0BB5069C42910069CFFF /* ChunkParserRegistry.cpp in Sources */,
 				F27F0BB7069C42910069C9E5 /* AsciiScriptParser.cpp in Sources */,
 				F27F0BB9069C42910069C9E5 /* MathExpressionEvaluator.cpp in Sources */,
-				FECC0001000000000000F005 /* RawTokenCapture.cpp in Sources */,
 				F2E0000200000000000000C1 /* SceneGrammar.cpp in Sources */,
 				F2E0000400000000000000C1 /* CompletionContext.cpp in Sources */,
 				F2E0000600000000000000C1 /* NameIndex.cpp in Sources */,
@@ -5065,9 +5172,7 @@
 				F2EE001700000000000000C1 /* LightIntrospection.cpp in Sources */,
 				F2EE001900000000000000C1 /* RasterizerIntrospection.cpp in Sources */,
 				F2EE002100000000000000C1 /* ChunkDescriptorRegistry.cpp in Sources */,
-				FECC0002000000000000F106 /* SourceSpanIndex.cpp in Sources */,
 				FECC0002000000000000F206 /* TransformSnapshot.cpp in Sources */,
-				FECC0003000000000000F306 /* OverrideSpanIndex.cpp in Sources */,
 				FECC0004000000000000F406 /* DirtyTracker.cpp in Sources */,
 				FECC0005000000000000F506 /* SaveEngine.cpp in Sources */,
 				F2EE002300000000000000C1 /* FilmIntrospection.cpp in Sources */,
@@ -5332,6 +5437,29 @@
 				F24B722D2F52A632008304C4 /* InfinitePlaneGeometry.h in Sources */,
 				5DF0B001000000000000C0DE /* SDFGeometry.cpp in Sources */,
 				5DF0B002000000000000C0DE /* SDFGeometry.h in Sources */,
+				5C57B001000000000000C0DE /* Cst.cpp in Sources */,
+				5C57B002000000000000C0DE /* Cst.h in Sources */,
+				A6E7B002000000000000C0DE /* AgentSession.cpp in Sources */,
+				A6E7B022000000000000C0DE /* InMemoryRasterizerOutput.cpp in Sources */,
+				A6E7B032000000000000C0DE /* AgentRpc.cpp in Sources */,
+				A6E7B082000000000000C0DE /* AgentMcpAdapter.cpp in Sources */,
+				A6E7B092000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */,
+				A6E7B062000000000000C0DE /* AgentChatCodecs.cpp in Sources */,
+				A6E7B072000000000000C0DE /* AgentChatLoop.cpp in Sources */,
+				A6E7B042000000000000C0DE /* Base64.cpp in Sources */,
+				A6E7B052000000000000C0DE /* Json.cpp in Sources */,
+				A6E7B004000000000000C0DE /* SchemaGen.cpp in Sources */,
+				A6E7B012000000000000C0DE /* AgentDiagnostic.h in Sources */,
+				A6E7B014000000000000C0DE /* AgentSession.h in Sources */,
+				A6E7B024000000000000C0DE /* InMemoryRasterizerOutput.h in Sources */,
+				A6E7B034000000000000C0DE /* AgentRpc.h in Sources */,
+				A6E7B084000000000000C0DE /* AgentMcpAdapter.h in Sources */,
+				A6E7B094000000000000C0DE /* AgentLoopbackHttpServer.h in Sources */,
+				A6E7B064000000000000C0DE /* AgentChatCodecs.h in Sources */,
+				A6E7B074000000000000C0DE /* AgentChatLoop.h in Sources */,
+				A6E7B044000000000000C0DE /* Base64.h in Sources */,
+				A6E7B054000000000000C0DE /* Json.h in Sources */,
+				A6E7B016000000000000C0DE /* SchemaGen.h in Sources */,
 				F24B722E2F52A632008304C4 /* SphereGeometry.cpp in Sources */,
 				F24B722F2F52A632008304C4 /* SphereGeometry.h in Sources */,
 				F24B72302F52A632008304C4 /* SphericalUVGenerator.cpp in Sources */,
@@ -5482,8 +5610,6 @@
 				F24B72AB2F52A632008304C4 /* PointLight.h in Sources */,
 				F24B72AC2F52A632008304C4 /* SpotLight.cpp in Sources */,
 				F24B72AD2F52A632008304C4 /* SpotLight.h in Sources */,
-				F24B72AE2F52A632008304C4 /* DAGObjectManager.cpp in Sources */,
-				F24B72AF2F52A632008304C4 /* DAGObjectManager.h in Sources */,
 				F24B72B02F52A632008304C4 /* DeletedCallbackDispatcher.h in Sources */,
 				FCA01000000000000000A004 /* CameraManager.h in Sources */,
 				F24B72B12F52A632008304C4 /* Function1DManager.h in Sources */,
@@ -5612,7 +5738,9 @@
 				F24B73192F52A632008304C4 /* CSGObject.cpp in Sources */,
 				F24B731A2F52A632008304C4 /* CSGObject.h in Sources */,
 				F24B731B2F52A632008304C4 /* Object.cpp in Sources */,
+				FEEDC10E0000000000000002 /* SnapshotLeafClone.cpp in Sources */,
 				F24B731C2F52A632008304C4 /* Object.h in Sources */,
+				FEEDC10E0000000000000005 /* SnapshotLeafClone.h in Sources */,
 				F24B731D2F52A632008304C4 /* Octree.h in Sources */,
 				F24B731E2F52A632008304C4 /* OctreeNode.h in Sources */,
 				F24B731F2F52A632008304C4 /* Options.cpp in Sources */,
@@ -5672,14 +5800,11 @@
 				F24B733B2F52A632008304C4 /* Voronoi3DPainter.h in Sources */,
 				F24B733C2F52A632008304C4 /* AsciiCommandParser.cpp in Sources */,
 				F24B733D2F52A632008304C4 /* AsciiCommandParser.h in Sources */,
-				F24B733E2F52A632008304C4 /* AsciiSceneParser.cpp in Sources */,
-				F24B733F2F52A632008304C4 /* AsciiSceneParser.h in Sources */,
+				F24B733E2F52A632008304FF /* ChunkParserRegistry.cpp in Sources */,
 				F24B73402F52A632008304C4 /* AsciiScriptParser.cpp in Sources */,
 				F24B73412F52A632008304C4 /* AsciiScriptParser.h in Sources */,
 				F24B73422F52A632008304C4 /* MathExpressionEvaluator.cpp in Sources */,
 				F24B73432F52A632008304C4 /* MathExpressionEvaluator.h in Sources */,
-				FECC0001000000000000F003 /* RawTokenCapture.cpp in Sources */,
-				FECC0001000000000000F004 /* RawTokenCapture.h in Sources */,
 				F24B73442F52A632008304C4 /* StdOutProgress.h in Sources */,
 				F2CD000100000000000000B1 /* ChunkDescriptor.h in Sources */,
 				F2CD000200000000000000B1 /* ChunkParserRegistry.h in Sources */,
@@ -5711,12 +5836,9 @@
 				F2EE001900000000000000B1 /* RasterizerIntrospection.cpp in Sources */,
 				F2EE002000000000000000B1 /* ChunkDescriptorRegistry.h in Sources */,
 				F2EE002100000000000000B1 /* ChunkDescriptorRegistry.cpp in Sources */,
-				FECC0002000000000000F103 /* SourceSpanIndex.h in Sources */,
-				FECC0002000000000000F104 /* SourceSpanIndex.cpp in Sources */,
+				FECC0006000000000000F605 /* FileIdentity.h in Sources */,
 				FECC0002000000000000F203 /* TransformSnapshot.h in Sources */,
 				FECC0002000000000000F204 /* TransformSnapshot.cpp in Sources */,
-				FECC0003000000000000F303 /* OverrideSpanIndex.h in Sources */,
-				FECC0003000000000000F304 /* OverrideSpanIndex.cpp in Sources */,
 				FECC0004000000000000F403 /* DirtyTracker.h in Sources */,
 				FECC0004000000000000F404 /* DirtyTracker.cpp in Sources */,
 				FECC0005000000000000F503 /* SaveEngine.h in Sources */,

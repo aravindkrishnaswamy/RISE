@@ -224,6 +224,7 @@ struct AccordionSectionDef {
 static const AccordionSectionDef kSectionDefs[] = {
     { ViewportBridge::Category::Camera,     "Cameras"         },
     { ViewportBridge::Category::Animation,  "Animation"       },
+    { ViewportBridge::Category::SceneVariant, "Variants"      },
     { ViewportBridge::Category::Rasterizer, "Rasterizer"      },
     { ViewportBridge::Category::Object,     "Objects"         },
     { ViewportBridge::Category::Light,      "Lights"          },
@@ -661,8 +662,31 @@ void ViewportProperties::rebuildPropertyRowsFor(Category sectionCat, SectionWidg
                         edit, p.name, p.kind,
                         [this, sectionCat](const QString& n, const QString& v) {
                             if (!m_bridge) return;
-                            if (m_bridge->setPropertyForCategory(sectionCat, n, v)) {
-                                m_lastValue.insert(n, v);
+                            // A2: don't gate on the bool return — a
+                            // per-drag-tick callback can't afford a
+                            // full refresh() (rebuildPropertyRows()
+                            // would deleteLater() the very ScrubHandle
+                            // whose mouseMoveEvent is on the stack, see
+                            // the m_scrubbing guard in refresh()), so
+                            // re-pull this property's LAST-KNOWN
+                            // CACHED value (propertySnapshotFor reads
+                            // the controller's cache, which refresh()
+                            // won't repopulate while m_scrubbing -- so
+                            // this is pre-drag, NOT live) and cache
+                            // THAT rather than the submitted string.
+                            // Harmless: m_lastValue's only consumer is
+                            // onLineEditFinished, unreachable mid-drag;
+                            // the drag-end path (endBracket below) does
+                            // a full refresh() that re-seeds from the
+                            // genuinely live snapshot.
+                            m_bridge->setPropertyForCategory(sectionCat, n, v);
+                            const QVector<ViewportProperty> live =
+                                m_bridge->propertySnapshotFor(sectionCat);
+                            for (const ViewportProperty& lp : live) {
+                                if (lp.name == n) {
+                                    m_lastValue.insert(n, lp.value);
+                                    break;
+                                }
                             }
                         },
                         [this]() {
@@ -700,10 +724,11 @@ void ViewportProperties::rebuildPropertyRowsFor(Category sectionCat, SectionWidg
                         connect(action, &QAction::triggered, this,
                                 [this, sectionCat, propName, val]() {
                                     if (!m_bridge) return;
-                                    if (m_bridge->setPropertyForCategory(sectionCat, propName, val)) {
-                                        m_lastValue.insert(propName, val);
-                                        refresh();
-                                    }
+                                    // A2: refresh unconditionally — see
+                                    // the onLineEditFinished comment
+                                    // above for the full rationale.
+                                    m_bridge->setPropertyForCategory(sectionCat, propName, val);
+                                    refresh();
                                 });
                     }
                     presetButton->setMenu(menu);
@@ -806,10 +831,17 @@ void ViewportProperties::onLineEditFinished()
     // Object was primary).
     const int catInt = edit->property("riseSectionCategory").toInt();
     const Category cat = static_cast<Category>(catInt);
-    if (m_bridge->setPropertyForCategory(cat, name, val)) {
-        m_lastValue.insert(name, val);
-        refresh();
-    }
+    // A2 contract (see SceneEditController::SetProperty /
+    // RISE_API_SceneEditController_SetProperty doc comments):
+    // `false` does not always mean "nothing happened" — a live Object
+    // edit can apply while the CST transform-commit follow-through
+    // fails, in which case the scene DID change.  So refresh()
+    // unconditionally rather than gating on the return value; refresh()
+    // re-pulls m_lastValue from the live snapshot (rebuildPropertyRowsFor
+    // below), never from the submitted text, so a failed commit doesn't
+    // leave a stale cache that silently swallows a later identical retype.
+    m_bridge->setPropertyForCategory(cat, name, val);
+    refresh();
 }
 
 void ViewportProperties::onAddCameraClicked()

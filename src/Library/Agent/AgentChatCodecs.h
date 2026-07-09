@@ -1,0 +1,431 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  AgentChatCodecs.h - provider wire-format codecs for the sans-IO LLM
+//    chat loop (Facet 5, the agentic surface -- slice B1).
+//
+//    A codec translates between ONE LLM provider's HTTP wire format and
+//    the provider-neutral chat-loop types.  Codecs are PURE and sans-IO:
+//    they build request descriptions (url + headers + body strings) and
+//    parse raw response bodies -- the caller (the GUI, or a test)
+//    performs the actual HTTP round-trip and feeds the body back.
+//
+//    Three implementations:
+//      * AnthropicChatCodec -- the Anthropic Messages API
+//        (POST https://api.anthropic.com/v1/messages, auth via the
+//        `x-api-key` header + `anthropic-version: 2023-06-01`).
+//      * GeminiChatCodec -- the Google Gemini v1beta REST API
+//        (POST .../v1beta/models/{model}:generateContent, auth via the
+//        `x-goog-api-key` header).  Wire shapes verified 2026-07-02
+//        against the ai.google.dev/api Content-type reference (the
+//        api/caching page): functionDeclarations, functionCall
+//        {id,name,args} ("If populated, the client to execute the
+//        functionCall and return the response with the matching id"),
+//        functionResponse {id,name,response,parts[]} where parts is an
+//        array of FunctionResponsePart {inlineData:{mimeType,data}}
+//        ("Ordered Parts that constitute a function response").
+//      * OpenAIChatCodec -- OpenAI Chat Completions
+//        (POST https://api.openai.com/v1/chat/completions, auth via
+//        `Authorization: Bearer ...`), surfaced in the GUI as ChatGPT.
+//
+//    KEY DESIGN RULES (see AgentChatLoop.h for the loop contract):
+//      * The API key appears ONLY in the auth header the codec emits --
+//        never in the URL, never in the body, never in any other string
+//        the codec produces.  Codecs log NOTHING (bodies may embed
+//        scene content; the key must never reach a log either).  Header
+//        values built from caller input (the key) are stripped of every
+//        control character (< 0x20, i.e. CR/LF and friends) so a pasted
+//        key cannot smuggle extra headers into the request.
+//      * Assistant turns are stored as RAW provider-native JSON and
+//        echoed VERBATIM (byte-preserved) on subsequent BuildRequests.
+//        ParseResponse extracts the assistant content as a raw byte
+//        span of the response body -- NOT a parse + re-serialize --
+//        so provider-opaque fields (Anthropic thinking-block
+//        `signature`s, Gemini thought signatures) round-trip intact.
+//      * RECORD-OR-REFUSE: ParseResponse either returns a disposition
+//        whose recorded entry is safe to echo forever, or refuses the
+//        WHOLE response (ProviderError; the loop records nothing).
+//        Any response whose tool calls could not become the loop's
+//        pending set is refused outright: tool_use / functionCall
+//        blocks under a non-tool-call stop_reason/finishReason
+//        (Gemini calls additionally REQUIRE an explicit finishReason
+//        STOP -- an absent finishReason is tolerated only on
+//        text-only turns, where the proto makes it optional), an
+//        id-less Anthropic tool_use (Gemini instead SYNTHESIZES ids
+//        for id-less calls), DUPLICATE call ids on either provider
+//        (ids are the result-matching key and must be unique), a
+//        malformed (non-object) Gemini functionCall value, an
+//        Anthropic tool_use whose "input" key is PRESENT but not a
+//        JSON object (including an explicit "input":null) or a
+//        Gemini functionCall whose "args" key is PRESENT but not a
+//        JSON object (including an explicit "args":null) -- an
+//        ABSENT input/args key is each provider's legal no-args
+//        shape and still maps to "{}"; only a present-but-non-object
+//        value refuses -- an OpenAI tool_call whose function.arguments
+//        string does not parse as a JSON object (all three: executing
+//        it would fabricate empty args), a Gemini candidate whose
+//        content.role is present and not "model" (a spoofed role
+//        would join BuildRequest's user merge on replay), and
+//        degenerate blank-content final turns on ALL THREE codecs
+//        (an OpenAI "stop", Anthropic "end_turn", or Gemini "STOP"
+//        turn whose EXTRACTED text is blank -- absent/null/
+//        empty-string/whitespace-only content, OR a content array
+//        that is empty or carries no "text" parts, the shape a
+//        non-conformant proxy can send; OpenAI additionally surfaces
+//        the structured message.refusal text when present).  Never
+//        "salvage" part of such a body: the raw echo would replay
+//        the un-answerable call blocks on every later request.
+//      * All tool results for one assistant turn are packed into ONE
+//        following user message (an Anthropic hard requirement for
+//        parallel tool_use; mirrored for Gemini).
+//      * read_image results carry a REAL image block: the base64 PNG is
+//        extracted into an image part (Anthropic `tool_result` content
+//        image block; Gemini `functionResponse.parts[].inlineData` --
+//        the documented FunctionResponsePart mechanism for multimodal
+//        function output) and STRIPPED from the textual part so it is
+//        not double-sent.  RewriteElidedImages later replaces such an
+//        image block/part with a short text note (the loop keeps only
+//        the MOST RECENT image live -- see AgentChatLoop.h).
+//      * USER ATTACHMENTS (Model-B F5 chat image attachments): a user
+//        message may carry reference images (photos the user wants the
+//        agent to model against), passed as ChatAttachment{mimeType,
+//        base64Data} to AddUserMessage / MakeUserEntry.  These are a
+//        SEPARATE mechanism from the read_image tool-result elision
+//        above -- independent policy, independent bookkeeping (see
+//        AgentChatLoop.h "USER IMAGE RETENTION").  MakeUserEntry places
+//        each attachment's image block/part BEFORE the text block/part
+//        (Anthropic content array / Gemini parts array order) -- both
+//        providers read multimodal content left-to-right, so the image
+//        precedes the caption that refers to it, matching how a human
+//        would present "here's a photo; do X with it".  An unsupported
+//        mimeType (anything outside the provider's allow-list -- see
+//        RewriteElidedUserImages) is the DRIVER's job to reject before
+//        it ever reaches this codec (Swift layer); the codec still
+//        degrades honestly (passes the mimeType through) rather than
+//        silently dropping it, since core-layer gating is optional by
+//        design (documented in the skill / CLAUDE.md deviation notes).
+//
+//    The nine tool definitions (mapping 1:1 to the AgentRpc verbs) are
+//    defined ONCE, provider-neutrally, in AgentChatCodecs.cpp; each
+//    codec maps them into its native tool declaration shape.  Their
+//    parameter names/shapes mirror AgentRpc.cpp exactly.
+//
+//  Author: Aravind Krishnaswamy
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef RISE_AGENT_AGENTCHATCODECS_
+#define RISE_AGENT_AGENTCHATCODECS_
+
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace RISE
+{
+	namespace Agent
+	{
+		//! One user-supplied reference image attached to a chat message
+		//! (Model-B F5 chat image attachments).  `mimeType` is a full
+		//! MIME string ("image/png", "image/jpeg", "image/gif",
+		//! "image/webp" -- Anthropic's exact allow-list; Gemini accepts
+		//! the same four via inlineData.mimeType); `base64Data` is the
+		//! already-encoded image payload, no data-URL prefix.  NEVER LOG
+		//! either field -- base64Data can be hundreds of KB and together
+		//! they are exactly the bytes the no-image-bytes-in-logs security
+		//! rule forbids.
+		struct ChatAttachment
+		{
+			std::string mimeType;
+			std::string base64Data;
+		};
+
+		//! A fully-described HTTP request the CALLER performs.  The codec
+		//! never talks to the network; it only fills this in.
+		struct ChatHttpRequest
+		{
+			std::string url;      //!< absolute https URL (POST)
+			std::vector<std::pair<std::string, std::string>> headers;   //!< header name/value pairs (includes content-type + the auth header)
+			std::string body;     //!< the JSON request body
+		};
+
+		//! One tool call the model requested.  `id` is the provider's
+		//! tool-call id (Anthropic `tool_use.id`; Gemini
+		//! `functionCall.id`, which Gemini 3.x populates and the docs
+		//! require echoed back as the matching `functionResponse.id`).
+		//! Only when a Gemini functionCall carries no id does the codec
+		//! synthesize "call_0", "call_1", ... per assistant turn,
+		//! skipping any candidate that collides with an id already
+		//! captured this turn (idSynthesized is then true, NO id field
+		//! is emitted in the functionResponse, and results match by
+		//! name + order).  Duplicate ids within one turn (a repeated
+		//! provider id -- on EITHER provider -- or a Gemini provider id
+		//! colliding with an earlier synthesized one) REFUSE the whole
+		//! turn -- ids are the result-matching key and must be unique.
+		struct ChatToolCall
+		{
+			std::string id;                  //!< provider (or synthesized) call id
+			std::string name;                //!< the tool name (a JSON-RPC verb)
+			std::string argsJson;            //!< the call arguments as a JSON object string
+			bool        idSynthesized = false; //!< true iff `id` was fabricated by the codec (never echoed to the provider)
+		};
+
+		//! A machine-readable classification for ProviderError outcomes so
+		//! a GUI driver can branch on the KIND (retry on Http, stop on
+		//! Refusal, ...) without string-matching errorMessage.
+		enum class ChatErrorKind
+		{
+			None,          //!< not an error (ToolCalls / FinalText)
+			Http,          //!< non-200 HTTP status from the provider
+			Parse,         //!< the response body did not parse as JSON
+			Provider,      //!< the provider returned a hostile/degenerate/unexpected turn
+			Refusal,       //!< the provider declined the request (safety/refusal)
+			MaxTokens,     //!< the reply hit the output-token cap (truncated; discarded).  A verbatim retry will likely truncate again -- recovery needs a NEW/narrower user message, not an automatic retry.
+			IterationCap,  //!< the loop's per-turn tool-round cap tripped
+			Misuse         //!< caller-contract violation (e.g. HandleResponse while calls are pending)
+		};
+
+		//! The outcome of one chat step (one HTTP round-trip).
+		struct ChatStepResult
+		{
+			enum class Kind
+			{
+				ToolCalls,      //!< the model wants tool calls executed
+				FinalText,      //!< the model finished its turn with text
+				ProviderError   //!< HTTP / parse / policy / cap failure
+			};
+
+			Kind                      kind = Kind::ProviderError;
+			std::vector<ChatToolCall> toolCalls;     //!< non-empty iff kind==ToolCalls
+			std::string               finalText;     //!< filled iff kind==FinalText; possibly empty (e.g. a thinking-only end_turn), like assistantDisplayText
+			std::string               errorMessage;  //!< filled iff kind==ProviderError
+			ChatErrorKind             errorKind = ChatErrorKind::None;  //!< set on EVERY ProviderError; None otherwise
+
+			//! The assistant's interim display text for THIS turn --
+			//! filled for BOTH ToolCalls (the text alongside the calls,
+			//! possibly empty) and FinalText (== finalText), so a GUI can
+			//! show the model's narration while tools run.  Empty on
+			//! ProviderError.
+			std::string               assistantDisplayText;
+		};
+
+		//! ParseResponse's full product: the step outcome PLUS the raw
+		//! provider-native transcript entry for the assistant turn (so the
+		//! loop can echo it verbatim later) and a display-text extraction
+		//! for the GUI.  `assistantEntryJson` is empty on ProviderError.
+		struct ChatParsedResponse
+		{
+			ChatStepResult step;
+			std::string    assistantEntryJson;   //!< raw provider-native message entry (verbatim content span)
+			std::string    assistantDisplayText; //!< concatenated text blocks/parts (for display)
+		};
+
+		//! The pure provider-codec interface.  Stateless: every method is
+		//! const and the transcript lives in AgentChatLoop as a list of
+		//! raw provider-native entry strings this codec produced.
+		class IChatProviderCodec
+		{
+		public:
+			virtual ~IChatProviderCodec() {}
+
+			//! A short human name ("anthropic" / "gemini" / "openai"), used to prefix
+			//! HTTP-error messages (see ParseResponse's non-200 path).
+			virtual const char* ProviderName() const = 0;
+
+			//! The default model id used when the loop is given none.
+			virtual const char* DefaultModelId() const = 0;
+
+			//! A provider-native transcript entry for a user text message,
+			//! optionally carrying reference-image attachments (Model-B F5
+			//! chat image attachments).  Each attachment becomes a REAL
+			//! image block/part (Anthropic content-array image element;
+			//! Gemini inlineData part), placed BEFORE the text block/part
+			//! -- image(s) first, then the caption -- with an EMPTY
+			//! `attachments` producing byte-identical output to the
+			//! text-only overload below (so every existing call site is
+			//! unaffected).  `attachments` defaults to empty so text-only
+			//! callers need no change; the default is safe here because
+			//! every call site goes through the SAME static type
+			//! (IChatProviderCodec*), so the default resolves once,
+			//! consistently, never depending on the concrete codec.
+			virtual std::string MakeUserEntry(
+				const std::string& text,
+				const std::vector<ChatAttachment>& attachments = std::vector<ChatAttachment>() ) const = 0;
+
+			//! Pack ALL tool results of one assistant turn into ONE
+			//! provider-native user-turn entry.  Each element pairs the
+			//! ChatToolCall with the raw JSON-RPC response ENVELOPE line
+			//! from AgentRpcDispatcher::HandleLine.  read_image results
+			//! get a real image block/part (base64 stripped from the
+			//! textual half) -- but when SEVERAL results in one pack
+			//! carry images, only the LAST keeps a live image; earlier
+			//! ones are packed pre-elided so at most one image is live
+			//! per entry (the loop's RewriteElidedImages pass handles
+			//! OLDER entries).  JSON-RPC error envelopes become error
+			//! tool results (Anthropic `is_error: true`).
+			virtual std::string PackToolResults(
+				const std::vector<std::pair<ChatToolCall, std::string>>& results ) const = 0;
+
+			//! Rewrite a PackToolResults-produced entry, replacing every
+			//! live image block/part with a short "[image elided ...]"
+			//! text note (Anthropic: the {type:"image"} content element;
+			//! Gemini: the functionResponse.parts inlineData transport).
+			//! The loop-written ATTACH note ("the PNG is attached as
+			//! ...") in the textual summary is rewritten to the elision
+			//! text as well, so the model is never shown a note
+			//! contradicting the elided block; an RPC-owned "note" field
+			//! is never clobbered (the attach note then lives under
+			//! "image_note", which the rewrite prefers).
+			//! Used by the loop to keep only the MOST RECENT image live
+			//! (see AgentChatLoop.h "IMAGE RETENTION").  This regeneration
+			//! is legal ONLY because ToolResults entries are loop-generated
+			//! -- assistant entries carry the byte-preservation contract
+			//! and must never pass through here.  Returns the entry
+			//! unchanged when it carries no image (or does not parse).
+			virtual std::string RewriteElidedImages( const std::string& packedEntryJson ) const = 0;
+
+			//! USER IMAGE RETENTION (see AgentChatLoop.h): elide the OLDEST
+			//! `countToElide` live image blocks/parts from a MakeUserEntry-
+			//! produced entry (in the order attachments were given -- index
+			//! 0 first), replacing each with the placeholder text
+			//! "[reference image elided -- re-attach if needed]".  Distinct
+			//! from RewriteElidedImages (which targets whole ToolResults
+			//! entries and always elides ALL of an entry's images): a
+			//! single user message can carry several attachments, of which
+			//! only SOME may need eliding when the running cap is crossed
+			//! by a small amount, so this takes a count rather than an
+			//! all-or-nothing switch.  `countToElide` >= the entry's live
+			//! image count elides all of them.  Legal ONLY on entries this
+			//! codec's MakeUserEntry produced (loop-generated, like
+			//! PackToolResults' output) -- never on assistant entries.
+			//! Returns the entry unchanged when countToElide <= 0 or the
+			//! entry carries no image.
+			virtual std::string RewriteElidedUserImages(
+				const std::string& userEntryJson, int countToElide ) const = 0;
+
+			//! Build the full HTTP request for the current conversation.
+			//! `apiKey` is used ONLY for the auth header -- it is not
+			//! retained, not placed in the body/url, and never logged.
+			//! `rawEntries` are the transcript entries in order (each a
+			//! provider-native message JSON produced by this codec).
+			virtual ChatHttpRequest BuildRequest(
+				const std::string& modelId,
+				const std::string& apiKey,
+				const std::string& systemPrompt,
+				const std::vector<std::string>& rawEntries ) const = 0;
+
+			//! Parse one raw HTTP response.  `httpStatus` is the status
+			//! code the caller observed (non-200 -> ProviderError carrying
+			//! the provider's error.message when parseable).  NEVER throws.
+			virtual ChatParsedResponse ParseResponse(
+				long httpStatus, const std::string& rawBody ) const = 0;
+		};
+
+		//! Anthropic Messages API codec (see file header).
+		class AnthropicChatCodec : public IChatProviderCodec
+		{
+		public:
+			virtual const char* ProviderName() const;
+			virtual const char* DefaultModelId() const;
+			virtual std::string MakeUserEntry(
+				const std::string& text,
+				const std::vector<ChatAttachment>& attachments = std::vector<ChatAttachment>() ) const;
+			virtual std::string PackToolResults(
+				const std::vector<std::pair<ChatToolCall, std::string>>& results ) const;
+			virtual std::string RewriteElidedImages( const std::string& packedEntryJson ) const;
+			virtual std::string RewriteElidedUserImages(
+				const std::string& userEntryJson, int countToElide ) const;
+			virtual ChatHttpRequest BuildRequest(
+				const std::string& modelId,
+				const std::string& apiKey,
+				const std::string& systemPrompt,
+				const std::vector<std::string>& rawEntries ) const;
+			virtual ChatParsedResponse ParseResponse(
+				long httpStatus, const std::string& rawBody ) const;
+		};
+
+		//! Google Gemini v1beta REST codec (see file header).  The
+		//! functionCall.id / functionResponse.{id,parts[].inlineData}
+		//! shapes were web-verified 2026-07-02 against the
+		//! ai.google.dev/api Content-type reference (the api/caching
+		//! page); the surrounding generateContent envelope against
+		//! ai.google.dev/api/generate-content.
+		class GeminiChatCodec : public IChatProviderCodec
+		{
+		public:
+			virtual const char* ProviderName() const;
+			virtual const char* DefaultModelId() const;
+			virtual std::string MakeUserEntry(
+				const std::string& text,
+				const std::vector<ChatAttachment>& attachments = std::vector<ChatAttachment>() ) const;
+			virtual std::string PackToolResults(
+				const std::vector<std::pair<ChatToolCall, std::string>>& results ) const;
+			virtual std::string RewriteElidedImages( const std::string& packedEntryJson ) const;
+			virtual std::string RewriteElidedUserImages(
+				const std::string& userEntryJson, int countToElide ) const;
+			virtual ChatHttpRequest BuildRequest(
+				const std::string& modelId,
+				const std::string& apiKey,
+				const std::string& systemPrompt,
+				const std::vector<std::string>& rawEntries ) const;
+			virtual ChatParsedResponse ParseResponse(
+				long httpStatus, const std::string& rawBody ) const;
+		};
+
+		//! OpenAI Chat Completions codec (see file header).  The GUI
+		//! labels this provider "ChatGPT"; the wire endpoint is OpenAI's
+		//! chat/completions API because its messages/tool_calls transcript
+		//! shape matches this loop's provider-native raw-entry model.
+		class OpenAIChatCodec : public IChatProviderCodec
+		{
+		public:
+			virtual const char* ProviderName() const;
+			virtual const char* DefaultModelId() const;
+			virtual std::string MakeUserEntry(
+				const std::string& text,
+				const std::vector<ChatAttachment>& attachments = std::vector<ChatAttachment>() ) const;
+			virtual std::string PackToolResults(
+				const std::vector<std::pair<ChatToolCall, std::string>>& results ) const;
+			virtual std::string RewriteElidedImages( const std::string& packedEntryJson ) const;
+			virtual std::string RewriteElidedUserImages(
+				const std::string& userEntryJson, int countToElide ) const;
+			virtual ChatHttpRequest BuildRequest(
+				const std::string& modelId,
+				const std::string& apiKey,
+				const std::string& systemPrompt,
+				const std::vector<std::string>& rawEntries ) const;
+			virtual ChatParsedResponse ParseResponse(
+				long httpStatus, const std::string& rawBody ) const;
+		};
+
+		//! True iff packing (call, raw JSON-RPC envelope line) would carry
+		//! a LIVE image block/part -- i.e. a read_image success result with
+		//! a non-empty png_base64.  Shared by the loop (to decide when the
+		//! image-elision pass must run) and the codecs (which use the same
+		//! predicate to build the image block/part), so the two can never
+		//! disagree about what counts as an image-bearing result.
+		bool ChatToolResultCarriesImage( const ChatToolCall& call,
+		                                 const std::string& rawJsonRpcResponseLine );
+
+		//! Number of LIVE (not-yet-elided) image blocks/parts in a
+		//! MakeUserEntry-produced user entry -- i.e. how many of its
+		//! attachments still carry a real image block/part rather than
+		//! the "[reference image elided ...]" placeholder.  PROVIDER-
+		//! AGNOSTIC: dispatches on the entry's own shape ("content"
+		//! array of {type:"image",...} elements for Anthropic; "parts"
+		//! array of {inlineData:...} elements for Gemini; "content" array
+		//! of {type:"image_url",...} elements for OpenAI, gated on
+		//! role=="user" so it does not double-count the Anthropic
+		//! {type:"image"} count above on a shape that happens to reuse
+		//! the "content" key) rather than needing a codec instance, so
+		//! AgentChatLoop's cap bookkeeping (USER IMAGE RETENTION) can
+		//! call it uniformly regardless of which codec produced the
+		//! entry.  Returns 0 for a non-user entry, or one that does not
+		//! parse.
+		int ChatUserEntryLiveImageCount( const std::string& userEntryJson );
+	}
+}
+
+#endif

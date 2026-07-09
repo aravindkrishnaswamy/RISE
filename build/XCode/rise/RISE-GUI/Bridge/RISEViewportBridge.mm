@@ -26,8 +26,14 @@
 #include "SceneEditor/SceneEditController.h"
 #include "Rendering/InteractivePelRasterizer.h"
 #include "Rendering/ViewportFrameStore.h"
+#include "Agent/AgentSession.h"   // Facet 5 slice 1c-1: live in-app agent injection
+#include "Agent/AgentRpc.h"
+#include "Agent/AgentMcpAdapter.h"          // Secure-MCP slice 5c: GUI-hosted external MCP endpoint
+#include "Agent/AgentLoopbackHttpServer.h"  // Secure-MCP slice 5c
 
 #include <atomic>
+#include <memory>
+#include <thread>
 #include <vector>
 #include <cstring>
 
@@ -301,6 +307,34 @@ private:
 
 }  // namespace
 
+// Secure-MCP slice 5c: value-object result of -startAgentHostedServerWithLabel:.
+// Declared/implemented standalone (NOT nested in RISEViewportBridge's
+// @implementation) -- Objective-C does not support nested @implementation
+// blocks; @interface RISEAgentHostedServerInfo lives in the .h, right
+// before RISEViewportBridge's own @interface.
+@implementation RISEAgentHostedServerInfo {
+    BOOL       _ok;
+    NSUInteger _port;
+    NSString*  _bearerToken;
+    NSString*  _message;
+}
+- (instancetype)initOk:(BOOL)ok port:(NSUInteger)port
+            bearerToken:(NSString*)bearerToken message:(NSString*)message {
+    self = [super init];
+    if (self) {
+        _ok = ok;
+        _port = port;
+        _bearerToken = [bearerToken copy] ?: @"";
+        _message = [message copy] ?: @"";
+    }
+    return self;
+}
+- (BOOL)ok { return _ok; }
+- (NSUInteger)port { return _port; }
+- (NSString *)bearerToken { return _bearerToken; }
+- (NSString *)message { return _message; }
+@end
+
 @implementation RISEViewportBridge {
     SceneEditController* _controller;
     RISEBridge*          _host;          // strong: we share its scene
@@ -320,6 +354,39 @@ private:
     // controller's listener detached) before _controller destruction
     // in -shutdown so a stale fire after dealloc is impossible.
     RISEViewportDirtyChangedBlock _dirtyChangedBlock;
+
+    // Facet 5 slice 1c-1: the live agent JSON-RPC dispatcher.  Owns a
+    // non-owning AgentSession that WrapJob's the SAME IJobPriv the
+    // controller wraps and is AttachController'd to `_controller`, so a
+    // dispatched propose_patch routes through the controller's render-
+    // safe cancel-and-park edit path.  Raw new/delete, mirroring
+    // `_controller`.  LIFETIME ORDER: destroyed in -shutdown BEFORE
+    // `_controller` (and before the host Job) because the session it
+    // holds BORROWS both — deleting the dispatcher first guarantees it
+    // never references a dead controller / job.
+    RISE::Agent::AgentRpcDispatcher* _agentDispatcher;
+
+    // Secure-MCP slice 5c: the GUI-hosted EXTERNAL loopback MCP server --
+    // a SEPARATE AgentSession (External authority) + AgentMcpAdapter +
+    // AgentLoopbackHttpServer from `_agentDispatcher` above (which is the
+    // Owner-authority, in-process dispatcher -agentHandleLine drives).
+    // Null/empty when not hosting (the default -- opt-in only via
+    // -startAgentHostedServerWithLabel:). The External AgentSession
+    // (WrapJob, non-owning, AttachController'd to `_controller` -- see
+    // -startAgentHostedServerWithLabel:'s body) is owned INTERNALLY by
+    // `_agentHttpAdapter`'s AgentRpcDispatcher (mirrors how
+    // AgentMcpAdapter always owns its wrapped session -- see
+    // AgentMcpAdapter.h); this class does not hold a separate pointer to
+    // it. Two independent sessions (this one and `_agentDispatcher`'s)
+    // borrow the SAME controller, serialized by the controller's own
+    // mMutex (see the header doc's "two-dispatcher-one-controller" note).
+    // `_agentHttpServerThread` runs the server's serial accept-handle
+    // loop; joined by -stopAgentHostedServer / -shutdown before the
+    // session/controller/job it touches goes away.
+    std::unique_ptr<RISE::Agent::AgentMcpAdapter>       _agentHttpAdapter;
+    std::unique_ptr<RISE::Agent::AgentLoopbackHttpServer> _agentHttpServer;
+    std::thread                                          _agentHttpServerThread;
+    BOOL                                                  _agentHttpServerRunning;
 }
 
 - (nullable instancetype)initWithHostBridge:(RISEBridge *)host {
@@ -332,6 +399,8 @@ private:
     _polishCaster = nullptr;
     _interactiveRasterizer = nullptr;
     _previewSink = nullptr;
+    _agentHttpServerRunning = NO;
+    _agentDispatcher = nullptr;
 
     void* jobOpaque = [host opaqueJobHandle];
     if (!jobOpaque) {
@@ -350,12 +419,39 @@ private:
         return nil;
     }
 
+    // Model-B F2 slice S4: register this controller on the host bridge so
+    // its production-render entry points (-rasterize / -rasterizeAnimation /
+    // -rasterizeRegionLeft:top:right:bottom:) route through the SAME
+    // single-slot coordinator as the interactive loop and agent renders,
+    // instead of calling Job::Rasterize() directly.  Cleared back to NULL
+    // at the START of -shutdown, before `_controller` is destroyed -- see
+    // -attachSceneEditController:'s header doc for the full contract.
+    [_host attachSceneEditController:static_cast<void*>(_controller)];
+
     if (_previewSink) {
         // The sink queries the controller's cancel state at end-of-pass
         // to decide whether to drop a stale dispatch.  Wire the pointer
         // before installing the sink as a rasterizer output.
         _previewSink->SetController(_controller);
         RISE_API_SceneEditController_SetPreviewSink(_controller, _previewSink);
+    }
+
+    // Facet 5 slice 1c-1: stand up the live agent dispatcher over the SAME
+    // Job the controller wraps, and attach the controller so a dispatched
+    // propose_patch routes through its render-safe cancel-and-park edit
+    // path (the same path GUI SetProperty uses).  Constructed AFTER
+    // `_controller` (whose lifetime it borrows) and torn down BEFORE it
+    // (see -shutdown).  WrapJob may return null (defensive; pJob is
+    // non-null here), in which case the dispatcher speaks valid JSON-RPC
+    // errors for the session-backed verbs — still safe.
+    {
+        std::unique_ptr<RISE::Agent::AgentSession> session =
+            RISE::Agent::AgentSession::WrapJob(pJob);
+        if (session) {
+            session->AttachController(_controller);
+        }
+        _agentDispatcher =
+            new RISE::Agent::AgentRpcDispatcher(std::move(session));
     }
 
     return self;
@@ -423,6 +519,59 @@ private:
 }
 
 - (void)shutdown {
+    // Model-B F2 slice S4: deregister FIRST, before anything else in this
+    // method — the host bridge's production-render entry points
+    // (-rasterize etc.) read `_viewportController` from whatever thread the
+    // platform UI happens to call them on, so this pointer must go back to
+    // NULL before `_controller` itself starts coming apart below.  Safe to
+    // call even if a stale render is still draining inside the coordinator:
+    // RISE_API_DestroySceneEditController (further down) is what actually
+    // calls Stop()/joins the worker; clearing the host's pointer here just
+    // stops any NEW production render from being submitted to a controller
+    // that is about to disappear.
+    [_host attachSceneEditController:nullptr];
+
+    // Secure-MCP slice 5c: stop the EXTERNAL hosted server BEFORE the
+    // in-process agent dispatcher / controller below.  -stopAgentHostedServer
+    // signals Stop() and JOINS the server thread, so by the time this call
+    // returns, no external HandleLine call is in flight against the
+    // External AgentSession `_agentHttpAdapter` owns internally (which,
+    // like `_agentDispatcher`'s own session, BORROWS `_controller` and the
+    // host Job) — the same "stale server over a torn-down controller = UAF"
+    // class the S4/agent-dispatcher teardown discipline above already
+    // guards against. Idempotent (a no-op when no server is running), so
+    // calling it unconditionally here is safe whether or not
+    // -startAgentHostedServerWithLabel: was ever called for this bridge
+    // instance's lifetime.
+    [self stopAgentHostedServer];
+
+    // Facet 5 slice 1c-1: destroy the agent dispatcher FIRST — the
+    // AgentSession it owns BORROWS both `_controller` and the host Job.
+    // Deleting it here, before the controller is torn down below,
+    // guarantees the session never references a dead controller / job
+    // (the lifetime-order invariant noted at the ivar declaration).
+    // Idempotent: -shutdown may be called explicitly and again from
+    // -dealloc; the nil guard makes the second call a no-op.
+    //
+    // Fix-round-1 P1-A belt-and-braces: explicitly detach the session's
+    // controller BEFORE deleting the dispatcher.  AgentSession's C++
+    // destructor (reached via the `delete` below, through
+    // ~AgentRpcDispatcher's implicit unique_ptr<AgentSession> teardown)
+    // now unconditionally drains any outstanding async render on its own —
+    // this call is not required for correctness — but calling
+    // AttachController(nullptr) here drains (cancel + bound-wait) while
+    // `_controller` is STILL VALID and this ordering is still explicit at
+    // the call site, rather than relying solely on the destructor reaching
+    // the same drain moments later against a controller that is ALSO
+    // mid-teardown.  Cheap (a null-check + a possible no-op wait) and
+    // removes any doubt about ordering for a future maintainer reading
+    // this method top-to-bottom.
+    if (_agentDispatcher && _agentDispatcher->Session()) {
+        _agentDispatcher->Session()->AttachController(nullptr);
+    }
+    delete _agentDispatcher;
+    _agentDispatcher = nullptr;
+
     if (_controller) {
         // Detach the dirty-changed listener BEFORE destroying the
         // controller so its captured `self` pointer can't fire into
@@ -453,7 +602,19 @@ private:
 
 - (void)stop {
     if (!_controller) return;
-    RISE_API_SceneEditController_Stop(_controller);
+    // Model-B F2 slice S4 fix round 4: StopInteractive, NOT the
+    // monolithic Stop() -- this method exists so RenderViewModel can
+    // pause the interactive viewport ahead of a production render
+    // (startRender/startAnimationRender) WITHOUT permanently retiring
+    // this controller's agent-render worker.  See this method's header
+    // doc in RISEViewportBridge.h and
+    // RISE_API_SceneEditController_StopInteractive's doc for the full
+    // rationale -- the monolithic Stop() call here used to poison every
+    // later production/agent submission on this controller with
+    // "controller stopped".  Full teardown still happens in -shutdown,
+    // via RISE_API_DestroySceneEditController's destructor call to the
+    // real Stop().
+    RISE_API_SceneEditController_StopInteractive(_controller);
     _ownsRunning = NO;
 }
 
@@ -465,7 +626,10 @@ private:
     void* jobOpaque = [_host opaqueJobHandle];
     if (!jobOpaque) return;
     IJobPriv* pJob = static_cast<IJobPriv*>(jobOpaque);
-    pJob->ScaleFilmToFit(
+    // Route through SetViewportFit (NOT ScaleFilmToFit directly) so the Job caches the CURRENT viewport size
+    // (this wrapper is the single chokepoint for both load-time and resize-time fits) -- a subsequent D2 full
+    // re-derive then re-applies the same fit instead of reverting the preview to the authored full-res dims.
+    pJob->SetViewportFit(
         static_cast<unsigned int>(surfaceW),
         static_cast<unsigned int>(surfaceH),
         static_cast<unsigned int>(maxLongEdge));
@@ -795,6 +959,7 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         case 6: return RISEViewportCategoryMaterial;
         case 7: return RISEViewportCategoryMedium;
         case 8: return RISEViewportCategoryAnimation;
+        case 9: return RISEViewportCategorySceneVariant;
         default: return RISEViewportCategoryNone;
     }
 }
@@ -1005,6 +1170,212 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         [self refreshProperties];
     }
     return ok;
+}
+
+#pragma mark - Agent surface (Facet 5 slice 1c-1)
+
+- (NSString *)agentHandleLine:(NSString *)jsonRpcRequest {
+    // Guard the no-dispatcher / nil-input cases with a well-formed
+    // JSON-RPC -32603 error so the Swift caller always parses a valid
+    // response line (never nil).  id=null because we can't reliably
+    // attribute the request without running the dispatcher's parse.
+    static NSString* const kNoDispatcher =
+        @"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":"
+        @"{\"code\":-32603,\"message\":\"internal error: agent dispatcher unavailable\"}}";
+    if (!_agentDispatcher) {
+        return kNoDispatcher;
+    }
+    // A nil request string becomes an empty line -> the dispatcher's own
+    // -32700 parse-error path (it is TOTAL and never throws).  `?: ""`
+    // keeps the std::string ctor from a null UTF8 pointer.
+    const char* utf8 = jsonRpcRequest ? [jsonRpcRequest UTF8String] : "";
+    // SYNCHRONOUS on the calling (main / @MainActor) thread — mirrors how
+    // GUI SetProperty drives the controller's cancel-and-park from main.
+    const std::string response =
+        _agentDispatcher->HandleLine(std::string(utf8 ? utf8 : ""));
+    NSString* out = [NSString stringWithUTF8String:response.c_str()];
+    return out ?: kNoDispatcher;
+}
+
+#pragma mark - Secure-MCP slice 5c: GUI-hosted external MCP endpoint
+
+// THREADING MODEL (two-dispatcher-one-controller), read this before
+// touching anything in this section:
+//
+//   `_agentDispatcher` (constructed in -initWithHostBridge:, Facet 5
+//   slice 1c-1) is the OWNER-authority, Commit-autonomy dispatcher the
+//   Swift ChatViewModel / the raw JSON-RPC debug panel drive via
+//   -agentHandleLine, always synchronously on the MAIN THREAD (Swift's
+//   @MainActor).
+//
+//   `_agentHttpAdapter` (constructed below by
+//   -startAgentHostedServerWithLabel:) wraps a SEPARATE, SECOND
+//   AgentRpcDispatcher (owned internally by AgentMcpAdapter) built over
+//   a SEPARATE, SECOND AgentSession (External authority, Propose
+//   autonomy, owned internally by that dispatcher -- this class holds no
+//   raw pointer to it). `_agentHttpServer`'s Serve() loop runs on
+//   `_agentHttpServerThread` -- a background thread this class owns --
+//   and calls HandleLine on THIS SECOND dispatcher for every accepted
+//   HTTP connection, ONE AT A TIME (AgentLoopbackHttpServer's own serial
+//   accept-handle-close loop; see that class's header -- there is never
+//   more than one HandleLine call against `_agentHttpAdapter` in flight
+//   at once).
+//
+//   So there are exactly TWO caller threads that can be inside a
+//   dispatcher's HandleLine at any moment: the main thread (via
+//   -agentHandleLine -> `_agentDispatcher`) and the hosted-server thread
+//   (via `_agentHttpServer`'s loop -> `_agentHttpAdapter`). Each
+//   dispatcher/session pair is touched by exactly ONE of those threads,
+//   never both -- `_agentDispatcher`/its session are main-thread-only
+//   (same as every other -agentHandleLine caller before this slice);
+//   `_agentHttpAdapter`/its session are hosted-server-thread-only
+//   (nothing else ever calls into them). Neither dispatcher instance is
+//   EVER called from more than one thread, so AgentRpcDispatcher's own
+//   "single caller" contract (AgentRpc.h) holds for BOTH instances
+//   independently.
+//
+//   What the two threads DO share is `_controller` (SceneEditController)
+//   and its wrapped Job/Scene. Every mutating path either dispatcher can
+//   reach -- StageProposal (external, stages only), ApplyAgentParamEdit /
+//   ApplyAgentInsertChunk / ApplyAgentRemoveChunk (owner, commits
+//   directly), ListProposals, ResolveProposal -- takes the controller's
+//   OWN `mMutex` internally (SceneEditController.cpp; StageProposal's doc
+//   spells out its own locked-capture discipline). So an external stage
+//   (hosted-server thread) and an owner commit / resolve (main thread) —
+//   or a concurrent GUI SetProperty edit, which routes through the SAME
+//   mMutex-guarded cancel-and-park path — correctly serialize on that one
+//   lock exactly as 5a/5b's TestExternalStageBaseVersionCoherentUnderConcurrency
+//   already proved for the two-AgentSession-one-controller topology; this
+//   slice adds a REAL second thread (a background std::thread) driving
+//   that same topology instead of a same-thread test harness, but
+//   introduces no new shared mutable state outside what mMutex already
+//   guards. Neither AgentSession instance itself holds any lock of its
+//   own beyond the per-instance mAsyncCacheMutex (render-result caching,
+//   irrelevant to proposal staging) -- there is no session-level state
+//   the two sessions could race on.
+
+- (RISEAgentHostedServerInfo *)startAgentHostedServerWithLabel:(NSString *)sessionLabel {
+    if (_agentHttpServerRunning) {
+        return [[RISEAgentHostedServerInfo alloc]
+            initOk:NO port:0 bearerToken:@""
+            message:@"a hosted server is already running -- stop it first"];
+    }
+    if (!_controller) {
+        return [[RISEAgentHostedServerInfo alloc]
+            initOk:NO port:0 bearerToken:@""
+            message:@"internal error: no live controller to host against"];
+    }
+
+    // Construct a SECOND, SEPARATE AgentSession over the SAME Job the
+    // controller wraps -- WrapJob is non-owning (the host Job outlives
+    // this session; released below in -stopAgentHostedServer, well
+    // before the Job itself could go away). External authority: mutating
+    // verbs STAGE rather than commit (see AgentSession::ProposePatch's
+    // authority-gate doc). AttachController shares the SAME controller
+    // `_agentDispatcher`'s own session is attached to, so a staged
+    // proposal lands on that controller's ONE proposal queue -- the
+    // queue the Owner dispatcher's list_proposals/resolve_proposal verbs
+    // read/resolve.
+    void* jobOpaque = [_host opaqueJobHandle];
+    if (!jobOpaque) {
+        return [[RISEAgentHostedServerInfo alloc]
+            initOk:NO port:0 bearerToken:@""
+            message:@"internal error: no live Job to host against"];
+    }
+    IJobPriv* pJob = static_cast<IJobPriv*>(jobOpaque);
+
+    std::unique_ptr<RISE::Agent::AgentSession> session =
+        RISE::Agent::AgentSession::WrapJob(pJob, RISE::Agent::AgentAuthority::External);
+    if (!session) {
+        return [[RISEAgentHostedServerInfo alloc]
+            initOk:NO port:0 bearerToken:@""
+            message:@"internal error: could not construct the external agent session"];
+    }
+    session->AttachController(_controller);
+
+    // Secure-MCP slice 5c: label this session so every proposal it stages
+    // carries a human-readable "who proposed this" string in the
+    // proposals panel (see SceneEditController::AgentProposal::sessionLabel's
+    // doc). "" from the caller falls back to a fixed generic label rather
+    // than staging silently-unlabeled proposals -- there is exactly ONE
+    // hosted-server session per bridge instance (not per-connection), so
+    // a single fixed label is the honest granularity available here (see
+    // the .h's doc for why a per-connection id isn't threaded further).
+    const char* labelUtf8 = sessionLabel ? [sessionLabel UTF8String] : "";
+    const std::string label = (labelUtf8 && labelUtf8[0]) ? std::string(labelUtf8)
+                                                           : std::string("external-mcp");
+    session->SetSessionLabel(label);
+
+    // Propose autonomy is the wire-layer posture that PAIRS with External
+    // authority (see AgentRpc.h's file header, "Secure-MCP slice 5b" —
+    // the mutating verbs reach AgentSession, which stages; resolve_proposal
+    // stays refused at the dispatcher layer for this session regardless).
+    auto adapter = std::make_unique<RISE::Agent::AgentMcpAdapter>(
+        std::move(session), RISE::Agent::AgentAutonomy::Propose);
+
+    auto server = std::make_unique<RISE::Agent::AgentLoopbackHttpServer>(adapter.get());
+    if (!server->Bind(/*port=*/0)) {
+        return [[RISEAgentHostedServerInfo alloc]
+            initOk:NO port:0 bearerToken:@""
+            message:@"failed to bind a loopback port for the hosted MCP server"];
+    }
+
+    const unsigned short boundPort = server->BoundPort();
+    NSString* token = [NSString stringWithUTF8String:server->ForTest_Token().c_str()];
+
+    // The adapter now owns the session (via its internal dispatcher) --
+    // this class retains only the ADAPTER, exactly like `_agentDispatcher`
+    // above retains its dispatcher directly; every subsequent access goes
+    // through -HandleLine, never a raw session pointer.
+    _agentHttpAdapter = std::move(adapter);
+    _agentHttpServer = std::move(server);
+    _agentHttpServerRunning = YES;
+
+    // Serve() blocks in a serial accept-handle loop until Stop() is
+    // called -- run it on a dedicated background thread, joined by
+    // -stopAgentHostedServer (and -shutdown, which calls that first).
+    RISE::Agent::AgentLoopbackHttpServer* serverPtr = _agentHttpServer.get();
+    _agentHttpServerThread = std::thread([serverPtr]() { serverPtr->Serve(); });
+
+    return [[RISEAgentHostedServerInfo alloc]
+        initOk:YES port:boundPort bearerToken:token message:@"hosted MCP server started"];
+}
+
+- (void)stopAgentHostedServer {
+    if (!_agentHttpServerRunning) return;
+
+    // Stop() closes the listen socket / signals the accept loop; safe to
+    // call from this (the caller's) thread per AgentLoopbackHttpServer's
+    // documented cross-thread contract. Join BEFORE releasing the
+    // adapter/session below -- Serve()'s loop may be mid-HandleLine when
+    // Stop() is called (Stop() only guarantees the loop exits promptly
+    // AFTER the connection currently being served finishes; it does not
+    // abort an in-flight HandleLine), so joining first guarantees no
+    // external HandleLine call can still be touching the External
+    // AgentSession `_agentHttpAdapter` owns / `_controller` once this
+    // method returns.
+    if (_agentHttpServer) {
+        _agentHttpServer->Stop();
+    }
+    if (_agentHttpServerThread.joinable()) {
+        _agentHttpServerThread.join();
+    }
+    _agentHttpServer.reset();
+    _agentHttpAdapter.reset();
+    _agentHttpServerRunning = NO;
+}
+
+- (BOOL)isAgentHostedServerRunning {
+    return _agentHttpServerRunning;
+}
+
+- (NSUInteger)agentHostedServerPort {
+    return (_agentHttpServerRunning && _agentHttpServer) ? _agentHttpServer->BoundPort() : 0;
+}
+
+- (NSString *)agentHostedServerToken {
+    if (!_agentHttpServerRunning || !_agentHttpServer) return @"";
+    return [NSString stringWithUTF8String:_agentHttpServer->ForTest_Token().c_str()];
 }
 
 @end

@@ -1,10 +1,11 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  ObjectManager.h - Declaration of the ObjectManager class which
-//    helps scenes manage various geometric objects.  This is the
-//    really simple and stupid object manager.  It just stores
-//    everything in a list.  For a better object manager, look at
-//    DAGObjectManager, which uses a directed acylic graph.
+//    helps scenes manage various geometric objects.  It builds a
+//    top-level BVH4 acceleration structure (TLAS) over the objects,
+//    with a linear-loop fallback for tiny scenes; see
+//    Job::SetPrimaryAcceleration and docs/ARCHITECTURE.md "Top-Level
+//    Acceleration (TLAS)".
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: November 16, 2001
@@ -42,6 +43,7 @@ namespace RISE
 			// "build a top-level BVH".
 			mutable BVH<const IObjectPriv*>*    pBVH;
 			mutable Octree<const IObjectPriv*>* pOctree;
+			mutable unsigned long long          mSpatialGen;   //!< advanced on every InvalidateSpatialStructure (see IObjectManager)
 
 			bool bUseBSPtree;
 			bool bUseOctree;
@@ -107,6 +109,7 @@ namespace RISE
 
 			void PrepareForRendering() const;
 			void InvalidateSpatialStructure() const;
+			unsigned long long GetSpatialStructureGeneration() const { return mSpatialGen; }
 		};
 	}
 }

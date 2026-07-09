@@ -24,7 +24,7 @@ This directory holds focused design notes and planning docs. Start at [../README
 
 - [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md): current state of the PT/BDPT/VCM integrator deduplication effort. Phases 0/1/2a shipped; later phases deferred. **Read this before [INTEGRATOR_REFACTOR_PLAN.md](INTEGRATOR_REFACTOR_PLAN.md)** — the plan is the design record; the status file is what's true today.
 - [INTEGRATOR_REFACTOR_PLAN.md](INTEGRATOR_REFACTOR_PLAN.md): original phased design for collapsing Pel/NM/HWSS duplication across the three integrators. Historical context for the in-flight refactor.
-- [INTERACTIVE_EDITOR_PLAN.md](INTERACTIVE_EDITOR_PLAN.md): six-phase plan for the always-on 3D viewport across macOS, Windows, and Android. Phases 1–5 shipped (Library + all three platforms + production-render integration); Phase 6 (round-trip save) not started.
+- [INTERACTIVE_EDITOR_PLAN.md](INTERACTIVE_EDITOR_PLAN.md): six-phase plan for the always-on 3D viewport across macOS, Windows, and Android. Phases 1–5 shipped (Library + all three platforms + production-render integration); Phase 6 (round-trip save) **largely implemented** (`src/Library/SceneEditor/SaveEngine.cpp` — transforms + properties + created-cameras), though that doc's own header still reads design-pending. See [GUI_ROADMAP.md](GUI_ROADMAP.md) §2.
 - [GLTF_IMPORT.md](GLTF_IMPORT.md): glTF 2.0 import. Phase 1 (mesh) and Phase 2 (scene + PBR + tangent normal mapping) shipped; Phase 3+ (animation, KHR extensions) deferred. Implementation-status table at the top is the canonical view.
 
 ## Completed Plans / Retrospectives
@@ -38,6 +38,7 @@ These describe shipped work. Retained as historical design records; the body sho
 
 ## Forward-Looking Plans
 
+- [GUI_ROADMAP.md](GUI_ROADMAP.md): umbrella vision + phasing for making the macOS/Windows/Android GUI more capable and approachable — approachability foundation, cameras/views, material editor, spectral-only differentiators, and a first-class LLM/agent (MCP) integration that can operate scenes and the engine. Principles: text-as-source-of-truth, maximize shared C++, Android-not-left-behind. Per-stage designs live in [gui/](gui/).
 - [IMPROVEMENTS.md](IMPROVEMENTS.md): ranked backlog of rendering improvements (transport, materials, samplers, volumes), with acceptance criteria and starting files per item. Items 1–9 marked DONE; items 10–11 pending.
 - [CAMERAS_ROADMAP.md](CAMERAS_ROADMAP.md): survey of production / research camera models beyond pinhole / ortho / fisheye / thin-lens, scored against RISE's spectral pipeline, plus a phased implementation roadmap (thin-lens enrichments → output-format cameras → ODS → realistic multi-element lens → polynomial-optics acceleration → diffraction & flare → sensor/shutter). Named-camera scaffolding has shipped; tier feature work has not started.
 - [COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md): brief for the proposed migration from `RISEPel = ROMMRGBPel` to a working space whose primaries lie inside the visible spectral locus (sRGB Linear or ACES AP1).  Triggered by the [JH_LUT_GAMUT.md](JH_LUT_GAMUT.md) gamut-corner failures and the BioSpec / JH chromatic-adapt friction surfaced in Landing 3 v2.  Two-stage plan (LUT-only first, then `RISEPel` typedef change); separate workstream from any current task.

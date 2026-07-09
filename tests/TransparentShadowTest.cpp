@@ -123,7 +123,7 @@ static double AttenNM( const ILightPriv* L, RayCaster* C,
 // Rasterize() in this test.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneText =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"\n"
 	"film\n"
 	"{\n"
@@ -363,7 +363,7 @@ int main()
 		std::remove( scenePath.c_str() );
 		return 1;
 	}
-	if( !pJob->LoadAsciiScene( scenePath.c_str() ) ) {
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) {
 		std::cout << "  FAIL: scene load" << std::endl;
 		safe_release( pJob );
 		std::remove( scenePath.c_str() );

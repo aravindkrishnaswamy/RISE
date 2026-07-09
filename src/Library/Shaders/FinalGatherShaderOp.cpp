@@ -17,6 +17,7 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../Intersection/RayIntersection.h"
+#include "../Utilities/Color/RGBSpectra.h"	// RGBUnboundedSpectrum (RGB->spectral uplift for PerformOperationNM)
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -730,10 +731,41 @@ Scalar FinalGatherShaderOp::PerformOperationNM(
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
-	Scalar c=0;
-
-	// We do nothing for spectral rendering, yet
-	//! @@ TODO: To be implemented
-
-	return c;
+	// Spectral path: evaluate the full RGB final-gather result (the same
+	// global-photon-map gather / irradiance-cache interpolation the RGB path
+	// does) and uplift the RGB indirect radiance to wavelength `nm` via the
+	// same chroma-preserving JH uplift the RGB painters use for GetColorNM.
+	// The prior `return 0` stub dropped ALL final-gather indirect illumination
+	// under the *_spectral_* rasterizers (pixelintegratingspectral /
+	// pathtracing_spectral / bdpt_spectral / vcm_spectral / mlt_spectral) --
+	// final-gather GI rendered BLACK -- even though the RGB path works.  Same
+	// spectral-stub family as DataDrivenBSDF::valueNM and the two SSS ops.
+	//
+	// Result-uplift, not a true per-wavelength gather: the gather queries the
+	// RGB-resolved global photon map(s), so a per-lambda port would need a
+	// per-wavelength photon-map radiance estimate.  Uplifting the result makes
+	// the spectral render reconstruct the RGB final-gather appearance (the
+	// uplift round-trips through the CMFs); a true spectral final gather is
+	// future work.
+	//
+	// EnsurePositve before the uplift is DEFENSE-IN-DEPTH (redundant today,
+	// kept deliberately).  PerformOperation already returns a non-negative c
+	// on every path reachable here: the compute path clamps at the end of the
+	// gather, and the irradiance-cache interpolation path clamps inside
+	// FinalGatherInterpolation::TryInterpolate (both per-element after the
+	// signed gradient extrapolation and on the final weighted result).  But
+	// unlike the SSS fix -- where c is a sum of non-negative terms, i.e.
+	// non-negative by construction -- c here flows through SIGNED rotational/
+	// translational irradiance gradients, so its non-negativity rests entirely
+	// on those upstream clamps; a refactor dropping one would not be obvious.
+	// And the failure is catastrophic at THIS boundary specifically: a
+	// negative RGB flips RGBUnboundedSpectrum's max-channel scale and corrupts
+	// EVERY wavelength -- far worse than the RGB path, where a stray negative
+	// is merely clamped at film resolve.  So clamp at the projection boundary,
+	// where it matters.  RGBUnboundedSpectrum (not Albedo): indirect radiance
+	// is >= 0 and may exceed 1.
+	RISEPel c;
+	PerformOperation( rc, ri, caster, rs, c, ior_stack, pScat );
+	ColorMath::EnsurePositve( c );
+	return RGBUnboundedSpectrum::FromRGB( c ).Eval( nm );
 }

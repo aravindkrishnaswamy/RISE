@@ -30,15 +30,16 @@
 #include "IShaderOpManager.h"
 #include "IRasterizer.h"
 
+#include "../Cst/Cst.h"   // Facet 5 slice 1a: CstHeadVersion (a trivial POD returned by value below; Cst.h is std-lib-only weight)
+
 namespace RISE
 {
-	// Phase 6.1 + 6.2 forward declarations — these types live in
+	// Forward declarations — these types live in
 	// `src/Library/SceneEditor/` so we keep the include light.  The
 	// getters return raw pointers so this header doesn't have to
 	// pull in unordered_map / Matrix4 / etc.
-	class SourceSpanIndex;
 	class TransformSnapshot;
-	class OverrideSpanIndex;
+	struct FileIdentity;   // defined in SceneEditor/FileIdentity.h; CST-save external-mod guard reads it via GetCstLoadFileIdentity()
 
 	//! IJobPriv - Priviledged interface with getters
 	class IJobPriv : public virtual IJob
@@ -67,25 +68,38 @@ namespace RISE
 		virtual IShaderManager*				GetShaders() = 0;
 		virtual IShaderOpManager*			GetShaderOps() = 0;
 
-		// Phase 6.1 (docs/ROUND_TRIP_SAVE_PLAN.md §6.3 + §7.4).
-		// Per-entity source-file metadata + transform snapshots captured
-		// at scene-load time.  Read-only after parse completes; mutable
-		// access is only via AsciiSceneParser during the load pass.
-		// Returns non-null for any Job constructed via the standard
-		// factories (all three are owned by Job and live for its lifetime);
-		// null is reserved for future "lightweight" job types.
-		virtual SourceSpanIndex*			GetSourceSpanIndexMutable() = 0;
-		virtual const SourceSpanIndex*		GetSourceSpanIndex() const = 0;
+		// Two transform snapshots the legacy streaming loader captured at
+		// scene-load time (loader deleted, Model-B P5 Slice 6c).  The
+		// CST-only load path never populates them — Job allocates them
+		// empty so the getters return stable non-null pointers.  Currently
+		// unused (no callers); retained pending deletion — the virtual
+		// layout here is append-only.  (The related SourceSpanIndex /
+		// OverrideSpanIndex byte-splice metadata was deleted in Slice 6d.)
 		virtual TransformSnapshot*			GetBaseTransformSnapshotMutable() = 0;
 		virtual const TransformSnapshot*	GetBaseTransformSnapshot() const = 0;
 		virtual TransformSnapshot*			GetLoadedTransformSnapshotMutable() = 0;
 		virtual const TransformSnapshot*	GetLoadedTransformSnapshot() const = 0;
 
-		// Phase 6.2 (docs/ROUND_TRIP_SAVE_PLAN.md §6.8 + pinned 2.16).
-		// Catalog of every `override_object` chunk parsed from the
-		// scene file, with managed/unmanaged classification.
-		virtual OverrideSpanIndex*			GetOverrideSpanIndexMutable() = 0;
-		virtual const OverrideSpanIndex*	GetOverrideSpanIndex() const = 0;
+		// Model-B P5 Slice 6a: the CST-load file identity (path + mtime + size) captured by
+		// Job::RefreshCstLoadFileIdentity.  The CST-save external-modification guard reads THIS
+		// so the guard has no dependency on any legacy load-time span index.  Job is the sole implementer.
+		virtual const FileIdentity&			GetCstLoadFileIdentity() const = 0;
+
+		// Facet 5 (live co-edit) slice 1a: the optimistic-concurrency identity of the retained CST
+		// head -- (uuid, revision), see RISE::Cst::CstHeadVersion.  `uuid` is minted fresh on EVERY
+		// load (incl. a reload of the same file) and is 0 when no CST head is retained; `revision`
+		// bumps IFF the retained Document content changes.  The AgentSession baseHeadVersion conflict
+		// precondition reads this to reject a stale patch.  Job is the sole implementer.
+		virtual RISE::Cst::CstHeadVersion	GetCstHeadVersion() const = 0;
+
+		// Model-B F2 slice S2a fix round 2 (P2-A): read-only accessor for the progress callback
+		// installed via SetProgress -- null when none is installed.  Added so a test can assert the
+		// Job's progress hook is genuinely restored to null after a render whose Rasterize() call
+		// throws (AgentSession::RenderCore_'s ProgressRestoreGuard); no production caller needs this,
+		// but IJobPriv is the getters interface and a const read-only accessor belongs here rather
+		// than as a test-only friend hack.  Job is the sole implementer.
+		// APPENDED AT THE TRUE END OF THE VIRTUAL TAIL (append-only ABI convention -- do NOT insert mid-tail).
+		virtual IProgressCallback*			GetProgress() const = 0;
 	};
 
 

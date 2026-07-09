@@ -2,8 +2,9 @@
 //
 //  CompletionContext.cpp - Implementation.  Single forward scan of
 //    the buffer up to the caret, tracking brace depth and active
-//    chunk keyword.  Braces are on their own lines per the RISE
-//    grammar invariant, which keeps the counter simple.
+//    chunk keyword.  Braces are conventionally on their own lines in
+//    RISE scenes -- an authoring convention, NOT an enforced grammar
+//    invariant -- which this scanner assumes to keep the counter simple.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: 2026-04-24

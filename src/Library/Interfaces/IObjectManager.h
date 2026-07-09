@@ -72,6 +72,16 @@ namespace RISE
 		//! boxes that the BSP/octree was built from. Call PrepareForRendering() after
 		//! this to rebuild with current transforms.
 		virtual void InvalidateSpatialStructure() const = 0;
+
+		//! Monotonic counter advanced every time InvalidateSpatialStructure() runs.
+		//! A consumer reads it across an edit to confirm whether the top-level
+		//! acceleration was invalidated: the CST incremental apply's closure-gated
+		//! invariant pass leaves it UNCHANGED for a non-spatial edit (material/painter
+		//! value -- object bboxes unchanged) and advances it for a spatial edit
+		//! (geometry-extent / transform change), which is exactly the "non-spatial
+		//! edit skips the TLAS" property (docs/agentic-redesign/21-stable-apply-and-
+		//! resolver.md slices 3-4).
+		virtual unsigned long long GetSpatialStructureGeneration() const = 0;
 	};
 }
 

@@ -109,6 +109,10 @@ namespace RISE
 			inline const IScalarPainter* GetFilmExtinction() const { return pFilmExtinction; }
 			inline const IScalarPainter* GetFilmThickness()  const { return pFilmThickness; }
 			inline FresnelMode           GetFresnelMode()    const { return fresnelMode; }
+			//! Optional anisotropy tangent-rotation painter (KHR_materials_
+			//! anisotropy); nullable.  Read-back for the snapshot clone so a
+			//! GGX clone keeps the same anisotropic tangent orientation.
+			inline const IPainter*       GetTangentRotation() const { return pTangentRotation; }
 			void SetDiffuse( const IPainter& v );
 			void SetSpecular( const IPainter& v );
 			void SetAlphaX( const IScalarPainter& v );

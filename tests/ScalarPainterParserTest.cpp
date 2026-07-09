@@ -71,7 +71,7 @@ static IJobPriv* LoadScene( const char* body, const char* tag )
 		"/tmp/scalar_painter_test_%s_%d.RISEscene", tag, (int)::getpid() );
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) return nullptr;
-	ofs << "RISE ASCII SCENE 6\n\n" << body;
+	ofs << "RISE ASCII SCENE 7\n\n" << body;
 	ofs.close();
 
 	IJobPriv* pJob = nullptr;
@@ -79,7 +79,7 @@ static IJobPriv* LoadScene( const char* body, const char* tag )
 		std::remove( path );
 		return nullptr;
 	}
-	const bool ok = pJob->LoadAsciiScene( path );
+	const bool ok = pJob->LoadAsciiSceneViaCst( path );
 	std::remove( path );
 	if( !ok ) {
 		safe_release( pJob );

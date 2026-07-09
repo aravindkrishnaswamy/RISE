@@ -61,7 +61,21 @@ likely bug classes, your review prompts will be vague.
 Two reviewers with overlapping remits produce correlated findings and
 a shared blind spot.  Before launching, write down the axes on which
 the change could be wrong and pick 2-3 genuinely independent lenses.
-Typical axes for a rendering change:
+
+For any change whose correctness rests on NEW tests (editor/state work
+especially), ALWAYS include two standing lenses on top of the
+domain-specific ones:
+- **Test integrity** — does each new assertion actually FAIL without the
+  fix (RED-proven)?  Any `-ffast-math`-foldable NaN/Inf sentinel
+  (`SourceHygieneTest` enforces this), wrong-observable assertion (e.g.
+  reading `.x` when the code writes `.y`), or check the setup already
+  guarantees?  This lens caught false-green tests THREE times.
+- **Completeness / siblings** — is every parallel site covered (all undo/
+  redo/composite walks, every mutator that must invalidate, every file
+  carrying the fixed pattern)?  Partial fixes that looked done were the
+  most common confirmed finding.
+
+Typical domain axes for a rendering change:
 
 - **Mathematical / algorithmic correctness** — Is the math right?
   Does it match the reference paper / established derivation?
@@ -124,6 +138,11 @@ conversation.  Every prompt must include:
 - **An explicit bias toward findings** — "prioritize correctness,
   regressions, and missing coverage; ignore style unless it hides a
   correctness risk."
+- **Scope = ALL bugs in the touched code, regardless of provenance** —
+  "report every correctness bug you find in this code or the code it
+  relies on, WHETHER OR NOT this change introduced it.  Do NOT dismiss a
+  finding as pre-existing, not-introduced-here, or not-reachable-today.
+  A latent bug in surrounding code is still a bug to chase down and fix."
 
 Recommended finding format:
 
@@ -181,7 +200,11 @@ For every non-trivial finding, spend 30 seconds confirming:
 Cheap to do, invaluable when it catches a false positive.
 
 Reject a finding only if you can state why the cited failure mode is
-not reachable.  Record that reason in the ledger.
+genuinely IMPOSSIBLE — not merely "rare", "pre-existing", or "not
+introduced by this change".  **Provenance is never grounds for dismissal:
+a latent correctness bug in the surrounding code must be chased down and
+fixed (or explicitly deferred with the user's approval), exactly like one
+this change introduced.**  Record the reason in the ledger.
 
 ### 7. Fix the confirmed findings, then ask for more review
 
@@ -232,6 +255,15 @@ Stop only when both are true:
 
 The user saying "good" can still stop the process, but absent that,
 do not exit after the first fix pass.
+
+Run this review as a **GATE before declaring a correctness-sensitive
+change done** — not only after landing it.  And report status honestly:
+"tests X pass, RED-proven; *unverified:* Y" — never "complete / no P1 /
+sound" on the strength of narrow tests.  In the editor work that
+optimistic claim was falsified by the very next review every single time;
+the durable lesson is that solo verification reliably misses false-green
+tests, completeness, and edge cases, and the review loop is what catches
+them — so it is load-bearing, not optional polish.
 
 Typical depth remains 2-5 rounds, but broad or correctness-sensitive
 changes should bias toward the high end.
@@ -293,6 +325,20 @@ by the natural quartic scale `|u²| + |q·t|`").  If no one can write
 that sentence, the constant is empirical and the formulation needs
 to change.  See
 [precision-fix-the-formulation](precision-fix-the-formulation.md).
+
+### Dismissing a bug as pre-existing / not-introduced-here
+
+"That bug was already there / this change didn't cause it / it's not
+reachable today" is NOT a reason to skip a fix.  Reviews that anchor on
+provenance ("is this introduced by THIS change?") systematically miss
+latent correctness bugs in the surrounding code: an external review of the
+editor de-brittling arc found NINE such P1s the provenance-anchored
+in-session reviews had waved past (wrong-camera undo, partial-rollback
+falsely-clean, an open-composite history drain, a callback capturing a
+to-be-freed `this`, ...).  Chase down and fix EVERY real bug the review
+surfaces, regardless of who introduced it or when.  The only acceptable
+non-fix dispositions are "genuinely not a bug" (with a stated reason) or an
+explicit, user-approved deferral.
 
 ### Unbounded reports
 

@@ -70,6 +70,14 @@ namespace RISE
 			// Finalizes all transformations and computes the final matrix
 			virtual void FinalizeTransformations( );
 
+			//! Capture the full component-decomposed transform state (for
+			//! editor undo / restore) -- see TransformState.
+			virtual TransformState CaptureTransformState( ) const;
+
+			//! Restore a state captured by CaptureTransformState, preserving the
+			//! component decomposition, then finalize.
+			virtual void RestoreTransformState( const TransformState& st );
+
 			// Retrieves the transformation matrix
 			virtual inline Matrix4 const GetFinalTransformMatrix( ) const { return m_mxFinalTrans; };
 			virtual inline Matrix4 const GetFinalInverseTransformMatrix( ) const { return m_mxInvFinalTrans; };

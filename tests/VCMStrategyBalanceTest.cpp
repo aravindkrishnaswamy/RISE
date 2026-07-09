@@ -211,7 +211,7 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 	IJobPriv* pJob = nullptr;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) return result;
 
-	if( !pJob->LoadAsciiScene( scenePath ) ) {
+	if( !pJob->LoadAsciiSceneViaCst( scenePath ) ) {
 		safe_release( pJob );
 		return result;
 	}
@@ -433,8 +433,8 @@ static void RunTopologyTest(
 {
 	std::cout << "Testing PT-vs-VCM: " << topologyName << std::endl;
 
-	const std::string ptScene  = std::string("RISE ASCII SCENE 6\n") + kRasterizerPT  + sceneCommonBlock;
-	const std::string vcmScene = std::string("RISE ASCII SCENE 6\n") + kRasterizerVCM + sceneCommonBlock;
+	const std::string ptScene  = std::string("RISE ASCII SCENE 7\n") + kRasterizerPT  + sceneCommonBlock;
+	const std::string vcmScene = std::string("RISE ASCII SCENE 7\n") + kRasterizerVCM + sceneCommonBlock;
 
 	const std::string ptPath  = WriteSceneToTempFile( ptScene.c_str(),  "pt"  );
 	const std::string vcmPath = WriteSceneToTempFile( vcmScene.c_str(), "vcm" );

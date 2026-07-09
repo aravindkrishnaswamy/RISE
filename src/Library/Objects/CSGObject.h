@@ -28,6 +28,18 @@ namespace RISE
 			CSG_SUBTRACTION		= 2
 		};
 
+		//! Map the wire CSG-op code (0 Union / 1 Intersection / 2 Subtraction; any other -> Union,
+		//! matching RISE_API_CreateCSGObject) to the typed enum.  Shared by the create path and the
+		//! CST incremental re-point (Job::AddCSGObject -> SetOperation) so the two cannot drift.
+		inline CSG_OP CsgOpFromChar( char op )
+		{
+			switch( op ) {
+				case 1:  return CSG_INTERSECTION;
+				case 2:  return CSG_SUBTRACTION;
+				default: return CSG_UNION;
+			}
+		}
+
 		class CSGObject : public virtual Object
 		{
 		protected:
@@ -44,8 +56,30 @@ namespace RISE
 
 			bool AssignObjects( IObjectPriv* objA, IObjectPriv* objB );
 
+			//! Re-set the CSG operation in place (CST incremental re-point).  `op` is a read-only
+			//! runtime field (read by getBoundingBox + IntersectRay), so this is a plain field set --
+			//! no cached/derived state to rebuild.
+			void SetOperation( const CSG_OP& op_ );
+
+			//! The current operands (CST incremental apply: compare against the edited chunk's
+			//! obja/objb to DETECT an operand-reference change -- which is refused, since re-binding
+			//! un-hides the dropped operand and that is wrong if the operand is shared with another CSG).
+			IObjectPriv* GetOperandA() const { return pObjectA; }
+			IObjectPriv* GetOperandB() const { return pObjectB; }
+
 			IObjectPriv* CloneFull();
 			IObjectPriv* CloneGeometric();
+
+			//! feature/gui-snapshot-prototype: snapshot-clone AS a CSGObject.
+			//! The base Object::CloneSnapshot would slice a CSGObject to a
+			//! plain Object (operands + operation lost, null geometry).  This
+			//! overrides it to snapshot-clone the operation + BOTH operands
+			//! (recursively, via each operand's virtual CloneSnapshot) and
+			//! then copy the shared mutable state via CopySnapshotStateInto.
+			//! NOTE: deliberately NOT marked `override` to match this class's
+			//! existing no-`override` style — adding the keyword to one method
+			//! wakes -Winconsistent-missing-override on the 7 sibling virtuals.
+			Object* CloneSnapshot() const;
 
 			const BoundingBox getBoundingBox() const;
 			void IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;

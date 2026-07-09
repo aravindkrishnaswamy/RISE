@@ -246,8 +246,13 @@ bool RiseBridge::loadScene(const std::string& absPath) {
     // itself reports progress.
     m_job->SetProgress(m_progress.get());
 
-    if (!m_job->LoadAsciiScene(absPath.c_str())) {
-        LOGE("loadScene: LoadAsciiScene failed for %s", absPath.c_str());
+    // P5 (Model-B, Slice 6c-3a): scene load is now CST-ONLY.  LoadAsciiSceneAuto routes a native-v7 scene to
+    // the canonical CST path (retains the CST Document so scene_variant switching + CST edit/save work) and
+    // HARD-FAILS an un-migrated scene (returns false, with a migrator pointer) -- the legacy streaming parser
+    // was retired.  A derive error on the native-v7 branch is a real, visible failure (returns false), NOT
+    // masked by a legacy retry.  There is no env escape hatch anymore; a false return tears the job down below.
+    if (!m_job->LoadAsciiSceneAuto(absPath.c_str())) {
+        LOGE("loadScene: LoadAsciiSceneAuto failed for %s", absPath.c_str());
         teardownJob();
         return false;
     }
@@ -974,7 +979,10 @@ bool RiseBridge::scaleFilmToFit(unsigned int maxSurfaceW,
                                 unsigned int maxLongEdge) {
     if (!m_job) return false;
     if (maxSurfaceW == 0 || maxSurfaceH == 0 || maxLongEdge == 0) return false;
-    return m_job->ScaleFilmToFit(maxSurfaceW, maxSurfaceH, maxLongEdge);
+    // Route through SetViewportFit (NOT ScaleFilmToFit directly) so the Job caches the CURRENT viewport size
+    // (this wrapper is the single chokepoint for both load-time and resize-time fits) -- a subsequent D2 full
+    // re-derive then re-applies the same fit instead of reverting the preview to the authored full-res dims.
+    return m_job->SetViewportFit(maxSurfaceW, maxSurfaceH, maxLongEdge);
 }
 
 bool RiseBridge::startViewport(bool suppressFirstFrame) {

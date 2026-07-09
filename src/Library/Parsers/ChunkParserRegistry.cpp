@@ -1,0 +1,10078 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  ChunkParserRegistry.cpp - Definitions of every concrete
+//    IAsciiChunkParser subclass, the CreateAllChunkParsers factory,
+//    the default IAsciiChunkParser::ParseChunk dispatch, and the public
+//    DispatchChunkParameters / ClearChunkParserState / LastAllocatedCameraName
+//    wrappers.  This is the SHARED chunk-parser registry: it is consumed
+//    by the CST derive path (Cst/Cst.cpp, ParseToCst + DeriveToJob -- the
+//    ONLY scene-load path) and the scene-editor introspection panels
+//    (SceneEditor/ChunkDescriptorRegistry.cpp).
+//
+//    Split out of AsciiSceneParser.cpp (Model-B P5 Slice 6b) precisely so
+//    the legacy streaming loader could be retired as a clean unit without
+//    disturbing this registry -- that retirement happened in Slice 6c/6d
+//    (AsciiSceneParser.cpp and its ParseAndLoadScene are deleted).
+//
+//    The descriptor-driven architecture (every parser overrides only
+//    Describe() + Finalize(); the default ParseChunk validates against the
+//    descriptor) is documented in README.md in this directory.
+//
+//  Author: Aravind Krishnaswamy
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#include "pch.h"
+#include <vector>
+#include <map>
+#include <set>
+#include <stack>
+#include <string>
+#include <sstream>
+#include <algorithm>
+#include <cstring>   // Phase 6.2: strstr for sentinel detection
+#include <cstdio>    // Phase 6.2: sscanf in OnOverrideObjectFinalized
+#include <cstdlib>   // strtod for the ar_layer numeric parse
+#include <cerrno>    // ERANGE overflow detection for ar_layer values
+#include "../Materials/DielectricSPF.h"   // DielectricSPF::kMaxARLayers (ar_layer cap)
+#include <sys/types.h>
+#include <sys/stat.h>
+#include "AsciiCommandParser.h"
+#include "IAsciiChunkParser.h"
+#include "ChunkParserRegistry.h"
+#include "StdOutProgress.h"
+#include "../Utilities/Math3D/Math3D.h"
+#include "../Utilities/OrthonormalBasis3D.h"
+#include "../Utilities/MediaPathLocator.h"
+#include "MathExpressionEvaluator.h"
+#include "../Utilities/RasterizerDefaults.h"
+#include "../Rendering/Film.h"		// kDefaultFilm* constants for `film` chunk
+#include "../RISE_API.h"				// IScalarPainter constructors (Phase 2)
+#include "../Interfaces/IScalarPainter.h"
+#include "../Interfaces/IScalarPainterManager.h"
+#include "../Interfaces/IFunction1DManager.h"
+#include "../Interfaces/IFunction2DManager.h"
+#include "../Interfaces/IModifierManager.h"	// bumpmap_modifier normalize_gradient path (via IJobPriv::GetModifiers)
+#include "../Painters/RGBScalarPainter.h"		// for ScalarTriple::IsUniform et al
+#include "../Painters/TexturePainter.h"		// for resolving a named image painter -> raster accessor (scalar_painter texture form)
+#include "../Interfaces/IJobPriv.h"
+#include "../Interfaces/IObjectManager.h"
+#include "../Interfaces/IObjectPriv.h"
+// Phase B: descriptor-driven introspection used by
+// PopulateLoadedPropertySnapshot to capture loaded parameter values.
+#include "../SceneEditor/CameraIntrospection.h"
+#include "../SceneEditor/LightIntrospection.h"
+#include "../SceneEditor/MaterialIntrospection.h"
+#include "../SceneEditor/MediaIntrospection.h"
+#include "../SceneEditor/ObjectIntrospection.h"
+#include "../Interfaces/ICameraManager.h"
+#include "../Interfaces/ILightManager.h"
+#include "../Interfaces/IMaterialManager.h"
+
+#ifdef WIN32
+#include <malloc.h>
+#else
+#include <alloca.h>
+#endif
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+// Shared file-scope helpers used by the chunk-parser registry.  (The
+// legacy hal() QMC sequence `mh` lived ONLY in the deleted streaming TU,
+// AsciiSceneParser.cpp, and was deleted with it in Slice 6c -- this TU
+// never touched MultiHalton.)
+
+// Max scene-file line length for the file-backed data-curve readers below
+// (carried from the deleted streaming TU, AsciiSceneParser.cpp).
+#define MAX_CHARS_PER_LINE		8192
+
+// Read a data file into its meaningful lines, tolerant of comments and
+// blank lines.  Skips blank / whitespace-only lines and lines whose first
+// non-blank character is '#'.  Returns false (the caller logs) if the file
+// cannot be opened.  Each returned line still contains its trailing
+// newline; callers sscanf their own column format from it and validate the
+// conversion count, so a malformed or non-numeric line is skipped rather
+// than — as the historical `while( !feof(f) ) { fscanf(...); push; }` loops
+// did — spinning forever on a comment line (fscanf matches nothing and does
+// not advance) or pushing uninitialized / duplicated values at EOF.
+static bool ReadDataFileLines( const String& filename, std::vector<std::string>& outLines )
+{
+	FILE* f = fopen( GlobalMediaPathLocator().Find( filename ).c_str(), "r" );
+	if( !f ) {
+		return false;
+	}
+	char buf[MAX_CHARS_PER_LINE];
+	while( fgets( buf, sizeof( buf ), f ) ) {
+		const char* p = buf;
+		while( *p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' ) {
+			++p;
+		}
+		if( *p == '\0' || *p == '#' ) {
+			continue;   // blank / whitespace-only / comment line
+		}
+		outLines.push_back( std::string( buf ) );
+	}
+	fclose( f );
+	return true;
+}
+
+inline bool string_split( const String& s, String& first, String& second, const char ch )
+{
+	String::const_iterator it = std::find( s.begin(), s.end(), ch );
+	if( it==s.end() ) {
+		return false;
+	}
+
+	first = String( s.begin(), it );
+	second = String( it+1, s.end() );
+	return true;
+}
+
+// Phase 6.2 helper (docs/ROUND_TRIP_SAVE_PLAN.md §8.10): compose a
+// column-major 4×4 from translation, glTF-style quaternion (xyzw),
+// and per-axis stretch.  Extracted from the inline body of
+// StandardObjectAsciiChunkParser::Finalize (originally line 5534) so
+// the new OverrideObjectAsciiChunkParser can call it.  Behaviour-
+// preserving refactor: the math is identical.
+inline void ComposeTRS_QuaternionGltf(
+	const double pos[3], const double q[4], const double scale[3],
+	double outM[16] )
+{
+	// Quaternion → 3×3 rotation, then assemble column-major M = T·R·S.
+	const double xx = q[0]*q[0], yy = q[1]*q[1], zz = q[2]*q[2];
+	const double xy = q[0]*q[1], xz = q[0]*q[2], yz = q[1]*q[2];
+	const double wx = q[3]*q[0], wy = q[3]*q[1], wz = q[3]*q[2];
+	const double r00 = 1.0 - 2.0*(yy+zz);
+	const double r01 = 2.0*(xy - wz);
+	const double r02 = 2.0*(xz + wy);
+	const double r10 = 2.0*(xy + wz);
+	const double r11 = 1.0 - 2.0*(xx+zz);
+	const double r12 = 2.0*(yz - wx);
+	const double r20 = 2.0*(xz - wy);
+	const double r21 = 2.0*(yz + wx);
+	const double r22 = 1.0 - 2.0*(xx+yy);
+
+	// Column 0: scale[0] * R column 0
+	outM[ 0] = scale[0] * r00;  outM[ 1] = scale[0] * r10;  outM[ 2] = scale[0] * r20;  outM[ 3] = 0;
+	// Column 1: scale[1] * R column 1
+	outM[ 4] = scale[1] * r01;  outM[ 5] = scale[1] * r11;  outM[ 6] = scale[1] * r21;  outM[ 7] = 0;
+	// Column 2: scale[2] * R column 2
+	outM[ 8] = scale[2] * r02;  outM[ 9] = scale[2] * r12;  outM[10] = scale[2] * r22;  outM[11] = 0;
+	// Column 3: translation, w=1
+	outM[12] = pos[0];          outM[13] = pos[1];          outM[14] = pos[2];          outM[15] = 1;
+}
+
+// Phase 6.2 helper: build a RISE Matrix4 from a column-major 16-double
+// array — the same layout as glTF and as the existing
+// `Job::AddObjectMatrix` consumer (Job.cpp:5103-5107).  Inline here so
+// `OverrideObjectAsciiChunkParser` doesn't need to introduce a new
+// public Matrix4 constructor.
+inline Matrix4 BuildMatrix4FromColumnMajor( const double m[16] )
+{
+	Matrix4 out;
+	out._00 = m[ 0]; out._01 = m[ 1]; out._02 = m[ 2]; out._03 = m[ 3];
+	out._10 = m[ 4]; out._11 = m[ 5]; out._12 = m[ 6]; out._13 = m[ 7];
+	out._20 = m[ 8]; out._21 = m[ 9]; out._22 = m[10]; out._23 = m[11];
+	out._30 = m[12]; out._31 = m[13]; out._32 = m[14]; out._33 = m[15];
+	return out;
+}
+
+//////////////////////////////////////////////////
+// IAsciiChunkParser moved to IAsciiChunkParser.h
+// Descriptor types in ChunkDescriptor.h
+// Factory declared in ChunkParserRegistry.h
+//////////////////////////////////////////////////
+
+//////////////////////////////////////////////////
+// Implementation of the different kinds of
+//   chunk parsers
+//////////////////////////////////////////////////
+
+//////////////////////////////////////////////////
+// Chunk breakdown:
+//  Chunks are identified by name.  There are
+//  two levels to chunks.  At the root level,
+//  there are 8 primary chunks:
+//    Geometry, Painter, Material, Object, Camera
+//    PhotonMap, Rasterizer and Shader
+//
+//  Most of these primary chunks have subchunks.
+//  For example each type of painter is a subchunk
+//  The main painter chunk itself doesn't mean
+//  anything without a subchunk
+//
+//  A note about parsing:  Each chunk MUST begin
+//    with a '{' on its own line and MUST end
+//    with a '}' on its own line.  The braces
+//    and all comments will be automatically removed
+//    by the primary parser before being passed
+//    to the chunk parser
+//////////////////////////////////////////////////
+
+namespace RISE
+{
+	namespace Implementation
+	{
+		namespace ChunkParsers
+		{
+			// Adds the optional `variant` tag to a chunk descriptor (doc 63): when set, the chunk OVERRIDES its base
+			// same-named counterpart while that scene_variant is active.  The chunk's own Finalize ignores `variant`
+			// -- it is a marker the CST derive reads (bake-at-derive); the legacy reader skips a tagged material.
+			static void AddVariantTagParam( ChunkDescriptor& cd )
+			{
+				cd.parameters.emplace_back();
+				ParameterDescriptor& p = cd.parameters.back();
+				p.name = "variant"; p.kind = ValueKind::String;
+				p.description = "If set, this chunk overrides the base same-named chunk when scene_variant <name> is active.";
+			}
+
+			// Tracks uniform color painter values so that material parsers
+			// can validate energy conservation at scene-definition time.
+			struct PainterColor { double c[3]; };
+			static thread_local std::map<std::string, PainterColor> s_painterColors;
+
+			//! Resolve a scalar painter from a chunk parameter value.
+			//!
+			//! Accepts three input shapes:
+			//!   - Inline scalar literal: `1.5` → UniformScalarPainter(1.5).
+			//!   - Inline RGB-triple literal: `1.3 1.5 2.0` → RGBScalarPainter.
+			//!   - Name of a registered scalar_painter: looked up in
+			//!     `pJob.GetScalarPainters()`.
+			//!
+			//! Returns nullptr on lookup failure / unparseable value.  The
+			//! returned painter is owned by the caller (refcount 1, must
+			//! be released).  `requireSingle = true` causes a per-channel
+			//! painter to be rejected with a clear error — used by single-
+			//! scalar material slots (roughness, exponent, etc.).
+			//!
+			//! `paramName` is just for diagnostic messages.
+			//!
+			//! DEAD CODE (no callers; the live resolver is Job.cpp's
+			//! ResolveScalarPainterArg).  If ever revived, its inline strtod
+			//! path must gain the same non-finite rejection (nan/inf spellings +
+			//! ERANGE overflow) the live path has, or it reintroduces the
+			//! non-finite-scalar bug.  Kept only as a reference.
+			[[maybe_unused]] static IScalarPainter* ResolveScalarPainter(
+				IJob& pJob,
+				const std::string& value,
+				const char* paramName,
+				bool requireSingle = false )
+			{
+				IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+				if( !pPriv ) return nullptr;
+
+				// Try named-lookup first — the most common case in scenes
+				// that already define a `scalar_painter` block.
+				IScalarPainter* named =
+					pPriv->GetScalarPainters()->GetItem( value.c_str() );
+				if( named ) {
+					if( requireSingle && named->HasPerChannelVariation() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scalar parameter `%s`: bound to per-channel painter `%s`, but slot requires a wavelength-uniform scalar",
+							paramName, value.c_str() );
+						return nullptr;
+					}
+					named->addref();
+					return named;
+				}
+
+				// Inline numeric forms.  Use `strtod` end-pointer to
+				// reject trailing non-whitespace — silent truncation
+				// would let `1.5 garbage_name` parse as `1.5`, masking
+				// typos in named-painter references.
+				auto onlyTrailingWhitespace = []( const char* p ) -> bool {
+					while( *p ) {
+						if( ! std::isspace( static_cast<unsigned char>( *p ) ) ) return false;
+						++p;
+					}
+					return true;
+				};
+
+				// 3-double first (more specific).
+				{
+					const char* s = value.c_str();
+					char* end1 = nullptr;
+					const double r = std::strtod( s, &end1 );
+					if( end1 != s ) {
+						char* end2 = nullptr;
+						const double g = std::strtod( end1, &end2 );
+						if( end2 != end1 ) {
+							char* end3 = nullptr;
+							const double b = std::strtod( end2, &end3 );
+							if( end3 != end2 && onlyTrailingWhitespace( end3 ) ) {
+								if( requireSingle ) {
+									if( r == g && g == b ) {
+										IScalarPainter* p = nullptr;
+										RISE_API_CreateUniformScalarPainter( &p, Scalar( r ) );
+										return p;
+									}
+									GlobalLog()->PrintEx( eLog_Error,
+										"scalar parameter `%s`: inline triple (%g %g %g) supplied where a wavelength-uniform scalar is required",
+										paramName, r, g, b );
+									return nullptr;
+								}
+								IScalarPainter* p = nullptr;
+								RISE_API_CreateRGBScalarPainter( &p,
+									Scalar( r ), Scalar( g ), Scalar( b ) );
+								return p;
+							}
+						}
+					}
+				}
+				// 1-double next.
+				{
+					const char* s = value.c_str();
+					char* end = nullptr;
+					const double v = std::strtod( s, &end );
+					if( end != s && onlyTrailingWhitespace( end ) ) {
+						IScalarPainter* p = nullptr;
+						RISE_API_CreateUniformScalarPainter( &p, Scalar( v ) );
+						return p;
+					}
+				}
+
+				GlobalLog()->PrintEx( eLog_Error,
+					"scalar parameter `%s`: value `%s` is neither a named scalar_painter nor a numeric literal",
+					paramName, value.c_str() );
+				return nullptr;
+			}
+
+			// Scene-level camera defaults (set by `camera_defaults`
+			// chunk).  thinlens_camera consults this as fallback when
+			// a per-camera value is omitted.  Reset at the top of
+			// every parse via ClearParseState; declaration order
+			// inside the .RISEscene file matters — `camera_defaults`
+			// must precede the camera chunks that consume it (the
+			// natural reading order; same as `standard_shader` and
+			// other scene-level config blocks).
+			struct CameraDefaultsState {
+				bool has_sensor_size  = false;  double sensor_size  = 0;
+				bool has_focal_length = false;  double focal_length = 0;
+				bool has_fstop        = false;  double fstop        = 0;
+			};
+			static thread_local CameraDefaultsState s_cameraDefaults;
+
+			// Scene-level unit scale, set by `scene_options`.  Tells the
+			// parser what one "scene unit" (geometry coordinates,
+			// focus_distance, etc.) corresponds to in real-world
+			// meters.  Default 1.0 = scenes are in meters.  Camera
+			// lens-spec params (sensor_size, focal_length, shift_x/y)
+			// are entered in MM in the scene file regardless of the
+			// scene's unit scale; the camera reconciles mm-to-scene
+			// internally via this factor.  This matches Cycles /
+			// Arnold / V-Ray conventions where the user types
+			// photographic numbers (35mm, f/2.8) and the renderer
+			// scales them per scene-unit settings.
+			struct SceneOptionsState {
+				double scene_unit_meters = 1.0;   // 1 scene unit = N meters; default meters.
+				// Set by `thinlens_camera::Finalize` once it commits a
+				// camera using whatever scene_unit was current at that
+				// moment.  If `scene_options` is then declared AFTER
+				// the camera, the camera's scale is already locked in
+				// and the new value is silently ignored — we warn at
+				// parse time so a misplaced block is caught loudly
+				// rather than producing a 1000×-misscaled render.
+				bool   camera_committed  = false;
+			};
+			static thread_local SceneOptionsState s_sceneOptions;
+
+			// Tracks every camera name issued across the whole top-level load (incl. recursive `> load`/`> run`
+			// includes; reset only at top-level) so the
+			// auto-name helper below doesn't collide with names the
+			// user explicitly supplied.  Insertion is the parser's
+			// responsibility — happens inside `AllocateCameraName`,
+			// once per camera chunk, before the Add*Camera call.
+			static thread_local std::set<std::string> s_cameraNamesUsed;
+
+			// The runtime name AllocateCameraName issued for the MOST
+			// RECENTLY finalized camera chunk.  HISTORICAL: the Phase-B
+			// entity-index hook (AsciiSceneParser::OnEntityChunkFinalized,
+			// deleted with the streaming loader in Slice 6c) read this to key
+			// a NAME-OMITTED camera's SourceSpan under the SAME runtime name
+			// the editor enumerates ("default", auto-suffixed) instead of
+			// ExtractObjectName's "noname".  The SourceSpan entity index
+			// itself went in Slice 6d; today's save (SaveEngine's whole-
+			// Document SerializeCst) needs no such keying.  Still set on
+			// every AllocateCameraName call; the only remaining reader is
+			// the currently-unused public LastAllocatedCameraName accessor
+			// (retained pending deletion).  thread_local for the same reason
+			// as s_cameraNamesUsed.
+			static thread_local std::string s_lastAllocatedCameraName;
+
+			// Default name issued to an unnamed camera chunk.  The
+			// design treats `name` as optional; first unnamed camera
+			// gets "default", second "default_1", and so on.  An
+			// explicit `name "default"` followed by an unnamed camera
+			// also auto-suffixes — that's what the s_cameraNamesUsed
+			// set is for.
+			static std::string AllocateCameraNameImpl( const std::string& requested ) {
+				if( !requested.empty() ) {
+					s_cameraNamesUsed.insert( requested );
+					return requested;
+				}
+				if( s_cameraNamesUsed.find( "default" ) == s_cameraNamesUsed.end() ) {
+					s_cameraNamesUsed.insert( "default" );
+					return "default";
+				}
+				for( int i = 1; i < 1000; ++i ) {
+					char buf[64];
+					std::snprintf( buf, sizeof(buf), "default_%d", i );
+					std::string candidate = buf;
+					if( s_cameraNamesUsed.find( candidate ) == s_cameraNamesUsed.end() ) {
+						s_cameraNamesUsed.insert( candidate );
+						return candidate;
+					}
+				}
+				return std::string( "default_overflow" );
+			}
+
+			// Capturing wrapper around the (unchanged) allocator: every
+			// camera Finalize calls this, so s_lastAllocatedCameraName always
+			// holds the runtime name of the most recently finalized camera.
+			static std::string AllocateCameraName( const std::string& requested ) {
+				s_lastAllocatedCameraName = AllocateCameraNameImpl( requested );
+				return s_lastAllocatedCameraName;
+			}
+
+			// Read-only accessor: the runtime name issued to the most
+			// recently finalized camera chunk.  Its consumer -- the Phase-B
+			// entity-index hook (AsciiSceneParser::OnEntityChunkFinalized) --
+			// was deleted with the streaming loader in Slice 6c; today the
+			// only caller is the public LastAllocatedCameraName wrapper,
+			// which itself has no callers.  Retained pending deletion.
+			static const std::string& LastAllocatedCameraName() {
+				return s_lastAllocatedCameraName;
+			}
+
+			// Per-parse reset.  Sole live caller: Cst::DeriveToJob (Cst/Cst.cpp), via the public
+			// ClearChunkParserState wrapper, always with the default resetTopLevelState=true.
+			// resetTopLevelState gates the reset of state that accumulates ACROSS a top-level build to TOP-LEVEL
+			// parses only.  HISTORICAL: the deleted streaming loader (ParseAndLoadScene, Slice 6c) passed false
+			// on a nested `> load`/`> run` parse -- camera auto-naming had to stay unique manager-wide ACROSS
+			// includes, so a nested parse must not wipe the outer scene's allocated names (else a child's unnamed
+			// camera re-allocates "default" and Scene::AddCamera rejects the duplicate).  No caller passes false
+			// today; the parameter is retained pending deletion.  The other caches reset on every call.  (The
+			// legacy hal() QMC sequence lived in the deleted streaming TU and went with it -- never this TU's
+			// concern.)
+			static void ClearParseState( bool resetTopLevelState = true ) {
+				s_painterColors.clear();
+				s_cameraDefaults = CameraDefaultsState();
+				s_sceneOptions   = SceneOptionsState();
+				if( resetTopLevelState ) {
+					s_cameraNamesUsed.clear();
+					s_lastAllocatedCameraName.clear();
+				}
+			}
+
+			// Generic dispatch used by migrated chunk parsers to replace the
+			// Generic registry-driven dispatcher.  Walks the input
+			// parameter lines, validates each name against the chunk's
+			// ChunkDescriptor::parameters, and stores matched values
+			// in the bag (single-valued or repeatable depending on
+			// the descriptor's `repeatable` flag).  Unknown parameter
+			// names fail the parse — exactly the same behaviour as
+			// the legacy hand-rolled if/else chain's else branch.
+			//
+			// Because the bag is keyed by parameter name and the only
+			// gate on what gets stored is the descriptor, the
+			// descriptor IS the parser's accepted-parameter set.
+			// Drift between "what the parser parses" and "what the
+			// descriptor advertises" is structurally impossible: if
+			// the descriptor lists a parameter, the parser accepts it
+			// and Finalize sees it; if it doesn't, the parser rejects
+			// it.  Each parser's Finalize then reads typed values out
+			// of the bag and emits the corresponding pJob.AddX call.
+			// TEXT-domain numeric validation for Double/UInt-kind parameter
+			// values: every whitespace-separated token must fully consume as
+			// a number, and `nan` / `inf` spellings are rejected by TEXT
+			// before strtod ever runs.  This is deliberately not a value
+			// check (std::isfinite / !(x>0) nets) -- the build uses
+			// -ffast-math (finite-math-only), under which inf/NaN VALUE
+			// comparisons are undefined and really do get folded away (see
+			// the guilloché dial inf-seed miscompile, 2026-06-11).  Scene
+			// text is the one layer where the rejection cannot be optimized
+			// out.  Also closes String::toDouble's uninitialized return on
+			// entirely non-numeric tokens.
+			inline bool AllTokensAreFiniteNumbers( const char* sz )
+			{
+				if( !sz ) {
+					return false;
+				}
+				int tokens = 0;
+				const char* p = sz;
+				while( *p ) {
+					while( *p == ' ' || *p == '\t' ) {
+						++p;
+					}
+					if( !*p ) {
+						break;
+					}
+					const char* tok = p;
+					if( *tok == '#' ) {
+						break;	// inline trailing comment ends the value (legacy-tolerated idiom: `sensor_size 36 # mm`)
+					}
+					const char* t = ( *tok == '+' || *tok == '-' ) ? tok + 1 : tok;
+					if( t[0] == 'n' || t[0] == 'N' || t[0] == 'i' || t[0] == 'I' ) {
+						return false;	// nan / inf / infinity spellings
+					}
+					char* end = 0;
+					errno = 0;
+					strtod( tok, &end );
+					if( errno == ERANGE ) {
+						return false;	// overflow/underflow (e.g. 1e999 -> HUGE_VAL); reject at the STRING layer (value-level isfinite is unreliable under -ffast-math), mirroring the ar_layer parser
+					}
+					if( end == tok ) {
+						return false;	// token does not start as a number
+					}
+					if( *end != '\0' && *end != ' ' && *end != '\t' && *end != '#' ) {
+						return false;	// trailing garbage glued to the number
+					}
+					++tokens;
+					p = end;
+					if( *p == '#' ) {
+						break;	// number glued to a comment (`36#mm`) -- legacy sscanf accepted it
+					}
+				}
+				return tokens > 0;
+			}
+
+			inline bool DispatchChunkParameters(
+				const ChunkDescriptor& desc,
+				ParseStateBag&         bag,
+				const IAsciiChunkParser::ParamsList& params )
+			{
+				for( IAsciiChunkParser::ParamsList::const_iterator i = params.begin(); i != params.end(); ++i ) {
+					String pname;
+					String pvalue;
+					if( !string_split( *i, pname, pvalue, ' ' ) ) {
+						return false;
+					}
+
+					const ParameterDescriptor* found = 0;
+					for( std::vector<ParameterDescriptor>::const_iterator p = desc.parameters.begin(); p != desc.parameters.end(); ++p ) {
+						if( p->name == std::string(pname.c_str()) ) {
+							found = &(*p);
+							break;
+						}
+					}
+
+					if( !found ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"ChunkParser:: Failed to parse parameter name `%s` (not declared in `%s` descriptor)",
+							pname.c_str(),
+							desc.keyword.empty() ? "(unknown)" : desc.keyword.c_str() );
+						return false;
+					}
+
+					switch( found->kind ) {
+					case ValueKind::Double:
+					case ValueKind::DoubleVec3:
+					case ValueKind::DoubleVec4:
+					case ValueKind::DoubleMat4:
+					case ValueKind::UInt:
+						if( !AllTokensAreFiniteNumbers( pvalue.c_str() ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"ChunkParser:: parameter `%s` in `%s` expects finite numeric value(s); got `%s` (nan/inf and non-numeric tokens are rejected)",
+								pname.c_str(),
+								desc.keyword.empty() ? "(unknown)" : desc.keyword.c_str(),
+								pvalue.c_str() );
+							return false;
+						}
+						break;
+					default:
+						break;
+					}
+
+					if( found->repeatable ) {
+						bag.AppendRepeatable( found->name, std::string(pvalue.c_str()) );
+					} else {
+						bag.SetSingle( found->name, std::string(pvalue.c_str()) );
+					}
+				}
+				return true;
+			}
+
+			//////////////////////////////////////////
+			// Descriptor helpers — shared parameter groups used by
+			// chunk-parser Describe() implementations below.  Defined
+			// here so every chunk parser that uses them sees a complete
+			// declaration before the call site.
+			//////////////////////////////////////////
+
+			// Per-enum to_hint specialisations for the parser-internal
+			// enums whose definitions live in headers ChunkDescriptor.h
+			// shouldn't pull in.  Match the lowercase string the parser
+			// actually accepts on the input side.  The using-declaration
+			// re-introduces the namespace-RISE to_hint overloads (bool,
+			// double, unsigned int, OidnQuality, ...) so they participate
+			// in overload resolution alongside these local additions —
+			// without the using, name lookup would stop at the first
+			// match in this nested namespace and the namespace-level
+			// overloads would be hidden.
+			using RISE::to_hint;
+			static inline std::string to_hint( GuidingSamplingType v ) {
+				return v == eGuidingRIS ? "RIS" : "OneSampleMIS";
+			}
+			static inline std::string to_hint( SMSSeedingMode v ) {
+				return v == SMSSeedingMode::Uniform ? "uniform" : "snell";
+			}
+			static inline std::string to_hint( AutoIntegratorChoice v ) {
+				switch( v ) {
+					case AutoIntegratorChoice::PT:   return "pt";
+					case AutoIntegratorChoice::BDPT: return "bdpt";
+					case AutoIntegratorChoice::VCM:  return "vcm";
+					case AutoIntegratorChoice::Auto:
+					default:                         return "auto";
+				}
+			}
+
+			// Optional rasterizer params accepted only by a subset.  Hints
+			// derive from StabilityConfig defaults so this helper has one
+			// source of truth shared with the parser-side `bag.GetX()`
+			// fallbacks (which all use `if(bag.Has)` against a default-
+			// constructed StabilityConfig).
+			template<typename PushFn>
+			static void AddOptimalMISParams( PushFn P ) {
+				StabilityConfig d;
+				{ auto& p = P(); p.name = "optimal_mis";                     p.kind = ValueKind::Bool; p.description = "Enable optimal MIS";                  p.defaultValueHint = to_hint(d.optimalMIS); }
+				{ auto& p = P(); p.name = "optimal_mis_training_iterations"; p.kind = ValueKind::UInt; p.description = "Optimal-MIS training iterations";    p.defaultValueHint = to_hint(d.optimalMISTrainingIterations); }
+				{ auto& p = P(); p.name = "optimal_mis_tile_size";           p.kind = ValueKind::UInt; p.description = "Optimal-MIS tile size";              p.defaultValueHint = to_hint(d.optimalMISTileSize); }
+			}
+
+			// StabilityConfig params accepted by all non-MLT rasterizers.
+			template<typename PushFn>
+			static void AddStabilityConfigParams( PushFn P ) {
+				StabilityConfig d;
+				{ auto& p = P(); p.name = "direct_clamp";                           p.kind = ValueKind::Double; p.description = "Clamp on direct-lighting contribution (0 disables)"; p.defaultValueHint = to_hint(d.directClamp); }
+				{ auto& p = P(); p.name = "indirect_clamp";                         p.kind = ValueKind::Double; p.description = "Clamp on indirect contribution (0 disables)";         p.defaultValueHint = to_hint(d.indirectClamp); }
+				{ auto& p = P(); p.name = "rr_min_depth";                           p.kind = ValueKind::UInt;   p.description = "Min depth before Russian roulette";     p.defaultValueHint = to_hint(d.rrMinDepth); }
+				{ auto& p = P(); p.name = "rr_threshold";                           p.kind = ValueKind::Double; p.description = "Throughput threshold for RR";           p.defaultValueHint = to_hint(d.rrThreshold); }
+				{ auto& p = P(); p.name = "max_diffuse_bounce";                     p.kind = ValueKind::UInt;   p.description = "Max diffuse bounce depth (UINT_MAX = unlimited)";              p.defaultValueHint = to_hint(d.maxDiffuseBounce); }
+				{ auto& p = P(); p.name = "max_glossy_bounce";                      p.kind = ValueKind::UInt;   p.description = "Max glossy bounce depth (UINT_MAX = unlimited)";               p.defaultValueHint = to_hint(d.maxGlossyBounce); }
+				{ auto& p = P(); p.name = "max_transmission_bounce";                p.kind = ValueKind::UInt;   p.description = "Max transmission bounce depth (UINT_MAX = unlimited)";         p.defaultValueHint = to_hint(d.maxTransmissionBounce); }
+				{ auto& p = P(); p.name = "max_translucent_bounce";                 p.kind = ValueKind::UInt;   p.description = "Max translucent bounce depth (UINT_MAX = unlimited)";          p.defaultValueHint = to_hint(d.maxTranslucentBounce); }
+				{ auto& p = P(); p.name = "max_volume_bounce";                      p.kind = ValueKind::UInt;   p.description = "Max volume bounce depth";               p.defaultValueHint = to_hint(d.maxVolumeBounce); }
+				{ auto& p = P(); p.name = "light_bvh";                              p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = to_hint(d.useLightBVH); }
+			}
+			template<typename PushFn>
+			static void AddPathGuidingParams( PushFn P ) {
+				PathGuidingConfig d;
+				{ auto& p = P(); p.name = "pathguiding";                            p.kind = ValueKind::Bool;   p.description = "Enable path guiding";                   p.defaultValueHint = to_hint(d.enabled); }
+				{ auto& p = P(); p.name = "pathguiding_iterations";                 p.kind = ValueKind::UInt;   p.description = "Training iterations";                   p.defaultValueHint = to_hint(d.trainingIterations); }
+				{ auto& p = P(); p.name = "pathguiding_spp";                        p.kind = ValueKind::UInt;   p.description = "Samples per pixel during training";     p.defaultValueHint = to_hint(d.trainingSPP); }
+				{ auto& p = P(); p.name = "pathguiding_combine_training";           p.kind = ValueKind::Bool;   p.description = "Accumulate training-iteration pixels into the final image weighted by SPP (Müller 2017 §5).  Off = legacy discard behaviour."; p.defaultValueHint = to_hint(d.combineTrainingIterations); }
+				{ auto& p = P(); p.name = "pathguiding_online";                     p.kind = ValueKind::Bool;   p.description = "Training-iteration loop is the entire render; no separate final pass.  Best for low-SPP regimes (Vorba/NASG style)."; p.defaultValueHint = to_hint(d.online); }
+				{ auto& p = P(); p.name = "pathguiding_warmup_iterations";          p.kind = ValueKind::UInt;   p.description = "First N training iterations render with alpha=0 (unguided) so their pixels are unbiased even when combine/online is on.  Samples still feed the field.  Default 1 keeps the empty-field iteration's pixels clean; raise to 2 in online mode."; p.defaultValueHint = to_hint(d.warmupIterations); }
+				{ auto& p = P(); p.name = "pathguiding_alpha";                      p.kind = ValueKind::Double; p.description = "Mixing factor with BSDF sampling";      p.defaultValueHint = to_hint(d.alpha); }
+				{ auto& p = P(); p.name = "pathguiding_learned_alpha";              p.kind = ValueKind::Bool;   p.description = "Per-cell Adam-learned mixing alpha (Müller 2017 v2); modest win at SPP >= 256, neutral at low SPP";  p.defaultValueHint = to_hint(d.learnedAlpha); }
+				{ auto& p = P(); p.name = "pathguiding_max_depth";                  p.kind = ValueKind::UInt;   p.description = "Max eye-subpath depth to apply guiding (matches typical scene max_eye_depth)"; p.defaultValueHint = to_hint(d.maxGuidingDepth); }
+				{ auto& p = P(); p.name = "pathguiding_light_max_depth";            p.kind = ValueKind::UInt;   p.description = "Max light-subpath depth for guiding (BDPT only); 0 disables (separate field, additional training cost)"; p.defaultValueHint = to_hint(d.maxLightGuidingDepth); }
+				{ auto& p = P(); p.name = "pathguiding_sampling_type";              p.kind = ValueKind::Enum;   p.enumValues = {"ris","RIS","OneSampleMIS"}; p.description = "Sampling strategy (any string other than ris/RIS selects OneSampleMIS)";  p.defaultValueHint = to_hint(d.samplingType); }
+				{ auto& p = P(); p.name = "pathguiding_ris_candidates";             p.kind = ValueKind::UInt;   p.description = "RIS candidate count (only N=2 currently implemented; values >2 reserved for future)"; p.defaultValueHint = to_hint(d.risCandidates); }
+				{ auto& p = P(); p.name = "pathguiding_complete_paths";             p.kind = ValueKind::Bool;   p.description = "Enable complete-path guiding (experimental, BDPT)"; p.defaultValueHint = to_hint(d.completePathGuiding); }
+				{ auto& p = P(); p.name = "pathguiding_complete_path_strategy_selection"; p.kind = ValueKind::Bool; p.description = "Enable complete-path strategy selection (experimental)"; p.defaultValueHint = to_hint(d.completePathStrategySelection); }
+				{ auto& p = P(); p.name = "pathguiding_complete_path_strategy_samples";   p.kind = ValueKind::UInt; p.description = "Techniques to evaluate per path when strategy selection is on"; p.defaultValueHint = to_hint(d.completePathStrategySamples); }
+			}
+			template<typename PushFn>
+			static void AddAdaptiveSamplingParams( PushFn P ) {
+				AdaptiveSamplingConfig d;
+				{ auto& p = P(); p.name = "adaptive_max_samples";                   p.kind = ValueKind::UInt;   p.description = "Max adaptive samples per pixel (0 disables)";        p.defaultValueHint = to_hint(d.maxSamples); }
+				{ auto& p = P(); p.name = "adaptive_threshold";                     p.kind = ValueKind::Double; p.description = "Relative-error threshold";              p.defaultValueHint = to_hint(d.threshold); }
+				{ auto& p = P(); p.name = "show_adaptive_map";                      p.kind = ValueKind::Bool;   p.description = "Visualize the adaptive sample map";     p.defaultValueHint = to_hint(d.showMap); }
+			}
+			template<typename PushFn>
+			static void AddPixelFilterParams( PushFn P ) {
+				PixelFilterConfig d;
+				{ auto& p = P(); p.name = "pixel_sampler";                          p.kind = ValueKind::String; p.description = "Pixel sampler strategy";                p.defaultValueHint = to_hint(std::string(d.pixelSampler.c_str())); }
+				{ auto& p = P(); p.name = "pixel_sampler_param";                    p.kind = ValueKind::Double; p.description = "Sampler-specific parameter";            p.defaultValueHint = to_hint(d.pixelSamplerParam); }
+				{ auto& p = P(); p.name = "pixel_filter";                           p.kind = ValueKind::String; p.description = "Reconstruction filter";                 p.defaultValueHint = to_hint(std::string(d.filter.c_str())); }
+				{ auto& p = P(); p.name = "pixel_filter_width";                     p.kind = ValueKind::Double; p.description = "Filter width";                          p.defaultValueHint = to_hint(d.width); }
+				{ auto& p = P(); p.name = "pixel_filter_height";                    p.kind = ValueKind::Double; p.description = "Filter height";                         p.defaultValueHint = to_hint(d.height); }
+				{ auto& p = P(); p.name = "pixel_filter_paramA";                    p.kind = ValueKind::Double; p.description = "Filter paramA";                         p.defaultValueHint = to_hint(d.paramA); }
+				{ auto& p = P(); p.name = "pixel_filter_paramB";                    p.kind = ValueKind::Double; p.description = "Filter paramB";                         p.defaultValueHint = to_hint(d.paramB); }
+				{ auto& p = P(); p.name = "blue_noise_sampler";                     p.kind = ValueKind::Bool;   p.description = "Use blue-noise sampler";                p.defaultValueHint = to_hint(d.blueNoiseSampler); }
+			}
+			template<typename PushFn>
+			static void AddRadianceMapParams( PushFn P ) {
+				RadianceMapConfig d;
+				{ auto& p = P(); p.name = "radiance_map";                           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Environment radiance painter"; }
+				{ auto& p = P(); p.name = "radiance_scale";                         p.kind = ValueKind::Double; p.description = "Scale applied to radiance map";         p.defaultValueHint = to_hint(d.scale); }
+				{ auto& p = P(); p.name = "radiance_background";                    p.kind = ValueKind::Bool;   p.description = "Also use as camera background";         p.defaultValueHint = to_hint(d.isBackground); }
+				{ auto& p = P(); p.name = "radiance_orient";                        p.kind = ValueKind::DoubleVec3; p.description = "Rotation (degrees) X Y Z";           p.defaultValueHint = "0 0 0"; }
+			}
+			template<typename PushFn>
+			static void AddProgressiveParams( PushFn P ) {
+				ProgressiveConfig d;
+				{ auto& p = P(); p.name = "progressive_rendering";                  p.kind = ValueKind::Bool;   p.description = "Enable progressive rendering";          p.defaultValueHint = to_hint(d.enabled); }
+				{ auto& p = P(); p.name = "progressive_samples_per_pass";           p.kind = ValueKind::UInt;   p.description = "Samples per progressive pass";          p.defaultValueHint = to_hint(d.samplesPerPass); }
+			}
+			// Core spectral params — exactly the fields of SpectralConfig.
+			// Used by every spectral rasterizer (pixelintegratingspectral,
+			// PT/BDPT/VCM spectral, MLT spectral).
+			template<typename PushFn>
+			static void AddSpectralCoreParams( PushFn P ) {
+				SpectralConfig d;
+				{ auto& p = P(); p.name = "spectral_samples";  p.kind = ValueKind::UInt;   p.description = "Number of spectral samples per pixel";       p.defaultValueHint = to_hint(d.spectralSamples); }
+				{ auto& p = P(); p.name = "nmbegin";           p.kind = ValueKind::Double; p.description = "Start wavelength (nm)";                      p.defaultValueHint = to_hint(d.nmBegin); }
+				{ auto& p = P(); p.name = "nmend";             p.kind = ValueKind::Double; p.description = "End wavelength (nm)";                        p.defaultValueHint = to_hint(d.nmEnd); }
+				{ auto& p = P(); p.name = "num_wavelengths";   p.kind = ValueKind::UInt;   p.description = "Discrete wavelengths sampled";               p.defaultValueHint = to_hint(d.numWavelengths); }
+				{ auto& p = P(); p.name = "hwss";              p.kind = ValueKind::Bool;   p.description = "Enable hero-wavelength stratified sampling"; p.defaultValueHint = to_hint(d.useHWSS); }
+			}
+
+			// RGB-to-SPD conversion params — only the legacy
+			// pixelintegratingspectral_rasterizer accepts these.  Modern
+			// PT/BDPT/VCM/MLT spectral integrators do RGB-to-SPD via
+			// the painters pipeline.
+			template<typename PushFn>
+			static void AddSpectralRGBSpdParams( PushFn P ) {
+				{ auto& p = P(); p.name = "integrate_rgb";       p.kind = ValueKind::Bool;   p.description = "Integrate directly to RGB (skip spectral storage)"; p.defaultValueHint = "FALSE"; }
+				{ auto& p = P(); p.name = "rgb_spd";             p.kind = ValueKind::String; p.description = "RGB-to-SPD conversion type";            p.defaultValueHint = "smits"; }
+				{ auto& p = P(); p.name = "rgb_spd_wavelengths"; p.kind = ValueKind::String; p.description = "Wavelengths for custom RGB-SPD tables";  p.defaultValueHint = ""; }
+				{ auto& p = P(); p.name = "rgb_spd_r";           p.kind = ValueKind::String; p.description = "Red channel SPD samples";               p.defaultValueHint = ""; }
+				{ auto& p = P(); p.name = "rgb_spd_g";           p.kind = ValueKind::String; p.description = "Green channel SPD samples";             p.defaultValueHint = ""; }
+				{ auto& p = P(); p.name = "rgb_spd_b";           p.kind = ValueKind::String; p.description = "Blue channel SPD samples";              p.defaultValueHint = ""; }
+			}
+
+			// Backwards-compat alias — every existing call site that
+			// said AddSpectralConfigParams meant "everything spectral",
+			// which was the over-broad bundle.  Now resolves to core +
+			// RGB-SPD.  New code should use AddSpectralCoreParams /
+			// AddSpectralRGBSpdParams directly so the descriptor
+			// matches what the parser actually consumes.
+			template<typename PushFn>
+			static void AddSpectralConfigParams( PushFn P ) {
+				AddSpectralCoreParams( P );
+				AddSpectralRGBSpdParams( P );
+			}
+			// Strip surrounding ASCII double-quotes from a string value
+			// produced by `ParseStateBag::GetString`.  RISE's scene-language
+			// convention is bare identifiers for these enum-style string
+			// parameters (`pixel_filter box`, no quotes), but users
+			// frequently write the quoted form (`sms_seeding "uniform"`)
+			// because it looks more like normal config syntax — and the
+			// bag preserves quotes verbatim.  Without this normalisation,
+			// the raw `GetString` return for `sms_seeding "uniform"` is
+			// the 10-character sequence `"uniform"` (the quotes are part
+			// of the string), which never compares equal to the literal
+			// `"uniform"` (8 chars) and silently falls through to the
+			// "snell" fallback.  Found while debugging an abandoned
+			// prototype; the underlying bug is older and applies wherever
+			// an enum-as-string is parsed, but only `sms_seeding` is
+			// fixed here — extend to other sites as they're discovered
+			// or as part of a broader parser audit.  Idempotent: bare
+			// values are returned unchanged.
+			static std::string StripSurroundingQuotes( const std::string& s ) {
+				if( s.size() >= 2 && s.front() == '"' && s.back() == '"' ) {
+					return s.substr( 1, s.size() - 2 );
+				}
+				return s;
+			}
+
+			template<typename PushFn>
+			static void AddSMSConfigParams( PushFn P ) {
+				SMSConfig d;
+				{ auto& p = P(); p.name = "sms_enabled";                            p.kind = ValueKind::Bool;   p.description = "Enable Specular Manifold Sampling";     p.defaultValueHint = to_hint(d.enabled); }
+				{ auto& p = P(); p.name = "sms_max_iterations";                     p.kind = ValueKind::UInt;   p.description = "Max SMS Newton iterations";             p.defaultValueHint = to_hint(d.maxIterations); }
+				{ auto& p = P(); p.name = "sms_threshold";                          p.kind = ValueKind::Double; p.description = "SMS convergence threshold";             p.defaultValueHint = to_hint(d.threshold); }
+				{ auto& p = P(); p.name = "sms_max_chain_depth";                    p.kind = ValueKind::UInt;   p.description = "Max SMS manifold-chain depth (recommend setting to natural caustic K, typically 2)"; p.defaultValueHint = to_hint(d.maxChainDepth); }
+				{ auto& p = P(); p.name = "sms_biased";                             p.kind = ValueKind::Bool;   p.description = "Use biased SMS estimator";              p.defaultValueHint = to_hint(d.biased); }
+				{ auto& p = P(); p.name = "sms_bernoulli_trials";                   p.kind = ValueKind::UInt;   p.description = "Bernoulli trials per vertex (only used when sms_biased=FALSE)"; p.defaultValueHint = to_hint(d.bernoulliTrials); }
+				{ auto& p = P(); p.name = "sms_multi_trials";                       p.kind = ValueKind::UInt;   p.description = "Multi-trials per vertex";               p.defaultValueHint = to_hint(d.multiTrials); }
+				{ auto& p = P(); p.name = "sms_photon_count";                       p.kind = ValueKind::UInt;   p.description = "SMS photon budget (0 disables; recommend 10000 for diacaustic / mirror-chain scenes)"; p.defaultValueHint = to_hint(d.photonCount); }
+				{ auto& p = P(); p.name = "sms_two_stage";                          p.kind = ValueKind::Bool;   p.description = "Two-stage solver: smooth seed then refine on actual surface (Zeltner 2020 §5)"; p.defaultValueHint = to_hint(d.twoStage); }
+				{ auto& p = P(); p.name = "sms_seeding";                            p.kind = ValueKind::String; p.description = "SMS seeding strategy: \"snell\" (legacy Snell-trace) or \"uniform\" (Mitsuba-faithful uniform-on-shape)"; p.defaultValueHint = to_hint(d.seedingMode); }
+				{ auto& p = P(); p.name = "sms_target_bounces";                     p.kind = ValueKind::UInt;   p.description = "REQUIRED specular-vertex count per seed chain (Mitsuba `m_config.bounces` analogue).  0 = no target.  Set to natural caustic K (typically 2 for glass shells / interior lights).  Active in BOTH snell and uniform modes; recommended for uniform mode."; p.defaultValueHint = to_hint(d.targetBounces); }
+			}
+			template<typename PushFn>
+			static void AddPhotonMapGenerateCommonParams( PushFn P ) {
+				{ auto& p = P(); p.name = "num";                      p.kind = ValueKind::UInt;   p.description = "Photon count to shoot";                     p.defaultValueHint = "10000"; }
+				{ auto& p = P(); p.name = "power_scale";              p.kind = ValueKind::Double; p.description = "Photon power multiplier";                   p.defaultValueHint = "1.0"; }
+				{ auto& p = P(); p.name = "max_recursion";            p.kind = ValueKind::UInt;   p.description = "Max photon scattering depth";               p.defaultValueHint = "10"; }
+				{ auto& p = P(); p.name = "min_importance";           p.kind = ValueKind::Double; p.description = "Photon-throughput cutoff";                  p.defaultValueHint = "0.01"; }
+				{ auto& p = P(); p.name = "branch";                   p.kind = ValueKind::Bool;   p.description = "Branch at dielectric splits";               p.defaultValueHint = "TRUE"; }
+				{ auto& p = P(); p.name = "reflect";                  p.kind = ValueKind::Bool;   p.description = "Trace reflected photons";                   p.defaultValueHint = "TRUE"; }
+				{ auto& p = P(); p.name = "refract";                  p.kind = ValueKind::Bool;   p.description = "Trace refracted photons";                   p.defaultValueHint = "TRUE"; }
+				{ auto& p = P(); p.name = "shootFromNonMeshLights";   p.kind = ValueKind::Bool;   p.description = "Shoot from point / directional lights";     p.defaultValueHint = "TRUE"; }
+				{ auto& p = P(); p.name = "shootFromMeshLights";      p.kind = ValueKind::Bool;   p.description = "Shoot from area / mesh luminaires";         p.defaultValueHint = "FALSE"; }
+				{ auto& p = P(); p.name = "temporal_samples";         p.kind = ValueKind::UInt;   p.description = "Temporal samples for animated lights";      p.defaultValueHint = "1"; }
+				{ auto& p = P(); p.name = "regenerate";               p.kind = ValueKind::Bool;   p.description = "Regenerate per frame";                      p.defaultValueHint = "FALSE"; }
+			}
+			template<typename PushFn>
+			static void AddPhotonMapGatherCommonParams( PushFn P ) {
+				{ auto& p = P(); p.name = "radius";        p.kind = ValueKind::Double; p.description = "Max gather radius"; p.defaultValueHint = "0"; }
+				{ auto& p = P(); p.name = "ellipse_ratio"; p.kind = ValueKind::Double; p.description = "Flattening ratio for the gather ellipsoid"; p.defaultValueHint = "0.05"; }
+				{ auto& p = P(); p.name = "min_photons";   p.kind = ValueKind::UInt;   p.description = "Minimum photons to gather"; p.defaultValueHint = "8"; }
+				{ auto& p = P(); p.name = "max_photons";   p.kind = ValueKind::UInt;   p.description = "Maximum photons to gather"; p.defaultValueHint = "150"; }
+			}
+			template<typename PushFn>
+			static void AddCameraCommonParams( PushFn P ) {
+				{ auto& p = P(); p.name = "name";               p.kind = ValueKind::String;     p.description = "Optional identifier; defaults to \"default\" with auto-suffix on collision."; p.defaultValueHint = "default"; }
+				{ auto& p = P(); p.name = "location";           p.kind = ValueKind::DoubleVec3; p.description = "World-space position"; }
+				{ auto& p = P(); p.name = "lookat";             p.kind = ValueKind::DoubleVec3; p.description = "Look-at target point"; }
+				{ auto& p = P(); p.name = "up";                 p.kind = ValueKind::DoubleVec3; p.description = "Up vector"; p.defaultValueHint = "0 1 0"; }
+				// width / height / pixelAR moved to the `film` chunk
+				// in scene format v6 (Phase B2 of the Camera/Film/Output
+				// split).  Camera chunks are now imaging-only; the
+				// rasterizer reads grid dims from `Scene::GetFilm()`.
+				{ auto& p = P(); p.name = "exposure";           p.kind = ValueKind::Double;     p.description = "Shutter exposure time"; p.defaultValueHint = "0"; }
+				{ auto& p = P(); p.name = "scanning_rate";      p.kind = ValueKind::Double;     p.description = "Rolling-shutter rate"; p.defaultValueHint = "0"; }
+				{ auto& p = P(); p.name = "pixel_rate";         p.kind = ValueKind::Double;     p.description = "Per-pixel time offset"; p.defaultValueHint = "0"; }
+				{ auto& p = P(); p.name = "pitch";              p.kind = ValueKind::Double;     p.description = "Pitch rotation (degrees)"; }
+				{ auto& p = P(); p.name = "roll";               p.kind = ValueKind::Double;     p.description = "Roll rotation (degrees)"; }
+				{ auto& p = P(); p.name = "yaw";                p.kind = ValueKind::Double;     p.description = "Yaw rotation (degrees)"; }
+				{ auto& p = P(); p.name = "orientation";        p.kind = ValueKind::DoubleVec3; p.description = "Euler orientation (degrees)"; }
+				{ auto& p = P(); p.name = "theta";              p.kind = ValueKind::Double;     p.description = "Polar angle (radians)"; }
+				{ auto& p = P(); p.name = "phi";                p.kind = ValueKind::Double;     p.description = "Azimuthal angle (radians)"; }
+				{ auto& p = P(); p.name = "target_orientation"; p.kind = ValueKind::DoubleVec3; p.description = "Target Euler orientation"; }
+			}
+			template<typename PushFn>
+			static void AddNoisePainterCommonParams( PushFn P ) {
+				{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name";                p.defaultValueHint = "noname"; }
+				{ auto& p = P(); p.name = "colora";      p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
+				{ auto& p = P(); p.name = "colorb";      p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
+				{ auto& p = P(); p.name = "persistence"; p.kind = ValueKind::Double;     p.description = "Octave amplitude falloff";   p.defaultValueHint = "0.5"; }
+				{ auto& p = P(); p.name = "octaves";     p.kind = ValueKind::UInt;       p.description = "Number of noise octaves";    p.defaultValueHint = "4"; }
+				{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale";             p.defaultValueHint = "1 1 1"; }
+				{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "Per-axis shift";             p.defaultValueHint = "0 0 0"; }
+			}
+			//
+			// AddBaseRasterizerParams — the 7 fields every production
+			// rasterizer accepts.  Takes a `BaseRasterizerDefaults` so
+			// the per-rasterizer parser can pass its own *Defaults
+			// struct (PixelPel overrides numPixelSamples=1, MLT
+			// overrides oidnDenoise=false, etc.) and the GUI hint
+			// matches the actual `Finalize` fallback.
+			//
+			template<typename PushFn>
+			static void AddBaseRasterizerParams( PushFn P, const BaseRasterizerDefaults& d ) {
+				{ auto& p = P(); p.name = "defaultshader";                          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain for hit points"; p.defaultValueHint = to_hint(d.defaultShader); }
+				{ auto& p = P(); p.name = "samples";                                p.kind = ValueKind::UInt;   p.description = "Samples per pixel";                     p.defaultValueHint = to_hint(d.numPixelSamples); }
+				{ auto& p = P(); p.name = "show_luminaires";                        p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";        p.defaultValueHint = to_hint(d.showLuminaires); }
+				{ auto& p = P(); p.name = "oidn_denoise";                           p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                  p.defaultValueHint = to_hint(d.oidnDenoise); }
+				{ auto& p = P(); p.name = "oidn_quality";                           p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = to_hint(d.oidnQuality); }
+				{ auto& p = P(); p.name = "oidn_device";                            p.kind = ValueKind::Enum;   p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = to_hint(d.oidnDevice); }
+				{ auto& p = P(); p.name = "oidn_prefilter";                         p.kind = ValueKind::Enum;   p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = to_hint(d.oidnPrefilter); }
+			}
+
+			// Parse the `oidn_quality` enum string from a parser bag.  Unknown
+			// strings fall through to Auto with a warning so a typo doesn't
+			// silently freeze the user at HIGH on every render.
+			static inline OidnQuality ParseOidnQuality( const std::string& s )
+			{
+				if( s == "high"     ) return OidnQuality::High;
+				if( s == "balanced" ) return OidnQuality::Balanced;
+				if( s == "fast"     ) return OidnQuality::Fast;
+				if( s == "auto"     ) return OidnQuality::Auto;
+				GlobalLog()->PrintEx( eLog_Warning,
+					"Parser: unknown oidn_quality value \"%s\"; defaulting to auto",
+					s.c_str() );
+				return OidnQuality::Auto;
+			}
+
+			// Parse the `oidn_device` enum string from a parser bag.
+			// Same fallback discipline as ParseOidnQuality — typos
+			// fall through to Auto with a warning rather than silently
+			// pinning the user to one backend.
+			static inline OidnDevice ParseOidnDevice( const std::string& s )
+			{
+				if( s == "cpu"  ) return OidnDevice::CPU;
+				if( s == "gpu"  ) return OidnDevice::GPU;
+				if( s == "auto" ) return OidnDevice::Auto;
+				GlobalLog()->PrintEx( eLog_Warning,
+					"Parser: unknown oidn_device value \"%s\"; defaulting to auto",
+					s.c_str() );
+				return OidnDevice::Auto;
+			}
+
+			// Parse the `oidn_prefilter` enum string.  Default-falls
+			// through to Fast (current default behaviour) on unknown
+			// values; explicit `accurate` opts into the inline
+			// first-non-delta + 3-filter prefilter pipeline.
+			static inline OidnPrefilter ParseOidnPrefilter( const std::string& s )
+			{
+				if( s == "fast"     ) return OidnPrefilter::Fast;
+				if( s == "accurate" ) return OidnPrefilter::Accurate;
+				GlobalLog()->PrintEx( eLog_Warning,
+					"Parser: unknown oidn_prefilter value \"%s\"; defaulting to fast",
+					s.c_str() );
+				return OidnPrefilter::Fast;
+			}
+
+			//////////////////////////////////////////
+			// Painters
+			//////////////////////////////////////////
+
+			struct UniformColorPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",       "noname" );
+					double color[3] = {0,0,0};
+					bag.GetVec3( "color", color );
+					// Default colorspace is `Rec709RGB_Linear` since 2026-05.
+					// Hand-typed scalar / RGB values in scene files are
+					// physical numbers (reflectance, light tint, intensity
+					// multiplier), NOT display-referred.  Earlier default
+					// `sRGB` silently decoded `color 0.5 0.5 0.5` to linear
+					// 0.214 — a 2.4x dimming of every uniform-painter-driven
+					// albedo.  Pre-2026-05 scenes that intended sRGB-encoded
+					// display values must now declare `colorspace sRGB`
+					// explicitly; image-texture painters
+					// (png/jpeg/in-memory) keep their per-role auto colour-
+					// space (sRGB for basecolor / emissive, linear for normal
+					// / metallic-roughness / occlusion).
+					std::string color_space = bag.GetString( "colorspace", "Rec709RGB_Linear" );
+
+					PainterColor pc = { {color[0], color[1], color[2]} };
+					s_painterColors[name] = pc;
+
+					return pJob.AddUniformColorPainter( name.c_str(), color, color_space.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "uniformcolor_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Constant RGB painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";      p.kind = ValueKind::String;     p.description = "Unique name";                          p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "color";     p.kind = ValueKind::DoubleVec3; p.description = "R G B values";                         p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "colorspace";p.kind = ValueKind::String;    p.description = "Interpretation of R G B (linear default)"; p.defaultValueHint = "Rec709RGB_Linear"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct VertexColorPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",       "noname" );
+					double fallback[3]      = { 1.0, 1.0, 1.0 };
+					bag.GetVec3( "fallback", fallback );
+					// Default linear, matching uniformcolor_painter (2026-05).
+					std::string color_space = bag.GetString( "colorspace", "Rec709RGB_Linear" );
+
+					return pJob.AddVertexColorPainter( name.c_str(), fallback, color_space.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "vertex_color_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Painter that returns the per-vertex color "
+							"interpolated by the geometry at the hit point.  "
+							"Falls back to the configured color when the hit "
+							"surface has no per-vertex color data.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name";                                p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "fallback";   p.kind = ValueKind::DoubleVec3; p.description = "RGB used when no vertex color is present";   p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "colorspace"; p.kind = ValueKind::String;     p.description = "Interpretation of the fallback RGB (linear default)"; p.defaultValueHint = "Rec709RGB_Linear"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct SpectralPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name    = bag.GetString( "name",   "noname" );
+					double nmbegin      = bag.GetDouble( "nmbegin", 400.0 );
+					double nmend        = bag.GetDouble( "nmend",   700.0 );
+					double scale        = bag.GetDouble( "scale",   1.0 );
+
+					std::vector<double> wavelengths;
+					std::vector<double> amplitudes;
+
+					// Repeatable per-sample control points: "cp <nm> <amp>"
+					const std::vector<std::string>& cps = bag.GetRepeatable( "cp" );
+					for( size_t k = 0; k < cps.size(); ++k ) {
+						double nm = 0.0, amp = 0.0;
+						sscanf( cps[k].c_str(), "%lf %lf", &nm, &amp );
+						wavelengths.push_back( nm );
+						amplitudes.push_back( amp );
+					}
+
+					// Optional file-loaded spectrum (pairs)
+					if( bag.Has( "file" ) ) {
+						std::string fname = bag.GetString( "file" );
+						std::vector<std::string> fileLines;
+						if( !ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
+							return false;
+						}
+						for( const std::string& ln : fileLines ) {
+							double nm = 0.0, amp = 0.0;
+							if( sscanf( ln.c_str(), "%lf %lf", &nm, &amp ) == 2 ) {
+								wavelengths.push_back( nm );
+								amplitudes.push_back( amp );
+							} else {
+								GlobalLog()->PrintEx( eLog_Warning, "spectral file:: skipping malformed line in `%s`", fname.c_str() );
+							}
+						}
+					}
+
+					// Optional file-loaded wavelengths
+					if( bag.Has( "nmfile" ) ) {
+						std::string fname = bag.GetString( "nmfile" );
+						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
+						if( f ) {
+							char nmbuf[MAX_CHARS_PER_LINE];
+							while( fgets( nmbuf, sizeof( nmbuf ), f ) ) {
+								const char* q = nmbuf;
+								while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
+								if( *q == '\0' || *q == '#' ) continue;
+								double nm = 0.0;
+								if( sscanf( nmbuf, "%lf", &nm ) == 1 ) wavelengths.push_back( nm );
+							}
+							fclose( f );
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
+							return false;
+						}
+					}
+
+					// Optional file-loaded amplitudes
+					if( bag.Has( "ampfile" ) ) {
+						std::string fname = bag.GetString( "ampfile" );
+						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
+						if( f ) {
+							char ampbuf[MAX_CHARS_PER_LINE];
+							while( fgets( ampbuf, sizeof( ampbuf ), f ) ) {
+								const char* q = ampbuf;
+								while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
+								if( *q == '\0' || *q == '#' ) continue;
+								double amp = 0.0;
+								if( sscanf( ampbuf, "%lf", &amp ) == 1 ) amplitudes.push_back( amp );
+							}
+							fclose( f );
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
+							return false;
+						}
+					}
+
+					if( amplitudes.empty() || wavelengths.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: no samples (empty / all-comment file, no inline cp)", name.c_str() );
+						return false;
+					}
+					return pJob.AddSpectralColorPainter( name.c_str(), &amplitudes[0], &wavelengths[0], nmbegin, nmend, static_cast<unsigned int>(amplitudes.size()), scale );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "spectral_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Spectral painter defined by wavelength/amplitude samples.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";    p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "nmbegin"; p.kind = ValueKind::Double;   p.description = "Start wavelength (nm)"; p.defaultValueHint = "400"; }
+						{ auto& p = P(); p.name = "nmend";   p.kind = ValueKind::Double;   p.description = "End wavelength (nm)"; p.defaultValueHint = "700"; }
+						{ auto& p = P(); p.name = "scale";   p.kind = ValueKind::Double;   p.description = "Overall amplitude scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "cp";      p.kind = ValueKind::String;   p.repeatable = true; p.description = "Wavelength,amplitude sample (repeatable)"; }
+						{ auto& p = P(); p.name = "file";    p.kind = ValueKind::Filename; p.description = "Spectrum text file (pairs)"; }
+						{ auto& p = P(); p.name = "nmfile";  p.kind = ValueKind::Filename; p.description = "Wavelength list file"; }
+						{ auto& p = P(); p.name = "ampfile"; p.kind = ValueKind::Filename; p.description = "Amplitude list file"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//////////////////////////////////////////
+			// scalar_painter — IScalarPainter chunk (Phase 2 of
+			// IScalarPainter refactor, see docs/ISCALARPAINTER_REFACTOR.md).
+			//
+			// Dispatches on which optional fields are present:
+			//   value <s>                              → UniformScalarPainter
+			//   values <r> <g> <b>                     → RGBScalarPainter
+			//   file <path>                            → PiecewiseLinearScalarPainter (2-col file)
+			//   sellmeier <B1> <B2> <B3> <C1> <C2> <C3>→ SellmeierScalarPainter
+			//   polynomial <c0> <c1> ...               → PolynomialScalarPainter
+			//   function1d <name>                      → Function1DScalarPainter wrapping a named IFunction1D
+			//   function2d <name>                      → Function2DScalarPainter wrapping a named IFunction2D
+			//   base <name> [scale <s>]                → ScaledScalarPainter (default scale = 1.0)
+			//   multiply <a> <b>                       → MultiplyScalarPainter
+			//   texture <name> [channel R|G|B] [scale <s>] [bias <b>]
+			//                                          → TextureScalarPainter (image map
+			//                                            sampled at surface UV; out = bias +
+			//                                            scale * rawTexel; no JH-uplift)
+			//
+			// At most one of {value, values, file, sellmeier, polynomial,
+			// function1d, function2d, base, multiply, texture} may be present.
+			// Mutually exclusive — the parser raises an error otherwise.
+			//////////////////////////////////////////
+			struct ScalarPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+
+					// Tally which form is present.
+					const bool hasValue       = bag.Has( "value" );
+					const bool hasValues      = bag.Has( "values" );
+					const bool hasFile        = bag.Has( "file" );
+					const bool hasSellmeier   = bag.Has( "sellmeier" );
+					const bool hasPolynomial  = bag.Has( "polynomial" );
+					const bool hasFunction1d  = bag.Has( "function1d" );
+					const bool hasFunction2d  = bag.Has( "function2d" );
+					const bool hasBase        = bag.Has( "base" );
+					const bool hasMultiply    = bag.Has( "multiply" );
+					const bool hasTexture     = bag.Has( "texture" );
+
+					const int formCount = (int)hasValue + (int)hasValues + (int)hasFile +
+						(int)hasSellmeier + (int)hasPolynomial + (int)hasFunction1d +
+						(int)hasFunction2d + (int)hasBase + (int)hasMultiply + (int)hasTexture;
+					if( formCount == 0 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scalar_painter `%s`: missing form (one of value, values, file, sellmeier, polynomial, function1d, function2d, base, multiply, texture)",
+							name.c_str() );
+						return false;
+					}
+					if( formCount > 1 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scalar_painter `%s`: multiple forms specified (mutually exclusive)",
+							name.c_str() );
+						return false;
+					}
+
+					IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+					if( !pPriv ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scalar_painter `%s`: IJobPriv unavailable", name.c_str() );
+						return false;
+					}
+
+					IScalarPainter* painter = nullptr;
+
+					if( hasValue ) {
+						const double v = bag.GetDouble( "value" );
+						RISE_API_CreateUniformScalarPainter( &painter, Scalar( v ) );
+					}
+					else if( hasValues ) {
+						const std::string raw = bag.GetString( "values" );
+						double rgb[3] = { 0, 0, 0 };
+						const int matched = sscanf( raw.c_str(), "%lf %lf %lf",
+							&rgb[0], &rgb[1], &rgb[2] );
+						if( matched != 3 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: `values` requires three numeric components (got %d in `%s`)",
+								name.c_str(), matched, raw.c_str() );
+							return false;
+						}
+						RISE_API_CreateRGBScalarPainter( &painter,
+							Scalar( rgb[0] ), Scalar( rgb[1] ), Scalar( rgb[2] ) );
+					}
+					else if( hasFile ) {
+						std::string fname = bag.GetString( "file" );
+						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
+						if( !f ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: failed to open file `%s`",
+								name.c_str(), fname.c_str() );
+							return false;
+						}
+						std::vector<std::pair<Scalar, Scalar>> samples;
+						char spbuf[MAX_CHARS_PER_LINE];
+						while( fgets( spbuf, sizeof( spbuf ), f ) ) {
+							const char* q = spbuf;
+							while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
+							if( *q == '\0' || *q == '#' ) continue;
+							double nm = 0.0, val = 0.0;
+							if( sscanf( spbuf, "%lf %lf", &nm, &val ) == 2 ) {
+								samples.emplace_back( Scalar( nm ), Scalar( val ) );
+							}
+						}
+						fclose( f );
+						if( samples.empty() ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: file `%s` produced no samples",
+								name.c_str(), fname.c_str() );
+							return false;
+						}
+						RISE_API_CreatePiecewiseLinearScalarPainter( &painter, samples );
+					}
+					else if( hasSellmeier ) {
+						double B1=0, B2=0, B3=0, C1=0, C2=0, C3=0;
+						const std::string s = bag.GetString( "sellmeier" );
+						if( sscanf( s.c_str(), "%lf %lf %lf %lf %lf %lf",
+								&B1, &B2, &B3, &C1, &C2, &C3 ) != 6 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: sellmeier needs 6 values (B1 B2 B3 C1 C2 C3)",
+								name.c_str() );
+							return false;
+						}
+						RISE_API_CreateSellmeierScalarPainter( &painter,
+							Scalar( B1 ), Scalar( B2 ), Scalar( B3 ),
+							Scalar( C1 ), Scalar( C2 ), Scalar( C3 ) );
+					}
+					else if( hasPolynomial ) {
+						const std::string s = bag.GetString( "polynomial" );
+						std::vector<Scalar> coeffs;
+						std::istringstream iss( s );
+						double c;
+						while( iss >> c ) coeffs.push_back( Scalar( c ) );
+						// Reject trailing non-numeric content — silent
+						// truncation would let a typo produce a different
+						// polynomial than authored.  After the loop,
+						// `iss.eof()` is true iff every input token was
+						// consumed as a number; `fail()` is set when the
+						// last `>>` ran off either valid input or a bad
+						// token, which is fine if we hit EOF cleanly.
+						if( ! iss.eof() ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: polynomial has trailing non-numeric content in `%s`",
+								name.c_str(), s.c_str() );
+							return false;
+						}
+						if( coeffs.empty() ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: polynomial needs at least one coefficient",
+								name.c_str() );
+							return false;
+						}
+						RISE_API_CreatePolynomialScalarPainter( &painter, coeffs );
+					}
+					else if( hasFunction1d ) {
+						const std::string ref = bag.GetString( "function1d" );
+						IFunction1D* f = pPriv->GetFunction1Ds()->GetItem( ref.c_str() );
+						if( !f ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: function1d `%s` not found",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						RISE_API_CreateFunction1DScalarPainter( &painter, f );
+					}
+					else if( hasFunction2d ) {
+						const std::string ref = bag.GetString( "function2d" );
+						IFunction2D* f = pPriv->GetFunction2Ds()->GetItem( ref.c_str() );
+						if( !f ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: function2d `%s` not found",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						const double scale = bag.GetDouble( "scale", 1.0 );
+						const double bias  = bag.GetDouble( "bias",  0.0 );
+						RISE_API_CreateFunction2DScalarPainterAffine( &painter, f, scale, bias );
+					}
+					else if( hasBase ) {
+						const std::string ref = bag.GetString( "base" );
+						const double scale = bag.GetDouble( "scale", 1.0 );
+						IScalarPainter* base = pPriv->GetScalarPainters()->GetItem( ref.c_str() );
+						if( !base ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: base scalar_painter `%s` not found",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						RISE_API_CreateScaledScalarPainter( &painter, base, Scalar( scale ) );
+					}
+					else if( hasMultiply ) {
+						const std::string s = bag.GetString( "multiply" );
+						char aname[256] = {0}, bname[256] = {0};
+						if( sscanf( s.c_str(), "%255s %255s", aname, bname ) != 2 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: multiply needs two scalar_painter names",
+								name.c_str() );
+							return false;
+						}
+						IScalarPainter* a = pPriv->GetScalarPainters()->GetItem( aname );
+						IScalarPainter* b = pPriv->GetScalarPainters()->GetItem( bname );
+						if( !a || !b ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: multiply operands `%s` / `%s` not found",
+								name.c_str(), aname, bname );
+							return false;
+						}
+						RISE_API_CreateMultiplyScalarPainter( &painter, a, b );
+					}
+					else if( hasTexture ) {
+						// Spatially-varying physical scalar driven by a 2D image
+						// map sampled at the surface UV.  We resolve a previously
+						// declared image painter (png_painter / jpg_painter / ...),
+						// pull its raster accessor, and sample the chosen channel
+						// DIRECTLY (no Jakob-Hanika uplift, no colourspace
+						// conversion) via TextureScalarPainter.  This is the
+						// physical-scalar analogue of binding a png_painter to a
+						// colour slot, and is the supported way to map an
+						// IScalarPainter slot (e.g. thin-film film_thickness) from
+						// an image.  out = bias + scale * rawTexel, rawTexel in [0,1].
+						const std::string ref = bag.GetString( "texture" );
+						IPainter* imgPainter = pPriv->GetPainters()->GetItem( ref.c_str() );
+						if( !imgPainter ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: texture `%s` not found (declare a png_painter / jpg_painter / hdr_painter / exr_painter / tiff_painter with that name first)",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						Implementation::TexturePainter* tex =
+							dynamic_cast<Implementation::TexturePainter*>( imgPainter );
+						if( !tex ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: texture `%s` is not an image painter (only raster-backed painters such as png_painter / jpg_painter / hdr_painter / exr_painter / tiff_painter can be sampled spatially)",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						IRasterImageAccessor* pRIA = tex->GetRasterImageAccessor();
+						if( !pRIA ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: texture `%s` has no raster accessor",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						// channel select: R (default) / G / B.
+						unsigned int channel = 0;
+						if( bag.Has( "channel" ) ) {
+							const std::string chs = bag.GetString( "channel" );
+							if(      chs == "R" ) channel = 0;
+							else if( chs == "G" ) channel = 1;
+							else if( chs == "B" ) channel = 2;
+							else {
+								GlobalLog()->PrintEx( eLog_Error,
+									"scalar_painter `%s`: unknown channel `%s` (expected R, G, or B)",
+									name.c_str(), chs.c_str() );
+								return false;
+							}
+						}
+						const double scale = bag.GetDouble( "scale", 1.0 );
+						const double bias  = bag.GetDouble( "bias",  0.0 );
+						RISE_API_CreateTextureScalarPainterAffine(
+							&painter, pRIA, channel, Scalar( scale ), Scalar( bias ) );
+					}
+
+					if( !painter ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scalar_painter `%s`: construction failed", name.c_str() );
+						return false;
+					}
+
+					pPriv->GetScalarPainters()->AddItem( painter, name.c_str() );
+					painter->release();
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "scalar_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Physical-scalar painter (no colorspace).  Used for IOR, scattering, roughness, etc.  Pick exactly one form via the optional fields below.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "value";      p.kind = ValueKind::Double;     p.description = "Single scalar value (form 1: UniformScalarPainter)"; }
+						{ auto& p = P(); p.name = "values";     p.kind = ValueKind::DoubleVec3; p.description = "Per-channel (R G B) scalars (form 2: RGBScalarPainter)"; }
+						{ auto& p = P(); p.name = "file";       p.kind = ValueKind::Filename;   p.description = "2-column (nm value) file (form 3: PiecewiseLinearScalarPainter)"; }
+						{ auto& p = P(); p.name = "sellmeier";  p.kind = ValueKind::String;     p.description = "Sellmeier coefficients `B1 B2 B3 C1 C2 C3` (form 4: SellmeierScalarPainter)"; }
+						{ auto& p = P(); p.name = "polynomial"; p.kind = ValueKind::String;     p.description = "Polynomial coefficients `c0 c1 c2 ...` (form 5: PolynomialScalarPainter)"; }
+						{ auto& p = P(); p.name = "function1d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction1D to wrap (form 6: Function1DScalarPainter)"; }
+						{ auto& p = P(); p.name = "function2d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction2D to wrap (form 7: Function2DScalarPainter)"; }
+						{ auto& p = P(); p.name = "base";       p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Base scalar_painter for ScaledScalarPainter (form 8)"; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;     p.description = "Scale factor (companion to `base`, `texture`, and `function2d`)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "multiply";   p.kind = ValueKind::String;     p.tupleKinds = {ValueKind::Reference, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Two scalar_painter names `a b` (form 9: MultiplyScalarPainter)"; }
+						{ auto& p = P(); p.name = "texture";    p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named raster image painter (png_painter / jpg_painter / hdr_painter / exr_painter / tiff_painter) to sample spatially at the surface UV (form 10: TextureScalarPainter; no JH-uplift / colourspace conversion)"; }
+						{ auto& p = P(); p.name = "channel";    p.kind = ValueKind::Enum;       p.enumValues = {"R","G","B"}; p.description = "Which texture channel sources the scalar (companion to `texture`)"; p.defaultValueHint = "R"; }
+						{ auto& p = P(); p.name = "bias";       p.kind = ValueKind::Double;     p.description = "Additive offset for the `texture` / `function2d` forms: out = bias + scale * raw (raw in [0,1])"; p.defaultValueHint = "0.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// Shared helper: parse a wrap-mode chunk parameter (U or V axis)
+			// into RISE's char encoding (0 = clamp, 1 = repeat, 2 = mirrored
+			// repeat).  Accepted strings are exactly the three values the
+			// matching ChunkDescriptor advertises (`clamp`, `repeat`,
+			// `mirrored_repeat`) — no aliases, so external tooling that
+			// reads the descriptor's enumValues to drive autocomplete /
+			// validation sees the same set the parser accepts.
+			//
+			// Returns 0 (clamp) when the parameter is absent so existing
+			// scenes that didn't specify wrap render byte-identically to
+			// the pre-2026-05-01 clamp-to-edge default.  Logs and returns
+			// false on an unrecognised string so users see the typo
+			// instead of getting silent clamp.  Used by all 5 texture-
+			// painter chunks (png / jpg / hdr / exr / tiff) so the surface
+			// stays consistent.
+			static inline bool ParseWrapModeParam(
+				const ParseStateBag& bag,
+				const char*          paramName,
+				char&                outWrap )
+			{
+				outWrap = 0;	// eRasterWrap_ClampToEdge (legacy default)
+				if( !bag.Has( paramName ) ) return true;
+				std::string w = bag.GetString( paramName );
+				if(      w == "clamp" )            outWrap = 0;
+				else if( w == "repeat" )           outWrap = 1;
+				else if( w == "mirrored_repeat" )  outWrap = 2;
+				else {
+					GlobalLog()->PrintEx( eLog_Error,
+						"ChunkParser:: Unknown wrap mode `%s` on parameter `%s` "
+						"(expected one of: clamp, repeat, mirrored_repeat)",
+						w.c_str(), paramName );
+					return false;
+				}
+				return true;
+			}
+
+			// Adds the wrap_s / wrap_t parameter descriptors to a
+			// ChunkDescriptor so every painter chunk advertises the same
+			// names + accepted values.  Default value hint is "clamp" to
+			// match the runtime default + preserve the legacy contract for
+			// scenes that don't set wrap.
+			static inline void AddWrapModeParams( ChunkDescriptor& cd )
+			{
+				// Matches the per-chunk pattern: emplace_back() then take
+				// a reference via .back().  Older codebases without
+				// C++17's emplace_back-returns-reference compile cleanly
+				// this way.
+				{ cd.parameters.emplace_back(); ParameterDescriptor& p = cd.parameters.back(); p.name = "wrap_s"; p.kind = ValueKind::Enum; p.enumValues = {"clamp","repeat","mirrored_repeat"}; p.description = "Address-wrap mode for the U axis (S in glTF terminology) when sampling outside [0,1].  `repeat` matches glTF's default and lets tiled atlases (brick / wood / plaster, NewSponza floor) sample correctly across the full image; `clamp` saturates at the edge texel (legacy / default for non-glTF scenes); `mirrored_repeat` reflects across each integer crossing for seam-free alternating tiles."; p.defaultValueHint = "clamp"; }
+				{ cd.parameters.emplace_back(); ParameterDescriptor& p = cd.parameters.back(); p.name = "wrap_t"; p.kind = ValueKind::Enum; p.enumValues = {"clamp","repeat","mirrored_repeat"}; p.description = "Address-wrap mode for the V axis (T in glTF terminology); see wrap_s for semantics."; p.defaultValueHint = "clamp"; }
+			}
+
+			// Shared helper: parse a filter_type chunk parameter into RISE's
+			// char encoding for RasterImageAccessorFromChar (0 = nearest-
+			// neighbour, 1 = bilinear, 2 = Catmull-Rom bicubic, 3 = uniform
+			// B-spline bicubic) -- the four filter modes the runtime actually
+			// implements.  The user-facing names are the lowercase forms the
+			// matching ChunkDescriptor advertises; the PascalCase forms (NNB /
+			// Bilinear / CatmullRom / UniformBSpline) are kept as backward-
+			// compatible aliases because they were the ONLY strings the pre-
+			// reconciliation Finalize accepted, so every pre-existing scene
+			// that successfully set filter_type uses them.
+			//
+			// Returns 1 (bilinear) when the parameter is absent so scenes that
+			// don't specify a filter render byte-identically to the historical
+			// default.  Logs and returns false on an unrecognised string so
+			// authors see the typo instead of a silent fallback.  Used by all 5
+			// texture-painter chunks (png / jpg / hdr / exr / tiff) so the
+			// surface stays consistent and descriptor/Finalize cannot drift.
+			static inline bool ParseFilterTypeParam(
+				const ParseStateBag& bag,
+				char&                outFilter )
+			{
+				outFilter = 1;	// bilinear (historical default)
+				if( !bag.Has( "filter_type" ) ) return true;
+				std::string ft = bag.GetString( "filter_type" );
+				if(      ft == "nearest"       || ft == "NNB" )            outFilter = 0;
+				else if( ft == "bilinear"      || ft == "Bilinear" )       outFilter = 1;
+				else if( ft == "catmull-rom"   || ft == "CatmullRom" )     outFilter = 2;
+				else if( ft == "cubic-bspline" || ft == "UniformBSpline" ) outFilter = 3;
+				else {
+					GlobalLog()->PrintEx( eLog_Error,
+						"ChunkParser:: Unknown filter type `%s` "
+						"(expected one of: nearest, bilinear, catmull-rom, cubic-bspline)",
+						ft.c_str() );
+					return false;
+				}
+				return true;
+			}
+
+			// Adds the filter_type parameter descriptor to a ChunkDescriptor so
+			// every image-painter chunk advertises the same names + accepted
+			// values.  Only the four filter modes RasterImageAccessorFromChar
+			// actually implements are advertised -- the earlier {box, gaussian}
+			// entries had no backing accessor and hard-failed in Finalize,
+			// making them un-authorable.  Mirror of AddWrapModeParams.
+			static inline void AddFilterTypeParam( ChunkDescriptor& cd )
+			{
+				cd.parameters.emplace_back();
+				ParameterDescriptor& p = cd.parameters.back();
+				p.name = "filter_type";
+				p.kind = ValueKind::Enum;
+				p.enumValues = {"nearest","bilinear","catmull-rom","cubic-bspline"};
+				p.description = "Texture filter";
+				p.defaultValueHint = "bilinear";
+			}
+
+			struct PngPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string filename = bag.GetString( "file",     "none" );
+					bool lowmemory       = bag.GetBool(   "lowmemory", false );
+					double scale[3] = {1,1,1};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+
+					char color_space = 1;
+					if( bag.Has( "color_space" ) ) {
+						std::string cs = bag.GetString( "color_space" );
+						if(      cs == "Rec709RGB_Linear" ) color_space = 0;
+						else if( cs == "sRGB" )             color_space = 1;
+						else if( cs == "ROMMRGB_Linear" )   color_space = 2;
+						else if( cs == "ProPhotoRGB" )      color_space = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown color space `%s`", cs.c_str() );
+							return false;
+						}
+					}
+
+					char filter_type = 1;
+					if( !ParseFilterTypeParam( bag, filter_type ) ) return false;
+
+					char wrap_s = 0, wrap_t = 0;
+					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
+					if( !ParseWrapModeParam( bag, "wrap_t", wrap_t ) ) return false;
+
+					return pJob.AddPNGTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift, wrap_s, wrap_t );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "png_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Texture painter that loads a PNG image.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "PNG file path"; }
+						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Source colour space"; p.defaultValueHint = "sRGB"; }
+						AddFilterTypeParam( cd );
+						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint (8-bit in-core)"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale multipliers"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B additive shift"; p.defaultValueHint = "0 0 0"; }
+						AddWrapModeParams( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct JpegPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string filename = bag.GetString( "file",     "none" );
+					bool lowmemory       = bag.GetBool(   "lowmemory", false );
+					double scale[3] = {1,1,1};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+
+					char color_space = 1;
+					if( bag.Has( "color_space" ) ) {
+						std::string cs = bag.GetString( "color_space" );
+						if(      cs == "Rec709RGB_Linear" ) color_space = 0;
+						else if( cs == "sRGB" )             color_space = 1;
+						else if( cs == "ROMMRGB_Linear" )   color_space = 2;
+						else if( cs == "ProPhotoRGB" )      color_space = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown color space `%s`", cs.c_str() );
+							return false;
+						}
+					}
+
+					char filter_type = 1;
+					if( !ParseFilterTypeParam( bag, filter_type ) ) return false;
+
+					char wrap_s = 0, wrap_t = 0;
+					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
+					if( !ParseWrapModeParam( bag, "wrap_t", wrap_t ) ) return false;
+
+					return pJob.AddJPEGTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift, wrap_s, wrap_t );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "jpg_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Texture painter that loads a JPEG image.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "JPEG file path"; }
+						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Source colour space"; p.defaultValueHint = "sRGB"; }
+						AddFilterTypeParam( cd );
+						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint (8-bit in-core)"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale multipliers"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B additive shift"; p.defaultValueHint = "0 0 0"; }
+						AddWrapModeParams( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct HdrPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string filename = bag.GetString( "file",     "none" );
+					bool lowmemory       = bag.GetBool(   "lowmemory", false );
+					double scale[3] = {1,1,1};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+
+					char filter_type = 1;
+					if( !ParseFilterTypeParam( bag, filter_type ) ) return false;
+
+					char wrap_s = 0, wrap_t = 0;
+					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
+					if( !ParseWrapModeParam( bag, "wrap_t", wrap_t ) ) return false;
+
+					return pJob.AddHDRTexturePainter( name.c_str(), filename.c_str(), filter_type, lowmemory, scale, shift, wrap_s, wrap_t );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "hdr_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Texture painter that loads a Radiance HDR image.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "HDR file path"; }
+						AddFilterTypeParam( cd );
+						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B shift"; p.defaultValueHint = "0 0 0"; }
+						AddWrapModeParams( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ExrPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string filename = bag.GetString( "file",     "none" );
+					bool lowmemory       = bag.GetBool(   "lowmemory", false );
+					double scale[3] = {1,1,1};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+
+					char color_space = 0;
+					if( bag.Has( "color_space" ) ) {
+						std::string cs = bag.GetString( "color_space" );
+						if(      cs == "Rec709RGB_Linear" ) color_space = 0;
+						else if( cs == "sRGB" )             color_space = 1;
+						else if( cs == "ROMMRGB_Linear" )   color_space = 2;
+						else if( cs == "ProPhotoRGB" )      color_space = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown color space `%s`", cs.c_str() );
+							return false;
+						}
+					}
+
+					char filter_type = 1;
+					if( !ParseFilterTypeParam( bag, filter_type ) ) return false;
+
+					char wrap_s = 0, wrap_t = 0;
+					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
+					if( !ParseWrapModeParam( bag, "wrap_t", wrap_t ) ) return false;
+
+					return pJob.AddEXRTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift, wrap_s, wrap_t );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "exr_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Texture painter that loads an OpenEXR image.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "EXR file path"; }
+						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Source colour space"; p.defaultValueHint = "Rec709RGB_Linear"; }
+						AddFilterTypeParam( cd );
+						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B shift"; p.defaultValueHint = "0 0 0"; }
+						AddWrapModeParams( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct TiffPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string filename = bag.GetString( "file",     "none" );
+					bool lowmemory       = bag.GetBool(   "lowmemory", false );
+					double scale[3] = {1,1,1};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+
+					char color_space = 1;
+					if( bag.Has( "color_space" ) ) {
+						std::string cs = bag.GetString( "color_space" );
+						if(      cs == "Rec709RGB_Linear" ) color_space = 0;
+						else if( cs == "sRGB" )             color_space = 1;
+						else if( cs == "ROMMRGB_Linear" )   color_space = 2;
+						else if( cs == "ProPhotoRGB" )      color_space = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown color space `%s`", cs.c_str() );
+							return false;
+						}
+					}
+
+					char filter_type = 1;
+					if( !ParseFilterTypeParam( bag, filter_type ) ) return false;
+
+					char wrap_s = 0, wrap_t = 0;
+					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
+					if( !ParseWrapModeParam( bag, "wrap_t", wrap_t ) ) return false;
+
+					return pJob.AddTIFFTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift, wrap_s, wrap_t );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "tiff_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Texture painter that loads a TIFF image.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "TIFF file path"; }
+						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Source colour space"; p.defaultValueHint = "sRGB"; }
+						AddFilterTypeParam( cd );
+						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B shift"; p.defaultValueHint = "0 0 0"; }
+						AddWrapModeParams( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+
+			struct CheckerPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string colora = bag.GetString( "colora", "none" );
+					std::string colorb = bag.GetString( "colorb", "none" );
+					double size        = bag.GetDouble( "size",   1.0 );
+
+					return pJob.AddCheckerPainter( name.c_str(), size, colora.c_str(), colorb.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "checker_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Two-colour checkerboard painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour (painter)"; }
+						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour (painter)"; }
+						{ auto& p = P(); p.name = "size";   p.kind = ValueKind::Double;    p.description = "Checker cell size"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct LinesPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name",     "noname" );
+					std::string colora = bag.GetString( "colora",   "none" );
+					std::string colorb = bag.GetString( "colorb",   "none" );
+					double size        = bag.GetDouble( "size",     1.0 );
+					bool vertical      = bag.GetBool(   "vertical", false );
+
+					return pJob.AddLinesPainter( name.c_str(), size, colora.c_str(), colorb.c_str(), vertical );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "lines_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Two-colour stripe painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour (painter)"; }
+						{ auto& p = P(); p.name = "colorb";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour (painter)"; }
+						{ auto& p = P(); p.name = "size";     p.kind = ValueKind::Double;    p.description = "Stripe width"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "vertical"; p.kind = ValueKind::Bool;      p.description = "Vertical (vs horizontal) stripes"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct MandelbrotPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string colora = bag.GetString( "colora", "none" );
+					std::string colorb = bag.GetString( "colorb", "none" );
+					double xstart      = bag.GetDouble( "xstart", 0.0 );
+					double xend        = bag.GetDouble( "xend",   1.0 );
+					double ystart      = bag.GetDouble( "ystart", 0.0 );
+					double yend        = bag.GetDouble( "yend",   1.0 );
+					// Legacy parser used toUInt() on the exponent value
+					// despite holding it in a double — preserve the
+					// truncation so backwards behaviour is identical.
+					double exponent    = 12.0;
+					if( bag.Has( "exponent" ) ) exponent = static_cast<double>( bag.GetUInt( "exponent" ) );
+
+					return pJob.AddMandelbrotFractalPainter( name.c_str(), colora.c_str(), colorb.c_str(), xstart, xend, ystart, yend, exponent );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "mandelbrot_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Procedural Mandelbrot-fractal painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Inside-set colour"; }
+						{ auto& p = P(); p.name = "colorb";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Outside-set colour"; }
+						{ auto& p = P(); p.name = "xstart";   p.kind = ValueKind::Double;    p.description = "Real-axis start"; p.defaultValueHint = "-2.0"; }
+						{ auto& p = P(); p.name = "xend";     p.kind = ValueKind::Double;    p.description = "Real-axis end";   p.defaultValueHint = "2.0"; }
+						{ auto& p = P(); p.name = "ystart";   p.kind = ValueKind::Double;    p.description = "Imag-axis start"; p.defaultValueHint = "-2.0"; }
+						{ auto& p = P(); p.name = "yend";     p.kind = ValueKind::Double;    p.description = "Imag-axis end";   p.defaultValueHint = "2.0"; }
+						{ auto& p = P(); p.name = "exponent"; p.kind = ValueKind::Double;    p.description = "Iteration exponent"; p.defaultValueHint = "2.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct Perlin2DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string colora      = bag.GetString( "colora",      "none" );
+					std::string colorb      = bag.GetString( "colorb",      "none" );
+					double persistence      = bag.GetDouble( "persistence", 1.0 );
+					unsigned int octaves    = bag.GetUInt(   "octaves",     4 );
+					double scale[2] = {1.0,1.0};
+					double shift[2] = {0,0};
+					if( bag.Has( "scale" ) ) sscanf( bag.GetString( "scale" ).c_str(), "%lf %lf", &scale[0], &scale[1] );
+					if( bag.Has( "shift" ) ) sscanf( bag.GetString( "shift" ).c_str(), "%lf %lf", &shift[0], &shift[1] );
+
+					return pJob.AddPerlin2DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "perlin2d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "2D Perlin noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddNoisePainterCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ControlledSmoothness2DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string colora      = bag.GetString( "colora",      "none" );
+					std::string colorb      = bag.GetString( "colorb",      "none" );
+					double radius           = bag.GetDouble( "radius",      0.5 );
+					double amplitude        = bag.GetDouble( "amplitude",   1.0 );
+					unsigned int mode       = bag.GetUInt(   "smoothness",  3 );	// default: cubic Hermite
+					double center[2] = { 0.5, 0.5 };
+					if( bag.Has( "center" ) ) sscanf( bag.GetString( "center" ).c_str(), "%lf %lf", &center[0], &center[1] );
+
+					return pJob.AddControlledSmoothness2DPainter(
+						name.c_str(), colora.c_str(), colorb.c_str(),
+						center[0], center[1], radius, amplitude, mode );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "controlled_smoothness2d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Test painter: a single radial bump with controllable boundary smoothness order.  Use as a `displaced_geometry` displacement to isolate per-edge C¹ jump effects on SMS Newton convergence.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Low/zero-end color"; }
+						{ auto& p = P(); p.name = "colorb";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "High/peak-end color"; }
+						{ auto& p = P(); p.name = "center";     p.kind = ValueKind::DoubleVec3;p.description = "Bump center in UV space (only first two components used)"; p.defaultValueHint = "0.5 0.5"; }
+						{ auto& p = P(); p.name = "radius";     p.kind = ValueKind::Double;    p.description = "Bump radius in UV space"; p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "amplitude";  p.kind = ValueKind::Double;    p.description = "Peak height"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "smoothness"; p.kind = ValueKind::UInt;      p.description = "Boundary smoothness order: 0=Heaviside, 1=Tent, 2=Quadratic, 3=Cubic, 5=Quintic, 99=Gaussian"; p.defaultValueHint = "3"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct GerstnerWavePainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name           = bag.GetString( "name",               "noname" );
+					std::string colora         = bag.GetString( "colora",             "none" );
+					std::string colorb         = bag.GetString( "colorb",             "none" );
+					unsigned int numWaves      = bag.GetUInt(   "num_waves",          12 );
+					double medianWavelength    = bag.GetDouble( "median_wavelength",  0.25 );
+					double wavelengthRange     = bag.GetDouble( "wavelength_range",   3.0 );
+					double medianAmplitude     = bag.GetDouble( "median_amplitude",   0.05 );
+					double amplitudePower      = bag.GetDouble( "amplitude_power",    1.0 );
+					double directionalSpread   = bag.GetDouble( "directional_spread", 0.5 );
+					double dispersionSpeed     = bag.GetDouble( "dispersion_speed",   1.0 );
+					unsigned int seed          = bag.GetUInt(   "seed",               42 );
+					double time                = bag.GetDouble( "time",               0.0 );
+					double windDir[2] = {1.0, 0.0};
+					if( bag.Has( "wind_dir" ) ) sscanf( bag.GetString( "wind_dir" ).c_str(), "%lf %lf", &windDir[0], &windDir[1] );
+
+					return pJob.AddGerstnerWavePainter(
+						name.c_str(),
+						colora.c_str(), colorb.c_str(),
+						numWaves,
+						medianWavelength, wavelengthRange,
+						medianAmplitude, amplitudePower,
+						windDir,
+						directionalSpread,
+						dispersionSpeed,
+						seed,
+						time );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "gerstnerwave_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Procedural ocean-wave painter (Gerstner waves).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";                p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora";              p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Trough colour"; }
+						{ auto& p = P(); p.name = "colorb";              p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Crest colour"; }
+						{ auto& p = P(); p.name = "num_waves";           p.kind = ValueKind::UInt;      p.description = "Number of wave components"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "median_wavelength";   p.kind = ValueKind::Double;    p.description = "Median wavelength"; }
+						{ auto& p = P(); p.name = "wavelength_range";    p.kind = ValueKind::Double;    p.description = "Wavelength spread"; }
+						{ auto& p = P(); p.name = "median_amplitude";    p.kind = ValueKind::Double;    p.description = "Median amplitude"; }
+						{ auto& p = P(); p.name = "amplitude_power";     p.kind = ValueKind::Double;    p.description = "Amplitude falloff exponent"; }
+						{ auto& p = P(); p.name = "wind_dir";            p.kind = ValueKind::DoubleVec3;p.description = "Wind direction"; }
+						{ auto& p = P(); p.name = "directional_spread";  p.kind = ValueKind::Double;    p.description = "Angular spread"; }
+						{ auto& p = P(); p.name = "dispersion_speed";    p.kind = ValueKind::Double;    p.description = "Dispersion coefficient"; }
+						{ auto& p = P(); p.name = "seed";                p.kind = ValueKind::UInt;      p.description = "RNG seed"; }
+						{ auto& p = P(); p.name = "time";                p.kind = ValueKind::Double;    p.description = "Time variable"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PolynomialFunction2DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				// Map user-facing type string → API integer.  Unknown
+				// strings fall through to 0 (radial_bump) with a
+				// warning, matching the API layer's guard.
+				static unsigned int ParseType( const std::string& s )
+				{
+					if( s == "radial_bump" )       return 0;
+					if( s == "monomial" )          return 1;
+					if( s == "paraboloid" )        return 2;
+					if( s == "hyperbolic_saddle" ) return 3;
+					if( s == "monkey_saddle" )     return 4;
+					if( s == "bivariate" )         return 5;
+					GlobalLog()->PrintEx( eLog_Warning,
+						"polynomial_function2d_painter: unknown type '%s'; defaulting to 'radial_bump'",
+						s.c_str() );
+					return 0;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name      = bag.GetString( "name",      "noname" );
+					std::string colora    = bag.GetString( "colora",    "none" );
+					std::string colorb    = bag.GetString( "colorb",    "none" );
+					std::string typeStr   = bag.GetString( "type",      "radial_bump" );
+					double amplitude      = bag.GetDouble( "amplitude", 1.0 );
+					unsigned int degree   = bag.GetUInt(   "degree",    2 );
+					unsigned int powerX   = bag.GetUInt(   "power_x",   0 );
+					unsigned int powerY   = bag.GetUInt(   "power_y",   0 );
+
+					// Defaults: centre and scale map [0,1]² UV → [-1, 1]²,
+					// the natural domain for unit-form polynomials.
+					double center[2] = { 0.5, 0.5 };
+					double scale[2]  = { 0.5, 0.5 };
+					if( bag.Has( "center" ) ) sscanf( bag.GetString( "center" ).c_str(), "%lf %lf", &center[0], &center[1] );
+					if( bag.Has( "scale" )  ) sscanf( bag.GetString( "scale"  ).c_str(), "%lf %lf", &scale[0],  &scale[1]  );
+
+					// Bivariate coefficients: space-separated doubles.
+					// Token-by-token parse so the user may supply any
+					// length, with implicit zero-fill / clipping per
+					// the API contract.
+					std::vector<double> coeffs;
+					if( bag.Has( "coefficients" ) ) {
+						const std::string& s = bag.GetString( "coefficients" );
+						std::istringstream iss( s );
+						double v;
+						while( iss >> v ) {
+							coeffs.push_back( v );
+						}
+					}
+
+					const unsigned int polynomialType = ParseType( typeStr );
+
+					return pJob.AddPolynomialFunction2DPainter(
+						name.c_str(),
+						colora.c_str(), colorb.c_str(),
+						polynomialType,
+						center, scale,
+						amplitude,
+						degree, powerX, powerY,
+						coeffs.empty() ? nullptr : coeffs.data(),
+						static_cast<unsigned int>( coeffs.size() ) );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "polynomial_function2d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Polynomial-based Function2D painter.  Evaluates a polynomial in normalised coords ((u−center.u)/scale.u, (v−center.v)/scale.v); the `type` selects one of: radial_bump (compact-support bump), monomial (single term x^px·y^py), paraboloid, hyperbolic_saddle, monkey_saddle, or bivariate (general).  Drives `displaced_geometry` and texture materials alike.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Zero/low-end colour"; }
+						{ auto& p = P(); p.name = "colorb";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Positive/peak-end colour"; }
+						{ auto& p = P(); p.name = "type";         p.kind = ValueKind::String;    p.description = "Polynomial family: radial_bump | monomial | paraboloid | hyperbolic_saddle | monkey_saddle | bivariate"; p.defaultValueHint = "radial_bump"; }
+						{ auto& p = P(); p.name = "center";       p.kind = ValueKind::DoubleVec3;p.description = "(U, V) origin for the normalised coordinates"; p.defaultValueHint = "0.5 0.5"; }
+						{ auto& p = P(); p.name = "scale";        p.kind = ValueKind::DoubleVec3;p.description = "(U, V) divisor: x = (u − center.u)/scale.u"; p.defaultValueHint = "0.5 0.5"; }
+						{ auto& p = P(); p.name = "amplitude";    p.kind = ValueKind::Double;    p.description = "Global multiplier"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "degree";       p.kind = ValueKind::UInt;      p.description = "Degree for radial_bump (smoothness exponent) and bivariate (max total degree)"; p.defaultValueHint = "2"; }
+						{ auto& p = P(); p.name = "power_x";      p.kind = ValueKind::UInt;      p.description = "x exponent for monomial type"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "power_y";      p.kind = ValueKind::UInt;      p.description = "y exponent for monomial type"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "coefficients"; p.kind = ValueKind::String;    p.description = "Bivariate coefficients, space-separated, row-major triangular order: a00, a10, a01, a20, a11, a02, a30, a21, a12, a03, ... (a_ij = coefficient of x^i y^j).  Length up to (degree+1)(degree+2)/2; shorter is OK (rest implicitly zero)."; p.defaultValueHint = ""; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct CompositeFunction2DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				// Map the user-facing op string to the integer the API
+				// expects.  Unknown values resolve to 0 (Sum) with a
+				// warning at Finalize time; the API layer also guards.
+				static unsigned int ParseOp( const std::string& s )
+				{
+					if( s == "sum" )        return 0;
+					if( s == "product" )    return 1;
+					if( s == "lerp" )       return 2;
+					if( s == "max" )        return 3;
+					if( s == "min" )        return 4;
+					if( s == "difference" ) return 5;
+					GlobalLog()->PrintEx( eLog_Warning,
+						"composite_function2d_painter: unknown op '%s'; defaulting to 'sum'",
+						s.c_str() );
+					return 0;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name         = bag.GetString( "name",          "noname" );
+					std::string colora       = bag.GetString( "colora",        "none" );
+					std::string colorb       = bag.GetString( "colorb",        "none" );
+					std::string childA       = bag.GetString( "child_a",       "none" );
+					std::string childB       = bag.GetString( "child_b",       "none" );
+					std::string opStr        = bag.GetString( "op",            "sum" );
+					double weightA           = bag.GetDouble( "weight_a",      1.0 );
+					double weightB           = bag.GetDouble( "weight_b",      1.0 );
+					double lerpT             = bag.GetDouble( "lerp_t",        0.5 );
+					double outputScale       = bag.GetDouble( "output_scale",  1.0 );
+					double outputOffset      = bag.GetDouble( "output_offset", 0.0 );
+
+					// (U, V) affine transform per operand.  Default
+					// scale 1.0 1.0 and offset 0 0 = identity, so the
+					// minimal-config case (just `op`, `child_a`,
+					// `child_b`) Just Works.
+					double uvScaleA[2]  = { 1.0, 1.0 };
+					double uvOffsetA[2] = { 0.0, 0.0 };
+					double uvScaleB[2]  = { 1.0, 1.0 };
+					double uvOffsetB[2] = { 0.0, 0.0 };
+					if( bag.Has( "uv_scale_a"  ) ) sscanf( bag.GetString( "uv_scale_a"  ).c_str(), "%lf %lf", &uvScaleA[0],  &uvScaleA[1]  );
+					if( bag.Has( "uv_offset_a" ) ) sscanf( bag.GetString( "uv_offset_a" ).c_str(), "%lf %lf", &uvOffsetA[0], &uvOffsetA[1] );
+					if( bag.Has( "uv_scale_b"  ) ) sscanf( bag.GetString( "uv_scale_b"  ).c_str(), "%lf %lf", &uvScaleB[0],  &uvScaleB[1]  );
+					if( bag.Has( "uv_offset_b" ) ) sscanf( bag.GetString( "uv_offset_b" ).c_str(), "%lf %lf", &uvOffsetB[0], &uvOffsetB[1] );
+
+					const unsigned int op = ParseOp( opStr );
+
+					return pJob.AddCompositeFunction2DPainter(
+						name.c_str(),
+						colora.c_str(), colorb.c_str(),
+						childA.c_str(), childB.c_str(),
+						op,
+						weightA, uvScaleA, uvOffsetA,
+						weightB, uvScaleB, uvOffsetB,
+						lerpT,
+						outputScale, outputOffset );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "composite_function2d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Composable Function2D painter: combines two operand Function2Ds per a binary operator (sum/product/lerp/max/min/difference), with per-operand weight + (u,v) affine transform and a global output remap.  Used for multi-scale displacement and procedural texture composition.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "op";            p.kind = ValueKind::String;    p.description = "Binary operator: sum | product | lerp | max | min | difference"; p.defaultValueHint = "sum"; }
+						{ auto& p = P(); p.name = "colora";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Low-value color painter"; }
+						{ auto& p = P(); p.name = "colorb";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "High-value color painter"; }
+						{ auto& p = P(); p.name = "child_a";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First operand Function2D (must be a Function2D-implementing painter)"; }
+						{ auto& p = P(); p.name = "child_b";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second operand Function2D (must be a Function2D-implementing painter)"; }
+						{ auto& p = P(); p.name = "weight_a";      p.kind = ValueKind::Double;    p.description = "Scalar multiplier applied to A before the operator"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "weight_b";      p.kind = ValueKind::Double;    p.description = "Scalar multiplier applied to B before the operator"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "uv_scale_a";    p.kind = ValueKind::DoubleVec3;p.description = "(U, V) scale applied to (u,v) before sampling A (only first two components used)"; p.defaultValueHint = "1.0 1.0"; }
+						{ auto& p = P(); p.name = "uv_offset_a";   p.kind = ValueKind::DoubleVec3;p.description = "(U, V) offset applied to (u,v) before sampling A"; p.defaultValueHint = "0.0 0.0"; }
+						{ auto& p = P(); p.name = "uv_scale_b";    p.kind = ValueKind::DoubleVec3;p.description = "(U, V) scale applied to (u,v) before sampling B"; p.defaultValueHint = "1.0 1.0"; }
+						{ auto& p = P(); p.name = "uv_offset_b";   p.kind = ValueKind::DoubleVec3;p.description = "(U, V) offset applied to (u,v) before sampling B"; p.defaultValueHint = "0.0 0.0"; }
+						{ auto& p = P(); p.name = "lerp_t";        p.kind = ValueKind::Double;    p.description = "Lerp parameter (clamped to [0,1]); only used when op = lerp"; p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "output_scale";  p.kind = ValueKind::Double;    p.description = "Final-stage scalar multiplier applied AFTER the operator"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "output_offset"; p.kind = ValueKind::Double;    p.description = "Final-stage scalar offset added AFTER output_scale"; p.defaultValueHint = "0.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct Perlin3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string colora      = bag.GetString( "colora",      "none" );
+					std::string colorb      = bag.GetString( "colorb",      "none" );
+					double persistence      = bag.GetDouble( "persistence", 1.0 );
+					unsigned int octaves    = bag.GetUInt(   "octaves",     4 );
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+
+					return pJob.AddPerlin3DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "perlin3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D Perlin noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddNoisePainterCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct Wavelet3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string colora      = bag.GetString( "colora",      "none" );
+					std::string colorb      = bag.GetString( "colorb",      "none" );
+					unsigned int tile_size  = bag.GetUInt(   "tile_size",   32 );
+					double persistence      = bag.GetDouble( "persistence", 0.65 );
+					unsigned int octaves    = bag.GetUInt(   "octaves",     4 );
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+
+					return pJob.AddWavelet3DPainter( name.c_str(), tile_size, persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "wavelet3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D wavelet noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddNoisePainterCommonParams( P );
+						{ auto& p = P(); p.name = "tile_size"; p.kind = ValueKind::UInt; p.description = "Precomputed tile edge length"; p.defaultValueHint = "32"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ReactionDiffusion3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",       "noname" );
+					std::string colora      = bag.GetString( "colora",     "none" );
+					std::string colorb      = bag.GetString( "colorb",     "none" );
+					unsigned int grid_size  = bag.GetUInt(   "grid_size",  32 );
+					double da               = bag.GetDouble( "da",         0.2 );
+					double db               = bag.GetDouble( "db",         0.1 );
+					double feed             = bag.GetDouble( "feed",       0.037 );
+					double kill             = bag.GetDouble( "kill",       0.06 );
+					unsigned int iterations = bag.GetUInt(   "iterations", 2000 );
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+
+					return pJob.AddReactionDiffusion3DPainter( name.c_str(), grid_size, da, db, feed, kill, iterations, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "reactiondiffusion3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Reaction-diffusion procedural texture.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora";     p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
+						{ auto& p = P(); p.name = "colorb";     p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
+						{ auto& p = P(); p.name = "grid_size";  p.kind = ValueKind::UInt;       p.description = "Simulation grid edge";        p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "da";         p.kind = ValueKind::Double;     p.description = "Diffusion rate of A";          p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "db";         p.kind = ValueKind::Double;     p.description = "Diffusion rate of B";          p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "feed";       p.kind = ValueKind::Double;     p.description = "Feed rate";                    p.defaultValueHint = "0.055"; }
+						{ auto& p = P(); p.name = "kill";       p.kind = ValueKind::Double;     p.description = "Kill rate";                    p.defaultValueHint = "0.062"; }
+						{ auto& p = P(); p.name = "iterations"; p.kind = ValueKind::UInt;       p.description = "Simulation iterations";        p.defaultValueHint = "5000"; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale";               p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";      p.kind = ValueKind::DoubleVec3; p.description = "Per-axis shift";               p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct Gabor3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",            "noname" );
+					std::string colora      = bag.GetString( "colora",          "none" );
+					std::string colorb      = bag.GetString( "colorb",          "none" );
+					double frequency        = bag.GetDouble( "frequency",       4.0 );
+					double bandwidth        = bag.GetDouble( "bandwidth",       1.0 );
+					double impulse_density  = bag.GetDouble( "impulse_density", 4.0 );
+					double orientation[3] = {0,1,0};
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "orientation", orientation );
+					bag.GetVec3( "scale",       scale );
+					bag.GetVec3( "shift",       shift );
+
+					return pJob.AddGabor3DPainter( name.c_str(), frequency, bandwidth, orientation, impulse_density, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "gabor3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D Gabor noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora";          p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
+						{ auto& p = P(); p.name = "colorb";          p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
+						{ auto& p = P(); p.name = "frequency";       p.kind = ValueKind::Double;     p.description = "Carrier frequency";   p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "bandwidth";       p.kind = ValueKind::Double;     p.description = "Gaussian bandwidth";  p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "orientation";     p.kind = ValueKind::DoubleVec3; p.description = "Orientation vector"; }
+						{ auto& p = P(); p.name = "impulse_density"; p.kind = ValueKind::Double;     p.description = "Impulses per unit volume"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "scale";           p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale";      p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";           p.kind = ValueKind::DoubleVec3; p.description = "Per-axis shift";      p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct Simplex3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string colora      = bag.GetString( "colora",      "none" );
+					std::string colorb      = bag.GetString( "colorb",      "none" );
+					double persistence      = bag.GetDouble( "persistence", 0.65 );
+					unsigned int octaves    = bag.GetUInt(   "octaves",     4 );
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+
+					return pJob.AddSimplex3DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "simplex3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D simplex noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddNoisePainterCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct SDF3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",            "noname" );
+					std::string colora      = bag.GetString( "colora",          "none" );
+					std::string colorb      = bag.GetString( "colorb",          "none" );
+					double param1           = bag.GetDouble( "param1",          0.5 );
+					double param2           = bag.GetDouble( "param2",          0.3 );
+					double param3           = bag.GetDouble( "param3",          0.3 );
+					double shell_thickness  = bag.GetDouble( "shell_thickness", 0.0 );
+					double noise_amplitude  = bag.GetDouble( "noise_amplitude", 0.0 );
+					double noise_frequency  = bag.GetDouble( "noise_frequency", 1.0 );
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+
+					unsigned int type = 0;		// 0=sphere, 1=box, 2=torus, 3=cylinder
+					if( bag.Has( "type" ) ) {
+						std::string t = bag.GetString( "type" );
+						if(      t == "sphere" )   type = 0;
+						else if( t == "box" )      type = 1;
+						else if( t == "torus" )    type = 2;
+						else if( t == "cylinder" ) type = 3;
+						else                       type = String( t.c_str() ).toUInt();
+					}
+
+					return pJob.AddSDF3DPainter( name.c_str(), type, param1, param2, param3, shell_thickness, noise_amplitude, noise_frequency, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "sdf3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Signed-distance-field procedural painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora";           p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Inside colour"; }
+						{ auto& p = P(); p.name = "colorb";           p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Outside colour"; }
+						{ auto& p = P(); p.name = "type";             p.kind = ValueKind::Enum;       p.enumValues = {"sphere","box","torus","cylinder","plane","gyroid","menger"}; p.description = "SDF primitive"; }
+						{ auto& p = P(); p.name = "param1";           p.kind = ValueKind::Double;     p.description = "Shape parameter 1"; }
+						{ auto& p = P(); p.name = "param2";           p.kind = ValueKind::Double;     p.description = "Shape parameter 2"; }
+						{ auto& p = P(); p.name = "param3";           p.kind = ValueKind::Double;     p.description = "Shape parameter 3"; }
+						{ auto& p = P(); p.name = "shell_thickness";  p.kind = ValueKind::Double;     p.description = "Shell/band thickness"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "noise_amplitude";  p.kind = ValueKind::Double;     p.description = "Noise displacement amplitude"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "noise_frequency";  p.kind = ValueKind::Double;     p.description = "Noise displacement frequency"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";            p.kind = ValueKind::DoubleVec3; p.description = "Per-axis shift"; p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct CurlNoise3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string colora      = bag.GetString( "colora",      "none" );
+					std::string colorb      = bag.GetString( "colorb",      "none" );
+					double persistence      = bag.GetDouble( "persistence", 0.65 );
+					unsigned int octaves    = bag.GetUInt(   "octaves",     4 );
+					double epsilon          = bag.GetDouble( "epsilon",     0.01 );
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+
+					return pJob.AddCurlNoise3DPainter( name.c_str(), persistence, octaves, epsilon, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "curlnoise3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D curl-noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddNoisePainterCommonParams( P );
+						{ auto& p = P(); p.name = "epsilon"; p.kind = ValueKind::Double; p.description = "Finite-difference step"; p.defaultValueHint = "1e-4"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct DomainWarp3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",           "noname" );
+					std::string colora      = bag.GetString( "colora",         "none" );
+					std::string colorb      = bag.GetString( "colorb",         "none" );
+					double persistence      = bag.GetDouble( "persistence",    0.65 );
+					unsigned int octaves    = bag.GetUInt(   "octaves",        4 );
+					double warp_amplitude   = bag.GetDouble( "warp_amplitude", 4.0 );
+					unsigned int warp_levels= bag.GetUInt(   "warp_levels",    2 );
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+
+					return pJob.AddDomainWarp3DPainter( name.c_str(), persistence, octaves, warp_amplitude, warp_levels, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "domainwarp3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D domain-warped noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddNoisePainterCommonParams( P );
+						{ auto& p = P(); p.name = "warp_amplitude"; p.kind = ValueKind::Double; p.description = "Warp displacement amplitude"; p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "warp_levels";    p.kind = ValueKind::UInt;   p.description = "Warp iteration levels"; p.defaultValueHint = "2"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PerlinWorley3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",          "noname" );
+					std::string colora      = bag.GetString( "colora",        "none" );
+					std::string colorb      = bag.GetString( "colorb",        "none" );
+					double persistence      = bag.GetDouble( "persistence",   0.65 );
+					unsigned int octaves    = bag.GetUInt(   "octaves",       4 );
+					double worley_jitter    = bag.GetDouble( "worley_jitter", 1.0 );
+					double blend            = bag.GetDouble( "blend",         0.5 );
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+
+					return pJob.AddPerlinWorley3DPainter( name.c_str(), persistence, octaves, worley_jitter, blend, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "perlinworley3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Hybrid Perlin + Worley noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddNoisePainterCommonParams( P );
+						{ auto& p = P(); p.name = "worley_jitter"; p.kind = ValueKind::Double; p.description = "Worley feature jitter amount"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "blend";         p.kind = ValueKind::Double; p.description = "Perlin/Worley blend weight";    p.defaultValueHint = "0.5"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct Worley3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",   "noname" );
+					std::string colora      = bag.GetString( "colora", "none" );
+					std::string colorb      = bag.GetString( "colorb", "none" );
+					double jitter           = bag.GetDouble( "jitter", 1.0 );
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+
+					unsigned int metric = 0;	// 0=Euclidean, 1=Manhattan, 2=Chebyshev
+					if( bag.Has( "metric" ) ) {
+						std::string m = bag.GetString( "metric" );
+						if(      m == "euclidean" ) metric = 0;
+						else if( m == "manhattan" ) metric = 1;
+						else if( m == "chebyshev" ) metric = 2;
+						else                        metric = String( m.c_str() ).toUInt();
+					}
+					unsigned int output = 0;	// 0=F1, 1=F2, 2=F2-F1
+					if( bag.Has( "output" ) ) {
+						std::string o = bag.GetString( "output" );
+						if(      o == "f1" )    output = 0;
+						else if( o == "f2" )    output = 1;
+						else if( o == "f2-f1" ) output = 2;
+						else                    output = String( o.c_str() ).toUInt();
+					}
+
+					return pJob.AddWorley3DPainter( name.c_str(), jitter, metric, output, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "worley3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D Worley (cellular / Voronoi) noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
+						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
+						{ auto& p = P(); p.name = "jitter"; p.kind = ValueKind::Double;     p.description = "Feature jitter";               p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "metric"; p.kind = ValueKind::Enum;       p.enumValues = {"euclidean","manhattan","chebyshev","minkowski"}; p.description = "Distance metric"; p.defaultValueHint = "euclidean"; }
+						{ auto& p = P(); p.name = "output"; p.kind = ValueKind::Enum;       p.enumValues = {"f1","f2","f2_minus_f1"};      p.description = "Value function"; p.defaultValueHint = "f1"; }
+						{ auto& p = P(); p.name = "scale";  p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale";               p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";  p.kind = ValueKind::DoubleVec3; p.description = "Per-axis shift";               p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct Turbulence3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string colora      = bag.GetString( "colora",      "none" );
+					std::string colorb      = bag.GetString( "colorb",      "none" );
+					double persistence      = bag.GetDouble( "persistence", 1.0 );
+					unsigned int octaves    = bag.GetUInt(   "octaves",     4 );
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+
+					return pJob.AddTurbulence3DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "turbulence3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D turbulence (absolute-valued Perlin) painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddNoisePainterCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct Voronoi2DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name",       "noname" );
+					std::string border = bag.GetString( "border",     "none" );
+					double bordersize  = bag.GetDouble( "bordersize", 0.0 );
+
+					std::vector<double> ptx;
+					std::vector<double> pty;
+					std::vector<std::string> painters;
+
+					// Repeatable inline generators: "gen <x> <y> <painter>"
+					const std::vector<std::string>& gens = bag.GetRepeatable( "gen" );
+					for( size_t k = 0; k < gens.size(); ++k ) {
+						double x = 0, y = 0;
+						char painter[256] = {0};
+						sscanf( gens[k].c_str(), "%lf %lf %255s", &x, &y, painter );
+						ptx.push_back( x );
+						pty.push_back( y );
+						painters.push_back( painter );
+					}
+
+					// Optional file-loaded generators
+					if( bag.Has( "file" ) ) {
+						std::string fname = bag.GetString( "file" );
+						std::vector<std::string> fileLines;
+						if( ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
+							for( const std::string& ln : fileLines ) {
+								double x = 0.0, y = 0.0;
+								char painter[256] = {0};
+								if( sscanf( ln.c_str(), "%lf %lf %255s", &x, &y, painter ) == 3 ) {
+									ptx.push_back( x );
+									pty.push_back( y );
+									painters.push_back( painter );
+								}
+							}
+						}
+					}
+
+					const unsigned int num = static_cast<unsigned int>(painters.size());
+					char* pntrmem = new char[num*256];
+					memset( pntrmem, 0, num*256 );
+					char** pntrs = new char*[num];
+
+					for( unsigned int i=0; i<num; i++ ) {
+						pntrs[i] = &pntrmem[i*256];
+						strncpy( pntrs[i], painters[i].c_str(), 255 );
+					}
+
+					bool bRet = pJob.AddVoronoi2DPainter( name.c_str(), &ptx[0], &pty[0], (const char**)pntrs, num, border=="none"?0:border.c_str(), bordersize );
+
+					delete [] pntrs;
+					delete [] pntrmem;
+
+					return bRet;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "voronoi2d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "2D Voronoi painter with per-cell colours.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "gen";        p.kind = ValueKind::String;    p.repeatable = true; p.tupleKinds = {ValueKind::Double, ValueKind::Double, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Voronoi generator: x y paintername (repeatable)"; }
+						{ auto& p = P(); p.name = "file";       p.kind = ValueKind::Filename;  p.description = "Generator list file (each line: x y paintername)"; }
+						{ auto& p = P(); p.name = "border";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Border colour (painter)"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "bordersize"; p.kind = ValueKind::Double;    p.description = "Border width"; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct Voronoi3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name",       "noname" );
+					std::string border = bag.GetString( "border",     "none" );
+					double bordersize  = bag.GetDouble( "bordersize", 0.0 );
+
+					std::vector<double> ptx;
+					std::vector<double> pty;
+					std::vector<double> ptz;
+					std::vector<std::string> painters;
+
+					// Repeatable inline generators: "gen <x> <y> <z> <painter>"
+					const std::vector<std::string>& gens = bag.GetRepeatable( "gen" );
+					for( size_t k = 0; k < gens.size(); ++k ) {
+						double x = 0, y = 0, z = 0;
+						char painter[256] = {0};
+						sscanf( gens[k].c_str(), "%lf %lf %lf %255s", &x, &y, &z, painter );
+						ptx.push_back( x );
+						pty.push_back( y );
+						ptz.push_back( z );
+						painters.push_back( painter );
+					}
+
+					// Optional file-loaded generators (count-prefixed)
+					if( bag.Has( "file" ) ) {
+						std::string fname = bag.GetString( "file" );
+						std::vector<std::string> fileLines;
+						if( ReadDataFileLines( String( fname.c_str() ), fileLines ) && !fileLines.empty() ) {
+							int num = 0;
+							sscanf( fileLines[0].c_str(), "%d", &num );
+							for( int i = 1; i <= num && i < (int)fileLines.size(); ++i ) {
+								double x = 0.0, y = 0.0, z = 0.0;
+								char painter[256] = {0};
+								if( sscanf( fileLines[i].c_str(), "%lf %lf %lf %255s", &x, &y, &z, painter ) == 4 ) {
+									ptx.push_back( x );
+									pty.push_back( y );
+									ptz.push_back( z );
+									painters.push_back( painter );
+								}
+							}
+						}
+					}
+
+					const unsigned int num = static_cast<unsigned int>(painters.size());
+					char* pntrmem = new char[num*256];
+					memset( pntrmem, 0, num*256 );
+					char** pntrs = new char*[num];
+
+					for( unsigned int i=0; i<num; i++ ) {
+						pntrs[i] = &pntrmem[i*256];
+						strncpy( pntrs[i], painters[i].c_str(), 255 );
+					}
+
+					bool bRet = pJob.AddVoronoi3DPainter( name.c_str(), &ptx[0], &pty[0], &ptz[0], (const char**)pntrs, num, border=="none"?0:border.c_str(), bordersize );
+
+					delete [] pntrs;
+					delete [] pntrmem;
+
+					return bRet;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "voronoi3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D Voronoi painter with per-cell colours.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "gen";        p.kind = ValueKind::String;    p.repeatable = true; p.tupleKinds = {ValueKind::Double, ValueKind::Double, ValueKind::Double, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Voronoi generator: x y z paintername (repeatable)"; }
+						{ auto& p = P(); p.name = "file";       p.kind = ValueKind::Filename;  p.description = "Generator list file (count-prefixed: N then N lines of x y z paintername)"; }
+						{ auto& p = P(); p.name = "border";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Border colour (painter)"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "bordersize"; p.kind = ValueKind::Double;    p.description = "Border width"; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct IridescentPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string colora = bag.GetString( "colora", "none" );
+					std::string colorb = bag.GetString( "colorb", "none" );
+					double bias        = bag.GetDouble( "bias",   0.0 );
+
+					return pJob.AddIridescentPainter( name.c_str(), colora.c_str(), colorb.c_str(), bias );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "iridescent_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Angle-dependent iridescent painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Normal-incidence colour"; }
+						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Grazing-angle colour"; }
+						{ auto& p = P(); p.name = "bias";   p.kind = ValueKind::Double;    p.description = "View-angle bias";               p.defaultValueHint = "0.5"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct BlackBodyPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name      = bag.GetString( "name",        "noname" );
+					double temperature    = bag.GetDouble( "temperature", 5600.0 );
+					double lambda_begin   = bag.GetDouble( "nmbegin",     400.0 );
+					double lambda_end     = bag.GetDouble( "nmend",       700.0 );
+					unsigned int num_freq = bag.GetUInt(   "numfreq",     30 );
+					double scale          = bag.GetDouble( "scale",       1.0 );
+					bool normalize        = bag.GetBool(   "normalize",   true );
+
+					return pJob.AddBlackBodyPainter( name.c_str(), temperature, lambda_begin, lambda_end, num_freq, normalize, scale );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "blackbody_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Planckian blackbody spectrum painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "temperature";  p.kind = ValueKind::Double; p.description = "Temperature in Kelvin"; p.defaultValueHint = "5600"; }
+						{ auto& p = P(); p.name = "nmbegin";      p.kind = ValueKind::Double; p.description = "Start wavelength (nm)"; p.defaultValueHint = "400"; }
+						{ auto& p = P(); p.name = "nmend";        p.kind = ValueKind::Double; p.description = "End wavelength (nm)";   p.defaultValueHint = "700"; }
+						{ auto& p = P(); p.name = "numfreq";      p.kind = ValueKind::UInt;   p.description = "Sample count";          p.defaultValueHint = "30"; }
+						{ auto& p = P(); p.name = "normalize";    p.kind = ValueKind::Bool;   p.description = "Normalize peak to 1";   p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "scale";        p.kind = ValueKind::Double; p.description = "Overall amplitude";     p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct BlendPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string colora = bag.GetString( "colora", "none" );
+					std::string colorb = bag.GetString( "colorb", "none" );
+					std::string mask   = bag.GetString( "mask",   "none" );
+
+					return pJob.AddBlendPainter( name.c_str(), colora.c_str(), colorb.c_str(), mask.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "blend_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Blend two painters using a third painter as mask.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
+						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
+						{ auto& p = P(); p.name = "mask";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Blend-weight painter"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ChannelPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name    = bag.GetString( "name",    "noname" );
+					std::string source  = bag.GetString( "source",  "none" );
+					std::string chanStr = bag.GetString( "channel", "R" );
+					double scale        = bag.GetDouble( "scale",   1.0 );
+					double bias         = bag.GetDouble( "bias",    0.0 );
+					char chan = 0;
+					if(      chanStr == "R" || chanStr == "r" ) chan = 0;
+					else if( chanStr == "G" || chanStr == "g" ) chan = 1;
+					else if( chanStr == "B" || chanStr == "b" ) chan = 2;
+					else if( chanStr == "A" || chanStr == "a" ) chan = 3;
+					else {
+						GlobalLog()->PrintEx( eLog_Error, "channel_painter:: unknown channel `%s` (expected R / G / B / A)", chanStr.c_str() );
+						return false;
+					}
+					return pJob.AddChannelPainter( name.c_str(), source.c_str(), chan, scale, bias );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "channel_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Extracts a single R / G / B / A channel from another painter, "
+							"applies an affine `out = scale * channel + bias`, and broadcasts the "
+							"result as (out, out, out).  Designed for glTF metallic-roughness "
+							"texture decomposition: glTF stores metallic in the .B channel and "
+							"roughness in .G of the metallicRoughnessTexture, and "
+							"`pbr_metallic_roughness_material` routes the texture through two "
+							"channel_painter chunks to feed `ggx_material`'s scalar `rs` and "
+							"`alphax`/`alphay` inputs.  Channel `A` reads un-premultiplied alpha "
+							"(via `IPainter::GetAlpha`) and is used by the alphaMode = MASK and "
+							"BLEND wiring in the glTF importer.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";    p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "source";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Source painter (e.g. a png_painter for an MR texture)"; }
+						{ auto& p = P(); p.name = "channel"; p.kind = ValueKind::Enum;      p.enumValues = {"R","G","B","A"}; p.description = "Which channel to extract (R, G, B, or A); A reads un-premultiplied alpha"; p.defaultValueHint = "R"; }
+						{ auto& p = P(); p.name = "scale";   p.kind = ValueKind::Double;    p.description = "Scale multiplier"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "bias";    p.kind = ValueKind::Double;    p.description = "Additive offset (post-scale)"; p.defaultValueHint = "0.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//////////////////////////////////////////
+			// Functions
+			//////////////////////////////////////////
+
+			struct PiecewiseLinearFunctionChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",   "noname" );
+					bool         bUseLUTs   = bag.GetBool(   "use_lut", false );
+					unsigned int lutsize    = bag.GetUInt(   "lutsize", 1024 );
+
+					std::vector<double> cp_x;
+					std::vector<double> cp_y;
+
+					// Repeatable per-sample control points: "cp <x> <y>"
+					const std::vector<std::string>& cps = bag.GetRepeatable( "cp" );
+					for( size_t k = 0; k < cps.size(); ++k ) {
+						double x = 0.0, y = 0.0;
+						sscanf( cps[k].c_str(), "%lf %lf", &x, &y );
+						cp_x.push_back( x );
+						cp_y.push_back( y );
+					}
+
+					// Optional file-loaded function (pairs)
+					if( bag.Has( "file" ) ) {
+						std::string fname = bag.GetString( "file" );
+						std::vector<std::string> fileLines;
+						if( !ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
+							return false;
+						}
+						for( const std::string& ln : fileLines ) {
+							double x = 0.0, y = 0.0;
+							if( sscanf( ln.c_str(), "%lf %lf", &x, &y ) == 2 ) {
+								cp_x.push_back( x );
+								cp_y.push_back( y );
+							} else {
+								GlobalLog()->PrintEx( eLog_Warning, "piecewise_linear_function:: skipping malformed line in `%s`", fname.c_str() );
+							}
+						}
+					}
+
+					if( cp_x.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error, "piecewise_linear_function `%s`: no control points (empty / all-comment file, no inline cp)", name.c_str() );
+						return false;
+					}
+					return pJob.AddPiecewiseLinearFunction( name.c_str(), &cp_x[0], &cp_y[0], static_cast<unsigned int>(cp_x.size()), bUseLUTs, lutsize );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "piecewise_linear_function"; cd.category = ChunkCategory::Function;
+						cd.description = "1D piecewise-linear scalar function.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";    p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "cp";      p.kind = ValueKind::String;   p.repeatable = true; p.description = "Control point: x y (repeatable)"; }
+						{ auto& p = P(); p.name = "use_lut"; p.kind = ValueKind::Bool;     p.description = "Use lookup table for fast evaluation"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "lutsize"; p.kind = ValueKind::UInt;     p.description = "LUT size";                              p.defaultValueHint = "1024"; }
+						{ auto& p = P(); p.name = "file";    p.kind = ValueKind::Filename; p.description = "Function text file (x y pairs)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PiecewiseLinearFunction2DChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+
+					std::vector<double> cp_x;
+					std::vector<String> cp_y;
+
+					// Repeatable per-row entries: "cp <x> <y values...>"
+					const std::vector<std::string>& cps = bag.GetRepeatable( "cp" );
+					for( size_t k = 0; k < cps.size(); ++k ) {
+						double x = 0.0;
+						char y[1024] = {0};
+						sscanf( cps[k].c_str(), "%lf %s", &x, y );
+						cp_x.push_back( x );
+						cp_y.push_back( String(y) );
+					}
+
+					if( cp_x.empty() ) {
+						// A row-less 2D function is well-defined at runtime:
+						// PiecewiseLinearFunction2D::getYValueFromFunction falls
+						// back to the constant 1.0 whenever it holds fewer than
+						// two rows.  Scenes use the empty form as a placeholder
+						// (e.g. a displacement slot bound but not yet authored),
+						// so warn loudly rather than refuse.
+						GlobalLog()->PrintEx( eLog_Warning, "piecewise_linear_function2d `%s`: no control points -- evaluates as the constant 1.0", name.c_str() );
+					}
+
+					// Setup the array of strings
+					char** func = new char*[cp_x.size()];
+					for( unsigned int i=0; i<cp_x.size(); i++ ) {
+						func[i] = (char*)(&(*(cp_y[i].begin())));
+					}
+
+					bool bRet = pJob.AddPiecewiseLinearFunction2D( name.c_str(), cp_x.empty() ? 0 : &cp_x[0], func, static_cast<unsigned int>(cp_x.size()) );
+
+					delete [] func;
+
+					return bRet;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "piecewise_linear_function2d"; cd.category = ChunkCategory::Function;
+						cd.description = "2D piecewise-linear function (1D row at each x).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "cp";   p.kind = ValueKind::String; p.repeatable = true; p.description = "Row: x then space-separated y values (repeatable)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//////////////////////////////////////////
+			// Materials
+			//////////////////////////////////////////
+
+			struct LambertianMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string reflectance = bag.GetString( "reflectance", "none" );
+
+					return pJob.AddLambertianMaterial( name.c_str(), reflectance.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "lambertian_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Pure Lambertian (diffuse) material.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Albedo painter"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PerfectReflectorMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string reflectance = bag.GetString( "reflectance", "none" );
+
+					return pJob.AddPerfectReflectorMaterial( name.c_str(), reflectance.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "perfectreflector_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Perfect mirror reflector.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Reflectance painter"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PerfectRefractorMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string refractance = bag.GetString( "refractance", "none" );
+					std::string ior         = bag.GetString( "ior",         "1.33" );
+
+					return pJob.AddPerfectRefractorMaterial( name.c_str(), refractance.c_str(), ior.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "perfectrefractor_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Perfect refractor (glass).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "refractance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance painter"; }
+						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PolishedMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string reflectance = bag.GetString( "reflectance", "none" );
+					std::string tau         = bag.GetString( "tau",         "none" );
+					std::string ior         = bag.GetString( "ior",         "1.0" );
+					std::string scat        = bag.GetString( "scattering",  "64" );
+					bool hg                 = bag.GetBool(   "henyey-greenstein", false );
+
+					return pJob.AddPolishedMaterial( name.c_str(), reflectance.c_str(), tau.c_str(), ior.c_str(), scat.c_str(), hg );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "polished_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Polished surface (Fresnel dielectric over Lambertian substrate).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";              p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "reflectance";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse substrate"; }
+						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance"; }
+						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
+						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct DielectricMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name",       "noname" );
+					std::string tau  = bag.GetString( "tau",        "none" );
+					std::string ior  = bag.GetString( "ior",        "1.33" );
+					std::string scat = bag.GetString( "scattering", "10000" );
+					bool hg          = bag.GetBool(   "henyey-greenstein", false );
+
+					// AR coating layers in AMBIENT -> SUBSTRATE order (outermost,
+					// air-side, first).  Preferred form: repeatable
+					// `ar_layer <n> <thickness_nm> [k]` -> a broadband multi-
+					// layer stack that reflects faint AND colour-neutral (a
+					// single layer leaves the characteristic purple bloom).
+					// Bound to the engine cap (DielectricSPF::kMaxARLayers, itself
+					// static_assert-tied to ThinFilm::kMaxFilms) so this reject
+					// limit can never drift from what the TMM actually evaluates.
+					// Reject a too-deep stack rather than silently truncating it.
+					const std::size_t kMaxARLayers = (std::size_t)RISE::Implementation::DielectricSPF::kMaxARLayers;
+					std::vector<Scalar> arN, arK, arT;
+					const std::vector<std::string>& layerLines = bag.GetRepeatable( "ar_layer" );
+					if( layerLines.size() > kMaxARLayers ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"dielectric_material `%s`: %u ar_layer lines exceeds the %u-layer maximum",
+							name.c_str(), (unsigned int)layerLines.size(), (unsigned int)kMaxARLayers );
+						return false;
+					}
+					for( std::size_t i = 0; i < layerLines.size(); ++i ) {
+						// Reject nan/inf spellings and non-numeric junk at the STRING
+						// layer (value-level isfinite is unreliable under -ffast-math;
+						// see AllTokensAreFiniteNumbers), then count + range-check the
+						// numbers (errno/ERANGE catches overflow like 1e999).
+						if( !AllTokensAreFiniteNumbers( layerLines[i].c_str() ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"dielectric_material `%s`: ar_layer %u (`%s`) has a non-finite or non-numeric token",
+								name.c_str(), (unsigned int)i, layerLines[i].c_str() );
+							return false;
+						}
+						double vals[3] = { 0.0, 0.0, 0.0 }; int cnt = 0; bool overflow = false;
+						for( const char* p = layerLines[i].c_str(); ; ) {
+							while( *p == ' ' || *p == '\t' ) ++p;
+							if( !*p || *p == '#' ) break;
+							errno = 0; char* end = 0;
+							const double v = strtod( p, &end );
+							if( end == p ) break;
+							if( errno == ERANGE ) overflow = true;
+							if( cnt < 3 ) vals[cnt] = v;
+							++cnt; p = end;
+						}
+						// A layer is `<n>0 <thickness_nm>0 [k>=0]`: exactly 2-3 finite
+						// numbers, positive index + thickness (a zero-thickness layer
+						// is a spurious extra interface), non-negative extinction.
+						if( cnt < 2 || cnt > 3 || overflow ||
+						    vals[0] <= 0.0 || vals[1] <= 0.0 || ( cnt == 3 && vals[2] < 0.0 ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"dielectric_material `%s`: ar_layer %u (`%s`) must be `<n>0 <thickness_nm>0 [k>=0]`",
+								name.c_str(), (unsigned int)i, layerLines[i].c_str() );
+							return false;
+						}
+						arN.push_back( (Scalar)vals[0] ); arT.push_back( (Scalar)vals[1] ); arK.push_back( (Scalar)( cnt == 3 ? vals[2] : 0.0 ) );
+					}
+					// Legacy single-layer form, honoured only when no ar_layer
+					// lines are present (back-compat, bit-identical).
+					if( arN.empty() ) {
+						const double ar_ior   = bag.GetDouble( "ar_film_ior",        0.0 );
+						const double ar_thick = bag.GetDouble( "ar_film_thickness",  0.0 );
+						const double ar_ext   = bag.GetDouble( "ar_film_extinction", 0.0 );
+						if( ar_thick > 0.0 ) {
+							arN.push_back( (Scalar)ar_ior ); arT.push_back( (Scalar)ar_thick ); arK.push_back( (Scalar)ar_ext );
+						}
+					}
+					const unsigned int nLayers = (unsigned int)arN.size();
+					return pJob.AddDielectricMaterial( name.c_str(), tau.c_str(), ior.c_str(), scat.c_str(), hg,
+						nLayers ? arN.data() : 0, nLayers ? arK.data() : 0, nLayers ? arT.data() : 0, nLayers );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "dielectric_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Fresnel dielectric (reflect + refract) with optional volumetric scattering.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";              p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "10000"; }
+						{ auto& p = P(); p.name = "ar_layer";           p.kind = ValueKind::String; p.repeatable = true; p.description = "One anti-reflective coating layer (repeatable, AMBIENT->SUBSTRATE / air-side first): `<n> <thickness_nm> [k]`, all positive (k optional, >=0).  One layer = the classic MgF2 quarter-wave (drops glare but leaves a purple bloom); a multi-layer broadband stack (e.g. quarter/half/quarter) reflects far fainter AND colour-neutral, as on real premium AR.  At most 8 layers (more is a parse error)."; }
+						{ auto& p = P(); p.name = "ar_film_ior";        p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR film index (e.g. MgF2 1.38); prefer ar_layer.  Honoured only when no ar_layer lines are present. 0 = no coating."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "ar_film_thickness";  p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR thickness, nm (MgF2 quarter-wave ~99.6 at 550nm); prefer ar_layer. 0 = no coating."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "ar_film_extinction"; p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR film extinction k (~0 for a transparent AR); prefer ar_layer."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct SubSurfaceScatteringMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name       = bag.GetString( "name",       "noname" );
+					std::string ior        = bag.GetString( "ior",        "1.3" );
+					std::string absorption = bag.GetString( "absorption", "0.1" );
+					std::string scattering = bag.GetString( "scattering", "1.0" );
+					std::string g          = bag.GetString( "g",          "0.0" );
+					std::string roughness  = bag.GetString( "roughness",  "0.0" );
+
+					return pJob.AddSubSurfaceScatteringMaterial( name.c_str(), ior.c_str(), absorption.c_str(), scattering.c_str(), g.c_str(), roughness.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "subsurfacescattering_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Diffusion-based subsurface scattering material.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
+						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption coefficient"; }
+						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; }
+						{ auto& p = P(); p.name = "g";          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Henyey-Greenstein g"; }
+						{ auto& p = P(); p.name = "roughness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct RandomWalkSSSMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name       = bag.GetString( "name",        "noname" );
+					std::string ior        = bag.GetString( "ior",         "1.3" );
+					std::string absorption = bag.GetString( "absorption",  "0.1" );
+					std::string scattering = bag.GetString( "scattering",  "1.0" );
+					std::string g          = bag.GetString( "g",           "0.0" );
+					std::string roughness  = bag.GetString( "roughness",   "0.0" );
+					std::string maxBounces = bag.GetString( "max_bounces", "64" );
+
+					return pJob.AddRandomWalkSSSMaterial( name.c_str(), ior.c_str(), absorption.c_str(), scattering.c_str(), g.c_str(), roughness.c_str(), maxBounces.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "randomwalk_sss_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Random-walk (path-traced) subsurface scattering.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction"; }
+						{ auto& p = P(); p.name = "absorption";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption"; }
+						{ auto& p = P(); p.name = "scattering";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering"; }
+						{ auto& p = P(); p.name = "g";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Henyey-Greenstein g"; }
+						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness"; }
+						{ auto& p = P(); p.name = "max_bounces"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Max volume bounces per ray"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct LambertianLuminaireMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string material = bag.GetString( "material", "none" );
+					std::string painter  = bag.GetString( "exitance", "none" );
+					double scale         = bag.GetDouble( "scale",    1.0 );
+
+					return pJob.AddLambertianLuminaireMaterial( name.c_str(), painter.c_str(), material.c_str(), scale );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "lambertian_luminaire_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Emissive Lambertian material (area light).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "exitance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Emitted radiance"; }
+						{ auto& p = P(); p.name = "material"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Underlying material"; }
+						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::Double;    p.description = "Exitance multiplier"; p.defaultValueHint = "1.0"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PhongLuminaireMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string material = bag.GetString( "material", "none" );
+					std::string painter  = bag.GetString( "exitance", "none" );
+					double scale         = bag.GetDouble( "scale",    1.0 );
+					std::string N        = bag.GetString( "N",        "16.0" );
+
+					return pJob.AddPhongLuminaireMaterial( name.c_str(), painter.c_str(), material.c_str(), N.c_str(), scale );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "phong_luminaire_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Emissive Phong (directional) luminaire.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "exitance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Emitted radiance"; }
+						{ auto& p = P(); p.name = "material"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Underlying material"; }
+						{ auto& p = P(); p.name = "N";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent"; }
+						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::Double;    p.description = "Exitance multiplier"; p.defaultValueHint = "1.0"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct AshikminShirleyAnisotropicPhongMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string rd   = bag.GetString( "rd",   "none" );
+					std::string rs   = bag.GetString( "rs",   "none" );
+					std::string Nu   = bag.GetString( "nu",   "10.0" );
+					std::string Nv   = bag.GetString( "nv",   "100.0" );
+
+					return pJob.AddAshikminShirleyAnisotropicPhongMaterial( name.c_str(), rd.c_str(), rs.c_str(), Nu.c_str(), Nv.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "ashikminshirley_anisotropicphong_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Ashikhmin-Shirley anisotropic Phong BRDF.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rd";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
+						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
+						{ auto& p = P(); p.name = "nu";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "U-direction exponent (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "nv";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "V-direction exponent (scalar_painter, or inline `r g b` or scalar)"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct IsotropicPhongMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string rd   = bag.GetString( "rd",   "none" );
+					std::string rs   = bag.GetString( "rs",   "none" );
+					std::string N    = bag.GetString( "N",    "16.0" );
+
+					return pJob.AddIsotropicPhongMaterial( name.c_str(), rd.c_str(), rs.c_str(), N.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "isotropic_phong_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Isotropic Phong BRDF.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rd";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
+						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
+						{ auto& p = P(); p.name = "N";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent (scalar_painter, or inline `r g b` or scalar)"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct TranslucentMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name",       "noname" );
+					std::string ref  = bag.GetString( "ref",        "none" );
+					std::string tau  = bag.GetString( "tau",        "none" );
+					std::string ext  = bag.GetString( "ext",        "none" );
+					std::string N    = bag.GetString( "N",          "1.0" );
+					std::string scat = bag.GetString( "scattering", "0.0" );
+
+					// Energy conservation: ref + tau must not exceed 1.0 per channel.
+					// If violated, create new auto-scaled painters and use those instead.
+					std::map<std::string, PainterColor>::const_iterator itRef = s_painterColors.find( ref.c_str() );
+					std::map<std::string, PainterColor>::const_iterator itTau = s_painterColors.find( tau.c_str() );
+
+					if( itRef != s_painterColors.end() && itTau != s_painterColors.end() )
+					{
+						const double* refColor = itRef->second.c;
+						const double* tauColor = itTau->second.c;
+
+						bool violated = false;
+						for( int ch = 0; ch < 3; ch++ ) {
+							if( refColor[ch] + tauColor[ch] > 1.0 ) {
+								violated = true;
+								break;
+							}
+						}
+
+						if( violated ) {
+							GlobalLog()->PrintEx( eLog_Warning,
+								"TranslucentMaterial '%s': ref + tau exceeds 1.0 "
+								"(R: %.3f+%.3f=%.3f, G: %.3f+%.3f=%.3f, B: %.3f+%.3f=%.3f), "
+								"auto-scaling to conserve energy",
+								name.c_str(),
+								refColor[0], tauColor[0], refColor[0]+tauColor[0],
+								refColor[1], tauColor[1], refColor[1]+tauColor[1],
+								refColor[2], tauColor[2], refColor[2]+tauColor[2] );
+
+							double scaledRef[3], scaledTau[3];
+							for( int ch = 0; ch < 3; ch++ ) {
+								const double sum = refColor[ch] + tauColor[ch];
+								if( sum > 1.0 ) {
+									const double scale = 1.0 / sum;
+									scaledRef[ch] = refColor[ch] * scale;
+									scaledTau[ch] = tauColor[ch] * scale;
+								} else {
+									scaledRef[ch] = refColor[ch];
+									scaledTau[ch] = tauColor[ch];
+								}
+							}
+
+							char buf[256];
+							snprintf( buf, sizeof(buf), "%s_auto_ref", name.c_str() );
+							pJob.AddUniformColorPainter( buf, scaledRef, "sRGB" );
+							ref = buf;
+
+							snprintf( buf, sizeof(buf), "%s_auto_tau", name.c_str() );
+							pJob.AddUniformColorPainter( buf, scaledTau, "sRGB" );
+							tau = buf;
+						}
+					}
+
+					return pJob.AddTranslucentMaterial( name.c_str(), ref.c_str(), tau.c_str(), ext.c_str(), N.c_str(), scat.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "translucent_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Translucent material combining reflection and transmission.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "ref";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Reflectance"; }
+						{ auto& p = P(); p.name = "tau";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance"; }
+						{ auto& p = P(); p.name = "ext";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Extinction"; }
+						{ auto& p = P(); p.name = "N";          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent"; }
+						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct BioSpecSkinMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name                                = bag.GetString( "name",                                "noname" );
+					std::string thickness_SC                        = bag.GetString( "thickness_SC",                        "0.001" );
+					std::string thickness_epidermis                 = bag.GetString( "thickness_epidermis",                 "0.01" );
+					std::string thickness_papillary_dermis          = bag.GetString( "thickness_papillary_dermis",          "0.02" );
+					std::string thickness_reticular_dermis          = bag.GetString( "thickness_reticular_dermis",          "0.18" );
+					std::string ior_SC                              = bag.GetString( "ior_SC",                              "1.55" );
+					std::string ior_epidermis                       = bag.GetString( "ior_epidermis",                       "1.4" );
+					std::string ior_papillary_dermis                = bag.GetString( "ior_papillary_dermis",                "1.36" );
+					std::string ior_reticular_dermis                = bag.GetString( "ior_reticular_dermis",                "1.38" );
+					std::string concentration_eumelanin             = bag.GetString( "concentration_eumelanin",             "80.0" );
+					std::string concentration_pheomelanin           = bag.GetString( "concentration_pheomelanin",           "12.0" );
+					std::string melanosomes_in_epidermis            = bag.GetString( "melanosomes_in_epidermis",            "0.10" );
+					std::string hb_ratio                            = bag.GetString( "hb_ratio",                            "0.75" );
+					std::string whole_blood_in_papillary_dermis     = bag.GetString( "whole_blood_in_papillary_dermis",     "0.012" );
+					std::string whole_blood_in_reticular_dermis     = bag.GetString( "whole_blood_in_reticular_dermis",     "0.0091" );
+					std::string bilirubin_concentration             = bag.GetString( "bilirubin_concentration",             "0.05" );
+					std::string betacarotene_concentration_SC       = bag.GetString( "betacarotene_concentration_SC",       "2.1e-4" );
+					std::string betacarotene_concentration_epidermis= bag.GetString( "betacarotene_concentration_epidermis","2.1e-4" );
+					std::string betacarotene_concentration_dermis   = bag.GetString( "betacarotene_concentration_dermis",   "7.0e-5" );
+					std::string folds_aspect_ratio                  = bag.GetString( "folds_aspect_ratio",                  "0.75" );
+					bool bSubdermalLayer                            = bag.GetBool(   "subdermal_layer",                     true );
+
+					return pJob.AddBioSpecSkinMaterial( name.c_str(), thickness_SC.c_str(), thickness_epidermis.c_str(), thickness_papillary_dermis.c_str(), thickness_reticular_dermis.c_str(),
+						ior_SC.c_str(), ior_epidermis.c_str(), ior_papillary_dermis.c_str(), ior_reticular_dermis.c_str(), concentration_eumelanin.c_str(), concentration_pheomelanin.c_str(),
+						melanosomes_in_epidermis.c_str(), hb_ratio.c_str(), whole_blood_in_papillary_dermis.c_str(), whole_blood_in_reticular_dermis.c_str(),
+						bilirubin_concentration.c_str(), betacarotene_concentration_SC.c_str(), betacarotene_concentration_epidermis.c_str(), betacarotene_concentration_dermis.c_str(),
+						folds_aspect_ratio.c_str(), bSubdermalLayer );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "biospec_skin_material"; cd.category = ChunkCategory::Material;
+						cd.description = "BioSpec multi-layer skin model (Krishnaswamy & Baranoski).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						static const char* painterRefs[] = {
+							"thickness_SC","thickness_epidermis","thickness_papillary_dermis","thickness_reticular_dermis",
+							"ior_SC","ior_epidermis","ior_papillary_dermis","ior_reticular_dermis",
+							"concentration_eumelanin","concentration_pheomelanin","melanosomes_in_epidermis",
+							"hb_ratio","whole_blood_in_papillary_dermis","whole_blood_in_reticular_dermis",
+							"bilirubin_concentration","betacarotene_concentration_SC","betacarotene_concentration_epidermis","betacarotene_concentration_dermis",
+							"folds_aspect_ratio"
+						};
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						for (const char* n : painterRefs) {
+							auto& p = P(); p.name = n; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Skin-model painter parameter";
+						}
+						{ auto& p = P(); p.name = "subdermal_layer"; p.kind = ValueKind::Bool; p.description = "Include subdermal fat layer"; p.defaultValueHint = "TRUE"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct DonnerJensenSkinBSSRDFMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					// Donner et al. 2008 spectral skin model parameters
+					std::string name                 = bag.GetString( "name",                 "noname" );
+					std::string melanin_fraction     = bag.GetString( "melanin_fraction",     "0.02" );
+					std::string melanin_blend        = bag.GetString( "melanin_blend",        "0.5" );
+					std::string hemoglobin_epidermis = bag.GetString( "hemoglobin_epidermis", "0.002" );
+					std::string carotene_fraction    = bag.GetString( "carotene_fraction",    "0.001" );
+					std::string hemoglobin_dermis    = bag.GetString( "hemoglobin_dermis",    "0.005" );
+					std::string epidermis_thickness  = bag.GetString( "epidermis_thickness",  "0.025" );
+					std::string ior_epidermis        = bag.GetString( "ior_epidermis",        "1.4" );
+					std::string ior_dermis           = bag.GetString( "ior_dermis",           "1.38" );
+					std::string blood_oxygenation    = bag.GetString( "blood_oxygenation",    "0.7" );
+					std::string roughness            = bag.GetString( "roughness",            "0.35" );
+
+					return pJob.AddDonnerJensenSkinBSSRDFMaterial( name.c_str(),
+						melanin_fraction.c_str(), melanin_blend.c_str(),
+						hemoglobin_epidermis.c_str(), carotene_fraction.c_str(),
+						hemoglobin_dermis.c_str(), epidermis_thickness.c_str(),
+						ior_epidermis.c_str(), ior_dermis.c_str(),
+						blood_oxygenation.c_str(), roughness.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "donner_jensen_skin_bssrdf_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Donner & Jensen 2008 spectral skin BSSRDF.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						static const char* painterRefs[] = {
+							"melanin_fraction","melanin_blend","hemoglobin_epidermis","carotene_fraction",
+							"hemoglobin_dermis","epidermis_thickness","ior_epidermis","ior_dermis",
+							"blood_oxygenation","roughness"
+						};
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						for (const char* n : painterRefs) {
+							auto& p = P(); p.name = n; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Skin-model painter parameter";
+						}
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct GenericHumanTissueMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name              = bag.GetString( "name",                      "noname" );
+					std::string g                 = bag.GetString( "g",                         "none" );
+					std::string sca               = bag.GetString( "sca",                       "0.85" );
+					double hb_ratio               = bag.GetDouble( "hb_ratio",                  0.75 );
+					double whole_blood            = bag.GetDouble( "whole_blood",               0.012 );
+					double bilirubin_concentration= bag.GetDouble( "bilirubin_concentration",   0.05 );
+					double betacarotene_concentration = bag.GetDouble( "betacarotene_concentration", 7.0e-5 );
+					bool diffuse                  = bag.GetBool(   "diffuse",                   true );
+
+					return pJob.AddGenericHumanTissueMaterial( name.c_str(), sca.c_str(), g.c_str(), whole_blood, hb_ratio, bilirubin_concentration, betacarotene_concentration, diffuse );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "generic_human_tissue_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Parametric human-tissue scattering material.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";                     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "sca";                      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering amplitude"; }
+						{ auto& p = P(); p.name = "g";                        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phase-function asymmetry"; }
+						{ auto& p = P(); p.name = "whole_blood";              p.kind = ValueKind::Double;    p.description = "Blood volume fraction"; p.defaultValueHint = "0.012"; }
+						{ auto& p = P(); p.name = "hb_ratio";                 p.kind = ValueKind::Double;    p.description = "Oxygenated hemoglobin ratio"; p.defaultValueHint = "0.75"; }
+						{ auto& p = P(); p.name = "bilirubin_concentration";  p.kind = ValueKind::Double;    p.description = "Bilirubin concentration"; p.defaultValueHint = "0.05"; }
+						{ auto& p = P(); p.name = "betacarotene_concentration";p.kind = ValueKind::Double;   p.description = "Beta-carotene concentration"; p.defaultValueHint = "7.0e-5"; }
+						{ auto& p = P(); p.name = "diffuse";                  p.kind = ValueKind::Bool;      p.description = "Use diffuse approximation"; p.defaultValueHint = "TRUE"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct CompositeMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name           = bag.GetString( "name",                      "noname" );
+					std::string top            = bag.GetString( "top",                       "none" );
+					std::string bottom         = bag.GetString( "bottom",                    "none" );
+					unsigned int max_recur     = bag.GetUInt(   "max_recursion",             3 );
+					unsigned int max_refl_recur= bag.GetUInt(   "max_reflection_recursion",  3 );
+					unsigned int max_refr_recur= bag.GetUInt(   "max_refraction_recursion",  3 );
+					unsigned int max_diff_recur= bag.GetUInt(   "max_diffuse_recursion",     3 );
+					unsigned int max_tran_recur= bag.GetUInt(   "max_translucent_recursion", 3 );
+					double thickness           = bag.GetDouble( "thickness",                 0.0 );
+					std::string extinction     = bag.GetString( "extinction",                "none" );
+
+					return pJob.AddCompositeMaterial( name.c_str(), top.c_str(), bottom.c_str(), max_recur, max_refl_recur, max_refr_recur, max_diff_recur, max_tran_recur, thickness, extinction.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "composite_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Layered composite of two materials separated by a translucent interior.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";                 p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "top";                  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Top material"; }
+						{ auto& p = P(); p.name = "bottom";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Bottom material"; }
+						{ auto& p = P(); p.name = "max_recursion";            p.kind = ValueKind::UInt; p.description = "Max composite recursion"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "max_reflection_recursion"; p.kind = ValueKind::UInt; p.description = "Max reflection recursion"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "max_refraction_recursion"; p.kind = ValueKind::UInt; p.description = "Max refraction recursion"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "max_diffuse_recursion";    p.kind = ValueKind::UInt; p.description = "Max diffuse recursion"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "max_translucent_recursion";p.kind = ValueKind::UInt; p.description = "Max translucent recursion"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "thickness";            p.kind = ValueKind::Double;    p.description = "Layer thickness"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "extinction";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Interior extinction"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct WardIsotropicGaussianMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name  = bag.GetString( "name",  "noname" );
+					std::string rd    = bag.GetString( "rd",    "none" );
+					std::string rs    = bag.GetString( "rs",    "none" );
+					std::string alpha = bag.GetString( "alpha", "0.1" );
+
+					return pJob.AddWardIsotropicGaussianMaterial( name.c_str(), rd.c_str(), rs.c_str(), alpha.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "ward_isotropic_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Ward isotropic Gaussian BRDF.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rd";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
+						{ auto& p = P(); p.name = "rs";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
+						{ auto& p = P(); p.name = "alpha"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface slope RMS (scalar_painter, or inline `r g b` or scalar)"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct WardAnisotropicEllipticalGaussianMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string rd     = bag.GetString( "rd",     "none" );
+					std::string rs     = bag.GetString( "rs",     "none" );
+					std::string alphax = bag.GetString( "alphax", "0.1" );
+					std::string alphay = bag.GetString( "alphay", "0.2" );
+
+					return pJob.AddWardAnisotropicEllipticalGaussianMaterial( name.c_str(), rd.c_str(), rs.c_str(), alphax.c_str(), alphay.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "ward_anisotropic_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Ward anisotropic elliptical-Gaussian BRDF.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rd";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
+						{ auto& p = P(); p.name = "rs";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
+						{ auto& p = P(); p.name = "alphax"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X-direction slope RMS (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "alphay"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y-direction slope RMS (scalar_painter, or inline `r g b` or scalar)"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct GGXMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name       = bag.GetString( "name",       "noname" );
+					std::string rd         = bag.GetString( "rd",         "none" );
+					std::string rs         = bag.GetString( "rs",         "none" );
+					std::string alphax     = bag.GetString( "alphax",     "0.15" );
+					std::string alphay     = bag.GetString( "alphay",     "0.15" );
+					std::string ior        = bag.GetString( "ior",        "2.45" );
+					std::string extinction = bag.GetString( "extinction", "3.45" );
+					// Optional emissive: when present, fold a LambertianEmitter
+					// into the material so glTF pbrMetallicRoughness emissives
+					// can be expressed as one chunk instead of needing a
+					// separate composite_emitter wrapper.
+					std::string emissive   = bag.GetString( "emissive",        "none" );
+					double emissive_scale  = bag.GetDouble( "emissive_scale",  1.0 );
+					std::string fresnelMode = bag.GetString( "fresnel_mode",   "conductor" );
+					// Thin-film FILM slots (eFresnelThinFilmConductor).  Default
+					// "none" => no film painter; Job::AddGGXMaterial enforces that
+					// thinfilm mode supplies film_ior + film_thickness (the P2-B
+					// BSDF contract dereferences them when the mode is selected).
+					std::string filmIor       = bag.GetString( "film_ior",        "none" );
+					std::string filmExtinction= bag.GetString( "film_extinction", "none" );
+					std::string filmThickness = bag.GetString( "film_thickness",  "none" );
+					// P0-A: tangent-frame rotation (painter OR scalar radians; "none" =
+					// aligned with the geometry tangent).  Job::AddGGXMaterial + the GGX
+					// BRDF already apply it (ResolveTangentONB/RotateTangent) -- this just
+					// stops ggx_material hard-coding "none".  Steers groove-aligned anisotropy.
+					std::string tangentRot    = bag.GetString( "tangent_rotation", "none" );
+
+					if( emissive == "none" ) {
+						return pJob.AddGGXMaterial( name.c_str(), rd.c_str(), rs.c_str(),
+							alphax.c_str(), alphay.c_str(), ior.c_str(), extinction.c_str(),
+							fresnelMode.c_str(), tangentRot.c_str(),
+							filmIor.c_str(), filmExtinction.c_str(), filmThickness.c_str() );
+					}
+					return pJob.AddGGXEmissiveMaterial( name.c_str(), rd.c_str(), rs.c_str(),
+						alphax.c_str(), alphay.c_str(), ior.c_str(), extinction.c_str(),
+						emissive.c_str(), emissive_scale, fresnelMode.c_str(), tangentRot.c_str(),
+						filmIor.c_str(), filmExtinction.c_str(), filmThickness.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "ggx_material"; cd.category = ChunkCategory::Material;
+						cd.description = "GGX (Trowbridge-Reitz) microfacet BRDF with optional Fresnel.  "
+							"Optional `emissive` painter folds a LambertianEmitter into the material "
+							"(matches glTF pbrMetallicRoughness with non-zero emissiveFactor / "
+							"emissiveTexture); leave at default for non-emissive surfaces.  "
+							"`fresnel_mode` selects Fresnel evaluation: `conductor` (default) uses "
+							"the ior + extinction painters with a real conductor Fresnel and `rs` as "
+							"a tint; `schlick_f0` uses Schlick's F0-shaped approximation, treating "
+							"`rs` as F0 directly and ignoring ior + extinction (required by glTF "
+							"metallicRoughness PBR mapping; pbr_metallic_roughness_material picks "
+							"this automatically); `thinfilm` evaluates thin-film interference "
+							"(heat-tint / anodization color) on an air / oxide-film / metal stack — "
+							"`ior` + `extinction` carry the SUBSTRATE (metal) complex index and the "
+							"three `film_*` slots carry the oxide film (docs/THIN_FILM_INTERFERENCE.md).  "
+							"`thinfilm` REQUIRES `film_ior` and `film_thickness` (`film_extinction` optional).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rd";             p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
+						{ auto& p = P(); p.name = "rs";             p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance / F0"; }
+						{ auto& p = P(); p.name = "alphax";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X roughness"; }
+						{ auto& p = P(); p.name = "alphay";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y roughness"; }
+						{ auto& p = P(); p.name = "ior";            p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel IOR (ignored in schlick_f0 mode)"; }
+						{ auto& p = P(); p.name = "extinction";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (ignored in schlick_f0 mode)"; }
+						{ auto& p = P(); p.name = "emissive";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Optional emissive painter (LambertianEmitter folded in when present)"; }
+						{ auto& p = P(); p.name = "emissive_scale"; p.kind = ValueKind::Double;    p.description = "Multiplier on emissive radiance"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "fresnel_mode";   p.kind = ValueKind::String;    p.description = "Fresnel model: conductor | schlick_f0 | thinfilm"; p.defaultValueHint = "conductor"; }
+						{ auto& p = P(); p.name = "film_ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide n (scalar_painter; eFresnelThinFilmConductor only)"; }
+						{ auto& p = P(); p.name = "film_extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide k (scalar_painter; eFresnelThinFilmConductor only; default 0/none = transparent film)"; }
+						{ auto& p = P(); p.name = "film_thickness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide thickness in nm (scalar_painter, may be spatially varying; eFresnelThinFilmConductor only)"; }
+						{ auto& p = P(); p.name = "tangent_rotation"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Anisotropy tangent-frame rotation in RADIANS: a colour-painter reference (an expression_function2d gives a SPATIALLY-VARYING field, e.g. groove direction) OR an inline scalar.  \"none\" = aligned with the geometry tangent.  Resolved in the colour-painter manager, so a scalar_painter does NOT bind here -- use expression_function2d or a scalar.  Steers alphax!=alphay anisotropy."; p.defaultValueHint = "none"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PBRMetallicRoughnessMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name                = bag.GetString( "name",                 "noname" );
+					std::string base_color          = bag.GetString( "base_color",           "none" );
+					std::string metallic            = bag.GetString( "metallic",             "0.0" );
+					std::string roughness           = bag.GetString( "roughness",            "0.5" );
+					double      ior                 = bag.GetDouble( "ior",                  1.5 );
+					std::string emissive            = bag.GetString( "emissive",             "none" );
+					double      emissive_scale      = bag.GetDouble( "emissive_scale",       1.0 );
+					// Landing 7 (KHR_materials_specular)
+					std::string specular_factor     = bag.GetString( "specular_factor",      "1.0" );
+					std::string specular_color      = bag.GetString( "specular_color",       "none" );
+					// Landing 8 (KHR_materials_anisotropy)
+					std::string anisotropy_factor   = bag.GetString( "anisotropy_factor",    "0.0" );
+					std::string anisotropy_rotation = bag.GetString( "anisotropy_rotation",  "0.0" );
+					return pJob.AddPBRMetallicRoughnessMaterial(
+						name.c_str(), base_color.c_str(),
+						metallic.c_str(), roughness.c_str(),
+						ior, emissive.c_str(), emissive_scale,
+						specular_factor.c_str(),
+						specular_color.c_str(),
+						anisotropy_factor.c_str(),
+						anisotropy_rotation.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "pbr_metallic_roughness_material"; cd.category = ChunkCategory::Material;
+						cd.description = "glTF 2.0 pbrMetallicRoughness material.  Single-chunk authoring "
+							"surface that takes baseColor / metallic / roughness / emissive painters and "
+							"composes the equivalent ggx_material under the hood.  The internal mapping is: "
+							"`F0 = lerp(0.04, baseColor, metallic)` for the GGX specular reflectance, "
+							"`baseColor * (1 - metallic)` for the diffuse colour painter, "
+							"`roughness * roughness` for the GGX α (isotropic).  The (1 - max(F0)) "
+							"diffuse-vs-specular energy split is applied by the BSDF at evaluation time "
+							"(not pre-multiplied into the diffuse painter).  Fresnel mode is forced to "
+							"`schlick_f0`, which treats `F0` as the Schlick-approximation F0 directly and "
+							"ignores the `ior` argument (preserved for API stability only).  "
+							"Internal painters live under prefix `__pbrmr_<name>__`; don't reference "
+							"them by name.  `metallic` and `roughness` can be either a painter reference "
+							"or a scalar string like \"0.5\" (auto-promoted to a uniformcolor painter).  "
+							"`emissive` is optional; pass \"none\" or omit for non-emissive surfaces. "
+							"Full design + Phase 3 status in docs/GLTF_IMPORT.md §4 and §13.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "base_color";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.required = true; p.description = "Base color painter (sRGB-decoded RGB; texture or uniform)"; }
+						{ auto& p = P(); p.name = "metallic";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Metallic painter or scalar string (default 0.0)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "roughness";      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Roughness painter or scalar string (default 0.5)"; p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "ior";            p.kind = ValueKind::Double;    p.description = "Preserved for API stability; ignored under the schlick_f0 Fresnel path that this chunk forces"; p.defaultValueHint = "1.5"; }
+						{ auto& p = P(); p.name = "emissive";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Optional emissive painter; pass \"none\" / omit for non-emissive"; }
+						{ auto& p = P(); p.name = "emissive_scale"; p.kind = ValueKind::Double;    p.description = "Multiplier on emissive radiance"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "specular_factor";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 7 / KHR_materials_specular: scalar in [0, 1] (or scalar painter) scaling the dielectric F0.  Default 1.0 = standard 0.04 dielectric F0; lower values reduce the dielectric specular highlight (matte plastic / paint).  Metals are unaffected (their F0 = baseColor).  Accepts a painter reference OR a literal scalar string like \"0.5\"."; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "specular_color";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 7 / KHR_materials_specular: RGB tint on dielectric F0.  Default \"none\" = white (untinted, F0 stays at 0.04 across all wavelengths).  Set to a non-white painter for measured dielectrics where the Fresnel response varies with wavelength.  Final F0 = 0.04 × specular_color × specular_factor."; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "anisotropy_factor"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 8 / KHR_materials_anisotropy: scalar in [0, 1] (or scalar painter) controlling specular-lobe stretch along the tangent direction.  Default 0 = isotropic (αx = αy = roughness²; bit-identical to pre-L8 PBR-MR).  Larger values stretch the lobe: αt = mix(α, 1, anisotropy²), αb = α.  Useful for brushed metal, hair, fabric.  Accepts a painter reference OR a literal scalar string."; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "anisotropy_rotation"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 8 / KHR_materials_anisotropy: tangent-frame rotation in RADIANS (or scalar painter).  Default 0 = aligned with the geometry's TANGENT attribute.  Phase 1 reads but does not yet APPLY the rotation; rotation is wired alongside the anisotropy_texture in L12.  Document for forward compatibility."; p.defaultValueHint = "0.0"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct CookTorranceMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name       = bag.GetString( "name",       "noname" );
+					std::string rd         = bag.GetString( "rd",         "none" );
+					std::string rs         = bag.GetString( "rs",         "none" );
+					std::string facets     = bag.GetString( "facets",     "0.15" );
+					std::string ior        = bag.GetString( "ior",        "2.45" );
+					std::string extinction = bag.GetString( "extinction", "1" );
+					// Thin-film interference is intentionally GGX-only; reject it
+					// here with a clear, specific diagnostic rather than silently
+					// ignoring the mode (the CT BSDF has no thin-film Fresnel path).
+					std::string fresnelMode = bag.GetString( "fresnel_mode", "conductor" );
+					if( fresnelMode == "thinfilm" ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"cooktorrance_material `%s`: fresnel_mode `thinfilm` is not supported on Cook-Torrance (thin-film interference is GGX-only).  Use a ggx_material with fresnel_mode thinfilm + film_ior / film_extinction / film_thickness instead (docs/THIN_FILM_INTERFERENCE.md §7).",
+							name.c_str() );
+						return false;
+					}
+					if( fresnelMode != "conductor" ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"cooktorrance_material `%s`: unknown fresnel_mode `%s`.  Cook-Torrance supports only `conductor`.",
+							name.c_str(), fresnelMode.c_str() );
+						return false;
+					}
+
+					return pJob.AddCookTorranceMaterial( name.c_str(), rd.c_str(), rs.c_str(), facets.c_str(), ior.c_str(), extinction.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "cooktorrance_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Cook-Torrance microfacet BRDF.  Only `fresnel_mode conductor` is supported; "
+							"`thinfilm` is GGX-only and rejected with a diagnostic.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rd";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
+						{ auto& p = P(); p.name = "rs";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
+						{ auto& p = P(); p.name = "facets";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Microfacet slope distribution (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel IOR (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "fresnel_mode"; p.kind = ValueKind::String; p.description = "Fresnel model: conductor (only).  `thinfilm` is GGX-only and rejected here."; p.defaultValueHint = "conductor"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct OrenNayarMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string reflectance = bag.GetString( "reflectance", "none" );
+					std::string roughness   = bag.GetString( "roughness",   "0.5" );
+
+					return pJob.AddOrenNayarMaterial( name.c_str(), reflectance.c_str(), roughness.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "orennayar_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Oren-Nayar rough-diffuse BRDF.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Albedo"; }
+						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness sigma (scalar_painter, or inline `r g b` or scalar)"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct SheenMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name      = bag.GetString( "name",            "noname" );
+					std::string color     = bag.GetString( "sheen_color",     "none" );
+					std::string roughness = bag.GetString( "sheen_roughness", "0.5" );
+					return pJob.AddSheenMaterial( name.c_str(), color.c_str(), roughness.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "sheen_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Charlie / Neubelt sheen BRDF for fabric / cloth surfaces.  "
+							"Designed as the top layer in a CompositeMaterial(top=sheen, bottom=base) "
+							"pairing for glTF KHR_materials_sheen, but usable standalone.  No diffuse "
+							"or Fresnel — the layer just adds the colour-tinted grazing scatter "
+							"characteristic of velvet, suede, satin.  Roughness controls how broad "
+							"the lobe is (low = sharp grazing highlights, high = diffuse-like sheen).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "sheen_color";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.required = true; p.description = "Sheen tint (typical 0..1)"; }
+						{ auto& p = P(); p.name = "sheen_roughness"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Sheen roughness painter or scalar (clamped to >= 1e-3 internally)"; p.defaultValueHint = "0.5"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct SchlickMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name      = bag.GetString( "name",      "noname" );
+					std::string rd        = bag.GetString( "rd",        "none" );
+					std::string rs        = bag.GetString( "rs",        "none" );
+					std::string roughness = bag.GetString( "roughness", "0.05" );
+					std::string isotropy  = bag.GetString( "isotropy",  "1" );
+
+					return pJob.AddSchlickMaterial( name.c_str(), rd.c_str(), rs.c_str(), roughness.c_str(), isotropy.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "schlick_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Schlick BRDF approximation.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";      p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rd";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
+						{ auto& p = P(); p.name = "rs";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
+						{ auto& p = P(); p.name = "roughness"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "isotropy";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Isotropy factor (scalar_painter, or inline `r g b` or scalar)"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct DataDrivenMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string filename = bag.GetString( "filename", "" );
+
+					return pJob.AddDataDrivenMaterial( name.c_str(), filename.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "datadriven_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Data-driven BRDF loaded from file (MERL format).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "filename"; p.kind = ValueKind::Filename; p.description = "BRDF data file"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+
+			//////////////////////////////////////////
+			// Scene-level options (top-of-file scope)
+			//////////////////////////////////////////
+
+			// `scene_options` declares the world-unit scale.  Stored
+			// in thread_local parser state and consumed by camera
+			// chunks at parse time.  Place AT OR NEAR THE TOP of the
+			// .RISEscene file (before any camera) — values declared
+			// after a camera don't reach back.  Same declaration-order
+			// rule as `standard_shader`, `camera_defaults`, etc.
+			//
+			// Today this only governs camera lens-mm-to-scene-unit
+			// conversion; future phases (volumetric atmosphere,
+			// physical sky, sensor noise) will consume the same scale.
+			struct SceneOptionsAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& /*pJob*/ ) const override
+				{
+					if( bag.Has( "scene_unit" ) ) {
+						const double v = bag.GetDouble( "scene_unit" );
+						if( v <= 0.0 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scene_options:: scene_unit must be positive (got %g). "
+								"It's the meters-per-scene-unit factor — 1.0 for meters, "
+								"0.001 for mm, 0.0254 for inches.", v );
+							return false;
+						}
+						// Catch the misplaced-block footgun: if a camera
+						// was already finalized with the old scene_unit,
+						// changing it now has no effect on that camera
+						// (its lens math is locked in).  Warn loudly so
+						// the user notices rather than silently rendering
+						// a 1000×-misscaled image.
+						if( s_sceneOptions.camera_committed
+						    && v != s_sceneOptions.scene_unit_meters ) {
+							GlobalLog()->PrintEx( eLog_Warning,
+								"scene_options:: declared AFTER a camera was already finalized. "
+								"The camera locked in scene_unit = %g; this block sets %g but the "
+								"camera's lens math is unchanged. Move `scene_options` to the top "
+								"of the .RISEscene file, before any camera chunk.",
+								s_sceneOptions.scene_unit_meters, v );
+						}
+						s_sceneOptions.scene_unit_meters = v;
+					}
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "scene_options"; cd.category = ChunkCategory::Camera;
+						cd.description = "Scene-level options. Currently sets the world-unit scale that bridges scene-geometry units to mm-input on cameras. Place near the top of the file (before any camera).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{
+							auto& p = P();
+							p.name = "scene_unit"; p.kind = ValueKind::Double;
+							p.description = "Meters per scene unit. Default 1.0 = scenes are in meters. Set 0.001 for mm-scale scenes, 0.0254 for inches, etc. Affects camera lens-input conversion (sensor_size / focal_length / shift_x/y are mm in the scene file regardless of this value; the camera converts to scene units via this factor).";
+							p.defaultValueHint = "1.0";
+							p.unitLabel = "m / unit";
+							p.presets = {
+								{ "Meters (default)", "1.0" },
+								{ "Centimetres",      "0.01" },
+								{ "Millimetres",      "0.001" },
+								{ "Inches",           "0.0254" },
+								{ "Feet",             "0.3048" },
+							};
+						}
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//////////////////////////////////////////
+			// Cameras
+			//////////////////////////////////////////
+
+			// Scene-level camera defaults.  Consumed by thinlens_camera
+			// when a per-camera value is omitted.  Place this chunk
+			// AT OR NEAR THE TOP of the .RISEscene file (before any
+			// camera that should use it) — values declared after a
+			// camera don't reach back.  Same declaration-order rule
+			// as `standard_shader` and the other scene-level blocks.
+			//
+			// Currently sets fallbacks for the photographic-quartet
+			// scalars; tilt/shift are deliberately not fallbackable
+			// because they're shot-specific and tend to need per-camera
+			// override even within a single scene.
+			struct CameraDefaultsAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& /*pJob*/ ) const override
+				{
+					if( bag.Has( "sensor_size" ) ) {
+						s_cameraDefaults.sensor_size     = bag.GetDouble( "sensor_size" );
+						s_cameraDefaults.has_sensor_size = true;
+					}
+					if( bag.Has( "focal_length" ) ) {
+						s_cameraDefaults.focal_length     = bag.GetDouble( "focal_length" );
+						s_cameraDefaults.has_focal_length = true;
+					}
+					if( bag.Has( "fstop" ) ) {
+						s_cameraDefaults.fstop     = bag.GetDouble( "fstop" );
+						s_cameraDefaults.has_fstop = true;
+					}
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "camera_defaults"; cd.category = ChunkCategory::Camera;
+						cd.description = "Scene-level fallback values for thinlens_camera. Cameras declared AFTER this chunk pick up these values when they omit the corresponding parameter; cameras declared before are unaffected.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{
+							auto& p = P();
+							p.name = "sensor_size"; p.kind = ValueKind::Double;
+							p.description = "Default sensor width in MILLIMETRES.";
+							p.defaultValueHint = "36";
+							p.unitLabel = "mm";
+							p.presets = {
+								{ "Full-frame 35mm",         "36" },
+								{ "APS-C (Sony/Nikon/Fuji)", "23.6" },
+								{ "APS-C (Canon)",           "22.3" },
+								{ "Super 35 (cinema)",       "24.89" },
+								{ "Micro Four Thirds",       "17.3" },
+								{ "Vista Vision",            "37.72" },
+								{ "IMAX 70mm",               "70.41" },
+								{ "645 medium format",       "56" },
+								{ "6×7 medium format",       "70" },
+								{ "6×9 medium format",       "84" },
+								{ "4×5 large format",        "121" },
+								{ "8×10 large format",       "254" },
+							};
+						}
+						{ auto& p = P(); p.name = "focal_length"; p.kind = ValueKind::Double; p.description = "Default lens focal length in MILLIMETRES."; p.defaultValueHint = "35"; p.unitLabel = "mm"; }
+						{ auto& p = P(); p.name = "fstop";        p.kind = ValueKind::Double; p.description = "Default f-number (dimensionless)."; p.defaultValueHint = "2.8"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PinholeCameraAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
+					double fov          = 30.0 * DEG_TO_RAD;
+					if( bag.Has( "fov" ) ) fov = bag.GetDouble( "fov" ) * DEG_TO_RAD;
+					double exposure     = bag.GetDouble( "exposure",      0 );
+					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
+					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
+					// Landing 5: photographic exposure metadata.  Both
+					// default 0 (= disabled), so any pre-L5 scene that
+					// omits these keeps its exact pre-L5 behaviour.
+					double iso          = bag.GetDouble( "iso",           0.0 );
+					double fstop        = bag.GetDouble( "fstop",         0.0 );
+
+					double loc[3]    = {0,0,0};
+					double lookat[3] = {0,0,-1};
+					double up[3]     = {0,1,0};
+					bag.GetVec3( "location", loc );
+					bag.GetVec3( "lookat",   lookat );
+					bag.GetVec3( "up",       up );
+
+					double orientation[3] = {0,0,0};
+					if( bag.Has( "orientation" ) ) {
+						bag.GetVec3( "orientation", orientation );
+					}
+					if( bag.Has( "pitch" ) ) orientation[0] = bag.GetDouble( "pitch" );
+					if( bag.Has( "roll" ) )  orientation[1] = bag.GetDouble( "roll" );
+					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
+
+					double target_orientation[2] = {0,0};
+					if( bag.Has( "target_orientation" ) ) {
+						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
+					}
+					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
+					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
+
+					orientation[0] *= DEG_TO_RAD;
+					orientation[1] *= DEG_TO_RAD;
+					orientation[2] *= DEG_TO_RAD;
+
+					target_orientation[0] *= DEG_TO_RAD;
+					target_orientation[1] *= DEG_TO_RAD;
+
+					// Landing 5: validate physical exposure parameters at
+					// the parser layer so authors get clear feedback
+					// before construction.  The camera constructor's own
+					// guard returns 0 evCompensation as a fallback.
+					if( iso > 0.0 ) {
+						if( fstop <= 0.0 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"pinhole_camera:: `iso` is set (%g) but `fstop` is missing or non-positive (%g).  "
+								"Pinhole cameras have no geometric DOF, so `fstop` is used only for EV computation; "
+								"set it to a typical photographic value (e.g. f/2.8 - f/16).",
+								iso, fstop );
+							return false;
+						}
+						if( exposure <= 0.0 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"pinhole_camera:: `iso` is set (%g) but `exposure` (shutter time, seconds) is %g.  "
+								"Physical exposure requires a real shutter time; set `exposure` to e.g. 0.004 for 1/250 s.",
+								iso, exposure );
+							return false;
+						}
+					}
+
+					return pJob.AddPinholeCamera( name.c_str(), loc, lookat, up, fov, exposure, scanningRate, pixelRate, orientation, target_orientation, iso, fstop );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "pinhole_camera"; cd.category = ChunkCategory::Camera;
+						cd.description = "Standard perspective (pinhole) camera.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "fov"; p.kind = ValueKind::Double; p.description = "Field of view (degrees)"; p.defaultValueHint = "45"; }
+						AddCameraCommonParams( P );
+						{ auto& p = P(); p.name = "iso";   p.kind = ValueKind::Double; p.description = "Landing 5: ISO sensitivity (sensor speed).  Default 0 = physical exposure DISABLED — the camera contributes no exposure compensation and existing scenes render bit-identically.  When > 0, the camera computes an EV-stops compensation from (iso, fstop, exposure) and stacks it ADDITIVELY into LDR outputs (PNG / JPEG); HDR archival outputs (EXR / RGBE) ignore it to preserve linear-radiance ground truth.  Requires `fstop` > 0 and `exposure` (shutter time, seconds) > 0.  Typical values: 100 (lowest noise), 400 (interior), 1600 (low light).  Pinhole has no geometric DOF, so `fstop` only drives the EV stack."; p.defaultValueHint = "0 (disabled)"; }
+						{ auto& p = P(); p.name = "fstop"; p.kind = ValueKind::Double; p.description = "Landing 5: f-number for EV computation.  Required when `iso > 0`; ignored otherwise.  Typical values: f/1.4 (very fast lens), f/2.8 (fast prime), f/8 (balanced), f/16 (sunny outdoor)."; p.defaultValueHint = "0 (disabled)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ONBPinholeCameraAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
+					double fov          = 30.0 * DEG_TO_RAD;
+					if( bag.Has( "fov" ) ) fov = bag.GetDouble( "fov" ) * DEG_TO_RAD;
+					double exposure     = bag.GetDouble( "exposure",      0 );
+					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
+					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
+					String components   = String( bag.GetString( "components" ).c_str() );
+
+					double loc[3] = {0,0,0};
+					double vA[3]  = {0,0,0};
+					double vB[3]  = {0,0,0};
+					bag.GetVec3( "location", loc );
+					bag.GetVec3( "va",       vA );
+					bag.GetVec3( "vb",       vB );
+
+					OrthonormalBasis3D	onb;
+
+					if( components == "UV" ) {
+						onb.CreateFromUV( vA, vB );
+					} else if( components == "VU" ) {
+						onb.CreateFromVU( vA, vB );
+					} else if( components == "UW" ) {
+						onb.CreateFromUW( vA, vB );
+					} else if( components == "WU" ) {
+						onb.CreateFromWU( vA, vB );
+					} else if( components == "VW" ) {
+						onb.CreateFromVW( vA, vB );
+					} else if( components == "WV" ) {
+						onb.CreateFromWV( vA, vB );
+					} else {
+						GlobalLog()->PrintEx( eLog_Error, "ONBPinholeCameraAsciiChunkParser:: Unknown component type `%s`", components.c_str() );
+							return false;
+					}
+
+					double ONB_U[3] = {onb.u().x, onb.u().y, onb.u().z};
+					double ONB_V[3] = {onb.v().x, onb.v().y, onb.v().z};
+					double ONB_W[3] = {onb.w().x, onb.w().y, onb.w().z};
+					return pJob.AddPinholeCameraONB( name.c_str(), ONB_U, ONB_V, ONB_W, loc, fov, exposure, scanningRate, pixelRate );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "onb_pinhole_camera"; cd.category = ChunkCategory::Camera;
+						cd.description = "Pinhole camera oriented via an orthonormal basis built from two axes (va, vb) plus a `components` selector.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;     p.description = "Optional identifier; defaults to \"default\" with auto-suffix on collision."; p.defaultValueHint = "default"; }
+						{ auto& p = P(); p.name = "location";      p.kind = ValueKind::DoubleVec3; p.description = "Eye position"; }
+						{ auto& p = P(); p.name = "va";            p.kind = ValueKind::DoubleVec3; p.description = "First ONB axis (used per `components`)"; }
+						{ auto& p = P(); p.name = "vb";            p.kind = ValueKind::DoubleVec3; p.description = "Second ONB axis (used per `components`)"; }
+						{ auto& p = P(); p.name = "components";    p.kind = ValueKind::Enum;       p.enumValues = {"UV","VU","UW","WU","VW","WV"}; p.description = "Which ONB components va/vb represent"; }
+						{ auto& p = P(); p.name = "fov";           p.kind = ValueKind::Double;     p.description = "Field of view (degrees)"; p.defaultValueHint = "30"; }
+						// width / height / pixelAR moved to the `film` chunk
+						// in scene format v6 (Phase B2 of the Camera/Film/Output
+						// split).  Camera chunks are now imaging-only.
+						{ auto& p = P(); p.name = "exposure";      p.kind = ValueKind::Double;     p.description = "Shutter exposure"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "scanning_rate"; p.kind = ValueKind::Double;     p.description = "Rolling-shutter rate"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "pixel_rate";    p.kind = ValueKind::Double;     p.description = "Per-pixel time offset"; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// thinlens_camera takes the photographic quartet
+			// (sensor_size, focal_length, fstop, focus_distance) plus
+			// optional aperture-shape params (blades, rotation,
+			// anamorphic squeeze).  The pre-photographic parameters
+			// `fov` and `aperture_size` are no longer accepted; the
+			// descriptor-driven parser rejects them automatically with
+			// "parameter not declared in descriptor" because they're
+			// absent from Describe() below.  Migration formula in
+			// docs/CAMERAS_ROADMAP.md Phase 1.0.
+			struct ThinlensCameraAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
+					// Photographic quartet — units (Phase 1.2):
+					//
+					//   sensor_size, focal_length, shift_x, shift_y
+					//     in MILLIMETRES (the photographic convention).
+					//   focus_distance
+					//     in scene units (matches geometry coords —
+					//     "focus at 5 metres" reads naturally in a
+					//     metres scene as `focus_distance 5`).
+					//
+					// The renderer converts mm-input → scene-units
+					// internally via the scene-level `scene_options
+					// { scene_unit ... }` factor (default 1.0 = scenes
+					// in metres).  This keeps the editor stable on mm
+					// regardless of geometry unit, and keeps the lens
+					// equation v=f·u/(u-f) unit-consistent inside the
+					// camera.  See ThinLensCamera::Recompute().
+					if( !bag.Has( "focus_distance" ) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"thinlens_camera:: `focus_distance` is required and has no default — set it explicitly to "
+							"the focus plane distance in your scene's unit (must be > focal_length-in-scene-units)." );
+						return false;
+					}
+					double focus        = bag.GetDouble( "focus_distance" );
+					// Per-camera value wins; otherwise fall through to
+					// scene-level `camera_defaults` (if declared earlier
+					// in the file); otherwise the hard-coded photographic
+					// default.  Defaults are in mm.
+					double sensor       = bag.Has( "sensor_size"  ) ? bag.GetDouble( "sensor_size"  )
+					                    : s_cameraDefaults.has_sensor_size  ? s_cameraDefaults.sensor_size
+					                    : 36.0;
+					double focal        = bag.Has( "focal_length" ) ? bag.GetDouble( "focal_length" )
+					                    : s_cameraDefaults.has_focal_length ? s_cameraDefaults.focal_length
+					                    : 35.0;
+					double fstop        = bag.Has( "fstop"        ) ? bag.GetDouble( "fstop"        )
+					                    : s_cameraDefaults.has_fstop        ? s_cameraDefaults.fstop
+					                    : 2.8;
+					// Aperture-shape (Phase 1.0 enrichments).
+					unsigned int blades = bag.GetUInt(   "aperture_blades",   0 );
+					double rotation     = bag.GetDouble( "aperture_rotation", 0 );
+					double squeeze      = bag.GetDouble( "anamorphic_squeeze", 1.0 );
+					// Tilt-shift (Phase 1.1).  Tilt is degrees in the
+					// scene file (parser converts to radians); shift is
+					// MILLIMETRES.  Defaults of 0 give a plain
+					// perpendicular-focus thin-lens (bit-identical to
+					// Phase 1.0 output).
+					double tilt_x       = bag.GetDouble( "tilt_x",            0 );
+					double tilt_y       = bag.GetDouble( "tilt_y",            0 );
+					double shift_x      = bag.GetDouble( "shift_x",           0 );
+					double shift_y      = bag.GetDouble( "shift_y",           0 );
+
+					// Scene-level unit scale (Phase 1.2).  Default 1.0
+					// (metres scene); set via `scene_options { scene_unit ... }`
+					// at the top of the .RISEscene file.
+					const double sceneUnitMeters = s_sceneOptions.scene_unit_meters;
+
+					double exposure     = bag.GetDouble( "exposure",       0 );
+					double scanningRate = bag.GetDouble( "scanning_rate",  0 );
+					double pixelRate    = bag.GetDouble( "pixel_rate",     0 );
+					// Landing 5: photographic exposure metadata.  Default
+					// 0 (= disabled) preserves pre-L5 behaviour.  When > 0,
+					// fstop and exposure (already read above) must be > 0.
+					double iso          = bag.GetDouble( "iso",            0.0 );
+
+					double loc[3]    = {0,0,0};
+					double lookat[3] = {0,0,-1};
+					double up[3]     = {0,1,0};
+					bag.GetVec3( "location", loc );
+					bag.GetVec3( "lookat",   lookat );
+					bag.GetVec3( "up",       up );
+
+					double orientation[3] = {0,0,0};
+					if( bag.Has( "orientation" ) ) {
+						bag.GetVec3( "orientation", orientation );
+					}
+					if( bag.Has( "pitch" ) ) orientation[0] = bag.GetDouble( "pitch" );
+					if( bag.Has( "roll" ) )  orientation[1] = bag.GetDouble( "roll" );
+					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
+
+					double target_orientation[2] = {0,0};
+					if( bag.Has( "target_orientation" ) ) {
+						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
+					}
+					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
+					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
+
+					if( fstop <= 0.0 ) {
+						GlobalLog()->PrintEx( eLog_Error, "thinlens_camera:: fstop must be positive; got %g", fstop );
+						return false;
+					}
+					if( sensor <= 0.0 || focal <= 0.0 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"thinlens_camera:: sensor_size (%g mm) and focal_length (%g mm) must both be positive", sensor, focal );
+						return false;
+					}
+					// Validate focus_distance > focal_length, both in
+					// SCENE UNITS — the lens equation v=f·u/(u-f) gives
+					// a negative film distance for u <= f.  focus is
+					// already in scene units; convert focal mm → scene
+					// units before comparing.
+					{
+						const double mm_to_scene  = 0.001 / sceneUnitMeters;
+						const double focal_scene  = focal * mm_to_scene;
+						if( focus <= focal_scene ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"thinlens_camera:: focus_distance (%g scene units) must be greater than "
+								"focal_length (%g mm = %g scene units, given scene_unit = %g m). "
+								"For a 35mm lens in a metres scene, set focus_distance to at least 0.05 (5cm); "
+								"the lens equation v=f·u/(u-f) requires u > f.",
+								focus, focal, focal_scene, sceneUnitMeters );
+							return false;
+						}
+					}
+
+					orientation[0] *= DEG_TO_RAD;
+					orientation[1] *= DEG_TO_RAD;
+					orientation[2] *= DEG_TO_RAD;
+
+					target_orientation[0] *= DEG_TO_RAD;
+					target_orientation[1] *= DEG_TO_RAD;
+
+					rotation *= DEG_TO_RAD;
+					tilt_x   *= DEG_TO_RAD;
+					tilt_y   *= DEG_TO_RAD;
+
+					// Cap tilt at ±80° (1.396 rad).  Beyond this,
+					// off-axis chief rays may go parallel to (or
+					// beyond) the focal plane, producing 1/0 in the
+					// focus-point math.  Real tilt-shift lenses
+					// max out around ±15°; an 80° ceiling leaves
+					// enough headroom for stylized renders without
+					// risking divide-by-zero NaN frames.
+					{
+						constexpr double kMaxTiltRad = 1.396;       // 80°, just shy of pi/2
+						if( fabs( tilt_x ) >= kMaxTiltRad || fabs( tilt_y ) >= kMaxTiltRad ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"thinlens_camera:: |tilt_x| (%g°) and |tilt_y| (%g°) must each be < 80°. "
+								"Real tilt-shift lenses max out around 15°; values closer to 90° would make "
+								"chief rays parallel to the focal plane (divide-by-zero).",
+								tilt_x * RAD_TO_DEG, tilt_y * RAD_TO_DEG );
+							return false;
+						}
+					}
+
+					// Mark the scene_options state as locked-in so a
+					// later `scene_options` block can warn the user
+					// it's too late to affect this camera.
+					s_sceneOptions.camera_committed = true;
+
+					// Landing 5: validate physical exposure parameters
+					// at the parser layer.  thinlens already requires
+					// fstop > 0 (validated above), so we only need to
+					// check exposure here.
+					if( iso > 0.0 && exposure <= 0.0 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"thinlens_camera:: `iso` is set (%g) but `exposure` (shutter time, seconds) is %g.  "
+							"Physical exposure requires a real shutter time; set `exposure` to e.g. 0.004 for 1/250 s.",
+							iso, exposure );
+						return false;
+					}
+
+					return pJob.AddThinlensCamera( name.c_str(), loc, lookat, up, sensor, focal, fstop, focus, sceneUnitMeters, exposure, scanningRate, pixelRate, orientation, target_orientation, blades, rotation, squeeze, tilt_x, tilt_y, shift_x, shift_y, iso );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "thinlens_camera"; cd.category = ChunkCategory::Camera;
+						cd.description = "Perspective camera with thin-lens depth of field, parameterised photographically (sensor_size + focal_length + fstop + focus_distance).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{
+							auto& p = P();
+							p.name = "sensor_size"; p.kind = ValueKind::Double;
+							p.description = "Sensor width in MILLIMETRES (always — the renderer converts to scene units via scene_options.scene_unit). 36 = full-frame 35mm.";
+							p.defaultValueHint = "36";
+							p.unitLabel = "mm";
+							// Surface the canonical photographic formats as
+							// quick-pick combo entries.  Values are in mm
+							// directly — no scaling needed regardless of
+							// the scene's geometry unit.
+							p.presets = {
+								{ "Full-frame 35mm",         "36" },
+								{ "APS-C (Sony/Nikon/Fuji)", "23.6" },
+								{ "APS-C (Canon)",           "22.3" },
+								{ "Super 35 (cinema)",       "24.89" },
+								{ "Micro Four Thirds",       "17.3" },
+								{ "Vista Vision",            "37.72" },
+								{ "IMAX 70mm",               "70.41" },
+								{ "645 medium format",       "56" },
+								{ "6×7 medium format",       "70" },
+								{ "6×9 medium format",       "84" },
+								{ "4×5 large format",        "121" },
+								{ "8×10 large format",       "254" },
+							};
+						}
+						{ auto& p = P(); p.name = "focal_length";       p.kind = ValueKind::Double; p.description = "Lens focal length in MILLIMETRES. 35 is 'natural' for a 36mm sensor; 50 is 'normal'; 24 is wide; 85 is portrait; 200+ is telephoto."; p.defaultValueHint = "35"; p.unitLabel = "mm"; }
+						{ auto& p = P(); p.name = "fstop";              p.kind = ValueKind::Double; p.description = "f-number (aperture diameter = focal_length / fstop)."; p.defaultValueHint = "2.8"; }
+						{ auto& p = P(); p.name = "focus_distance";     p.kind = ValueKind::Double; p.required = true; p.description = "Focus plane distance in SCENE UNITS (matches geometry coords — e.g. `focus_distance 5` means 5 scene units, which is 5 metres in a default metres scene). No default — set per scene. Must be greater than focal_length-converted-to-scene-units."; p.unitLabel = "scene units"; }
+						{ auto& p = P(); p.name = "aperture_blades";    p.kind = ValueKind::UInt;   p.description = "Polygonal aperture blades; 0 = perfect disk, typical cinematic 5-9."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "aperture_rotation";  p.kind = ValueKind::Double; p.description = "Polygon rotation in degrees."; p.defaultValueHint = "0"; p.unitLabel = "°"; }
+						{ auto& p = P(); p.name = "anamorphic_squeeze"; p.kind = ValueKind::Double; p.description = "Aperture x-axis scale for oval bokeh (1.0 = circular)."; p.defaultValueHint = "1.0"; }
+						// Tilt-shift (Phase 1.1).  Tilt rotates the
+						// FOCAL plane (Scheimpflug); shift translates
+						// the IMAGE plane (architectural correction).
+						{ auto& p = P(); p.name = "tilt_x";             p.kind = ValueKind::Double; p.description = "Focal-plane tilt around camera x-axis in degrees (Scheimpflug). Default 0 = perpendicular focus plane. |tilt_x| must be < 80°."; p.defaultValueHint = "0"; p.unitLabel = "°"; }
+						{ auto& p = P(); p.name = "tilt_y";             p.kind = ValueKind::Double; p.description = "Focal-plane tilt around camera y-axis in degrees (Scheimpflug). |tilt_y| must be < 80°."; p.defaultValueHint = "0"; p.unitLabel = "°"; }
+						{ auto& p = P(); p.name = "shift_x";            p.kind = ValueKind::Double; p.description = "Lens shift along camera x-axis in MILLIMETRES. Positive = lens shifts right (camera 'looks right', image content moves left in frame). Matches Blender Cycles convention."; p.defaultValueHint = "0"; p.unitLabel = "mm"; }
+						{ auto& p = P(); p.name = "shift_y";            p.kind = ValueKind::Double; p.description = "Lens shift along camera y-axis in MILLIMETRES. Positive = lens shifts up (camera 'looks up', image content moves down in frame). Architectural correction. Matches Blender Cycles convention."; p.defaultValueHint = "0"; p.unitLabel = "mm"; }
+						AddCameraCommonParams( P );
+						{ auto& p = P(); p.name = "iso"; p.kind = ValueKind::Double; p.description = "Landing 5: ISO sensitivity (sensor speed).  Default 0 = physical exposure DISABLED — the camera contributes no exposure compensation and existing scenes render bit-identically.  When > 0, the camera computes an EV-stops compensation from (iso, fstop, exposure) and stacks it ADDITIVELY into LDR outputs (PNG / JPEG); HDR archival outputs (EXR / RGBE) ignore it.  Reuses `fstop` (the same number that controls DOF) and `exposure` (the same number that controls motion blur) — physically consistent because the same aperture and shutter govern both effects.  Requires `exposure` > 0 when set.  Typical values: 100 (lowest noise), 400 (interior), 1600 (low light)."; p.defaultValueHint = "0 (disabled)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// `realistic_camera` keyword is reserved for the future
+			// multi-element lens-system camera (see
+			// docs/CAMERAS_ROADMAP.md Phase 4).  The previous stub
+			// (which delegated to thin-lens) was removed as part of
+			// the Phase 1.0 thin-lens parameter overhaul; existing
+			// scenes were migrated to `thinlens_camera`.
+
+			struct FisheyeCameraAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
+					double exposure     = bag.GetDouble( "exposure",      0 );
+					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
+					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
+					double scale        = bag.GetDouble( "scale",         1.0 );
+
+					double loc[3]    = {0,0,0};
+					double lookat[3] = {0,0,-1};
+					double up[3]     = {0,1,0};
+					bag.GetVec3( "location", loc );
+					bag.GetVec3( "lookat",   lookat );
+					bag.GetVec3( "up",       up );
+
+					double orientation[3] = {0,0,0};
+					if( bag.Has( "orientation" ) ) {
+						bag.GetVec3( "orientation", orientation );
+					}
+					if( bag.Has( "pitch" ) ) orientation[0] = bag.GetDouble( "pitch" );
+					if( bag.Has( "roll" ) )  orientation[1] = bag.GetDouble( "roll" );
+					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
+
+					double target_orientation[2] = {0,0};
+					if( bag.Has( "target_orientation" ) ) {
+						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
+					}
+					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
+					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
+
+					orientation[0] *= DEG_TO_RAD;
+					orientation[1] *= DEG_TO_RAD;
+					orientation[2] *= DEG_TO_RAD;
+
+					target_orientation[0] *= DEG_TO_RAD;
+					target_orientation[1] *= DEG_TO_RAD;
+
+					return pJob.AddFisheyeCamera( name.c_str(), loc, lookat, up, exposure, scanningRate, pixelRate, orientation, target_orientation, scale );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "fisheye_camera"; cd.category = ChunkCategory::Camera;
+						cd.description = "Fisheye (equidistant) camera.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "scale"; p.kind = ValueKind::Double; p.description = "Fisheye scale factor"; p.defaultValueHint = "1.0"; }
+						AddCameraCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct OrthographicCameraAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
+					double exposure   = bag.GetDouble( "exposure",      0 );
+					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
+					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
+
+					double loc[3]    = {0,0,0};
+					double lookat[3] = {0,0,-1};
+					double up[3]     = {0,1,0};
+					bag.GetVec3( "location", loc );
+					bag.GetVec3( "lookat",   lookat );
+					bag.GetVec3( "up",       up );
+
+					double vpscale[2] = {1.0,1.0};
+					if( bag.Has( "viewport_scale" ) ) {
+						sscanf( bag.GetString( "viewport_scale" ).c_str(), "%lf %lf", &vpscale[0], &vpscale[1] );
+					}
+
+					double orientation[3] = {0,0,0};
+					if( bag.Has( "orientation" ) ) {
+						bag.GetVec3( "orientation", orientation );
+					}
+					if( bag.Has( "pitch" ) ) orientation[0] = bag.GetDouble( "pitch" );
+					if( bag.Has( "roll" ) )  orientation[1] = bag.GetDouble( "roll" );
+					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
+
+					double target_orientation[2] = {0,0};
+					if( bag.Has( "target_orientation" ) ) {
+						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
+					}
+					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
+					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
+
+					orientation[0] *= DEG_TO_RAD;
+					orientation[1] *= DEG_TO_RAD;
+					orientation[2] *= DEG_TO_RAD;
+
+					target_orientation[0] *= DEG_TO_RAD;
+					target_orientation[1] *= DEG_TO_RAD;
+
+					return pJob.AddOrthographicCamera( name.c_str(), loc, lookat, up, vpscale, exposure, scanningRate, pixelRate, orientation, target_orientation );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "orthographic_camera"; cd.category = ChunkCategory::Camera;
+						cd.description = "Orthographic (parallel-projection) camera.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "viewport_scale"; p.kind = ValueKind::Double; p.description = "Orthographic viewport scale"; p.defaultValueHint = "1.0"; }
+						AddCameraCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//////////////////////////////////////////
+			// Film — pixel-grid descriptor
+			//
+			// The `film` chunk authors the scene's output resolution.
+			// As of scene format v6 (Phase B2), camera chunks no longer
+			// accept `width` / `height` / `pixelAR`; the `film` chunk
+			// is the sole authoring surface for raster dims.  The CLI
+			// flags --width / --height / --pixel-ar override whatever
+			// the scene's film chunk authored (and override the qHD
+			// default when neither is present).  Position within the
+			// scene file is unimportant: Job::SetFilm walks the camera
+			// manager and resyncs every camera's pixelAR + dim cache
+			// on each call, so a late `film` chunk after several
+			// cameras still wins.
+			//////////////////////////////////////////
+
+			struct FilmAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					// Defaults pulled from Rendering/Film.h so a `film {}`
+					// chunk produces the same Film as omitting the chunk
+					// (Job::InitializeContainers uses the same constants).
+					const unsigned int width   = bag.GetUInt(   "width",   kDefaultFilmWidth );
+					const unsigned int height  = bag.GetUInt(   "height",  kDefaultFilmHeight );
+					const double       pixelAR = bag.GetDouble( "pixelAR", kDefaultFilmPixelAR );
+					return pJob.SetFilm( width, height, pixelAR );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword     = "film";
+						cd.category    = ChunkCategory::Film;
+						cd.description = "Pixel-grid descriptor.  Sets the rendered image's "
+						                 "width, height, and pixel aspect ratio.  Defaults to "
+						                 "qHD (960 x 540) with square pixels if absent.  CLI "
+						                 "flags --width / --height / --pixel-ar override this.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "width";   p.kind = ValueKind::UInt;   p.description = "Image width (pixels)";  p.defaultValueHint = "960"; }
+						{ auto& p = P(); p.name = "height";  p.kind = ValueKind::UInt;   p.description = "Image height (pixels)"; p.defaultValueHint = "540"; }
+						{ auto& p = P(); p.name = "pixelAR"; p.kind = ValueKind::Double; p.description = "Pixel aspect ratio (1.0 = square)"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//////////////////////////////////////////
+			// Geometries
+			//////////////////////////////////////////
+
+			struct SphereGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name",   "noname" );
+					double      radius = bag.GetDouble( "radius", 1.0 );
+					return pJob.AddSphereGeometry( name.c_str(), radius );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "sphere_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Implicit sphere geometry.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "radius"; p.kind = ValueKind::Double; p.description = "Sphere radius"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct EllipsoidGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					double radii[3] = {1.0,1.0,1.0};
+					bag.GetVec3( "radii", radii );
+					return pJob.AddEllipsoidGeometry( name.c_str(), radii );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "ellipsoid_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Implicit ellipsoid (per-axis radii).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "radii"; p.kind = ValueKind::DoubleVec3; p.description = "Per-axis radii (semi-axes, like sphere_geometry radius)"; p.defaultValueHint = "1 1 1"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct CylinderGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name",   "noname" );
+					double radius    = bag.GetDouble( "radius", 1.0 );
+					double height    = bag.GetDouble( "height", 1.0 );
+					bool   capped    = bag.GetBool( "capped", true );
+					std::string axisStr = bag.GetString( "axis", "x" );
+					char axis        = axisStr.empty() ? 'x' : axisStr[0];
+					return pJob.AddCylinderGeometry( name.c_str(), axis, radius, height, capped );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "cylinder_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Implicit cylinder.  Default is a CLOSED SOLID (two end-cap disks) so an interior_medium bound to it is actually entered; set capped FALSE for a legacy open-ended tube (a camera ray along the axis then crosses no surface).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "axis";   p.kind = ValueKind::Enum;   p.enumValues = {"x","y","z"}; p.description = "Cylinder axis"; p.defaultValueHint = "x"; }
+						{ auto& p = P(); p.name = "radius"; p.kind = ValueKind::Double; p.description = "Cylinder radius"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "height"; p.kind = ValueKind::Double; p.description = "Cylinder height"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "capped"; p.kind = ValueKind::Bool;   p.description = "TRUE: closed solid with end-cap disks (enterable by an interior_medium); FALSE: open-ended tube (side wall only)"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct TorusGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name    = bag.GetString( "name",        "noname" );
+					double majorradius  = bag.GetDouble( "majorradius", 1.0 );
+					double minorratio   = bag.GetDouble( "minorratio",  0.3 );
+					return pJob.AddTorusGeometry( name.c_str(), majorradius, minorratio*majorradius );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "torus_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Implicit torus.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "majorradius"; p.kind = ValueKind::Double; p.description = "Major (tube-centre) radius"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "minorratio";  p.kind = ValueKind::Double; p.description = "Minor (tube) radius as a fraction of majorradius"; p.defaultValueHint = "0.3"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct InfinitePlaneGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name",  "noname" );
+					double xtile     = bag.GetDouble( "xtile", 1.0 );
+					double ytile     = bag.GetDouble( "ytile", 1.0 );
+					return pJob.AddInfinitePlaneGeometry( name.c_str(), xtile, ytile );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "infiniteplane_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Infinite tiling plane.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "xtile"; p.kind = ValueKind::Double; p.description = "Tile size in X"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "ytile"; p.kind = ValueKind::Double; p.description = "Tile size in Y"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct BoxGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name",   "noname" );
+					double width     = bag.GetDouble( "width",  1.0 );
+					double height    = bag.GetDouble( "height", 1.0 );
+					double depth     = bag.GetDouble( "depth",  1.0 );
+					return pJob.AddBoxGeometry( name.c_str(), width, height, depth );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "box_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Axis-aligned box.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "width";  p.kind = ValueKind::Double; p.description = "X extent"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "height"; p.kind = ValueKind::Double; p.description = "Y extent"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "depth";  p.kind = ValueKind::Double; p.description = "Z extent"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ClippedPlaneGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					double pta[3] = {0,0,0};
+					double ptb[3] = {0,0,0};
+					double ptc[3] = {0,0,0};
+					double ptd[3] = {0,0,0};
+					bag.GetVec3( "pta", pta );
+					bag.GetVec3( "ptb", ptb );
+					bag.GetVec3( "ptc", ptc );
+					bag.GetVec3( "ptd", ptd );
+					bool doublesided = bag.GetBool( "doublesided", true );
+					return pJob.AddClippedPlaneGeometry( name.c_str(), pta, ptb, ptc, ptd, doublesided );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "clippedplane_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Quad patch defined by four corner points.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "pta";         p.kind = ValueKind::DoubleVec3; p.description = "Corner A"; }
+						{ auto& p = P(); p.name = "ptb";         p.kind = ValueKind::DoubleVec3; p.description = "Corner B"; }
+						{ auto& p = P(); p.name = "ptc";         p.kind = ValueKind::DoubleVec3; p.description = "Corner C"; }
+						{ auto& p = P(); p.name = "ptd";         p.kind = ValueKind::DoubleVec3; p.description = "Corner D"; }
+						{ auto& p = P(); p.name = "doublesided"; p.kind = ValueKind::Bool;       p.description = "Rendered on both sides"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct Mesh3DSGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name",        "noname" );
+					std::string file = bag.GetString( "file",        "none" );
+					bool double_sided = bag.GetBool( "double_sided", false );
+					bool face_normals = bag.GetBool( "face_normals", false );
+					// Tier A2 cleanup (2026-04-27): `maxpolygons`, `maxdepth`,
+					// and `bsp` are accepted but ignored — BVH is the sole
+					// acceleration structure now and has no user-tunable
+					// build parameters from scene files.
+					return pJob.Add3DSTriangleMeshGeometry( name.c_str(), file.c_str(), double_sided, face_normals );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "3dsmesh_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Triangle mesh loaded from a 3D Studio .3ds file.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source .3ds file"; }
+						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool;     p.description = "Use flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						// Retired: accepted for backward compat with pre-A2 scene files; ignored.
+						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Retired (BVH is sole accelerator)"; }
+						{ auto& p = P(); p.name = "maxdepth";     p.kind = ValueKind::UInt;     p.description = "Retired (BVH is sole accelerator)"; }
+						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Retired (BVH is sole accelerator)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct RAWMeshGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name",        "noname" );
+					std::string file = bag.GetString( "file",        "none" );
+					bool double_sided = bag.GetBool( "double_sided", false );
+					// Legacy maxpolygons/maxdepth/bsp keys accepted but ignored (Tier A2).
+					return pJob.AddRAWTriangleMeshGeometry( name.c_str(), file.c_str(), double_sided );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "rawmesh_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Triangle mesh loaded from a RAW vertex file.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source RAW file"; }
+						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
+						// Retired: accepted for backward compat with pre-A2 scene files; ignored.
+						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Retired (BVH is sole accelerator)"; }
+						{ auto& p = P(); p.name = "maxdepth";     p.kind = ValueKind::UInt;     p.description = "Retired (BVH is sole accelerator)"; }
+						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Retired (BVH is sole accelerator)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct RAWMesh2GeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name",        "noname" );
+					std::string file = bag.GetString( "file",        "none" );
+					bool double_sided = bag.GetBool( "double_sided", false );
+					bool face_normals = bag.GetBool( "face_normals", false );
+					// Legacy maxpolygons/maxdepth/bsp keys accepted but ignored (Tier A2).
+					return pJob.AddRAW2TriangleMeshGeometry( name.c_str(), file.c_str(), double_sided, face_normals );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "rawmesh2_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Triangle mesh loaded from a RAW v2 file.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source RAW2 file"; }
+						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool;     p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						// Retired: accepted for backward compat with pre-A2 scene files; ignored.
+						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Retired (BVH is sole accelerator)"; }
+						{ auto& p = P(); p.name = "maxdepth";     p.kind = ValueKind::UInt;     p.description = "Retired (BVH is sole accelerator)"; }
+						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Retired (BVH is sole accelerator)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct RISEMeshGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name",           "noname" );
+					std::string file = bag.GetString( "file",           "none" );
+					bool loadintomem = bag.GetBool(   "loadintomemory", true );
+					bool face_normals= bag.GetBool(   "face_normals",   false );
+					return pJob.AddRISEMeshTriangleMeshGeometry( name.c_str(), file.c_str(), loadintomem, face_normals );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "risemesh_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Triangle mesh loaded from a RISE-native .risemesh file.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";           p.kind = ValueKind::Filename; p.description = "Source .risemesh file"; }
+						{ auto& p = P(); p.name = "loadintomemory"; p.kind = ValueKind::Bool;     p.description = "Load entire mesh into memory"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "face_normals";   p.kind = ValueKind::Bool;     p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PLYMeshGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",         "noname" );
+					std::string file        = bag.GetString( "file",         "none" );
+					bool double_sided       = bag.GetBool(   "double_sided", false );
+					bool invert_faces       = bag.GetBool(   "invert_faces", false );
+					bool face_normals       = bag.GetBool(   "face_normals", false );
+					return pJob.AddPLYTriangleMeshGeometry( name.c_str(), file.c_str(), double_sided, invert_faces, face_normals );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "plymesh_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Triangle mesh loaded from a Stanford PLY file.  "
+							"Per-vertex colors (when present in the PLY) are read into the "
+							"mesh and exposed at hit time via `vertex_color_painter`.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source .ply file"; }
+						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Treat polygons as double sided"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "invert_faces"; p.kind = ValueKind::Bool;     p.description = "Reverse face winding";          p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool;     p.description = "Flat per-face normals";         p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct GLTFImportAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string file              = bag.GetString( "file",                "none" );
+					std::string name_prefix       = bag.GetString( "name_prefix",         "gltf" );
+					// `scene_index` defaults to UINT_MAX (sentinel: "use the
+					// file's default scene") when omitted, so callers don't
+					// inadvertently override an asset's `"scene":` field.
+					// Explicit values map to the corresponding scenes[]
+					// array index.
+					unsigned int scene_index      = bag.Has( "scene_index" ) ?
+					                                  bag.GetUInt( "scene_index", 0u ) :
+					                                  UINT_MAX;
+					bool import_meshes            = bag.GetBool(   "import_meshes",       true );
+					bool import_materials         = bag.GetBool(   "import_materials",    true );
+					bool import_lights            = bag.GetBool(   "import_lights",       true );
+					bool import_cameras           = bag.GetBool(   "import_cameras",      true );
+					bool import_normal_maps       = bag.GetBool(   "import_normal_maps",  true );
+					bool lowmem_textures          = bag.GetBool(   "lowmem_textures",     false );
+					double lights_intensity_override       = bag.GetDouble( "lights_intensity_override",        0.0 );
+					double directional_intensity_override  = bag.GetDouble( "directional_intensity_override",   0.0 );
+					double point_intensity_override        = bag.GetDouble( "point_intensity_override",         0.0 );
+					double spot_intensity_override         = bag.GetDouble( "spot_intensity_override",          0.0 );
+					bool   respect_baked_occlusion         = bag.GetBool(   "respect_baked_occlusion",          true );
+					double emissive_intensity_scale        = bag.GetDouble( "emissive_intensity_scale",         1.0 );
+					double emissive_tint[3] = { 1.0, 1.0, 1.0 };
+					bag.GetVec3( "emissive_tint", emissive_tint );
+					if( lights_intensity_override > 0.0 ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"gltf_import:: `lights_intensity_override` is unit-blind (it conflates lux for "
+							"directional lights with candela for point/spot, which are different physical "
+							"quantities).  Prefer `directional_intensity_override` (lux), "
+							"`point_intensity_override` (candela), and `spot_intensity_override` (candela) -- "
+							"they respect glTF's per-type units.  Per-type values override this when set." );
+					}
+					return pJob.ImportGLTFScene(
+						file.c_str(), name_prefix.c_str(),
+						scene_index,
+						import_meshes, import_materials,
+						import_lights, import_cameras,
+						import_normal_maps,
+						lowmem_textures,
+						lights_intensity_override,
+						directional_intensity_override,
+						point_intensity_override,
+						spot_intensity_override,
+						respect_baked_occlusion,
+						emissive_intensity_scale,
+						emissive_tint[0],
+						emissive_tint[1],
+						emissive_tint[2] );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "gltf_import"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Bulk-import of a glTF 2.0 (.gltf or .glb) scene.  Walks the "
+							"scene tree and registers per-primitive standard_objects, per-material "
+							"pbr_metallic_roughness materials (Schlick-from-F0 PBR with optional "
+							"normal_map_modifier; per-material alpha-test or transparency shader op "
+							"for alphaMode = MASK / BLEND with per-pixel alpha read straight from "
+							"the baseColor texture's A channel), painters for each texture (embedded "
+							"`.glb` images decode in-memory; external URIs read from disk -- no "
+							"sidecar cache), lights from KHR_lights_punctual, and the first camera.  "
+							"Node transforms flow through `Job::AddObjectMatrix` verbatim (lossless "
+							"4x4, no Euler decomposition).  Object names are prefixed with "
+							"`name_prefix` to keep manager namespaces clean.  Phase 4 also wires "
+							"KHR_materials_emissive_strength, KHR_materials_unlit (via "
+							"LambertianLuminaireMaterial), and the scalar subset of "
+							"KHR_materials_transmission + volume + ior (refractive glass with Beer-"
+							"Lambert absorption).  Out of scope: animations, skinning, morph targets "
+							"(warn-and-skip), KHR_materials_clearcoat / sheen as a layer over PBR "
+							"(warn-and-skip; standalone sheen_material chunk works), "
+							"transmission_texture (per-pixel τ; warn), Draco / meshopt compression, "
+							"other KHR_materials_* (specular, anisotropy, iridescence, dispersion).  "
+							"alphaMode = MASK / BLEND are honoured only by integrators routing "
+							"through IShader::Shade() (PT and the legacy direct shaders) -- BDPT, "
+							"VCM, MLT, photon tracers bypass shader ops and treat both as opaque.  "
+							"See docs/GLTF_IMPORT.md §7, §13, §15 for full status.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "file";               p.kind = ValueKind::Filename; p.description = "Source .gltf or .glb file"; }
+						{ auto& p = P(); p.name = "name_prefix";        p.kind = ValueKind::String;   p.description = "Prefix for created geometry / material / object / light / camera names"; p.defaultValueHint = "gltf"; }
+						{ auto& p = P(); p.name = "scene_index";        p.kind = ValueKind::UInt;     p.description = "Index into the file's scenes[] array.  Omit (or use UINT_MAX) to import the file's default scene (the `scene` field in the glTF JSON), which is what most authoring tools intend; explicit values force a particular array index."; p.defaultValueHint = "(default scene)"; }
+						{ auto& p = P(); p.name = "import_meshes";      p.kind = ValueKind::Bool;     p.description = "Create per-primitive standard_objects"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "import_materials";   p.kind = ValueKind::Bool;     p.description = "Create one PBR material per glTF material"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "import_lights";      p.kind = ValueKind::Bool;     p.description = "Create lights from KHR_lights_punctual"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "import_cameras";     p.kind = ValueKind::Bool;     p.description = "Create the first camera (subsequent ones warn)"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "import_normal_maps"; p.kind = ValueKind::Bool;     p.description = "Attach normal_map_modifier when material has normalTexture"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "lowmem_textures";   p.kind = ValueKind::Bool;     p.description = "Defer texture color-space conversion to per-sample access.  Saves ~4x peak texture memory and 5-10x faster scene load on heavy-PBR assets (NewSponza-class), at the cost of ~25% per-sample render time (the sRGB->linear convert moves from load-time to ray-hit time).  Default FALSE (final-render workflow); flip TRUE for iteration on big scenes."; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "lights_intensity_override"; p.kind = ValueKind::Double; p.description = "DEPRECATED (Landing 4): unit-blind override that replaces zero authored intensities for ALL light types uniformly when > 0.  glTF assigns DIFFERENT physical units per type (lux for directional, candela for point/spot per KHR_lights_punctual) so a single number is physically meaningless across types.  Kept one release for back-compat (NewSponza-style scenes).  Prefer `directional_intensity_override`, `point_intensity_override`, `spot_intensity_override` below.  Per-type values override this when set."; p.defaultValueHint = "0 (no override)"; }
+						{ auto& p = P(); p.name = "directional_intensity_override"; p.kind = ValueKind::Double; p.description = "Per-type override for KHR_lights_punctual directional lights.  Units: LUX (lm/m²) -- glTF's authored unit for directional intensity.  Replaces zero authored intensities for directional lights only (lights set non-zero stay untouched).  Typical values: ~120000 for noon clear-sky sun, ~10000 for overcast day, ~100 for moonlight."; p.defaultValueHint = "0 (no override)"; }
+						{ auto& p = P(); p.name = "point_intensity_override";       p.kind = ValueKind::Double; p.description = "Per-type override for KHR_lights_punctual point lights.  Units: CANDELA (lm/sr) -- glTF's authored unit for point intensity.  Replaces zero authored intensities for point lights only.  Typical values: ~100 for a 60-W incandescent (~800 lm omnidirectional / 4 pi sr), ~1500 for a 100-W LED bulb."; p.defaultValueHint = "0 (no override)"; }
+						{ auto& p = P(); p.name = "spot_intensity_override";        p.kind = ValueKind::Double; p.description = "Per-type override for KHR_lights_punctual spot lights.  Units: CANDELA (lm/sr) along the spot's central axis -- glTF's authored unit for spot intensity.  Replaces zero authored intensities for spot lights only."; p.defaultValueHint = "0 (no override)"; }
+						{ auto& p = P(); p.name = "respect_baked_occlusion";       p.kind = ValueKind::Bool;   p.description = "Landing 13: when TRUE (default), import glTF `occlusionTexture` as a multiplier on the material's diffuse baseColor (× R-channel × occlusionStrength).  Recovers high-frequency baked AO that geometry can't reach (column flutes, brick mortar, fabric folds) but slightly double-counts the path tracer's own occlusion on direct light.  Set FALSE for strict-PB workflows where you want only the integrator's computed occlusion."; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "emissive_intensity_scale";      p.kind = ValueKind::Double; p.description = "Multiplier applied AFTER each material's authored `KHR_materials_emissive_strength` (or default 1.0).  Default 1.0 (no change).  Use to brighten ALL emissive surfaces in the import uniformly without editing the asset (e.g. a deep-dusk candle scene whose flame meshes are authored at daytime-balanced strength can multiply by 50-200 to make the candles dominate).  Unlike `lights_intensity_override` this is a SCALE (composes with authored values) -- emissive materials typically ship with meaningful chromatic / relative values whose ratios should be preserved.  Values <= 0 kill all emissive in the import.  Folded in once at import time, no per-sample cost."; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "emissive_tint";                 p.kind = ValueKind::DoubleVec3; p.description = "Per-channel R G B multiplier applied componentwise to every material's `emissiveFactor`.  Default (1, 1, 1) -- no tint.  Use to recolour emissive surfaces uniformly across the import without editing the asset, e.g. tint a pure-yellow flame `(1, 1, 0)` to warm orange via `emissive_tint 1.0 0.5 0.1` (final emissive becomes `(1, 0.5, 0)`).  Composes with `emissive_intensity_scale` (independent brightness vs chroma knobs).  Multiplies the FACTOR not the painted texture, so an authored 0.0 channel stays 0.0 (the tint can attenuate channels but cannot add a colour the asset never authored)."; p.defaultValueHint = "1 1 1"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct GLTFMeshGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name           = bag.GetString( "name",         "noname" );
+					std::string file           = bag.GetString( "file",         "none" );
+					unsigned int mesh_idx      = bag.GetUInt(   "mesh_index",    0 );
+					unsigned int primitive_idx = bag.GetUInt(   "primitive",     0 );
+					bool double_sided          = bag.GetBool(   "double_sided",  false );
+					bool face_normals          = bag.GetBool(   "face_normals",  false );
+					// Default flip_v to FALSE.  glTF 2.0 spec says V=0 is at
+					// the upper-left of the texture; PNG/JPEG decoders store
+					// row 0 at the top and RISE's BilinRasterImageAccessor
+					// passes V verbatim into the vertical-pixel index, so
+					// glTF V=0 already lands at the correct row without a
+					// flip.  Verified end-to-end via Avocado.glb (clean
+					// brown pit + yellow flesh + green skin) at commit
+					// 1c62acb.
+					bool flip_v                = bag.GetBool(   "flip_v",        false );
+					return pJob.AddGLTFTriangleMeshGeometry(
+						name.c_str(), file.c_str(),
+						mesh_idx, primitive_idx,
+						double_sided, face_normals, flip_v );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "gltfmesh_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Triangle mesh loaded from a glTF 2.0 (.gltf or .glb) file.  "
+							"Imports a single primitive of a single mesh -- materials, scene "
+							"structure, lights, cameras, and animations are NOT imported by this "
+							"chunk (Phase 1 of glTF support; bulk scene import comes in Phase 2 "
+							"via `gltf_import`).  See docs/GLTF_IMPORT.md for the design plan.  "
+							"POSITION + NORMAL + TANGENT + TEXCOORD_0 + TEXCOORD_1 + COLOR_0 + "
+							"indices are honoured; other attributes warn-and-discard.  "
+							"`flip_v` defaults to FALSE because the glTF 2.0 spec puts the UV "
+							"origin at the upper-left of the texture (V increases downward), "
+							"matching RISE's V-down sampling.  Override TRUE only for non-"
+							"conformant assets that ship with V already baked in upside-down.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source .gltf or .glb file"; }
+						{ auto& p = P(); p.name = "mesh_index";   p.kind = ValueKind::UInt;     p.description = "Which mesh in the file (0-based)"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "primitive";    p.kind = ValueKind::UInt;     p.description = "Which primitive within the mesh (0-based)"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Treat polygons as double sided"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool;     p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "flip_v";       p.kind = ValueKind::Bool;     p.description = "Flip TEXCOORD V at load (defaults FALSE — glTF UV origin is upper-left, matches RISE's V-down sampling already)"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct CircularDiskGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name",   "noname" );
+					double radius    = bag.GetDouble( "radius", 1.0 );
+					std::string axisStr = bag.GetString( "axis", "x" );
+					char axis        = axisStr.empty() ? 'x' : axisStr[0];
+					return pJob.AddCircularDiskGeometry( name.c_str(), radius, axis );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "circulardisk_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Flat circular disk.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "radius"; p.kind = ValueKind::Double; p.description = "Disk radius"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "axis";   p.kind = ValueKind::Enum;   p.enumValues = {"x","y","z"}; p.description = "Normal axis"; p.defaultValueHint = "x"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// bezierpatch_geometry is always analytic now.  The chunk accepts
+			// ONLY the minimal set of parameters that control the patch file
+			// and the patch-level acceleration structure.  Every parameter
+			// that relates to tessellation (detail, face_normals, double_sided,
+			// maxpolygons, maxpolydepth/poly_bsp, cache_size) or to the binary
+			// analytic/mesh switch (analytic) or to displacement (displacement,
+			// disp_scale) lives on `displaced_geometry` or is gone entirely.
+			// Any such parameter found here is rejected with a clear message
+			// so out-of-date scenes get an actionable error instead of silent
+			// behaviour drift.
+			struct BezierPatchGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					// Reject legacy parameters that have been retired.  The
+					// descriptor lists them so the dispatcher accepts them
+					// (instead of failing with a generic "unknown parameter"
+					// message), and Finalize emits the actionable error.
+					static const char* const kRetired[] = {
+						"analytic", "cache_size", "detail", "face_normals",
+						"double_sided", "poly_bsp", "maxpolygons", "maxpolydepth",
+						"displacement", "disp_scale"
+					};
+					for( const char* r : kRetired ) {
+						if( bag.Has( r ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"bezierpatch_geometry: parameter `%s` is no longer "
+								"accepted.  Rendering is always analytic; for a "
+								"tessellated or displaced mesh wrap the geometry in "
+								"a displaced_geometry chunk and set detail/"
+								"face_normals/double_sided/displacement/disp_scale "
+								"there.",
+								r );
+							return false;
+						}
+					}
+
+					std::string name = bag.GetString( "name",          "noname" );
+					std::string file = bag.GetString( "file",          "none" );
+					unsigned int maxPatches = bag.GetUInt( "maxpatches",    2 );
+					unsigned int maxRecur   = bag.GetUInt( "maxdepth",      8 );
+					bool bsp                = bag.GetBool( "bsp",           false );
+					bool center_object      = bag.GetBool( "center_object", false );
+
+					return pJob.AddBezierPatchGeometry( name.c_str(), file.c_str(), maxPatches, maxRecur, bsp, center_object );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "bezierpatch_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Bézier patch surface from file.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";          p.kind = ValueKind::Filename; p.description = "Patch file"; }
+						{ auto& p = P(); p.name = "maxpatches";    p.kind = ValueKind::UInt;     p.description = "Max patches per BSP leaf"; p.defaultValueHint = "2"; }
+						{ auto& p = P(); p.name = "maxdepth";      p.kind = ValueKind::UInt;     p.description = "Max BSP depth"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "bsp";           p.kind = ValueKind::Bool;     p.description = "Build BSP"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "center_object"; p.kind = ValueKind::Bool;     p.description = "Auto-center the mesh"; p.defaultValueHint = "FALSE"; }
+						// Retired parameters — accepted by the descriptor so we can
+						// emit a specific error in Finalize, then rejected.
+						{ auto& p = P(); p.name = "analytic";      p.kind = ValueKind::String;   p.description = "Retired — rendering is always analytic"; }
+						{ auto& p = P(); p.name = "cache_size";    p.kind = ValueKind::UInt;     p.description = "Retired — wrap in displaced_geometry"; }
+						{ auto& p = P(); p.name = "detail";        p.kind = ValueKind::UInt;     p.description = "Retired — wrap in displaced_geometry"; }
+						{ auto& p = P(); p.name = "face_normals";  p.kind = ValueKind::Bool;     p.description = "Retired — wrap in displaced_geometry"; }
+						{ auto& p = P(); p.name = "double_sided";  p.kind = ValueKind::Bool;     p.description = "Retired — wrap in displaced_geometry"; }
+						{ auto& p = P(); p.name = "poly_bsp";      p.kind = ValueKind::Bool;     p.description = "Retired — wrap in displaced_geometry"; }
+						{ auto& p = P(); p.name = "maxpolygons";   p.kind = ValueKind::UInt;     p.description = "Retired — wrap in displaced_geometry"; }
+						{ auto& p = P(); p.name = "maxpolydepth";  p.kind = ValueKind::UInt;     p.description = "Retired — wrap in displaced_geometry"; }
+						{ auto& p = P(); p.name = "displacement";  p.kind = ValueKind::String;   p.description = "Retired — wrap in displaced_geometry"; }
+						{ auto& p = P(); p.name = "disp_scale";    p.kind = ValueKind::Double;   p.description = "Retired — wrap in displaced_geometry"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct SDFGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string file = bag.GetString( "file", "" );
+					unsigned int maxSteps = bag.GetUInt( "maxsteps", 256 );
+					double eps = bag.GetDouble( "epsilon", 0.0 );
+					unsigned int samplingDetail = bag.GetUInt( "sampling_detail", 64 );
+
+					// Heightfield mode (analytic exact-surface twin of a displaced
+					// cartesian disk): when a heightfield_function is named, the SDF
+					// IS the surface z = heightfield_scale * f(u,v) over the square
+					// [-R,R]^2 -- sphere-traced, O(1) memory -- and the `part` / `file`
+					// path is bypassed entirely.
+					std::string hfFunction = bag.GetString( "heightfield_function", "none" );
+					double hfRadius = bag.GetDouble( "heightfield_radius", 1.0 );
+					double hfScale  = bag.GetDouble( "heightfield_scale", 0.0 );
+					if( hfFunction != "none" ) {
+						return pJob.AddSDFHeightfieldGeometry( name.c_str(), hfFunction.c_str(), hfRadius, hfScale, maxSteps, eps, samplingDetail );
+					}
+
+					// Inline `part` lines (repeatable, in authoring order) are
+					// joined into the newline-separated source that
+					// SDFGeometry::ParsePartLines understands.  The lines are
+					// forwarded VERBATIM -- future part-grammar extensions
+					// (new shapes / ops / per-part fields) need no change
+					// here.  Exactly-one-of-{`part` lines, `file`} is
+					// diagnosed by Job::AddSDFGeometry with the chunk name.
+					const std::vector<std::string>& partLines = bag.GetRepeatable( "part" );
+					std::string parts;
+					for( std::size_t i = 0; i < partLines.size(); ++i ) {
+						parts += partLines[i];
+						parts += "\n";
+					}
+
+					return pJob.AddSDFGeometry( name.c_str(), file.c_str(), parts.c_str(), maxSteps, eps, samplingDetail );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "sdf_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Signed-distance-field (implicit) surface: transformed primitives composed with smooth-min / boolean ops, sphere-traced.  For melded / filleted organic shapes (e.g. lugs flowing into a bezel).  Author the parts inline with repeatable `part` lines; use `file` only for very large SDFs.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "part";     p.kind = ValueKind::String;   p.repeatable = true; p.description = "One SDF part (repeatable; parts compose in order): <prim> <op> <k>  <px py pz>  <exDeg eyDeg ezDeg>  <sx sy sz>  <a b c>  <round>.  prim: sphere|box|roundbox|cylinder|torus|capsule|roundcone; op: union|smin|subtract|intersect (k = blend radius, 0 = hard).  Lines are forwarded verbatim to the shared SDF part grammar (SDFGeometry::ParsePartLines), so future shapes / ops extend without chunk changes.  The FIRST part must be union or smin (the field starts empty)"; }
+						{ auto& p = P(); p.name = "file";     p.kind = ValueKind::Filename; p.description = "External SDF parts file (same one-part-per-line grammar; for very large SDFs).  Provide either inline `part` lines or `file`, not both"; }
+						{ auto& p = P(); p.name = "maxsteps"; p.kind = ValueKind::UInt;     p.description = "Sphere-trace step cap"; p.defaultValueHint = "256"; }
+						{ auto& p = P(); p.name = "epsilon";  p.kind = ValueKind::Double;   p.description = "Surface hit epsilon as a fraction of the bbox diagonal (0 = auto)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "sampling_detail"; p.kind = ValueKind::UInt; p.description = "Tessellation cells along the longest bbox axis for area-light / SSS surface sampling (clamped 8..256)"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "heightfield_function"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "HEIGHTFIELD MODE: a named IFunction2D giving f(u,v) in [0,1].  When set (not `none`), the SDF IS the exact analytic surface z = heightfield_scale*f(u,v) over the square [-heightfield_radius,heightfield_radius]^2 (sphere-traced, O(1) memory -- the exact-geometry twin of a displaced_geometry on a cartesian_disk_geometry); `part` / `file` are ignored"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "heightfield_radius"; p.kind = ValueKind::Double; p.description = "Heightfield mode: half-extent of the square domain (object units; u=(x+R)/2R)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "heightfield_scale"; p.kind = ValueKind::Double; p.description = "Heightfield mode: world amplitude of the field (surface z = heightfield_scale*f(u,v))"; p.defaultValueHint = "0.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct CartesianDiskGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					const double radius = bag.GetDouble( "radius", 20.6 );
+					const int meshN = (int)bag.GetUInt( "mesh_n", 560 );
+					return pJob.AddCartesianDiskGeometry( name.c_str(), radius, meshN );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "cartesian_disk_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "A FLAT Cartesian-grid circular disk: linear Cartesian UV (u=(x+R)/2R), +Z normals, uniform world-space cell density everywhere (unlike a polar fan).  The general flat base for displacing an arbitrary 2D field -- an expression_function2d, a texture, noise -- onto a disk via displaced_geometry with uv_seam_fold FALSE.  (A guilloché dial = this base + a guilloché expression_function2d displacement.)";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "radius"; p.kind = ValueKind::Double; p.description = "Disk radius (world units)"; p.defaultValueHint = "20.6"; }
+						{ auto& p = P(); p.name = "mesh_n"; p.kind = ValueKind::UInt;   p.description = "Grid samples across the diameter (tessellation density; clamped 2..4096)"; p.defaultValueHint = "560"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ExpressionFunction2DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string finalExpr = bag.GetString( "expr", "" );
+					if( finalExpr.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: missing `expr` (the final value expression)", name.c_str() );
+						return false;
+					}
+
+					Implementation::ExpressionProgram::Builder builder;
+					// named numeric constants (all params precede all defs)
+					const std::vector<std::string>& params = bag.GetRepeatable( "param" );
+					for( std::size_t i = 0; i < params.size(); ++i ) {
+						char pn[128] = {0}; double pv = 0;
+						if( sscanf( params[i].c_str(), "%127s %lf", pn, &pv ) != 2 ) {
+							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: param %u (`%s`) must be `<name> <number>`", name.c_str(), (unsigned)i, params[i].c_str() );
+							return false;
+						}
+						if( !Implementation::ExpressionProgram::IsFinite( (Scalar)pv ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: param `%s` must be finite (nan/inf rejected)", name.c_str(), pn );
+							return false;
+						}
+						builder.AddParam( pn, (Scalar)pv );
+					}
+					// named sub-expressions (let-bindings), in input order
+					const std::vector<std::string>& defs = bag.GetRepeatable( "def" );
+					for( std::size_t i = 0; i < defs.size(); ++i ) {
+						const std::string& line = defs[i];
+						std::size_t sp = line.find_first_of( " \t" );
+						if( sp == std::string::npos ) {
+							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: def %u (`%s`) must be `<name> <expression>`", name.c_str(), (unsigned)i, line.c_str() );
+							return false;
+						}
+						const std::string dname = line.substr( 0, sp );
+						const std::string dexpr = line.substr( sp + 1 );
+						if( !builder.AddDef( dname, dexpr ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: def `%s`: %s", name.c_str(), dname.c_str(), builder.Error().c_str() );
+							return false;
+						}
+					}
+
+					Implementation::ExpressionProgram prog = Implementation::ExpressionProgram::Invalid();
+					if( !builder.Finalize( finalExpr, prog ) ) {
+						GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: expr: %s", name.c_str(), builder.Error().c_str() );
+						return false;
+					}
+
+					IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+					if( !pPriv ) {
+						GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: IJobPriv unavailable", name.c_str() );
+						return false;
+					}
+					IPainter* painter = 0;
+					if( !RISE_API_CreateExpressionFunction2D( &painter, prog ) ) {
+						return false;
+					}
+					pPriv->GetPainters()->AddItem( painter, name.c_str() );
+					pPriv->GetFunction2Ds()->AddItem( painter, name.c_str() );
+					painter->release();
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "expression_function2d"; cd.category = ChunkCategory::Painter;
+						cd.description = "A procedural 2D field whose value is a MATH EXPRESSION authored in the scene -- the in-scene-scripted analogue of perlin2d / worley.  Usable as a displacement (displaced_geometry), a greyscale colour (a colour slot / blend_painter mask), or a physical scalar (scalar_painter { function2d <name> }).  Variables u, v (the UV); declare `param <name> <number>` constants and `def <name> <expr>` named sub-expressions (let-bindings, in order, referencing u/v/params/earlier-defs), then the final `expr`.  Functions: sin cos tan asin acos atan exp log sqrt abs floor ceil frac sign atan2 mod min max pow hypot step clamp smoothstep mix select; operators + - * / % ^ and comparisons (yield 1/0); constants pi tau e.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "param"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Named numeric constant `<name> <number>` (repeatable); visible to every def and the final expr"; }
+						{ auto& p = P(); p.name = "def";   p.kind = ValueKind::String; p.repeatable = true; p.description = "Named sub-expression `<name> <expr>` (repeatable, in order); a let-binding referencing u, v, params, and earlier defs"; }
+						{ auto& p = P(); p.name = "expr";  p.kind = ValueKind::String; p.description = "The final value expression over u, v, params and defs"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct Function2DColorPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string func = bag.GetString( "function2d", "" );
+					if( func.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"function2d_painter `%s`: missing `function2d` (the named IFunction2D to wrap)", name.c_str() );
+						return false;
+					}
+					const double scale = bag.GetDouble( "scale", 1.0 );
+					const double bias  = bag.GetDouble( "bias",  0.0 );
+					return pJob.AddFunction2DColorPainter( name.c_str(), func.c_str(), scale, bias );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "function2d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Wraps a named IFunction2D as a greyscale COLOUR painter (out = bias + scale * f(u,v) on all channels).  The colour analogue of scalar_painter { function2d }: lets any procedural 2D field (Perlin, Worley, polynomial, composite, guilloché) feed a colour slot or a blend_painter mask -- e.g. the guilloché spall mask driving the matte oxide-scale blend.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "function2d"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction2D to wrap as greyscale colour"; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "Output scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "bias";       p.kind = ValueKind::Double;    p.description = "Output bias (out = bias + scale * f)"; p.defaultValueHint = "0.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct SweepGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+
+					// repeatable 2D profile + 3D path lines
+					const std::vector<std::string>& profLines = bag.GetRepeatable( "profile_point" );
+					if( profLines.size() < 3 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"sweep_geometry `%s`: need at least 3 repeatable `profile_point <x> <h>` entries (a closed polygon; got %u)",
+							name.c_str(), (unsigned int)profLines.size() );
+						return false;
+					}
+					std::vector<double> prof;
+					prof.reserve( profLines.size() * 2 );
+					for( std::size_t i = 0; i < profLines.size(); ++i ) {
+						double x = 0, h = 0;
+						char trailing[8] = {0};
+						if( sscanf( profLines[i].c_str(), "%lf %lf %7s", &x, &h, trailing ) != 2 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: profile_point %u (`%s`) must be exactly two numbers `<x> <h>`",
+								name.c_str(), (unsigned int)i, profLines[i].c_str() );
+							return false;
+						}
+						prof.push_back( x );
+						prof.push_back( h );
+					}
+
+					const std::vector<std::string>& pointLines = bag.GetRepeatable( "point" );
+					if( pointLines.size() < 2 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"sweep_geometry `%s`: need at least 2 repeatable `point <x> <y> <z>` path control points (got %u)",
+							name.c_str(), (unsigned int)pointLines.size() );
+						return false;
+					}
+					std::vector<double> pts;
+					pts.reserve( pointLines.size() * 3 );
+					for( std::size_t i = 0; i < pointLines.size(); ++i ) {
+						double x = 0, y = 0, z = 0;
+						char trailing[8] = {0};
+						if( sscanf( pointLines[i].c_str(), "%lf %lf %lf %7s", &x, &y, &z, trailing ) != 3 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: point %u (`%s`) must be exactly three numbers `<x> <y> <z>`",
+								name.c_str(), (unsigned int)i, pointLines[i].c_str() );
+							return false;
+						}
+						pts.push_back( x ); pts.push_back( y ); pts.push_back( z );
+					}
+
+					// OPTIONAL repeatable per-control-point width (x-axis) multipliers,
+					// one per `point` (the rest pad with 1.0).  A NON-linear width profile.
+					const std::vector<std::string>& widthLines = bag.GetRepeatable( "point_width" );
+					std::vector<double> widths;
+					if( !widthLines.empty() ) {
+						if( widthLines.size() > pointLines.size() ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: %u `point_width` entries exceed %u `point` path control points (one width per point; pad with 1.0)",
+								name.c_str(), (unsigned int)widthLines.size(), (unsigned int)pointLines.size() );
+							return false;
+						}
+						widths.reserve( widthLines.size() );
+						for( std::size_t i = 0; i < widthLines.size(); ++i ) {
+							double w = 0;
+							char trailing[8] = {0};
+							if( sscanf( widthLines[i].c_str(), "%lf %7s", &w, trailing ) != 1 ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"sweep_geometry `%s`: point_width %u (`%s`) must be exactly one number `<sx>`",
+									name.c_str(), (unsigned int)i, widthLines[i].c_str() );
+								return false;
+							}
+							if( !( w > 0 ) ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"sweep_geometry `%s`: point_width %u (%g) must be > 0", name.c_str(), (unsigned int)i, w );
+								return false;
+							}
+							widths.push_back( w );
+						}
+					}
+
+					SweepDescriptor d;
+					d.profilePoints    = &prof[0];
+					d.numProfilePoints = (unsigned int)profLines.size();
+					d.pathPoints       = &pts[0];
+					d.numPathPoints    = (unsigned int)pointLines.size();
+					d.nLen             = (int)bag.GetUInt( "n_len", (unsigned int)d.nLen );
+					d.endScaleX        = bag.GetDouble( "end_scale_x", d.endScaleX );
+					d.endScaleY        = bag.GetDouble( "end_scale_y", d.endScaleY );
+					d.capStart         = bag.GetBool( "cap_start", d.capStart );
+					d.capEnd           = bag.GetBool( "cap_end",   d.capEnd );
+					if( !widths.empty() ) {
+						d.pointWidths    = &widths[0];
+						d.numPointWidths = (unsigned int)widths.size();
+					}
+					{
+						const std::string fh = bag.GetString( "frame_hint", "" );
+						if( !fh.empty() ) {
+							double hx = 0, hy = 0, hz = 0;
+							char trailing[8] = {0};
+							if( sscanf( fh.c_str(), "%lf %lf %lf %7s", &hx, &hy, &hz, trailing ) != 3 ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"sweep_geometry `%s`: frame_hint must be three numbers `<x> <y> <z>`", name.c_str() );
+								return false;
+							}
+							d.frameHintX = hx; d.frameHintY = hy; d.frameHintZ = hz;
+						}
+					}
+					return pJob.AddSweepGeometry( name.c_str(), d );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "sweep_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "General profile sweep: an arbitrary CLOSED 2D profile polygon (repeatable profile_point lines) swept along an arbitrary 3D Catmull-Rom path (repeatable point lines) with rotation-minimizing frames, optional per-axis linear taper (linear in path parameter), optional NON-linear per-station width (repeatable point_width multipliers, Catmull-Rom interpolated, composed multiplicatively with end_scale_x), and ear-clipped end caps.  Tubes, rails, mouldings, straps, cables.  Profile x maps to the frame binormal, h to the frame normal; UV = (profile arc fraction, path parameter fraction; profile U wraps with no duplicated seam vertex).  OPEN paths only: a loop authored first==last seams (RMF holonomy + open-spline padding) -- use torus_geometry for true rings.  Catmull-Rom rounds sharp path corners; add control points to tighten.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "profile_point"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Closed-profile vertex `<x> <h>` in the sweep frame (repeatable, polygon order; at least 3; CCW = outward normals).  Duplicate a point to harden an edge"; }
+						{ auto& p = P(); p.name = "point";         p.kind = ValueKind::String; p.repeatable = true; p.description = "Path control point `<x> <y> <z>` (repeatable, path order; at least 2).  The profile sweeps a Catmull-Rom spline through these"; }
+						{ auto& p = P(); p.name = "point_width";   p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL per-control-point width (x-axis) multiplier `<sx>` (repeatable, path order; one per `point`, missing padded with 1.0; > 0).  Catmull-Rom interpolated along the path and composed MULTIPLICATIVELY with end_scale_x -- a NON-linear width profile (e.g. neck in at one end).  Catmull-Rom can over/undershoot between non-monotone widths (add path points to tighten; interpolated widths are floored to > 0).  Omit = uniform 1.0"; }
+						{ auto& p = P(); p.name = "n_len";         p.kind = ValueKind::UInt;   p.description = "Requested samples along the path (clamped 2..4096; actual = (points-1)*max(2, n_len/(points-1)) + 1)"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "end_scale_x";   p.kind = ValueKind::Double; p.description = "Profile x scale at the path end (linear taper from 1 at the start)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "end_scale_y";   p.kind = ValueKind::Double; p.description = "Profile h scale at the path end (linear taper from 1 at the start)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "cap_start";     p.kind = ValueKind::Bool;   p.description = "Close the start cross-section (ear-clipped cap)"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "cap_end";       p.kind = ValueKind::Bool;   p.description = "Close the end cross-section (ear-clipped cap)"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "frame_hint";    p.kind = ValueKind::String; p.description = "Initial binormal hint `<x> <y> <z>` for the rotation-minimizing frame (omit = world axis most perpendicular to the start tangent)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PathInstancesGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string tmpl = bag.GetString( "geometry", "" );
+					if( tmpl.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"path_instances_geometry `%s`: missing `geometry` (the named template geometry to instance)", name.c_str() );
+						return false;
+					}
+
+					const std::vector<std::string>& pointLines = bag.GetRepeatable( "point" );
+					if( pointLines.size() < 2 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"path_instances_geometry `%s`: need at least 2 repeatable `point <x> <y> <z>` path control points (got %u)",
+							name.c_str(), (unsigned int)pointLines.size() );
+						return false;
+					}
+					std::vector<double> pts;
+					pts.reserve( pointLines.size() * 3 );
+					for( std::size_t i = 0; i < pointLines.size(); ++i ) {
+						double x = 0, y = 0, z = 0;
+						char trailing[8] = {0};
+						if( sscanf( pointLines[i].c_str(), "%lf %lf %lf %7s", &x, &y, &z, trailing ) != 3 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"path_instances_geometry `%s`: point %u (`%s`) must be exactly three numbers `<x> <y> <z>`",
+								name.c_str(), (unsigned int)i, pointLines[i].c_str() );
+							return false;
+						}
+						pts.push_back( x ); pts.push_back( y ); pts.push_back( z );
+					}
+
+					PathInstancesDescriptor d;
+					d.pathPoints    = &pts[0];
+					d.numPathPoints = (unsigned int)pointLines.size();
+					d.nLen          = (int)bag.GetUInt( "n_len", (unsigned int)d.nLen );
+					d.pitch         = bag.GetDouble( "pitch", d.pitch );
+					d.phase         = bag.GetDouble( "phase", d.phase );
+					d.slantDeg      = bag.GetDouble( "slant", d.slantDeg );
+					d.scale         = bag.GetDouble( "scale", d.scale );
+					d.detail        = bag.GetUInt( "detail", d.detail );
+					{
+						const std::string fh = bag.GetString( "frame_hint", "" );
+						if( !fh.empty() ) {
+							double hx = 0, hy = 0, hz = 0;
+							char trailing[8] = {0};
+							if( sscanf( fh.c_str(), "%lf %lf %lf %7s", &hx, &hy, &hz, trailing ) != 3 ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"path_instances_geometry `%s`: frame_hint must be three numbers `<x> <y> <z>`", name.c_str() );
+								return false;
+							}
+							d.frameHintX = hx; d.frameHintY = hy; d.frameHintZ = hz;
+						}
+					}
+					return pJob.AddPathInstancesGeometry( name.c_str(), tmpl.c_str(), d );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "path_instances_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Along-path instancing: a named TEMPLATE geometry (tessellated once through the universal TessellateToMesh contract -- any first-class geometry works, e.g. an sdf_geometry capsule) stamped along a 3D Catmull-Rom path at arc-length pitch with optional slant and scale.  Fence posts, rivets, beads, stitching, chain links.  Template +Y aligns with the path tangent (positive slant rotates the tangent toward the binormal about the frame normal), +Z with the frame normal, +X with the binormal.  Instances BANK with the path (no world-up mode); steer roll with frame_hint.  Alternating twists (chain links) = two chunks at 2x pitch with offset phase and pre-rotated templates.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "geometry"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.description = "Named template geometry to instance (must support TessellateToMesh -- every first-class RISE geometry does)"; }
+						{ auto& p = P(); p.name = "point";    p.kind = ValueKind::String;    p.repeatable = true; p.description = "Path control point `<x> <y> <z>` (repeatable, path order; at least 2)"; }
+						{ auto& p = P(); p.name = "n_len";    p.kind = ValueKind::UInt;      p.description = "Arc-length walk resolution (path samples; clamped 2..8192)"; p.defaultValueHint = "256"; }
+						{ auto& p = P(); p.name = "pitch";    p.kind = ValueKind::Double;    p.description = "Arc-length distance between instances (> 0)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "phase";    p.kind = ValueKind::Double;    p.description = "Arc-length distance before the first instance (omit = pitch/2, the centred default)"; p.defaultValueHint = "pitch/2"; }
+						{ auto& p = P(); p.name = "slant";    p.kind = ValueKind::Double;    p.description = "Template rotation about the frame normal, degrees (e.g. saddle-stitch slant; sign mirrors)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::Double;    p.description = "Uniform template scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "detail";   p.kind = ValueKind::UInt;      p.description = "TessellateToMesh detail for the template (clamped 3..256; cost is O(detail^2) for most templates)"; p.defaultValueHint = "16"; }
+					{ auto& p = P(); p.name = "frame_hint"; p.kind = ValueKind::String;  p.description = "Initial binormal hint `<x> <y> <z>` steering instance roll about the path (omit = world axis most perpendicular to the start tangent)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct BilinearPatchGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name",        "noname" );
+					std::string file = bag.GetString( "file",        "none" );
+					unsigned int maxPoly  = bag.GetUInt( "maxpolygons", 10 );
+					unsigned int maxRecur = bag.GetUInt( "maxdepth",    8 );
+					bool bsp              = bag.GetBool( "bsp",         false );
+					return pJob.AddBilinearPatchGeometry( name.c_str(), file.c_str(), maxPoly, maxRecur, bsp );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "bilinearpatch_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Bilinear patch surface from file.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename; p.description = "Patch file"; }
+						{ auto& p = P(); p.name = "maxpolygons"; p.kind = ValueKind::UInt;     p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "maxdepth";    p.kind = ValueKind::UInt;     p.description = "Max BSP depth"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "bsp";         p.kind = ValueKind::Bool;     p.description = "Build BSP"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct DisplacedGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name          = bag.GetString( "name",          "noname" );
+					std::string base_geometry = bag.GetString( "base_geometry", "" );
+					unsigned int detail       = bag.GetUInt(   "detail",        32 );
+					std::string displacement  = bag.GetString( "displacement",  "none" );
+					double disp_scale         = bag.GetDouble( "disp_scale",    1.0 );
+					bool double_sided         = bag.GetBool(   "double_sided",  false );
+					bool face_normals         = bag.GetBool(   "face_normals",  false );
+					bool seam_fold            = bag.GetBool(   "uv_seam_fold",  true );
+					// Legacy maxpolygons/maxdepth/bsp keys accepted but ignored (Tier A2).
+
+					if( base_geometry.empty() ) {
+						GlobalLog()->Print( eLog_Error, "DisplacedGeometry:: `base_geometry` is required" );
+						return false;
+					}
+
+					return pJob.AddDisplacedGeometry(
+						name.c_str(),
+						base_geometry.c_str(),
+						detail,
+						displacement == "none" ? 0 : displacement.c_str(),
+						disp_scale,
+						double_sided,
+						face_normals,
+						seam_fold );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "displaced_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Tessellated geometry with painter-driven vertex displacement.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;    p.description = "Unique name"; p.required = true; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "base_geometry"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.required = true; p.description = "Geometry to displace"; }
+						{ auto& p = P(); p.name = "detail";        p.kind = ValueKind::UInt;      p.description = "Subdivision detail level"; p.defaultValueHint = "32"; }
+						{ auto& p = P(); p.name = "displacement";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Displacement painter"; }
+						{ auto& p = P(); p.name = "disp_scale";    p.kind = ValueKind::Double;    p.description = "Displacement scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "double_sided";  p.kind = ValueKind::Bool;      p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "face_normals";  p.kind = ValueKind::Bool;      p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "uv_seam_fold";  p.kind = ValueKind::Bool;     p.description = "Tent-fold UV before displacement -- keeps a wrapped field continuous across the u=0/u=1 seam of CLOSED surfaces (sphere/torus/cylinder).  FALSE for an OPEN field on a non-wrapping Cartesian UV (e.g. a guilloché expression on a flat disk)"; p.defaultValueHint = "TRUE"; }
+						// Retired: accepted for backward compat with pre-A2 scene files; ignored.
+						{ auto& p = P(); p.name = "maxpolygons";   p.kind = ValueKind::UInt;      p.description = "Retired (BVH is sole accelerator)"; }
+						{ auto& p = P(); p.name = "maxdepth";      p.kind = ValueKind::UInt;      p.description = "Retired (BVH is sole accelerator)"; }
+						{ auto& p = P(); p.name = "bsp";           p.kind = ValueKind::Bool;      p.description = "Retired (BVH is sole accelerator)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//////////////////////////////////////////
+			// Modifiers
+			//////////////////////////////////////////
+
+			struct BumpmapModifierAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name     = bag.GetString( "name",       "noname" );
+					std::string function = bag.GetString( "function",   "none" );
+					double scale         = bag.GetDouble( "scale",      1.0 );
+					double window        = bag.GetDouble( "windowsize", 0.01 );
+					bool normalize       = bag.GetBool(   "normalize_gradient", false );
+
+					if( !normalize ) {
+						// Default / legacy path, signature-frozen IJob virtual.
+						return pJob.AddBumpMapModifier( name.c_str(), function.c_str(), scale, window );
+					}
+
+					// normalize_gradient TRUE: `scale` becomes the window-independent
+					// gradient multiplier.  The IJob::AddBumpMapModifier virtual is
+					// frozen for ABI (out-of-tree callers + the Blender bridge), so the
+					// flag is carried by RISE_API_CreateBumpMapModifierEx and the
+					// modifier is registered through the privileged IJobPriv channel
+					// (the same pattern expression_function2d uses to self-register).
+					IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+					if( !pPriv ) {
+						GlobalLog()->PrintEx( eLog_Error, "bumpmap_modifier `%s`: IJobPriv unavailable", name.c_str() );
+						return false;
+					}
+					IFunction2D* pFunc = pPriv->GetFunction2Ds()->GetItem( function.c_str() );
+					if( !pFunc ) {
+						GlobalLog()->PrintEx( eLog_Error, "bumpmap_modifier `%s`: function2d `%s` not found", name.c_str(), function.c_str() );
+						return false;
+					}
+					IRayIntersectionModifier* pMod = 0;
+					if( !RISE_API_CreateBumpMapModifierEx( &pMod, *pFunc, scale, window, true ) ) {
+						return false;
+					}
+					pPriv->GetModifiers()->AddItem( pMod, name.c_str() );
+					pMod->release();
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "bumpmap_modifier"; cd.category = ChunkCategory::Modifier;
+						cd.description = "Bump-map modifier perturbing the surface normal from the gradient of a heightfield function2d, sampled at the hit's TEXCOORD_0 (u,v) by central difference.  Works on any geometry that supplies texcoords + a normal (analytic primitives AND triangle meshes such as cartesian_disk_geometry; the ONB tangents are built from the shading normal).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "function";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Heightfield painter (an IFunction2D, e.g. expression_function2d / perlin2d_painter)"; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "Bump amplitude.  With normalize_gradient FALSE (default) the perturbation is scale*(f(+w)-f(-w)), so its magnitude couples to windowsize (~scale*2*windowsize*slope) -- a fine window needs a proportionally larger scale.  With normalize_gradient TRUE, scale is the window-independent slope multiplier."; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "windowsize"; p.kind = ValueKind::Double;    p.description = "Central-difference half-step in (u,v) texture space; smaller = finer detail captured"; p.defaultValueHint = "0.01"; }
+						{ auto& p = P(); p.name = "normalize_gradient"; p.kind = ValueKind::Bool; p.description = "Divide the central difference by 2*windowsize so `scale` is the true, window-INDEPENDENT gradient amplitude (decouples bump strength from the sampling step).  Default FALSE preserves legacy coupled behaviour byte-for-byte."; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct NormalMapModifierAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name    = bag.GetString( "name",       "noname" );
+					std::string painter = bag.GetString( "normal_map", "none" );
+					double scale        = bag.GetDouble( "scale",      1.0 );
+					return pJob.AddNormalMapModifier( name.c_str(), painter.c_str(), scale );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "normal_map_modifier"; cd.category = ChunkCategory::Modifier;
+						cd.description = "Tangent-space normal-map modifier.  Samples a normal-map "
+							"painter at the hit's TEXCOORD_0, decodes (2*RGB - 1) -> tangent-space "
+							"normal, and reorients ri.vNormal using the imported per-vertex TANGENT "
+							"(via the v3 ITriangleMeshGeometryIndexed3 storage) plus its bitangent "
+							"sign.  Falls back to UV-derived dpdu/dpdv (silent, qualitatively "
+							"correct on connected UV charts) when the source mesh has no TANGENT, "
+							"and to ONB-derived tangents (one-time warning) when neither TANGENT "
+							"nor valid derivatives are available.  Designed for glTF 2.0 "
+							"normalTexture but works with any linear-RGB normal map.  IMPORTANT: "
+							"the referenced painter MUST be loaded with NO colour-matrix conversion "
+							"-- post Stage B colour-space migration (RISEPel == Rec709RGBPel) that "
+							"means `color_space Rec709RGB_Linear`, which stores PNG bytes verbatim "
+							"in the engine working space.  ROMMRGB_Linear would apply a Rec.709 → "
+							"ROMM colour matrix that warps the encoded vector; sRGB would gamma-"
+							"decode and break the [0,1] vector domain.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "normal_map"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Normal-map painter (load with `color_space Rec709RGB_Linear` for verbatim store; see chunk description)"; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "glTF normalTexture.scale (xy multiplier)"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct GlintModifierAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					double density   = bag.GetDouble( "density",  5.0 );
+					double coverage  = bag.GetDouble( "coverage", 0.15 );
+					double fill      = bag.GetDouble( "fill",     0.6 );
+					double spread    = bag.GetDouble( "spread",   2.0 );
+					double scale[3]  = { 1.0, 1.0, 1.0 };
+					double shift[3]  = { 0.0, 0.0, 0.0 };
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+					unsigned int seed = bag.GetUInt( "seed", 0 );
+
+					// The descriptor layer already hard-rejects non-finite /
+					// non-numeric tokens (AllTokensAreFiniteNumbers) -- the
+					// load-bearing gate for this chunk (the modifier ctor's
+					// laundered backstop only goes silently inert).  Here we
+					// add DOMAIN diagnostics: values that make the modifier
+					// pointless fail LOUDLY (an authored no-op chunk is a
+					// mistake, not an intent), and out-of-range fractions
+					// warn about the clamp they will receive.
+					if( !(density > 0.0) || !(coverage > 0.0) || !(fill > 0.0) || !(spread > 0.0) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"glint_modifier `%s`: density/coverage/fill/spread must all be > 0 (got %g/%g/%g/%g) -- these values would make the modifier inert",
+							name.c_str(), density, coverage, fill, spread );
+						return false;
+					}
+					if( coverage > 1.0 ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"glint_modifier `%s`: coverage %g clamps to 1.0", name.c_str(), coverage );
+					}
+					if( fill > 1.0 ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"glint_modifier `%s`: fill %g clamps to 1.0 (facet radius may not exceed the half-cell)", name.c_str(), fill );
+					}
+					if( !(scale[0] > 0.0) || !(scale[1] > 0.0) || !(scale[2] > 0.0) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"glint_modifier `%s`: scale components must be > 0 (got %g %g %g)",
+							name.c_str(), scale[0], scale[1], scale[2] );
+						return false;
+					}
+
+					return pJob.AddGlintModifier( name.c_str(), density, coverage, fill, spread, scale, shift, seed );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "glint_modifier"; cd.category = ChunkCategory::Modifier;
+						cd.description = "Discrete-facet glint modifier: an object-space cell hash "
+							"places sparse mirror-like micro-facets (jittered centre + radius test, "
+							"per-cell existence probability); a hit landing on a facet has its "
+							"shading normal replaced by the facet's Rayleigh-tilted normal, so the "
+							"object's EXISTING material twinkles as the view/light sweeps -- enamel "
+							"flecks, metallic-flake paint, snow sparkle, glitter.  Facets are pinned "
+							"to the surface (object-space hash): they flash because the geometry "
+							"moves, never because the pattern swims.  Attach via the object's "
+							"`modifier` parameter.  See docs/ENAMEL_SPARKLE_BRDF.md.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "density";  p.kind = ValueKind::Double;     p.description = "Cells per object-space unit; facet pitch = 1/density units.  Anchor to the physical fleck pitch (e.g. 180um flecks on a dial with ~1.08 units/mm => density ~5)"; p.defaultValueHint = "5.0"; }
+						{ auto& p = P(); p.name = "coverage"; p.kind = ValueKind::Double;     p.description = "Per-cell facet existence probability (0,1]; with `fill` this sets the areal facet fraction"; p.defaultValueHint = "0.15"; }
+						{ auto& p = P(); p.name = "fill";     p.kind = ValueKind::Double;     p.description = "Facet disc radius as a fraction of the half-cell (0,1]; the sphere-slice test varies apparent facet sizes naturally"; p.defaultValueHint = "0.6"; }
+						{ auto& p = P(); p.name = "spread";   p.kind = ValueKind::Double;     p.description = "Facet tilt Rayleigh scale in DEGREES (single-digit typical; the twinkle's angular sensitivity)"; p.defaultValueHint = "2.0"; }
+						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::DoubleVec3; p.description = "Anisotropic cell stretch (Worley convention pt*scale+shift); elongated cells give a streak lay"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";    p.kind = ValueKind::DoubleVec3; p.description = "Cell-space offset"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "seed";     p.kind = ValueKind::UInt;       p.description = "Hash seed -- distinct fleck fields on otherwise identical objects"; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//////////////////////////////////////////
+			// Participating media
+			//////////////////////////////////////////
+
+			struct HomogeneousMediumAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					double sigma_a[3] = {0,0,0};
+					double sigma_s[3] = {0,0,0};
+					bag.GetVec3( "absorption", sigma_a );
+					bag.GetVec3( "scattering", sigma_s );
+
+					// Optional per-wavelength coefficient curves (G1,
+					// vitreous enamel): names of registered IFunction1D
+					// (e.g. piecewise_linear_function) curves for the
+					// spectral (NM) path.  BOTH empty => RGB-only (luminance
+					// fallback), byte-identical to pre-G1.  If EITHER is
+					// bound the NM path is curve-driven (an unbound
+					// coefficient is zero in NM; Job warns on a non-zero
+					// RGB sibling).
+					std::string absorption_spectral = bag.GetString( "absorption_spectral", "" );
+					std::string scattering_spectral = bag.GetString( "scattering_spectral", "" );
+
+					// Composite phase token: "isotropic" or "hg <g>".
+					std::string phase_type = "isotropic";
+					double      phase_g    = 0.0;
+					if( bag.Has( "phase" ) ) {
+						std::string raw = bag.GetString( "phase" );
+						char ptype[64] = {0};
+						double g = 0.0;
+						int n = sscanf( raw.c_str(), "%63s %lf", ptype, &g );
+						if( n >= 1 ) phase_type = ptype;
+						if( n >= 2 ) phase_g    = g;
+					}
+
+					if( !absorption_spectral.empty() || !scattering_spectral.empty() ) {
+						const double emission[3] = { 0, 0, 0 };
+						return pJob.AddHomogeneousMediumSpectral( name.c_str(), sigma_a, sigma_s, emission,
+							absorption_spectral.c_str(), scattering_spectral.c_str(),
+							phase_type.c_str(), phase_g );
+					}
+
+					return pJob.AddHomogeneousMedium( name.c_str(), sigma_a, sigma_s, phase_type.c_str(), phase_g );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "homogeneous_medium"; cd.category = ChunkCategory::Medium;
+						cd.description = "Uniform participating medium.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::DoubleVec3; p.description = "Absorption coefficient (R G B), RGB/preview path"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::DoubleVec3; p.description = "Scattering coefficient (R G B), RGB/preview path"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "absorption_spectral"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Name of a sigma_a(lambda) IFunction1D curve (e.g. piecewise_linear_function) for the spectral NM path.  Once EITHER spectral curve is bound the NM path is curve-driven: an unbound coefficient is ZERO in NM (bind both curves, or accept zero).  Only when BOTH are empty does NM fall back to RGB luminance"; }
+						{ auto& p = P(); p.name = "scattering_spectral"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Name of a sigma_s(lambda) IFunction1D curve for the spectral NM path.  Once EITHER spectral curve is bound the NM path is curve-driven: an unbound coefficient is ZERO in NM (bind both curves, or accept zero).  Only when BOTH are empty does NM fall back to RGB luminance"; }
+						{ auto& p = P(); p.name = "phase";      p.kind = ValueKind::String;     p.description = "Phase function: either `isotropic` or `hg <g>` (Henyey-Greenstein with asymmetry g)"; p.tupleKinds = {ValueKind::Enum, ValueKind::Double}; p.enumValues = {"isotropic","hg"}; p.defaultValueHint = "isotropic"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct GlobalMediumAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					return pJob.SetGlobalMedium( bag.GetString( "medium", "" ).c_str() );
+				}
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "global_medium"; cd.category = ChunkCategory::Medium;
+						cd.description = "Sets the scene's global participating medium to a previously-added medium (the v7 form of `> set global_medium`).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "medium"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Medium}; p.description = "Name of a previously-added medium"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct LightRRThresholdAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					return pJob.SetLightSampleRRThreshold( bag.GetDouble( "threshold", 0.0 ) );
+				}
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "light_rr_threshold"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Sets the light-sample Russian-roulette threshold (the v7 form of `> set light_rr_threshold`).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "threshold"; p.kind = ValueKind::Double; p.description = "Light-sample RR threshold (0 disables RR)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct HeterogeneousMediumAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					double max_sigma_a[3] = {0,0,0};
+					double max_sigma_s[3] = {0,0,0};
+					double emission[3]    = {0,0,0};
+					bag.GetVec3( "absorption", max_sigma_a );
+					bag.GetVec3( "scattering", max_sigma_s );
+					bag.GetVec3( "emission",   emission );
+
+					// Composite phase token: "isotropic" or "hg <g>".
+					std::string phase_type = "isotropic";
+					double      phase_g    = 0.0;
+					if( bag.Has( "phase" ) ) {
+						std::string raw = bag.GetString( "phase" );
+						char ptype[64] = {0};
+						double g = 0.0;
+						int n = sscanf( raw.c_str(), "%63s %lf", ptype, &g );
+						if( n >= 1 ) phase_type = ptype;
+						if( n >= 2 ) phase_g    = g;
+					}
+
+					std::string volume_pattern = bag.GetString( "volume_pattern", "" );
+					unsigned int vol_width  = bag.GetUInt( "volume_width",  0 );
+					unsigned int vol_height = bag.GetUInt( "volume_height", 0 );
+					unsigned int vol_startz = bag.GetUInt( "volume_startz", 0 );
+					unsigned int vol_endz   = bag.GetUInt( "volume_endz",   0 );
+
+					std::string accStr = bag.GetString( "accessor", "t" );
+					char accessor = accStr.empty() ? 't' : accStr[0];
+
+					double bbox_min[3] = {0,0,0};
+					double bbox_max[3] = {0,0,0};
+					bag.GetVec3( "bbox_min", bbox_min );
+					bag.GetVec3( "bbox_max", bbox_max );
+
+					if( volume_pattern.empty() || vol_width == 0 || vol_height == 0 ) {
+						GlobalLog()->PrintEasyError( "HeterogeneousMedium:: volume_pattern, volume_width, and volume_height are required" );
+						return false;
+					}
+
+					if( vol_endz < vol_startz ) {
+						GlobalLog()->PrintEasyError( "HeterogeneousMedium:: volume_endz must be >= volume_startz" );
+						return false;
+					}
+
+					return pJob.AddHeterogeneousMedium( name.c_str(),
+						max_sigma_a, max_sigma_s, emission, phase_type.c_str(), phase_g,
+						volume_pattern.c_str(), vol_width, vol_height, vol_startz, vol_endz,
+						accessor, bbox_min, bbox_max );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "heterogeneous_medium"; cd.category = ChunkCategory::Medium;
+						cd.description = "Voxel-grid heterogeneous participating medium loaded from a raw volume pattern.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "absorption";     p.kind = ValueKind::DoubleVec3; p.description = "Max absorption coefficient (R G B)"; }
+						{ auto& p = P(); p.name = "scattering";     p.kind = ValueKind::DoubleVec3; p.description = "Max scattering coefficient (R G B)"; }
+						{ auto& p = P(); p.name = "emission";       p.kind = ValueKind::DoubleVec3; p.description = "Volumetric emission (R G B)"; }
+						{ auto& p = P(); p.name = "phase";          p.kind = ValueKind::String;     p.description = "Phase function: either `isotropic` or `hg <g>` (Henyey-Greenstein with asymmetry g)"; p.tupleKinds = {ValueKind::Enum, ValueKind::Double}; p.enumValues = {"isotropic","hg"}; p.defaultValueHint = "isotropic"; }
+						{ auto& p = P(); p.name = "volume_pattern"; p.kind = ValueKind::String;     p.description = "Volume file pattern (printf-style)"; }
+						{ auto& p = P(); p.name = "volume_width";   p.kind = ValueKind::UInt;       p.description = "Volume width"; }
+						{ auto& p = P(); p.name = "volume_height";  p.kind = ValueKind::UInt;       p.description = "Volume height"; }
+						{ auto& p = P(); p.name = "volume_startz";  p.kind = ValueKind::UInt;       p.description = "Start slice index"; }
+						{ auto& p = P(); p.name = "volume_endz";    p.kind = ValueKind::UInt;       p.description = "End slice index"; }
+						{ auto& p = P(); p.name = "accessor";       p.kind = ValueKind::String;     p.description = "Voxel accessor type (first character: 'n', 't', or 'c')"; p.defaultValueHint = "t"; }
+						{ auto& p = P(); p.name = "bbox_min";       p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox min"; }
+						{ auto& p = P(); p.name = "bbox_max";       p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox max"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+
+			struct PainterHeterogeneousMediumAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					double max_sigma_a[3] = {0,0,0};
+					double max_sigma_s[3] = {0,0,0};
+					double emission[3]    = {0,0,0};
+					bag.GetVec3( "absorption", max_sigma_a );
+					bag.GetVec3( "scattering", max_sigma_s );
+					bag.GetVec3( "emission",   emission );
+
+					// Composite phase token: "isotropic" or "hg <g>".
+					std::string phase_type = "isotropic";
+					double      phase_g    = 0.0;
+					if( bag.Has( "phase" ) ) {
+						std::string raw = bag.GetString( "phase" );
+						char ptype[64] = {0};
+						double g = 0.0;
+						int n = sscanf( raw.c_str(), "%63s %lf", ptype, &g );
+						if( n >= 1 ) phase_type = ptype;
+						if( n >= 2 ) phase_g    = g;
+					}
+
+					std::string density_painter = bag.GetString( "density_painter", "none" );
+					unsigned int resolution     = bag.GetUInt(   "resolution",      64 );
+
+					char color_to_scalar = 'l';
+					if( bag.Has( "color_to_scalar" ) ) {
+						std::string c2s = bag.GetString( "color_to_scalar" );
+						if( c2s == "luminance" ) {
+							color_to_scalar = 'l';
+						} else if( c2s == "max" ) {
+							color_to_scalar = 'm';
+						} else if( c2s == "red" ) {
+							color_to_scalar = 'r';
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "PainterHeterogeneousMedium:: Unknown color_to_scalar `%s`, using luminance", c2s.c_str() );
+							color_to_scalar = 'l';
+						}
+					}
+
+					double bbox_min[3] = {0,0,0};
+					double bbox_max[3] = {0,0,0};
+					bag.GetVec3( "bbox_min", bbox_min );
+					bag.GetVec3( "bbox_max", bbox_max );
+
+					if( density_painter == "none" ) {
+						GlobalLog()->PrintEasyError( "PainterHeterogeneousMedium:: density_painter is required" );
+						return false;
+					}
+
+					if( resolution == 0 ) {
+						GlobalLog()->PrintEasyError( "PainterHeterogeneousMedium:: resolution must be > 0" );
+						return false;
+					}
+
+					return pJob.AddPainterHeterogeneousMedium( name.c_str(),
+						max_sigma_a, max_sigma_s, emission, phase_type.c_str(), phase_g,
+						density_painter.c_str(), resolution, color_to_scalar,
+						bbox_min, bbox_max );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "painter_heterogeneous_medium"; cd.category = ChunkCategory::Medium;
+						cd.description = "Heterogeneous medium whose density field comes from a painter evaluation.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "absorption";      p.kind = ValueKind::DoubleVec3; p.description = "Max absorption coefficient (R G B)"; }
+						{ auto& p = P(); p.name = "scattering";      p.kind = ValueKind::DoubleVec3; p.description = "Max scattering coefficient (R G B)"; }
+						{ auto& p = P(); p.name = "emission";        p.kind = ValueKind::DoubleVec3; p.description = "Volumetric emission (R G B)"; }
+						{ auto& p = P(); p.name = "phase";           p.kind = ValueKind::String;     p.description = "Phase function: either `isotropic` or `hg <g>` (Henyey-Greenstein with asymmetry g)"; p.tupleKinds = {ValueKind::Enum, ValueKind::Double}; p.enumValues = {"isotropic","hg"}; p.defaultValueHint = "isotropic"; }
+						{ auto& p = P(); p.name = "density_painter"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Density painter"; }
+						{ auto& p = P(); p.name = "resolution";      p.kind = ValueKind::UInt;       p.description = "Voxel resolution"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "color_to_scalar"; p.kind = ValueKind::Enum;       p.enumValues = {"luminance","max","red"}; p.description = "RGB→scalar rule"; p.defaultValueHint = "luminance"; }
+						{ auto& p = P(); p.name = "bbox_min";        p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox min"; }
+						{ auto& p = P(); p.name = "bbox_max";        p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox max"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+
+			//////////////////////////////////////////
+			// Objects
+			//////////////////////////////////////////
+
+			struct StandardObjectAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string geometry = bag.GetString( "geometry", "none" );
+					std::string material = bag.GetString( "material", "none" );
+					std::string modifier = bag.GetString( "modifier", "none" );
+					std::string shader   = bag.GetString( "shader",   "none" );
+					std::string interior_medium = bag.GetString( "interior_medium", "none" );
+
+					RadianceMapConfig radianceMapConfig;
+					if( bag.Has( "radiance_map" ) )    radianceMapConfig.name  = bag.GetString( "radiance_map" ).c_str();
+					if( bag.Has( "radiance_scale" ) )  radianceMapConfig.scale = bag.GetDouble( "radiance_scale" );
+					if( bag.GetVec3( "radiance_orient", radianceMapConfig.orientation ) ) {
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
+					bool bCastsShadows    = bag.GetBool( "casts_shadows",    true );
+					bool bReceivesShadows = bag.GetBool( "receives_shadows", true );
+
+					// Transform precedence (highest first): matrix > quaternion > orientation (Euler).
+					// `position` and `scale` apply alongside quaternion / orientation but are subsumed
+					// by `matrix`, since a 4x4 already encodes translation + rotation + scale.
+					const bool hasMatrix     = bag.Has( "matrix" );
+					const bool hasQuaternion = bag.Has( "quaternion" );
+					const bool hasEuler      = bag.Has( "orientation" );
+
+					if( hasMatrix && (hasQuaternion || hasEuler) ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"standard_object `%s`: `matrix` overrides `quaternion` / `orientation` "
+							"(matrix already encodes the full transform)", name.c_str() );
+					} else if( hasQuaternion && hasEuler ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"standard_object `%s`: `quaternion` overrides `orientation` (Euler decomposition is lossy)",
+							name.c_str() );
+					}
+
+					bool bRet = false;
+					if( hasMatrix ) {
+						double mat[16];
+						bag.GetMat4( "matrix", mat );
+						bRet = pJob.AddObjectMatrix(
+							name.c_str(), geometry.c_str(),
+							material=="none"?0:material.c_str(),
+							modifier=="none"?0:modifier.c_str(),
+							shader=="none"?0:shader.c_str(),
+							radianceMapConfig, mat,
+							bCastsShadows, bReceivesShadows );
+					} else if( hasQuaternion ) {
+						// Compose translation, quaternion rotation, and per-axis scale into a
+						// single column-major 4x4, then call AddObjectMatrix.  Using
+						// AddObject with Euler-from-quaternion would re-introduce the
+						// gimbal-lock loss this parameter exists to avoid.  Math is shared
+						// with OverrideObjectAsciiChunkParser (Phase 6.2) via
+						// ComposeTRS_QuaternionGltf (§8.10).
+						double pos[3]   = {0,0,0};
+						double q[4]     = {0,0,0,1};	// xyzw, glTF convention
+						double scale[3] = {1,1,1};
+						bag.GetVec3( "position",   pos );
+						bag.GetVec4( "quaternion", q );
+						bag.GetVec3( "scale",      scale );
+
+						double M[16];
+						ComposeTRS_QuaternionGltf( pos, q, scale, M );
+
+						bRet = pJob.AddObjectMatrix(
+							name.c_str(), geometry.c_str(),
+							material=="none"?0:material.c_str(),
+							modifier=="none"?0:modifier.c_str(),
+							shader=="none"?0:shader.c_str(),
+							radianceMapConfig, M,
+							bCastsShadows, bReceivesShadows );
+					} else {
+						double pos[3]    = {0,0,0};
+						double orient[3] = {0,0,0};
+						double scale[3]  = {1.0,1.0,1.0};
+						bag.GetVec3( "position", pos );
+						if( bag.GetVec3( "orientation", orient ) ) {
+							orient[0] *= DEG_TO_RAD;
+							orient[1] *= DEG_TO_RAD;
+							orient[2] *= DEG_TO_RAD;
+						}
+						bag.GetVec3( "scale", scale );
+
+						bRet = pJob.AddObject( name.c_str(), geometry.c_str(),
+							material=="none"?0:material.c_str(),
+							modifier=="none"?0:modifier.c_str(),
+							shader=="none"?0:shader.c_str(),
+							radianceMapConfig, pos, orient, scale, bCastsShadows, bReceivesShadows );
+					}
+
+					if( bRet && !(interior_medium == "none") ) {
+						bRet = pJob.SetObjectInteriorMedium( name.c_str(), interior_medium.c_str() );
+					}
+
+					return bRet;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "standard_object"; cd.category = ChunkCategory::Object;
+						cd.description = "Scene object instancing a geometry with material, modifier, and shader.  "
+							"Transform precedence: `matrix` > `quaternion` > `orientation` (Euler).  "
+							"`matrix` (16 doubles, column-major) bypasses the position / orientation / scale "
+							"composition entirely; `quaternion` (xyzw, glTF convention) replaces Euler "
+							"rotation but still composes with `position` and `scale`.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "geometry";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.required = true; p.description = "Geometry to instance"; }
+						{ auto& p = P(); p.name = "material";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Surface material"; }
+						{ auto& p = P(); p.name = "modifier";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Modifier}; p.description = "Geometry modifier"; }
+						{ auto& p = P(); p.name = "shader";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Shader override"; }
+						{ auto& p = P(); p.name = "position";         p.kind = ValueKind::DoubleVec3;p.description = "World-space position"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "orientation";      p.kind = ValueKind::DoubleVec3;p.description = "Euler orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "quaternion";       p.kind = ValueKind::DoubleVec4;p.description = "Rotation quaternion (xyzw, glTF convention)"; p.defaultValueHint = "0 0 0 1"; }
+						{ auto& p = P(); p.name = "matrix";           p.kind = ValueKind::DoubleMat4;p.description = "Full 4x4 world transform, column-major (overrides position/orientation/quaternion/scale)"; }
+						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3;p.description = "Per-axis scale"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "casts_shadows";    p.kind = ValueKind::Bool;      p.description = "Participates in shadow casting"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "receives_shadows"; p.kind = ValueKind::Bool;      p.description = "Receives shadows from other objects"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "radiance_map";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Per-object radiance map"; }
+						{ auto& p = P(); p.name = "radiance_scale";   p.kind = ValueKind::Double;    p.description = "Radiance-map scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "radiance_orient";  p.kind = ValueKind::DoubleVec3;p.description = "Radiance-map orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "interior_medium";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Medium}; p.description = "Interior participating medium"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// Phase 6.2 (docs/ROUND_TRIP_SAVE_PLAN.md §8.9): applies
+			// transform overrides to an already-declared object.  The
+			// chunk MUST appear AFTER the target's standard_object;
+			// missing target is a hard parse error.  Precedence
+			// matrix > quaternion > orientation mirrors the
+			// standard_object path.
+			struct OverrideObjectAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					const std::string name = bag.GetString( "name", std::string() );
+					if( name.empty() ) {
+						GlobalLog()->PrintEasyError(
+							"override_object: missing `name` field." );
+						return false;
+					}
+					IJobPriv* priv = dynamic_cast<IJobPriv*>( &pJob );
+					if( !priv ) {
+						GlobalLog()->PrintEasyError(
+							"override_object: IJob does not expose IObjectManager (mock?)" );
+						return false;
+					}
+					IObjectManager* objs = priv->GetObjects();
+					if( !objs ) return false;
+					IObjectPriv* obj = objs->GetItem( name.c_str() );
+					if( !obj ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"override_object: target `%s` not found in scene.  "
+							"Possible causes: (a) the override_object chunk appears "
+							"BEFORE the chunk that creates the target — chunks are "
+							"order-sensitive (§8.5); (b) the file was edited between "
+							"save and reload and the standard_object/csg_object was "
+							"deleted; (c) the target name has a typo or was renamed "
+							"after the override was authored.",
+							name.c_str() );
+						return false;
+					}
+
+					// Precedence: matrix > quaternion > orientation
+					// (mirrors StandardObjectAsciiChunkParser).
+					const bool hasMatrix     = bag.Has( "matrix" );
+					const bool hasQuaternion = bag.Has( "quaternion" );
+
+					bool any = false;
+					if( hasMatrix ) {
+						double m[16];
+						bag.GetMat4( "matrix", m );
+						obj->ClearAllTransforms();
+						obj->PushTopTransStack( BuildMatrix4FromColumnMajor( m ) );
+						any = true;
+					} else if( hasQuaternion ) {
+						double pos[3]={0,0,0}, q[4]={0,0,0,1}, s[3]={1,1,1};
+						bag.GetVec3( "position",   pos );
+						bag.GetVec4( "quaternion", q );
+						bag.GetVec3( "scale",      s );
+						double M[16];
+						ComposeTRS_QuaternionGltf( pos, q, s, M );
+						obj->ClearAllTransforms();
+						obj->PushTopTransStack( BuildMatrix4FromColumnMajor( M ) );
+						any = true;
+					} else {
+						// Per-field path.  Each Set* is independent;
+						// missing fields leave the corresponding
+						// component untouched (allows partial overrides
+						// like `override_object { name X  position 1 2 3 }`
+						// to update X's translation without disturbing
+						// its orientation/scale).
+						//
+						// COMPOSITIONAL CAVEAT (review-noted, V1 documented
+						// limitation): per-field SetPosition/Orientation/
+						// Stretch update P/O/Stretch components only — they
+						// do NOT clear the underlying transform STACK.  When
+						// the source `standard_object` was matrix-authored
+						// (Job::AddObjectMatrix pushed the matrix onto the
+						// stack), a per-field override of that target
+						// COMPOSES with the existing stack matrix rather
+						// than replacing it.  HISTORICAL: the pre-CST byte-
+						// splice save engine (deleted Slice 6d) never emitted
+						// per-field overrides for matrix-authored objects
+						// (pinned 2.13: matrix author-mode forced matrix-
+						// form override), so its round-trip path was safe;
+						// nothing emits override_object at all today (save
+						// is SaveEngine's whole-Document SerializeCst).
+						// Hand-written overrides targeting matrix-authored
+						// sources should use the matrix or quaternion
+						// branch to replace cleanly.
+						double v[3];
+						if( bag.GetVec3( "position", v ) ) {
+							obj->SetPosition( Point3( v[0], v[1], v[2] ) );
+							any = true;
+						}
+						if( bag.GetVec3( "orientation", v ) ) {
+							// orientation is DEGREES per scene convention
+							// (matches standard_object).
+							obj->SetOrientation( Vector3(
+								v[0]*DEG_TO_RAD, v[1]*DEG_TO_RAD, v[2]*DEG_TO_RAD ) );
+							any = true;
+						}
+						double scl[3];
+						if( bag.GetVec3( "scale", scl ) ) {
+							// R2 fix (pinned 2.7): ALWAYS use
+							// SetStretch — `scale` Vec3 routes to
+							// SetStretch in standard_object too
+							// (its parser in this file → AddObject
+							// → IObjectPriv::SetStretch).
+							obj->SetStretch( Vector3( scl[0], scl[1], scl[2] ) );
+							any = true;
+						}
+					}
+
+					if( !any ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"override_object `%s`: no override parameters present "
+							"(empty block — likely a bug in the writer).",
+							name.c_str() );
+						return true;	// not a fatal error; just a no-op.
+					}
+
+					obj->FinalizeTransformations();
+					objs->InvalidateSpatialStructure();
+					// Record the override so the CST incremental apply can refuse when any
+					// is present (its String target-ref is invisible to the static graph,
+					// so the closure of editing the target would miss it -- review P1.3).
+					pJob.NoteObjectOverride();
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword     = "override_object";
+						cd.category    = ChunkCategory::Object;
+						cd.description = "Apply transform overrides to an already-declared "
+							"object.  Legacy chunk emitted by the pre-CST round-trip save "
+							"(deleted in Model-B P5 Slice 6d) for objects that had no direct "
+							"source-line representation; nothing emits it today, but it "
+							"remains parseable for older scene files that contain it.  Order "
+							"in the scene file matters — this chunk must appear AFTER the "
+							"chunk that created the target.";
+						auto P = [&cd]() -> ParameterDescriptor& {
+							cd.parameters.emplace_back();
+							return cd.parameters.back();
+						};
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.required = true;
+						  p.description = "Name of the existing object to override."; }
+						{ auto& p = P(); p.name = "position";    p.kind = ValueKind::DoubleVec3; p.required = false;
+						  p.description = "World-space position; matches standard_object semantics."; }
+						{ auto& p = P(); p.name = "orientation"; p.kind = ValueKind::DoubleVec3; p.required = false;
+						  p.description = "Euler orientation in DEGREES; matches standard_object semantics."; }
+						{ auto& p = P(); p.name = "quaternion";  p.kind = ValueKind::DoubleVec4; p.required = false;
+						  p.description = "Rotation quaternion (xyzw, glTF); matches standard_object semantics."; }
+						{ auto& p = P(); p.name = "matrix";      p.kind = ValueKind::DoubleMat4; p.required = false;
+						  p.description = "Full 4x4 world transform, column-major; overrides "
+						                  "position/orientation/quaternion/scale.  The pre-CST "
+						                  "byte-splice save (deleted in Slice 6d) emitted this for "
+						                  "objects whose transform was not decomposable into "
+						                  "pos+orient+scale (e.g. after ScaleObjectFromAnchor); "
+						                  "nothing emits override_object today, but older scene "
+						                  "files that contain it remain parseable."; }
+						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.required = false;
+						  p.description = "Per-axis scale; matches standard_object semantics."; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct CSGObjectAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string obja     = bag.GetString( "obja",     "none" );
+					std::string objb     = bag.GetString( "objb",     "none" );
+					std::string material = bag.GetString( "material", "none" );
+					std::string modifier = bag.GetString( "modifier", "none" );
+					std::string shader   = bag.GetString( "shader",   "none" );
+
+					double pos[3]    = {0,0,0};
+					double orient[3] = {0,0,0};
+					bag.GetVec3( "position", pos );
+					if( bag.GetVec3( "orientation", orient ) ) {
+						orient[0] *= DEG_TO_RAD;
+						orient[1] *= DEG_TO_RAD;
+						orient[2] *= DEG_TO_RAD;
+					}
+
+					RadianceMapConfig radianceMapConfig;
+					if( bag.Has( "radiance_map" ) )    radianceMapConfig.name  = bag.GetString( "radiance_map" ).c_str();
+					if( bag.Has( "radiance_scale" ) )  radianceMapConfig.scale = bag.GetDouble( "radiance_scale" );
+					if( bag.GetVec3( "radiance_orient", radianceMapConfig.orientation ) ) {
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
+					char op = 0;
+					if( bag.Has( "operation" ) ) {
+						std::string opStr = bag.GetString( "operation" );
+						if( opStr == "union" ) {
+							op = 0;
+						} else if( opStr == "intersection" ) {
+							op = 1;
+						} else if( opStr == "subtraction" ) {
+							op = 2;
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "csg_object:: unknown operation `%s`", opStr.c_str() );
+							return false;
+						}
+					}
+
+					bool bCastsShadows    = bag.GetBool( "casts_shadows",    true );
+					bool bReceivesShadows = bag.GetBool( "receives_shadows", true );
+
+					return pJob.AddCSGObject( name.c_str(), obja.c_str(), objb.c_str(), op, material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radianceMapConfig, pos, orient, bCastsShadows, bReceivesShadows );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "csg_object"; cd.category = ChunkCategory::Object;
+						cd.description = "Constructive solid geometry combining two objects by a boolean operation.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "obja";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "First operand object"; }
+						{ auto& p = P(); p.name = "objb";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Second operand object"; }
+						{ auto& p = P(); p.name = "operation";   p.kind = ValueKind::Enum;      p.enumValues = {"union","intersection","subtraction"}; p.description = "CSG operation"; }
+						{ auto& p = P(); p.name = "material";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Override material"; }
+						{ auto& p = P(); p.name = "modifier";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Modifier}; p.description = "Override modifier"; }
+						{ auto& p = P(); p.name = "shader";      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Override shader"; }
+						{ auto& p = P(); p.name = "position";        p.kind = ValueKind::DoubleVec3;p.description = "World-space position"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "orientation";     p.kind = ValueKind::DoubleVec3;p.description = "Euler orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "casts_shadows";   p.kind = ValueKind::Bool;      p.description = "Casts shadows"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "receives_shadows";p.kind = ValueKind::Bool;      p.description = "Receives shadows"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "radiance_map";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Per-object radiance map"; }
+						{ auto& p = P(); p.name = "radiance_scale";  p.kind = ValueKind::Double;    p.description = "Radiance-map scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "radiance_orient"; p.kind = ValueKind::DoubleVec3;p.description = "Radiance-map orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//////////////////////////////////////////
+			// Photon Mapping
+			//////////////////////////////////////////
+
+
+			//////////////////////////////////////////
+			// Lights
+			//////////////////////////////////////////
+
+			// AmbientLight — descriptor-driven (reference pattern for migrations).
+			// State holds the accumulator values; apply functions below populate
+			// it; kAmbientLightDescriptor lists every valid parameter with its
+			// metadata and apply binding; ParseChunk creates a state, dispatches
+			// via the descriptor, then hands the state to pJob.AddAmbientLight.
+			// Adding or removing a parameter is a single edit in the descriptor.
+			// AmbientLight — descriptor-driven, Finalize-only
+			struct AmbientLightAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					double power = bag.GetDouble( "power", 1.0 );
+					double color[3] = {0,0,0};
+					bag.GetVec3( "color", color );
+					return pJob.AddAmbientLight( name.c_str(), power, color );
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = [](){
+						ChunkDescriptor cd;
+						cd.keyword     = "ambient_light";
+						cd.category    = ChunkCategory::Light;
+						cd.description = "Uniform ambient illumination (no spatial variation).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String;     p.description = "Unique name for this light";  p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "power"; p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "color"; p.kind = ValueKind::DoubleVec3; p.description = "R G B in scene colour space"; p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// OmniLight — descriptor-driven, Finalize-only
+			struct OmniLightAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					double power = bag.GetDouble( "power", 1.0 );
+					double position[3] = {0,0,0}; bag.GetVec3( "position", position );
+					double color[3]    = {0,0,0}; bag.GetVec3( "color",    color );
+					bool shootphotons  = bag.GetBool( "shootphotons", true );
+					return pJob.AddPointOmniLight( name.c_str(), power, color, position, shootphotons );
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "omni_light"; cd.category = ChunkCategory::Light;
+						cd.description = "Point light radiating uniformly in all directions.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;     p.description = "Unique name for this light";        p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";   p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";             p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";            p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// SpotLight — descriptor-driven, Finalize-only
+			struct SpotLightAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					double power = bag.GetDouble( "power", 1.0 );
+					// inner/outer specified in degrees; converted iff present.
+					double inner = PI_OV_FOUR;
+					double outer = PI_OV_TWO;
+					if( bag.Has("inner") ) inner = bag.GetDouble("inner", 45.0) * DEG_TO_RAD;
+					if( bag.Has("outer") ) outer = bag.GetDouble("outer", 90.0) * DEG_TO_RAD;
+					double position[3] = {0,0,0};  bag.GetVec3( "position", position );
+					double target[3]   = {0,0,0};  bag.GetVec3( "target",   target );
+					double color[3]    = {0,0,0};  bag.GetVec3( "color",    color );
+					bool shootphotons  = bag.GetBool( "shootphotons", true );
+					return pJob.AddPointSpotLight( name.c_str(), power, color, target, inner, outer, position, shootphotons );
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "spot_light"; cd.category = ChunkCategory::Light;
+						cd.description = "Cone spot light with inner and outer falloff angles.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;     p.description = "Unique name for this light";       p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";  p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "inner";        p.kind = ValueKind::Double;     p.description = "Inner cone half-angle (degrees)"; p.defaultValueHint = "45"; }
+						{ auto& p = P(); p.name = "outer";        p.kind = ValueKind::Double;     p.description = "Outer cone half-angle (degrees)"; p.defaultValueHint = "90"; }
+						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";            p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "target";       p.kind = ValueKind::DoubleVec3; p.description = "World-space target point";        p.defaultValueHint = "0 0 -1"; }
+						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";           p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// HosekWilkieSkylight — Landing 3.D analytic sun-and-sky.
+			// Creates an IRadianceMap (HW model wrapper) and registers
+			// it as the scene's global radiance map.  Optionally also
+			// creates a matched directional_light named `__hw_sun__`
+			// with the same solar elevation/azimuth — toggleable so a
+			// scene can use HW for the env hemisphere only.
+			struct HosekWilkieSkylightAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					const double  solarElevation = bag.GetDouble( "solar_elevation",     45.0 );
+					const double  solarAzimuth   = bag.GetDouble( "solar_azimuth",        0.0 );
+					const double  turbidity      = bag.GetDouble( "turbidity",            3.0 );
+					double        groundAlbedo[3] = { 0.3, 0.3, 0.3 };
+					if( bag.Has( "ground_albedo" ) ) {
+						bag.GetVec3( "ground_albedo", groundAlbedo );
+					}
+					const double  skyScale       = bag.GetDouble( "sky_intensity_scale", 1.0 );
+					const double  sunPower       = bag.GetDouble( "sun_intensity_scale", 3.14 );
+					const bool    createSun      = bag.GetBool(   "create_sun",          true );
+
+					return pJob.AddHosekWilkieSkylight(
+						solarElevation, solarAzimuth, turbidity,
+						groundAlbedo, skyScale, sunPower, createSun );
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "hosek_wilkie_skylight";
+						cd.category = ChunkCategory::Light;
+						cd.description = "Analytic spectral sun-and-sky (Hosek-Wilkie 2012; v1 uses Preetham 1999 internally).  Creates a global radiance map and an optional matched directional_light atomically — they share the same solar position so they can't drift apart.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "solar_elevation";    p.kind = ValueKind::Double;     p.description = "Sun angle above horizon, degrees (0 = horizon, 90 = zenith)";          p.defaultValueHint = "45.0"; }
+						{ auto& p = P(); p.name = "solar_azimuth";      p.kind = ValueKind::Double;     p.description = "Sun compass bearing, degrees (0 = +Z, 90 = +X)";                       p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "turbidity";          p.kind = ValueKind::Double;     p.description = "Atmospheric turbidity ∈ [1, 10] (1 = arctic clear, 3 = typical, 10 = polluted)"; p.defaultValueHint = "3.0"; }
+						{ auto& p = P(); p.name = "ground_albedo";      p.kind = ValueKind::DoubleVec3; p.description = "Per-channel ground albedo (v1: stored but not coupled — Preetham fallback; emits one-time warning if non-default)"; p.defaultValueHint = "0.3 0.3 0.3"; }
+						{ auto& p = P(); p.name = "sky_intensity_scale"; p.kind = ValueKind::Double;    p.description = "Multiplier on radiance-map output (does not affect the matched sun light)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "sun_intensity_scale"; p.kind = ValueKind::Double;    p.description = "Power for the matched directional_light (RISE convention: π for unit-flux key)"; p.defaultValueHint = "3.14"; }
+						{ auto& p = P(); p.name = "create_sun";         p.kind = ValueKind::Bool;       p.description = "If true (default), also creates a directional_light `__hw_sun__` matched to the solar position";  p.defaultValueHint = "true"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// DirectionalLight — descriptor-driven, Finalize-only
+			struct DirectionalLightAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					double power = bag.GetDouble( "power", 1.0 );
+					double dir[3]   = {0,0,0}; bag.GetVec3( "direction", dir );
+					double color[3] = {0,0,0}; bag.GetVec3( "color",     color );
+					return pJob.AddDirectionalLight( name.c_str(), power, color, dir );
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "directional_light"; cd.category = ChunkCategory::Light;
+						cd.description = "Parallel rays from a fixed direction (e.g. sunlight).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";      p.kind = ValueKind::String;     p.description = "Unique name for this light";      p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "power";     p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "direction"; p.kind = ValueKind::DoubleVec3; p.description = "Direction vector";                p.defaultValueHint = "0 -1 0"; }
+						{ auto& p = P(); p.name = "color";     p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";           p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//////////////////////////////////////////
+			// ShaderOps
+			//////////////////////////////////////////
+
+			struct PathTracingShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string  name             = bag.GetString( "name",                "noname" );
+					bool         smsEnabled       = bag.GetBool(   "sms_enabled",         false );
+					unsigned int smsMaxIterations = bag.GetUInt(   "sms_max_iterations",  20 );
+					double       smsThreshold     = bag.GetDouble( "sms_threshold",       1e-5 );
+					unsigned int smsMaxChainDepth = bag.GetUInt(   "sms_max_chain_depth", 10 );
+					bool         smsBiased        = bag.GetBool(   "sms_biased",          true );
+
+					return pJob.AddPathTracingShaderOp( name.c_str(), smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "pathtracing_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Unidirectional path-tracing shader op with optional Specular Manifold Sampling.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";                p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "sms_enabled";         p.kind = ValueKind::Bool;   p.description = "Enable SMS"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "sms_max_iterations";  p.kind = ValueKind::UInt;   p.description = "SMS Newton iterations"; p.defaultValueHint = "20"; }
+						{ auto& p = P(); p.name = "sms_threshold";       p.kind = ValueKind::Double; p.description = "SMS convergence threshold"; p.defaultValueHint = "1e-5"; }
+						{ auto& p = P(); p.name = "sms_max_chain_depth"; p.kind = ValueKind::UInt;   p.description = "SMS chain depth"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "sms_biased";          p.kind = ValueKind::Bool;   p.description = "Use biased SMS estimator"; p.defaultValueHint = "TRUE"; }
+						// Legacy parameters — accepted for backwards compat, silently ignored.
+						// `branch` was retired (legacy distribution-tracing knob).
+						{ auto& p = P(); p.name = "branch";               p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						{ auto& p = P(); p.name = "force_check_emitters"; p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						{ auto& p = P(); p.name = "finalgather";          p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						{ auto& p = P(); p.name = "reflections";          p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						{ auto& p = P(); p.name = "refractions";          p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						{ auto& p = P(); p.name = "diffuse";              p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						{ auto& p = P(); p.name = "translucents";         p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct SMSShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string  name          = bag.GetString( "name",            "noname" );
+					unsigned int maxIterations = bag.GetUInt(   "max_iterations",  20 );
+					double       threshold     = bag.GetDouble( "threshold",       1e-5 );
+					unsigned int maxChainDepth = bag.GetUInt(   "max_chain_depth", 10 );
+					bool         biased        = bag.GetBool(   "biased",          true );
+
+					return pJob.AddSMSShaderOp( name.c_str(), maxIterations, threshold, maxChainDepth, biased );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "sms_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Specular Manifold Sampling shader op.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "max_iterations";   p.kind = ValueKind::UInt;   p.description = "Newton iterations"; p.defaultValueHint = "20"; }
+						{ auto& p = P(); p.name = "threshold";        p.kind = ValueKind::Double; p.description = "Convergence threshold"; p.defaultValueHint = "1e-5"; }
+						{ auto& p = P(); p.name = "max_chain_depth";  p.kind = ValueKind::UInt;   p.description = "Max manifold-chain depth"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "biased";           p.kind = ValueKind::Bool;   p.description = "Biased SMS estimator"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct DistributionTracingShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string  name               = bag.GetString( "name",                 "noname" );
+					unsigned int samples            = bag.GetUInt(   "samples",              16 );
+					bool         irradiancecaching  = bag.GetBool(   "irradiance_caching",   false );
+					bool         forcecheckemitters = bag.GetBool(   "force_check_emitters", false );
+					bool         reflections        = bag.GetBool(   "reflections",          true );
+					bool         refractions        = bag.GetBool(   "refractions",          true );
+					bool         diffuse            = bag.GetBool(   "diffuse",              true );
+					bool         translucents       = bag.GetBool(   "translucents",         true );
+
+					return pJob.AddDistributionTracingShaderOp( name.c_str(), samples, irradiancecaching, forcecheckemitters, reflections, refractions, diffuse, translucents );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "distributiontracing_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Distribution ray tracing shader op.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";                 p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "samples";              p.kind = ValueKind::UInt;   p.description = "Samples per hit"; p.defaultValueHint = "16"; }
+						{ auto& p = P(); p.name = "irradiance_caching";   p.kind = ValueKind::Bool;   p.description = "Enable irradiance caching"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "force_check_emitters"; p.kind = ValueKind::Bool;   p.description = "Force emitter visibility checks"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "reflections";          p.kind = ValueKind::Bool;   p.description = "Trace reflection rays"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "refractions";          p.kind = ValueKind::Bool;   p.description = "Trace refraction rays"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "diffuse";              p.kind = ValueKind::Bool;   p.description = "Trace diffuse-reflection rays"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "translucents";         p.kind = ValueKind::Bool;   p.description = "Trace translucent rays"; p.defaultValueHint = "TRUE"; }
+						// Legacy parameter — accepted for backwards compat, silently ignored.
+						// `branch` was retired (legacy distribution-tracing knob).
+						{ auto& p = P(); p.name = "branch";               p.kind = ValueKind::Bool;   p.description = "Legacy — ignored"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct FinalGatherShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string  name = bag.GetString( "name", "noname" );
+
+					unsigned int thetasamples = 15;
+					unsigned int phisamples   = (unsigned int)(Scalar(thetasamples)*PI);
+
+					if( bag.Has("theta_samples") ) thetasamples = bag.GetUInt("theta_samples");
+					if( bag.Has("phi_samples") )   phisamples   = bag.GetUInt("phi_samples");
+					if( bag.Has("samples") ) {
+						const unsigned int samples = bag.GetUInt("samples");
+						const Scalar base = sqrt(Scalar(samples)/PI);
+						thetasamples = static_cast<unsigned int>( base );
+						phisamples   = static_cast<unsigned int>( PI*base );
+					}
+
+					bool         cachegradients              = bag.GetBool(   "cachegradients",             true );
+					unsigned int min_effective_contributors  = bag.GetUInt(   "min_effective_contributors", 2 );
+					double       high_variation_reuse_scale  = bag.GetDouble( "high_variation_reuse_scale", 0.25 );
+					bool         cache                       = bag.GetBool(   "cache",                      true );
+
+					return pJob.AddFinalGatherShaderOp( name.c_str(), thetasamples, phisamples, cachegradients, min_effective_contributors, high_variation_reuse_scale, cache );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "finalgather_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Irradiance-cache final-gather shader op.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";                        p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "theta_samples";               p.kind = ValueKind::UInt;   p.description = "Theta (elevation) samples"; p.defaultValueHint = "15"; }
+						{ auto& p = P(); p.name = "phi_samples";                 p.kind = ValueKind::UInt;   p.description = "Phi (azimuth) samples"; p.defaultValueHint = "47"; }
+						{ auto& p = P(); p.name = "samples";                     p.kind = ValueKind::UInt;   p.description = "Total samples — derives theta and phi automatically"; }
+						{ auto& p = P(); p.name = "cachegradients";              p.kind = ValueKind::Bool;   p.description = "Cache irradiance gradients"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "min_effective_contributors";  p.kind = ValueKind::UInt;   p.description = "Min contributors for reuse"; p.defaultValueHint = "2"; }
+						{ auto& p = P(); p.name = "high_variation_reuse_scale";  p.kind = ValueKind::Double; p.description = "Reuse-scale for high-variation regions"; p.defaultValueHint = "0.25"; }
+						{ auto& p = P(); p.name = "cache";                       p.kind = ValueKind::Bool;   p.description = "Use irradiance cache"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+
+			struct AmbientOcclusionShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+
+					unsigned int numtheta = 5;
+					unsigned int numphi   = 15;
+
+					if( bag.Has("numtheta") ) numtheta = bag.GetUInt("numtheta");
+					if( bag.Has("numphi") )   numphi   = bag.GetUInt("numphi");
+					if( bag.Has("samples") ) {
+						const unsigned int samples = bag.GetUInt("samples");
+						const Scalar base = sqrt(Scalar(samples)/PI);
+						numtheta = static_cast<unsigned int>( base );
+						numphi   = static_cast<unsigned int>( PI*base );
+					}
+
+					bool multiplybrdf     = bag.GetBool( "multiplybrdf",     true );
+					bool irradiance_cache = bag.GetBool( "irradiance_cache", false );
+
+					return pJob.AddAmbientOcclusionShaderOp( name.c_str(), numtheta, numphi, multiplybrdf, irradiance_cache );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "ambientocclusion_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Screen-space / hemisphere ambient occlusion.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "numtheta";         p.kind = ValueKind::UInt;   p.description = "Elevation samples"; p.defaultValueHint = "5"; }
+						{ auto& p = P(); p.name = "numphi";           p.kind = ValueKind::UInt;   p.description = "Azimuth samples"; p.defaultValueHint = "15"; }
+						{ auto& p = P(); p.name = "samples";          p.kind = ValueKind::UInt;   p.description = "Total samples — derives numtheta and numphi automatically"; }
+						{ auto& p = P(); p.name = "multiplybrdf";     p.kind = ValueKind::Bool;   p.description = "Multiply by surface BRDF"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "irradiance_cache"; p.kind = ValueKind::Bool;   p.description = "Use irradiance cache"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct DirectLightingShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string bsdf = bag.GetString( "bsdf", "none" );
+
+					return pJob.AddDirectLightingShaderOp( name.c_str(), bsdf=="none"?0:bsdf.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "directlighting_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Direct lighting only (no indirect).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "bsdf"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Override BSDF"; }
+						// Legacy parameters — accepted for backwards compat, silently ignored.
+						// The unified LightSampler now handles both analytic and mesh lights through
+						// one path, and `cache` was never correct with the stochastic sampler.
+						{ auto& p = P(); p.name = "nonmeshlights"; p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						{ auto& p = P(); p.name = "meshlights";    p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						{ auto& p = P(); p.name = "cache";         p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct SimpleSubSurfaceScatteringShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string  name             = bag.GetString( "name",             "noname" );
+					unsigned int numpoints        = bag.GetUInt(   "numpoints",        1000 );
+					double       error            = bag.GetDouble( "error",            0.001 );
+					unsigned int maxPointsPerNode = bag.GetUInt(   "maxpointspernode", 40 );
+					unsigned char maxDepth        = static_cast<unsigned char>( bag.GetUInt( "maxdepth", 8 ) );
+					double       irrad_scale      = bag.GetDouble( "irrad_scale",      1.0 );
+					double       geometric_scale  = bag.GetDouble( "geometric_scale",  1.0 );
+					bool         multiplyBSDF     = bag.GetBool(   "multiplybsdf",     false );
+					bool         regenerate       = bag.GetBool(   "regenerate",       true );
+					std::string  shader           = bag.GetString( "shader",           "none" );
+					bool         cache            = bag.GetBool(   "cache",            true );
+					bool         low_discrepancy  = bag.GetBool(   "low_discrepancy",  true );
+					double       extinction[3]   = {0.02, 0.03, 0.09};
+					bag.GetVec3( "extinction", extinction );
+
+					return pJob.AddSimpleSubSurfaceScatteringShaderOp( name.c_str(), numpoints, error, maxPointsPerNode, maxDepth, irrad_scale, geometric_scale, multiplyBSDF, regenerate, shader.c_str(), cache, low_discrepancy, extinction );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "simple_sss_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Simple point-cloud subsurface scattering.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "numpoints";        p.kind = ValueKind::UInt;   p.description = "Sample points per object"; p.defaultValueHint = "1000"; }
+						{ auto& p = P(); p.name = "error";            p.kind = ValueKind::Double; p.description = "Octree error threshold"; p.defaultValueHint = "0.001"; }
+						{ auto& p = P(); p.name = "maxpointspernode"; p.kind = ValueKind::UInt;   p.description = "Octree leaf capacity"; p.defaultValueHint = "40"; }
+						{ auto& p = P(); p.name = "maxdepth";         p.kind = ValueKind::UInt;   p.description = "Octree depth"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "irrad_scale";      p.kind = ValueKind::Double; p.description = "Irradiance scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "geometric_scale";  p.kind = ValueKind::Double; p.description = "Geometric scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "multiplybsdf";     p.kind = ValueKind::Bool;   p.description = "Multiply result by BSDF"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "regenerate";       p.kind = ValueKind::Bool;   p.description = "Re-build cache each frame"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "shader";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Sample-irradiance shader"; }
+						{ auto& p = P(); p.name = "cache";            p.kind = ValueKind::Bool;   p.description = "Cache sample irradiances"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "low_discrepancy";  p.kind = ValueKind::Bool;   p.description = "Use low-discrepancy sampling"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "extinction";       p.kind = ValueKind::DoubleVec3; p.description = "Extinction coefficient"; p.defaultValueHint = "0.02 0.03 0.09"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct DiffusionApproximationSubSurfaceScatteringShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string  name             = bag.GetString( "name",             "noname" );
+					unsigned int numpoints        = bag.GetUInt(   "numpoints",        1000 );
+					double       error            = bag.GetDouble( "error",            0.001 );
+					unsigned int maxPointsPerNode = bag.GetUInt(   "maxpointspernode", 40 );
+					unsigned char maxDepth        = static_cast<unsigned char>( bag.GetUInt( "maxdepth", 8 ) );
+					double       irrad_scale      = bag.GetDouble( "irrad_scale",      1.0 );
+					double       geometric_scale  = bag.GetDouble( "geometric_scale",  1.0 );
+					bool         multiplyBSDF     = bag.GetBool(   "multiplybsdf",     false );
+					bool         regenerate       = bag.GetBool(   "regenerate",       true );
+					std::string  shader           = bag.GetString( "shader",           "none" );
+					bool         cache            = bag.GetBool(   "cache",            true );
+					bool         low_discrepancy  = bag.GetBool(   "low_discrepancy",  true );
+					double       scattering[3]   = {2.19, 2.62, 3.0};
+					double       absorption[3]   = {0.0021, 0.0041, 0.0071};
+					bag.GetVec3( "scattering", scattering );
+					bag.GetVec3( "absorption", absorption );
+					double       ior              = bag.GetDouble( "ior",              1.3 );
+					double       g                = bag.GetDouble( "g",                0.8 );
+
+					return pJob.AddDiffusionApproximationSubSurfaceScatteringShaderOp( name.c_str(), numpoints, error, maxPointsPerNode, maxDepth, irrad_scale, geometric_scale, multiplyBSDF, regenerate, shader.c_str(), cache, low_discrepancy, scattering, absorption, ior, g );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "diffusion_approximation_sss_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Diffusion-approximation point-cloud SSS (Jensen et al.).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "numpoints";        p.kind = ValueKind::UInt;   p.description = "Sample points per object"; p.defaultValueHint = "1000"; }
+						{ auto& p = P(); p.name = "error";            p.kind = ValueKind::Double; p.description = "Octree error threshold"; p.defaultValueHint = "0.001"; }
+						{ auto& p = P(); p.name = "maxpointspernode"; p.kind = ValueKind::UInt;   p.description = "Octree leaf capacity"; p.defaultValueHint = "40"; }
+						{ auto& p = P(); p.name = "maxdepth";         p.kind = ValueKind::UInt;   p.description = "Octree depth"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "irrad_scale";      p.kind = ValueKind::Double; p.description = "Irradiance scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "geometric_scale";  p.kind = ValueKind::Double; p.description = "Geometric scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "multiplybsdf";     p.kind = ValueKind::Bool;   p.description = "Multiply by BSDF"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "regenerate";       p.kind = ValueKind::Bool;   p.description = "Re-build cache each frame"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "shader";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Sample-irradiance shader"; }
+						{ auto& p = P(); p.name = "cache";            p.kind = ValueKind::Bool;   p.description = "Cache irradiances"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "low_discrepancy";  p.kind = ValueKind::Bool;   p.description = "Low-discrepancy sampling"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "scattering";       p.kind = ValueKind::DoubleVec3; p.description = "Scattering coefficient"; p.defaultValueHint = "2.19 2.62 3.0"; }
+						{ auto& p = P(); p.name = "absorption";       p.kind = ValueKind::DoubleVec3; p.description = "Absorption coefficient"; p.defaultValueHint = "0.0021 0.0041 0.0071"; }
+						{ auto& p = P(); p.name = "ior";              p.kind = ValueKind::Double; p.description = "Index of refraction"; p.defaultValueHint = "1.3"; }
+						{ auto& p = P(); p.name = "g";                p.kind = ValueKind::Double; p.description = "Henyey-Greenstein g"; p.defaultValueHint = "0.8"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct DonnerJensenSkinSSSShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string  name             = bag.GetString( "name",             "noname" );
+					unsigned int numpoints        = bag.GetUInt(   "numpoints",        10000 );
+					double       error            = bag.GetDouble( "error",            0.001 );
+					unsigned int maxPointsPerNode = bag.GetUInt(   "maxpointspernode", 40 );
+					unsigned char maxDepth        = static_cast<unsigned char>( bag.GetUInt( "maxdepth", 8 ) );
+					double       irrad_scale      = bag.GetDouble( "irrad_scale",      1.0 );
+					std::string  shader           = bag.GetString( "shader",           "none" );
+					bool         cache            = bag.GetBool(   "cache",            true );
+
+					double melanin_fraction     = bag.GetDouble( "melanin_fraction",     0.02 );
+					double melanin_blend        = bag.GetDouble( "melanin_blend",        0.5 );
+					double hemoglobin_epidermis = bag.GetDouble( "hemoglobin_epidermis", 0.002 );
+					double carotene_fraction    = bag.GetDouble( "carotene_fraction",    0.001 );
+					double hemoglobin_dermis    = bag.GetDouble( "hemoglobin_dermis",    0.005 );
+					double epidermis_thickness  = bag.GetDouble( "epidermis_thickness",  0.025 );
+					double ior_epidermis        = bag.GetDouble( "ior_epidermis",        1.4 );
+					double ior_dermis           = bag.GetDouble( "ior_dermis",           1.38 );
+					double blood_oxygenation    = bag.GetDouble( "blood_oxygenation",    0.7 );
+
+					std::string melanin_fraction_offset     = bag.GetString( "melanin_fraction_offset",     "" );
+					std::string hemoglobin_epidermis_offset = bag.GetString( "hemoglobin_epidermis_offset", "" );
+					std::string hemoglobin_dermis_offset    = bag.GetString( "hemoglobin_dermis_offset",    "" );
+
+					return pJob.AddDonnerJensenSkinSSSShaderOp( name.c_str(),
+						numpoints, error, maxPointsPerNode, maxDepth, irrad_scale,
+						shader.c_str(), cache,
+						melanin_fraction, melanin_blend, hemoglobin_epidermis,
+						carotene_fraction, hemoglobin_dermis, epidermis_thickness,
+						ior_epidermis, ior_dermis, blood_oxygenation,
+						melanin_fraction_offset.c_str(),
+						hemoglobin_epidermis_offset.c_str(),
+						hemoglobin_dermis_offset.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "donner_jensen_skin_sss_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Donner-Jensen spectral skin SSS shader op.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						static const char* doubles[] = {
+							"melanin_fraction","melanin_blend","hemoglobin_epidermis","carotene_fraction",
+							"hemoglobin_dermis","epidermis_thickness","ior_epidermis","ior_dermis","blood_oxygenation"
+						};
+						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "numpoints";        p.kind = ValueKind::UInt;   p.description = "Sample points per object"; p.defaultValueHint = "10000"; }
+						{ auto& p = P(); p.name = "error";            p.kind = ValueKind::Double; p.description = "Octree error"; p.defaultValueHint = "0.001"; }
+						{ auto& p = P(); p.name = "maxpointspernode"; p.kind = ValueKind::UInt;   p.description = "Octree leaf capacity"; p.defaultValueHint = "40"; }
+						{ auto& p = P(); p.name = "maxdepth";         p.kind = ValueKind::UInt;   p.description = "Octree depth"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "irrad_scale";      p.kind = ValueKind::Double; p.description = "Irradiance scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "shader";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Irradiance-gather shader"; }
+						{ auto& p = P(); p.name = "cache";            p.kind = ValueKind::Bool;   p.description = "Cache sample irradiances"; p.defaultValueHint = "TRUE"; }
+						for (const char* n : doubles) {
+							auto& p = P(); p.name = n; p.kind = ValueKind::Double; p.description = "Donner-Jensen skin parameter";
+						}
+						{ auto& p = P(); p.name = "melanin_fraction_offset";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Spatial melanin offset"; }
+						{ auto& p = P(); p.name = "hemoglobin_epidermis_offset";p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Spatial hb-epi offset"; }
+						{ auto& p = P(); p.name = "hemoglobin_dermis_offset";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Spatial hb-derm offset"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct AreaLightShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string  name     = bag.GetString( "name",   "noname" );
+					double       width    = bag.GetDouble( "width",  1.0 );
+					double       height   = bag.GetDouble( "height", 1.0 );
+					double       location[3] = {0, 10, 0};
+					double       dir[3]      = {0, -1, 0};
+					bag.GetVec3( "location", location );
+					bag.GetVec3( "dir",      dir );
+
+					// `make_dir` derives `dir` from a target point relative to location
+					if( bag.Has("make_dir") ) {
+						double target[3] = {0,0,0};
+						bag.GetVec3( "make_dir", target );
+						dir[0] = target[0] - location[0];
+						dir[1] = target[1] - location[1];
+						dir[2] = target[2] - location[2];
+					}
+
+					unsigned int samples = bag.GetUInt(   "samples",  9 );
+					std::string  emm     = bag.GetString( "emission", "color_white" );
+					Scalar       power   = bag.GetDouble( "power",    1.0 );
+					std::string  N       = bag.GetString( "N",        "1.0" );
+					Scalar       hotspot = bag.Has("hotspot") ? bag.GetDouble("hotspot") * DEG_TO_RAD : PI;
+					bool         cache   = bag.GetBool(   "cache",    false );
+
+					return pJob.AddAreaLightShaderOp( name.c_str(), width, height, location, dir, samples, emm.c_str(), power, N.c_str(), hotspot, cache );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "arealight_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Area-light shader op (direct sampling of an emitting rectangle).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "width";    p.kind = ValueKind::Double;     p.description = "Rectangle width"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "height";   p.kind = ValueKind::Double;     p.description = "Rectangle height"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "location"; p.kind = ValueKind::DoubleVec3; p.description = "World-space center"; p.defaultValueHint = "0 10 0"; }
+						{ auto& p = P(); p.name = "dir";      p.kind = ValueKind::DoubleVec3; p.description = "Rectangle normal"; p.defaultValueHint = "0 -1 0"; }
+						{ auto& p = P(); p.name = "make_dir"; p.kind = ValueKind::DoubleVec3; p.description = "Derive dir from target = make_dir - location"; }
+						{ auto& p = P(); p.name = "samples";  p.kind = ValueKind::UInt;       p.description = "Samples per shade"; p.defaultValueHint = "9"; }
+						{ auto& p = P(); p.name = "emission"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Emission colour"; p.defaultValueHint = "color_white"; }
+						{ auto& p = P(); p.name = "power";    p.kind = ValueKind::Double;     p.description = "Radiant power"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "N";        p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Directionality exponent"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "hotspot";  p.kind = ValueKind::Double;     p.description = "Hotspot half-angle (degrees)"; p.defaultValueHint = "180"; }
+						{ auto& p = P(); p.name = "cache";    p.kind = ValueKind::Bool;       p.description = "Cache direct-light estimate"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct TransparencyShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name      = bag.GetString( "name",         "noname" );
+					std::string trans     = bag.GetString( "transparency", "color_white" );
+					bool        one_sided = bag.GetBool(   "one_sided",    false );
+
+					return pJob.AddTransparencyShaderOp( name.c_str(), trans.c_str(), one_sided );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "transparency_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Alpha-transparency shader op.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "transparency"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Alpha painter"; p.defaultValueHint = "color_white"; }
+						{ auto& p = P(); p.name = "one_sided";    p.kind = ValueKind::Bool;      p.description = "Transparent from one side only"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct AlphaTestShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string alpha  = bag.GetString( "alpha",  "color_white" );
+					double      cutoff = bag.GetDouble( "cutoff", 0.5 );
+					return pJob.AddAlphaTestShaderOp( name.c_str(), alpha.c_str(), cutoff );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "alpha_test_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Cutout-alpha (glTF alphaMode=MASK) shader op.  At hit time samples "
+							"`alpha` from the painter; if alpha < cutoff the ray is forwarded past the "
+							"surface as if it never hit.  Caveat: only honoured by integrators that go "
+							"through IShader::Shade() (path tracer + legacy direct shaders); BDPT, VCM, "
+							"MLT, and photon tracers treat the surface as fully opaque.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "alpha";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Alpha painter"; p.defaultValueHint = "color_white"; }
+						{ auto& p = P(); p.name = "cutoff"; p.kind = ValueKind::Double;    p.description = "Alpha threshold (alpha < cutoff continues the ray past the surface)"; p.defaultValueHint = "0.5"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//////////////////////////////////////////
+			// Shaders
+			//////////////////////////////////////////
+
+			struct StandardShaderAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+
+					const std::vector<std::string>& shaderops = bag.GetRepeatable( "shaderop" );
+					const unsigned int num = static_cast<unsigned int>(shaderops.size());
+
+					char* shmem = new char[num*256];
+					memset( shmem, 0, num*256 );
+					char** shops = new char*[num];
+
+					for( unsigned int i=0; i<num; i++ ) {
+						shops[i] = &shmem[i*256];
+						strncpy( shops[i], shaderops[i].c_str(), 255 );
+					}
+
+					bool bRet = pJob.AddStandardShader( name.c_str(), num, (const char**)shops );
+
+					delete [] shops;
+					delete [] shmem;
+
+					return bRet;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "standard_shader"; cd.category = ChunkCategory::Shader;
+						cd.description = "Linear chain of shader ops evaluated per hit.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "shaderop"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::ShaderOp}; p.repeatable = true; p.description = "Shader op to chain (repeatable)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct AdvancedShaderAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+
+					std::vector<String> shaderops;
+					std::vector<unsigned int> mins, maxs;
+					std::vector<char> operations;
+
+					// Repeatable composite tokens: "<shaderop-name> <min-depth> <max-depth> <op>"
+					const std::vector<std::string>& sops = bag.GetRepeatable( "shaderop" );
+					for( size_t k = 0; k < sops.size(); ++k ) {
+						char buf[256] = {0};
+						unsigned int min=1, max=10000;
+						char operation = '+';
+						sscanf( sops[k].c_str(), "%s %u %u %c", buf, &min, &max, &operation );
+						shaderops.push_back( String(buf) );
+						mins.push_back( min );
+						maxs.push_back( max );
+						operations.push_back( operation );
+					}
+
+					const unsigned int num = static_cast<unsigned int>(shaderops.size());
+					char* shmem = new char[num*256];
+					memset( shmem, 0, num*256 );
+					char** shops = new char*[num];
+
+					for( unsigned int i=0; i<num; i++ ) {
+						shops[i] = &shmem[i*256];
+						strncpy( shops[i], shaderops[i].c_str(), 255 );
+					}
+
+					bool bRet = pJob.AddAdvancedShader( name.c_str(), num, (const char**)shops, (unsigned int*)(&(*(mins.begin()))), (unsigned int*)(&(*(maxs.begin()))), (char*)(&(*(operations.begin()))) );
+
+					delete [] shops;
+					delete [] shmem;
+
+					return bRet;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "advanced_shader"; cd.category = ChunkCategory::Shader;
+						cd.description = "Depth-scoped shader chain with per-op recursion ranges and composition operators.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "shaderop"; p.kind = ValueKind::String; p.repeatable = true; p.tupleKinds = {ValueKind::Reference, ValueKind::UInt, ValueKind::UInt, ValueKind::Enum}; p.referenceCategories = {ChunkCategory::ShaderOp}; p.description = "Shader-op triple: <shaderop-name> <min-depth> <max-depth> <op>"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct DirectVolumeRenderingShaderAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string  name              = bag.GetString( "name",            "noname" );
+					std::string  szVolumeFilePattern = bag.GetString( "file_pattern",  "" );
+					std::string  iso_shader        = bag.GetString( "iso_shader",      "none" );
+					unsigned int width             = bag.GetUInt(   "width",           0 );
+					unsigned int height            = bag.GetUInt(   "height",          0 );
+					unsigned int startz            = bag.GetUInt(   "startz",          0 );
+					unsigned int endz              = bag.GetUInt(   "endz",            0 );
+
+					std::string accessorS  = bag.GetString( "accessor",  "n" );
+					std::string gradientS  = bag.GetString( "gradient",  "i" );
+					std::string compositeS = bag.GetString( "composite", "c" );
+					std::string samplerS   = bag.GetString( "sampler",   "u" );
+					char accessor  = accessorS.empty()  ? 'n' : (char)tolower( accessorS[0] );
+					char gradient  = gradientS.empty()  ? 'i' : (char)tolower( gradientS[0] );
+					char composite = compositeS.empty() ? 'c' : (char)tolower( compositeS[0] );
+					char sampler   = samplerS.empty()   ? 'u' : (char)tolower( samplerS[0] );
+
+					double       dThresholdStart   = bag.GetDouble( "threshold_start", 0.4 );
+					double       dThresholdEnd     = bag.GetDouble( "threshold_end",   1.0 );
+					unsigned int samples           = bag.GetUInt(   "samples",         50 );
+					std::string  transfer_red      = bag.GetString( "transfer_red",    "none" );
+					std::string  transfer_green    = bag.GetString( "transfer_green",  "none" );
+					std::string  transfer_blue     = bag.GetString( "transfer_blue",   "none" );
+					std::string  transfer_alpha    = bag.GetString( "transfer_alpha",  "none" );
+
+					return pJob.AddDirectVolumeRenderingShader( name.c_str(), szVolumeFilePattern.c_str(), width, height, startz, endz,
+						accessor, gradient, composite, dThresholdStart, dThresholdEnd, sampler, samples, transfer_red.c_str(), transfer_green.c_str(), transfer_blue.c_str(), transfer_alpha.c_str(), iso_shader=="none"?0:iso_shader.c_str()
+						);
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "directvolumerendering_shader"; cd.category = ChunkCategory::Shader;
+						cd.description = "Direct volume rendering shader.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file_pattern";    p.kind = ValueKind::String;   p.description = "Volume file pattern"; }
+						{ auto& p = P(); p.name = "width";           p.kind = ValueKind::UInt;     p.description = "Volume width"; }
+						{ auto& p = P(); p.name = "height";          p.kind = ValueKind::UInt;     p.description = "Volume height"; }
+						{ auto& p = P(); p.name = "startz";          p.kind = ValueKind::UInt;     p.description = "Start slice index"; }
+						{ auto& p = P(); p.name = "endz";            p.kind = ValueKind::UInt;     p.description = "End slice index"; }
+						{ auto& p = P(); p.name = "accessor";        p.kind = ValueKind::Enum;     p.enumValues = {"n","t"}; p.description = "Voxel accessor"; p.defaultValueHint = "n"; }
+						{ auto& p = P(); p.name = "gradient";        p.kind = ValueKind::Enum;     p.enumValues = {"i","c","s"}; p.description = "Gradient estimator"; p.defaultValueHint = "i"; }
+						{ auto& p = P(); p.name = "composite";       p.kind = ValueKind::Enum;     p.enumValues = {"c","m","i"}; p.description = "Compositing op"; p.defaultValueHint = "c"; }
+						{ auto& p = P(); p.name = "threshold_start"; p.kind = ValueKind::Double;   p.description = "Low opacity cutoff"; p.defaultValueHint = "0.4"; }
+						{ auto& p = P(); p.name = "threshold_end";   p.kind = ValueKind::Double;   p.description = "High opacity cutoff"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "sampler";         p.kind = ValueKind::Enum;     p.enumValues = {"u","s"}; p.description = "Ray sampler"; p.defaultValueHint = "u"; }
+						{ auto& p = P(); p.name = "samples";         p.kind = ValueKind::UInt;     p.description = "Samples along ray"; p.defaultValueHint = "50"; }
+						{ auto& p = P(); p.name = "transfer_red";    p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "R transfer function"; }
+						{ auto& p = P(); p.name = "transfer_green";  p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "G transfer function"; }
+						{ auto& p = P(); p.name = "transfer_blue";   p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "B transfer function"; }
+						{ auto& p = P(); p.name = "transfer_alpha";  p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "A transfer function"; }
+						{ auto& p = P(); p.name = "iso_shader";      p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Shader}; p.description = "Iso-surface shader"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct SpectralDirectVolumeRenderingShaderAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string  name              = bag.GetString( "name",            "noname" );
+					std::string  szVolumeFilePattern = bag.GetString( "file_pattern",  "" );
+					std::string  iso_shader        = bag.GetString( "iso_shader",      "none" );
+					unsigned int width             = bag.GetUInt(   "width",           0 );
+					unsigned int height            = bag.GetUInt(   "height",          0 );
+					unsigned int startz            = bag.GetUInt(   "startz",          0 );
+					unsigned int endz              = bag.GetUInt(   "endz",            0 );
+
+					std::string accessorS  = bag.GetString( "accessor",  "n" );
+					std::string gradientS  = bag.GetString( "gradient",  "i" );
+					std::string compositeS = bag.GetString( "composite", "c" );
+					std::string samplerS   = bag.GetString( "sampler",   "u" );
+					char accessor  = accessorS.empty()  ? 'n' : (char)tolower( accessorS[0] );
+					char gradient  = gradientS.empty()  ? 'i' : (char)tolower( gradientS[0] );
+					char composite = compositeS.empty() ? 'c' : (char)tolower( compositeS[0] );
+					char sampler   = samplerS.empty()   ? 'u' : (char)tolower( samplerS[0] );
+
+					double       dThresholdStart    = bag.GetDouble( "threshold_start",   0.4 );
+					double       dThresholdEnd      = bag.GetDouble( "threshold_end",     1.0 );
+					unsigned int samples            = bag.GetUInt(   "samples",           50 );
+					std::string  transfer_spectral  = bag.GetString( "transfer_spectral", "none" );
+					std::string  transfer_alpha     = bag.GetString( "transfer_alpha",    "none" );
+
+					return pJob.AddSpectralDirectVolumeRenderingShader( name.c_str(), szVolumeFilePattern.c_str(), width, height, startz, endz,
+						accessor, gradient, composite, dThresholdStart, dThresholdEnd, sampler, samples, transfer_alpha.c_str(), transfer_spectral.c_str(), iso_shader=="none"?0:iso_shader.c_str()
+						);
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "spectraldirectvolumerendering_shader"; cd.category = ChunkCategory::Shader;
+						cd.description = "Spectral direct volume rendering shader.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";              p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file_pattern";      p.kind = ValueKind::String;   p.description = "Volume file pattern"; }
+						{ auto& p = P(); p.name = "width";             p.kind = ValueKind::UInt;     p.description = "Volume width"; }
+						{ auto& p = P(); p.name = "height";            p.kind = ValueKind::UInt;     p.description = "Volume height"; }
+						{ auto& p = P(); p.name = "startz";            p.kind = ValueKind::UInt;     p.description = "Start slice"; }
+						{ auto& p = P(); p.name = "endz";              p.kind = ValueKind::UInt;     p.description = "End slice"; }
+						{ auto& p = P(); p.name = "accessor";          p.kind = ValueKind::Enum;     p.enumValues = {"n","t"}; p.description = "Voxel accessor"; p.defaultValueHint = "n"; }
+						{ auto& p = P(); p.name = "gradient";          p.kind = ValueKind::Enum;     p.enumValues = {"i","c","s"}; p.description = "Gradient estimator"; p.defaultValueHint = "i"; }
+						{ auto& p = P(); p.name = "composite";         p.kind = ValueKind::Enum;     p.enumValues = {"c","m","i"}; p.description = "Compositing op"; p.defaultValueHint = "c"; }
+						{ auto& p = P(); p.name = "threshold_start";   p.kind = ValueKind::Double;   p.description = "Low opacity cutoff"; p.defaultValueHint = "0.4"; }
+						{ auto& p = P(); p.name = "threshold_end";     p.kind = ValueKind::Double;   p.description = "High opacity cutoff"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "sampler";           p.kind = ValueKind::Enum;     p.enumValues = {"u","s"}; p.description = "Ray sampler"; p.defaultValueHint = "u"; }
+						{ auto& p = P(); p.name = "samples";           p.kind = ValueKind::UInt;     p.description = "Samples along ray"; p.defaultValueHint = "50"; }
+						{ auto& p = P(); p.name = "transfer_alpha";    p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Alpha transfer function"; }
+						{ auto& p = P(); p.name = "transfer_spectral"; p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Function}; p.description = "Spectral transfer function"; }
+						{ auto& p = P(); p.name = "iso_shader";        p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Shader}; p.description = "Iso-surface shader"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//////////////////////////////////////////
+			// Rasterizers
+			//////////////////////////////////////////
+
+			// (Helper templates AddStabilityConfigParams / AddPathGuidingParams
+			//  / AddAdaptiveSamplingParams / AddPixelFilterParams /
+			//  AddRadianceMapParams / AddProgressiveParams /
+			//  AddSpectralConfigParams / AddSMSConfigParams /
+			//  AddPhotonMapGenerate*/Gather* / AddCameraCommonParams /
+			//  AddNoisePainterCommonParams / AddBaseRasterizerParams /
+			//  AddOptimalMISParams are defined above the Painters section
+			//  so every chunk parser can reference them.)
+
+			struct PixelPelRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					PixelPelDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int maxRecur       = bag.GetUInt(   "max_recursion",  dflt.maxRecursion );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					unsigned int numLumSamples  = bag.GetUInt(   "lum_samples",    dflt.numLumSamples );
+					std::string luminarySampler = bag.GetString( "luminary_sampler", dflt.luminarySampler );
+					double luminarySamplerParam = bag.GetDouble( "luminary_sampler_param", dflt.luminarySamplerParam );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+
+					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
+					PixelFilterConfig pixelFilterConfig;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
+					PathGuidingConfig guidingConfig;
+					if( bag.Has("pathguiding") )                                         guidingConfig.enabled                = bag.GetBool("pathguiding");
+					if( bag.Has("pathguiding_iterations") )                              guidingConfig.trainingIterations     = bag.GetUInt("pathguiding_iterations");
+					if( bag.Has("pathguiding_spp") )                                     guidingConfig.trainingSPP            = bag.GetUInt("pathguiding_spp");
+					if( bag.Has("pathguiding_combine_training") )                        guidingConfig.combineTrainingIterations = bag.GetBool("pathguiding_combine_training");
+					if( bag.Has("pathguiding_online") )                                  guidingConfig.online                 = bag.GetBool("pathguiding_online");
+					if( bag.Has("pathguiding_warmup_iterations") )                       guidingConfig.warmupIterations       = bag.GetUInt("pathguiding_warmup_iterations");
+					if( bag.Has("pathguiding_alpha") )                                   guidingConfig.alpha                  = bag.GetDouble("pathguiding_alpha");
+				if( bag.Has("pathguiding_learned_alpha") )                           guidingConfig.learnedAlpha           = bag.GetBool("pathguiding_learned_alpha");
+					if( bag.Has("pathguiding_max_depth") )                               guidingConfig.maxGuidingDepth        = bag.GetUInt("pathguiding_max_depth");
+					if( bag.Has("pathguiding_light_max_depth") )                         guidingConfig.maxLightGuidingDepth   = bag.GetUInt("pathguiding_light_max_depth");
+					if( bag.Has("pathguiding_sampling_type") ) {
+						const std::string st = bag.GetString("pathguiding_sampling_type");
+						guidingConfig.samplingType = ( st == "ris" || st == "RIS" ) ? eGuidingRIS : eGuidingOneSampleMIS;
+					}
+					if( bag.Has("pathguiding_ris_candidates") )                          guidingConfig.risCandidates          = std::max( 2u, bag.GetUInt("pathguiding_ris_candidates") );
+					if( bag.Has("pathguiding_complete_paths") )                          guidingConfig.completePathGuiding    = bag.GetBool("pathguiding_complete_paths");
+					if( bag.Has("pathguiding_complete_path_strategy_selection") )        guidingConfig.completePathStrategySelection = bag.GetBool("pathguiding_complete_path_strategy_selection");
+					if( bag.Has("pathguiding_complete_path_strategy_samples") )          guidingConfig.completePathStrategySamples   = bag.GetUInt("pathguiding_complete_path_strategy_samples");
+
+					AdaptiveSamplingConfig adaptiveConfig;
+					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+					if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+					if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
+					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )                   stabilityConfig.filterGlossy                 = bag.GetDouble("filter_glossy");
+					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )               stabilityConfig.maxGlossyBounce              = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") )         stabilityConfig.maxTransmissionBounce        = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
+					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
+					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
+					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
+
+					ProgressiveConfig progressiveConfig;
+					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+					if( bag.Has("progressive_samples_per_pass") ) {
+						const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+						progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
+					}
+
+					return pJob.SetPixelBasedPelRasterizer( numSamples, numLumSamples,
+						maxRecur, defaultshader.c_str(), radianceMapConfig,
+						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
+						pixelFilterConfig,
+						showLuminaires, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						PixelPelDefaults dflt;
+						StabilityConfig stabilityDflt;
+						ChunkDescriptor cd;
+						cd.keyword = "pixelpel_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "RGB pel-based unidirectional path-tracing integrator.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "defaultshader";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain for hit points"; p.defaultValueHint = to_hint(dflt.defaultShader); }
+						{ auto& p = P(); p.name = "max_recursion";         p.kind = ValueKind::UInt;      p.description = "Maximum ray recursion depth";   p.defaultValueHint = to_hint(dflt.maxRecursion); }
+						{ auto& p = P(); p.name = "samples";               p.kind = ValueKind::UInt;      p.description = "Samples per pixel";              p.defaultValueHint = to_hint(dflt.numPixelSamples); }
+						{ auto& p = P(); p.name = "lum_samples";           p.kind = ValueKind::UInt;      p.description = "Luminaire samples per hit";      p.defaultValueHint = to_hint(dflt.numLumSamples); }
+						{ auto& p = P(); p.name = "luminary_sampler";      p.kind = ValueKind::String;    p.description = "Luminary sampling strategy";     p.defaultValueHint = to_hint(dflt.luminarySampler); }
+						{ auto& p = P(); p.name = "luminary_sampler_param";p.kind = ValueKind::Double;    p.description = "Luminary sampler parameter";     p.defaultValueHint = to_hint(dflt.luminarySamplerParam); }
+						{ auto& p = P(); p.name = "show_luminaires";       p.kind = ValueKind::Bool;      p.description = "Show direct-visible luminaires"; p.defaultValueHint = to_hint(dflt.showLuminaires); }
+						{ auto& p = P(); p.name = "oidn_denoise";          p.kind = ValueKind::Bool;      p.description = "Enable OIDN denoiser";           p.defaultValueHint = to_hint(dflt.oidnDenoise); }
+						{ auto& p = P(); p.name = "oidn_quality";          p.kind = ValueKind::Enum;      p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = to_hint(dflt.oidnQuality); }
+						{ auto& p = P(); p.name = "oidn_device";           p.kind = ValueKind::Enum;      p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = to_hint(dflt.oidnDevice); }
+					{ auto& p = P(); p.name = "oidn_prefilter";        p.kind = ValueKind::Enum;      p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = to_hint(dflt.oidnPrefilter); }
+						{ auto& p = P(); p.name = "choose_one_light";      p.kind = ValueKind::Bool;      p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						AddPathGuidingParams( P );
+						AddAdaptiveSamplingParams( P );
+						AddStabilityConfigParams( P );
+						{ auto& p = P(); p.name = "filter_glossy";                    p.kind = ValueKind::Double; p.description = "Glossy roughness floor (0 disables)";                     p.defaultValueHint = to_hint(stabilityDflt.filterGlossy); }
+						AddOptimalMISParams( P );
+						AddProgressiveParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PixelIntegratingSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				// Helper: read pairs of (key, vector) from a single-column file.
+				static bool LoadSingleColumnFile( const std::string& filename, std::vector<double>& out ) {
+					FILE* f = fopen( GlobalMediaPathLocator().Find(String(filename.c_str())).c_str(), "r" );
+					if( !f ) {
+						GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", filename.c_str() );
+						return false;
+					}
+					char lcbuf[MAX_CHARS_PER_LINE];
+					while( fgets( lcbuf, sizeof( lcbuf ), f ) ) {
+						const char* q = lcbuf;
+						while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
+						if( *q == '\0' || *q == '#' ) continue;
+						double v = 0.0;
+						if( sscanf( lcbuf, "%lf", &v ) == 1 ) out.push_back( v );
+					}
+					fclose( f );
+					return true;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					PixelIntegratingSpectralDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int maxRecur       = bag.GetUInt(   "max_recursion",  dflt.maxRecursion );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					unsigned int numLumSamples  = bag.GetUInt(   "lum_samples",    dflt.numLumSamples );
+					std::string luminarySampler = bag.GetString( "luminary_sampler", dflt.luminarySampler );
+					double luminarySamplerParam = bag.GetDouble( "luminary_sampler_param", dflt.luminarySamplerParam );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+					bool integrateRGB           = bag.GetBool(   "integrate_rgb",   dflt.integrateRGB );
+
+					SpectralConfig spectralConfig;
+					if( bag.Has("spectral_samples") ) spectralConfig.spectralSamples = bag.GetUInt("spectral_samples");
+					if( bag.Has("num_wavelengths") )  spectralConfig.numWavelengths  = bag.GetUInt("num_wavelengths");
+					if( bag.Has("nmbegin") )          spectralConfig.nmBegin         = bag.GetDouble("nmbegin");
+					if( bag.Has("nmend") )            spectralConfig.nmEnd           = bag.GetDouble("nmend");
+					if( bag.Has("hwss") )             spectralConfig.useHWSS         = bag.GetBool("hwss");
+
+					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
+					PixelFilterConfig pixelFilterConfig;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
+					std::vector<double> spd_wavelengths;
+					std::vector<double> spd_r;
+					std::vector<double> spd_g;
+					std::vector<double> spd_b;
+
+					// rgb_spd loads wavelength + R + G + B together from a 4-column file.
+					if( bag.Has("rgb_spd") ) {
+						const std::string filename = bag.GetString("rgb_spd");
+						FILE* f = fopen( GlobalMediaPathLocator().Find(String(filename.c_str())).c_str(), "r" );
+						if( f ) {
+							char rgbbuf[MAX_CHARS_PER_LINE];
+							while( fgets( rgbbuf, sizeof( rgbbuf ), f ) ) {
+								const char* q = rgbbuf;
+								while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
+								if( *q == '\0' || *q == '#' ) continue;
+								double nm = 0.0, r = 0.0, g = 0.0, b = 0.0;
+								if( sscanf( rgbbuf, "%lf %lf %lf %lf", &nm, &r, &g, &b ) == 4 ) {
+									spd_wavelengths.push_back( nm );
+									spd_r.push_back( r );
+									spd_g.push_back( g );
+									spd_b.push_back( b );
+								}
+							}
+							fclose( f );
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", filename.c_str() );
+							return false;
+						}
+					}
+					if( bag.Has("rgb_spd_wavelengths") ) {
+						if( !LoadSingleColumnFile( bag.GetString("rgb_spd_wavelengths"), spd_wavelengths ) ) return false;
+					}
+					if( bag.Has("rgb_spd_r") ) {
+						if( !LoadSingleColumnFile( bag.GetString("rgb_spd_r"), spd_r ) ) return false;
+					}
+					if( bag.Has("rgb_spd_g") ) {
+						if( !LoadSingleColumnFile( bag.GetString("rgb_spd_g"), spd_g ) ) return false;
+					}
+					if( bag.Has("rgb_spd_b") ) {
+						if( !LoadSingleColumnFile( bag.GetString("rgb_spd_b"), spd_b ) ) return false;
+					}
+
+					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )            stabilityConfig.directClamp           = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )          stabilityConfig.indirectClamp         = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )           stabilityConfig.filterGlossy          = bag.GetDouble("filter_glossy");
+					if( bag.Has("rr_min_depth") )            stabilityConfig.rrMinDepth            = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )            stabilityConfig.rrThreshold           = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )      stabilityConfig.maxDiffuseBounce      = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )       stabilityConfig.maxGlossyBounce       = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") ) stabilityConfig.maxTransmissionBounce = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )  stabilityConfig.maxTranslucentBounce  = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )       stabilityConfig.maxVolumeBounce       = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )               stabilityConfig.useLightBVH           = bag.GetBool("light_bvh");
+
+					return pJob.SetPixelBasedSpectralIntegratingRasterizer( numSamples, numLumSamples, spectralConfig, maxRecur, defaultshader.c_str(), radianceMapConfig,
+						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
+						pixelFilterConfig,
+						showLuminaires,
+						integrateRGB, static_cast<unsigned int>(spd_wavelengths.size()), integrateRGB?&spd_wavelengths[0]:0, integrateRGB?&spd_r[0]:0, integrateRGB?&spd_g[0]:0, integrateRGB?&spd_b[0]:0,
+						oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, stabilityConfig
+						);
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						PixelIntegratingSpectralDefaults dflt;
+						StabilityConfig stabilityDflt;
+						ChunkDescriptor cd;
+						cd.keyword = "pixelintegratingspectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Spectral pel-based path-tracing integrator.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddBaseRasterizerParams( P, dflt );
+						{ auto& p = P(); p.name = "max_recursion";   p.kind = ValueKind::UInt; p.description = "Maximum ray recursion depth"; p.defaultValueHint = to_hint(dflt.maxRecursion); }
+						{ auto& p = P(); p.name = "lum_samples";     p.kind = ValueKind::UInt; p.description = "Luminaire samples per hit";   p.defaultValueHint = to_hint(dflt.numLumSamples); }
+						{ auto& p = P(); p.name = "luminary_sampler";p.kind = ValueKind::String; p.description = "Luminary sampling strategy"; p.defaultValueHint = to_hint(dflt.luminarySampler); }
+						{ auto& p = P(); p.name = "luminary_sampler_param"; p.kind = ValueKind::Double; p.description = "Luminary sampler parameter"; p.defaultValueHint = to_hint(dflt.luminarySamplerParam); }
+						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						AddSpectralConfigParams( P );
+						AddStabilityConfigParams( P );
+						{ auto& p = P(); p.name = "filter_glossy"; p.kind = ValueKind::Double; p.description = "Glossy roughness floor (0 disables)"; p.defaultValueHint = to_hint(stabilityDflt.filterGlossy); }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct BDPTPelRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					BDPTPelDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  dflt.maxEyeDepth );
+					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",dflt.maxLightDepth );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+
+					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
+					PixelFilterConfig pixelFilterConfig;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
+					PathGuidingConfig guidingConfig;
+					if( bag.Has("pathguiding") )                                    guidingConfig.enabled              = bag.GetBool("pathguiding");
+					if( bag.Has("pathguiding_iterations") )                         guidingConfig.trainingIterations   = bag.GetUInt("pathguiding_iterations");
+					if( bag.Has("pathguiding_spp") )                                guidingConfig.trainingSPP          = bag.GetUInt("pathguiding_spp");
+					if( bag.Has("pathguiding_combine_training") )                   guidingConfig.combineTrainingIterations = bag.GetBool("pathguiding_combine_training");
+					if( bag.Has("pathguiding_online") )                             guidingConfig.online               = bag.GetBool("pathguiding_online");
+					if( bag.Has("pathguiding_warmup_iterations") )                  guidingConfig.warmupIterations     = bag.GetUInt("pathguiding_warmup_iterations");
+					if( bag.Has("pathguiding_alpha") )                              guidingConfig.alpha                = bag.GetDouble("pathguiding_alpha");
+					if( bag.Has("pathguiding_learned_alpha") )                      guidingConfig.learnedAlpha         = bag.GetBool("pathguiding_learned_alpha");
+					if( bag.Has("pathguiding_max_depth") )                          guidingConfig.maxGuidingDepth      = bag.GetUInt("pathguiding_max_depth");
+					if( bag.Has("pathguiding_light_max_depth") )                    guidingConfig.maxLightGuidingDepth = bag.GetUInt("pathguiding_light_max_depth");
+					if( bag.Has("pathguiding_sampling_type") ) {
+						const std::string st = bag.GetString("pathguiding_sampling_type");
+						guidingConfig.samplingType = ( st == "ris" || st == "RIS" ) ? eGuidingRIS : eGuidingOneSampleMIS;
+					}
+					if( bag.Has("pathguiding_ris_candidates") )                     guidingConfig.risCandidates                 = std::max( 2u, bag.GetUInt("pathguiding_ris_candidates") );
+					if( bag.Has("pathguiding_complete_paths") )                     guidingConfig.completePathGuiding           = bag.GetBool("pathguiding_complete_paths");
+					if( bag.Has("pathguiding_complete_path_strategy_selection") )   guidingConfig.completePathStrategySelection = bag.GetBool("pathguiding_complete_path_strategy_selection");
+					if( bag.Has("pathguiding_complete_path_strategy_samples") )     guidingConfig.completePathStrategySamples   = bag.GetUInt("pathguiding_complete_path_strategy_samples");
+
+					AdaptiveSamplingConfig adaptiveConfig;
+					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+					if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+					if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
+					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )               stabilityConfig.maxGlossyBounce              = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") )         stabilityConfig.maxTransmissionBounce        = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
+					// Optimal MIS is intentionally NOT parsed here:
+					// `BDPTIntegrator` does not consume `rc.pOptimalMIS`
+					// (the Kondapaneni 2019 single-step formulation has
+					// not been extended to BDPT's per-strategy-pair MIS).
+					// The descriptor below also omits `AddOptimalMISParams`,
+					// so the parser hard-fails on `optimal_mis*` lines
+					// rather than silently dropping them.  See
+					// docs/SPECTRAL_PARITY_AUDIT.md §2.10.
+
+					ProgressiveConfig progressiveConfig;
+					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+					if( bag.Has("progressive_samples_per_pass") ) {
+						const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+						progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
+					}
+
+					return pJob.SetBDPTPelRasterizer( numSamples,
+						maxEyeDepth, maxLightDepth,
+						defaultshader.c_str(), radianceMapConfig,
+						pixelFilterConfig,
+						showLuminaires,
+						oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						BDPTPelDefaults dflt;
+						ChunkDescriptor cd;
+						cd.keyword = "bdpt_pel_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "RGB bidirectional path-tracing integrator.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddBaseRasterizerParams( P, dflt );
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max eye subpath depth";   p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max light subpath depth"; p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool; p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						AddPathGuidingParams( P );
+						AddAdaptiveSamplingParams( P );
+						AddStabilityConfigParams( P );
+						// Intentionally NO AddOptimalMISParams: BDPTIntegrator
+						// does not consume rc.pOptimalMIS — see Finalize note
+						// and SPECTRAL_PARITY_AUDIT.md §2.10.
+						AddProgressiveParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct BDPTSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					BDPTSpectralDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  dflt.maxEyeDepth );
+					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",dflt.maxLightDepth );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+
+					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
+					PixelFilterConfig pixelFilterConfig;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
+					SpectralConfig spectralConfig;
+					if( bag.Has("spectral_samples") ) spectralConfig.spectralSamples = bag.GetUInt("spectral_samples");
+					if( bag.Has("num_wavelengths") )  spectralConfig.numWavelengths  = bag.GetUInt("num_wavelengths");
+					if( bag.Has("nmbegin") )          spectralConfig.nmBegin         = bag.GetDouble("nmbegin");
+					if( bag.Has("nmend") )            spectralConfig.nmEnd           = bag.GetDouble("nmend");
+					if( bag.Has("hwss") )             spectralConfig.useHWSS         = bag.GetBool("hwss");
+
+					PathGuidingConfig guidingConfig;
+					if( bag.Has("pathguiding") )                                    guidingConfig.enabled                       = bag.GetBool("pathguiding");
+					if( bag.Has("pathguiding_iterations") )                         guidingConfig.trainingIterations            = bag.GetUInt("pathguiding_iterations");
+					if( bag.Has("pathguiding_spp") )                                guidingConfig.trainingSPP                   = bag.GetUInt("pathguiding_spp");
+					if( bag.Has("pathguiding_combine_training") )                   guidingConfig.combineTrainingIterations     = bag.GetBool("pathguiding_combine_training");
+					if( bag.Has("pathguiding_online") )                             guidingConfig.online                        = bag.GetBool("pathguiding_online");
+					if( bag.Has("pathguiding_warmup_iterations") )                  guidingConfig.warmupIterations              = bag.GetUInt("pathguiding_warmup_iterations");
+					if( bag.Has("pathguiding_alpha") )                              guidingConfig.alpha                         = bag.GetDouble("pathguiding_alpha");
+					if( bag.Has("pathguiding_learned_alpha") )                      guidingConfig.learnedAlpha                  = bag.GetBool("pathguiding_learned_alpha");
+					if( bag.Has("pathguiding_max_depth") )                          guidingConfig.maxGuidingDepth               = bag.GetUInt("pathguiding_max_depth");
+					if( bag.Has("pathguiding_light_max_depth") )                    guidingConfig.maxLightGuidingDepth          = bag.GetUInt("pathguiding_light_max_depth");
+					if( bag.Has("pathguiding_sampling_type") ) {
+						const std::string st = bag.GetString("pathguiding_sampling_type");
+						guidingConfig.samplingType = ( st == "ris" || st == "RIS" ) ? eGuidingRIS : eGuidingOneSampleMIS;
+					}
+					if( bag.Has("pathguiding_ris_candidates") )                     guidingConfig.risCandidates                 = std::max( 2u, bag.GetUInt("pathguiding_ris_candidates") );
+					if( bag.Has("pathguiding_complete_paths") )                     guidingConfig.completePathGuiding           = bag.GetBool("pathguiding_complete_paths");
+					if( bag.Has("pathguiding_complete_path_strategy_selection") )   guidingConfig.completePathStrategySelection = bag.GetBool("pathguiding_complete_path_strategy_selection");
+					if( bag.Has("pathguiding_complete_path_strategy_samples") )     guidingConfig.completePathStrategySamples   = bag.GetUInt("pathguiding_complete_path_strategy_samples");
+
+					// Adaptive sampling wired here 2026-05-24 (audit §2.8 / §6.1
+					// last remaining quick win).  Welford convergence is driven
+					// by the XYZ.Y luminance signal — see BDPTSpectralRasterizer
+					// ::IntegratePixel for the mirrored Pel-side pattern.
+					AdaptiveSamplingConfig adaptiveConfig;
+					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+					if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+					if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
+					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )               stabilityConfig.maxGlossyBounce              = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") )         stabilityConfig.maxTransmissionBounce        = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
+					// Optimal MIS not parsed: BDPTIntegrator does not
+					// consume rc.pOptimalMIS, and the spectral parent
+					// rasterizer does not allocate the accumulator.
+					// Descriptor below also omits AddOptimalMISParams.
+					// See docs/SPECTRAL_PARITY_AUDIT.md §2.10.
+
+					ProgressiveConfig progressiveConfig;
+					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+					if( bag.Has("progressive_samples_per_pass") ) {
+						const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+						progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
+					}
+
+					return pJob.SetBDPTSpectralRasterizer( numSamples,
+						maxEyeDepth, maxLightDepth,
+						defaultshader.c_str(), radianceMapConfig,
+						pixelFilterConfig,
+						showLuminaires,
+						spectralConfig,
+						oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						BDPTSpectralDefaults dflt;
+						ChunkDescriptor cd;
+						cd.keyword = "bdpt_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Spectral bidirectional path-tracing integrator.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddBaseRasterizerParams( P, dflt );
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max eye subpath depth";   p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max light subpath depth"; p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool; p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						// BDPT spectral consumes only the core spectral
+						// fields; RGB-to-SPD conversion is done in the
+						// painters pipeline.
+						AddSpectralCoreParams( P );
+						// Full path-guiding param set.  The shared
+						// BDPTRasterizerBase honors every field including
+						// light-subpath guiding and complete-path strategy.
+						// Wired here 2026-05-07 (audit §2.7) — previously
+						// the descriptor / Finalize hand-rolled a subset
+						// that silently dropped 3 fields.
+						AddPathGuidingParams( P );
+						// Adaptive sampling wired 2026-05-24 (audit §2.8 /
+						// §6.1 last remaining quick win).
+						AddAdaptiveSamplingParams( P );
+						AddStabilityConfigParams( P );
+						// Intentionally NO AddOptimalMISParams: see Finalize
+						// note and SPECTRAL_PARITY_AUDIT.md §2.10.
+						AddProgressiveParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct VCMPelRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					VCMPelDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  dflt.maxEyeDepth );
+					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",dflt.maxLightDepth );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+					double mergeRadius          = bag.GetDouble( "merge_radius",    dflt.mergeRadius );
+					bool enableVC               = bag.GetBool(   "vc_enabled",      dflt.enableVC );
+					bool enableVM               = bag.GetBool(   "vm_enabled",      dflt.enableVM );
+
+					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
+					PixelFilterConfig pixelFilterConfig;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
+					PathGuidingConfig guidingConfig;	// VCMPel does not consume pathguiding params
+
+					AdaptiveSamplingConfig adaptiveConfig;
+					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+					if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+					if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
+					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )            stabilityConfig.directClamp           = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )          stabilityConfig.indirectClamp         = bag.GetDouble("indirect_clamp");
+					if( bag.Has("rr_min_depth") )            stabilityConfig.rrMinDepth            = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )            stabilityConfig.rrThreshold           = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )      stabilityConfig.maxDiffuseBounce      = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )       stabilityConfig.maxGlossyBounce       = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") ) stabilityConfig.maxTransmissionBounce = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )  stabilityConfig.maxTranslucentBounce  = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )       stabilityConfig.maxVolumeBounce       = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )               stabilityConfig.useLightBVH           = bag.GetBool("light_bvh");
+
+					ProgressiveConfig progressiveConfig;
+					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+					if( bag.Has("progressive_samples_per_pass") ) {
+						const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+						progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
+					}
+
+					return pJob.SetVCMPelRasterizer( numSamples,
+						maxEyeDepth, maxLightDepth,
+						defaultshader.c_str(), radianceMapConfig,
+						pixelFilterConfig,
+						showLuminaires,
+						mergeRadius, enableVC, enableVM, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
+						guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						VCMPelDefaults dflt;
+						ChunkDescriptor cd;
+						cd.keyword = "vcm_pel_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "RGB vertex-connection-and-merging integrator.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddBaseRasterizerParams( P, dflt );
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";         p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";       p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "merge_radius";    p.kind = ValueKind::Double; p.description = "Photon merge radius (0=auto)"; p.defaultValueHint = to_hint(dflt.mergeRadius); }
+						{ auto& p = P(); p.name = "vc_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex connection";      p.defaultValueHint = to_hint(dflt.enableVC); }
+						{ auto& p = P(); p.name = "vm_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex merging";         p.defaultValueHint = to_hint(dflt.enableVM); }
+						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						AddAdaptiveSamplingParams( P );
+						AddStabilityConfigParams( P );
+						AddProgressiveParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct VCMSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					VCMSpectralDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  dflt.maxEyeDepth );
+					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",dflt.maxLightDepth );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+					double mergeRadius          = bag.GetDouble( "merge_radius",    dflt.mergeRadius );
+					bool enableVC               = bag.GetBool(   "vc_enabled",      dflt.enableVC );
+					bool enableVM               = bag.GetBool(   "vm_enabled",      dflt.enableVM );
+
+					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
+					PixelFilterConfig pixelFilterConfig;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
+					SpectralConfig spectralConfig;
+					if( bag.Has("spectral_samples") ) spectralConfig.spectralSamples = bag.GetUInt("spectral_samples");
+					if( bag.Has("num_wavelengths") )  spectralConfig.numWavelengths  = bag.GetUInt("num_wavelengths");
+					if( bag.Has("nmbegin") )          spectralConfig.nmBegin         = bag.GetDouble("nmbegin");
+					if( bag.Has("nmend") )            spectralConfig.nmEnd           = bag.GetDouble("nmend");
+					if( bag.Has("hwss") )             spectralConfig.useHWSS         = bag.GetBool("hwss");
+
+					PathGuidingConfig guidingConfig;	// VCMSpectral does not consume pathguiding params
+
+					AdaptiveSamplingConfig adaptiveConfig;
+					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+					if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+					if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
+					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )            stabilityConfig.directClamp           = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )          stabilityConfig.indirectClamp         = bag.GetDouble("indirect_clamp");
+					if( bag.Has("rr_min_depth") )            stabilityConfig.rrMinDepth            = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )            stabilityConfig.rrThreshold           = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )      stabilityConfig.maxDiffuseBounce      = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )       stabilityConfig.maxGlossyBounce       = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") ) stabilityConfig.maxTransmissionBounce = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )  stabilityConfig.maxTranslucentBounce  = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )       stabilityConfig.maxVolumeBounce       = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )               stabilityConfig.useLightBVH           = bag.GetBool("light_bvh");
+
+					ProgressiveConfig progressiveConfig;
+					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+					if( bag.Has("progressive_samples_per_pass") ) {
+						const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+						progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
+					}
+
+					return pJob.SetVCMSpectralRasterizer( numSamples,
+						maxEyeDepth, maxLightDepth,
+						defaultshader.c_str(), radianceMapConfig,
+						pixelFilterConfig,
+						showLuminaires,
+						spectralConfig,
+						mergeRadius, enableVC, enableVM, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
+						guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						VCMSpectralDefaults dflt;
+						ChunkDescriptor cd;
+						cd.keyword = "vcm_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Spectral vertex-connection-and-merging integrator.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddBaseRasterizerParams( P, dflt );
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";         p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";       p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "merge_radius";    p.kind = ValueKind::Double; p.description = "Photon merge radius (0=auto)"; p.defaultValueHint = to_hint(dflt.mergeRadius); }
+						{ auto& p = P(); p.name = "vc_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex connection";      p.defaultValueHint = to_hint(dflt.enableVC); }
+						{ auto& p = P(); p.name = "vm_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex merging";         p.defaultValueHint = to_hint(dflt.enableVM); }
+						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						// VCM spectral consumes only the core spectral
+						// fields; RGB-to-SPD conversion is done in the
+						// painters pipeline.
+						AddSpectralCoreParams( P );
+						AddAdaptiveSamplingParams( P );
+						AddStabilityConfigParams( P );
+						AddProgressiveParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct AutoRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					AutoRasterizerDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool probeEnabled           = bag.GetBool(   "probe",          dflt.probeEnabled );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+
+					// Integrator pin (Tier 0).  Unknown / omitted -> auto, which
+					// the dispatcher resolves to PT in Phase 1.  Accept the quoted
+					// form too (`integrator "vcm"`) for consistency with sms_seeding.
+					AutoIntegratorChoice integrator = dflt.integrator;
+					if( bag.Has("integrator") ) {
+						std::string iv = StripSurroundingQuotes( bag.GetString("integrator") );
+						std::transform( iv.begin(), iv.end(), iv.begin(),
+							[]( unsigned char c ){ return std::tolower( c ); } );
+						if( iv == "pt" || iv == "pathtracing" || iv == "path_tracing" ) integrator = AutoIntegratorChoice::PT;
+						else if( iv == "bdpt" )                                         integrator = AutoIntegratorChoice::BDPT;
+						else if( iv == "vcm" )                                          integrator = AutoIntegratorChoice::VCM;
+						else if( iv == "auto" )                                         integrator = AutoIntegratorChoice::Auto;
+						else {
+							GlobalLog()->PrintEx( eLog_Warning,
+								"Parser: unknown auto_rasterizer integrator \"%s\"; defaulting to auto", iv.c_str() );
+							integrator = AutoIntegratorChoice::Auto;
+						}
+					}
+
+					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
+					PixelFilterConfig pixelFilterConfig;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
+					PathGuidingConfig guidingConfig;
+					if( bag.Has("pathguiding") )                                    guidingConfig.enabled              = bag.GetBool("pathguiding");
+					if( bag.Has("pathguiding_iterations") )                         guidingConfig.trainingIterations   = bag.GetUInt("pathguiding_iterations");
+					if( bag.Has("pathguiding_spp") )                                guidingConfig.trainingSPP          = bag.GetUInt("pathguiding_spp");
+					if( bag.Has("pathguiding_combine_training") )                   guidingConfig.combineTrainingIterations = bag.GetBool("pathguiding_combine_training");
+					if( bag.Has("pathguiding_online") )                             guidingConfig.online               = bag.GetBool("pathguiding_online");
+					if( bag.Has("pathguiding_warmup_iterations") )                  guidingConfig.warmupIterations     = bag.GetUInt("pathguiding_warmup_iterations");
+					if( bag.Has("pathguiding_alpha") )                              guidingConfig.alpha                = bag.GetDouble("pathguiding_alpha");
+					if( bag.Has("pathguiding_learned_alpha") )                      guidingConfig.learnedAlpha         = bag.GetBool("pathguiding_learned_alpha");
+					if( bag.Has("pathguiding_max_depth") )                          guidingConfig.maxGuidingDepth      = bag.GetUInt("pathguiding_max_depth");
+					if( bag.Has("pathguiding_light_max_depth") )                    guidingConfig.maxLightGuidingDepth = bag.GetUInt("pathguiding_light_max_depth");
+					if( bag.Has("pathguiding_sampling_type") ) {
+						const std::string st = bag.GetString("pathguiding_sampling_type");
+						guidingConfig.samplingType = ( st == "ris" || st == "RIS" ) ? eGuidingRIS : eGuidingOneSampleMIS;
+					}
+					if( bag.Has("pathguiding_ris_candidates") )                     guidingConfig.risCandidates                 = std::max( 2u, bag.GetUInt("pathguiding_ris_candidates") );
+					if( bag.Has("pathguiding_complete_paths") )                     guidingConfig.completePathGuiding           = bag.GetBool("pathguiding_complete_paths");
+					if( bag.Has("pathguiding_complete_path_strategy_selection") )   guidingConfig.completePathStrategySelection = bag.GetBool("pathguiding_complete_path_strategy_selection");
+					if( bag.Has("pathguiding_complete_path_strategy_samples") )     guidingConfig.completePathStrategySamples   = bag.GetUInt("pathguiding_complete_path_strategy_samples");
+
+					AdaptiveSamplingConfig adaptiveConfig;
+					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+					if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+					if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
+					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )               stabilityConfig.maxGlossyBounce              = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") )         stabilityConfig.maxTransmissionBounce        = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
+					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
+					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
+					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
+
+					ProgressiveConfig progressiveConfig;
+					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+					if( bag.Has("progressive_samples_per_pass") ) {
+						const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+						progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
+					}
+
+					return pJob.SetAutoRasterizer( integrator, numSamples,
+						defaultshader.c_str(), radianceMapConfig,
+						pixelFilterConfig,
+						showLuminaires,
+						oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig,
+						probeEnabled );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						AutoRasterizerDefaults dflt;
+						ChunkDescriptor cd;
+						cd.keyword = "auto_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Auto-routing integrator dispatcher: delegates to PT/BDPT/VCM (Phase 1: author pin via `integrator`, else PT).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddBaseRasterizerParams( P, dflt );
+						{ auto& p = P(); p.name = "integrator"; p.kind = ValueKind::Enum; p.enumValues = {"auto","pt","bdpt","vcm"}; p.description = "Integrator selection: auto (dispatcher decides) or an explicit pin (pt/bdpt/vcm)"; p.defaultValueHint = to_hint(dflt.integrator); }
+						{ auto& p = P(); p.name = "probe"; p.kind = ValueKind::Bool; p.description = "Enable the Tier-2 render-time probe (Phase 4): a cheap reduced-res/low-spp pre-render of candidate integrators that picks per-scene (caustic median-lum -> VCM; strong-indirect σ²·T -> BDPT; else PT).  Only fires once production `samples` clears the activation-spp gate (GlobalOptions auto_probe_activation_spp); below it the dispatcher uses the Tier-1 static best-guess.  Default off — the probe is a final-render tool."; p.defaultValueHint = dflt.probeEnabled ? "TRUE" : "FALSE"; }
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						AddPathGuidingParams( P );
+						AddAdaptiveSamplingParams( P );
+						AddStabilityConfigParams( P );
+						AddOptimalMISParams( P );
+						AddProgressiveParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+				struct AutoSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
+				{
+					bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+					{
+						AutoRasterizerDefaults dflt;
+						std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+						unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+						bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+						bool probeEnabled           = bag.GetBool(   "probe",          dflt.probeEnabled );
+						bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+						OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+						OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+						OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+
+						// Integrator pin (Tier 0) — identical vocabulary to auto_rasterizer.
+						AutoIntegratorChoice integrator = dflt.integrator;
+						if( bag.Has("integrator") ) {
+							std::string iv = StripSurroundingQuotes( bag.GetString("integrator") );
+							std::transform( iv.begin(), iv.end(), iv.begin(),
+								[]( unsigned char c ){ return std::tolower( c ); } );
+							if( iv == "pt" || iv == "pathtracing" || iv == "path_tracing" ) integrator = AutoIntegratorChoice::PT;
+							else if( iv == "bdpt" )                                         integrator = AutoIntegratorChoice::BDPT;
+							else if( iv == "vcm" )                                          integrator = AutoIntegratorChoice::VCM;
+							else if( iv == "auto" )                                         integrator = AutoIntegratorChoice::Auto;
+							else {
+								GlobalLog()->PrintEx( eLog_Warning,
+									"Parser: unknown auto_spectral_rasterizer integrator \"%s\"; defaulting to auto", iv.c_str() );
+								integrator = AutoIntegratorChoice::Auto;
+							}
+						}
+
+						RadianceMapConfig radianceMapConfig;
+						if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+						if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+						if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+						if( bag.Has("radiance_orient") ) {
+							bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+						}
+
+						PixelFilterConfig pixelFilterConfig;
+						if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+						if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+						if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+						if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+						if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+						if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+						if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+						if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
+						// Spectral-core params replace path-guiding on this chunk (the
+						// spectral domain has no guiding); accept both `hwss` and the legacy
+						// `use_hwss` spelling, matching pathtracing_spectral_rasterizer.
+						SpectralConfig spectralConfig;
+						if( bag.Has("spectral_samples") ) spectralConfig.spectralSamples = bag.GetUInt("spectral_samples");
+						if( bag.Has("num_wavelengths") )  spectralConfig.numWavelengths  = bag.GetUInt("num_wavelengths");
+						if( bag.Has("nmbegin") )          spectralConfig.nmBegin         = bag.GetDouble("nmbegin");
+						if( bag.Has("nmend") )            spectralConfig.nmEnd           = bag.GetDouble("nmend");
+						if( bag.Has("hwss") )             spectralConfig.useHWSS         = bag.GetBool("hwss");
+						if( bag.Has("use_hwss") )         spectralConfig.useHWSS         = bag.GetBool("use_hwss");
+
+						AdaptiveSamplingConfig adaptiveConfig;
+						if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+						if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+						if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
+						// Stability config minus optimal-MIS: the spectral integrators do not
+						// allocate the optimal-MIS accumulator (SPECTRAL_PARITY_AUDIT §1), so
+						// the descriptor below omits AddOptimalMISParams too.
+						StabilityConfig stabilityConfig;
+						if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
+						if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+						if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
+						if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
+						if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
+						if( bag.Has("max_glossy_bounce") )               stabilityConfig.maxGlossyBounce              = bag.GetUInt("max_glossy_bounce");
+						if( bag.Has("max_transmission_bounce") )         stabilityConfig.maxTransmissionBounce        = bag.GetUInt("max_transmission_bounce");
+						if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
+						if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
+						if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
+
+						ProgressiveConfig progressiveConfig;
+						if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+						if( bag.Has("progressive_samples_per_pass") ) {
+							const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+							progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
+						}
+
+						return pJob.SetAutoSpectralRasterizer( integrator, numSamples,
+							defaultshader.c_str(), radianceMapConfig,
+							pixelFilterConfig,
+							showLuminaires,
+							spectralConfig,
+							oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, adaptiveConfig, stabilityConfig, progressiveConfig,
+							probeEnabled );
+					}
+
+					const ChunkDescriptor& Describe() const override {
+						static const ChunkDescriptor d = []{
+							AutoRasterizerDefaults dflt;
+							ChunkDescriptor cd;
+							cd.keyword = "auto_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+							cd.description = "Spectral auto-routing integrator dispatcher: delegates to PT/BDPT/VCM spectral (Phase 1b: author pin via `integrator`, else PT; `probe` enables the Tier-2 render-time probe).";
+							auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+							AddBaseRasterizerParams( P, dflt );
+							{ auto& p = P(); p.name = "integrator"; p.kind = ValueKind::Enum; p.enumValues = {"auto","pt","bdpt","vcm"}; p.description = "Integrator selection: auto (dispatcher decides) or an explicit pin (pt/bdpt/vcm)"; p.defaultValueHint = to_hint(dflt.integrator); }
+							{ auto& p = P(); p.name = "probe"; p.kind = ValueKind::Bool; p.description = "Enable the Tier-2 render-time probe (Phase 4): a cheap reduced-res/low-spp pre-render of candidate spectral integrators that picks per-scene (caustic median+reach -> VCM; strong-indirect sigma2T -> BDPT; else PT).  Only fires once production `samples` clears the activation-spp gate; below it the dispatcher uses the Tier-1 static best-guess.  Default off."; p.defaultValueHint = dflt.probeEnabled ? "TRUE" : "FALSE"; }
+							AddPixelFilterParams( P );
+							AddRadianceMapParams( P );
+							AddSpectralCoreParams( P );
+							AddAdaptiveSamplingParams( P );
+							AddStabilityConfigParams( P );
+							AddProgressiveParams( P );
+							return cd;
+						}();
+						return d;
+					}
+				};
+
+			struct PathTracingPelRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					PathTracingPelDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+
+					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
+					PixelFilterConfig pixelFilterConfig;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
+					SMSConfig smsConfig;
+					if( bag.Has("sms_enabled") )          smsConfig.enabled         = bag.GetBool("sms_enabled");
+					if( bag.Has("sms_max_iterations") )   smsConfig.maxIterations   = bag.GetUInt("sms_max_iterations");
+					if( bag.Has("sms_threshold") )        smsConfig.threshold       = bag.GetDouble("sms_threshold");
+					if( bag.Has("sms_max_chain_depth") )  smsConfig.maxChainDepth   = bag.GetUInt("sms_max_chain_depth");
+					if( bag.Has("sms_biased") )           smsConfig.biased          = bag.GetBool("sms_biased");
+					if( bag.Has("sms_bernoulli_trials") ) smsConfig.bernoulliTrials = bag.GetUInt("sms_bernoulli_trials");
+					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
+					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
+					if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
+					if( bag.Has("sms_target_bounces") )   smsConfig.targetBounces   = bag.GetUInt("sms_target_bounces");
+					if( bag.Has("sms_seeding") ) {
+						std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
+						std::transform( sv.begin(), sv.end(), sv.begin(),
+							[]( unsigned char c ){ return std::tolower( c ); } );
+						if( sv == "uniform" )      smsConfig.seedingMode = SMSSeedingMode::Uniform;
+						else if( sv == "snell" )   smsConfig.seedingMode = SMSSeedingMode::Snell;
+						else                       smsConfig.seedingMode = SMSSeedingMode::Snell;   // unknown → snell fallback
+					}
+
+					PathGuidingConfig guidingConfig;
+					if( bag.Has("pathguiding") )                                    guidingConfig.enabled              = bag.GetBool("pathguiding");
+					if( bag.Has("pathguiding_iterations") )                         guidingConfig.trainingIterations   = bag.GetUInt("pathguiding_iterations");
+					if( bag.Has("pathguiding_spp") )                                guidingConfig.trainingSPP          = bag.GetUInt("pathguiding_spp");
+					if( bag.Has("pathguiding_combine_training") )                   guidingConfig.combineTrainingIterations = bag.GetBool("pathguiding_combine_training");
+					if( bag.Has("pathguiding_online") )                             guidingConfig.online               = bag.GetBool("pathguiding_online");
+					if( bag.Has("pathguiding_warmup_iterations") )                  guidingConfig.warmupIterations     = bag.GetUInt("pathguiding_warmup_iterations");
+					if( bag.Has("pathguiding_alpha") )                              guidingConfig.alpha                = bag.GetDouble("pathguiding_alpha");
+					if( bag.Has("pathguiding_learned_alpha") )                      guidingConfig.learnedAlpha         = bag.GetBool("pathguiding_learned_alpha");
+					if( bag.Has("pathguiding_max_depth") )                          guidingConfig.maxGuidingDepth      = bag.GetUInt("pathguiding_max_depth");
+					if( bag.Has("pathguiding_light_max_depth") )                    guidingConfig.maxLightGuidingDepth = bag.GetUInt("pathguiding_light_max_depth");
+					if( bag.Has("pathguiding_sampling_type") ) {
+						const std::string st = bag.GetString("pathguiding_sampling_type");
+						guidingConfig.samplingType = ( st == "ris" || st == "RIS" ) ? eGuidingRIS : eGuidingOneSampleMIS;
+					}
+					if( bag.Has("pathguiding_ris_candidates") )                     guidingConfig.risCandidates                 = std::max( 2u, bag.GetUInt("pathguiding_ris_candidates") );
+					if( bag.Has("pathguiding_complete_paths") )                     guidingConfig.completePathGuiding           = bag.GetBool("pathguiding_complete_paths");
+					if( bag.Has("pathguiding_complete_path_strategy_selection") )   guidingConfig.completePathStrategySelection = bag.GetBool("pathguiding_complete_path_strategy_selection");
+					if( bag.Has("pathguiding_complete_path_strategy_samples") )     guidingConfig.completePathStrategySamples   = bag.GetUInt("pathguiding_complete_path_strategy_samples");
+
+					AdaptiveSamplingConfig adaptiveConfig;
+					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+					if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+					if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
+					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )               stabilityConfig.maxGlossyBounce              = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") )         stabilityConfig.maxTransmissionBounce        = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
+					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
+					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
+					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
+					// Transparent (Fresnel-attenuated) shadow rays — PT-only opt-in.
+					if( bag.Has("transparent_shadows") )             stabilityConfig.transparentShadows           = bag.GetBool("transparent_shadows");
+
+					ProgressiveConfig progressiveConfig;
+					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+					if( bag.Has("progressive_samples_per_pass") ) {
+						const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+						progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
+					}
+
+					return pJob.SetPathTracingPelRasterizer( numSamples,
+						defaultshader.c_str(), radianceMapConfig,
+						pixelFilterConfig,
+						showLuminaires,
+						smsConfig, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						PathTracingPelDefaults dflt;
+						ChunkDescriptor cd;
+						cd.keyword = "pathtracing_pel_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Pure unidirectional RGB path tracer (bypasses shader-op chain).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddBaseRasterizerParams( P, dflt );
+						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						AddSMSConfigParams( P );
+						AddPathGuidingParams( P );
+						AddAdaptiveSamplingParams( P );
+						AddStabilityConfigParams( P );
+						// Transparent (Fresnel-attenuated) shadow rays — PT-only
+						// opt-in; not part of the shared StabilityConfig params
+						// because BDPT/VCM/auto don't honour it.
+						{ auto& p = P(); p.name = "transparent_shadows"; p.kind = ValueKind::Bool; p.description = "NEE shadow rays pass through specular dielectrics with Fresnel transmittance (PT only)"; p.defaultValueHint = to_hint(false); }
+						AddOptimalMISParams( P );
+						AddProgressiveParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PathTracingSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					PathTracingSpectralDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+
+					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
+					PixelFilterConfig pixelFilterConfig;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
+					SpectralConfig spectralConfig;
+					if( bag.Has("spectral_samples") ) spectralConfig.spectralSamples = bag.GetUInt("spectral_samples");
+					if( bag.Has("num_wavelengths") )  spectralConfig.numWavelengths  = bag.GetUInt("num_wavelengths");
+					if( bag.Has("nmbegin") )          spectralConfig.nmBegin         = bag.GetDouble("nmbegin");
+					if( bag.Has("nmend") )            spectralConfig.nmEnd           = bag.GetDouble("nmend");
+					// Accept both `hwss` (canonical, used by other spectral
+					// rasterizers) and the legacy `use_hwss` spelling that
+					// only this parser historically accepted.
+					if( bag.Has("hwss") )             spectralConfig.useHWSS         = bag.GetBool("hwss");
+					if( bag.Has("use_hwss") )         spectralConfig.useHWSS         = bag.GetBool("use_hwss");
+
+					SMSConfig smsConfig;
+					if( bag.Has("sms_enabled") )          smsConfig.enabled         = bag.GetBool("sms_enabled");
+					if( bag.Has("sms_max_iterations") )   smsConfig.maxIterations   = bag.GetUInt("sms_max_iterations");
+					if( bag.Has("sms_threshold") )        smsConfig.threshold       = bag.GetDouble("sms_threshold");
+					if( bag.Has("sms_max_chain_depth") )  smsConfig.maxChainDepth   = bag.GetUInt("sms_max_chain_depth");
+					if( bag.Has("sms_biased") )           smsConfig.biased          = bag.GetBool("sms_biased");
+					if( bag.Has("sms_bernoulli_trials") ) smsConfig.bernoulliTrials = bag.GetUInt("sms_bernoulli_trials");
+					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
+					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
+				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
+				if( bag.Has("sms_target_bounces") )   smsConfig.targetBounces   = bag.GetUInt("sms_target_bounces");
+				if( bag.Has("sms_seeding") ) {
+					std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
+					std::transform( sv.begin(), sv.end(), sv.begin(),
+						[]( unsigned char c ){ return std::tolower( c ); } );
+					if( sv == "uniform" )      smsConfig.seedingMode = SMSSeedingMode::Uniform;
+					else if( sv == "snell" )   smsConfig.seedingMode = SMSSeedingMode::Snell;
+					else                       smsConfig.seedingMode = SMSSeedingMode::Snell;   // unknown → snell fallback
+					// Adding a third mode (Specular Polynomials, MPG, ...) extends
+					// the enum in `SMSConfig.h` and adds one branch here.
+				}
+
+					AdaptiveSamplingConfig adaptiveConfig;
+					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+					if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+					if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
+					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )               stabilityConfig.maxGlossyBounce              = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") )         stabilityConfig.maxTransmissionBounce        = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
+					// Transparent (Fresnel-attenuated) shadow rays — PT-only opt-in.
+					// Honoured on the spectral (NM / HWSS) NEE path too.
+					if( bag.Has("transparent_shadows") )             stabilityConfig.transparentShadows           = bag.GetBool("transparent_shadows");
+					// Optimal MIS not parsed: PathTracingIntegrator's
+					// NM/HWSS branches reference rc.pOptimalMIS, but
+					// PixelBasedSpectralIntegratingRasterizer (the parent)
+					// does not allocate the accumulator — the branch is
+					// always-false on spectral.  Descriptor below also
+					// omits AddOptimalMISParams.  See
+					// docs/SPECTRAL_PARITY_AUDIT.md §1, §2.4.
+
+					ProgressiveConfig progressiveConfig;
+					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+					if( bag.Has("progressive_samples_per_pass") ) {
+						const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+						progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
+					}
+
+					return pJob.SetPathTracingSpectralRasterizer( numSamples,
+						defaultshader.c_str(), radianceMapConfig,
+						pixelFilterConfig,
+						showLuminaires,
+						spectralConfig,
+						smsConfig, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, adaptiveConfig, stabilityConfig, progressiveConfig );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						PathTracingSpectralDefaults dflt;
+						SpectralConfig spectralDflt;
+						ChunkDescriptor cd;
+						cd.keyword = "pathtracing_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Pure unidirectional spectral path tracer (bypasses shader-op chain).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddBaseRasterizerParams( P, dflt );
+						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						// PT spectral consumes only the core spectral
+						// fields; RGB-to-SPD conversion is done in the
+						// painters pipeline.
+						AddSpectralCoreParams( P );
+						// Legacy alias for `hwss` accepted only by this
+						// parser (other spectral integrators use `hwss`).
+						{ auto& p = P(); p.name = "use_hwss";        p.kind = ValueKind::Bool; p.description = "Legacy alias for `hwss`"; p.defaultValueHint = to_hint(spectralDflt.useHWSS); }
+						AddSMSConfigParams( P );
+						AddAdaptiveSamplingParams( P );
+						AddStabilityConfigParams( P );
+						// Transparent (Fresnel-attenuated) shadow rays — PT-only
+						// opt-in; honoured on the spectral NEE path too.
+						{ auto& p = P(); p.name = "transparent_shadows"; p.kind = ValueKind::Bool; p.description = "NEE shadow rays pass through specular dielectrics with Fresnel transmittance (PT only)"; p.defaultValueHint = to_hint(false); }
+						// Intentionally NO AddOptimalMISParams: spectral
+						// parent doesn't allocate the accumulator.  See
+						// Finalize note and SPECTRAL_PARITY_AUDIT.md §2.4.
+						AddProgressiveParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct MLTRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					MLTDefaults dflt;
+					std::string defaultshader     = bag.GetString( "defaultshader",       dflt.defaultShader );
+					unsigned int maxEyeDepth      = bag.GetUInt(   "max_eye_depth",       dflt.maxEyeDepth );
+					unsigned int maxLightDepth    = bag.GetUInt(   "max_light_depth",     dflt.maxLightDepth );
+					unsigned int bootstrapSamples = bag.GetUInt(   "bootstrap_samples",   dflt.nBootstrap );
+					unsigned int chains           = bag.GetUInt(   "chains",              dflt.nChains );
+					unsigned int mutationsPerPixel= bag.GetUInt(   "mutations_per_pixel", dflt.nMutationsPerPixel );
+					double largeStepProb          = bag.GetDouble( "large_step_prob",     dflt.largeStepProb );
+					bool showLuminaires           = bag.GetBool(   "show_luminaires",     dflt.showLuminaires );
+					// MLT defaults oidn_denoise to FALSE because the
+					// entire MLT image lives in the splat film, so OIDN
+					// would denoise an already-accumulated / filter-
+					// reconstructed image.  That is precisely the case
+					// the BDPT comment ("their splatted accumulation
+					// pattern is incompatible with OIDN", see
+					// BDPTRasterizerBase.cpp) warns about: OIDN is
+					// trained on raw Monte Carlo noise, not on the
+					// smoother distribution you get from splat film
+					// resolve, and it can over-smooth caustics.
+					// BDPT avoids this by denoising the primary image
+					// first and ADDING splats afterward; MLT has no
+					// separate "primary" path to split out, so we opt
+					// out by default.  Users who specifically want
+					// OIDN applied to their MLT result (e.g. to denoise
+					// the residual Markov-chain noise in a long render)
+					// can still enable it with `oidn_denoise true`.
+					bool oidnDenoise              = bag.GetBool(   "oidn_denoise",        dflt.oidnDenoise );
+					OidnQuality oidnQuality       = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice        = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter   = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+
+					// Pixel filter for sub-pixel reconstruction.  Default
+					// is Mitchell-Netravali (B=C=1/3, width/height=1.0)
+					// so existing MLT scenes automatically get proper
+					// sub-pixel reconstruction.  Before this fix MLT
+					// splatted straight to integer pixels with no
+					// filtering — the cause of the hard edges / aliasing
+					// the user reported.  Scenes that genuinely want an
+					// unfiltered image can specify pixel_filter none.
+					PixelFilterConfig pixelFilterConfig;
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width  = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB = bag.GetDouble("pixel_filter_paramB");
+
+					StabilityConfig stabilityConfig;
+					if( bag.Has("light_bvh") )           stabilityConfig.useLightBVH        = bag.GetBool("light_bvh");
+
+					return pJob.SetMLTRasterizer( maxEyeDepth, maxLightDepth,
+						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
+						defaultshader.c_str(), showLuminaires, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
+						pixelFilterConfig,
+						stabilityConfig );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						MLTDefaults dflt;
+						StabilityConfig stabilityDflt;
+						ChunkDescriptor cd;
+						cd.keyword = "mlt_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Metropolis Light Transport (RGB).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "defaultshader";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain"; p.defaultValueHint = to_hint(dflt.defaultShader); }
+						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";                  p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth";  p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";                p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "bootstrap_samples";p.kind = ValueKind::UInt;   p.description = "Bootstrap samples";                      p.defaultValueHint = to_hint(dflt.nBootstrap); }
+						{ auto& p = P(); p.name = "chains";           p.kind = ValueKind::UInt;   p.description = "Number of Markov chains";                p.defaultValueHint = to_hint(dflt.nChains); }
+						{ auto& p = P(); p.name = "mutations_per_pixel"; p.kind = ValueKind::UInt;p.description = "Mutations per pixel";                     p.defaultValueHint = to_hint(dflt.nMutationsPerPixel); }
+						{ auto& p = P(); p.name = "large_step_prob";  p.kind = ValueKind::Double; p.description = "Probability of large-step mutation";      p.defaultValueHint = to_hint(dflt.largeStepProb); }
+						{ auto& p = P(); p.name = "show_luminaires";  p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";         p.defaultValueHint = to_hint(dflt.showLuminaires); }
+						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = to_hint(dflt.oidnDenoise); }
+						{ auto& p = P(); p.name = "oidn_quality";     p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = to_hint(dflt.oidnQuality); }
+						{ auto& p = P(); p.name = "oidn_device";      p.kind = ValueKind::Enum;   p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = to_hint(dflt.oidnDevice); }
+					{ auto& p = P(); p.name = "oidn_prefilter";   p.kind = ValueKind::Enum;   p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = to_hint(dflt.oidnPrefilter); }
+						{ auto& p = P(); p.name = "choose_one_light"; p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
+						AddPixelFilterParams( P );
+						// MLT accepts only light_bvh from StabilityConfig.
+						{ auto& p = P(); p.name = "light_bvh";            p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = to_hint(stabilityDflt.useLightBVH); }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct MLTSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					MLTSpectralDefaults dflt;
+					std::string defaultshader     = bag.GetString( "defaultshader",       dflt.defaultShader );
+					unsigned int maxEyeDepth      = bag.GetUInt(   "max_eye_depth",       dflt.maxEyeDepth );
+					unsigned int maxLightDepth    = bag.GetUInt(   "max_light_depth",     dflt.maxLightDepth );
+					unsigned int bootstrapSamples = bag.GetUInt(   "bootstrap_samples",   dflt.nBootstrap );
+					unsigned int chains           = bag.GetUInt(   "chains",              dflt.nChains );
+					unsigned int mutationsPerPixel= bag.GetUInt(   "mutations_per_pixel", dflt.nMutationsPerPixel );
+					double largeStepProb          = bag.GetDouble( "large_step_prob",     dflt.largeStepProb );
+					bool showLuminaires           = bag.GetBool(   "show_luminaires",     dflt.showLuminaires );
+					// MLT spectral also defaults OIDN off — see the Pel
+					// MLT parser for the detailed rationale.
+					bool oidnDenoise              = bag.GetBool(   "oidn_denoise",        dflt.oidnDenoise );
+					OidnQuality oidnQuality       = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice        = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter   = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+
+					SpectralConfig spectralConfig;
+					if( bag.Has("nmbegin") )          spectralConfig.nmBegin         = bag.GetDouble("nmbegin");
+					if( bag.Has("nmend") )            spectralConfig.nmEnd           = bag.GetDouble("nmend");
+					if( bag.Has("spectral_samples") ) spectralConfig.spectralSamples = bag.GetUInt("spectral_samples");
+					if( bag.Has("num_wavelengths") )  spectralConfig.numWavelengths  = bag.GetUInt("num_wavelengths");
+					if( bag.Has("hwss") )             spectralConfig.useHWSS         = bag.GetBool("hwss");
+
+					PixelFilterConfig pixelFilterConfig;
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width  = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB = bag.GetDouble("pixel_filter_paramB");
+
+					StabilityConfig stabilityConfig;
+					if( bag.Has("light_bvh") )           stabilityConfig.useLightBVH        = bag.GetBool("light_bvh");
+
+					return pJob.SetMLTSpectralRasterizer( maxEyeDepth, maxLightDepth,
+						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
+						defaultshader.c_str(), showLuminaires,
+						spectralConfig, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
+						pixelFilterConfig,
+						stabilityConfig );
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						MLTSpectralDefaults dflt;
+						StabilityConfig stabilityDflt;
+						ChunkDescriptor cd;
+						cd.keyword = "mlt_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Metropolis Light Transport (spectral).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "defaultshader";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain"; p.defaultValueHint = to_hint(dflt.defaultShader); }
+						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";                  p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth";  p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";                p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "bootstrap_samples";p.kind = ValueKind::UInt;   p.description = "Bootstrap samples";                      p.defaultValueHint = to_hint(dflt.nBootstrap); }
+						{ auto& p = P(); p.name = "chains";           p.kind = ValueKind::UInt;   p.description = "Number of Markov chains";                p.defaultValueHint = to_hint(dflt.nChains); }
+						{ auto& p = P(); p.name = "mutations_per_pixel"; p.kind = ValueKind::UInt;p.description = "Mutations per pixel";                     p.defaultValueHint = to_hint(dflt.nMutationsPerPixel); }
+						{ auto& p = P(); p.name = "large_step_prob";  p.kind = ValueKind::Double; p.description = "Probability of large-step mutation";      p.defaultValueHint = to_hint(dflt.largeStepProb); }
+						{ auto& p = P(); p.name = "show_luminaires";  p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";         p.defaultValueHint = to_hint(dflt.showLuminaires); }
+						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = to_hint(dflt.oidnDenoise); }
+						{ auto& p = P(); p.name = "oidn_quality";     p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = to_hint(dflt.oidnQuality); }
+						{ auto& p = P(); p.name = "oidn_device";      p.kind = ValueKind::Enum;   p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = to_hint(dflt.oidnDevice); }
+					{ auto& p = P(); p.name = "oidn_prefilter";   p.kind = ValueKind::Enum;   p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = to_hint(dflt.oidnPrefilter); }
+						AddPixelFilterParams( P );
+						// MLT spectral consumes only the core spectral
+						// fields; RGB-to-SPD conversion is done in the
+						// painters pipeline.
+						AddSpectralCoreParams( P );
+						// MLT accepts only light_bvh from StabilityConfig.
+						{ auto& p = P(); p.name = "light_bvh";            p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = to_hint(stabilityDflt.useLightBVH); }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct FileRasterizerOutputAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string pattern   = bag.GetString( "pattern",  "none" );
+					bool        multiple  = bag.GetBool(   "multiple", false );
+					int         bpp       = bag.GetInt(    "bpp",      8 );
+
+					char type = 0;
+					if( bag.Has("type") ) {
+						std::string t = bag.GetString("type");
+						if( t == "TGA" ) {
+							type = 0;
+						} else if( t == "PPM" ) {
+							type = 1;
+						} else if( t == "PNG" ) {
+					#ifndef NO_PNG_SUPPORT
+							type = 2;
+					#else
+							type = 0;
+							GlobalLog()->PrintEasyWarning( "AsciiCommandParser::ParseAddRasterizeroutput::File: NO PNG SUPPORT was compiled, reverting to TGA instead" );
+					#endif
+						} else if( t == "TIFF" ) {
+					#ifndef NO_TIFF_SUPPORT
+							type = 4;
+					#else
+							type = 0;
+							GlobalLog()->PrintEasyWarning( "AsciiCommandParser::ParseAddRasterizeroutput::File: NO TIFF SUPPORT was compiled, reverting to TGA instead" );
+					#endif
+						} else if( t == "HDR" ) {
+							type = 3;
+						} else if( t == "RGBEA" ) {
+							type = 5;
+						} else if( t == "EXR" ) {
+					#ifndef NO_EXR_SUPPORT
+							type = 6;
+					#else
+							type = 0;
+							GlobalLog()->PrintEasyWarning( "AsciiCommandParser::ParseAddRasterizeroutput::File: NO EXR SUPPORT was compiled, reverting to TGA instead" );
+					#endif
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown output file type type `%s`", t.c_str() );
+							return false;
+						}
+					}
+
+					char color_space = 1;
+					if( bag.Has("color_space") ) {
+						std::string cs = bag.GetString("color_space");
+						if( cs=="Rec709RGB_Linear" ) {
+							color_space = 0;
+						} else if( cs=="sRGB" ) {
+							color_space = 1;
+						} else if( cs=="ROMMRGB_Linear" ) {
+							color_space = 2;
+						} else if( cs=="ProPhotoRGB" ) {
+							color_space = 3;
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown color space `%s`", cs.c_str() );
+							return false;
+						}
+					}
+
+					// Display pipeline (Landing 1).  exposure default = 0
+					// EV (no scaling).  display_transform default
+					// depends on the format:
+					//   - HDR (EXR / HDR / RGBEA): "none" (write verbatim
+					//     radiance; tone-mapping an archival output would
+					//     corrupt it)
+					//   - LDR (PNG / TGA / PPM / TIFF): "aces" (proper
+					//     highlight rolloff for an LDR display; see
+					//     docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md)
+					// Picking the default per-type here means the user's
+					// 86+ existing HDR scenes don't trip the constructor's
+					// "display_transform ignored on HDR" warning at every
+					// render; the warning now only fires when the user
+					// explicitly sets a non-none value on an HDR output
+					// (genuine misuse).
+					const double exposureEV = bag.GetDouble( "exposure", 0.0 );
+
+					const bool typeIsHDR = ( type == 3 /*HDR*/ ||
+					                         type == 5 /*RGBEA*/ ||
+					                         type == 6 /*EXR*/ );
+					char display_transform = typeIsHDR ? 0 /*none*/ : 2 /*ACES*/;
+					if( bag.Has("display_transform") ) {
+						std::string s = bag.GetString("display_transform");
+						if      ( s == "none"     ) display_transform = 0;
+						else if ( s == "reinhard" ) display_transform = 1;
+						else if ( s == "aces"     ) display_transform = 2;
+						else if ( s == "agx"      ) display_transform = 3;
+						else if ( s == "hable"    ) display_transform = 4;
+						else {
+							GlobalLog()->PrintEx( eLog_Error,
+								"ChunkParser:: Unknown display_transform `%s` "
+								"(expected: none|reinhard|aces|agx|hable)", s.c_str() );
+							return false;
+						}
+					}
+
+					// EXR-specific knobs.  Default piz + alpha.
+					char exr_compression = 2;	// PIZ default
+					if( bag.Has("exr_compression") ) {
+						std::string s = bag.GetString("exr_compression");
+						if      ( s == "none" ) exr_compression = 0;
+						else if ( s == "zip"  ) exr_compression = 1;
+						else if ( s == "piz"  ) exr_compression = 2;
+						else if ( s == "dwaa" ) exr_compression = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error,
+								"ChunkParser:: Unknown exr_compression `%s` "
+								"(expected: none|zip|piz|dwaa)", s.c_str() );
+							return false;
+						}
+					}
+					const bool exr_with_alpha = bag.GetBool( "exr_with_alpha", true );
+
+					return pJob.AddFileRasterizerOutput(
+						pattern.c_str(), multiple, type, (unsigned char)bpp, color_space,
+						exposureEV, display_transform, exr_compression, exr_with_alpha );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "file_rasterizeroutput"; cd.category = ChunkCategory::RasterizerOutput;
+						cd.description = "Writes rendered frames to disk.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "pattern";    p.kind = ValueKind::Filename; p.description = "Output path pattern (with optional frame placeholders)"; p.defaultValueHint = "out.exr"; }
+						{ auto& p = P(); p.name = "multiple";   p.kind = ValueKind::Bool;    p.description = "Emit one file per frame (for animation)";                p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "type";       p.kind = ValueKind::Enum;    p.enumValues = {"TGA","PPM","PNG","HDR","TIFF","RGBEA","EXR"};             p.description = "File format";                                                p.defaultValueHint = "EXR"; }
+						{ auto& p = P(); p.name = "bpp";        p.kind = ValueKind::Enum;    p.enumValues = {"8","16","32"};                                           p.description = "Bits per channel (format-dependent)";                        p.defaultValueHint = "32"; }
+						{ auto& p = P(); p.name = "color_space";p.kind = ValueKind::Enum;    p.enumValues = {"Rec709RGB_Linear","sRGB","ROMMRGB_Linear","ProPhotoRGB"};p.description = "Output colour space";                                        p.defaultValueHint = "sRGB"; }
+						{ auto& p = P(); p.name = "exposure";          p.kind = ValueKind::Double; p.description = "Exposure offset in EV stops; 0 = no scaling.  LDR formats only — HDR formats warn and ignore."; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "display_transform"; p.kind = ValueKind::Enum;   p.enumValues = {"none","reinhard","aces","agx","hable"}; p.description = "Tone-mapping curve applied between linear radiance and OETF.  LDR formats only — HDR formats warn and ignore.  Default: aces for LDR formats; none for HDR formats."; p.defaultValueHint = "aces (LDR) / none (HDR)"; }
+						{ auto& p = P(); p.name = "exr_compression";   p.kind = ValueKind::Enum;   p.enumValues = {"none","zip","piz","dwaa"};              p.description = "EXR compression algorithm.  EXR only.";  p.defaultValueHint = "piz"; }
+						{ auto& p = P(); p.name = "exr_with_alpha";    p.kind = ValueKind::Bool;   p.description = "Write alpha channel into the EXR.  EXR only.";  p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+
+			//////////////////////////////////////////
+			// Photon Mapping
+			//////////////////////////////////////////
+
+			struct CausticPelPhotonMapGenerateAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					unsigned int photons          = bag.GetUInt(   "num",                    10000 );
+					double power_scale            = bag.GetDouble( "power_scale",            1.0 );
+					unsigned int maxRecur         = bag.GetUInt(   "max_recursion",          10 );
+					double minImportance          = bag.GetDouble( "min_importance",         0.01 );
+					bool branch                   = bag.GetBool(   "branch",                 true );
+					bool reflect                  = bag.GetBool(   "reflect",                true );
+					bool refract                  = bag.GetBool(   "refract",                true );
+					bool shootFromNonMeshLights   = bag.GetBool(   "shootFromNonMeshLights", true );
+					bool shootFromMeshLights      = bag.GetBool(   "shootFromMeshLights",    true );
+					unsigned int temporal_samples = bag.GetUInt(   "temporal_samples",       100 );
+					bool regenerate               = bag.GetBool(   "regenerate",             true );
+
+					std::cout << "Queued Caustic Pel Photons (will shoot at render time)" << std::endl;
+
+					return pJob.ShootCausticPelPhotons( photons, power_scale, maxRecur, minImportance, branch, reflect, refract, shootFromNonMeshLights, temporal_samples, regenerate, shootFromMeshLights );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "caustic_pel_photonmap"; cd.category = ChunkCategory::PhotonMap;
+						cd.description = "Caustic photon map generation (RGB).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGenerateCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct CausticSpectralPhotonMapGenerateAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					unsigned int photons          = bag.GetUInt(   "num",              10000 );
+					double power_scale            = bag.GetDouble( "power_scale",      1.0 );
+					unsigned int maxRecur         = bag.GetUInt(   "max_recursion",    10 );
+					double nmbegin                = bag.GetDouble( "nmbegin",          400.0 );
+					double nmend                  = bag.GetDouble( "nmend",            700.0 );
+					unsigned int numWavelengths   = bag.GetUInt(   "num_wavelengths",  30 );
+					double minImportance          = bag.GetDouble( "min_importance",   0.01 );
+					bool branch                   = bag.GetBool(   "branch",           true );
+					bool reflect                  = bag.GetBool(   "reflect",          true );
+					bool refract                  = bag.GetBool(   "refract",          true );
+					unsigned int temporal_samples = bag.GetUInt(   "temporal_samples", 100 );
+					bool regenerate               = bag.GetBool(   "regenerate",       true );
+
+					std::cout << "Queued Caustic Spectral Photons (will shoot at render time)" << std::endl;
+
+					return pJob.ShootCausticSpectralPhotons( photons, power_scale, maxRecur, minImportance, nmbegin, nmend, numWavelengths, branch, reflect, refract, temporal_samples, regenerate );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "caustic_spectral_photonmap"; cd.category = ChunkCategory::PhotonMap;
+						cd.description = "Caustic photon map generation (spectral).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGenerateCommonParams( P );
+						{ auto& p = P(); p.name = "nmbegin";         p.kind = ValueKind::Double; p.description = "Start wavelength (nm)"; p.defaultValueHint = "400"; }
+						{ auto& p = P(); p.name = "nmend";           p.kind = ValueKind::Double; p.description = "End wavelength (nm)"; p.defaultValueHint = "700"; }
+						{ auto& p = P(); p.name = "num_wavelengths"; p.kind = ValueKind::UInt;   p.description = "Spectral sample count"; p.defaultValueHint = "16"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct GlobalSpectralPhotonMapGenerateAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					unsigned int photons          = bag.GetUInt(   "num",              10000 );
+					double power_scale            = bag.GetDouble( "power_scale",      1.0 );
+					unsigned int maxRecur         = bag.GetUInt(   "max_recursion",    10 );
+					double nmbegin                = bag.GetDouble( "nmbegin",          400.0 );
+					double nmend                  = bag.GetDouble( "nmend",            700.0 );
+					unsigned int numWavelengths   = bag.GetUInt(   "num_wavelengths",  30 );
+					double minImportance          = bag.GetDouble( "min_importance",   0.01 );
+					bool branch                   = bag.GetBool(   "branch",           true );
+					unsigned int temporal_samples = bag.GetUInt(   "temporal_samples", 100 );
+					bool regenerate               = bag.GetBool(   "regenerate",       true );
+
+					std::cout << "Queued Global Spectral Photons (will shoot at render time)" << std::endl;
+
+					return pJob.ShootGlobalSpectralPhotons( photons, power_scale, maxRecur, minImportance, nmbegin, nmend, numWavelengths, branch, temporal_samples, regenerate );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "global_spectral_photonmap"; cd.category = ChunkCategory::PhotonMap;
+						cd.description = "Global photon map generation (spectral).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGenerateCommonParams( P );
+						{ auto& p = P(); p.name = "nmbegin";         p.kind = ValueKind::Double; p.description = "Start wavelength (nm)"; p.defaultValueHint = "400"; }
+						{ auto& p = P(); p.name = "nmend";           p.kind = ValueKind::Double; p.description = "End wavelength (nm)"; p.defaultValueHint = "700"; }
+						{ auto& p = P(); p.name = "num_wavelengths"; p.kind = ValueKind::UInt;   p.description = "Spectral sample count"; p.defaultValueHint = "16"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct TranslucentPelPhotonMapGenerateAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					unsigned int photons          = bag.GetUInt(   "num",                    10000 );
+					unsigned int maxRecur         = bag.GetUInt(   "max_recursion",          10 );
+					double minImportance          = bag.GetDouble( "min_importance",         0.01 );
+					double power_scale            = bag.GetDouble( "power_scale",            1.0 );
+					bool shootFromNonMeshLights   = bag.GetBool(   "shootFromNonMeshLights", true );
+					bool shootFromMeshLights      = bag.GetBool(   "shootFromMeshLights",    true );
+					bool reflect                  = bag.GetBool(   "reflect",                true );
+					bool refract                  = bag.GetBool(   "refract",                true );
+					bool direct_translucent       = bag.GetBool(   "direct_translucent",     true );
+					unsigned int temporal_samples = bag.GetUInt(   "temporal_samples",       100 );
+					bool regenerate               = bag.GetBool(   "regenerate",             true );
+
+					std::cout << "Queued Translucent Pel Photons (will shoot at render time)" << std::endl;
+
+					return pJob.ShootTranslucentPelPhotons( photons, power_scale, maxRecur, minImportance, reflect, refract, direct_translucent, shootFromNonMeshLights, temporal_samples, regenerate, shootFromMeshLights );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "translucent_pel_photonmap"; cd.category = ChunkCategory::PhotonMap;
+						cd.description = "Translucent photon map generation (RGB).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGenerateCommonParams( P );
+						{ auto& p = P(); p.name = "direct_translucent"; p.kind = ValueKind::Bool; p.description = "Include direct translucency"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ShadowPhotonMapGenerateAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					unsigned int photons          = bag.GetUInt( "num",              10000 );
+					unsigned int temporal_samples = bag.GetUInt( "temporal_samples", 100 );
+					bool regenerate               = bag.GetBool( "regenerate",       true );
+
+					std::cout << "Queued Shadow Photons (will shoot at render time)" << std::endl;
+
+					return pJob.ShootShadowPhotons( photons, temporal_samples, regenerate );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "shadow_photonmap"; cd.category = ChunkCategory::PhotonMap;
+						cd.description = "Shadow photon map (direct visibility-cache).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "num";              p.kind = ValueKind::UInt; p.description = "Photon count"; p.defaultValueHint = "10000"; }
+						{ auto& p = P(); p.name = "temporal_samples"; p.kind = ValueKind::UInt; p.description = "Temporal samples"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "regenerate";       p.kind = ValueKind::Bool; p.description = "Regenerate per frame"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct GlobalPelPhotonMapGenerateAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					unsigned int photons             = bag.GetUInt(   "num",                    10000 );
+					double power_scale               = bag.GetDouble( "power_scale",            1.0 );
+					unsigned int maxRecur            = bag.GetUInt(   "max_recursion",          10 );
+					double minImportance             = bag.GetDouble( "min_importance",         0.01 );
+					bool branch                      = bag.GetBool(   "branch",                 true );
+					bool shootFromNonMeshLights      = bag.GetBool(   "shootFromNonMeshLights", true );
+					bool shootFromMeshLights         = bag.GetBool(   "shootFromMeshLights",    true );
+					unsigned int temporal_samples    = bag.GetUInt(   "temporal_samples",       100 );
+					bool regenerate                  = bag.GetBool(   "regenerate",             true );
+
+					std::cout << "Queued Global Pel Photons (will shoot at render time)" << std::endl;
+
+					return pJob.ShootGlobalPelPhotons( photons, power_scale, maxRecur, minImportance, branch, shootFromNonMeshLights, temporal_samples, regenerate, shootFromMeshLights );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "global_pel_photonmap"; cd.category = ChunkCategory::PhotonMap;
+						cd.description = "Global photon map generation (RGB).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGenerateCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct CausticPelPhotonMapGatherAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					double radius        = bag.GetDouble( "radius",        0.0 );
+					double ellipse_ratio = bag.GetDouble( "ellipse_ratio", 0.05 );
+					unsigned int min     = bag.GetUInt(   "min_photons",   8 );
+					unsigned int max     = bag.GetUInt(   "max_photons",   150 );
+
+					return pJob.SetCausticPelGatherParameters( radius, ellipse_ratio, min, max );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "caustic_pel_gather"; cd.category = ChunkCategory::PhotonGather;
+						cd.description = "Caustic photon gather (RGB).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGatherCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct CausticSpectralPhotonMapGatherAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					double radius        = bag.GetDouble( "radius",        0.0 );
+					double ellipse_ratio = bag.GetDouble( "ellipse_ratio", 0.05 );
+					double nm_range      = bag.GetDouble( "nm_range",      10.0 );
+					unsigned int min     = bag.GetUInt(   "min_photons",   8 );
+					unsigned int max     = bag.GetUInt(   "max_photons",   150 );
+
+					return pJob.SetCausticSpectralGatherParameters( radius, ellipse_ratio, min, max, nm_range );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "caustic_spectral_gather"; cd.category = ChunkCategory::PhotonGather;
+						cd.description = "Caustic photon gather (spectral).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGatherCommonParams( P );
+						{ auto& p = P(); p.name = "nm_range"; p.kind = ValueKind::Double; p.description = "Wavelength gather range (nm)"; p.defaultValueHint = "10"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct GlobalSpectralPhotonMapGatherAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					double radius        = bag.GetDouble( "radius",        0.0 );
+					double ellipse_ratio = bag.GetDouble( "ellipse_ratio", 0.05 );
+					double nm_range      = bag.GetDouble( "nm_range",      10.0 );
+					unsigned int min     = bag.GetUInt(   "min_photons",   8 );
+					unsigned int max     = bag.GetUInt(   "max_photons",   150 );
+
+					return pJob.SetGlobalSpectralGatherParameters( radius, ellipse_ratio, min, max, nm_range );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "global_spectral_gather"; cd.category = ChunkCategory::PhotonGather;
+						cd.description = "Global photon gather (spectral).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGatherCommonParams( P );
+						{ auto& p = P(); p.name = "nm_range"; p.kind = ValueKind::Double; p.description = "Wavelength gather range (nm)"; p.defaultValueHint = "10"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct TranslucentPelPhotonMapGatherAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					double radius        = bag.GetDouble( "radius",        0.0 );
+					double ellipse_ratio = bag.GetDouble( "ellipse_ratio", 0.05 );
+					unsigned int min     = bag.GetUInt(   "min_photons",   8 );
+					unsigned int max     = bag.GetUInt(   "max_photons",   150 );
+
+					return pJob.SetTranslucentPelGatherParameters( radius, ellipse_ratio, min, max );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "translucent_pel_gather"; cd.category = ChunkCategory::PhotonGather;
+						cd.description = "Translucent photon gather (RGB).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGatherCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ShadowPhotonMapGatherAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					double radius        = bag.GetDouble( "radius",        0.0 );
+					double ellipse_ratio = bag.GetDouble( "ellipse_ratio", 0.05 );
+					unsigned int min     = bag.GetUInt(   "min_photons",   1 );
+					unsigned int max     = bag.GetUInt(   "max_photons",   100 );
+
+					return pJob.SetShadowGatherParameters( radius, ellipse_ratio, min, max );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "shadow_gather"; cd.category = ChunkCategory::PhotonGather;
+						cd.description = "Shadow photon gather parameters.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGatherCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct GlobalPelPhotonMapGatherAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					double radius        = bag.GetDouble( "radius",        0.0 );
+					double ellipse_ratio = bag.GetDouble( "ellipse_ratio", 0.05 );
+					unsigned int min     = bag.GetUInt(   "min_photons",   8 );
+					unsigned int max     = bag.GetUInt(   "max_photons",   150 );
+
+					return pJob.SetGlobalPelGatherParameters( radius, ellipse_ratio, min, max );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "global_pel_gather"; cd.category = ChunkCategory::PhotonGather;
+						cd.description = "Global photon gather (RGB).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGatherCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct IrradianceCacheAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					double tolerance              = bag.GetDouble( "tolerance",              0.1 );
+					unsigned int size             = bag.GetUInt(   "size",                   100000 );
+					double min_spacing            = bag.GetDouble( "min_spacing",            0.05 );
+					double max_spacing            = bag.GetDouble( "max_spacing",            min_spacing * 100 );
+					double query_threshold_scale  = bag.GetDouble( "query_threshold_scale",  0.5 );
+					double neighbor_spacing_scale = bag.GetDouble( "neighbor_spacing_scale", 2.0 );
+
+					return pJob.SetIrradianceCacheParameters( size, tolerance, min_spacing, max_spacing, query_threshold_scale, neighbor_spacing_scale );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "irradiance_cache"; cd.category = ChunkCategory::IrradianceCache;
+						cd.description = "Global irradiance-cache parameters.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "size";                    p.kind = ValueKind::UInt;   p.description = "Cache capacity (entries)"; p.defaultValueHint = "100000"; }
+						{ auto& p = P(); p.name = "tolerance";               p.kind = ValueKind::Double; p.description = "Reuse tolerance"; p.defaultValueHint = "0.2"; }
+						{ auto& p = P(); p.name = "min_spacing";             p.kind = ValueKind::Double; p.description = "Min sample spacing"; p.defaultValueHint = "0.1"; }
+						{ auto& p = P(); p.name = "max_spacing";             p.kind = ValueKind::Double; p.description = "Max sample spacing"; p.defaultValueHint = "10.0"; }
+						{ auto& p = P(); p.name = "query_threshold_scale";   p.kind = ValueKind::Double; p.description = "Query-threshold scaling"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "neighbor_spacing_scale"; p.kind = ValueKind::Double; p.description = "Neighbor-spacing scaling"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct KeyframeAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					// NOTE: legacy ParseChunk had two bugs preserved here for
+					// backwards-compat: `element_type` set `param = element_type`
+					// (never updating element_type), and AddKeyframe was called
+					// with `element_type` for both element_type and element
+					// arguments, so the `element` parameter is effectively ignored.
+					std::string element_type   = "object";
+					std::string param          = bag.GetString( "param", "none" );
+					std::string value          = bag.GetString( "value", "none" );
+					std::string interp         = bag.GetString( "interpolator", "none" );
+					std::string interp_params  = bag.GetString( "interpolator_params", "none" );
+					double      time           = bag.GetDouble( "time", 0 );
+
+					// Legacy behavior: when element_type is provided, override `param` to "object".
+					if( bag.Has("element_type") ) {
+						param = element_type;
+					}
+
+					return pJob.AddKeyframe( element_type.c_str(), element_type.c_str(), param.c_str(), value.c_str(), time, interp=="none"?0:interp.c_str(), interp_params=="none"?0:interp_params.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "keyframe"; cd.category = ChunkCategory::Animation;
+						cd.description = "Single keyframe for an element's parameter over time.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name"; }
+						// NB: this legacy single-`keyframe` chunk hardwires the lookup to objects
+						// (see the AddKeyframe call above) -- it cannot target geometry/painter, so
+						// the hint deliberately stays {object,camera,light}.  Use `timeline` for those.
+						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light"}; p.description = "Element kind"; p.defaultValueHint = "object"; }
+						{ auto& p = P(); p.name = "param";               p.kind = ValueKind::String; p.description = "Parameter name (e.g. position, orientation, scale)"; }
+						{ auto& p = P(); p.name = "value";               p.kind = ValueKind::String; p.description = "Value at this keyframe (whitespace-separated tokens)"; }
+						{ auto& p = P(); p.name = "time";                p.kind = ValueKind::Double; p.description = "Time (seconds) of the keyframe"; }
+						{ auto& p = P(); p.name = "interpolator";        p.kind = ValueKind::String; p.description = "Interpolator type"; p.defaultValueHint = "linear"; }
+						{ auto& p = P(); p.name = "interpolator_params"; p.kind = ValueKind::String; p.description = "Interpolator parameters"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct TimelineAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string element_type = bag.GetString( "element_type", "object" );
+					std::string element      = bag.GetString( "element",      "none" );
+					std::string param        = bag.GetString( "param",        "none" );
+					std::string animation    = bag.GetString( "animation",    "" );
+
+					// `time`, `value`, `interpolator`, `interpolator_params` are
+					// declared repeatable and zipped here.  Each `value`
+					// appearance emits one keyframe.  `time` is read positionally
+					// (time[i] applies to value[i]); `interpolator` and
+					// `interpolator_params` are sticky — the last seen up to
+					// position i applies to value[i], matching the legacy
+					// in-order parser's update-then-emit behavior.
+					const std::vector<std::string>& values  = bag.GetRepeatable( "value" );
+					const std::vector<std::string>& times   = bag.GetRepeatable( "time" );
+					const std::vector<std::string>& interps = bag.GetRepeatable( "interpolator" );
+					const std::vector<std::string>& iparams = bag.GetRepeatable( "interpolator_params" );
+
+					for( size_t i = 0; i < values.size(); ++i ) {
+						double time = (i < times.size()) ? RISE::String(times[i].c_str()).toDouble() : 0.0;
+						const char* interp_c  = interps.empty() ? 0 :
+							(interps[std::min(i, interps.size()-1)] == "none" ? 0 : interps[std::min(i, interps.size()-1)].c_str());
+						const char* iparams_c = iparams.empty() ? 0 :
+							(iparams[std::min(i, iparams.size()-1)] == "none" ? 0 : iparams[std::min(i, iparams.size()-1)].c_str());
+
+						if( !pJob.AddKeyframeToAnimation( element_type.c_str(), element.c_str(), param.c_str(), values[i].c_str(), time, interp_c, iparams_c, animation.c_str() ) ) {
+							return false;
+						}
+					}
+
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "timeline"; cd.category = ChunkCategory::Animation;
+						cd.description = "Sequence of keyframes for one element/parameter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name"; }
+						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light","geometry","painter"}; p.description = "Element kind (geometry/painter animate a named geometry's or painter's intrinsic params, e.g. an sdf_geometry's part fields)"; p.defaultValueHint = "object"; }
+						{ auto& p = P(); p.name = "param";               p.kind = ValueKind::String; p.description = "Parameter name"; }
+						{ auto& p = P(); p.name = "animation";           p.kind = ValueKind::String; p.description = "Owning named animation (default = the implicit default animation)"; p.defaultValueHint = "(default)"; }
+						{ auto& p = P(); p.name = "value";               p.kind = ValueKind::String; p.repeatable = true; p.description = "Value at the corresponding `time` (emits one keyframe per appearance)"; }
+						{ auto& p = P(); p.name = "time";                p.kind = ValueKind::Double; p.repeatable = true; p.description = "Time of the matching value (positional, paired 1:1 with `value`)"; }
+						{ auto& p = P(); p.name = "interpolator";        p.kind = ValueKind::String; p.repeatable = true; p.description = "Interpolator type (sticky — last-seen up to a given `value` applies)"; p.defaultValueHint = "linear"; }
+						{ auto& p = P(); p.name = "interpolator_params"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Interpolator parameters (sticky)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct AnimationOptionsAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					double       time_start    = bag.GetDouble( "time_start",    0 );
+					double       time_end      = bag.GetDouble( "time_end",      1.0 );
+					unsigned int num_frames    = bag.GetUInt(   "num_frames",    30 );
+					bool         do_fields     = bag.GetBool(   "do_fields",     false );
+					bool         invert_fields = bag.GetBool(   "invert_fields", false );
+
+					return pJob.SetAnimationOptions( time_start, time_end, num_frames, do_fields, invert_fields );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "animation_options"; cd.category = ChunkCategory::Animation;
+						cd.description = "Global animation time range, frame count, and field options.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "time_start";    p.kind = ValueKind::Double; p.description = "Animation start time"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "time_end";      p.kind = ValueKind::Double; p.description = "Animation end time"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "num_frames";    p.kind = ValueKind::UInt;   p.description = "Number of frames to render"; p.defaultValueHint = "30"; }
+						{ auto& p = P(); p.name = "do_fields";     p.kind = ValueKind::Bool;   p.description = "Emit interlaced fields"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "invert_fields"; p.kind = ValueKind::Bool;   p.description = "Invert field order"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct SceneVariantAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "" );
+					std::string cam  = bag.GetString( "active_camera", "" );
+					return pJob.DeclareSceneVariant( name.c_str(), cam.c_str() );   // empty name -> false
+				}
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "scene_variant"; cd.category = ChunkCategory::SceneVariant;
+						cd.description = "Declares a named, selectable scene variant (an overlay).  variant-tagged chunks override their base when this variant is active; active_camera selects a camera.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;    p.description = "Variant name (REQUIRED; the UI handle / switch key)"; }
+						{ auto& p = P(); p.name = "active_camera"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Camera}; p.description = "Camera to activate when this variant is active"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ActiveSceneVariantAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "" );
+					return pJob.SetActiveSceneVariant( name.c_str() );
+				}
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "active_scene_variant"; cd.category = ChunkCategory::SceneVariant;
+						cd.description = "Selects the active scene variant by name (empty / none / absent => the base default).  Single-select.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Active variant name (empty / none => base default)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct AnimationAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string  name          = bag.GetString( "name",          "(default)" );
+					double       time_start    = bag.GetDouble( "time_start",    0 );
+					double       time_end      = bag.GetDouble( "time_end",      1.0 );
+					unsigned int num_frames    = bag.GetUInt(   "num_frames",    30 );
+					bool         do_fields     = bag.GetBool(   "do_fields",     false );
+					bool         invert_fields = bag.GetBool(   "invert_fields", false );
+					bool         active        = bag.GetBool(   "active",        false );
+
+					return pJob.DeclareAnimation( name.c_str(), time_start, time_end, num_frames, do_fields, invert_fields, active );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "animation"; cd.category = ChunkCategory::Animation;
+						cd.description = "Declares a named animation path (a group of timelines sharing a name); each `timeline` joins it via its `animation <name>` tag.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String; p.description = "Animation name (referenced by timeline `animation` tags)"; p.defaultValueHint = "(default)"; }
+						{ auto& p = P(); p.name = "active";        p.kind = ValueKind::Bool;   p.description = "Make this the active animation (rendered/scrubbed by default)"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "time_start";    p.kind = ValueKind::Double; p.description = "Animation start time"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "time_end";      p.kind = ValueKind::Double; p.description = "Animation end time"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "num_frames";    p.kind = ValueKind::UInt;   p.description = "Number of frames to render"; p.defaultValueHint = "30"; }
+						{ auto& p = P(); p.name = "do_fields";     p.kind = ValueKind::Bool;   p.description = "Emit interlaced fields"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "invert_fields"; p.kind = ValueKind::Bool;   p.description = "Invert field order"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+		}
+	}
+
+	// Factory that creates one instance of every chunk parser the scene
+	// grammar supports.  Ownership transfers to the caller; when the
+	// returned vector goes out of scope all parsers are destroyed.  The
+	// same list powers AsciiSceneParser's dispatch map and
+	// SceneEditorSuggestions' grammar enumeration.
+	std::vector<ChunkParserEntry> CreateAllChunkParsers()
+	{
+		using namespace Implementation::ChunkParsers;
+		std::vector<ChunkParserEntry> entries;
+		entries.reserve( 128 );
+
+		auto add = [&entries]( const char* keyword, IAsciiChunkParser* parser ) {
+			ChunkParserEntry e;
+			e.keyword = keyword;
+			e.parser.reset( parser );
+			entries.push_back( std::move(e) );
+		};
+
+		// Painters
+		add( "uniformcolor_painter",                  new UniformColorPainterAsciiChunkParser() );
+		add( "vertex_color_painter",                  new VertexColorPainterAsciiChunkParser() );
+		add( "spectral_painter",                      new SpectralPainterAsciiChunkParser() );
+		add( "scalar_painter",                        new ScalarPainterAsciiChunkParser() );
+		add( "png_painter",                           new PngPainterAsciiChunkParser() );
+		add( "jpg_painter",                           new JpegPainterAsciiChunkParser() );
+		add( "hdr_painter",                           new HdrPainterAsciiChunkParser() );
+		add( "exr_painter",                           new ExrPainterAsciiChunkParser() );
+		add( "tiff_painter",                          new TiffPainterAsciiChunkParser() );
+		add( "checker_painter",                       new CheckerPainterAsciiChunkParser() );
+		add( "lines_painter",                         new LinesPainterAsciiChunkParser() );
+		add( "mandelbrot_painter",                    new MandelbrotPainterAsciiChunkParser() );
+		add( "perlin2d_painter",                      new Perlin2DPainterAsciiChunkParser() );
+		add( "controlled_smoothness2d_painter",       new ControlledSmoothness2DPainterAsciiChunkParser() );
+		add( "polynomial_function2d_painter",         new PolynomialFunction2DPainterAsciiChunkParser() );
+		add( "composite_function2d_painter",          new CompositeFunction2DPainterAsciiChunkParser() );
+		add( "gerstnerwave_painter",                  new GerstnerWavePainterAsciiChunkParser() );
+		add( "perlin3d_painter",                      new Perlin3DPainterAsciiChunkParser() );
+		add( "turbulence3d_painter",                  new Turbulence3DPainterAsciiChunkParser() );
+		add( "wavelet3d_painter",                     new Wavelet3DPainterAsciiChunkParser() );
+		add( "reactiondiffusion3d_painter",           new ReactionDiffusion3DPainterAsciiChunkParser() );
+		add( "gabor3d_painter",                       new Gabor3DPainterAsciiChunkParser() );
+		add( "simplex3d_painter",                     new Simplex3DPainterAsciiChunkParser() );
+		add( "sdf3d_painter",                         new SDF3DPainterAsciiChunkParser() );
+		add( "curlnoise3d_painter",                   new CurlNoise3DPainterAsciiChunkParser() );
+		add( "domainwarp3d_painter",                  new DomainWarp3DPainterAsciiChunkParser() );
+		add( "perlinworley3d_painter",                new PerlinWorley3DPainterAsciiChunkParser() );
+		add( "worley3d_painter",                      new Worley3DPainterAsciiChunkParser() );
+		add( "voronoi2d_painter",                     new Voronoi2DPainterAsciiChunkParser() );
+		add( "voronoi3d_painter",                     new Voronoi3DPainterAsciiChunkParser() );
+		add( "iridescent_painter",                    new IridescentPainterAsciiChunkParser() );
+		add( "blackbody_painter",                     new BlackBodyPainterAsciiChunkParser() );
+		add( "blend_painter",                         new BlendPainterAsciiChunkParser() );
+		add( "function2d_painter",                    new Function2DColorPainterAsciiChunkParser() );
+		add( "expression_function2d",                 new ExpressionFunction2DPainterAsciiChunkParser() );
+		add( "channel_painter",                       new ChannelPainterAsciiChunkParser() );
+
+		// Functions
+		add( "piecewise_linear_function",             new PiecewiseLinearFunctionChunkParser() );
+		add( "piecewise_linear_function2d",           new PiecewiseLinearFunction2DChunkParser() );
+
+		// Materials
+		add( "lambertian_material",                   new LambertianMaterialAsciiChunkParser() );
+		add( "perfectreflector_material",             new PerfectReflectorMaterialAsciiChunkParser() );
+		add( "perfectrefractor_material",             new PerfectRefractorMaterialAsciiChunkParser() );
+		add( "polished_material",                     new PolishedMaterialAsciiChunkParser() );
+		add( "dielectric_material",                   new DielectricMaterialAsciiChunkParser() );
+		add( "subsurfacescattering_material",         new SubSurfaceScatteringMaterialAsciiChunkParser() );
+		add( "randomwalk_sss_material",               new RandomWalkSSSMaterialAsciiChunkParser() );
+		add( "lambertian_luminaire_material",         new LambertianLuminaireMaterialAsciiChunkParser() );
+		add( "phong_luminaire_material",              new PhongLuminaireMaterialAsciiChunkParser() );
+		add( "ashikminshirley_anisotropicphong_material", new AshikminShirleyAnisotropicPhongMaterialAsciiChunkParser() );
+		add( "isotropic_phong_material",              new IsotropicPhongMaterialAsciiChunkParser() );
+		add( "translucent_material",                  new TranslucentMaterialAsciiChunkParser() );
+		add( "biospec_skin_material",                 new BioSpecSkinMaterialAsciiChunkParser() );
+		add( "donner_jensen_skin_bssrdf_material",    new DonnerJensenSkinBSSRDFMaterialAsciiChunkParser() );
+		add( "generic_human_tissue_material",         new GenericHumanTissueMaterialAsciiChunkParser() );
+		add( "composite_material",                    new CompositeMaterialAsciiChunkParser() );
+		add( "ward_isotropic_material",               new WardIsotropicGaussianMaterialAsciiChunkParser() );
+		add( "ward_anisotropic_material",             new WardAnisotropicEllipticalGaussianMaterialAsciiChunkParser() );
+		add( "ggx_material",                          new GGXMaterialAsciiChunkParser() );
+		add( "pbr_metallic_roughness_material",       new PBRMetallicRoughnessMaterialAsciiChunkParser() );
+		add( "cooktorrance_material",                 new CookTorranceMaterialAsciiChunkParser() );
+		add( "orennayar_material",                    new OrenNayarMaterialAsciiChunkParser() );
+		add( "sheen_material",                        new SheenMaterialAsciiChunkParser() );
+		add( "schlick_material",                      new SchlickMaterialAsciiChunkParser() );
+		add( "datadriven_material",                   new DataDrivenMaterialAsciiChunkParser() );
+
+		// Cameras
+		add( "scene_options",                         new SceneOptionsAsciiChunkParser() );
+		add( "camera_defaults",                       new CameraDefaultsAsciiChunkParser() );
+		// Film — pixel-grid descriptor.  See FilmAsciiChunkParser
+		// definition for the contract; the chunk should be authored
+		// BEFORE any camera chunk in the scene file.
+		add( "film",                                  new FilmAsciiChunkParser() );
+
+		add( "pinhole_camera",                        new PinholeCameraAsciiChunkParser() );
+		add( "onb_pinhole_camera",                    new ONBPinholeCameraAsciiChunkParser() );
+		add( "thinlens_camera",                       new ThinlensCameraAsciiChunkParser() );
+		// realistic_camera reserved for Phase 4 (multi-element lens).
+		add( "fisheye_camera",                        new FisheyeCameraAsciiChunkParser() );
+		add( "orthographic_camera",                   new OrthographicCameraAsciiChunkParser() );
+
+		// Geometry
+		add( "sphere_geometry",                       new SphereGeometryAsciiChunkParser() );
+		add( "ellipsoid_geometry",                    new EllipsoidGeometryAsciiChunkParser() );
+		add( "cylinder_geometry",                     new CylinderGeometryAsciiChunkParser() );
+		add( "torus_geometry",                        new TorusGeometryAsciiChunkParser() );
+		add( "infiniteplane_geometry",                new InfinitePlaneGeometryAsciiChunkParser() );
+		add( "box_geometry",                          new BoxGeometryAsciiChunkParser() );
+		add( "clippedplane_geometry",                 new ClippedPlaneGeometryAsciiChunkParser() );
+		add( "3dsmesh_geometry",                      new Mesh3DSGeometryAsciiChunkParser() );
+		add( "rawmesh_geometry",                      new RAWMeshGeometryAsciiChunkParser() );
+		add( "rawmesh2_geometry",                     new RAWMesh2GeometryAsciiChunkParser() );
+		add( "risemesh_geometry",                     new RISEMeshGeometryAsciiChunkParser() );
+		add( "plymesh_geometry",                      new PLYMeshGeometryAsciiChunkParser() );
+		add( "gltfmesh_geometry",                     new GLTFMeshGeometryAsciiChunkParser() );
+		add( "gltf_import",                           new GLTFImportAsciiChunkParser() );
+		add( "circulardisk_geometry",                 new CircularDiskGeometryAsciiChunkParser() );
+		add( "bezierpatch_geometry",                  new BezierPatchGeometryAsciiChunkParser() );
+		add( "bilinearpatch_geometry",                new BilinearPatchGeometryAsciiChunkParser() );
+		add( "sdf_geometry",                          new SDFGeometryAsciiChunkParser() );
+		add( "cartesian_disk_geometry",               new CartesianDiskGeometryAsciiChunkParser() );
+		add( "sweep_geometry",                        new SweepGeometryAsciiChunkParser() );
+		add( "path_instances_geometry",               new PathInstancesGeometryAsciiChunkParser() );
+		add( "displaced_geometry",                    new DisplacedGeometryAsciiChunkParser() );
+
+		// Modifiers
+		add( "bumpmap_modifier",                      new BumpmapModifierAsciiChunkParser() );
+		add( "normal_map_modifier",                   new NormalMapModifierAsciiChunkParser() );
+		add( "glint_modifier",                        new GlintModifierAsciiChunkParser() );
+
+		// Media
+		add( "homogeneous_medium",                    new HomogeneousMediumAsciiChunkParser() );
+		add( "global_medium",                         new GlobalMediumAsciiChunkParser() );
+		add( "light_rr_threshold",                   new LightRRThresholdAsciiChunkParser() );
+		add( "heterogeneous_medium",                  new HeterogeneousMediumAsciiChunkParser() );
+		add( "painter_heterogeneous_medium",          new PainterHeterogeneousMediumAsciiChunkParser() );
+
+		// Objects
+		add( "standard_object",                       new StandardObjectAsciiChunkParser() );
+		add( "override_object",                       new OverrideObjectAsciiChunkParser() );
+		add( "csg_object",                            new CSGObjectAsciiChunkParser() );
+
+		// Shader ops
+		add( "ambientocclusion_shaderop",             new AmbientOcclusionShaderOpAsciiChunkParser() );
+		add( "directlighting_shaderop",               new DirectLightingShaderOpAsciiChunkParser() );
+		add( "pathtracing_shaderop",                  new PathTracingShaderOpAsciiChunkParser() );
+		add( "mis_pathtracing_shaderop",              new PathTracingShaderOpAsciiChunkParser() );  // Legacy alias
+		add( "sms_shaderop",                          new SMSShaderOpAsciiChunkParser() );
+		add( "distributiontracing_shaderop",          new DistributionTracingShaderOpAsciiChunkParser() );
+		add( "finalgather_shaderop",                  new FinalGatherShaderOpAsciiChunkParser() );
+		add( "simple_sss_shaderop",                   new SimpleSubSurfaceScatteringShaderOpAsciiChunkParser() );
+		add( "diffusion_approximation_sss_shaderop",  new DiffusionApproximationSubSurfaceScatteringShaderOpAsciiChunkParser() );
+		add( "donner_jensen_skin_sss_shaderop",       new DonnerJensenSkinSSSShaderOpAsciiChunkParser() );
+		add( "arealight_shaderop",                    new AreaLightShaderOpAsciiChunkParser() );
+		add( "transparency_shaderop",                 new TransparencyShaderOpAsciiChunkParser() );
+		add( "alpha_test_shaderop",                   new AlphaTestShaderOpAsciiChunkParser() );
+
+		// Shaders
+		add( "standard_shader",                       new StandardShaderAsciiChunkParser() );
+		add( "advanced_shader",                       new AdvancedShaderAsciiChunkParser() );
+		add( "directvolumerendering_shader",          new DirectVolumeRenderingShaderAsciiChunkParser() );
+		add( "spectraldirectvolumerendering_shader",  new SpectralDirectVolumeRenderingShaderAsciiChunkParser() );
+
+		// Rasterizers
+		add( "pixelpel_rasterizer",                   new PixelPelRasterizerAsciiChunkParser() );
+		add( "pixelintegratingspectral_rasterizer",   new PixelIntegratingSpectralRasterizerAsciiChunkParser() );
+		add( "bdpt_pel_rasterizer",                   new BDPTPelRasterizerAsciiChunkParser() );
+		add( "bdpt_spectral_rasterizer",              new BDPTSpectralRasterizerAsciiChunkParser() );
+		add( "vcm_pel_rasterizer",                    new VCMPelRasterizerAsciiChunkParser() );
+		add( "vcm_spectral_rasterizer",               new VCMSpectralRasterizerAsciiChunkParser() );
+		add( "pathtracing_pel_rasterizer",            new PathTracingPelRasterizerAsciiChunkParser() );
+		add( "pathtracing_spectral_rasterizer",       new PathTracingSpectralRasterizerAsciiChunkParser() );
+		add( "auto_rasterizer",                       new AutoRasterizerAsciiChunkParser() );
+		add( "auto_spectral_rasterizer",              new AutoSpectralRasterizerAsciiChunkParser() );
+		add( "mlt_rasterizer",                        new MLTRasterizerAsciiChunkParser() );
+		add( "mlt_spectral_rasterizer",               new MLTSpectralRasterizerAsciiChunkParser() );
+
+		// Rasterizer output
+		add( "file_rasterizeroutput",                 new FileRasterizerOutputAsciiChunkParser() );
+
+		// Lights
+		add( "ambient_light",                         new AmbientLightAsciiChunkParser() );
+		add( "omni_light",                            new OmniLightAsciiChunkParser() );
+		add( "spot_light",                            new SpotLightAsciiChunkParser() );
+		add( "directional_light",                     new DirectionalLightAsciiChunkParser() );
+		add( "hosek_wilkie_skylight",                 new HosekWilkieSkylightAsciiChunkParser() );
+
+		// Photon maps & gather
+		add( "caustic_pel_photonmap",                 new CausticPelPhotonMapGenerateAsciiChunkParser() );
+		add( "translucent_pel_photonmap",             new TranslucentPelPhotonMapGenerateAsciiChunkParser() );
+		add( "caustic_spectral_photonmap",            new CausticSpectralPhotonMapGenerateAsciiChunkParser() );
+		add( "global_pel_photonmap",                  new GlobalPelPhotonMapGenerateAsciiChunkParser() );
+		add( "global_spectral_photonmap",             new GlobalSpectralPhotonMapGenerateAsciiChunkParser() );
+		add( "shadow_photonmap",                      new ShadowPhotonMapGenerateAsciiChunkParser() );
+		add( "caustic_pel_gather",                    new CausticPelPhotonMapGatherAsciiChunkParser() );
+		add( "translucent_pel_gather",                new TranslucentPelPhotonMapGatherAsciiChunkParser() );
+		add( "caustic_spectral_gather",               new CausticSpectralPhotonMapGatherAsciiChunkParser() );
+		add( "global_pel_gather",                     new GlobalPelPhotonMapGatherAsciiChunkParser() );
+		add( "global_spectral_gather",                new GlobalSpectralPhotonMapGatherAsciiChunkParser() );
+		add( "shadow_gather",                         new ShadowPhotonMapGatherAsciiChunkParser() );
+
+		// Irradiance cache
+		add( "irradiance_cache",                      new IrradianceCacheAsciiChunkParser() );
+
+		// Animation
+		add( "keyframe",                              new KeyframeAsciiChunkParser() );
+		add( "timeline",                              new TimelineAsciiChunkParser() );
+		add( "animation_options",                     new AnimationOptionsAsciiChunkParser() );
+		add( "animation",                             new AnimationAsciiChunkParser() );
+		add( "scene_variant",                         new SceneVariantAsciiChunkParser() );
+		add( "active_scene_variant",                  new ActiveSceneVariantAsciiChunkParser() );
+
+		return entries;
+	}
+
+	//////////////////////////////////////////////////
+	// IAsciiChunkParser default implementations
+	//////////////////////////////////////////////////
+
+	// Default ParseChunk dispatches via the chunk's descriptor: every
+	// input line is validated against Describe().parameters, matched
+	// values are stored in a ParseStateBag, and Finalize() is invoked
+	// to emit the pJob.AddX call.  This is the single source of truth
+	// — a parameter that is not in the descriptor cannot be parsed,
+	// and a parameter that is in the descriptor flows automatically
+	// to Finalize().  Every chunk parser overrides only Finalize;
+	// none overrides ParseChunk.  This means the descriptor IS the
+	// parser's accepted-parameter set — drift between "what the
+	// parser parses" and "what the descriptor advertises" is
+	// structurally impossible.
+	bool IAsciiChunkParser::ParseChunk( const ParamsList& in, IJob& pJob ) const
+	{
+		ParseStateBag bag( &Describe() );
+		if( !Implementation::ChunkParsers::DispatchChunkParameters( Describe(), bag, in ) ) {
+			return false;
+		}
+		// scene_variant is CST-native (doc 63): the legacy streaming reader can't pre-scan for the active variant,
+		// so it renders the BASE -- skip a variant-tagged material's registration (else it dup-name-collides with
+		// the base material).  `variant none` is the no-variant sentinel (cf. `material none`) -- an ordinary base
+		// material, so it is NOT skipped.  The CST DeriveToJob bakes real variants properly.  Gate the `variant`
+		// lookup behind the material category: GetString on a chunk whose descriptor does not declare `variant`
+		// trips ValidateAccess's "ChunkParser Bug" diagnostic, which would otherwise fire for every non-material
+		// chunk on this (default) legacy path.
+		if( Describe().category == ChunkCategory::Material ) {
+			const std::string variantTag = bag.GetString( "variant", "" );
+			if( !variantTag.empty() && variantTag != "none" ) {
+				return true;
+			}
+		}
+		return Finalize( bag, pJob );
+	}
+
+	// Public wrapper (declared in IAsciiChunkParser.h) over the inline
+	// Implementation::ChunkParsers::DispatchChunkParameters, so the CST derive
+	// path can validate+populate a bag through the SAME live validation the
+	// default ParseChunk dispatch uses, then Finalize() separately (refuse-all
+	// boundary).
+	bool DispatchChunkParameters( const ChunkDescriptor& desc, ParseStateBag& bag, const IAsciiChunkParser::ParamsList& params )
+	{
+		return Implementation::ChunkParsers::DispatchChunkParameters( desc, bag, params );
+	}
+
+	// Public wrapper (declared in IAsciiChunkParser.h) over the per-parse
+	// state reset, so the CST derive path can reset the chunk parsers' cross-
+	// chunk caches before deriving -- the same reset the legacy ParseAndLoadScene
+	// performed at its start (streaming loader deleted, Slice 6c) -- preventing
+	// parse state from leaking between successive derives.  Sole live caller:
+	// Cst::DeriveToJob (Cst/Cst.cpp), always with the default `true`.  The
+	// `resetTopLevelState` argument forwards to the private ClearParseState;
+	// `false` was the deleted streaming loader's recursive `> load` / `> run`
+	// mode (keep the camera-name dedup across the nested parse) and is
+	// currently unused (no callers pass it); retained pending deletion.
+	void ClearChunkParserState( bool resetTopLevelState )
+	{
+		Implementation::ChunkParsers::ClearParseState( resetTopLevelState );
+	}
+
+	// Public wrapper (declared in IAsciiChunkParser.h) over the private
+	// ChunkParsers::LastAllocatedCameraName.  HISTORICAL: existed so the
+	// streaming loader (a separate translation unit, deleted Slice 6c) could
+	// read the camera name the most recent camera-chunk Finalize allocated.
+	// Currently unused (no callers); retained pending deletion.
+	const std::string& LastAllocatedCameraName()
+	{
+		return Implementation::ChunkParsers::LastAllocatedCameraName();
+	}
+}

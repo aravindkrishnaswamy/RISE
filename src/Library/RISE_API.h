@@ -3227,13 +3227,6 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	// Parsers
 	//////////////////////////////////////////////////////////
 
-	//! Creates a parser capable of loading a job from a text file
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateAsciiSceneParser(
-								ISceneParser** ppi,					///< [out] Pointer to recieve the parser
-								const char* name					///< [in] Name of the file to load
-								);
-
 	//! Creates a parser capable of processing a script from a text file
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateAsciiScriptParser(
@@ -3477,8 +3470,27 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_StartSuppressingInitialRender(
 		SceneEditController* p );
 
-	//! Stop the controller's render thread.  Joins the thread.
+	//! Stop the controller's render thread.  Joins the thread.  ALSO
+	//! permanently retires the agent-render worker -- every later
+	//! agent/production render submission on this controller is refused
+	//! ("controller stopped").  Correct for controller teardown (the
+	//! destructor calls this); NOT what a platform shell should call
+	//! merely to pause the interactive viewport before a production
+	//! render -- use RISE_API_SceneEditController_StopInteractive for
+	//! that (see its doc, and SceneEditController::Stop's header doc).
 	bool RISE_API_SceneEditController_Stop( SceneEditController* p );
+
+	//! Stop ONLY the controller's interactive render thread.  Joins the
+	//! thread; leaves the agent-render worker (and any in-flight/queued
+	//! agent or production render) untouched, so a production render
+	//! submitted immediately afterward via SubmitProductionRenderSync /
+	//! RunProductionRenderComposed is still served normally.  This is
+	//! what a platform shell's Render action should call to pause the
+	//! interactive viewport ahead of a production render -- Start() /
+	//! RISE_API_SceneEditController_StartSuppressingInitialRender can
+	//! re-spawn the interactive loop afterward exactly as after a full
+	//! Stop().  Model-B F2 slice S4 fix round 4.
+	bool RISE_API_SceneEditController_StopInteractive( SceneEditController* p );
 
 	//! Install the preview image sink (typically a platform-specific
 	//! IRasterizerOutput that marshals the framebuffer to the UI
@@ -3725,8 +3737,12 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		char* buf, unsigned int bufLen );
 
 	//! Apply an edited value.  Triggers a re-render via the
-	//! cancel-restart loop.  Returns false on parse failure or
-	//! read-only property.
+	//! cancel-restart loop.  Returns false on parse failure,
+	//! read-only property, OR (Object edits, A2) when the live edit
+	//! applied but the CST transform-commit follow-through failed --
+	//! in that last case the scene DID change and re-renders even
+	//! though this returns false (the failure is logged; callers
+	//! must not treat false as "nothing happened").
 	bool RISE_API_SceneEditController_SetProperty(
 		SceneEditController* p, const char* name, const char* valueStr );
 

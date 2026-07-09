@@ -258,7 +258,7 @@ static CapturingRasterizerOutput* RenderAndCapture( const char* scenePath )
 		return nullptr;
 	}
 
-	if( !pJob->LoadAsciiScene( scenePath ) ) {
+	if( !pJob->LoadAsciiSceneViaCst( scenePath ) ) {
 		safe_release( pJob );
 		return nullptr;
 	}
@@ -289,7 +289,7 @@ static CapturingRasterizerOutput* RenderAndCapture( const char* scenePath )
 // function level — independent of any integrator's use of it.
 //////////////////////////////////////////////////////////////////////
 static const char* kUnitSceneText =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"\n"
 	"film\n"
 	"{\n"
@@ -365,7 +365,7 @@ static void RunUnitTests()
 		std::remove( scenePath.c_str() );
 		return;
 	}
-	if( !pJob->LoadAsciiScene( scenePath.c_str() ) ) {
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) {
 		Check( false, "unit scene load" );
 		safe_release( pJob );
 		std::remove( scenePath.c_str() );
@@ -612,8 +612,8 @@ static void RunCameraSideRenderTest()
 {
 	std::cout << "PART 2: Camera-side render test (probe traverses sphere)" << std::endl;
 
-	std::string ptScene   = std::string("RISE ASCII SCENE 6\n") + kRasterizerPT   + kCameraSceneGeometry;
-	std::string bdptScene = std::string("RISE ASCII SCENE 6\n") + kRasterizerBDPT + kCameraSceneGeometry;
+	std::string ptScene   = std::string("RISE ASCII SCENE 7\n") + kRasterizerPT   + kCameraSceneGeometry;
+	std::string bdptScene = std::string("RISE ASCII SCENE 7\n") + kRasterizerBDPT + kCameraSceneGeometry;
 
 	const std::string ptPath   = WriteSceneToTempFile( ptScene.c_str(),   "cam_pt"   );
 	const std::string bdptPath = WriteSceneToTempFile( bdptScene.c_str(), "cam_bdpt" );
@@ -896,8 +896,8 @@ static void RunLightSideRenderTest()
 {
 	std::cout << "PART 3: Light-side render test (light probe traverses sphere)" << std::endl;
 
-	std::string ptScene   = std::string("RISE ASCII SCENE 6\n") + kRasterizerPT_LightTest   + kLightSceneGeometry;
-	std::string bdptScene = std::string("RISE ASCII SCENE 6\n") + kRasterizerBDPT_LightTest + kLightSceneGeometry;
+	std::string ptScene   = std::string("RISE ASCII SCENE 7\n") + kRasterizerPT_LightTest   + kLightSceneGeometry;
+	std::string bdptScene = std::string("RISE ASCII SCENE 7\n") + kRasterizerBDPT_LightTest + kLightSceneGeometry;
 
 	const std::string ptPath   = WriteSceneToTempFile( ptScene.c_str(),   "light_pt"   );
 	const std::string bdptPath = WriteSceneToTempFile( bdptScene.c_str(), "light_bdpt" );

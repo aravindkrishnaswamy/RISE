@@ -126,14 +126,10 @@ static std::string WriteMessyDataFile()
 
 static bool ParseSceneFile( const std::string& path, Job& job )
 {
-	ISceneParser* parser = 0;
-	if( !RISE_API_CreateAsciiSceneParser( &parser, path.c_str() ) || !parser ) {
-		return false;
-	}
-	parser->addref();
-	const bool ok = parser->ParseAndLoadScene( job );
-	parser->release();
-	return ok;
+	// Load via the canonical CST path (the legacy streaming parser is gone).
+	// DeriveToJob refuses-all on a bad chunk exactly as the legacy parser
+	// hard-failed, so the rejection cases below still hold.
+	return job.LoadAsciiSceneViaCst( path.c_str() );
 }
 
 static std::string WriteScene( const std::string& tag, const std::string& body )

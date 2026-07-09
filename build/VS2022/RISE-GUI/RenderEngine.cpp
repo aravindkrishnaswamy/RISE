@@ -36,6 +36,8 @@
 #include "Rendering/TargetFormat.h"
 #include "Rendering/ViewTransform.h"
 #include "Interfaces/IFrameEncoder.h"
+#include "SceneEditor/SceneEditController.h"
+#include "SceneEditor/CancellableProgressCallback.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -97,6 +99,61 @@ public:
 
     void Flush() override {}
 };
+
+// ============================================================
+// Model-B F2 slice S4: production-render coordinator routing
+// ============================================================
+//
+// Mirrors macOS RISEBridge.mm's `RunProductionRenderThroughController` --
+// see that function's comment for the full rationale.  Runs `doRasterize`
+// (the "actually call Job::Rasterize()/RasterizeAnimationUsingOptions()"
+// closure) through `controller`'s single-slot coordinator when one is
+// attached, so a production render can never overlap the interactive
+// loop or an agent render inside Rasterize().  NULL-safe: falls back to
+// calling `doRasterize` directly when no controller is attached (today's
+// pre-S4 behaviour).
+//
+// Fix-round S4-1 (throw-path UAF) + Fix-round 2 (Windows cancel
+// regression): the actual progress/cancel composition lives ONCE in
+// SceneEditController::RunProductionRenderComposed -- see that method's
+// header doc for the full rationale, the RAII throw-path fix, and the
+// prior-vs-inner contract.
+//
+// `progressCb` (this Windows render's own ProgressCallbackAdapter,
+// forwarding to RenderEngine::onProgress and returning !m_cancelFlag) is
+// now passed straight through as the EXPLICIT `guiProgress` parameter --
+// the thing RunProductionRenderComposed composes in as mCancelProgress's
+// `inner`.  The PRIOR fix-round-2 shape of this wrapper discarded
+// `progressCb` and instead re-derived "prior" by reading
+// job->GetProgress() -- which matched macOS (whose BlockProgressCallback
+// is installed PERSISTENTLY, so GetProgress() always returns it) but was
+// wrong here: startRender/startAnimationRender deliberately skip
+// installing `progressCb` on the Job when a controller is attached (see
+// startRender's own comment), specifically so RunProductionRenderComposed
+// owns the Job's progress slot for the render's duration. That meant
+// GetProgress() read nullptr, `inner` was never `progressCb`,
+// ProgressCallbackAdapter::Progress was never invoked, and the Windows
+// Cancel button + progress/ETA UI went dead for every coordinator-routed
+// production render -- the regression this fix-round closes.
+// RunProductionRenderComposed itself still separately captures
+// job->GetProgress() at entry as the value it RESTORES to the Job's
+// progress slot on exit (typically nullptr here, matching this file's own
+// `SetProgress(nullptr)` at each render's completion) -- see that
+// method's header doc for why "restore" and "inner" are deliberately two
+// different values.
+static bool RunProductionRenderThroughController(
+    IJobPriv* job,
+    SceneEditController* controller,
+    const std::string& clientLabel,
+    IProgressCallback* progressCb,
+    const std::function<bool()>& doRasterize)
+{
+    if (!job) {
+        return doRasterize();
+    }
+    return SceneEditController::RunProductionRenderComposed(
+        *job, controller, RISE::String(clientLabel.c_str()), progressCb, doRasterize);
+}
 
 // ============================================================
 // RenderEngine implementation
@@ -311,6 +368,14 @@ void* RenderEngine::opaqueJobHandle() const
     return static_cast<void*>(m_job);
 }
 
+void RenderEngine::attachSceneEditController(void* opaqueController)
+{
+    // See the header doc for the full lifetime contract (ViewportBridge
+    // is the sole caller; registers after creating its controller, clears
+    // to nullptr before destroying it).
+    m_viewportController = static_cast<SceneEditController*>(opaqueController);
+}
+
 void RenderEngine::setState(State newState)
 {
     m_state = newState;
@@ -386,7 +451,13 @@ void RenderEngine::loadScene(const QString& filePath)
     // before Qt got around to delivering it.  See ~RenderEngine().
     QPointer<RenderEngine> guard(this);
     QThread* thread = QThread::create([this, filePath, guard]() {
-        bool ok = m_job->LoadAsciiScene(filePath.toUtf8().constData());
+        // P5 (Model-B, Slice 6c-3a): scene load is now CST-ONLY.  LoadAsciiSceneAuto routes a native-v7 scene
+        // to the canonical CST path (retains the CST Document so scene_variant switching + CST edit/save work)
+        // and HARD-FAILS an un-migrated scene (returns false, with a migrator pointer) -- the legacy streaming
+        // parser was retired.  A derive error on the native-v7 branch is a real, visible failure (returns
+        // false), NOT masked by a legacy retry.  There is no env escape hatch anymore.  A false return here
+        // surfaces as the Error state below.
+        bool ok = m_job->LoadAsciiSceneAuto(filePath.toUtf8().constData());
 
         QMetaObject::invokeMethod(this, [guard, ok]() {
             if (!guard) return;
@@ -414,9 +485,21 @@ void RenderEngine::startRender()
     m_sizeDetected = false;
     m_lastAnimationSummary.clear();  // still render: no video outputs to report
 
-    // Install progress callback
+    // Install progress callback.  Model-B F2 slice S4: when a
+    // SceneEditController is attached, do NOT install directly here --
+    // RunProductionRenderThroughController installs its OWN composed
+    // callback (forwarding to `progressCb`) for the render's exact
+    // duration, on the worker thread, immediately before calling
+    // Rasterize().  Installing `progressCb` directly here as well would
+    // just be clobbered by that swap an instant later; skipping it
+    // keeps the "one progress hook, owned by whoever is actually
+    // rendering" invariant the coordinator relies on.  With no
+    // controller attached (today's pre-S4 shape), install directly as
+    // before.
     auto* progressCb = new ProgressCallbackAdapter(this);
-    m_job->SetProgress(progressCb);
+    if (!m_viewportController) {
+        m_job->SetProgress(progressCb);
+    }
 
     // Install ViewportFrameStore as the rasterizer's IRasterizerOutput.
     // The engine owns the initial reference; Attach() addrefs the
@@ -445,7 +528,10 @@ void RenderEngine::startRender()
     // and the leak is bounded to one Render() invocation.
     QPointer<RenderEngine> guard(this);
     QThread* thread = QThread::create([this, progressCb, guard]() {
-        bool ok = m_job->Rasterize();
+        IJobPriv* job = m_job;
+        bool ok = RunProductionRenderThroughController(
+            job, m_viewportController, "gui_render", progressCb,
+            [job]() -> bool { return job->Rasterize(); });
 
         QMetaObject::invokeMethod(this, [guard, ok, progressCb]() {
             if (!guard) { delete progressCb; return; }
@@ -493,9 +579,13 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
     rasterizer->FreeRasterizerOutputs();
     m_productionVFSAttachedToRasterizer = false;
 
-    // Install progress callback
+    // Install progress callback.  Model-B F2 slice S4: same "skip the
+    // direct install when a controller is attached" rule as startRender
+    // -- see that method's comment.
     auto* progressCb = new ProgressCallbackAdapter(this);
-    m_job->SetProgress(progressCb);
+    if (!m_viewportController) {
+        m_job->SetProgress(progressCb);
+    }
 
     // (Re-)attach VFS to the rasterizer for this render pass.
     ensureProductionVFSAttachedToRasterizer();
@@ -531,7 +621,10 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
     // L4 round-6 P1 — QPointer guard for the queued completion lambda.
     QPointer<RenderEngine> guard(this);
     QThread* thread = QThread::create([this, progressCb, rasterizer, proResEncoder, hevcEncoder, guard]() {
-        bool ok = m_job->RasterizeAnimationUsingOptions();
+        IJobPriv* job = m_job;
+        bool ok = RunProductionRenderThroughController(
+            job, m_viewportController, "gui_render_animation", progressCb,
+            [job]() -> bool { return job->RasterizeAnimationUsingOptions(); });
 
         // Flush + write each container's trailer before the outputs are
         // freed.  The rasterizer still holds the only references, so the

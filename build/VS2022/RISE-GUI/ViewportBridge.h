@@ -16,6 +16,7 @@
 #include <QImage>
 #include <QString>
 #include <QVector>
+#include <memory>
 
 class RenderEngine;
 
@@ -23,6 +24,9 @@ namespace RISE {
     class SceneEditController;
     class IRayCaster;
     class IRasterizer;
+    namespace Agent {
+        class AgentRpcDispatcher;
+    }
 }
 class ViewportPreviewSink;
 
@@ -86,18 +90,39 @@ public:
     /// only ever covered the LDR sink path, not the HDR observer path)
     /// is needed.
     void startSuppressingInitialRender();
-    /// Stop the render thread and join.  Idempotent.
+    /// Stop the interactive render thread and join.  Idempotent.  Does
+    /// NOT touch the attached SceneEditController's agent-render worker
+    /// -- a production render submitted immediately afterward (via
+    /// RunProductionRenderThroughController, which
+    /// RenderEngine::startRender/startAnimationRender call) is still
+    /// served normally.
+    ///
+    /// Model-B F2 slice S4 fix round 4: this used to call the C++
+    /// controller's monolithic Stop(), which ALSO permanently retired
+    /// the agent-render worker (mAgentRenderStop is a one-shot flag; the
+    /// worker thread is spawned only once, in the constructor, and
+    /// nothing ever respawns it) -- so MainWindow::onRender/
+    /// onRenderAnimation calling this immediately before
+    /// m_engine->startRender()/startAnimationRender() poisoned the
+    /// controller for the rest of its lifetime, and the production
+    /// render (and every later one) was refused with "controller
+    /// stopped".  Wired to RISE_API_SceneEditController_StopInteractive
+    /// instead; see that function's doc.
     void stop();
     bool isRunning() const { return m_running; }
 
     /// Shrink the scene Film so the interactive preview renders at a
     /// screen-appropriate resolution rather than blindly inheriting
     /// whatever the .RISEscene file declared.  Wraps
-    /// `IJobPriv::ScaleFilmToFit` — never upscales, preserves the
-    /// scene's authored aspect ratio + pixelAR.  Caller passes the
-    /// available rendering-surface dims in window pixels; the long
-    /// edge is also capped at `maxLongEdge`.  Call once after the
-    /// bridge is constructed and before `start()`.
+    /// `IJobPriv::SetViewportFit`, which caches the fit params and
+    /// applies the fit immediately; the cache lets a subsequent D2
+    /// full re-derive (variant switch / CST edit) re-apply the SAME
+    /// fit so the preview stays screen-sized instead of jumping to
+    /// authored full-res.  Never upscales, preserves the scene's
+    /// authored aspect ratio + pixelAR.  Caller passes the available
+    /// rendering-surface dims in window pixels; the long edge is also
+    /// capped at `maxLongEdge`.  Call once after the bridge is
+    /// constructed and before `start()`.
     void scaleFilmToFit(int surfaceW, int surfaceH, int maxLongEdge);
 
     void setTool(ViewportTool t);
@@ -262,6 +287,11 @@ public:
 
     bool requestProductionRender();
 
+    /// Execute one Agent JSON-RPC request against the live scene.
+    /// Mirrors macOS RISEViewportBridge.agentHandleLine and is the
+    /// bridge the Windows chat panel uses for model-requested tools.
+    QString agentHandleLine(const QString& jsonRpcRequest);
+
     // Properties panel ------------------------------------------------
 
     /// Mirrors RISE::SceneEditController::PanelMode.  Drives which
@@ -291,7 +321,8 @@ public:
         Film       = 5,   ///< Output Settings (single Film per scene)
         Material   = 6,   ///< Materials
         Medium     = 7,   ///< Participating media
-        Animation  = 8    ///< Named animation paths (pick to activate; no editable properties)
+        Animation  = 8,   ///< Named animation paths (pick to activate; no editable properties)
+        SceneVariant = 9  ///< scene_variant overlays (pick to re-derive that variant active)
     };
 
     PanelMode panelMode() const;
@@ -389,6 +420,7 @@ private:
     RISE::IRayCaster*          m_polishCaster = nullptr;  // polish caster, max-recursion 2 (one bounce of glossy / refl / refr)
     RISE::IRasterizer*         m_interactiveRasterizer = nullptr;
     ViewportPreviewSink*       m_previewSink = nullptr;
+    std::unique_ptr<RISE::Agent::AgentRpcDispatcher> m_agentDispatcher;
     bool                       m_running = false;
 };
 

@@ -72,6 +72,7 @@ signals:
     void renderClicked();
     void renderAnimationClicked();
     void cancelClicked();
+    void chatClicked();
 
     // L5e — User dragged or double-clicked the exposure slider.
     // MainWindow forwards to RenderEngine::setViewExposureEV.
@@ -86,6 +87,7 @@ private:
     QPushButton* m_renderBtn = nullptr;
     QPushButton* m_renderAnimBtn = nullptr;
     QPushButton* m_cancelBtn = nullptr;
+    QPushButton* m_chatBtn = nullptr;
 
     QProgressBar* m_progressBar = nullptr;
     QLabel* m_progressTitle = nullptr;

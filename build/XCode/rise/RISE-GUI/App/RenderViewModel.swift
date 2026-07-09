@@ -151,6 +151,116 @@ final class RenderViewModel: ObservableObject {
     @Published var isEditorVisible: Bool = false
     @Published var editorText: String = ""
     @Published var editorOriginalText: String = ""
+
+    // Facet 5 slice 1c-1: the live agent (JSON-RPC) panel.  A minimal
+    // "agent + user co-edit" affordance — a typed JSON-RPC request is
+    // handed to the viewport bridge's `agentHandleLine`, which drives the
+    // SAME live dispatcher/session/controller the GUI edits through, so a
+    // `propose_patch` edits the running scene and the viewport reflects it.
+    //
+    // Superseded by the Chat panel for everyday use (2026-07); kept ONLY
+    // as the raw-wire debug surface against the LIVE controller (the
+    // headless CLI agent session is a separate process/session and isn't
+    // affected either way).  Gated behind a developer toggle, default
+    // OFF — see `showAgentDebugPanel` below.
+    /// Whether the Agent (JSON-RPC) panel is showing.  Mirrors
+    /// `isEditorVisible` as the show/hide toggle pattern.  Meaningful only
+    /// when `showAgentDebugPanel` is true; the button/panel are hidden
+    /// entirely otherwise (see ContentView).
+    @Published var isAgentPanelVisible: Bool = false
+
+    /// Developer toggle: reveals the Agent (JSON-RPC) debug panel's
+    /// button + inline panel at all.  Persisted in UserDefaults (a UI
+    /// preference, not a secret) so it survives relaunch; default OFF —
+    /// the Chat panel is the everyday surface, this is a wire-debug tool.
+    /// Switching this off while the panel is open hides it gracefully
+    /// (and clears the visibility flag so re-enabling later doesn't
+    /// surprise-pop a stale panel back open).
+    @Published var showAgentDebugPanel: Bool = false {
+        didSet {
+            UserDefaults.standard.set(showAgentDebugPanel, forKey: Self.showAgentDebugPanelKey)
+            if !showAgentDebugPanel {
+                isAgentPanelVisible = false
+            }
+        }
+    }
+    /// The JSON-RPC request text the user is composing.
+    @Published var agentRequestText: String =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"read_document\"}"
+    /// The last JSON-RPC response line (read-only display).
+    @Published var agentResponseText: String = ""
+
+    // Facet 5 slice B2: the LLM chat panel.  All chat state + the
+    // turn driver live in ChatViewModel (which wraps the C++
+    // AgentChatLoop via RISEAgentChatBridge); this view model only
+    // owns its lifetime and forwards the per-scene bind/unbind so the
+    // chat driver never touches a torn-down viewport bridge.
+    /// Whether the Chat panel is showing.  Mirrors `isAgentPanelVisible`.
+    @Published var isChatPanelVisible: Bool = false
+    /// App-lifetime chat state (provider/model selection outlives any
+    /// one scene; the conversation itself resets per scene).
+    let chat = ChatViewModel()
+
+    /// B2 review round 1 (refined Model-B F2 slice S2b — see the S2b note
+    /// below): may agent tool calls (the chat driver and the Agent
+    /// JSON-RPC panel) mutate the live scene RIGHT NOW?  THE single gate:
+    /// both call sites — `ChatViewModel.sceneEditable` (wired in `init`
+    /// below) and `sendAgentRequest` (the raw JSON-RPC debug panel) —
+    /// consume this ONE property.  It in turn is built from
+    /// `isProductionRenderRunning`, the SINGLE source for the
+    /// `renderState` case-list — neither this property nor
+    /// `productionRenderActive` below hand-copies that list a second
+    /// time (see `isProductionRenderRunning`'s doc for the S2b P2-1
+    /// fix that single-sourced it).
+    ///
+    /// Only while the interactive viewport is the sole scene reader.
+    /// During a production render (.rendering / .cancelling — the
+    /// production rasterizer's worker threads read Scene state
+    /// off-main until the render task completes) a propose_patch's
+    /// CST re-derive would destroy scene objects under those workers
+    /// — the same race the Clear & Load teardown dance guards (the
+    /// "deep in IntegratePixel" crash).  .loading is excluded too:
+    /// the parser mutates job state on a background thread (the chat
+    /// executor is nil then anyway — belt and suspenders).
+    /// MainActor invariant: this predicate, startRender, and every
+    /// caller run on the main actor, so check-then-execute cannot
+    /// interleave with a render kick.
+    ///
+    /// Model-B F2 slice S2b ADDITIVE clause: `chat.isChatRenderOutstanding`
+    /// folds in truth `isProductionRenderRunning` cannot see on its
+    /// own — a chat-driven `render` tool call's async render runs on the
+    /// controller's dedicated agent-render worker WITHOUT ever flipping
+    /// `renderState` out of `.sceneLoaded`/`.completed` (that state
+    /// machine only tracks the PRODUCTION rasterizer).  Without this
+    /// clause, the Agent JSON-RPC debug panel could fire a `propose_patch`
+    /// (or a second render) concurrently with a chat-driven render still
+    /// in flight on the SAME controller.  This is genuinely NEW truth,
+    /// not a redundant restatement of the renderState cases — the two
+    /// clauses gate two DIFFERENT concurrent-render sources (production
+    /// rasterizer vs. chat-driven agent render) that share the same
+    /// underlying "don't let two things touch the scene/controller at
+    /// once" concern.
+    var isSceneEditableForAgents: Bool {
+        !chat.isChatRenderOutstanding && !isProductionRenderRunning
+    }
+
+    /// S2b P2-1: THE single source for the `renderState` case-list that
+    /// means "a production render is currently occupying the
+    /// controller/scene" — `.rendering`, `.cancelling`, `.loading`.
+    /// Both `isSceneEditableForAgents` above and `productionRenderActive`
+    /// below (wired into `ChatViewModel` in `init`) read this ONE
+    /// property instead of each hand-copying the same three-case
+    /// switch — the exact duplication the "one gate" goal exists to
+    /// kill, caught in S2b review as P2-1 (both copies lived on this
+    /// same type, so drift between them was a `case` away).
+    private var isProductionRenderRunning: Bool {
+        switch renderState {
+        case .rendering, .cancelling, .loading:
+            return true
+        default:
+            return false
+        }
+    }
     @Published var hasAnimation: Bool = false
     @Published var recentFiles: [String] = []
 
@@ -312,10 +422,32 @@ final class RenderViewModel: ObservableObject {
     private static let maxLogMessages = 10000
     private static let maxRecentFiles = 10
     private static let recentFilesKey = "recentSceneFiles"
+    private static let showAgentDebugPanelKey = "showAgentDebugPanel"
 
     init() {
         versionString = RISEBridge.versionString()
         recentFiles = UserDefaults.standard.stringArray(forKey: Self.recentFilesKey) ?? []
+        showAgentDebugPanel = UserDefaults.standard.bool(forKey: Self.showAgentDebugPanelKey)
+        // B2 review round 1: the chat driver re-checks this predicate
+        // after every await and before each tool call, so a turn
+        // resuming from its HTTP suspension can never mutate the
+        // scene under a production render (the predicate's other
+        // half: startRender / startAnimationRender cancel the turn
+        // BEFORE kicking production).
+        chat.sceneEditable = { [weak self] in
+            self?.isSceneEditableForAgents ?? false
+        }
+        // Model-B F2 slice S2b: the NARROWER sibling `productionRenderActive`
+        // — see its doc on ChatViewModel for why the render tool call's own
+        // poll loop needs this instead of the combined `isSceneEditableForAgents`
+        // (which now also reports false for that SAME call's own outstanding
+        // render).  S2b P2-1: forwards to `isProductionRenderRunning`, the
+        // SAME single-sourced case-list `isSceneEditableForAgents` reads —
+        // no second hand-copy of the `renderState` switch.
+        chat.productionRenderActive = { [weak self] in
+            guard let self else { return true }   // fail closed, matching sceneEditable's convention
+            return self.isProductionRenderRunning
+        }
         bridge.setLogBlock { [weak self] (level: RISELogLevel, message: String) in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
@@ -540,6 +672,7 @@ final class RenderViewModel: ObservableObject {
     /// path.
     private func continueMergeLoad(at path: String) {
         stopPreviewPlay()   // halt a looping preview-play before the bridge it drives is torn down
+        chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
         viewportBridge?.shutdown()
         viewportBridge = nil
 
@@ -557,6 +690,7 @@ final class RenderViewModel: ObservableObject {
         // thread; once it returns, no other thread holds pointers into
         // Scene state that clearAll is about to destroy.
         stopPreviewPlay()   // halt a looping preview-play before the bridge it drives is torn down
+        chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
         viewportBridge?.shutdown()
         viewportBridge = nil
 
@@ -645,6 +779,7 @@ final class RenderViewModel: ObservableObject {
                     // a prior scene) and stand up a fresh one over the
                     // newly-loaded job.
                     self.stopPreviewPlay()   // halt any looping preview-play before swapping the bridge
+                    self.chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
                     self.viewportBridge?.shutdown()
                     let vb = RISEViewportBridge(hostBridge: bridgeRef)
                     self.viewportBridge = vb
@@ -692,6 +827,13 @@ final class RenderViewModel: ObservableObject {
                     // Render-Animation stop the bridge before kicking the
                     // production rasterizer; both restart it on completion.
                     vb?.start()
+                    // Facet 5 slice B2: bind the chat driver to the
+                    // fresh scene.  Resets the conversation (it was
+                    // about the previous scene) and fetches the skills
+                    // index once via the live dispatcher's read_skill.
+                    if let vb = vb {
+                        self.chat.sceneOpened(viewportBridge: vb)
+                    }
                 } else {
                     self.renderState = .error("Failed to load scene")
                 }
@@ -715,6 +857,13 @@ final class RenderViewModel: ObservableObject {
         // Halt any looping preview-play first — it drives scrubTime on the
         // viewport renderer, which must be idle before production starts.
         stopPreviewPlay()
+        // B2 review round 1: cancel any in-flight chat turn BEFORE
+        // production kicks, mirroring the sceneClosed discipline at
+        // the teardown sites.  A turn suspended in its HTTP await
+        // would otherwise resume mid-render — its cancelled / stop /
+        // executor checks all passing — and execute tool calls
+        // against Scene state the production workers read off-main.
+        chat.productionRenderStarting()
         viewportBridge?.stop()
 
         // Advance scene state to the canonical scrubbed time AND
@@ -918,6 +1067,9 @@ final class RenderViewModel: ObservableObject {
 
         // Stop the viewport before production renders (see startRender).
         stopPreviewPlay()
+        // B2 review round 1: cancel any in-flight chat turn before
+        // production kicks (see startRender).
+        chat.productionRenderStarting()
         viewportBridge?.stop()
 
         renderState = .rendering
@@ -1090,7 +1242,10 @@ final class RenderViewModel: ObservableObject {
         guard !isPreviewPlaying,
               let vb = viewportBridge,
               hasAnimation,
-              renderState != .rendering else { return }
+              // Same worker-alive set as isSceneEditableForAgents:
+              // .cancelling means rasterize() has not returned yet, so
+              // production workers may still read animator state.
+              renderState != .rendering, renderState != .cancelling else { return }
         let t0 = vb.animationTimeStart
         let t1 = vb.animationTimeEnd
         let frames = max(Int(vb.animationNumFrames), 2)
@@ -1134,6 +1289,57 @@ final class RenderViewModel: ObservableObject {
 
         refreshEditorContents()
         isEditorVisible = true
+    }
+
+    // MARK: - Agent surface (Facet 5 slice 1c-1)
+
+    /// Toggle the Agent (JSON-RPC) panel.  Mirrors `editSceneFile`.
+    func toggleAgentPanel() {
+        isAgentPanelVisible.toggle()
+    }
+
+    /// Facet 5 slice B2: toggle the LLM Chat panel.  Mirrors
+    /// `toggleAgentPanel`.
+    func toggleChatPanel() {
+        isChatPanelVisible.toggle()
+    }
+
+    /// Facet 5 slice 1c-1: hand one JSON-RPC request line to the live
+    /// agent dispatcher and return its response line.
+    ///
+    /// Runs SYNCHRONOUSLY on the main actor — the bridge's
+    /// `agentHandleLine` runs on the calling (main) thread, exactly like
+    /// GUI SetProperty drives the controller's cancel-and-park from main.
+    /// After a `propose_patch` the viewport re-renders and the Save button
+    /// enables AUTOMATICALLY: the controller's commit kicks a fresh render
+    /// pass (delivered via the live-preview image block) and flips the
+    /// dirty flag (delivered via `setDirtyChangedBlock` → `sceneEditsDirty`).
+    /// So there is NO manual viewport refresh or Save-state poke here.
+    @discardableResult
+    func sendAgentRequest(_ line: String) -> String {
+        guard let vb = viewportBridge else {
+            let err = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":" +
+                      "{\"code\":-32603,\"message\":\"no scene loaded (no viewport bridge)\"}}"
+            agentResponseText = err
+            return err
+        }
+        // B2 review round 1 (audit-by-bug-pattern sibling of the chat
+        // gate): refuse while a production render owns the scene —
+        // `agentHandleLine` would mutate Scene state the production
+        // rasterizer's workers read off-main.  Well-formed JSON-RPC
+        // error, like the nil-dispatcher path above, so the refusal
+        // is visible in the panel's Response area (the panel's Send
+        // is also disabled on the same predicate).
+        guard isSceneEditableForAgents else {
+            let err = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":" +
+                      "{\"code\":-32603,\"message\":\"a production render is running — " +
+                      "wait for it to finish, then send again\"}}"
+            agentResponseText = err
+            return err
+        }
+        let response = vb.agentHandleLine(line)
+        agentResponseText = response
+        return response
     }
 
     func saveEditorFile() {
@@ -1189,6 +1395,7 @@ final class RenderViewModel: ObservableObject {
         // first so its render thread is joined before clearAll
         // destroys the scene it's referencing.
         stopPreviewPlay()   // halt a looping preview-play before the bridge it drives is torn down
+        chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
         viewportBridge?.shutdown()
         viewportBridge = nil
         bridge.clearAll()
@@ -1343,6 +1550,7 @@ final class RenderViewModel: ObservableObject {
         // BEFORE bridge.clearAll() so the controller's render thread
         // is joined before the scene is destroyed.
         stopPreviewPlay()   // halt a looping preview-play before the bridge it drives is torn down
+        chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
         viewportBridge?.shutdown()
         viewportBridge = nil
         sceneTime = 0
@@ -1361,6 +1569,16 @@ final class RenderViewModel: ObservableObject {
         isEditorVisible = false
         editorText = ""
         editorOriginalText = ""
+        // Mirror the editor: the Agent panel is per-scene too -- its
+        // dispatcher lives in the (now torn-down) viewport bridge, so
+        // reset its visibility + the stale response when the scene clears.
+        isAgentPanelVisible = false
+        agentResponseText = ""
+        // Facet 5 slice B2: the Chat panel is per-scene too — its tool
+        // executor lives in the (now torn-down) viewport bridge.  The
+        // conversation itself was already reset by chat.sceneClosed()
+        // above; here we just hide the panel (mirrors the Agent panel).
+        isChatPanelVisible = false
     }
 
     func clearLog() {

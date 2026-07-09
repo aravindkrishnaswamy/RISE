@@ -4561,20 +4561,7 @@ namespace RISE
 			return false;
 		}
 
-		CSGObject* pObj = 0;
-
-		switch( op ) {
-		default:
-		case 0:
-			pObj = new CSGObject( CSG_UNION );
-			break;
-		case 1:
-			pObj = new CSGObject( CSG_INTERSECTION );
-			break;
-		case 2:
-			pObj = new CSGObject( CSG_SUBTRACTION );
-			break;
-		}
+		CSGObject* pObj = new CSGObject( CsgOpFromChar( op ) );
 
 		pObj->AssignObjects( objA, objB );
 		(*ppi) = pObj;
@@ -7000,27 +6987,12 @@ namespace RISE
 // Parsers
 //////////////////////////////////////////////////////////
 
-#include "Parsers/AsciiSceneParser.h"
 #include "Parsers/AsciiScriptParser.h"
 #include "Parsers/AsciiCommandParser.h"
 #include "Options.h"
 
 namespace RISE
 {
-	bool RISE_API_CreateAsciiSceneParser(
-								ISceneParser** ppi,					///< [out] Pointer to recieve the parser
-								const char* name					///< [in] Name of the file to load
-								)
-	{
-		if( !ppi ) {
-			return false;
-		}
-
-		(*ppi) = new AsciiSceneParser( name );
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ascii scene parser" );
-		return true;
-	}
-
 	//! Creates a parser capable of processing a script from a text file
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateAsciiScriptParser(
@@ -7403,6 +7375,13 @@ namespace RISE
 	{
 		if( !p ) return false;
 		p->Stop();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_StopInteractive( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->StopInteractive();
 		return true;
 	}
 

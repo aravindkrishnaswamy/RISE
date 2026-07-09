@@ -64,6 +64,12 @@
     <Filter Include="Camera">
       <UniqueIdentifier>{25af0af4-21a6-4e0f-ab2a-1c48887de7cf}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Agent">
+      <UniqueIdentifier>{a6e70000-0000-4000-8000-0000000000de}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Cst">
+      <UniqueIdentifier>{c57c5700-0000-4000-8000-0000000000de}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Geometry">
       <UniqueIdentifier>{698cf3d4-e941-4352-8f98-5a0318bbf51c}</UniqueIdentifier>
     </Filter>
@@ -537,6 +543,39 @@
     <ClCompile Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.cpp">
       <Filter>Geometry</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\AgentChatCodecs.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\AgentChatLoop.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\AgentLoopbackHttpServer.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\AgentMcpAdapter.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\AgentRpc.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\AgentSession.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\Base64.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\InMemoryRasterizerOutput.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\Json.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\SchemaGen.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Cst\Cst.cpp">
+      <Filter>Cst</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Geometry\SDFGeometry.cpp">
       <Filter>Geometry</Filter>
     </ClCompile>
@@ -613,6 +652,9 @@
       <Filter>Object</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Objects\Object.cpp">
+      <Filter>Object</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Objects\SnapshotLeafClone.cpp">
       <Filter>Object</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\CompositeSPF.cpp">
@@ -765,13 +807,7 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\SceneEditor\SourceSpanIndex.cpp">
-      <Filter>Scene Editor (3D Viewport)</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\SceneEditor\TransformSnapshot.cpp">
-      <Filter>Scene Editor (3D Viewport)</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\SceneEditor\OverrideSpanIndex.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\SceneEditor\DirtyTracker.cpp">
@@ -903,9 +939,6 @@
     <ClCompile Include="..\..\..\src\Library\Modifiers\NormalMap.cpp">
       <Filter>Modifiers</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Managers\DAGObjectManager.cpp">
-      <Filter>Managers</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Managers\LightManager.cpp">
       <Filter>Managers</Filter>
     </ClCompile>
@@ -981,16 +1014,13 @@
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiCommandParser.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Parsers\AsciiSceneParser.cpp">
+    <ClCompile Include="..\..\..\src\Library\Parsers\ChunkParserRegistry.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiScriptParser.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.cpp">
-      <Filter>Parser</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Parsers\RawTokenCapture.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Shaders\AdvancedShader.cpp">
@@ -1710,6 +1740,42 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\SDFGeometry.h">
       <Filter>Geometry</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\AgentDiagnostic.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\AgentChatCodecs.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\AgentChatLoop.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\AgentLoopbackHttpServer.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\AgentMcpAdapter.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\AgentRpc.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\AgentSession.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\Base64.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\InMemoryRasterizerOutput.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\Json.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\SchemaGen.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Cst\Cst.h">
+      <Filter>Cst</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\SphereGeometry.h">
       <Filter>Geometry</Filter>
     </ClInclude>
@@ -1780,6 +1846,9 @@
       <Filter>Intersection</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Objects\CSGObject.h">
+      <Filter>Object</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Objects\SnapshotLeafClone.h">
       <Filter>Object</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Objects\Object.h">
@@ -1989,13 +2058,10 @@
     <ClInclude Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.h">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\SceneEditor\SourceSpanIndex.h">
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\FileIdentity.h">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditor\TransformSnapshot.h">
-      <Filter>Scene Editor (3D Viewport)</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\SceneEditor\OverrideSpanIndex.h">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditor\DirtyTracker.h">
@@ -2430,9 +2496,6 @@
     <ClInclude Include="..\..\..\src\Library\Modifiers\NormalMap.h">
       <Filter>Modifiers</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Managers\DAGObjectManager.h">
-      <Filter>Managers</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Managers\DeletedCallbackDispatcher.h">
       <Filter>Managers</Filter>
     </ClInclude>
@@ -2520,9 +2583,6 @@
     <ClInclude Include="..\..\..\src\Library\Parsers\AsciiCommandParser.h">
       <Filter>Parser</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Parsers\AsciiSceneParser.h">
-      <Filter>Parser</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Parsers\AsciiScriptParser.h">
       <Filter>Parser</Filter>
     </ClInclude>
@@ -2536,9 +2596,6 @@
       <Filter>Parser</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.h">
-      <Filter>Parser</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Parsers\RawTokenCapture.h">
       <Filter>Parser</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Parsers\StdOutProgress.h">

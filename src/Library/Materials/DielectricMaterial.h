@@ -81,6 +81,13 @@ namespace RISE
 			inline const IScalarPainter& GetTransmittance() const { return pSPF->GetTransmittance(); }
 			inline const IScalarPainter& GetIOR()           const { return pSPF->GetIOR(); }
 			inline const IScalarPainter& GetScattering()    const { return pSPF->GetScattering(); }
+			//! Baked construction-time scalars read-back for the snapshot
+			//! clone (HG-phase flag + anodization/AR-film params; no setters).
+			inline bool   GetHG()                   const { return pSPF->GetHG(); }
+			inline int           GetARLayerCount()  const { return pSPF->GetARLayerCount(); }
+			inline const Scalar* GetARLayerN()      const { return pSPF->GetARLayerN(); }
+			inline const Scalar* GetARLayerK()      const { return pSPF->GetARLayerK(); }
+			inline const Scalar* GetARLayerT()      const { return pSPF->GetARLayerT(); }
 			inline void SetTransmittance( const IScalarPainter& v ) { pSPF->SetTransmittance( v ); }
 			inline void SetIOR( const IScalarPainter& v )           { pSPF->SetIOR( v ); }
 			inline void SetScattering( const IScalarPainter& v )    { pSPF->SetScattering( v ); }

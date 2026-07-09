@@ -170,11 +170,14 @@ public:
     // renders at a screen-appropriate resolution rather than blindly
     // inheriting whatever the .RISEscene file declared.  Caller passes
     // the display surface dims in pixels; the long edge is also
-    // capped at maxLongEdge.  Wraps IJobPriv::ScaleFilmToFit — never
-    // upscales, preserves aspect + pixelAR.  Call AFTER loadScene and
-    // BEFORE startViewport so the override is in place when the
-    // render thread spawns.  Returns false on null job or invalid
-    // arguments.
+    // capped at maxLongEdge.  Wraps IJobPriv::SetViewportFit, which
+    // caches the fit params and applies the fit immediately; the cache
+    // lets a subsequent D2 full re-derive (variant switch / CST edit)
+    // re-apply the SAME fit so the preview stays screen-sized instead
+    // of jumping to authored full-res.  Never upscales, preserves
+    // aspect + pixelAR.  Call AFTER loadScene and BEFORE startViewport
+    // so the override is in place when the render thread spawns.
+    // Returns false on null job or invalid arguments.
     bool scaleFilmToFit(unsigned int maxSurfaceW,
                         unsigned int maxSurfaceH,
                         unsigned int maxLongEdge);

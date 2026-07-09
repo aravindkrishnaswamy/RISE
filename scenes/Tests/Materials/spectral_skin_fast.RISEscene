@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # Fast diagnostic version of spectral_skinmodel.RISEscene for iterating
 # on the spectral_skin chromaticity / SSS regression after the spectral
 # normalization fix.

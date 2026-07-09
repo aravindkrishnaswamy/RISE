@@ -37,7 +37,6 @@
 
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
-#include "../src/Library/Interfaces/ISceneParser.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Modifiers/GlintModifier.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
@@ -81,14 +80,10 @@ namespace
 
 	bool ParseSceneFile( const std::string& path, Job& job )
 	{
-		ISceneParser* parser = 0;
-		if( !RISE_API_CreateAsciiSceneParser( &parser, path.c_str() ) || !parser ) {
-			std::remove( path.c_str() );
-			return false;
-		}
-		parser->addref();
-		const bool ok = parser->ParseAndLoadScene( job );
-		parser->release();
+		// Load via the canonical CST path (the legacy streaming parser is
+		// gone).  DeriveToJob refuses-all on a bad chunk exactly as the
+		// legacy parser hard-failed.
+		const bool ok = job.LoadAsciiSceneViaCst( path.c_str() );
 		std::remove( path.c_str() );		// keep TMPDIR clean
 		return ok;
 	}

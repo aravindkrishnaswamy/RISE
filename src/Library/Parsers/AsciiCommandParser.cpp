@@ -162,7 +162,10 @@ bool AsciiCommandParser::ParseLoad( String* tokens, unsigned int num_tokens, IJo
 		return false;
 	}
 
-	return pJob.LoadAsciiScene( tokens[0].c_str() );
+	// Slice 6c-3c: the interactive console `load <file>` command routes through the CST-only Auto loader
+	// (the legacy streaming Job::LoadAsciiScene was deleted).  Native-v7 scenes load via the CST path; an
+	// un-migrated scene hard-fails with an actionable diagnostic pointing at the offline migrator.
+	return pJob.LoadAsciiSceneAuto( tokens[0].c_str() );
 }
 
 bool AsciiCommandParser::ParseRun( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise )

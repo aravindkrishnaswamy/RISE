@@ -207,7 +207,7 @@ static PixelRGB RenderCentralBlock( const std::string& sceneText, const char* ta
 		return result;
 	}
 
-	if( !pJob->LoadAsciiScene( scenePath.c_str() ) ) {
+	if( !pJob->LoadAsciiSceneAuto( scenePath.c_str() ) ) {
 		safe_release( pJob );
 		return result;
 	}
@@ -353,7 +353,7 @@ static std::string BuildScene(
 		"\tmaterial emitwall\n"
 		"}\n"
 		"\n"
-		"> set global_medium gmed\n";
+		"global_medium\n{\nmedium gmed\n}\n";
 	return ss.str();
 }
 
