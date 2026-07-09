@@ -280,10 +280,13 @@
 //    Secure-MCP slice 2 (headless autonomy policy): AgentAutonomy is a
 //    LAUNCH-TIME-ONLY posture -- never settable by the model, a scene
 //    file, or any request parameter.  Post-hardening, the choke point is
-//    DENY-BY-DEFAULT: `Read` allows ONLY the 9-verb read-safe allowlist
+//    DENY-BY-DEFAULT: `Read` allows ONLY the read-safe allowlist
 //    (read_document, read_schema, read_skill, validate, render,
-//    render_status, render_wait, render_cancel, read_image -- IsReadSafeVerb
-//    in AgentRpc.cpp) and refuses EVERYTHING else, including the 3 known-
+//    render_status, render_wait, render_cancel, read_image,
+//    list_proposals, read_viewport -- IsReadSafeVerb in AgentRpc.cpp,
+//    the single source of truth for membership; keep this enumeration
+//    in sync when a verb is added) and refuses EVERYTHING else,
+//    including the 3 known-
 //    mutating verbs (propose_patch, insert_chunk, remove_chunk), any
 //    unrecognized/typo'd method name, and any FUTURE verb added to the
 //    dispatch below without also being added to the read-safe list.  This
@@ -305,6 +308,8 @@
 //    conflict.  render (and every other verb on the read-safe allowlist)
 //    is DELIBERATELY allowed under `Read` -- it does not mutate the
 //    retained Document, and rendering is the core value of a read-only
+//    observer session.  `Commit` is today's behaviour: no refusal, every
+//    verb dispatches as before.
 //
 //    Secure-MCP slice 6 (limits hardening): two SIBLING app-range codes in
 //    the same -320xx family as kAutonomyRefused, each a distinct
@@ -316,14 +321,13 @@
 //    TRANSPORT layer, before a request reaches this dispatcher, so it is
 //    deliberately NOT reachable via `rise --agent-stdio`) when a mutating
 //    verb exceeds the fixed-window call-rate cap.
-//    observer session.  `Commit` is today's behaviour: no refusal, every
-//    verb dispatches as before.
 //
 //    Secure-MCP slice 5b (`Propose` autonomy): a THIRD posture, between
-//    Read and Commit.  Under `Propose`, the read-safe 9-verb allowlist
-//    still passes (same as Read) PLUS list_proposals (also read-safe under
-//    every posture, see below) PLUS the 3 mutating verbs (propose_patch,
-//    insert_chunk, remove_chunk) are let THROUGH to the wrapped
+//    Read and Commit.  Under `Propose`, the read-safe allowlist
+//    (IsReadSafeVerb -- includes list_proposals, read-safe under every
+//    posture, see below) still passes (same as Read) PLUS the 3 mutating
+//    verbs (propose_patch, insert_chunk, remove_chunk) are let THROUGH
+//    to the wrapped
 //    AgentSession rather than refused at this dispatcher's choke point --
 //    see IsProposeSafeVerb in AgentRpc.cpp.  Crucially, this dispatcher-
 //    layer gate does NOT itself decide whether a mutating verb commits or
@@ -440,8 +444,9 @@ namespace RISE
 			//! response line in slice 0c (the stdio transport is strictly
 			//! request/response; true fire-and-forget notifications are not
 			//! part of this set).  Secure-MCP slice 2 hardening: under
-			//! AgentAutonomy::Read, any method NOT on the 9-verb read-safe
-			//! allowlist (IsReadSafeVerb) -- the 3 mutating verbs, an
+			//! AgentAutonomy::Read, any method NOT on the read-safe
+			//! allowlist (IsReadSafeVerb, the single source of truth for
+			//! membership) -- the 3 mutating verbs, an
 			//! unrecognized method, or any future verb not yet classified --
 			//! returns kAutonomyRefused (-32011) instead of dispatching; see
 			//! the file header's policy-refusal doc.
