@@ -1065,6 +1065,23 @@ namespace RISE
 				return mAsyncOutstandingJobId;
 			}
 
+			//! Offscreen-isolation fix-round P1-A test hook: force
+			//! RenderCore_'s doRenderWork to throw a std::runtime_error
+			//! immediately before it calls mJob->Rasterize() -- AFTER any
+			//! requested film-dims override and private-FrameStore install
+			//! have already run, so the throw lands at exactly the point a
+			//! real OIDN-class throw would.  Exists so a test can red-prove
+			//! the FrameStoreIsolationGuard / RenderOverrideRestoreGuard
+			//! construction-order fix (fsGuard must be constructed BEFORE
+			//! restoreGuard so it destructs AFTER -- see AgentSession.cpp's
+			//! doRenderWork comment) without depending on OIDN or any other
+			//! real throw site actually firing. Default false (disabled);
+			//! production code never calls this. Single-threaded like the
+			//! rest of this class's non-Render test-hook surface -- set
+			//! before the Render() call that will observe it, never
+			//! concurrently.
+			void ForTest_SetThrowBeforeRasterize( bool on ) { mThrowBeforeRasterizeForTest = on; }
+
 		private:
 			AgentSession( IJobPriv* job, bool owns, AgentAuthority authority );
 			AgentSession( const AgentSession& );             // deleted
@@ -1263,6 +1280,13 @@ namespace RISE
 			//! non-Render surface -- set before the teardown/detach call
 			//! that will read it, never concurrently.
 			unsigned int mDrainChunkMsForTest = 0;
+
+			//! Offscreen-isolation fix-round P1-A test hook -- see
+			//! ForTest_SetThrowBeforeRasterize's doc. false = disabled
+			//! (doRenderWork calls mJob->Rasterize() normally); read/set
+			//! only from doRenderWork and the test-hook setter above,
+			//! single-threaded like mDrainChunkMsForTest.
+			bool mThrowBeforeRasterizeForTest = false;
 		};
 	}
 }

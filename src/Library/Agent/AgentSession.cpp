@@ -68,6 +68,7 @@
 #include <cmath>
 #include <cstdio>   // Facet 5 slice 1a: std::snprintf for the conflict message
 #include <cstdlib>  // Facet 5 slice S1: std::getenv for the skills-root resolution
+#include <stdexcept>  // Fix-round (offscreen isolation): ForTest_ThrowBeforeRasterize's std::runtime_error
 #include <fstream>  // Facet 5 slice S1: read-only skill-file reads
 #include <iterator> // Facet 5 slice S1: istreambuf_iterator for whole-file reads
 
@@ -1991,8 +1992,63 @@ namespace RISE
 
 			auto doRenderWork = [&]()
 			{
-				// P1-A fix: arm an RAII guard BEFORE any override is applied
-				// so restoration runs unconditionally on every exit from this
+				// Offscreen isolation: capture the DISPLAY FrameStore's
+				// identity BEFORE any mutation, and addref our own copy of
+				// the pointer (FrameStoreIsolationGuard's destructor -- or
+				// the ordinary-path explicit tail restore below -- owns
+				// that ref and drops it exactly once).  `concreteRast` is
+				// null only if some future non-Implementation::Rasterizer
+				// IRasterizer subclass is in play (none exist in tree
+				// today); every check below degrades to a safe no-op in
+				// that case.  Captured/armed BEFORE the private-store
+				// install (and before the film-override's SetFilm, which
+				// can ALSO push a fresh FrameStore -- see the override
+				// branch below) so a throw between here and the tail
+				// restore still restores the display FrameStore identity
+				// via the destructor.
+				//
+				// P1-A FIX -- CONSTRUCTION ORDER IS LOAD-BEARING: `fsGuard`
+				// is constructed FIRST, BEFORE `restoreGuard` just below, so
+				// that on an exception unwinding out of this lambda the two
+				// destructors run in the OPPOSITE (reverse-construction)
+				// order: `restoreGuard` (film-dims restore) destructs
+				// FIRST, THEN `fsGuard` (FrameStore-identity restore)
+				// destructs LAST.  Getting this backwards is a real,
+				// reproduced SIGABRT use-after-free: if `fsGuard` destructed
+				// first, it would rebind the rasterizer to
+				// `capturedDisplayStore` and drop ITS OWN ref to it; then
+				// `restoreGuard`'s destructor calls
+				// `mJob->SetFilm(origFilmW, origFilmH, origFilmPAR)`, which
+				// (Job::EnsureJobFrameStore_locked) reallocates yet ANOTHER
+				// FrameStore and rebinds the rasterizer to THAT one via
+				// PushJobFrameStoreToRasterizers -- releasing the rasterizer's
+				// own ref on `capturedDisplayStore` with no other ref left
+				// to keep it alive, freeing the SAME object a GUI's
+				// ViewportFrameStore is still observing (FrameStore::
+				// RemoveObserver on the freed object is the UAF a live-lldb
+				// session reproduced twice).  With `fsGuard` outliving
+				// `restoreGuard`, its OWN addref on `capturedDisplayStore`
+				// (taken right here, before either guard exists) keeps the
+				// object alive THROUGH `restoreGuard`'s SetFilm-driven
+				// reallocation, so the final `SetFrameStore(captured)` in
+				// `fsGuard`'s destructor rebinds to a still-live object.
+				Implementation::Rasterizer* concreteRast = dynamic_cast<Implementation::Rasterizer*>( rast );
+				Implementation::FrameStore* capturedDisplayStore = concreteRast ? concreteRast->GetFrameStore() : nullptr;
+				if( capturedDisplayStore ) {
+					capturedDisplayStore->addref();
+				}
+				FrameStoreIsolationGuard fsGuard( concreteRast, capturedDisplayStore );
+				fsGuard.Arm();
+
+				// P1-A FIX (see `fsGuard` above for the full exception-
+				// safety explanation): this guard is constructed SECOND, so
+				// it is what runs on the ordinary "declare it done" path
+				// first: this guard's destructor MUST run before
+				// `fsGuard`'s does on any unwind, since the film-dims
+				// restore below can reallocate a FrameStore that `fsGuard`
+				// then needs to replace.  Do NOT reorder these two
+				// constructions.  Armed BEFORE any override is applied so
+				// restoration runs unconditionally on every exit from this
 				// lambda -- including an exception unwinding out of
 				// mJob->Rasterize() below (OIDN denoise is a documented real
 				// throw site).  The explicit tail restore further down
@@ -2010,29 +2066,10 @@ namespace RISE
 				// explicit tail restore still restores via the destructor.
 				// `origSamples` was already captured (GetSampleCountOverride,
 				// before ANY mutation) by the caller, outside this lambda.
+				// (No FrameStore/film interaction, so its position relative
+				// to fsGuard/restoreGuard's load-bearing order is free.)
 				SampleCountRestoreGuard sampleGuard( *rast, origSamples );
 				sampleGuard.Arm();
-
-				// Offscreen isolation: capture the DISPLAY FrameStore's
-				// identity BEFORE any mutation, and addref our own copy of
-				// the pointer (FrameStoreIsolationGuard's destructor -- or
-				// the ordinary-path explicit tail restore below -- owns
-				// that ref and drops it exactly once).  `concreteRast` is
-				// null only if some future non-Implementation::Rasterizer
-				// IRasterizer subclass is in play (none exist in tree
-				// today); every check below degrades to a safe no-op in
-				// that case.  Armed BEFORE the private-store install (and
-				// before the film-override's SetFilm, which can ALSO push
-				// a fresh FrameStore -- see the override branch below) so
-				// a throw between here and the tail restore still restores
-				// the display FrameStore identity via the destructor.
-				Implementation::Rasterizer* concreteRast = dynamic_cast<Implementation::Rasterizer*>( rast );
-				Implementation::FrameStore* capturedDisplayStore = concreteRast ? concreteRast->GetFrameStore() : nullptr;
-				if( capturedDisplayStore ) {
-					capturedDisplayStore->addref();
-				}
-				FrameStoreIsolationGuard fsGuard( concreteRast, capturedDisplayStore );
-				fsGuard.Arm();
 
 				if( wantSamplesOverride ) {
 					overrodeSamples = rast->SetSampleCountOverride( params.samples );
@@ -2062,11 +2099,13 @@ namespace RISE
 				// ordering, just without the lock).
 				//
 				// Offscreen isolation: the (origFilmW, origFilmH, origFilmPAR)
-				// capture below now runs UNCONDITIONALLY (not just inside the
-				// `wantFilmOverride` branch) -- the no-override private-store
-				// install right after this block needs the CURRENT film dims
-				// to size its throwaway FrameStore, even when no override was
-				// requested for THIS render.
+				// capture below runs UNCONDITIONALLY (not just inside the
+				// `wantFilmOverride` branch) -- the private-store install
+				// right after this block needs the CURRENT film dims (as
+				// its no-override sizing fallback) even when THIS render
+				// does request an override, since `renderW`/`renderH` below
+				// fall back to `origFilmW`/`origFilmH` whenever
+				// `wantFilmOverride` is false.
 				const IScenePriv* scenePriv = mJob->GetScene();
 				const IFilm* curFilm = scenePriv ? scenePriv->GetFilm() : nullptr;
 				if( curFilm ) {
@@ -2080,31 +2119,63 @@ namespace RISE
 					}
 				}
 
-				// Offscreen isolation, no-override case: when this render did
-				// NOT request a film-dims override, Job::SetFilm (which would
-				// otherwise push a fresh private-sized FrameStore via
-				// PushJobFrameStoreToRasterizers) never fires -- so install a
-				// PRIVATE throwaway FrameStore directly, sized to the film's
-				// CURRENT dims, so the render's BeginTile/EndTile/
-				// MarkFrameComplete calls land there instead of in the shared
-				// display store the VFS observes.  Gated on
-				// AcceptsFrameStorePush() so MLT-family rasterizers (which
-				// never get a FrameStore -- see that virtual's doc) are left
-				// exactly as they are today; gated on a non-null CURRENT
-				// FrameStore so a rasterizer that never had one (no active
-				// camera at construction, direct-construction test rasterizer)
-				// isn't handed one for the first time by an agent render.
-				if( !wantFilmOverride && concreteRast && concreteRast->AcceptsFrameStorePush()
+				// Offscreen isolation: install a PRIVATE throwaway FrameStore,
+				// UNCONDITIONALLY, sized to the EFFECTIVE render dims for
+				// THIS call.  Placed AFTER the film-override block just
+				// above so our explicit SetFrameStore here always wins over
+				// whatever (if anything) Job::SetFilm's own
+				// PushJobFrameStoreToRasterizers did.
+				//
+				// P1-1 FIX: this used to be gated on `!wantFilmOverride`,
+				// relying on the override branch's `mJob->SetFilm(...)` to
+				// supply a fresh (and therefore automatically DISTINCT-
+				// pointer) FrameStore via its own PushJobFrameStoreToRasterizers
+				// path.  That silently fails whenever the requested override
+				// dims equal the CURRENT film dims -- the plausible "re-
+				// render this scene's own resolution" input: Job::SetFilm
+				// short-circuits on a same-dims request (Job.cpp's
+				// "Same-dim short-circuit" block, `return true;` with NO
+				// call to PushJobFrameStoreToRasterizers), and even on a
+				// dims CHANGE, Rasterizer::SetFrameStore(sameStorePointer)
+				// itself early-returns as a no-op if EnsureJobFrameStore
+				// ever reused the existing store object.  Net effect pre-fix:
+				// an agent override-render at the scene's current resolution
+				// painted straight into the shared display FrameStore -- the
+				// exact bug this whole mechanism exists to close.  Installing
+				// our OWN fresh `new Implementation::FrameStore(spec)` here,
+				// unconditionally, guarantees a genuinely distinct pointer on
+				// EVERY render (override or not, same-dims or not), so
+				// isolation no longer depends on SetFilm's internal store-
+				// swap behavior at all.
+				//
+				// Gated on AcceptsFrameStorePush() -- true for every
+				// Implementation::Rasterizer subclass in tree today,
+				// including MLT (which opted back INTO the FrameStore push
+				// in commit 36809dcf, "L6d-2b") -- so this only skips a
+				// rasterizer that genuinely returns false / carries no
+				// store (e.g. a direct-constructed test rasterizer with no
+				// active camera, which has nothing to isolate in the first
+				// place).  Also gated on a non-null CURRENT FrameStore so a
+				// rasterizer that never had one isn't handed one for the
+				// first time by an agent render.
+				const unsigned int renderW = wantFilmOverride ? params.width  : origFilmW;
+				const unsigned int renderH = wantFilmOverride ? params.height : origFilmH;
+				if( concreteRast && concreteRast->AcceptsFrameStorePush()
 				    && concreteRast->GetFrameStore() != nullptr )
 				{
 					Implementation::FrameStore::Spec spec;
-					spec.width    = origFilmW;
-					spec.height   = origFilmH;
+					spec.width    = renderW;
+					spec.height   = renderH;
 					spec.tileEdge = 32;
-					// aovChannels intentionally left empty: PropagateAOVsToFrameStore
-					// is per-channel null-safe (skips absent channels), and OIDN
-					// denoise reads/writes its own internal buffers, not FrameStore
-					// AOV channels -- an agent render doesn't need AOV storage.
+					// aovChannels intentionally left empty: this is SAFE, not
+					// merely "AOV writes are elsewhere" -- in production,
+					// PropagateAOVsToFrameStore DOES populate a FrameStore's
+					// Albedo/Normal AOV channels from the rasterizer's AOV
+					// buffers when they are present, but it is per-channel
+					// null-safe (it skips any channel the FrameStore didn't
+					// allocate storage for). An agent render has no consumer
+					// reading AOV storage back out, so simply not allocating
+					// it here is a safe, deliberate omission, not a gap.
 					Implementation::FrameStore* privateStore = new Implementation::FrameStore( spec );
 					concreteRast->SetFrameStore( privateStore );
 					safe_release( privateStore );   // the rasterizer's own addref (inside SetFrameStore) keeps it alive for the render
@@ -2209,6 +2280,21 @@ namespace RISE
 					progressGuard.Arm();
 					mJob->SetProgress( mController->AgentRenderProgress() );
 				}
+
+				// Test-only seam (P1-A regression lock): force a throw
+				// immediately before Rasterize() so a test can exercise the
+				// EXACT unwind path FrameStoreIsolationGuard /
+				// RenderOverrideRestoreGuard / SampleCountRestoreGuard /
+				// ProgressRestoreGuard exist for -- including with a film-
+				// dims override already applied -- without depending on
+				// OIDN or any other real throw site. `mThrowBeforeRasterizeForTest`
+				// defaults to false; production code never sets it. See
+				// AgentSession.h's ForTest_SetThrowBeforeRasterize doc.
+				if( mThrowBeforeRasterizeForTest ) {
+					throw std::runtime_error(
+						"AgentSession::ForTest_ThrowBeforeRasterize: test-only forced throw immediately before Rasterize()" );
+				}
+
 				rendered = mJob->Rasterize();
 				if( mController ) {
 					// Read the cancel state BEFORE clearing the progress
@@ -2474,8 +2560,17 @@ namespace RISE
 			// report ok=false rather than silently rendering un-overridden
 			// (or worse, reporting cameraOverridden==true on a no-op).  The
 			// guard already restored every field that DID apply before the
-			// failure; the render itself was skipped (doRenderWork returns
-			// early on this path), so there is no sink to release.
+			// failure; only mJob->Rasterize() itself was skipped
+			// (doRenderWork returns early on this path, before reaching the
+			// Rasterize() call) -- the in-memory `sink` WAS already created
+			// and attached (that setup runs ahead of the camera-override
+			// block; see doRenderWork's "moved ahead of the film-dims /
+			// camera-pose override blocks" comment), so it does still exist
+			// here.  Nothing to do about it explicitly, though: `sink` is
+			// still owned by `sinkUnwindGuard` (declared in the enclosing
+			// scope, still in scope at this `return`), which releases it
+			// when this function returns -- no leak, just not this
+			// early-return's job to handle.
 			if( cameraOverrideFailed ) {
 				res.ok = false;
 				res.integrator = mJob->GetActiveRasterizerName();

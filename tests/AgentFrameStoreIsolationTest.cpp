@@ -42,12 +42,36 @@
 //        trap is closed, not just papered over).
 //
 //    Uses the scene's DEFAULT rasterizer (PT, path-traced) for the main
-//    assertions, then re-runs the same probe against bdpt_pel_rasterizer
-//    and vcm_pel_rasterizer scenes to confirm the fix generalizes across
-//    the pixel-based integrator family (both write through the same
-//    canonical FrameStore via AcquireRenderImage's dims-exact-match
-//    gate, per PixelBasedRasterizerHelper.cpp / BDPTRasterizerBase.cpp /
-//    VCMRasterizerBase.cpp).
+//    assertions, then re-runs the same probe against bdpt_pel_rasterizer,
+//    vcm_pel_rasterizer, AND mlt_rasterizer scenes to confirm the fix
+//    generalizes across the pixel-based integrator family (all four
+//    write through the same canonical FrameStore -- PT/BDPT/VCM via
+//    AcquireRenderImage's dims-exact-match gate, per
+//    PixelBasedRasterizerHelper.cpp / BDPTRasterizerBase.cpp /
+//    VCMRasterizerBase.cpp; MLT via its own per-round Flush* path since
+//    it opted back INTO the FrameStore push in commit 36809dcf
+//    "L6d-2b" -- see MLTRasterizer.h's AcceptsFrameStorePush doc).
+//
+//    Fix-round P1-1 / P1-A additions (offscreen-isolation fix round on
+//    commit 81cdbadd):
+//      * RunIsolationProbe's Case 3 renders with an override whose
+//        width/height EQUAL the scene's current film dims -- the
+//        regression lock for P1-1 (the private-store install used to be
+//        gated on `!wantFilmOverride`, so a same-dims override silently
+//        relied on Job::SetFilm's same-dims short-circuit, which never
+//        pushes a fresh FrameStore -- an agent override-render at the
+//        scene's current resolution used to paint straight into the
+//        shared display store).
+//      * RunThrowDuringOverrideTest (below) uses
+//        AgentSession::ForTest_SetThrowBeforeRasterize to force a throw
+//        from inside doRenderWork, immediately before Rasterize(), during
+//        an OVERRIDE render -- the regression lock for P1-A (the
+//        FrameStoreIsolationGuard / RenderOverrideRestoreGuard
+//        construction-order bug: constructing the FrameStore guard LAST
+//        made it destruct FIRST on unwind, so the film-dims restore's
+//        SetFilm-driven FrameStore reallocation ran AFTER the identity
+//        restore had already dropped its ref -- a reproduced SIGABRT
+//        use-after-free).
 //
 //    Self-contained: inline native-v7 scenes (a lit sphere), OIDN off,
 //    written to scratch temp files (LoadAsciiSceneViaCst takes a
@@ -67,7 +91,10 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <fstream>
+#include <memory>
+#include <stdexcept>
 #include <string>
 
 using namespace RISE;
@@ -121,6 +148,16 @@ static const char* const kBdptRasterizer =
 	"bdpt_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}";
 static const char* const kVcmRasterizer =
 	"vcm_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}";
+// P2: MLT opted BACK INTO the FrameStore push in commit 36809dcf
+// ("L6d-2b") -- an ancestor of 81cdbadd -- so AcceptsFrameStorePush() is
+// TRUE for MLT and it IS subject to the private-store swap this file
+// proves.  Deliberately tiny bootstrap/chains/mutations so the probe
+// stays fast on the 24x24 test scene; the RGB (non-spectral)
+// `mlt_rasterizer` is used (not `mlt_spectral_rasterizer`) since it
+// drives the exact same native-v7 RGB scene shape as the other three
+// parametrizations with no changes.
+static const char* const kMltRasterizer =
+	"mlt_rasterizer\n{\n\tbootstrap_samples 200\n\tchains 4\n\tmutations_per_pixel 4\n\tpixel_filter box\n\toidn_denoise false\n}";
 
 // Probe IRenderObserver: counts OnTileComplete / OnFrameComplete calls.
 // Attached to the CANONICAL (display) FrameStore before an agent render;
@@ -244,7 +281,196 @@ static void RunIsolationProbe( const std::string& label, const std::string& rast
 			label + " (override): scene Film dims restored to original after the override render" );
 	}
 
+	// ---- Case 3: SAME-DIMS OVERRIDE render (P1-1 regression lock) -----
+	//
+	// A render whose requested params.width/height EQUAL the scene's
+	// CURRENT film dims still counts as `wantFilmOverride == true`
+	// (AgentSession.cpp: `wantFilmOverride = (params.width > 0 &&
+	// params.height > 0)` -- it does not compare against the current
+	// dims).  Pre-P1-1-fix, the private-store install was gated on
+	// `!wantFilmOverride`, so THIS case relied entirely on
+	// Job::SetFilm's own PushJobFrameStoreToRasterizers to supply a
+	// fresh FrameStore -- but Job::SetFilm short-circuits and returns
+	// true WITHOUT pushing anything when the requested dims already
+	// match the current Film (Job.cpp's "Same-dim short-circuit"
+	// block).  Net effect pre-fix: this exact case painted straight
+	// into the shared display FrameStore.  Must FAIL if the
+	// unconditional private-store install regresses back to being
+	// gated on `!wantFilmOverride`.
+	{
+		const uint64_t genBefore = displayStore->Generation();
+
+		ProbeObserver probe;
+		displayStore->AddObserver( &probe );
+
+		AgentRenderParams params;
+		params.width  = origW;
+		params.height = origH;
+		AgentRenderResult res = session->Render( params );
+
+		displayStore->RemoveObserver( &probe );
+
+		Check( res.ok, label + " (same-dims override): render succeeds" );
+		Check( !res.png.empty(), label + " (same-dims override): PNG bytes are non-empty" );
+		Check( res.width == origW && res.height == origH,
+			label + " (same-dims override): render ran at the (unchanged) overridden dims" );
+		Check( displayStore->Generation() == genBefore,
+			label + " (same-dims override) P1-1 LOCK: canonical FrameStore Generation() did NOT advance across the agent render" );
+		Check( probe.tileCompleteCount == 0,
+			label + " (same-dims override) P1-1 LOCK: probe observer saw ZERO OnTileComplete callbacks on the canonical store" );
+		Check( probe.frameCompleteCount == 0,
+			label + " (same-dims override) P1-1 LOCK: probe observer saw ZERO OnFrameComplete callbacks on the canonical store" );
+		Check( concreteRast->GetFrameStore() == displayStore,
+			label + " (same-dims override): rasterizer's FrameStore identity is restored to the captured display store" );
+	}
+
 	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// P1-A regression lock: THROW-DURING-OVERRIDE.
+//
+// Forces AgentSession::RenderCore_'s doRenderWork to throw a
+// std::runtime_error immediately before mJob->Rasterize() -- via the
+// ForTest_SetThrowBeforeRasterize test-only seam -- during an OVERRIDE
+// render (so the film-dims override + private-store install have
+// already run by the time the throw unwinds the lambda).  This is
+// exactly the code shape a real OIDN-class throw hits.
+//
+// The money assertions target the FrameStoreIsolationGuard /
+// RenderOverrideRestoreGuard construction-order bug: pre-fix,
+// FrameStoreIsolationGuard was constructed LAST (so it destructed
+// FIRST on unwind), meaning the film-dims restore's
+// SetFilm(origW, origH, ...) reallocated a brand new FrameStore AFTER
+// the identity-restore had already dropped its own ref on the
+// captured display store, orphaning it (a live-lldb session
+// reproduced a SIGABRT use-after-free in FrameStore::RemoveObserver
+// from exactly this shape).  With the fix (FrameStoreIsolationGuard
+// constructed FIRST, so it destructs LAST), the display store survives
+// the film-dims restore and is correctly rebound.
+//
+// Model-B F2 slice S2a note: RenderCore_ does NOT let a thrown
+// exception escape as a raw C++ exception -- it is already caught
+// inside RenderCore_ and reported as an ordinary AgentRenderResult with
+// ok=false (see AgentSession.cpp's "S1-delta doc-truth fix" comment).
+// So "it threw" is verified via res.ok/res.message, not a caught C++
+// exception at this call site -- the try/catch below is a defensive
+// belt in case a future regression lets the exception escape raw
+// (which would itself be worth knowing about, hence CATCHING it rather
+// than letting the test process abort).
+//////////////////////////////////////////////////////////////////////
+static void RunThrowDuringOverrideTest()
+{
+	std::printf( "=== AgentFrameStoreIsolationTest: P1-A throw-during-override (no UAF) ===\n" );
+
+	const std::string scenePath = WriteTemp(
+		"agent_framestore_isolation_throw.RISEscene", BuildScene( kPtRasterizer ) );
+	Check( !scenePath.empty(), "throw-during-override: scratch scene file written" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "throw-during-override: scene loads via the CST path" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "throw-during-override: AgentSession::WrapJob wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); return; }
+
+	IRasterizer* rast = pJob->GetRasterizer();
+	Implementation::Rasterizer* concreteRast = rast ? dynamic_cast<Implementation::Rasterizer*>( rast ) : nullptr;
+	Check( concreteRast != nullptr, "throw-during-override: active rasterizer is an Implementation::Rasterizer" );
+	if( !concreteRast ) { pJob->release(); return; }
+
+	Implementation::FrameStore* displayStore = concreteRast->GetFrameStore();
+	Check( displayStore != nullptr, "throw-during-override: rasterizer has a canonical FrameStore before any render" );
+	if( !displayStore ) { pJob->release(); return; }
+
+	const IScenePriv* scenePriv = pJob->GetScene();
+	const IFilm* film = scenePriv ? scenePriv->GetFilm() : nullptr;
+	const unsigned int origW = film ? film->GetWidth()  : 0;
+	const unsigned int origH = film ? film->GetHeight() : 0;
+	Check( origW == 24 && origH == 24, "throw-during-override: pre-override Film dims are the scene's authored 24x24" );
+
+	const uint64_t genBefore = displayStore->Generation();
+
+	// Arm the test-only seam, then run an OVERRIDE render (dims DIFFERENT
+	// from the current film, so the film-dims-restore's SetFilm actually
+	// reallocates a FrameStore -- the exact shape the P1-A bug needed).
+	session->ForTest_SetThrowBeforeRasterize( true );
+
+	AgentRenderParams params;
+	params.width  = 16;
+	params.height = 16;
+
+	AgentRenderResult res;
+	bool escaped = false;
+	std::string escapedWhat;
+	try {
+		res = session->Render( params );
+	}
+	catch( const std::exception& e ) { escaped = true; escapedWhat = e.what(); }
+	catch( ... )                     { escaped = true; escapedWhat = "unknown exception"; }
+
+	// (a) "it threw": RenderCore_ catches the seam's throw internally and
+	// reports it as an ordinary ok=false result (Model-B F2 slice S2a
+	// doc-truth fix) -- it must NOT escape as a raw C++ exception (that
+	// would itself be a regression, hence failing loudly here instead of
+	// silently accepting either shape).
+	Check( !escaped, "throw-during-override: the forced throw did NOT escape RenderCore_ as a raw C++ exception" );
+	if( escaped ) {
+		std::printf( "  (raw exception escaped: %s)\n", escapedWhat.c_str() );
+	}
+	Check( !res.ok, "throw-during-override: render reports ok=false (the seam's throw actually fired)" );
+	Check( res.message.find( "ForTest_ThrowBeforeRasterize" ) != std::string::npos,
+		"throw-during-override: failure message names the forced test-seam throw" );
+
+	// (b) NO CRASH: reaching this line at all (the process is still
+	// running, the test binary hasn't SIGABRT'd) IS the assertion -- the
+	// live reviewer reproduced a SIGABRT use-after-free in
+	// FrameStore::RemoveObserver from exactly this call shape pre-fix.
+	Check( true, "throw-during-override: process did NOT crash (SIGABRT/UAF closed)" );
+
+	// (c) identity restored: the rasterizer's FrameStore is back to the
+	// EXACT captured display-store pointer, even though the film-dims
+	// restore (inside RenderOverrideRestoreGuard's destructor, which ran
+	// BEFORE FrameStoreIsolationGuard's per the fixed construction order)
+	// reallocated an intermediate FrameStore along the way.
+	Check( concreteRast->GetFrameStore() == displayStore,
+		"throw-during-override: rasterizer's FrameStore identity is restored to the captured display store after the throw" );
+
+	// (d) Generation() unchanged: the throw fires BEFORE mJob->Rasterize()
+	// ever runs, so no BeginTile/EndTile/MarkFrameComplete touched
+	// anything -- the canonical store's generation counter must be
+	// bit-for-bit where it started.
+	Check( displayStore->Generation() == genBefore,
+		"throw-during-override: canonical FrameStore Generation() did NOT advance" );
+
+	// (e) the display store is still ALIVE and USABLE: read its dims (a
+	// freed/UAF object would be undefined behaviour here, not merely a
+	// wrong answer) and confirm they are the ORIGINAL 24x24 -- proving
+	// FrameStoreIsolationGuard's own addref (taken before either guard is
+	// constructed) kept it alive through RenderOverrideRestoreGuard's
+	// SetFilm-driven reallocation.
+	Check( static_cast<unsigned int>( displayStore->Width() )  == origW &&
+	       static_cast<unsigned int>( displayStore->Height() ) == origH,
+		"throw-during-override: the display FrameStore is still ALIVE and reports its ORIGINAL 24x24 dims (no UAF)" );
+
+	const IFilm* filmAfter = scenePriv ? scenePriv->GetFilm() : nullptr;
+	Check( filmAfter && filmAfter->GetWidth() == origW && filmAfter->GetHeight() == origH,
+		"throw-during-override: scene Film dims restored to original after the throwing override render" );
+
+	// RED-PROVE the red-prove: the session must still be USABLE after the
+	// throw -- disarm the seam and confirm a clean follow-up render
+	// succeeds (the guard's restore did not itself leave the Job/
+	// rasterizer in a broken state).
+	session->ForTest_SetThrowBeforeRasterize( false );
+	AgentRenderResult clean = session->Render( -1 );
+	Check( clean.ok, "throw-during-override: a follow-up non-throwing Render() succeeds after the earlier throw+restore" );
+	Check( clean.width == origW && clean.height == origH,
+		"throw-during-override: follow-up render is at the authored 24x24 (no lingering override)" );
+
+	std::printf( "=== P1-A throw-during-override: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
 }
 
 int main()
@@ -265,6 +491,14 @@ int main()
 	// paper over.
 	RunIsolationProbe( "bdpt", kBdptRasterizer );
 	RunIsolationProbe( "vcm",  kVcmRasterizer );
+
+	// P2: MLT opted back into the FrameStore push (commit 36809dcf,
+	// "L6d-2b") -- it is genuinely gated into this private-store path
+	// today (AcceptsFrameStorePush() == true), so it must be covered
+	// here, not just PT/BDPT/VCM.
+	RunIsolationProbe( "mlt", kMltRasterizer );
+
+	RunThrowDuringOverrideTest();
 
 	std::printf( "=== AgentFrameStoreIsolationTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
