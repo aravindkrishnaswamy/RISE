@@ -48,7 +48,7 @@ standard_shader
 pathtracing_pel_rasterizer
 {
 	samples			256
-	oidn_denoise		false
+#	oidn_denoise		false
 }
 
 file_rasterizeroutput
