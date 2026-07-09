@@ -18,6 +18,7 @@
 #define JOB_
 
 #include "Interfaces/IJobPriv.h"
+#include <cstdint>
 #include "Interfaces/IScenePriv.h"
 #include "Interfaces/IMaterial.h"
 #include "Interfaces/IRayIntersectionModifier.h"
@@ -36,8 +37,7 @@
 #include "Interfaces/IFunction1DManager.h"
 #include "Interfaces/IFunction2DManager.h"
 #include "Interfaces/IMedium.h"
-#include "SceneEditor/OverrideSpanIndex.h"
-#include "SceneEditor/SourceSpanIndex.h"
+#include "SceneEditor/FileIdentity.h"
 #include "SceneEditor/TransformSnapshot.h"
 #include "Utilities/Reference.h"
 #include "Utilities/RString.h"
@@ -57,6 +57,8 @@
 
 namespace RISE
 {
+	namespace Cst { struct Document; typedef std::int64_t NodeId; }   // P5 (save-as-CST): the retained canonical CST; fwd-decl keeps Cst.h out of Job.h (NodeId == Cst.h's, a legal typedef redeclaration)
+
 	//! Job - This is used to simplify the creation of a job, all things can be
 	//! easily accessed by name, no need to keep track of managers and such
 	class Job : public virtual IJobPriv, public Implementation::Reference
@@ -105,19 +107,44 @@ namespace RISE
 		// command-line behaviour is byte-identical to legacy.
 		bool										m_suppressFileRasterizerOutputs = false;
 
-		// Phase 6.1 (docs/ROUND_TRIP_SAVE_PLAN.md §6.3 + §7.4).
-		// Per-entity source-file metadata + two transform snapshots
-		// captured at scene-load time, owned by Job for its lifetime.
-		// Populated by AsciiSceneParser; consumed by the save engine
-		// (Phase 6.4).  Held by unique_ptr so they're cheap to swap
-		// out on rescene if/when we add that path; raw pointers
+		// Two transform snapshots captured at scene-load time, owned by
+		// Job for its lifetime.  Held by unique_ptr so raw pointers
 		// returned by the IJobPriv getters remain stable across the
-		// scene's lifetime.
-		std::unique_ptr<SourceSpanIndex>			pSourceSpanIndex;
+		// scene's lifetime.  (The legacy SourceSpanIndex /
+		// OverrideSpanIndex byte-splice metadata was deleted in Model-B
+		// P5 Slice 6d — CST-only loading never populated them.)
+		RISE::FileIdentity						mCstLoadFileIdentity;   // P5 Slice 4: CST-load file identity, preserved across ClearAll for the save external-mod guard
 		std::unique_ptr<TransformSnapshot>			pBaseTransforms;
 		std::unique_ptr<TransformSnapshot>			pLoadedTransforms;
-		// Phase 6.2 (§6.8): per-`override_object` chunk catalog.
-		std::unique_ptr<OverrideSpanIndex>			pOverrideSpans;
+
+		// P5 (save-as-CST, Slice 1): the retained canonical CST when the scene was loaded via
+		// LoadAsciiSceneViaCst (Model-B: Scene = derive(CST)); null when no CST-load has occurred yet.  Slices 3-4
+		// (edit/save) patch + serialize this.  unique_ptr<fwd-decl> is safe -- Job::~Job is out-of-line (Job.cpp).
+		std::unique_ptr<RISE::Cst::Document>		pCstDocument;
+
+		// Facet 5 (live co-edit) slice 1a: the optimistic-concurrency identity of the retained CST head.
+		// MINTED on every LoadAsciiSceneViaCst that retains a head ({fresh uuid, 1}); RESET to {0,0} by
+		// ClearAll (no head); revision BUMPED by BumpCstHeadRevision() at every site that successfully
+		// mutates the retained pCstDocument content.  The invariant: `revision` changes IFF the retained
+		// Document content changed.  Read via GetCstHeadVersion (IJobPriv) for the baseHeadVersion conflict
+		// precondition.  A plain value member -- CstHeadVersion is a trivial POD (full defn via Cst.h,
+		// pulled in through Interfaces/IJobPriv.h).
+		RISE::Cst::CstHeadVersion					mCstHeadVersion;
+
+		// P5 (Model-B): cached viewport screen-fit params so a D2 full
+		// re-derive (variant switch / CST edit) — which re-derives the
+		// LIVE film to the Document's AUTHORED dims — can RE-APPLY the
+		// interactive viewport's screen-fit afterward, keeping the
+		// preview at a screen-appropriate resolution instead of jumping
+		// to full-res.  Populated by SetViewportFit (the GUI bridges call
+		// it at load + on resize); the headless CLI never calls it, so
+		// mHasViewportFit stays false and the D2 tails skip the re-fit
+		// (CLI renders at authored full-res).  Live-only: never touches
+		// the retained CST Document, so save-correctness is preserved.
+		bool										mHasViewportFit = false;
+		unsigned int								mViewportFitSurfaceW = 0;
+		unsigned int								mViewportFitSurfaceH = 0;
+		unsigned int								mViewportFitLongEdge = 0;
 
 		// L6b — canonical FrameStore allocated at the active camera's
 		// dims and threaded into every rasterizer factory.  Per
@@ -272,6 +299,11 @@ namespace RISE
 		// blend chain).  Set is keyed by the material's manager-
 		// registered name and grows-only (no removal path today).
 		std::set<String>							composedMaterialNames;
+		// Scene variants (doc 63): named selectable overlays.  P0 records name->active_camera + the active
+		// selection (for GUI/save + the derive-end active-camera apply); the material override BAKE is
+		// derive-local (Cst.cpp), so there is no override store here.
+		std::map<String,String>						sceneVariantCameras;	// scene_variant name -> active_camera ("" = none)
+		String										activeSceneVariant;	// "" / "none" => base default
 
 		//
 		// Helper functions
@@ -320,21 +352,31 @@ namespace RISE
 		ILightManager*				GetLights()			{ return pLightManager; };
 		IRasterizer*				GetRasterizer()		{ return pRasterizer; };
 
-		// Phase 6.1 getters.  Mutable versions return non-const pointers
-		// for AsciiSceneParser's population pass; const versions are
-		// what the save engine consumes.  Pointers stable across the
-		// Job's lifetime (the unique_ptr's are populated in
-		// InitializeContainers and never reseated).  Inline like the
-		// other manager getters; matches Job's no-`override` convention
-		// (see SetSuppressFileRasterizerOutputs comment).
-		SourceSpanIndex*			GetSourceSpanIndexMutable()			{ return pSourceSpanIndex.get(); }
-		const SourceSpanIndex*		GetSourceSpanIndex() const			{ return pSourceSpanIndex.get(); }
+		// Phase 6.1 getters.  HISTORICAL: the mutable versions fed the
+		// legacy streaming loader's population pass and the const versions
+		// the pre-CST save engine — both deleted (Model-B P5 Slices 6c/6d).
+		// The CST load path populates neither snapshot, so all four are
+		// currently unused (no callers outside these declarations);
+		// retained pending deletion (IJobPriv's virtual tail is
+		// append-only).  Pointers stable across the Job's lifetime (the
+		// unique_ptr's are populated in InitializeContainers and never
+		// reseated).  Inline like the other manager getters; matches Job's
+		// no-`override` convention (see SetSuppressFileRasterizerOutputs
+		// comment).
 		TransformSnapshot*			GetBaseTransformSnapshotMutable()	{ return pBaseTransforms.get(); }
 		const TransformSnapshot*	GetBaseTransformSnapshot() const	{ return pBaseTransforms.get(); }
 		TransformSnapshot*			GetLoadedTransformSnapshotMutable()	{ return pLoadedTransforms.get(); }
 		const TransformSnapshot*	GetLoadedTransformSnapshot() const	{ return pLoadedTransforms.get(); }
-		OverrideSpanIndex*			GetOverrideSpanIndexMutable()		{ return pOverrideSpans.get(); }
-		const OverrideSpanIndex*	GetOverrideSpanIndex() const		{ return pOverrideSpans.get(); }
+		// Model-B P5 Slice 6a: the CST-load file identity, read by the SaveEngine CST-save external-mod
+		// guard directly off the Job member (decoupled from pSourceSpanIndex).  Inline, no-`override`
+		// convention like the other getters.
+		const RISE::FileIdentity&	GetCstLoadFileIdentity() const		{ return mCstLoadFileIdentity; }
+		// Facet 5 slice 1a: the retained CST head's (uuid,revision) identity.  Inline, no-`override`
+		// convention like the other getters.
+		RISE::Cst::CstHeadVersion	GetCstHeadVersion() const			{ return mCstHeadVersion; }
+		// Model-B F2 slice S2a fix round 2 (P2-A): read-only accessor for pGlobalProgress -- see
+		// IJobPriv::GetProgress's doc.  Inline, no-`override` convention like the other getters.
+		IProgressCallback*			GetProgress() const					{ return pGlobalProgress; }
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.
@@ -366,6 +408,8 @@ namespace RISE
 			const unsigned int nMaxTreeDepth						///< [in] Maximum tree depth
 			);
 
+		double GetLightSampleRRThreshold() const { return lightSampleRRThreshold; }
+
 		bool SetLightSampleRRThreshold(
 			const double threshold									///< [in] RR threshold (0=disabled)
 			);
@@ -382,6 +426,16 @@ namespace RISE
 		bool ScaleFilmToFit(
 			const unsigned int maxSurfaceW,
 			const unsigned int maxSurfaceH,
+			const unsigned int maxLongEdge
+			);
+
+		//! Cache the interactive viewport screen-fit params on the Job
+		//! AND apply the fit immediately (via ScaleFilmToFit).  See IJob.h
+		//! for semantics — the cache lets a D2 full re-derive re-apply the
+		//! fit so the preview stays screen-sized.
+		bool SetViewportFit(
+			const unsigned int surfaceW,
+			const unsigned int surfaceH,
 			const unsigned int maxLongEdge
 			);
 
@@ -1020,9 +1074,10 @@ namespace RISE
 									const char* rIndex,				///< [in] Index of refraction
 									const char* scat,				///< [in] Scattering function (either Phong or HG)
 									const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
-									const Scalar arN,
-									const Scalar arK,
-									const Scalar arThickness
+									const Scalar* arN,
+									const Scalar* arK,
+									const Scalar* arThickness,
+									const unsigned int arNLayers
 									);
 
 		//! Creates a SubSurface Scattering material
@@ -1329,7 +1384,8 @@ namespace RISE
 									const char* name,				///< [in] Name of the geometry
 									const char axis,				///< [in] (x|y|z) Which axis the cylinder is sitting on
 									const double radius,			///< [in] Radius of the cylinder
-									const double height			///< [in] Height of the cylinder
+									const double height,			///< [in] Height of the cylinder
+									const bool capped = true		///< [in] TRUE: closed solid (end caps, default); FALSE: open tube.  Defaulted so pre-cap 4-arg callers keep compiling.
 									);
 
 		//! Creates an infinite plane that passes through the origin
@@ -1605,6 +1661,21 @@ namespace RISE
 			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
 			);
 
+		//! Adds a homogeneous participating medium with optional
+		//! per-wavelength spectral coefficient curves (G1).  Not marked
+		//! 'override' — Job's IJob overrides are intentionally
+		//! unannotated (house style; see CLAUDE.md).
+		bool AddHomogeneousMediumSpectral(
+			const char* name,										///< [in] Name of the medium
+			const double sigma_a[3],								///< [in] Absorption coefficient (RGB preview)
+			const double sigma_s[3],								///< [in] Scattering coefficient (RGB preview)
+			const double emission[3],								///< [in] Volumetric emission (RGB)
+			const char* absorption_spectral,						///< [in] Name of sigma_a(lambda) IFunction1D, or null/""
+			const char* scattering_spectral,						///< [in] Name of sigma_s(lambda) IFunction1D, or null/""
+			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
+			);
+
 		//! Adds a heterogeneous participating medium driven by volume data
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddHeterogeneousMedium(
@@ -1699,6 +1770,21 @@ namespace RISE
 			const char* name,										///< [in] Name of the modifier
 			const char* painter,									///< [in] Linear-RGB normal-map painter
 			const double scale										///< [in] glTF normalTexture.scale
+			);
+
+		//! Creates a discrete-facet glint modifier.  See IJob.h for the doc.
+		//! (Overrides the IJob virtual; unmarked to match this file's
+		//! no-`override` style.)
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddGlintModifier(
+			const char* name,										///< [in] Name of the modifier
+			const double density,									///< [in] cells per object-space unit; <= 0 inert
+			const double coverage,									///< [in] per-cell facet existence probability [0,1]
+			const double fill,										///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 inert
+			const double spread,									///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 inert
+			const double scale[3],									///< [in] anisotropic cell stretch
+			const double shift[3],									///< [in] cell-space offset
+			const unsigned int seed									///< [in] hash seed
 			);
 
 		//
@@ -2229,6 +2315,7 @@ namespace RISE
 		// Job* would fail to compile even though the inline wrapper
 		// exists in IJob.  The `using` brings the base-class overloads
 		// into Job's scope, restoring overload resolution.
+		using IJob::AddDielectricMaterial;
 		using IJob::SetMLTRasterizer;
 		using IJob::SetMLTSpectralRasterizer;
 
@@ -2706,6 +2793,26 @@ namespace RISE
 			const char* name								///< [in] Name of the modifer to remove
 			);
 
+		//! Invalidates the top-level acceleration structure (see IJob).  Annotated
+		//! without `override` to match this file's house style (Job omits it on all
+		//! IJob virtuals; adding it here would wake -Winconsistent-missing-override).
+		void InvalidateSpatialStructure();
+
+		//! Bumps the scene's light-topology generation (see IJob).
+		void BumpLightTopologyGeneration();
+
+		//! Reads the scene's light-topology generation (see IJob).  No `override` to
+		//! match this file's house style.
+		unsigned int GetLightTopologyGeneration() const;
+
+		//! Object-override accounting (see IJob).  No `override` (house style).
+		void NoteObjectOverride();
+		unsigned int GetObjectOverrideCount() const;
+
+		//! Enables/disables incremental re-point mode (see IJob).  No `override` to
+		//! match this file's house style.
+		void SetIncrementalRepointMode( bool b );
+
 		//! Clears the entire scene, resets everything back to defaults
 		/// \return TRUE if successful, FALSE otherwise
 		bool ClearAll(
@@ -2717,11 +2824,132 @@ namespace RISE
 			);
 
 
-		//! Loading an ascii scene description
-		/// \return TRUE if successful, FALSE otherwise
-		bool LoadAsciiScene(
-			const char* filename							///< [in] Name of the file containing the scene
+		//! P5 Slice 1: load a scene by building the canonical CST (ParseToCst) and deriving the Scene from
+		//! it (DeriveToJob), RETAINING the Document for edit/save (Model-B "Scene = derive(CST)").  Since Slice
+		//! 6c-3c this is the ONLY scene-load path (the legacy streaming loader was deleted).  Input must be NATIVE v7-form
+		//! (macro/expr/directive-free) -- ENFORCED via Cst::IsNativeV7Document: an UN-migrated top-level construct
+		//! (a `FOR`/`ENDFOR` loop, a `> run`/`> load` include, or a render-AFFECTING `>` directive -- `> modify`,
+		//! `> set <other>`) or a missing `RISE ASCII SCENE` header is REFUSED (returns false), NOT silently
+		//! mis-derived.  (Only render-NEUTRAL `>` directives -- `> echo`, `> set accelerator` -- are accepted;
+		//! DeriveToJob skips them render-neutrally.)  The v6 corpus is converted OFFLINE (migrator, plan Slice 2).
+		//! Load-once: re-loading a live Job is refused.
+		/// \return TRUE iff native v7-form AND derived with no error diagnostics
+		bool LoadAsciiSceneViaCst(
+			const char* filename
 			);
+
+		//! P5 Slice 6c-3a: DEFAULT scene-load entry point -- CST-ONLY.  Routes a NATIVE-v7 scene to the CST path
+		//! (LoadAsciiSceneViaCst; retains the Document for edit/save/variant).  A non-native (un-migrated) scene
+		//! HARD-FAILS with an actionable diagnostic pointing at the offline migrator -- the legacy streaming loader
+		//! was deleted (no fallback, no env escape hatch).  A derive error on the native-v7 branch is a
+		//! REAL failure (returns false), NOT masked by a legacy retry.
+		bool LoadAsciiSceneAuto(
+			const char* filename
+			);
+
+		//! P5: re-derive the retained CST Document with a forced active scene_variant ("none"/"" = base).
+		bool RederiveCstWithVariant(
+			const char* variantName
+			);
+
+		bool HasRetainedCstDocument() const { return pCstDocument != nullptr; }
+		int ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue );
+
+		//! Model-B F5 slice S2 round 2 (P1-A root gate): ApplyCstParamEdit PLUS a full-derivability
+		//! pre-commit dry-run for AGENT-originated edits -- same signature and 0/1/2/3 contract, but
+		//! additionally returns 0 (head + live scene untouched) when the edited Document would no longer
+		//! derive in DOCUMENT ORDER (e.g. a reference retarget to an entity declared later -- a forward
+		//! reference the incremental fast path's live-manager validation cannot see).  The GUI panel /
+		//! gizmo path keeps the ungated ApplyCstParamEdit.
+		int ApplyCstParamEditChecked( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue );
+
+		//! Shared-undo U1: full-derivability-gated inverse of a param INSERT -- see the IJob virtual doc.
+		//! P1-2 fix (round 1): `occ` selects WHICH occurrence to remove (0 = first) -- removing every same-role
+		//! occurrence would delete other edits a repeatable param accumulated after the agent's insert.
+		int ApplyCstParamRemoveChecked( const char* entityName, const char* entityKind, const char* role, int occ );
+
+		//! P5 Slice 3 expansion (object transform): commit an object's NET world transform to the retained CST as
+		//! the authoritative `matrix` param (16 col-major doubles), stripping the dead component params.  Same
+		//! 0/1/2/3 contract as ApplyCstParamEdit (2/3 => Scene+managers REPLACED, caller MUST rebind).
+		int ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 );
+
+		//! P5 Slice 3 expansion (object transform): 0 = not routable / 1 = MATRIX (standard_object) / 2 = COMPONENTS
+		//! (csg_object -- position/orientation only).  The editor routes the commit + refuses unrepresentable edits.
+		int CstObjectTransformKind( const char* name ) const;
+
+		//! P5 Slice 3 expansion (csg transform): commit a csg_object's translate+rotate as its position +
+		//! orientation (Euler degrees) params.  Same 0/1/2/3 contract.
+		int ApplyCstObjectComponentsEdit( const char* objectName, const char* position, const char* orientation );
+
+		//! P5 Slice 4: (re)capture the CST-loaded file's identity (path/mtime/size) into the span index + a
+		//! ClearAll-surviving member.  Called at load and after a successful CST save (re-baseline / Save-As re-anchor).
+		void RefreshCstLoadFileIdentity( const char* path );
+
+		//! P5 Slice 3 expansion (camera drag): commit a camera's NET pose (rest location/lookat/up/orientation/
+		//! target_orientation) to the retained CST as the authored chunk params.  Same 0/1/2/3 contract.
+		int ApplyCstCameraPoseEdit( const char* camName, const char* location, const char* lookat, const char* up,
+		                            const char* orientation, const char* targetOrientation );
+
+		//! Model-B P5 (camera-clone CST insert): INSERT a faithful camera chunk (built by
+		//! CameraIntrospection::BuildCameraChunkText) into the retained Document so a future D2 / save reproduces the
+		//! clone.  Document-only (no re-derive) -> returns 1 on success / 0 on failure; no rebind needed.
+		int ApplyCstInsertCameraChunk( const char* chunkText );
+
+		//! Model-B P5 (camera-clone CST insert -- undo): REMOVE the camera chunk named `camName` (the inverse of
+		//! ApplyCstInsertCameraChunk).  Document-only -> 1 on success / 0 on failure; no rebind needed.
+		int ApplyCstRemoveCameraChunk( const char* camName );
+
+		//! Model-B P5 (Phase-4 RemoveCamera): SAFELY delete ANY camera chunk (file-authored OR clone-inserted) via
+		//! the trivia-preserving Cst::DocEraseChunkTidy.  The general erase; NOT the clone-undo-only inverse above.
+		//! Document-only -> 1 on success / 0 on failure (no Document / not found / ambiguous), Document intact.
+		int ApplyCstDeleteCameraChunk( const char* camName );
+
+		//! Model-B P5 Slice 3 expansion (FILM edit/preset): PATCH the singleton unnamed `film` chunk in the retained
+		//! Document so a SAVE / future D2 preserves a Film dim edit the live SetFilm already applied.  width/height/
+		//! pixelAR are each OPTIONAL (nullptr = leave that param untouched -> minimal diff; pixelAR may need INSERTing
+		//! when the chunk omits it).  Document-only (no re-derive, no rebind) -> 1 on success / 0 on no-op/failure.
+		int ApplyCstFilmEdit( const char* width, const char* height, const char* pixelAR );
+
+		//! Model-B F5 slice S2 (agent chunk CRUD): INSERT one complete chunk into the retained Document and
+		//! REALIZE it via a full re-derive (dry-run-guarded: a failed dry-run leaves Document + live scene
+		//! byte-identical).  Contract + out-params (incl. round-1 P1-A's `outInsertedAt`) documented on the
+		//! IJob virtual.  Returns 2/3 (replaced; rebind) / 0 (would-not-derive) / -1 (malformed chunk text) /
+		//! -2 (duplicate (kind,name)).  Never 1.
+		int ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned int keywordMax,
+		                         char* outName, unsigned int nameMax,
+		                         char* outDiag, unsigned int diagMax,
+		                         int* outInsertedAt = nullptr );
+
+		//! Model-B F5 slice S2 (agent chunk CRUD): REMOVE the chunk resolved by bare name (+ optional kind
+		//! narrowing, same rules as ApplyCstParamEdit) via the TRIVIA-PRESERVING Cst::DocEraseChunkTidy, then
+		//! drop the entity from the live scene via a full re-derive (dry-run-guarded -- a still-referenced
+		//! target refuses cleanly).  Contract + out-params documented on the IJob virtual.  Returns 2/3
+		//! (replaced; rebind) / 0 (would-not-derive) / -1 (not found / resolved to a DIFFERENT kind than
+		//! requested / no top-level index -- outDiag + log disambiguate) / -2 (ambiguous).  Never 1.
+		int ApplyCstRemoveChunk( const char* target, const char* kind,
+		                         char* outKeyword, unsigned int keywordMax,
+		                         char* outDiag, unsigned int diagMax );
+
+		//! Shared-undo U2: EXACT-POSITION inverse of ApplyCstRemoveChunk (an agent AgentRemoveChunk op's Undo).
+		//! Splices `bytesInOrder` back verbatim at top-level index `atIndex` (GLUE-SAFE per round-1 P1-B: a
+		//! synthesized "\n" lead item is inserted first when the left neighbour at a shifted `atIndex` does not
+		//! already end in a newline), then realizes via the same dry-run-guarded full re-derive tail.  Contract
+		//! documented on the IJob virtual.  Returns 2/3 (replaced; rebind) / 0 (would-not-derive / malformed
+		//! bytes).  Never 1.
+		int ApplyCstRestoreChunkAt( const char* bytesInOrder, int atIndex, bool restoreActiveRasterizer,
+		                            char* outDiag, unsigned int diagMax );
+
+		//! Shared-undo U2: EXACT-POSITION inverse of ApplyCstInsertChunk (an agent AgentInsertChunk op's
+		//! Undo).  Removes EXACTLY `count` top-level items starting at `atIndex` (the insert's own
+		//! [leadSep][chunk][trailSep] triple), then realizes via the same dry-run-guarded full re-derive
+		//! tail.  Contract (incl. round-1 P2's `expectedChunkBytes` identity check) documented on the IJob
+		//! virtual.  Returns 2/3 (replaced; rebind) / 0 (would-not-derive / out-of-range / stale-index
+		//! byte-mismatch).  Never 1.
+		int ApplyCstRemoveItemsAt( int atIndex, int count, char* outDiag, unsigned int diagMax,
+		                           const char* expectedChunkBytes = nullptr );
+
+		//! P5: the retained canonical CST (null unless the scene was loaded via LoadAsciiSceneViaCst).
+		const RISE::Cst::Document*	GetCstDocument() const { return pCstDocument.get(); }
 
 		//! Runs an ascii script
 		/// \return TRUE if successful, FALSE otherwise
@@ -2794,6 +3022,15 @@ namespace RISE
 		bool GetAnimationName( const unsigned int index, char* buf, const unsigned int bufLen ) const;
 		unsigned int GetActiveAnimationIndex() const;
 		bool GetActiveAnimationName( char* buf, const unsigned int bufLen ) const;
+		bool DeclareSceneVariant( const char* name, const char* active_camera );
+		bool SetActiveSceneVariant( const char* name );
+		bool GetActiveSceneVariant( char* buf, const unsigned int bufLen ) const;
+		const std::map<String,String>& GetSceneVariantCameras() const { return sceneVariantCameras; }
+		const String& GetActiveSceneVariantName() const { return activeSceneVariant; }
+		unsigned int GetSceneVariantCount() const { return (unsigned int)sceneVariantCameras.size(); }
+		bool GetSceneVariantName( unsigned int idx, char* buf, const unsigned int bufLen ) const;
+		bool HasSceneVariants() const { return !sceneVariantCameras.empty() || !activeSceneVariant.empty(); }
+		void ClearSceneVariants() { sceneVariantCameras.clear(); activeSceneVariant.clear(); }
 
 		//! Sets progress class to report progress for anything we do
 		void SetProgress(
@@ -2869,6 +3106,31 @@ namespace RISE
 									);
 
 	private:
+		//! P5 Slice 3 expansion: shared incremental + D2 re-derive tail for an already-edited CST Document
+		//! (closure anchored at `closureAnchorId`).  Activation-preserving D2 fallback.  Returns the 0/1/2/3
+		//! contract.  `entityName`/`role` are diagnostic-only.  Used by ApplyCstParamEdit + ApplyCstObjectMatrixEdit.
+		//! `requireFullDerivability` (F5 S2 round 2, P1-A root gate): when true, the edited Document is dry-run
+		//! through the FULL DeriveToJob BEFORE the incremental fast path may commit -- an edit that would leave
+		//! a head that no longer derives in document order is refused (code 0, head + live scene untouched).
+		int DeriveEditedCstDocument_( RISE::Cst::Document&& editedDoc, RISE::Cst::NodeId closureAnchorId, const char* entityName, const char* role, bool requireFullDerivability = false );
+		//! Shared body of ApplyCstParamEdit (ungated -- GUI panel/gizmo route) and ApplyCstParamEditChecked
+		//! (agent route -- full-derivability gate on).
+		int ApplyCstParamEditImpl_( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue, bool requireFullDerivability );
+		//! Model-B F5 slice S2: the SHARED D2 tail factored out of DeriveEditedCstDocument_ -- validate-before-
+		//! destroy dry-run into a throwaway Job, then the real ClearAll + full re-derive of `editedDoc`, forcing
+		//! the active variant and PRESERVING the active camera/rasterizer/animation + the cached viewport fit.
+		//! `diagContext` is a pre-formatted diagnostic prefix (e.g. "`lum`.`scale`"); `outFirstDryRunDiag` (if
+		//! non-null) receives the FIRST dry-run diagnostic on refusal.  Returns 0 = dry-run diagnosed (live scene
+		//! AND retained Document byte-identical -- the caller's edited copy is simply dropped) / 2 = replaced +
+		//! clean / 3 = replaced-but-diagnosed.  Used by DeriveEditedCstDocument_'s D2 fallback AND the S2 chunk
+		//! insert/remove (which are ALWAYS D2-class: a new/removed entity cannot re-derive incrementally).
+		//! `restoreActiveRasterizer` (F5 S2 round 2, P1-B): ApplyCstInsertChunk passes false when the inserted
+		//! chunk IS a rasterizer so the derive's last-wins activation (the insert) stands -- live matches reload.
+		int RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag, bool restoreActiveRasterizer = true );
+		//! Facet 5 slice 1a: bump the retained CST head's revision (leaving uuid), called at EVERY site that
+		//! successfully mutates the retained pCstDocument content.  The invariant: revision changes IFF the
+		//! retained Document content changed -- so a NO-CHANGE code path (a rejected edit) must NOT call this.
+		void BumpCstHeadRevision() { ++mCstHeadVersion.revision; }
 		//! Lazy-build a rasterizer of the given chunk-name with
 		//! sensible defaults and a shader picked from the scene's
 		//! shader manager (first registered name).  Returns false if
@@ -2885,6 +3147,17 @@ namespace RISE
 		//! every Add*Camera impl so the camera-factory dim-arg
 		//! plumbing has one source of truth — the Scene's Film.
 		void ReadFilmDims( unsigned int& xres, unsigned int& yres, double& pixelAR ) const;
+
+		//! Incremental re-point mode (slice 3 stable-object apply).  When true,
+		//! AddObject/AddObjectMatrix re-point an existing same-named object in place
+		//! rather than creating a new one (see SetIncrementalRepointMode / IJob).  Set
+		//! only by the single-threaded CST incremental re-Finalize loop; false in every
+		//! full derive, so the full-derive object-creation path is byte-unchanged.
+		bool m_bIncrementalRepoint;
+
+		//! Count of override_object chunks that modified an object in place this derive
+		//! (see IJob::NoteObjectOverride).  The CST incremental apply refuses when > 0.
+		unsigned int m_objectOverrideCount;
 	};
 }
 

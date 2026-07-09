@@ -1,0 +1,2178 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#   File:           enamel_watch.RISEscene
+#   Description:    anOrdain-style vitreous-enamel wristwatch: a deep oxblood fume dial.  The dial is a
+#                   physically-layered enamel stack -- a bounded dielectric-enamel slab whose interior
+#                   carries a gold-ruby absorbing medium (the fume tint) over a domed measured-silver
+#                   substrate, so the colour deepens toward the rim exactly as real basse-taille /
+#                   fume enamel does (thickness x absorption over a reflective ground).  Gold-leaf
+#                   hour + minute hands and a thin central seconds hand run over the dial; a slim
+#                   polished-steel case + a low-dome sapphire crystal with a multi-layer AR coating
+#                   sit above.  Env-only, glare-free studio lighting.  Rendered spectrally (PT, not
+#                   VCM).  Fully procedural: dial heightfields, case/crown/hands and crystal are
+#                   SDF / sweep / path-instance geometry -- no pre-baked meshes or maps.  The
+#                   loopable "GlintSweep" animation rakes a localized key across the dial so the
+#                   continuous fired-glass dimple relief twinkles (the fumé breathes with it).  Generic -- no brand mark.
+#   Author:         Aravind Krishnaswamy
+#############################################################################################################
+
+##################################################
+# Scene unit normalization (physically-accurate sizing).  The case cylinder
+# is radius 24 -> 48 units across; the watch case here is 38 mm, so
+# 1 scene unit = 38/48 mm.  scene_unit is METRES per scene unit, and the
+# thinlens_camera reconciles its mm focal_length/sensor_size against it.
+# (Design target: 38mm dia, 10.9mm thick, 44.5mm lug-to-lug, domed sapphire
+#  + double-sided AR -> matches our dielectric AR coating.)
+##################################################
+scene_options
+{
+	scene_unit			0.00079167
+}
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultPathTracing
+}
+
+# STUDIO light-tent fill: a neutral white surround (replaced the uffizi
+# cathedral probe).  The dark black-glass floor below the watch turns this
+# into the classic studio gradient on the polished case (bright above ->
+# dark below); the soft_top/soft_bot area lights are the key highlights.
+uniformcolor_painter
+{
+	name				pnt_env
+	color				1 1 1
+}
+
+pathtracing_spectral_rasterizer
+{
+	# 512: the discrete-facet flecks are 1-2px deterministic peaks; OIDN
+	# keeps 68% of them at 512 spp but only 23% at 128 (the denoiser needs
+	# the noise floor below the fleck structure).  Measured 2026-07-03.
+	samples				512
+	nmbegin				380
+	nmend				720
+	num_wavelengths			16
+	spectral_samples		1
+	oidn_denoise			true
+	oidn_prefilter			accurate
+	# NEE shadow rays pass through the sapphire crystal with Fresnel
+	# transmittance (else binary-blocked -> dial lit only by noisy BSDF
+	# refraction -> denoiser smears the dial).  PT-only opt-in.
+	transparent_shadows		FALSE
+	radiance_map			pnt_env
+	radiance_scale			1.15
+	radiance_background		FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/enamel_watch
+	multiple			FALSE
+	type				EXR
+	color_space			Rec709RGB_Linear
+}
+
+# LDR quick-look twin of the EXR above (sRGB 8-bit PNG).
+file_rasterizeroutput
+{
+	pattern				rendered/enamel_watch_ldr
+	multiple			FALSE
+	type				PNG
+	bpp				8
+	color_space			sRGB
+}
+
+film
+{
+	width				380
+	height				380
+}
+
+##################################################
+# Cameras -- a product-shoot set for the watch on its polished surface.
+# The ACTIVE camera is the LAST one defined (RISE activates the most recently
+# added camera), so cam_photo (the hero) is last -> a plain `render` / the GUI
+# default is the beauty shot.  Switch angle in the GUI with the
+# camera selector (Job::SetActiveCamera).  All non-top-down cameras use
+# up=(0,0,1) so the +Z tabletop reads as the ground and the watch reflects in it.
+# The watch sits crown-on-+X, 12-o'clock-on-+Y; azimuths ~300-333 deg put the
+# crown on the right and 12 toward the upper corner (the natural pose).
+#
+#   cam_topdown  straight-down flat-lay: whole dial + strap laid out, 12 up.
+#   cam_high34   high 3/4 (~56deg), rakes the enamel dial + gold hands from above.
+#   cam_graze    low ~12deg grazing rake -- dramatic, catches the dome + sheen.
+#   cam_profile  pure side profile from 6 o'clock: case slab, domed crystal,
+#                crown nub, lugs, strap curving down to the table.
+#   cam_low34    low 3/4 beauty (~24deg), sharp (no DOF) -- crisp alt to cam_photo.
+#   cam_macro    100mm macro PUNCH-IN at f/8: closer + lower + toward the crown,
+#                shallow DOF so the strap melts to bokeh (thinlens).
+#   cam_photo    HERO: 100mm macro at f/16, balanced 3/4 (psi=315), active/last.
+##################################################
+pinhole_camera
+{
+	name				cam_topdown
+	location			0.00 0.00 95.00
+	lookat				0 0 -2
+	up				0 1 0
+	fov				50.0
+}
+
+
+pinhole_camera
+{
+	name				cam_graze
+	location			54.20 -69.37 18.71
+	lookat				0 0 -1
+	up				0 0 1
+	fov				40.0
+}
+
+pinhole_camera
+{
+	name				cam_profile
+	location			3.29 -94.23 11.58
+	lookat				0 0 -2
+	up				0 0 1
+	fov				42.0
+}
+
+pinhole_camera
+{
+	name				cam_low34
+	location			66.48 -55.79 38.64
+	lookat				0 0 -2
+	up				0 0 1
+	fov				36.0
+}
+
+thinlens_camera
+{
+	name				cam_macro
+	sensor_size			36
+	focal_length			100
+	fstop				8
+	focus_distance		176.0
+	aperture_blades		9
+	location			140.15 -71.41 76.71
+	lookat				0 0 -2
+	up				0 0 1
+}
+
+##################################################
+# cam_photo: the photographer's hero rig -- 100mm macro on full-frame (36mm) at
+# f/16 (deep DOF; RISE has no diffraction penalty so small f reads like a focus
+# stack).  psi=315 deg, ~45deg elevation: 12 o'clock to NE, crown to the right.
+# location + focus_distance are SCENE UNITS.  The hero STILL (select it in
+# the GUI); cam_high34 is now last = active, so a bare
+# `render` and `renderanimation` use the animated cam_high34.
+##################################################
+thinlens_camera
+{
+	name				cam_photo
+	sensor_size			36
+	focal_length			100
+	fstop				16
+	focus_distance		260.0
+	aperture_blades		9
+	location			130.00 -130.00 182.85
+	lookat				0 0 -1
+	up				0 0 1
+}
+
+##################################################
+# cam_high34 -- ACTIVE (last) camera.  Base pose = the animation MIDPOINT (a high
+# 3/4, ~56deg elevation, psi=305).  A bare `render` shows this still; the
+# timelines below drive it during `renderanimation`.
+##################################################
+pinhole_camera
+{
+	name				cam_high34
+	location			27.26 -38.94 70.47
+	lookat				0 0 -2
+	up				0 0 1
+	fov				42.0
+}
+
+##################################################
+# NAMED ANIMATIONS on cam_high34 -- pick one in the RISE-GUI side-panel
+# dropdown, with the CLI `> modify animation <name>`, or by moving `active`
+# below.  `renderanimation` renders the ACTIVE animation (GlintSweep by default)
+# and the GUI timeline scrubs / the Play button loops it.  All five orbit the
+# camera around the dial's lookat (re-centred, so it stays framed) and every
+# one drives BOTH `elevation` and `azimuth` so switching between them is always
+# clean.  Elevation drives the fume look: near head-on the dial reads its
+# deepest oxblood, and the crystalline dimples + gold hands catch the light as
+# the view rocks, warming toward grazing.
+# cam_high34 must stay the ACTIVE (last) camera for renderanimation to drive it.
+#
+#   GlintSweep (active) WIDE elliptical rake (+-18deg elev / +-12deg azim) that
+#              sweeps the glint_key lobe across the dial so the dimple relief
+#              twinkles; C1-seamless loop.
+#   Wobble     gentle elliptical orbit, +-12deg elev / +-5deg azim; subtle
+#              sparkle breathe over the dimpled enamel, C1-seamless loop.
+#   Reveal     dramatic dip-and-rise (elev 31 -> -35 -> 31, azim +-12); the dial
+#              sheen sweeps head-on -> grazing -> head-on.
+#   Figure-8   infinity-path wobble (azim 10*sin, elev 12*sin at 2x rate); both
+#              curves cross zero at the seam -> perfectly C1-seamless loop.
+#   SlowOrbit  slow constant-speed full 360deg azimuth ring at the hero
+#              elevation; the specular highlight sweeps around the dial.
+#   HandsSweep the watch HANDS run (a 12-hour time-lapse) while the camera holds
+#              the hero pose: minute hand 12 clockwise turns, hour hand 1 turn
+#              (1/12 the speed, like a real watch); both loop back to 10:10.
+#   WobbleHands HandsSweep + Wobble together: the hands run the 12-hour time-
+#              lapse WHILE the camera does the gentle elliptical wobble -- a live,
+#              breathing hero view of the running watch (both loop at t=1).
+##################################################
+
+animation
+{
+	name			Wobble
+	time_start		0.0
+	time_end		1.0
+	num_frames		48
+}
+
+animation
+{
+	name			Reveal
+	time_start		0.0
+	time_end		1.0
+	num_frames		48
+}
+
+animation
+{
+	name			Figure-8
+	time_start		0.0
+	time_end		1.0
+	num_frames		48
+}
+
+animation
+{
+	name			SlowOrbit
+	time_start		0.0
+	time_end		1.0
+	num_frames		72
+}
+
+animation
+{
+	name			HandsSweep
+	time_start		0.0
+	time_end		1.0
+	num_frames		120
+}
+
+animation
+{
+	name			WobbleHands
+	time_start		0.0
+	time_end		1.0
+	num_frames		120
+}
+
+#   GlintSweep (ACTIVE) a WIDE elliptical orbit (+-18deg elev / +-12deg azim,
+#              90deg out of phase) that rakes the glint_key's specular lobe
+#              in an ellipse across the whole dial -- so the continuous
+#              fired-glass dimple relief flashes its twinkle as the lobe
+#              sweeps over each patch of orange-peel.  Wider than Wobble
+#              (whose gentle rock keeps the lobe near centre); C1-seamless
+#              loop (start = end, hermite).
+animation
+{
+	name			GlintSweep
+	active			TRUE
+	time_start		0.0
+	time_end		1.0
+	num_frames		48
+}
+
+# --- Wobble (active) ---
+
+timeline
+{
+	animation	Wobble
+	element_type	camera
+	element			cam_high34
+	param			elevation
+	interpolator	hermite
+
+	time		0.000
+	value		0.0
+
+	time		0.125
+	value		8.485
+
+	time		0.250
+	value		12.0
+
+	time		0.375
+	value		8.485
+
+	time		0.500
+	value		0.0
+
+	time		0.625
+	value		-8.485
+
+	time		0.750
+	value		-12.0
+
+	time		0.875
+	value		-8.485
+
+	time		1.000
+	value		0.0
+}
+
+timeline
+{
+	animation	Wobble
+	element_type	camera
+	element			cam_high34
+	param			azimuth
+	interpolator	hermite
+
+	time		0.000
+	value		5.0
+
+	time		0.125
+	value		3.536
+
+	time		0.250
+	value		0.0
+
+	time		0.375
+	value		-3.536
+
+	time		0.500
+	value		-5.0
+
+	time		0.625
+	value		-3.536
+
+	time		0.750
+	value		0.0
+
+	time		0.875
+	value		3.536
+
+	time		1.000
+	value		5.0
+}
+
+# --- Reveal ---
+
+timeline
+{
+	animation	Reveal
+	element_type	camera
+	element			cam_high34
+	param			elevation
+	interpolator	hermite
+
+	time		0.00
+	value		31.0
+
+	time		0.25
+	value		-4.0
+
+	time		0.50
+	value		-35.0
+
+	time		0.75
+	value		-4.0
+
+	time		1.00
+	value		31.0
+}
+
+timeline
+{
+	animation	Reveal
+	element_type	camera
+	element			cam_high34
+	param			azimuth
+	interpolator	hermite
+
+	time		0.00
+	value		-12.0
+
+	time		0.50
+	value		12.0
+
+	time		1.00
+	value		-12.0
+}
+
+# --- Figure-8 ---
+
+timeline
+{
+	animation	Figure-8
+	element_type	camera
+	element			cam_high34
+	param			azimuth
+	interpolator	hermite
+
+	time		0.000
+	value		0.0
+
+	time		0.125
+	value		7.071
+
+	time		0.250
+	value		10.0
+
+	time		0.375
+	value		7.071
+
+	time		0.500
+	value		0.0
+
+	time		0.625
+	value		-7.071
+
+	time		0.750
+	value		-10.0
+
+	time		0.875
+	value		-7.071
+
+	time		1.000
+	value		0.0
+}
+
+timeline
+{
+	animation	Figure-8
+	element_type	camera
+	element			cam_high34
+	param			elevation
+	interpolator	hermite
+
+	time		0.000
+	value		0.0
+
+	time		0.125
+	value		12.0
+
+	time		0.250
+	value		0.0
+
+	time		0.375
+	value		-12.0
+
+	time		0.500
+	value		0.0
+
+	time		0.625
+	value		12.0
+
+	time		0.750
+	value		0.0
+
+	time		0.875
+	value		-12.0
+
+	time		1.000
+	value		0.0
+}
+
+# --- SlowOrbit (constant-speed full revolution; elevation pinned at base) ---
+
+timeline
+{
+	animation	SlowOrbit
+	element_type	camera
+	element			cam_high34
+	param			azimuth
+	interpolator	linear
+
+	time		0.00
+	value		0.0
+
+	time		1.00
+	value		360.0
+}
+
+timeline
+{
+	animation	SlowOrbit
+	element_type	camera
+	element			cam_high34
+	param			elevation
+	interpolator	linear
+
+	time		0.00
+	value		0.0
+
+	time		1.00
+	value		0.0
+}
+
+# --- HandsSweep (the watch HANDS run; camera held at the hero pose) ---
+# A 12-hour time-lapse: the minute hand sweeps 12 full CLOCKWISE turns while the
+# hour hand advances exactly 1/12 as fast -> one full turn (12 hours).  Both
+# return to the 10:10 pose at t=1 (seamless loop) and the 1:12 ratio matches a
+# real watch.  Hands rotate about the dial normal (Z) at the centre hub (the SDF
+# round-cone's fat r1 end sits at the object origin = the hub).  CLOCKWISE =
+# DECREASING Z (the dial faces the camera, so +Z reads counter-clockwise).  The
+# camera elevation/azimuth stay pinned at 0 so the hero framing holds steady.
+
+timeline
+{
+	animation	HandsSweep
+	element_type	camera
+	element			cam_high34
+	param			elevation
+	interpolator	linear
+
+	time		0.00
+	value		0.0
+
+	time		1.00
+	value		0.0
+}
+
+timeline
+{
+	animation	HandsSweep
+	element_type	camera
+	element			cam_high34
+	param			azimuth
+	interpolator	linear
+
+	time		0.00
+	value		0.0
+
+	time		1.00
+	value		0.0
+}
+
+# --- WobbleHands (hands run + camera wobbles) -- camera half (the Wobble
+# elliptical orbit); the hand half is with the other hand timelines below. ---
+timeline
+{
+	animation	WobbleHands
+	element_type	camera
+	element			cam_high34
+	param			elevation
+	interpolator	hermite
+
+	time		0.000
+	value		0.0
+
+	time		0.125
+	value		8.485
+
+	time		0.250
+	value		12.0
+
+	time		0.375
+	value		8.485
+
+	time		0.500
+	value		0.0
+
+	time		0.625
+	value		-8.485
+
+	time		0.750
+	value		-12.0
+
+	time		0.875
+	value		-8.485
+
+	time		1.000
+	value		0.0
+}
+
+timeline
+{
+	animation	WobbleHands
+	element_type	camera
+	element			cam_high34
+	param			azimuth
+	interpolator	hermite
+
+	time		0.000
+	value		5.0
+
+	time		0.125
+	value		3.536
+
+	time		0.250
+	value		0.0
+
+	time		0.375
+	value		-3.536
+
+	time		0.500
+	value		-5.0
+
+	time		0.625
+	value		-3.536
+
+	time		0.750
+	value		0.0
+
+	time		0.875
+	value		3.536
+
+	time		1.000
+	value		5.0
+}
+
+# --- GlintSweep (active) -- wide elliptical rake to reveal the dimple twinkle ---
+
+timeline
+{
+	animation	GlintSweep
+	element_type	camera
+	element			cam_high34
+	param			elevation
+	interpolator	hermite
+
+	time		0.000
+	value		0.0
+
+	time		0.125
+	value		12.728
+
+	time		0.250
+	value		18.0
+
+	time		0.375
+	value		12.728
+
+	time		0.500
+	value		0.0
+
+	time		0.625
+	value		-12.728
+
+	time		0.750
+	value		-18.0
+
+	time		0.875
+	value		-12.728
+
+	time		1.000
+	value		0.0
+}
+
+timeline
+{
+	animation	GlintSweep
+	element_type	camera
+	element			cam_high34
+	param			azimuth
+	interpolator	hermite
+
+	time		0.000
+	value		12.0
+
+	time		0.125
+	value		8.485
+
+	time		0.250
+	value		0.0
+
+	time		0.375
+	value		-8.485
+
+	time		0.500
+	value		-12.0
+
+	time		0.625
+	value		-8.485
+
+	time		0.750
+	value		0.0
+
+	time		0.875
+	value		8.485
+
+	time		1.000
+	value		12.0
+}
+
+# (HandsSweep's hour/minute-hand timelines live AFTER the hand objects
+# sdfhour/sdfminute below -- a timeline's element must already exist when
+# its chunk is parsed, and the hands are defined later in the file.)
+
+
+
+##################################################
+# Painters
+##################################################
+uniformcolor_painter
+{
+	name				pnt_black
+	color				0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				1.0 1.0 1.0
+}
+
+# Steel (Fe) optical constants for the 316L stainless case.
+scalar_painter
+{
+	name				Steel_n
+	file				colors/thinfilm/substrates/Steel.n
+}
+
+scalar_painter
+{
+	name				Steel_k
+	file				colors/thinfilm/substrates/Steel.k
+}
+##################################################
+# Watch-head support painters + materials
+##################################################
+uniformcolor_painter
+{
+	name				pnt_strap_blue
+	color				0.07 0.011 0.014
+}
+
+uniformcolor_painter
+{
+	name				pnt_surf_f0
+	color				0.05 0.05 0.05
+}
+
+# Polished 316L stainless steel (case, bezel, crown, lugs); the case is
+# steel, not titanium; Fe (Johnson-Christy) n/k.  Near-mirror polished finish.
+ggx_material
+{
+	name				ti_polished
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.03
+	alphay				0.03
+	fresnel_mode			conductor
+	ior				Steel_n
+	extinction			Steel_k
+}
+
+# Gold leaf hands (anOrdain) -- polished-gold conductor (schlick gold F0).
+uniformcolor_painter
+{
+	name				pnt_gold_f0
+	color				1.0 0.77 0.34
+}
+
+# Measured gold (Au) n,k -- Johnson & Christy 1972.  A true conductor keeps its
+# gold tint even on a blown highlight (blue reflectance ~0.38 stays low), so the
+# hands read brass instead of clipping to white like a schlick_f0 mirror does.
+scalar_painter
+{
+	name				Au_n
+	file				colors/conductors/Au.n
+}
+scalar_painter
+{
+	name				Au_k
+	file				colors/conductors/Au.k
+}
+
+ggx_material
+{
+	name				white_hands
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.06
+	alphay				0.06
+	fresnel_mode			conductor
+	ior				Au_n
+	extinction			Au_k
+}
+
+# Stamped gold dial furniture (anOrdain markings) as thin gold RELIEF geometry:
+# railroad chapter ring + even-Arabic numerals + "anOrdain" / "VITREOUS ENAMEL",
+# extruded from a mask into flat gold quads just proud of the enamel top
+# (z=-0.80).  This is the pad-STAMPED gold layer modelled as real geometry --
+# NOT an alpha decal (the spectral PT does not honour material alpha masks), and
+# geometry is also the more physically-accurate model of anOrdain's stamping.
+ggx_material
+{
+	name				furniture_gold
+	rd				pnt_surf_f0
+	rs				pnt_gold_f0
+	alphax				0.07
+	alphay				0.07
+	fresnel_mode			schlick_f0
+}
+
+# Blued-steel DARK furniture + hands -- bound on LIGHT dials for legibility
+# (swap the `furniture` object to furniture_dark and the hands to dark_hands;
+# used by the light tear-sheet colourways).  Near-black with a subtle polished
+# sheen, like blued/blackened steel markings on a pale enamel dial.
+uniformcolor_painter
+{
+	name				pnt_ink
+	color				0.02 0.02 0.025
+}
+
+# Bright silver-WHITE furniture + hands -- bound on MEDIUM-saturated dials (green,
+# olive, amber) where neither gold nor dark reads well.  Rhodium/white-print look.
+uniformcolor_painter
+{
+	name				pnt_letterwhite
+	color				0.90 0.90 0.92
+}
+ggx_material
+{
+	name				white_furniture
+	rd				pnt_letterwhite
+	rs				pnt_white
+	alphax				0.12
+	alphay				0.12
+	fresnel_mode			schlick_f0
+}
+ggx_material
+{
+	name				light_hands
+	rd				pnt_letterwhite
+	rs				pnt_white
+	alphax				0.06
+	alphay				0.06
+	fresnel_mode			schlick_f0
+}
+uniformcolor_painter
+{
+	name				pnt_ink_f0
+	color				0.07 0.07 0.08
+}
+ggx_material
+{
+	name				furniture_dark
+	rd				pnt_ink
+	rs				pnt_ink_f0
+	alphax				0.12
+	alphay				0.12
+	fresnel_mode			schlick_f0
+}
+ggx_material
+{
+	name				dark_hands
+	rd				pnt_ink
+	rs				pnt_ink_f0
+	alphax				0.06
+	alphay				0.06
+	fresnel_mode			schlick_f0
+}
+
+plymesh_geometry
+{
+	name				furnituregeom
+	file				scenes/FeatureBased/EnamelWatch/furniture.ply
+	double_sided			TRUE
+}
+
+standard_object
+{
+	name				furniture
+	geometry			furnituregeom
+	position			0 0 0
+	material			furniture_gold
+}
+
+# Sapphire (Al2O3 / corundum) dispersion -- Malitson 1962 ordinary-ray Sellmeier
+# coefficients (B1 B2 B3 C1 C2 C3, C in um^2; the painter converts nm->um internally).
+# n(589nm) ~= 1.768; low dispersion (Abbe ~72), so a subtle but physical chromatic edge.
+scalar_painter
+{
+	name				sapphire_ior
+	sellmeier			1.4313493 0.65054713 5.3414021 0.0052799 0.0142383 325.0178
+}
+
+# Domed sapphire crystal -- clear dielectric with the real spectral (dispersive) sapphire
+# index above.  High `scattering` == long mean free path == effectively clear.
+dielectric_material
+{
+	name				sapphire_crystal
+	tau				0.985 0.99 1.0
+	ior				sapphire_ior
+	scattering			100000.0
+	# Broadband multi-layer AR (the real premium-watch coating): a two-layer
+	# quarter/quarter stack, authored AIR-side first (ambient->substrate):
+	#   MgF2  (n 1.38) quarter-wave @520nm = 94.2 nm
+	#   Al2O3 (n 1.66) quarter-wave @520nm = 78.3 nm  (sapphire-matching layer)
+	# A SINGLE MgF2 layer minimises glare only at green, so it leaves a magenta
+	# "purple bloom"; this QQ pair flattens R(lambda) across the visible to a
+	# nearly constant ~1% (TMM: mean 0.99%, spread 0.04%, vs 7.7% bare) -> a
+	# faint, COLOUR-NEUTRAL reflection like the anOrdain's coating.  Design +
+	# sweep in scratchpad/ar_tmm.py; evaluated at render by the N-layer TMM
+	# (ThinFilm::ReflectanceConductorStack).
+	ar_layer			1.38 94.2 0
+	ar_layer			1.66 78.3 0
+}
+
+##################################################
+# Studio lighting (watch-photography style), TWO sources:
+#   soft_top -- a LARGE soft overhead-front SCRIM (light-tent fill): big enough
+#               that the domed crystal reflects it as a smooth broad gradient
+#               (no hotspot) while still RAKING the enamel dial from above
+#               so the crystalline dimples shimmer.  The vivid-but-flare-free key.
+#   soft_bot -- a SMALL bright overhead KEY aimed straight down on the dial
+#               (direct fill so the face reads bright); overhead, so at the
+#               grazing end it reflects up-and-away rather than flaring into
+#               the low camera.
+# The neutral env (dim) + dark black-glass floor give the dark studio surround
+# and the bright-above -> dark-below gradient on the polished case.
+##################################################
+
+lambertian_luminaire_material
+{
+	name				soft_top_lum
+	exitance			pnt_white
+	scale				0.0
+	material			none
+}
+
+clippedplane_geometry
+{
+	name				soft_top_geom
+	pta				-170 50 230
+	ptb				170 50 230
+	ptc				170 -185 95
+	ptd				-170 -185 95
+}
+
+standard_object
+{
+	name				soft_top
+	geometry			soft_top_geom
+	material			soft_top_lum
+}
+
+lambertian_luminaire_material
+{
+	name				soft_bot_lum
+	exitance			pnt_white
+	scale				0.0
+	material			none
+}
+
+clippedplane_geometry
+{
+	name				soft_bot_geom
+	pta				-26 -34 92
+	ptb				-26 16 92
+	ptc				26 16 92
+	ptd				26 -34 92
+}
+
+standard_object
+{
+	name				soft_bot
+	geometry			soft_bot_geom
+	material			soft_bot_lum
+}
+
+##################################################
+# GLINT KEY -- a SMALL bright accent panel (~0.49deg angular radius: 3.1x3.1
+# units at 180 distance), aimed along the dial-plane specular MIRROR of the
+# cam_high34 base pose so the glaze's specular lobe reveals the dimple relief's
+# twinkle for the hero framing (the GlintSweep / Wobble tilt then rakes it
+# across the dial).  It sits at distance 180 = clearly IN FRONT of the
+# soft_top scrim's plane (which is at z~248 at this height) -- an accent
+# kicker up-and-behind the watch, NOT a third source stacked on the scrim (an
+# earlier revision put it at distance 350, coincident with the scrim plane --
+# unphysical; a scrim cannot contain a light at its own surface).  SMALL is
+# the point: a localized source is REQUIRED for specular glints (a uniform env
+# produces none), yet small enough that it cannot re-introduce the broad glare
+# band the env-only look removed.  Physically this is the reference clips'
+# distant window, reflected to the eye off the near-flat dial.  Front face (winding normal)
+# points at the dial.
+##################################################
+
+lambertian_luminaire_material
+{
+	name				glint_key_lum
+	exitance			pnt_white
+	scale				400.0
+	material			none
+}
+
+clippedplane_geometry
+{
+	name				glint_key_geom
+	pta				-59.17 81.83 149.02
+	ptb				-56.64 83.60 149.02
+	ptc				-55.17 81.49 150.73
+	ptd				-57.69 79.72 150.73
+}
+
+standard_object
+{
+	name				glint_key
+	geometry			glint_key_geom
+	material			glint_key_lum
+}
+
+##################################################
+# ALTERNATE LIGHTING (commented out) -- DRAMATIC HIGH-CONTRAST HERO.
+# A dark, moody 'emerging-from-black' look (high-end dark-product style):
+# a single HARD raking KEY (upper-front, +X side) carves the dial
+# dimples into strong light/shadow, an edge RIM (rear -X, low) catches the
+# case outline so the watch separates from a near-black field.  The soft
+# studio light-tent above is replaced by deep contrast.
+#
+# TO ACTIVATE (and reverse to undo):
+#   1. studio lights above -> scale 0   (soft_top_lum AND soft_bot_lum)
+#   2. rasterizer 'radiance_scale' -> ~0.03   (near-black surround)
+#   3. uncomment every line in this block (strip the leading '# ')
+# Tuning: raise dram_rim_lum 'scale' for a brighter case-edge halo; move
+# dram_key_geom toward the dial for a tighter, harder hotspot; raise
+# radiance_scale a touch (~0.06) if the shadows are too crushed.
+##################################################
+/*
+ lambertian_luminaire_material
+ {
+ 	name				dram_key_lum
+ 	exitance			pnt_white
+ 	scale				58.0
+ 	material			none
+ }
+ clippedplane_geometry
+ {
+ 	name				dram_key_geom
+ 	pta				45.52 -82.29 101.95
+ 	ptb				13.71 -50.48 128.05
+ 	ptc				50.48 -13.71 128.05
+ 	ptd				82.29 -45.52 101.95
+ }
+ standard_object
+ {
+ 	name				dram_key
+ 	geometry			dram_key_geom
+ 	material			dram_key_lum
+ }
+ lambertian_luminaire_material
+ {
+ 	name				dram_rim_lum
+ 	exitance			pnt_white
+ 	scale				0.0
+ 	material			none
+ }
+ clippedplane_geometry
+ {
+ 	name				dram_rim_geom
+ 	pta				-72.20 75.68 14.52
+ 	ptb				-45.57 53.09 77.48
+ 	ptc				-59.80 36.32 77.48
+ 	ptd				-86.43 58.91 14.52
+ }
+ standard_object
+ {
+ 	name				dram_rim
+ 	geometry			dram_rim_geom
+ 	material			dram_rim_lum
+ }
+*/
+
+##################################################
+# NIGHT / LUME SHOT: authored as a self-contained `> modify` command
+# block at the END of this file (the commands must follow the objects
+# they repoint).  Uncomment that block to switch day -> night.
+##################################################
+# ===================== VITREOUS-ENAMEL DIAL =====================
+# The fume dial as a physically-layered enamel stack:
+# dimpled DIELECTRIC top (sec 10.2 relief) + gold-ruby MEDIUM + laterally-
+# bounded SDF silver DOME (fume thickness gradient, sec 2.1).  Vertical
+# dimensions are thin/realistic; only the radius scales to the 20.6 dial.
+scalar_painter
+{
+	name Ag_n
+	file colors/conductors/Ag.n
+}
+scalar_painter
+{
+	name Ag_k
+	file colors/conductors/Ag.k
+}
+uniformcolor_painter
+{
+	name en_black
+	color 0 0 0
+}
+uniformcolor_painter
+{
+	name en_white
+	color 1 1 1
+}
+
+piecewise_linear_function
+{
+	name goldruby_abs
+	cp 400 56.0
+	cp 420 57.0
+	cp 440 57.0
+	cp 460 57.0
+	cp 480 56.0
+	cp 500 55.0
+	cp 515 56.0
+	cp 530 54.0
+	cp 550 47.0
+	cp 570 34.0
+	cp 590 21.0
+	cp 610 15.0
+	cp 630 9.0
+	cp 650 5.6
+	cp 680 3.7
+	cp 700 2.7
+	cp 720 2.4
+}
+
+homogeneous_medium
+{
+	name goldruby
+	absorption 3.5 3.9 0.4
+	scattering 0.0 0.0 0.0
+	absorption_spectral goldruby_abs
+	phase isotropic
+}
+
+##################################################
+# DIAL COLOUR PALETTE (2026-07-05).  Physically-based translucent-enamel
+# colorants: each is a spectral absorption curve sigma_a(lambda) [1/scene-unit]
+# for the fume interior_medium, grounded in the real metal-oxide/colloid
+# chemistry vitreous-enamel makers use (anOrdain's own account: cobalt=blue,
+# chromium=green, iron=grey, manganese=purple, copper=turquoise, gold-ruby=plum).
+# The DIAL colour = substrate reflectance(lambda) x medium transmission(lambda)^2
+# (double pass), so the SUBSTRATE is a second lever: SILVER (neutral bright) for
+# most; GOLD (floor_gold, warm) for amber/champagne and warm reds.  Transmission
+# windows sit at sigma_a ~2.4-3.5 (goldruby's visible level); absorbed bands ~46-56
+# (killed).  EXCEPTION: payne_grey is a near-black 'dilute black' colorant (mean
+# sigma_a ~25, roughly flat) -- calibrated 2026-07-05 against the measured anOrdain
+# product photo so the ground crushes near-black and the surface glints sparkle.  To
+# switch the dial: bind a different `interior_medium` on `enamel` (+ `floor_gold`
+# on `en_dome` for a gold ground).  goldruby/plum stays the default.
+#
+# COLOURWAY RECIPES (interior_medium / en_dome substrate) -- the tear-sheet set:
+#   Plum          goldruby            / floor_silver   (default)
+#   Payne's Grey  payne_grey          / floor_silver
+#   Cobalt Blue   cobalt_blue         / floor_silver
+#   Chrome Green  chrome_green        / floor_silver
+#   Turquoise     copper_turquoise    / floor_silver
+#   Amethyst      manganese_amethyst  / floor_silver
+#   Champagne     iron_amber          / floor_gold     (warm ground)
+#   Olive         chrome_green        / floor_gold     (same colorant as Chrome
+#                                                        Green; the GOLD ground
+#                                                        warms/mutes it to olive --
+#                                                        the substrate lever)
+# NOTE: gold-ruby over gold ~= over silver (both grounds reflect red strongly and
+# gold-ruby already kills blue), so a gold-substrate "rose" red is NOT distinct;
+# the substrate only shifts colours whose transmission window overlaps the band
+# where silver and gold reflectance DIFFER (blue/green).
+##################################################
+
+# Iron (Fe) grey -- anOrdain 'Payne's Grey'.  Payne's Grey is a *dilute black*
+# (William Payne's pigment: indigo + raw sienna + crimson lake), so this is a
+# HIGH-absorption near-neutral: mean sigma_a ~25, gently RISING into the red so a
+# little more blue transmits -> the cool undertone anOrdain describes.  Calibrated
+# (2026-07-05) against the measured anOrdain product photo: the ground must crush
+# to near-black (measured dial linLum median 0.015-0.041) so the top-surface
+# Fresnel glints read as the brilliant aventurine sparkle.  Iron in glass
+# (Fe2+/Fe3+) gives the smoky neutral over the SILVER ground.
+piecewise_linear_function
+{
+	name payne_grey_abs
+	cp 400 21.0
+	cp 420 21.3
+	cp 440 21.7
+	cp 460 22.1
+	cp 480 22.7
+	cp 500 23.2
+	cp 515 23.8
+	cp 530 24.4
+	cp 550 24.9
+	cp 570 25.6
+	cp 590 26.3
+	cp 610 27.0
+	cp 630 27.7
+	cp 650 28.3
+	cp 680 29.0
+	cp 700 29.4
+	cp 720 30.0
+}
+
+homogeneous_medium
+{
+	name payne_grey
+	absorption 1.0 1.0 1.0
+	scattering 0.0 0.0 0.0
+	absorption_spectral payne_grey_abs
+	phase isotropic
+}
+
+# Cobalt (Co2+) BLUE.  Tetrahedral Co2+ absorbs a broad triple band across
+# green-orange-red (~535/590/645 nm) and transmits BLUE (~440 nm window).
+# The classic deep cobalt.  (anOrdain: 'adding cobalt produces a blue'.)
+piecewise_linear_function
+{
+	name cobalt_abs
+	cp 400 5
+	cp 420 3.5
+	cp 440 2.5
+	cp 460 2.8
+	cp 480 5
+	cp 500 10
+	cp 515 16
+	cp 530 24
+	cp 550 26
+	cp 570 34
+	cp 590 44
+	cp 610 48
+	cp 630 52
+	cp 650 54
+	cp 680 54
+	cp 700 52
+	cp 720 50
+}
+
+homogeneous_medium
+{
+	name cobalt_blue
+	absorption 3.0 2.8 0.5
+	scattering 0.0 0.0 0.0
+	absorption_spectral cobalt_abs
+	phase isotropic
+}
+
+# Chromium (Cr3+) GREEN.  Two absorption humps -- violet-blue (~440) and red
+# (~650) -- with a transmission WINDOW at green (~515-530).  Chrome green.
+# (anOrdain: 'chromium a green'.)
+piecewise_linear_function
+{
+	name chrome_abs
+	cp 400 54
+	cp 420 56
+	cp 440 58
+	cp 460 50
+	cp 480 32
+	cp 500 16
+	cp 515 10
+	cp 530 9
+	cp 550 11
+	cp 570 18
+	cp 590 28
+	cp 610 36
+	cp 630 41
+	cp 650 45
+	cp 680 39
+	cp 700 31
+	cp 720 25
+}
+
+homogeneous_medium
+{
+	name chrome_green
+	absorption 3.0 0.6 2.8
+	scattering 0.0 0.0 0.0
+	absorption_spectral chrome_abs
+	phase isotropic
+}
+
+# Copper (Cu2+) TURQUOISE.  Broad absorption across the red into the near-IR
+# (rising 550->720), transmitting cyan/blue-green (~460-480 window).
+# Turquoise/teal over silver.
+piecewise_linear_function
+{
+	name copper_abs
+	cp 400 8
+	cp 420 5
+	cp 440 3
+	cp 460 2.5
+	cp 480 2.8
+	cp 500 3.5
+	cp 515 5
+	cp 530 7
+	cp 550 11
+	cp 570 18
+	cp 590 28
+	cp 610 40
+	cp 630 50
+	cp 650 56
+	cp 680 58
+	cp 700 58
+	cp 720 58
+}
+
+homogeneous_medium
+{
+	name copper_turquoise
+	absorption 3.4 1.3 0.5
+	scattering 0.0 0.0 0.0
+	absorption_spectral copper_abs
+	phase isotropic
+}
+
+# Manganese (Mn3+) AMETHYST.  Broad absorption in the green-yellow (~500-550),
+# transmitting BOTH blue (~440) and red (~680) -> purple/violet.  A traditional
+# amethyst / 'mineral purple' colorant.
+piecewise_linear_function
+{
+	name manganese_abs
+	cp 400 10
+	cp 420 7
+	cp 440 5
+	cp 460 8
+	cp 480 16
+	cp 500 30
+	cp 515 34
+	cp 530 40
+	cp 550 38
+	cp 570 30
+	cp 590 20
+	cp 610 12
+	cp 630 6
+	cp 650 3.5
+	cp 680 2.5
+	cp 700 2.5
+	cp 720 2.5
+}
+
+homogeneous_medium
+{
+	name manganese_amethyst
+	absorption 1.0 3.0 0.8
+	scattering 0.0 0.0 0.0
+	absorption_spectral manganese_abs
+	phase isotropic
+}
+
+# Iron (Fe3+) AMBER.  Absorbs the blue (~400-500) and transmits yellow-orange-
+# red (>~560).  Warm amber/champagne -- shown over the GOLD substrate
+# (floor_gold) for extra warmth (a real 'gold fume' pairing).
+piecewise_linear_function
+{
+	name iron_amber_abs
+	cp 400 54
+	cp 420 50
+	cp 440 44
+	cp 460 34
+	cp 480 24
+	cp 500 16
+	cp 515 12
+	cp 530 9
+	cp 550 7.5
+	cp 570 7
+	cp 590 6.8
+	cp 610 6.5
+	cp 630 6.5
+	cp 650 6.5
+	cp 680 6.5
+	cp 700 6.5
+	cp 720 6.5
+}
+
+homogeneous_medium
+{
+	name iron_amber
+	absorption 0.2 0.7 3.0
+	scattering 0.0 0.0 0.0
+	absorption_spectral iron_amber_abs
+	phase isotropic
+}
+
+# GOLD substrate (Au, Johnson-Christy) -- the warm ground for amber/rose fume.
+# Same satin finish as floor_silver; the gold's low blue / high red reflectance
+# warms the dial and mutes blues, so pair it with WARM colorants only.
+ggx_material
+{
+	name floor_gold
+	rd en_black
+	rs en_white
+	alphax 0.14
+	alphay 0.14
+	fresnel_mode conductor
+	ior Au_n
+	extinction Au_k
+}
+
+##################################################
+# OPAQUE GRAND-FEU PALETTE (2026-07-05) -- mechanism (B): opacified enamel.
+# Grand feu WHITE / IVORY / BLACK / opaque BLUE (Jaquet Droz, Moritz Grossmann,
+# Chronoswiss, and the opaque cells of Patek/Vacheron cloisonne) are NOT
+# translucent-over-substrate: the colour lives in a DENSE volume-SCATTERING glass
+# body (tin/zirconia opacifier) whose metal is never seen through.  Physically
+# this is the SAME bounded slab as the fume, with the sigma_s (scattering) knob
+# turned UP.  Two regime differences from the translucent curves above:
+#   (1) multiple scattering AMPLIFIES a small sigma_a contrast into saturated
+#       colour, so the opaque colorant curves are GENTLE (low contrast), not the
+#       high-contrast single-pass fume curves;
+#   (2) sigma_s ~15 makes the slab opaque (the silver dome no longer reads, so an
+#       opaque dial is UNIFORM -- no fume gradient), and black is a pure absorber
+#       (sigma_s 0).  Bind one of these on `enamel` instead of a fume medium; the
+#       substrate is hidden so `en_dome`/floor choice no longer matters.  OIDN is
+#       needed (multiple-scattering media are noisy).  Validated swatch:
+#       scenes/FeatureBased/EnamelWatch/enamel_grandfeu_opaque.RISEscene.
+##################################################
+
+# Gentle cobalt (opaque blue): small contrast, blue passes, red mildly absorbed.
+piecewise_linear_function
+{
+	name cobalt_op
+	cp 400 0.6
+	cp 440 0.3
+	cp 470 0.4
+	cp 500 1.2
+	cp 530 3.0
+	cp 560 4.5
+	cp 600 6.0
+	cp 650 6.5
+	cp 700 5.0
+	cp 720 4.2
+}
+# Gentle warm ivory: absorb a touch more blue than red.
+piecewise_linear_function
+{
+	name ivory_op
+	cp 400 0.55
+	cp 460 0.42
+	cp 520 0.28
+	cp 580 0.18
+	cp 650 0.12
+	cp 720 0.10
+}
+homogeneous_medium
+{
+	name gf_white
+	absorption			0.02 0.02 0.02
+	scattering			15.0 15.0 15.0
+	phase				isotropic
+}
+homogeneous_medium
+{
+	name gf_ivory
+	absorption			0.3 0.3 0.3
+	scattering			15.0 15.0 15.0
+	absorption_spectral	ivory_op
+	phase				isotropic
+}
+homogeneous_medium
+{
+	name gf_black
+	absorption			45.0 45.0 45.0
+	scattering			0.0 0.0 0.0
+	phase				isotropic
+}
+homogeneous_medium
+{
+	name gf_blue
+	absorption			2.0 1.5 0.4
+	scattering			15.0 15.0 15.0
+	absorption_spectral	cobalt_op
+	phase				isotropic
+}
+
+dielectric_material
+{
+	name enamel_glass
+	tau 1.0
+	ior 1.55
+	scattering 100000
+}
+
+# Measured-silver (Johnson-Christy Ag) fume substrate.  SATIN, not a mirror:
+# alpha 0.14 (2026-07-05).  At alpha 0.03 the domed silver acted as a near-
+# perfect curved mirror and FOCUSED the uniform light-tent env into a bright
+# caustic pool -- a large "oval" that swam and reshaped oddly as the watch
+# rotated (user-caught; isolated to the env reflection, not the glint_key).
+# Real anOrdain silver is STAMPED (a satin, semi-specular finish), and the
+# enamel scatters slightly -- so the reflection is a soft, stable luminous
+# glow, not a sharp moving focus.  alpha 0.14 (satin) diffuses the caustic
+# into that natural glow while preserving the fume luminous depth, the
+# thickness-gradient (bright centre -> dark rim, which comes from absorption
+# not reflection sharpness), and the top-surface dimple twinkle (a separate
+# layer, unaffected).
+ggx_material
+{
+	name floor_silver
+	rd en_black
+	rs en_white
+	alphax 0.14
+	alphay 0.14
+	fresnel_mode conductor
+	ior Ag_n
+	extinction Ag_k
+}
+
+# Radial silver DOME heightfield (f in [0.625,1.0]) -- bounded to the 20.6 disk.
+expression_function2d
+{
+	name en_dome
+	def rho hypot(2*u-1,2*v-1)
+	def dome 1-clamp(rho*rho,0,1)
+	expr 0.625+0.375*dome
+}
+
+# Crystalline dimple heightfield (Worley F1, N=64 cells over the 20.6 disk).
+expression_function2d
+{
+	name en_dimpled
+	param N 85
+	param amp 0.15
+	def gu u*N
+	def gv v*N
+	def cx floor(gu)
+	def cy floor(gv)
+	def h0a frac(sin((cx+(-1))*127.1+(cy+(-1))*311.7)*43758.5453)
+	def h0b frac(sin((cx+(-1))*269.5+(cy+(-1))*183.3)*43758.5453)
+	def fx0 (cx+(-1))+h0a
+	def fy0 (cy+(-1))+h0b
+	def d0 hypot(gu-fx0,gv-fy0)
+	def h1a frac(sin((cx+(-1))*127.1+(cy+(0))*311.7)*43758.5453)
+	def h1b frac(sin((cx+(-1))*269.5+(cy+(0))*183.3)*43758.5453)
+	def fx1 (cx+(-1))+h1a
+	def fy1 (cy+(0))+h1b
+	def d1 hypot(gu-fx1,gv-fy1)
+	def h2a frac(sin((cx+(-1))*127.1+(cy+(1))*311.7)*43758.5453)
+	def h2b frac(sin((cx+(-1))*269.5+(cy+(1))*183.3)*43758.5453)
+	def fx2 (cx+(-1))+h2a
+	def fy2 (cy+(1))+h2b
+	def d2 hypot(gu-fx2,gv-fy2)
+	def h3a frac(sin((cx+(0))*127.1+(cy+(-1))*311.7)*43758.5453)
+	def h3b frac(sin((cx+(0))*269.5+(cy+(-1))*183.3)*43758.5453)
+	def fx3 (cx+(0))+h3a
+	def fy3 (cy+(-1))+h3b
+	def d3 hypot(gu-fx3,gv-fy3)
+	def h4a frac(sin((cx+(0))*127.1+(cy+(0))*311.7)*43758.5453)
+	def h4b frac(sin((cx+(0))*269.5+(cy+(0))*183.3)*43758.5453)
+	def fx4 (cx+(0))+h4a
+	def fy4 (cy+(0))+h4b
+	def d4 hypot(gu-fx4,gv-fy4)
+	def h5a frac(sin((cx+(0))*127.1+(cy+(1))*311.7)*43758.5453)
+	def h5b frac(sin((cx+(0))*269.5+(cy+(1))*183.3)*43758.5453)
+	def fx5 (cx+(0))+h5a
+	def fy5 (cy+(1))+h5b
+	def d5 hypot(gu-fx5,gv-fy5)
+	def h6a frac(sin((cx+(1))*127.1+(cy+(-1))*311.7)*43758.5453)
+	def h6b frac(sin((cx+(1))*269.5+(cy+(-1))*183.3)*43758.5453)
+	def fx6 (cx+(1))+h6a
+	def fy6 (cy+(-1))+h6b
+	def d6 hypot(gu-fx6,gv-fy6)
+	def h7a frac(sin((cx+(1))*127.1+(cy+(0))*311.7)*43758.5453)
+	def h7b frac(sin((cx+(1))*269.5+(cy+(0))*183.3)*43758.5453)
+	def fx7 (cx+(1))+h7a
+	def fy7 (cy+(0))+h7b
+	def d7 hypot(gu-fx7,gv-fy7)
+	def h8a frac(sin((cx+(1))*127.1+(cy+(1))*311.7)*43758.5453)
+	def h8b frac(sin((cx+(1))*269.5+(cy+(1))*183.3)*43758.5453)
+	def fx8 (cx+(1))+h8a
+	def fy8 (cy+(1))+h8b
+	def d8 hypot(gu-fx8,gv-fy8)
+	def F1 min(min(min(min(min(min(min(min(d0,d1),d2),d3),d4),d5),d6),d7),d8)
+	def F1c clamp(F1,0,1)
+	expr 1-amp*(1-F1c)
+}
+
+sdf_geometry
+{
+	name en_enamelgeom
+	heightfield_function en_dimpled
+	heightfield_radius 20.6
+	heightfield_scale 0.30
+}
+
+sdf_geometry
+{
+	name en_domegeom
+	heightfield_function en_dome
+	heightfield_radius 20.6
+	heightfield_scale 0.40
+}
+# NOTE on the fleck twinkle (docs/ENAMEL_SPARKLE_BRDF.md): grand-feu enamel
+# is a CONTINUOUS fired-glass surface, and its twinkle is that surface's own
+# top-surface Fresnel glints catching a localized light as the dial tilts.
+# The fleck-scale relief IS the en_dimpled Worley heightfield above: N=85
+# cells over the 41.2-unit disk = 384um cells (1 unit = 38/48 mm), squarely
+# in the reference's 100-350um fleck band.  So the physically-correct model of
+# the dial sparkle is the CONTINUOUS displacement heightfield already applied
+# to en_enamelgeom -- NOT the discrete-facet `glint_modifier`, which models
+# genuinely discrete scatterers (metal-flake paint, glitter, aventurine) and
+# would be both the wrong material physics here and redundant with the
+# dimples.  The dimples twinkle under the small glint_key below (a uniform env
+# cannot produce specular glints -- that is why the env-only look showed none);
+# the GlintSweep animation rakes that key across the dial to reveal it.  The
+# glint_modifier's canonical home is scenes/FeatureBased/Materials/glint_flakes.
+
+standard_object
+{
+	name				enamel
+	geometry			en_enamelgeom
+	position			0 0 -1.12
+	material			enamel_glass
+	interior_medium			goldruby
+}
+
+standard_object
+{
+	name				en_dome
+	geometry			en_domegeom
+	position			0 0 -1.30
+	material			floor_silver
+}
+
+##################################################
+# Watch head as melded SDF geometry (sphere-traced implicit primitives -- the
+# `sdf_geometry` chunk; src/Library/Geometry/SDFGeometry.{h,cpp}):
+#   casebodysdf  - case cylinder + bezel torus + 4 flying-blade lugs + carved
+#                  dial bowl, fused into one smooth-min ti_polished body
+#   crownsdf     - ribbed gear crown at 3 o'clock
+#   hand{hour,minute}sdf - fat-at-hub, tapering-to-tip gold-leaf hands
+# The `part` lists below are authored inline (one `part` line per SDF
+# primitive; no sidecar files).
+##################################################
+sdf_geometry
+{
+	name				casebodysdf
+	part				cylinder union 0  0 0 -4.635  90 0 0  1 1 1  24 5.635 0  0
+	part				roundcone smin 2.4  -13.88 20.5 -2.2  -53 0 0  1.15 0.80 0.5  3.3 0.95 9.2  0
+	part				roundcone smin 2.4  13.88 20.5 -2.2  -53 0 0  1.15 0.80 0.5  3.3 0.95 9.2  0
+	part				roundcone smin 2.4  -13.88 -20.5 -2.2  -127 0 0  1.15 0.80 0.5  3.3 0.95 9.2  0
+	part				roundcone smin 2.4  13.88 -20.5 -2.2  -127 0 0  1.15 0.80 0.5  3.3 0.95 9.2  0
+	part				torus smin 1.2  0 0 1  90 0 0  1 1 1  22 1.25 0  0
+	part				cylinder subtract 1  0 0 -1  90 0 0  1 1 1  21 3 0  0
+}
+
+sdf_geometry
+{
+	name				crownsdf
+	part				cylinder union 0  26 0 -4.635  0 0 90  1 1 1  3.2 2 0  0
+	part				cylinder smin 0.5  22.9 0 -4.635  0 0 90  1 1 1  1.4 1.3 0  0
+	part				box subtract 0.06  26 3.2 -4.635  0 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 2.95641 -3.41041  22.5 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 2.26274 -2.37226  45 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 1.22459 -1.67859  67.5 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 1.95943e-16 -1.435  90 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 -1.22459 -1.67859  112.5 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 -2.26274 -2.37226  135 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 -2.95641 -3.41041  157.5 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 -3.2 -4.635  180 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 -2.95641 -5.85959  202.5 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 -2.26274 -6.89774  225 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 -1.22459 -7.59141  247.5 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 -5.8783e-16 -7.835  270 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 1.22459 -7.59141  292.5 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 2.26274 -6.89774  315 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 2.95641 -5.85959  337.5 0 0  1 1 1  2.2 0.72 0.42  0
+}
+
+# anOrdain Model 1 "New Hands": slim LEAF / lance (feuille) hands -- narrow at
+# the hub, swelling to a belly around mid-length, then tapering to a fine point.
+# Each hand is
+# two roundcones stacked along +Y: a neck (hub-r -> belly-r) unioned to a tip
+# (belly-r -> point). z-scale ~0.15 flattens them into thin flat hands; the
+# object orientation aims each along its hour. Reach unchanged (hour ~10.5,
+# minute ~16) so the 10:10-ish pose is preserved.
+sdf_geometry
+{
+	name				handhoursdf
+	part				roundcone union 0     0 0 0    0 0 0  1 1 0.15  0.24 0.82 5.0  0
+	part				roundcone union 0.28  0 5.0 0  0 0 0  1 1 0.15  0.82 0.05 6.0  0
+}
+
+sdf_geometry
+{
+	name				handminutesdf
+	part				roundcone union 0     0 0 0    0 0 0  1 1 0.15  0.22 0.72 7.5  0
+	part				roundcone union 0.28  0 7.5 0  0 0 0  1 1 0.15  0.72 0.04 9.5  0
+}
+
+# anOrdain central seconds hand: a VERY thin straight needle reaching almost to
+# the chapter ring, with a short counterweight tail past the hub (the -Y round-
+# cone, rotated 180 about Z, swelling to a small round counterweight). Far
+# thinner than the leaf hour/minute hands; z-scale 0.15 keeps it a flat blade.
+sdf_geometry
+{
+	name				handsecsdf
+	part				roundcone union 0    0 0 0   0 0 0    1 1 0.15  0.17 0.02 19  0
+	part				roundcone union 0.2  0 0 0   0 0 180  1 1 0.15  0.20 0.40 3.0  0
+}
+
+standard_object
+{
+	name				sdfcase
+	geometry			casebodysdf
+	material			ti_polished
+	position			0 0 0
+}
+
+standard_object
+{
+	name				sdfcrown
+	geometry			crownsdf
+	material			ti_polished
+	position			0 0 0
+}
+
+standard_object
+{
+	name				sdfhour
+	geometry			handhoursdf
+	material			white_hands
+	position			0 0 0.10
+	orientation		0 0 60
+}
+
+standard_object
+{
+	name				sdfminute
+	geometry			handminutesdf
+	material			white_hands
+	position			0 0 0.60
+	orientation		0 0 -60
+}
+
+standard_object
+{
+	name				sdfsec
+	geometry			handsecsdf
+	material			white_hands
+	position			0 0 0.83
+	orientation		0 0 -160
+}
+
+##################################################
+# HandsSweep animation -- the watch hands' rotation timelines.  Placed here
+# (not up in the animation block) because a `timeline` chunk resolves its
+# `element` at parse time, so sdfhour/sdfminute must be defined first.  The
+# matching `animation { name HandsSweep ... }` + the camera-pin timelines are
+# in the animation block near the top.
+##################################################
+# Hour hand: 10:10 pose (Z=+60) -> one clockwise turn over 12 hours (Z=-300,
+# which is +60 mod 360 -> loops).
+timeline
+{
+	animation	HandsSweep
+	element_type	object
+	element			sdfhour
+	param			orientation
+	interpolator	linear
+
+	time		0.00
+	value		0 0 60
+
+	time		1.00
+	value		0 0 -300
+}
+
+# Minute hand: 10:10 pose (Z=-60) -> 12 clockwise turns (Z=-4380, which is -60
+# mod 360 -> loops); 12x the hour hand's angular speed.
+timeline
+{
+	animation	HandsSweep
+	element_type	object
+	element			sdfminute
+	param			orientation
+	interpolator	linear
+
+	time		0.00
+	value		0 0 -60
+
+	time		1.00
+	value		0 0 -4380
+}
+
+# WobbleHands hand half (same hour/minute sweep as HandsSweep; the camera
+# wobble half is in the animation block up top).
+timeline
+{
+	animation	WobbleHands
+	element_type	object
+	element			sdfhour
+	param			orientation
+	interpolator	linear
+
+	time		0.00
+	value		0 0 60
+
+	time		1.00
+	value		0 0 -300
+}
+
+timeline
+{
+	animation	WobbleHands
+	element_type	object
+	element			sdfminute
+	param			orientation
+	interpolator	linear
+
+	time		0.00
+	value		0 0 -60
+
+	time		1.00
+	value		0 0 -4380
+}
+
+##################################################
+# LOW-domed sapphire crystal, anOrdain Model 1 profile (sphere-traced SDF
+# meniscus shell, authored in the watch's ABSOLUTE world frame; SDFGeometry).
+# The anOrdain wears a LOW sapphire that sits nearly flush in the thin polished
+# bezel.  A ~0.8-unit (0.63 mm) concentric meniscus between two spheres of
+# radius 272.36 / 271.56 (centre z=-270.26) over a flat seat at z=1.30; the
+# outer apex rises only to z=2.10 -- a 0.63 mm SAG (radius of curvature ~216 mm).
+#
+# WHY SO LOW (2026-07-04): an earlier revision domed the crystal to a z=3.5 apex
+# (1.74 mm sag).  At OBLIQUE viewing that tall dome presented a large curved
+# surface to the bright light-tent env and mirrored it across the whole dial --
+# a Fresnel washout that HID the dial (on a real low/AR crystal you still see
+# the dial at oblique angles; user-caught).  The low dome reflects a far smaller
+# solid angle of the surround, so the dial reads through at oblique angles as it
+# should.  The hand stack was lowered 0.35 units to keep ~0.45-unit clearance
+# under the lower inner surface (also more realistic than the old 1.2-unit
+# float).  A central inner-sphere subtract carves the concave recess; the box
+# floor (z=1.30) forms the flat flange that meets the bezel.
+##################################################
+sdf_geometry
+{
+	name				crystalsdf
+	part				sphere union 0  0 0 -270.26  0 0 0  1 1 1  272.36 0 0  0
+	part				box intersect 0  0 0 3.65  0 0 0  1 1 1  22 22 2.35  0
+	part				sphere subtract 0  0 0 -270.26  0 0 0  1 1 1  271.56 0 0  0
+}
+
+standard_object
+{
+	name				crystal
+	geometry			crystalsdf
+	material			sapphire_crystal
+	position			0 0 0
+}
+
+##################################################
+# Floating hands (white satin round-cones), pointing to ~10:10.  The hands run
+# JUST BENEATH the crystal so the hands and the etched markers are nearly
+# coplanar ("floating" over the deep dial, minimal parallax): hour at z=0.45,
+# minute ABOVE it at z=0.95, pin covering the pivot at z~1.02 (top 1.18).
+##################################################
+# Small FLAT central pin cap (lume white) on TOP of the hand stack, just under
+# the crystal's central inner dome (z=3.30 at centre -- ample clearance).
+#
+# >>> LUME PLAN <<<  A future night variant renders this scene with the lights
+# set very low and swaps the markerlume object's lume_white to an emissive lume
+# material (lambertian_luminaire_material) -- plus white-lume variants of the
+# pin + hands -- so the markers and hands GLOW.  SDF geometry is a first-class
+# NEE area light (tessellation-backed UniformRandomPoint/GetArea), so the lume
+# fill and hands emit correctly.
+sdf_geometry
+{
+	name				pinsdf
+	part				cylinder union 0  0 0 0.67  90 0 0  1 1 1  0.85 0.16 0  0
+}
+
+uniformcolor_painter
+{
+	name				pnt_lume_white
+	color				0.93 0.93 0.89
+}
+
+# Matte lume white (day look).  Night variant: lambertian_luminaire_material
+# with exitance pnt_lume_white over this same geometry.
+lambertian_material
+{
+	name				lume_white
+	reflectance			pnt_lume_white
+}
+
+# DAY lume: real luminous pigment is photoluminescent -- charged by ambient
+# light it re-emits and reads bright white even in daylight, so a gentle
+# emission over the matte base reproduces that daylight pop.  (Historically
+# this was also a PT necessity: the lume sits INSIDE the crystal's etched
+# cavities and BINARY NEE shadow rays were blocked by the dielectric shell,
+# leaving a purely-matte fill near-black.  The rasterizer's transparent_shadows
+# TRUE now lights a matte fill through the crystal, so the emission is an
+# aesthetic day-lume choice -- swap the markerlume object to the matte
+# `lume_white` for a subtler, non-glowing marker.)  The NIGHT variant simply
+# raises this scale (and dims the studio).
+lambertian_luminaire_material
+{
+	name				lume_day
+	exitance			pnt_lume_white
+	scale				4.0
+	material			lume_white
+}
+
+standard_object
+{
+	name				pin
+	geometry			pinsdf
+	material			lume_white
+	position			0 0 0
+}
+
+##################################################
+# Crown at 3 o'clock: knurled-look polished-steel cylinder, axis x,
+# protruding from the caseband (built into crownsdf above).
+# 4 lugs (2 pairs) at the 12 and 6 o'clock band, where a strap attaches:
+# short angular polished-steel nubs protruding radially from the caseband
+# (built into casebodysdf above).
+##################################################
+##################################################
+# Polished display surface (dark 'black-glass' tabletop) the watch rests on,
+# Hero style: a glossy dielectric (schlick_f0, F0 0.04) -> dark face-on,
+# brighter Fresnel reflection at grazing, soft glossy reflection of the watch +
+# a lighting gradient that fades to black at the edges.  Sits at the caseback
+# plane (z=-10.30, just below the -10.27 caseback) so the watch rests on it.
+##################################################
+uniformcolor_painter
+{
+	name				pnt_paper
+	color				0.86 0.86 0.83
+}
+
+# Matte white paper the watch rests on (the captured setup: a diffuse white
+# surface).  Pure Lambertian, high albedo; large plane fills the frame so it is
+# also the bright background (radiance_background FALSE).
+lambertian_material
+{
+	name				surface_dark
+	reflectance			pnt_paper
+}
+
+clippedplane_geometry
+{
+	name				surfacegeom
+	pta				-3000 -3000 -10.30
+	ptb				3000 -3000 -10.30
+	ptc				3000 3000 -10.30
+	ptd				-3000 3000 -10.30
+	doublesided			TRUE
+}
+
+standard_object
+{
+	name				surface
+	geometry			surfacegeom
+	material			surface_dark
+}
+
+##################################################
+# Blue FKM-rubber strap.  A general sweep_geometry from each lug,
+# curving down to the tabletop with a subtle residual arc (never dead-flat).
+# Domed top, rounded edges, 20->16mm taper; soft FKM sheen = schlick_f0 with
+# a low F0.  The -Y (6 o'clock) half is the same mesh rotated 180deg about Z.
+##################################################
+ggx_material
+{
+	name				strap_leather
+	rd				pnt_strap_blue
+	rs				pnt_surf_f0
+	alphax				0.34
+	alphay				0.34
+	fresnel_mode			schlick_f0
+}
+
+# The strap as a GENERAL sweep_geometry: the FKM cross-section (superellipse
+# rounded rails, centre crown, two recessed stitch channels at 8.5% inset --
+# evaluated from strap_mesh_gen.py's profile formulas at its 14 stations and
+# authored here as data) swept along the Catmull-Rom drape path
+# (lug -> curve down -> subtle residual arc on the tabletop,
+# z = -10.30 + thickness/2 = -8.80).  end_scale_x = 20.2/25.26 is the
+# 20mm -> 16mm width taper; profile h is untapered.  The auto frame hint
+# picks world X (most perpendicular to the start tangent) = the width axis.
+# The band meets the case as a CONCAVE CRESCENT (the fitted "integrated"
+# strap look): the sweep START extends ~6 units UNDER the radius-24 case (its
+# first path point is at y=18, inside the case+dial), so they OCCLUDE the flat
+# leading edge and the band emerges along the round case outline -- cupping the
+# case instead of butting a straight edge against it.  Full width at the case;
+# end_scale_x still tapers the band toward the buckle.
+sweep_geometry
+{
+	name				strapgeom
+	profile_point			-12.63000 0.04743
+	profile_point			-10.68692 1.29123
+	profile_point			-8.74385 1.73862
+	profile_point			-6.80077 1.88384
+	profile_point			-4.85769 1.96817
+	profile_point			-2.91462 2.02070
+	profile_point			-0.97154 2.04675
+	profile_point			0.97154 2.04675
+	profile_point			2.91462 2.02070
+	profile_point			4.85769 1.96817
+	profile_point			6.80077 1.88384
+	profile_point			8.74385 1.73862
+	profile_point			10.68692 1.29123
+	profile_point			12.63000 0.04743
+	profile_point			12.63000 -0.04743
+	profile_point			10.68692 -1.28792
+	profile_point			8.74385 -1.45989
+	profile_point			6.80077 -1.49469
+	profile_point			4.85769 -1.49964
+	profile_point			2.91462 -1.49999
+	profile_point			0.97154 -1.50000
+	profile_point			-0.97154 -1.50000
+	profile_point			-2.91462 -1.49999
+	profile_point			-4.85769 -1.49964
+	profile_point			-6.80077 -1.49469
+	profile_point			-8.74385 -1.45989
+	profile_point			-10.68692 -1.28792
+	profile_point			-12.63000 -0.04743
+	point				0 18.0 -3.4
+	point				0 32.0 -4.9
+	point				0 43.0 -7.3
+	point				0 56.0 -8.25
+	point				0 70.0 -8.68
+	point				0 86.0 -8.50
+	point				0 104.0 -8.78
+	n_len				140
+	end_scale_x			0.799683
+	cap_start			FALSE
+	cap_end				TRUE
+}
+
+standard_object
+{
+	name				strap_12
+	geometry			strapgeom
+	material			strap_leather
+}
+
+standard_object
+{
+	name				strap_6
+	geometry			strapgeom
+	material			strap_leather
+	orientation			0 0 180
+}
+
+# Saddle stitching: a GENERAL path_instances_geometry stamping an SDF thread
+# capsule along each stitch row at arc-length pitch, slanted +/-16 deg about
+# the surface normal (mirrored rows = the saddle look).  The two row paths
+# are the drape curve offset to the channel positions (x = (0.085-0.5)*W(t),
+# h = channel floor + 0.9*r -- derived from the strap profile; re-derive if
+# the drape or profile changes).  Separate mesh so the thread carries its
+# own material.
+uniformcolor_painter
+{
+	name				pnt_thread
+	color				0.30 0.075 0.075
+}
+
+ggx_material
+{
+	name				strap_thread
+	rd				pnt_thread
+	rs				pnt_surf_f0
+	alphax				0.42
+	alphay				0.42
+	fresnel_mode			schlick_f0
+}
+
+sdf_geometry
+{
+	name				threadcapsule
+	part				capsule union 0  0 0 0  0 0 0  1 1 1  0.14 0.535 0  0
+}
+
+path_instances_geometry
+{
+	name				strapstitchgeom
+	geometry			threadcapsule
+	point				-10.48290 24.26360 -1.98746
+	point				-10.13292 32.29168 -3.49299
+	point				-9.78293 43.20002 -5.87707
+	point				-9.43295 56.07242 -6.81490
+	point				-9.08297 70.01101 -7.24312
+	point				-8.73298 86.00369 -7.06308
+	point				-8.38300 104.02306 -7.34326
+	pitch				2.4
+	slant				16.0
+	detail				24
+}
+
+path_instances_geometry
+{
+	name				strapstitchgeom6
+	geometry			threadcapsule
+	point				10.48290 24.26360 -1.98746
+	point				10.13292 32.29168 -3.49299
+	point				9.78293 43.20002 -5.87707
+	point				9.43295 56.07242 -6.81490
+	point				9.08297 70.01101 -7.24312
+	point				8.73298 86.00369 -7.06308
+	point				8.38300 104.02306 -7.34326
+	pitch				2.4
+	slant				-16.0
+	detail				24
+}
+
+standard_object
+{
+	name				stitch_12_l
+	geometry			strapstitchgeom
+	material			strap_thread
+}
+
+standard_object
+{
+	name				stitch_12_r
+	geometry			strapstitchgeom6
+	material			strap_thread
+}
+
+standard_object
+{
+	name				stitch_6_l
+	geometry			strapstitchgeom
+	material			strap_thread
+	orientation			0 0 180
+}
+
+standard_object
+{
+	name				stitch_6_r
+	geometry			strapstitchgeom6
+	material			strap_thread
+	orientation			0 0 180
+}
+
+
+##################################################
+# NIGHT / LUME SHOT (alternate mode -- self-contained, NO manual chunk edits).
+# The photoluminescent lume carries the frame: the chapter-ring arcs, the
+# hands, and the centre pin glow blue-green while everything else falls to
+# near black.  `lume_glow_night` is defined but UNUSED in day mode (an unbound
+# material has no render effect); the `>` command block below applies the mode
+# at scene-load time via the generalized `> modify` command.
+#
+# TO ACTIVATE: delete the '/*' and '*/' lines around the command block (and
+# re-add them to return to day).  Tuning: lume_glow_night 'scale' = glow
+# brightness, pnt_lume_glow = glow colour; the lume is then the ONLY light, so
+# raise the rasterizer 'samples' (e.g. 32 -> 256) for a clean night hero.
+##################################################
+uniformcolor_painter
+{
+	name				pnt_lume_glow
+	color				0.45 0.95 0.70
+}
+
+lambertian_luminaire_material
+{
+	name				lume_glow_night
+	exitance			pnt_lume_glow
+	scale				45.0
+	material			none
+}
+
+/*
+> modify rasterizer radiance_scale 0.02
+> modify material soft_top_lum scale 0
+> modify material soft_bot_lum scale 0
+> modify object sdfhour material lume_glow_night
+> modify object sdfminute material lume_glow_night
+> modify object pin material lume_glow_night
+*/

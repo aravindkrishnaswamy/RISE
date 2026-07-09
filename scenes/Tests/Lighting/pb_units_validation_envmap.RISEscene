@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # Sanity check: empty scene, camera looking at uniform white sky_dome.
 # radiance_scale = 100, painter = white linear → expected EXR pixel = 100.
 # If pixel ≠ 100, there is an unexpected scaling somewhere in the

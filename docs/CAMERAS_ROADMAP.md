@@ -366,7 +366,7 @@ The mapping is C0 across blade seams (proven algebraically; verified numerically
 - **Editor introspection**: new [src/Library/SceneEditor/FilmIntrospection.{h,cpp}](../src/Library/SceneEditor/) lets the properties panel surface Film like any other top-level chunk.
 - **New tests**: `FilmCameraResyncTest`, `FilmIntrospectionTest`, `JobScaleFilmToFitTest`. [scenes/Tests/Cameras/film_chunk.RISEscene](../scenes/Tests/Cameras/film_chunk.RISEscene) exercises the parser end-to-end.
 
-**Migration.** All in-tree scenes were converted automatically (`tools/migrate_scenes_v5_to_v6.py`). Out-of-tree scenes get a one-line parser error pointing at the migration tool.
+**Migration.** All in-tree scenes were converted automatically (`tools/migrate_scenes_v5_to_v7.py`). Out-of-tree scenes get a one-line parser error pointing at the migration tool.
 
 ---
 

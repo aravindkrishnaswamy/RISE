@@ -16,7 +16,6 @@
 #include "LambertianEmitter.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/GeometricUtilities.h"
-#include "../Utilities/RandomNumbers.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -43,8 +42,17 @@ void LambertianEmitter::RefreshAverages()
 
 	// Sample the texture space of the radiance exitance to compute the average radiant exitance
 	RayIntersectionGeometric rig( Ray(), nullRasterizerState );
-	for( int i=0; i<100; i++ ) {
-		rig.ptCoord = Point2( GlobalRNG().CanonicalRandom(), GlobalRNG().CanonicalRandom() );
+	// Deterministic 10x10 stratified UV grid (cell centres), NOT 100 GlobalRNG samples: reproducible and
+	// consumes no render-RNG at parse (this runs at emitter construction).  averageRadEx/averageSpectrum feed
+	// light-importance weights (LightSampler) + photon power/budget (PhotonTracer / SpectralPhotonTracer /
+	// SMSPhotonMap), NOT the emitted radiance (emittedRadiance reads the painter at the hit point) -- so this
+	// is not a DIRECT emitted-radiance change.  For a UNIFORM emissive painter the grid mean is bit-identical
+	// to the old RNG mean; for a NON-uniform (textured) painter it is a different deterministic estimate of
+	// the same integral, so a FINITE photon-map / SMS render of a textured emitter can differ slightly
+	// (converging to the same result), and a regular grid can alias a painter whose period resonates with
+	// the 0.1-UV pitch.  The determinism is required for a reproducible parse (the v6->v7 cutover gate).
+	for( int gy=0; gy<10; gy++ ) for( int gx=0; gx<10; gx++ ) {
+		rig.ptCoord = Point2( (Scalar(gx)+Scalar(0.5))/Scalar(10), (Scalar(gy)+Scalar(0.5))/Scalar(10) );
 		averageRadEx = averageRadEx + pRadEx->GetColor(rig);
 		averageSpectrum = averageSpectrum + pRadEx->GetSpectrum(rig);
 	}

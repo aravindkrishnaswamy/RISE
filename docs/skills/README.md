@@ -50,6 +50,7 @@ point back here when a tool requires a shim.
 
 | Skill | Trigger |
 |---|---|
+| [implementation-review-loop](implementation-review-loop.md) | **The definition of done for ALL implementation work** (feature / refactor / bug fix / perf / structural change). Not done until a fresh round of independent reviewers returns ZERO P1s. Self-driven loop: implement → gate → spawn orthogonal reviewers → fix every P1 → commit → re-spawn fresh reviewers → repeat to convergence. Wraps adversarial-code-review. |
 | [adversarial-code-review](adversarial-code-review.md) | Validate a non-trivial change; user asks for multiple / adversarial reviewers. |
 | [performance-work-with-baselines](performance-work-with-baselines.md) | Optimize runtime or memory; any change framed as "make X faster." |
 | [const-correctness-over-escape-hatches](const-correctness-over-escape-hatches.md) | Tempted to add `mutable` / `const_cast` / drop a `const` — stop and apply this decision tree first. |

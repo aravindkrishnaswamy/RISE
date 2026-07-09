@@ -8,7 +8,7 @@
 //    This piece wires `fresnel_mode thinfilm` + the `film_ior` /
 //    `film_extinction` / `film_thickness` IScalarPainter slots through:
 //
-//      ggx_material chunk descriptor  (AsciiSceneParser.cpp)
+//      ggx_material chunk descriptor
 //        -> Job::AddGGXMaterial        (Job.cpp; ResolveOrDiagnoseScalar
 //                                       + ResolveFresnelMode + presence
 //                                       contract)
@@ -52,7 +52,6 @@
 
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
-#include "../src/Library/Interfaces/ISceneParser.h"
 #include "../src/Library/Interfaces/IMaterial.h"
 #include "../src/Library/Interfaces/IBSDF.h"
 #include "../src/Library/Materials/GGXMaterial.h"
@@ -104,18 +103,14 @@ namespace
 		return path;
 	}
 
-	// Parse a scene file into a fresh Job.  Returns the ParseAndLoadScene
+	// Load a scene file into a fresh Job.  Returns the load
 	// result; `job` is left holding whatever was loaded.
 	bool ParseSceneFile( const std::string& path, Job& job )
 	{
-		ISceneParser* parser = 0;
-		if( !RISE_API_CreateAsciiSceneParser( &parser, path.c_str() ) || !parser ) {
-			return false;
-		}
-		parser->addref();
-		const bool ok = parser->ParseAndLoadScene( job );
-		parser->release();
-		return ok;
+		// Model-B P5 Slice 6c-3b: load via the canonical CST path (native-v7).
+		// The rejection cases (malformed / missing-slot -> false) hold: DeriveToJob
+		// refuses-all on a bad chunk exactly as the legacy parser hard-failed.
+		return job.LoadAsciiSceneViaCst( path.c_str() );
 	}
 
 	// A minimal-but-complete thin-film GGX scene.  Inline scalar_painters
@@ -125,7 +120,7 @@ namespace
 	std::string ThinFilmGGXScene( double thickness, bool includeThickness )
 	{
 		std::string s;
-		s += "RISE ASCII SCENE 6\n";
+		s += "RISE ASCII SCENE 7\n";
 		s += "uniformcolor_painter\n{\nname rd\ncolor 0.0 0.0 0.0\n}\n";
 		s += "uniformcolor_painter\n{\nname rs\ncolor 1.0 1.0 1.0\n}\n";
 		s += "scalar_painter\n{\nname sub_n\nvalue 0.5\n}\n";			// Ti-ish substrate n
@@ -199,7 +194,7 @@ static void TestThinFilmParsesAndWires()
 	job->addref();
 
 	const bool parsed = ParseSceneFile( path, *job );
-	Check( parsed, "scene with thinfilm ggx_material + 3 film painters parses (ParseAndLoadScene == true)" );
+	Check( parsed, "scene with thinfilm ggx_material + 3 film painters parses (load == true)" );
 
 	// Pull the registered material back out and confirm it has a BSDF.
 	IMaterial* mat = job->GetMaterials() ? job->GetMaterials()->GetItem( "ti_heattint" ) : 0;
@@ -223,7 +218,7 @@ static void TestCookTorranceThinFilmRejected()
 	std::cout << "\n[2a] cooktorrance_material + fresnel_mode thinfilm is rejected\n";
 
 	std::string s;
-	s += "RISE ASCII SCENE 6\n";
+	s += "RISE ASCII SCENE 7\n";
 	s += "uniformcolor_painter\n{\nname rd\ncolor 0.2 0.2 0.2\n}\n";
 	s += "uniformcolor_painter\n{\nname rs\ncolor 0.8 0.8 0.8\n}\n";
 	s += "scalar_painter\n{\nname facets\nvalue 0.15\n}\n";
@@ -400,6 +395,66 @@ static void TestApiRejectsNullFilm()
 	subN->release(); subK->release(); filmN->release(); filmT->release();
 }
 
+// ============================================================
+//  Test 5: dielectric_material `ar_layer` multi-layer AR parsing.
+//          A valid stack registers; malformed / non-finite / zero-thickness /
+//          over-8 stacks are REJECTED (hard parse failure, no material).
+// ============================================================
+static std::string DielectricARScene( const std::string& arLines )
+{
+	std::string s;
+	s += "RISE ASCII SCENE 6\n";
+	s += "dielectric_material\n{\n";
+	s += "name dtest\n";
+	s += "tau 1.0\n";
+	s += "ior 1.77\n";
+	s += "scattering 100000\n";
+	s += arLines;
+	s += "}\n";
+	return s;
+}
+
+static bool ParsesDielectricAR( const char* tag, const std::string& arLines, bool& registered )
+{
+	const std::string path = WriteTempScene( tag, DielectricARScene( arLines ) );
+	Job* job = new Job();
+	job->addref();
+	const bool parsed = ParseSceneFile( path, *job );
+	registered = ( job->GetMaterials() && job->GetMaterials()->GetItem( "dtest" ) != 0 );
+	job->release();
+	std::remove( path.c_str() );
+	return parsed;
+}
+
+static void TestDielectricARLayerParsing()
+{
+	std::cout << "\n[5] dielectric_material ar_layer multi-layer AR parsing\n";
+	bool reg = false;
+
+	// Valid 2-layer stack (3-number and 2-number/k-omitted forms both ok).
+	Check(  ParsesDielectricAR( "ar_ok", "ar_layer 1.38 94.2 0\nar_layer 1.66 78.3\n", reg ) && reg,
+		"valid 2-layer ar_layer stack parses and registers the material" );
+
+	// Malformed: a single number is not a layer.
+	Check( !ParsesDielectricAR( "ar_bad1", "ar_layer 1.38\n", reg ) && !reg,
+		"ar_layer with one number is REJECTED (needs <n> <thickness> [k])" );
+
+	// Non-finite token (nan/inf spelling) is rejected at the string layer.
+	Check( !ParsesDielectricAR( "ar_nan", "ar_layer nan 94.2 0\n", reg ) && !reg,
+		"ar_layer with a nan token is REJECTED" );
+
+	// Zero (non-positive) thickness is a spurious extra interface -> rejected.
+	Check( !ParsesDielectricAR( "ar_zero", "ar_layer 1.38 0 0\n", reg ) && !reg,
+		"ar_layer with zero thickness is REJECTED" );
+
+	// More than the 8-layer maximum is rejected (not silently truncated).
+	{
+		std::string many; for( int i = 0; i < 9; ++i ) many += "ar_layer 1.38 94.2 0\n";
+		Check( !ParsesDielectricAR( "ar_deep", many, reg ) && !reg,
+			"9 ar_layer lines (> 8 max) is REJECTED, not silently truncated" );
+	}
+}
+
 int main()
 {
 	std::cout << "=== ThinFilmSceneParseTest -- scene-language + API plumbing ===\n";
@@ -410,6 +465,7 @@ int main()
 	TestThinFilmMissingThicknessRejected();
 	TestApiFactoryPlumbsFilmSlots();
 	TestApiRejectsNullFilm();
+	TestDielectricARLayerParsing();
 
 	std::cout << "\nResults: " << s_pass << " passed, " << s_fail << " failed.\n";
 	return ( s_fail == 0 ) ? 0 : 1;

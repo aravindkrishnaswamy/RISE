@@ -25,6 +25,25 @@
 
 namespace RISE
 {
+	// D35 record-during-derive (slice 1, docs/agentic-redesign/21-stable-apply-and-resolver.md
+	// §8): when DeriveToJob installs these sinks -- SETUP-TIME only, during its PASS-2 chunk
+	// bracketing; NULL by default, so the normal path pays a single predictable branch and
+	// nothing else -- GenericManager records each PRODUCED entity (AddItem) and each RESOLVED
+	// entity (GetItem-found) by pointer.  The derive then builds the reference graph from the
+	// engine's ACTUAL production+resolution, not a parallel heuristic, so the two cannot drift.
+	// Keyed by entity POINTER: a multiple-inheritance sub-object pointer (the same painter seen
+	// as IPainter via the colour manager and as IFunction2D via the func-2D manager) records
+	// under each base, but both AddItems run in the same chunk's bracket, so both pointers map
+	// to the one producer.  See Cst.cpp DeriveToJob.
+	// INVARIANT for any entity class added to this recording (e.g. the media mediaMap hook):
+	// a resolution hook MUST be paired with a production hook.  Producer-pointer identity is
+	// how a resolution maps back to its producer; if an entity could be freed + its address
+	// reused mid-derive (e.g. a duplicate-name replace) without a production hook re-stamping
+	// that address, a stale producer attribution could survive.  With the pairing, any reused
+	// address is re-recorded as a producer before it can be resolved -- so it stays correct.
+	inline thread_local std::vector<const void*>* g_cstProductionSink = nullptr;
+	inline thread_local std::vector<const void*>* g_cstResolutionSink = nullptr;
+
 	template< class T >
 	class GenericManager : public virtual Implementation::Reference, public virtual IManager<T>
 	{
@@ -57,6 +76,11 @@ namespace RISE
 
 		ItemListType		items;
 
+		// P1: parallel per-name registration serial, bumped on every AddItem, so a
+		// remove+re-add under the same name yields a NEW serial (identity change).
+		unsigned long long							m_nNextSerial;
+		std::map<String,unsigned long long>			m_serials;
+
 		virtual ~GenericManager( )
 		{
 			Shutdown();
@@ -64,6 +88,7 @@ namespace RISE
 
 	public:
 		GenericManager( )
+		: m_nNextSerial( 0 )
 		{}
 
 		bool		AddItem( T* pItem, const char* szName )
@@ -84,6 +109,8 @@ namespace RISE
 
 			String vecName( szName );
 			items[vecName] = std::pair<T*,ReferencesListType>( pItem, ReferencesListType() );
+			m_serials[vecName] = ++m_nNextSerial;   // P1: identity serial
+			if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( pItem ) );   // D35: PRODUCED entity
 			return true;
 		}
 
@@ -118,6 +145,7 @@ namespace RISE
 			// safe_release covers them on teardown.
 			safe_release( elem->second.first );
 			items.erase( elem );
+			m_serials.erase( vecName );   // P1: drop identity serial (a re-add gets a fresh one)
 			return true;
 		}
 
@@ -135,7 +163,17 @@ namespace RISE
 				return 0;
 			}
 
+			if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( (*elem).second.first ) );   // D35: RESOLVED entity
 			return (*elem).second.first;
+		}
+
+		// P1: see IManager::GetItemSerial.
+		unsigned long long	GetItemSerial( const char* szName ) const
+		{
+			if( !szName ) return 0;
+			String vecName( szName );
+			typename std::map<String,unsigned long long>::const_iterator it = m_serials.find( vecName );
+			return ( it == m_serials.end() ) ? 0 : it->second;
 		}
 
 		T*			RequestItemUse( const char* szName, IDeletedCallback<T>& pFunc, IReference& pCaller )
@@ -206,6 +244,7 @@ namespace RISE
 			}
 
 			items.clear();
+			m_serials.clear();   // P1
 		}
 
 		unsigned int	getItemCount( ) const{ return static_cast<unsigned int>(items.size()); }

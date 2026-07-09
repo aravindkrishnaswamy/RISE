@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -117,7 +117,10 @@ homogeneous_medium
 	phase		isotropic
 }
 
-> set global_medium fog
+global_medium
+{
+medium fog
+}
 
 uniformcolor_painter
 {
@@ -234,3 +237,4 @@ standard_object
 	geometry			rightwallgeom
 	material			green
 }
+

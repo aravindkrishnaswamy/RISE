@@ -53,12 +53,21 @@ DiskFileReadBuffer::~DiskFileReadBuffer( )
 
 char DiskFileReadBuffer::getChar()
 {
-#ifdef _DEBUG
-	if( getCurPos()==nSize ) {
-		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getChar:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	// No file handle (open failed): degrade gracefully instead of
+	// ftell(NULL)/fread(NULL) UB.
+	if( !hFile ) {
 		return 0;
 	}
-#endif
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
+	// the buffer end otherwise partial-reads into the local (a
+	// truncated file yields a corrupt value).  Return 0 on exhaustion.
+	if( getCurPos() >= nSize ) {
+	#ifdef _DEBUG
+		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getChar:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	#endif
+		fseek( hFile, 0, SEEK_END );   // consume to end so loop-until-cursor callers terminate
+		return 0;
+	}
 	char c=0;
 	fread( &c, 1, 1, hFile );
 	return c;
@@ -66,12 +75,21 @@ char DiskFileReadBuffer::getChar()
 
 unsigned char DiskFileReadBuffer::getUChar()
 {
-#ifdef _DEBUG
-	if( getCurPos()==nSize ) {
-		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getUChar:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	// No file handle (open failed): degrade gracefully instead of
+	// ftell(NULL)/fread(NULL) UB.
+	if( !hFile ) {
 		return 0;
 	}
-#endif
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
+	// the buffer end otherwise partial-reads into the local (a
+	// truncated file yields a corrupt value).  Return 0 on exhaustion.
+	if( getCurPos() >= nSize ) {
+	#ifdef _DEBUG
+		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getUChar:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	#endif
+		fseek( hFile, 0, SEEK_END );   // consume to end so loop-until-cursor callers terminate
+		return 0;
+	}
 
 	unsigned char c=0;
 	fread( &c, 1, 1, hFile );
@@ -80,12 +98,21 @@ unsigned char DiskFileReadBuffer::getUChar()
 
 short DiskFileReadBuffer::getWord()
 {
-#ifdef _DEBUG
-	if( getCurPos()+sizeof(short) > nSize ) {
-		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getWord:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	// No file handle (open failed): degrade gracefully instead of
+	// ftell(NULL)/fread(NULL) UB.
+	if( !hFile ) {
 		return 0;
 	}
-#endif
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
+	// the buffer end otherwise partial-reads into the local (a
+	// truncated file yields a corrupt value).  Return 0 on exhaustion.
+	if( getCurPos() > nSize || sizeof(short) > nSize - getCurPos() ) {
+	#ifdef _DEBUG
+		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getWord:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	#endif
+		fseek( hFile, 0, SEEK_END );   // consume to end so loop-until-cursor callers terminate
+		return 0;
+	}
 
 #ifdef RISE_BIG_ENDIAN
 	short Low = getUChar();
@@ -101,12 +128,21 @@ short DiskFileReadBuffer::getWord()
 
 unsigned short DiskFileReadBuffer::getUWord()
 {
-#ifdef _DEBUG
-	if( getCurPos()+sizeof(unsigned short) > nSize ) {
-		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getUWord:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	// No file handle (open failed): degrade gracefully instead of
+	// ftell(NULL)/fread(NULL) UB.
+	if( !hFile ) {
 		return 0;
 	}
-#endif
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
+	// the buffer end otherwise partial-reads into the local (a
+	// truncated file yields a corrupt value).  Return 0 on exhaustion.
+	if( getCurPos() > nSize || sizeof(unsigned short) > nSize - getCurPos() ) {
+	#ifdef _DEBUG
+		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getUWord:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	#endif
+		fseek( hFile, 0, SEEK_END );   // consume to end so loop-until-cursor callers terminate
+		return 0;
+	}
 
 #ifdef RISE_BIG_ENDIAN
 	unsigned short Low = getUChar();
@@ -121,12 +157,21 @@ unsigned short DiskFileReadBuffer::getUWord()
 
 int DiskFileReadBuffer::getInt()
 {
-#ifdef _DEBUG
-	if( getCurPos()+sizeof(int) > nSize ) {
-		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getInt:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	// No file handle (open failed): degrade gracefully instead of
+	// ftell(NULL)/fread(NULL) UB.
+	if( !hFile ) {
 		return 0;
 	}
-#endif
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
+	// the buffer end otherwise partial-reads into the local (a
+	// truncated file yields a corrupt value).  Return 0 on exhaustion.
+	if( getCurPos() > nSize || sizeof(int) > nSize - getCurPos() ) {
+	#ifdef _DEBUG
+		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getInt:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	#endif
+		fseek( hFile, 0, SEEK_END );   // consume to end so loop-until-cursor callers terminate
+		return 0;
+	}
 
 #ifdef RISE_BIG_ENDIAN
 	int Low = getUWord();
@@ -141,12 +186,21 @@ int DiskFileReadBuffer::getInt()
 
 unsigned int DiskFileReadBuffer::getUInt()
 {
-#ifdef _DEBUG
-	if( getCurPos()+sizeof(unsigned int) > nSize ) {
-		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getUInt:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	// No file handle (open failed): degrade gracefully instead of
+	// ftell(NULL)/fread(NULL) UB.
+	if( !hFile ) {
 		return 0;
 	}
-#endif
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
+	// the buffer end otherwise partial-reads into the local (a
+	// truncated file yields a corrupt value).  Return 0 on exhaustion.
+	if( getCurPos() > nSize || sizeof(unsigned int) > nSize - getCurPos() ) {
+	#ifdef _DEBUG
+		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getUInt:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	#endif
+		fseek( hFile, 0, SEEK_END );   // consume to end so loop-until-cursor callers terminate
+		return 0;
+	}
 
 #ifdef RISE_BIG_ENDIAN
 	unsigned int Low = getUWord();
@@ -161,12 +215,21 @@ unsigned int DiskFileReadBuffer::getUInt()
 
 float DiskFileReadBuffer::getFloat()
 {
-#ifdef _DEBUG
-	if( getCurPos()+sizeof(float) > nSize ) {
-		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getFloat:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	// No file handle (open failed): degrade gracefully instead of
+	// ftell(NULL)/fread(NULL) UB.
+	if( !hFile ) {
 		return 0;
 	}
-#endif
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
+	// the buffer end otherwise partial-reads into the local (a
+	// truncated file yields a corrupt value).  Return 0 on exhaustion.
+	if( getCurPos() > nSize || sizeof(float) > nSize - getCurPos() ) {
+	#ifdef _DEBUG
+		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getFloat:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	#endif
+		fseek( hFile, 0, SEEK_END );   // consume to end so loop-until-cursor callers terminate
+		return 0;
+	}
 
 #ifdef RISE_BIG_ENDIAN
 	float f = 0;
@@ -182,12 +245,21 @@ float DiskFileReadBuffer::getFloat()
 
 double DiskFileReadBuffer::getDouble()
 {
-#ifdef _DEBUG
-	if( getCurPos()+sizeof(double) > nSize ) {
-		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getDouble:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	// No file handle (open failed): degrade gracefully instead of
+	// ftell(NULL)/fread(NULL) UB.
+	if( !hFile ) {
 		return 0;
 	}
-#endif
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
+	// the buffer end otherwise partial-reads into the local (a
+	// truncated file yields a corrupt value).  Return 0 on exhaustion.
+	if( getCurPos() > nSize || sizeof(double) > nSize - getCurPos() ) {
+	#ifdef _DEBUG
+		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getDouble:: Attempted read past end of buffer", __FILE__, __LINE__ );
+	#endif
+		fseek( hFile, 0, SEEK_END );   // consume to end so loop-until-cursor callers terminate
+		return 0;
+	}
 
 #ifdef RISE_BIG_ENDIAN
 	unsigned int Low = getUInt();
@@ -209,23 +281,34 @@ double DiskFileReadBuffer::getDouble()
 
 bool DiskFileReadBuffer::getBytes( void* pDest, unsigned int amount )
 {
-#ifdef _DEBUG
-	if( getCurPos()+amount > nSize ) {
-		GlobalLog()->PrintEx( eLog_Error, "DiskFileReadBuffer::getBytes:: Attempted read past end of buffer, read %d bytes, cursor at %d bytes", amount, getCurPos() );
-		return false;
-	}
-#endif
-	if( !pDest ) {
+	if( !pDest || !hFile ) {
 		return false;
 	}
 
-	fread( pDest, amount, 1, hFile );
+	// Bounds-check UNCONDITIONALLY (was _DEBUG-only) and CHECK the fread
+	// count: a truncated file must not leave the caller's buffer tail
+	// uninitialised.  getCurPos() <= nSize is the invariant, so the
+	// subtraction cannot underflow.
+	const unsigned int cur    = getCurPos();
+	const unsigned int avail  = ( cur <= nSize ) ? ( nSize - cur ) : 0;
+	const unsigned int toRead = ( amount <= avail ) ? amount : avail;
+
+	size_t got = 0;
+	if( toRead ) {
+		got = fread( pDest, 1, toRead, hFile );
+	}
+	if( got < amount ) {
+		// Short read (truncation / EOF): zero the tail and signal failure.
+		memset( static_cast<char*>(pDest) + got, 0, amount - got );
+		GlobalLog()->PrintEx( eLog_Error, "DiskFileReadBuffer::getBytes:: short read (want %u at cursor %u of %u, got %u); rest zeroed", amount, cur, nSize, static_cast<unsigned>(got) );
+		return false;
+	}
 	return true;
 }
 
 int DiskFileReadBuffer::getLine( char* pDest, unsigned int max )
 {
-	if( !pDest ) {
+	if( !pDest || !hFile ) {
 		return false;
 	}
 

@@ -29,8 +29,10 @@
 
 #include "pch.h"
 #include "SceneEditor.h"
+#include <vector>   // P1: atomic composite undo/redo rollback buffer
 #include "CameraIntrospection.h"
 #include "../Interfaces/IObjectPriv.h"
+#include "../Utilities/Transformable.h"
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IMaterialManager.h"
@@ -48,16 +50,129 @@
 #include "../Interfaces/ILightManager.h"
 #include "../Interfaces/IMedium.h"
 #include "../Interfaces/IJob.h"
+#include "../Interfaces/IJobPriv.h"
 #include "../Interfaces/IKeyframable.h"
 #include "../Interfaces/IEnumCallback.h"
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Cameras/CameraCommon.h"
+#include "../Scene.h"   // concrete Scene for the #2b(a) light-generation bump
 #include <cmath>
 
 using namespace RISE;
 
+void SceneEditor::BumpSceneLightGeneration()
+{
+	// IScenePriv carries no light-generation surface (keeping that off the
+	// abstract interface is deliberate — see Scene::GetLightTopologyGeneration
+	// and the abi-preserving-api-evolution skill).  Downcast to the concrete
+	// Scene at this single editor call site; out-of-tree scenes no-op.
+	if( Implementation::Scene* concrete =
+	    dynamic_cast<Implementation::Scene*>( mScene ) )
+	{
+		concrete->BumpLightTopologyGeneration();
+	}
+}
+
+void SceneEditor::BumpSceneLightGenerationIfEmitterSetChanged(
+	const IMaterial* prevMat, const IMaterial* newMat )
+{
+	// The emitter set changes iff at least one of the two bindings is
+	// emissive: emissive->anything REMOVES (or replaces) a luminary;
+	// anything->emissive ADDS one; emissive->emissive changes its
+	// exitance.  A non-emissive->non-emissive swap (the common
+	// reflectance-only rebind) leaves the luminary set identical, so we
+	// skip the bump and its sampler rebuild.  GetEmitter() is null for a
+	// non-emissive material; a null material pointer is treated as
+	// non-emissive (defensive).
+	const bool prevEmits = ( prevMat && prevMat->GetEmitter() );
+	const bool newEmits  = ( newMat  && newMat->GetEmitter()  );
+	if( prevEmits || newEmits )
+	{
+		BumpSceneLightGeneration();
+	}
+}
+
+void SceneEditor::BumpSceneLightGenerationIfMaterialEmits( const IMaterial* mat )
+{
+	// A SPATIAL edit on an emissive object (area / world position) or a
+	// material-SLOT edit on an emissive material (exitance) changes the
+	// LightSampler's cached alias-table weight + representative point
+	// (baked at Prepare()) WITHOUT changing the emitter SET.  Bump so a
+	// reused RayCaster rebuilds its sampler; else light SELECTION is biased
+	// toward the stale footprint (the estimator stays unbiased -- per-sample
+	// area / Le are read live).  No-op for a null / non-emissive material.
+	if( mat && mat->GetEmitter() )
+	{
+		BumpSceneLightGeneration();
+	}
+}
+
+bool SceneEditor::ClassifyCstEntityKind( const std::string& kind, EntityCategory& outCategory )
+{
+	// Model-B F2 S3 fix round (P3-a): the ONE place that maps a CST
+	// chunk-kind string to its EntityCategory -- see the header doc for
+	// why this used to be two independently-maintained copies.
+	auto endsWith = []( const std::string& s, const char* suffix ) {
+		const std::string suf( suffix );
+		return s.size() >= suf.size()
+		    && s.compare( s.size() - suf.size(), suf.size(), suf ) == 0;
+	};
+	if( kind == "standard_object" ) {
+		outCategory = EntityCategory::Object;
+		return true;
+	}
+	if( kind == "camera" || endsWith( kind, "_camera" ) ) {
+		outCategory = EntityCategory::Camera;
+		return true;
+	}
+	if( endsWith( kind, "_light" ) ) {
+		outCategory = EntityCategory::Light;
+		return true;
+	}
+	if( kind == "material" || endsWith( kind, "_material" ) ) {
+		outCategory = EntityCategory::Material;
+		return true;
+	}
+	if( endsWith( kind, "_medium" ) ) {
+		outCategory = EntityCategory::Medium;
+		return true;
+	}
+	return false;   // empty / unrecognized -- caller applies its own fallback policy
+}
+
+void SceneEditor::BumpSceneLightGenerationForAgentParamEdit(
+	const char* entityName, const char* entityKind )
+{
+	// Shared-undo follow-up (P2 fix): see the doc comment in SceneEditor.h --
+	// resolve material-ness from the CST chunk-kind string via the SAME
+	// ClassifyCstEntityKind MarkCstHeadDirty's kind dispatch uses, then
+	// bump iff the resolved material is emissive (matching
+	// MarkEditEntityDirty's SetMaterialProperty arm, the GUI-path
+	// counterpart this closes the gap with).  Empty/unrecognized kinds
+	// bump CONSERVATIVELY -- a spurious bump costs one alias-table
+	// rebuild; a missed bump on an actually-emissive target is a
+	// rendering-correctness bug.
+	const std::string kind = entityKind ? entityKind : std::string();
+	EntityCategory category;
+	const bool isKnown = ClassifyCstEntityKind( kind, category );
+	if( isKnown && category == EntityCategory::Material )
+	{
+		if( mMaterialManager && entityName )
+		{
+			BumpSceneLightGenerationIfMaterialEmits(
+				mMaterialManager->GetItem( entityName ) );
+		}
+	}
+	else if( !isKnown )
+	{
+		// Empty / unrecognized kind: bump conservatively (see the tradeoff
+		// note above and in the header doc comment).
+		BumpSceneLightGeneration();
+	}
+}
+
 SceneEditor::SceneEditor( IScenePriv& scene )
-: mScene( scene )
+: mScene( &scene )
 , mMaterialManager( 0 )
 , mShaderManager( 0 )
 , mPainterManager( 0 )
@@ -141,7 +256,7 @@ Scalar SceneEditor::SceneScale() const
 	if( mSceneScale > 0 ) return mSceneScale;
 
 	BoundingBoxAccumulator acc;
-	if( const IObjectManager* objs = mScene.GetObjects() ) {
+	if( const IObjectManager* objs = mScene->GetObjects() ) {
 		objs->EnumerateObjects( acc );
 	}
 
@@ -161,12 +276,12 @@ Scalar SceneEditor::SceneScale() const
 
 bool SceneEditor::ComputeScenePhotonsExist() const
 {
-	return mScene.GetCausticPelMap()       != 0
-	    || mScene.GetGlobalPelMap()        != 0
-	    || mScene.GetTranslucentPelMap()   != 0
-	    || mScene.GetCausticSpectralMap()  != 0
-	    || mScene.GetGlobalSpectralMap()   != 0
-	    || mScene.GetShadowMap()           != 0;
+	return mScene->GetCausticPelMap()       != 0
+	    || mScene->GetGlobalPelMap()        != 0
+	    || mScene->GetTranslucentPelMap()   != 0
+	    || mScene->GetCausticSpectralMap()  != 0
+	    || mScene->GetGlobalSpectralMap()   != 0
+	    || mScene->GetShadowMap()           != 0;
 }
 
 // The IObjectManager only exposes EnumerateItemNames + GetItem
@@ -450,7 +565,7 @@ namespace
 
 IObjectPriv* SceneEditor::FindObject( const String& name ) const
 {
-	const IObjectManager* objs = mScene.GetObjects();
+	const IObjectManager* objs = mScene->GetObjects();
 	if( !objs ) return 0;
 	IObjectPriv* obj = objs->GetItem( name.c_str() );
 	return obj;
@@ -664,8 +779,9 @@ bool ApplyMediumPropertyValue( IMedium& medium, const String& propertyName, cons
 
 }  // namespace
 
-void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit )
+bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit )
 {
+	bool ok = true;   // P1: false if a binding op's forward target name no longer resolves
 	switch( edit.op )
 	{
 	case SceneEdit::TranslateObject:
@@ -705,13 +821,31 @@ void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 	case SceneEdit::SetObjectMaterial:
 		if( mMaterialManager ) {
 			IMaterial* mat = mMaterialManager->GetItem( edit.propertyValue.c_str() );
-			if( mat ) obj.AssignMaterial( *mat );
+			if( mat ) {
+				// P1-4: capture the PRIOR binding before the swap so we can
+				// detect an emitter-set change and bump the light-topology
+				// generation (a reused RayCaster then rebuilds its
+				// LightSampler — else a cached luminary on a now-non-
+				// emissive material would deref a NULL emitter).  Covers
+				// the forward Apply AND both Redo paths (composite + single)
+				// since they all route material binds through here.
+				const IMaterial* prevMat = obj.GetMaterial();
+				obj.AssignMaterial( *mat );
+				BumpSceneLightGenerationIfEmitterSetChanged( prevMat, mat );
+			} else {
+				ok = false;   // P1: forward target removed since capture -> redo can't bind
+			}
+		} else {
+			ok = false;
 		}
 		break;
 	case SceneEdit::SetObjectShader:
 		if( mShaderManager ) {
 			IShader* sh = mShaderManager->GetItem( edit.propertyValue.c_str() );
 			if( sh ) obj.AssignShader( *sh );
+			else     ok = false;   // P1: forward shader removed
+		} else {
+			ok = false;
 		}
 		break;
 	case SceneEdit::SetObjectShadowFlags: {
@@ -731,6 +865,9 @@ void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		} else if( mJob ) {
 			const IMedium* med = mJob->GetMedium( edit.propertyValue.c_str() );
 			if( med ) obj.AssignInteriorMedium( *med );
+			else      ok = false;   // P1: forward medium removed
+		} else {
+			ok = false;
 		}
 		break;
 	case SceneEdit::SetObjectGeometry:
@@ -741,36 +878,57 @@ void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		if( mJob ) {
 			const IGeometry* g = mJob->GetGeometry( edit.propertyValue.c_str() );
 			if( g ) obj.AssignGeometry( *g );
+			else    ok = false;   // P1: forward geometry removed
+		} else {
+			ok = false;
 		}
 		break;
 	default:
 		// Caller guarantees IsObjectOp(edit.op) — this is a coding
 		// error if reached, but we silently no-op rather than crash.
+		ok = false;
 		break;
 	}
+	return ok;
 }
 
-void SceneEditor::RestoreObjectTransform( IObjectPriv& obj, const Matrix4& prev )
+void SceneEditor::RestoreObjectTransform( IObjectPriv& obj, const SceneEdit& edit )
 {
-	// ITransformable composes its final matrix as
-	//   m_mxFinalTrans = position * orientation * stretch * scale * stack
-	// So to restore an arbitrary captured matrix we zero out every
-	// component (ClearAllTransforms) and push the captured matrix
-	// onto the stack.  After FinalizeTransformations, the final
-	// matrix equals prev.
+	// Prefer the full component-decomposed state captured at edit time: it
+	// restores position/orientation/scale/stretch as COMPONENTS, so a later
+	// absolute SetPosition/SetOrientation/... replaces the right component
+	// instead of composing with a baseline collapsed onto the stack (the
+	// pre-existing transform-undo bug).  Fall back to the collapsed-matrix
+	// restore for ScaleObjectFromAnchor / non-Transformable targets.
+	if( edit.hasTransformState ) {
+		if( Implementation::Transformable* t = dynamic_cast<Implementation::Transformable*>( &obj ) ) {
+			t->RestoreTransformState( edit.prevTransformState );
+			return;
+		}
+	}
+	// Fallback (ITransformable composes final = position * orientation *
+	// stretch * scale * stack; zero components + push the captured matrix).
 	obj.ClearAllTransforms();
-	obj.PushTopTransStack( prev );
+	obj.PushTopTransStack( edit.prevTransform );
 }
 
 void SceneEditor::RunObjectInvariantChain( IObjectPriv& obj )
 {
 	obj.FinalizeTransformations();
 	obj.ResetRuntimeData();
-	const IObjectManager* objs = mScene.GetObjects();
+	const IObjectManager* objs = mScene->GetObjects();
 	if( objs )
 	{
 		objs->InvalidateSpatialStructure();
 	}
+	// Re-review finding B: a spatial change to an EMISSIVE object (move /
+	// rotate / scale / geometry swap) changes its luminary area + world
+	// position, which the LightSampler caches at Prepare().  Bump the light-
+	// topology generation so a reused RayCaster rebuilds its sampler; else
+	// light SELECTION is biased toward the stale footprint (estimator stays
+	// unbiased).  Single choke point for EVERY OpNeedsSpatialRebuild op
+	// across Apply / Undo / Redo / composite, so one call covers them all.
+	BumpSceneLightGenerationIfMaterialEmits( obj.GetMaterial() );
 }
 
 void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
@@ -778,8 +936,10 @@ void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
 	// Phase B: route a property-shaped edit into the per-category
 	// dirty channel.  Transform ops are deliberately omitted — they
 	// mark the object-transform channel (mDirtyTracker.MarkDirty)
-	// inline.  AddCamera (new entity, no source span) and SetSceneTime
-	// (transient) are intentionally NOT persisted by Phase B.
+	// inline.  AddCamera (a created entity — historically the
+	// byte-splice era's "no source span" case, now just the Phase C
+	// created channel below) and SetSceneTime (transient) are
+	// intentionally NOT part of Phase B's per-category channel.
 	switch( edit.op )
 	{
 	case SceneEdit::SetObjectGeometry:
@@ -800,7 +960,7 @@ void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
 		// Camera ops target the ACTIVE camera (the op carries no
 		// camera name — SetCameraProperty's objectName is the
 		// PROPERTY name).
-		const String camName = mScene.GetActiveCameraName();
+		const String camName = mScene->GetActiveCameraName();
 		if( camName.size() > 0 ) {
 			mDirtyTracker.MarkEntityDirty( EntityCategory::Camera,
 				std::string( camName.c_str() ) );
@@ -814,17 +974,61 @@ void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
 	case SceneEdit::SetMaterialProperty:
 		mDirtyTracker.MarkEntityDirty( EntityCategory::Material,
 			std::string( edit.objectName.c_str() ) );
+		// Re-review finding B: editing an EMISSIVE material's slot (e.g.
+		// exitance) changes the cached alias-table weight; bump light-gen so a
+		// reused RayCaster rebuilds its sampler.  MarkEditEntityDirty is the
+		// shared per-edit hook (Apply / Undo / Redo / composite all route
+		// through it), so one site covers every path.  edit.objectName is the
+		// material name for SetMaterialProperty.
+		if( mMaterialManager )
+		{
+			BumpSceneLightGenerationIfMaterialEmits(
+				mMaterialManager->GetItem( edit.objectName.c_str() ) );
+		}
 		break;
 	case SceneEdit::SetMediumProperty:
 		mDirtyTracker.MarkEntityDirty( EntityCategory::Medium,
 			std::string( edit.objectName.c_str() ) );
 		break;
 	case SceneEdit::AddCamera:
-		// Phase C: a newly-created entity has no source span — the
-		// save engine emits a fresh chunk for it.  objectName carries
-		// the new camera's name.
+		// Phase C: mark the new entity created.  Historically the
+		// byte-splice save engine emitted a fresh chunk for it (a
+		// created entity has no source span); that machinery went
+		// with Slice 6d — today the mark only feeds dirty state.
+		// objectName carries the new camera's name.
 		mDirtyTracker.MarkEntityCreated( EntityCategory::Camera,
 			std::string( edit.objectName.c_str() ) );
+		break;
+	case SceneEdit::SetAgentCstParam:
+		// P1-4 fix (round 1): the FORWARD agent commit marks dirty via
+		// MarkCstHeadDirty (SceneEditController::ApplyAgentParamEdit calls it
+		// directly, since that mutation lands OUTSIDE SceneEditor::Apply --
+		// see PushAgentCstParamEdit's doc). But MarkEditEntityDirty (THIS
+		// function) is the one Undo()/Redo() call for every op via
+		// ApplyRevertMutation/ApplyForwardMutation's shared callers -- falling
+		// to `default: break` here left an agent edit's Undo/Redo with NO
+		// dirty mark of its own. Harmless when the entity was already dirty
+		// from the original forward edit (the per-entity channel is a set,
+		// so re-marking is a no-op) -- but after a SAVE clears the tracker,
+		// an Undo or Redo of an agent edit mutates the Document away from the
+		// saved bytes with nothing to flip HasUnsavedChanges() back on,
+		// so a close-without-prompt silently discards the reverted/redone
+		// edit. Route through the SAME MarkCstHeadDirty the forward path
+		// uses (kind-aware category dispatch; unknown/empty kind falls to
+		// the CST-head boolean channel) so Undo/Redo match the forward mark
+		// exactly.
+		MarkCstHeadDirty( edit.objectName.c_str(),
+			edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr );
+		break;
+	case SceneEdit::AgentInsertChunk:
+	case SceneEdit::AgentRemoveChunk:
+		// Shared-undo U2: same rationale as SetAgentCstParam above -- the FORWARD chunk-CRUD commit marks
+		// dirty via MarkCstHeadDirty directly (SceneEditController::ApplyAgentChunkCrud_), since that mutation
+		// also lands OUTSIDE SceneEditor::Apply.  Undo/Redo of a chunk-CRUD op route through THIS function via
+		// ApplyRevertMutation/ApplyForwardMutation's shared callers, so without this case a chunk-CRUD Undo/Redo
+		// after a Save would leave HasUnsavedChanges() false -- the same data-loss gap P1-4 closed for param edits.
+		MarkCstHeadDirty( edit.objectName.c_str(),
+			edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr );
 		break;
 	default:
 		break;
@@ -858,20 +1062,817 @@ struct DirtyChangeNotifier
 };
 }
 
+ICamera* SceneEditor::ResolveEditedCamera( const SceneEdit& e )
+{
+	// F4: restore the camera that was EDITED (recorded at Apply time), not
+	// whatever camera happens to be active now.
+	if( e.cameraTargetName.size() > 0 ) {
+		if( ICameraManager* cm = mScene->GetCamerasMutable() ) {
+			if( ICamera* c = cm->GetItem( e.cameraTargetName.c_str() ) ) return c;
+		}
+		// P1-#5: a recorded name that no longer resolves means the edited
+		// camera was removed.  Return null -- do NOT fall through to the
+		// active camera, or undo/rollback of camera A would silently
+		// overwrite whatever camera is active now (camera B).
+		return 0;
+	}
+	// Legacy edit with no recorded name: the active camera is the target.
+	return mScene->GetCameraMutable();
+}
+
+// P5 Slice 3: which SceneEdit ops route through the CST (Job::ApplyCstParamEdit) on a retained-CST scene,
+// and so RE-DERIVE their entity (churning its serial) instead of mutating it in place.  The identity
+// serial-guard in Apply{Forward,Revert}Mutation is SKIPPED for exactly these (it would falsely trip -- they
+// apply/revert/redo BY NAME, never the stale pointer).  As the edit set expands (object/light/camera), add
+// each newly-CST-routed op HERE -- one place, both guard sites read it.
+// P5 Slice 3 expansion (object): an object BINDING op re-points a standard_object reference slot -- it maps
+// 1:1 to a standard_object param, so it routes per-op (like material/light).  TRANSFORM ops are committed to
+// the authoritative `matrix` param at the composite/edit boundary instead (see CommitPendingCstObjectTransforms).
+static inline bool IsObjectBindingOp( SceneEdit::Op op )
+{
+	return op == SceneEdit::SetObjectMaterial
+	    || op == SceneEdit::SetObjectShader
+	    || op == SceneEdit::SetObjectGeometry
+	    || op == SceneEdit::SetObjectInteriorMedium;
+}
+
+// The standard_object param role each binding op writes.
+static inline const char* ObjectBindingRole( SceneEdit::Op op )
+{
+	switch( op ) {
+	case SceneEdit::SetObjectMaterial:       return "material";
+	case SceneEdit::SetObjectShader:         return "shader";
+	case SceneEdit::SetObjectGeometry:       return "geometry";
+	case SceneEdit::SetObjectInteriorMedium: return "interior_medium";
+	default:                                 return "";
+	}
+}
+
+// P5 Slice 3 expansion (object transform): a TRANSFORM edit (panel absolute OR gizmo delta) is committed to the
+// standard_object `matrix` param (authoritative, lossless) at the composite/edit boundary -- NOT per-op (a gizmo
+// drag emits one per frame, which would be N full re-derives).  See CommitPendingCstObjectTransforms.
+static inline bool IsObjectTransformOp( SceneEdit::Op op )
+{
+	return op == SceneEdit::TranslateObject
+	    || op == SceneEdit::RotateObjectArb
+	    || op == SceneEdit::SetObjectPosition
+	    || op == SceneEdit::SetObjectOrientation
+	    || op == SceneEdit::SetObjectScale
+	    || op == SceneEdit::SetObjectStretch
+	    || op == SceneEdit::ScaleObjectFromAnchor;
+}
+
+// Serialise a Matrix4 as the 16 col-major doubles the standard_object `matrix` param expects.  RISE's Matrix4
+// stores fields `_<col><row>` contiguously in declaration order (_00,_01,..,_33), and the load-time parser maps
+// matrix[k] -> the k-th field in that same order (Job::AddObjectMatrix), so emitting the fields in declaration
+// order is a ROUND-TRIP-EXACT col-major encoding.  %.17g preserves every double bit-for-bit.
+static std::string FormatMatrix16( const Matrix4& m )
+{
+	const Scalar v[16] = {
+		m._00, m._01, m._02, m._03,
+		m._10, m._11, m._12, m._13,
+		m._20, m._21, m._22, m._23,
+		m._30, m._31, m._32, m._33 };
+	std::string out;
+	char buf[ 32 ];
+	for( int i = 0; i < 16; ++i ) {
+		std::snprintf( buf, sizeof( buf ), "%.17g", static_cast<double>( v[i] ) );
+		if( i ) out += ' ';
+		out += buf;
+	}
+	return out;
+}
+
+// Format a Vector3 as "x y z" at full precision.
+static std::string FormatVec3( const Vector3& v )
+{
+	char buf[ 96 ];
+	std::snprintf( buf, sizeof( buf ), "%.17g %.17g %.17g", static_cast<double>( v.x ), static_cast<double>( v.y ), static_cast<double>( v.z ) );
+	return std::string( buf );
+}
+
+// P5 Slice 3 expansion (csg transform): decompose a RIGID (translate+rotate, UNIT-scale) transform into
+// position + Euler(XYZ, DEGREES), matching RISE's P*O composition (O = XRot*YRot*ZRot, Transformable::SetOrientation).
+// Returns false on shear / non-unit scale / gimbal-lock / reflection.  A self-verifying local decompose;
+// originally it mirrored the byte-splice SaveEngine's §9.5 TryDecompose, deleted in Slice 6d.  It REBUILDS the
+// matrix RISE's way and compares, so a future composition-convention change fails SAFE (returns false -> the
+// csg edit is refused, never mis-saved).  Used to commit a csg_object transform via its position/orientation params (csg
+// authors no matrix/scale param).  Non-unit scale returns false because csg has no scale param to persist it.
+static bool DecomposeRigid( const Matrix4& M, Vector3& outPos, Vector3& outOrientDeg )
+{
+	if( std::fabs( M._03 ) > 1e-9 || std::fabs( M._13 ) > 1e-9 ||
+	    std::fabs( M._23 ) > 1e-9 || std::fabs( M._33 - 1.0 ) > 1e-9 ) return false;   // not affine
+	const Vector3 c0( M._00, M._01, M._02 );
+	const Vector3 c1( M._10, M._11, M._12 );
+	const Vector3 c2( M._20, M._21, M._22 );
+	const double s0 = Vector3Ops::Magnitude( c0 );
+	const double s1 = Vector3Ops::Magnitude( c1 );
+	const double s2 = Vector3Ops::Magnitude( c2 );
+	if( std::fabs( s0 - 1.0 ) > 1e-6 || std::fabs( s1 - 1.0 ) > 1e-6 || std::fabs( s2 - 1.0 ) > 1e-6 ) return false;   // non-unit scale -> csg has no scale param
+	const Vector3 r0( c0.x / s0, c0.y / s0, c0.z / s0 );
+	const Vector3 r1( c1.x / s1, c1.y / s1, c1.z / s1 );
+	const Vector3 r2( c2.x / s2, c2.y / s2, c2.z / s2 );
+	const double tol = 1e-6;
+	if( std::fabs( Vector3Ops::Dot( r0, r1 ) ) > tol ||
+	    std::fabs( Vector3Ops::Dot( r0, r2 ) ) > tol ||
+	    std::fabs( Vector3Ops::Dot( r1, r2 ) ) > tol ) return false;   // shear
+	if( Vector3Ops::Dot( r0, Vector3Ops::Cross( r1, r2 ) ) < 0.0 ) return false;   // reflection
+	// Euler extraction for RISE's Rx*Ry*Rz (the cell-by-cell derivation originally lived in the byte-splice
+	// SaveEngine's §9.5 TryDecompose, deleted in Slice 6d).
+	const double sin_y = r2.x;
+	if( std::fabs( sin_y ) >= 1.0 - 1e-9 ) return false;   // gimbal-lock
+	const double cos_y = std::sqrt( 1.0 - sin_y * sin_y );
+	const double y_rad = std::atan2( sin_y, cos_y );
+	const double x_rad = std::atan2( -r2.y, r2.z );
+	const double z_rad = std::atan2( -r1.x, r0.x );
+	// Rebuild EXACTLY the way Transformable composes and compare (binds correctness to RISE's actual rule).
+	const Vector3 pos( M._30, M._31, M._32 );
+	const Matrix4 cand = Matrix4Ops::Translation( pos )
+	                   * ( Matrix4Ops::XRotation( x_rad ) * Matrix4Ops::YRotation( y_rad ) * Matrix4Ops::ZRotation( z_rad ) );
+	for( int col = 0; col < 4; ++col ) for( int row = 0; row < 4; ++row ) {
+		const Scalar* cp = &cand._00; const Scalar* mp = &M._00;
+		const int k = col * 4 + row;
+		if( std::fabs( static_cast<double>( cp[k] ) - static_cast<double>( mp[k] ) ) > 1e-6 ) return false;
+	}
+	outPos       = pos;
+	outOrientDeg = Vector3( x_rad * 180.0 / PI, y_rad * 180.0 / PI, z_rad * 180.0 / PI );
+	return true;
+}
+
+// True for the object transform ops a non-matrix object (csg) CAN represent: pure translate / rotate (no scale).
+static inline bool IsObjectTranslateOrRotateOp( SceneEdit::Op op )
+{
+	return op == SceneEdit::TranslateObject
+	    || op == SceneEdit::RotateObjectArb
+	    || op == SceneEdit::SetObjectPosition
+	    || op == SceneEdit::SetObjectOrientation;
+}
+
+static inline bool IsCstRoutedOp( SceneEdit::Op op )
+{
+	// CST-routed = the entity is RE-DERIVED (not mutated in place) on a CST-loaded scene, so the remove+re-add
+	// serial guard must SKIP it (its serial legitimately changes each edit) and it applies/reverts/redoes BY
+	// NAME.  Material/light/camera + object bindings + object shadow flags route PER-OP; object TRANSFORM ops
+	// commit to the `matrix` param at the composite/edit boundary -- all of IsObjectOp is re-derived on a CST
+	// scene, so all of it skips the guard.
+	return op == SceneEdit::SetMaterialProperty
+	    || op == SceneEdit::SetLightProperty
+	    || op == SceneEdit::SetCameraProperty
+	    || op == SceneEdit::SetMediumProperty
+	    || op == SceneEdit::SetAgentCstParam    // shared-undo U1: agent edits re-derive by name too
+	    || op == SceneEdit::AgentInsertChunk    // shared-undo U2: agent chunk CRUD re-derives (full re-derive) too
+	    || op == SceneEdit::AgentRemoveChunk
+	    || SceneEdit::IsObjectOp( op )
+	    || SceneEdit::IsCameraOp( op );   // camera DRAG ops re-derive at the pose-commit boundary too
+}
+
+// P5 Slice 3 expansion (medium): only the homogeneous_medium chunk params that EXIST are routable -- absorption
+// and scattering.  `emission` is editable on the live HomogeneousMedium but the homogeneous_medium SCENE chunk
+// has NO emission param (see MediaIntrospection), so routing it would insert a param the descriptor-driven
+// parser rejects on re-derive -> the edit would be wrongly REFUSED.  Emission therefore falls through to the
+// direct mutate (live-but-transient -- a pre-existing, documented limitation, not closed here).
+static inline bool IsCstRoutableMediumProp( const String& prop )
+{
+	return prop == String( "absorption" ) || prop == String( "scattering" );
+}
+
+unsigned long long SceneEditor::ResolveTargetSerial( const SceneEdit& e ) const
+{
+	// P1: the entity whose STATE this op restores -- compare its serial at capture vs
+	// apply to detect a remove+re-add of a DIFFERENT instance under the same name.
+	// 0 = no identity tracking: SetMediumProperty (mediums have no RemoveMedium so a
+	// name can't be reused), SetSceneTime, AddCamera (its undo removes the entity),
+	// composite markers, and legacy camera edits with no recorded name.
+	//
+	// KNOWN LIMITATION (unreachable today): redo of an entity-CREATING op mints a NEW
+	// serial.  AddCamera is the only such op and is currently issued only standalone
+	// (CloneActiveCamera, never inside a composite).  If a future composite ever
+	// brackets AddCamera + a later op on the created entity, composite REDO would
+	// recreate the entity with a fresh serial and this guard would then false-refuse
+	// the later op.  When entity-creation becomes composable (the planned outliner),
+	// the recreated entity must PRESERVE its identity serial across undo/redo (e.g. a
+	// serial-preserving re-add), not just its name.
+	if( SceneEdit::IsObjectOp( e.op ) ) {
+		const IObjectManager* objs = mScene->GetObjects();
+		return objs ? objs->GetItemSerial( e.objectName.c_str() ) : 0;
+	}
+	if( SceneEdit::IsCameraOp( e.op ) || e.op == SceneEdit::SetCameraProperty ) {
+		const ICameraManager* cams = mScene->GetCameras();
+		return ( cams && e.cameraTargetName.size() > 0 )
+		     ? cams->GetItemSerial( e.cameraTargetName.c_str() ) : 0;
+	}
+	if( e.op == SceneEdit::SetMaterialProperty ) {
+		return mMaterialManager ? mMaterialManager->GetItemSerial( e.objectName.c_str() ) : 0;
+	}
+	if( e.op == SceneEdit::SetLightProperty ) {
+		const ILightManager* lights = mScene->GetLights();
+		return lights ? lights->GetItemSerial( e.objectName.c_str() ) : 0;
+	}
+	return 0;
+}
+
+// P5 Slice 3: re-point this editor at the Job's CURRENT scene + managers after a CST D2 full re-derive
+// (Job::ApplyCstParamEdit result 2 or 3) ClearAll'd the Job -- the Scene + managers this editor cached are now
+// freed.  Mirrors SceneEditController::RebindEditorToJob (which re-binds for a variant switch); here the
+// editor re-binds ITSELF, synchronously at the edit site, so no frame above derefs a dangling pointer.
+// The Job object itself is unchanged (only its containers), so mJob stays valid.
+void SceneEditor::RebindToJob_()
+{
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( mJob );
+	if( !priv ) return;
+	if( IScenePriv* sc = priv->GetScene() ) RebindScene( *sc );
+	SetMaterialManager( priv->GetMaterials() );
+	SetShaderManager( priv->GetShaders() );
+	SetPainterManager( priv->GetPainters() );
+	SetScalarPainterManager( priv->GetScalarPainters() );
+	// A material EDIT must not reset the interactive scrub: the D2 ClearAll+re-derive built a fresh scene at
+	// the animator's default time, but the user is parked at mLastSetTime -- re-apply it (the scrub-TIME twin of
+	// the camera/rasterizer/animation preservation) so the viewport pose matches the timeline slider; the
+	// production path already re-applies LastSceneTime before dispatch.  Skipped at the implicit t=0 (no scrub).
+	if( mScene && mLastSetTime != 0 ) mScene->SetSceneTimeForPreview( mLastSetTime );
+}
+
+// P5 Slice 3 expansion: shared CST-routing for a property edit (material/light/...).  Mirrors the material
+// branch -- DocSetOrAddParamValue + re-derive via Job::ApplyCstParamEdit; rebind on a D2 (result >=2); a
+// diagnosed re-derive (3) rebinds but reports failure.
+bool SceneEditor::RouteCstParamEdit_( const char* entityName, const char* entityKind, const char* role, const char* value )
+{
+	const int r = mJob->ApplyCstParamEdit( entityName, entityKind, role, 0, value );
+	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;   // code 1/2/3 all MUTATED the live scene -> the controller must re-render
+	return r == 1 || r == 2;
+}
+
+// Shared-undo U1: the inverse of an agent param edit that INSERTED a previously-absent param (SetAgentCstParam's
+// prevValueWasAbsent case) -- removes the param instead of re-setting a (nonexistent) prior value.  Mirrors
+// RouteCstParamEdit_ exactly (rebind on >=2, mCstLiveSceneChanged on != 0); only the Job entry point differs
+// (ApplyCstParamRemoveChecked, always full-derivability-gated -- agent-originated Document mutations never take
+// the ungated fast path).  `occ` (P1-2 fix, round 1) selects WHICH occurrence to remove (0 = first) -- the sole
+// caller (ApplyRevertMutation's SetAgentCstParam arm) always passes 0, matching the agent path's fixed occ=0
+// edit convention, but the plumbing is occ-aware end to end (Job::ApplyCstParamRemoveChecked ->
+// Cst::DocRemoveParamOcc) rather than hardcoding "remove every occurrence".
+//
+// P1-3 fix (round 1): the return is keyed on MUTATION, not cleanliness -- r==1 (incremental), r==2 (clean full
+// re-derive), and r==3 (full re-derive that DIAGNOSED) ALL mutated + rebound the retained Document (a code-3
+// DeriveEditedCstDocument_ commits the Document and replaces the Scene/managers UNCONDITIONALLY -- fdiags is
+// only checked to pick the return code, not to gate the commit); only r==0 (reject) left the head untouched.
+// The pre-fix `r == 1 || r == 2` treated a code-3 revert as "didn't happen", but SceneEditor::Undo()/Redo() had
+// ALREADY moved the entry across the undo/redo stacks (PopForUndo/PopForRedo) before calling this -- a false
+// return there triggers RestoreLastUndoFromRedo()/RestoreLastRedoFromUndo(), moving the entry BACK even though
+// the Document was already mutated. That leaves history and Document disagreeing about whether the revert
+// happened, and a retried Cmd-Z double-reverts (or wedges) the entry. Callers that need to know the diagnosed
+// case for logging read `outDiagnosed` (non-null only where SceneEditor.cpp needs it); everyone else can ignore
+// it -- the honest "did the mutation land" answer is the return value alone.
+bool SceneEditor::RouteCstParamRemove_( const char* entityName, const char* entityKind, const char* role, int occ, bool* outDiagnosed )
+{
+	if( outDiagnosed ) *outDiagnosed = false;
+	const int r = mJob->ApplyCstParamRemoveChecked( entityName, entityKind, role, occ );
+	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;
+	if( r == 3 && outDiagnosed ) *outDiagnosed = true;
+	return r >= 1;
+}
+
+// Shared-undo U1: the FULL-DERIVABILITY-GATED twin of RouteCstParamEdit_, used ONLY by SetAgentCstParam's
+// Undo/Redo (both directions, not just the absent-param Remove arm above).  Every other CST-routed op's
+// Undo/Redo (SetMaterialProperty, SetLightProperty, SetCameraProperty, SetMediumProperty) safely uses the
+// ungated RouteCstParamEdit_ because a GUI value edit has no adjacent mutation channel that can silently
+// invalidate a previously-proven-safe reference between the original Apply and a later Redo.  SetAgentCstParam
+// does NOT have that safety: Model-B F5's agent chunk-CRUD verbs (SceneEditController::ApplyAgentChunkCrud_ ->
+// Job::ApplyCstInsertChunk / ApplyCstRemoveChunk) mutate the retained Document WITHOUT ever touching mHistory
+// (no Push, no redo-stack clear -- see that method's own comment on why: chunk CRUD has no EditHistory record
+// at all yet, slice U2's scope).  So a chunk insert/remove/reorder can land BETWEEN an agent param edit and a
+// later Undo/Redo of it without invalidating the redo entry, changing whether a previously-forward-safe
+// reference is still forward-safe.  Re-applying a stale value through the UNGATED incremental-only path in that
+// window would validate only against the live managers and could silently re-commit a head that fails to
+// re-derive from serialized bytes -- exactly what the gate exists to prevent.  Cost: one extra throwaway
+// full-derive dry-run per Undo/Redo of an agent edit (not the GUI hot path) -- acceptable for a discrete,
+// infrequent operation.
+//
+// P1-3 fix (round 1): same mutation-keyed return as RouteCstParamRemove_ above -- see its doc for the full
+// rationale (a code-3 diagnosed re-derive still mutated + rebound the Document, so it must count as "the
+// revert/redo happened" for the history-stack bookkeeping, even though it is reported to the CALLER of the
+// forward-path ApplyAgentParamEdit as a failure).  `outDiagnosed` (non-null only where the caller logs it)
+// reports the code-3 case; the return value alone answers "did the mutation land".
+bool SceneEditor::RouteCstParamEditChecked_( const char* entityName, const char* entityKind, const char* role, const char* value, bool* outDiagnosed )
+{
+	if( outDiagnosed ) *outDiagnosed = false;
+	const int r = mJob->ApplyCstParamEditChecked( entityName, entityKind, role, 0, value );
+	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;
+	if( r == 3 && outDiagnosed ) *outDiagnosed = true;
+	return r >= 1;
+}
+
+// Shared-undo U2: route an AgentInsertChunk/AgentRemoveChunk Undo or Redo through Job's chunk-CRUD
+// primitives.  Every one of Job::ApplyCstInsertChunk / ApplyCstRemoveChunk / ApplyCstRestoreChunkAt is
+// ALREADY full-derivability-gated (they route through the shared RederiveCstDocumentFull_ tail, which
+// ALWAYS dry-runs before committing -- unlike ApplyCstParamEdit's OPTIONAL gate, chunk CRUD has no ungated
+// fast path to begin with), so -- unlike RouteCstParamEditChecked_/RouteCstParamRemove_, which exist
+// specifically to select the gated Job entry point over an ungated sibling -- this helper's job is purely
+// dispatch: pick the right Job call for (which op, which direction) and fold its 0/2/3 return the same
+// mutation-keyed way (r>=1 => "the mutation landed", including a diagnosed code-3).  Never 1 for any of
+// the three calls (a chunk-CRUD verb is always D2-class), so `r >= 1` and `r >= 2` are equivalent here;
+// written as `r != 0` to mirror the sibling helpers' shape.
+bool SceneEditor::RouteAgentChunkCrud_( const SceneEdit& edit, bool forInsertOp, bool forward, bool* outDiagnosed )
+{
+	if( outDiagnosed ) *outDiagnosed = false;
+	if( !mJob ) return false;
+	const char* kind = edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr;
+	int r = 0;
+	if( forInsertOp && forward )
+	{
+		// Redo of an insert: re-insert the SAME captured bytes.  Deterministic: Undo (the remove below)
+		// restored the pre-insert Document byte-identically, so re-running the positioned insert on that
+		// identical Document lands the same way it did the first time.
+		char kwBuf[128]; kwBuf[0] = '\0';
+		char nameBuf[256]; nameBuf[0] = '\0';
+		char diagBuf[512]; diagBuf[0] = '\0';
+		r = mJob->ApplyCstInsertChunk( edit.propertyValue.c_str(), kwBuf, sizeof( kwBuf ), nameBuf, sizeof( nameBuf ), diagBuf, sizeof( diagBuf ) );
+		if( r < 0 ) r = 0;   // fold malformed/duplicate refusals into the ordinary "would not derive" bucket
+	}
+	else if( forInsertOp && !forward )
+	{
+		// Undo of an insert: remove EXACTLY the 3 items ApplyCstInsertChunk spliced ([leadSep][chunk]
+		// [trailSep]) at the captured EXACT index -- NOT the general Cst::DocEraseChunkTidy heuristic a
+		// manual remove_chunk uses (which collapses at most ONE adjacent separator and -- correctly, by its
+		// own contract -- leaves a residual blank line on a chunk that had TWO fresh separators inserted
+		// around it; see AgentChunkCrudTest.cpp's T3).  This keeps Undo-of-insert byte-identical to the
+		// pre-insert Document, matching Undo-of-remove's own byte-identity bar.  A still-REFERENCED chunk
+		// (something now names it) fails the dry-run inside ApplyCstRemoveItemsAt's re-derive tail and
+		// refuses honestly (r==0), leaving the Document untouched -- the derivability gate this whole slice
+		// exists to enforce (SAME guarantee ApplyCstRemoveChunk gives; just a different Document-splice
+		// mechanism to reach it).
+		// Round-1 P2: also pass `edit.propertyValue` (the agent's exact original chunk text) as
+		// `expectedChunkBytes` -- ApplyCstRemoveItemsAt is otherwise a pure positional splice with NO identity
+		// check, so an out-of-band mutation between this insert and its Undo that shifts `agentChunkIndex` to
+		// a STALE-but-in-range position (a different, unrelated triple now sitting there) would otherwise let
+		// the dry-run below happily commit deleting the WRONG content whenever that wrong triple happens to
+		// derive cleanly (any well-formed, unreferenced triple does).  A mismatch refuses honestly (r==0,
+		// Document byte-unchanged) instead.
+		char diagBuf[512]; diagBuf[0] = '\0';
+		r = mJob->ApplyCstRemoveItemsAt( edit.agentChunkIndex, /*count*/3, diagBuf, sizeof( diagBuf ),
+		                                  edit.propertyValue.c_str() );
+	}
+	else if( !forInsertOp && !forward )
+	{
+		// Undo of a remove: splice the captured bytes back at the captured EXACT index.
+		char diagBuf[512]; diagBuf[0] = '\0';
+		r = mJob->ApplyCstRestoreChunkAt( edit.propertyValue.c_str(), edit.agentChunkIndex,
+		                                  /*restoreActiveRasterizer*/ !edit.agentChunkWasRasterizer,
+		                                  diagBuf, sizeof( diagBuf ) );
+	}
+	else
+	{
+		// Redo of a remove: re-remove by (name, kind) -- deterministic for the same reason insert-Redo is:
+		// Undo restored the pre-remove Document byte-identically first.
+		char kwBuf[128]; kwBuf[0] = '\0';
+		char diagBuf[512]; diagBuf[0] = '\0';
+		r = mJob->ApplyCstRemoveChunk( edit.objectName.c_str(), kind, kwBuf, sizeof( kwBuf ), diagBuf, sizeof( diagBuf ) );
+		if( r < 0 ) r = 0;
+	}
+	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;
+	if( r == 3 && outDiagnosed ) *outDiagnosed = true;
+	return r >= 1;
+}
+
+// P5 Slice 3 expansion (object): a shadow-flags edit maps to TWO standard_object bool params, so route both
+// (casts_shadows then receives_shadows).  `flags` bit0 = casts, bit1 = receives (the SetObjectShadowFlags
+// encoding).  Each route re-derives; RouteCstParamEdit_ rebinds on a D2, and the retained Document is re-retained
+// across the ClearAll (reset DURING ClearAll, re-retained immediately after inside DeriveEditedCstDocument_), so
+// the second route sees the first param already applied.  Returns false if EITHER route fails.
+bool SceneEditor::RouteObjectShadowFlagsToCst_( const String& objectName, int flags )
+{
+	const char* casts = ( flags & 1 ) ? "true" : "false";
+	const char* recvs = ( flags & 2 ) ? "true" : "false";
+	bool ok = RouteCstParamEdit_( objectName.c_str(), "standard_object", "casts_shadows", casts );
+	ok = RouteCstParamEdit_( objectName.c_str(), "standard_object", "receives_shadows", recvs ) && ok;
+	return ok;
+}
+
+// P5 Slice 3 expansion (object transform): a transform op direct-mutates the live object now (cheap, so a gizmo
+// drag stays responsive) and NOTES the object for a deferred `matrix`-param commit at the composite/edit
+// boundary.  Only on a CST-loaded scene (else there is no Document to keep in sync).
+void SceneEditor::NoteCstObjectTransform_( const String& name )
+{
+	mPendingCstObjMatrix.insert( std::string( name.c_str() ) );
+}
+
+// Route ONE object's net transform as the standard_object `matrix` param (Job strips the dead component params
+// first).  Rebinds this editor on a D2 full re-derive (result >=2), mirroring RouteCstParamEdit_.
+bool SceneEditor::ApplyCstObjectMatrix_( const std::string& name, const std::string& matrix16 )
+{
+	const int r = mJob->ApplyCstObjectMatrixEdit( name.c_str(), matrix16.c_str() );
+	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;   // code 1/2/3 all MUTATED the live scene -> the controller must re-render
+	return r == 1 || r == 2;
+}
+
+// Route ONE csg_object's translate+rotate as its position + orientation params (rebinds on a D2).
+bool SceneEditor::ApplyCstObjectComponents_( const std::string& name, const std::string& position, const std::string& orientation )
+{
+	const int r = mJob->ApplyCstObjectComponentsEdit( name.c_str(), position.c_str(), orientation.c_str() );
+	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;   // code 1/2/3 all MUTATED the live scene -> the controller must re-render
+	return r == 1 || r == 2;
+}
+
+// P5 Slice 3 expansion (object transform): commit every pending object's NET world transform to the retained CST
+// as the authoritative `matrix` param.  Called by the CONTROLLER at a render-thread-PARKED boundary (a commit
+// re-derives, which on a variant scene ClearAll's the live scene -- it must NOT race a render worker).  The
+// per-frame gizmo edits only NOTE objects (NoteCstObjectTransform_); this single flush at drag-end / panel-edit /
+// undo / redo does the one re-derive.  Snapshot EVERY target matrix BEFORE routing any -- the first route's D2
+// rebuilds the scene from the Document, which would reset a not-yet-routed object's live transform to its (stale)
+// Document value.  Returns false if any route failed.  Two failure shapes, OPPOSITE Document states (A2):
+// code 0 = the Document did NOT record the live transform -- a later full re-derive (D2) rebuilds the live
+// scene FROM the Document and therefore REVERTS the unrecorded transform (the divergence resolves by LOSING
+// the live edit, not by recording it); code 3 = the Document DID record it but the live re-derive diagnosed.
+// Either way the live edit stands right now and the failure is logged.
+bool SceneEditor::CommitPendingCstObjectTransforms()
+{
+	if( mPendingCstObjMatrix.empty() ) return true;
+	// Snapshot EACH pending object's route BEFORE applying ANY -- the first route's D2 rebuilds the scene from the
+	// Document, which would reset a not-yet-routed object's live transform to its (stale) Document value.  Per
+	// object: kind 1 (standard_object) commits the full `matrix`; kind 2 (csg_object) commits decomposed position +
+	// orientation (the editor's apply-gate + its post-mutate decomposability check already refused any csg
+	// scale/shear/gimbal-lock, so DecomposeRigid is guaranteed to succeed here).
+	struct Route { std::string name; int kind; std::string a; std::string b; bool ready; };
+	std::vector<Route> work;
+	work.reserve( mPendingCstObjMatrix.size() );
+	for( std::unordered_set<std::string>::const_iterator it = mPendingCstObjMatrix.begin(); it != mPendingCstObjMatrix.end(); ++it ) {
+		IObjectPriv* obj = FindObject( String( it->c_str() ) );
+		if( !obj ) continue;
+		const Matrix4 M = obj->GetFinalTransformMatrix();
+		const int kind = mJob->CstObjectTransformKind( it->c_str() );
+		Route r; r.name = *it; r.kind = kind; r.ready = false;
+		if( kind == 1 ) {
+			r.a = FormatMatrix16( M );
+			r.ready = true;
+		} else if( kind == 2 ) {
+			Vector3 pos, orientDeg;
+			if( DecomposeRigid( M, pos, orientDeg ) ) {
+				r.a = FormatVec3( pos );
+				r.b = FormatVec3( orientDeg );
+				r.ready = true;
+			}
+		}
+		work.push_back( r );
+	}
+	mPendingCstObjMatrix.clear();
+	bool ok = true;
+	for( size_t i = 0; i < work.size(); ++i ) {
+		bool routed = false;
+		if( work[i].ready ) {
+			if( work[i].kind == 1 )      routed = ApplyCstObjectMatrix_( work[i].name, work[i].a );
+			else if( work[i].kind == 2 ) routed = ApplyCstObjectComponents_( work[i].name, work[i].a, work[i].b );
+		}
+		if( !routed ) {
+			ok = false;
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: object transform commit to the CST failed for `%s` -- the live edit stands; EITHER the Document did not record it (a later full re-derive will REVERT the live transform) OR it was recorded but the re-derive diagnosed; see the preceding log lines", work[i].name.c_str() );
+		}
+	}
+	return ok;
+}
+
+// P5 Slice 3 expansion (camera drag): note that the active camera's pose changed, for a deferred commit.
+void SceneEditor::NoteCstCameraDrag_( const String& camName )
+{
+	mPendingCstCameraName = std::string( camName.c_str() );
+}
+
+// Commit the dragged camera's NET pose to the retained CST.  Called by the CONTROLLER at a render-thread-PARKED
+// boundary (the commit re-derives).  Reads the REST pose params via CameraIntrospection (NOT the post-orbit
+// composed position) so the route reconstructs the same pose -- see Job::ApplyCstCameraPoseEdit.
+bool SceneEditor::CommitPendingCstCameraPose()
+{
+	if( mPendingCstCameraName.empty() ) return true;
+	const std::string camName = mPendingCstCameraName;
+	mPendingCstCameraName.clear();
+	if( !mScene ) return false;
+	const ICameraManager* cams = mScene->GetCameras();
+	const ICamera* cam = cams ? cams->GetItem( camName.c_str() ) : 0;
+	if( !cam ) cam = mScene->GetCamera();   // fall back to the active camera (e.g. an unnamed sole camera)
+	if( !cam ) return false;
+	const String loc    = CameraIntrospection::GetPropertyValue( *cam, String( "location" ) );
+	const String lookat = CameraIntrospection::GetPropertyValue( *cam, String( "lookat" ) );
+	const String up     = CameraIntrospection::GetPropertyValue( *cam, String( "up" ) );
+	const String orient = CameraIntrospection::GetPropertyValue( *cam, String( "orientation" ) );
+	const String target = CameraIntrospection::GetPropertyValue( *cam, String( "target_orientation" ) );
+	const int r = mJob->ApplyCstCameraPoseEdit( camName.c_str(), loc.c_str(), lookat.c_str(), up.c_str(), orient.c_str(), target.c_str() );
+	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;   // code 1/2/3 all MUTATED the live scene -> the controller must re-render
+	if( r == 0 )
+		GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: camera pose commit to the CST failed for `%s` -- the Document did NOT record the live pose (a later full re-derive will REVERT it)", camName.c_str() );
+	else if( r == 3 )
+		GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: camera pose commit for `%s` recorded in the Document but the re-derive DIAGNOSED (see log) -- not a clean success", camName.c_str() );
+	return r == 1 || r == 2;
+}
+
+bool SceneEditor::ApplyMaterialSlotByName( const SceneEdit& e, const String& painterName )
+{
+	// F1: shared SetMaterialProperty restore -- resolves the slot's pipe
+	// (Painter vs ScalarPainter) and rebinds it to `painterName`.  Undo passes
+	// prevPropertyValue; redo passes propertyValue.
+	// P1-#2: return FALSE on any failure (empty name, unregistered painter,
+	// unknown slot kind, dispatch failure) so the composite/single walks can
+	// report a partial revert -- the old `return true` silently swallowed it.
+	if( !mMaterialManager ) return false;
+	IMaterial* mat = mMaterialManager->GetItem( e.objectName.c_str() );
+	if( !mat ) return false;
+	if( painterName.size() <= 1 ) return false;
+	// P5 Slice 3 (edit-model pivot): when the Job retains a CST Document (LoadAsciiSceneViaCst), route the
+	// slot re-point through a CST param-edit + re-derive so the canonical CST stays the source of truth
+	// (Slice 4's save serializes it).  Serves BOTH forward and undo (the inverse re-point replays through
+	// here), so the mHistory undo stack works unchanged.  "material" disambiguates a cross-category name
+	// clash.  Result 2 or 3 = the D2 full re-derive ClearAll'd + replaced the Scene + managers, so re-point THIS
+	// editor's cached pointers before returning (the SetMaterialProperty arm reads mLastScope but not the
+	// managers after we return; the next edit/undo would dereference the freed ones) -- else use-after-free.
+	// Legacy-loaded scenes (no Document) fall through to the direct MaterialIntrospection::SetSlot below.
+	if( mJob && mJob->HasRetainedCstDocument() )
+		return RouteCstParamEdit_( e.objectName.c_str(), "material", e.propertyName.c_str(), painterName.c_str() );
+	const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, e.propertyName );
+	if( cur.kind == MaterialSlotRef::Painter ) {
+		if( !mPainterManager ) return false;
+		const IPainter* p = mPainterManager->GetItem( painterName.c_str() );
+		if( !p ) return false;
+		return MaterialIntrospection::SetSlot( *mat, e.propertyName, p, 0 );
+	}
+	if( cur.kind == MaterialSlotRef::ScalarPainter ) {
+		if( !mScalarPainterManager ) return false;
+		const IScalarPainter* p = mScalarPainterManager->GetItem( painterName.c_str() );
+		if( !p ) return false;
+		return MaterialIntrospection::SetSlot( *mat, e.propertyName, 0, p );
+	}
+	return false;
+}
+
+bool SceneEditor::CaptureForApply( SceneEdit& edit )
+{
+	// H2 Stage 3: the capture/validate half of a first Apply.  No mutation,
+	// no history push, no scope -- those are ApplyForwardMutation's job.
+	// Returns false (reject) on any validation miss, exactly where the old
+	// inline Apply returned false.
+	if( SceneEdit::IsObjectOp( edit.op ) )
+	{
+		IObjectPriv* obj = FindObject( edit.objectName );
+		if( !obj ) return false;
+
+		// Capture transform state for undo (ScaleObjectFromAnchor carries a
+		// controller-supplied drag-start anchor in prevTransform -- never
+		// overwrite it).
+		if( edit.op != SceneEdit::ScaleObjectFromAnchor ) {
+			edit.prevTransform = obj->GetFinalTransformMatrix();
+			if( const Implementation::Transformable* t = dynamic_cast<const Implementation::Transformable*>( obj ) ) {
+				edit.prevTransformState = t->CaptureTransformState();
+				edit.hasTransformState  = true;
+			}
+		}
+
+		switch( edit.op ) {
+		case SceneEdit::SetObjectMaterial:
+			if( !mMaterialManager
+			 || !mMaterialManager->GetItem( edit.propertyValue.c_str() ) )
+			{
+				return false;
+			}
+			edit.prevPropertyValue  = FindManagerName( mMaterialManager, obj->GetMaterial() );
+			edit.prevBindingWasNull = ( obj->GetMaterial() == 0 );
+			// P1-#7: a non-null prior material with no manager-registered name has
+			// no representable inverse -> reject rather than push a silent-no-op undo.
+			if( !edit.prevBindingWasNull && edit.prevPropertyValue.size() <= 1 ) return false;
+			break;
+		case SceneEdit::SetObjectShader:
+			if( !mShaderManager
+			 || !mShaderManager->GetItem( edit.propertyValue.c_str() ) )
+			{
+				return false;
+			}
+			edit.prevPropertyValue  = FindManagerName( mShaderManager, obj->GetShader() );
+			edit.prevBindingWasNull = ( obj->GetShader() == 0 );
+			if( !edit.prevBindingWasNull && edit.prevPropertyValue.size() <= 1 ) return false;   // P1-#7
+			break;
+		case SceneEdit::SetObjectShadowFlags:
+			edit.prevShadowFlags = static_cast<Scalar>(
+				( obj->DoesCastShadows()    ? 1 : 0 )
+			  | ( obj->DoesReceiveShadows() ? 2 : 0 ) );
+			break;
+		case SceneEdit::SetObjectInteriorMedium:
+			if( edit.propertyValue.size() > 1 && edit.propertyValue != String( "none" ) ) {
+				if( !mJob || !mJob->GetMedium( edit.propertyValue.c_str() ) ) {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"SceneEditor: interior_medium edit rejected -- `%s` is not a registered medium",
+						edit.propertyValue.c_str() );
+					return false;
+				}
+			}
+			edit.prevPropertyValue = FindMediumName( mJob, obj->GetInteriorMedium() );
+			// P1-#7: a non-null prior medium with no registered name has no inverse
+			// (undo would wrongly Clear it).  Empty prev is valid ONLY when there
+			// genuinely was no medium bound.
+			if( obj->GetInteriorMedium() != 0 && edit.prevPropertyValue.size() <= 1 ) return false;
+			break;
+		case SceneEdit::SetObjectGeometry:
+			if( !mJob || !mJob->GetGeometry( edit.propertyValue.c_str() ) ) {
+				return false;
+			}
+			edit.prevPropertyValue = FindGeometryName( mJob, obj->GetGeometry() );
+			if( edit.prevPropertyValue.size() <= 1 ) return false;   // P1-#7: prior geometry unregistered -> no inverse
+			break;
+		default:
+			break;
+		}
+		return true;
+	}
+
+	if( SceneEdit::IsCameraOp( edit.op ) )
+	{
+		ICamera* baseCam = mScene->GetCameraMutable();
+		if( !baseCam ) return false;
+		// Record the active camera name so ApplyForwardMutation resolves the
+		// SAME camera via ResolveEditedCamera (pActiveCamera == GetItem(name)).
+		edit.cameraTargetName = mScene->GetActiveCameraName();
+		Implementation::CameraCommon* cam =
+			dynamic_cast<Implementation::CameraCommon*>( baseCam );
+		if( !cam ) return true;   // skeleton camera: nothing to capture; forward arm no-ops
+		edit.prevCameraPos          = cam->GetRestLocation();
+		edit.prevCameraLookAt       = cam->GetStoredLookAt();
+		edit.prevCameraUp           = cam->GetStoredUp();
+		edit.prevCameraTargetOrient = cam->GetTargetOrientation();
+		edit.prevCameraOrient       = cam->GetEulerOrientation();
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetSceneTime )
+	{
+		edit.prevTime = mLastSetTime;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetCameraProperty )
+	{
+		ICamera* baseCam = mScene->GetCameraMutable();
+		if( !baseCam ) return false;
+		edit.prevPropertyValue = CameraIntrospection::GetPropertyValue( *baseCam, edit.objectName );
+		edit.cameraTargetName  = mScene->GetActiveCameraName();
+		// The parse/read-only rejection is fused with the SetProperty mutation;
+		// ApplyForwardMutation surfaces it (returns false) so Apply rejects.
+		return true;
+	}
+
+	if( edit.op == SceneEdit::AddCamera )
+	{
+		if( !mJob ) return false;
+		if( edit.objectName.size() <= 1 ) return false;
+		edit.prevPropertyValue = String( mJob->GetActiveCameraName().c_str() );
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetMaterialProperty )
+	{
+		if( !mMaterialManager ) return false;
+		IMaterial* mat = mMaterialManager->GetItem( edit.objectName.c_str() );
+		if( !mat ) return false;
+		if( mJob && mJob->IsMaterialComposed( edit.objectName.c_str() ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor: SetMaterialProperty rejected on `%s` -- composed material "
+				"(PBR-MR / GGX-Emissive); rebinding a slot would break the painter graph. "
+				"Edit upstream painters instead.",
+				edit.objectName.c_str() );
+			return false;
+		}
+		const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, edit.propertyName );
+		if( cur.kind == MaterialSlotRef::None ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor: SetMaterialProperty rejected -- `%s` has no slot named `%s`",
+				edit.objectName.c_str(), edit.propertyName.c_str() );
+			return false;
+		}
+		if( cur.kind == MaterialSlotRef::Painter ) {
+			if( !mPainterManager ) return false;
+			if( !mPainterManager->GetItem( edit.propertyValue.c_str() ) ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: SetMaterialProperty rejected -- painter `%s` is not registered",
+					edit.propertyValue.c_str() );
+				return false;
+			}
+			edit.prevPropertyValue = FindManagerName( mPainterManager, cur.painter );
+			if( edit.prevPropertyValue.size() <= 1 ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: SetMaterialProperty on `%s.%s` rejected -- current painter "
+					"has no manager-registered name, so undo cannot restore the prior binding.",
+					edit.objectName.c_str(), edit.propertyName.c_str() );
+				return false;
+			}
+		} else {
+			if( !mScalarPainterManager ) return false;
+			if( !mScalarPainterManager->GetItem( edit.propertyValue.c_str() ) ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: SetMaterialProperty rejected -- scalar_painter `%s` is not registered",
+					edit.propertyValue.c_str() );
+				return false;
+			}
+			edit.prevPropertyValue = FindManagerName( mScalarPainterManager, cur.scalarPainter );
+			if( edit.prevPropertyValue.size() <= 1 ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: SetMaterialProperty on `%s.%s` rejected -- current scalar_painter "
+					"has no manager-registered name, so undo cannot restore the prior binding.",
+					edit.objectName.c_str(), edit.propertyName.c_str() );
+				return false;
+			}
+		}
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetLightProperty )
+	{
+		ILightManager* lights = const_cast<ILightManager*>( mScene->GetLights() );
+		if( !lights ) return false;
+		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
+		if( !light ) return false;
+		if( edit.propertyName == String( "shootphotons" ) ) {
+			edit.prevPropertyValue = String( light->CanGeneratePhotons() ? "true" : "false" );
+			return true;
+		}
+		edit.prevPropertyValue = ReadLightProperty( *light, edit.propertyName );
+		// The keyframe-parse rejection is fused with the mutation;
+		// ApplyForwardMutation surfaces it so Apply rejects.
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetMediumProperty )
+	{
+		if( !mJob ) return false;
+		const IMedium* medConst = mJob->GetMedium( edit.objectName.c_str() );
+		if( !medConst ) return false;
+		IMedium* medium = const_cast<IMedium*>( medConst );
+		edit.prevPropertyValue = ReadMediumProperty( *medium, edit.propertyName );
+		if( edit.prevPropertyValue.size() <= 1 ) return false;
+		return true;
+	}
+
+	return false;   // unknown op
+}
+
+// Shared-undo U1: see the header doc.  This is the ONE place a SceneEdit is pushed onto mHistory WITHOUT going
+// through Apply's CaptureForApply + ApplyForwardMutation -- the mutation already landed (the caller applied it
+// via Job::ApplyCstParamEditChecked before calling this), so there is nothing left to capture or mutate here.
+void SceneEditor::PushAgentCstParamEdit(
+	const String& entityName, const String& entityKind, const String& param,
+	const String& newValue, const String& prevValue, bool prevValueWasAbsent )
+{
+	SceneEdit edit;
+	edit.op                 = SceneEdit::SetAgentCstParam;
+	edit.objectName         = entityName;
+	edit.cstEntityKind      = entityKind;
+	edit.propertyName       = param;
+	edit.propertyValue      = newValue;
+	edit.prevPropertyValue  = prevValue;
+	edit.prevValueWasAbsent = prevValueWasAbsent;
+	// capturedTargetSerial stays 0 (default): SetAgentCstParam is a CST-routed op (IsCstRoutedOp), so
+	// ApplyForwardMutation/ApplyRevertMutation's identity-serial guard is skipped for it regardless -- it
+	// applies/reverts/redoes BY NAME, like every other CST-routed property op.
+	mHistory.Push( edit );
+}
+
+// Shared-undo U2: see the header doc.  Same shape as PushAgentCstParamEdit -- the forward mutation (Job::
+// ApplyCstInsertChunk / ApplyCstRemoveChunk) already landed via SceneEditController::ApplyAgentChunkCrud_
+// before this call; there is nothing left to capture or mutate here.
+void SceneEditor::PushAgentChunkCrudEdit(
+	bool isInsert, const String& chunkName, const String& chunkKind, const String& chunkBytes,
+	int docIndex, bool wasRasterizer )
+{
+	SceneEdit edit;
+	edit.op                      = isInsert ? SceneEdit::AgentInsertChunk : SceneEdit::AgentRemoveChunk;
+	edit.objectName               = chunkName;
+	edit.cstEntityKind            = chunkKind;
+	edit.propertyValue            = chunkBytes;
+	edit.agentChunkIndex          = docIndex;
+	edit.agentChunkWasRasterizer  = wasRasterizer;
+	// capturedTargetSerial stays 0 (default): both ops are CST-routed (IsCstRoutedOp, extended below) -- they
+	// apply/revert/redo BY NAME (or by captured position for a remove's Undo), never a stale pointer.
+	mHistory.Push( edit );
+}
+
 bool SceneEditor::Apply( const SceneEdit& editIn )
 {
 	DirtyChangeNotifier _notifier( this );
 	SceneEdit edit = editIn;
 
-	// Phase B: route property-shaped edits into the per-category
-	// dirty channel up front.  Safe to mark before dispatch — the
-	// save engine's property pass diffs current-vs-loaded values, so
-	// an edit that later fails or nets to no change just produces a
-	// NoOp for that entity.  Transform ops + composite markers are
-	// skipped by the helper.
+	// Model-B (code-3 re-render fix): clear the "live scene changed by a CST re-derive" signal for THIS Apply.
+	// The route helpers below (RouteCstParamEdit_ / ApplyCstObjectMatrix_ / ApplyCstObjectComponents_ / the camera
+	// pose commit) OR-in true when Job::DeriveEditedCstDocument_ returns a mutating code (1/2/3 -- including a
+	// DIAGNOSED code-3 that replaced the Scene but reports failure).  The controller reads it after Apply to kick
+	// the render even when Apply's success bool is false, so a diagnosed edit repaints the replaced scene rather
+	// than leaving stale pixels.  Reset ONLY here (route helpers never reset), so it reflects "any mutating derive
+	// happened during this whole Apply", surviving composite walks that route multiple params.
+	mCstLiveSceneChanged = false;
+
+	// Route property-shaped edits into the per-category dirty channel up front
+	// (transform ops + composite markers are skipped by the helper).
 	MarkEditEntityDirty( edit );
 
-	// Composite markers: just push, no mutation, no scope change.
+	// Composite markers: push, adjust depth, no mutation.
 	if( edit.op == SceneEdit::CompositeBegin )
 	{
 		++mCompositeDepth;
@@ -885,409 +1886,18 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 		return true;
 	}
 
-	if( SceneEdit::IsObjectOp( edit.op ) )
-	{
-		IObjectPriv* obj = FindObject( edit.objectName );
-		if( !obj ) return false;
-
-		// Capture state BEFORE mutation.  Transform-shaped ops use
-		// `prevTransform`; property-shaped ops (material / shader /
-		// shadow flags) use `prevPropertyValue` (or `prevShadowFlags`
-		// for the bit-packed bool pair) so the appropriate per-op
-		// restorer in Undo can replay the prior state.
-		//
-		// EXCEPTION: `ScaleObjectFromAnchor` carries a controller-
-		// supplied anchor matrix captured at drag-START — overwriting
-		// it on every per-frame Apply would replace the anchor with
-		// the previous frame's already-scaled state, so the cumulative
-		// drag factor would compound across frames.  The controller
-		// pre-populates `prevTransform` once at OnPointerDown; we keep
-		// it through every frame of the drag.
-		if( edit.op != SceneEdit::ScaleObjectFromAnchor ) {
-			edit.prevTransform = obj->GetFinalTransformMatrix();
-		}
-
-		switch( edit.op ) {
-		case SceneEdit::SetObjectMaterial:
-			// Validate the new name resolves to a registered material
-			// BEFORE pushing history.  Without this, a stale or
-			// mistyped name would silently no-op in
-			// ApplyObjectOpForward yet still report success and
-			// poison the undo stack with a no-op entry.
-			if( !mMaterialManager
-			 || !mMaterialManager->GetItem( edit.propertyValue.c_str() ) )
-			{
-				return false;
-			}
-			edit.prevPropertyValue = FindManagerName( mMaterialManager, obj->GetMaterial() );
-			break;
-		case SceneEdit::SetObjectShader:
-			// Same validation as material — prevent silent no-ops on
-			// stale shader names.
-			if( !mShaderManager
-			 || !mShaderManager->GetItem( edit.propertyValue.c_str() ) )
-			{
-				return false;
-			}
-			edit.prevPropertyValue = FindManagerName( mShaderManager, obj->GetShader() );
-			break;
-		case SceneEdit::SetObjectShadowFlags:
-			edit.prevShadowFlags = static_cast<Scalar>(
-				( obj->DoesCastShadows()    ? 1 : 0 )
-			  | ( obj->DoesReceiveShadows() ? 2 : 0 ) );
-			break;
-		case SceneEdit::SetObjectInteriorMedium:
-			// Empty propertyValue OR the literal "none" = "clear the
-			// interior medium" (parser-parity sentinel; see
-			// SceneEdit.h doc).  Non-"none" non-empty must resolve to
-			// a registered medium.  Validate BEFORE pushing history —
-			// same rationale as material / shader: silently no-op'ing
-			// a stale/mistyped name would still push a poison undo
-			// entry.
-			if( edit.propertyValue.size() > 1 && edit.propertyValue != String( "none" ) ) {
-				if( !mJob || !mJob->GetMedium( edit.propertyValue.c_str() ) ) {
-					GlobalLog()->PrintEx( eLog_Warning,
-						"SceneEditor: interior_medium edit rejected — `%s` is not a registered medium",
-						edit.propertyValue.c_str() );
-					return false;
-				}
-			}
-			// Reverse-lookup the prior medium for undo.  Empty result
-			// = "no medium was bound"; undo's ClearInteriorMedium path
-			// handles that round-trip cleanly.
-			edit.prevPropertyValue = FindMediumName( mJob, obj->GetInteriorMedium() );
-			break;
-		case SceneEdit::SetObjectGeometry:
-			// Validate the new geometry name resolves BEFORE pushing
-			// history — same rationale as material/shader: a stale or
-			// mistyped name would silently no-op yet poison undo.
-			if( !mJob || !mJob->GetGeometry( edit.propertyValue.c_str() ) ) {
-				return false;
-			}
-			edit.prevPropertyValue = FindGeometryName( mJob, obj->GetGeometry() );
-			break;
-		default:
-			break;
-		}
-
-		ApplyObjectOpForward( *obj, edit );
-		// Property-style ops don't need the spatial-structure rebuild
-		// that transform changes do.  Run the invariant chain only
-		// for transform ops to avoid an unnecessary BSP invalidation
-		// per material/shader/shadow click.
-		const bool needsSpatialRebuild = SceneEdit::OpNeedsSpatialRebuild( edit.op );
-		if( needsSpatialRebuild ) {
-			RunObjectInvariantChain( *obj );
-			// Phase 6.3 (§7.2): every transform-shaped op marks the
-			// target dirty.  Property ops (material / shader / etc.)
-			// are V1-out-of-scope for round-trip save and do NOT
-			// touch the tracker.
-			mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );
-			if( edit.op == SceneEdit::ScaleObjectFromAnchor ) {
-				// Pinned 2.8 / R2 §7: always-matrix policy.
-				mScaleFromAnchorSet.insert( std::string( edit.objectName.c_str() ) );
-			}
-		}
-		mHistory.Push( edit );
-		mLastScope = Dirty_ObjectTransform;
-		return true;
-	}
-
-	if( SceneEdit::IsCameraOp( edit.op ) )
-	{
-		ICamera* baseCam = mScene.GetCameraMutable();
-		if( !baseCam ) return false;
-
-		// All standard concrete cameras (PinholeCamera, ThinLensCamera,
-		// FisheyeCamera, OrthographicCamera) inherit from CameraCommon.
-		// External-implementor cameras would fall back to no-op which
-		// is consistent with skeleton-mode behaviour.
-		Implementation::CameraCommon* cam =
-			dynamic_cast<Implementation::CameraCommon*>( baseCam );
-		if( !cam )
-		{
-			mLastScope = Dirty_Camera;
-			mHistory.Push( edit );
-			return true;
-		}
-
-		// Capture state BEFORE mutation, for undo.  Record everything
-		// regardless of which op this is — most ops touch only one of
-		// these but capturing all five is cheap (a few words) and
-		// keeps Undo's restore path uniform.
-		//
-		// Use GetRestLocation() (vPosition) for prevCameraPos — NOT
-		// GetLocation() (post-orbit frame.origin).  RestoreCameraTransform
-		// passes prevCameraPos to SetLocation, which writes vPosition;
-		// if we captured the post-orbit position and wrote it back as
-		// vPosition, Recompute would re-apply target_orientation on
-		// top of an already-orbited point, breaking undo whenever the
-		// camera has non-zero target_orientation.
-		edit.prevCameraPos          = cam->GetRestLocation();
-		edit.prevCameraLookAt       = cam->GetStoredLookAt();
-		edit.prevCameraUp           = cam->GetStoredUp();
-		edit.prevCameraTargetOrient = cam->GetTargetOrientation();
-		edit.prevCameraOrient       = cam->GetEulerOrientation();
-
-		ApplyCameraOpForward( *cam, edit, SceneScale() );
-		cam->RegenerateData();
-
-		mLastScope = Dirty_Camera;
-		mHistory.Push( edit );
-		return true;
-	}
-
-	if( edit.op == SceneEdit::SetSceneTime )
-	{
-		// Capture previous time from our local cache (IScene does not
-		// expose GetSceneTime); apply the new time and update the cache.
-		edit.prevTime = mLastSetTime;
-		mScene.SetSceneTimeForPreview( edit.s );
-		mLastSetTime = edit.s;
-		mLastScope = mScenePhotonsExist ? Dirty_TimeAndPhotons : Dirty_Time;
-		mHistory.Push( edit );
-		return true;
-	}
-
-	if( edit.op == SceneEdit::SetCameraProperty )
-	{
-		ICamera* baseCam = mScene.GetCameraMutable();
-		if( !baseCam ) return false;
-
-		// Capture the prev value through the same formatter the
-		// panel uses for display, so undo round-trips losslessly
-		// through CameraIntrospection::SetProperty.
-		edit.prevPropertyValue = CameraIntrospection::GetPropertyValue( *baseCam, edit.objectName );
-
-		if( !CameraIntrospection::SetProperty( *baseCam, edit.objectName, edit.propertyValue ) )
-		{
-			return false;   // parse failure or read-only
-		}
-		mLastScope = Dirty_Camera;
-		mHistory.Push( edit );
-		return true;
-	}
-
-	if( edit.op == SceneEdit::AddCamera )
-	{
-		// objectName carries the NEW camera's name.  cameraSnapshot
-		// carries the full source-camera state at Apply time.
-		// prevPropertyValue captures the previously-active camera's
-		// name so undo can restore the prior selection (Add*Camera
-		// auto-promotes the new camera to active under the "last
-		// added wins" policy, so without the capture we wouldn't
-		// know which camera was active before the clone).
-		if( !mJob ) return false;
-		if( edit.objectName.size() <= 1 ) return false;
-
-		edit.prevPropertyValue = String( mJob->GetActiveCameraName().c_str() );
-
-		if( !CameraIntrospection::AddCameraFromSnapshot( *mJob, edit.objectName, edit.cameraSnapshot ) ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditor: AddCamera failed for `%s` (duplicate name or unknown type)",
-				edit.objectName.c_str() );
-			return false;
-		}
-		// Add*Camera auto-promoted the new camera; ensure the active
-		// matches `edit.objectName` for the caller's expectation.
-		mJob->SetActiveCamera( edit.objectName.c_str() );
-
-		mLastScope = Dirty_Camera;
-		mHistory.Push( edit );
-		return true;
-	}
-
-	if( edit.op == SceneEdit::SetMaterialProperty )
-	{
-		// objectName carries the material's manager-registered name;
-		// propertyName the slot identifier ("reflectance", "ior",
-		// etc.); propertyValue the painter name (IPainter or
-		// IScalarPainter depending on slot type).  Caller (the
-		// controller's Material SetProperty branch) is responsible
-		// for cancel-and-park around this call — painter rebinds
-		// release the prior painter, which could free a painter a
-		// worker is mid-sample on.
-		if( !mMaterialManager ) return false;
-		IMaterial* mat = mMaterialManager->GetItem( edit.objectName.c_str() );
-		if( !mat ) return false;
-
-		// Composed materials reject up-front — see SceneEdit.h doc
-		// + IJob::IsMaterialComposed.  Without this gate, the
-		// MaterialIntrospection::SetSlot dispatch would succeed
-		// even though the rebinding would break the painter graph
-		// the composition relies on.
-		if( mJob && mJob->IsMaterialComposed( edit.objectName.c_str() ) ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditor: SetMaterialProperty rejected on `%s` — composed material "
-				"(PBR-MR / GGX-Emissive); rebinding a slot would break the painter graph. "
-				"Edit upstream painters instead.",
-				edit.objectName.c_str() );
-			return false;
-		}
-
-		// Resolve the slot's pipe (IPainter vs IScalarPainter) by
-		// asking MaterialIntrospection what it expects.  The two
-		// pipes are NOT interchangeable per CLAUDE.md's IScalarPainter
-		// section — binding an IPainter into an IScalarPainter slot
-		// would silently JH-uplift inline-numeric values, breaking
-		// physical-scalar inputs.
-		const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, edit.propertyName );
-		if( cur.kind == MaterialSlotRef::None ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditor: SetMaterialProperty rejected — `%s` has no slot named `%s`",
-				edit.objectName.c_str(), edit.propertyName.c_str() );
-			return false;
-		}
-
-		// Resolve the new painter name through the appropriate
-		// manager.  Capture prev binding via reverse-lookup BEFORE
-		// the mutation so undo can replay losslessly.  CRITICAL:
-		// reject the edit if the prior binding has no recoverable
-		// manager-registered name — an empty prev would push an
-		// undo entry that silently no-ops on the way back, leaving
-		// the user with no way to revert.  The GUI's introspection
-		// layer (MaterialIntrospection::BuildPainterSlot) already
-		// marks unregistered slots read-only so the GUI path can't
-		// reach here, but programmatic callers via
-		// RISE_API_SceneEditController_SetPropertyForCategory can
-		// still trigger this gate.
-		const IPainter*       newPainter       = 0;
-		const IScalarPainter* newScalarPainter = 0;
-		if( cur.kind == MaterialSlotRef::Painter ) {
-			if( !mPainterManager ) return false;
-			newPainter = mPainterManager->GetItem( edit.propertyValue.c_str() );
-			if( !newPainter ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"SceneEditor: SetMaterialProperty rejected — painter `%s` is not registered",
-					edit.propertyValue.c_str() );
-				return false;
-			}
-			// Reverse-lookup the prior painter's name for undo.
-			edit.prevPropertyValue = FindManagerName( mPainterManager, cur.painter );
-			if( edit.prevPropertyValue.size() <= 1 ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"SceneEditor: SetMaterialProperty on `%s.%s` rejected — "
-					"current painter has no manager-registered name, so undo "
-					"cannot restore the prior binding.  Register the painter "
-					"with IPainterManager before editing the slot.",
-					edit.objectName.c_str(), edit.propertyName.c_str() );
-				return false;
-			}
-		} else {  // ScalarPainter
-			if( !mScalarPainterManager ) return false;
-			newScalarPainter = mScalarPainterManager->GetItem( edit.propertyValue.c_str() );
-			if( !newScalarPainter ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"SceneEditor: SetMaterialProperty rejected — scalar_painter `%s` is not registered",
-					edit.propertyValue.c_str() );
-				return false;
-			}
-			edit.prevPropertyValue = FindManagerName( mScalarPainterManager, cur.scalarPainter );
-			if( edit.prevPropertyValue.size() <= 1 ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"SceneEditor: SetMaterialProperty on `%s.%s` rejected — "
-					"current scalar_painter has no manager-registered name, "
-					"so undo cannot restore the prior binding.  Register the "
-					"scalar_painter with IScalarPainterManager before editing.",
-					edit.objectName.c_str(), edit.propertyName.c_str() );
-				return false;
-			}
-		}
-
-		if( !MaterialIntrospection::SetSlot( *mat, edit.propertyName, newPainter, newScalarPainter ) ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditor: SetMaterialProperty internal dispatch failed for `%s.%s`",
-				edit.objectName.c_str(), edit.propertyName.c_str() );
-			return false;
-		}
-
-		mLastScope = Dirty_Camera;   // no spatial-structure invalidation
-		mHistory.Push( edit );
-		return true;
-	}
-
-	if( edit.op == SceneEdit::SetLightProperty )
-	{
-		// objectName carries the light's manager name; propertyName
-		// the property identifier ("position" / "energy" / etc.).
-		ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
-		if( !lights ) return false;
-		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
-		if( !light ) return false;
-
-		// `shootphotons` is a non-keyframable bool — the keyframe
-		// machinery has no parameter for it, so dispatch to the
-		// dedicated ILight::SetCanGeneratePhotons setter instead.
-		// Capture prev as "true"/"false" so undo replays through the
-		// same path.  No RegenerateData call: the flag is read lazily
-		// during the next photon-mapping pass; nothing to bake.
-		if( edit.propertyName == String( "shootphotons" ) ) {
-			edit.prevPropertyValue = String( light->CanGeneratePhotons() ? "true" : "false" );
-			bool newVal = false;
-			if( !ParseLenientBool( edit.propertyValue, newVal ) ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"SceneEditor: shootphotons edit rejected — `%s` is not a recognised boolean (try true/false/yes/no/1/0)",
-					edit.propertyValue.c_str() );
-				return false;
-			}
-			light->SetCanGeneratePhotons( newVal );
-			mLastScope = Dirty_Camera;
-			mHistory.Push( edit );
-			return true;
-		}
-
-		// Capture prev value through the same readback the introspection
-		// panel uses, so undo replays losslessly via the keyframe path.
-		edit.prevPropertyValue = ReadLightProperty( *light, edit.propertyName );
-
-		// Translate chunk-name → keyframe-name before dispatching:
-		// the panel surfaces chunk vocabulary (power/inner/outer)
-		// while ILight::KeyframeFromParameters expects keyframe
-		// vocabulary (energy/inner_angle/outer_angle).
-		IKeyframeParameter* p = light->KeyframeFromParameters(
-			ChunkNameToKeyframeName( edit.propertyName ), edit.propertyValue );
-		if( !p ) return false;
-		light->SetIntermediateValue( *p );
-		safe_release( p );
-		// SetIntermediateValue stages new field values; flush to the
-		// final transform / runtime state before the next render.
-		light->RegenerateData();
-
-		mLastScope = Dirty_Camera;   // no spatial structure invalidation; same scope as camera
-		mHistory.Push( edit );
-		return true;
-	}
-
-	if( edit.op == SceneEdit::SetMediumProperty )
-	{
-		// objectName carries the medium's manager name; propertyName
-		// the slot identifier ("absorption" / "scattering" /
-		// "emission"); propertyValue the "r g b" string.  Caller
-		// (controller's Medium SetProperty branch) handles the
-		// cancel-and-park gate — setters re-derive sigma_t cache
-		// which is read by distance-sampling workers.
-		if( !mJob ) return false;
-		const IMedium* medConst = mJob->GetMedium( edit.objectName.c_str() );
-		if( !medConst ) return false;
-		IMedium* medium = const_cast<IMedium*>( medConst );
-
-		// Capture prev BEFORE mutating so undo replays losslessly.
-		// Empty prev means the slot/medium combo isn't supported
-		// (e.g. HeterogeneousMedium "absorption") — reject up-front
-		// rather than push a phantom edit.
-		edit.prevPropertyValue = ReadMediumProperty( *medium, edit.propertyName );
-		if( edit.prevPropertyValue.size() <= 1 ) return false;
-
-		if( !ApplyMediumPropertyValue( *medium, edit.propertyName, edit.propertyValue ) ) {
-			return false;
-		}
-
-		mLastScope = Dirty_Camera;   // medium edit affects rendering but no spatial reseed
-		mHistory.Push( edit );
-		return true;
-	}
-
-	return false;
+	// H2 Stage 3: capture/validate, then the SHARED forward mutation, then
+	// push.  Forward logic now lives in exactly one place (ApplyForwardMutation),
+	// reused by Redo and the composite-redo loop.  Either half returning false
+	// rejects the edit with no mutation and no history entry.
+	if( !CaptureForApply( edit ) )       return false;
+	// P1: capture the edited entity's identity serial AFTER CaptureForApply has set
+	// cameraTargetName etc.  Undo/Redo re-resolve by name + compare to catch a
+	// remove+re-add that put a different instance under the same name.
+	edit.capturedTargetSerial = ResolveTargetSerial( edit );
+	if( !ApplyForwardMutation( edit ) )  return false;
+	mHistory.Push( edit );
+	return true;
 }
 
 bool SceneEditor::Undo()
@@ -1306,193 +1916,151 @@ bool SceneEditor::Undo()
 	// matching CompositeBegin.
 	if( edit.op == SceneEdit::CompositeEnd )
 	{
-		// The CompositeEnd has already moved to the redo stack (good).
-		// Now pop and invert each entry until we hit the matching
-		// CompositeBegin (also good — moves to redo stack).
-		Implementation::CameraCommon* cam = 0;
-		bool sawObjectOp     = false;
-		bool sawCameraOp     = false;
-		bool sawTimeOp       = false;
-		bool sawPropertyOp   = false;
+		// P1: composite undo is ATOMIC.  Revert inners LIFO; if ANY revert fails,
+		// roll back the partial work -- re-apply (forward) what we already reverted
+		// AND restore the whole popped group to the undo stack -- so a failed composite
+		// undo is a true no-op: live state unchanged, the group stays intact + retryable,
+		// and a subsequent transaction rollback won't delete half-moved records.  (The
+		// earlier "honest partial" left every record on redo with partially-changed state.)
+		// PopForUndo already moved the CompositeEnd trigger to redo, so redoMoves starts at 1.
+		bool sawObjectOp = false, sawCameraOp = false, sawTimeOp = false, sawPropertyOp = false;
+		int  depth     = 1;   // the CompositeEnd trigger opened one level (LIFO walk-back).
+		int  redoMoves = 1;   // records moved undo->redo so far (incl. the trigger), for restore-on-failure.
+		bool failed    = false;
+		std::vector<SceneEdit> reverted;   // inners successfully reverted, for forward roll-back
 		while( true )
 		{
 			SceneEdit inner;
 			if( !mHistory.PopForUndo( inner ) ) break;
-			if( inner.op == SceneEdit::CompositeBegin ) break;
-			// Phase B: a save may have cleared the dirty channels;
-			// undoing a property edit re-mutates the entity, so
-			// re-mark it (mirrors the transform channel's undo mark).
+			++redoMoves;
+			// P1: nesting-aware -- a nested CompositeEnd opens a deeper level going
+			// backward; only the matching OUTER CompositeBegin (depth 0) ends the walk.
+			if( inner.op == SceneEdit::CompositeEnd )   { ++depth; continue; }
+			if( inner.op == SceneEdit::CompositeBegin ) { if( --depth == 0 ) break; continue; }
 			MarkEditEntityDirty( inner );
-			// Undo the inner edit.
-			if( SceneEdit::IsObjectOp( inner.op ) )
-			{
-				IObjectPriv* obj = FindObject( inner.objectName );
-				if( obj )
-				{
-					switch( inner.op ) {
-					case SceneEdit::SetObjectMaterial:
-						if( mMaterialManager && inner.prevPropertyValue.size() > 1 ) {
-							IMaterial* mat = mMaterialManager->GetItem( inner.prevPropertyValue.c_str() );
-							if( mat ) obj->AssignMaterial( *mat );
-						}
-						break;
-					case SceneEdit::SetObjectShader:
-						if( mShaderManager && inner.prevPropertyValue.size() > 1 ) {
-							IShader* sh = mShaderManager->GetItem( inner.prevPropertyValue.c_str() );
-							if( sh ) obj->AssignShader( *sh );
-						}
-						break;
-					case SceneEdit::SetObjectShadowFlags: {
-						const int flags = static_cast<int>( inner.prevShadowFlags );
-						obj->SetShadowParams( ( flags & 1 ) != 0, ( flags & 2 ) != 0 );
-						break;
-					}
-					case SceneEdit::SetObjectGeometry:
-						if( mJob && inner.prevPropertyValue.size() > 1 ) {
-							const IGeometry* g = mJob->GetGeometry( inner.prevPropertyValue.c_str() );
-							if( g ) obj->AssignGeometry( *g );
-						}
-						// Geometry changes the bbox — rebuild the TLAS on undo,
-						// same as a transform op.
-						RunObjectInvariantChain( *obj );
-						break;
-					case SceneEdit::SetObjectInteriorMedium:
-						if( inner.prevPropertyValue.size() <= 1 ) {
-							obj->ClearInteriorMedium();
-						} else if( mJob ) {
-							const IMedium* med = mJob->GetMedium( inner.prevPropertyValue.c_str() );
-							if( med ) obj->AssignInteriorMedium( *med );
-						}
-						break;
-					default:
-						RestoreObjectTransform( *obj, inner.prevTransform );
-						RunObjectInvariantChain( *obj );
-						// Phase 6.3 (§7.3): composite-undo marks dirty.
-						mDirtyTracker.MarkDirty( std::string( inner.objectName.c_str() ) );
-						if( inner.op == SceneEdit::ScaleObjectFromAnchor ) {
-							mScaleFromAnchorSet.insert( std::string( inner.objectName.c_str() ) );
-						}
-						break;
-					}
-				}
-				sawObjectOp = true;
-			}
-			else if( SceneEdit::IsCameraOp( inner.op ) )
-			{
-				if( !cam )
-				{
-					ICamera* baseCam = mScene.GetCameraMutable();
-					cam = baseCam ? dynamic_cast<Implementation::CameraCommon*>( baseCam ) : 0;
-				}
-				if( cam )
-				{
-					RestoreCameraTransform( *cam, inner );
-				}
-				sawCameraOp = true;
-			}
-			else if( inner.op == SceneEdit::SetSceneTime )
-			{
-				// The composite's first SetSceneTime captured prevTime
-				// from mLastSetTime (the pre-composite value).  Walking
-				// back inner-edits LIFO means the LAST iteration here
-				// is the first SetSceneTime in the composite — its
-				// prevTime is the canonical "before-composite" value.
-				mScene.SetSceneTimeForPreview( inner.prevTime );
-				mLastSetTime = inner.prevTime;
-				sawTimeOp = true;
-			}
-			else if( inner.op == SceneEdit::SetCameraProperty )
-			{
-				// Defer RegenerateData: the trailing cam->RegenerateData()
-				// below covers it.  Use a per-name scratch path that
-				// updates the camera fields without re-baking the basis
-				// matrix on every iteration.
-				ICamera* baseCam = mScene.GetCameraMutable();
-				if( baseCam )
-				{
-					CameraIntrospection::SetProperty( *baseCam,
-						inner.objectName, inner.prevPropertyValue );
-				}
-				sawPropertyOp = true;
-			}
-			else if( inner.op == SceneEdit::SetLightProperty )
-			{
-				// Mirror the single-edit Undo path: shootphotons through
-				// the direct setter, everything else through keyframe.
-				ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
-				ILightPriv* light = lights ? lights->GetItem( inner.objectName.c_str() ) : 0;
-				if( light ) {
-					if( inner.propertyName == String( "shootphotons" ) ) {
-						bool prevVal = false;
-						ParseLenientBool( inner.prevPropertyValue, prevVal );
-						light->SetCanGeneratePhotons( prevVal );
-					} else {
-						IKeyframeParameter* p = light->KeyframeFromParameters(
-							ChunkNameToKeyframeName( inner.propertyName ), inner.prevPropertyValue );
-						if( p ) {
-							light->SetIntermediateValue( *p );
-							safe_release( p );
-							light->RegenerateData();
-						}
-					}
-				}
-				sawPropertyOp = true;
-			}
-			else if( inner.op == SceneEdit::SetMediumProperty )
-			{
-				if( mJob ) {
-					const IMedium* medConst = mJob->GetMedium( inner.objectName.c_str() );
-					if( medConst && inner.prevPropertyValue.size() > 1 ) {
-						IMedium* medium = const_cast<IMedium*>( medConst );
-						ApplyMediumPropertyValue( *medium, inner.propertyName, inner.prevPropertyValue );
-					}
-				}
-				sawPropertyOp = true;
-			}
-			else if( inner.op == SceneEdit::AddCamera )
-			{
-				if( mJob ) {
-					mJob->RemoveCamera( inner.objectName.c_str() );
-					if( inner.prevPropertyValue.size() > 1 ) {
-						mJob->SetActiveCamera( inner.prevPropertyValue.c_str() );
-					}
-				}
-				sawCameraOp = true;
-			}
+			if( !ApplyRevertMutation( inner ) ) { failed = true; break; }   // P1: stop + roll back atomically
+			reverted.push_back( inner );
+			if( SceneEdit::IsObjectOp( inner.op ) )                                          sawObjectOp = true;
+			else if( SceneEdit::IsCameraOp( inner.op ) || inner.op == SceneEdit::AddCamera ) sawCameraOp = true;
+			else if( inner.op == SceneEdit::SetSceneTime )                                   sawTimeOp = true;
+			else                                                                             sawPropertyOp = true;
 		}
-		if( cam ) cam->RegenerateData();
-
-		// Pick the most-significant scope contained in the composite
-		// so the controller's downstream invalidation logic gets the
-		// right signal.  Object > Time-with-photons > Time > Camera.
-		if( sawObjectOp )                          mLastScope = Dirty_ObjectTransform;
-		else if( sawTimeOp && mScenePhotonsExist ) mLastScope = Dirty_TimeAndPhotons;
-		else if( sawTimeOp )                       mLastScope = Dirty_Time;
-		else if( sawCameraOp || sawPropertyOp )    mLastScope = Dirty_Camera;
-		else                                       mLastScope = Dirty_None;
+		if( failed )
+		{
+			// Re-apply the reverts we already did, in original FORWARD order (reverse of the
+			// LIFO revert order), then move the whole popped group back redo->undo so the
+			// composite is intact + retryable.  Rollback re-applies are best-effort.
+			for( std::vector<SceneEdit>::reverse_iterator it = reverted.rbegin(); it != reverted.rend(); ++it ) {
+				ApplyForwardMutation( *it );
+			}
+			for( int k = 0; k < redoMoves; ++k ) mHistory.RestoreLastUndoFromRedo();
+			mLastScope = Dirty_None;
+			return false;
+		}
+		mLastScope = AggregateCompositeScope( sawObjectOp, sawCameraOp, sawTimeOp, sawPropertyOp );
 		return true;
 	}
 
-	// Single edit (not part of a composite).
+	// Single edit -> the shared revert dispatcher (same one the composite loop uses).
+	// P1: PopForUndo already moved this edit to the redo stack.  If the revert FAILS
+	// (e.g. a captured prior dependency vanished), restore it to the undo stack -- a
+	// failed undo must NOT advance the depth or make the un-reverted edit redo-able.
+	if( !ApplyRevertMutation( edit ) ) {
+		mHistory.RestoreLastUndoFromRedo();
+		return false;
+	}
+	return true;
+}
+
+bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
+{
+
+	// P1: identity guard -- refuse if the captured target was removed and a DIFFERENT
+	// instance re-registered under the same name (serial mismatch); applying the
+	// captured state to the replacement would corrupt it.  capturedTargetSerial==0
+	// means the op tracks no identity (medium/time/marker/legacy) -> no check.
+	// SKIP on the CST edit-model for the CST-routed ops (IsCstRoutedOp -- now material/light/camera-property +
+	// medium + every IsObjectOp + every IsCameraOp drag): that path RE-DERIVES the entity (object transforms
+	// mutate the live object then RECOMMIT as the `matrix` param at the boundary; camera drags recommit the pose
+	// params), so its serial legitimately changes each edit, and it applies/reverts/redoes BY NAME (never the
+	// stale pointer) -- the serial guard is both moot and would FALSELY trip.  (Medium ops carry serial==0
+	// anyway, so the guard never reaches them regardless.)  The guard still applies ONLY on a LEGACY (no-Document)
+	// scene, where these ops DO mutate the captured instance in place.
+	if( edit.capturedTargetSerial != 0 &&
+	    !( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) &&
+	    ResolveTargetSerial( edit ) != edit.capturedTargetSerial )
+		return false;
 	if( SceneEdit::IsObjectOp( edit.op ) )
 	{
 		IObjectPriv* obj = FindObject( edit.objectName );
 		if( !obj ) return false;
 
-		// Property-style ops restore from per-op prev fields; transform
-		// ops restore the captured matrix.  Switch on op so each path
-		// runs only the work it needs.
+		// P5 Slice 3 expansion (object): CST-route the INVERSE per-op object edit too (replays the PREV value
+		// through the same CST path), so undo stays Document-consistent.  A cleared prior binding routes "none"
+		// (the standard_object unbind sentinel the load-time parser honours: material/shader/interior "none" == 0).
+		if( mJob && mJob->HasRetainedCstDocument() ) {
+			if( IsObjectBindingOp( edit.op ) ) {
+				String val;
+				switch( edit.op ) {
+				case SceneEdit::SetObjectMaterial:
+				case SceneEdit::SetObjectShader:
+					val = edit.prevBindingWasNull ? String( "none" ) : edit.prevPropertyValue;
+					break;
+				case SceneEdit::SetObjectInteriorMedium:
+					val = ( edit.prevPropertyValue.size() <= 1 ) ? String( "none" ) : edit.prevPropertyValue;
+					break;
+				default:   // SetObjectGeometry -- prev is always a real registered name (CaptureForApply rejected otherwise)
+					val = edit.prevPropertyValue;
+					break;
+				}
+				if( !RouteCstParamEdit_( edit.objectName.c_str(), "standard_object", ObjectBindingRole( edit.op ), val.c_str() ) ) return false;
+				mLastScope = Dirty_ObjectTransform;
+				return true;
+			}
+			if( edit.op == SceneEdit::SetObjectShadowFlags ) {
+				if( !RouteObjectShadowFlagsToCst_( edit.objectName, static_cast<int>( edit.prevShadowFlags ) ) ) return false;
+				mLastScope = Dirty_ObjectTransform;
+				return true;
+			}
+		}
+
+		// P1: a binding revert FAILS if the captured prior dependency (material /
+		// shader / geometry / medium) was removed AFTER the edit -- GetItem returns
+		// null.  Track that as `restored = false` so the caller treats the undo as
+		// PARTIAL (rollback keeps the residual-dirty state) instead of reporting
+		// success while the edited binding stays live.  Transform ops restore from
+		// the captured matrix and always succeed.
+		bool restored = true;
 		switch( edit.op ) {
 		case SceneEdit::SetObjectMaterial:
-			if( mMaterialManager && edit.prevPropertyValue.size() > 1 ) {
+			if( edit.prevBindingWasNull ) {
+				// F5: undo of a FIRST material bind restores the unbound state.
+				const IMaterial* clrPrev = obj->GetMaterial();
+				// ClearMaterial is an IObjectPriv virtual (workstream #3) -- clear the slot directly.
+				obj->ClearMaterial();
+				BumpSceneLightGenerationIfEmitterSetChanged( clrPrev, nullptr );
+			} else if( mMaterialManager && edit.prevPropertyValue.size() > 1 ) {
 				IMaterial* mat = mMaterialManager->GetItem( edit.prevPropertyValue.c_str() );
-				if( mat ) obj->AssignMaterial( *mat );
+				if( mat ) {
+					const IMaterial* prevMat = obj->GetMaterial();
+					obj->AssignMaterial( *mat );
+					BumpSceneLightGenerationIfEmitterSetChanged( prevMat, mat );
+				} else {
+					restored = false;   // P1: prior material was removed -> cannot restore
+				}
+			} else {
+				restored = false;
 			}
 			break;
 		case SceneEdit::SetObjectShader:
-			if( mShaderManager && edit.prevPropertyValue.size() > 1 ) {
+			if( edit.prevBindingWasNull ) {
+				obj->ClearShader();   // F5: undo of a FIRST shader bind (ClearShader is now an IObjectPriv virtual, workstream #3)
+			} else if( mShaderManager && edit.prevPropertyValue.size() > 1 ) {
 				IShader* sh = mShaderManager->GetItem( edit.prevPropertyValue.c_str() );
 				if( sh ) obj->AssignShader( *sh );
+				else     restored = false;   // P1: prior shader removed
+			} else {
+				restored = false;
 			}
 			break;
 		case SceneEdit::SetObjectShadowFlags: {
@@ -1504,55 +2072,55 @@ bool SceneEditor::Undo()
 			if( mJob && edit.prevPropertyValue.size() > 1 ) {
 				const IGeometry* g = mJob->GetGeometry( edit.prevPropertyValue.c_str() );
 				if( g ) obj->AssignGeometry( *g );
+				else    restored = false;   // P1: prior geometry removed
+			} else {
+				restored = false;
 			}
-			// Geometry changes the bbox — rebuild the TLAS on undo.
-			RunObjectInvariantChain( *obj );
+			RunObjectInvariantChain( *obj );   // bbox rebuild (safe even if geometry unchanged)
 			break;
 		case SceneEdit::SetObjectInteriorMedium:
 			if( edit.prevPropertyValue.size() <= 1 ) {
-				// Empty prev = object had no medium before; restore
-				// "no medium" state via ClearInteriorMedium.
-				obj->ClearInteriorMedium();
+				obj->ClearInteriorMedium();   // valid prior state: no medium was bound
 			} else if( mJob ) {
 				const IMedium* med = mJob->GetMedium( edit.prevPropertyValue.c_str() );
 				if( med ) obj->AssignInteriorMedium( *med );
+				else      restored = false;   // P1: prior medium removed
+			} else {
+				restored = false;
 			}
 			break;
 		default:
-			// Transform op.
-			RestoreObjectTransform( *obj, edit.prevTransform );
+			// Transform op -- restores from the captured component/matrix state,
+			// always succeeds.
+			RestoreObjectTransform( *obj, edit );
 			RunObjectInvariantChain( *obj );
-			// Phase 6.3 (§7.3): undo of a transform op still marks
-			// dirty.  The save engine's matrix-equality compare
-			// (§9.4) resolves the no-op case: drag → undo → save is
-			// idempotent because Mfinal == Mloaded.
 			mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );
 			if( edit.op == SceneEdit::ScaleObjectFromAnchor ) {
-				// Pinned 2.8: SFA-touched objects stay flagged across
-				// undo (matrix-form save policy is sticky once the
-				// op has been seen during the session).  Doesn't
-				// cause incorrect saves: if the user fully undoes
-				// all SFA ops on an object, the §9.2 Mfinal ==
-				// Mloaded no-op check fires before forceMatrixOverride
-				// is consulted, so the entry is dropped from the
-				// managed block regardless of SFA-set membership.
 				mScaleFromAnchorSet.insert( std::string( edit.objectName.c_str() ) );
 			}
+			// P5 Slice 3 expansion (object transform): the inverse transform changed the live object too -> note it
+			// for the same deferred `matrix`-param commit, so undo stays Document-consistent.
+			if( mJob && mJob->HasRetainedCstDocument() && IsObjectTransformOp( edit.op ) )
+				NoteCstObjectTransform_( edit.objectName );
 			break;
 		}
 		mLastScope = Dirty_ObjectTransform;
-		return true;
+		return restored;
 	}
 
 	if( SceneEdit::IsCameraOp( edit.op ) )
 	{
-		ICamera* baseCam = mScene.GetCameraMutable();
+		ICamera* baseCam = ResolveEditedCamera( edit );
 		if( !baseCam ) return false;
 		Implementation::CameraCommon* cam =
 			dynamic_cast<Implementation::CameraCommon*>( baseCam );
 		if( !cam ) return true;   // skeleton-camera edit was a no-op
 		RestoreCameraTransform( *cam, edit );
 		cam->RegenerateData();
+		// P5 Slice 3 expansion (camera drag): the inverse changed the live camera pose too -> note it for the same
+		// deferred pose commit, so undo stays Document-consistent.
+		if( mJob && mJob->HasRetainedCstDocument() )
+			NoteCstCameraDrag_( edit.cameraTargetName );
 		mLastScope = Dirty_Camera;
 		return true;
 	}
@@ -1561,7 +2129,7 @@ bool SceneEditor::Undo()
 	{
 		// Restore the time captured before the edit.  Use the preview
 		// path (no photon regen) so undo is fast.
-		mScene.SetSceneTimeForPreview( edit.prevTime );
+		mScene->SetSceneTimeForPreview( edit.prevTime );
 		mLastSetTime = edit.prevTime;
 		mLastScope = mScenePhotonsExist ? Dirty_TimeAndPhotons : Dirty_Time;
 		return true;
@@ -1569,8 +2137,14 @@ bool SceneEditor::Undo()
 
 	if( edit.op == SceneEdit::SetCameraProperty )
 	{
-		ICamera* baseCam = mScene.GetCameraMutable();
+		ICamera* baseCam = ResolveEditedCamera( edit );
 		if( !baseCam ) return false;
+		// P5 Slice 3 expansion: CST-route the inverse camera edit too.
+		if( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) {
+			if( !RouteCstParamEdit_( edit.cameraTargetName.c_str(), "camera", edit.objectName.c_str(), edit.prevPropertyValue.c_str() ) ) return false;
+			mLastScope = Dirty_Camera;
+			return true;
+		}
 		// Replay the captured prev value through the same parser.
 		CameraIntrospection::SetProperty( *baseCam, edit.objectName, edit.prevPropertyValue );
 		mLastScope = Dirty_Camera;
@@ -1589,6 +2163,17 @@ bool SceneEditor::Undo()
 		// leave the auto-promoted active in place rather than
 		// silently swallowing the inconsistency.
 		if( !mJob ) return false;
+		// Model-B P5 (camera-clone CST insert -- undo): on a CST scene, REMOVE the cloned camera's chunk from the
+		// retained Document FIRST (the inverse of the forward insert), so the undo stays Document-consistent -- a
+		// subsequent D2 must NOT resurrect the undone clone.  Document-only (no re-derive); redo re-inserts via the
+		// forward branch.  No-op on a legacy scene.
+		if( mJob->HasRetainedCstDocument() ) {
+			if( mJob->ApplyCstRemoveCameraChunk( edit.objectName.c_str() ) != 1 ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"SceneEditor: undo of camera clone `%s` could not remove its CST chunk (live camera removed, but the Document still holds it -- a re-derive would bring it back)",
+					edit.objectName.c_str() );
+			}
+		}
 		mJob->RemoveCamera( edit.objectName.c_str() );
 		if( edit.prevPropertyValue.size() > 1 ) {
 			if( !mJob->SetActiveCamera( edit.prevPropertyValue.c_str() ) ) {
@@ -1603,39 +2188,23 @@ bool SceneEditor::Undo()
 
 	if( edit.op == SceneEdit::SetMaterialProperty )
 	{
-		// Inverse: rebind the slot to the captured prev painter
-		// name.  If prev is empty (e.g. the slot was previously
-		// bound to a painter that wasn't registered in the
-		// manager — unusual but possible for in-process-only
-		// painters), the undo silently no-ops since we have no
-		// painter pointer to restore.
-		if( !mMaterialManager ) return false;
-		IMaterial* mat = mMaterialManager->GetItem( edit.objectName.c_str() );
-		if( !mat ) return false;
-		if( edit.prevPropertyValue.size() <= 1 ) return true;
-
-		// Re-resolve the slot's pipe to pick the right manager for
-		// the prev-name lookup.  (We don't store the pipe kind in
-		// the SceneEdit struct; the material's slot type is stable
-		// across the op, so re-querying is reliable.)
-		const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, edit.propertyName );
-		if( cur.kind == MaterialSlotRef::Painter && mPainterManager ) {
-			const IPainter* prev = mPainterManager->GetItem( edit.prevPropertyValue.c_str() );
-			if( prev ) MaterialIntrospection::SetSlot( *mat, edit.propertyName, prev, 0 );
-		} else if( cur.kind == MaterialSlotRef::ScalarPainter && mScalarPainterManager ) {
-			const IScalarPainter* prev = mScalarPainterManager->GetItem( edit.prevPropertyValue.c_str() );
-			if( prev ) MaterialIntrospection::SetSlot( *mat, edit.propertyName, 0, prev );
-		}
-		mLastScope = Dirty_Camera;
-		return true;
+		const bool ok = ApplyMaterialSlotByName( edit, edit.prevPropertyValue );
+		if( ok ) mLastScope = Dirty_Camera;
+		return ok;
 	}
 
 	if( edit.op == SceneEdit::SetLightProperty )
 	{
-		ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
+		ILightManager* lights = const_cast<ILightManager*>( mScene->GetLights() );
 		if( !lights ) return false;
 		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
 		if( !light ) return false;
+		// P5 Slice 3 expansion: CST-route the inverse light edit too (replays through the SAME CST path).
+		if( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) {
+			if( !RouteCstParamEdit_( edit.objectName.c_str(), "light", edit.propertyName.c_str(), edit.prevPropertyValue.c_str() ) ) return false;
+			mLastScope = Dirty_Camera;
+			return true;
+		}
 		// shootphotons round-trips through the direct setter, not the
 		// keyframe path.  Match the Apply branch above.
 		if( edit.propertyName == String( "shootphotons" ) ) {
@@ -1652,6 +2221,7 @@ bool SceneEditor::Undo()
 		light->SetIntermediateValue( *p );
 		safe_release( p );
 		light->RegenerateData();
+		BumpSceneLightGeneration();   // #2b(a): rebuild caster samplers next render
 		mLastScope = Dirty_Camera;
 		return true;
 	}
@@ -1665,7 +2235,62 @@ bool SceneEditor::Undo()
 		if( !medConst ) return false;
 		IMedium* medium = const_cast<IMedium*>( medConst );
 		if( edit.prevPropertyValue.size() <= 1 ) return true;
+		// P5 Slice 3 expansion (medium): CST-route the inverse absorption/scattering edit too.
+		if( mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) && IsCstRoutableMediumProp( edit.propertyName ) ) {
+			if( !RouteCstParamEdit_( edit.objectName.c_str(), "medium", edit.propertyName.c_str(), edit.prevPropertyValue.c_str() ) ) return false;
+			mLastScope = Dirty_Camera;
+			return true;
+		}
 		ApplyMediumPropertyValue( *medium, edit.propertyName, edit.prevPropertyValue );
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetAgentCstParam )
+	{
+		// Shared-undo U1 (Undo direction): the whole point of this op -- see SceneEdit.h's doc and
+		// PushAgentCstParamEdit.  Two shapes: the param was ABSENT before the agent edit (it got INSERTED by
+		// DocSetOrAddParamValue) -> the inverse is a REMOVE, not a re-SET of a value that never existed; else
+		// re-apply the captured prior value.  BOTH arms use the FULL-DERIVABILITY-GATED route (RouteCstParamRemove_
+		// / RouteCstParamEditChecked_), NOT the ungated RouteCstParamEdit_ every other CST-routed property revert
+		// uses above -- see RouteCstParamEditChecked_'s doc for why an agent-originated edit cannot safely share
+		// the GUI's ungated fast path here (Model-B F5's agent chunk-CRUD verbs can mutate the Document between
+		// this edit's original Apply and this Undo without leaving an mHistory record to invalidate).
+		if( !mJob ) return false;
+		const char* kind = edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr;
+		bool diagnosed = false;
+		// P1-2 fix (round 1): occ=0 -- the agent path's fixed occ convention (ApplyAgentParamEdit always
+		// edits/removes occurrence 0; see AgentReadFirstParamValue's matching capture).
+		if( edit.prevValueWasAbsent ) {
+			if( !RouteCstParamRemove_( edit.objectName.c_str(), kind, edit.propertyName.c_str(), /*occ*/0, &diagnosed ) ) return false;
+		} else {
+			if( !RouteCstParamEditChecked_( edit.objectName.c_str(), kind, edit.propertyName.c_str(), edit.prevPropertyValue.c_str(), &diagnosed ) ) return false;
+		}
+		if( diagnosed )
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Undo:: agent edit on `%s`.`%s` reverted via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean revert",
+			                       edit.objectName.c_str(), edit.propertyName.c_str() );
+		// Shared-undo follow-up (P2 fix): mirror the forward commit's light-gen
+		// bump (SceneEditController::ApplyAgentParamEdit) on the Undo arm too --
+		// same stale-alias-table hazard applies to a REVERTED emissive-material
+		// edit.  See BumpSceneLightGenerationForAgentParamEdit's doc.
+		BumpSceneLightGenerationForAgentParamEdit(
+			edit.objectName.c_str(), kind );
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::AgentInsertChunk || edit.op == SceneEdit::AgentRemoveChunk )
+	{
+		// Shared-undo U2 (Undo direction): the inverse-patch doctrine -- Undo of an insert REMOVES the chunk
+		// (occurrence-aware, by name+kind); Undo of a remove RESTORES the captured exact bytes at the captured
+		// exact index.  See SceneEdit.h's op docs + RouteAgentChunkCrud_ for the full per-shape rationale.
+		if( !mJob ) return false;
+		const bool forInsertOp = ( edit.op == SceneEdit::AgentInsertChunk );
+		bool diagnosed = false;
+		if( !RouteAgentChunkCrud_( edit, forInsertOp, /*forward*/ false, &diagnosed ) ) return false;
+		if( diagnosed )
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Undo:: agent chunk %s on `%s` reverted via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean revert",
+			                       forInsertOp ? "insert" : "remove", edit.objectName.c_str() );
 		mLastScope = Dirty_Camera;
 		return true;
 	}
@@ -1676,6 +2301,336 @@ bool SceneEditor::Undo()
 		return true;
 	}
 
+	// Unreachable for any valid SceneEdit::Op (every op is handled above).
+	// A new op MUST add a branch here + in the sibling dispatcher + CaptureForApply;
+	// this defensive default no-ops it as a camera-scope edit rather than crash.
+	mLastScope = Dirty_Camera;
+	return true;
+}
+
+SceneEditor::DirtyScope SceneEditor::AggregateCompositeScope( bool sawObjectOp, bool sawCameraOp, bool sawTimeOp, bool sawPropertyOp ) const
+{
+	if( sawObjectOp )                     return Dirty_ObjectTransform;
+	if( sawTimeOp && mScenePhotonsExist ) return Dirty_TimeAndPhotons;
+	if( sawTimeOp )                       return Dirty_Time;
+	if( sawCameraOp || sawPropertyOp )    return Dirty_Camera;
+	return Dirty_None;
+}
+
+bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
+{
+
+	// P1: identity guard -- refuse if the captured target was removed and a DIFFERENT
+	// instance re-registered under the same name (serial mismatch); applying the
+	// captured state to the replacement would corrupt it.  capturedTargetSerial==0
+	// means the op tracks no identity (medium/time/marker/legacy) -> no check.
+	// SKIP on the CST edit-model for the CST-routed ops (IsCstRoutedOp -- now material/light/camera-property +
+	// medium + every IsObjectOp + every IsCameraOp drag): that path RE-DERIVES the entity (object transforms
+	// mutate the live object then RECOMMIT as the `matrix` param at the boundary; camera drags recommit the pose
+	// params), so its serial legitimately changes each edit, and it applies/reverts/redoes BY NAME (never the
+	// stale pointer) -- the serial guard is both moot and would FALSELY trip.  (Medium ops carry serial==0
+	// anyway, so the guard never reaches them regardless.)  The guard still applies ONLY on a LEGACY (no-Document)
+	// scene, where these ops DO mutate the captured instance in place.
+	if( edit.capturedTargetSerial != 0 &&
+	    !( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) &&
+	    ResolveTargetSerial( edit ) != edit.capturedTargetSerial )
+		return false;
+	if( SceneEdit::IsObjectOp( edit.op ) )
+	{
+		IObjectPriv* obj = FindObject( edit.objectName );
+		if( !obj ) return false;
+		int cstKind = -1;   // CST object-transform kind (set in the gate below): -1 non-CST, 0 none, 1 matrix, 2 components
+		// P5 Slice 3 expansion (object): on a CST-loaded scene, route the PER-OP object edits (reference BINDINGS +
+		// shadow flags) through the canonical CST so the Document stays complete (a later D2 re-derive can't lose
+		// them).  The re-derive rebuilds the object from the edited chunk (bbox / TLAS / light-gen included), so we
+		// route + return instead of the direct mutate.  TRANSFORM ops fall through to the direct mutate here and are
+		// committed to the authoritative `matrix` param at the composite/edit boundary (Stage B).
+		if( mJob && mJob->HasRetainedCstDocument() ) {
+			if( IsObjectBindingOp( edit.op ) ) {
+				String val = edit.propertyValue;
+				if( edit.op == SceneEdit::SetObjectInteriorMedium
+				 && ( val.size() <= 1 || val == String( "none" ) ) ) val = String( "none" );
+				if( !RouteCstParamEdit_( edit.objectName.c_str(), "standard_object", ObjectBindingRole( edit.op ), val.c_str() ) ) return false;
+				mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );
+				mLastScope = Dirty_ObjectTransform;
+				return true;
+			}
+			if( edit.op == SceneEdit::SetObjectShadowFlags ) {
+				if( !RouteObjectShadowFlagsToCst_( edit.objectName, static_cast<int>( edit.s ) ) ) return false;
+				mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );
+				mLastScope = Dirty_ObjectTransform;
+				return true;
+			}
+			// A TRANSFORM edit must be COMMITTABLE to the CST, or it would mutate the live object then fail the
+			// deferred commit -- leaving the live transform DIVERGED from the un-committable CST, which a later D2
+			// would silently revert (data-loss).  standard_object -> `matrix` (any transform); csg_object ->
+			// position/orientation (translate+rotate ONLY -- it has no scale param).  Refuse anything else HERE,
+			// before the live mutate.  (Bindings above already routed -- csg has material/shader params.)
+			if( IsObjectTransformOp( edit.op ) ) {
+				cstKind = mJob->CstObjectTransformKind( edit.objectName.c_str() );
+				const bool committable = ( cstKind == 1 ) || ( cstKind == 2 && IsObjectTranslateOrRotateOp( edit.op ) );
+				if( !committable ) {
+					if( mLastNonRoutableTransformObj != std::string( edit.objectName.c_str() ) ) {
+						mLastNonRoutableTransformObj = std::string( edit.objectName.c_str() );
+						GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` transform cannot be saved on a CST-loaded scene (%s); edit refused", edit.objectName.c_str(), ( cstKind == 2 ) ? "csg_object has no scale param -- only translate/rotate are committable" : "object has no CST `matrix` param and is not a csg_object" );
+					}
+					return false;
+				}
+			}
+		}
+		const bool fwdOk = ApplyObjectOpForward( *obj, edit );   // P1: false if a redo target vanished
+		// POST-MUTATE: the op-level gate above admits a csg (kind 2) translate/rotate, but a ROTATE can land on
+		// GIMBAL-LOCK (~90 deg about Y) which DecomposeRigid cannot express as position/orientation.  The committable
+		// guarantee is therefore matrix-level, not op-level -- so VERIFY it here, after the mutate: if the csg result
+		// is not decomposable, RESTORE the object (the edit carries the captured prev state) and reject, so the live
+		// transform never diverges from the un-committable CST.  (Translate always decomposes; this only ever fires
+		// on a near-singular rotation.)  Makes the commit-time DecomposeRigid in CommitPendingCstObjectTransforms a
+		// guaranteed success.
+		if( fwdOk && cstKind == 2 ) {
+			obj->FinalizeTransformations();   // ApplyObjectOpForward updates components/stack but not m_mxFinalTrans; compose it before reading
+			Vector3 dpos, dorient;
+			if( !DecomposeRigid( obj->GetFinalTransformMatrix(), dpos, dorient ) ) {
+				RestoreObjectTransform( *obj, edit );
+				RunObjectInvariantChain( *obj );
+				if( mLastNonRoutableTransformObj != std::string( edit.objectName.c_str() ) ) {
+					mLastNonRoutableTransformObj = std::string( edit.objectName.c_str() );
+					GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` rotation is not committable to a csg_object (gimbal-lock / non-decomposable to position+orientation); edit refused", edit.objectName.c_str() );
+				}
+				mLastScope = Dirty_ObjectTransform;
+				return false;
+			}
+		}
+		// Property-style ops don't move geometry — symmetric with
+		// Apply()'s spatial-rebuild gate.  Pre-Phase-1 this path ran
+		// the chain unconditionally, costing a spurious BSP
+		// invalidation per material/shader/shadow redo.
+		const bool needsSpatialRebuild = SceneEdit::OpNeedsSpatialRebuild( edit.op );
+		if( needsSpatialRebuild ) {
+			RunObjectInvariantChain( *obj );
+			// Phase 6.3 (§7.3): single-op redo marks dirty.
+			mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );
+			if( edit.op == SceneEdit::ScaleObjectFromAnchor ) {
+				mScaleFromAnchorSet.insert( std::string( edit.objectName.c_str() ) );
+			}
+		}
+		// P5 Slice 3 expansion (object transform): on a CST scene, NOTE this object for a deferred `matrix`-param
+		// commit (the controller flushes it at a parked boundary -- per-op routing would be N re-derives per drag).
+		if( fwdOk && mJob && mJob->HasRetainedCstDocument() && IsObjectTransformOp( edit.op ) )
+			NoteCstObjectTransform_( edit.objectName );
+		mLastScope = Dirty_ObjectTransform;
+		return fwdOk;   // P1: forward-bind failure (vanished redo target) is a partial redo
+	}
+
+	if( SceneEdit::IsCameraOp( edit.op ) )
+	{
+		ICamera* baseCam = ResolveEditedCamera( edit );
+		if( !baseCam ) return false;
+		Implementation::CameraCommon* cam =
+			dynamic_cast<Implementation::CameraCommon*>( baseCam );
+		if( !cam ) { mLastScope = Dirty_Camera; return true; }   // H2-S3: skeleton camera no-op, keep Apply's scope
+		ApplyCameraOpForward( *cam, edit, SceneScale() );
+		cam->RegenerateData();
+		// P5 Slice 3 expansion (camera drag): on a CST scene, NOTE the active camera for a deferred pose commit
+		// (the controller flushes it at a parked boundary -- per-op routing would be N re-derives per drag).
+		if( mJob && mJob->HasRetainedCstDocument() )
+			NoteCstCameraDrag_( edit.cameraTargetName );
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::AddCamera )
+	{
+		// Re-create the cloned camera from the captured snapshot.
+		// Mirrors Apply: deterministic recreation even if the source
+		// has changed in the interim.
+		if( !mJob ) return false;
+		if( !CameraIntrospection::AddCameraFromSnapshot( *mJob, edit.objectName, edit.cameraSnapshot ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor: AddCamera failed for `%s` (duplicate name or unknown type)",
+				edit.objectName.c_str() );   // H2-S3: restore diagnostic lost in the Apply split
+			return false;
+		}
+		mJob->SetActiveCamera( edit.objectName.c_str() );
+		// Model-B P5 (camera-clone CST insert): on a CST scene, also INSERT a faithful camera chunk into the
+		// retained Document so the clone SURVIVES a future D2 re-derive AND a save->reload (else it's a live-only
+		// camera the Document doesn't know about, dropped the first time the scene re-derives from the CST).  This
+		// is purely a Document-only edit (the live camera is already registered above) -- no re-derive, no rebind.
+		// Serves forward AND redo (both route here).  Resolve the just-added live camera by name to introspect its
+		// authorable params.  On a legacy (no-Document) scene this is a no-op (HasRetainedCstDocument false).
+		if( mJob->HasRetainedCstDocument() ) {
+			const ICameraManager* cams = mScene ? mScene->GetCameras() : 0;
+			const ICamera* newCam = cams ? cams->GetItem( edit.objectName.c_str() ) : 0;
+			if( newCam ) {
+				const std::string chunk = CameraIntrospection::BuildCameraChunkText( *newCam, edit.objectName );
+				if( chunk.empty() || mJob->ApplyCstInsertCameraChunk( chunk.c_str() ) != 1 ) {
+					GlobalLog()->PrintEx( eLog_Error,
+						"SceneEditor: camera clone `%s` could not be recorded in the CST Document (live clone stands, but a future re-derive / save would lose it)",
+						edit.objectName.c_str() );
+				}
+			} else {
+				GlobalLog()->PrintEx( eLog_Error,
+					"SceneEditor: camera clone `%s` not resolvable post-add for CST insert (live clone stands, but the Document is out of sync)",
+					edit.objectName.c_str() );
+			}
+		}
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetMaterialProperty )
+	{
+		const bool ok = ApplyMaterialSlotByName( edit, edit.propertyValue );
+		if( ok ) mLastScope = Dirty_Camera;
+		return ok;
+	}
+
+	if( edit.op == SceneEdit::SetLightProperty )
+	{
+		ILightManager* lights = const_cast<ILightManager*>( mScene->GetLights() );
+		if( !lights ) return false;
+		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
+		if( !light ) return false;
+		// P5 Slice 3 expansion: CST-route the light edit (incl. shootphotons -- the re-derive applies it from
+		// the chunk param) so the Document stays complete; a later material D2 then can't revert this edit.
+		if( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) {
+			if( !RouteCstParamEdit_( edit.objectName.c_str(), "light", edit.propertyName.c_str(), edit.propertyValue.c_str() ) ) return false;
+			mLastScope = Dirty_Camera;
+			return true;
+		}
+		// shootphotons re-replays through the direct setter to match
+		// the Apply / Undo paths.
+		if( edit.propertyName == String( "shootphotons" ) ) {
+			bool newVal = false;
+			if( !ParseLenientBool( edit.propertyValue, newVal ) ) {   // H2-S3: surface parse failure so Apply can reject
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: shootphotons edit rejected -- `%s` is not a recognised boolean (try true/false/yes/no/1/0)",
+					edit.propertyValue.c_str() );   // H2-S3: restore diagnostic lost in the Apply split
+				return false;
+			}
+			light->SetCanGeneratePhotons( newVal );
+			mLastScope = Dirty_Camera;
+			return true;
+		}
+		// Translate chunk-name → keyframe-name before dispatching:
+		// the panel surfaces chunk vocabulary (power/inner/outer)
+		// while ILight::KeyframeFromParameters expects keyframe
+		// vocabulary (energy/inner_angle/outer_angle).
+		IKeyframeParameter* p = light->KeyframeFromParameters(
+			ChunkNameToKeyframeName( edit.propertyName ), edit.propertyValue );
+		if( !p ) return false;
+		light->SetIntermediateValue( *p );
+		safe_release( p );
+		light->RegenerateData();
+		BumpSceneLightGeneration();   // #2b(a): rebuild caster samplers next render
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetMediumProperty )
+	{
+		// Re-apply propertyValue (the post-edit value).  Same dispatch
+		// shape as the Undo branch but using the new value instead of
+		// the prev one.
+		if( !mJob ) return false;
+		const IMedium* medConst = mJob->GetMedium( edit.objectName.c_str() );
+		if( !medConst ) return false;
+		IMedium* medium = const_cast<IMedium*>( medConst );
+		// P5 Slice 3 expansion (medium): route absorption/scattering through the CST so the Document stays complete
+		// (a later D2 can't lose them); emission has no chunk param -> direct mutate (documented transient).
+		if( mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) && IsCstRoutableMediumProp( edit.propertyName ) ) {
+			if( !RouteCstParamEdit_( edit.objectName.c_str(), "medium", edit.propertyName.c_str(), edit.propertyValue.c_str() ) ) return false;
+			mLastScope = Dirty_Camera;
+			return true;
+		}
+		if( !ApplyMediumPropertyValue( *medium, edit.propertyName, edit.propertyValue ) ) return false;   // H2-S3: surface failure so Apply can reject
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetSceneTime )
+	{
+		mScene->SetSceneTimeForPreview( edit.s );
+		mLastSetTime = edit.s;
+		mLastScope = mScenePhotonsExist ? Dirty_TimeAndPhotons : Dirty_Time;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetCameraProperty )
+	{
+		ICamera* baseCam = ResolveEditedCamera( edit );
+		if( !baseCam ) return false;
+		// P5 Slice 3 expansion: CST-route the camera edit (entity = the active camera by name, or the unique
+		// camera chunk by position for an UNNAMED camera) so the Document stays complete.
+		if( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) {
+			if( !RouteCstParamEdit_( edit.cameraTargetName.c_str(), "camera", edit.objectName.c_str(), edit.propertyValue.c_str() ) ) return false;
+			mLastScope = Dirty_Camera;
+			return true;
+		}
+		if( !CameraIntrospection::SetProperty( *baseCam, edit.objectName, edit.propertyValue ) ) return false;   // H2-S3: surface parse failure so Apply can reject
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetAgentCstParam )
+	{
+		// Shared-undo U1 (Redo direction): re-apply the new value the same way
+		// the ORIGINAL agent commit did -- DocSetOrAddParamValue inserts-or-sets,
+		// so this is correct whether or not the param existed at the time of the
+		// original edit.  The FIRST apply of a fresh agent edit never reaches
+		// here (the mutation already landed via Job::ApplyCstParamEditChecked
+		// before the history push -- see PushAgentCstParamEdit); this arm is
+		// exercised by Redo only.  Uses the FULL-DERIVABILITY-GATED
+		// RouteCstParamEditChecked_, NOT the ungated RouteCstParamEdit_ -- see
+		// that helper's doc for why an agent-originated edit cannot safely
+		// share the GUI property panel's ungated fast path here.
+		if( !mJob ) return false;
+		{
+			bool diagnosed = false;
+			if( !RouteCstParamEditChecked_( edit.objectName.c_str(),
+			                                 edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr,
+			                                 edit.propertyName.c_str(), edit.propertyValue.c_str(), &diagnosed ) ) return false;
+			if( diagnosed )
+				GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Redo:: agent edit on `%s`.`%s` re-applied via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean redo",
+				                       edit.objectName.c_str(), edit.propertyName.c_str() );
+		}
+		// Shared-undo follow-up (P2 fix): mirror the forward commit's light-gen
+		// bump on the Redo arm too -- same stale-alias-table hazard applies to
+		// a RE-APPLIED emissive-material edit.  See
+		// BumpSceneLightGenerationForAgentParamEdit's doc.
+		BumpSceneLightGenerationForAgentParamEdit(
+			edit.objectName.c_str(),
+			edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr );
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::AgentInsertChunk || edit.op == SceneEdit::AgentRemoveChunk )
+	{
+		// Shared-undo U2 (Redo direction): re-apply the ORIGINAL verb (re-insert the captured bytes / re-remove
+		// by name).  The FIRST apply of a fresh chunk-CRUD commit never reaches here (the mutation already
+		// landed via Job::ApplyCstInsertChunk/ApplyCstRemoveChunk before the history push -- see
+		// PushAgentChunkCrudEdit); this arm is exercised by Redo only.
+		if( !mJob ) return false;
+		const bool forInsertOp = ( edit.op == SceneEdit::AgentInsertChunk );
+		{
+			bool diagnosed = false;
+			if( !RouteAgentChunkCrud_( edit, forInsertOp, /*forward*/ true, &diagnosed ) ) return false;
+			if( diagnosed )
+				GlobalLog()->PrintEx( eLog_Error, "SceneEditor::Redo:: agent chunk %s on `%s` re-applied via a full re-derive that DIAGNOSED (see log) -- the Document WAS mutated and rebound (history still advances); not a clean redo",
+				                       forInsertOp ? "insert" : "remove", edit.objectName.c_str() );
+		}
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
+	if( SceneEdit::IsCompositeMarker( edit.op ) )
+	{
+		return true;
+	}
+
+	// Unreachable for any valid SceneEdit::Op (every op is handled above).
+	// A new op MUST add a branch here + in the sibling dispatcher + CaptureForApply;
+	// this defensive default no-ops it as a camera-scope edit rather than crash.
 	mLastScope = Dirty_Camera;
 	return true;
 }
@@ -1692,256 +2647,54 @@ bool SceneEditor::Redo()
 
 	if( edit.op == SceneEdit::CompositeBegin )
 	{
-		// Re-apply the composite group: pop forwards through
-		// the redo stack until matching CompositeEnd.
-		Implementation::CameraCommon* cam = 0;
 		bool sawObjectOp = false, sawCameraOp = false, sawTimeOp = false, sawPropertyOp = false;
+		int  depth     = 1;   // the CompositeBegin trigger opened one level (forward walk).
+		int  undoMoves = 1;   // records moved redo->undo so far (incl. the trigger), for restore-on-failure.
+		bool failed    = false;
+		std::vector<SceneEdit> applied;   // inners successfully forward-applied, for revert roll-back
 		while( true )
 		{
 			SceneEdit inner;
 			if( !mHistory.PopForRedo( inner ) ) break;
-			if( inner.op == SceneEdit::CompositeEnd ) break;
-			// Phase B: re-mark the property entity dirty on redo.
+			++undoMoves;
+			// P1: nesting-aware -- a nested CompositeBegin opens a deeper level going
+			// forward; only the matching OUTER CompositeEnd (depth 0) ends the replay.
+			if( inner.op == SceneEdit::CompositeBegin ) { ++depth; continue; }
+			if( inner.op == SceneEdit::CompositeEnd )   { if( --depth == 0 ) break; continue; }
 			MarkEditEntityDirty( inner );
-			if( SceneEdit::IsObjectOp( inner.op ) )
-			{
-				IObjectPriv* obj = FindObject( inner.objectName );
-				if( obj )
-				{
-					ApplyObjectOpForward( *obj, inner );
-					// Spatial structure only needs invalidating for
-					// transform ops; property-style ops (material /
-					// shader / shadow / interior_medium) leave the
-					// bbox alone.  Symmetric with Apply()'s gate.
-					const bool needsSpatialRebuild = SceneEdit::OpNeedsSpatialRebuild( inner.op );
-					if( needsSpatialRebuild ) {
-						RunObjectInvariantChain( *obj );
-						// Phase 6.3 (§7.3): redo marks dirty.
-						mDirtyTracker.MarkDirty( std::string( inner.objectName.c_str() ) );
-						if( inner.op == SceneEdit::ScaleObjectFromAnchor ) {
-							mScaleFromAnchorSet.insert( std::string( inner.objectName.c_str() ) );
-						}
-					}
-				}
-				sawObjectOp = true;
-			}
-			else if( SceneEdit::IsCameraOp( inner.op ) )
-			{
-				if( !cam )
-				{
-					ICamera* baseCam = mScene.GetCameraMutable();
-					cam = baseCam ? dynamic_cast<Implementation::CameraCommon*>( baseCam ) : 0;
-				}
-				if( cam ) ApplyCameraOpForward( *cam, inner, SceneScale() );
-				sawCameraOp = true;
-			}
-			else if( inner.op == SceneEdit::SetSceneTime )
-			{
-				mScene.SetSceneTimeForPreview( inner.s );
-				mLastSetTime = inner.s;
-				sawTimeOp = true;
-			}
-			else if( inner.op == SceneEdit::SetCameraProperty )
-			{
-				ICamera* baseCam = mScene.GetCameraMutable();
-				if( baseCam )
-				{
-					CameraIntrospection::SetProperty( *baseCam,
-						inner.objectName, inner.propertyValue );
-				}
-				sawPropertyOp = true;
-			}
-			else if( inner.op == SceneEdit::AddCamera )
-			{
-				if( mJob ) {
-					CameraIntrospection::AddCameraFromSnapshot(
-						*mJob, inner.objectName, inner.cameraSnapshot );
-					mJob->SetActiveCamera( inner.objectName.c_str() );
-				}
-				sawCameraOp = true;
-			}
-			else if( inner.op == SceneEdit::SetLightProperty )
-			{
-				// Mirror the single-edit Redo path: shootphotons via
-				// the direct setter, everything else via keyframe.
-				ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
-				ILightPriv* light = lights ? lights->GetItem( inner.objectName.c_str() ) : 0;
-				if( light ) {
-					if( inner.propertyName == String( "shootphotons" ) ) {
-						bool newVal = false;
-						ParseLenientBool( inner.propertyValue, newVal );
-						light->SetCanGeneratePhotons( newVal );
-					} else {
-						IKeyframeParameter* p = light->KeyframeFromParameters(
-							ChunkNameToKeyframeName( inner.propertyName ), inner.propertyValue );
-						if( p ) {
-							light->SetIntermediateValue( *p );
-							safe_release( p );
-							light->RegenerateData();
-						}
-					}
-				}
-				sawPropertyOp = true;
-			}
-			else if( inner.op == SceneEdit::SetMediumProperty )
-			{
-				if( mJob ) {
-					const IMedium* medConst = mJob->GetMedium( inner.objectName.c_str() );
-					if( medConst ) {
-						IMedium* medium = const_cast<IMedium*>( medConst );
-						ApplyMediumPropertyValue( *medium, inner.propertyName, inner.propertyValue );
-					}
-				}
-				sawPropertyOp = true;
-			}
+			if( !ApplyForwardMutation( inner ) ) { failed = true; break; }   // P1: stop + roll back atomically
+			applied.push_back( inner );
+			if( SceneEdit::IsObjectOp( inner.op ) )                                          sawObjectOp = true;
+			else if( SceneEdit::IsCameraOp( inner.op ) || inner.op == SceneEdit::AddCamera ) sawCameraOp = true;
+			else if( inner.op == SceneEdit::SetSceneTime )                                   sawTimeOp = true;
+			else                                                                             sawPropertyOp = true;
 		}
-		if( cam ) cam->RegenerateData();
-		if( sawObjectOp )                          mLastScope = Dirty_ObjectTransform;
-		else if( sawTimeOp && mScenePhotonsExist ) mLastScope = Dirty_TimeAndPhotons;
-		else if( sawTimeOp )                       mLastScope = Dirty_Time;
-		else if( sawCameraOp || sawPropertyOp )    mLastScope = Dirty_Camera;
-		else                                       mLastScope = Dirty_None;
-		return true;
-	}
-
-	if( SceneEdit::IsObjectOp( edit.op ) )
-	{
-		IObjectPriv* obj = FindObject( edit.objectName );
-		if( !obj ) return false;
-		ApplyObjectOpForward( *obj, edit );
-		// Property-style ops don't move geometry — symmetric with
-		// Apply()'s spatial-rebuild gate.  Pre-Phase-1 this path ran
-		// the chain unconditionally, costing a spurious BSP
-		// invalidation per material/shader/shadow redo.
-		const bool needsSpatialRebuild = SceneEdit::OpNeedsSpatialRebuild( edit.op );
-		if( needsSpatialRebuild ) {
-			RunObjectInvariantChain( *obj );
-			// Phase 6.3 (§7.3): single-op redo marks dirty.
-			mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );
-			if( edit.op == SceneEdit::ScaleObjectFromAnchor ) {
-				mScaleFromAnchorSet.insert( std::string( edit.objectName.c_str() ) );
+		if( failed )
+		{
+			// P1 (symmetric to Undo): re-revert what we applied (reverse forward order),
+			// then move the whole popped group back undo->redo so the composite is intact
+			// + retryable.  Rollback re-reverts are best-effort.
+			for( std::vector<SceneEdit>::reverse_iterator it = applied.rbegin(); it != applied.rend(); ++it ) {
+				ApplyRevertMutation( *it );
 			}
-		}
-		mLastScope = Dirty_ObjectTransform;
-		return true;
-	}
-
-	if( SceneEdit::IsCameraOp( edit.op ) )
-	{
-		ICamera* baseCam = mScene.GetCameraMutable();
-		if( !baseCam ) return false;
-		Implementation::CameraCommon* cam =
-			dynamic_cast<Implementation::CameraCommon*>( baseCam );
-		if( !cam ) return true;
-		ApplyCameraOpForward( *cam, edit, SceneScale() );
-		cam->RegenerateData();
-		mLastScope = Dirty_Camera;
-		return true;
-	}
-
-	if( edit.op == SceneEdit::AddCamera )
-	{
-		// Re-create the cloned camera from the captured snapshot.
-		// Mirrors Apply: deterministic recreation even if the source
-		// has changed in the interim.
-		if( !mJob ) return false;
-		if( !CameraIntrospection::AddCameraFromSnapshot( *mJob, edit.objectName, edit.cameraSnapshot ) ) {
+			for( int k = 0; k < undoMoves; ++k ) mHistory.RestoreLastRedoFromUndo();
+			mLastScope = Dirty_None;
 			return false;
 		}
-		mJob->SetActiveCamera( edit.objectName.c_str() );
-		mLastScope = Dirty_Camera;
+		mLastScope = AggregateCompositeScope( sawObjectOp, sawCameraOp, sawTimeOp, sawPropertyOp );
 		return true;
 	}
 
-	if( edit.op == SceneEdit::SetMaterialProperty )
-	{
-		// Re-apply propertyValue (the post-edit binding).  Same
-		// dispatch shape as the Undo branch but using the new
-		// painter name instead of the prev one.
-		if( !mMaterialManager ) return false;
-		IMaterial* mat = mMaterialManager->GetItem( edit.objectName.c_str() );
-		if( !mat ) return false;
-		const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, edit.propertyName );
-		if( cur.kind == MaterialSlotRef::Painter && mPainterManager ) {
-			const IPainter* p = mPainterManager->GetItem( edit.propertyValue.c_str() );
-			if( p ) MaterialIntrospection::SetSlot( *mat, edit.propertyName, p, 0 );
-		} else if( cur.kind == MaterialSlotRef::ScalarPainter && mScalarPainterManager ) {
-			const IScalarPainter* p = mScalarPainterManager->GetItem( edit.propertyValue.c_str() );
-			if( p ) MaterialIntrospection::SetSlot( *mat, edit.propertyName, 0, p );
-		}
-		mLastScope = Dirty_Camera;
-		return true;
+	// Single edit -> the shared forward dispatcher.  P1 (symmetric to Undo): PopForRedo
+	// already moved this edit to the undo stack.  If the forward mutation FAILS (e.g.
+	// the redo's binding target vanished after capture), restore it to the redo stack --
+	// a failed redo must NOT advance the depth or leave a phantom no-op edit undoable.
+	if( !ApplyForwardMutation( edit ) ) {
+		mHistory.RestoreLastRedoFromUndo();
+		return false;
 	}
-
-	if( edit.op == SceneEdit::SetLightProperty )
-	{
-		ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
-		if( !lights ) return false;
-		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
-		if( !light ) return false;
-		// shootphotons re-replays through the direct setter to match
-		// the Apply / Undo paths.
-		if( edit.propertyName == String( "shootphotons" ) ) {
-			bool newVal = false;
-			ParseLenientBool( edit.propertyValue, newVal );  // value was already validated by Apply
-			light->SetCanGeneratePhotons( newVal );
-			mLastScope = Dirty_Camera;
-			return true;
-		}
-		// Translate chunk-name → keyframe-name before dispatching:
-		// the panel surfaces chunk vocabulary (power/inner/outer)
-		// while ILight::KeyframeFromParameters expects keyframe
-		// vocabulary (energy/inner_angle/outer_angle).
-		IKeyframeParameter* p = light->KeyframeFromParameters(
-			ChunkNameToKeyframeName( edit.propertyName ), edit.propertyValue );
-		if( !p ) return false;
-		light->SetIntermediateValue( *p );
-		safe_release( p );
-		light->RegenerateData();
-		mLastScope = Dirty_Camera;
-		return true;
-	}
-
-	if( edit.op == SceneEdit::SetMediumProperty )
-	{
-		// Re-apply propertyValue (the post-edit value).  Same dispatch
-		// shape as the Undo branch but using the new value instead of
-		// the prev one.
-		if( !mJob ) return false;
-		const IMedium* medConst = mJob->GetMedium( edit.objectName.c_str() );
-		if( !medConst ) return false;
-		IMedium* medium = const_cast<IMedium*>( medConst );
-		ApplyMediumPropertyValue( *medium, edit.propertyName, edit.propertyValue );
-		mLastScope = Dirty_Camera;
-		return true;
-	}
-
-	if( edit.op == SceneEdit::SetSceneTime )
-	{
-		mScene.SetSceneTimeForPreview( edit.s );
-		mLastSetTime = edit.s;
-		mLastScope = mScenePhotonsExist ? Dirty_TimeAndPhotons : Dirty_Time;
-		return true;
-	}
-
-	if( edit.op == SceneEdit::SetCameraProperty )
-	{
-		ICamera* baseCam = mScene.GetCameraMutable();
-		if( !baseCam ) return false;
-		CameraIntrospection::SetProperty( *baseCam, edit.objectName, edit.propertyValue );
-		mLastScope = Dirty_Camera;
-		return true;
-	}
-
-	if( SceneEdit::IsCompositeMarker( edit.op ) )
-	{
-		return true;
-	}
-
-	mLastScope = Dirty_Camera;
 	return true;
 }
-
 void SceneEditor::BeginComposite( const char* label )
 {
 	SceneEdit e;

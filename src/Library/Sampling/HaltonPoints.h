@@ -192,6 +192,16 @@ namespace RISE
 			memset( current_num, 0, sizeof(unsigned int)*QMC_NUM_PRIMES );
 		}
 
+		// Reset the per-dimension sample counters to index 0.  The SIGMA permutation tables are immutable, so
+		// only current_num advances -- this restarts the sequence WITHOUT reallocating (no leak, unlike a
+		// fresh construction).  Used by the v6->v7 migrator (g_migratorHalton) + the legacy parser's `mh` to
+		// fold/evaluate hal() from a FRESH sequence per top-level scene (a standalone load) rather than
+		// leaking sample state across scenes loaded in one process.
+		void Reset()
+		{
+			memset( current_num, 0, sizeof(unsigned int)*QMC_NUM_PRIMES );
+		}
+
 		double halton( unsigned int d, unsigned int i ) const
 		{
 			// generalized Halton sequence

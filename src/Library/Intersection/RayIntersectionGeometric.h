@@ -148,6 +148,19 @@ namespace RISE
 
 		Scalar						glossyFilterWidth;	///< Accumulated glossy filter blur from StabilityConfig (0 = off)
 
+		//! Index of refraction of the AMBIENT (incident) medium at this hit —
+		//! the medium the incoming ray was travelling through when it struck the
+		//! surface.  Stamped by the integrator / ray caster from `IORStack::top()`
+		//! at hit-production time.  DEFAULT 1.0 = air ⇒ byte-identical for every
+		//! scene that renders in vacuum.  Consumed by the GGX conductor Fresnel
+		//! (`GGXSPF::Scatter*` / `GGXBRDF::value*`) and its Kulla-Conty
+		//! multiscatter average so a conductor viewed THROUGH a dielectric (e.g.
+		//! silver under enamel glass) reflects for the surrounding medium's IOR
+		//! rather than hardcoded air.  In the spectral (NM) path this is the
+		//! per-wavelength n(λ) that `DielectricSPF` pushed, so it is
+		//! dispersion-correct automatically.
+		Scalar						ambientIOR;
+
 		//! Surface derivatives at the hit point.  Populated by geometries
 		//! that know them at intersection time (currently: triangle meshes).
 		//! Other geometries leave this with valid=false; consumers should
@@ -208,6 +221,7 @@ namespace RISE
 		  bHasTexCoord1( false ),
 		  pCustom( 0 ),
 		  glossyFilterWidth( 0 ),
+		  ambientIOR( 1.0 ),
 		  bHasVertexColor( false ),
 		  bitangentSign( 1.0 ),
 		  bHasTangent( false ),
@@ -239,6 +253,7 @@ namespace RISE
 		  onb( r.onb ),
 		  pCustom( r.pCustom ),
 		  glossyFilterWidth( r.glossyFilterWidth ),
+		  ambientIOR( r.ambientIOR ),
 		  derivatives( r.derivatives ),
 		  txFootprint( r.txFootprint ),
 		  vColor( r.vColor ),
@@ -275,6 +290,7 @@ namespace RISE
 			ptObjExit = r.ptObjExit;
 			onb = r.onb;
 			glossyFilterWidth = r.glossyFilterWidth;
+			ambientIOR = r.ambientIOR;
 			vColor = r.vColor;
 			bHasVertexColor = r.bHasVertexColor;
 			vTangent = r.vTangent;

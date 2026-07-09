@@ -78,28 +78,34 @@ importing from a foreign format.**
 
 ---
 
-## 2. Spot light `focus_point` defines the cone axis (different convention)
+## 2. Spot light `target` defines the cone axis (different convention)
 
 ```text
 spot_light
 {
-    name        torch
-    power       50
-    color       1 1 1
-    position    Px Py Pz
-    focus_point Fx Fy Fz   # any point along the cone-axis BEYOND the source
-    inner_angle 0.2
-    outer_angle 0.4
+    name     torch
+    power    50
+    color    1 1 1
+    position Px Py Pz
+    target   Fx Fy Fz   # any point along the cone-axis BEYOND the source
+    inner    20         # inner cone HALF-angle, in DEGREES
+    outer    45         # outer cone HALF-angle, in DEGREES
 }
 ```
 
-For spots, RISE wants a **focus point**, not a direction.  Internally
-it computes `vDirection = focus_point - position` (the shine direction
-for the cone axis).  This is symmetric to how SpotLight tests `dot(toLight, -vDirection)` at hit time.  See
+For spots, RISE wants a **target point**, not a direction (the
+`spot_light` chunk parameters are `target`/`inner`/`outer` — see the
+descriptor in
+[src/Library/Parsers/ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp)).
+Internally it computes the cone-axis shine direction as
+`target - position`; `inner`/`outer` are cone **half-angles in
+degrees** (converted to radians at parse time; defaults 45/90).  This
+is symmetric to how SpotLight tests `dot(toLight, -vDirection)` at hit
+time.  See
 [src/Library/Lights/SpotLight.cpp:37](../src/Library/Lights/SpotLight.cpp:37).
 
 The glTF importer for spots passes `position + shine_direction` as the
-focus point — that's correct (no extra flip needed).
+target point — that's correct (no extra flip needed).
 
 ---
 
@@ -129,7 +135,7 @@ Most painters take a `colorspace` parameter:
 |---|---|---|
 | `sRGB` | sRGB-encoded display value; gamma-decoded on load | Hand-authored colors copied from a colour picker / RGB hex code (e.g. `#FF7F00`) |
 | `Rec709RGB_Linear` | Already-linear Rec.709 RGB | Numerical weights / multipliers / measured spectra |
-| `ROMMRGB_Linear` | RISE's internal working space | Bypass colour conversion entirely (e.g. tangent-space normal maps where the "RGB" is a vector, not a colour) |
+| `ROMMRGB_Linear` | Linear ROMM (ProPhoto primaries); applies a REAL Rec.709 → ROMM conversion on load (the working space has been Rec.709 since the 2026-05 Stage-B migration) | Only when you've explicitly authored ROMM-encoded data.  NEVER for normal maps — the conversion warps the vectors; the verbatim-store idiom is `Rec709RGB_Linear` |
 | `ProPhotoRGB` | ROMM with the ProPhoto display-encoding curve | Rare; only when you've explicitly authored ProPhoto-encoded data |
 
 `uniformcolor_painter` defaults to `Rec709RGB_Linear` (its `color` is treated
@@ -267,7 +273,7 @@ the active Film at construction.  v5 scenes that authored
 `width`/`height` inside camera chunks must be migrated:
 
 ```sh
-python tools/migrate_scenes_v5_to_v6.py [path-or-dir]
+python tools/migrate_scenes_v5_to_v7.py [path-or-dir]
 ```
 
 The script is idempotent — running it on a v6 scene is a no-op.
@@ -320,11 +326,15 @@ display preview.
 # HDR primary — the integrator's verbatim radiometric output.
 # No exposure, no display transform.  Use as the source of truth
 # for variance / RMSE comparisons and external compositing.
+# (`Rec709RGB_Linear` is the identity/verbatim output since the
+# Stage-B migration; `ROMMRGB_Linear` here would apply a real
+# Rec.709 → ROMM conversion at the write boundary — use it only
+# when you specifically want a ROMM-encoded EXR.)
 file_rasterizeroutput
 {
     pattern             rendered/myscene
     type                EXR
-    color_space         ROMMRGB_Linear
+    color_space         Rec709RGB_Linear
     exr_compression     piz
 }
 
@@ -402,8 +412,8 @@ file_rasterizeroutput
 ### External tools and chromaticities
 
 Our EXR output writes the `chromaticities` attribute matching the
-selected `color_space` (ROMM RGB primaries when
-`color_space = ROMMRGB_Linear`).  Colour-managed viewers that
+selected `color_space` (Rec.709 primaries for `Rec709RGB_Linear`,
+ROMM RGB primaries when `color_space = ROMMRGB_Linear`).  Colour-managed viewers that
 honour the tag (tev, mrViewer, Nuke + OCIO) display correct hues.
 Viewers that ignore it (Photoshop's EXR support) show slightly
 desaturated values — the data is recoverable via an explicit

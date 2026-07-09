@@ -185,6 +185,7 @@ set(RISE_LIB_SOURCES
     # SRCLIBOBJECT
     "${RISE_LIB}/Objects/CSGObject.cpp"
     "${RISE_LIB}/Objects/Object.cpp"
+    "${RISE_LIB}/Objects/SnapshotLeafClone.cpp"
 
     # SRCLIBINTERSECTION
     "${RISE_LIB}/Intersection/RayBezierPatchIntersection.cpp"
@@ -226,6 +227,17 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/PhotonMapping/TranslucentPelPhotonTracer.cpp"
 
     # SRCLIBCAMERA
+    "${RISE_LIB}/Agent/AgentChatCodecs.cpp"
+    "${RISE_LIB}/Agent/AgentChatLoop.cpp"
+    "${RISE_LIB}/Agent/AgentLoopbackHttpServer.cpp"
+    "${RISE_LIB}/Agent/AgentMcpAdapter.cpp"
+    "${RISE_LIB}/Agent/AgentRpc.cpp"
+    "${RISE_LIB}/Agent/AgentSession.cpp"
+    "${RISE_LIB}/Agent/Base64.cpp"
+    "${RISE_LIB}/Agent/InMemoryRasterizerOutput.cpp"
+    "${RISE_LIB}/Agent/Json.cpp"
+    "${RISE_LIB}/Agent/SchemaGen.cpp"
+    "${RISE_LIB}/Cst/Cst.cpp"
     "${RISE_LIB}/Cameras/CameraCommon.cpp"
     "${RISE_LIB}/Cameras/CameraUtilities.cpp"
     "${RISE_LIB}/Cameras/FisheyeCamera.cpp"
@@ -308,6 +320,7 @@ set(RISE_LIB_SOURCES
 
     # SRCLIBMODIFIERS
     "${RISE_LIB}/Modifiers/BumpMap.cpp"
+    "${RISE_LIB}/Modifiers/GlintModifier.cpp"
     "${RISE_LIB}/Modifiers/NormalMap.cpp"
 
     # SRCLIBRASTERIMAGES
@@ -341,10 +354,9 @@ set(RISE_LIB_SOURCES
 
     # SRCLIBPARSERS
     "${RISE_LIB}/Parsers/AsciiCommandParser.cpp"
-    "${RISE_LIB}/Parsers/AsciiSceneParser.cpp"
+    "${RISE_LIB}/Parsers/ChunkParserRegistry.cpp"
     "${RISE_LIB}/Parsers/AsciiScriptParser.cpp"
     "${RISE_LIB}/Parsers/MathExpressionEvaluator.cpp"
-    "${RISE_LIB}/Parsers/RawTokenCapture.cpp"
     "${RISE_LIB}/Options.cpp"
 
     # SRCLIBSCENEEDITORSUGGESTIONS
@@ -366,9 +378,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/SceneEditor/MaterialIntrospection.cpp"
     "${RISE_LIB}/SceneEditor/MediaIntrospection.cpp"
     "${RISE_LIB}/SceneEditor/ChunkDescriptorRegistry.cpp"
-    "${RISE_LIB}/SceneEditor/SourceSpanIndex.cpp"
     "${RISE_LIB}/SceneEditor/TransformSnapshot.cpp"
-    "${RISE_LIB}/SceneEditor/OverrideSpanIndex.cpp"
     "${RISE_LIB}/SceneEditor/DirtyTracker.cpp"
     "${RISE_LIB}/SceneEditor/SaveEngine.cpp"
 

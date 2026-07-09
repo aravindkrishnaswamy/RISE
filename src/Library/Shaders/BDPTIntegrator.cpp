@@ -976,6 +976,74 @@ namespace {
 		return medium.EvalTransmittanceNM( ray, dist, tag.nm );
 	}
 
+	/// Analog no-scatter SURVIVAL weight for a subpath that reaches a
+	/// surface (or escapes) WITHOUT a medium scatter event.  Mirrors
+	/// PathTracingIntegrator's PTSurvivalWeight exactly.
+	///
+	/// SampleDistance is an ANALOG estimator: sampling a free-flight
+	/// distance PAST the surface (i.e. "no scatter") is a stochastic
+	/// SURVIVAL outcome whose probability already carries the Beer-Lambert
+	/// factor.  Multiplying beta by the full transmittance Tr AGAIN
+	/// double-counts attenuation (a pure absorber would render
+	/// exp(-2*sigma_a*d), the slab ~2x too thick).  The correct weight is
+	/// Tr / pSurvival, where pSurvival is the DETERMINISTIC no-scatter
+	/// survival pdf from IMedium::EvalDistancePdf[NM]( ray, dist,
+	/// /*scattered=*/false, dist ).
+	///
+	/// Why the deterministic pdf and NOT MinValue(EvalTransmittance): for a
+	/// HomogeneousMedium the two are identical -- EvalDistancePdf(false)
+	/// returns exp(-sigma_t_max*d) = MinValue(Tr) (Pel), and
+	/// EvalDistancePdfNM(false) returns exp(-sigma_t(nm)*d) =
+	/// EvalTransmittanceNM (so the NM weight is exactly 1, byte-identical to
+	/// the previous unconditional identity).  For a HeterogeneousMedium,
+	/// EvalTransmittance is a STOCHASTIC ratio-tracking estimate, so
+	/// MinValue(EvalTransmittance) would be a random denominator (a biased
+	/// ratio-of-random-estimates); HeterogeneousMedium overrides
+	/// EvalDistancePdf[NM] with a deterministic Simpson optical depth, so
+	/// Tr / pSurvival is the correct unbiased no-scatter weight there.
+	///
+	/// Guard: divide only when pSurvival > 0 (a non-positive survival pdf
+	/// means "no attenuation to apply"); otherwise return the value-type
+	/// multiplicative identity.
+	inline RISEPel BDPTSurvivalWeight( const RISEPel& Tr, const Scalar pSurvival )
+	{
+		if( pSurvival > 0 ) {
+			return Tr * ( Scalar( 1 ) / pSurvival );
+		}
+		return RISEPel( 1, 1, 1 );
+	}
+	inline Scalar BDPTSurvivalWeight( const Scalar Tr, const Scalar pSurvival )
+	{
+		if( pSurvival > 0 ) {
+			return Tr / pSurvival;
+		}
+		return Scalar( 1 );
+	}
+
+	/// Deterministic no-scatter survival pdf: the denominator of
+	/// BDPTSurvivalWeight.  Pel routes to EvalDistancePdf, NM to
+	/// EvalDistancePdfNM.  For HomogeneousMedium this equals MinValue(Tr)
+	/// (Pel) / EvalTransmittanceNM (NM); for HeterogeneousMedium it is the
+	/// deterministic Simpson optical depth (NOT the stochastic
+	/// EvalTransmittance).
+	template<class Tag>
+	inline Scalar EvalNoScatterSurvivalPdf(
+		const IMedium& medium, const Ray& ray, const Scalar dist, const Tag& tag );
+
+	template<>
+	inline Scalar EvalNoScatterSurvivalPdf<PelTag>(
+		const IMedium& medium, const Ray& ray, const Scalar dist, const PelTag& )
+	{
+		return medium.EvalDistancePdf( ray, dist, /*scattered=*/false, dist );
+	}
+
+	template<>
+	inline Scalar EvalNoScatterSurvivalPdf<NMTag>(
+		const IMedium& medium, const Ray& ray, const Scalar dist, const NMTag& tag )
+	{
+		return medium.EvalDistancePdfNM( ray, dist, /*scattered=*/false, dist, tag.nm );
+	}
+
 	/// Scalar magnitude for the "transmittance effectively zero" early
 	/// out (< 1e-6).  Pel: max channel (ColorMath::MaxValue, the RGB
 	/// original).  NM: the bare scalar (the NM original tested Tr < 1e-6
@@ -1611,6 +1679,16 @@ namespace {
 				pMedObj_eye = pMedObj;
 				pMed_eye = pMed;
 
+				// G6: stamp the ambient (incident-medium) IOR so the conductor
+				// Fresnel in ScatterSPF (trace-time sampling below) uses the
+				// surrounding medium rather than hardcoded air.  IORStack::top()
+				// here is the medium the ray was travelling through (read before
+				// SetCurrentObject, which does not push).  Guard to air (1.0).
+				{
+					const Scalar ambIOR = iorStack.top();
+					ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+				}
+
 				if( pMed )
 				{
 					const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
@@ -1794,10 +1872,18 @@ namespace {
 					}
 					else if( ri.geometric.bHit )
 					{
-						// No scatter event: apply transmittance to throughput.
-						// The ray passes through the medium to the surface.
+						// No-scatter SURVIVAL: the eye subpath reached the
+						// surface WITHOUT a medium scatter event.  Under the
+						// analog estimator that "no scatter" outcome is itself
+						// a stochastic survival whose probability already
+						// carries Beer-Lambert (via the analog survival pdf);
+						// multiplying beta by the full Tr again would
+						// double-count.  Apply the survival weight
+						// Tr / pSurvival (deterministic no-scatter survival pdf;
+						// = 1 for monochrome/NM homogeneous, correct for hetero).
 						const V Tr = EvalMediumTransmittance<Tag>( *pMed, currentRay, ri.geometric.range, tag );
-						beta = beta * Tr;
+						const Scalar pSurvival = EvalNoScatterSurvivalPdf<Tag>( *pMed, currentRay, ri.geometric.range, tag );
+						beta = beta * BDPTSurvivalWeight( Tr, pSurvival );
 					}
 				}
 			}
@@ -1904,24 +1990,30 @@ namespace {
 					const Scalar distSqToExit = tExit * tExit;
 					vEnv.pdfFwd = BDPTUtilities::SolidAngleToArea(
 						pdfFwdPrev, Scalar( 1.0 ), distSqToExit );
-					// Apply the residual medium transmittance along the escape
-					// segment before the synthetic env vertex stores beta —
-					// mirrors the surface-hit branch above (line ~2655) and the
-					// PT escape fix (PBRT-v4 beta *= T_maj before the
-					// infinite-light contribution).  maxDist = RISE_INFINITY
-					// matches PT and the env-NEE convention (see ConnectAndEvaluate
-					// s=1 comment ~line 3520) exactly so a global medium evaporates
-					// identically across integrators: for an UNBOUNDED medium with
-					// tiny σ_t a finite cap like 1e10 leaves exp(-σ_t·1e10) ≈ 1
-					// (env leaks through where it must be fully attenuated), whereas
-					// exp(-σ_t·∞) → 0 for any σ_t > 0.  A bounded (AABB) medium
-					// clips internally to a finite Tr regardless of the cap.  VCM's
-					// s=0 env-escape consumes this same throughput via the shared
-					// generator, so this is the single fix point for PT-reference /
-					// BDPT / VCM s=0 consistency.
+					// Apply the residual medium attenuation along the escape
+					// segment before the synthetic env vertex stores beta.
+					// This is a no-scatter SURVIVAL escape: the eye ray left the
+					// scene through the medium WITHOUT a scatter event, so under
+					// the analog estimator its survival probability already
+					// carries Beer-Lambert.  Apply the survival weight Tr /
+					// pSurvival (deterministic no-scatter survival pdf; = 1 for
+					// monochrome/NM homogeneous) rather than the full Tr, mirroring
+					// above and the PT escape fix (PTSurvivalWeight).  maxDist =
+					// RISE_INFINITY matches PT and the env-NEE convention (see
+					// ConnectAndEvaluate s=1 comment ~line 3520) exactly so a global
+					// medium evaporates identically across integrators: for an
+					// UNBOUNDED medium with tiny sigma_t a finite cap like 1e10
+					// leaves exp(-sigma_t*1e10) ~ 1 (env leaks through where it must
+					// be fully attenuated), whereas exp(-sigma_t*inf) -> 0 for any
+					// sigma_t > 0.  A bounded (AABB) medium clips internally to a
+					// finite Tr regardless of the cap.  VCM's s=0 env-escape consumes
+					// this same throughput via the shared generator, so this is the
+					// single fix point for PT-reference / BDPT / VCM s=0 consistency.
 					V betaEsc = beta;
 					if( pMed_eye ) {
-						betaEsc = betaEsc * EvalMediumTransmittance<Tag>( *pMed_eye, currentRay, RISE_INFINITY, tag );
+						const V Tr = EvalMediumTransmittance<Tag>( *pMed_eye, currentRay, RISE_INFINITY, tag );
+						const Scalar pSurvival = EvalNoScatterSurvivalPdf<Tag>( *pMed_eye, currentRay, RISE_INFINITY, tag );
+						betaEsc = betaEsc * BDPTSurvivalWeight( Tr, pSurvival );
 					}
 					StoreThroughput<Tag>( vEnv, betaEsc );
 					if constexpr( Traits::is_nm ) {
@@ -5072,6 +5164,16 @@ unsigned int GenerateLightSubpathImpl(
 			pMedObj_light = pMedObj;
 			pMed_light = pMed;
 
+			// G6: stamp the ambient (incident-medium) IOR so the conductor
+			// Fresnel in ScatterSPF (light-subpath trace-time sampling) uses the
+			// surrounding medium rather than hardcoded air.  IORStack::top() here
+			// is the medium the ray was travelling through (read before
+			// SetCurrentObject, which does not push).  Guard to air (1.0).
+			{
+				const Scalar ambIOR = iorStack.top();
+				ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+			}
+
 			if( pMed )
 			{
 				const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
@@ -5203,9 +5305,18 @@ unsigned int GenerateLightSubpathImpl(
 				}
 				else if( ri.geometric.bHit )
 				{
+					// No-scatter SURVIVAL: the light subpath reached the surface
+					// WITHOUT a medium scatter event.  Same analog convention as
+					// the eye-subpath surface-hit branch -- the survival
+					// probability already carries the analog
+					// Beer-Lambert, so apply the weight Tr / pSurvival (the
+					// deterministic no-scatter survival pdf), NOT the full Tr,
+					// or the medium reads ~2x too thick.  Must match the eye
+					// side so BDPT connections stay unbiased.
 					const V Tr = EvalMediumTransmittance<Tag>(
 						*pMed, currentRay, ri.geometric.range, tag );
-					beta = beta * Tr;
+					const Scalar pSurvival = EvalNoScatterSurvivalPdf<Tag>( *pMed, currentRay, ri.geometric.range, tag );
+					beta = beta * BDPTSurvivalWeight( Tr, pSurvival );
 				}
 			}
 		}

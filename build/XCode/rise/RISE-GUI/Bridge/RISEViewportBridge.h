@@ -36,6 +36,22 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
     RISEViewportToolRollCamera       = 8
 };
 
+/// Secure-MCP slice 5c: the result of -startAgentHostedServerWithLabel:.
+/// `ok` false means the server did not start (bind failure, or a server
+/// was already running -- see that method's doc for the idempotent-
+/// refusal contract); `port`/`bearerToken` are meaningful only when `ok`
+/// is true.
+@interface RISEAgentHostedServerInfo : NSObject
+@property (nonatomic, readonly) BOOL ok;
+@property (nonatomic, readonly) NSUInteger port;
+/// The per-launch bearer token an external MCP client must present via
+/// `Authorization: Bearer <token>`.  NEVER LOG THIS — the Swift caller
+/// must only ever put it in a copyable text field, never in an
+/// NSLog/print/os_log call.
+@property (nonatomic, readonly, copy) NSString *bearerToken;
+@property (nonatomic, readonly, copy) NSString *message;
+@end
+
 @interface RISEViewportBridge : NSObject
 
 /// Construct over an existing RISEBridge.  The RISEBridge must have
@@ -62,7 +78,23 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
 /// first place, so no display-layer frame-suppression is needed.
 - (void)startSuppressingInitialRender;
 
-/// Stop the render thread and join.  Idempotent.
+/// Stop the interactive render thread and join.  Idempotent.  Does NOT
+/// touch the attached SceneEditController's agent-render worker -- a
+/// production render submitted immediately afterward (via
+/// -[RISEBridge rasterize] et al, which route through
+/// RunProductionRenderComposed) is still served normally.
+///
+/// Model-B F2 slice S4 fix round 4: this used to call the C++
+/// controller's monolithic Stop(), which ALSO permanently retired the
+/// agent-render worker (mAgentRenderStop is a one-shot flag; the worker
+/// thread is spawned only once, in the constructor, and nothing ever
+/// respawns it) -- so RenderViewModel's startRender/startAnimationRender
+/// calling this immediately before a production submit poisoned the
+/// controller for the rest of its lifetime, and the production render
+/// (and every later one, interactive-viewport restart notwithstanding)
+/// was refused with "controller stopped".  Wired to
+/// RISE_API_SceneEditController_StopInteractive instead; see that
+/// function's doc and SceneEditController::StopInteractive's header doc.
 - (void)stop;
 
 @property (nonatomic, readonly) BOOL isRunning;
@@ -70,11 +102,14 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
 /// Shrink the scene Film so the interactive preview renders at a
 /// screen-appropriate resolution rather than blindly inheriting
 /// whatever the .RISEscene file declared.  Wraps the C++
-/// `IJobPriv::ScaleFilmToFit` — never upscales, preserves the
-/// scene's authored aspect ratio + pixelAR.  Caller passes the
-/// available rendering-surface dims in pixels; the long edge is
-/// also capped at `maxLongEdge`.  Call once after init, before
-/// `start`.
+/// `IJobPriv::SetViewportFit`, which caches the fit params and
+/// applies the fit immediately; the cache lets a subsequent D2 full
+/// re-derive (variant switch / CST edit) re-apply the SAME fit so
+/// the preview stays screen-sized instead of jumping to authored
+/// full-res.  Never upscales, preserves the scene's authored aspect
+/// ratio + pixelAR.  Caller passes the available rendering-surface
+/// dims in pixels; the long edge is also capped at `maxLongEdge`.
+/// Call once after init, before `start`.
 - (void)scaleFilmToFitSurfaceW:(NSUInteger)surfaceW
                        surfaceH:(NSUInteger)surfaceH
                     maxLongEdge:(NSUInteger)maxLongEdge;
@@ -309,6 +344,7 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
     RISEViewportCategoryMaterial   = 6,   ///< Materials
     RISEViewportCategoryMedium     = 7,   ///< Participating media
     RISEViewportCategoryAnimation  = 8,   ///< Named animation paths (pick to activate)
+    RISEViewportCategorySceneVariant = 9, ///< scene_variant overlays (pick to re-derive that variant active)
 };
 
 /// Current panel mode — lets the SwiftUI parent decide whether to
@@ -425,6 +461,113 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// the first time per session.
 - (nullable NSString *)addCameraFromActive:(NSString *)proposedName
     NS_SWIFT_NAME(addCameraFromActive(proposedName:));
+
+#pragma mark - Agent surface (Facet 5 slice 1c-1: live in-app injection)
+
+/// Facet 5 slice 1c-1: hand one JSON-RPC 2.0 request LINE to the live
+/// agent dispatcher and return the JSON-RPC response line.  This is the
+/// "agent + user co-edit" entry point: the same
+/// `AgentRpcDispatcher::HandleLine` the CLI's `--agent-stdio` loop drives,
+/// but here it runs IN-PROCESS over the SAME live Job + SceneEditController
+/// this viewport bridge owns — so a typed `propose_patch` edits the running
+/// scene and the viewport reflects it.
+///
+/// Runs SYNCHRONOUSLY on the calling thread.  The caller is Swift's
+/// @MainActor, i.e. the main thread — exactly where the GUI's own
+/// SetProperty drives its cancel-and-park edit, so no extra marshalling is
+/// needed for this slice (a background thread / socket is 1c-2+).  The
+/// dispatcher's commit routes through `SceneEditController::ApplyAgentParamEdit`
+/// (attached at init), which cancel-and-parks the render thread and marks the
+/// editor dirty, so the viewport re-render + the Save-button enable happen
+/// automatically via the controller's existing kick + dirty-changed block —
+/// the caller need NOT refresh the viewport or the Save state by hand.
+///
+/// Never returns nil: if the dispatcher is unavailable (init failed / the
+/// bridge was shut down), a well-formed JSON-RPC -32603 error string is
+/// returned so the Swift caller always parses a valid response.
+- (NSString *)agentHandleLine:(NSString *)jsonRpcRequest
+    NS_SWIFT_NAME(agentHandleLine(_:));
+
+#pragma mark - Secure-MCP slice 5c: GUI-hosted external MCP endpoint
+
+/// Start a LOOPBACK-ONLY MCP HTTP server (the same
+/// RISE::Agent::AgentLoopbackHttpServer the headless `rise --agent-http`
+/// CLI transport hosts) bound to THIS bridge's LIVE Job + live
+/// SceneEditController, so a real external MCP client (Claude Code, or
+/// any other MCP host) can connect and PROPOSE edits into the scene
+/// that's actually open in this window -- the counterpart to the
+/// in-process Owner dispatcher `agentHandleLine` already drives.
+///
+/// AUTHORITY / AUTONOMY: constructs a NEW, SEPARATE AgentSession over
+/// the SAME Job this bridge wraps (WrapJob), AttachController's it to
+/// this bridge's live `_controller` (so a staged proposal lands on the
+/// SAME queue the Owner dispatcher's ListProposals/ResolveProposal
+/// verbs read), sets its authority to External (mutating verbs STAGE,
+/// never commit), labels it via SetSessionLabel (see `sessionLabel`
+/// below), and wraps it in an AgentMcpAdapter constructed with
+/// AgentAutonomy::Propose (the wire-layer posture that pairs with
+/// External authority -- see AgentRpc.h's file header). This is a
+/// SEPARATE AgentRpcDispatcher instance from the one -agentHandleLine
+/// drives (that one is Owner-authority + Commit-autonomy, constructed
+/// at init time over its OWN AgentSession) -- see the .mm's
+/// "two-dispatcher-one-controller" doc comment for the full threading
+/// argument for why two independent dispatcher instances sharing one
+/// controller is safe.
+///
+/// THREADING: the server's serial accept-handle loop runs on a
+/// dedicated background thread this method spawns (std::thread,
+/// detached-by-ownership -- joined by -stopAgentHostedServer or
+/// -shutdown, never detached-and-abandoned). Every request that
+/// thread handles calls HandleLine on the EXTERNAL dispatcher, which
+/// (for a mutating verb) calls SceneEditController::StageProposal --
+/// guarded by the controller's OWN mMutex, the SAME lock the render
+/// thread and every OTHER controller entry point (SetProperty,
+/// ApplyAgentParamEdit, the Owner dispatcher's own calls) already
+/// serialize on. list_proposals / resolve_proposal called from the
+/// GUI's Owner dispatcher (via -agentHandleLine, always the main
+/// thread) and a concurrent external stage are therefore safe by the
+/// SAME pre-existing mutex discipline 5a/5b already proved -- nothing
+/// new is introduced here beyond a second caller thread.
+///
+/// IDEMPOTENT: calling this while a server is already running returns
+/// `ok=false` with an explanatory message and does NOT start a second
+/// server (a fresh call after -stopAgentHostedServer starts a new one
+/// with a FRESH per-launch token, per AgentLoopbackHttpServer's own
+/// per-construction-token contract).
+///
+/// `sessionLabel` is stamped onto the External AgentSession via
+/// SetSessionLabel BEFORE Bind() -- so every proposal any external
+/// client stages through this server carries it (see
+/// SceneEditController::AgentProposal::sessionLabel's doc). Pass ""
+/// for the generic default; the Swift caller passes a fixed
+/// "external-mcp" label today (see StartAgentHostedServer's Swift-side
+/// caller for why a per-connection id isn't threaded further: the
+/// server is single-adapter-instance, not per-connection-session).
+///
+/// Returns immediately (Bind() is synchronous and fast; Serve() runs
+/// on the spawned thread) -- never blocks for a client connection.
+- (RISEAgentHostedServerInfo *)startAgentHostedServerWithLabel:(NSString *)sessionLabel
+    NS_SWIFT_NAME(startAgentHostedServer(sessionLabel:));
+
+/// Stop the hosted server started by -startAgentHostedServerWithLabel:
+/// (a no-op, not an error, if none is running). Signals the server's
+/// Stop() (unblocks the accept-loop thread's accept() call) and JOINS
+/// that thread before returning -- so by the time this method returns,
+/// no external-dispatcher HandleLine call can still be in flight and
+/// it is safe to proceed to tear down the controller/Job (see -shutdown,
+/// which calls this FIRST, before the agent dispatcher / controller
+/// teardown, for exactly that reason).
+- (void)stopAgentHostedServer;
+
+/// True iff a hosted server is currently running (bound + serving).
+@property (nonatomic, readonly) BOOL isAgentHostedServerRunning;
+
+/// The bound port / bearer token of the CURRENTLY RUNNING hosted
+/// server (0 / "" when not running) -- lets the Swift settings panel
+/// re-display these after e.g. a view re-render without re-starting
+/// the server.
+@property (nonatomic, readonly) NSUInteger agentHostedServerPort;
+@property (nonatomic, readonly, copy) NSString *agentHostedServerToken;
 
 @end
 

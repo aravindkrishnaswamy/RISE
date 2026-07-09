@@ -19,7 +19,7 @@
 //
 //    DisplacedGeometry::GetBuildMeshCount() is the instrumentation: it
 //    counts every actual tessellate+bake.  We assert:
-//      - after PARSE (LoadAsciiScene) the count is 0 — nothing baked at
+//      - after PARSE (LoadAsciiSceneViaCst) the count is 0 — nothing baked at
 //        parse time (the whole point of deferral);
 //      - after RENDER the count is exactly 3 — the bound single (1) plus
 //        the nested outer + its cascaded inner (2); the UNBOUND one
@@ -132,7 +132,7 @@ static std::string WriteSceneToTempFile( const char* sceneText, const char* tag 
 // obj_plain / obj_single / obj_nested are bound to objects; disp_unbound and
 // (used only as a base) disp_inner are NOT bound directly.
 static const char* kSceneText =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"\n"
 	"film\n"
 	"{\n"
@@ -283,7 +283,7 @@ static void TestDeferralAndCascade()
 	Check( created, "Job created" );
 	if( !created ) return;
 
-	const bool loaded = pJob->LoadAsciiScene( scenePath.c_str() );
+	const bool loaded = pJob->LoadAsciiSceneViaCst( scenePath.c_str() );
 	Check( loaded, "scene loaded (parse)" );
 
 	// PROOF OF DEFERRAL: parse must bake NOTHING.  Pre-change, all four
@@ -337,7 +337,7 @@ static void TestIdempotentReRender()
 
 	IJobPriv* pJob = 0;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { Check( false, "Job created" ); return; }
-	if( !pJob->LoadAsciiScene( scenePath.c_str() ) ) { Check( false, "scene loaded" ); safe_release( pJob ); return; }
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { Check( false, "scene loaded" ); safe_release( pJob ); return; }
 
 	pJob->RemoveRasterizerOutputs();
 	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
@@ -364,7 +364,7 @@ static void TestIdempotentReRender()
 // realize pass (visible-objects-only) reaches disp_csg ONLY through the CSG
 // cascade.  plain_sphere (csg_opB) is the non-displaced operand.
 static const char* kCSGSceneText =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"\n"
 	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 -8\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60.0\n}\n\n"
@@ -399,7 +399,7 @@ static void TestCSGOperandRealized()
 
 	IJobPriv* pJob = 0;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { Check( false, "Job created" ); return; }
-	const bool loaded = pJob->LoadAsciiScene( scenePath.c_str() );
+	const bool loaded = pJob->LoadAsciiSceneViaCst( scenePath.c_str() );
 	Check( loaded, "csg scene loaded (parse)" );
 	if( !loaded ) { safe_release( pJob ); return; }
 
@@ -446,7 +446,7 @@ static void TestPrepareForRenderingRealizes()
 
 	IJobPriv* pJob = 0;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { Check( false, "Job created" ); return; }
-	if( !pJob->LoadAsciiScene( scenePath.c_str() ) ) { Check( false, "scene loaded" ); safe_release( pJob ); return; }
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { Check( false, "scene loaded" ); safe_release( pJob ); return; }
 	Check( DisplacedGeometry::GetBuildMeshCount() == 0, "parse bakes nothing" );
 
 	// The editor scenario: build the TLAS DIRECTLY, with no render / AttachScene.
@@ -466,7 +466,7 @@ static void TestPrepareForRenderingRealizes()
 // pre-fix this scene failed at parse.  The factory now Realize()s the template
 // first (a template that is instanced IS used), so it bakes at parse.
 static const char* kPathInstanceSceneText =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"\n"
 	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 -8\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60.0\n}\n\n"
@@ -498,7 +498,7 @@ static void TestPathInstanceOfDisplaced()
 
 	IJobPriv* pJob = 0;
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { Check( false, "Job created" ); return; }
-	const bool loaded = pJob->LoadAsciiScene( scenePath.c_str() );
+	const bool loaded = pJob->LoadAsciiSceneViaCst( scenePath.c_str() );
 	Check( loaded, "scene with displaced path-instance template parses (was a parse failure pre-fix)" );
 	if( !loaded ) { safe_release( pJob ); return; }
 

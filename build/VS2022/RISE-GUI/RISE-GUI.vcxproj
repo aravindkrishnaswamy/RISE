@@ -58,7 +58,7 @@
       <TreatWarningAsError>false</TreatWarningAsError>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>COLORS_RGB;MERSENNE53;NO_TIFF_SUPPORT;WIN32;_CRT_SECURE_NO_WARNINGS;QT_DLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtCore;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtGui;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtWidgets;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)..\..\src\Library;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtCore;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtGui;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtWidgets;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtNetwork;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)..\..\src\Library;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4250;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <AdditionalOptions>/Zc:__cplusplus /permissive- /utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -68,7 +68,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
-      <AdditionalDependencies>RISE.lib;OpenEXR-3_4_d.lib;OpenEXRCore-3_4_d.lib;OpenEXRUtil-3_4_d.lib;IlmThread-3_4_d.lib;Iex-3_4_d.lib;Imath-3_2_d.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>RISE.lib;Qt6Networkd.lib;OpenEXR-3_4_d.lib;OpenEXRCore-3_4_d.lib;OpenEXRUtil-3_4_d.lib;IlmThread-3_4_d.lib;Iex-3_4_d.lib;Imath-3_2_d.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;ws2_32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)..\..\dbin\;$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\debug\lib\;$(SolutionDir)..\..\extlib\oidn\install\lib\;C:\Dev\openpgl-install\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -78,7 +78,7 @@
       <TreatWarningAsError>false</TreatWarningAsError>
       <Optimization>Full</Optimization>
       <PreprocessorDefinitions>COLORS_RGB;MERSENNE53;NO_TIFF_SUPPORT;WIN32;_CRT_SECURE_NO_WARNINGS;QT_DLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtCore;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtGui;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtWidgets;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)..\..\src\Library;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtCore;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtGui;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtWidgets;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtNetwork;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)..\..\src\Library;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4250;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <AdditionalOptions>/Zc:__cplusplus /permissive- /utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -88,7 +88,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
-      <AdditionalDependencies>RISE.lib;OpenEXR-3_4.lib;OpenEXRCore-3_4.lib;OpenEXRUtil-3_4.lib;IlmThread-3_4.lib;Iex-3_4.lib;Imath-3_2.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>RISE.lib;Qt6Network.lib;OpenEXR-3_4.lib;OpenEXRCore-3_4.lib;OpenEXRUtil-3_4.lib;IlmThread-3_4.lib;Iex-3_4.lib;Imath-3_2.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;ws2_32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\lib\;$(SolutionDir)..\..\extlib\oidn\install\lib\;C:\Dev\openpgl-install\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -100,6 +100,7 @@
     <ClCompile Include="RenderWidget.cpp" />
     <ClCompile Include="HDRRenderWidget.cpp" />
     <ClCompile Include="ControlsWidget.cpp" />
+    <ClCompile Include="ChatPanel.cpp" />
     <ClCompile Include="LogWidget.cpp" />
     <ClCompile Include="SceneEditor.cpp" />
     <ClCompile Include="SceneTextEdit.cpp" />
@@ -118,6 +119,7 @@
     <ClCompile Include="$(QtMocOutDir)moc_RenderWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_HDRRenderWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_ControlsWidget.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_ChatPanel.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_LogWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_SceneEditor.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_SceneTextEdit.cpp" />
@@ -155,6 +157,12 @@
       <AdditionalInputs>%(FullPath)</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="ControlsWidget.h">
+      <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
+      <Message>MOC %(Filename).h</Message>
+      <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="ChatPanel.h">
       <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
       <Message>MOC %(Filename).h</Message>
       <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
@@ -242,10 +250,17 @@
     <PostBuildEvent>
       <Command>
 if not exist "$(OutDir)platforms" mkdir "$(OutDir)platforms"
+if not exist "$(OutDir)tls" mkdir "$(OutDir)tls"
 copy /Y "$(QtVcpkgInstalled)debug\Qt6\plugins\platforms\qwindowsd.dll" "$(OutDir)platforms\"
+copy /Y "$(QtVcpkgInstalled)debug\Qt6\plugins\tls\qcertonlybackendd.dll" "$(OutDir)tls\"
+copy /Y "$(QtVcpkgInstalled)debug\Qt6\plugins\tls\qopensslbackendd.dll" "$(OutDir)tls\"
+copy /Y "$(QtVcpkgInstalled)debug\Qt6\plugins\tls\qschannelbackendd.dll" "$(OutDir)tls\"
 copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Cored.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Guid.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Widgetsd.dll" "$(OutDir)"
+copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Networkd.dll" "$(OutDir)"
+copy /Y "$(QtVcpkgInstalled)debug\bin\libssl-3-x64.dll" "$(OutDir)"
+copy /Y "$(QtVcpkgInstalled)debug\bin\libcrypto-3-x64.dll" "$(OutDir)"
       </Command>
       <Message>Copying Qt debug DLLs to output...</Message>
     </PostBuildEvent>
@@ -254,10 +269,17 @@ copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Widgetsd.dll" "$(OutDir)"
     <PostBuildEvent>
       <Command>
 if not exist "$(OutDir)platforms" mkdir "$(OutDir)platforms"
+if not exist "$(OutDir)tls" mkdir "$(OutDir)tls"
 copy /Y "$(QtVcpkgInstalled)Qt6\plugins\platforms\qwindows.dll" "$(OutDir)platforms\"
+copy /Y "$(QtVcpkgInstalled)Qt6\plugins\tls\qcertonlybackend.dll" "$(OutDir)tls\"
+copy /Y "$(QtVcpkgInstalled)Qt6\plugins\tls\qopensslbackend.dll" "$(OutDir)tls\"
+copy /Y "$(QtVcpkgInstalled)Qt6\plugins\tls\qschannelbackend.dll" "$(OutDir)tls\"
 copy /Y "$(QtVcpkgInstalled)bin\Qt6Core.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)bin\Qt6Gui.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)bin\Qt6Widgets.dll" "$(OutDir)"
+copy /Y "$(QtVcpkgInstalled)bin\Qt6Network.dll" "$(OutDir)"
+copy /Y "$(QtVcpkgInstalled)bin\libssl-3-x64.dll" "$(OutDir)"
+copy /Y "$(QtVcpkgInstalled)bin\libcrypto-3-x64.dll" "$(OutDir)"
       </Command>
       <Message>Copying Qt release DLLs to output...</Message>
     </PostBuildEvent>

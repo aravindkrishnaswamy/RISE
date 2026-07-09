@@ -773,6 +773,52 @@ static void TestAxisRingDragRotates()
 	job->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 17 (F6): after a scale-gizmo (ScaleObjectFromAnchor) drag is
+// UNDONE, a subsequent ABSOLUTE SetObjectPosition must land at the
+// requested value -- not compose with the drag-start baseline that the
+// old SFA undo collapsed onto the transform stack.
+//////////////////////////////////////////////////////////////////////
+static void TestScaleGizmoUndoThenAbsoluteSet()
+{
+	std::cout << "Test 17 (F6): scale-gizmo undo + absolute set composes correctly" << std::endl;
+	Job* job = BuildJob( 5, 5, 10 );   // off-axis so the uniform cube projects
+	SceneEditController c( *job, 0 );
+	c.SetSelection( SceneEditController::Category::Object, String( "sphere" ) );
+
+	// Move to a NON-identity baseline (x=8) so the composition bug is visible.
+	{
+		SceneEdit mv; mv.op = SceneEdit::SetObjectPosition; mv.objectName = String( "sphere" ); mv.v3a = Vector3( 8, 0, 0 );
+		c.Editor().Apply( mv );
+	}
+
+	// Scale-gizmo drag on the uniform cube (a ScaleObjectFromAnchor gesture).
+	c.SetTool( SceneEditController::Tool::ScaleObject );
+	c.RefreshGizmoHandles();
+	using K = SceneEditController::GizmoHandle::Kind;
+	int cubeIdx = -1;
+	for( unsigned int i = 0; i < c.GizmoHandleCount(); ++i )
+		if( c.GizmoHandleKind( i ) == static_cast<int>( K::UniformScaleCube ) ) { cubeIdx = static_cast<int>( i ); break; }
+	Check( cubeIdx >= 0, "[f6] uniform scale cube located" );
+	const Point2 down( c.GizmoHandleScreenX( cubeIdx ), c.GizmoHandleScreenY( cubeIdx ) );
+	c.OnPointerDown( down );
+	Check( c.IsGizmoDragActive(), "[f6] scale drag armed" );
+	c.OnPointerMove( Point2( down.x + 40.0, down.y ) );   // scale up
+	c.OnPointerUp( Point2( down.x + 40.0, down.y ) );
+
+	// Undo the scale gesture (composite), then set an ABSOLUTE position.
+	Check( c.Editor().Undo(), "[f6] undo scale gesture" );
+	{
+		SceneEdit mv; mv.op = SceneEdit::SetObjectPosition; mv.objectName = String( "sphere" ); mv.v3a = Vector3( -12, 0, 0 );
+		c.Editor().Apply( mv );
+	}
+	double wx = 0, wy = 0, wz = 0;
+	c.ForTest_GetSelectionPivotWorld( wx, wy, wz );
+	Check( std::fabs( wx - ( -12.0 ) ) < 1e-6,
+	       "[f6] absolute SetPosition after scale-gizmo undo lands at -12, not composed" );
+	job->release();
+}
+
 int main()
 {
 	std::cout << "SceneEditorGizmoHandlesTest — B2 + B3 gizmo math + dispatch" << std::endl;
@@ -796,6 +842,7 @@ int main()
 	TestAxisPlaneDragStaysInPlane();
 	TestScreenCenterDragTranslates();
 	TestAxisRingDragRotates();
+	TestScaleGizmoUndoThenAbsoluteSet();
 
 	std::cout << "Passed: " << passCount << "  Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;

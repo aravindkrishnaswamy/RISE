@@ -48,7 +48,6 @@
 
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
-#include "../src/Library/Interfaces/ISceneParser.h"
 #include "../src/Library/Interfaces/IPainter.h"
 #include "../src/Library/Interfaces/IPainterManager.h"
 #include "../src/Library/Interfaces/IRasterImage.h"
@@ -97,14 +96,8 @@ namespace
 
 	bool ParseSceneFile( const std::string& path, Job& job )
 	{
-		ISceneParser* parser = 0;
-		if( !RISE_API_CreateAsciiSceneParser( &parser, path.c_str() ) || !parser ) {
-			return false;
-		}
-		parser->addref();
-		const bool ok = parser->ParseAndLoadScene( job );
-		parser->release();
-		return ok;
+		// Model-B P5 Slice 6c-3b: load via the canonical CST path (native-v7).
+		return job.LoadAsciiSceneViaCst( path.c_str() );
 	}
 
 	// Write a tiny solid-colour PNG to TMPDIR using RISE's own raster
@@ -138,7 +131,7 @@ namespace
 	std::string PngPainterScene( const std::string& pngPath, const std::string& value )
 	{
 		std::string s;
-		s += "RISE ASCII SCENE 6\n";
+		s += "RISE ASCII SCENE 7\n";
 		s += "png_painter\n{\nname tex\nfile " + pngPath + "\ncolor_space Rec709RGB_Linear\n";
 		if( !value.empty() ) {
 			s += "filter_type " + value + "\n";
@@ -149,7 +142,7 @@ namespace
 
 	// Parse a one-painter scene built from `value` and report whether the
 	// painter `tex` ended up registered.  `outParsed` receives the raw
-	// ParseAndLoadScene result.
+	// load result.
 	bool ParsePngWithFilter( const std::string& pngPath, const std::string& value, bool& outParsed )
 	{
 		const std::string tag = value.empty() ? std::string("default") : value;
@@ -252,7 +245,7 @@ static void TestLegacyAliasesStillParse( const std::string& pngPath )
 
 // ============================================================
 //  Test 4: unknown / removed filter_type values are rejected (the chunk
-//          fails to load, so ParseAndLoadScene returns false and the
+//          fails to load, so the load returns false and the
 //          painter is NOT registered).  Covers the now-removed box/
 //          gaussian and a generic typo.
 // ============================================================

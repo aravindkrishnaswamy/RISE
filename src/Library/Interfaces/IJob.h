@@ -21,6 +21,7 @@
 #define IJOB_
 
 #include "IReference.h"
+#include <type_traits>   // SFINAE for the arithmetic AR-film convenience
 #include "IPainter.h"           // for SpectrumKind enum (Landing 3)
 #include "IProgressCallback.h"
 #include "IJobRasterizerOutput.h"
@@ -40,6 +41,7 @@
 
 namespace RISE
 {
+	namespace Cst { struct Document; }   // P5 Slice 4 (save-as-CST): the retained canonical CST; fwd-decl keeps Cst.h out of IJob.h
 	// Forward declaration to avoid pulling in the full
 	// ITriangleMeshGeometry.h dependency chain.  Used by
 	// AddPrebuiltTriangleMeshGeometry, declared near the bottom.
@@ -813,10 +815,44 @@ namespace RISE
 									const char* rIndex,				///< [in] Index of refraction
 									const char* scat,				///< [in] Scattering function (either Phong or HG)
 									const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
-								const Scalar arN = 0,			///< [in] AR coating film real index (0 = no coating)
-								const Scalar arK = 0,			///< [in] AR coating film extinction (~0)
-								const Scalar arThickness = 0	///< [in] AR coating thickness, nm (0 = no coating)
+								const Scalar* arN = 0,			///< [in] AR coating layer real indices, ambient->substrate (0/null = no coating)
+								const Scalar* arK = 0,			///< [in] AR coating layer extinctions (~0; null => all 0)
+								const Scalar* arThickness = 0,	///< [in] AR coating layer thicknesses, nm
+								const unsigned int arNLayers = 0	///< [in] Number of AR layers (0 = no coating)
 									) = 0;
+
+		//! Legacy single-film AR convenience -> the N-layer virtual above.  A
+		//! single SFINAE template (constrained to arithmetic args) so ANY spelling
+		//! of the three AR-film scalars compiles -- all-double, all-int `(0,0,0)`,
+		//! or MIXED `(1.38, 0, 99.6)`.  A fixed Scalar/int overload pair would leave
+		//! mixed calls with no best match; a template is exact for every combo and,
+		//! being non-pointer, never competes with the array-form virtual.
+		//! NON-virtual (no vtable change).  NO-COATING: arFilmThickness <= 0 =>
+		//! nLayers=0 (bare Fresnel), not a zero-thickness/zero-index film.
+		template< typename ARN, typename ARK, typename ART,
+		          typename = typename std::enable_if< std::is_arithmetic<ARN>::value &&
+		                                              std::is_arithmetic<ARK>::value &&
+		                                              std::is_arithmetic<ART>::value >::type >
+		bool AddDielectricMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* tau,				///< [in] Transmittance painter
+									const char* rIndex,				///< [in] Index of refraction
+									const char* scat,				///< [in] Scattering function (either Phong or HG)
+									const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+									const ARN arFilmN,				///< [in] Single AR film real index
+									const ARK arFilmK,				///< [in] Single AR film extinction
+									const ART arFilmThickness		///< [in] Single AR film thickness, nm
+									)
+		{
+			if( Scalar( arFilmThickness ) <= Scalar( 0 ) ) {
+				return AddDielectricMaterial( name, tau, rIndex, scat, hg,
+					(const Scalar*)0, (const Scalar*)0, (const Scalar*)0, 0u );
+			}
+			const Scalar n[1]  = { Scalar( arFilmN ) };
+			const Scalar k[1]  = { Scalar( arFilmK ) };
+			const Scalar th[1] = { Scalar( arFilmThickness ) };
+			return AddDielectricMaterial( name, tau, rIndex, scat, hg, n, k, th, 1u );
+		}
 
 		//! Adds a SubSurface Scattering material
 		/// \return TRUE if successful, FALSE otherwise
@@ -1172,7 +1208,8 @@ namespace RISE
 									const char* name,				///< [in] Name of the geometry
 									const char axis,				///< [in] (x|y|z) Which axis the cylinder is sitting on
 									const double radius,			///< [in] Radius of the cylinder
-									const double height			///< [in] Height of the cylinder
+									const double height,			///< [in] Height of the cylinder
+									const bool capped = true		///< [in] TRUE: closed solid (end caps, default); FALSE: open tube.  Defaulted so pre-cap 4-arg callers keep compiling.
 									) = 0;
 
 		//! Adds an infinite plane that passes through the origin
@@ -1451,6 +1488,25 @@ namespace RISE
 			const char* name,										///< [in] Name of the medium
 			const double sigma_a[3],								///< [in] Absorption coefficient (linear RGB)
 			const double sigma_s[3],								///< [in] Scattering coefficient (linear RGB)
+			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
+			) = 0;
+
+		//! Adds a homogeneous participating medium with optional
+		//! per-wavelength coefficient curves for the spectral (NM) path
+		//! (G1, vitreous enamel).  \a absorption_spectral /
+		//! \a scattering_spectral are names of registered IFunction1D
+		//! curves (lambda->value), or null/"" for none.  When both are
+		//! absent the medium matches AddHomogeneousMedium (plus the
+		//! emission term).  The RGB triples drive the RGB/preview path.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddHomogeneousMediumSpectral(
+			const char* name,										///< [in] Name of the medium
+			const double sigma_a[3],								///< [in] Absorption coefficient (RGB preview)
+			const double sigma_s[3],								///< [in] Scattering coefficient (RGB preview)
+			const double emission[3],								///< [in] Volumetric emission (RGB)
+			const char* absorption_spectral,						///< [in] Name of sigma_a(lambda) IFunction1D, or null/""
+			const char* scattering_spectral,						///< [in] Name of sigma_s(lambda) IFunction1D, or null/""
 			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
 			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
 			) = 0;
@@ -2666,6 +2722,38 @@ namespace RISE
 			const char* name								///< [in] Name of the modifer to remove
 			) = 0;
 
+		//! Invalidates the top-level acceleration structure (TLAS) so the next
+		//! render rebuilds it.  An incremental re-derivation that recreated objects
+		//! (new addresses) or changed any object's world bounding box MUST call this
+		//! -- the TLAS holds raw object pointers, so a stale BVH would dangle (see
+		//! docs/agentic-redesign/21-stable-apply-and-resolver.md).  Default no-op so
+		//! non-scene IJob impls are unaffected; the real Job delegates to its
+		//! IObjectManager::InvalidateSpatialStructure.
+		virtual void InvalidateSpatialStructure() {}
+
+		//! Bumps the scene's light-topology generation so the next AttachScene
+		//! rebuilds the light/environment samplers (mirrors the SceneEditor path).
+		//! An incremental re-derivation that may have changed the emitter set
+		//! (recreated/re-pointed an emissive material or object) MUST call this.
+		//! Default no-op; the real Job bumps its Scene's generation counter.
+		virtual void BumpLightTopologyGeneration() {}
+
+		//! Reads the current light-topology generation (the counter
+		//! BumpLightTopologyGeneration advances).  A consumer reads it across an edit to
+		//! confirm whether the emitter set changed (the incremental apply's closure-gated
+		//! light-gen decision).  Default 0; the real Job returns its Scene's counter.
+		virtual unsigned int GetLightTopologyGeneration() const { return 0; }
+
+		//! Enables/disables INCREMENTAL re-point mode (slice 3 stable-object apply,
+		//! docs/agentic-redesign/21-stable-apply-and-resolver.md).  While enabled,
+		//! AddObject/AddObjectMatrix re-point an EXISTING same-named object IN PLACE
+		//! (keeping its address so the TLAS that holds raw object pointers stays valid)
+		//! instead of creating a new one; with it disabled (the default, and every full
+		//! derive -- where objects never pre-exist) behaviour is unchanged.  The CST
+		//! incremental apply sets it true only around its single-threaded re-Finalize
+		//! loop.  Default no-op; the real Job stores the flag.
+		virtual void SetIncrementalRepointMode( bool ) {}
+
 		//! Clears the entire scene, resets everything back to defaults
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool ClearAll(
@@ -2676,11 +2764,43 @@ namespace RISE
 		virtual bool RemoveRasterizerOutputs(
 			) = 0;
 
-		//! Loading an ascii scene description
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool LoadAsciiScene(
+		//! P5 (Model-B): load via the canonical CST path (Scene = derive(CST)) instead of the legacy
+		//! streaming parser.  Refuses non-native-v7 documents and derive-error scenes.  Default returns
+		//! FALSE (only Job overrides this -- it retains the CST Document).  Reached via LoadAsciiSceneAuto's
+		//! native-v7 branch -- CST-load is the Slice-5 DEFAULT (the RISE_LOAD_VIA_CST opt-in env var was removed).
+		/// \return TRUE iff loaded via the CST path with no error diagnostics
+		virtual bool LoadAsciiSceneViaCst(
 			const char* filename							///< [in] Name of the file containing the scene
-			) = 0;
+			) { return false; }
+
+		//! P5 (Model-B, Slice 6c-3a): DEFAULT scene-load entry point used by every front-end (CLI/GUI/bridges).
+		//! CST-ONLY -- routes a NATIVE-v7 scene to the CST path (LoadAsciiSceneViaCst -- retains the Document for
+		//! edit/save/scene_variant); an un-migrated scene HARD-FAILS with an actionable diagnostic pointing at
+		//! the offline migrator (the legacy loader was retired -- no fallback, no env escape hatch).  A derive
+		//! error on the native-v7 branch is a REAL, visible failure (returns false) -- it is NOT masked by a
+		//! legacy retry.  Default (non-Job implementers) is a safe no-op returning false -- the legacy streaming
+		//! loader was deleted in Slice 6c-3c, so there is nothing to delegate to; only Job overrides this.
+		/// \return TRUE iff the scene loaded successfully
+		virtual bool LoadAsciiSceneAuto(
+			const char* filename							///< [in] Name of the file containing the scene
+			) { return false; }
+
+		//! P5 (Model-B): re-derive the RETAINED CST Document with a FORCED active scene_variant ("none"/"" =
+		//! base), re-baking the materials -- the GUI variant switch.  Resets the managers first (ClearAll), so the
+		//! Document must already be retained (loaded via LoadAsciiSceneViaCst).  Default FALSE (only Job overrides).
+		/// \return TRUE iff re-derived with no error diagnostics
+		virtual bool RederiveCstWithVariant(
+			const char* variantName							///< [in] variant to force active ("none"/"" = base)
+			) { return false; }
+
+		//! P5: does this Job retain a CST Document (loaded via LoadAsciiSceneViaCst)?  The GUI gates the
+		//! "Variants" accordion on this -- the variant SWITCH needs the Document to re-derive, so a legacy-loaded
+		//! scene (no Document) must not offer pickable variants that would silently no-op.  Default FALSE.
+		virtual bool HasRetainedCstDocument() const { return false; }
+
+		//! P5 Slice 4 (save-as-CST): the retained canonical CST Document (null unless loaded via
+		//! LoadAsciiSceneViaCst).  The SaveEngine serializes it directly when present.  Default null; see Job.
+		virtual const RISE::Cst::Document* GetCstDocument() const { return nullptr; }
 
 		//! Runs an ascii script
 		/// \return TRUE if successful, FALSE otherwise
@@ -2770,6 +2890,16 @@ namespace RISE
 		//! Number of declared named animations.
 		virtual unsigned int GetAnimationCount() const { return 0; }
 
+		//! Records that an `override_object` chunk modified an existing object's transform
+		//! in place (its Finalize calls this).  The CST incremental apply reads
+		//! GetObjectOverrideCount() to refuse when any override is present: an
+		//! override_object references its target object by a ValueKind::String `name`,
+		//! invisible to the static reference graph (review P1.3), so the closure of editing
+		//! the target would NOT include the override -> the re-point would erase the
+		//! override's effective transform.  Default no-op / 0; the real Job counts them.
+		virtual void NoteObjectOverride() {}
+		virtual unsigned int GetObjectOverrideCount() const { return 0; }
+
 		//! Copies the name of the animation at `index` into `buf` (NUL-terminated,
 		//! truncated to bufLen).  FALSE if the index is out of range.
 		virtual bool GetAnimationName( const unsigned int /*index*/, char* /*buf*/, const unsigned int /*bufLen*/ ) const { return false; }
@@ -2779,6 +2909,25 @@ namespace RISE
 
 		//! Copies the active animation's name into `buf`.  FALSE if none declared.
 		virtual bool GetActiveAnimationName( char* /*buf*/, const unsigned int /*bufLen*/ ) const { return false; }
+
+		//! Declares a named scene variant (a selectable overlay).  active_camera may be "" (none).  See
+		//! docs/agentic-redesign/63-scene-variants-feature-spec.md.
+		virtual bool DeclareSceneVariant( const char* /*name*/, const char* /*active_camera*/ ) { return false; }
+		//! Sets the stored active scene variant ("" / "none" => the base default).
+		virtual bool SetActiveSceneVariant( const char* /*name*/ ) { return false; }
+		//! Returns the active scene variant name into buf (empty if none).
+		virtual bool GetActiveSceneVariant( char* /*buf*/, const unsigned int /*bufLen*/ ) const { return false; }
+
+		//! P5: COUNT of declared scene_variants (the GUI accordion's variant list).  Default 0.
+		virtual unsigned int GetSceneVariantCount() const { return 0; }
+
+		//! P5: the idx-th declared scene_variant name (0-based, in the map's sorted order).  Default false.
+		virtual bool GetSceneVariantName( unsigned int /*idx*/, char* /*buf*/, const unsigned int /*bufLen*/ ) const { return false; }
+		//! True iff the Job has any declared scene variant or an active selection -- the O(1) incremental-derive
+		//! refuse signal (a variant's bake is whole-document, so a variant scene's edits fall back to a full re-derive).
+		virtual bool HasSceneVariants() const { return false; }
+		//! Resets the scene-variant records (per derive/clear); a re-derive must not inherit prior variant state.
+		virtual void ClearSceneVariants() {}
 
 		//! Sets progress class to report progress for anything we do
 		virtual void SetProgress(
@@ -3165,6 +3314,342 @@ namespace RISE
 		virtual bool SetActiveRasterizerRadianceScale(
 			const double scale						///< [in] New environment radiance scale
 			) = 0;
+
+		//! Adds a discrete-facet glint modifier (sparse mirror-like
+		//! micro-facets pinned to the surface by an object-space cell
+		//! hash; a hit on a facet has its shading normal replaced by
+		//! the facet's tilted normal so the existing materials twinkle
+		//! — enamel flecks, metallic flake, snow, glitter).  See
+		//! Modifiers/GlintModifier.h for the model and parameter
+		//! semantics; all values must be FINITE (callers own loud
+		//! rejection; the modifier goes inert on garbage).
+		//! (Appended at the interface END per the vtable end-append
+		//! convention, hence its distance from the sibling modifier
+		//! adders.)
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddGlintModifier(
+			const char* name,										///< [in] Name of the modifier
+			const double density,									///< [in] cells per object-space unit (facet pitch = 1/density); <= 0 inert
+			const double coverage,									///< [in] per-cell facet existence probability [0,1]
+			const double fill,										///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 inert
+			const double spread,									///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 inert
+			const double scale[3],									///< [in] anisotropic cell stretch (1,1,1 = isotropic; Worley convention pt*scale+shift)
+			const double shift[3],									///< [in] cell-space offset
+			const unsigned int seed									///< [in] hash seed (distinct fleck fields on otherwise identical objects)
+			) = 0;
+		//! P5 Slice 3 (edit-model pivot): apply ONE param-value edit to the retained CST Document, then re-derive
+		//! (incrementally for the common case; a FULL document re-derive for variant / animated / instance_array
+		//! scenes).  `entityName` = the chunk's bare name (unique-or-refuse); `entityKind` = a keyword-suffix that
+		//! disambiguates a cross-category name clash -- reliable ONLY for materials today ("material"; every
+		//! material keyword is "material" or ends in "_material").  geometry/light/camera keywords have exceptions
+		//! (gltf_import, hosek_wilkie_skylight, camera_defaults), so the expansion will narrow by ChunkCategory
+		//! instead; "" = no narrowing.  `role` = the param (e.g. "reflectance"); `occ` = the occurrence; `newValue`
+		//! = the new value (INSERTED if the scene text omitted the slot; occ 0 + non-empty value only).  Returns
+		//! 0 = no change (live scene intact); 1 = applied incrementally (managers untouched); 2 = applied via a FULL
+		//! re-derive (the Scene + managers were REPLACED -- the caller MUST re-point any cached scene/manager
+		//! pointers); 3 = managers replaced BUT the re-derive diagnosed -> rebind required AND treat as failure.
+		//! A full re-derive (2/3) PRESERVES the user's runtime state -- active camera/rasterizer/animation and the
+		//! interactive scrub time -- across the rebuild (an EDIT must not reset them the way a variant SWITCH does).
+		//! Default 0 (only Job overrides).
+		//! NB: appended at the IJob tail per the append-only ABI convention (preserves every prior vtable slot).
+		virtual int ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue ) { return 0; }
+
+		//! P5 Slice 3 expansion (object transform): commit an object's NET world transform as the authoritative
+		//! standard_object `matrix` param.  Default no-op (legacy jobs have no retained CST).  See Job override.
+		virtual int ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 ) { return 0; }
+
+		//! P5 Slice 3 expansion (camera drag): commit a camera's NET pose params to the retained CST.  Default
+		//! no-op (legacy jobs have no retained CST).  See Job override.
+		virtual int ApplyCstCameraPoseEdit( const char* camName, const char* location, const char* lookat, const char* up,
+		                                    const char* orientation, const char* targetOrientation ) { return 0; }
+
+		//! Model-B P5 (camera-clone CST insert): INSERT a faithful camera chunk into the retained CST so a future
+		//! D2 / save reproduces a cloned camera.  Document-only (no re-derive); 1 = inserted, 0 = failure.  Default
+		//! no-op (legacy jobs have no retained CST).  See Job override.  Appended at the IJob tail (append-only ABI).
+		virtual int ApplyCstInsertCameraChunk( const char* chunkText ) { return 0; }
+
+		//! Model-B P5 (camera-clone CST insert -- undo): REMOVE the camera chunk named `camName` (inverse of
+		//! ApplyCstInsertCameraChunk).  Document-only; 1 = removed, 0 = failure.  Default no-op; see Job override.
+		virtual int ApplyCstRemoveCameraChunk( const char* camName ) { return 0; }
+
+		//! Model-B P5 Slice 3 expansion (FILM edit/preset): record a Film dim edit in the retained CST so a SAVE
+		//! (SerializeCst) and a future D2 re-derive preserve it -- the live SetFilm already mutated the scene, this
+		//! only PATCHES the singleton unnamed `film` chunk.  Each of width/height/pixelAR is OPTIONAL (nullptr =
+		//! leave that param untouched -> a single-property edit writes ONLY the changed param; a preset passes
+		//! width+height with pixelAR=nullptr).  Document-only (no re-derive, no rebind); 1 = recorded, 0 = no-op /
+		//! failure (legacy scene with no retained Document -> clean 0).  Default no-op; see Job override.
+		virtual int ApplyCstFilmEdit( const char* width, const char* height, const char* pixelAR ) { return 0; }
+
+		//! P5 Slice 3 expansion (object transform): 0 = not routable / 1 = matrix (standard_object) / 2 = components
+		//! (csg_object).  Default 0; see Job override.
+		virtual int CstObjectTransformKind( const char* name ) const { return 0; }
+
+		//! P5 Slice 3 expansion (csg transform): commit a csg_object's translate+rotate as position+orientation
+		//! params.  Default no-op; see Job override.
+		virtual int ApplyCstObjectComponentsEdit( const char* objectName, const char* position, const char* orientation ) { return 0; }
+
+		//! P5 Slice 4: re-baseline the CST-load file identity after a successful save (re-anchor on Save-As).
+		//! Default no-op (legacy jobs use the SaveEngine's own refresh); see Job override.
+		virtual void RefreshCstLoadFileIdentity( const char* path ) {}
+
+		//! Model-B P5 (Phase-4 RemoveCamera): SAFELY delete ANY camera chunk named `camName` from the retained CST
+		//! -- file-authored OR clone-inserted -- via the trivia-preserving Cst::DocEraseChunkTidy (keeps the
+		//! Document well-formed: NO `}<keyword>` glue; collapses ONE adjacent blank-line separator).  This is the
+		//! general erase a future arbitrary-camera-delete op MUST use; do NOT reuse the CLONE-UNDO-ONLY
+		//! ApplyCstRemoveCameraChunk on a file-authored camera (its idx-1 unconditional drop glues the prior chunk).
+		//! Document-only (no re-derive); 1 = removed, 0 = failure (no Document / not found / ambiguous).  Default
+		//! no-op (legacy jobs have no retained CST); see Job override.  Appended at the IJob tail per the append-only ABI convention (moved here after it was mistakenly inserted mid-tail).
+		virtual int ApplyCstDeleteCameraChunk( const char* camName ) { return 0; }
+
+		//! Model-B P5: cache the interactive viewport screen-fit params on the Job AND apply the fit immediately
+		//! (delegates to ScaleFilmToFit -- same never-upscale, aspect-preserving, no-op-if-already-fit semantics,
+		//! same zero-argument rejection).  The GUI bridges call THIS instead of ScaleFilmToFit at scene-load (and
+		//! on viewport resize) so the fit params are cached; a subsequent D2 full re-derive (variant switch / CST
+		//! edit) -- which re-derives the LIVE film to the Document's AUTHORED dims -- then RE-APPLIES the cached fit
+		//! at its tail, keeping the preview at a screen-appropriate resolution instead of jumping to full-res.
+		//! Live-only: never touches the retained CST Document, so save reproduces the AUTHORED dims.  The headless
+		//! CLI never calls this, so the cache stays unset and every D2 tail skips the re-fit (CLI = authored full-res).
+		//! Returns ScaleFilmToFit's bool.  Default no-op returning false (legacy / non-Job); see Job override.
+		//! NB: appended at the IJob tail per the append-only ABI convention (preserves every prior vtable slot).
+		virtual bool SetViewportFit( const unsigned int surfaceW, const unsigned int surfaceH, const unsigned int maxLongEdge ) { return false; }
+
+		//! Model-B F5 slice S2 (agent chunk CRUD -- insert): INSERT one complete chunk into the retained CST
+		//! Document, then REALIZE it in the live scene via a FULL re-derive (validate-before-destroy dry-run into
+		//! a throwaway Job first -- a failed dry-run leaves the Document AND the live scene byte-identical).
+		//! `chunkText` must parse to EXACTLY ONE chunk (`keyword { ... }`; braces on their own lines) with nothing
+		//! but pure-whitespace trivia around it -- scene headers/directives/comments outside the chunk are refused.
+		//! A duplicate (kind,name) against an existing chunk is refused early; a chunk carrying a `variant` param
+		//! is exempt from that check (a variant overlay legitimately shares its base chunk's (kind,name)) but an
+		//! EXACT (kind,name,variant) duplicate is still refused.  An UNNAMED chunk (film / rasterizer /
+		//! camera-class) is refused when an unnamed chunk of the SAME keyword already exists -- unnamed chunks are
+		//! singletons per keyword (a duplicate would be last-wins-masked on derive yet persisted by save, and
+		//! bare-name-addressed remove_chunk could never delete it).  NOTE the one-way doors: an unnamed FILM or
+		//! RASTERIZER chunk can never be removed through this surface once inserted (remove_chunk is
+		//! bare-name-addressed) -- insert them deliberately.  The SOLE camera is the EXCEPTION:
+		//! ApplyCstRemoveChunk's kind="camera" positional fallback resolves it even unnamed (any target string
+		//! that matches no chunk name), so a camera SWAP must REMOVE the old camera FIRST, THEN insert the
+		//! replacement -- insert-first yields TWO cameras and the exactly-one fallback then resolves neither
+		//! (a NAMED second camera stays removable by name; the stranded one is the old UNNAMED camera).
+		//! POSITION (round 2): DECLARATION-class chunks (painters/functions; materials/geometry/modifiers/media/
+		//! shaders/shaderops) are inserted BEFORE their potential consumers (declare-before-use), falling back to
+		//! append-at-end if the positioned insert does not derive; everything else -- objects, lights, cameras,
+		//! film, rasterizers, outputs -- appends at the document END.  A RASTERIZER insert additionally becomes
+		//! the ACTIVE rasterizer (the D2 activation restore is skipped for it), so the live integrator matches
+		//! what a save+reload's last-wins derive would activate.
+		//! Out-params (each nullable): `outKeyword`/`outName` echo the parsed chunk's keyword + `name` param (filled
+		//! as soon as the chunk parses, so even a refusal identifies what was attempted); `outDiag` carries the FIRST
+		//! dry-run diagnostic (code 0) or a short refusal reason (codes -1/-2).  `outInsertedAt` (round-1 P1-A fix):
+		//! ONLY on a landed insert (codes 2/3) is set to the top-level Document index of the splice's OWN LEADING
+		//! ITEM -- i.e. exactly the `at` this call itself used for `DocInsertItem(d,at,leadItem)` (whichever branch
+		//! committed: the tier-positioned attempt, or the append-at-end fallback) -- NOT a post-hoc name/kind
+		//! re-resolution.  This is the ONLY reliable way for a caller to recover the exact 3-item splice position
+		//! for a later `ApplyCstRemoveItemsAt` inverse: a variant-tagged overlay chunk legitimately shares its base
+		//! chunk's (kind,name) (see the duplicate-refusal rule above), so re-resolving "the chunk I just inserted"
+		//! by (name,kind) after the fact can match MULTIPLE chunks and correctly fail to resolve -- silently
+		//! wrong-indexing a caller that then falls back to guessing.  Left UNTOUCHED (caller must pre-initialize,
+		//! e.g. to -1) on every non-landing code (0/-1/-2) and when null.
+		//! Returns: 2 = inserted + clean full re-derive (Scene + managers REPLACED -- caller MUST rebind);
+		//! 3 = inserted + managers replaced BUT the re-derive diagnosed (rebind AND treat as failure);
+		//! 0 = refused, would-not-derive in context (dry-run diagnosed; nothing changed) -- ALSO returned for
+		//! no retained CST Document, empty chunk text, and an internal separator-build failure (outDiag/log say
+		//! which);
+		//! -1 = malformed chunk text (not exactly one chunk / stray text / unclosed chunk); -2 = duplicate
+		//! (kind,name) or exact (kind,name,variant), or the RESERVED name `none` (the scene language's unbind
+		//! sentinel -- the material + painter managers pre-register a "none" null entry, and countless slots
+		//! treat the literal string "none" as "unbound", so an entity named `none` could never be bound or
+		//! addressed distinctly; outDiag is prefixed "reserved name" so callers can distinguish it).
+		//! Never 1: an insert is ALWAYS D2-class (a new entity cannot re-derive incrementally).
+		//! Default no-op returning 0 (legacy jobs have no retained CST); see Job override.
+		//! NB: appended at the IJob tail per the append-only ABI convention (preserves every prior vtable slot).
+		//! `outInsertedAt` was added by amending THIS virtual in place (not a new tail overload) -- it was
+		//! introduced on this same unpushed branch (S2 slice), so there are no external ABI consumers to break.
+		virtual int ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned int keywordMax,
+		                                 char* outName, unsigned int nameMax,
+		                                 char* outDiag, unsigned int diagMax,
+		                                 int* outInsertedAt = nullptr )
+		{
+			// The default no-op still honours the out-param contract (buffers always NUL-terminated).
+			if( outKeyword && keywordMax ) outKeyword[0] = '\0';
+			if( outName && nameMax ) outName[0] = '\0';
+			if( outDiag && diagMax ) outDiag[0] = '\0';
+			return 0;
+		}
+
+		//! Model-B F5 slice S2 (agent chunk CRUD -- remove): REMOVE the chunk resolved by bare name `target`
+		//! (optional `kind` keyword-suffix narrowing + the sole-unnamed-camera positional fallback -- the SAME
+		//! resolution rules as ApplyCstParamEdit) from the retained CST Document via the TRIVIA-PRESERVING
+		//! Cst::DocEraseChunkTidy (safe for FILE-AUTHORED chunks: never the clone-undo-only idx-1 drop), then
+		//! drop the entity from the live scene via a FULL re-derive (dry-run first -- removing a chunk that is
+		//! still REFERENCED fails the dry-run and leaves Document + live scene byte-identical).
+		//! Out-params (nullable): `outKeyword` echoes the resolved chunk's keyword; `outDiag` the first dry-run
+		//! diagnostic (code 0), the match count (code -2), or a short refusal reason (code -1).
+		//! Returns: 2 = removed + clean full re-derive (rebind); 3 = replaced-but-diagnosed (rebind + failure);
+		//! 0 = refused, would-not-derive (e.g. target still referenced, or the remainder no longer derives in
+		//! document order; nothing changed) -- ALSO returned for no retained CST Document / empty target;
+		//! -1 = no chunk with that name -- ALSO covers a name that resolved to a chunk of a DIFFERENT kind than
+		//! the requested one (kind verification on a destructive verb) and a chunk with no top-level index
+		//! (outDiag + the log disambiguate); -2 = ambiguous name (narrow with `kind`).  Never 1.
+		//! Default no-op returning 0; see Job override.  Appended at the IJob tail (append-only ABI).
+		virtual int ApplyCstRemoveChunk( const char* target, const char* kind,
+		                                 char* outKeyword, unsigned int keywordMax,
+		                                 char* outDiag, unsigned int diagMax )
+		{
+			// The default no-op still honours the out-param contract (buffers always NUL-terminated).
+			if( outKeyword && keywordMax ) outKeyword[0] = '\0';
+			if( outDiag && diagMax ) outDiag[0] = '\0';
+			return 0;
+		}
+
+		//! Model-B F5 slice S2 round 2 (P1-A root gate): ApplyCstParamEdit PLUS a FULL-DERIVABILITY pre-commit
+		//! gate for AGENT-originated edits.  Same parameters and 0/1/2/3 return contract as ApplyCstParamEdit,
+		//! with ONE addition: before the incremental fast path may commit, the edited Document is dry-run through
+		//! the FULL derive (throwaway Job) and the edit is refused with 0 (head + live scene byte-identical) when
+		//! the whole document would no longer derive in DOCUMENT ORDER.  Rationale: the incremental path validates
+		//! the edit closure against the LIVE managers, so a reference RETARGET to an entity declared LATER in the
+		//! document (a forward reference) commits a head whose serialized bytes fail to reload -- silent save-time
+		//! data loss, and every subsequent D2-class verb is refused.  Agent edits are discrete, so the extra
+		//! throwaway derive (~ms..24ms at 16k chunks) is acceptable; the GUI property-panel / gizmo path keeps the
+		//! ungated ApplyCstParamEdit fast path.  Default 0 (only Job overrides).
+		//! NB: appended at the IJob tail per the append-only ABI convention (a NEW virtual, not a signature change
+		//! to ApplyCstParamEdit -- changing an existing virtual's signature would break every prior vtable slot
+		//! contract, which is worse than appending).
+		virtual int ApplyCstParamEditChecked( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue ) { return 0; }
+
+		//! Shared-undo U1: the FULL-DERIVABILITY-GATED inverse of a param INSERT --
+		//! removes ONLY the `occ`-th occurrence of `role` on the entity's chunk (Cst::DocRemoveParamOcc; 0 =
+		//! first), then re-derives via the SAME 0/1/2/3-contract tail ApplyCstParamEditChecked uses.
+		//! Undoes an agent edit that INSERTED a previously-absent (defaulted) param: the
+		//! entity had no `role` line in the scene text, Job::ApplyCstParamEditChecked's
+		//! DocSetOrAddParamValue inserted one, and undo must remove it (a re-SET of "the
+		//! prior value" is meaningless -- there was no prior value, only the descriptor
+		//! default).  Same resolution rules as ApplyCstParamEditChecked (entityKind
+		//! narrows a cross-category name clash; the "camera" kind gets the unique-in-kind
+		//! resolve-by-position fallback).
+		//! P1-2 fix (round 1): `occ` is REQUIRED (not defaulted) -- removing EVERY same-role occurrence (the
+		//! pre-fix behaviour, Cst::DocRemoveParam) silently deletes other edits a repeatable param accumulated
+		//! AFTER the agent's insert; the Undo was only ever asked to revert its own occurrence. This virtual was
+		//! introduced in the same slice as this fix (unpushed, no external consumers), so the signature is
+		//! amended IN PLACE rather than appending a second tail virtual.
+		//! Return: 0 = not found / would-not-derive (head
+		//! untouched); 1 = removed incrementally; 2 = removed via a full re-derive (Scene +
+		//! managers REPLACED, caller must rebind); 3 = same as 2 but the re-derive
+		//! diagnosed (still rebind; treat as failure).  Default 0 (only Job overrides).
+		//! NB: appended at the IJob tail per the append-only ABI convention.
+		virtual int ApplyCstParamRemoveChecked( const char* entityName, const char* entityKind, const char* role, int occ ) { return 0; }
+
+		//! Shared-undo U2: the EXACT-POSITION inverse of ApplyCstRemoveChunk, used ONLY by an agent
+		//! AgentRemoveChunk op's Undo (SceneEditor::ApplyRevertMutation).  Unlike ApplyCstInsertChunk (which
+		//! POSITIONS a FRESH chunk by declaration-tier heuristic, falling back to append-at-end), this splices
+		//! `bytesInOrder` back verbatim AT `atIndex` -- the top-level index captured by the controller
+		//! (SceneEditController::ApplyAgentChunkCrud_) from the retained Document immediately BEFORE the
+		//! original ApplyCstRemoveChunk call that erased it.  `bytesInOrder` is the CONCATENATION, in document
+		//! order, of every top-level item Cst::DocEraseChunkTidy actually dropped at that erase (the chunk
+		//! itself, plus its OWN tidied-away trailing separator when the erase collapsed one) -- reproducing
+		//! exactly the substring SerializeCst showed at [atIndex, atIndex+droppedCount) before the erase.  This
+		//! is parsed back into its constituent top-level items and DocInsertItem'd at `atIndex` in order, which
+		//! is the documented exact inverse of DocRemoveItem (Cst.h): the result is byte-identical to the
+		//! pre-erase Document.  Then realized via the SAME dry-run-guarded full re-derive tail every chunk-CRUD
+		//! verb uses (a still-invalid restore -- e.g. something removed in the interim now collides with the
+		//! restored chunk's name -- fails the dry-run and leaves the Document + live scene untouched).
+		//! `restoreActiveRasterizer` (default true): pass false when the restored chunk is itself a
+		//! `*_rasterizer` chunk, mirroring ApplyCstInsertChunk's own rule -- re-inserting ANY rasterizer chunk
+		//! changes the document's last-wins activation the same way a fresh insert does, so the pre-erase
+		//! active rasterizer must NOT be restored over it (live must match what a reload of the now-restored
+		//! Document would activate).
+		//! GLUE-SAFETY (round-1 P1-B fix + round-2 P1 fix, LEFT and RIGHT sides): `atIndex` is CLAMPED to the
+		//! current Document's range but carries NO identity check -- an out-of-band Document mutation between
+		//! the original erase and this restore call (another agent session; a script; the Test-19-style
+		//! "independent mechanism" idiom) can shift indices, so `atIndex` may land in a position whose LEFT
+		//! NEIGHBOUR does not end in a newline, or whose RIGHT NEIGHBOUR does not begin with whitespace.
+		//! Splicing `bytesInOrder` verbatim at such an index would glue the restored chunk's `keyword` token
+		//! directly onto the neighbour's `}` on the left (`}lambertian_material`), OR glue the neighbour's own
+		//! `keyword` token directly onto the restored chunk's trailing `}` on the right
+		//! (`}lambertian_luminaire_material`) -- syntactically recoverable today (the tokenizer is
+		//! brace-forgiving) but a byte-exact-restore invariant violation and latent corruption.  Mirroring
+		//! Cst::DocEraseChunkTidy's own glue-safety reasoning (ItemEndsInNewline / IsPureWhitespaceTrivia):
+		//! after clamping, if `atIndex > 0` and the item now at `atIndex - 1` does NOT end in a newline, a
+		//! synthesized pure-`"\n"` Trivia lead item is spliced in FIRST (ahead of `bytesInOrder`'s own items) so
+		//! the restored chunk always starts on a fresh line.  SYMMETRICALLY on the right: `bytesInOrder` is NOT
+		//! always trailing-separator-terminated -- the controller's capture is trimmed to JUST the chunk's own
+		//! bytes (which always end in `}`, never `\n`, since the trailing newline when one exists is a
+		//! SEPARATE sibling Trivia item) whenever the original erase's `droppedCount == 1` (the removed chunk
+		//! was the LAST top-level item, so no trailing separator ever existed; or DocEraseChunkTidy found the
+		//! separator glue-unsafe to collapse and left it in the Document rather than folding it into the
+		//! capture).  So if the restored run's LAST item does not end in a newline AND an item is now sitting
+		//! at the (post-left-synthesis) splice point AND that item's FIRST byte is not whitespace, a synthesized
+		//! pure-`"\n"` Trivia item is appended AFTER `bytesInOrder`'s own items before splicing.  In the
+		//! ordinary NO-SHIFT case (the common path -- nothing moved between erase and restore) neither synthetic
+		//! item is added: the left neighbour already ends in `\n` (the original erase's own glue-safety proved
+		//! that), and on the right, the item now sitting at the splice point is either nothing (the chunk was
+		//! last) or the ORIGINAL untouched separator DocEraseChunkTidy declined to collapse -- which, being
+		//! pure whitespace by construction, always STARTS with a whitespace byte (space/tab, not necessarily
+		//! `\n`) even when it isn't newline-led, so the "first byte is whitespace" test (not "first byte is
+		//! `\n`") is what keeps the no-shift path byte-IDENTICAL to the pre-erase Document rather than
+		//! incorrectly inserting a `\n` that was never there.  Under a genuine shift the bar relaxes from
+		//! byte-identity to glue-safety (a well-formed, non-corrupt Document) -- byte-identity to a Document
+		//! state that no longer exists is not a coherent goal once something else has changed it.
+		//! Out-param `outDiag` (nullable) carries the first dry-run diagnostic on a code-0 refusal.
+		//! Returns: 2 = restored + clean full re-derive (Scene + managers REPLACED -- caller MUST rebind);
+		//! 3 = restored + managers replaced BUT the re-derive diagnosed (rebind AND treat as failure);
+		//! 0 = refused, would-not-derive in context (dry-run diagnosed; nothing changed) -- ALSO returned for no
+		//! retained CST Document, empty bytes, or a malformed `bytesInOrder` (does not parse to at least one
+		//! top-level item).  Never 1 (a restored chunk is never incrementally re-derivable, matching
+		//! ApplyCstInsertChunk).  Default 0 (only Job overrides).
+		//! NB: appended at the IJob tail per the append-only ABI convention.
+		virtual int ApplyCstRestoreChunkAt( const char* bytesInOrder, int atIndex, bool restoreActiveRasterizer,
+		                                     char* outDiag, unsigned int diagMax )
+		{
+			if( outDiag && diagMax ) outDiag[0] = '\0';
+			return 0;
+		}
+
+		//! Shared-undo U2: the EXACT-POSITION inverse of ApplyCstInsertChunk, used ONLY by an agent
+		//! AgentInsertChunk op's Undo.  ApplyCstInsertChunk ALWAYS splices EXACTLY THREE top-level items
+		//! ([leadSep "\n"][chunk][trailSep "\n"]) at a single contiguous index `at` (whether positioned by the
+		//! declaration-tier heuristic or appended at the document end) -- so its exact inverse is removing
+		//! those same three items at that same index, NOT the general-purpose Cst::DocEraseChunkTidy
+		//! (Job::ApplyCstRemoveChunk's mechanism), which is a HEURISTIC erase for an arbitrary FILE-AUTHORED
+		//! chunk (at most ONE adjacent separator collapsed, glue-safety evaluated from the actual bytes) and
+		//! -- by design, per its own erase contract -- leaves a residual blank line when applied to a chunk
+		//! that had TWO fresh separators inserted around it (see AgentChunkCrudTest.cpp's T3, "one residual
+		//! lead \n vs the original" -- correctness over minimality is the RIGHT choice for an arbitrary
+		//! erase, but it means a plain remove is NOT byte-identical to the pre-insert Document).  This
+		//! primitive removes EXACTLY `count` top-level items starting at `atIndex` (Document-only splice via
+		//! repeated Cst::DocRemoveItem at the same index), then realizes via the SAME dry-run-guarded full
+		//! re-derive tail every chunk-CRUD verb uses.  `count` is always 3 for the sole caller (the insert's
+		//! own [lead][chunk][trail] triple), but the primitive itself has no reason to hardcode that.
+		//! Out-param `outDiag` (nullable) carries the first dry-run diagnostic on a code-0 refusal.
+		//! `expectedChunkBytes` (round-1 P2 fix, nullable -- null preserves the pre-fix positional-only splice for
+		//! any OTHER caller that cannot supply it): the caller's own captured exact bytes of the CHUNK item it
+		//! expects to still be sitting at the middle of the triple (`atIndex + 1`, the [lead][CHUNK][trail]
+		//! layout) -- i.e. `SceneEdit::propertyValue`'s chunk substring for an AgentInsertChunk Undo.  This
+		//! primitive has NO IDENTITY CHECK of its own beyond bounds -- it is a pure positional splice, so an
+		//! `atIndex` that is IN-RANGE but STALE (an out-of-band Document mutation shifted indices between the
+		//! insert and this Undo call -- e.g. another agent session, or a script, inserting/removing chunks ahead
+		//! of `atIndex` -- see AgentLiveCommitTest.cpp's Test 19 "independent mechanism" idiom for how such a
+		//! shift is manufactured) would otherwise splice-and-dry-run-validate whatever THREE items now occupy
+		//! [atIndex, atIndex+3) -- and the dry-run can DERIVE CLEANLY even when those are the WRONG three items
+		//! (any well-formed, unreferenced triple derives), silently deleting the wrong content.  When
+		//! `expectedChunkBytes` is non-null, the item at `atIndex + 1` is serialized (Cst::SerializeNode) and
+		//! byte-compared against it BEFORE the splice; a mismatch REFUSES with code 0 (Document byte-unchanged,
+		//! outDiag says "document changed since the edit was recorded") instead of removing whatever happens to
+		//! be there.
+		//! Returns: 2 = removed + clean full re-derive (Scene + managers REPLACED -- caller MUST rebind);
+		//! 3 = removed + managers replaced BUT the re-derive diagnosed (rebind AND treat as failure);
+		//! 0 = refused -- would-not-derive in context (dry-run diagnosed; nothing changed), OR an out-of-range
+		//! `atIndex`/`count`, `count <= 0`, no retained CST Document, OR (when `expectedChunkBytes` is supplied)
+		//! the chunk at `atIndex + 1` no longer byte-matches the caller's capture (STALE INDEX -- something else
+		//! moved the Document since the index was recorded; nothing changed).  Never 1 (matching
+		//! ApplyCstRemoveChunk).  Default 0 (only Job overrides).
+		//! NB: appended at the IJob tail per the append-only ABI convention.  `expectedChunkBytes` was added by
+		//! amending THIS virtual in place (not a new tail overload) -- it was introduced on this same unpushed
+		//! branch (U2 slice), so there are no external ABI consumers to break.
+		virtual int ApplyCstRemoveItemsAt( int atIndex, int count, char* outDiag, unsigned int diagMax,
+		                                    const char* expectedChunkBytes = nullptr )
+		{
+			if( outDiag && diagMax ) outDiag[0] = '\0';
+			return 0;
+		}
 	};
 
 

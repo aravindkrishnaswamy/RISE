@@ -370,9 +370,16 @@ fun ViewportPane(
                             }
                         },
                         onPropertyEdited = { name, value ->
-                            if (RiseNative.nativeViewportSetProperty(name, value)) {
-                                refreshTrigger++
-                            }
+                            // A2 contract (SceneEditController::SetProperty /
+                            // RISE_API_SceneEditController_SetProperty doc
+                            // comments): false does not always mean nothing
+                            // happened -- a live Object edit can apply while
+                            // the CST transform-commit follow-through fails,
+                            // in which case the scene DID change.  Refresh
+                            // unconditionally rather than gating on the
+                            // return value, matching the Mac panel idiom.
+                            RiseNative.nativeViewportSetProperty(name, value)
+                            refreshTrigger++
                         },
                     )
                 }

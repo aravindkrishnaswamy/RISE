@@ -133,14 +133,34 @@ bool PNGReader::BeginRead( unsigned int& width, unsigned int& height )
 	width = pngwidth;
 	height = pngheight;
 
-	const unsigned int image_stride = width*nPngChannels*(bit_depth>>3);
-	pBuffer = new unsigned char[height*image_stride];
+	// Guard the destination-buffer sizing against a header-driven integer
+	// overflow: width/height come from the PNG IHDR and libpng's default
+	// limits allow up to 1,000,000 each, so the historical 32-bit
+	// `height*image_stride` product can wrap to a tiny allocation that
+	// png_read_row then writes past (heap OOB write).  Compute the stride
+	// and total in 64-bit and cap at a sane ceiling; reject (releasing the
+	// libpng structs) before allocating on overflow / degenerate size.  A
+	// sub-8-bit depth makes (bit_depth>>3)==0 -> stride 0 -> total 0, which
+	// ReadColor cannot represent anyway, so it is rejected here too.
+	const unsigned long long stride64 =
+		(unsigned long long)width * (unsigned long long)nPngChannels * (unsigned long long)(bit_depth>>3);
+	const unsigned long long total64 = (unsigned long long)height * stride64;
+	static const unsigned long long kMaxImageBytes = 2ULL * 1024 * 1024 * 1024; // 2 GiB ceiling
+	if( total64 == 0 || total64 > kMaxImageBytes ) {
+		GlobalLog()->Print( eLog_Error, "PNGReader: Invalid or too-large image dimensions" );
+		png_destroy_read_struct( &png_ptr, &info_ptr, (png_infopp)NULL );
+		return false;
+	}
+	const size_t image_stride = (size_t)stride64;
+	const size_t nBytes = (size_t)total64;
+
+	pBuffer = new unsigned char[nBytes];
 	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
-	memset( pBuffer, 0, width*height*nPngChannels );
+	memset( pBuffer, 0, nBytes );          // full allocation (was width*height*nPngChannels — undersized for 16-bit depth)
 
 	// Read scanline by scanline
 	for( unsigned int y=0; y<height; y++ ) {
-		png_read_row(png_ptr, &pBuffer[y*image_stride], NULL);
+		png_read_row(png_ptr, &pBuffer[(size_t)y*image_stride], NULL);
 	}
 
 	// Close

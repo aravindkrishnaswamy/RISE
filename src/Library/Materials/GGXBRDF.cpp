@@ -211,7 +211,7 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 			// painter-free -- this functor is the template boundary.
 			const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );
 			auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
-				n0 = Scalar(1); k0 = Scalar(0);
+				n0 = ri.ambientIOR; k0 = Scalar(0); // G6 ambient medium IOR (default 1.0 = air)
 				n1 = pFilmIOR->GetValueAtNM( ri, nm );
 				k1 = pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
 				n2 = pIOR->GetValueAtNM( ri, nm );
@@ -227,8 +227,13 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 			const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 			const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 			const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
+			// G6: ambient (incident) medium IOR from the hit context (default
+			// 1.0 = air; the surrounding dielectric's n when the conductor is
+			// buried, e.g. silver under enamel glass).  Consistent with
+			// GGXSPF::Scatter so sampling and NEE eval agree (MIS-correct).
+			const RISEPel niPel( ri.ambientIOR, ri.ambientIOR, ri.ambientIOR );
 			const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
-				ri.ray.Dir(), h, RISEPel(1,1,1), ior, ext );
+				ri.ray.Dir(), h, niPel, ior, ext );
 			specular = specColor * fresnel * specFactor;
 		}
 	}
@@ -261,7 +266,7 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 			// site): film/substrate n,k sampled at each integration wavelength.
 			const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );
 			auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
-				n0 = Scalar(1); k0 = Scalar(0);
+				n0 = ri.ambientIOR; k0 = Scalar(0); // G6 ambient medium IOR (default 1.0 = air)
 				n1 = pFilmIOR->GetValueAtNM( ri, nm );
 				k1 = pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
 				n2 = pIOR->GetValueAtNM( ri, nm );
@@ -285,7 +290,8 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 			const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 			const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 			const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
-			const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
+			const RISEPel niPel( ri.ambientIOR, ri.ambientIOR, ri.ambientIOR ); // G6 ambient IOR (default 1.0 = air)
+			const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, niPel, ior, ext );
 			// specColor INSIDE the average (tinted per-bounce reflectance
 			// specColor*F_avg compounds across bounces; matches the single-scatter
 			// lobe specColor*fresnel).  See the thin-film branch above.
@@ -374,7 +380,7 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 			const Scalar cosWoH = r_max( Scalar(0), Vector3Ops::Dot( r, h ) );
 			const Scalar Rfilm = ThinFilm::ReflectanceConductor(
 				cosWoH, nm,
-				1.0, 0.0,
+				ri.ambientIOR, 0.0, // G6 ambient medium n(λ), k=0 (default 1.0 = air)
 				pFilmIOR->GetValueAtNM(ri,nm), ( pFilmExtinction ? pFilmExtinction->GetValueAtNM(ri,nm) : Scalar(0) ),
 				pFilmThickness->GetValueAtNM(ri,nm),
 				pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
@@ -386,7 +392,8 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 		{
 			const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
 			const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
-			const Scalar fresnel = Optics::CalculateConductorReflectance( ri.ray.Dir(), h, 1.0, iorVal, extVal );
+			// G6: ambient medium IOR from the hit context (per-wavelength n(λ) in NM; default 1.0 = air).
+			const Scalar fresnel = Optics::CalculateConductorReflectance( ri.ray.Dir(), h, ri.ambientIOR, iorVal, extVal );
 			if( fresnel > 0 ) {
 				specular = specColor * fresnel * specFactor;
 			}
@@ -415,7 +422,7 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 			// hemispherical F_avg (not the substrate's).  Identical term to
 			// GGXSPF::ScatterNM (the RGB/NM twin); see the RGB path above.
 			const Scalar F_avg = ThinFilm::FresnelAvgConductor(
-				nm, 1.0, 0.0,
+				nm, ri.ambientIOR, 0.0, // G6 ambient medium n(λ), k=0 (default 1.0 = air)
 				pFilmIOR->GetValueAtNM(ri,nm), ( pFilmExtinction ? pFilmExtinction->GetValueAtNM(ri,nm) : Scalar(0) ),
 				pFilmThickness->GetValueAtNM(ri,nm),
 				pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
@@ -432,7 +439,8 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 			// hemispherical F_avg into the same multiscatter tail.)
 			const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
 			const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
-			const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
+			// G6: ambient medium IOR from the hit context (per-wavelength n(λ) in NM; default 1.0 = air).
+			const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, ri.ambientIOR, iorVal, extVal );
 			// specColor INSIDE the average (tinted per-bounce reflectance
 			// specColor*F_avg compounds; matches single-scatter specColor*fresnel).
 			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
@@ -489,7 +497,7 @@ RISEPel GGXBRDF::albedo( const RayIntersectionGeometric& ri ) const
 		const Scalar cosThetaO = r_max( Scalar(0), Vector3Ops::Dot( wo, n ) );
 		const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );
 		auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
-			n0 = Scalar(1); k0 = Scalar(0);
+			n0 = ri.ambientIOR; k0 = Scalar(0); // G6 ambient medium IOR (default 1.0 = air)
 			n1 = pFilmIOR->GetValueAtNM( ri, nm );
 			k1 = pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
 			n2 = pIOR->GetValueAtNM( ri, nm );
@@ -505,8 +513,10 @@ RISEPel GGXBRDF::albedo( const RayIntersectionGeometric& ri ) const
 		const ScalarTriple extT = pExtinction->GetValuesAt( ri );
 		const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 		const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
+		// G6: ambient medium IOR from the hit context (default 1.0 = air).
+		const RISEPel niPel( ri.ambientIOR, ri.ambientIOR, ri.ambientIOR );
 		const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
-			ri.ray.Dir(), n, RISEPel( 1, 1, 1 ), ior, ext );
+			ri.ray.Dir(), n, niPel, ior, ext );
 		return diffColor + specColor * fresnel;
 	}
 }

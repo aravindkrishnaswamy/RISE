@@ -37,6 +37,13 @@ ControlsWidget::ControlsWidget(QWidget* parent)
     sceneLayout->addWidget(m_clearBtn);
     mainLayout->addLayout(sceneLayout);
 
+    auto* agentLayout = new QHBoxLayout();
+    m_chatBtn = new QPushButton("Chat");
+    m_chatBtn->setToolTip("Show the Chat panel");
+    agentLayout->addWidget(m_chatBtn);
+    agentLayout->addStretch();
+    mainLayout->addLayout(agentLayout);
+
     // Render actions
     auto* renderLayout = new QHBoxLayout();
     m_renderBtn = new QPushButton("Render");
@@ -135,6 +142,7 @@ ControlsWidget::ControlsWidget(QWidget* parent)
     connect(m_renderBtn, &QPushButton::clicked, this, &ControlsWidget::renderClicked);
     connect(m_renderAnimBtn, &QPushButton::clicked, this, &ControlsWidget::renderAnimationClicked);
     connect(m_cancelBtn, &QPushButton::clicked, this, &ControlsWidget::cancelClicked);
+    connect(m_chatBtn, &QPushButton::clicked, this, &ControlsWidget::chatClicked);
 
     // L5e — exposure-slider wiring.  valueChanged → forward as
     // double EV; resetRequested (double-click) → snap to 0 +
@@ -274,4 +282,5 @@ void ControlsWidget::updateButtonStates()
     m_renderBtn->setEnabled(canRender);
     m_renderAnimBtn->setEnabled(canRender && m_hasAnimation);
     m_cancelBtn->setEnabled(m_state == S::Rendering);
+    m_chatBtn->setEnabled(m_hasScene && !isActive);
 }

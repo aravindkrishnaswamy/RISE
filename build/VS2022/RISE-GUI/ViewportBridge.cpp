@@ -24,6 +24,8 @@
 #include "Utilities/Reference.h"
 #include "SceneEditor/SceneEditController.h"
 #include "Rendering/InteractivePelRasterizer.h"
+#include "Agent/AgentSession.h"
+#include "Agent/AgentRpc.h"
 
 using namespace RISE;
 
@@ -136,12 +138,34 @@ ViewportBridge::ViewportBridge(RenderEngine* engine, QObject* parent)
         releaseLivePreview();
         return;
     }
+
+    // Model-B F2 slice S4: register this controller on the engine so its
+    // production-render entry points (startRender / startAnimationRender)
+    // route through the SAME single-slot coordinator as the interactive
+    // loop and agent renders, instead of calling Job::Rasterize() directly.
+    // Cleared back to nullptr at the START of the destructor, before
+    // `m_controller` is destroyed -- see RenderEngine::attachSceneEditController's
+    // header doc for the full contract.  Mirrors macOS
+    // RISEViewportBridge's -attachSceneEditController: wiring exactly.
+    if (m_engine) {
+        m_engine->attachSceneEditController(static_cast<void*>(m_controller));
+    }
+
     if (m_previewSink) {
         // The sink queries the controller's cancel state at end-of-pass
         // so it can drop a stale dispatch.  Wire the pointer before
         // installing the sink as a rasterizer output.
         m_previewSink->SetController(m_controller);
         RISE_API_SceneEditController_SetPreviewSink(m_controller, m_previewSink);
+    }
+
+    {
+        std::unique_ptr<Agent::AgentSession> session =
+            Agent::AgentSession::WrapJob(pJob);
+        if (session) {
+            session->AttachController(m_controller);
+        }
+        m_agentDispatcher.reset(new Agent::AgentRpcDispatcher(std::move(session)));
     }
 
     // Phase 6.5: hook up the C dirty-changed callback.  userData
@@ -177,7 +201,10 @@ void ViewportBridge::scaleFilmToFit(int surfaceW, int surfaceH, int maxLongEdge)
     void* opaque = m_engine->opaqueJobHandle();
     if (!opaque) return;
     IJobPriv* pJob = static_cast<IJobPriv*>(opaque);
-    pJob->ScaleFilmToFit(
+    // Route through SetViewportFit (NOT ScaleFilmToFit directly) so the Job caches the CURRENT viewport size
+    // (this wrapper is the single chokepoint for both load-time and resize-time fits) -- a subsequent D2 full
+    // re-derive then re-applies the same fit instead of reverting the preview to the authored full-res dims.
+    pJob->SetViewportFit(
         static_cast<unsigned int>(surfaceW),
         static_cast<unsigned int>(surfaceH),
         static_cast<unsigned int>(maxLongEdge));
@@ -186,6 +213,19 @@ void ViewportBridge::scaleFilmToFit(int surfaceW, int surfaceH, int maxLongEdge)
 ViewportBridge::~ViewportBridge()
 {
     stop();
+    // Model-B F2 slice S4: deregister FIRST, before anything else here --
+    // see the constructor's comment.  Safe even if a stale render is still
+    // draining inside the coordinator: RISE_API_DestroySceneEditController
+    // below is what actually calls Stop()/joins the worker; clearing the
+    // engine's pointer here just stops any NEW production render from
+    // being submitted to a controller that is about to disappear.
+    if (m_engine) {
+        m_engine->attachSceneEditController(nullptr);
+    }
+    if (m_agentDispatcher && m_agentDispatcher->Session()) {
+        m_agentDispatcher->Session()->AttachController(nullptr);
+    }
+    m_agentDispatcher.reset();
     if (m_controller) {
         // Phase 6.5: detach the dirty-changed C callback BEFORE the
         // controller (and its std::function listener) goes away so
@@ -247,7 +287,13 @@ void ViewportBridge::startSuppressingInitialRender()
 void ViewportBridge::stop()
 {
     if (!m_controller) return;
-    RISE_API_SceneEditController_Stop(m_controller);
+    // Model-B F2 slice S4 fix round 4: StopInteractive, NOT the
+    // monolithic Stop() -- see this method's header doc in
+    // ViewportBridge.h.  The destructor above still gets the FULL
+    // teardown: it calls this stop() first, then
+    // RISE_API_DestroySceneEditController (a few lines down), whose
+    // destructor call to the real Stop() retires the agent worker.
+    RISE_API_SceneEditController_StopInteractive(m_controller);
     m_running = false;
 }
 
@@ -432,6 +478,21 @@ bool ViewportBridge::requestProductionRender()
     return RISE_API_SceneEditController_RequestProductionRender(m_controller);
 }
 
+QString ViewportBridge::agentHandleLine(const QString& jsonRpcRequest)
+{
+    static const char* const kNoDispatcher =
+        "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":"
+        "{\"code\":-32603,\"message\":\"internal error: agent dispatcher unavailable\"}}";
+    if (!m_agentDispatcher) {
+        return QString::fromUtf8(kNoDispatcher);
+    }
+
+    const QByteArray utf8 = jsonRpcRequest.toUtf8();
+    const std::string response =
+        m_agentDispatcher->HandleLine(std::string(utf8.constData(), static_cast<std::size_t>(utf8.size())));
+    return QString::fromUtf8(response.c_str());
+}
+
 ViewportBridge::PanelMode ViewportBridge::panelMode() const
 {
     if (!m_controller) return PanelMode::None;
@@ -488,6 +549,7 @@ ViewportBridge::Category ViewportBridge::selectionCategory() const
         case 6: return Category::Material;
         case 7: return Category::Medium;
         case 8: return Category::Animation;
+        case 9: return Category::SceneVariant;
         default: return Category::None;
     }
 }

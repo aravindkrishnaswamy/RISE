@@ -1,0 +1,41 @@
+# goldruby_sigma_a.txt — spectral absorption coefficient sigma_a(lambda)
+# for a gold-ruby ("cranberry" / colloidal-gold) vitreous enamel colorant.
+#
+# Two columns: wavelength[nm]  sigma_a[1/scene-unit]  (whitespace separated).
+# Loaded by a `piecewise_linear_function { file goldruby_sigma_a.txt }` chunk
+# and bound to a `homogeneous_medium`'s `absorption_spectral` slot (G1).
+# PiecewiseLinearFunction clamps to the endpoint values outside [400,720] nm,
+# so the finite curve is safe across the full 360-830 nm sampler range.
+#
+# PHYSICS: the colour of gold-ruby glass comes from ~10-50 nm colloidal gold
+# nanoparticles.  Their surface-plasmon resonance absorbs a broad band centred
+# at ~515-525 nm (green), and gold's inter-band (d-band) transitions add
+# absorption rising into the blue/UV below ~500 nm.  The combination absorbs
+# green + blue-green and TRANSMITS red (>~610 nm) -> the classic ruby/oxblood
+# window.  Shape is a plasmon Lorentzian at ~515 nm + a blue inter-band
+# shoulder; magnitudes are in inverse SCENE units (sec 10.4), scaled so that a
+# ~1-unit medium path saturates the green (Tr~0.01) while passing the red
+# (Tr~0.7).  The exact hue is calibrated against the reference render later;
+# this is the canonical first spectral colorant that proves the pipeline.
+#
+# Sources (see docs/VITREOUS_ENAMEL.md sec 8): colloidal-gold SPR ~520 nm
+# (Cytodiagnostics gold-nanoparticle properties; Shi et al. 2012 ISRN),
+# gold inter-band onset ~2.4 eV (~500 nm).
+#
+400   2.48
+420   2.61
+440   2.79
+460   3.15
+480   3.69
+500   4.23
+515   4.50
+530   4.37
+550   3.83
+570   2.79
+590   1.80
+610   1.08
+630   0.63
+650   0.36
+680   0.23
+700   0.16
+720   0.14

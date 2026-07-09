@@ -18,6 +18,7 @@
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Interfaces/IFunction2D.h"
+#include "../src/Library/Functions/ConstantFunctions.h"
 #include "../src/Library/Utilities/Reference.h"
 
 using namespace RISE;
@@ -283,6 +284,77 @@ static void TestWideThinTopFaceEntry()
 		Check( ri.bHit && IsClose( ri.ptIntersection.x, 19.0, 1e-2 ), "wide-thin: side-face entry hits +X face x~=19" );
 		Check( VClose( ri.vNormal, Vector3(1,0,0) ), "wide-thin: side-face normal points +X" ); }
 	safe_release( g );
+}
+
+// A FLAT heightfield SDF (f(u,v)=1 -> surface z = scale) is the sharpest form of
+// the top-entry-vs-tunnel bug the part-based Test 4c guards: here the surface
+// COINCIDES with the bbox top face, so NO bbox pad can move the eye-ray's clipped
+// start out of the surface band -- the pad-sizing fix that saved the part-based
+// case cannot save this one.  Before the Map(origin)-gated step-off, an eye ray
+// straight down the axis got mis-sided into the solid and reported the BOTTOM
+// (z=0) or missed, so a refractive dielectric heightfield over a substrate (the
+// enamel dial over the silver dome) rendered SOLID BLACK -- the eye ray tunnelled
+// through the top without a refraction event, never entering the glass.  Built at
+// the SCENE's auto epsilon (0.0 -> pad ~1e-3 < the |scale|-tied band ~3e-3) so it
+// tunnels on the pre-fix engine and this case is a genuine discriminator.
+static void TestHeightfieldFlatTopEntry()
+{
+	std::cout << "Test 4d: FLAT heightfield SDF -- eye ray enters the top, not tunnelling to the bottom" << std::endl;
+	const Scalar R = Scalar(1.6), S = Scalar(0.30);
+	ConstantFunction2D* flat = new ConstantFunction2D( Scalar(1.0) );   // f(u,v) == 1
+	SDFGeometry* g = new SDFGeometry( flat, R, S, 512, Scalar(0.0) );   // 0.0 = scene auto epsilon
+
+	// Straight-down eye ray at the disk centre: must HIT the TOP (z==scale) as a
+	// FRONT face, never the bottom exit (z=0) and never a miss.
+	{	RayIntersectionGeometric ri = MkRI( Point3(0,0,5), Vector3(0,0,-1) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit, "heightfield: top-entry eye ray hits (pre-fix tunnels to a miss/bottom)" );
+		Check( ri.bHit && IsClose( ri.ptIntersection.z, S, 5e-3 ), "heightfield: hit is the TOP face z==scale (not the z=0 bottom)" );
+		Check( ri.bHit && ri.ptIntersection.z > S*Scalar(0.5), "heightfield: hit is the top half, never the z=0 exit" );
+		Check( ri.bHit && VClose( ri.vNormal, Vector3(0,0,1) ), "heightfield: top-face normal points +Z (front side)" ); }
+
+	// An off-centre eye ray (still inside the disk) must also enter the top.
+	{	RayIntersectionGeometric ri = MkRI( Point3(0.8,0.3,5), Vector3(0,0,-1) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose( ri.ptIntersection.z, S, 5e-3 ), "heightfield: off-centre eye ray also enters the top face" ); }
+
+	// A continuation ray SPAWNED on the top surface going down (the refracted ray
+	// entering the glass) must still step off its OWN band -- the fix must not
+	// break self-hit avoidance.  The heightfield is a half-space (semi-infinite
+	// below the surface, no bottom face), so a straight-down ray at the centre
+	// correctly finds no further surface; the invariant is only that it must NOT
+	// report a paper-thin self-hit back at the spawn surface z=S (which is what
+	// re-blackens the glass).
+	{	RayIntersectionGeometric ri = MkRI( Point3(0,0,S), Vector3(0,0,-1) );
+		g->IntersectRay( ri, true, true, false );
+		Check( !( ri.bHit && ri.ptIntersection.z > S - 1e-2 ), "heightfield: on-surface continuation ray steps off its own band (no self-hit at z=scale)" ); }
+
+	// SHADOW / visibility fast path (IntersectRay_IntersectionOnly) shares the same
+	// March, so it tunnelled the same way pre-fix -- a light around or below the
+	// dial would leak straight through the enamel top.  Existing Test 5 only covers
+	// a sphere (surface not coincident with the bbox face), so it never caught this.
+	// Lock the sibling explicitly: the flat top must OCCLUDE a ray that reaches it
+	// and NOT occlude one that stops short.
+	Check(  g->IntersectRay_IntersectionOnly( Ray( Point3(0,0,5), Vector3(0,0,-1) ), Scalar(10.0), true, true ),
+	        "heightfield: shadow path sees the top as occluding within reach (pre-fix tunnels -> not occluding)" );
+	Check( !g->IntersectRay_IntersectionOnly( Ray( Point3(0,0,5), Vector3(0,0,-1) ), Scalar(4.0),  true, true ),
+	        "heightfield: shadow path does not occlude a ray that stops short of the top (dHowFar honoured)" );
+	safe_release( g );
+	safe_release( flat );   // SDFGeometry addref'd its own ref; release the one `new` gave us (Reference starts at refcount 1)
+
+	// Non-vacuous step-off coverage: a CLOSED part-based slab (top + bottom faces)
+	// so a continuation ray spawned ON the top going down must step off its own
+	// band AND reach the far (bottom) surface -- the "find the next surface" half of
+	// the step-off that a half-space heightfield cannot exercise.
+	{	std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimBox, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,1.5), 0,0,0, Vector3(1,1,1), 4.0, 4.0, 0.2, 0 ) );   // top z=1.7, bottom z=1.3
+		SDFGeometry* slab = new SDFGeometry( parts, 512, Scalar(5e-5) );
+		RayIntersectionGeometric ri = MkRI( Point3(0,0,1.7), Vector3(0,0,-1) );   // spawned ON the top face
+		slab->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose( ri.ptIntersection.z, 1.3, 1e-2 ),
+		       "slab: on-top continuation ray steps off and reaches the BOTTOM face z~=1.3 (not a self-hit at z=1.7)" );
+		safe_release( slab ); }
 }
 
 static void TestShadowQuery()
@@ -1216,6 +1288,7 @@ int main()
 	TestBoundingBoxContainsSurface();
 	TestBoundingBoxOpAware();
 	TestWideThinTopFaceEntry();
+	TestHeightfieldFlatTopEntry();
 	TestShadowQuery();
 	TestMiss();
 	TestInsideStartExits();

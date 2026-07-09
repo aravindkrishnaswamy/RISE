@@ -30,6 +30,7 @@
 #include "../Utilities/RString.h"
 #include "SceneEdit.h"   // for CameraSnapshot used by Capture/ApplyCameraSnapshot
 #include <vector>
+#include <string>
 
 namespace RISE
 {
@@ -115,9 +116,30 @@ namespace RISE
 		//! Returns the scene-file chunk keyword for this camera —
 		//! "pinhole_camera" / "thinlens_camera" / "fisheye_camera" /
 		//! "orthographic_camera" — or empty for an out-of-tree type.
-		//! Phase C: the save engine needs this to emit a fresh chunk
-		//! for a newly-created (cloned) camera.
+		//! Current consumers: CameraIntrospection::Inspect (descriptor
+		//! lookup for the property panel) and BuildCameraChunkText (the
+		//! CST camera-clone chunk insert).  (Historically added in Phase
+		//! C so the byte-splice save engine could emit a fresh chunk for
+		//! a newly-created (cloned) camera; that engine went with the
+		//! Slice-6d deletion.)
 		static String GetDescriptorKeyword( const ICamera& camera );
+
+		//! Model-B P5 (camera-clone CST insert): build a FAITHFUL,
+		//! re-derivable scene-file chunk for `camera` under `cloneName`.
+		//! The keyword is the camera's type; the body emits `name
+		//! <cloneName>` followed by every AUTHORABLE pose/param row
+		//! (location / lookat / up / orientation / theta / phi + fov /
+		//! thinlens photographic quartet / fisheye scale / orthographic
+		//! viewport_scale + exposure / scanning_rate / pixel_rate), each
+		//! formatted in the form the parser accepts (degrees for angles,
+		//! mm / scene-units as the descriptor declares) so a re-derive of
+		//! this chunk reproduces an equivalent camera.  NO width / height
+		//! / pixelAR (the `film` chunk owns dims; pixelAR is const-bound).
+		//! The chunk has NO trailing newline (the inter-chunk separator is
+		//! a separate trivia leaf the caller inserts).  Returns an empty
+		//! string for an out-of-tree / ONB camera type (not re-derivable).
+		static std::string BuildCameraChunkText( const ICamera& camera,
+		                                         const String& cloneName );
 	};
 }
 

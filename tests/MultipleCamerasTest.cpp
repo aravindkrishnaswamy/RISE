@@ -223,10 +223,10 @@ static void TestJobAPI()
 //////////////////////////////////////////////////////////////////////
 // 7. Parser: optional name, auto-suffix, mixed named+unnamed
 //
-// These exercise the AsciiSceneParser path end-to-end:
+// These exercise the CST load path (LoadAsciiSceneViaCst) end-to-end:
 // AllocateCameraName + AddCameraCommonParams + Add*Camera dispatch.
 // Each test writes a minimal .RISEscene to a temp file, loads it via
-// IJob::LoadAsciiScene, and inspects the resulting camera manager.
+// IJob::LoadAsciiSceneViaCst, and inspects the resulting camera manager.
 //////////////////////////////////////////////////////////////////////
 
 // Build a tmp scene file path.  Returned path is unique enough for
@@ -249,7 +249,7 @@ static std::string MakeTempScenePath( const char* tag )
 // lines (parser requirement, see CLAUDE.md).  All test fixtures here
 // follow that.
 static const char* kSceneShell =
-	"RISE ASCII SCENE 6\n"
+	"RISE ASCII SCENE 7\n"
 	"standard_shader\n"
 	"{\n"
 	"\tname global\n"
@@ -273,7 +273,7 @@ static bool WriteScene( const std::string& path, const std::string& cameras )
 static Job* LoadScene( const std::string& path )
 {
 	Job* pJob = new Job();
-	if( !pJob->LoadAsciiScene( path.c_str() ) ) {
+	if( !pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
 		pJob->release();
 		return nullptr;
 	}
@@ -378,9 +378,9 @@ static void TestParserDuplicateExplicitNameFails()
 		"pinhole_camera\n{\nname shared\nlocation 1 1 5\nlookat 0 0 0\nup 0 1 0\nfov 60\n}\n"
 	), "wrote scene" );
 
-	// LoadAsciiScene returns false because the second AddCamera fails.
+	// LoadAsciiSceneViaCst returns false because the second AddCamera fails.
 	Job* pJob = new Job();
-	const bool ok = pJob->LoadAsciiScene( path.c_str() );
+	const bool ok = pJob->LoadAsciiSceneViaCst( path.c_str() );
 	Check( !ok, "scene load reports failure (duplicate camera name)" );
 	// First camera DID register before the second's failure aborted the parse.
 	Check( pJob->GetScene()->GetCameras()->getItemCount() == 1,

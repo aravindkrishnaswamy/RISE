@@ -22,6 +22,7 @@ class RenderEngine;
 class RenderWidget;
 class HDRRenderWidget;
 class ControlsWidget;
+class ChatPanel;
 class LogWidget;
 class SceneEditor;
 class ViewportBridge;
@@ -46,6 +47,7 @@ private slots:
     void onRender();
     void onRenderAnimation();
     void onCancel();
+    void onChatToggle();
 
     void onStateChanged(int newState);
     void onSceneSizeDetected(int width, int height);
@@ -99,6 +101,7 @@ private:
     QMenu*          m_toneCurveMenu = nullptr;         // L5e — View > Tone Curve
     QActionGroup*   m_toneCurveGroup = nullptr;        // L5e — exclusive group for tone-curve radio
     ControlsWidget* m_controlsWidget = nullptr;
+    ChatPanel* m_chatPanel = nullptr;
     LogWidget* m_logWidget = nullptr;
     SceneEditor* m_sceneEditor = nullptr;
 
@@ -119,6 +122,7 @@ private:
     QSplitter* m_bottomSplitter = nullptr;   // horizontal: controls | log
 
     bool m_editorVisible = false;
+    bool m_chatVisible = false;
 
     void rebuildViewportForLoadedScene();
     void teardownViewport();

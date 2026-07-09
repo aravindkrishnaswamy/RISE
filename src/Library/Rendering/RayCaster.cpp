@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <atomic>
 #include "RayCaster.h"
 #include "LuminaryManager.h"
 #include "EnvironmentSampler.h"
@@ -28,6 +29,7 @@
 #include "../Utilities/Optics.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IGeometry.h"
+#include "../Scene.h"					// concrete Scene for the light-generation read (#2b(a))
 
 #define ENABLE_MAX_RECURSION
 
@@ -51,6 +53,36 @@ static const RISE::Scalar RC_RR_THRESHOLD = 0.01;
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	// Analog no-scatter survival weight (mirrors PathTracingIntegrator's
+	// PTSurvivalWeight).  SampleDistance{,NM} is an ANALOG estimator: reaching
+	// the surface / escaping WITHOUT a scatter event is a stochastic SURVIVAL
+	// outcome whose probability already carries the Beer-Lambert factor.
+	// Multiplying throughput by the full per-channel Tr again would double-count
+	// attenuation (a pure absorber would render exp(-2*sigma_a*d), ~2x too
+	// thick).  The correct weight is Tr / pSurvival, where pSurvival is the
+	// DETERMINISTIC no-scatter survival pdf from
+	// IMedium::EvalDistancePdf( ray, dist, /*scattered=*/false, dist ).
+	//
+	// For a HomogeneousMedium this is byte-identical to the previous
+	// MinValue(Tr) form: EvalDistancePdf(false) returns exp(-sigma_t_max*dist) =
+	// MinValue(EvalTransmittance).  For a HeterogeneousMedium, EvalTransmittance
+	// is a STOCHASTIC ratio-tracking estimate, so MinValue(EvalTransmittance)
+	// would be a random denominator (biased ratio-of-random-estimates);
+	// HeterogeneousMedium overrides EvalDistancePdf with a deterministic Simpson
+	// optical depth, so Tr / pSurvival is the correct unbiased weight there.
+	// A non-positive survival pdf means "no attenuation to apply" -> identity.
+	inline RISE::RISEPel RayCasterSurvivalWeight(
+		const RISE::RISEPel& Tr, const RISE::Scalar pSurvival )
+	{
+		if( pSurvival > 0 ) {
+			return Tr * ( RISE::Scalar( 1 ) / pSurvival );
+		}
+		return RISE::RISEPel( 1, 1, 1 );
+	}
+}
+
 RayCaster::RayCaster(
 	const bool seeRadianceMap,
 	const unsigned int maxR,
@@ -67,6 +99,8 @@ RayCaster::RayCaster(
   bShowLuminaires( showLuminaires ),
   dPendingLightRRThreshold( 0 ),
   bPendingUseLightBVH( false ),
+  iPendingRISCandidates( -1 ),
+  builtLightGeneration( 0 ),
   bTransparentShadows( false ),
   dRadianceScaleOverride( -1.0 )		// negative = no override (use the map's own scale)
 {
@@ -90,6 +124,30 @@ RayCaster::~RayCaster( )
 }
 
 namespace {
+	// Diagnostic counter; see RayCaster::GetSamplerRebuildCount in the
+	// header.  Single-threaded — AttachScene runs at the pre-parallel
+	// scene-setup seam, never from inside the rasterize.
+	// Diagnostic counter (atomic: AttachScene normally runs single-threaded
+	// at the scene-setup seam, but two casters/documents could attach
+	// concurrently -- relaxed atomics keep the count race-free). (P2c)
+	std::atomic<unsigned int> s_samplerRebuildCount{ 0 };
+
+	// Read the concrete Scene's light/structure generation (#2b(a)).  The
+	// IScene/IScenePriv abstract interface deliberately does NOT carry this
+	// (adding a virtual there would break new-caller -> old-implementation
+	// vtable ABI — see abi-preserving-api-evolution).  We downcast to the
+	// concrete Scene here at the one call site instead.  An out-of-tree
+	// IScene that isn't a RISE::Implementation::Scene yields 0 (a constant),
+	// so AttachScene's `liveGen != builtLightGeneration` check is never
+	// satisfied for it after the first build — i.e. such a scene keeps the
+	// exact pre-#2b(a) same-pointer fast-path behaviour (no regression).
+	unsigned int SceneLightGeneration( const RISE::IScene* pScene )
+	{
+		const RISE::Implementation::Scene* concrete =
+			dynamic_cast<const RISE::Implementation::Scene*>( pScene );
+		return concrete ? concrete->GetLightTopologyGeneration() : 0u;
+	}
+
 	// Realize-pass dispatch: calls obj.Realize() on each world-visible
 	// object.  Object::Realize() bakes its (deferred) geometry; CSGObject::
 	// Realize() cascades into its world-invisible, un-enumerated operands.
@@ -135,7 +193,23 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 		}
 	}
 
+	// Same Scene pointer: the contents may still have changed IN PLACE
+	// (a restore or an in-place light edit on the live scene — see
+	// Scene::BumpLightTopologyGeneration / RestoreFromSnapshot).  Compare
+	// the live light/structure generation against the one our cached
+	// samplers were built with.  Unchanged -> O(1) fast path (so a
+	// production render that re-attaches every pass pays nothing).
+	// Advanced -> rebuild ONLY the light samplers (the realize pass above
+	// + the caller's PrepareForRendering already refresh geometry/TLAS);
+	// nothing else on the caster needs to change.
 	if( pScene == pScene_ ) {
+		if( pScene ) {
+			const unsigned int liveGen = SceneLightGeneration( pScene );
+			if( liveGen != builtLightGeneration ) {
+				RebuildLightSamplers();
+				builtLightGeneration = liveGen;
+			}
+		}
 		return;
 	}
 
@@ -145,81 +219,105 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 		pScene = pScene_;
 		pScene->addref();
 
-		safe_release( pLuminaryManager );
-
-		LuminaryManager* pConcreteLumMgr = new LuminaryManager();
-		pLuminaryManager = pConcreteLumMgr;
-		GlobalLog()->PrintNew( pLuminaryManager, __FILE__, __LINE__, "luminary manager" );
-		pLuminaryManager->AttachScene( pScene );
-
-		if( pLumSampling ) {
-			pLuminaryManager->SetLuminaireSampling( pLumSampling );
-		}
-
-		// Create and prepare the unified light sampler
-		safe_release( pLightSampler );
-		pLightSampler = new LightSampler();
-		GlobalLog()->PrintNew( pLightSampler, __FILE__, __LINE__, "light sampler" );
-
-		// Apply pending settings before Prepare() which builds
-		// internal data structures that depend on them.
-		if( bPendingUseLightBVH )
-		{
-			pLightSampler->SetUseLightBVH( true );
-		}
-
-		pLightSampler->Prepare( *pScene, pConcreteLumMgr->getLuminaries() );
-
-		// Apply any pending light-sample RR threshold
-		if( dPendingLightRRThreshold > 0 )
-		{
-			pLightSampler->SetLightSampleRRThreshold( dPendingLightRRThreshold );
-		}
-
-		// Build environment importance sampler if a global radiance map exists
-		const IRadianceMap* pEnvMap = pScene->GetGlobalRadianceMap();
-		if( pEnvMap )
-		{
-			// A `> modify rasterizer radiance_scale` override (set via
-			// Job::SetActiveRasterizerRadianceScale -> SetRadianceScale)
-			// takes precedence over the map's own scale.  Negative means
-			// "no override".  The same override is also pushed into the
-			// radiance map (the direct-view background), keeping NEE and the
-			// background in sync; a direct SetRadianceScale() that skips that
-			// dual-write would drive only NEE — but we resolve from the
-			// member to keep this caster the authoritative source for the
-			// NEE (environment-sampler) scale regardless of attach order.
-			const Scalar dEnvScale =
-				( dRadianceScaleOverride >= 0.0 ) ? dRadianceScaleOverride : pEnvMap->GetScale();
-
-			EnvironmentSampler* pEnvSampler = new EnvironmentSampler(
-				pEnvMap->GetPainter(),
-				dEnvScale,
-				pEnvMap->GetTransform(),
-				64
-				);
-			GlobalLog()->PrintNew( pEnvSampler, __FILE__, __LINE__, "environment sampler" );
-			pEnvSampler->Build();
-
-			if( pEnvSampler->IsValid() )
-			{
-				pLightSampler->SetEnvironmentSampler( pEnvMap, pEnvSampler );
-				GlobalLog()->PrintEasyEvent( "Environment importance sampler built successfully" );
-			}
-			else
-			{
-				GlobalLog()->PrintEasyWarning( "Environment map is black, importance sampling disabled" );
-			}
-
-			// LightSampler::SetEnvironmentSampler addrefs if valid, so
-			// release our local reference.
-			safe_release( pEnvSampler );
-		}
+		RebuildLightSamplers();
+		builtLightGeneration = SceneLightGeneration( pScene );
 	}
 }
 
 
-bool RayCaster::CastRay( 
+// Rebuild the cached LuminaryManager / LightSampler / EnvironmentSampler
+// from the currently-attached `pScene`.  Extracted from AttachScene so the
+// first-attach (new scene pointer) and the same-pointer-generation-advanced
+// rebuild paths share ONE implementation and cannot drift.  `pScene` must
+// be non-null and already set by the caller.
+void RayCaster::RebuildLightSamplers()
+{
+	s_samplerRebuildCount.fetch_add( 1, std::memory_order_relaxed );
+
+	safe_release( pLuminaryManager );
+
+	LuminaryManager* pConcreteLumMgr = new LuminaryManager();
+	pLuminaryManager = pConcreteLumMgr;
+	GlobalLog()->PrintNew( pLuminaryManager, __FILE__, __LINE__, "luminary manager" );
+	pLuminaryManager->AttachScene( pScene );
+
+	if( pLumSampling ) {
+		pLuminaryManager->SetLuminaireSampling( pLumSampling );
+	}
+
+	// Create and prepare the unified light sampler
+	safe_release( pLightSampler );
+	pLightSampler = new LightSampler();
+	GlobalLog()->PrintNew( pLightSampler, __FILE__, __LINE__, "light sampler" );
+
+	// Apply pending settings before Prepare() which builds
+	// internal data structures that depend on them.
+	if( bPendingUseLightBVH )
+	{
+		pLightSampler->SetUseLightBVH( true );
+	}
+
+	pLightSampler->Prepare( *pScene, pConcreteLumMgr->getLuminaries() );
+
+	// Apply any pending light-sample RR threshold
+	if( dPendingLightRRThreshold > 0 )
+	{
+		pLightSampler->SetLightSampleRRThreshold( dPendingLightRRThreshold );
+	}
+
+	// Re-apply any previously-set RIS candidate count so a same-pointer
+	// rebuild doesn't silently drop it (the fresh LightSampler defaults to 0).
+	if( iPendingRISCandidates >= 0 )
+	{
+		pLightSampler->SetRISCandidates( (unsigned int)iPendingRISCandidates );
+	}
+
+	// Build environment importance sampler if a global radiance map exists
+	const IRadianceMap* pEnvMap = pScene->GetGlobalRadianceMap();
+	if( pEnvMap )
+	{
+		// A `> modify rasterizer radiance_scale` override (set via
+		// Job::SetActiveRasterizerRadianceScale -> SetRadianceScale)
+		// takes precedence over the map's own scale.  Negative means
+		// "no override".  The same override is also pushed into the
+		// radiance map (the direct-view background), keeping NEE and the
+		// background in sync; a direct SetRadianceScale() that skips that
+		// dual-write would drive only NEE — but we resolve from the
+		// member to keep this caster the authoritative source for the
+		// NEE (environment-sampler) scale regardless of attach order.
+		const Scalar dEnvScale =
+			( dRadianceScaleOverride >= 0.0 ) ? dRadianceScaleOverride : pEnvMap->GetScale();
+
+		EnvironmentSampler* pEnvSampler = new EnvironmentSampler(
+			pEnvMap->GetPainter(),
+			dEnvScale,
+			pEnvMap->GetTransform(),
+			64
+			);
+		GlobalLog()->PrintNew( pEnvSampler, __FILE__, __LINE__, "environment sampler" );
+		pEnvSampler->Build();
+
+		if( pEnvSampler->IsValid() )
+		{
+			pLightSampler->SetEnvironmentSampler( pEnvMap, pEnvSampler );
+			GlobalLog()->PrintEasyEvent( "Environment importance sampler built successfully" );
+		}
+		else
+		{
+			GlobalLog()->PrintEasyWarning( "Environment map is black, importance sampling disabled" );
+		}
+
+		// LightSampler::SetEnvironmentSampler addrefs if valid, so
+		// release our local reference.
+		safe_release( pEnvSampler );
+	}
+}
+
+unsigned int RayCaster::GetSamplerRebuildCount() { return s_samplerRebuildCount.load( std::memory_order_relaxed ); }
+void         RayCaster::ResetSamplerRebuildCount() { s_samplerRebuildCount.store( 0, std::memory_order_relaxed ); }
+
+
+bool RayCaster::CastRay(
 			const RuntimeContext& rc,							///< [in] The runtime context
 			const RasterizerState& rast,						///< [in] Current state of the rasterizer
 			const Ray& ray,										///< [in] Ray to cast
@@ -306,6 +404,21 @@ bool RayCaster::CastRay(
 	// ----------------------------------------------------------------
 	const IObject* pMediumObject = 0;
 	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
+
+	// G6: stamp the ambient (incident-medium) IOR so a GGX conductor shaded via
+	// the RayCaster shader path sees the surrounding medium's IOR rather than
+	// hardcoded air.  Read before SetCurrentObject (which does not push).  Guard
+	// to air (1.0).
+	{
+		const Scalar ambIOR = ior_stack.top();
+		ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+	}
+
+	// Strategy-selection factor for a no-scatter outcome (see the EQ-MIS block
+	// below).  Declared in the outer scope because the survival sites that
+	// consume it (surface-hit / escape) live outside the if(pMedium) block.
+	// 0.5 only in the DT no-scatter branch under equiangular MIS; 1.0 otherwise.
+	Scalar noScatterPdfScale = 1.0;
 
 	if( pMedium )
 	{
@@ -446,7 +559,13 @@ bool RayCaster::CastRay(
 						combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 						useExplicitThroughput = true;
 					}
-					// If not scattered: no equiangular counterpart, weight = 1
+					else
+					{
+						// No-scatter outcome under equiangular MIS: reachable only
+						// via this delta-tracking strategy (chosen with prob 0.5).
+						// The survival sites divide by the extra 0.5.
+						noScatterPdfScale = 0.5;
+					}
 				}
 				else
 				{
@@ -796,9 +915,15 @@ bool RayCaster::CastRay(
 		// Apply shade by calling the appropriate shader
 		SelectShader( ri ).Shade( rc, ri, *this, rs, c, ior_stack );
 
-		// Apply medium transmittance to surface shading result
+		// Analog no-scatter survival weight (see RayCasterSurvivalWeight):
+		// reaching this surface without a scatter event is a survival outcome
+		// whose probability already carries Beer-Lambert, so weight by
+		// Tr / pSurvival (deterministic no-scatter survival pdf), NOT the full
+		// Tr (which would double-count attenuation).
 		if( pMedium ) {
-			c = c * pMedium->EvalTransmittance( ray, ri.geometric.range );
+			c = c * RayCasterSurvivalWeight(
+				pMedium->EvalTransmittance( ray, ri.geometric.range ),
+				noScatterPdfScale * pMedium->EvalDistancePdf( ray, ri.geometric.range, false, ri.geometric.range ) );
 		}
 
 		if( distance ) {
@@ -809,9 +934,12 @@ bool RayCaster::CastRay(
 	} else if( pRadianceMap ) {
 		c = pRadianceMap->GetRadiance( ray, rast );
 
-		// Apply medium transmittance for background
+		// Analog no-scatter survival weight for the escape-to-background path
+		// (Tr / pSurvival, not full Tr — see above).
 		if( pMedium ) {
-			c = c * pMedium->EvalTransmittance( ray, RISE_INFINITY );
+			c = c * RayCasterSurvivalWeight(
+				pMedium->EvalTransmittance( ray, RISE_INFINITY ),
+				noScatterPdfScale * pMedium->EvalDistancePdf( ray, RISE_INFINITY, false, RISE_INFINITY ) );
 		}
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadiance( ray, rast );
@@ -855,9 +983,12 @@ bool RayCaster::CastRay(
 			}
 		}
 
-		// Apply medium transmittance for environment
+		// Analog no-scatter survival weight for the escape-to-environment path
+		// (Tr / pSurvival, not full Tr — see above).
 		if( pMedium ) {
-			c = c * pMedium->EvalTransmittance( ray, RISE_INFINITY );
+			c = c * RayCasterSurvivalWeight(
+				pMedium->EvalTransmittance( ray, RISE_INFINITY ),
+				noScatterPdfScale * pMedium->EvalDistancePdf( ray, RISE_INFINITY, false, RISE_INFINITY ) );
 		}
 
 		if( distance && bConsiderRMapAsBackground ) {
@@ -949,6 +1080,21 @@ bool RayCaster::CastRayNM(
 	// Medium transport (spectral variant)
 	const IObject* pMediumObject = 0;
 	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
+
+	// G6: stamp the ambient (incident-medium) IOR (per-wavelength n(λ) in NM) so
+	// a GGX conductor shaded via the RayCaster spectral shader path uses the
+	// surrounding medium's IOR rather than hardcoded air.  Read before
+	// SetCurrentObject (which does not push).  Guard to air (1.0).
+	{
+		const Scalar ambIOR = ior_stack.top();
+		ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+	}
+
+	// Strategy-selection factor for a no-scatter outcome (see the EQ-MIS block
+	// below).  Declared in the outer scope because the survival sites that
+	// consume it (surface-hit / escape) live outside the if(pMedium) block.
+	// 0.5 only in the DT no-scatter branch under equiangular MIS; 1.0 otherwise.
+	Scalar noScatterPdfScale_NM = 1.0;
 
 	if( pMedium )
 	{
@@ -1053,6 +1199,12 @@ bool RayCaster::CastRayNM(
 						}
 						combinedPdf_NM = 0.5 * pdf_dt + 0.5 * pdf_eq;
 						useExplicitThroughput_NM = true;
+					}
+					else
+					{
+						// No-scatter outcome under equiangular MIS: reachable only
+						// via this delta-tracking strategy (chosen with prob 0.5).
+						noScatterPdfScale_NM = 0.5;
 					}
 				}
 				else
@@ -1319,9 +1471,22 @@ bool RayCaster::CastRayNM(
 		// Apply shade by calling the appropriate shader
 		c = SelectShader( ri ).ShadeNM( rc, ri, *this, rs, nm, ior_stack );
 
-		// Apply medium transmittance to surface shading result
+		// Analog no-scatter survival: reaching this surface without a scatter
+		// event is a survival outcome whose probability already carries
+		// Beer-Lambert.  The correct weight is Tr / pSurvival, where pSurvival is
+		// the DETERMINISTIC no-scatter survival pdf EvalDistancePdfNM(false).  For
+		// a HomogeneousMedium both equal exp(-sigma_t(nm)*d), so the weight is
+		// exactly 1 (byte-identical to applying no factor).  For a
+		// HeterogeneousMedium, EvalTransmittanceNM is a STOCHASTIC ratio-tracking
+		// estimate while EvalDistancePdfNM is a deterministic Simpson optical
+		// depth, so the ratio is the correct unbiased weight (NOT unity).
 		if( pMedium ) {
-			c *= pMedium->EvalTransmittanceNM( ray, ri.geometric.range, nm );
+			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, ri.geometric.range, nm );
+			const Scalar pSurvival = noScatterPdfScale_NM * pMedium->EvalDistancePdfNM(
+				ray, ri.geometric.range, false, ri.geometric.range, nm );
+			if( pSurvival > 0 ) {
+				c = c * ( Tr / pSurvival );
+			}
 		}
 
 		if( distance ) {
@@ -1332,8 +1497,16 @@ bool RayCaster::CastRayNM(
 	} else if( pRadianceMap ) {
 		c = pRadianceMap->GetRadianceNM( ray, rast, nm );
 
+		// Analog no-scatter survival weight for the escape-to-background path:
+		// Tr / pSurvival (deterministic no-scatter survival pdf; = 1 for
+		// homogeneous, correct for heterogeneous — see the surface-hit case).
 		if( pMedium ) {
-			c *= pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
+			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
+			const Scalar pSurvival = noScatterPdfScale_NM * pMedium->EvalDistancePdfNM(
+				ray, RISE_INFINITY, false, RISE_INFINITY, nm );
+			if( pSurvival > 0 ) {
+				c = c * ( Tr / pSurvival );
+			}
 		}
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadianceNM( ray, rast, nm );
@@ -1377,8 +1550,16 @@ bool RayCaster::CastRayNM(
 			}
 		}
 
+		// Analog no-scatter survival weight for the escape-to-environment path:
+		// Tr / pSurvival (deterministic no-scatter survival pdf; = 1 for
+		// homogeneous, correct for heterogeneous — see the surface-hit case).
 		if( pMedium ) {
-			c *= pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
+			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
+			const Scalar pSurvival = noScatterPdfScale_NM * pMedium->EvalDistancePdfNM(
+				ray, RISE_INFINITY, false, RISE_INFINITY, nm );
+			if( pSurvival > 0 ) {
+				c = c * ( Tr / pSurvival );
+			}
 		}
 
 		if( distance && bConsiderRMapAsBackground ) {
@@ -1676,6 +1857,9 @@ bool RayCaster::CastShadowRayAuto(
 
 void RayCaster::SetRISCandidates( const unsigned int M )
 {
+	// Retain so a same-pointer sampler rebuild (#2b(a)) re-applies it; see
+	// iPendingRISCandidates.
+	iPendingRISCandidates = (int)M;
 	if( pLightSampler )
 	{
 		pLightSampler->SetRISCandidates( M );

@@ -1,12 +1,14 @@
 # Parser Guide
 
-This directory defines the scene, script, command, and options parsers. For most user-visible feature work, `AsciiSceneParser.cpp` is the most important file in the directory.
+This directory defines the chunk-parser registry, script, command, and options parsers. For most user-visible feature work, `ChunkParserRegistry.cpp` (the chunk-parser registry) is the most important file in the directory.
+
+> **Historical note (Model-B CST cutover, 2026-07):** the legacy streaming scene parser (`AsciiSceneParser.cpp` — `ParseAndLoadScene` + the `>`/macro/`FOR`/`> load` language below) has been **retired and deleted**. Scenes now load exclusively through the canonical CST path: `Cst::ParseToCst` → `Cst::DeriveToJob`, which drives the SAME descriptor-driven chunk parsers via the shared registry. The chunk-parser registry (`CreateAllChunkParsers` / `DispatchChunkParameters` / the default `ParseChunk` / every `IAsciiChunkParser` subclass / the helper templates) was relocated to `ChunkParserRegistry.cpp` (slice 6b) and SURVIVES; only the streaming front-end and its top-level language (next section) are gone. The corpus was flattened to native-v7 by the migrator, so `FOR`/`> load`/`> run`/macros no longer appear in tracked scenes.
 
 ## Canonical Files
 
-- Scene parser implementation and chunk registry: [AsciiSceneParser.cpp](AsciiSceneParser.cpp)
-- Scene parser interface: [../Interfaces/ISceneParser.h](../Interfaces/ISceneParser.h)
-- Command parser: `AsciiCommandParser.*`
+- Chunk-parser registry (the authoritative scene-syntax → implementation map): [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp)
+- Derive-time scene loading (the ONLY scene-load path): `../Cst/Cst.cpp` (`ParseToCst` + `DeriveToJob`)
+- Command parser: `AsciiCommandParser.*` (the console `load`/`run`/`modify` commands — `ICommandParser`)
 - Script parser: `AsciiScriptParser.*`
 - Math expression evaluator: `MathExpressionEvaluator.*`
 - Options parser: [../Options.h](../Options.h) (constructed via `RISE_API_CreateOptionsParser`)
@@ -16,8 +18,12 @@ This directory defines the scene, script, command, and options parsers. For most
 The current parser expects scene files to begin with:
 
 ```text
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 ```
+
+`7` is the post-CST-cutover header that new output (save + the migrator) emits. The
+CST loader is version-agnostic, so the transitional `6` header is still accepted on
+read — un-migrated scenes keep loading.
 
 Chunk syntax rules:
 
@@ -34,19 +40,19 @@ That document is the canonical reference for "why does my scene
 render unexpectedly?" — the chunk parsers themselves only enforce
 syntactic correctness.
 
-## Language Features Implemented In The Top-Level Parser
+## Language Features Of The (RETIRED) Top-Level Streaming Parser
 
-`AsciiSceneParser.cpp` handles more than chunk dispatch:
+**These features are GONE.** The legacy streaming parser (`AsciiSceneParser.cpp`) implemented a top-level scene language on top of chunk dispatch:
 
-- Embedded commands with `>`
+- Embedded commands with `>` (incl. `> load` / `> run` recursive includes)
 - Macro definitions with `!`, `define`, or `DEFINE`
 - Macro removal with `~`, `undef`, or `UNDEF`
 - Arithmetic expressions of the form `$(...)`
-- A small set of inline math functions such as `sin`, `cos`, `tan`, `sqrt`, and `hal`
+- A small set of inline math functions such as `sin`, `cos`, `tan`, `sqrt`, and `hal` (a stateful QMC Halton sequence)
 - `FOR` / `ENDFOR` loop expansion
 - Block and line comments
 
-If syntax changes in any of those areas, document them here and inspect scene compatibility carefully.
+The whole streaming front-end was **deleted in the Model-B CST cutover** (slice 6c). Native-v7 scenes do not use `>`/macros/`FOR`/`> load`; the migrator flattened the corpus. The CST derive path (`Cst.cpp`) supports a separate, smaller `expr( ... )` value sublanguage (arithmetic + `let`-bound named constants) — NOT the legacy `$(...)`/`hal`/`FOR` machinery. Block and line comments are handled by the CST tokenizer (`ParseToCst`).
 
 ## Chunk-Parser Architecture (descriptor-driven)
 
@@ -57,11 +63,11 @@ Every chunk parser derives from `IAsciiChunkParser` ([IAsciiChunkParser.h](IAsci
 | `Describe()` | Returns a `ChunkDescriptor` enumerating every parameter the chunk accepts (name, kind, enum values, reference categories, defaults, descriptions). The descriptor IS the parser's accepted-parameter set. |
 | `Finalize(const ParseStateBag&, IJob&)` | Reads typed values out of the bag and emits the corresponding `pJob.AddX(...)` / `pJob.SetX(...)` call. |
 
-No chunk parser overrides `ParseChunk` directly. The default `ParseChunk` impl (in [AsciiSceneParser.cpp](AsciiSceneParser.cpp), just after `CreateAllChunkParsers`) walks the input lines, validates each name against `Describe().parameters`, stores matched values in a `ParseStateBag`, then invokes `Finalize` to emit the AddX call. An input parameter whose name is not in the descriptor fails the parse.
+No chunk parser overrides `ParseChunk` directly. The default `ParseChunk` impl (in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp), just after `CreateAllChunkParsers`) walks the input lines, validates each name against `Describe().parameters`, stores matched values in a `ParseStateBag`, then invokes `Finalize` to emit the AddX call. An input parameter whose name is not in the descriptor fails the parse.
 
 **The invariant:** drift between "what the parser parses" and "what the descriptor advertises" is structurally impossible. Both are read from the same `ChunkDescriptor`. The same descriptor feeds:
 
-- the parser (via `DispatchChunkParameters` in [AsciiSceneParser.cpp](AsciiSceneParser.cpp))
+- the parser (via `DispatchChunkParameters` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp))
 - the syntax highlighters (Qt + AppKit, via `SceneGrammar` in [SceneEditorSuggestions/](../SceneEditorSuggestions/))
 - the scene-editor suggestion engine (right-click context menu and inline autocomplete in both GUI apps)
 - any future grammar consumer (linters, doc generators, …)
@@ -88,28 +94,30 @@ The default in each `GetX` accessor matches the legacy local-variable initial va
 
 ## Registered Chunk Families
 
-The registry in `CreateAllChunkParsers()` ([AsciiSceneParser.cpp](AsciiSceneParser.cpp)) is the authoritative map from scene syntax to implementation. The table below is generated by counting `add(...)` calls in `CreateAllChunkParsers()`; if you add or remove a chunk parser, update the relevant row. Current families:
+The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParserRegistry.cpp)) is the authoritative map from scene syntax to implementation. The table below is generated by counting `add(...)` calls in `CreateAllChunkParsers()`; if you add or remove a chunk parser, update the relevant row. Current families:
 
 | Family | Count | Examples |
 |--------|-------|----------|
-| Painters | 30 | `uniformcolor_painter`, `png_painter`, `voronoi3d_painter`, `iridescent_painter`, `channel_painter` |
-| Functions | 2 | `piecewise_linear_function`, `piecewise_linear_function2d` |
+| Painters | 35 | `uniformcolor_painter`, `png_painter`, `voronoi3d_painter`, `iridescent_painter`, `channel_painter`, `function2d_painter` (the `*_function2d_painter` painters live here, not under Functions) |
+| Functions | 3 | `piecewise_linear_function`, `piecewise_linear_function2d`, `expression_function2d` |
 | Materials | 25 | `lambertian_material`, `dielectric_material`, `ggx_material`, `pbr_metallic_roughness_material`, `sheen_material`, `composite_material` |
-| Cameras | 7 | `scene_options`, `camera_defaults` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
-| Geometry | 18 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry` |
-| Modifiers | 2 | `bumpmap_modifier`, `normal_map_modifier` |
-| Media | 3 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium` |
-| Objects | 2 | `standard_object`, `csg_object` |
+| Cameras | 8 | `scene_options`, `camera_defaults`, `film` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
+| Geometry | 22 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `path_instances_geometry` |
+| Modifiers | 3 | `bumpmap_modifier`, `normal_map_modifier`, `glint_modifier` |
+| Media | 4 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium`, `global_medium` |
+| Objects | 3 | `standard_object`, `csg_object`, `override_object` |
 | Shader ops | 13 | `pathtracing_shaderop`, `mis_pathtracing_shaderop` (legacy alias), `finalgather_shaderop`, `directlighting_shaderop`, `arealight_shaderop`, `alpha_test_shaderop` |
 | Shaders | 4 | `standard_shader`, `advanced_shader`, `directvolumerendering_shader`, `spectraldirectvolumerendering_shader` |
-| Rasterizers | 10 | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `vcm_pel_rasterizer`, `mlt_spectral_rasterizer` |
+| Rasterizers | 12 | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `vcm_pel_rasterizer`, `mlt_spectral_rasterizer`, `auto_rasterizer`, `auto_spectral_rasterizer` |
 | Rasterizer outputs | 1 | `file_rasterizeroutput` |
-| Lights | 4 | `ambient_light`, `omni_light`, `spot_light`, `directional_light` |
+| Lights | 5 | `ambient_light`, `omni_light`, `spot_light`, `directional_light`, `hosek_wilkie_skylight` |
 | Photon maps | 12 | 6 generate + 6 gather (caustic / global / shadow / translucent — Pel and spectral) |
 | Irradiance cache | 1 | `irradiance_cache` |
 | Animation | 4 | `keyframe`, `timeline`, `animation_options`, `animation` |
+| Scene variants | 2 | `scene_variant`, `active_scene_variant` (the CST named-overlay feature) |
+| Global config | 1 | `light_rr_threshold` (standalone RR-threshold chunk, mirrors `global_medium`) |
 
-**Total: 138 unique chunk keywords** (the per-family counts above sum to 138; `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` but is its own keyword). Read `CreateAllChunkParsers()` in [AsciiSceneParser.cpp](AsciiSceneParser.cpp) for the canonical list — this table is a summary, not the source of truth.
+**Total: 158 unique chunk keywords** (the per-family counts above sum to 158; `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` but is its own keyword). Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list — this table is a summary, not the source of truth.
 
 `realistic_camera` is intentionally **not** registered — the keyword is reserved for the future multi-element lens-system camera (see [docs/CAMERAS_ROADMAP.md](../../../docs/CAMERAS_ROADMAP.md) Phase 4). Until that lands, scenes that want photographic depth-of-field use `thinlens_camera`.
 
@@ -199,7 +207,7 @@ parameters. Omit the `film` chunk entirely if the default qHD
 
 **Multiple `camera_defaults` blocks:** if a scene declares more than one, the parser does a per-field "last write wins" overwrite — block B's `sensor_size` replaces block A's `sensor_size`, but block B's omission of `fstop` leaves block A's `fstop` in place. Cameras declared between blocks see the state-as-of-that-point. This is the simplest semantics and matches how the parser already handles other thread-local state (`s_painterColors`).
 
-**Nested `> load`:** as of Phase 1.1, `camera_defaults` state is reset at the top of each `ParseAndLoadScene` call. An outer scene that declares `camera_defaults` and then issues `> load other.RISEscene` will see its defaults wiped after the include returns; cameras AFTER the include fall back to hard-coded values. **The same hazard applies to `scene_options`** (Phase 1.2): an `> load` after a `scene_options` declaration silently resets `scene_unit` to `1.0` (metres), which can produce a 1000×-misscaled camera if the outer scene was using a different scale. Tracked for a future fix that saves/restores parser state across nested loads. Workaround: declare `scene_options` and `camera_defaults` AFTER any `> load` in the file (or avoid `> load` for unit-sensitive scenes).
+**Nested `> load` (RETIRED):** the `> load`/`> run` recursive-include machinery was deleted with the streaming parser (slice 6c), so the old `camera_defaults` / `scene_options` cross-include state-reset hazard no longer exists — native-v7 scenes are self-contained (the migrator flattened includes). `camera_defaults` / `scene_options` state is reset per top-level derive by `ClearChunkParserState()` (called at the top of `Cst::DeriveToJob`).
 
 Tilt-shift (`tilt_x`, `tilt_y`, `shift_x`, `shift_y`) is intentionally NOT settable from `camera_defaults` — those parameters tend to need per-camera override even within a single scene.
 
@@ -215,7 +223,7 @@ A regression scene at [scenes/Tests/Cameras/thinlens_tiltshift.RISEscene](../../
 
 ## Adding A New Chunk Parser
 
-1. **Implement the parser class** in the `RISE::Implementation::ChunkParsers` namespace inside [AsciiSceneParser.cpp](AsciiSceneParser.cpp). Convention: place it next to other parsers in the same family. Skeleton:
+1. **Implement the parser class** in the `RISE::Implementation::ChunkParsers` namespace inside [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp). Convention: place it next to other parsers in the same family. Skeleton:
 
    ```cpp
    struct MyAsciiChunkParser : public IAsciiChunkParser
@@ -298,7 +306,7 @@ That's it. The new parameter automatically appears in:
 
 ## Helper Templates
 
-Parameter sets shared across many chunks live in [AsciiSceneParser.cpp](AsciiSceneParser.cpp) just after `DispatchChunkParameters` and just before the painter parsers. Reuse them rather than copy-pasting:
+Parameter sets shared across many chunks live in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) just after `DispatchChunkParameters` and just before the painter parsers. Reuse them rather than copy-pasting:
 
 | Helper | Used by | Adds |
 |--------|---------|------|
@@ -321,8 +329,8 @@ Parameter sets shared across many chunks live in [AsciiSceneParser.cpp](AsciiSce
 ## Where Agent Authors Usually Get Tripped Up
 
 - The older comment near the top lists eight primary chunk categories, but the real registry now covers more specialized families. The registration map is the source of truth.
-- Parser support is split between top-level syntax handling and per-chunk parsers. A feature may require changes in both places.
-- Scene chunk bodies are assembled as strings after token substitution and expression evaluation. If a parameter seems to disappear, inspect macro substitution and token reassembly first.
+- Chunk loading is now purely the CST derive path (`Cst::DeriveToJob` → the shared chunk-parser registry). There is no longer a separate top-level streaming syntax layer to change — a new chunk is a registry entry only.
+- If a `chunk` parameter seems to disappear, inspect the `ChunkDescriptor` (the descriptor IS the accepted-parameter set) and the CST tokenization (`ParseToCst`) — not the old macro/token-substitution machinery, which is gone.
 
 ## MIS Weight Parameters (Rasterizer Blocks)
 

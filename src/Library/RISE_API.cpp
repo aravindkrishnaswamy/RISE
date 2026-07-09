@@ -459,7 +459,8 @@ namespace RISE
 								IGeometry** ppi,				///< [out] Pointer to recieve the geometry
 								const char axis,				///< [in] (x|y|z) Which axis the cylinder is sitting on
 								const Scalar radius,			///< [in] Radius of the cylinder
-								const Scalar height			///< [in] Height of the cylinder
+								const Scalar height,			///< [in] Height of the cylinder
+								const bool capped				///< [in] TRUE: closed solid (end caps); FALSE: open tube
 								)
 	{
 		if( !ppi ) {
@@ -467,7 +468,7 @@ namespace RISE
 		}
 
 
-		(*ppi) = new CylinderGeometry( axis, radius, height );
+		(*ppi) = new CylinderGeometry( axis, radius, height, capped );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "cylinder" );
 		return true;
 	}
@@ -1714,19 +1715,24 @@ namespace RISE
 								const IScalarPainter& rIndex,
 								const IScalarPainter& scat,
 								const bool hg,
-								const Scalar arN,
-								const Scalar arK,
-								const Scalar arThickness
+								const Scalar* arN,
+								const Scalar* arK,
+								const Scalar* arThickness,
+								const unsigned int arNLayers
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new DielectricMaterial( tau, rIndex, scat, hg, arN, arK, arThickness );
+		(*ppi) = new DielectricMaterial( tau, rIndex, scat, hg, arN, arK, arThickness, (int)arNLayers );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "dielectric material" );
 		return true;
 	}
+
+	// The legacy single-film AR overload is now a SFINAE template defined inline
+	// in RISE_API.h (it must accept any arithmetic spelling incl. mixed int/double
+	// -- a fixed Scalar/int overload pair leaves mixed calls ambiguous).
 
 	//! Creates a SubSurface Scattering material
 	/// \return TRUE if successful, FALSE otherwise
@@ -4207,6 +4213,7 @@ namespace RISE
 
 #include "Modifiers/BumpMap.h"
 #include "Modifiers/NormalMap.h"
+#include "Modifiers/GlintModifier.h"
 
 namespace RISE
 {
@@ -4258,6 +4265,26 @@ namespace RISE
 
 		(*ppi) = new NormalMap( painter, scale );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "normalmap" );
+		return true;
+	}
+
+	bool RISE_API_CreateGlintModifier(
+								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
+								const Scalar density,			///< [in] cells per object-space unit; <= 0 inert
+								const Scalar coverage,			///< [in] per-cell facet existence probability [0,1]
+								const Scalar fill,				///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 inert
+								const Scalar spread,			///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 inert
+								const Vector3& scale,			///< [in] anisotropic cell stretch (Worley convention pt*scale+shift)
+								const Vector3& shift,			///< [in] cell-space offset
+								const unsigned int seed			///< [in] hash seed
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new GlintModifier( density, coverage, fill, spread, scale, shift, seed );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "glintmodifier" );
 		return true;
 	}
 
@@ -4534,20 +4561,7 @@ namespace RISE
 			return false;
 		}
 
-		CSGObject* pObj = 0;
-
-		switch( op ) {
-		default:
-		case 0:
-			pObj = new CSGObject( CSG_UNION );
-			break;
-		case 1:
-			pObj = new CSGObject( CSG_INTERSECTION );
-			break;
-		case 2:
-			pObj = new CSGObject( CSG_SUBTRACTION );
-			break;
-		}
+		CSGObject* pObj = new CSGObject( CsgOpFromChar( op ) );
 
 		pObj->AssignObjects( objA, objB );
 		(*ppi) = pObj;
@@ -6973,27 +6987,12 @@ namespace RISE
 // Parsers
 //////////////////////////////////////////////////////////
 
-#include "Parsers/AsciiSceneParser.h"
 #include "Parsers/AsciiScriptParser.h"
 #include "Parsers/AsciiCommandParser.h"
 #include "Options.h"
 
 namespace RISE
 {
-	bool RISE_API_CreateAsciiSceneParser(
-								ISceneParser** ppi,					///< [out] Pointer to recieve the parser
-								const char* name					///< [in] Name of the file to load
-								)
-	{
-		if( !ppi ) {
-			return false;
-		}
-
-		(*ppi) = new AsciiSceneParser( name );
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ascii scene parser" );
-		return true;
-	}
-
 	//! Creates a parser capable of processing a script from a text file
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateAsciiScriptParser(
@@ -7151,6 +7150,26 @@ namespace RISE
 
 		(*ppi) = new HomogeneousMedium( sigma_a, sigma_s, emission, phase );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "homogeneous medium with emission" );
+		return true;
+	}
+
+	bool RISE_API_CreateHomogeneousMediumSpectral(
+								IMedium** ppi,
+								const RISEPel& sigma_a,
+								const RISEPel& sigma_s,
+								const RISEPel& emission,
+								const IFunction1D* sigma_a_spectral,
+								const IFunction1D* sigma_s_spectral,
+								const IPhaseFunction& phase
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new HomogeneousMedium( sigma_a, sigma_s, emission,
+			sigma_a_spectral, sigma_s_spectral, phase );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "homogeneous medium (spectral)" );
 		return true;
 	}
 
@@ -7356,6 +7375,13 @@ namespace RISE
 	{
 		if( !p ) return false;
 		p->Stop();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_StopInteractive( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->StopInteractive();
 		return true;
 	}
 

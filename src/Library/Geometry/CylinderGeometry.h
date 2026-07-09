@@ -29,14 +29,31 @@ namespace RISE
 			Scalar			m_dHeight;
 			Scalar			m_dAxisMin;
 			Scalar			m_dAxisMax;
+			const bool		m_bCapped;		///< TRUE: closed solid (two end-cap disks); FALSE: open tube (side only)
 
 			virtual ~CylinderGeometry( );
 
-		public:
-			CylinderGeometry( const int chAxis, const Scalar dRadius, const Scalar dHeight );
+			// Surface-region codes returned by IntersectCappedSolid / consumed by
+			// FillSurfaceNormalUV.  Only meaningful when m_bCapped is TRUE.
+			enum CylSurface { SURF_SIDE = 0, SURF_CAPMIN = 1, SURF_CAPMAX = 2 };
 
-			// Tessellates the cylinder side (no caps — matches the analytic intersection which
-			// is open-ended) to (detail+1) x (detail+1) vertices.  Duplicates the u=0/u=1 seam.
+			//! Closed-solid ray intersection (side wall + two cap disks).  Returns the
+			//! nearest boundary crossing ahead of the ray (tNear/surfNear) and, when the
+			//! ray enters from outside, the exit crossing (tFar/surfFar).  When the ray
+			//! origin is inside the solid there is a single crossing: tFar is set to 0 and
+			//! surfFar mirrors surfNear (matching the open-tube "started inside" convention).
+			bool IntersectCappedSolid( const Ray& ray, Scalar& tNear, int& surfNear, Scalar& tFar, int& surfFar ) const;
+
+			//! Fills the outward normal (and, if coord != 0, the UV) for a point known to lie
+			//! on surface region `surf` of the capped cylinder.
+			void FillSurfaceNormalUV( const Point3& pt, int surf, Vector3& normal, Point2* coord ) const;
+
+		public:
+			CylinderGeometry( const int chAxis, const Scalar dRadius, const Scalar dHeight, const bool capped );
+
+			// Tessellates the cylinder side to (detail+1) x (detail+1) vertices (duplicating the
+			// u=0/u=1 seam).  When m_bCapped, appends a triangle fan for each end cap so the
+			// tessellation is a closed solid matching the analytic intersection.
 			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
 
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;

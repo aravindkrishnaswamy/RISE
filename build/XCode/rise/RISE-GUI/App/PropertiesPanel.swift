@@ -79,6 +79,7 @@ struct AccordionSection: Identifiable, Hashable {
 private let kAccordionSections: [AccordionSection] = [
     AccordionSection(id: "cameras",     title: "Cameras",         category: .camera),
     AccordionSection(id: "animations",  title: "Animation",       category: .animation),
+    AccordionSection(id: "variants",    title: "Variants",        category: .sceneVariant),
     AccordionSection(id: "rasterizer",  title: "Rasterizer",      category: .rasterizer),
     AccordionSection(id: "objects",     title: "Objects",         category: .object),
     AccordionSection(id: "lights",      title: "Lights",          category: .light),

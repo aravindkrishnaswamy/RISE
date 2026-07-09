@@ -140,7 +140,8 @@ namespace RISE
 		PhotonMap,
 		PhotonGather,
 		IrradianceCache,
-		Animation
+		Animation,
+		SceneVariant
 	};
 
 	// Base class for per-chunk parse state.  In the registry-driven

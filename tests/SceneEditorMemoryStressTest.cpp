@@ -182,8 +182,8 @@ int main()
 		repoRoot + "/scenes/FeatureBased/Geometry/teapot.RISEscene";
 
 	Job* pJob = new Job();
-	if( !pJob->LoadAsciiScene( scenePath.c_str() ) ) {
-		std::cout << "  FAIL: LoadAsciiScene returned false for "
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) {
+		std::cout << "  FAIL: LoadAsciiSceneViaCst returned false for "
 		          << scenePath << std::endl;
 		pJob->release();
 		return 1;

@@ -43,6 +43,12 @@ unsigned int DiskBuffer::Size( ) const
 
 unsigned int DiskBuffer::getCurPos( ) const
 {
+	// No file handle (open failed): treat as position 0 rather than
+	// ftell(NULL) UB/SIGSEGV.  This also makes HowFarToEnd()/EndOfBuffer()
+	// (which call getCurPos) null-safe.
+	if( !hFile ) {
+		return 0;
+	}
 	return static_cast<unsigned int>(ftell( hFile ));
 }
 
@@ -53,7 +59,14 @@ bool DiskBuffer::EndOfBuffer( ) const
 
 bool DiskBuffer::seek( const eSeek type, const int amount )
 {
-	bool bReturn = false; 
+	// No file handle (open failed): refuse rather than fseek(NULL) UB.
+	// Reachable via seek-first image readers (e.g. TIFF) over an
+	// existing-but-unopenable file, where Size()>0 passes their gate.
+	if( !hFile ) {
+		return false;
+	}
+
+	bool bReturn = false;
 
 	switch( type )
 	{

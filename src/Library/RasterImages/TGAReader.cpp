@@ -66,15 +66,36 @@ bool TGAReader::BeginRead( unsigned int& width, unsigned int& height )
 		return false;
 	}
 
-	pBuffer = new unsigned char[width*height*4];
+	// Guard the destination-buffer sizing against a header-driven integer
+	// overflow.  width and height are each file-controlled (getUWord, 0..65535),
+	// so the historical 32-bit product `width*height*4` can wrap
+	// (65535*65535*4 > 2^32) to a tiny allocation that the scanline loop below
+	// then writes past (heap OOB write).  Reject degenerate (zero) dimensions
+	// and compute the size in 64-bit, capping at a sane ceiling, before allocating.
+	if( width == 0 || height == 0 ) {
+		GlobalLog()->Print( eLog_Error, "TGAReader: Invalid (zero) image dimensions" );
+		return false;
+	}
+
+	static const unsigned long long kMaxImageBytes = 2ULL * 1024 * 1024 * 1024; // 2 GiB ceiling
+	const unsigned long long nBytes64 = (unsigned long long)width * (unsigned long long)height * 4ULL;
+	if( nBytes64 > kMaxImageBytes ) {
+		GlobalLog()->Print( eLog_Error, "TGAReader: Image dimensions too large" );
+		return false;
+	}
+	const size_t nBytes = (size_t)nBytes64;
+
+	pBuffer = new unsigned char[nBytes];
 	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
-	memset( pBuffer, 0, width*height*4 );
+	memset( pBuffer, 0, nBytes );
 
 	pReadBuffer.seek( IBuffer::START, 17 );
 
-	// Read the entire image into memory, in backwards y order
+	// Read the entire image into memory, in backwards y order.  The row offset
+	// is computed in size_t (the ceiling above guarantees it stays < nBytes),
+	// and each getBytes writes exactly 4*width bytes into the row.
 	for( int y=height-1; y>=0; y-- ) {
-		pReadBuffer.getBytes( (char*)&pBuffer[y*width*4], 4*width );
+		pReadBuffer.getBytes( (char*)&pBuffer[(size_t)y*width*4], 4*width );
 	}
 
 	bufW = width;

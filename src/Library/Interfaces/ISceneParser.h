@@ -49,19 +49,9 @@ namespace RISE
 			) = 0;
 	};
 
-	class ISceneParser : public virtual IReference
-	{
-	protected:
-		ISceneParser(){};
-		virtual ~ISceneParser(){};
-
-	public:
-		//! Parses and loads a scene
-		/// \return TRUE if the parsing and loading was successful, FALSE otherwise
-		virtual bool ParseAndLoadScene(
-			IJob& pJob							///< [in/out] Where the scene should be loaded into
-			) = 0;
-	};
+	// Slice 6c-3c: the ISceneParser interface (ParseAndLoadScene) was removed together with the legacy
+	// streaming scene loader (AsciiSceneParser).  Scene loading is now CST-only (Job::LoadAsciiSceneAuto
+	// -> LoadAsciiSceneViaCst).  ICommandParser (interactive console commands) + IScriptParser survive.
 }
 
 #endif

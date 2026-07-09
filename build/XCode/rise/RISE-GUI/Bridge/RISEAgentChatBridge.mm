@@ -1,0 +1,343 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  RISEAgentChatBridge.mm - Obj-C++ implementation wrapping the C++
+//    AgentChatLoop for the Swift chat panel (Facet 5 slice B2).
+//
+//    Thin type-marshalling only: NSString <-> std::string via UTF8,
+//    C++ structs -> small immutable ObjC value objects.  ALL
+//    correctness-bearing logic (transcript state, provider codecs,
+//    flush/interrupt semantics, iteration cap, image retention) lives
+//    in the tested C++ core — see AgentChatLoop.h for the contract.
+//
+//    SECRET HYGIENE: nothing in this file logs.  The API key passes
+//    straight through to AgentChatLoop::BuildRequest, which places it
+//    only in the returned auth header.
+//
+//////////////////////////////////////////////////////////////////////
+
+#import "RISEAgentChatBridge.h"
+
+#include "Agent/AgentChatLoop.h"
+
+#include <string>
+#include <utility>
+#include <vector>
+
+using namespace RISE;
+
+// ============================================================
+// NSString <-> std::string helpers.  A nil NSString and a
+// UTF8String that comes back null both map to the empty string
+// (the C++ side treats empty as its documented no-op / omit
+// convention throughout).
+// ============================================================
+static std::string ToStd(NSString * _Nullable s) {
+    if (!s) return std::string();
+    const char* utf8 = [s UTF8String];
+    return std::string(utf8 ? utf8 : "");
+}
+
+static NSString *ToNS(const std::string& s) {
+    NSString* out = [NSString stringWithUTF8String:s.c_str()];
+    // A non-UTF8 byte sequence (shouldn't happen; the loop emits JSON)
+    // degrades to the empty string rather than nil so the nonnull
+    // ObjC surface holds.
+    return out ?: @"";
+}
+
+@implementation RISEAgentChatAttachment
+
+- (instancetype)initWithMimeType:(NSString *)mimeType
+                       base64Data:(NSString *)base64Data {
+    self = [super init];
+    if (self) {
+        _mimeType   = [mimeType copy];
+        _base64Data = [base64Data copy];
+    }
+    return self;
+}
+
+@end
+
+// Class extension: private initializer carrying the FULL C++
+// ChatToolCall (args + id-synthesis flag ride along invisibly), so
+// the opaque token round-trips everything result matching needs.
+@interface RISEAgentChatToolCall ()
+- (instancetype)initWithCall:(const Agent::ChatToolCall&)call;
+- (Agent::ChatToolCall)cppCall;
+@end
+
+@implementation RISEAgentChatToolCall {
+    std::string _cppId;
+    std::string _cppName;
+    std::string _cppArgsJson;
+    BOOL        _cppIdSynthesized;
+}
+
+- (instancetype)initWithCall:(const Agent::ChatToolCall&)call {
+    self = [super init];
+    if (self) {
+        _cppId            = call.id;
+        _cppName          = call.name;
+        _cppArgsJson      = call.argsJson;
+        _cppIdSynthesized = call.idSynthesized ? YES : NO;
+    }
+    return self;
+}
+
+- (Agent::ChatToolCall)cppCall {
+    Agent::ChatToolCall call;
+    call.id            = _cppId;
+    call.name          = _cppName;
+    call.argsJson      = _cppArgsJson;
+    call.idSynthesized = (_cppIdSynthesized == YES);
+    return call;
+}
+
+- (NSString *)callId { return ToNS(_cppId); }
+- (NSString *)name   { return ToNS(_cppName); }
+
+@end
+
+// Class extension: private initializer for RISEAgentChatRequest.
+@interface RISEAgentChatRequest ()
+- (instancetype)initWithRequest:(const Agent::ChatHttpRequest&)req;
+@end
+
+@implementation RISEAgentChatRequest {
+    NSString *_url;
+    NSDictionary<NSString *, NSString *> *_headers;
+    NSString *_body;
+}
+
+- (instancetype)initWithRequest:(const Agent::ChatHttpRequest&)req {
+    self = [super init];
+    if (self) {
+        _url  = ToNS(req.url);
+        _body = ToNS(req.body);
+        NSMutableDictionary<NSString *, NSString *> *headers =
+            [NSMutableDictionary dictionaryWithCapacity:req.headers.size()];
+        for (const std::pair<std::string, std::string>& h : req.headers) {
+            headers[ToNS(h.first)] = ToNS(h.second);
+        }
+        _headers = [headers copy];
+    }
+    return self;
+}
+
+- (NSString *)url  { return _url; }
+- (NSString *)body { return _body; }
+- (NSDictionary<NSString *, NSString *> *)headers { return _headers; }
+- (BOOL)isEmpty    { return _url.length == 0; }
+
+@end
+
+// Class extension: private initializer for RISEAgentChatStep.
+@interface RISEAgentChatStep ()
+- (instancetype)initWithStep:(const Agent::ChatStepResult&)step;
+@end
+
+@implementation RISEAgentChatStep {
+    RISEAgentChatStepKind _kind;
+    NSArray<RISEAgentChatToolCall *> *_toolCalls;
+    NSString *_finalText;
+    NSString *_errorMessage;
+    RISEAgentChatErrorKind _errorKind;
+    NSString *_assistantDisplayText;
+}
+
+- (instancetype)initWithStep:(const Agent::ChatStepResult&)step {
+    self = [super init];
+    if (!self) return nil;
+
+    switch (step.kind) {
+        case Agent::ChatStepResult::Kind::ToolCalls:
+            _kind = RISEAgentChatStepKindToolCalls;     break;
+        case Agent::ChatStepResult::Kind::FinalText:
+            _kind = RISEAgentChatStepKindFinalText;     break;
+        case Agent::ChatStepResult::Kind::ProviderError:
+        default:
+            _kind = RISEAgentChatStepKindProviderError; break;
+    }
+
+    switch (step.errorKind) {
+        case Agent::ChatErrorKind::None:
+            _errorKind = RISEAgentChatErrorKindNone;         break;
+        case Agent::ChatErrorKind::Http:
+            _errorKind = RISEAgentChatErrorKindHttp;         break;
+        case Agent::ChatErrorKind::Parse:
+            _errorKind = RISEAgentChatErrorKindParse;        break;
+        case Agent::ChatErrorKind::Provider:
+            _errorKind = RISEAgentChatErrorKindProvider;     break;
+        case Agent::ChatErrorKind::Refusal:
+            _errorKind = RISEAgentChatErrorKindRefusal;      break;
+        case Agent::ChatErrorKind::MaxTokens:
+            _errorKind = RISEAgentChatErrorKindMaxTokens;    break;
+        case Agent::ChatErrorKind::IterationCap:
+            _errorKind = RISEAgentChatErrorKindIterationCap; break;
+        case Agent::ChatErrorKind::Misuse:
+        default:
+            _errorKind = RISEAgentChatErrorKindMisuse;       break;
+    }
+
+    NSMutableArray<RISEAgentChatToolCall *> *calls =
+        [NSMutableArray arrayWithCapacity:step.toolCalls.size()];
+    for (const Agent::ChatToolCall& c : step.toolCalls) {
+        [calls addObject:[[RISEAgentChatToolCall alloc] initWithCall:c]];
+    }
+    _toolCalls = [calls copy];
+
+    _finalText            = ToNS(step.finalText);
+    _errorMessage         = ToNS(step.errorMessage);
+    _assistantDisplayText = ToNS(step.assistantDisplayText);
+    return self;
+}
+
+- (RISEAgentChatStepKind)kind { return _kind; }
+- (NSArray<RISEAgentChatToolCall *> *)toolCalls { return _toolCalls; }
+- (NSString *)finalText    { return _finalText; }
+- (NSString *)errorMessage { return _errorMessage; }
+- (RISEAgentChatErrorKind)errorKind { return _errorKind; }
+- (NSString *)assistantDisplayText  { return _assistantDisplayText; }
+
+@end
+
+@implementation RISEAgentChatBridge {
+    // The one wrapped chat loop.  Raw new/delete, mirroring how
+    // RISEViewportBridge holds its C++ objects.  Pure state — no
+    // pointers into any controller / job / dispatcher, so there is no
+    // cross-object teardown-order constraint (see the header note).
+    Agent::AgentChatLoop* _loop;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _loop = new Agent::AgentChatLoop();
+    }
+    return self;
+}
+
+- (void)dealloc {
+    delete _loop;
+    _loop = nullptr;
+}
+
+- (void)reset {
+    _loop->Reset();
+}
+
+- (void)setProvider:(RISEAgentChatProvider)provider
+            modelId:(NSString * _Nullable)modelId {
+    Agent::ChatProvider p = Agent::ChatProvider::Anthropic;
+    if (provider == RISEAgentChatProviderGemini) {
+        p = Agent::ChatProvider::Gemini;
+    } else if (provider == RISEAgentChatProviderOpenAI) {
+        p = Agent::ChatProvider::OpenAI;
+    }
+    _loop->SetProvider(p, ToStd(modelId));
+}
+
+- (RISEAgentChatProvider)provider {
+    if (_loop->Provider() == Agent::ChatProvider::Gemini) {
+        return RISEAgentChatProviderGemini;
+    }
+    if (_loop->Provider() == Agent::ChatProvider::OpenAI) {
+        return RISEAgentChatProviderOpenAI;
+    }
+    return RISEAgentChatProviderAnthropic;
+}
+
+- (NSString *)modelId {
+    return ToNS(_loop->ModelId());
+}
+
++ (NSString *)defaultModelIdForProvider:(RISEAgentChatProvider)provider {
+    if (provider == RISEAgentChatProviderGemini) {
+        return ToNS(Agent::GeminiChatCodec().DefaultModelId());
+    }
+    if (provider == RISEAgentChatProviderOpenAI) {
+        return ToNS(Agent::OpenAIChatCodec().DefaultModelId());
+    }
+    return ToNS(Agent::AnthropicChatCodec().DefaultModelId());
+}
+
++ (NSInteger)maxToolRoundsPerTurn {
+    return static_cast<NSInteger>(Agent::AgentChatLoop::kMaxToolRoundsPerTurn);
+}
+
++ (NSInteger)maxLiveUserImages {
+    return static_cast<NSInteger>(Agent::AgentChatLoop::kMaxLiveUserImages);
+}
+
+- (void)setSkillIndex:(NSString *)indexText {
+    _loop->SetSkillIndex(ToStd(indexText));
+}
+
+- (void)addUserMessage:(NSString *)text {
+    _loop->AddUserMessage(ToStd(text));
+}
+
+- (void)addUserMessage:(NSString *)text
+            attachments:(NSArray<RISEAgentChatAttachment *> *)attachments {
+    std::vector<Agent::ChatAttachment> cppAttachments;
+    cppAttachments.reserve(attachments.count);
+    for (RISEAgentChatAttachment *a in attachments) {
+        Agent::ChatAttachment cppA;
+        cppA.mimeType   = ToStd(a.mimeType);
+        cppA.base64Data = ToStd(a.base64Data);
+        cppAttachments.push_back(cppA);
+    }
+    _loop->AddUserMessage(ToStd(text), cppAttachments);
+}
+
+- (RISEAgentChatRequest *)buildRequestWithApiKey:(NSString *)apiKey {
+    const Agent::ChatHttpRequest req = _loop->BuildRequest(ToStd(apiKey));
+    return [[RISEAgentChatRequest alloc] initWithRequest:req];
+}
+
+- (RISEAgentChatStep *)handleResponseWithStatus:(NSInteger)httpStatus
+                                           body:(NSString *)rawBody {
+    const Agent::ChatStepResult step =
+        _loop->HandleResponse(static_cast<long>(httpStatus), ToStd(rawBody));
+    return [[RISEAgentChatStep alloc] initWithStep:step];
+}
+
+- (NSString *)toolCallToJsonRpcLine:(RISEAgentChatToolCall *)call
+                              rpcId:(NSInteger)rpcId {
+    return ToNS(_loop->ToolCallToJsonRpcLine([call cppCall],
+                                             static_cast<int>(rpcId)));
+}
+
+- (void)addToolResult:(RISEAgentChatToolCall *)call
+  jsonRpcResponseLine:(NSString *)line {
+    _loop->AddToolResult([call cppCall], ToStd(line));
+}
+
+- (NSUInteger)pendingToolCallsCount {
+    return static_cast<NSUInteger>(_loop->PendingToolCalls().size());
+}
+
+- (NSUInteger)transcriptSize {
+    return static_cast<NSUInteger>(_loop->TranscriptSize());
+}
+
+- (RISEAgentChatRole)transcriptRoleAtIndex:(NSUInteger)index {
+    // TranscriptAt is bounds-safe (returns a static empty entry whose
+    // role is User), so no extra range check is needed here.
+    switch (_loop->TranscriptAt(static_cast<std::size_t>(index)).role) {
+        case Agent::ChatTranscriptEntry::Role::Assistant:
+            return RISEAgentChatRoleAssistant;
+        case Agent::ChatTranscriptEntry::Role::ToolResults:
+            return RISEAgentChatRoleToolResults;
+        case Agent::ChatTranscriptEntry::Role::User:
+        default:
+            return RISEAgentChatRoleUser;
+    }
+}
+
+- (NSString *)transcriptDisplayTextAtIndex:(NSUInteger)index {
+    return ToNS(_loop->TranscriptAt(static_cast<std::size_t>(index)).displayText);
+}
+
+@end

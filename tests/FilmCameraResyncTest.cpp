@@ -258,7 +258,7 @@ static void TestFilmChunkAfterCamera()
 	std::cout << "Testing parsing `film` chunk AFTER `pinhole_camera` chunk..." << std::endl;
 
 	const char* sceneText =
-		"RISE ASCII SCENE 6\n"
+		"RISE ASCII SCENE 7\n"
 		"\n"
 		"film\n"
 		"{\n"
@@ -306,7 +306,7 @@ static void TestFilmChunkAfterCamera()
 
 	Job* pJob = new Job();
 	IScenePriv* scene = pJob->GetScene();
-	Check( pJob->LoadAsciiScene( tmpPath ), "scene loads" );
+	Check( pJob->LoadAsciiSceneViaCst( tmpPath ), "scene loads" );
 
 	// First `film` chunk installs 100x100, camera adds at 100x100,
 	// second `film` chunk overrides to 1920x1080 and resyncs the

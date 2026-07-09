@@ -19,12 +19,15 @@ namespace RISE
 
     void DirtyTracker::Clear()
     {
-        // Transient channels only — `mSessionCreated` persists so the
-        // managed block keeps re-emitting created-entity chunks on
-        // every subsequent same-session save.
+        // Transient channels only — `mSessionCreated` persists, a
+        // byte-splice-era rule (the deleted save engine re-emitted
+        // created-entity chunks into its managed block on every
+        // subsequent same-session save); kept so the channel still
+        // means "created at any point this session".
         mNames.clear();
         mEntityDirty.clear();
         mCreatedPending.clear();
+        mCstHeadDirty = false;
     }
 
     bool DirtyTracker::Contains( const std::string& objectName ) const

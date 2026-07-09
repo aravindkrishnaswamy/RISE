@@ -662,7 +662,9 @@ static void TestBox()
 static void TestCylinderOne( char axis )
 {
 	const Scalar r = 1.0, h = 2.5;
-	CylinderGeometry* g = new CylinderGeometry( axis, r, h );
+	// Side-wall UV roundtrip: use the open tube (capped=false) so every ray hit
+	// lands on the side surface that CylinderTessParamToPos parameterises.
+	CylinderGeometry* g = new CylinderGeometry( axis, r, h, false );
 
 	// CylinderGeometry::RegenerateData (private) sets axisMin = -h/2, axisMax = h/2.
 	const Scalar axisMin = -h * 0.5;

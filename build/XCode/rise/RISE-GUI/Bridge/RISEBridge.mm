@@ -45,6 +45,8 @@
 #include "Rendering/TargetFormat.h"
 #include "Rendering/ViewTransform.h"
 #include "Interfaces/IFrameEncoder.h"
+#include "SceneEditor/SceneEditController.h"
+#include "SceneEditor/CancellableProgressCallback.h"
 
 #include <atomic>
 #include <memory>
@@ -524,11 +526,77 @@ public:
 };
 
 // ============================================================
+// Model-B F2 slice S4: production-render coordinator routing
+// ============================================================
+//
+// Runs `doRasterize` (the platform-specific "actually call
+// Job::Rasterize()/RasterizeAnimationUsingOptions()/RasterizeRegion()"
+// closure) through `controller`'s single-slot coordinator when a
+// controller is attached, so a production render can never overlap the
+// interactive loop or an agent render inside Rasterize() -- see
+// SceneEditController::SubmitProductionRenderSync's header doc for the
+// full rationale.  NULL-safe: with no controller (headless / no scene
+// loaded / between viewport-bridge teardown and the next one's init),
+// this falls back to calling `doRasterize` directly on the calling
+// thread, i.e. today's pre-S4 behaviour.
+//
+// Fix-round S4-1 (throw-path UAF): the actual progress/cancel
+// composition -- including the RAII teardown of both the Job's
+// progress slot AND mCancelProgress's `inner` on every exit, including
+// a throw out of `doRasterize` (OIDN denoise is a documented real
+// throw site) -- now lives ONCE in
+// SceneEditController::RunProductionRenderComposed (pure
+// IProgressCallback plumbing, no AppKit dependency, directly tested by
+// tests/AgentRenderAsyncTest.cpp).  This wrapper only adapts BOOL <->
+// bool at the Objective-C++ boundary.  See that method's header doc for
+// the full composition rationale and the guard-order/mMutex-exclusion
+// proof.
+//
+// Fix-round 2 (Windows cancel regression): `guiProgress` is passed
+// through EXPLICITLY as the composed callback's `inner` -- this is
+// `_progressCallback`, the persistent BlockProgressCallback that
+// -setProgressBlock: installs on the Job for the app's whole lifetime
+// (see that method, ~line 759).  Because it is persistent, it is ALSO
+// what job->GetProgress() would read at composition time -- unlike
+// Windows, where startRender/startAnimationRender deliberately do not
+// install their per-render adapter on the Job when a controller is
+// attached.  Passing it explicitly here (rather than continuing to
+// rely on RunProductionRenderComposed re-deriving it via
+// job->GetProgress()) keeps both platform adapters symmetric under one
+// explicit contract instead of two platforms quietly relying on
+// different implicit ones.
+static BOOL RunProductionRenderThroughController(
+    IJobPriv* job,
+    SceneEditController* controller,
+    const String& clientLabel,
+    IProgressCallback* guiProgress,
+    std::function<BOOL()> doRasterize)
+{
+    if (!job) {
+        return doRasterize();
+    }
+    return SceneEditController::RunProductionRenderComposed(
+        *job, controller, clientLabel, guiProgress,
+        [&doRasterize]() -> bool { return doRasterize() ? true : false; })
+        ? YES : NO;
+}
+
+// ============================================================
 // RISEBridge implementation
 // ============================================================
 @implementation RISEBridge {
     IJobPriv* _job;
     BlockProgressCallback* _progressCallback;
+    // Model-B F2 slice S4: borrowed, NULL-safe.  Registered by
+    // RISEViewportBridge (via -attachSceneEditController:) once its
+    // SceneEditController exists; cleared back to NULL before that
+    // controller is destroyed.  See -attachSceneEditController:'s header
+    // doc for the full lifetime contract.  When non-NULL, the production
+    // render entry points (-rasterize / -rasterizeAnimation /
+    // -rasterizeRegionLeft:top:right:bottom:) route through it instead of
+    // calling Job::Rasterize() directly, so a production render can never
+    // overlap the interactive loop or an agent render inside Rasterize().
+    SceneEditController* _viewportController;
     // L5a round-5 — TWO independent ViewportFrameStores, one per
     // path.  Production VFS is for the full-quality renderer
     // (Render / Render-Animation buttons), with per-tile updates
@@ -587,6 +655,7 @@ public:
 
         _job = nullptr;
         RISE_CreateJobPriv(&_job);
+        _viewportController = nullptr;
 
         // L5d — interactive GUI: drop file_rasterizeroutput chunks
         // at parse time so loading a scene doesn't auto-write
@@ -687,7 +756,14 @@ public:
 
 - (BOOL)loadAsciiScene:(NSString *)filePath {
     if (!_job) return NO;
-    return _job->LoadAsciiScene([filePath UTF8String]) ? YES : NO;
+    const char* path = [filePath UTF8String];
+    // P5 (Model-B, Slice 6c-3a): scene load is now CST-ONLY.  LoadAsciiSceneAuto classifies the scene -- a
+    // native-v7 scene loads via the canonical CST path (retains the CST Document so scene_variant switching +
+    // CST edit/save work); an un-migrated scene HARD-FAILS (returns NO) with a migrator pointer -- the legacy
+    // streaming parser was retired.  A derive error on the native-v7 branch is a REAL, visible failure
+    // (returns NO) -- it is NOT masked by a legacy retry.  There is no env escape hatch (RISE_FORCE_LEGACY_LOAD
+    // and the old opt-in RISE_LOAD_VIA_CST are both gone).
+    return _job->LoadAsciiSceneAuto(path) ? YES : NO;
 }
 
 - (BOOL)clearAll {
@@ -1122,8 +1198,10 @@ public:
 
     [self ensureVFSAttachedToRasterizer:rasterizer];
 
-    BOOL result = _job->Rasterize() ? YES : NO;
-    return result;
+    IJobPriv* job = _job;
+    return RunProductionRenderThroughController(
+        _job, _viewportController, String("gui_rasterize"), _progressCallback,
+        [job]() -> BOOL { return job->Rasterize() ? YES : NO; });
 }
 
 - (void)setAnimationVideoOutputPath:(NSString *)path {
@@ -1155,7 +1233,10 @@ public:
         movieOutput->release();  // rasterizer now owns it (refcount=1)
     }
 
-    BOOL result = _job->RasterizeAnimationUsingOptions() ? YES : NO;
+    IJobPriv* job = _job;
+    BOOL result = RunProductionRenderThroughController(
+        _job, _viewportController, String("gui_rasterize_animation"), _progressCallback,
+        [job]() -> BOOL { return job->RasterizeAnimationUsingOptions() ? YES : NO; });
 
     // Finalize the video file after rendering completes.
     // The movieOutput pointer is still valid because the rasterizer holds a reference.
@@ -1187,7 +1268,12 @@ public:
 
     [self ensureVFSAttachedToRasterizer:rasterizer];
 
-    return _job->RasterizeRegion(left, top, right, bottom) ? YES : NO;
+    IJobPriv* job = _job;
+    return RunProductionRenderThroughController(
+        _job, _viewportController, String("gui_rasterize_region"), _progressCallback,
+        [job, left, top, right, bottom]() -> BOOL {
+            return job->RasterizeRegion(left, top, right, bottom) ? YES : NO;
+        });
 }
 
 #pragma mark - Render-time ETA estimator
@@ -1252,6 +1338,13 @@ public:
     // resolution-thrash interfering with production buffers).
     [self ensureInteractiveVFSCreated];
     return static_cast<void*>(_interactiveVFS);
+}
+
+- (void)attachSceneEditController:(void *)opaqueController {
+    // See the header doc for the full lifetime contract (RISEViewportBridge
+    // is the sole caller; registers after creating its controller, clears
+    // to NULL before destroying it).
+    _viewportController = static_cast<SceneEditController*>(opaqueController);
 }
 
 @end

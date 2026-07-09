@@ -90,10 +90,13 @@ each section against your scene:
    at distance `r` (≈ 2800 for r ≈ 30).  This trap recurs — the
    sweep_instances test scene hit it on first authoring (2026-06-11)
    even with the convention doc open.
-3. **§4 Colour spaces.**  `uniformcolor_painter` defaults to sRGB.  If
-   you typed a perceptual hex code, use `colorspace sRGB`.  If you
-   typed a numerical weight (`0.5` to mean "half"), use
-   `Rec709RGB_Linear`.  Normal maps need `ROMMRGB_Linear`.
+3. **§4 Colour spaces.**  `uniformcolor_painter` defaults to
+   `Rec709RGB_Linear` (since 2026-05): a typed numerical weight
+   (`0.5` to mean "half") is used as-is.  If you typed a perceptual
+   hex code / colour-picker value, declare `colorspace sRGB` so it is
+   gamma-decoded.  Normal maps must stay linear — post-Stage-B the
+   verbatim-store idiom is `Rec709RGB_Linear` (`ROMMRGB_Linear` now
+   applies a real conversion that warps normal vectors).
 4. **§5 standard_object transforms.**  Don't combine `matrix`,
    `quaternion`, and `orientation` — pick one.  glTF imports always
    use `matrix`.  Hand-authored scenes usually use Euler `orientation`.
@@ -115,7 +118,6 @@ uniformcolor_painter
 {
     name        ctrl_white
     color       0.8 0.8 0.8
-    colorspace  sRGB
 }
 
 lambertian_material
@@ -124,7 +126,11 @@ lambertian_material
     reflectance ctrl_white
 }
 
-sphere_geometry { name ctrl_sph radius 0.6 }
+sphere_geometry
+{
+    name   ctrl_sph
+    radius 0.6
+}
 
 standard_object
 {

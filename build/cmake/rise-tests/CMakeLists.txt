@@ -315,6 +315,8 @@ foreach(test_src ${TEST_SOURCES})
         ${OPENPGL_LIBS}
         user32
         gdi32
+        ws2_32                     # AgentLoopbackHttpServer / SocketCommunications (Winsock)
+        bcrypt                     # per-launch bearer-token CSPRNG (BCryptGenRandom)
     )
 
     set_target_properties(${test_name} PROPERTIES

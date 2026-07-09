@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 #############################################################################################################
 #   Glass Teapot (Close, VCM reference): identical setup to sms_teapot_close_sms.RISEscene but rendered
 #   with the Vertex Connection and Merging integrator as the ground-truth photon-map reference to compare

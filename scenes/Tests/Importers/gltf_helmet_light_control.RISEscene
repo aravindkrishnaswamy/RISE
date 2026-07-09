@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 # Light-control scene: identical camera + lights to gltf_import_damaged_helmet
 # but with a known Lambertian-white sphere instead of the helmet asset.  If
 # this renders bright, the helmet's darkness is a metallic-without-IBL PBR
