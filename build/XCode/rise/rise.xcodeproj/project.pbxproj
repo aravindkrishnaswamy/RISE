@@ -6243,17 +6243,14 @@
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
-					"$(HOME)/working/deps/openpgl-0.7.1/include",
 				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				OPTIMIZATION_CFLAGS = "-O0";
 				OTHER_CPLUSPLUSFLAGS = (
@@ -6303,17 +6300,14 @@
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
-					"$(HOME)/working/deps/openpgl-0.7.1/include",
 				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
@@ -6362,17 +6356,14 @@
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
-					"$(HOME)/working/deps/openpgl-0.7.1/include",
 				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
@@ -6544,17 +6535,14 @@
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
-					"$(HOME)/working/deps/openpgl-0.7.1/include",
 				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LLVM_LTO = YES;
 				OTHER_CPLUSPLUSFLAGS = (
@@ -6686,7 +6674,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
-					"$(HOME)/working/deps/openpgl-0.7.1/include",
 					"$(SRCROOT)/../../../src/Library/**",
 					/opt/homebrew/include/OpenEXR,
 					/opt/homebrew/include/Imath,
@@ -6696,11 +6683,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
@@ -6805,7 +6790,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
-					"$(HOME)/working/deps/openpgl-0.7.1/include",
 					"$(SRCROOT)/../../../src/Library/**",
 					/opt/homebrew/include/OpenEXR,
 					/opt/homebrew/include/Imath,
@@ -6815,11 +6799,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LLVM_LTO = YES_THIN;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
@@ -6924,7 +6906,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
-					"$(HOME)/working/deps/openpgl-0.7.1/include",
 					"$(SRCROOT)/../../../src/Library/**",
 					/opt/homebrew/include/OpenEXR,
 					/opt/homebrew/include/Imath,
@@ -6934,11 +6915,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LLVM_LTO = YES_THIN;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
@@ -7043,7 +7022,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
-					"$(HOME)/working/deps/openpgl-0.7.1/include",
 					"$(SRCROOT)/../../../src/Library/**",
 					/opt/homebrew/include/OpenEXR,
 					/opt/homebrew/include/Imath,
@@ -7053,11 +7031,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					/opt/homebrew/lib,
-					"$(HOME)/working/deps/openpgl-0.7.1/lib",
 				);
 				LLVM_LTO = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
