@@ -91,6 +91,24 @@ static const char* const kScene =
 	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
 	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
 
+// Round-2 P2-A: the SAME scene, but with NO rasterizer chunk at all --
+// Job::GetRasterizer() resolves to nullptr on this head.  Used to prove a
+// draft render does not need a production rasterizer to exist (the
+// standard_shader chunk is dropped too since it exists only to be resolved
+// by the (now absent) rasterizer chunk's Finalize).
+static const char* const kSceneNoRasterizer =
+	"RISE ASCII SCENE 7\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
 // Write `text` to a temp file and return its path (or "" on failure).
 static std::string WriteTemp( const char* name, const std::string& text )
 {
@@ -134,6 +152,7 @@ static void RunPreS2HardeningTests();          // Model-B F2 slice S1 pre-S2 har
 static void RunSampleCountOverrideTests();     // Model-B F2 slice S3 (EffectiveRenderConfig) -- defined below, called from main()
 static void RunDraftQualityTests();            // Toolkit slice 2 (quality:"draft") -- defined below, called from main()
 static void RunDraftCancelTest();              // Toolkit slice 2 draft-quality cancel mid-flight -- defined below, called from main()
+static void RunNoRasterizerDraftTest();        // Round-2 P2-A: draft render on a rasterizer-less head -- defined below, called from main()
 
 static void RunCoreTests()
 {
@@ -1835,6 +1854,40 @@ static void RunDraftCancelTest()
 	const std::string scenePath = WriteTemp( "rise_agent_draft_cancel.RISEscene", kScene );
 	Check( !scenePath.empty(), "wrote the draft-cancel scene to a temp file" );
 
+	// Round-2 P2-C: measure an UNINTERRUPTED baseline at the SAME large
+	// (3000x3000) dims FIRST, on a wholly SEPARATE Job/session (no
+	// controller attached, so there is no cancel machinery in play at
+	// all) -- this gives the promptness assertion below an IN-TEST
+	// reference point that self-scales with however fast/slow this CI
+	// machine happens to be at 3000x3000 draft AO shading, instead of a
+	// hardcoded wall-clock millisecond threshold that would be flaky
+	// across machines.
+	double baselineMs = 0.0;
+	{
+		Job* baselineJob = new Job();
+		Check( baselineJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "draft-cancel P2-C: baseline Job loads the same scene" );
+
+		std::unique_ptr<AgentSession> baselineSession = AgentSession::WrapJob( baselineJob );
+		Check( baselineSession != nullptr, "draft-cancel P2-C: baseline AgentSession wraps the Job" );
+		if( baselineSession )
+		{
+			AgentRenderParams bp;
+			bp.quality = AgentRenderQuality::Draft;
+			bp.width   = 3000;
+			bp.height  = 3000;
+
+			const auto t0 = std::chrono::steady_clock::now();
+			const AgentRenderResult baselineRes = baselineSession->Render( bp );
+			const auto t1 = std::chrono::steady_clock::now();
+
+			Check( baselineRes.ok, "draft-cancel P2-C: uninterrupted 3000x3000 draft baseline render succeeds" );
+			baselineMs = std::chrono::duration<double, std::milli>( t1 - t0 ).count();
+			std::printf( "  [P2-C] uninterrupted baseline @3000x3000 draft: %.1f ms\n", baselineMs );
+		}
+		baselineJob->release();
+	}
+
 	Job* pJob = new Job();
 	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (draft-cancel test)" );
 
@@ -1852,6 +1905,7 @@ static void RunDraftCancelTest()
 		p.width   = 3000;
 		p.height  = 3000;
 
+		const auto cancelT0 = std::chrono::steady_clock::now();
 		const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( p );
 		Check( ar.accepted, "the draft async render is accepted" );
 
@@ -1872,7 +1926,40 @@ static void RunDraftCancelTest()
 		session->CancelAsyncRender( ar.renderJobId );
 
 		const bool completed = session->RenderWait( ar.renderJobId, 10000 );
+		const auto cancelT1 = std::chrono::steady_clock::now();
 		Check( completed, "render_wait observes the cancelled draft render complete within the 10s bound" );
+
+		// Round-2 P2-C MONEY ASSERTION (promptness): a cancelled draft
+		// render must complete in a SMALL FRACTION of the uninterrupted
+		// baseline measured above, not merely report ok=false AFTER
+		// running to completion anyway. This is the regression this test
+		// previously could NOT catch: without doDraftRenderWork's
+		// ephemeral SetProgressCallback wiring (AgentSession.cpp
+		// ~2202-2204 installing mController->AgentRenderProgress() on the
+		// ephemeral rasterizer), the cancel flag is set but nothing
+		// downstream of RasterizeScene() ever polls it, so the render
+		// silently runs to completion at roughly the baseline's wall
+		// time -- exactly the "boolean assertions pass, promptness
+		// silently regresses" gap a LIVE reviewer proved by hand: ~2550ms
+		// (progress callback NOT wired -- runs to completion) vs ~55ms
+		// (wired -- genuinely interrupted), a ~46x gap. MARGIN RATIONALE:
+		// a 4x-margin 25% threshold (cancelled < 25% of baseline) easily
+		// absorbs CI machine noise/scheduling jitter around the true ~2%
+		// ratio while still failing hard on a regression back to "cancel
+		// is accepted but doesn't actually interrupt the render" (which
+		// would land within a few percent of 100%, nowhere close to under
+		// 25%).
+		const double cancelledMs = std::chrono::duration<double, std::milli>( cancelT1 - cancelT0 ).count();
+		std::printf( "  [P2-C] cancelled render (submit -> render_wait): %.1f ms (baseline %.1f ms)\n",
+		             cancelledMs, baselineMs );
+		if( baselineMs > 0.0 ) {
+			char msg[256];
+			std::snprintf( msg, sizeof( msg ),
+				"MONEY ASSERTION (P2-C promptness): cancelled draft render took %.1fms, "
+				"under 25%% of the %.1fms uninterrupted baseline (ratio %.3f)",
+				cancelledMs, baselineMs, cancelledMs / baselineMs );
+			Check( cancelledMs < baselineMs * 0.25, msg );
+		}
 
 		const AgentSession::AgentLastAsyncRenderResult cached = session->LastAsyncRenderResult( ar.renderJobId );
 		Check( cached.found, "the cached async result names this draft job" );
@@ -1902,6 +1989,62 @@ static void RunDraftCancelTest()
 	std::printf( "=== draft-quality cancel mid-flight: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Round-2 P2-A regression lock: a scene with NO active rasterizer chunk
+// at all (kSceneNoRasterizer -- Job::GetRasterizer() resolves nullptr)
+// must still be able to run a quality:"draft" render, since
+// doDraftRenderWork never dereferences the production rasterizer.  A
+// PRODUCTION render on the SAME rasterizer-less head must still fail
+// honestly with "no active rasterizer" -- proving the fix narrowed the
+// gate to the production branch rather than removing the check
+// entirely.
+//////////////////////////////////////////////////////////////////////
+static void RunNoRasterizerDraftTest()
+{
+	std::printf( "=== AgentProposeRenderTest: Round-2 P2-A no-rasterizer draft render ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_no_rasterizer.RISEscene", kSceneNoRasterizer );
+	Check( !scenePath.empty(), "wrote the no-rasterizer scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+	       "Job loads the rasterizer-less native-v7 scene via the CST path" );
+	Check( pJob->GetRasterizer() == nullptr,
+	       "RED-PROVE the fixture: the scene truly has NO active rasterizer" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the rasterizer-less Job" );
+	if( session )
+	{
+		AgentRenderParams pDraft;
+		pDraft.quality = AgentRenderQuality::Draft;
+		const AgentRenderResult draftRes = session->Render( pDraft );
+		Check( draftRes.ok,
+		       "MONEY ASSERTION (P2-A): a draft render succeeds on a scene with NO active rasterizer" );
+		Check( draftRes.renderMode == "draft", "the draft result reports renderMode==\"draft\"" );
+		Check( draftRes.width > 0 && draftRes.height > 0, "the draft render produced a non-empty image" );
+		Check( !draftRes.png.empty(), "the draft render produced non-empty PNG bytes" );
+
+		AgentRenderParams pProd;   // default -> quality:Production
+		const AgentRenderResult prodRes = session->Render( pProd );
+		Check( !prodRes.ok,
+		       "a PRODUCTION render on the SAME rasterizer-less scene still fails honestly "
+		       "(the gate narrowed to production, it was not removed)" );
+		Check( prodRes.message == "no active rasterizer",
+		       "the production failure names the exact pre-existing reason (\"no active rasterizer\")" );
+
+		// A plain legacy Render(int) call (quality defaults to Production
+		// via AgentRenderParams' default) must fail the same honest way.
+		const AgentRenderResult prodRes2 = session->Render( -1 );
+		Check( !prodRes2.ok, "Render(-1) (legacy entry point) on the rasterizer-less scene also fails honestly" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== Round-2 P2-A no-rasterizer draft render: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunCoreTests();
@@ -1913,6 +2056,7 @@ int main()
 	RunSampleCountOverrideTests();
 	RunDraftQualityTests();
 	RunDraftCancelTest();
+	RunNoRasterizerDraftTest();
 
 	std::printf( "=== AgentProposeRenderTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

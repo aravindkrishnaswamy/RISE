@@ -1844,8 +1844,15 @@ namespace RISE
 		{
 			// Legacy entry point: build an all-absent AgentRenderParams so
 			// this is BYTE-COMPATIBLE with the pre-preview-render behaviour
-			// (samplesOverride is folded in -- still advisory/ignored, same
-			// as before; see RenderCore_'s doc for why).
+			// apart from `samplesOverride`, which forwards into
+			// params.samples below and is honoured IDENTICALLY to a direct
+			// Render(AgentRenderParams) call -- Model-B F2 slice S3 gave
+			// this a real, non-mutating effect (IRasterizer::
+			// SetSampleCountOverride) for the pixel-based rasterizer family
+			// (PT, spectral PT, BDPT, VCM); on an unsupported rasterizer
+			// (MLT, photon-map-only, ...) it is honestly reported as NOT
+			// applied via res.samplesOverridden/res.message, never silently
+			// ignored.  See RenderCore_'s doc for the full mechanism.
 			AgentRenderParams params;
 			params.samples = samplesOverride;
 			return RenderCore_( params );
@@ -1900,37 +1907,51 @@ namespace RISE
 			// camera-pose overrides below -- never a CST edit).
 			const bool wantSamplesOverride = ( params.samples >= 1 );
 
-			// Fetch and null-check the live rasterizer BEFORE any mutation:
-			// RemoveRasterizerOutputs() unconditionally dereferences
-			// pRasterizer (Job::RemoveRasterizerOutputs has no null guard), so
-			// a head with no active rasterizer (or a re-derive that left it
-			// null) would crash if we removed outputs first.
-			IRasterizer* rast = mJob->GetRasterizer();
-			if( !rast ) {
-				res.ok = false;
-				res.message = "no active rasterizer";
-				return res;
-			}
-
-			// Round-3 additive wire field: report the ACTIVE rasterizer's
-			// registered type name (= its scene-file chunk keyword, e.g.
-			// "bdpt_pel_rasterizer") so the agent can observe which
-			// integrator a rasterizer insert_chunk activated.  Filled on
-			// BOTH the success and the render-failure paths below -- the
-			// active integrator is a property of the head, not of whether
-			// this particular render produced an image.
-			res.integrator = mJob->GetActiveRasterizerName();
-
-			// Toolkit slice 2 (quality:"draft"): computed once, right
-			// alongside `res.integrator` above, so it (and `res.renderMode`
-			// below) are set on every subsequent return path in this
-			// function -- nothing after this point ever resets either
-			// field.  `res.integrator` is DELIBERATELY left as the head's
-			// active (production) rasterizer's name in EITHER mode -- see
+			// Round-2 P2-A fix: compute isDraft/res.renderMode FIRST, before
+			// fetching/gating the live rasterizer below -- doDraftRenderWork
+			// (see its own doc) never dereferences the PRODUCTION rasterizer,
+			// its FrameStore, or mJob->RemoveRasterizerOutputs() at all, so a
+			// scene with NO active rasterizer chunk must still be able to
+			// run a draft render.  Pre-fix, the `!rast` bail-out below ran
+			// UNCONDITIONALLY before this was even computed, so a
+			// rasterizer-less head could never reach quality:"draft" though
+			// the draft path never needed `rast` in the first place.
+			// `res.integrator` is DELIBERATELY left as the head's active
+			// (production) rasterizer's name in EITHER mode -- see
 			// AgentRenderResult::renderMode's doc for why the two fields
 			// answer different questions.
 			const bool isDraft = ( params.quality == AgentRenderQuality::Draft );
 			res.renderMode = isDraft ? "draft" : "production";
+
+			// Round-3 additive wire field: report the ACTIVE rasterizer's
+			// registered type name (= its scene-file chunk keyword, e.g.
+			// "bdpt_pel_rasterizer") so the agent can observe which
+			// integrator a rasterizer insert_chunk activated.  Job::
+			// GetActiveRasterizerName() is a plain member-string accessor
+			// that defaults to "" (Job.h) -- null-safe with no active
+			// rasterizer at all, so this is safe to read regardless of
+			// isDraft/rast below.  Filled on BOTH the success and the
+			// render-failure paths below -- the active integrator is a
+			// property of the head, not of whether this particular render
+			// produced an image.
+			res.integrator = mJob->GetActiveRasterizerName();
+
+			// Fetch the live rasterizer.  Round-2 P2-A: the "!rast" bail-out
+			// now applies ONLY to the PRODUCTION branch -- gating it on
+			// `!isDraft` lets a rasterizer-less head still run a draft
+			// render.  `rast` is allowed to be null from here on: every
+			// site downstream that dereferences it either (a) lives inside
+			// doRenderWork's production body, which early-returns via
+			// doDraftRenderWork() BEFORE reaching any of them whenever
+			// isDraft is true -- and this same gate guarantees rast is
+			// non-null whenever isDraft is false -- or (b) is made
+			// null-tolerant explicitly (origSamples just below).
+			IRasterizer* rast = mJob->GetRasterizer();
+			if( !isDraft && !rast ) {
+				res.ok = false;
+				res.message = "no active rasterizer";
+				return res;
+			}
 
 			const bool wantFilmOverride =
 				( params.width > 0 && params.height > 0 );
@@ -1960,8 +1981,14 @@ namespace RISE
 			// actually returns true for THIS render, so a caller reading
 			// res.samplesOverridden gets an honest answer even when
 			// `wantSamplesOverride` was requested against an unsupported
-			// rasterizer.
-			const int origSamples = rast->GetSampleCountOverride();
+			// rasterizer.  Round-2 P2-A: `rast` may now be null here (a
+			// rasterizer-less head running a draft render) -- guard the
+			// dereference; -1 is the SAME "no override support" sentinel
+			// this already used for an opted-out rasterizer, and this value
+			// is only ever consulted from the PRODUCTION branch below, which
+			// cannot run when rast is null (the gate above refuses
+			// production in that case).
+			const int origSamples = rast ? rast->GetSampleCountOverride() : -1;
 			bool overrodeSamples = false;
 			// Toolkit slice 2 (quality:"draft"): the draft path's OWN
 			// sample-cap outcome, tracked separately from
@@ -2131,6 +2158,18 @@ namespace RISE
 				// denoises, but this stays exception-safe on general
 				// principle).  No production state is touched by this
 				// branch, so there is nothing else to restore.
+				//
+				// Round-2 P3 (documented limitation, deliberate): there is
+				// NO test coverage proving these three owned pointers are
+				// actually released on every exit path (vs. e.g. a future
+				// edit that reorders `pipelineGuard`'s construction past a
+				// throwing call, silently reintroducing a leak).  A leak of
+				// three small ray-caster/rasterizer objects per draft render
+				// is RSS-undetectable at this size against normal process
+				// noise, so a black-box "did memory grow" test would not
+				// reliably catch a regression here -- this comment is the
+				// tracked acknowledgment of that gap rather than a claim
+				// it's covered.
 				struct EphemeralPipelineGuard
 				{
 					IRasterizer*& r; IRayCaster*& p; IRayCaster*& q;

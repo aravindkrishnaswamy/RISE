@@ -222,7 +222,7 @@ namespace RISE
 					"materials/lighting/exposure/colour.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"samples\":{\"type\":\"number\",\"description\":"
-						"\"Optional sample-count override (currently advisory; the authored count is used). Under quality:draft this is instead a firm request CAPPED at 4.\"},"
+						"\"Optional sample-count override. Honoured by the pixel-based rasterizer family (PT, spectral PT, BDPT, VCM) via a transient, non-mutating setter -- check the result's samplesOverridden/effectiveSamples fields. On an unsupported rasterizer (MLT, photon-map-only, Auto's outer wrapper) the override is honestly reported as NOT applied, never silently ignored. Under quality:draft this is instead a firm request CAPPED at 4.\"},"
 						"\"width\":{\"type\":\"number\",\"description\":"
 						"\"Optional TRANSIENT preview width in pixels, clamped to [16,512]. Must be paired with height -- if only one of width/height is given, NEITHER is applied and the render silently proceeds at the scene's authored dimensions (not rejected); check previewWidth/previewHeight in the result to confirm an override took. Does not touch the document -- use 128-192 for cheap placement checks.\"},"
 						"\"height\":{\"type\":\"number\",\"description\":"
