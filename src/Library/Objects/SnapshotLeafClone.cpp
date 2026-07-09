@@ -274,8 +274,8 @@ const IMedium* RISE::Implementation::CloneMediumForSnapshot( const IMedium* medi
 					m->GetAbsorption(), m->GetScattering(), m->GetEmission(),
 					m->GetAbsorptionSpectral(), m->GetScatteringSpectral(), *phase );
 			} else {
-			RISE_API_CreateHomogeneousMediumWithEmission( &clone,
-				m->GetAbsorption(), m->GetScattering(), m->GetEmission(), *phase );
+				RISE_API_CreateHomogeneousMediumWithEmission( &clone,
+					m->GetAbsorption(), m->GetScattering(), m->GetEmission(), *phase );
 			}
 			if( clone ) {
 				GlobalLog()->PrintNew( clone, __FILE__, __LINE__, "snapshot homogeneous medium clone" );

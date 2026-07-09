@@ -738,15 +738,27 @@ static void TestSnapshotIsRenderComplete()
 		}
 	}
 
-	// --- A global homogeneous medium. ---
+	// --- A global homogeneous medium, WITH a spectral sigma_a(lambda) curve
+	//     bound (locks the snapshot clone's spectral routing: a spectral
+	//     medium cloned through the RGB-only factory would silently lose
+	//     its curves). ---
+	IFunction1D* pCurve = nullptr;
 	IPhaseFunction* pPhase = nullptr;
 	RISE_API_CreateIsotropicPhaseFunction( &pPhase );
 	Check( pPhase != nullptr, "[complete] phase function created" );
 	if( pPhase ) {
+		IPiecewiseFunction1D* pPw = nullptr;
+		RISE_API_CreatePiecewiseLinearFunction1D( &pPw );
+		if( pPw ) {
+			pPw->addControlPoint( std::make_pair( 400.0, 0.5 ) );
+			pPw->addControlPoint( std::make_pair( 700.0, 1.5 ) );
+			pCurve = pPw;   // keep one ref for the post-snapshot identity check
+		}
 		IMedium* pMedium = nullptr;
 		const RISEPel sigA( 0.1, 0.2, 0.3 );
 		const RISEPel sigS( 0.4, 0.5, 0.6 );
-		RISE_API_CreateHomogeneousMedium( &pMedium, sigA, sigS, *pPhase );
+		RISE_API_CreateHomogeneousMediumSpectral( &pMedium, sigA, sigS,
+			RISEPel( 0, 0, 0 ), pCurve, nullptr, *pPhase );
 		Check( pMedium != nullptr, "[complete] homogeneous medium created" );
 		if( pMedium ) {
 			pScene->SetGlobalMedium( pMedium );
@@ -794,7 +806,15 @@ static void TestSnapshotIsRenderComplete()
 		// Independent instance from the live medium.
 		Check( snapHom != dynamic_cast<const HomogeneousMedium*>( pScene->GetGlobalMedium() ),
 		       "[complete] snapshot medium is a distinct instance from live" );
+		// The spectral sigma_a(lambda) curve survives the clone (ref-shared,
+		// not dropped by the RGB-only factory) and the unbound sigma_s curve
+		// stays null.
+		Check( snapHom->GetAbsorptionSpectral() == pCurve,
+		       "[complete] snapshot medium ref-shares the authored sigma_a(lambda) curve" );
+		Check( snapHom->GetScatteringSpectral() == nullptr,
+		       "[complete] snapshot medium's unbound sigma_s curve stays null" );
 	}
+	safe_release( pCurve );
 
 	safe_release( snap );
 	pJob->release();
