@@ -2074,6 +2074,10 @@ static int FunctionSubNamespace( const std::string& paramName )
 	if( paramName == "function1d" ) return kFunc1DSubCat;
 	if( paramName == "transfer_red" || paramName == "transfer_green" ||
 	    paramName == "transfer_blue" || paramName == "transfer_alpha" ) return kFunc1DSubCat;
+	// homogeneous_medium's sigma(lambda) curves -> Function1D (pFunc1DManager,
+	// Job::AddHomogeneousMediumSpectral): dimension-precise so a same-named 2D
+	// function can never capture the edge.
+	if( paramName == "absorption_spectral" || paramName == "scattering_spectral" ) return kFunc1DSubCat;
 	if( paramName == "function2d" || paramName == "heightfield_function" ||
 	    paramName == "transfer_spectral" ) return kFunc2DSubCat;
 	// {Painter}-DECLARED slots the engine actually binds via pFunc2DManager (Function2D, which
