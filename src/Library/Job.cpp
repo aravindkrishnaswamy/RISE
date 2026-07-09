@@ -12,7 +12,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
-#include <cerrno>   // ERANGE: reject overflowed inline material scalars
+#include <cerrno>    // errno / ERANGE for non-finite + overflow rejection
+#include <climits>   // UINT_MAX for max_bounces validation
 #include "Geometry/SDFGeometry.h"
 #include <cstring>
 #define _USE_MATH_DEFINES
@@ -66,14 +67,27 @@ static bool ScalarLiteralIsNonFinite( const char* s )
 	char* end = nullptr;
 	errno = 0;
 	(void)std::strtod( s, &end );
-	if( end == s ) return false;		// not a number (painter name / garbage) -> not our concern
-	// strtod must have consumed the WHOLE token (only trailing whitespace remains),
-	// else it merely matched a nan/inf PREFIX of a longer painter name -- e.g. "inf"
-	// of "inflection_map", "nan" of "nan_mask".  Those are NAMES, not non-finite
-	// numbers, and must reach the painter lookup, so do not flag them.
-	while( *end == ' ' || *end == '\t' ) ++end;
-	if( *end != '\0' ) return false;
-	if( errno == ERANGE ) return true;	// overflow / underflow (e.g. 1e999)
+	if( end == s ) return false;		// strtod consumed nothing -> not a number (painter name / garbage)
+	// strtod DID parse a numeric prefix; this returns true iff that value is
+	// non-finite (nan/inf spelling or ERANGE overflow), regardless of what trails
+	// -- a trailing "# comment" or junk still yields a non-finite atof() value, so
+	// `inf # comment`, `1e999 # comment`, and `1e999x` are all flagged.  NOTE: this
+	// also flags a longer identifier with a nan/inf prefix (e.g. "inflection_map",
+	// which strtod reads as "inf"); callers whose slot accepts a painter NAME must
+	// therefore consult the painter manager FIRST and apply this only on the inline
+	// fallback (a registered name never reaches here).
+	if( errno == ERANGE ) {
+		// ERANGE is set on overflow (-> non-finite HUGE_VAL) AND underflow (-> finite
+		// 0/subnormal, e.g. 5e-400).  Only overflow is non-finite.  Distinguish at the
+		// STRING layer (value-level inf tests are unreliable under -ffast-math): an
+		// underflow literal carries a NEGATIVE exponent; overflow does not.  Scan
+		// ONLY the token strtod consumed ([s, end)) so trailing junk (e.g. the `e-`
+		// in `1e999xe-5`, whose atof is still +inf) cannot spoof it as underflow.
+		for( const char* q = s; q < end; ++q ) {
+			if( ( *q == 'e' || *q == 'E' ) && q + 1 < end && q[1] == '-' ) return false;	// underflow -> finite
+		}
+		return true;	// overflow -> non-finite
+	}
 	const char* p = s;
 	while( *p == ' ' || *p == '\t' ) ++p;
 	const char* t = ( *p == '+' || *p == '-' ) ? p + 1 : p;
@@ -2955,8 +2969,10 @@ bool Job::AddRandomWalkSSSMaterial(
 	char* mbEnd = nullptr;
 	errno = 0;
 	const long mb = std::strtol( maxBounces, &mbEnd, 10 );
-	if( mbEnd == maxBounces || mb < 0 || errno == ERANGE ) {
-		GlobalLog()->PrintEx( eLog_Error, "randomwalksss_material `%s`: `max_bounces` must be a non-negative integer (got `%s`)", name, maxBounces );
+	const char* mbTail = mbEnd;
+	while( *mbTail == ' ' || *mbTail == '\t' ) ++mbTail;	// tolerate trailing whitespace / # comment
+	if( mbEnd == maxBounces || ( *mbTail != '\0' && *mbTail != '#' ) || mb < 0 || errno == ERANGE || (unsigned long)mb > UINT_MAX ) {
+		GlobalLog()->PrintEx( eLog_Error, "randomwalksss_material `%s`: `max_bounces` must be a non-negative integer <= UINT_MAX (got `%s`)", name, maxBounces );
 		safe_release( pIOR );
 		safe_release( pAbsorption );
 		safe_release( pScattering );
@@ -3522,7 +3538,7 @@ bool Job::AddGGXMaterial(
 	const char* film_thickness
 	)
 {
-	if( ScalarLiteralIsNonFinite( tangent_rotation ) ) {
+	if( ScalarLiteralIsNonFinite( tangent_rotation ) && pPntManager->GetItem( tangent_rotation ) == 0 ) {
 		GlobalLog()->PrintEx( eLog_Error, "ggx_material `%s`: `tangent_rotation` must be a finite rotation (got `%s`)", name, tangent_rotation );
 		return false;
 	}
@@ -3661,7 +3677,7 @@ bool Job::AddGGXEmissiveMaterial(
 	const char* film_thickness
 	)
 {
-	if( ScalarLiteralIsNonFinite( tangent_rotation ) ) {
+	if( ScalarLiteralIsNonFinite( tangent_rotation ) && pPntManager->GetItem( tangent_rotation ) == 0 ) {
 		GlobalLog()->PrintEx( eLog_Error, "ggx_emissive_material `%s`: `tangent_rotation` must be a finite rotation (got `%s`)", name, tangent_rotation );
 		return false;
 	}
@@ -3812,7 +3828,7 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 	const char* anisotropy_rotation
 	)
 {
-	if( ScalarLiteralIsNonFinite( anisotropy_rotation ) ) {
+	if( ScalarLiteralIsNonFinite( anisotropy_rotation ) && pPntManager->GetItem( anisotropy_rotation ) == 0 ) {
 		GlobalLog()->PrintEx( eLog_Error, "pbrmetallicroughness_material `%s`: `anisotropy_rotation` must be a finite rotation (got `%s`)", name, anisotropy_rotation );
 		return false;
 	}
@@ -3828,7 +3844,7 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 			{ anisotropy_factor, "anisotropy_factor" },
 		};
 		for( unsigned int i = 0; i < sizeof(pbrScalars)/sizeof(pbrScalars[0]); ++i ) {
-			if( ScalarLiteralIsNonFinite( pbrScalars[i].v ) ) {
+			if( ScalarLiteralIsNonFinite( pbrScalars[i].v ) && pPntManager->GetItem( pbrScalars[i].v ) == 0 ) {
 				GlobalLog()->PrintEx( eLog_Error, "pbrmetallicroughness_material `%s`: `%s` must be a finite scalar (got `%s`)", name, pbrScalars[i].role, pbrScalars[i].v );
 				return false;
 			}
@@ -6262,7 +6278,7 @@ bool Job::AddAreaLightShaderOp(
 	// N (Phong/directionality exponent) is Reference-kind and falls back to atof()
 	// below when not a painter name, so an inline non-finite value would synthesise
 	// a non-finite exponent painter.  Reject up front (painter name / "none" not flagged).
-	if( ScalarLiteralIsNonFinite( N ) ) {
+	if( ScalarLiteralIsNonFinite( N ) && pPntManager->GetItem( N ) == 0 ) {
 		GlobalLog()->PrintEx( eLog_Error, "arealight_shaderop `%s`: `N` must be a finite exponent (got `%s`)", name, N );
 		return false;
 	}

@@ -494,6 +494,12 @@ namespace RISE
 			//! scalar material slots (roughness, exponent, etc.).
 			//!
 			//! `paramName` is just for diagnostic messages.
+			//!
+			//! DEAD CODE (no callers; the live resolver is Job.cpp's
+			//! ResolveScalarPainterArg).  If ever revived, its inline strtod
+			//! path must gain the same non-finite rejection (nan/inf spellings +
+			//! ERANGE overflow) the live path has, or it reintroduces the
+			//! non-finite-scalar bug.  Kept only as a reference.
 			[[maybe_unused]] static IScalarPainter* ResolveScalarPainter(
 				IJob& pJob,
 				const std::string& value,

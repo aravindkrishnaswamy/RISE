@@ -484,6 +484,55 @@ static void TestRejectInlineScalarOverflow()
 	IJobPriv* jro = LoadScene( rwOk, "rw_ok" );
 	Check( jro != nullptr, "randomwalk finite max_bounces (32) still loads" );
 	if( jro ) safe_release( jro );
+
+	// Non-finite followed by a # comment or junk must STILL be caught (inline
+	// comments are tolerated syntax; atof would yield inf).  Inline (unregistered)
+	// tangent_rotation on a lookup-first slot.
+	const char* rotComment =
+		"uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n"
+		"ggx_material\n{\n\tname ggx_c\n\trd col\n\trs col\n\talphax 0.1\n\talphay 0.1\n\tior 0.15\n\textinction 3.5\n\ttangent_rotation inf # deg\n}\n";
+	IJobPriv* jrc = LoadScene( rotComment, "ggx_c" );
+	Check( jrc == nullptr, "GGX `tangent_rotation inf # comment` REJECTED" );
+	if( jrc ) safe_release( jrc );
+
+	const char* rotJunk =
+		"uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n"
+		"ggx_material\n{\n\tname ggx_j\n\trd col\n\trs col\n\talphax 0.1\n\talphay 0.1\n\tior 0.15\n\textinction 3.5\n\ttangent_rotation 1e999x\n}\n";
+	IJobPriv* jrj = LoadScene( rotJunk, "ggx_j" );
+	Check( jrj == nullptr, "GGX `tangent_rotation 1e999x` REJECTED" );
+	if( jrj ) safe_release( jrj );
+
+	// max_bounces must reject a partial token (32junk) and a value that overflows
+	// unsigned int (4294967296 > UINT_MAX), not silently truncate/wrap.
+	const char* mbJunk =
+		"randomwalk_sss_material\n{\n\tname rw_j\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n\tmax_bounces 32junk\n}\n";
+	IJobPriv* jmj = LoadScene( mbJunk, "rw_j" );
+	Check( jmj == nullptr, "randomwalk `max_bounces 32junk` REJECTED" );
+	if( jmj ) safe_release( jmj );
+
+	const char* mbBig =
+		"randomwalk_sss_material\n{\n\tname rw_big\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n\tmax_bounces 4294967296\n}\n";
+	IJobPriv* jmb = LoadScene( mbBig, "rw_big" );
+	Check( jmb == nullptr, "randomwalk `max_bounces 4294967296` (>UINT_MAX) REJECTED" );
+	if( jmb ) safe_release( jmb );
+
+	// UNDERFLOW (5e-400) sets ERANGE but is a FINITE 0.0 -- it must NOT be rejected
+	// as non-finite (only overflow is).
+	const char* ufOk =
+		"randomwalk_sss_material\n{\n\tname rw_uf\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg 5e-400\n\troughness 0.0\n\tmax_bounces 32\n}\n";
+	IJobPriv* juf = LoadScene( ufOk, "rw_uf" );
+	Check( juf != nullptr, "underflow `g 5e-400` (finite 0) NOT rejected" );
+	if( juf ) safe_release( juf );
+
+	// OVERFLOW with trailing junk that itself contains `e-` (1e999e-5): strtod
+	// consumes `1e999` (overflow, atof -> +inf); the underflow scan must look only
+	// at the consumed token, not the trailing `e-5`, so this is still REJECTED.
+	const char* ofJunk =
+		"uniformcolor_painter\n{\n\tname col\n\tcolor 0.5 0.5 0.5\n}\n"
+		"ggx_material\n{\n\tname ggx_of\n\trd col\n\trs col\n\talphax 0.1\n\talphay 0.1\n\tior 0.15\n\textinction 3.5\n\ttangent_rotation 1e999e-5\n}\n";
+	IJobPriv* jof = LoadScene( ofJunk, "ggx_of" );
+	Check( jof == nullptr, "overflow-with-junk `1e999e-5` REJECTED (scan bounded to token)" );
+	if( jof ) safe_release( jof );
 }
 
 int main()
