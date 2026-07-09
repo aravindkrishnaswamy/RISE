@@ -1225,6 +1225,100 @@ static void RunQueryObjectAtWireTest()
 	pJob->release();
 }
 
+//----------------------------------------------------------------------
+// Review-round P2 (slice 3b): EVERY other scene in this file places its
+// objects at world y=0, so a y-axis regression -- a flipped or off-by-one
+// vertical pixel mapping in the objectmap render OR in query_object_at --
+// would pass the entire suite undetected (empirically proven: an injected
+// y-flip left all prior checks green while an adversarial probe caught it
+// immediately).  This test is that probe, made permanent: ONE sphere
+// clearly offset in world +Y.  With `up 0 1 0` and the file's standard
+// camera, world +Y is image TOP, i.e. SMALL pixel-y rows in the decoded
+// PNG (the render maps a pixel via Point2(x, height-y)).
+//   (a) render-side lock: the sphere's identity-colour bbox centre lands
+//       in the TOP half of the PNG (a render y-flip moves it to the
+//       bottom half);
+//   (b) query-side lock: query_object_at at the bbox centre HITS the
+//       sphere, and at the vertically MIRRORED point (same x, h-1-y)
+//       MISSES (a query-only y-flip swaps these two outcomes).
+// Assertions are derived from the render itself (bbox scan), so no
+// hand-tuned pixel coordinates can rot.
+//----------------------------------------------------------------------
+static const char* const kSceneVerticalAsym =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+	"standard_object\n{\n\tname high_ball\n\tgeometry geo\n\tmaterial mat\n\tposition 0 1.6 0\n}\n";
+
+static void RunVerticalAsymmetryTest()
+{
+	std::printf( "=== AgentObjectMapTest: vertical-asymmetry y-mapping lock (3b review P2) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_vertasym.RISEscene", kSceneVerticalAsym );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "vert-asym scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "vert-asym session" ); return; }
+
+	AgentRenderParams p;
+	p.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult r = session->Render( p );
+	Check( r.ok && r.legend.size() == 1, "vert-asym objectmap render succeeds with 1 object" );
+	Decoded dec;
+	Check( DecodePng( r.png, dec ), "vert-asym objectmap PNG decodes" );
+	const LegendEntry* le = FindLegend( r, "high_ball" );
+	Check( le != nullptr, "legend carries high_ball" );
+	if( !le || !r.ok ) { pJob->release(); std::remove( scenePath.c_str() ); return; }
+
+	unsigned char cb[3];
+	Check( HexToBytes( le->colorHex, cb ), "high_ball colorHex parses" );
+
+	// Scan the decoded PNG for the sphere's colour bbox.
+	unsigned int minX = dec.w, maxX = 0, minY = dec.h, maxY = 0;
+	unsigned int found = 0;
+	for( unsigned int y = 0; y < dec.h; ++y ) {
+		for( unsigned int x = 0; x < dec.w; ++x ) {
+			const Px& q = dec.at( x, y );
+			if( q[0] == cb[0] && q[1] == cb[1] && q[2] == cb[2] ) {
+				if( x < minX ) minX = x;
+				if( x > maxX ) maxX = x;
+				if( y < minY ) minY = y;
+				if( y > maxY ) maxY = y;
+				++found;
+			}
+		}
+	}
+	Check( found > 0, "the sphere's identity colour appears in the PNG" );
+	if( !found ) { pJob->release(); std::remove( scenePath.c_str() ); return; }
+
+	const unsigned int cx = ( minX + maxX ) / 2;
+	const unsigned int cy = ( minY + maxY ) / 2;
+
+	// (a) render-side lock: world +Y == image TOP == small pixel-y.
+	Check( cy < dec.h / 2,
+	       "MONEY ASSERTION (render y-mapping): the +Y sphere's bbox centre is in the TOP half of the PNG" );
+
+	// (b) query-side lock: hit at the bbox centre, miss at the mirrored y.
+	{
+		AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( (int)cx, (int)cy );
+		Check( qr.hit && qr.name == "high_ball",
+		       "MONEY ASSERTION (query y-mapping): query_object_at at the bbox centre hits high_ball" );
+	}
+	{
+		const unsigned int my = dec.h - 1 - cy;   // vertical mirror -- bottom half, empty
+		AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( (int)cx, (int)my );
+		Check( !qr.hit,
+		       "MONEY ASSERTION (query y-mapping): the vertically MIRRORED point misses (a y-flip would swap these)" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	RunCoreTests();
@@ -1243,6 +1337,7 @@ int main()
 	RunQueryObjectAtCameraOverrideTest();
 	RunQueryObjectAtNoRasterizerTest();
 	RunQueryObjectAtWireTest();
+	RunVerticalAsymmetryTest();
 
 	std::printf( "\nAgentObjectMapTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

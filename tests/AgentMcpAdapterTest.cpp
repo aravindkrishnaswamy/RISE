@@ -7,7 +7,8 @@
 //  Drives AgentMcpAdapter::HandleLine directly (no subprocess, no LLM):
 //    * initialize handshake -> protocolVersion/capabilities/serverInfo.
 //    * notifications/initialized -> RED-PROVED silent (empty response).
-//    * tools/list -> all 14 verbs present; spot-check 3 schemas' required
+//    * tools/list -> every dispatcher verb present (the count tracks the
+//      verb surface; see kExpectedNames below); spot-check 3 schemas' required
 //      fields + a description contains a known AgentRpc.h gotcha string.
 //    * tools/call happy path: read_document, render (sync), read_image
 //      (an MCP image content block with valid base64 PNG).
