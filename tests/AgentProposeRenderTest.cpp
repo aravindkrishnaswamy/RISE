@@ -132,6 +132,8 @@ static void RunMalformedCameraOverrideTests(); // P1-B -- defined below, called 
 static void RunRenderJobIdTests();             // Model-B F2 slice S1 -- defined below, called from main()
 static void RunPreS2HardeningTests();          // Model-B F2 slice S1 pre-S2 hardening -- defined below, called from main()
 static void RunSampleCountOverrideTests();     // Model-B F2 slice S3 (EffectiveRenderConfig) -- defined below, called from main()
+static void RunDraftQualityTests();            // Toolkit slice 2 (quality:"draft") -- defined below, called from main()
+static void RunDraftCancelTest();              // Toolkit slice 2 draft-quality cancel mid-flight -- defined below, called from main()
 
 static void RunCoreTests()
 {
@@ -1645,6 +1647,261 @@ static void RunSampleCountOverrideTests()
 	std::printf( "=== sample-count override: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Toolkit slice 2: `quality:"draft"|"production"` on the agent `render`
+// verb -- an EPHEMERAL, cheap-rasterizer override (a wholly separate
+// InteractiveMaterialPreviewPipeline preview render), NO scene mutation.
+// See AgentSession.h's AgentRenderQuality / AgentRenderParams::quality /
+// AgentRenderResult::renderMode docs for the full contract this proves:
+//
+//   (a) byte-identity: a draft render never touches the retained CST
+//       Document (same non-mutation contract as the samples/film/camera
+//       overrides above).
+//   (b) MONEY ASSERTION (deterministic cheapness): a draft render CAPS
+//       `samples` at 4 regardless of the requested value, and reports
+//       the cap honestly in `message` -- never measured by wall-clock.
+//   (c) an in-cap request is honored verbatim, not silently forced.
+//   (d) production is UNCHANGED: absent/explicit quality:"production"
+//       reports renderMode=="production" and the SAME `integrator` every
+//       pre-existing test in this file already expects.
+//////////////////////////////////////////////////////////////////////
+static void RunDraftQualityTests()
+{
+	std::printf( "=== AgentProposeRenderTest: Toolkit slice 2 (quality:\"draft\") ===\n" );
+
+	//------------------------------------------------------------------
+	// (a) RED-PROVE byte-identity: ReadDocument() before/after a DRAFT
+	//     render is IDENTICAL -- the ephemeral preview pipeline never
+	//     touches the retained CST Document, exactly like the production
+	//     samples/film/camera overrides above.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_draft_byteidentity.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the draft byte-identity scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (draft byte-identity test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (draft byte-identity test)" );
+		if( session )
+		{
+			const std::string beforeDoc = session->ReadDocument();
+
+			AgentRenderParams p;
+			p.quality = AgentRenderQuality::Draft;
+			const AgentRenderResult r = session->Render( p );
+			Check( r.ok, "the draft render succeeds" );
+			Check( r.renderMode == "draft", "the result reports renderMode==\"draft\"" );
+			Check( r.width > 0 && r.height > 0, "the draft render produced a non-empty image" );
+
+			const std::string afterDoc = session->ReadDocument();
+			Check( afterDoc == beforeDoc,
+			       "MONEY ASSERTION (byte-identity): ReadDocument() is BYTE-IDENTICAL before and after a draft render -- "
+			       "the ephemeral preview pipeline never touches the retained CST Document" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (b) RED-PROVE deterministic cheapness: a draft render honours the
+	//     kDraftMaxSamples==4 cap even when a much larger `samples` is
+	//     requested -- asserted via the STRUCTURED result fields, never
+	//     wall-clock (a slow CI machine must not make this flaky).
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_draft_samplescap.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the draft samples-cap scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (draft samples-cap test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (draft samples-cap test)" );
+		if( session )
+		{
+			AgentRenderParams p;
+			p.quality = AgentRenderQuality::Draft;
+			p.samples = 64;   // far above the draft cap -- must be clamped, not honoured verbatim
+			const AgentRenderResult r = session->Render( p );
+			Check( r.ok, "the over-requested-samples draft render succeeds" );
+			Check( r.renderMode == "draft", "the result reports renderMode==\"draft\"" );
+			Check( r.samplesOverridden, "the draft pipeline accepts a (capped) sample-count override" );
+			Check( r.effectiveSamples == 4,
+			       "MONEY ASSERTION (cap): effectiveSamples reads back 4 (the draft cap), NOT the requested 64" );
+			Check( r.message.find( "caps samples at 4" ) != std::string::npos,
+			       "MONEY ASSERTION (honesty): the result message names the draft sample cap" );
+			Check( r.message.find( "64" ) != std::string::npos,
+			       "the honest message names the ORIGINALLY REQUESTED count (64)" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (c) A draft request WITHIN the cap (samples=2) is honoured
+	//     verbatim, not silently forced to some other value -- and NOT
+	//     reported as capped.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_draft_samplesunder.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the draft under-cap scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (draft under-cap test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (draft under-cap test)" );
+		if( session )
+		{
+			AgentRenderParams p;
+			p.quality = AgentRenderQuality::Draft;
+			p.samples = 2;
+			const AgentRenderResult r = session->Render( p );
+			Check( r.ok, "the under-cap draft render succeeds" );
+			Check( r.effectiveSamples == 2, "a within-cap request (2) is honoured verbatim, not forced to the cap" );
+			Check( r.message.find( "caps samples at 4" ) == std::string::npos,
+			       "the message does NOT claim a cap fired when the request was already within the cap" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (d) Absent `quality` -> today's EXACT production behaviour: the
+	//     result reports renderMode=="production" and `integrator` is
+	//     STILL the head's active rasterizer -- unchanged from every
+	//     pre-existing test in this file (RunCoreTests etc.), which
+	//     never set `quality` at all.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_draft_productiondefault.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the production-default scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (production-default test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (production-default test)" );
+		if( session )
+		{
+			const AgentRenderResult r1 = session->Render( -1 );
+			Check( r1.ok, "a plain Render(-1) succeeds" );
+			Check( r1.renderMode == "production", "Render(-1) (absent quality) reports renderMode==\"production\"" );
+			Check( r1.integrator == "pathtracing_pel_rasterizer", "integrator names the scene's authored PT rasterizer" );
+
+			AgentRenderParams p;   // quality left at its default (Production)
+			const AgentRenderResult r2 = session->Render( p );
+			Check( r2.ok, "a default-constructed AgentRenderParams render succeeds" );
+			Check( r2.renderMode == "production", "a default-constructed AgentRenderParams reports renderMode==\"production\"" );
+
+			AgentRenderParams p3;
+			p3.quality = AgentRenderQuality::Production;   // explicit, same as default
+			const AgentRenderResult r3 = session->Render( p3 );
+			Check( r3.ok, "an explicit quality:Production render succeeds" );
+			Check( r3.renderMode == "production", "an explicit quality:Production render reports renderMode==\"production\"" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	std::printf( "=== Toolkit slice 2 (quality:\"draft\"): %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Toolkit slice 2: cancel MID-FLIGHT on a draft render.  Reuses this
+// file's existing controller-attached idiom (a plain SceneEditController,
+// Start(suppressInitialRender=true) -- see RunRenderJobIdTests' (b) part
+// 2 and RunSampleCountOverrideTests) plus AgentSession's own RenderAsync /
+// CancelAsyncRender / RenderWait surface.  A LARGE film-dims override
+// (900x900) makes the draft preview pipeline's per-pixel AO shading take
+// long enough (many pixels, many tiles) that a cancel shortly after
+// submission lands mid-flight rather than after the render already
+// finished -- the draft path shares the SAME single-agent-render-slot /
+// cancel-and-park machinery as a production render (both route through
+// the SAME doRenderWork lambda via SubmitAgentRenderAsync), so a real
+// cancel here proves that sharing holds for draft too, not a
+// mocked/simulated stand-in.
+//////////////////////////////////////////////////////////////////////
+static void RunDraftCancelTest()
+{
+	std::printf( "=== AgentProposeRenderTest: Toolkit slice 2 draft-quality cancel mid-flight ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_draft_cancel.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the draft-cancel scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (draft-cancel test)" );
+
+	SceneEditController* controller = new SceneEditController( *pJob, /*interactiveRasterizer*/0 );
+	controller->Start( /*suppressInitialRender=*/true );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the Job (draft-cancel test)" );
+	if( session )
+	{
+		session->AttachController( controller );
+
+		AgentRenderParams p;
+		p.quality = AgentRenderQuality::Draft;
+		p.width   = 3000;
+		p.height  = 3000;
+
+		const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( p );
+		Check( ar.accepted, "the draft async render is accepted" );
+
+		// A SHORT sleep before cancelling is REQUIRED, not merely
+		// tolerated: the agent-render worker unconditionally clears any
+		// STALE cancel flag (mCancelProgress.Reset()) at the very start
+		// of running `fn` (SceneEditController.cpp, right before the
+		// submitted closure runs) so a cancel from a PRIOR render can
+		// never bleed into a fresh one -- a cancel issued before that
+		// Reset() has run is silently WIPED OUT, not merely a no-op-but-
+		// harmless race. The sleep only needs to outlast that worker
+		// wake-up + Reset() window (microseconds in practice); the large
+		// 3000x3000 dims are what keep the render GENUINELY in flight
+		// well past this short sleep, so the cancel lands mid-render
+		// rather than after it already finished.
+		std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+
+		session->CancelAsyncRender( ar.renderJobId );
+
+		const bool completed = session->RenderWait( ar.renderJobId, 10000 );
+		Check( completed, "render_wait observes the cancelled draft render complete within the 10s bound" );
+
+		const AgentSession::AgentLastAsyncRenderResult cached = session->LastAsyncRenderResult( ar.renderJobId );
+		Check( cached.found, "the cached async result names this draft job" );
+		if( cached.found ) {
+			Check( !cached.result.ok,
+			       "MONEY ASSERTION: the cancelled draft render reports ok=false -- genuinely interrupted, never a partial success" );
+			Check( cached.result.renderMode == "draft", "the cancelled result still reports renderMode==\"draft\"" );
+		}
+
+		// RED-PROVE the red-prove: the session is still USABLE after a
+		// cancelled draft render -- a clean follow-up draft render (small,
+		// no override) succeeds.
+		AgentRenderParams p2;
+		p2.quality = AgentRenderQuality::Draft;
+		const AgentRenderResult clean = session->Render( p2 );
+		Check( clean.ok, "a follow-up draft render succeeds after the cancelled one (session still usable)" );
+		Check( clean.renderMode == "draft", "the follow-up render reports renderMode==\"draft\"" );
+
+		session->AttachController( nullptr );
+	}
+
+	controller->Stop();
+	delete controller;
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== draft-quality cancel mid-flight: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunCoreTests();
@@ -1654,6 +1911,8 @@ int main()
 	RunRenderJobIdTests();
 	RunPreS2HardeningTests();
 	RunSampleCountOverrideTests();
+	RunDraftQualityTests();
+	RunDraftCancelTest();
 
 	std::printf( "=== AgentProposeRenderTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -248,6 +248,24 @@ namespace RISE
 			std::string fov;         //!< degrees, plain number
 		};
 
+		//! Toolkit slice 2: `render`'s optional quality selector.  `Production`
+		//! (the default) is today's EXACT behaviour -- the head's active
+		//! (production) rasterizer, byte-for-byte unchanged.  `Draft`
+		//! renders through a wholly SEPARATE, EPHEMERAL preview pipeline
+		//! (CreateInteractiveMaterialPreviewPipeline -- the SAME studio-
+		//! preview shading the GUI's live interactive editor uses) that
+		//! NEVER references the production rasterizer, its FrameStore, or
+		//! its outputs -- see AgentRenderParams::quality's doc and
+		//! AgentRenderResult::renderMode's doc for the full honesty
+		//! contract (a draft render is geometry/composition/camera-
+		//! accurate but IGNORES the scene's authored materials and
+		//! lighting; never judge those from a draft).
+		enum class AgentRenderQuality
+		{
+			Production,   //!< today's exact behaviour -- the head's active rasterizer (default)
+			Draft         //!< a cheap, ephemeral studio-preview render -- see the class doc above
+		};
+
 		//! Preview-render params (all optional; every field at its default
 		//! reproduces EXACTLY today's Render(-1) behaviour -- wire-additive).
 		//! `width`/`height` are a TRANSIENT film-dims override (both must be
@@ -293,6 +311,18 @@ namespace RISE
 			int                  samples = -1;  //!< -1 = no override; else the requested SPP (see EffectiveRenderConfig doc above)
 			AgentCameraOverride  camera;
 			bool                 pinned = false;  //!< false = preview (today's semantics); true = pinned (never silently superseded -- see doc above)
+			//! Toolkit slice 2: Production (default) = today's exact
+			//! behaviour, strictly additive.  Draft routes this ONE render
+			//! through the ephemeral studio-preview pipeline instead of the
+			//! production rasterizer -- see AgentRenderQuality's doc.  A
+			//! draft render's requested `samples` (above) is CAPPED at 4
+			//! regardless of the value requested (see AgentRenderResult::
+			//! renderMode's doc for the honesty contract this enforces);
+			//! absent a request, the preview pipeline's own 1-SPP default
+			//! is used.  Composes with `width`/`height`/`camera`/`pinned`
+			//! exactly as the production path does (all four are Job/Scene-
+			//! level state, not rasterizer-specific).
+			AgentRenderQuality   quality = AgentRenderQuality::Production;
 		};
 
 		//! The structured result of Render: the rendered head as PNG bytes
@@ -386,6 +416,26 @@ namespace RISE
 			//! never guessed).
 			bool                       samplesOverridden = false;
 			int                        effectiveSamples = 0;
+			//! Toolkit slice 2 ADDITIVE wire field: "production" (default)
+			//! or "draft" -- which pipeline THIS render actually ran
+			//! through (see AgentRenderParams::quality's doc).  Set
+			//! unconditionally alongside `integrator` above (both are
+			//! filled as soon as this call passes the initial no-head /
+			//! no-active-rasterizer guards, and persist across every later
+			//! return path).  DELIBERATELY DISTINCT from `integrator`:
+			//! `integrator` always names the HEAD's active (production)
+			//! rasterizer, independent of what this call rendered with --
+			//! a draft render still reports the production integrator's
+			//! name here, NOT "draft" or the preview pipeline's identity.
+			//! Use `renderMode` to tell which shading actually produced
+			//! THIS image: "draft" means the pixels came from a fixed
+			//! studio-preview shader that IGNORES the scene's authored
+			//! materials and lighting entirely (geometry, composition, and
+			//! camera framing are representative; materials, lighting,
+			//! exposure, and colour are NOT) -- never judge those from a
+			//! draft image; render at quality:"production" (the default)
+			//! or use ReadViewport for what the user actually sees.
+			std::string                renderMode;
 		};
 
 		//! Facet 5 slice S1: one entry of the skills INDEX -- `name` is the
@@ -849,6 +899,20 @@ namespace RISE
 			//! and does NOT render -- every field that WAS applied before the
 			//! failure is restored first.  This never reports
 			//! `cameraOverridden=true` on a partial or no-op override.
+			//!
+			//! Toolkit slice 2: `params.quality == AgentRenderQuality::Draft`
+			//! routes the render through a wholly SEPARATE, EPHEMERAL
+			//! studio-preview pipeline instead of the production
+			//! rasterizer -- see AgentRenderQuality's doc for the honesty
+			//! contract and AgentSession.cpp's RenderCore_ for the
+			//! isolation mechanism (never touches the production
+			//! rasterizer, its FrameStore, or its outputs).  The film-dims
+			//! and camera-pose overrides above still apply identically in
+			//! either mode (both are Job/Scene-level state, not
+			//! rasterizer-specific); the single-agent-render-slot /
+			//! cancel-and-park machinery below also applies identically --
+			//! a draft render is just as genuinely cancellable as a
+			//! production one.
 			//!
 			//! LIVE mode (a controller is attached): the mutate-render-restore
 			//! window for BOTH overrides runs under

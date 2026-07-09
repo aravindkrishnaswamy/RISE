@@ -54,6 +54,7 @@
 #include "../Interfaces/ILog.h"   // P1-A: RenderOverrideRestoreGuard's defensive log-and-swallow
 #include "../Rendering/FrameStore.h"   // offscreen isolation: FrameStoreIsolationGuard's private throwaway FrameStore
 #include "../Rendering/Rasterizer.h"   // offscreen isolation: concrete GetFrameStore/SetFrameStore/AcceptsFrameStorePush (not on IRasterizer)
+#include "../Rendering/InteractivePelRasterizer.h"   // Toolkit slice 2 (quality:"draft"): CreateInteractiveMaterialPreviewPipeline
 #include "../RISE_API.h"
 #include "../SceneEditor/SceneEditController.h"   // Facet 5 slice 1b: LIVE-mode routing through the render-safe edit path
 #include "../SceneEditor/CameraIntrospection.h"   // preview-render: ephemeral camera-pose override
@@ -1920,6 +1921,17 @@ namespace RISE
 			// this particular render produced an image.
 			res.integrator = mJob->GetActiveRasterizerName();
 
+			// Toolkit slice 2 (quality:"draft"): computed once, right
+			// alongside `res.integrator` above, so it (and `res.renderMode`
+			// below) are set on every subsequent return path in this
+			// function -- nothing after this point ever resets either
+			// field.  `res.integrator` is DELIBERATELY left as the head's
+			// active (production) rasterizer's name in EITHER mode -- see
+			// AgentRenderResult::renderMode's doc for why the two fields
+			// answer different questions.
+			const bool isDraft = ( params.quality == AgentRenderQuality::Draft );
+			res.renderMode = isDraft ? "draft" : "production";
+
 			const bool wantFilmOverride =
 				( params.width > 0 && params.height > 0 );
 			const bool wantCameraOverride =
@@ -1951,6 +1963,17 @@ namespace RISE
 			// rasterizer.
 			const int origSamples = rast->GetSampleCountOverride();
 			bool overrodeSamples = false;
+			// Toolkit slice 2 (quality:"draft"): the draft path's OWN
+			// sample-cap outcome, tracked separately from
+			// overrodeSamples/origSamples above -- those describe the
+			// PRODUCTION rasterizer `rast`, which a draft render never
+			// touches at all.  `draftEffectiveSamples` is 0 until
+			// doDraftRenderWork actually runs; kDraftMaxSamples is the
+			// hard cap (see AgentRenderParams::quality's doc).
+			static constexpr int kDraftMaxSamples = 4;
+			bool draftSamplesApplied   = false;
+			bool draftSamplesCapped    = false;
+			int  draftEffectiveSamples = 0;
 			bool renderRan = false;
 			bool rendered = false;
 			// Fix-round-1 P2-C: true iff CancelAgentRender_ / Stop() tripped
@@ -1990,8 +2013,247 @@ namespace RISE
 			bool cameraOverrideFailed = false;
 			std::string cameraOverrideFailedField;
 
+			// Toolkit slice 2 (quality:"draft") shared helpers ------------------
+			//
+			// Film-dims / camera-pose override capture+apply is IDENTICAL in
+			// EITHER render mode -- it mutates the Job's Film / the active
+			// camera's properties, never the rasterizer -- so it is factored
+			// out here (verbatim, unchanged logic) and called from BOTH
+			// doRenderWork's production branch (at the SAME relative position
+			// the inline code used to occupy) and doDraftRenderWork below.
+			// Neither helper touches a restore guard itself -- each branch
+			// constructs and arms its OWN RenderOverrideRestoreGuard (the
+			// production branch's construction order relative to fsGuard is
+			// LOAD-BEARING, see fsGuard's doc below; the draft branch has no
+			// fsGuard at all, so its instance has no such constraint) -- these
+			// lambdas only do the capture/apply WORK.
+			auto applyFilmOverride = [&]()
+			{
+				const IScenePriv* scenePriv = mJob->GetScene();
+				const IFilm* curFilm = scenePriv ? scenePriv->GetFilm() : nullptr;
+				if( curFilm ) {
+					origFilmW   = curFilm->GetWidth();
+					origFilmH   = curFilm->GetHeight();
+					origFilmPAR = curFilm->GetPixelAR();
+				}
+				if( wantFilmOverride && curFilm ) {
+					if( mJob->SetFilm( params.width, params.height, origFilmPAR ) ) {
+						overrodeFilm = true;
+					}
+				}
+			};
+
+			auto applyCameraOverride = [&]()
+			{
+				if( !wantCameraOverride ) return;
+				ICameraManager* cams = mJob->GetCameras();
+				const std::string activeName = mJob->GetActiveCameraName();
+				activeCam = ( cams && !activeName.empty() )
+					? cams->GetItem( activeName.c_str() ) : nullptr;
+				if( !activeCam ) return;
+				// captureAndSet returns true iff the field was requested AND
+				// applied cleanly; false on a rejected SetProperty (the field
+				// is captured but NOT pushed onto capturedCam in that case,
+				// since nothing was actually changed -- there is nothing to
+				// restore for it, and restoring it would be a harmless but
+				// misleading no-op given it was never applied).
+				auto captureAndSet = [&]( bool has, const char* name, const std::string& newVal ) -> bool
+				{
+					if( !has ) return true;   // not requested -- vacuously fine
+					const String priorValue = CameraIntrospection::GetPropertyValue( *activeCam, String( name ) );
+					const bool applied = CameraIntrospection::SetProperty( *activeCam, String( name ), String( newVal.c_str() ) );
+					if( !applied ) {
+						cameraOverrideFailed = true;
+						cameraOverrideFailedField = name;
+						return false;
+					}
+					CapturedCameraField f;
+					f.name  = name;
+					f.value = priorValue.c_str();
+					capturedCam.push_back( f );
+					return true;
+				};
+				// Apply in the SAME order as before; stop at the first
+				// failure (fail-loud -- no point applying further fields
+				// once one has already failed) but keep going through
+				// captureAndSet's own bookkeeping so every field ALREADY
+				// applied before the failure is captured and will be
+				// restored by the guard.
+				captureAndSet( params.camera.hasLocation, "location", params.camera.location )
+					&& captureAndSet( params.camera.hasLookAt, "lookat", params.camera.lookAt )
+					&& captureAndSet( params.camera.hasUp,     "up",     params.camera.up )
+					&& captureAndSet( params.camera.hasFov,    "fov",    params.camera.fov );
+				overrodeCamera = !capturedCam.empty();
+			};
+
+			// The ORDINARY-path restore (camera fields, then film dims) --
+			// the guard exists for the ABNORMAL (exception) path; each branch
+			// calls this explicitly then Disarm()s its OWN restoreGuard so
+			// the destructor's restore is a no-op on the ordinary path
+			// (avoids a harmless but redundant double SetProperty/SetFilm
+			// call).
+			auto restoreFilmAndCameraOverridesOrdinary = [&]()
+			{
+				for( std::size_t i = capturedCam.size(); i-- > 0; ) {
+					CameraIntrospection::SetProperty( *activeCam,
+						String( capturedCam[i].name.c_str() ),
+						String( capturedCam[i].value.c_str() ) );
+				}
+				if( overrodeFilm ) {
+					mJob->SetFilm( origFilmW, origFilmH, origFilmPAR );
+				}
+			};
+
+			// Toolkit slice 2 (quality:"draft"): the EPHEMERAL preview-
+			// pipeline render body.  Never references `rast` (the production
+			// rasterizer), its FrameStore, or mJob->RemoveRasterizerOutputs()
+			// -- a fresh, throwaway InteractivePelRasterizer pipeline (studio-
+			// preview shading only -- see CreateInteractiveMaterialPreviewPipeline
+			// and AgentRenderQuality's doc) is constructed, used for exactly
+			// this one render, and released before this lambda returns.
+			auto doDraftRenderWork = [&]()
+			{
+				IRasterizer* ephemeralRast = nullptr;
+				IRayCaster*  previewCaster = nullptr;
+				IRayCaster*  polishCaster  = nullptr;
+				if( !Implementation::CreateInteractiveMaterialPreviewPipeline(
+						&ephemeralRast, &previewCaster, &polishCaster ) )
+				{
+					return;   // rendered/renderRan stay false -- the shared tail reports "render failed"
+				}
+				// RAII release of the three factory refs (each an owning
+				// reference the caller must release exactly once -- the SAME
+				// contract RISEViewportBridge.mm's tryBuildLivePreviewForJob
+				// / releaseLivePreview follow) -- runs on every exit,
+				// including an exception unwinding out of RasterizeScene()
+				// below (OIDN is a documented real throw site for the
+				// production path; the interactive preview pipeline never
+				// denoises, but this stays exception-safe on general
+				// principle).  No production state is touched by this
+				// branch, so there is nothing else to restore.
+				struct EphemeralPipelineGuard
+				{
+					IRasterizer*& r; IRayCaster*& p; IRayCaster*& q;
+					~EphemeralPipelineGuard() { safe_release( r ); safe_release( p ); safe_release( q ); }
+				} pipelineGuard{ ephemeralRast, previewCaster, polishCaster };
+
+				// Film-dims / camera-pose overrides are SHARED with the
+				// production path (see the helpers above) -- they mutate
+				// Job/Scene state the ephemeral pipeline's RasterizeScene
+				// call reads through `*scenePriv` below, so they compose for
+				// free.  This instance's RenderOverrideRestoreGuard has none
+				// of the fsGuard-ordering constraints the production branch
+				// documents (there is no FrameStore identity to protect
+				// here), so it is simply constructed+armed up front.
+				RenderOverrideRestoreGuard restoreGuard( *mJob,
+					overrodeFilm, origFilmW, origFilmH, origFilmPAR,
+					activeCam, capturedCam );
+				restoreGuard.Arm();
+
+				// Attach the agent's sink DIRECTLY to the ephemeral instance
+				// -- deliberately do NOT call mJob->RemoveRasterizerOutputs()
+				// (that would perturb the PRODUCTION rasterizer's outs for
+				// no reason; this fresh instance starts with an empty outs
+				// list of its own).
+				sink = new InMemoryRasterizerOutput();
+				ephemeralRast->AddRasterizerOutput( sink );
+
+				applyFilmOverride();
+				applyCameraOverride();
+
+				if( cameraOverrideFailed ) {
+					// FAIL LOUD, same contract as the production branch:
+					// restoreGuard (still armed) restores whatever WAS
+					// applied before the failure; skip the render entirely.
+					return;
+				}
+
+				// Samples: CAP at kDraftMaxSamples regardless of what was
+				// requested -- see AgentRenderParams::quality's doc for the
+				// honesty contract this enforces (a draft render must stay
+				// cheap even if a caller asks for a high sample count).
+				// Absent an explicit request, the pipeline's own Config
+				// default (1 SPP -- InteractivePelRasterizer::Config::
+				// liveSamplesPerPass, already the state of a freshly
+				// constructed instance with no sampling kernel installed) is
+				// left untouched: no SetSampleCountOverride call at all in
+				// that case.
+				if( wantSamplesOverride ) {
+					draftEffectiveSamples = ( params.samples > kDraftMaxSamples ) ? kDraftMaxSamples : params.samples;
+					draftSamplesCapped    = ( params.samples > kDraftMaxSamples );
+					draftSamplesApplied   = ephemeralRast->SetSampleCountOverride( draftEffectiveSamples );
+					if( !draftSamplesApplied ) {
+						draftEffectiveSamples = 0;   // honest: the request had no effect
+					}
+				} else {
+					draftEffectiveSamples = 1;   // the pipeline's own uncustomized default
+				}
+
+				// Cancel wiring: mJob->SetProgress (the production path's
+				// mechanism, driven through Job::Rasterize) never reaches an
+				// object mJob does not own.  Install the SAME controller-
+				// owned mCancelProgress the production path would
+				// (AgentRenderProgress()) DIRECTLY on this ephemeral
+				// instance instead, so CancelAgentRender_() / Stop() can
+				// still abort an in-flight draft render.  No restore needed
+				// afterward: this object (and whatever progress callback it
+				// holds) is destroyed by `pipelineGuard` at the end of this
+				// lambda.
+				if( mController ) {
+					ephemeralRast->SetProgressCallback( mController->AgentRenderProgress() );
+				}
+
+				// Test-only seam (shared with the production path) -- see
+				// AgentSession.h's ForTest_SetThrowBeforeRasterize doc.
+				if( mThrowBeforeRasterizeForTest ) {
+					throw std::runtime_error(
+						"AgentSession::ForTest_ThrowBeforeRasterize: test-only forced throw immediately before RasterizeScene() (draft path)" );
+				}
+
+				const IScenePriv* scenePriv = mJob->GetScene();
+				if( scenePriv ) {
+					// Dims and camera come from the Scene's Film / active
+					// camera -- RasterizeScene reads both off `*scenePriv`
+					// directly, so the film-dims (SetFilm) and camera-pose
+					// overrides applied above compose for free; nothing
+					// draft-specific to do here for either.
+					IRasterizeSequence* pSeq = nullptr;
+					if( mController ) {
+						// Mirror Job::Rasterize's own fallback for "a
+						// progress callback is installed" (Job.cpp's
+						// RasterizeSequenceFromOptions, a private file-
+						// static -- not reachable from here): a Morton
+						// tile-32 sequence, the same default
+						// RasterizeSequenceFromOptions produces absent a
+						// non-default options-file override.
+						RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
+					}
+					ephemeralRast->RasterizeScene( *scenePriv, 0, pSeq );
+					safe_release( pSeq );
+
+					if( mController ) {
+						wasCancelled = mController->IsCancelRequested();
+					}
+					renderRan = true;
+					rendered  = true;
+				}
+
+				restoreFilmAndCameraOverridesOrdinary();
+				restoreGuard.Disarm();
+			};
+
 			auto doRenderWork = [&]()
 			{
+				if( isDraft ) {
+					doDraftRenderWork();
+					return;
+				}
+
+				// ---- PRODUCTION render body (unchanged apart from the
+				// film/camera capture-apply-restore steps now factored into
+				// the shared helpers above -- guard construction ORDER
+				// relative to fsGuard is unchanged) ----
+				//
 				// Offscreen isolation: capture the DISPLAY FrameStore's
 				// identity BEFORE any mutation, and addref our own copy of
 				// the pointer (FrameStoreIsolationGuard's destructor -- or
@@ -2105,19 +2367,10 @@ namespace RISE
 				// its no-override sizing fallback) even when THIS render
 				// does request an override, since `renderW`/`renderH` below
 				// fall back to `origFilmW`/`origFilmH` whenever
-				// `wantFilmOverride` is false.
-				const IScenePriv* scenePriv = mJob->GetScene();
-				const IFilm* curFilm = scenePriv ? scenePriv->GetFilm() : nullptr;
-				if( curFilm ) {
-					origFilmW   = curFilm->GetWidth();
-					origFilmH   = curFilm->GetHeight();
-					origFilmPAR = curFilm->GetPixelAR();
-				}
-				if( wantFilmOverride && curFilm ) {
-					if( mJob->SetFilm( params.width, params.height, origFilmPAR ) ) {
-						overrodeFilm = true;
-					}
-				}
+				// `wantFilmOverride` is false.  (Toolkit slice 2: this is
+				// `applyFilmOverride()`, the SAME shared helper doDraftRenderWork
+				// calls -- factored out above so the logic is not duplicated.)
+				applyFilmOverride();
 
 				// Offscreen isolation: install a PRIVATE throwaway FrameStore,
 				// UNCONDITIONALLY, sized to the EFFECTIVE render dims for
@@ -2186,52 +2439,11 @@ namespace RISE
 				// apply the overrides.  P1-B: SetProperty's bool return is
 				// now CHECKED -- a parse failure (malformed vector shape,
 				// non-finite number, ...) must not silently no-op while
-				// `overrodeCamera` reports true.
-				if( wantCameraOverride ) {
-					ICameraManager* cams = mJob->GetCameras();
-					const std::string activeName = mJob->GetActiveCameraName();
-					activeCam = ( cams && !activeName.empty() )
-						? cams->GetItem( activeName.c_str() ) : nullptr;
-					if( activeCam ) {
-						// captureAndSet returns true iff the field was
-						// requested AND applied cleanly; false on a rejected
-						// SetProperty (the field is captured but NOT pushed
-						// onto capturedCam in that case, since nothing was
-						// actually changed -- there is nothing to restore
-						// for it, and restoring it would be a harmless but
-						// misleading no-op given it was never applied).
-						auto captureAndSet = [&]( bool has, const char* name, const std::string& newVal ) -> bool
-						{
-							if( !has ) return true;   // not requested -- vacuously fine
-							const String priorValue = CameraIntrospection::GetPropertyValue( *activeCam, String( name ) );
-							const bool applied = CameraIntrospection::SetProperty( *activeCam, String( name ), String( newVal.c_str() ) );
-							if( !applied ) {
-								cameraOverrideFailed = true;
-								cameraOverrideFailedField = name;
-								return false;
-							}
-							CapturedCameraField f;
-							f.name  = name;
-							f.value = priorValue.c_str();
-							capturedCam.push_back( f );
-							return true;
-						};
-						// Apply in the SAME order as before; stop at the
-						// first failure (fail-loud -- no point applying
-						// further fields once one has already failed) but
-						// keep going through captureAndSet's own bookkeeping
-						// so every field ALREADY applied before the failure
-						// is captured and will be restored by the guard.
-						captureAndSet( params.camera.hasLocation, "location", params.camera.location )
-							&& captureAndSet( params.camera.hasLookAt, "lookat", params.camera.lookAt )
-							&& captureAndSet( params.camera.hasUp,     "up",     params.camera.up )
-							&& captureAndSet( params.camera.hasFov,    "fov",    params.camera.fov );
-						overrodeCamera = !capturedCam.empty();
-					}
-					// else: no active camera resolved at all -- nothing to
-					// override; not itself a failure (matches pre-P1-B
-					// behaviour: overrodeCamera stays false).
-				}
+				// `overrodeCamera` reports true.  (Toolkit slice 2: this is
+				// `applyCameraOverride()`, the SAME shared helper
+				// doDraftRenderWork calls -- factored out above so the logic
+				// is not duplicated.)
+				applyCameraOverride();
 
 				if( cameraOverrideFailed ) {
 					// FAIL LOUD: do not render un-overridden and do not
@@ -2314,15 +2526,10 @@ namespace RISE
 				// restoration test AgentSession callers rely on).  This is the
 				// ORDINARY-path restore; the guard exists for the ABNORMAL
 				// (exception) path, so Disarm() it here to skip the
-				// redundant destructor-time restore.
-				for( std::size_t i = capturedCam.size(); i-- > 0; ) {
-					CameraIntrospection::SetProperty( *activeCam,
-						String( capturedCam[i].name.c_str() ),
-						String( capturedCam[i].value.c_str() ) );
-				}
-				if( overrodeFilm ) {
-					mJob->SetFilm( origFilmW, origFilmH, origFilmPAR );
-				}
+				// redundant destructor-time restore.  (Toolkit slice 2: this
+				// is `restoreFilmAndCameraOverridesOrdinary()`, the SAME
+				// shared helper doDraftRenderWork calls.)
+				restoreFilmAndCameraOverridesOrdinary();
 				restoreGuard.Disarm();
 
 				// Offscreen isolation: explicit ordinary-path restore of the
@@ -2616,24 +2823,39 @@ namespace RISE
 			res.previewHeight    = res.height;
 			res.cameraOverridden = overrodeCamera;
 
-			// Model-B F2 slice S3: report the sample-count override
-			// outcome.  `overrodeSamples` is only true when
-			// SetSampleCountOverride actually accepted THIS render's
-			// request (see doRenderWork above); `effectiveSamples` is the
-			// requested count on that path, else whatever
-			// GetSampleCountOverride() reads back (the rasterizer's own
-			// current/restored count, when that query is supported) --
-			// never guessed.  A requested-but-unsupported override gets a
-			// clear, additive note appended to `message` rather than
-			// silently overwriting the "ok" success message.
-			res.samplesOverridden = overrodeSamples;
-			if( overrodeSamples ) {
-				res.effectiveSamples = params.samples;
+			// Model-B F2 slice S3 (production) / Toolkit slice 2 (draft):
+			// report the sample-count outcome.  DRAFT and PRODUCTION are
+			// tracked through COMPLETELY INDEPENDENT bookkeeping --
+			// production's `overrodeSamples`+`rast` (the production
+			// rasterizer) vs draft's `draftSamplesApplied`+
+			// `draftEffectiveSamples` (the now-destroyed ephemeral
+			// pipeline, captured DURING doDraftRenderWork since there is
+			// nothing left to query afterward) -- so this branches on
+			// `isDraft` rather than sharing one code path.  See
+			// AgentRenderParams::quality's doc for the draft sample-cap
+			// honesty contract.
+			if( isDraft ) {
+				res.samplesOverridden = draftSamplesApplied;
+				res.effectiveSamples  = draftEffectiveSamples;
+				if( draftSamplesCapped && res.ok ) {
+					char capNote[160];
+					std::snprintf( capNote, sizeof( capNote ),
+						" (draft quality caps samples at %d -- requested %d, rendered at %d)",
+						kDraftMaxSamples, params.samples, draftEffectiveSamples );
+					res.message += capNote;
+				} else if( wantSamplesOverride && !draftSamplesApplied && res.ok ) {
+					res.message += " (samples override not supported by the draft preview pipeline -- rendered at its default 1 spp)";
+				}
 			} else {
-				const int readBack = rast->GetSampleCountOverride();
-				res.effectiveSamples = ( readBack >= 1 ) ? readBack : 0;
-				if( wantSamplesOverride && res.ok ) {
-					res.message += " (samples override not supported by the active rasterizer -- rendered at the scene-authored count)";
+				res.samplesOverridden = overrodeSamples;
+				if( overrodeSamples ) {
+					res.effectiveSamples = params.samples;
+				} else {
+					const int readBack = rast->GetSampleCountOverride();
+					res.effectiveSamples = ( readBack >= 1 ) ? readBack : 0;
+					if( wantSamplesOverride && res.ok ) {
+						res.message += " (samples override not supported by the active rasterizer -- rendered at the scene-authored count)";
+					}
 				}
 			}
 

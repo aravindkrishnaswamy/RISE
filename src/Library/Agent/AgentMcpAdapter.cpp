@@ -367,20 +367,29 @@ namespace RISE
 					props.set( "height", NumberProp( "OPTIONAL transient film-height override in pixels, CLAMPED to [16,512]. Must be paired with `width`." ) );
 					props.set( "camera", CameraOverrideSchema() );
 					props.set( "pinned", BoolProp( "OPTIONAL, default false. When true, this render cannot be silently superseded by a later render submission while it is in flight (it still responds to an explicit cancel or teardown) -- meaningful only against a live in-app GUI session's controller; has no effect in headless `rise --agent-stdio`." ) );
+					props.set( "quality", StringProp( "OPTIONAL, \"draft\" or \"production\" (default \"production\" -- today's exact behaviour). \"draft\" renders through a wholly SEPARATE, cheap studio-preview pipeline (the SAME fixed preview shader the GUI's live interactive editor uses) that IGNORES the scene's authored materials and lighting entirely -- geometry, composition, and camera framing are representative; materials, lighting, exposure, and colour are NOT. NEVER judge materials/lighting/exposure/colour from a draft image -- use quality:\"production\" (or read_viewport) for that. A draft render CAPS samples at 4 regardless of the requested `samples` value. Check the result's `renderMode` field (\"production\"/\"draft\") to see which pipeline actually ran -- `integrator` always names the head's active PRODUCTION rasterizer regardless of `quality`, so it is NOT the field to check for this." ) );
 					tools.push_back( MakeTool( "render",
 						"Render the current scene head SYNCHRONOUSLY and return {ok,width,height,"
 						"meanR,meanG,meanB,integrator,previewWidth,previewHeight,cameraOverridden,"
-						"message,renderJobId,samplesOverridden,effectiveSamples}. Does NOT return "
-						"image bytes -- call read_image afterward for the rendered PNG. `integrator` "
-						"is the active rasterizer's scene-file chunk keyword (e.g. "
+						"message,renderJobId,samplesOverridden,effectiveSamples,renderMode}. Does NOT "
+						"return image bytes -- call read_image afterward for the rendered PNG. "
+						"`integrator` is the active rasterizer's scene-file chunk keyword (e.g. "
 						"\"pathtracing_pel_rasterizer\"), empty when none is active -- useful to "
-						"confirm which integrator an insert_chunk activated. `meanR/meanG/meanB` are "
+						"confirm which integrator an insert_chunk activated; it does NOT change with "
+						"`quality` (see `quality`'s own description for the field to use instead). "
+						"`meanR/meanG/meanB` are "
 						"linear per-channel means: a stable, order-independent signature for "
 						"comparing two renders (RISE's sampler is not deterministic across runs, so "
 						"raw pixels differ run-to-run by MC noise even on an unchanged scene). "
 						"`renderJobId` is a monotonically increasing id from one of two DISJOINT-BY-"
 						"PARITY id spaces (coordinator-tracked ids are always EVEN, session-local "
 						"ids are always ODD) usable with render_status/render_wait/render_cancel. "
+						"TOKEN/TIME ECONOMY: for a quick orientation check (is the geometry/camera "
+						"roughly right?) prefer quality:\"draft\" over a small width/height -- it is "
+						"the cheapest possible render (capped at 4 samples, fixed studio shading, no "
+						"scene lighting to evaluate) but its pixels tell you NOTHING about materials, "
+						"lighting, exposure, or colour; reserve quality:\"production\" (the default) "
+						"for any check of those. "
 						"NOTE: this adapter's headless `rise --agent-stdio --mcp` process has no "
 						"live in-app controller, so the async submission mode that the underlying "
 						"RPC surface supports (`{\"async\":true}`) is NOT exposed as an option here "

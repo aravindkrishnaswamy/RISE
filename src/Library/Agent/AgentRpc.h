@@ -57,10 +57,10 @@
 //                                            disambiguation hint; a still-referenced
 //                                            target fails the dry-run -> rejected with
 //                                            the diagnostic, head byte-identical.)
-//      render       {samples?,width?,height?,camera?,pinned?}
+//      render       {samples?,width?,height?,camera?,pinned?,quality?}
 //                                        -> {ok,width,height,meanR,meanG,meanB,integrator,
 //                                            previewWidth,previewHeight,cameraOverridden,message,
-//                                            renderJobId,samplesOverridden,effectiveSamples}
+//                                            renderJobId,samplesOverridden,effectiveSamples,renderMode}
 //                                           (`integrator` is the ACTIVE rasterizer's
 //                                            registered type name = its scene-file
 //                                            chunk keyword, e.g.
@@ -130,7 +130,52 @@
 //                                            controller Stop() still cancel
 //                                            it -- pinned guards against
 //                                            supersession, not against an
-//                                            explicit cancel/teardown).)
+//                                            explicit cancel/teardown).
+//                                            Toolkit slice 2: `quality`
+//                                            (OPTIONAL string, "draft" or
+//                                            "production"; absent = today's
+//                                            EXACT "production" behaviour,
+//                                            strictly additive) selects an
+//                                            EPHEMERAL, per-call rasterizer
+//                                            override -- NEVER a scene
+//                                            mutation.  "draft" renders
+//                                            through a wholly SEPARATE
+//                                            preview pipeline (the SAME
+//                                            fixed studio-preview shader the
+//                                            GUI's live interactive editor
+//                                            uses) that IGNORES the scene's
+//                                            authored materials and
+//                                            lighting entirely -- geometry,
+//                                            composition, and camera framing
+//                                            are representative; materials,
+//                                            lighting, exposure, and colour
+//                                            are NOT.  NEVER judge those
+//                                            from a draft image -- render at
+//                                            quality:"production" (or read
+//                                            the LIVE viewport via
+//                                            read_viewport) for that.  A
+//                                            draft render CAPS `samples` at
+//                                            4 regardless of the requested
+//                                            value (absent a request, the
+//                                            preview pipeline's own 1-SPP
+//                                            default is used); the additive
+//                                            result field `renderMode`
+//                                            ("production"/"draft") reports
+//                                            which pipeline actually ran,
+//                                            and is DISTINCT from
+//                                            `integrator`, which always
+//                                            names the head's ACTIVE
+//                                            (production) rasterizer
+//                                            regardless of `quality` -- use
+//                                            `renderMode`, not `integrator`,
+//                                            to tell which shading produced
+//                                            THIS image.  `width`/`height`/
+//                                            `camera`/`pinned` compose with
+//                                            `quality` exactly as they do
+//                                            today (both render modes share
+//                                            the same film-dims/camera-pose
+//                                            override and cancel/single-slot
+//                                            machinery).)
 //      read_image   {maxEdge?}           -> {png_base64:string, byteLength:number,
 //                                            width:number, height:number}
 //                                           (Facet 5 preview-render: `maxEdge`

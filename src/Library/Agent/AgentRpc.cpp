@@ -425,6 +425,12 @@ namespace RISE
 				// AgentRenderResult::samplesOverridden's doc.
 				result.set( "samplesOverridden", JsonValue::MakeBool( rr.samplesOverridden ) );
 				result.set( "effectiveSamples", JsonValue::MakeNumber( static_cast<double>( rr.effectiveSamples ) ) );
+				// Toolkit slice 2 ADDITIVE wire field -- see
+				// AgentRenderResult::renderMode's doc.  "production" or
+				// "draft"; distinct from `integrator`, which always names
+				// the head's ACTIVE (production) rasterizer regardless of
+				// which mode this render actually used.
+				result.set( "renderMode", JsonValue::MakeString( rr.renderMode ) );
 				return result;
 			}
 
@@ -1086,6 +1092,30 @@ namespace RISE
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'pinned' must be a boolean" );
 					}
 					rparams.pinned = wantPinned;
+
+					// Toolkit slice 2 ADDITIVE param: {"quality":"draft"|
+					// "production"} -> AgentRenderParams::quality.  Absent
+					// or "production" is today's EXACT behaviour
+					// (strictly additive); "draft" routes this ONE render
+					// through the ephemeral studio-preview pipeline -- see
+					// AgentRenderQuality's doc.  Any other string (or a
+					// non-string, non-null value) is a clean -32602, not a
+					// silent fall-through to production.
+					if( const JsonValue* qv = params.find( "quality" ) ) {
+						if( qv->isString() ) {
+							const std::string qs = qv->asString();
+							if( qs == "draft" ) {
+								rparams.quality = AgentRenderQuality::Draft;
+							} else if( qs == "production" ) {
+								rparams.quality = AgentRenderQuality::Production;
+							} else {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'quality' must be \"draft\" or \"production\"" );
+							}
+						}
+						else if( !qv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'quality' must be a string" );
+					}
 
 					if( wantAsync ) {
 						const AgentSession::AgentRenderAsyncResult ar = s->RenderAsync( rparams );
