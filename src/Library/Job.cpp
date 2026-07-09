@@ -137,6 +137,53 @@ using namespace RISE::Implementation;
 // Forward declarations for scalar-painter resolution helpers — full
 // definitions live alongside the first `AddDielectricMaterial` and
 // are shared by every material conversion in this file.
+// On an ERANGE strtod result, classify the consumed token [tok,end) as
+// UNDERFLOW (-> finite 0/subnormal) vs OVERFLOW (-> non-finite HUGE_VAL)
+// at the STRING layer.  An exponent-SIGN heuristic alone is spoofable --
+// a 320-digit mantissa with `e-1` still overflows to +inf yet carries
+// `e-` in the token -- so compute the SIGN of the token's net magnitude:
+// the order of the leading significant digit plus the explicit exponent
+// (decimal digits count in powers of 10; C99 hex-float mantissa digits
+// count 4 bits each against the BINARY `p` exponent).  ERANGE guarantees
+// the value is hundreds of orders outside [DBL_MIN, DBL_MAX], so the +-3
+// bit slop of the leading hex digit can never flip the sign.
+// KEEP IN LOCKSTEP with the identical helper in ChunkParserRegistry.cpp.
+static bool ERangeTokenIsUnderflow( const char* tok, const char* end )
+{
+	const char* p = ( tok < end && ( *tok == '+' || *tok == '-' ) ) ? tok + 1 : tok;
+	bool isHex = false;
+	if( end - p > 1 && p[0] == '0' && ( p[1] == 'x' || p[1] == 'X' ) ) { isHex = true; p += 2; }
+	long order = 0;                    // order of the leading significant digit
+	bool seenSig = false, seenPoint = false;
+	long intDigits = 0, fracZeros = 0;
+	for( ; p < end; ++p ) {
+		const char c = *p;
+		if( c == '.' && !seenPoint ) { seenPoint = true; continue; }
+		const bool dig = isHex ? !!isxdigit( (unsigned char)c ) : !!isdigit( (unsigned char)c );
+		if( !dig ) break;                       // exponent marker
+		if( !seenSig ) {
+			if( c == '0' ) { if( seenPoint ) ++fracZeros; continue; }
+			seenSig = true;
+			if( !seenPoint ) intDigits = 1; else order = -( fracZeros + 1 );
+		} else if( !seenPoint ) {
+			++intDigits;
+		}
+	}
+	if( !seenSig ) return true;        // literal zero never ERANGEs; harmless
+	if( intDigits > 0 ) order = intDigits - 1;
+	long expVal = 0;
+	if( p < end && ( ( !isHex && ( *p == 'e' || *p == 'E' ) ) || ( isHex && ( *p == 'p' || *p == 'P' ) ) ) ) {
+		++p;
+		long sign = 1;
+		if( p < end && ( *p == '+' || *p == '-' ) ) { if( *p == '-' ) sign = -1; ++p; }
+		long v = 0;
+		for( ; p < end && isdigit( (unsigned char)*p ); ++p ) { if( v < 100000000L ) v = v * 10 + ( *p - '0' ); }
+		expVal = sign * v;
+	}
+	const long net = isHex ? ( 4 * order + expVal ) : ( order + expVal );
+	return net < 0;
+}
+
 // True IFF s parses as a NON-FINITE number (nan/inf spelling, or ERANGE overflow).
 // A non-numeric value (e.g. a painter name like "pnt_zero", which the legacy atof
 // path turns into 0) returns FALSE and is left untouched.  Used to reject non-finite
@@ -160,17 +207,11 @@ static bool ScalarLiteralIsNonFinite( const char* s )
 	// fallback (a registered name never reaches here).
 	if( errno == ERANGE ) {
 		// ERANGE is set on overflow (-> non-finite HUGE_VAL) AND underflow (-> finite
-		// 0/subnormal, e.g. 5e-400).  Only overflow is non-finite.  Distinguish at the
-		// STRING layer (value-level inf tests are unreliable under -ffast-math): an
-		// underflow literal carries a NEGATIVE exponent; overflow does not.  Scan
-		// ONLY the token strtod consumed ([s, end)) so trailing junk (e.g. the `e-`
-		// in `1e999xe-5`, whose atof is still +inf) cannot spoof it as underflow.
-		// Both decimal (`e-`/`E-`) and C99 hex-float (`p-`/`P-`) exponent markers
-		// are recognised so `0x1p-5000` is treated as (finite) underflow too.
-		for( const char* q = s; q < end; ++q ) {
-			if( ( *q == 'e' || *q == 'E' || *q == 'p' || *q == 'P' ) && q + 1 < end && q[1] == '-' ) return false;	// underflow -> finite
-		}
-		return true;	// overflow -> non-finite
+		// 0/subnormal, e.g. 5e-400).  Only overflow is non-finite.  Classify at the
+		// STRING layer by net-magnitude sign over the consumed token [s, end) --
+		// an exponent-sign scan alone is spoofable by a huge mantissa with a small
+		// negative exponent (`1<320 zeros>e-1` -> +inf).  See ERangeTokenIsUnderflow.
+		return !ERangeTokenIsUnderflow( s, end );	// overflow -> non-finite
 	}
 	const char* p = s;
 	while( *p == ' ' || *p == '\t' ) ++p;

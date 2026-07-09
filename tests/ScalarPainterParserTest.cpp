@@ -582,6 +582,30 @@ static void TestRejectInlineScalarOverflow()
 	IJobPriv* jho = LoadScene( hexOf, "sss_ho" );
 	Check( jho == nullptr, "SSS hex-overflow `g 0x1p5000` (+inf) REJECTED" );
 	if( jho ) safe_release( jho );
+
+	// Spoof guard: a HUGE mantissa with a small NEGATIVE exponent still
+	// overflows to +inf (`1<320 zeros>e-1`) yet carries `e-` inside the
+	// consumed token -- an exponent-SIGN heuristic misreads that as
+	// underflow.  Net-magnitude classification must reject it.  The mirror
+	// (tiny fractional mantissa, POSITIVE exponent, no `e-` anywhere) is a
+	// genuine finite underflow and must load.
+	{
+		const std::string big = std::string( "1" ) + std::string( 320, '0' ) + "e-1";
+		const std::string spoof = std::string(
+			"subsurfacescattering_material\n{\n\tname sss_sp\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg " )
+			+ big + "\n\troughness 0.0\n}\n";
+		IJobPriv* jsp = LoadScene( spoof.c_str(), "sss_sp" );
+		Check( jsp == nullptr, "SSS huge-mantissa `g 1<320 zeros>e-1` (+inf despite `e-`) REJECTED" );
+		if( jsp ) safe_release( jsp );
+
+		const std::string tiny = std::string( "0." ) + std::string( 400, '0' ) + "1e5";
+		const std::string mirror = std::string(
+			"subsurfacescattering_material\n{\n\tname sss_tf\n\tior 1.4\n\tabsorption 0.1\n\tscattering 1.0\n\tg " )
+			+ tiny + "\n\troughness 0.0\n}\n";
+		IJobPriv* jtf = LoadScene( mirror.c_str(), "sss_tf" );
+		Check( jtf != nullptr, "SSS tiny-mantissa `g 0.<400 zeros>1e5` (finite underflow, positive exponent) NOT rejected" );
+		if( jtf ) safe_release( jtf );
+	}
 }
 
 int main()

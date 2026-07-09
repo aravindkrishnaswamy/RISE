@@ -497,6 +497,53 @@ namespace RISE
 			// text is the one layer where the rejection cannot be optimized
 			// out.  Also closes String::toDouble's uninitialized return on
 			// entirely non-numeric tokens.
+			// On an ERANGE strtod result, classify the consumed token [tok,end) as
+			// UNDERFLOW (-> finite 0/subnormal) vs OVERFLOW (-> non-finite HUGE_VAL)
+			// at the STRING layer.  An exponent-SIGN heuristic alone is spoofable --
+			// a 320-digit mantissa with `e-1` still overflows to +inf yet carries
+			// `e-` in the token -- so compute the SIGN of the token's net magnitude:
+			// the order of the leading significant digit plus the explicit exponent
+			// (decimal digits count in powers of 10; C99 hex-float mantissa digits
+			// count 4 bits each against the BINARY `p` exponent).  ERANGE guarantees
+			// the value is hundreds of orders outside [DBL_MIN, DBL_MAX], so the +-3
+			// bit slop of the leading hex digit can never flip the sign.
+			// KEEP IN LOCKSTEP with the identical helper in Job.cpp.
+			static bool ERangeTokenIsUnderflow( const char* tok, const char* end )
+			{
+				const char* p = ( tok < end && ( *tok == '+' || *tok == '-' ) ) ? tok + 1 : tok;
+				bool isHex = false;
+				if( end - p > 1 && p[0] == '0' && ( p[1] == 'x' || p[1] == 'X' ) ) { isHex = true; p += 2; }
+				long order = 0;                    // order of the leading significant digit
+				bool seenSig = false, seenPoint = false;
+				long intDigits = 0, fracZeros = 0;
+				for( ; p < end; ++p ) {
+					const char c = *p;
+					if( c == '.' && !seenPoint ) { seenPoint = true; continue; }
+					const bool dig = isHex ? !!isxdigit( (unsigned char)c ) : !!isdigit( (unsigned char)c );
+					if( !dig ) break;                       // exponent marker
+					if( !seenSig ) {
+						if( c == '0' ) { if( seenPoint ) ++fracZeros; continue; }
+						seenSig = true;
+						if( !seenPoint ) intDigits = 1; else order = -( fracZeros + 1 );
+					} else if( !seenPoint ) {
+						++intDigits;
+					}
+				}
+				if( !seenSig ) return true;        // literal zero never ERANGEs; harmless
+				if( intDigits > 0 ) order = intDigits - 1;
+				long expVal = 0;
+				if( p < end && ( ( !isHex && ( *p == 'e' || *p == 'E' ) ) || ( isHex && ( *p == 'p' || *p == 'P' ) ) ) ) {
+					++p;
+					long sign = 1;
+					if( p < end && ( *p == '+' || *p == '-' ) ) { if( *p == '-' ) sign = -1; ++p; }
+					long v = 0;
+					for( ; p < end && isdigit( (unsigned char)*p ); ++p ) { if( v < 100000000L ) v = v * 10 + ( *p - '0' ); }
+					expVal = sign * v;
+				}
+				const long net = isHex ? ( 4 * order + expVal ) : ( order + expVal );
+				return net < 0;
+			}
+
 			inline bool AllTokensAreFiniteNumbers( const char* sz )
 			{
 				if( !sz ) {
@@ -525,15 +572,9 @@ namespace RISE
 					if( errno == ERANGE ) {
 						// ERANGE covers overflow (-> non-finite HUGE_VAL) AND underflow
 						// (-> finite 0/subnormal, e.g. 5e-400).  Only overflow is
-						// non-finite.  Distinguish at the STRING layer exactly like
-						// Job.cpp's ScalarLiteralIsNonFinite: an underflow literal
-						// carries a NEGATIVE decimal (`e-`) or C99 hex-float (`p-`)
-						// exponent within the consumed token; overflow does not.
-						bool underflow = false;
-						for( const char* q = tok; q < end; ++q ) {
-							if( ( *q == 'e' || *q == 'E' || *q == 'p' || *q == 'P' ) && q + 1 < end && q[1] == '-' ) { underflow = true; break; }
-						}
-						if( !underflow ) {
+						// non-finite; classify at the STRING layer by net-magnitude
+						// sign (exponent-sign alone is spoofable -- see the helper).
+						if( !ERangeTokenIsUnderflow( tok, end ) ) {
 							return false;	// overflow (e.g. 1e999 -> HUGE_VAL); reject at the STRING layer (value-level isfinite is unreliable under -ffast-math), mirroring the ar_layer parser
 						}
 					}
