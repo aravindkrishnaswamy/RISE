@@ -85,6 +85,13 @@ void InMemoryRasterizerOutput::MeanChannels( double& r, double& g, double& b ) c
 	b = sb / n;
 }
 
+bool InMemoryRasterizerOutput::GetPixelColor( unsigned int x, unsigned int y, RISEColor& out ) const
+{
+	if( !mHasImage || x >= mWidth || y >= mHeight ) return false;
+	out = mPixels[ static_cast<std::size_t>( y ) * mWidth + x ];
+	return true;
+}
+
 namespace
 {
 	//! Shared PNG-encode tail for ToPng / ToPngDownscaled: write `w`x`h`

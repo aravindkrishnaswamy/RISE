@@ -357,6 +357,28 @@ namespace RISE
 			AgentRenderTarget    renderTarget = AgentRenderTarget::Beauty;
 		};
 
+		//! Toolkit slice 3b: the OPTIONAL ephemeral camera/dims overrides
+		//! for query_object_at -- the SAME composition rule render's
+		//! width/height/camera use (see AgentRenderParams's doc above): 0/0
+		//! (the default) means "no dims override, use the Document's
+		//! authored Film dims"; a default-constructed `camera` means "no
+		//! camera override, use the active camera's current pose".
+		//! Deliberately a narrower struct than AgentRenderParams --
+		//! `samples`/`quality`/`pinned`/`renderTarget` have no meaning for a
+		//! point query (it always runs the objectmap identity pipeline
+		//! internally; see AgentSession::QueryObjectAt's doc for why).
+		//! NAMESPACE-SCOPE (not nested in AgentSession, unlike
+		//! AgentQueryObjectResult below) so it can default-construct as
+		//! QueryObjectAt's own default argument value from within
+		//! AgentSession's class body (a nested type's default member
+		//! initializers are not yet complete at that point).
+		struct AgentQueryObjectParams
+		{
+			unsigned int        width = 0;    //!< 0 = no override
+			unsigned int        height = 0;   //!< 0 = no override
+			AgentCameraOverride camera;
+		};
+
 		//! Toolkit slice 3a: one entry of an objectmap render's colour
 		//! LEGEND -- the mapping a caller uses to decode the segmentation
 		//! PNG.  `name` is the object's manager name (its scene-file chunk
@@ -1195,6 +1217,100 @@ namespace RISE
 			                                         unsigned int& outHeight,
 			                                         bool& outAvailable,
 			                                         std::string& outReason ) const;
+
+			//! Toolkit slice 3b: the structured result of query_object_at.
+			//! `hit`/`name`/`kind`/`pixelX`/`pixelY`/`width`/`height`/`message`
+			//! are the wire-visible fields (AgentRpc.cpp's query_object_at
+			//! dispatch mirrors them 1:1); `outOfRange` is an INTERNAL-ONLY
+			//! signal (never serialized) the RPC layer checks to decide
+			//! between a structured success and a -32602 kInvalidParams error
+			//! -- see QueryObjectAt's doc for the full out-of-range contract.
+			struct AgentQueryObjectResult
+			{
+				//! True iff (x,y) fell OUTSIDE the EFFECTIVE film dims (the
+				//! override dims when both width+height were supplied, else
+				//! the Document's authored Film dims). AgentRpc.cpp maps this
+				//! to a JSON-RPC -32602 error rather than a structured result
+				//! -- every other field is left at its default in this case
+				//! except `width`/`height` (the effective dims that WOULD have
+				//! applied) and `message` (why).
+				bool         outOfRange = false;
+				//! True iff the probe pixel resolved to a registered, world-
+				//! visible object (the SAME identity registry a mode:
+				//! "objectmap" render's legend is built from). False is a
+				//! STRUCTURED result, NOT a failure -- it means the pixel
+				//! decoded to the reserved background colour (the ray missed
+				//! every object), exactly like an objectmap render's
+				//! background pixels.
+				bool         hit = false;
+				//! The LEGEND name of the hit object (see LegendEntry::name's
+				//! doc -- same instance-array `grid[i,j]`-is-not-a-CST-chunk
+				//! caveat applies identically here) -- "" when !hit.
+				std::string  name;
+				//! OPTIONALLY the hit object's manager "kind" -- ALWAYS "" as
+				//! of this slice: neither IObject nor IObjectPriv exposes a
+				//! cheap kind/type-name accessor (the scene-file chunk
+				//! keyword lives on the CST Document, and resolving a
+				//! possibly generator-synthesized legend name -- e.g.
+				//! "grid[0,1]" -- back to a real chunk would need a
+				//! Document scan per query, defeating the point of a CHEAP
+				//! point-query). Wired for a future cheap accessor; honestly
+				//! empty until one exists rather than paying that cost or
+				//! guessing.
+				std::string  kind;
+				unsigned int pixelX = 0;
+				unsigned int pixelY = 0;
+				//! The EFFECTIVE film dims this query actually ran against
+				//! (the override dims when supplied, else the Document's
+				//! authored Film dims) -- always populated, even on
+				//! `outOfRange` (reporting what the caller SHOULD target).
+				unsigned int width = 0;
+				unsigned int height = 0;
+				std::string  message;
+			};
+
+			//! Toolkit slice 3b: query_object_at -- the cheap single-pixel
+			//! companion to render's mode:"objectmap" (see
+			//! AgentRenderTarget::ObjectMap's doc): "which WORLD-VISIBLE
+			//! object is under pixel (x,y)?"
+			//!
+			//! IMPLEMENTATION CHOICE: this reuses the objectmap ephemeral
+			//! pipeline WHOLESALE rather than a bespoke single-ray probe --
+			//! it runs one full mode:"objectmap" Render() at the effective
+			//! dims (composing width/height/camera EXACTLY as render's own
+			//! overrides do, via the SAME AgentRenderParams path) and then
+			//! reads ONE pixel back from the cached sink, matched against
+			//! that render's legend by EXACT colorHex byte (the same byte-
+			//! unique-by-construction contract the palette guarantees).  This
+			//! costs one identity render (measured ~20ms at 256x256) rather
+			//! than a second, bespoke GetCamera()->GenerateRay + caster code
+			//! path -- shared machinery, shared invariants (exactness,
+			//! byte-uniqueness, emissive visibility, isolation from the
+			//! production FrameStore), zero new rendering code.  See
+			//! AgentSession.cpp for the pixel-decode + legend-match mechanics.
+			//!
+			//! `x`/`y` are pixel coordinates in the EFFECTIVE film dims (the
+			//! override dims when `params.width`/`params.height` are both
+			//! set, else the Document's authored Film dims) -- resolved and
+			//! range-checked BEFORE the render runs (a cheap, read-only Film
+			//! query), so an out-of-range request never pays for the
+			//! ephemeral render; `result.outOfRange` is set and NO render
+			//! happens (AgentRpc.cpp maps this to -32602 kInvalidParams).
+			//! `result.hit=false` (a STRUCTURED result, never a failure) means
+			//! the probe ray missed every object (the reserved background
+			//! colour) -- `result.outOfRange` stays false in that case.
+			//!
+			//! Document byte-identity: like every Render call, this NEVER
+			//! mutates the retained CST Document (ReadDocument() is byte-
+			//! identical before and after, camera/film overrides are
+			//! captured-applied-restored exactly as render's own do).
+			//!
+			//! Works on a head with NO active production rasterizer (mirrors
+			//! the quality:"draft" / mode:"objectmap" gate -- the underlying
+			//! render this reuses never dereferences the production
+			//! rasterizer at all).
+			AgentQueryObjectResult QueryObjectAt( int x, int y,
+			                                       const AgentQueryObjectParams& params = AgentQueryObjectParams() );
 
 			//! Round-2 P1-1 test hook: override DrainAsyncRender_'s per-chunk
 			//! wait duration for THIS session instance (default 0 = "use

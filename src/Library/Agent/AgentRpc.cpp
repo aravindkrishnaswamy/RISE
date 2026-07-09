@@ -74,10 +74,11 @@ namespace RISE
 			// translation unit that never triggers it.
 
 			//! Secure-MCP slice 2 hardening: the gate is now DENY-BY-
-			//! DEFAULT -- an explicit allowlist of the 9 READ-SAFE verb
+			//! DEFAULT -- an explicit allowlist of the READ-SAFE verb
 			//! names (read_document, read_schema, read_skill, validate,
 			//! render, render_status, render_wait, render_cancel,
-			//! read_image), the ONE list the choke point in HandleLine
+			//! read_image, read_viewport, list_proposals, query_object_at),
+			//! the ONE list the choke point in HandleLine
 			//! consults.  Anything NOT on this list -- including the 3
 			//! known-mutating verbs (propose_patch, insert_chunk,
 			//! remove_chunk) AND any FUTURE verb added to the dispatch
@@ -118,7 +119,15 @@ namespace RISE
 				       // the loopback transport is already token-gated, so the
 				       // proposal queue isn't secret to an authenticated
 				       // co-editing client).
-				       method == "list_proposals";
+				       method == "list_proposals"  ||
+				       // Toolkit slice 3b: query_object_at is a PURE READ --
+				       // it never mutates the retained Document (the
+				       // ephemeral objectmap render it reuses composes
+				       // camera/dims overrides exactly like render's own,
+				       // captured and restored) -- available under every
+				       // autonomy posture, including Read, exactly like
+				       // render itself.
+				       method == "query_object_at";
 			}
 
 			//! Secure-MCP slice 5b: the additional verbs `Propose` autonomy lets
@@ -1413,6 +1422,84 @@ namespace RISE
 					result.set( "byteLength", JsonValue::MakeNumber( static_cast<double>( png.size() ) ) );
 					result.set( "width",  JsonValue::MakeNumber( static_cast<double>( imgW ) ) );
 					result.set( "height", JsonValue::MakeNumber( static_cast<double>( imgH ) ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// query_object_at {x,y,camera?,width?,height?} ->
+				//   {hit,name,kind,pixelX,pixelY,width,height,message}
+				//   Toolkit slice 3b: the cheap single-pixel companion to
+				//   render mode:"objectmap" -- see AgentSession::
+				//   QueryObjectAt's doc for the full contract (reuses the
+				//   objectmap ephemeral pipeline wholesale; camera/width/
+				//   height compose exactly like render's own overrides).
+				//   `x`/`y` are REQUIRED integer pixel coordinates; an
+				//   out-of-range (x,y) for the EFFECTIVE film dims is a
+				//   clean -32602 (checked BEFORE the render runs), NOT a
+				//   structured hit:false.
+				//--------------------------------------------------------------
+				if( m == "query_object_at" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+
+					const JsonValue* xv = params.find( "x" );
+					const JsonValue* yv = params.find( "y" );
+					if( !xv || !xv->isNumber() || !yv || !yv->isNumber() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'x' and 'y' (numbers) are required" );
+					}
+					const double xd = xv->asNumber();
+					const double yd = yv->asNumber();
+					// Same explicit finite-range guard idiom as every other
+					// numeric parse in this file (NOT std::isfinite -- dead
+					// code under -ffinite-math-only; see the 'samples' parse
+					// above) -- guards the narrowing casts below against a
+					// hostile/typo'd 1e999 or NaN.
+					if( !( xd >= -2147483648.0 && xd <= 2147483647.0 ) ||
+					    !( yd >= -2147483648.0 && yd <= 2147483647.0 ) )
+					{
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'x' and 'y' must be finite, in-range numbers" );
+					}
+					const int qx = static_cast<int>( xd );
+					const int qy = static_cast<int>( yd );
+
+					// Same width/height/camera override composition as
+					// render (ParseClampedUInt/ParseCameraOverrideParam are
+					// the SAME helpers render's dispatch uses just above).
+					AgentQueryObjectParams qparams;
+					unsigned int qw = 0, qh = 0;
+					std::string qDimErr;
+					const int qwPresent = ParseClampedUInt( params, "width",  16, 512, qw, qDimErr );
+					if( qwPresent < 0 ) return MakeError( idValue, kInvalidParams, qDimErr );
+					const int qhPresent = ParseClampedUInt( params, "height", 16, 512, qh, qDimErr );
+					if( qhPresent < 0 ) return MakeError( idValue, kInvalidParams, qDimErr );
+					if( qwPresent == 1 && qhPresent == 1 ) {
+						qparams.width  = qw;
+						qparams.height = qh;
+					}
+
+					AgentCameraOverride qCamOverride;
+					std::string qCamErr;
+					const int qCamPresent = ParseCameraOverrideParam( params, qCamOverride, qCamErr );
+					if( qCamPresent < 0 ) return MakeError( idValue, kInvalidParams, qCamErr );
+					if( qCamPresent == 1 ) qparams.camera = qCamOverride;
+
+					const AgentSession::AgentQueryObjectResult qr = s->QueryObjectAt( qx, qy, qparams );
+					if( qr.outOfRange ) {
+						return MakeError( idValue, kInvalidParams,
+							qr.message.empty()
+								? "Invalid params: 'x'/'y' out of range for the effective film dims"
+								: qr.message );
+					}
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "hit",     JsonValue::MakeBool( qr.hit ) );
+					result.set( "name",    JsonValue::MakeString( qr.name ) );
+					result.set( "kind",    JsonValue::MakeString( qr.kind ) );
+					result.set( "pixelX",  JsonValue::MakeNumber( static_cast<double>( qr.pixelX ) ) );
+					result.set( "pixelY",  JsonValue::MakeNumber( static_cast<double>( qr.pixelY ) ) );
+					result.set( "width",   JsonValue::MakeNumber( static_cast<double>( qr.width ) ) );
+					result.set( "height",  JsonValue::MakeNumber( static_cast<double>( qr.height ) ) );
+					result.set( "message", JsonValue::MakeString( qr.message ) );
 					return MakeSuccess( idValue, result );
 				}
 

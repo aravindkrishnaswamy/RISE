@@ -104,7 +104,7 @@
 //        silently dropping it, since core-layer gating is optional by
 //        design (documented in the skill / CLAUDE.md deviation notes).
 //
-//    The nine tool definitions (mapping 1:1 to the AgentRpc verbs) are
+//    The ten tool definitions (mapping 1:1 to the AgentRpc verbs) are
 //    defined ONCE, provider-neutrally, in AgentChatCodecs.cpp; each
 //    codec maps them into its native tool declaration shape.  Their
 //    parameter names/shapes mirror AgentRpc.cpp exactly.

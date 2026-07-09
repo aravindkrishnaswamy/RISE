@@ -4,7 +4,7 @@
 //    LLM chat loop (see AgentChatCodecs.h).
 //
 //  Layout:
-//    (1) the NINE provider-neutral tool definitions (1:1 with the
+//    (1) the TEN provider-neutral tool definitions (1:1 with the
 //        AgentRpc verbs; parameter names/shapes mirror AgentRpc.cpp),
 //    (2) a small raw-span JSON scanner (byte-exact extraction of the
 //        assistant content from a response body, so provider-opaque
@@ -259,6 +259,39 @@ namespace RISE
 						"\"maxEdge\":{\"type\":\"number\",\"description\":"
 						"\"Optional long-edge bound in pixels, clamped to [16,1024]. Downscales (box filter, aspect-preserving, never upscales) the cached image before sending -- no re-render. Use ~192 for cheap modeling checks.\"}"
 					"}}"
+				},
+				{
+					"query_object_at",
+					"Identify WHICH single object is at one pixel (x,y) -- the cheap way to "
+					"answer \"what is that\" / locate ONE object before acting on it (e.g. "
+					"before a propose_patch that moves or recolors it), without paying for a "
+					"full render mode:\"objectmap\" segmentation. Returns hit:false (a NORMAL "
+					"result, not an error) when the pixel is empty background -- name is empty "
+					"in that case. width/height/camera compose EXACTLY like render's own "
+					"overrides (ephemeral, restored automatically, never touch the document) -- "
+					"use camera to aim at a spot, then query a known pixel (e.g. the image "
+					"center) to name what's there. An out-of-range x/y for the effective film "
+					"dims is refused as an error, never a silent hit:false. Works even with no "
+					"active production rasterizer -- it runs its own cheap identity render "
+					"internally.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"x\":{\"type\":\"number\",\"description\":"
+						"\"Required integer pixel X coordinate, in the EFFECTIVE film dims (the width/height override below when both are given, else the scene's authored dims).\"},"
+						"\"y\":{\"type\":\"number\",\"description\":"
+						"\"Required integer pixel Y coordinate, same effective-dims rule as x.\"},"
+						"\"width\":{\"type\":\"number\",\"description\":"
+						"\"Optional TRANSIENT film-width override in pixels, clamped to [16,512]. Must be paired with height.\"},"
+						"\"height\":{\"type\":\"number\",\"description\":"
+						"\"Optional TRANSIENT film-height override in pixels, clamped to [16,512]. Must be paired with width.\"},"
+						"\"camera\":{\"type\":\"object\",\"description\":"
+						"\"Optional EPHEMERAL camera-pose override for this ONE query -- captured and restored automatically, never touches the document.\","
+						"\"properties\":{"
+							"\"location\":{\"type\":\"string\",\"description\":\"Eye position, a string of EXACTLY 3 finite numbers \\\"x y z\\\" -- required if camera is given.\"},"
+							"\"lookat\":{\"type\":\"string\",\"description\":\"Target point, a string of EXACTLY 3 finite numbers \\\"x y z\\\" -- required if camera is given.\"},"
+							"\"up\":{\"type\":\"string\",\"description\":\"Optional up vector, a string of EXACTLY 3 finite numbers \\\"x y z\\\".\"},"
+							"\"fov\":{\"type\":\"number\",\"description\":\"Optional field of view in degrees, EXCLUSIVE range (0, 180).\"}"
+						"},\"required\":[\"location\",\"lookat\"]}"
+					"},\"required\":[\"x\",\"y\"]}"
 				},
 			};
 

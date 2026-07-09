@@ -472,16 +472,17 @@ static JsonValue ParseBody( const std::string& body )
 
 static void TestChatLoopWiring()
 {
-	std::printf( "S4: chat-loop tool table (nine tools) + SetSkillIndex...\n" );
+	std::printf( "S4: chat-loop tool table (ten tools) + SetSkillIndex...\n" );
 
-	// Anthropic: nine tools (S2 added insert_chunk/remove_chunk), read_skill present with a schema.
+	// Anthropic: ten tools (S2 added insert_chunk/remove_chunk; toolkit
+	// slice 3b added query_object_at), read_skill present with a schema.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 9, "anthropic body carries nine tools" );
+		Check( tools.isArray() && tools.size() == 10, "anthropic body carries ten tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() != "read_skill" ) continue;
@@ -494,28 +495,28 @@ static void TestChatLoopWiring()
 		Check( saw, "anthropic tool list includes read_skill" );
 	}
 
-	// Gemini: nine functionDeclarations, read_skill present.
+	// Gemini: ten functionDeclarations, read_skill present.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Gemini );
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 9, "gemini body carries nine functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 10, "gemini body carries ten functionDeclarations" );
 		bool saw = false;
 		for( std::size_t i = 0; i < decls.size(); ++i )
 			if( decls.at( i ).get( "name" ).asString() == "read_skill" ) saw = true;
 		Check( saw, "gemini functionDeclarations include read_skill" );
 	}
 
-	// OpenAI/ChatGPT: nine function tools, read_skill present.
+	// OpenAI/ChatGPT: ten function tools, read_skill present.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::OpenAI );
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 9, "openai body carries nine tools" );
+		Check( tools.isArray() && tools.size() == 10, "openai body carries ten tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const JsonValue& fn = tools.at( i ).get( "function" );

@@ -428,7 +428,7 @@ static void TestOpenAIRequestShape()
 	       "user text rides as a Chat Completions user message" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 9, "body carries exactly nine OpenAI tools" );
+	Check( tools.isArray() && tools.size() == 10, "body carries exactly ten OpenAI tools" );
 	bool sawReadDocument = false;
 	for( std::size_t i = 0; i < tools.size(); ++i ) {
 		const JsonValue& fn = tools.at( i ).get( "function" );
@@ -511,7 +511,7 @@ static void TestAnthropicRequestShape()
 	Check( sawVersion, "anthropic-version: 2023-06-01 header present" );
 	CheckKeyOnlyInAuthHeader( req, "x-api-key", "T1" );
 
-	// Body shape: model / max_tokens / system / all nine tools / the user turn.
+	// Body shape: model / max_tokens / system / all ten tools / the user turn.
 	JsonValue root = ParseBody( req.body );
 	Check( root.isObject(), "body parses as JSON" );
 	Check( root.get( "model" ).asString() == "claude-sonnet-5", "body carries the model id" );
@@ -524,11 +524,11 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 9, "body carries exactly nine tools" );
+	Check( tools.isArray() && tools.size() == 10, "body carries exactly ten tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
 	                           "propose_patch", "insert_chunk", "remove_chunk",
-	                           "render", "read_image" };
-	for( int t = 0; t < 9; ++t ) {
+	                           "render", "read_image", "query_object_at" };
+	for( int t = 0; t < 10; ++t ) {
 		bool found = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() == expected[t] ) {
@@ -941,7 +941,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 9, "nine functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 10, "ten functionDeclarations" );
 		bool sawPatch = false, sawInsert = false, sawRemove = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {

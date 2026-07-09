@@ -99,6 +99,16 @@ namespace RISE
 			//! space (before ToPng's sRGB Integerize) to avoid quantization.
 			void MeanChannels( double& r, double& g, double& b ) const;
 
+			//! Toolkit slice 3b (query_object_at): the captured pixel's LINEAR
+			//! RISEColor at (x,y) -- the SAME per-pixel value ToPng()'s encode
+			//! loop reads (row-major, pre-sRGB-Integerize; identical storage
+			//! MeanChannels()/ToPng() already read). Returns false (leaving
+			//! `out` unmodified) when no frame has been captured yet or (x,y)
+			//! is outside [0,Width())x[0,Height()) -- no clamping, no
+			//! wraparound. Const: reading a pixel does not mutate the
+			//! captured buffer.
+			bool GetPixelColor( unsigned int x, unsigned int y, RISEColor& out ) const;
+
 			//! Serialize the captured frame to 8-bit sRGB PNG bytes, reusing
 			//! the tree's `PNGWriter` (sRGB Integerize + libpng) targeting a
 			//! `MemoryBuffer` rather than a file.  Returns an EMPTY vector

@@ -20,7 +20,7 @@ namespace RISE
 		namespace
 		{
 			//! The static co-editing system prompt (rule 7): the user and
-			//! the agent co-edit ONE live scene through the nine verbs.
+			//! the agent co-edit ONE live scene through the ten verbs.
 			const char* const kSystemPrompt =
 				"You are a scene-editing agent embedded in the RISE renderer. You and "
 				"the user CO-EDIT one live scene: the user sees the same viewport and "
@@ -56,7 +56,13 @@ namespace RISE
 				"ran). Only do a full-size, full-sample, quality:\"production\" "
 				"render (the default; no width/height/camera override) for the "
 				"FINAL check once you're confident the edit is right, and for any "
-				"judgement of materials/lighting/exposure/colour.\n"
+				"judgement of materials/lighting/exposure/colour. When you just "
+				"need to know WHICH object is at one spot (e.g. before moving or "
+				"recoloring \"the mug\" or \"that sphere\"), use query_object_at "
+				"{x,y} instead of a full render mode:\"objectmap\" -- it is "
+				"cheaper to parse than a legend+PNG and returns the object's name "
+				"directly (hit:false, not an error, when the pixel is empty); "
+				"combine it with `camera` to aim at a spot first.\n"
 				"\n"
 				// CAPABILITY SCOPE (Model-B F5 slice S2: insert_chunk /
 				// remove_chunk shipped -- entity add/remove is real now;

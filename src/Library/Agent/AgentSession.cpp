@@ -3451,6 +3451,143 @@ namespace RISE
 			return res;
 		}
 
+		// Toolkit slice 3b: query_object_at -------------------------------------
+
+		AgentSession::AgentQueryObjectResult AgentSession::QueryObjectAt(
+			int x, int y, const AgentQueryObjectParams& params )
+		{
+			AgentQueryObjectResult res;
+
+			if( !mJob ) {
+				res.message = "no head loaded";
+				return res;
+			}
+
+			// Effective dims: the SAME width/height-override composition
+			// render's own overrides use (AgentRenderParams::width/height's
+			// doc) -- both supplied means "use these transient dims",
+			// otherwise the Document's authored Film dims.  A CHEAP,
+			// read-only Film query -- NO render -- so an out-of-range (x,y)
+			// is rejected BEFORE paying for the ephemeral identity render
+			// below (see QueryObjectAt's header doc).
+			unsigned int effW = params.width;
+			unsigned int effH = params.height;
+			if( effW == 0 || effH == 0 ) {
+				const IScenePriv* scenePriv = mJob->GetScene();
+				const IFilm* curFilm = scenePriv ? scenePriv->GetFilm() : nullptr;
+				effW = curFilm ? curFilm->GetWidth()  : 0;
+				effH = curFilm ? curFilm->GetHeight() : 0;
+			}
+			res.width  = effW;
+			res.height = effH;
+
+			if( effW == 0 || effH == 0 ||
+			    x < 0 || y < 0 ||
+			    static_cast<unsigned int>( x ) >= effW ||
+			    static_cast<unsigned int>( y ) >= effH )
+			{
+				res.outOfRange = true;
+				res.message = "x/y out of range for the effective film dims";
+				return res;
+			}
+			res.pixelX = static_cast<unsigned int>( x );
+			res.pixelY = static_cast<unsigned int>( y );
+
+			// IMPLEMENTATION CHOICE (a): reuse render's mode:"objectmap"
+			// machinery WHOLESALE -- one full ephemeral identity render at
+			// the effective dims, sharing every invariant that pipeline
+			// already proves (exactness, byte-uniqueness, emissive
+			// visibility, production-FrameStore isolation) -- rather than a
+			// bespoke second GetCamera()->GenerateRay + caster code path.
+			// See QueryObjectAt's header doc for the full rationale.
+			AgentRenderParams rparams;
+			rparams.renderTarget = AgentRenderTarget::ObjectMap;
+			rparams.width  = params.width;
+			rparams.height = params.height;
+			rparams.camera = params.camera;
+
+			const AgentRenderResult rr = Render( rparams );
+
+			if( !rr.ok ) {
+				res.message = rr.message.empty()
+					? "query_object_at's identity render failed"
+					: rr.message;
+				if( rr.width )  res.width  = rr.width;
+				if( rr.height ) res.height = rr.height;
+				return res;
+			}
+			res.width  = rr.width;
+			res.height = rr.height;
+
+			// Defensive: the render's OWN effective dims should match the
+			// pre-render computation above (identical composition rule) --
+			// never read out of bounds on a mismatch.  Unreachable in
+			// practice (both derive the same width/height/camera
+			// composition), kept for robustness.
+			if( res.pixelX >= res.width || res.pixelY >= res.height ) {
+				res.outOfRange = true;
+				res.message = "x/y out of range for the effective film dims";
+				return res;
+			}
+
+			RISEColor pixel;
+			bool gotPixel = false;
+			{
+				// Guarded by mAsyncCacheMutex like every other mLastSink
+				// access (ReadImage/ReadImage(maxEdge)) -- the Render() call
+				// just above already populated it synchronously on THIS
+				// thread, so this is uncontended in practice; the lock costs
+				// nothing and keeps the access pattern uniform.
+				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				if( mLastSink ) gotPixel = mLastSink->GetPixelColor( res.pixelX, res.pixelY, pixel );
+			}
+			if( !gotPixel ) {
+				res.message = "could not read the rendered pixel";
+				return res;
+			}
+
+			// Decode EXACTLY the way ToPng()/PNGWriter's eColorSpace_sRGB
+			// path does (RISEColor::Integerize<sRGBPel,unsigned char>(255.0)
+			// -- see PNGWriter::WriteColor) so this byte is GUARANTEED
+			// identical to what the objectmap PNG's corresponding pixel
+			// carries -- the exact-byte legend match below rides the same
+			// quantizer contract the palette generator guarantees.
+			const RGBA_T<unsigned char> enc = pixel.Integerize<sRGBPel, unsigned char>( 255.0 );
+			char hexBuf[8];
+			std::snprintf( hexBuf, sizeof( hexBuf ), "#%02X%02X%02X",
+				static_cast<unsigned>( enc.r ), static_cast<unsigned>( enc.g ), static_cast<unsigned>( enc.b ) );
+			const std::string pixelHex( hexBuf );
+
+			if( pixelHex == "#000000" ) {
+				// The reserved background byte -- a genuine miss.  STRUCTURED
+				// result, not a failure (see AgentQueryObjectResult::hit's doc).
+				res.hit = false;
+				res.message = "no object at this pixel";
+				return res;
+			}
+
+			for( const LegendEntry& e : rr.legend ) {
+				if( e.name == "<unmapped>" ) continue;
+				if( e.colorHex == pixelHex ) {
+					res.hit  = true;
+					res.name = e.name;
+					res.message = "ok";
+					return res;
+				}
+			}
+
+			// Either the pixel decoded to the reserved UNKNOWN colour (a hit
+			// on an object the identity registry could not map -- see
+			// ObjectIdShader::LookupAndTally's unknown branch) or no legend
+			// entry matched at all (unreachable given the palette's byte-
+			// uniqueness contract).  The ray DID hit something -- report a
+			// hit with an honest caveat rather than silently claiming a miss.
+			res.hit  = true;
+			res.name = "";
+			res.message = "hit an unregistered/unmapped object -- no legend name available for this pixel";
+			return res;
+		}
+
 		// Model-B F2 slice S2a -------------------------------------------------
 
 		AgentSession::AgentRenderAsyncResult AgentSession::RenderAsync( const AgentRenderParams& params )

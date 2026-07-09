@@ -209,7 +209,7 @@ namespace RISE
 				"Commit (the posture the document owner's own session runs at) -- an external/"
 				"proposing session can list and poll proposals but never approve or reject one] ";
 
-			//! Build the `tools/list` result: the 14 existing AgentRpc verbs,
+			//! Build the `tools/list` result: the 16 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
 			//! comments for the gotchas an external MCP client needs (paired
@@ -491,6 +491,36 @@ namespace RISE
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 
+				// query_object_at (Toolkit slice 3b)
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "x", NumberProp( "REQUIRED integer pixel X coordinate, in the EFFECTIVE film dims (the width/height override below when both are given, else the scene's authored dims)." ) );
+					props.set( "y", NumberProp( "REQUIRED integer pixel Y coordinate, same effective-dims rule as `x`." ) );
+					props.set( "width",  NumberProp( "OPTIONAL transient film-width override in pixels, CLAMPED to [16,512]. Must be paired with `height`. Composes exactly like render's own width/height override -- NEVER mutates the scene document." ) );
+					props.set( "height", NumberProp( "OPTIONAL transient film-height override in pixels, CLAMPED to [16,512]. Must be paired with `width`." ) );
+					props.set( "camera", CameraOverrideSchema() );
+					std::vector<std::string> required; required.push_back( "x" ); required.push_back( "y" );
+					tools.push_back( MakeTool( "query_object_at",
+						"Identify WHICH single object is at one pixel (x,y) -- the cheap, "
+						"single-answer alternative to render mode:\"objectmap\" when you just "
+						"need to name or locate ONE object (e.g. before moving/editing it) rather "
+						"than see the whole segmentation. Returns "
+						"{hit,name,kind,pixelX,pixelY,width,height,message}: hit is false (a "
+						"NORMAL result, not an error) when the pixel is empty background -- name "
+						"is \"\" in that case. `width`/`height`/`camera` compose EXACTLY like "
+						"render's own overrides (ephemeral, captured and restored, never touch "
+						"the document) -- use `camera` to aim at an object, then query its known "
+						"screen position. An out-of-range x/y for the EFFECTIVE dims is a clean "
+						"error, not a silent hit:false. `name` is the SAME legend name a "
+						"mode:\"objectmap\" render would report for that pixel (the same "
+						"instance-array `grid[i,j]`-is-not-a-CST-chunk caveat applies -- target "
+						"the GENERATOR chunk to edit it, not the instance name). Works even on a "
+						"scene with no active production rasterizer (it runs its own cheap "
+						"identity render internally, costing about one small render, NOT a full "
+						"beauty render).",
+						ObjectProp( "", props, required ) ) );
+				}
+
 				// list_proposals (Secure-MCP slice 5b)
 				{
 					tools.push_back( MakeTool( "list_proposals",
@@ -573,7 +603,7 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 14 tool names this adapter recognizes --
+			//! The list of the 16 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
@@ -581,7 +611,7 @@ namespace RISE
 					"read_document", "read_schema", "read_skill", "validate",
 					"propose_patch", "insert_chunk", "remove_chunk",
 					"render", "render_status", "render_wait", "render_cancel",
-					"read_image", "read_viewport",
+					"read_image", "read_viewport", "query_object_at",
 					"list_proposals", "resolve_proposal"
 				};
 				for( const char* n : kNames ) if( name == n ) return true;
@@ -727,7 +757,7 @@ namespace RISE
 				}
 
 				//----------------------------------------------------------
-				// tools/list -> the 14 verbs as MCP tools.
+				// tools/list -> the 16 verbs as MCP tools.
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
 					JsonValue result = JsonValue::MakeObject();

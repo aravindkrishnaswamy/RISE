@@ -40,11 +40,35 @@
 //      colour (magenta) with a zero legend pixelCount and a nonzero unknown
 //      tally; registering it again restores an exact per-object map.
 //
+//  Also covers Toolkit slice 3b (query_object_at {x,y}, the cheap single-
+//  pixel companion to render mode:"objectmap" -- IMPLEMENTATION CHOICE (a):
+//  reuses the objectmap ephemeral pipeline WHOLESALE, one identity render +
+//  a single-pixel legend match, rather than a bespoke single-ray probe):
+//
+//    * center-of-object query names all 3 objects of kScene3 correctly
+//      (located via a reference objectmap render + pixel scan).
+//    * an empty-region (background) query -> hit:false, a STRUCTURED
+//      result, never an error.
+//    * camera-override composition: aiming at sph_a makes the SAME center
+//      pixel that resolves to sph_b under the default camera resolve to
+//      sph_a instead.
+//    * works on a head with NO active production rasterizer (mirrors the
+//      quality:"draft"/mode:"objectmap" gate) -- a sibling production
+//      render on the same head fails honestly, query_object_at does not.
+//    * document byte-identity across a query (with and without a camera
+//      override).
+//    * the WIRE verb over the JSON-RPC dispatcher: an in-range query
+//      returns the documented {hit,name,kind,pixelX,pixelY,width,height,
+//      message} shape; an out-of-range x or y is a clean -32602
+//      (kInvalidParams), never a structured hit:false.
+//
 //  Self-contained: inline native-v7 scenes, OIDN off, no RISE_MEDIA_PATH.
 //
 //////////////////////////////////////////////////////////////////////
 
 #include "../src/Library/Agent/AgentSession.h"
+#include "../src/Library/Agent/AgentRpc.h"
+#include "../src/Library/Agent/Json.h"
 #include "../src/Library/Agent/InMemoryRasterizerOutput.h"
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Job.h"
@@ -181,6 +205,24 @@ static const char* const kSceneCsg =
 	"standard_object\n{\n\tname op_b\n\tgeometry geo\n\tmaterial mat\n\tposition 0.4 0 0\n}\n\n"
 	"csg_object\n{\n\tname csg_root\n\tobja op_a\n\tobjb op_b\n\toperation union\n\tmaterial mat\n}\n";
 
+// Toolkit slice 3b test (5): the SAME 3-sphere layout as kScene3, but with
+// NO rasterizer chunk (and no standard_shader, which existed only to be
+// resolved by the now-absent rasterizer's Finalize) -- Job::GetRasterizer()
+// resolves nullptr on this head.  Proves query_object_at works on a
+// rasterizer-less head (it reuses the objectmap ephemeral pipeline, which
+// never dereferences the production rasterizer -- mirrors the quality:
+// "draft" / mode:"objectmap" gate).
+static const char* const kScene3NoRasterizer =
+	"RISE ASCII SCENE 7\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+	"standard_object\n{\n\tname sph_a\n\tgeometry geo\n\tmaterial mat\n\tposition -1.7 0 0\n}\n\n"
+	"standard_object\n{\n\tname sph_b\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"standard_object\n{\n\tname sph_c\n\tgeometry geo\n\tmaterial mat\n\tposition 1.7 0 0\n}\n";
+
 //----------------------------------------------------------------------
 // Helpers.
 //----------------------------------------------------------------------
@@ -265,6 +307,26 @@ static const LegendEntry* FindLegend( const AgentRenderResult& r, const std::str
 	for( std::size_t i = 0; i < r.legend.size(); ++i )
 		if( r.legend[i].name == name ) return &r.legend[i];
 	return nullptr;
+}
+
+// Toolkit slice 3b: find ANY pixel whose decoded bytes exactly equal
+// `rgb` -- since every hit-pixel of a solid-identity-colour object decodes
+// to the SAME exact byte triple (the objectmap exactness invariant), any
+// matching pixel is an equally valid query_object_at probe point for that
+// object; returns false if none found.
+static bool FindPixelForColor( const Decoded& d, const unsigned char rgb[3],
+                                unsigned int& outX, unsigned int& outY )
+{
+	for( unsigned int y = 0; y < d.h; ++y ) {
+		for( unsigned int x = 0; x < d.w; ++x ) {
+			const Px& p = d.at( x, y );
+			if( p[0] == rgb[0] && p[1] == rgb[1] && p[2] == rgb[2] ) {
+				outX = x; outY = y;
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 //----------------------------------------------------------------------
@@ -949,6 +1011,220 @@ static void RunAsyncObjectMapTest()
 	pJob->release();
 }
 
+//----------------------------------------------------------------------
+// Toolkit slice 3b: query_object_at {x,y} -- the cheap single-pixel
+// companion to render mode:"objectmap".  IMPLEMENTATION CHOICE (a): reuses
+// the SAME ephemeral objectmap pipeline wholesale (one identity render at
+// the effective dims, then decode ONE pixel against that render's legend
+// by exact colorHex byte) rather than a bespoke single-ray probe -- see
+// AgentSession::QueryObjectAt's doc.
+//
+// (1) center-of-object query returns the right name for all 3 objects of
+//     kScene3 (located via a reference objectmap render + pixel scan, so
+//     this does not depend on hand-derived screen-space coordinates).
+// (2) an empty-region (background) query -> hit:false, not an error.
+// (6) query_object_at is side-effect-free on the retained Document.
+//----------------------------------------------------------------------
+static void RunQueryObjectAtCoreTest()
+{
+	std::printf( "=== AgentObjectMapTest: query_object_at core (Toolkit slice 3b) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_qoa_core.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "qoa core scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "qoa core session" ); return; }
+
+	const std::string preDoc = session->ReadDocument();
+
+	// Reference objectmap render: locate each object's pixels + legend colours.
+	AgentRenderParams p;
+	p.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult r = session->Render( p );
+	Check( r.ok && r.legend.size() == 3, "reference objectmap render for query_object_at succeeds with 3 objects" );
+	Decoded dec;
+	Check( DecodePng( r.png, dec ), "reference objectmap PNG decodes" );
+
+	// (1) center-of-object query for ALL THREE objects returns the right name.
+	static const char* const kNames[3] = { "sph_a", "sph_b", "sph_c" };
+	for( int i = 0; i < 3; ++i ) {
+		const LegendEntry* le = FindLegend( r, kNames[i] );
+		Check( le != nullptr, std::string( "legend has " ) + kNames[i] );
+		if( !le ) continue;
+		unsigned char cb[3];
+		Check( HexToBytes( le->colorHex, cb ), std::string( "legend colorHex parses for " ) + kNames[i] );
+		unsigned int px = 0, py = 0;
+		Check( FindPixelForColor( dec, cb, px, py ), std::string( "found a pixel for " ) + kNames[i] );
+
+		AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( (int)px, (int)py );
+		Check( !qr.outOfRange, std::string( "query_object_at on " ) + kNames[i] + "'s own pixel is NOT out of range" );
+		Check( qr.hit, std::string( "query_object_at hits " ) + kNames[i] );
+		Check( qr.name == kNames[i],
+		       std::string( "MONEY ASSERTION (1): query_object_at names " ) + kNames[i] +
+		       " correctly (got '" + qr.name + "')" );
+		Check( qr.width == 64 && qr.height == 64, "query_object_at reports the effective 64x64 dims" );
+		Check( qr.pixelX == px && qr.pixelY == py, "query_object_at echoes back the queried pixel coords" );
+	}
+
+	// (2) empty-region (background) query -> hit:false, a STRUCTURED
+	// result, not an error/failure.  Corner (0,0) is background (see
+	// RunCoreTests' identical corner assertion).
+	{
+		AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( 0, 0 );
+		Check( !qr.outOfRange, "an in-range background pixel is NOT reported as outOfRange" );
+		Check( !qr.hit, "MONEY ASSERTION (2): query_object_at on an empty/background pixel reports hit:false" );
+		Check( qr.name.empty(), "a miss carries an empty name" );
+	}
+
+	// (6) Document byte-identity: query_object_at (like render) never
+	// mutates the retained Document.
+	Check( session->ReadDocument() == preDoc,
+	       "MONEY ASSERTION (6): query_object_at is side-effect-free on the Document" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (4) camera-override composition: aiming the ephemeral camera override at
+// sph_a makes the SAME center pixel (32,32) -- which resolves to sph_b
+// with the DEFAULT camera (see RunCoreTests) -- resolve to sph_a instead.
+// Also re-checks (6) Document byte-identity under a camera override.
+//----------------------------------------------------------------------
+static void RunQueryObjectAtCameraOverrideTest()
+{
+	std::printf( "=== AgentObjectMapTest: query_object_at camera-override composition (4) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_qoa_cam.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "qoa cam scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "qoa cam session" ); return; }
+
+	const std::string preDoc = session->ReadDocument();
+
+	AgentQueryObjectParams qp;
+	qp.camera.hasLocation = true;  qp.camera.location = "-1.7 0 2";
+	qp.camera.hasLookAt   = true;  qp.camera.lookAt   = "-1.7 0 0";
+	AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( 32, 32, qp );
+	Check( !qr.outOfRange, "camera-override query center pixel is in-range" );
+	Check( qr.hit && qr.name == "sph_a",
+	       "MONEY ASSERTION (4): aiming the camera at sph_a makes the CENTER pixel query return sph_a "
+	       "(the default camera resolves that same pixel to sph_b -- see RunCoreTests)" );
+
+	Check( session->ReadDocument() == preDoc,
+	       "(6) query_object_at with a camera override is ALSO side-effect-free on the Document" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (5) query_object_at works on a head with NO active production
+// rasterizer -- it reuses the objectmap ephemeral pipeline, which (like
+// quality:"draft") never dereferences the production rasterizer.  Pins the
+// CORRECT behaviour (works) against the alternative a naive implementation
+// might have: a production render on the SAME head fails honestly with
+// "no active rasterizer", so this test also proves query_object_at does
+// NOT share that fate.
+//----------------------------------------------------------------------
+static void RunQueryObjectAtNoRasterizerTest()
+{
+	std::printf( "=== AgentObjectMapTest: query_object_at on a rasterizer-less head (5) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_qoa_norast.RISEscene", kScene3NoRasterizer );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "qoa no-rasterizer scene loads" ); return; }
+	Check( pJob->GetRasterizer() == nullptr, "the head genuinely has no active rasterizer" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "qoa no-rasterizer session" ); return; }
+
+	// Sanity: a PRODUCTION render on this head fails honestly (the
+	// pre-existing contract) -- query_object_at must NOT share that fate.
+	AgentRenderResult prodRes = session->Render( -1 );
+	Check( !prodRes.ok && prodRes.message == "no active rasterizer",
+	       "sanity: a production render on this rasterizer-less head fails honestly" );
+
+	AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( 32, 32 );
+	Check( !qr.outOfRange,
+	       "MONEY ASSERTION (5): query_object_at on a rasterizer-less head is NOT rejected as out-of-range" );
+	Check( qr.width == 64 && qr.height == 64,
+	       "MONEY ASSERTION (5): query_object_at resolves the effective 64x64 dims on a rasterizer-less head" );
+	Check( qr.message.find( "no active rasterizer" ) == std::string::npos,
+	       "query_object_at does not fail with the production-only \"no active rasterizer\" message" );
+	Check( qr.hit && qr.name == "sph_b",
+	       "MONEY ASSERTION (5): query_object_at correctly identifies sph_b at center on a rasterizer-less head "
+	       "(mirrors the quality:\"draft\"/mode:\"objectmap\" gate -- never needs the production rasterizer)" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (3)+(7): the query_object_at WIRE verb over the JSON-RPC dispatcher.
+// (7) an in-range query returns the documented result shape; (3) an
+// out-of-range x or y is a clean -32602 (kInvalidParams), NOT a
+// structured hit:false result.
+//----------------------------------------------------------------------
+static std::string QoaReq( double id, int x, int y )
+{
+	JsonValue params = JsonValue::MakeObject();
+	params.set( "x", JsonValue::MakeNumber( (double)x ) );
+	params.set( "y", JsonValue::MakeNumber( (double)y ) );
+	JsonValue r = JsonValue::MakeObject();
+	r.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+	r.set( "id", JsonValue::MakeNumber( id ) );
+	r.set( "method", JsonValue::MakeString( "query_object_at" ) );
+	r.set( "params", params );
+	return JsonSerialize( r );
+}
+
+static void RunQueryObjectAtWireTest()
+{
+	std::printf( "=== AgentObjectMapTest: query_object_at wire dispatch (3)+(7) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_qoa_wire.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "qoa wire scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "qoa wire session" ); return; }
+	AgentRpcDispatcher rpc( std::move( session ) );
+
+	// (7) a normal in-range query returns the documented shape.
+	{
+		const std::string resp = rpc.HandleLine( QoaReq( 1, 32, 32 ) );
+		JsonValue env; std::string err;
+		Check( JsonParse( resp, env, err ), "query_object_at wire response parses as JSON" );
+		Check( !env.has( "error" ), "an in-range query_object_at is a JSON-RPC success" );
+		const JsonValue& result = env.get( "result" );
+		Check( result.get( "hit" ).isBool(), "result carries a boolean 'hit'" );
+		Check( result.get( "name" ).isString(), "result carries a string 'name'" );
+		Check( result.get( "kind" ).isString(), "result carries a string 'kind' (empty today)" );
+		Check( result.get( "pixelX" ).asNumber( -1 ) == 32 && result.get( "pixelY" ).asNumber( -1 ) == 32,
+		       "result echoes back the queried pixel coords" );
+		Check( result.get( "width" ).asNumber( 0 ) == 64 && result.get( "height" ).asNumber( 0 ) == 64,
+		       "result reports the effective 64x64 dims" );
+		Check( result.get( "hit" ).asBool() && result.get( "name" ).asString() == "sph_b",
+		       "MONEY ASSERTION (7): the wire verb identifies sph_b at the center pixel" );
+	}
+
+	// (3) out-of-range x -> -32602 (kInvalidParams), NOT a structured hit:false.
+	{
+		const std::string resp = rpc.HandleLine( QoaReq( 2, 999, 32 ) );
+		JsonValue env; std::string err;
+		Check( JsonParse( resp, env, err ), "out-of-range-x response parses as JSON" );
+		Check( env.has( "error" ),
+		       "MONEY ASSERTION (3): an out-of-range x is a JSON-RPC ERROR, not a structured hit:false" );
+		Check( env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "the out-of-range-x error carries code -32602 (kInvalidParams)" );
+	}
+
+	// (3) a negative y -> also -32602.
+	{
+		const std::string resp = rpc.HandleLine( QoaReq( 3, 10, -1 ) );
+		JsonValue env; std::string err;
+		Check( JsonParse( resp, env, err ), "negative-y response parses as JSON" );
+		Check( env.has( "error" ), "a negative y is ALSO a JSON-RPC error" );
+		Check( env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "negative y carries -32602 too" );
+	}
+
+	pJob->release();
+}
+
 int main()
 {
 	RunCoreTests();
@@ -963,6 +1239,10 @@ int main()
 	RunPaletteExhaustionUnitTest();
 	RunExhaustiveBranchReservedTest();
 	RunAsyncObjectMapTest();
+	RunQueryObjectAtCoreTest();
+	RunQueryObjectAtCameraOverrideTest();
+	RunQueryObjectAtNoRasterizerTest();
+	RunQueryObjectAtWireTest();
 
 	std::printf( "\nAgentObjectMapTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

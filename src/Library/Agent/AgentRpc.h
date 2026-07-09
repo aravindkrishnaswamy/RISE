@@ -240,6 +240,61 @@
 //                                            available/reason pair distinguishes "no
 //                                            live viewport" from "an all-black frame";
 //                                            do NOT harmonize the two shapes.)
+//      query_object_at {x,y,camera?,width?,height?}
+//                                        -> {hit,name,kind,pixelX,pixelY,width,height,
+//                                            message}
+//                                           (Toolkit slice 3b: the cheap single-pixel
+//                                            companion to render mode:"objectmap" --
+//                                            "which WORLD-VISIBLE object is under
+//                                            pixel (x,y)?" IMPLEMENTATION: reuses the
+//                                            objectmap ephemeral pipeline WHOLESALE
+//                                            (one full identity render at the
+//                                            effective dims, decoding ONE pixel back
+//                                            against that render's legend by exact
+//                                            colorHex byte) rather than a bespoke
+//                                            single-ray probe -- costs one identity
+//                                            render (~20ms at 256x256), not a second
+//                                            code path; see AgentSession::
+//                                            QueryObjectAt's doc for the full
+//                                            rationale. `x`/`y` are INTEGER pixel
+//                                            coordinates in the EFFECTIVE film dims
+//                                            (the override dims when `width`+`height`
+//                                            are BOTH supplied, else the Document's
+//                                            authored Film dims) -- an out-of-range
+//                                            (x,y) is a CLEAN -32602 (kInvalidParams),
+//                                            checked BEFORE the render runs (a cheap
+//                                            read-only Film query). `camera`/`width`/
+//                                            `height` compose EXACTLY like render's own
+//                                            overrides (ephemeral, captured + restored,
+//                                            never touch the Document) -- aim the
+//                                            camera with these, then query. `hit:false`
+//                                            is a STRUCTURED SUCCESS (never an error):
+//                                            the probe pixel resolved to the reserved
+//                                            background colour (the ray missed every
+//                                            object) -- `name` is "" in that case.
+//                                            `name` is the SAME legend name a
+//                                            mode:"objectmap" render's legend carries
+//                                            (the generator-synthesized `grid[i,j]`-
+//                                            is-not-a-CST-chunk caveat applies
+//                                            identically -- see render's `mode` doc).
+//                                            `kind` is currently ALWAYS "" -- no cheap
+//                                            manager-kind accessor exists yet (see
+//                                            AgentQueryObjectResult::kind's doc);
+//                                            wired for a future accessor rather than
+//                                            guessed. `pixelX`/`pixelY`/`width`/
+//                                            `height` echo the queried pixel and the
+//                                            EFFECTIVE dims this call resolved.
+//                                            Never mutates the retained Document
+//                                            (ReadDocument() is byte-identical before
+//                                            and after, exactly like render). Works on
+//                                            a head with NO active production
+//                                            rasterizer -- mirrors the quality:"draft"
+//                                            / mode:"objectmap" gate, since the
+//                                            underlying render this reuses never
+//                                            dereferences the production rasterizer.
+//                                            READ-SAFE: available under every
+//                                            autonomy posture, including Read (a pure
+//                                            read, exactly like render itself).)
 //      list_proposals {}                 -> {proposals:[{id,kind,target,entityKind,
 //                                            param,value,chunkText,truncated,
 //                                            baseVersion:{uuid,revision},
@@ -355,9 +410,9 @@
 //    DENY-BY-DEFAULT: `Read` allows ONLY the read-safe allowlist
 //    (read_document, read_schema, read_skill, validate, render,
 //    render_status, render_wait, render_cancel, read_image,
-//    list_proposals, read_viewport -- IsReadSafeVerb in AgentRpc.cpp,
-//    the single source of truth for membership; keep this enumeration
-//    in sync when a verb is added) and refuses EVERYTHING else,
+//    list_proposals, read_viewport, query_object_at -- IsReadSafeVerb in
+//    AgentRpc.cpp, the single source of truth for membership; keep this
+//    enumeration in sync when a verb is added) and refuses EVERYTHING else,
 //    including the 3 known-
 //    mutating verbs (propose_patch, insert_chunk, remove_chunk), any
 //    unrecognized/typo'd method name, and any FUTURE verb added to the
@@ -474,7 +529,7 @@ namespace RISE
 		//! the full class-default-vs-binary-default rationale.
 		enum class AgentAutonomy
 		{
-			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals) dispatches; every other method, including the 3 known-mutating verbs (propose_patch/insert_chunk/remove_chunk), resolve_proposal, and any future unclassified verb, is refused.
+			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at) dispatches; every other method, including the 3 known-mutating verbs (propose_patch/insert_chunk/remove_chunk), resolve_proposal, and any future unclassified verb, is refused.
 			//! Secure-MCP slice 5b: the read-safe allowlist PLUS the 3 mutating
 			//! verbs (propose_patch/insert_chunk/remove_chunk) dispatch -- but
 			//! dispatching only reaches AgentSession, whose OWN Owner/External
