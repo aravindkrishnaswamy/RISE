@@ -103,6 +103,12 @@ namespace RISE
 				       method == "render_wait"     ||
 				       method == "render_cancel"   ||
 				       method == "read_image"      ||
+				       // Toolkit slice 1: read_viewport is a PURE READ of the
+				       // live interactive viewport pixels -- it never renders
+				       // and never mutates the scene, so it belongs in the
+				       // read-safe allowlist (available under every autonomy
+				       // posture, including Read).
+				       method == "read_viewport"   ||
 				       // Secure-MCP slice 5b: list_proposals is a READ, not a
 				       // mutation or a resolve -- it lists the SAME scene's
 				       // staged-proposal queue a caller is already allowed to
@@ -1276,6 +1282,56 @@ namespace RISE
 						( mePresent == 1 ) ? s->ReadImage( maxEdge, imgW, imgH )
 						                   : s->ReadImage( 0, imgW, imgH );
 					JsonValue result = JsonValue::MakeObject();
+					result.set( "png_base64", JsonValue::MakeString( Base64Encode( png ) ) );
+					result.set( "byteLength", JsonValue::MakeNumber( static_cast<double>( png.size() ) ) );
+					result.set( "width",  JsonValue::MakeNumber( static_cast<double>( imgW ) ) );
+					result.set( "height", JsonValue::MakeNumber( static_cast<double>( imgH ) ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// read_viewport {maxEdge?} -> {available:bool,reason:string,
+				//                              png_base64:string,byteLength:number,
+				//                              width:number,height:number}
+				//   Toolkit slice 1: the LIVE interactive GUI viewport's CURRENT
+				//   pixels -- the exact frame the user is looking at right now,
+				//   NOT the agent's own last render (contrast read_image, which
+				//   returns THIS session's last headless render).  NEVER
+				//   triggers a render -- it copies whatever the interactive
+				//   render loop has most recently produced (the cheapest
+				//   observe).  `available` is false with reason "no_controller"
+				//   (headless session -- no viewport at all) or "no_frame_yet"
+				//   (controller attached but no interactive frame produced yet);
+				//   in both cases png_base64 is "" and byteLength/width/height
+				//   are 0.  available:false is a STRUCTURED SUCCESS result, NOT
+				//   a JSON-RPC error (the list_proposals precedent) -- only "no
+				//   session loaded" is the usual MakeError gate.  maxEdge
+				//   (OPTIONAL, clamped [16,1024]) downscales exactly as
+				//   read_image's maxEdge does (box filter, aspect-preserving,
+				//   never upscales), no re-render.
+				//
+				//   DELIBERATE CONTRAST with read_image: read_image returns a
+				//   silent EMPTY image (png_base64 "", byteLength 0) with no
+				//   availability flag when nothing has rendered; read_viewport
+				//   instead carries an explicit available/reason pair because
+				//   "no live viewport" and "an all-black frame" are genuinely
+				//   different states a caller must distinguish.  Do NOT
+				//   "harmonize" the two shapes -- the asymmetry is intentional.
+				//--------------------------------------------------------------
+				if( m == "read_viewport" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					unsigned int maxEdge = 0;
+					std::string meErr;
+					const int mePresent = ParseClampedUInt( params, "maxEdge", 16, 1024, maxEdge, meErr );
+					if( mePresent < 0 ) return MakeError( idValue, kInvalidParams, meErr );
+					unsigned int imgW = 0, imgH = 0;
+					bool available = false;
+					std::string reason;
+					const std::vector<unsigned char> png =
+						s->ReadViewport( ( mePresent == 1 ) ? maxEdge : 0, imgW, imgH, available, reason );
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "available",  JsonValue::MakeBool( available ) );
+					result.set( "reason",     JsonValue::MakeString( reason ) );
 					result.set( "png_base64", JsonValue::MakeString( Base64Encode( png ) ) );
 					result.set( "byteLength", JsonValue::MakeNumber( static_cast<double>( png.size() ) ) );
 					result.set( "width",  JsonValue::MakeNumber( static_cast<double>( imgW ) ) );

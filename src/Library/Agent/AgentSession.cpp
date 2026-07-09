@@ -2927,5 +2927,53 @@ namespace RISE
 			if( !mLastSink ) return std::vector<unsigned char>();   // nothing rendered yet
 			return mLastSink->ToPngDownscaled( maxEdge, outWidth, outHeight );
 		}
+
+		std::vector<unsigned char> AgentSession::ReadViewport(
+			unsigned int maxEdge, unsigned int& outWidth, unsigned int& outHeight,
+			bool& outAvailable, std::string& outReason ) const
+		{
+			outWidth  = 0;
+			outHeight = 0;
+			outAvailable = false;
+			outReason.clear();
+
+			// No live controller -> no viewport at all (headless session).
+			// This is a STRUCTURED unavailable, NOT an error.
+			if( !mController ) {
+				outReason = "no_controller";
+				return std::vector<unsigned char>();
+			}
+
+			// Copy the live interactive frame out of the controller.  This
+			// call does the cross-thread-safe, tile-locked COHERENT copy
+			// against the render thread (see CopyInteractiveFrame); false
+			// means the interactive render loop has not produced a frame yet.
+			std::vector<RISEColor> pixels;
+			unsigned int w = 0, h = 0;
+			if( !mController->CopyInteractiveFrame( pixels, w, h ) ) {
+				outReason = "no_frame_yet";
+				return std::vector<unsigned char>();
+			}
+
+			// Encode via InMemoryRasterizerOutput WITHOUT re-rendering: adopt
+			// the already-coherent buffer and reuse the exact ToPng /
+			// ToPngDownscaled path read_image uses (box filter, linear space,
+			// aspect-preserving downscale).  Scoped: released before return.
+			InMemoryRasterizerOutput* sink = new InMemoryRasterizerOutput();
+			sink->AdoptCoherentSnapshot( std::move( pixels ), w, h );
+
+			std::vector<unsigned char> png;
+			if( maxEdge > 0 ) {
+				png = sink->ToPngDownscaled( maxEdge, outWidth, outHeight );
+			} else {
+				png = sink->ToPng();
+				outWidth  = sink->Width();
+				outHeight = sink->Height();
+			}
+			safe_release( sink );
+
+			outAvailable = true;
+			return png;
+		}
 	}
 }

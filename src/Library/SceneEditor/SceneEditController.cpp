@@ -63,6 +63,7 @@
 #include "../Intersection/RayIntersection.h"
 #include "../Rendering/InteractivePelRasterizer.h"
 #include "../Rendering/FrameStore.h"  // L6e-3 — per-pass interactive FrameStore
+#include "../Interfaces/IRasterImageWriter.h"  // Toolkit slice 1 — BufferRasterImageWriter adapter for CopyInteractiveFrame
 #include "../Rendering/Rasterizer.h"  // L6e-3 — Implementation::Rasterizer for SetFrameStore
 #include "../Scene.h"                 // concrete Scene (transitive scene-state includes); transactional rollback no longer uses CreateSnapshot/RestoreFromSnapshot
 #include "../Utilities/RandomNumbers.h"
@@ -6266,6 +6267,16 @@ void SceneEditController::EnsureInteractiveFrameStore_( unsigned int width, unsi
 	if( width == 0 || height == 0 ) return;
 
 	// Same-dim short-circuit: reuse the existing FrameStore.
+	//
+	// Toolkit slice 1 (read_viewport) note: this branch does NOT take
+	// mInteractiveFrameStoreMutex.  It only READS the mInteractiveFrameStore
+	// pointer (and its immutable Width()/Height()) on the render thread
+	// itself, sequenced after that same thread's own prior write -- it never
+	// reassigns the pointer.  A concurrent CopyInteractiveFrame reader also
+	// only reads-and-addrefs the pointer under the mutex; two concurrent
+	// pointer READS are not a data race, so no lock is needed here.  Only the
+	// dims-changed branch below (which release-frees and reassigns the
+	// pointer) races the reader and therefore takes the mutex.
 	if( mInteractiveFrameStore &&
 	    mInteractiveFrameStore->Width()  == width &&
 	    mInteractiveFrameStore->Height() == height )
@@ -6295,12 +6306,8 @@ void SceneEditController::EnsureInteractiveFrameStore_( unsigned int width, unsi
 		return;
 	}
 
-	// Dim changed — release old, allocate new.
-	if( mInteractiveFrameStore ) {
-		mInteractiveFrameStore->release();
-		mInteractiveFrameStore = 0;
-	}
-
+	// Dim changed — allocate the new store FIRST (outside the leaf lock),
+	// then swap the pointer under mInteractiveFrameStoreMutex below.
 	FrameStoreOutput::FrameStoreSpec spec;
 	spec.width    = width;
 	spec.height   = height;
@@ -6337,14 +6344,112 @@ void SceneEditController::EnsureInteractiveFrameStore_( unsigned int width, unsi
 	// mutex / observer-dispatch overhead better at full image
 	// resolutions.  The asymmetry is intentional.
 	spec.tileEdge = 8;
-	mInteractiveFrameStore = new Implementation::FrameStore( spec );
+	Implementation::FrameStore* fresh = new Implementation::FrameStore( spec );
 	// new returns refcount 1; that's our owned reference.
 
+	// Toolkit slice 1 (read_viewport): leaf-lock the pointer swap ONLY.
+	// mInteractiveFrameStore is read cross-thread by CopyInteractiveFrame,
+	// so the release-old / reassign sequence is a genuine data race without
+	// this lock.  A reader that addref'd the OLD store before we release it
+	// here keeps its own reference alive (refcount stays >= 1), so its
+	// in-flight DumpImage sees a stable snapshot; new render passes write to
+	// `fresh`.  The lock guards ONLY the pointer; the store CONTENT is
+	// guarded by FrameStore's own per-tile shared_mutex.  See the member's
+	// leaf-lock note in the header.
+	{
+		std::lock_guard<std::mutex> lk( mInteractiveFrameStoreMutex );
+		if( mInteractiveFrameStore ) {
+			mInteractiveFrameStore->release();
+		}
+		mInteractiveFrameStore = fresh;
+	}
+
+	// SetFrameStore reads mInteractiveFrameStore on the render thread,
+	// sequenced after the reassign above -- same no-lock-needed reasoning as
+	// the same-dims short-circuit.
 	Implementation::Rasterizer* r =
 		dynamic_cast<Implementation::Rasterizer*>( mInteractiveRasterizer );
 	if( r ) {
 		r->SetFrameStore( mInteractiveFrameStore );
 	}
+}
+
+// Toolkit slice 1 (read_viewport): file-local IRasterImageWriter adapter
+// that captures DumpImage's WriteColor stream into a caller-supplied
+// std::vector<RISEColor> (row-major).  Stack-allocated by
+// CopyInteractiveFrame; the IReference addref/release/refcount are no-ops
+// because DumpImage never manages the writer's lifetime and the object
+// outlives the single synchronous DumpImage call by construction.
+namespace {
+	class BufferRasterImageWriter : public IRasterImageWriter
+	{
+	public:
+		BufferRasterImageWriter( std::vector<RISEColor>& out,
+		                         unsigned int& outW, unsigned int& outH )
+			: mOut( out ), mW( outW ), mH( outH ) {}
+
+		void BeginWrite( const unsigned int width, const unsigned int height ) override
+		{
+			mW = width;
+			mH = height;
+			mOut.assign( static_cast<std::size_t>( width ) * height, RISEColor() );
+		}
+		void WriteColor( const RISEColor& c, const unsigned int x, const unsigned int y ) override
+		{
+			mOut[ static_cast<std::size_t>( y ) * mW + x ] = c;
+		}
+		void EndWrite() override {}
+
+		// IReference: stack-owned, lifetime not managed by DumpImage.
+		void         addref()   const override {}
+		bool         release()  const override { return false; }
+		unsigned int refcount() const override { return 1; }
+
+	private:
+		std::vector<RISEColor>& mOut;
+		unsigned int&           mW;
+		unsigned int&           mH;
+	};
+}
+
+bool SceneEditController::CopyInteractiveFrame(
+	std::vector<RISEColor>& outPixels,
+	unsigned int& outWidth,
+	unsigned int& outHeight ) const
+{
+	outPixels.clear();
+	outWidth  = 0;
+	outHeight = 0;
+
+	// Snapshot + addref the interactive store pointer under the leaf mutex
+	// (mirrors ViewportFrameStore::SnapshotFrameStore) so a concurrent
+	// EnsureInteractiveFrameStore_ reassignment can't free it under us.
+	Implementation::FrameStore* snap = nullptr;
+	{
+		std::lock_guard<std::mutex> lk( mInteractiveFrameStoreMutex );
+		if( mInteractiveFrameStore ) {
+			mInteractiveFrameStore->addref();
+			snap = mInteractiveFrameStore;
+		}
+	}
+	if( !snap ) return false;   // no interactive frame yet (no render has run)
+
+	const unsigned int w = static_cast<unsigned int>( snap->Width() );
+	const unsigned int h = static_cast<unsigned int>( snap->Height() );
+	if( w == 0 || h == 0 ) {
+		snap->release();
+		return false;
+	}
+
+	// Coherent copy: DumpImage acquires EVERY tile's shared_lock up front,
+	// so an in-flight interactive render pass writing tiles cannot tear the
+	// result.  This is the SAME mechanism ViewportFrameStore::SaveAs uses --
+	// never a raw GetPEL loop (unlocked = torn/racy).
+	BufferRasterImageWriter writer( outPixels, outWidth, outHeight );
+	snap->AsBeautyRasterImage().DumpImage( &writer );
+
+	snap->release();
+	return outWidth != 0 && outHeight != 0 && !outPixels.empty();
 }
 
 void SceneEditController::DoOneRenderPass()

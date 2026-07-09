@@ -193,7 +193,7 @@ int main()
 		Check( env.has( "id" ), "id:null response HAS an id field" );
 		Check( env.get( "id" ).isNull(), "id:null response echoes id back as null (not omitted, not a fabricated number)" );
 		Check( !env.has( "error" ), "id:null tools/list is a JSON-RPC success" );
-		Check( env.get( "result" ).get( "tools" ).size() == 14, "id:null tools/list result carries all 14 tools" );
+		Check( env.get( "result" ).get( "tools" ).size() == 15, "id:null tools/list result carries all 15 tools" );
 	}
 	{
 		// Same id:null contract for `ping`, cross-checking both fixes
@@ -257,9 +257,9 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
-	// tools/list -- all 14 verbs present; spot-check schemas + descriptions.
+	// tools/list -- all 15 verbs present; spot-check schemas + descriptions.
 	//----------------------------------------------------------------------
-	std::printf( "[tools/list] all 14 verbs; schema + description spot-checks\n" );
+	std::printf( "[tools/list] all 15 verbs; schema + description spot-checks\n" );
 	JsonValue toolsList;
 	{
 		const std::string resp = mcp.HandleLine( Req( 10, "tools/list", JsonValue::MakeObject() ) );
@@ -267,13 +267,13 @@ int main()
 		Check( !env.has( "error" ), "tools/list returns a success" );
 		toolsList = env.get( "result" ).get( "tools" );
 		Check( toolsList.isArray(), "tools/list result.tools is an array" );
-		Check( toolsList.size() == 14, "tools/list returns EXACTLY the 14 agent verbs" );
+		Check( toolsList.size() == 15, "tools/list returns EXACTLY the 15 agent verbs" );
 
 		static const char* const kExpectedNames[] = {
 			"read_document", "read_schema", "read_skill", "validate",
 			"propose_patch", "insert_chunk", "remove_chunk",
 			"render", "render_status", "render_wait", "render_cancel",
-			"read_image",
+			"read_image", "read_viewport",
 			"list_proposals", "resolve_proposal"
 		};
 		for( const char* expected : kExpectedNames ) {
@@ -589,7 +589,7 @@ int main()
 
 		const std::string listResp = nohead.HandleLine( Req( 41, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue listEnv = ParseResponse( listResp, 41 );
-		Check( listEnv.get( "result" ).get( "tools" ).size() == 14, "no-head tools/list still lists all 14 tools" );
+		Check( listEnv.get( "result" ).get( "tools" ).size() == 15, "no-head tools/list still lists all 15 tools" );
 
 		// A stateless tool (read_schema) works with no head.
 		{

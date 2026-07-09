@@ -1517,6 +1517,28 @@ namespace RISE
 		// them, so no bespoke per-feature accessors are needed here.
 		// GetAnimationOptions above already follows the active animation.)
 
+		//! Toolkit slice 1 (read_viewport): copy the CURRENT live interactive
+		//! viewport pixels out of `mInteractiveFrameStore` -- the exact frame
+		//! the user is looking at right now -- WITHOUT triggering a render.
+		//! Fills `outPixels` (row-major, linear radiance, width*height) and
+		//! `outWidth`/`outHeight`; returns true iff a frame was available.
+		//!
+		//! Thread-safe and coherent: the pointer is snapshot-and-addref'd
+		//! under `mInteractiveFrameStoreMutex` (so a concurrent
+		//! `EnsureInteractiveFrameStore_` reallocation can't free it
+		//! mid-read), then the pixels are copied via
+		//! `AsBeautyRasterImage().DumpImage()` -- which acquires EVERY tile's
+		//! shared_lock up front, the SAME complete-coherent-snapshot mechanism
+		//! `ViewportFrameStore::SaveAs` uses -- so an in-flight interactive
+		//! render pass writing tiles cannot tear the copy.  Returns false
+		//! (leaving outputs empty/zero) when no interactive frame store exists
+		//! yet (no render has run) or it has zero dims.  Callable from any
+		//! thread (e.g. the agent RPC thread) concurrently with the render
+		//! thread.
+		bool CopyInteractiveFrame( std::vector<RISEColor>& outPixels,
+		                           unsigned int& outWidth,
+		                           unsigned int& outHeight ) const;
+
 		// Test hooks (Phase 2) ---------------------------------------
 		// These let tests bypass picking and observe internal counters.
 		// They live in non-RISE_TEST_HOOKS builds too — the surface
@@ -2103,6 +2125,25 @@ namespace RISE
 		// only when scale changes shrink/grow the active dims.
 		// `Reference`-counted; we own one addref.
 		mutable RISE::Implementation::FrameStore* mInteractiveFrameStore;
+
+		// Toolkit slice 1 (read_viewport): a LEAF mutex guarding ONLY the
+		// `mInteractiveFrameStore` POINTER swap -- nothing else.  The store's
+		// pixel CONTENT is guarded independently by FrameStore's per-tile
+		// shared_mutex (which a reader acquires transitively via
+		// `DumpImage`); this mutex exists solely so the cross-thread reader
+		// `CopyInteractiveFrame` can snapshot-and-addref the pointer without
+		// racing `EnsureInteractiveFrameStore_`'s release-old/reassign in the
+		// dims-changed branch (which, pre-slice-1, ran with ZERO
+		// synchronization -- safe only while the render thread was the SOLE
+		// accessor).  LEAF: `EnsureInteractiveFrameStore_` runs entirely
+		// OUTSIDE `mMutex` (DoOneRenderPass is called by RenderLoop AFTER it
+		// releases mMutex), so this lock never nests with mMutex /
+		// mJobStatusMutex / mAsyncCacheMutex / mAgentRenderSlotMutex -- it is
+		// deliberately NOT part of the lock-order table.  Only the
+		// dims-changed reassignment takes it; the same-dims short-circuit
+		// reads the pointer on the render thread itself (sequenced after that
+		// thread's own prior write) and needs no lock.
+		mutable std::mutex mInteractiveFrameStoreMutex;
 
 		CancellableProgressCallback mCancelProgress;
 

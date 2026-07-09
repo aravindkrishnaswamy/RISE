@@ -458,6 +458,26 @@ namespace RISE
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 
+				// read_viewport (Toolkit slice 1)
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "maxEdge", NumberProp( "OPTIONAL long-edge bound in pixels, CLAMPED to [16,1024]. Downscales the copied viewport frame (box filter, aspect-preserving, NEVER upscales) before encoding -- no re-render. Omit for the native viewport resolution." ) );
+					tools.push_back( MakeTool( "read_viewport",
+						"Read the user's LIVE interactive viewport -- the exact frame they are "
+						"looking at RIGHT NOW in the GUI. This is DIFFERENT from read_image: "
+						"read_image returns YOUR last headless render; read_viewport returns the "
+						"USER's live viewport as it currently stands. It NEVER triggers a render "
+						"(it just copies the most recent interactive frame), so it is the cheapest "
+						"way to observe what the user sees. Returns an MCP image content block "
+						"(inline PNG) PLUS a text block with {available,reason,png_base64,byteLength,"
+						"width,height}. When `available` is false there is no image: `reason` is "
+						"\"no_controller\" (this session has no live GUI viewport -- e.g. a headless "
+						"run) or \"no_frame_yet\" (the viewport exists but has not rendered a frame "
+						"yet). available:false is a normal result, not an error -- do not retry "
+						"blindly; a headless session will never have a viewport.",
+						ObjectProp( "", props, std::vector<std::string>() ) ) );
+				}
+
 				// list_proposals (Secure-MCP slice 5b)
 				{
 					tools.push_back( MakeTool( "list_proposals",
@@ -548,7 +568,7 @@ namespace RISE
 					"read_document", "read_schema", "read_skill", "validate",
 					"propose_patch", "insert_chunk", "remove_chunk",
 					"render", "render_status", "render_wait", "render_cancel",
-					"read_image",
+					"read_image", "read_viewport",
 					"list_proposals", "resolve_proposal"
 				};
 				for( const char* n : kNames ) if( name == n ) return true;
@@ -760,13 +780,17 @@ namespace RISE
 
 					const JsonValue& innerResult = innerEnv.get( "result" );
 
-					// read_image gets special treatment: surface the PNG as
-					// a real MCP image content block (so a vision-capable
-					// client sees the frame inline) ALONGSIDE a text block
-					// with the metadata fields -- a real win over a bare
-					// base64 string the client would otherwise have to know
-					// to decode and reinterpret itself.
-					if( toolName == "read_image" ) {
+					// read_image / read_viewport get special treatment:
+					// surface the PNG as a real MCP image content block (so a
+					// vision-capable client sees the frame inline) ALONGSIDE a
+					// text block with the metadata fields -- a real win over a
+					// bare base64 string the client would otherwise have to
+					// know to decode and reinterpret itself.  read_viewport's
+					// result carries the SAME png_base64 field when
+					// available:true; when available:false the field is "" and
+					// the image block is simply skipped (the text block still
+					// carries {available,reason,...} so the client learns why).
+					if( toolName == "read_image" || toolName == "read_viewport" ) {
 						JsonValue content = JsonValue::MakeArray();
 						const std::string b64 = innerResult.get( "png_base64" ).asString();
 						if( !b64.empty() ) {

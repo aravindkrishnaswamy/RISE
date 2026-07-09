@@ -1036,6 +1036,44 @@ namespace RISE
 			                                      unsigned int& outWidth,
 			                                      unsigned int& outHeight ) const;
 
+			//! Toolkit slice 1 (read_viewport): fetch the CURRENT live
+			//! interactive GUI viewport's pixels as PNG bytes -- the exact
+			//! frame the user is looking at right now.  This is DISTINCT from
+			//! ReadImage(): ReadImage returns the AGENT's own last headless
+			//! render; ReadViewport returns the USER's live viewport (the
+			//! attached SceneEditController's `mInteractiveFrameStore`).  It
+			//! NEVER triggers a render -- it copies whatever the interactive
+			//! render loop has most recently produced (the cheapest possible
+			//! "observe").
+			//!
+			//! `outAvailable` is the structured outcome; `outReason` is one of
+			//!   ""              (available == true)
+			//!   "no_controller" (no live SceneEditController attached -- a
+			//!                    headless session has no viewport at all)
+			//!   "no_frame_yet"  (a controller is attached but the interactive
+			//!                    render loop has not produced a frame yet).
+			//! An unavailable result is a STRUCTURED, NON-error outcome (the
+			//! returned byte vector is empty, outW/outH are 0).
+			//!
+			//! `maxEdge` (0 = native size, else clamped [16,1024] by the
+			//! caller) downscales the copied frame exactly as ReadImage's
+			//! maxEdge does (box filter, linear space, aspect-preserving,
+			//! never upscales) -- reusing InMemoryRasterizerOutput's encode
+			//! path on an already-coherent snapshot, no re-render.
+			//! outW/outH report the dims of the returned PNG.
+			//!
+			//! Single-threaded-caller like the rest of this class's non-Render
+			//! surface: the coherent, cross-thread-safe copy of the live store
+			//! is done INSIDE SceneEditController::CopyInteractiveFrame (which
+			//! locks against the render thread) -- no AgentSession-side lock is
+			//! taken here (mController is read on the session's own call
+			//! stack).
+			std::vector<unsigned char> ReadViewport( unsigned int maxEdge,
+			                                         unsigned int& outWidth,
+			                                         unsigned int& outHeight,
+			                                         bool& outAvailable,
+			                                         std::string& outReason ) const;
+
 			//! Round-2 P1-1 test hook: override DrainAsyncRender_'s per-chunk
 			//! wait duration for THIS session instance (default 0 = "use
 			//! whatever chunkMs the caller/default passes").  Exists so a

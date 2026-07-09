@@ -140,6 +140,34 @@
 //                                            base64-encoding; no re-render.
 //                                            `width`/`height` report the dims of
 //                                            the returned image.)
+//      read_viewport {maxEdge?}          -> {available:bool, reason:string,
+//                                            png_base64:string, byteLength:number,
+//                                            width:number, height:number}
+//                                           (Toolkit slice 1: the LIVE interactive
+//                                            GUI viewport's CURRENT pixels -- the frame
+//                                            the user is looking at right now, NOT the
+//                                            agent's own last render (contrast
+//                                            read_image).  NEVER triggers a render --
+//                                            the cheapest observe; it copies whatever
+//                                            the interactive render loop last produced.
+//                                            `available` is false with reason
+//                                            "no_controller" (headless session, no
+//                                            viewport) or "no_frame_yet" (controller
+//                                            attached but no interactive frame produced
+//                                            yet); png_base64 is "" and the numeric
+//                                            fields 0 in that case.  available:false is
+//                                            a STRUCTURED SUCCESS result, NOT an error
+//                                            (the list_proposals precedent) -- only "no
+//                                            session loaded" is a MakeError.  maxEdge
+//                                            (clamped [16,1024]) downscales exactly as
+//                                            read_image does (box filter, aspect-
+//                                            preserving, never upscales), no re-render.
+//                                            DELIBERATE CONTRAST with read_image, which
+//                                            returns a silent empty image with no
+//                                            availability flag -- the explicit
+//                                            available/reason pair distinguishes "no
+//                                            live viewport" from "an all-black frame";
+//                                            do NOT harmonize the two shapes.)
 //      list_proposals {}                 -> {proposals:[{id,kind,target,entityKind,
 //                                            param,value,chunkText,truncated,
 //                                            baseVersion:{uuid,revision},
@@ -370,7 +398,7 @@ namespace RISE
 		//! the full class-default-vs-binary-default rationale.
 		enum class AgentAutonomy
 		{
-			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/list_proposals) dispatches; every other method, including the 3 known-mutating verbs (propose_patch/insert_chunk/remove_chunk), resolve_proposal, and any future unclassified verb, is refused.
+			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals) dispatches; every other method, including the 3 known-mutating verbs (propose_patch/insert_chunk/remove_chunk), resolve_proposal, and any future unclassified verb, is refused.
 			//! Secure-MCP slice 5b: the read-safe allowlist PLUS the 3 mutating
 			//! verbs (propose_patch/insert_chunk/remove_chunk) dispatch -- but
 			//! dispatching only reaches AgentSession, whose OWN Owner/External
