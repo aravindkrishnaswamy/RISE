@@ -56,6 +56,18 @@ namespace RISE
 			//! Run body(i) for i in [0, n) across the worker pool.
 			//! Blocks until every task completes.
 			//!
+			//! Exception safety: if one or more `body` invocations throw,
+			//! the FIRST exception is captured and re-thrown to THIS caller
+			//! only AFTER every task has finished (the latch barrier is
+			//! reached first).  Consequences that render call sites rely on:
+			//!   * A worker's exception never escapes a pool thread (which
+			//!     would std::terminate the process) — it surfaces here.
+			//!   * No worker is still running `body` (still touching the
+			//!     caller's closure / render frame / scene) when this
+			//!     re-throws, so the caller can safely unwind — no
+			//!     use-after-free on the render buffers.
+			//! On the no-throw path behaviour is unchanged.
+			//!
 			//! Recursion safety in the DEFAULT mode (no
 			//! force_all_threads_low_priority): safe.  The calling
 			//! thread drains queued tasks while it waits, so a pool

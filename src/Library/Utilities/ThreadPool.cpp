@@ -13,6 +13,7 @@
 #include "../Interfaces/IOptions.h"
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <memory>
 
 using namespace RISE;
@@ -95,7 +96,17 @@ void ThreadPool::WorkerLoop()
 			task = std::move( tasks.front() );
 			tasks.pop_front();
 		}
-		task();
+		// A task exception must NEVER escape a pool worker thread: an
+		// exception unwinding out of the thread entry point is undefined /
+		// std::terminate, which would take the whole process down.
+		// ParallelFor's own tasks already capture their body's exception
+		// internally (so this is a no-op for them); this catch is
+		// belt-and-braces for any other Submit()ted work.
+		try {
+			task();
+		}
+		catch( ... ) {
+		}
 	}
 }
 
@@ -110,7 +121,17 @@ bool ThreadPool::ExecuteOnePendingTask()
 		task = std::move( tasks.front() );
 		tasks.pop_front();
 	}
-	task();
+	// Same contract as WorkerLoop: a task exception must not escape here
+	// either.  The caller thread participates in ParallelFor by draining
+	// tasks through this method; a ParallelFor task captures its own body
+	// exception (re-thrown to the caller only after the latch barrier), so
+	// this catch is belt-and-braces for any other Submit()ted work and
+	// keeps the caller's drain loop from unwinding mid-barrier.
+	try {
+		task();
+	}
+	catch( ... ) {
+	}
 	return true;
 }
 
@@ -143,6 +164,16 @@ namespace
 		std::mutex					mut;
 		std::condition_variable		cv;
 		std::atomic<unsigned int>	remaining;
+		// First exception any task's body threw, captured under `mut`.
+		// Surfaced to the ParallelFor caller ONLY after the latch drains
+		// to zero (every task has stopped touching the caller's closure /
+		// the objects it references).  Exception safety: a render worker's
+		// std::bad_alloc under memory pressure must NOT escape a pool
+		// thread (that std::terminates the whole process), and must NOT
+		// let the caller unwind its render frame while other workers are
+		// still writing into it (a use-after-free).  Capturing here + a
+		// post-barrier rethrow gives the caller a clean, catchable failure.
+		std::exception_ptr			firstEx;
 		explicit ParallelForLatchState( unsigned int n ) : remaining( n ) {}
 	};
 }
@@ -176,7 +207,21 @@ void ThreadPool::ParallelFor( unsigned int n, std::function<void( unsigned int )
 		std::lock_guard<std::mutex> lk( tasksMut );
 		for( unsigned int i = 0; i < n; i++ ) {
 			tasks.push_back( [i, &body, sync] {
-				body( i );
+				// The decrement below MUST run on every exit from this task
+				// (success OR throw), otherwise the latch never reaches zero
+				// and the ParallelFor caller hangs forever.  Catch the
+				// body's exception, stash the first one, and fall through to
+				// the always-run decrement.  Re-thrown to the caller after
+				// the barrier (see ParallelFor's tail).
+				try {
+					body( i );
+				}
+				catch( ... ) {
+					std::lock_guard<std::mutex> exlk( sync->mut );
+					if( !sync->firstEx ) {
+						sync->firstEx = std::current_exception();
+					}
+				}
 				if( sync->remaining.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
 					{
 						std::lock_guard<std::mutex> lk2( sync->mut );
@@ -221,6 +266,23 @@ void ThreadPool::ParallelFor( unsigned int n, std::function<void( unsigned int )
 				} );
 			}
 		}
+	}
+
+	// Barrier passed: `remaining == 0`, so EVERY task has finished running
+	// `body` and no worker is touching the caller's closure (or the render
+	// frame / scene it references) any longer.  Only now is it safe to
+	// surface a task exception to the caller — re-throwing here converts a
+	// worker's std::bad_alloc (memory pressure during a parallel render)
+	// into a clean, catchable failure at the call site instead of a
+	// std::terminate on a pool thread, and guarantees the caller never
+	// unwinds its render frame out from under a still-running worker.
+	std::exception_ptr captured;
+	{
+		std::lock_guard<std::mutex> lk( sync->mut );
+		captured = sync->firstEx;
+	}
+	if( captured ) {
+		std::rethrow_exception( captured );
 	}
 }
 
