@@ -118,7 +118,26 @@ namespace RISE
 					if( !j.isObject() ) continue;   // tolerate a stray non-object line (never emitted by the recorder)
 					const std::string runType = j.get( "run_type" ).asString();
 					if( runType == "session" ) {
-						if( provider.empty() ) provider = j.get( "provider" ).asString();
+						// Review-round P2: the replay source models exactly ONE
+						// provider's wire format, but a recorded trajectory can
+						// carry MULTIPLE session records -- a mid-chat provider
+						// switch (on-by-default; SetProvider resets the transcript
+						// and rolls a fresh session).  Collecting every llm body
+						// under the first provider would silently feed
+						// gemini-shaped bodies to the anthropic codec.  Refuse
+						// loudly and tell the user to replay one provider-segment
+						// at a time.
+						const std::string thisProvider = j.get( "provider" ).asString();
+						if( provider.empty() ) {
+							provider = thisProvider;
+						}
+						else if( thisProvider != provider ) {
+							err = "replay fixture '" + path + "' (trajectory) switches provider mid-file ('" +
+							      provider + "' -> '" + thisProvider + "'): a provider switch resets the "
+							      "transcript and changes the wire format, so the recording must be replayed "
+							      "one provider-segment at a time (split it at the session boundary)";
+							return false;
+						}
 					}
 					else if( runType == "llm" ) {
 						bodies.push_back( j.get( "response_body" ).asString() );
@@ -199,6 +218,20 @@ namespace RISE
 				return false;
 			}
 			out.id = root.get( "id" ).asString();
+
+			// Review-round P2: the id is concatenated into filesystem paths
+			// (temp scene, trajectory, result) -- it MUST be a bare token so a
+			// scenario can never write outside runDir.  Mirrors the read_skill
+			// bare-name rule (AgentRpc.h: '/', '\\', ".." rejected).  The
+			// scenario JSON is dev-committed today, but this closes the hole
+			// before E4's live runner or any less-trusted scenario source.
+			if( out.id.find( '/' ) != std::string::npos ||
+			    out.id.find( '\\' ) != std::string::npos ||
+			    out.id.find( ".." ) != std::string::npos ) {
+				err = "scenario id '" + out.id + "' must be a BARE token -- no '/', '\\\\', or \"..\" "
+				      "(it is used to build filesystem paths under the run dir)";
+				return false;
+			}
 
 			if( !root.has( "title" ) || !root.get( "title" ).isString() ||
 			    root.get( "title" ).asString().empty() ) {

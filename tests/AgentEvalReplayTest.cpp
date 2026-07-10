@@ -212,6 +212,14 @@ static void TestLoadScenarioGates()
 	tryLoad( "empty_prompts.json",
 		"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[]}",
 		"empty prompts array" );
+
+	// Review-round P2: an id used in filesystem paths must be a bare token.
+	tryLoad( "traversal_id.json",
+		"{\"id\":\"../../evil\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[\"hi\"]}",
+		"id containing .. (path traversal)" );
+	tryLoad( "slash_id.json",
+		"{\"id\":\"a/b\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[\"hi\"]}",
+		"id containing a path separator" );
 }
 
 //----------------------------------------------------------------------
@@ -265,6 +273,39 @@ static void TestReplaySourceLoad()
 		Check( !AgentEvalReplaySource::LoadFromFile( path, src, err ),
 		       "a fixture naming two different providers across lines is refused" );
 		Check( !err.empty(), "the mixed-provider refusal carries a non-empty message" );
+	}
+	{
+		// Review-round P2: a RECORDED trajectory that switched provider
+		// mid-chat (two session records, different providers) must ALSO
+		// refuse -- the harness's own "record once, replay forever" workflow
+		// would otherwise feed the second provider's wire-shaped bodies to
+		// the first provider's codec.
+		const std::string path = dir + "/switched_provider_trajectory.jsonl";
+		WriteFile( path,
+			"{\"run_type\":\"session\",\"provider\":\"anthropic\",\"gen_ai.request.model\":\"m\"}\n"
+			"{\"run_type\":\"llm\",\"response_body\":\"{}\"}\n"
+			"{\"run_type\":\"session\",\"provider\":\"gemini\",\"gen_ai.request.model\":\"m\"}\n"
+			"{\"run_type\":\"llm\",\"response_body\":\"{}\"}\n" );
+		AgentEvalReplaySource src;
+		std::string err;
+		Check( !AgentEvalReplaySource::LoadFromFile( path, src, err ),
+		       "a recorded trajectory that switches provider mid-file is refused" );
+		Check( err.find( "switches provider" ) != std::string::npos,
+		       "the switched-provider refusal names the mid-file switch" );
+
+		// Control: a single-provider trajectory with one session + two llm
+		// records still loads (the switch check must not over-refuse).
+		const std::string ok = dir + "/single_provider_trajectory.jsonl";
+		WriteFile( ok,
+			"{\"run_type\":\"session\",\"provider\":\"anthropic\",\"gen_ai.request.model\":\"m\"}\n"
+			"{\"run_type\":\"llm\",\"response_body\":\"{\\\"a\\\":1}\"}\n"
+			"{\"run_type\":\"llm\",\"response_body\":\"{\\\"b\\\":2}\"}\n" );
+		AgentEvalReplaySource src2;
+		std::string err2;
+		Check( AgentEvalReplaySource::LoadFromFile( ok, src2, err2 ),
+		       "a single-provider trajectory with two llm records loads (" + err2 + ")" );
+		Check( src2.Provider() == "anthropic" && src2.Total() == 2,
+		       "the single-provider trajectory yields anthropic + 2 bodies" );
 	}
 }
 
