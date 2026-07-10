@@ -45,6 +45,14 @@ public:
     ~ChatPanel() override;
 
     void setViewportBridge(ViewportBridge* bridge);
+
+    //! Review-round P2 (E1): the scene path is the trajectory<->document
+    //! correlator; MainWindow sets it at scene load, clears it at teardown.
+    //! Takes effect at the NEXT startTrajectory (no mid-session restart).
+    //! PUBLIC: called cross-class from MainWindow, like setViewportBridge
+    //! (the closing verifier caught the original private placement -- a
+    //! certain MSVC C2248 on the next Windows pass).
+    void setScenePath(const QString& path) { m_scenePath = path; }
     void setSceneEditable(bool editable);
     bool isBusy() const { return m_busy; }
 
@@ -103,11 +111,6 @@ private:
     // Eval-harness E1: (re)attach the per-session trajectory file for the
     // current scene, or detach when recording is off / no scene is bound.
     void startTrajectory();
-
-    //! Review-round P2 (E1): the scene path is the trajectory<->document
-    //! correlator; MainWindow sets it at scene load, clears it at teardown.
-    //! Takes effect at the NEXT startTrajectory (no mid-session restart).
-    void setScenePath(const QString& path) { m_scenePath = path; }
     QString renderSkillIndex(const QString& rpcResponse) const;
     QString cancelledToolResultJson(int rpcId, const QString& message) const;
     void clearErrorAffordances();

@@ -712,6 +712,10 @@ final class ChatViewModel: ObservableObject {
     /// skills index ONCE by driving the read_skill verb through the
     /// live dispatcher (per the SetSkillIndex contract — the loop
     /// stays sans-IO; the driver does the fetch).
+    /// NOTE: `scenePath` has a compatibility default, but every real call
+    /// site must pass the loaded path (RenderViewModel does) -- a future
+    /// caller that omits it silently ships a session record with no
+    /// scene identity (closing-verify P3).
     func sceneOpened(viewportBridge vb: RISEViewportBridge, scenePath: String = "") {
         cancelTurn()
         sceneGeneration += 1
