@@ -3377,6 +3377,73 @@ static void TestNullShapeDefensiveAudit()
 	}
 }
 
+//----------------------------------------------------------------------
+// T32: user-reported live-Gemini failure -- a bare read_schema call used
+//      to kill the whole chat with HTTP 400.  Root cause: SchemaGenAll()
+//      (SchemaGen.cpp) iterated the scene grammar with no dedupe, so a
+//      legacy alias parser entry (mis_pathtracing_shaderop, which shares
+//      its Describe() with the canonical pathtracing_shaderop) emitted
+//      the same top-level keyword TWICE.  Our JsonValue tolerates
+//      duplicate object keys on the wire (Json.h: serialization re-emits
+//      every stored pair; only lookup is last-wins), but Gemini's
+//      functionResponse.response rides as a protobuf Struct, which
+//      HARD-REJECTS a repeated map key -- HTTP 400, whole turn dead.
+//
+//      SchemaGen.cpp now dedupes at the source.  This test proves the
+//      INDEPENDENT wire-side backstop in the Gemini codec
+//      (DedupeJsonKeysLastWins, AgentChatCodecs.cpp, applied right
+//      before functionResponse.response is set in PackToolResults):
+//      ANY tool result carrying duplicate JSON object keys -- from
+//      read_schema or any future tool -- must never reach the Gemini
+//      wire with those duplicates intact, at any nesting depth.
+//----------------------------------------------------------------------
+static void TestGeminiFunctionResponseDedupe()
+{
+	std::printf( "T32: gemini functionResponse dedupes duplicate JSON keys (read_schema HTTP-400 regression)...\n" );
+	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Gemini );
+	loop.AddUserMessage( "read the schema" );
+
+	// A no-id functionCall (the pre-3.x shape) is enough to get one
+	// pending call to answer; the tool name just needs to route through
+	// the plain "respObj = result" object branch in PackToolResults (i.e.
+	// NOT read_image, which takes the inlineData path).
+	const std::string fx = GeminiFixture(
+		"{\"parts\":[{\"functionCall\":{\"name\":\"read_document\",\"args\":{}}}],\"role\":\"model\"}",
+		"STOP" );
+	ChatStepResult st = loop.HandleResponse( 200, fx );
+	Check( st.kind == ChatStepResult::Kind::ToolCalls && st.toolCalls.size() == 1,
+	       "one functionCall -> one pending ToolCall" );
+	if( st.toolCalls.size() != 1 ) return;
+
+	// Hand-crafted JSON-RPC response line with a duplicated key at TWO
+	// nesting depths: top-level "a" (mirrors a repeated top-level chunk
+	// keyword) and, inside an array element nested two levels down, "c"
+	// (proves the recursive case -- an array-of-objects, not just a bare
+	// nested object).
+	const std::string dupResultLine =
+		"{\"result\":{\"a\":1,\"a\":2,\"nested\":{\"b\":[{\"c\":1,\"c\":2}]}}}";
+	loop.AddToolResult( st.toolCalls[0], dupResultLine );
+
+	const std::string reqBody = loop.BuildRequest( kApiKey ).body;
+
+	auto CountOccurrences = []( const std::string& hay, const std::string& needle ) {
+		int n = 0;
+		for( std::size_t pos = hay.find( needle ); pos != std::string::npos; pos = hay.find( needle, pos + 1 ) )
+			++n;
+		return n;
+	};
+	Check( CountOccurrences( reqBody, "\"a\":" ) == 1,
+	       "the serialized gemini request body carries \"a\": exactly once (deduped)" );
+	Check( reqBody.find( "\"a\":2" ) != std::string::npos,
+	       "the kept top-level \"a\" is the LAST duplicate's value (2), matching "
+	       "JsonValue::find()'s documented last-wins lookup semantics" );
+	Check( CountOccurrences( reqBody, "\"c\":" ) == 1,
+	       "the nested duplicate \"c\" (inside an array element two levels down) is deduped too" );
+	Check( reqBody.find( "\"c\":2" ) != std::string::npos,
+	       "the kept nested \"c\" is likewise the LAST duplicate's value (2)" );
+}
+
 int main()
 {
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
@@ -3424,6 +3491,7 @@ int main()
 	TestAnthropicMalformedInput();
 	TestGeminiMalformedArgs();
 	TestNullShapeDefensiveAudit();
+	TestGeminiFunctionResponseDedupe();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

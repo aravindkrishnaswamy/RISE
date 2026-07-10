@@ -24,6 +24,9 @@
 #include "../Parsers/ChunkDescriptor.h"
 #include "../Utilities/RString.h"
 
+#include <set>
+#include <string>
+
 namespace RISE
 {
 	namespace Agent
@@ -201,11 +204,26 @@ namespace RISE
 			const SceneEditorSuggestions::SceneGrammar& g = SceneEditorSuggestions::SceneGrammar::Instance();
 			const std::vector<const ChunkDescriptor*>& all = g.AllChunks();
 
+			// Dedupe by keyword.  SceneGrammar's mDescriptors has one entry
+			// PER REGISTERED PARSER, not per distinct chunk (see
+			// SceneGrammar.cpp's constructor comment): a legacy alias like
+			// `mis_pathtracing_shaderop` shares its parser CLASS with the
+			// canonical `pathtracing_shaderop` entry, and Describe() reports
+			// the canonical keyword on both -- so `all` contains the same
+			// `d->keyword` twice.  Emitting it twice here is harmless for
+			// Anthropic/OpenAI (tool results ride as opaque strings) but is
+			// a hard failure for Gemini, whose protobuf-Struct backend
+			// rejects duplicate map keys outright (HTTP 400).  First
+			// occurrence wins (matches SceneGrammar's own registration
+			// order, which lists the canonical keyword before its aliases).
+			std::set<std::string> seen;
+
 			std::string out;
 			out += '{';
 			bool first = true;
 			for( const ChunkDescriptor* d : all ) {
 				if( !d ) continue;
+				if( !seen.insert( d->keyword ).second ) continue;
 				if( !first ) out += ',';
 				first = false;
 				AppendJsonString( out, d->keyword );

@@ -24,6 +24,7 @@
 #include "Json.h"
 
 #include <cstring>
+#include <map>
 #include <string>
 
 namespace RISE
@@ -1197,6 +1198,56 @@ namespace RISE
 		// (4) GeminiChatCodec
 		//======================================================================
 
+		namespace
+		{
+			//! Gemini's functionResponse.response rides the wire as a protobuf
+			//! Struct, which HARD-REJECTS duplicate map keys ("Repeated map
+			//! key: '...'" -> HTTP 400, killing the whole turn).  Our JsonValue
+			//! happily round-trips duplicate object keys (Json.h: "duplicate
+			//! object keys: last wins ... we store an ordered vector of
+			//! pairs" -- JsonValue::find() scans from the end so LOOKUPS
+			//! already resolve last-wins; only *serialization* blindly
+			//! re-emits every stored pair).  A tool result can legitimately
+			//! arrive with duplicate keys -- e.g. read_schema's SchemaGenAll()
+			//! used to emit the same chunk keyword twice when a legacy alias
+			//! (mis_pathtracing_shaderop) shared a descriptor with its
+			//! canonical keyword (pathtracing_shaderop); see SchemaGen.cpp for
+			//! the source-side fix.  This is the wire-side backstop: whatever
+			//! a tool emits, no duplicate key ever reaches Gemini.  Recurses
+			//! into array/object children so a nested duplicate (inside an
+			//! array element, say) is caught too.  Keeps the LAST value per
+			//! key, matching JsonValue::find()'s documented last-wins lookup
+			//! semantics so behavior here is consistent with what the rest of
+			//! the loop already sees when it reads the (un-deduplicated)
+			//! JsonValue via find()/get().  Deliberately scoped to this file
+			//! (not JsonParse/JsonSerialize) -- other JsonValue consumers
+			//! (e.g. the eval-harness E3 checker) depend on today's
+			//! preserve-duplicates serialize behavior.
+			JsonValue DedupeJsonKeysLastWins( const JsonValue& v )
+			{
+				if( v.isArray() ) {
+					JsonValue out = JsonValue::MakeArray();
+					for( std::size_t i = 0; i < v.size(); ++i )
+						out.push_back( DedupeJsonKeysLastWins( v.at( i ) ) );
+					return out;
+				}
+				if( !v.isObject() ) return v;
+
+				const std::vector<std::pair<std::string, JsonValue>>& mem = v.members();
+				std::vector<std::string> order;             // first-seen key order
+				std::map<std::string, JsonValue> latest;    // key -> last raw value
+				for( std::size_t i = 0; i < mem.size(); ++i ) {
+					if( latest.find( mem[i].first ) == latest.end() )
+						order.push_back( mem[i].first );
+					latest[ mem[i].first ] = mem[i].second;  // later duplicate overwrites -> last wins
+				}
+				JsonValue out = JsonValue::MakeObject();
+				for( std::size_t i = 0; i < order.size(); ++i )
+					out.set( order[i], DedupeJsonKeysLastWins( latest[ order[i] ] ) );
+				return out;
+			}
+		}
+
 		const char* GeminiChatCodec::ProviderName() const { return "gemini"; }
 
 		const char* GeminiChatCodec::DefaultModelId() const { return "gemini-3.5-flash"; }
@@ -1342,7 +1393,15 @@ namespace RISE
 				if( !call.idSynthesized && !call.id.empty() )
 					fr.set( "id", JsonValue::MakeString( call.id ) );
 				fr.set( "name", JsonValue::MakeString( call.name ) );
-				fr.set( "response", respObj );
+				// Wire-side backstop (see DedupeJsonKeysLastWins above): every
+				// branch above (`error` echo, image-strip, `respObj = result`,
+				// the scalar/array `result` wrap) can embed a JsonValue parsed
+				// straight from the tool's JSON-RPC line, which may carry
+				// duplicate object keys our JsonValue tolerates but Gemini's
+				// protobuf Struct backend rejects outright.  Applying the
+				// dedupe here, once, downstream of every branch, covers all
+				// of them without needing a call site in each.
+				fr.set( "response", DedupeJsonKeysLastWins( respObj ) );
 				if( !b64.empty() ) {
 					// FunctionResponse.parts: [{inlineData:{mimeType,data}}]
 					// (FunctionResponsePart / FunctionResponseBlob, per the
