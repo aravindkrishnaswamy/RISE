@@ -10,6 +10,12 @@
 
 #echo "Using Mac ARM64 configuration"
 
+# Eval-harness slice E4: the OS gate Filelist reads to pick the macOS
+# platform-TLS leg (TlsTransportMac.mm, NSURLSession) over the Linux stub.
+# Set ONLY here -- Config.Linux never defines it, so the Linux build never
+# pulls the ObjC++ .mm into SRCLIB.
+IS_MACOS_BUILD = 1
+
 # name of the CC compiler
 CXX = c++ -arch arm64
 
@@ -94,4 +100,7 @@ DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND) $(DEF_PROFILING) $(DEF_MAILBOXING) 
 # CPU-only build first and we'd never pick up Metal.
 LDLIBS_OIDN = -L$(OIDN_PREFIX)/lib -Wl,-rpath,$(OIDN_PREFIX)/lib -lOpenImageDenoise
 LDLIBS_OPENPGL = -lopenpgl
-LDLIBS = $(LDLIBS_OIDN) -L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib -lpng -lz $(LDLIBS_TIFF) $(LDLIBS_EXR) $(LDLIBS_OPENPGL)
+# Eval-harness slice E4: -framework Foundation links NSURLSession for the
+# macOS platform-TLS leg (TlsTransportMac.mm).  A plain NSURLSession POST
+# needs no Security framework (no manual TLS-trust API is called).
+LDLIBS = $(LDLIBS_OIDN) -L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib -lpng -lz $(LDLIBS_TIFF) $(LDLIBS_EXR) $(LDLIBS_OPENPGL) -framework Foundation

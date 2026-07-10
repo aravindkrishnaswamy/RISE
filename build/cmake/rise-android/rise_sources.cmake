@@ -239,6 +239,11 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Agent/InMemoryRasterizerOutput.cpp"
     "${RISE_LIB}/Agent/Json.cpp"
     "${RISE_LIB}/Agent/SchemaGen.cpp"
+    # Eval-harness slice E4: Android has no in-tree platform-TLS leg (no
+    # CFNetwork/WinHTTP), so it compiles the honest "unsupported" stub -- the
+    # live headless runner is macOS/Windows only in v1; the E2 replay backend
+    # covers everything else.
+    "${RISE_LIB}/Agent/TlsTransportUnsupported.cpp"
     "${RISE_LIB}/Cst/Cst.cpp"
     "${RISE_LIB}/Cameras/CameraCommon.cpp"
     "${RISE_LIB}/Cameras/CameraUtilities.cpp"

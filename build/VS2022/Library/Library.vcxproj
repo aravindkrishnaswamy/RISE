@@ -144,6 +144,7 @@
     <ClCompile Include="..\..\..\src\Library\Agent\InMemoryRasterizerOutput.cpp" />
     <ClCompile Include="..\..\..\src\Library\Agent\Json.cpp" />
     <ClCompile Include="..\..\..\src\Library\Agent\SchemaGen.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Agent\TlsTransportWin.cpp" />
     <ClCompile Include="..\..\..\src\Library\Cst\Cst.cpp" />
     <ClCompile Include="..\..\..\src\Library\Cameras\CameraCommon.cpp" />
     <ClCompile Include="..\..\..\src\Library\Cameras\CameraUtilities.cpp" />
@@ -525,6 +526,7 @@
     <ClInclude Include="..\..\..\src\Library\Agent\AgentRpc.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\AgentSession.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\Base64.h" />
+    <ClInclude Include="..\..\..\src\Library\Agent\ChatHttpTransport.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\ChatTrajectory.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\InMemoryRasterizerOutput.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\Json.h" />

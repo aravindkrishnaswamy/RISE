@@ -579,6 +579,9 @@
     <ClCompile Include="..\..\..\src\Library\Agent\SchemaGen.cpp">
       <Filter>Agent</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\TlsTransportWin.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Cst\Cst.cpp">
       <Filter>Cst</Filter>
     </ClCompile>
@@ -1771,6 +1774,9 @@
       <Filter>Agent</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Agent\Base64.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\ChatHttpTransport.h">
       <Filter>Agent</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Agent\ChatTrajectory.h">

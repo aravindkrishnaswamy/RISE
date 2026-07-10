@@ -16,6 +16,7 @@
 // Common includes
 //
 #include <iostream>
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -31,6 +32,9 @@
 #include "../Library/Agent/AgentRpc.h"
 #include "../Library/Agent/AgentMcpAdapter.h"
 #include "../Library/Agent/AgentLoopbackHttpServer.h"
+#include "../Library/Agent/AgentEvalRunner.h"
+#include "../Library/Agent/ChatHttpTransport.h"
+#include <filesystem>
 #include "../Library/Interfaces/ILogPriv.h"
 #include "../Library/Interfaces/IOptions.h"
 #include "../Library/Interfaces/IJobPriv.h"
@@ -378,6 +382,131 @@ static int RunAgentHttp( const char* sceneArg, RISE::Agent::AgentAutonomy autono
 	return 0;
 }
 
+// Eval-harness slice E4: `rise --agent-eval <runconfig.json>` -- the LIVE
+// headless runner.  Loads a run config (scenarios x providers x repeats),
+// drives each (scenario, provider-with-key, repeat) through the REAL
+// AgentChatLoop + dispatcher over a REAL platform-TLS transport
+// (NSURLSession on macOS / WinHTTP on Windows; an honest "unsupported" stub
+// on Linux), and writes a per-run trajectory + result + check-result under
+// runDir for E5 to consume.
+//
+// KEY HYGIENE: the api key is read ONLY here, ONLY via getenv on each
+// provider's declared keyEnvVar, and handed to RunEvalMatrix as an injected
+// lookup -- getenv stays in THIS TU (the library AgentEvalRunner.cpp never
+// reads an env var).  A provider whose env var is unset is SKIPPED with a
+// message, never a crash.  The key is never logged, never written to any
+// output file, and never handed to the progress log.
+//
+// This is NOT a stdout-protocol transport (unlike --agent-stdio/--agent-http):
+// progress + the final summary go to stderr, and the machine-readable output
+// is the per-run JSONL files under runDir.
+namespace {
+	// Minimal '*'/'?' wildcard match over a single filename (no path
+	// separators in the pattern segment -- callers split on the parent dir).
+	bool WildcardMatch( const std::string& pat, const std::string& s )
+	{
+		std::size_t p = 0, si = 0, star = std::string::npos, mark = 0;
+		while( si < s.size() ) {
+			if( p < pat.size() && ( pat[p] == '?' || pat[p] == s[si] ) ) { ++p; ++si; }
+			else if( p < pat.size() && pat[p] == '*' ) { star = p++; mark = si; }
+			else if( star != std::string::npos ) { p = star + 1; si = ++mark; }
+			else return false;
+		}
+		while( p < pat.size() && pat[p] == '*' ) ++p;
+		return p == pat.size();
+	}
+}
+
+static int RunAgentEval( const char* runConfigPath )
+{
+	using namespace RISE::Agent;
+
+	AgentEvalRunConfig config;
+	std::string err;
+	if( !LoadEvalRunConfig( runConfigPath, config, err ) ) {
+		std::cerr << "rise --agent-eval: " << err << "\n";
+		return 1;
+	}
+
+	// Expand scenario globs (entries with '*'/'?') against the filesystem;
+	// pass literal paths through unchanged.
+	std::vector<std::string> scenarioPaths;
+	for( std::size_t i = 0; i < config.scenarios.size(); ++i ) {
+		const std::string& entry = config.scenarios[i];
+		if( entry.find( '*' ) == std::string::npos && entry.find( '?' ) == std::string::npos ) {
+			scenarioPaths.push_back( entry );
+			continue;
+		}
+		std::filesystem::path pat( entry );
+		std::filesystem::path dir = pat.has_parent_path() ? pat.parent_path() : std::filesystem::path( "." );
+		const std::string fnamePat = pat.filename().string();
+		std::error_code ec;
+		std::vector<std::string> matched;
+		if( std::filesystem::is_directory( dir, ec ) ) {
+			for( std::filesystem::directory_iterator it( dir, ec ), end; it != end; it.increment( ec ) ) {
+				if( ec ) break;
+				if( !it->is_regular_file( ec ) ) continue;
+				const std::string fn = it->path().filename().string();
+				if( WildcardMatch( fnamePat, fn ) ) matched.push_back( it->path().string() );
+			}
+		}
+		std::sort( matched.begin(), matched.end() );   // deterministic order
+		for( std::size_t m = 0; m < matched.size(); ++m ) scenarioPaths.push_back( matched[m] );
+	}
+	if( scenarioPaths.empty() ) {
+		std::cerr << "rise --agent-eval: no scenario files matched the run config's \"scenarios\".\n";
+		return 1;
+	}
+
+	// Load every scenario up front (loud-fail on any malformed one).
+	std::vector<AgentEvalScenario> scenarios;
+	for( std::size_t i = 0; i < scenarioPaths.size(); ++i ) {
+		AgentEvalScenario s;
+		std::string serr;
+		if( !LoadEvalScenario( scenarioPaths[i], s, serr ) ) {
+			std::cerr << "rise --agent-eval: scenario load failed: " << serr << "\n";
+			return 1;
+		}
+		scenarios.push_back( s );
+	}
+
+	// The platform transport.  On Linux this is the honest "unsupported"
+	// stub -- surface that loudly BEFORE spending any turns, rather than
+	// letting every run fail with transport_error.
+	std::unique_ptr<IChatHttpTransport> transport = CreateSystemChatHttpTransport();
+	{
+		ChatHttpRequest probe;
+		probe.url = "https://127.0.0.1:0/__rise_agent_eval_probe__";
+		const ChatHttpResponse pr = transport->Post( probe );
+		if( pr.error.find( "unsupported on this platform" ) != std::string::npos ) {
+			std::cerr << "rise --agent-eval: " << pr.error << "\n"
+			          << "  (the live runner needs a platform-TLS transport; this build has none.)\n";
+			return 1;
+		}
+		// Any OTHER probe outcome (a connection refused to 127.0.0.1:0, etc.)
+		// is expected and harmless -- it only confirms the transport is a real
+		// implementation, not the stub.
+	}
+
+	std::cerr << "rise --agent-eval: " << scenarios.size() << " scenario(s) x "
+	          << config.providers.size() << " provider(s) x " << config.repeats
+	          << " repeat(s); runDir=" << config.runDir << "\n";
+
+	AgentEvalMatrixOptions mo;
+	mo.transport = transport.get();
+	mo.envLookup = []( const std::string& name ) -> const char* { return getenv( name.c_str() ); };
+	mo.log = []( const std::string& m ) { std::cerr << m << "\n"; };
+
+	const AgentEvalMatrixResult mr = RunEvalMatrix( config, scenarios, mo );
+
+	std::cerr << "rise --agent-eval: done. providers used=" << mr.providersUsed
+	          << " skipped=" << mr.providersSkipped
+	          << "; runs executed=" << mr.runsExecuted
+	          << " skipped(no-key)=" << mr.runsSkipped
+	          << "; results under " << config.runDir << "\n";
+	return 0;
+}
+
 int main( int argc, char** argv )
 {
 	// Facet 5 slice 0c: pre-scan argv for `--agent-stdio` BEFORE anything is
@@ -397,6 +526,12 @@ int main( int argc, char** argv )
 		if( strcmp( argv[ai], "--agent-stdio" ) == 0 ) { agentMode = true; break; }
 		if( strcmp( argv[ai], "--agent-http" ) == 0 ||
 		    strncmp( argv[ai], "--agent-http=", strlen( "--agent-http=" ) ) == 0 ) { agentMode = true; break; }
+		// Eval-harness E4: `--agent-eval` writes results to files + stderr
+		// progress; suppress the banner / route the media warning to stderr
+		// like the other agent modes (its stdout is not a protocol pipe, but
+		// the banner is still noise a batch caller doesn't want).
+		if( strcmp( argv[ai], "--agent-eval" ) == 0 ||
+		    strncmp( argv[ai], "--agent-eval=", strlen( "--agent-eval=" ) ) == 0 ) { agentMode = true; break; }
 	}
 
 	// Setup the media path locator
@@ -559,6 +694,13 @@ int main( int argc, char** argv )
 	unsigned short cliAgentHttpPort = 8765;
 	const char* kAgentHttpFlagPrefix = "--agent-http=";
 	const std::size_t kAgentHttpFlagPrefixLen = strlen( kAgentHttpFlagPrefix );
+	// Eval-harness slice E4: `--agent-eval <runconfig.json>` (or
+	// `--agent-eval=<runconfig.json>`) -- the LIVE headless runner.  Mutually
+	// exclusive with the stdio/http transports (loudly checked below).
+	bool cliAgentEval = false;
+	std::string cliAgentEvalPath;
+	const char* kAgentEvalFlagPrefix = "--agent-eval=";
+	const std::size_t kAgentEvalFlagPrefixLen = strlen( kAgentEvalFlagPrefix );
 	// Secure-MCP slice 2: the headless autonomy posture.  DEFAULT (no flag
 	// at all) is Read -- the INVERSE of AgentRpcDispatcher's own C++
 	// constructor default (Commit, for back-compat with the GUI's live
@@ -604,6 +746,25 @@ int main( int argc, char** argv )
 			cliAgentStdio = true;
 		} else if( strcmp(a, "--mcp") == 0 ) {
 			cliMcp = true;
+		} else if( strcmp(a, "--agent-eval") == 0 ) {
+			// Space form: `--agent-eval <runconfig.json>` -- the next argv is
+			// the config path (a REQUIRED value, loud-fail if absent or if it
+			// looks like another flag).
+			cliAgentEval = true;
+			if( ai+1 >= argc || argv[ai+1][0] == '-' ) {
+				std::cerr << "ERROR: --agent-eval requires a run-config JSON path; got "
+				          << ( ai+1 >= argc ? "end-of-args" : argv[ai+1] ) << ".\n";
+				cliArgError = true;
+			} else {
+				cliAgentEvalPath = argv[++ai];
+			}
+		} else if( strncmp( a, kAgentEvalFlagPrefix, kAgentEvalFlagPrefixLen ) == 0 ) {
+			cliAgentEval = true;
+			cliAgentEvalPath = a + kAgentEvalFlagPrefixLen;
+			if( cliAgentEvalPath.empty() ) {
+				std::cerr << "ERROR: --agent-eval= requires a run-config JSON path after '='.\n";
+				cliArgError = true;
+			}
 		} else if( strcmp(a, "--agent-http") == 0 ) {
 			cliAgentHttp = true;   // port stays at its default (8765)
 		} else if( strncmp( a, kAgentHttpFlagPrefix, kAgentHttpFlagPrefixLen ) == 0 ) {
@@ -680,6 +841,15 @@ int main( int argc, char** argv )
 	if( cliArgError ) {
 		return 1;	// Fail fast — don't render with a malformed override.
 	}
+	// Eval-harness slice E4: `--agent-eval` is a batch runner, not a live
+	// transport -- reject it combined with either live transport LOUDLY and
+	// BEFORE the transport dispatch below (otherwise the stdio/http branch
+	// would win silently and the eval intent would be dropped).
+	if( cliAgentEval && ( cliAgentStdio || cliAgentHttp ) ) {
+		std::cerr << "ERROR: --agent-eval cannot be combined with --agent-stdio or --agent-http "
+		             "(it is a batch runner, not a live transport).\n";
+		return 1;
+	}
 	if( cliMcp && !cliAgentStdio ) {
 		std::cerr << "WARNING: --mcp requires --agent-stdio; ignoring.\n";
 	}
@@ -721,6 +891,18 @@ int main( int argc, char** argv )
 		GlobalLogCleanupAndShutdown();
 		return rc;
 	}
+	// Eval-harness slice E4: `--agent-eval <runconfig.json>` -- the LIVE
+	// headless runner.  (The stdio/http exclusion was already enforced loudly
+	// right after the arg parse.)  Builds its own Job/AgentSession per run
+	// (RunScenarioLive), so it does not use `pJob`; release + hand off, same
+	// discipline as the --agent-stdio / --agent-http branches above.
+	if( cliAgentEval ) {
+		safe_release( pJob );
+		const int rc = RunAgentEval( cliAgentEvalPath.c_str() );
+		GlobalLogCleanupAndShutdown();
+		return rc;
+	}
+
 	const bool haveCliFilmOverride =
 		( cliFilmWidth > 0 ) || ( cliFilmHeight > 0 ) || ( cliFilmPixelAR > 0.0 );
 

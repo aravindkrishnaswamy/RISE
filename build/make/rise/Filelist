@@ -95,6 +95,22 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Functions/PolynomialGCD.cpp				\
 	$(PATHLIBRARY)Functions/Resultant.cpp
 
+# Eval-harness slice E4: the platform-HTTPS transport for the live headless
+# runner (src/Library/Agent/ChatHttpTransport.h).  EXACTLY ONE leg compiles
+# per OS -- OS-gated on IS_MACOS_BUILD (set in Config.OSX only), so the Linux
+# make build NEVER sees the ObjC++ .mm (g++ has no .mm rule / no Foundation).
+#   * macOS -> TlsTransportMac.mm  (NSURLSession; built via the %.o:%.mm rule)
+#   * Linux -> TlsTransportUnsupported.cpp (an honest "unsupported" stub)
+# The Windows leg (TlsTransportWin.cpp) lives ONLY in Library.vcxproj; the make
+# build never references it.  Appended with += (SRCLIBUTILITIES is a `=\`
+# block above and can't hold an ifdef mid-list); this still lands before SRCLIB
+# is assembled below.
+ifdef IS_MACOS_BUILD
+SRCLIBUTILITIES += $(PATHLIBRARY)Agent/TlsTransportMac.mm
+else
+SRCLIBUTILITIES += $(PATHLIBRARY)Agent/TlsTransportUnsupported.cpp
+endif
+
 # Noise
 SRCLIBNOISE =\
 	$(PATHLIBRARY)Noise/InterpolatedNoise.cpp					\

@@ -4,8 +4,15 @@
 //    runner (see AgentEvalRunner.h).
 //
 //  NO ENVIRONMENT-VARIABLE / CREDENTIAL READS ANYWHERE IN THIS FILE --
-//  the replay source is keyless by construction (BuildRequest is always
-//  called with an empty api key; nothing here ever calls getenv).
+//  the replay source is keyless by construction (BuildRequest is called
+//  with an empty api key), and nothing here ever calls getenv.  The E4
+//  LIVE path (RunScenarioLive / RunEvalMatrix) receives the api key as a
+//  PARAMETER: RunScenarioLive takes it via AgentEvalLiveRunOptions.apiKey
+//  and forwards it to BuildRequest (auth header ONLY); RunEvalMatrix
+//  resolves it through an INJECTED envLookup callback (the CLI passes a
+//  getenv adapter -- getenv stays in commandconsole.cpp, out of this TU).
+//  The key is never logged, never written to any trajectory/result file,
+//  and never handed to the matrix's `log` sink.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -381,6 +388,221 @@ namespace RISE
 				if( name == "openai" )    { out = ChatProvider::OpenAI;    return true; }
 				return false;
 			}
+
+			//! One round's outcome from a body source (replay OR live
+			//! transport).  `proceed` false STOPS the whole scenario with
+			//! `stopStatus` (and `stopError` for a transport_error).  On
+			//! `proceed` true the {status, body, elapsedMs} feed
+			//! RecordHttpRound + HandleResponse.  This is the ONLY thing
+			//! that differs between the replay and live drive paths -- the
+			//! rest of the loop (RunScenarioDriven, below) is byte-identical.
+			struct FetchOutcome
+			{
+				bool        proceed = false;
+				std::string stopStatus;   //!< terminalStatus to set when !proceed (e.g. "replay_exhausted", "transport_error")
+				std::string stopError;    //!< errorMessage to set when !proceed (transport_error carries the header-free category)
+				long        status   = 0;
+				std::string body;
+				int64_t     elapsedMs = 0;
+			};
+
+			using FetchFn = std::function<FetchOutcome( const ChatHttpRequest& )>;
+
+			//! The SHARED scenario drive loop for both the replay
+			//! (RunScenario) and live (RunScenarioLive) paths.  Everything
+			//! below the body source -- scene load, session/dispatcher
+			//! construction, the trajectory sink, the turn/tool loop, budget
+			//! enforcement, and the trajectory + result file writes -- is
+			//! identical; the two callers differ ONLY in `provider`/`apiKey`
+			//! and the `fetch` callback (canned bodies vs. a real POST).
+			//! Never throws.
+			AgentEvalRunHandle RunScenarioDriven(
+				const AgentEvalScenario&        scenario,
+				const std::string&              runDir,
+				const std::function<int64_t()>& optClock,
+				ChatProvider                    provider,
+				const std::string&              modelId,
+				const std::string&              apiKey,
+				const FetchFn&                  fetch )
+			{
+				AgentEvalRunHandle handle;
+				handle.result.scenarioId = scenario.id;
+
+				// 1. The scene: path as-is, or inline -> a throwaway temp file
+				//    under <runDir>/tmp (never scenes/), deleted immediately
+				//    after the load attempt.
+				std::string scenePathToLoad = scenario.scenePath;
+				std::string tempScenePath;
+				if( scenePathToLoad.empty() ) {
+					if( scenario.sceneInline.empty() ) {
+						handle.result.terminalStatus = "load_error";
+						handle.result.errorMessage =
+							"scenario '" + scenario.id + "' has neither scene.path nor scene.inline";
+						return handle;
+					}
+					std::error_code ec;
+					const std::filesystem::path tmpDir = std::filesystem::path( runDir ) / "tmp";
+					std::filesystem::create_directories( tmpDir, ec );
+					tempScenePath = ( tmpDir / ( scenario.id + ".inline.RISEscene" ) ).string();
+					std::ofstream f( tempScenePath.c_str(), std::ios::binary );
+					if( !f ) {
+						handle.result.terminalStatus = "load_error";
+						handle.result.errorMessage =
+							"could not write the inline scene temp file '" + tempScenePath + "'";
+						return handle;
+					}
+					f.write( scenario.sceneInline.data(), static_cast<std::streamsize>( scenario.sceneInline.size() ) );
+					f.close();
+					scenePathToLoad = tempScenePath;
+				}
+
+				std::unique_ptr<AgentSession> session =
+					AgentSession::LoadFromFile( scenePathToLoad, AuthorityForScenarioAutonomy( scenario.autonomy ) );
+
+				// Hygiene: clean up the throwaway inline-scene temp file
+				// regardless of load outcome -- the Job has already parsed its
+				// content by the time LoadFromFile returns.
+				if( !tempScenePath.empty() ) std::remove( tempScenePath.c_str() );
+
+				if( !session ) {
+					handle.result.terminalStatus = "load_error";
+					handle.result.errorMessage =
+						"scene '" + scenePathToLoad + "' failed to load (not native-v7, or a derive error)";
+					return handle;
+				}
+
+				const long long headVersionStart = static_cast<long long>( session->HeadVersion().revision );
+				handle.result.headVersionStart = headVersionStart;
+				handle.result.headVersionFinal = headVersionStart;
+
+				// Eval-harness slice E3 (the "untouched" checkpoint seam): capture
+				// the head's canonical text AS LOADED, before the first turn runs.
+				handle.initialDocument = session->ReadDocument();
+
+				std::unique_ptr<AgentRpcDispatcher> dispatcher(
+					new AgentRpcDispatcher( std::move( session ), AutonomyForScenarioString( scenario.autonomy ) ) );
+
+				// 2. The trajectory sink + the sans-IO loop.
+				const std::string trajectoryPath = JoinPath( runDir, scenario.id + ".trajectory.jsonl" );
+
+				AgentChatLoop loop;
+				loop.SetProvider( provider, modelId );
+				ChatTrajectoryConfig cfg;
+				cfg.clock = optClock;
+				cfg.scenePath = scenario.scenePath.empty() ? std::string( "<inline>" ) : scenario.scenePath;
+				cfg.sceneHeadVersion = headVersionStart;
+				loop.SetTrajectorySink( MakeTrajectoryFileSink( trajectoryPath ), cfg );
+
+				const std::function<int64_t()> clock = optClock ? optClock : &TrajectoryNowMs;
+				const int64_t startMs = clock();
+
+				int llmCalls = 0;
+				int toolCalls = 0;
+				int nextRpcId = 1;
+				bool budgetHit = false;
+				std::string terminalStatus;
+				std::string errorMessage;
+				std::string finalText;
+
+				// 3. Drive the turns: BuildRequest -> fetch (replay's next
+				//    body OR transport.Post) -> RecordHttpRound ->
+				//    HandleResponse -> dispatch any tool calls via the LIVE
+				//    dispatcher -> AddToolResult -> repeat, exactly like
+				//    tests/AgentChatLoopTest.cpp drives it by hand.
+				for( std::size_t pi = 0; pi < scenario.prompts.size() && terminalStatus.empty(); ++pi ) {
+					loop.AddUserMessage( scenario.prompts[pi] );
+
+					bool turnDone = false;
+					while( !turnDone ) {
+						if( scenario.budgets.maxWallMs >= 0 && ( clock() - startMs ) > scenario.budgets.maxWallMs ) {
+							terminalStatus = "budget_wall_ms"; budgetHit = true; break;
+						}
+						if( scenario.budgets.maxLlmCalls >= 0 && llmCalls >= scenario.budgets.maxLlmCalls ) {
+							terminalStatus = "budget_llm_calls"; budgetHit = true; break;
+						}
+
+						const ChatHttpRequest req = loop.BuildRequest( apiKey );
+						if( req.url.empty() ) {
+							terminalStatus = "provider_error";
+							errorMessage = "BuildRequest returned an empty request mid-scenario";
+							break;
+						}
+
+						const FetchOutcome fo = fetch( req );
+						if( !fo.proceed ) {
+							terminalStatus = fo.stopStatus;
+							errorMessage = fo.stopError;
+							break;
+						}
+
+						loop.RecordHttpRound( fo.status, fo.body, fo.elapsedMs );
+						++llmCalls;
+						ChatStepResult st = loop.HandleResponse( fo.status, fo.body );
+
+						if( st.kind == ChatStepResult::Kind::ToolCalls ) {
+							for( std::size_t ci = 0; ci < st.toolCalls.size(); ++ci ) {
+								if( scenario.budgets.maxToolCalls >= 0 && toolCalls >= scenario.budgets.maxToolCalls ) {
+									terminalStatus = "budget_tool_calls"; budgetHit = true; break;
+								}
+								const ChatToolCall& call = st.toolCalls[ci];
+								const std::string line = loop.ToolCallToJsonRpcLine( call, nextRpcId++ );
+								const std::string resp = dispatcher->HandleLine( line );
+								loop.AddToolResult( call, resp );
+								++toolCalls;
+							}
+							if( !terminalStatus.empty() ) break;   // a budget tripped mid tool-batch -- honest stop
+						}
+						else if( st.kind == ChatStepResult::Kind::FinalText ) {
+							finalText = st.finalText;
+							turnDone = true;
+						}
+						else {   // ProviderError
+							terminalStatus = "provider_error";
+							errorMessage = st.errorMessage;
+							break;
+						}
+					}
+				}
+
+				if( terminalStatus.empty() ) terminalStatus = "final_text";
+				loop.FinishTrajectory( terminalStatus );
+
+				handle.result.terminalStatus = terminalStatus;
+				handle.result.llmCalls = llmCalls;
+				handle.result.toolCalls = toolCalls;
+				handle.result.budgetHit = budgetHit;
+				handle.result.finalText = finalText;
+				handle.result.errorMessage = errorMessage;
+				handle.result.headVersionFinal = dispatcher->Session()
+					? static_cast<long long>( dispatcher->Session()->HeadVersion().revision )
+					: headVersionStart;
+				handle.trajectoryPath = trajectoryPath;
+
+				// 4. The one-line result summary.
+				JsonValue r = JsonValue::MakeObject();
+				r.set( "scenarioId", JsonValue::MakeString( handle.result.scenarioId ) );
+				r.set( "terminalStatus", JsonValue::MakeString( handle.result.terminalStatus ) );
+				r.set( "llmCalls", JsonValue::MakeNumber( static_cast<double>( handle.result.llmCalls ) ) );
+				r.set( "toolCalls", JsonValue::MakeNumber( static_cast<double>( handle.result.toolCalls ) ) );
+				r.set( "budgetHit", JsonValue::MakeBool( handle.result.budgetHit ) );
+				r.set( "headVersionStart", JsonValue::MakeNumber( static_cast<double>( handle.result.headVersionStart ) ) );
+				r.set( "headVersionFinal", JsonValue::MakeNumber( static_cast<double>( handle.result.headVersionFinal ) ) );
+				r.set( "finalText", JsonValue::MakeString( handle.result.finalText ) );
+				if( !handle.result.errorMessage.empty() )
+					r.set( "errorMessage", JsonValue::MakeString( handle.result.errorMessage ) );
+
+				const std::string resultPath = JoinPath( runDir, scenario.id + ".result.jsonl" );
+				{
+					std::error_code ec;
+					std::filesystem::create_directories( std::filesystem::path( runDir ), ec );
+					std::ofstream rf( resultPath.c_str(), std::ios::binary );
+					if( rf ) rf << JsonSerialize( r ) << "\n";
+				}
+				handle.resultPath = resultPath;
+
+				handle.dispatcher = std::move( dispatcher );
+				return handle;
+			}
 		}
 
 		AgentEvalRunHandle RunScenario( const AgentEvalScenario& scenario, const AgentEvalRunOptions& options )
@@ -394,8 +616,8 @@ namespace RISE
 				return handle;
 			}
 
-			// 1. The replay source (either the caller's override, or one
-			//    loaded fresh from the scenario's named fixture).
+			// The replay source (either the caller's override, or one loaded
+			// fresh from the scenario's named fixture) + its provider.
 			AgentEvalReplaySource ownedSource;
 			AgentEvalReplaySource* source = options.replaySourceOverride;
 			if( !source ) {
@@ -421,181 +643,277 @@ namespace RISE
 				return handle;
 			}
 
-			// 2. The scene: path as-is, or inline -> a throwaway temp file
-			//    under <runDir>/tmp (never scenes/), deleted immediately
-			//    after the load attempt.
-			std::string scenePathToLoad = scenario.scenePath;
-			std::string tempScenePath;
-			if( scenePathToLoad.empty() ) {
-				if( scenario.sceneInline.empty() ) {
-					handle.result.terminalStatus = "load_error";
-					handle.result.errorMessage =
-						"scenario '" + scenario.id + "' has neither scene.path nor scene.inline";
-					return handle;
-				}
-				std::error_code ec;
-				const std::filesystem::path tmpDir = std::filesystem::path( options.runDir ) / "tmp";
-				std::filesystem::create_directories( tmpDir, ec );
-				tempScenePath = ( tmpDir / ( scenario.id + ".inline.RISEscene" ) ).string();
-				std::ofstream f( tempScenePath.c_str(), std::ios::binary );
-				if( !f ) {
-					handle.result.terminalStatus = "load_error";
-					handle.result.errorMessage =
-						"could not write the inline scene temp file '" + tempScenePath + "'";
-					return handle;
-				}
-				f.write( scenario.sceneInline.data(), static_cast<std::streamsize>( scenario.sceneInline.size() ) );
-				f.close();
-				scenePathToLoad = tempScenePath;
-			}
+			// The replay fetch: hand out the next canned body (status 200,
+			// elapsed 0), or STOP with "replay_exhausted" when the source
+			// runs dry.  Keyless -- BuildRequest is called with an empty api
+			// key (see the apiKey argument below).
+			const FetchFn replayFetch = [source]( const ChatHttpRequest& ) -> FetchOutcome {
+				FetchOutcome fo;
+				if( !source->HasNext() ) { fo.proceed = false; fo.stopStatus = "replay_exhausted"; return fo; }
+				std::string body;
+				source->NextBody( body );
+				fo.proceed = true; fo.status = 200; fo.body = body; fo.elapsedMs = 0;
+				return fo;
+			};
 
-			std::unique_ptr<AgentSession> session =
-				AgentSession::LoadFromFile( scenePathToLoad, AuthorityForScenarioAutonomy( scenario.autonomy ) );
+			return RunScenarioDriven( scenario, options.runDir, options.clock,
+			                          provider, /*modelId=*/std::string(),
+			                          /*apiKey=*/std::string(), replayFetch );
+		}
 
-			// Hygiene: clean up the throwaway inline-scene temp file
-			// regardless of load outcome -- the Job has already parsed its
-			// content by the time LoadFromFile returns.
-			if( !tempScenePath.empty() ) std::remove( tempScenePath.c_str() );
+		//====================================================================
+		// 3b. RunScenarioLive (Eval-harness slice E4).
+		//====================================================================
+		AgentEvalRunHandle RunScenarioLive( const AgentEvalScenario& scenario,
+		                                    const AgentEvalLiveRunOptions& options )
+		{
+			AgentEvalRunHandle handle;
+			handle.result.scenarioId = scenario.id;
 
-			if( !session ) {
+			if( options.runDir.empty() ) {
 				handle.result.terminalStatus = "load_error";
-				handle.result.errorMessage =
-					"scene '" + scenePathToLoad + "' failed to load (not native-v7, or a derive error)";
+				handle.result.errorMessage = "AgentEvalLiveRunOptions.runDir is required";
+				return handle;
+			}
+			if( !options.transport ) {
+				handle.result.terminalStatus = "load_error";
+				handle.result.errorMessage = "AgentEvalLiveRunOptions.transport is required (null)";
 				return handle;
 			}
 
-			const long long headVersionStart = static_cast<long long>( session->HeadVersion().revision );
-			handle.result.headVersionStart = headVersionStart;
-			handle.result.headVersionFinal = headVersionStart;
+			// The live fetch: perform the POST through the transport.  A
+			// status <= 0 means NO HTTP response reached us (DNS/connect/TLS/
+			// timeout, or the Linux unsupported stub) -- STOP the run with
+			// "transport_error" carrying the transport's HEADER-FREE error
+			// category.  A status > 0 (any of 2xx..5xx) is a real response
+			// the loop/codec interprets (a 4xx becomes a provider_error
+			// downstream), NOT a transport failure.
+			IChatHttpTransport* transport = options.transport;
+			const FetchFn liveFetch = [transport]( const ChatHttpRequest& req ) -> FetchOutcome {
+				FetchOutcome fo;
+				const ChatHttpResponse resp = transport->Post( req );
+				if( resp.status <= 0 ) {
+					fo.proceed = false;
+					fo.stopStatus = "transport_error";
+					fo.stopError = resp.error.empty()
+						? std::string( "transport failure (no HTTP status, no error detail)" )
+						: resp.error;
+					return fo;
+				}
+				fo.proceed = true;
+				fo.status = resp.status;
+				fo.body = resp.body;
+				fo.elapsedMs = resp.elapsedMs;
+				return fo;
+			};
 
-			// Eval-harness slice E3 (the "untouched" checkpoint seam): capture
-			// the head's canonical text AS LOADED, before the first turn runs
-			// -- the ONLY point at which "the scene before the agent touched
-			// it" is observable (RunScenario is about to hand `session` off
-			// to the dispatcher, and every subsequent turn may mutate it).
-			handle.initialDocument = session->ReadDocument();
+			return RunScenarioDriven( scenario, options.runDir, options.clock,
+			                          options.provider, options.modelId,
+			                          options.apiKey, liveFetch );
+		}
 
-			std::unique_ptr<AgentRpcDispatcher> dispatcher(
-				new AgentRpcDispatcher( std::move( session ), AutonomyForScenarioString( scenario.autonomy ) ) );
+		//====================================================================
+		// 3c. LoadEvalRunConfig + RunEvalMatrix (Eval-harness slice E4).
+		//====================================================================
+		bool LoadEvalRunConfig( const std::string& path, AgentEvalRunConfig& out, std::string& err )
+		{
+			out = AgentEvalRunConfig();
 
-			// 3. The trajectory sink + the sans-IO loop.
-			const std::string trajectoryPath = JoinPath( options.runDir, scenario.id + ".trajectory.jsonl" );
+			std::string text;
+			if( !ReadWholeFile( path, text, err ) ) return false;
 
-			AgentChatLoop loop;
-			loop.SetProvider( provider );
-			ChatTrajectoryConfig cfg;
-			cfg.clock = options.clock;
-			cfg.scenePath = scenario.scenePath.empty() ? std::string( "<inline>" ) : scenario.scenePath;
-			cfg.sceneHeadVersion = headVersionStart;
-			loop.SetTrajectorySink( MakeTrajectoryFileSink( trajectoryPath ), cfg );
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( text, root, perr ) ) {
+				err = "run config '" + path + "' does not parse as JSON: " + perr;
+				return false;
+			}
+			if( !root.isObject() ) {
+				err = "run config '" + path + "' root must be a JSON object";
+				return false;
+			}
 
-			const std::function<int64_t()> clock = options.clock ? options.clock : &TrajectoryNowMs;
-			const int64_t startMs = clock();
-
-			int llmCalls = 0;
-			int toolCalls = 0;
-			int nextRpcId = 1;
-			bool budgetHit = false;
-			std::string terminalStatus;
-			std::string errorMessage;
-			std::string finalText;
-
-			// 4. Drive the turns: BuildRequest -> replay's next body ->
-			//    RecordHttpRound -> HandleResponse -> dispatch any tool
-			//    calls via the LIVE dispatcher -> AddToolResult -> repeat,
-			//    exactly like tests/AgentChatLoopTest.cpp drives it by hand.
-			for( std::size_t pi = 0; pi < scenario.prompts.size() && terminalStatus.empty(); ++pi ) {
-				loop.AddUserMessage( scenario.prompts[pi] );
-
-				bool turnDone = false;
-				while( !turnDone ) {
-					if( scenario.budgets.maxWallMs >= 0 && ( clock() - startMs ) > scenario.budgets.maxWallMs ) {
-						terminalStatus = "budget_wall_ms"; budgetHit = true; break;
+			// scenarios: required non-empty array of non-empty strings (each a
+			// path OR a glob -- the CLI expands globs; the loader validates
+			// only the shape).
+			if( !root.has( "scenarios" ) || !root.get( "scenarios" ).isArray() ||
+			    root.get( "scenarios" ).size() == 0 ) {
+				err = "run config '" + path + "' missing required non-empty array field \"scenarios\"";
+				return false;
+			}
+			{
+				const JsonValue& a = root.get( "scenarios" );
+				for( std::size_t i = 0; i < a.size(); ++i ) {
+					if( !a.at( i ).isString() || a.at( i ).asString().empty() ) {
+						err = "run config '" + path + "': scenarios[" + std::to_string( i ) +
+							"] must be a non-empty string";
+						return false;
 					}
-					if( scenario.budgets.maxLlmCalls >= 0 && llmCalls >= scenario.budgets.maxLlmCalls ) {
-						terminalStatus = "budget_llm_calls"; budgetHit = true; break;
+					out.scenarios.push_back( a.at( i ).asString() );
+				}
+			}
+
+			// providers: required non-empty array of {provider, keyEnvVar,
+			// model?} objects.
+			if( !root.has( "providers" ) || !root.get( "providers" ).isArray() ||
+			    root.get( "providers" ).size() == 0 ) {
+				err = "run config '" + path + "' missing required non-empty array field \"providers\"";
+				return false;
+			}
+			{
+				const JsonValue& a = root.get( "providers" );
+				for( std::size_t i = 0; i < a.size(); ++i ) {
+					const std::string idx = std::to_string( i );
+					const JsonValue& p = a.at( i );
+					if( !p.isObject() ) {
+						err = "run config '" + path + "': providers[" + idx + "] must be an object";
+						return false;
 					}
-
-					const ChatHttpRequest req = loop.BuildRequest( std::string() );   // keyless: replay needs no api key
-					if( req.url.empty() ) {
-						terminalStatus = "provider_error";
-						errorMessage = "BuildRequest returned an empty request mid-scenario";
-						break;
+					AgentEvalProviderConfig pc;
+					if( !p.has( "provider" ) || !p.get( "provider" ).isString() ||
+					    p.get( "provider" ).asString().empty() ) {
+						err = "run config '" + path + "': providers[" + idx +
+							"].provider must be a non-empty string";
+						return false;
 					}
-					if( !source->HasNext() ) { terminalStatus = "replay_exhausted"; break; }
-
-					std::string body;
-					source->NextBody( body );
-					loop.RecordHttpRound( 200, body, /*elapsedMs=*/0 );
-					++llmCalls;
-					ChatStepResult st = loop.HandleResponse( 200, body );
-
-					if( st.kind == ChatStepResult::Kind::ToolCalls ) {
-						for( std::size_t ci = 0; ci < st.toolCalls.size(); ++ci ) {
-							if( scenario.budgets.maxToolCalls >= 0 && toolCalls >= scenario.budgets.maxToolCalls ) {
-								terminalStatus = "budget_tool_calls"; budgetHit = true; break;
-							}
-							const ChatToolCall& call = st.toolCalls[ci];
-							const std::string line = loop.ToolCallToJsonRpcLine( call, nextRpcId++ );
-							const std::string resp = dispatcher->HandleLine( line );
-							loop.AddToolResult( call, resp );
-							++toolCalls;
+					pc.provider = p.get( "provider" ).asString();
+					ChatProvider dummy;
+					if( !ParseReplayProviderName( pc.provider, dummy ) ) {
+						err = "run config '" + path + "': providers[" + idx + "].provider '" + pc.provider +
+							"' is not a known provider (want \"anthropic\", \"gemini\", or \"openai\")";
+						return false;
+					}
+					if( !p.has( "keyEnvVar" ) || !p.get( "keyEnvVar" ).isString() ||
+					    p.get( "keyEnvVar" ).asString().empty() ) {
+						err = "run config '" + path + "': providers[" + idx +
+							"].keyEnvVar must be a non-empty string (the ENV VAR NAME holding the api key, never the key)";
+						return false;
+					}
+					pc.keyEnvVar = p.get( "keyEnvVar" ).asString();
+					if( p.has( "model" ) ) {
+						if( !p.get( "model" ).isString() ) {
+							err = "run config '" + path + "': providers[" + idx + "].model must be a string";
+							return false;
 						}
-						if( !terminalStatus.empty() ) break;   // a budget tripped mid tool-batch -- honest stop
-						// else: more rounds remain in this turn -- loop back for the next BuildRequest.
+						pc.model = p.get( "model" ).asString();
 					}
-					else if( st.kind == ChatStepResult::Kind::FinalText ) {
-						finalText = st.finalText;
-						turnDone = true;
-					}
-					else {   // ProviderError
-						terminalStatus = "provider_error";
-						errorMessage = st.errorMessage;
-						break;
+					out.providers.push_back( pc );
+				}
+			}
+
+			// repeats: optional number >= 1 (default 3).
+			out.repeats = 3;
+			if( root.has( "repeats" ) ) {
+				if( !root.get( "repeats" ).isNumber() ) {
+					err = "run config '" + path + "': \"repeats\" must be a number";
+					return false;
+				}
+				const int rep = static_cast<int>( root.get( "repeats" ).asNumber() );
+				if( rep < 1 ) {
+					err = "run config '" + path + "': \"repeats\" must be >= 1 (got " + std::to_string( rep ) + ")";
+					return false;
+				}
+				out.repeats = rep;
+			}
+
+			// runDir: required non-empty string.
+			if( !root.has( "runDir" ) || !root.get( "runDir" ).isString() ||
+			    root.get( "runDir" ).asString().empty() ) {
+				err = "run config '" + path + "' missing required non-empty string field \"runDir\"";
+				return false;
+			}
+			out.runDir = root.get( "runDir" ).asString();
+
+			return true;
+		}
+
+		namespace
+		{
+			//! Map an arbitrary string (scenario id / provider / model) to a
+			//! filesystem-safe token for the per-run subdirectory name.
+			std::string SanitizeForPath( const std::string& s )
+			{
+				std::string o;
+				o.reserve( s.size() );
+				for( std::size_t i = 0; i < s.size(); ++i ) {
+					const unsigned char u = static_cast<unsigned char>( s[i] );
+					if( std::isalnum( u ) || s[i] == '-' || s[i] == '.' || s[i] == '_' ) o += s[i];
+					else o += '_';
+				}
+				if( o.empty() ) o = "x";
+				return o;
+			}
+		}
+
+		AgentEvalMatrixResult RunEvalMatrix( const AgentEvalRunConfig& config,
+		                                     const std::vector<AgentEvalScenario>& scenarios,
+		                                     const AgentEvalMatrixOptions& options )
+		{
+			AgentEvalMatrixResult result;
+			auto logLine = [&]( const std::string& m ) { if( options.log ) options.log( m ); };
+
+			if( !options.transport ) {
+				logLine( "RunEvalMatrix: no transport supplied -- nothing run" );
+				return result;
+			}
+			if( !options.envLookup ) {
+				logLine( "RunEvalMatrix: no envLookup supplied -- nothing run" );
+				return result;
+			}
+
+			const int reps = config.repeats > 0 ? config.repeats : 0;
+
+			for( std::size_t pj = 0; pj < config.providers.size(); ++pj ) {
+				const AgentEvalProviderConfig& prov = config.providers[pj];
+
+				// The ONE place a key enters the matrix: resolve it from the
+				// injected env lookup.  A missing/empty key SKIPS the whole
+				// provider column (never a crash) -- logged, never with the key.
+				const char* keyC = options.envLookup( prov.keyEnvVar );
+				const std::string key = keyC ? std::string( keyC ) : std::string();
+				if( key.empty() ) {
+					++result.providersSkipped;
+					result.runsSkipped += static_cast<int>( scenarios.size() ) * reps;
+					logLine( "RunEvalMatrix: SKIP provider '" + prov.provider + "' -- env var " +
+						prov.keyEnvVar + " is unset/empty (no key -> no live run for this provider)" );
+					continue;
+				}
+
+				ChatProvider providerEnum;
+				if( !ParseReplayProviderName( prov.provider, providerEnum ) ) {
+					++result.providersSkipped;
+					logLine( "RunEvalMatrix: SKIP provider '" + prov.provider + "' -- unknown provider name" );
+					continue;
+				}
+				++result.providersUsed;
+
+				for( std::size_t si = 0; si < scenarios.size(); ++si ) {
+					const AgentEvalScenario& scenario = scenarios[si];
+					for( int rep = 1; rep <= reps; ++rep ) {
+						std::string leaf = SanitizeForPath( scenario.id ) + "__" + SanitizeForPath( prov.provider );
+						if( !prov.model.empty() ) leaf += "__" + SanitizeForPath( prov.model );
+						leaf += "__r" + std::to_string( rep );
+						const std::string runDir = ( std::filesystem::path( config.runDir ) / leaf ).string();
+
+						logLine( "RunEvalMatrix: RUN " + leaf );
+
+						AgentEvalLiveRunOptions lo;
+						lo.runDir   = runDir;
+						lo.transport = options.transport;
+						lo.provider = providerEnum;
+						lo.modelId  = prov.model;
+						lo.apiKey   = key;   // key stays in this local + BuildRequest; never logged/persisted
+						lo.clock    = options.clock;
+
+						AgentEvalRunHandle h = RunScenarioLive( scenario, lo );
+						CheckScenario( h, scenario );
+						++result.runsExecuted;
 					}
 				}
 			}
 
-			if( terminalStatus.empty() ) terminalStatus = "final_text";
-			loop.FinishTrajectory( terminalStatus );
-
-			handle.result.terminalStatus = terminalStatus;
-			handle.result.llmCalls = llmCalls;
-			handle.result.toolCalls = toolCalls;
-			handle.result.budgetHit = budgetHit;
-			handle.result.finalText = finalText;
-			handle.result.errorMessage = errorMessage;
-			handle.result.headVersionFinal = dispatcher->Session()
-				? static_cast<long long>( dispatcher->Session()->HeadVersion().revision )
-				: headVersionStart;
-			handle.trajectoryPath = trajectoryPath;
-
-			// 5. The one-line result summary.
-			JsonValue r = JsonValue::MakeObject();
-			r.set( "scenarioId", JsonValue::MakeString( handle.result.scenarioId ) );
-			r.set( "terminalStatus", JsonValue::MakeString( handle.result.terminalStatus ) );
-			r.set( "llmCalls", JsonValue::MakeNumber( static_cast<double>( handle.result.llmCalls ) ) );
-			r.set( "toolCalls", JsonValue::MakeNumber( static_cast<double>( handle.result.toolCalls ) ) );
-			r.set( "budgetHit", JsonValue::MakeBool( handle.result.budgetHit ) );
-			r.set( "headVersionStart", JsonValue::MakeNumber( static_cast<double>( handle.result.headVersionStart ) ) );
-			r.set( "headVersionFinal", JsonValue::MakeNumber( static_cast<double>( handle.result.headVersionFinal ) ) );
-			r.set( "finalText", JsonValue::MakeString( handle.result.finalText ) );
-			if( !handle.result.errorMessage.empty() )
-				r.set( "errorMessage", JsonValue::MakeString( handle.result.errorMessage ) );
-
-			const std::string resultPath = JoinPath( options.runDir, scenario.id + ".result.jsonl" );
-			{
-				std::error_code ec;
-				std::filesystem::create_directories( std::filesystem::path( options.runDir ), ec );
-				std::ofstream rf( resultPath.c_str(), std::ios::binary );
-				if( rf ) rf << JsonSerialize( r ) << "\n";
-			}
-			handle.resultPath = resultPath;
-
-			handle.dispatcher = std::move( dispatcher );
-			return handle;
+			return result;
 		}
-
 
 			//====================================================================
 			// 4. The checker engine (Eval-harness slice E3).

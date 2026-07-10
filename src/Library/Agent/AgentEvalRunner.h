@@ -74,6 +74,7 @@
 #include <vector>
 
 #include "AgentChatLoop.h"
+#include "ChatHttpTransport.h"
 #include "Json.h"
 
 namespace RISE
@@ -241,8 +242,11 @@ namespace RISE
 
 			//! One of: "final_text" (every prompt's turn ended cleanly),
 			//! "budget_tool_calls" / "budget_llm_calls" / "budget_wall_ms"
-			//! (an honest budget stop), "replay_exhausted" (the source ran
-			//! out of canned bodies before the scenario's turns did),
+			//! (an honest budget stop), "replay_exhausted" (the REPLAY source
+			//! ran out of canned bodies before the scenario's turns did --
+			//! replay path only), "transport_error" (the LIVE transport
+			//! failed to reach the endpoint: DNS/connect/TLS/timeout, or the
+			//! Linux unsupported stub -- see errorMessage; live path only),
 			//! "provider_error" (HandleResponse returned ProviderError --
 			//! see errorMessage), or "load_error" (the scenario/scene/
 			//! replay source itself failed to load -- see errorMessage;
@@ -298,6 +302,157 @@ namespace RISE
 		//! full drive-loop description.  Never throws.
 		AgentEvalRunHandle RunScenario( const AgentEvalScenario& scenario,
 		                                const AgentEvalRunOptions& options );
+
+		//----------------------------------------------------------------
+		// 3b. LIVE scenario execution (Eval-harness slice E4).
+		//----------------------------------------------------------------
+
+		//! Construction-time options for RunScenarioLive -- the LIVE twin of
+		//! AgentEvalRunOptions.  Same drive loop as RunScenario, but each
+		//! LLM round goes through `transport` (a real platform-TLS POST, or
+		//! a MOCK in tests) instead of a replay source.
+		struct AgentEvalLiveRunOptions
+		{
+			//! REQUIRED: where the trajectory + result files land (same
+			//! contract as AgentEvalRunOptions.runDir).  Empty => a
+			//! "load_error" result.
+			std::string runDir;
+
+			//! REQUIRED: the synchronous HTTPS transport.  RunScenarioLive
+			//! does NOT own it (must outlive the call).  A null transport is
+			//! a "load_error".  The SAME seam a mock plugs into: the mock
+			//! and the real socket drive byte-identical runner code.
+			IChatHttpTransport* transport = nullptr;
+
+			//! The provider whose codec builds the wire request (and whose
+			//! response bodies `transport` returns).
+			ChatProvider provider = ChatProvider::Anthropic;
+
+			//! The model id (empty => the provider codec's default model).
+			std::string modelId;
+
+			//! The api key forwarded to BuildRequest for the AUTH HEADER
+			//! ONLY.  Held nowhere, logged nowhere, and never written to any
+			//! trajectory/result file (E1 strips it; this runner never
+			//! copies it anywhere but into BuildRequest).  Empty is allowed
+			//! (the request goes out unauthenticated -- the endpoint will
+			//! 401, surfaced honestly as a provider_error).
+			std::string apiKey;
+
+			//! Optional injected epoch-ms clock (trajectory timestamps + the
+			//! maxWallMs budget check).  Empty uses the real wall clock.
+			std::function<int64_t()> clock;
+		};
+
+		//! Execute one scenario end-to-end through the REAL AgentChatLoop +
+		//! REAL AgentRpcDispatcher, driving each LLM round through
+		//! `options.transport` (BuildRequest(apiKey) -> transport.Post(req)
+		//! -> RecordHttpRound(status, body, elapsedMs) -> HandleResponse ->
+		//! tool dispatch -> repeat).  Enforces the SAME per-scenario budgets
+		//! as RunScenario; emits the SAME <runDir>/<id>.trajectory.jsonl +
+		//! <runDir>/<id>.result.jsonl and returns the SAME
+		//! still-alive-dispatcher handle for the E3 checker.  A transport
+		//! that returns status 0 (DNS/TLS/timeout, or the Linux unsupported
+		//! stub) terminates the run with terminalStatus == "transport_error".
+		//! Never throws.  Shares its entire drive loop with RunScenario --
+		//! only the per-round body source differs (replay vs. transport).
+		AgentEvalRunHandle RunScenarioLive( const AgentEvalScenario& scenario,
+		                                    const AgentEvalLiveRunOptions& options );
+
+		//----------------------------------------------------------------
+		// 3c. The run-config + provider matrix (Eval-harness slice E4).
+		//----------------------------------------------------------------
+
+		//! One provider entry of a run config's `providers[]`.
+		struct AgentEvalProviderConfig
+		{
+			std::string provider;   //!< "anthropic" / "gemini" / "openai" (validated)
+			std::string model;      //!< model id ("" => the codec's default)
+			std::string keyEnvVar;  //!< the ENV VAR NAME to read the api key from (e.g. "ANTHROPIC_API_KEY") -- NEVER the key itself
+		};
+
+		//! A parsed run config (the `rise --agent-eval <runconfig.json>`
+		//! input).  Schema:
+		//!   {
+		//!     "scenarios": [ path-or-glob, ... ],   // >= 1; globs expanded by the CLI
+		//!     "providers": [ {"provider","model"?,"keyEnvVar"}, ... ],  // >= 1
+		//!     "repeats":   N,                        // optional, default 3, >= 1
+		//!     "runDir":    "evals/runs/<stamp>"      // required, non-empty
+		//!   }
+		//! The api KEY is never in this file -- only the env-var NAME to
+		//! read it from at run time.
+		struct AgentEvalRunConfig
+		{
+			std::vector<std::string>             scenarios;   //!< path-or-glob strings, verbatim (CLI expands globs)
+			std::vector<AgentEvalProviderConfig> providers;
+			int         repeats = 3;
+			std::string runDir;
+		};
+
+		//! Parse `path` (a run-config JSON file) into `out`.  Returns true on
+		//! success; false + a loud human-readable `err` on any malformed
+		//! shape (unreadable/non-object root, missing/empty scenarios, a
+		//! non-string scenario entry, missing/empty providers, a provider
+		//! entry missing a valid "provider"/"keyEnvVar" or naming an unknown
+		//! provider, a non-positive/non-number "repeats", or a
+		//! missing/empty "runDir").  Reads NO environment variable and NO
+		//! api key -- only the config's declared shape.
+		bool LoadEvalRunConfig( const std::string& path, AgentEvalRunConfig& out, std::string& err );
+
+		//! Construction-time options for RunEvalMatrix.
+		struct AgentEvalMatrixOptions
+		{
+			//! REQUIRED: the live transport every run drives through (the
+			//! real system transport in the CLI; a mock in tests).  Not
+			//! owned; must outlive the call.
+			IChatHttpTransport* transport = nullptr;
+
+			//! REQUIRED: maps a provider's keyEnvVar NAME to its value, or
+			//! returns nullptr/"" when unset.  The CLI passes a getenv
+			//! adapter; a test passes a canned map.  This is the ONLY place
+			//! a key enters the matrix -- keeping getenv out of the library
+			//! TU (which must stay credential-read-free) while making the
+			//! missing-key SKIP behaviour unit-testable.
+			std::function<const char*(const std::string&)> envLookup;
+
+			//! Optional injected epoch-ms clock (threaded to each run).
+			std::function<int64_t()> clock;
+
+			//! Optional human-progress sink (one line per matrix event:
+			//! provider-skip, run start/finish).  The CLI wires this to
+			//! stderr; a test may leave it empty.  NEVER receives a key.
+			std::function<void(const std::string&)> log;
+		};
+
+		//! The aggregate outcome of a matrix run (also useful for a test to
+		//! assert skip/execute counts).
+		struct AgentEvalMatrixResult
+		{
+			int runsExecuted   = 0;   //!< (scenario x provider-with-key x repeat) runs actually driven
+			int runsSkipped    = 0;   //!< runs skipped because a provider's key env var was unset
+			int providersUsed  = 0;   //!< providers whose key resolved (non-empty)
+			int providersSkipped = 0; //!< providers skipped for a missing key
+		};
+
+		//! Run the full scenarios x providers x repeats matrix through
+		//! RunScenarioLive + CheckScenario, writing each run to its OWN
+		//! subdirectory under `config.runDir`:
+		//!
+		//!   <runDir>/<scenarioId>__<provider>[__<model>]__r<repeat>/
+		//!       <scenarioId>.trajectory.jsonl   (E1 trajectory)
+		//!       <scenarioId>.result.jsonl       (one-line run result)
+		//!       results.jsonl                   (E3 check result)
+		//!
+		//! -- a clean, documented per-run layout E5 (metrics/report) walks.
+		//! For each provider, the key is resolved via options.envLookup;
+		//! when it is unset the provider's whole column is SKIPPED with a
+		//! logged message (a missing key is never a crash).  `scenarios` are
+		//! pre-loaded (the CLI expands globs + LoadEvalScenario before
+		//! calling this, keeping matrix orchestration file-IO-light and
+		//! unit-testable with in-memory scenarios).  Never throws.
+		AgentEvalMatrixResult RunEvalMatrix( const AgentEvalRunConfig& config,
+		                                     const std::vector<AgentEvalScenario>& scenarios,
+		                                     const AgentEvalMatrixOptions& options );
 
 		//----------------------------------------------------------------
 		// 4. The checker engine (Eval-harness slice E3).
