@@ -1997,13 +1997,36 @@ bool Job::AddTexturePaintersBatch(
 	// + IPainter*, fully independent of the other workers' state.  All three
 	// stay alive until after the manager AddItem step, then release in
 	// reverse order.
+	//
+	// Decoded owns whatever non-null pointers a worker leaves in it.  The
+	// serial registration loop below is the normal owner: on success it
+	// safe_release()s (which also nulls, per safe_release's by-reference
+	// contract) every field it consumes.  ~Decoded() is purely a release-
+	// on-throw safety net: since commit 2692d1af, ThreadPool::ParallelFor
+	// propagates a worker exception (e.g. std::bad_alloc) to this caller
+	// instead of std::terminate'ing, which unwinds straight through the
+	// registration loop below and would otherwise leak every
+	// already-decoded slot.  Non-copyable so a slot's ownership is never
+	// duplicated; `decoded` is sized once via vector(count) and never
+	// reallocated, so no copy/move is ever needed.
 	struct Decoded
 	{
 		IPainter*               pPainter;     // null on decode failure
 		IRasterImageAccessor*   pRIA;
 		IRasterImage*           pImage;
+
+		Decoded() : pPainter( nullptr ), pRIA( nullptr ), pImage( nullptr ) {}
+		Decoded( const Decoded& ) = delete;
+		Decoded& operator=( const Decoded& ) = delete;
+
+		~Decoded()
+		{
+			safe_release( pPainter );
+			safe_release( pRIA );
+			safe_release( pImage );
+		}
 	};
-	std::vector<Decoded> decoded( numRequests, Decoded{ nullptr, nullptr, nullptr } );
+	std::vector<Decoded> decoded( numRequests );
 
 	// Parallel decode.  Worker bodies touch only their own slot of
 	// `decoded[]` and the constant `requests[i]`; no shared mutable state.
@@ -9202,7 +9225,20 @@ bool Job::Rasterize(
 		}
 	}
 
-	pRasterizer->RasterizeScene( *pScene, 0, pSeq );
+	// pSeq must be released on every exit, including a worker exception
+	// propagated up through RasterizeScene (ThreadPool::ParallelFor has
+	// surfaced such exceptions to the caller since commit 2692d1af,
+	// instead of std::terminate'ing) -- otherwise a throw here leaks the
+	// refcounted sequence object.  Release-and-rethrow keeps the success
+	// path's release at the exact same point (right after RasterizeScene
+	// returns) as before this fix.
+	try {
+		pRasterizer->RasterizeScene( *pScene, 0, pSeq );
+	}
+	catch( ... ) {
+		safe_release( pSeq );
+		throw;
+	}
 	safe_release( pSeq );
 
 	return true;
@@ -9263,7 +9299,18 @@ bool Job::RasterizeRegion(
 	}
 
 	Rect	rc( top, left, bottom, right );
-	pRasterizer->RasterizeScene( *pScene, &rc, pSeq );
+
+	// See the matching comment in Job::Rasterize: pSeq must be released
+	// on every exit, including a worker exception propagated up through
+	// RasterizeScene since ThreadPool::ParallelFor stopped
+	// std::terminate'ing on those (commit 2692d1af).
+	try {
+		pRasterizer->RasterizeScene( *pScene, &rc, pSeq );
+	}
+	catch( ... ) {
+		safe_release( pSeq );
+		throw;
+	}
 	safe_release( pSeq );
 
 	return true;
