@@ -596,10 +596,40 @@ final class ChatViewModel: ObservableObject {
     /// correlator for the session record.  Cleared at scene close.
     private var currentScenePath: String = ""
 
-    /// The per-session trajectory directory (evals/runs/gui, relative to
-    /// the process working directory).  Created lazily by the file sink.
-    private var trajectoryDirectory: String {
-        FileManager.default.currentDirectoryPath + "/evals/runs/gui"
+    /// The per-session trajectory directory.
+    ///
+    /// A GUI app's process CWD is meaningless -- Finder-launched, it's "/"
+    /// (creating "/evals" under it fails with a permission error); Xcode-
+    /// launched, it's some DerivedData build directory nobody would think
+    /// to look in.  Either way `evals/runs/gui` relative to it silently
+    /// never got created and every trajectory line vanished into a sink
+    /// that opened nothing (recording toggle said ON; nothing was
+    /// written -- see MakeTrajectoryFileSink's loud-once-failure log,
+    /// which is the ONLY place that ever surfaced this before the fix).
+    ///
+    /// Default is a deterministic, always-writable location under the
+    /// app's Application Support directory.  `RISE_TRAJECTORY_DIR`
+    /// overrides it verbatim when set + non-empty -- the dev workflow of
+    /// running the GUI straight out of the repo and wanting files under
+    /// `evals/runs/gui` there.
+    ///
+    /// Not private: ChatPanel reads it to show the resolved path in the
+    /// "Record chat trajectories" toggle's help text (closing-verify D) --
+    /// a toggle that's silently ON with no visible destination is exactly
+    /// the discoverability gap this fix closes.
+    var trajectoryDirectory: String {
+        if let override = ProcessInfo.processInfo.environment["RISE_TRAJECTORY_DIR"],
+           !override.isEmpty {
+            return override
+        }
+        if let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask).first {
+            return appSupport.appendingPathComponent("RISE/trajectories/gui").path
+        }
+        // Application Support should always resolve on macOS; this is a
+        // last-ditch fallback that keeps the property total rather than
+        // introducing an optional the many call sites would need to unwrap.
+        return NSTemporaryDirectory() + "RISE/trajectories/gui"
     }
 
     /// (Re)start the per-session trajectory file for the current scene, or

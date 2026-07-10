@@ -11,7 +11,6 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDebug>
-#include <QDir>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -26,6 +25,7 @@
 #include <QScrollBar>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QStandardPaths>
 #include <QTextEdit>
 #include <QTimer>
 #include <QUrl>
@@ -195,7 +195,8 @@ ChatPanel::ChatPanel(QWidget* parent)
 
     // Eval-harness E1: trajectory recording toggle (default ON).  The
     // redaction pass in the core is unconditional; this only controls
-    // whether a per-session JSONL file is written under evals/runs/gui/.
+    // whether a per-session JSONL file is written under
+    // trajectoryDirectory() (see that method's doc for the resolved path).
     {
         QSettings settings;
         m_recordTrajectories =
@@ -204,9 +205,10 @@ ChatPanel::ChatPanel(QWidget* parent)
     m_recordTrajectoriesCheck = new QCheckBox("Record chat trajectories");
     m_recordTrajectoriesCheck->setChecked(m_recordTrajectories);
     m_recordTrajectoriesCheck->setToolTip(
-        "Write a per-session JSONL log under evals/runs/gui/ (system prompt, "
-        "each request/response, tool calls, tokens, timings).  API-key-shaped "
-        "content is always redacted regardless of this setting.");
+        "Write a per-session JSONL log under " + trajectoryDirectory() +
+        " (system prompt, each request/response, tool calls, tokens, timings).  "
+        "API-key-shaped content is always redacted regardless of this setting.  "
+        "Set RISE_TRAJECTORY_DIR to record elsewhere.");
     outer->addWidget(m_recordTrajectoriesCheck);
 
     m_statusLabel = new QLabel();
@@ -645,6 +647,27 @@ void ChatPanel::fetchSkillIndex()
     m_loop->SetSkillIndex(toStdString(renderSkillIndex(m_bridge->agentHandleLine(line))));
 }
 
+QString ChatPanel::trajectoryDirectory() const
+{
+    // Dev-workflow override: running the GUI straight out of the repo and
+    // wanting files under evals/runs/gui there.
+    const QString dirOverride = qEnvironmentVariable("RISE_TRAJECTORY_DIR");
+    if (!dirOverride.isEmpty()) return dirOverride;
+
+    // QDir::currentPath() is nondeterministic for a GUI app (whatever the
+    // shell/shortcut/Explorer launched it from happened to be) and can be
+    // unwritable outright under Program Files -- either way "evals/runs/gui"
+    // relative to it silently never got created and every trajectory line
+    // vanished into a sink that opened nothing (recording toggle said ON;
+    // nothing was written -- see MakeTrajectoryFileSink's loud-once-failure
+    // log, which is the ONLY place that ever surfaced this before the fix).
+    // AppDataLocation already folds in the organizationName/applicationName
+    // set on QCoreApplication in main.cpp ("RISE"/"RISE"), so this resolves
+    // to a deterministic, always-writable per-user directory.
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    return base + "/trajectories/gui";
+}
+
 void ChatPanel::startTrajectory()
 {
     // Detach when recording is off or no scene is bound.
@@ -652,8 +675,7 @@ void ChatPanel::startTrajectory()
         m_loop->SetTrajectorySink(std::function<void(const std::string&)>());
         return;
     }
-    const std::string dir =
-        toStdString(QDir::currentPath() + "/evals/runs/gui");
+    const std::string dir = toStdString(trajectoryDirectory());
 
     // Rotate BEFORE creating the new file (keep ~50 newest / ~200 MB).
     RISE::Agent::PruneTrajectoryDir(dir, 50, 200LL * 1024 * 1024);

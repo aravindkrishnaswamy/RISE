@@ -633,10 +633,12 @@ private struct ChatSettingsView: View {
                 ))
                 .toggleStyle(.checkbox)
                 .font(.caption)
-                .help("Write a per-session JSONL log under evals/runs/gui/ "
-                      + "(system prompt, each request/response, tool calls, "
+                .help("Write a per-session JSONL log under "
+                      + chat.trajectoryDirectory
+                      + " (system prompt, each request/response, tool calls, "
                       + "tokens, timings).  API-key-shaped content is always "
-                      + "redacted regardless of this setting.")
+                      + "redacted regardless of this setting.  Set "
+                      + "RISE_TRAJECTORY_DIR to record elsewhere.")
             }
 
             Divider()

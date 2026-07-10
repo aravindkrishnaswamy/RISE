@@ -13,6 +13,7 @@
 #include "ChatTrajectory.h"
 
 #include "Json.h"
+#include "../Interfaces/ILog.h"   // GlobalLog(): loud-once logging on a broken trajectory sink
 
 #include <algorithm>
 #include <chrono>
@@ -360,23 +361,59 @@ namespace RISE
 		{
 			// Create parent directories once; open the file for append and
 			// keep the handle in a shared_ptr the lambda co-owns.  A failed
-			// open yields a no-op sink (recording never disrupts the chat).
+			// create/open yields a no-op sink (recording never disrupts the
+			// chat) -- but the failure is reported ONCE via the library
+			// logger rather than swallowed outright, so a misconfigured or
+			// unwritable trajectory directory is discoverable instead of
+			// masquerading as "recording is on and nothing is wrong" (the
+			// GUI toggle has no other way to surface this).  `loggedFailure`
+			// is shared with the returned lambda so the guard covers BOTH
+			// the create-directories failure below and a later open()
+			// failure without double-logging.
+			bool dirCreateFailed = false;
+			std::string dirCreateReason;
 			try {
 				std::filesystem::path p( path );
 				if( p.has_parent_path() )
 					std::filesystem::create_directories( p.parent_path() );
 			}
-			catch( ... ) {}
+			catch( const std::exception& e ) {
+				dirCreateFailed = true;
+				dirCreateReason = e.what();
+			}
+			catch( ... ) {
+				dirCreateFailed = true;
+				dirCreateReason = "unknown filesystem error";
+			}
 
 			// Open LAZILY on the first line so a session that records nothing
 			// leaves no empty file behind (the GUI attaches a sink at every
 			// scene open / provider switch, most of which never chat).
 			std::shared_ptr<std::ofstream> f = std::make_shared<std::ofstream>();
+			std::shared_ptr<bool> loggedFailure = std::make_shared<bool>( false );
 			std::string pathCopy = path;
-			return [f, pathCopy]( const std::string& line ) {
+
+			if( dirCreateFailed ) {
+				*loggedFailure = true;   // the lazy open below would just repeat this
+				GlobalLog()->PrintEx( eLog_Warning,
+					"ChatTrajectory: failed to create trajectory directory for '%s' (%s); "
+					"trajectory recording is disabled for this session.",
+					pathCopy.c_str(), dirCreateReason.c_str() );
+			}
+
+			return [f, pathCopy, loggedFailure]( const std::string& line ) {
 				if( !f->is_open() ) {
 					f->open( pathCopy, std::ios::app | std::ios::binary );
-					if( !f->is_open() ) return;
+					if( !f->is_open() ) {
+						if( !*loggedFailure ) {
+							*loggedFailure = true;
+							GlobalLog()->PrintEx( eLog_Warning,
+								"ChatTrajectory: failed to open trajectory file '%s' for append; "
+								"trajectory recording is disabled for this session.",
+								pathCopy.c_str() );
+						}
+						return;
+					}
 				}
 				( *f ) << line << '\n';
 				f->flush();

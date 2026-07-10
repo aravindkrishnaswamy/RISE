@@ -111,6 +111,11 @@ private:
     // Eval-harness E1: (re)attach the per-session trajectory file for the
     // current scene, or detach when recording is off / no scene is bound.
     void startTrajectory();
+    // The resolved trajectory directory: RISE_TRAJECTORY_DIR verbatim when
+    // set + non-empty, else QStandardPaths::AppDataLocation + "/trajectories/gui"
+    // (a deterministic, per-user-writable location -- QDir::currentPath()
+    // is nondeterministic for a GUI app and unwritable under Program Files).
+    QString trajectoryDirectory() const;
     QString renderSkillIndex(const QString& rpcResponse) const;
     QString cancelledToolResultJson(int rpcId, const QString& message) const;
     void clearErrorAffordances();
