@@ -103,6 +103,11 @@ private:
     // Eval-harness E1: (re)attach the per-session trajectory file for the
     // current scene, or detach when recording is off / no scene is bound.
     void startTrajectory();
+
+    //! Review-round P2 (E1): the scene path is the trajectory<->document
+    //! correlator; MainWindow sets it at scene load, clears it at teardown.
+    //! Takes effect at the NEXT startTrajectory (no mid-session restart).
+    void setScenePath(const QString& path) { m_scenePath = path; }
     QString renderSkillIndex(const QString& rpcResponse) const;
     QString cancelledToolResultJson(int rpcId, const QString& message) const;
     void clearErrorAffordances();
@@ -131,6 +136,7 @@ private:
     // Eval-harness E1: trajectory recording UI + timing.
     QCheckBox* m_recordTrajectoriesCheck = nullptr;
     bool m_recordTrajectories = true;
+    QString m_scenePath;   // scene-identity for the session record (may be empty)
     QElapsedTimer m_httpTimer;   //!< started at post(), read at networkFinished()
 
     QComboBox* m_providerCombo = nullptr;

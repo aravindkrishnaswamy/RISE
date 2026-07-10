@@ -601,8 +601,13 @@ final class ChatViewModel: ObservableObject {
     /// DETACH when recording is disabled.  Invoked at scene open, on a
     /// provider switch, and when the toggle changes.
     private func startTrajectory() {
+        // Review-round P2: the session record's scene-identity fields were
+        // shipped dead (""/-1) -- the scene PATH is the trajectory<->document
+        // correlator the eval harness needs, and it is available right here.
+        // headVersion stays best-effort -1 on the GUI (no cheap accessor at
+        // attach time; the headless runner populates it precisely).
         chatBridge.startTrajectory(directory: trajectoryDirectory,
-                                   scenePath: "",
+                                   scenePath: loadedFilePath ?? "",
                                    headVersion: -1,
                                    enabled: recordTrajectories)
     }

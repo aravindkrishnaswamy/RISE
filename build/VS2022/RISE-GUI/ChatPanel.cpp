@@ -673,7 +673,8 @@ void ChatPanel::startTrajectory()
 
     RISE::Agent::ChatTrajectoryConfig cfg;
     cfg.traceId = traceId;
-    cfg.sceneHeadVersion = -1;
+    cfg.scenePath = toStdString(m_scenePath);
+    cfg.sceneHeadVersion = -1;   // best-effort on the GUI; the headless runner populates it precisely
     m_loop->SetTrajectorySink(RISE::Agent::MakeTrajectoryFileSink(path), cfg);
 }
 

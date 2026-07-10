@@ -602,6 +602,10 @@ static void TestRedactionRedProve()
 	       "regex redacts AIza keys" );
 	Check( RedactTrajectoryLine( "Authorization: Bearer abc123def456" ).find( "abc123def456" ) == std::string::npos,
 	       "regex redacts Bearer tokens" );
+	// Review-round P3: lowercase "bearer" (proxies/error bodies may
+	// lowercase header names/values) is redacted too -- icase regex.
+	Check( RedactTrajectoryLine( "authorization: bearer abc123def456" ).find( "abc123def456" ) == std::string::npos,
+	       "regex redacts lowercase bearer tokens (icase)" );
 }
 
 //----------------------------------------------------------------------
@@ -649,6 +653,38 @@ static void TestRotation()
 	fs::remove_all( dir, ec );
 }
 
+//----------------------------------------------------------------------
+// Review-round P2: "recording never disrupts the chat" must hold for ANY
+// sink -- a throwing sink is swallowed and recording is disabled for the
+// rest of the session (the sink is dropped after the first throw).
+//----------------------------------------------------------------------
+static void RunThrowingSinkTest()
+{
+	std::printf( "=== AgentTrajectoryTest: throwing sink is swallowed + disables recording ===\n" );
+	int calls = 0;
+	ChatTrajectoryConfig cfg;
+	cfg.clock = []() -> int64_t { return 1700000000000LL; };
+	ChatTrajectoryRecorder rec(
+		[&calls]( const std::string& ) {
+			++calls;
+			if( calls >= 2 ) throw std::runtime_error( "sink exploded" );
+		}, cfg );
+
+	TrajectoryUserRecord u;
+	u.text = "first";
+	bool escaped = false;
+	try {
+		rec.EmitUser( u );          // call 1: sink ok
+		u.text = "second";
+		rec.EmitUser( u );          // call 2: sink throws -- must be swallowed
+		u.text = "third";
+		rec.EmitUser( u );          // call 3: sink disabled -- not invoked
+	}
+	catch( ... ) { escaped = true; }
+	Check( !escaped, "a throwing sink never propagates out of the recorder" );
+	Check( calls == 2, "the sink is DISABLED after its first throw (called exactly twice, not three times)" );
+}
+
 int main()
 {
 	std::printf( "=== AgentTrajectoryTest (Eval-harness E1) ===\n" );
@@ -659,6 +695,7 @@ int main()
 	TestHistoryEditRecords();
 	TestRedactionRedProve();
 	TestRotation();
+	RunThrowingSinkTest();
 	std::printf( "=== AgentTrajectoryTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

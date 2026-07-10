@@ -209,7 +209,8 @@ namespace RISE
 			// regex compile happens once.  ECMAScript grammar (the default).
 			static const std::regex kSk( "sk-[A-Za-z0-9_-]{8,}" );
 			static const std::regex kAiza( "AIza[A-Za-z0-9_-]{10,}" );
-			static const std::regex kBearer( "Bearer\\s+[A-Za-z0-9._-]{8,}" );
+			static const std::regex kBearer( "Bearer\\s+[A-Za-z0-9._-]{8,}",
+			                                 std::regex::ECMAScript | std::regex::icase );
 			static const std::string kRedacted = "[REDACTED]";
 
 			std::string out = std::regex_replace( line, kBearer, kRedacted );
@@ -252,7 +253,20 @@ namespace RISE
 		std::string ChatTrajectoryRecorder::Emit( const std::string& serializedLine )
 		{
 			const std::string redacted = RedactTrajectoryLine( serializedLine );
-			if( mSink ) mSink( redacted );
+			// Review-round P2: the "recording never disrupts the chat"
+			// contract must hold for ANY sink, not just the shipped
+			// non-throwing file sink.  A throwing sink is swallowed and
+			// recording is disabled for the rest of the session (a broken
+			// sink stays broken -- throwing once per record would just be
+			// noise on top of a lost trajectory).
+			if( mSink ) {
+				try {
+					mSink( redacted );
+				}
+				catch( ... ) {
+					mSink = nullptr;
+				}
+			}
 			return redacted;
 		}
 

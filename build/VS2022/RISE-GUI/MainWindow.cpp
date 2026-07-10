@@ -518,6 +518,7 @@ void MainWindow::loadSceneFile(const QString& filePath)
     }
 
     addToRecentFiles(filePath);
+    if (m_chatPanel) m_chatPanel->setScenePath(filePath);   // E1: session-record scene identity
     m_engine->loadScene(filePath);
     updateWindowTitle();
 
@@ -1011,6 +1012,7 @@ void MainWindow::teardownViewport()
 
     if (m_chatPanel) {
         m_chatPanel->setViewportBridge(nullptr);
+        m_chatPanel->setScenePath(QString());
         m_chatPanel->hide();
         m_chatVisible = false;
     }
