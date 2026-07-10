@@ -622,6 +622,25 @@ private struct ChatSettingsView: View {
 
             Divider()
 
+            // Eval-harness E1: chat trajectory recording (default ON).
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Diagnostics")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Toggle("Record chat trajectories", isOn: Binding(
+                    get: { chat.recordTrajectories },
+                    set: { newValue in chat.setRecordTrajectories(newValue) }
+                ))
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                .help("Write a per-session JSONL log under evals/runs/gui/ "
+                      + "(system prompt, each request/response, tool calls, "
+                      + "tokens, timings).  API-key-shaped content is always "
+                      + "redacted regardless of this setting.")
+            }
+
+            Divider()
+
             // Secure-MCP slice 5c: the GUI-hosted external MCP endpoint.
             // Off by default (no server, no external access). When ON,
             // a SEPARATE process (a real MCP client — e.g. Claude Code

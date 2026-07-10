@@ -139,6 +139,7 @@
     <ClCompile Include="..\..\..\src\Library\Agent\AgentRpc.cpp" />
     <ClCompile Include="..\..\..\src\Library\Agent\AgentSession.cpp" />
     <ClCompile Include="..\..\..\src\Library\Agent\Base64.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Agent\ChatTrajectory.cpp" />
     <ClCompile Include="..\..\..\src\Library\Agent\InMemoryRasterizerOutput.cpp" />
     <ClCompile Include="..\..\..\src\Library\Agent\Json.cpp" />
     <ClCompile Include="..\..\..\src\Library\Agent\SchemaGen.cpp" />
@@ -522,6 +523,7 @@
     <ClInclude Include="..\..\..\src\Library\Agent\AgentRpc.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\AgentSession.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\Base64.h" />
+    <ClInclude Include="..\..\..\src\Library\Agent\ChatTrajectory.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\InMemoryRasterizerOutput.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\Json.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\SchemaGen.h" />

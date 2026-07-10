@@ -18,7 +18,9 @@
 #import "RISEAgentChatBridge.h"
 
 #include "Agent/AgentChatLoop.h"
+#include "Agent/ChatTrajectory.h"
 
+#include <ctime>
 #include <string>
 #include <utility>
 #include <vector>
@@ -312,6 +314,48 @@ static NSString *ToNS(const std::string& s) {
 - (void)addToolResult:(RISEAgentChatToolCall *)call
   jsonRpcResponseLine:(NSString *)line {
     _loop->AddToolResult([call cppCall], ToStd(line));
+}
+
+- (void)startTrajectoryInDirectory:(NSString *)directory
+                         scenePath:(NSString *)scenePath
+                       headVersion:(long long)headVersion
+                           enabled:(BOOL)enabled {
+    if (!enabled) {
+        // Detach: an empty sink makes every recording hook a no-op.
+        _loop->SetTrajectorySink(std::function<void(const std::string&)>());
+        return;
+    }
+    const std::string dir = ToStd(directory);
+    if (dir.empty()) return;
+
+    // Rotate BEFORE creating the new file (keep ~50 newest / ~200 MB).
+    Agent::PruneTrajectoryDir(dir, 50, 200LL * 1024 * 1024);
+
+    // Per-session file: <UTC-timestamp>-<trace8>.jsonl.
+    const std::string traceId = Agent::MakeTrajectoryTraceId();
+    char ts[32];
+    std::time_t nowT = std::time(nullptr);
+    std::tm tmv;
+    gmtime_r(&nowT, &tmv);
+    std::strftime(ts, sizeof(ts), "%Y%m%dT%H%M%SZ", &tmv);
+    const std::string trace8 = traceId.substr(0, 8);
+    const std::string path = dir + "/" + std::string(ts) + "-" + trace8 + ".jsonl";
+
+    Agent::ChatTrajectoryConfig cfg;
+    cfg.traceId = traceId;
+    cfg.scenePath = ToStd(scenePath);
+    cfg.sceneHeadVersion = headVersion;
+    _loop->SetTrajectorySink(Agent::MakeTrajectoryFileSink(path), cfg);
+}
+
+- (void)recordHttpRoundWithStatus:(NSInteger)httpStatus
+                             body:(NSString *)rawBody
+                        elapsedMs:(int64_t)elapsedMs {
+    _loop->RecordHttpRound(static_cast<long>(httpStatus), ToStd(rawBody), elapsedMs);
+}
+
+- (void)finishTrajectoryWithStatus:(NSString *)status {
+    _loop->FinishTrajectory(ToStd(status));
 }
 
 - (NSUInteger)pendingToolCallsCount {

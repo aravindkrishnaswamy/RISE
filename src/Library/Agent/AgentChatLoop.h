@@ -125,12 +125,15 @@
 #define RISE_AGENT_AGENTCHATLOOP_
 
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "AgentChatCodecs.h"
+#include "ChatTrajectory.h"
 
 namespace RISE
 {
@@ -261,7 +264,14 @@ namespace RISE
 			//! flows back to the model as an error tool result; verbs whose
 			//! params are all optional simply execute with their defaults --
 			//! self-correcting either way, never throwing).
-			std::string ToolCallToJsonRpcLine( const ChatToolCall& call, int rpcId ) const;
+			//! NOTE (Eval-harness E1): NON-const.  When a trajectory sink is
+			//! attached this STAMPS the tool call's dispatch start time and
+			//! the JSON-RPC line, keyed by call id, so AddToolResult can
+			//! complete the `tool` trajectory record with a measured latency.
+			//! With no sink attached it is a pure translation (the stamp is
+			//! skipped) -- behaviour is byte-identical to the pre-E1 const
+			//! version.
+			std::string ToolCallToJsonRpcLine( const ChatToolCall& call, int rpcId );
 
 			//! Record the raw JSON-RPC response ENVELOPE line for one of
 			//! the pending calls.  Results are buffered and packed into
@@ -304,6 +314,57 @@ namespace RISE
 			//! model selection: it survives Reset() and SetProvider().
 			void SetSkillIndex( const std::string& indexText );
 
+			//==========================================================
+			// Eval-harness E1: trajectory recording.
+			//==========================================================
+
+			//! Attach (or replace) a trajectory sink: every subsequent user
+			//! message, LLM round, tool call, and image-elision rewrite is
+			//! recorded as a JSONL line handed to `sink`.  `config` supplies
+			//! the trace id (empty => generated), an optional epoch-ms clock
+			//! (empty => a real clock at the IO edge), and the scene
+			//! path/head version captured in the session record.  The
+			//! session record is emitted lazily on the first recorded action
+			//! (so it always leads, and captures the skill index set by
+			//! then).  Passing an EMPTY sink detaches recording.  With no
+			//! sink attached EVERY hook below is a cheap no-op -- the loop's
+			//! non-recording behaviour is byte-identical to the pre-E1 core.
+			//! Replacing an active session emits its summary ("replaced")
+			//! first.
+			void SetTrajectorySink( std::function<void(const std::string&)> sink,
+			                        const ChatTrajectoryConfig& config = ChatTrajectoryConfig() );
+
+			//! Record one LLM HTTP round into the `llm` trajectory record.
+			//! Called by the DRIVER just before HandleResponse (the driver
+			//! owns the HTTP round-trip, so it alone knows the status/body/
+			//! latency).  The response body is stored VERBATIM (the replay
+			//! payload); usage/finish-reasons/error are derived from it via
+			//! the codec.  AUTH HEADERS ARE STRIPPED from `request` by name
+			//! before the record is built (belt); the writer's regex pass is
+			//! the suspenders.  `attempt`/`retryOf` capture driver-initiated
+			//! retries (retryOf < 0 for a first attempt).  No-op when no sink
+			//! is attached.
+			void RecordHttpRound( const ChatHttpRequest& request, long httpStatus,
+			                      const std::string& rawBody, int64_t elapsedMs,
+			                      int attempt = 1, int retryOf = -1 );
+
+			//! Convenience overload using the request most recently returned
+			//! by BuildRequest (what the driver actually sent) -- so a GUI
+			//! driver need not marshal the request back into C++.  No-op when
+			//! no sink is attached or no request has been built yet.
+			void RecordHttpRound( long httpStatus, const std::string& rawBody,
+			                      int64_t elapsedMs, int attempt = 1, int retryOf = -1 );
+
+			//! Emit the terminal `summary` record with `status` and detach the
+			//! current session (a fresh trace id / new session begins on the
+			//! next recorded action).  No-op when no session is active.  Use
+			//! this at chat end / app close for a clean summary line; a Reset
+			//! or SetProvider also closes the session automatically.
+			void FinishTrajectory( const std::string& status );
+
+			//! True while a trajectory sink is attached.
+			bool TrajectoryActive() const { return mRecorder != nullptr; }
+
 		private:
 			AgentChatLoop( const AgentChatLoop& );             // deleted
 			AgentChatLoop& operator=( const AgentChatLoop& );  // deleted
@@ -314,6 +375,30 @@ namespace RISE
 			//! wire never carries an unanswered tool call).  No-op when
 			//! there is no pending turn.
 			void FlushPendingToolResults();
+
+			//! Compose the full system prompt (base + skills section when a
+			//! skill index is set) -- shared by BuildRequest and the session
+			//! record so the recorded prompt matches the sent prompt.
+			std::string ComposeSystemPrompt() const;
+
+			//! Emit the `session` record exactly once, on the first recorded
+			//! action, so it always leads the trajectory.  No-op with no sink.
+			void EnsureSessionRecordEmitted();
+
+			//! Emit the terminal `summary` (when a session is active) and roll
+			//! the recorder to a fresh trace id on the same sink, so the next
+			//! action starts a new session.  Shared by Reset / SetProvider /
+			//! FinishTrajectory.
+			void CloseTrajectorySession( const std::string& status );
+
+			//! One in-flight tool dispatch: the JSON-RPC line + start time
+			//! stamped by ToolCallToJsonRpcLine, completed at AddToolResult.
+			struct ToolLinePending
+			{
+				std::string id;
+				std::string line;
+				int64_t     startMs;
+			};
 
 			std::unique_ptr<IChatProviderCodec> mCodec;
 			ChatProvider                        mProvider;
@@ -332,6 +417,16 @@ namespace RISE
 			std::vector<std::pair<ChatToolCall, std::string>>  mPendingResults;
 
 			int mToolRounds;   //!< tool rounds in the current conversation-turn
+
+			//! Eval-harness E1 trajectory state (all inert when mRecorder is
+			//! null -- the non-recording path is byte-identical to pre-E1).
+			std::unique_ptr<ChatTrajectoryRecorder> mRecorder;
+			bool                                     mSessionEmitted;
+			std::function<void(const std::string&)>  mTrajectorySink;
+			ChatTrajectoryConfig                     mTrajectoryConfig;
+			std::function<int64_t()>                 mTrajectoryClock;
+			ChatHttpRequest                          mLastRequest;
+			std::vector<ToolLinePending>             mToolLineStash;
 		};
 	}
 }

@@ -1176,6 +1176,23 @@ namespace RISE
 			return out;
 		}
 
+		ChatUsage AnthropicChatCodec::ParseUsage( const std::string& rawBody ) const
+		{
+			ChatUsage u;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) return u;
+			const JsonValue& usage = root.get( "usage" );
+			if( !usage.isObject() ) return u;
+			if( usage.get( "input_tokens" ).isNumber() )
+				u.inputTokens = static_cast<long long>( usage.get( "input_tokens" ).asNumber() );
+			if( usage.get( "output_tokens" ).isNumber() )
+				u.outputTokens = static_cast<long long>( usage.get( "output_tokens" ).asNumber() );
+			if( usage.get( "cache_read_input_tokens" ).isNumber() )
+				u.cacheReadInputTokens = static_cast<long long>( usage.get( "cache_read_input_tokens" ).asNumber() );
+			return u;
+		}
+
 		//======================================================================
 		// (4) GeminiChatCodec
 		//======================================================================
@@ -1754,6 +1771,23 @@ namespace RISE
 			return out;
 		}
 
+		ChatUsage GeminiChatCodec::ParseUsage( const std::string& rawBody ) const
+		{
+			ChatUsage u;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) return u;
+			const JsonValue& m = root.get( "usageMetadata" );
+			if( !m.isObject() ) return u;
+			if( m.get( "promptTokenCount" ).isNumber() )
+				u.inputTokens = static_cast<long long>( m.get( "promptTokenCount" ).asNumber() );
+			if( m.get( "candidatesTokenCount" ).isNumber() )
+				u.outputTokens = static_cast<long long>( m.get( "candidatesTokenCount" ).asNumber() );
+			if( m.get( "cachedContentTokenCount" ).isNumber() )
+				u.cacheReadInputTokens = static_cast<long long>( m.get( "cachedContentTokenCount" ).asNumber() );
+			return u;
+		}
+
 		//======================================================================
 		// (5) OpenAIChatCodec
 		//======================================================================
@@ -2160,6 +2194,41 @@ namespace RISE
 				fallback.set( "content", msg.get( "content" ) );
 				if( toolCalls.isArray() ) fallback.set( "tool_calls", toolCalls );
 				out.assistantEntryJson = JsonSerialize( fallback );
+			}
+			return out;
+		}
+
+		ChatUsage OpenAIChatCodec::ParseUsage( const std::string& rawBody ) const
+		{
+			ChatUsage u;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) return u;
+			const JsonValue& usage = root.get( "usage" );
+			if( !usage.isObject() ) return u;
+			if( usage.get( "prompt_tokens" ).isNumber() )
+				u.inputTokens = static_cast<long long>( usage.get( "prompt_tokens" ).asNumber() );
+			if( usage.get( "completion_tokens" ).isNumber() )
+				u.outputTokens = static_cast<long long>( usage.get( "completion_tokens" ).asNumber() );
+			const JsonValue& details = usage.get( "prompt_tokens_details" );
+			if( details.isObject() && details.get( "cached_tokens" ).isNumber() )
+				u.cacheReadInputTokens = static_cast<long long>( details.get( "cached_tokens" ).asNumber() );
+			return u;
+		}
+
+		//======================================================================
+		// Eval-harness E1: provider-neutral tool-definition fingerprint.
+		//======================================================================
+		std::string ChatToolDefsFingerprint()
+		{
+			std::string out;
+			for( std::size_t i = 0; i < kToolDefCount; ++i ) {
+				out += kToolDefs[i].name;
+				out += '\n';
+				out += kToolDefs[i].description;
+				out += '\n';
+				if( kToolDefs[i].schemaJson ) out += kToolDefs[i].schemaJson;
+				out += '\n';
 			}
 			return out;
 		}

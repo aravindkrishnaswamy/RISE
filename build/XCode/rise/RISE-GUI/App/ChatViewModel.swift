@@ -256,6 +256,12 @@ final class ChatViewModel: ObservableObject {
     /// re-derives the key-source caption.
     @Published private(set) var keyStateEpoch: Int = 0
 
+    /// Eval-harness E1: when ON (default), every chat session writes a
+    /// trajectory JSONL under evals/runs/gui/.  Redaction of api-key-shaped
+    /// content is unconditional in the core regardless of this toggle;
+    /// this switch only controls whether a file is written at all.
+    @Published private(set) var recordTrajectories: Bool
+
     // MARK: - Secure-MCP slice 5c: GUI-hosted external MCP endpoint +
     // proposals panel.  See `startExternalHosting()` / `stopExternalHosting()`
     // and the "Proposals panel" section further below.
@@ -580,8 +586,41 @@ final class ChatViewModel: ObservableObject {
     var isChatRenderOutstanding: Bool { outstandingChatRenderJobId != 0 }
 
     private static let providerKey = "agentChat.provider"
+    private static let recordTrajectoriesKey = "agentChat.recordTrajectories"
     private static func modelIdKey(_ p: AgentChatProviderChoice) -> String {
         "agentChat.modelId.\(p.rawValue)"
+    }
+
+    /// The per-session trajectory directory (evals/runs/gui, relative to
+    /// the process working directory).  Created lazily by the file sink.
+    private var trajectoryDirectory: String {
+        FileManager.default.currentDirectoryPath + "/evals/runs/gui"
+    }
+
+    /// (Re)start the per-session trajectory file for the current scene, or
+    /// DETACH when recording is disabled.  Invoked at scene open, on a
+    /// provider switch, and when the toggle changes.
+    private func startTrajectory() {
+        chatBridge.startTrajectory(directory: trajectoryDirectory,
+                                   scenePath: "",
+                                   headVersion: -1,
+                                   enabled: recordTrajectories)
+    }
+
+    /// Toggle trajectory recording (persisted).  Turning it OFF finishes
+    /// the current session's summary line, then detaches; turning it ON
+    /// starts a fresh session file.
+    func setRecordTrajectories(_ on: Bool) {
+        guard on != recordTrajectories else { return }
+        recordTrajectories = on
+        UserDefaults.standard.set(on, forKey: Self.recordTrajectoriesKey)
+        if on {
+            startTrajectory()
+        } else {
+            chatBridge.finishTrajectory(status: "toggle_off")
+            chatBridge.startTrajectory(directory: trajectoryDirectory,
+                                       scenePath: "", headVersion: -1, enabled: false)
+        }
     }
 
     // MARK: - Image attachments (Model-B F5)
@@ -649,6 +688,10 @@ final class ChatViewModel: ObservableObject {
             forKey: Self.modelIdKey(storedProvider)) ?? ""
         provider = storedProvider
         modelId = storedModelId.isEmpty ? storedProvider.defaultModelId : storedModelId
+        // Eval-harness E1: default ON (records every session under
+        // evals/runs/gui/).  The actual file is attached at scene open.
+        recordTrajectories =
+            (UserDefaults.standard.object(forKey: Self.recordTrajectoriesKey) as? Bool) ?? true
         chatBridge.setProvider(storedProvider.bridgeValue, modelId: storedModelId)
     }
 
@@ -684,6 +727,11 @@ final class ChatViewModel: ObservableObject {
         let indexLine = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"read_skill\"}"
         chatBridge.setSkillIndex(
             Self.renderSkillIndex(fromRpcResponse: vb.agentHandleLine(indexLine)))
+
+        // Eval-harness E1: a freshly-opened scene starts a NEW trajectory
+        // file (the skill index is set above, so the session record captures
+        // the full system prompt including skills on first user message).
+        startTrajectory()
     }
 
     /// The scene is closing (clearScene / reload): stop any in-flight
@@ -704,6 +752,11 @@ final class ChatViewModel: ObservableObject {
         sceneGeneration += 1
         viewportBridge = nil
         chatBridge.reset()
+        // Eval-harness E1: reset() closed the session ("reset" summary to
+        // the current file); detach so no file lingers between scenes (the
+        // next sceneOpened starts a fresh one).
+        chatBridge.startTrajectory(directory: trajectoryDirectory,
+                                   scenePath: "", headVersion: -1, enabled: false)
         transcript = []
         inputText = ""
         clearErrorAffordances()
@@ -754,6 +807,10 @@ final class ChatViewModel: ObservableObject {
         transcript = []
         clearErrorAffordances()
         consecutiveHttp400s = 0
+        // Eval-harness E1: setProvider closed the old session (a
+        // "provider_switch" summary to the old file); begin a new file so
+        // the new provider's session records land separately.
+        startTrajectory()
     }
 
     /// Persisted model id for `p` ("" = provider default).  Lets the
@@ -1416,10 +1473,13 @@ final class ChatViewModel: ObservableObject {
 
             let data: Data
             let status: Int
+            let httpStarted = Date()
+            var elapsedMs: Int64 = 0
             do {
                 let (body, response) = try await URLSession.shared.data(for: urlRequest)
                 data = body
                 status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                elapsedMs = Int64(Date().timeIntervalSince(httpStarted) * 1000.0)
             } catch {
                 if Task.isCancelled || stopRequested { return }
                 // Transport-level failure: nothing reached the loop,
@@ -1441,8 +1501,13 @@ final class ChatViewModel: ObservableObject {
             // check, this closes the rest).
             guard sceneEditableOrReportRenderConflict() else { return }
 
-            let step = chatBridge.handleResponse(
-                status: status, body: String(data: data, encoding: .utf8) ?? "")
+            let bodyString = String(data: data, encoding: .utf8) ?? ""
+            // Eval-harness E1: record the LLM round (status/body/latency)
+            // into the trajectory BEFORE handling it (no-op when recording
+            // is off).  The bridge strips auth headers from the cached
+            // request; the writer redacts every line unconditionally.
+            chatBridge.recordHttpRound(status: status, body: bodyString, elapsedMs: elapsedMs)
+            let step = chatBridge.handleResponse(status: status, body: bodyString)
 
             switch step.kind {
             case .toolCalls:

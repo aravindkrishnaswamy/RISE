@@ -42,6 +42,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Agent/AgentRpc.cpp			\
 	$(PATHLIBRARY)Agent/AgentSession.cpp		\
 	$(PATHLIBRARY)Agent/Base64.cpp				\
+	$(PATHLIBRARY)Agent/ChatTrajectory.cpp		\
 	$(PATHLIBRARY)Agent/InMemoryRasterizerOutput.cpp	\
 	$(PATHLIBRARY)Agent/Json.cpp				\
 	$(PATHLIBRARY)Agent/SchemaGen.cpp			\

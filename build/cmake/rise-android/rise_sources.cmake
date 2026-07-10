@@ -234,6 +234,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Agent/AgentRpc.cpp"
     "${RISE_LIB}/Agent/AgentSession.cpp"
     "${RISE_LIB}/Agent/Base64.cpp"
+    "${RISE_LIB}/Agent/ChatTrajectory.cpp"
     "${RISE_LIB}/Agent/InMemoryRasterizerOutput.cpp"
     "${RISE_LIB}/Agent/Json.cpp"
     "${RISE_LIB}/Agent/SchemaGen.cpp"

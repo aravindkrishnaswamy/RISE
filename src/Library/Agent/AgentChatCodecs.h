@@ -151,6 +151,21 @@ namespace RISE
 			std::string body;     //!< the JSON request body
 		};
 
+			//! Token-usage counts parsed from ONE provider response body
+			//! (Eval-harness E1 -- fed into the trajectory `llm` record's
+			//! OTel `gen_ai.usage.*` fields).  Each field is -1 when the
+			//! provider omitted it (absent-tolerant, null-safe): Anthropic
+			//! `usage.{input_tokens,output_tokens,cache_read_input_tokens}`,
+			//! Gemini `usageMetadata.{promptTokenCount,candidatesTokenCount,
+			//! cachedContentTokenCount}`, OpenAI `usage.{prompt_tokens,
+			//! completion_tokens,prompt_tokens_details.cached_tokens}`.
+			struct ChatUsage
+			{
+				long long inputTokens          = -1;   //!< prompt / input tokens (-1 = absent)
+				long long outputTokens         = -1;   //!< completion / output tokens (-1 = absent)
+				long long cacheReadInputTokens = -1;   //!< cache-read input tokens (-1 = absent)
+			};
+
 		//! One tool call the model requested.  `id` is the provider's
 		//! tool-call id (Anthropic `tool_use.id`; Gemini
 		//! `functionCall.id`, which Gemini 3.x populates and the docs
@@ -321,6 +336,13 @@ namespace RISE
 			//! the provider's error.message when parseable).  NEVER throws.
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const = 0;
+
+			//! Parse the token-usage block from ONE raw response body into a
+			//! ChatUsage (Eval-harness E1).  Absent-tolerant and null-safe:
+			//! every field defaults to -1 and stays -1 when the provider
+			//! omits it or the body does not parse.  NEVER throws.  Pure
+			//! (like every codec method) -- the raw body is the sole input.
+			virtual ChatUsage ParseUsage( const std::string& rawBody ) const = 0;
 		};
 
 		//! Anthropic Messages API codec (see file header).
@@ -344,6 +366,7 @@ namespace RISE
 				const std::vector<std::string>& rawEntries ) const;
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
+			virtual ChatUsage ParseUsage( const std::string& rawBody ) const;
 		};
 
 		//! Google Gemini v1beta REST codec (see file header).  The
@@ -372,6 +395,7 @@ namespace RISE
 				const std::vector<std::string>& rawEntries ) const;
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
+			virtual ChatUsage ParseUsage( const std::string& rawBody ) const;
 		};
 
 		//! OpenAI Chat Completions codec (see file header).  The GUI
@@ -398,6 +422,7 @@ namespace RISE
 				const std::vector<std::string>& rawEntries ) const;
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
+			virtual ChatUsage ParseUsage( const std::string& rawBody ) const;
 		};
 
 		//! True iff packing (call, raw JSON-RPC envelope line) would carry
@@ -425,6 +450,16 @@ namespace RISE
 		//! entry.  Returns 0 for a non-user entry, or one that does not
 		//! parse.
 		int ChatUserEntryLiveImageCount( const std::string& userEntryJson );
+
+		//! A stable, provider-neutral fingerprint SOURCE string for the ten
+		//! tool definitions (Eval-harness E1): the concatenation of every
+		//! neutral tool's name + description + parameter-schema, in order.
+		//! The trajectory `session` record hashes this so a tool-definition
+		//! change is visible as a changed tool_defs hash across replays.
+		//! Provider-neutral by construction -- it reads the ONE kToolDefs
+		//! table every codec maps from, so the fingerprint never depends on
+		//! which provider is selected.
+		std::string ChatToolDefsFingerprint();
 	}
 }
 

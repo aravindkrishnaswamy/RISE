@@ -8,8 +8,10 @@
 
 #include "ViewportBridge.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDebug>
+#include <QDir>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -22,13 +24,17 @@
 #include <QNetworkRequest>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QTextEdit>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include <ctime>
+
 #include "Agent/AgentChatLoop.h"
+#include "Agent/ChatTrajectory.h"
 
 using RISE::Agent::AgentChatLoop;
 using RISE::Agent::AnthropicChatCodec;
@@ -187,11 +193,29 @@ ChatPanel::ChatPanel(QWidget* parent)
     inputRow->addWidget(m_stopBtn);
     outer->addLayout(inputRow);
 
+    // Eval-harness E1: trajectory recording toggle (default ON).  The
+    // redaction pass in the core is unconditional; this only controls
+    // whether a per-session JSONL file is written under evals/runs/gui/.
+    {
+        QSettings settings;
+        m_recordTrajectories =
+            settings.value("agentChat/recordTrajectories", true).toBool();
+    }
+    m_recordTrajectoriesCheck = new QCheckBox("Record chat trajectories");
+    m_recordTrajectoriesCheck->setChecked(m_recordTrajectories);
+    m_recordTrajectoriesCheck->setToolTip(
+        "Write a per-session JSONL log under evals/runs/gui/ (system prompt, "
+        "each request/response, tool calls, tokens, timings).  API-key-shaped "
+        "content is always redacted regardless of this setting.");
+    outer->addWidget(m_recordTrajectoriesCheck);
+
     m_statusLabel = new QLabel();
     m_statusLabel->setStyleSheet("color: gray;");
     m_statusLabel->setWordWrap(true);
     outer->addWidget(m_statusLabel);
 
+    connect(m_recordTrajectoriesCheck, &QCheckBox::toggled,
+            this, &ChatPanel::recordTrajectoriesToggled);
     connect(m_providerCombo, static_cast<void(QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
             this, &ChatPanel::providerChanged);
     connect(m_modelEdit, &QLineEdit::editingFinished,
@@ -235,8 +259,14 @@ void ChatPanel::setViewportBridge(ViewportBridge* bridge)
     m_sceneEditable = (bridge != nullptr);
     if (m_bridge) {
         fetchSkillIndex();
+        // Eval-harness E1: a freshly-bound scene starts a NEW trajectory
+        // file (skills are set above, so the session record captures the
+        // full system prompt on the first user message).
+        startTrajectory();
     } else {
         m_loop->Reset();
+        // Detach so no file lingers between scenes.
+        startTrajectory();
         refreshTranscript();
     }
     updateButtonStates();
@@ -273,6 +303,9 @@ void ChatPanel::resetConversation()
 {
     requestStop();
     m_loop->Reset();
+    // Eval-harness E1: Reset() closed the session ("reset" summary); start
+    // a fresh file for the post-reset conversation (or detach if off).
+    startTrajectory();
     clearErrorAffordances();
     refreshTranscript();
     updateButtonStates();
@@ -374,8 +407,13 @@ void ChatPanel::networkFinished()
     }
 
     const long httpStatus = status == 0 ? 0 : status;
-    const ChatStepResult step =
-        m_loop->HandleResponse(httpStatus, std::string(body.constData(), static_cast<std::size_t>(body.size())));
+    const std::string bodyStd(body.constData(), static_cast<std::size_t>(body.size()));
+    // Eval-harness E1: record the LLM round (status/body/latency) BEFORE
+    // handling it (no-op when recording is off).  The loop strips auth
+    // headers from its cached request; the writer redacts every line.
+    const qint64 elapsedMs = m_httpTimer.isValid() ? m_httpTimer.elapsed() : 0;
+    m_loop->RecordHttpRound(httpStatus, bodyStd, static_cast<int64_t>(elapsedMs));
+    const ChatStepResult step = m_loop->HandleResponse(httpStatus, bodyStd);
     refreshTranscript(step.assistantDisplayText.empty() ? QString() : "Running tools...");
 
     if (step.kind == ChatStepResult::Kind::ProviderError) {
@@ -459,6 +497,9 @@ void ChatPanel::applyProviderToLoop(bool resetModelToDefault)
         chatProvider = ChatProvider::Gemini;
     }
     m_loop->SetProvider(chatProvider, toStdString(m_modelEdit->text().trimmed()));
+    // Eval-harness E1: SetProvider closed the old session ("provider_switch"
+    // summary to the old file); begin a new file for the new provider.
+    startTrajectory();
     refreshTranscript();
 
     m_appliedProvider = newProvider;
@@ -580,6 +621,8 @@ void ChatPanel::runNextStep()
             QByteArray(header.second.c_str(), static_cast<int>(header.second.size())));
     }
 
+    // Eval-harness E1: measure the round-trip latency for the llm record.
+    m_httpTimer.start();
     m_reply = m_network->post(
         netReq,
         QByteArray(req.body.c_str(), static_cast<int>(req.body.size())));
@@ -600,6 +643,52 @@ void ChatPanel::fetchSkillIndex()
     const QString line =
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"read_skill\",\"params\":{}}";
     m_loop->SetSkillIndex(toStdString(renderSkillIndex(m_bridge->agentHandleLine(line))));
+}
+
+void ChatPanel::startTrajectory()
+{
+    // Detach when recording is off or no scene is bound.
+    if (!m_recordTrajectories || !m_bridge) {
+        m_loop->SetTrajectorySink(std::function<void(const std::string&)>());
+        return;
+    }
+    const std::string dir =
+        toStdString(QDir::currentPath() + "/evals/runs/gui");
+
+    // Rotate BEFORE creating the new file (keep ~50 newest / ~200 MB).
+    RISE::Agent::PruneTrajectoryDir(dir, 50, 200LL * 1024 * 1024);
+
+    const std::string traceId = RISE::Agent::MakeTrajectoryTraceId();
+    char ts[32];
+    std::time_t nowT = std::time(nullptr);
+    std::tm tmv;
+#ifdef _WIN32
+    gmtime_s(&tmv, &nowT);
+#else
+    gmtime_r(&nowT, &tmv);
+#endif
+    std::strftime(ts, sizeof(ts), "%Y%m%dT%H%M%SZ", &tmv);
+    const std::string path =
+        dir + "/" + std::string(ts) + "-" + traceId.substr(0, 8) + ".jsonl";
+
+    RISE::Agent::ChatTrajectoryConfig cfg;
+    cfg.traceId = traceId;
+    cfg.sceneHeadVersion = -1;
+    m_loop->SetTrajectorySink(RISE::Agent::MakeTrajectoryFileSink(path), cfg);
+}
+
+void ChatPanel::recordTrajectoriesToggled(bool on)
+{
+    if (on == m_recordTrajectories) return;
+    m_recordTrajectories = on;
+    QSettings settings;
+    settings.setValue("agentChat/recordTrajectories", on);
+    if (on) {
+        startTrajectory();
+    } else {
+        m_loop->FinishTrajectory("toggle_off");
+        m_loop->SetTrajectorySink(std::function<void(const std::string&)>());
+    }
 }
 
 QString ChatPanel::renderSkillIndex(const QString& rpcResponse) const

@@ -13,11 +13,13 @@
 
 #include <QWidget>
 #include <QHash>
+#include <QElapsedTimer>
 #include <memory>
 #include <vector>
 
 #include "Agent/AgentChatCodecs.h"
 
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -68,6 +70,9 @@ private slots:
     void networkFinished();
     void retryLastRequest();
 
+    // Eval-harness E1: the "Record chat trajectories" checkbox (default ON).
+    void recordTrajectoriesToggled(bool on);
+
     // P1-2: fires on a ~250ms QTimer while a chat-driven `render` tool
     // call has an async job outstanding; each tick is a fast
     // render_wait(timeoutMs:0) poll-once through agentHandleLine.
@@ -95,6 +100,9 @@ private:
     void runNextStep();
     void finishBusy(const QString& statusLine = QString());
     void fetchSkillIndex();
+    // Eval-harness E1: (re)attach the per-session trajectory file for the
+    // current scene, or detach when recording is off / no scene is bound.
+    void startTrajectory();
     QString renderSkillIndex(const QString& rpcResponse) const;
     QString cancelledToolResultJson(int rpcId, const QString& message) const;
     void clearErrorAffordances();
@@ -119,6 +127,11 @@ private:
     ViewportBridge* m_bridge = nullptr;   // borrowed; owned by MainWindow
     QNetworkAccessManager* m_network = nullptr;
     QNetworkReply* m_reply = nullptr;
+
+    // Eval-harness E1: trajectory recording UI + timing.
+    QCheckBox* m_recordTrajectoriesCheck = nullptr;
+    bool m_recordTrajectories = true;
+    QElapsedTimer m_httpTimer;   //!< started at post(), read at networkFinished()
 
     QComboBox* m_providerCombo = nullptr;
     QLineEdit* m_modelEdit = nullptr;
