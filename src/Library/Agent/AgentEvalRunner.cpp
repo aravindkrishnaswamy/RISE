@@ -1492,7 +1492,21 @@ namespace RISE
 					result.checkpoints.push_back( r );
 				}
 
-				result.checkpointFraction = ( weightSum > 0.0 ) ? ( passSum / weightSum ) : 1.0;
+				if( weightSum > 0.0 ) {
+					result.checkpointFraction = passSum / weightSum;
+				} else if( !result.checkpoints.empty() ) {
+					// Every checkpoint has zero weight (degenerate authoring):
+					// the weighted fraction is undefined, so fall back to the
+					// UNWEIGHTED pass fraction.  A failing checkpoint must still
+					// drag the score below 1.0 -- returning a flat 1.0 here would
+					// report a spurious perfect score for a scenario that failed.
+					std::size_t passedCount = 0;
+					for( const auto& c : result.checkpoints ) if( c.passed ) ++passedCount;
+					result.checkpointFraction =
+						static_cast<double>( passedCount ) / static_cast<double>( result.checkpoints.size() );
+				} else {
+					result.checkpointFraction = 1.0;   // no checkpoints -> vacuously complete
+				}
 				result.allPassed = true;
 				for( const auto& c : result.checkpoints ) if( !c.passed ) { result.allPassed = false; break; }
 

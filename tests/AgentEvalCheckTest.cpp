@@ -737,6 +737,24 @@ static void TestPartialCreditArithmetic()
 	Check( rEmpty.allPassed, "zero checkpoints -> allPassed vacuously true" );
 	Check( rEmpty.checkpointFraction == 1.0, "zero checkpoints -> checkpointFraction is 1.0" );
 
+	// Degenerate authoring: every checkpoint has weight 0 so weightSum == 0.
+	// The weighted fraction is undefined, so we fall back to the UNWEIGHTED
+	// pass fraction -- a failing checkpoint must still drag it below 1.0
+	// rather than report a spurious perfect score.  Here: 1 pass + 1 fail
+	// over 2 checkpoints -> 0.5, and allPassed is false.
+	JsonValue zcps; std::string zerr;
+	Check( JsonParse(
+		"[{\"kind\":\"document\",\"weight\":0,\"op\":\"chunk_exists\",\"name\":\"pnt_albedo\"},"
+		" {\"kind\":\"document\",\"weight\":0,\"op\":\"chunk_exists\",\"name\":\"nope\"}]",
+		zcps, zerr ), "the all-zero-weight checkpoints array parses" );
+	AgentEvalScenario sZero = s;
+	sZero.checkpoints = zcps;
+	AgentEvalCheckResult rZero = CheckScenario( h, sZero );
+	Check( !rZero.allPassed, "all-zero-weight: allPassed is false (one checkpoint failed)" );
+	Check( std::abs( rZero.checkpointFraction - 0.5 ) < 1e-9,
+		"all-zero-weight: checkpointFraction falls back to unweighted 0.5, NOT 1.0 (got "
+		+ std::to_string( rZero.checkpointFraction ) + ")" );
+
 	// The side effect: results.jsonl was written under runDir and contains
 	// at least one JSON line naming this scenario.
 	const std::string resultsPath = dir + "/results.jsonl";
