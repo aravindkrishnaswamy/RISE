@@ -471,6 +471,9 @@ static int RunAgentEval( const char* runConfigPath )
 			if( cec ) { canon = std::filesystem::weakly_canonical( scenarioPaths[i], cec ); }
 			const std::string key = cec ? scenarioPaths[i] : canon.string();
 			if( seen.insert( key ).second ) deduped.push_back( scenarioPaths[i] );
+			else
+				std::cerr << "rise --agent-eval: scenario '" << scenarioPaths[i]
+				          << "' duplicates an earlier entry (same canonical path) -- skipping.\n";
 		}
 		scenarioPaths.swap( deduped );
 	}
