@@ -71,25 +71,47 @@ from collections import Counter, defaultdict
 #
 # PRICES AS OF 2026-07, PUBLIC LIST PRICES, EDIT ME; cost is an ESTIMATE.
 #
-# Keyed by provider -> ("_default" plus optional per-model overrides).  Model
-# lookup is a case-insensitive substring match against the model key (e.g. the
-# key "claude-3-5-sonnet" matches an actual model string of
+# Keyed by provider -> ("_default" plus optional per-model overrides, plus a
+# "cached_in_input" bool documented below).  Model lookup is a
+# case-insensitive substring match against the model key (e.g. the key
+# "claude-3-5-sonnet" matches an actual model string of
 # "claude-3-5-sonnet-20241022"); the most specific (longest) matching key
-# wins.  All prices are USD per 1,000,000 tokens.  "cached_input" is the rate
-# charged for cache-read input tokens (gen_ai.usage.cache_read_input_tokens);
-# providers that don't distinguish a cached rate should set it equal to
-# "input".  A provider/model combination absent from this table (or an
-# unrecognized provider) makes cost report as "n/a (no pricing)" -- it never
-# crashes the tool.
+# wins ("_default" and "cached_in_input" are not model keys and are skipped
+# by that scan).  All prices are USD per 1,000,000 tokens.  "cached_input" is
+# the rate charged for cache-read input tokens
+# (gen_ai.usage.cache_read_input_tokens); providers that don't distinguish a
+# cached rate should set it equal to "input".  A provider/model combination
+# absent from this table (or an unrecognized provider) makes cost report as
+# "n/a (no pricing)" -- it never crashes the tool.
+#
+# "cached_in_input" (bool): whether this provider's reported input-token
+# count is the TOTAL (cached tokens are a SUBSET already included in it,
+# "cached_in_input": True) or whether cached tokens are reported separately/
+# ADDITIVELY on top of a cache-excluding input count ("cached_in_input":
+# False).  This is NOT a stylistic choice -- it mirrors each provider's real
+# usage-accounting, verified against `ParseUsage` in
+# src/Library/Agent/AgentChatCodecs.cpp, 2026-07:
+#   anthropic (False, additive): `input_tokens` EXCLUDES cache reads --
+#     `cache_read_input_tokens` is a separate, additive field.
+#   openai (True, subset): `input_tokens` = `prompt_tokens` is the TOTAL, and
+#     `cached_tokens` (`prompt_tokens_details.cached_tokens`) is a SUBSET.
+#   gemini (True, subset): `input_tokens` = `promptTokenCount` is the TOTAL,
+#     and `cached_tokens` (`cachedContentTokenCount`) is a SUBSET.
+# See estimate_cost() for how the flag changes the arithmetic; getting this
+# wrong double-counts the cached portion for openai/gemini (once in the full
+# input term, once again in the cached term) -- up to 2x overcount on
+# cache-heavy conversations.
 # ---------------------------------------------------------------------------
 PROVIDER_PRICING = {
     "anthropic": {
+        "cached_in_input": False,
         "_default": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
         "claude-opus": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
         "claude-sonnet": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
         "claude-haiku": {"input": 0.80, "output": 4.00, "cached_input": 0.08},
     },
     "openai": {
+        "cached_in_input": True,
         "_default": {"input": 2.50, "output": 10.00, "cached_input": 1.25},
         "gpt-4o-mini": {"input": 0.15, "output": 0.60, "cached_input": 0.075},
         "gpt-4o": {"input": 2.50, "output": 10.00, "cached_input": 1.25},
@@ -97,6 +119,7 @@ PROVIDER_PRICING = {
         "gpt-4.1": {"input": 2.00, "output": 8.00, "cached_input": 0.50},
     },
     "gemini": {
+        "cached_in_input": True,
         "_default": {"input": 1.25, "output": 5.00, "cached_input": 0.3125},
         "gemini-1.5-flash": {"input": 0.075, "output": 0.30, "cached_input": 0.01875},
         "gemini-1.5-pro": {"input": 1.25, "output": 5.00, "cached_input": 0.3125},
@@ -104,6 +127,10 @@ PROVIDER_PRICING = {
     },
 }
 
+# Must stay in lockstep with the provider set recognized by
+# `ParseReplayProviderName` / `ChatProvider` in
+# src/Library/Agent/AgentChatCodecs.{h,cpp} -- adding a 4th provider there
+# requires adding it here (and to PROVIDER_PRICING) too.
 KNOWN_PROVIDERS = ("anthropic", "openai", "gemini")
 
 WILSON_Z = 1.96
@@ -152,7 +179,7 @@ def lookup_pricing(provider, model):
     model_l = (model or "").lower()
     best_key = None
     for key in prov_table:
-        if key == "_default":
+        if key in ("_default", "cached_in_input"):
             continue
         if key.lower() in model_l:
             if best_key is None or len(key) > len(best_key):
@@ -163,15 +190,37 @@ def lookup_pricing(provider, model):
 
 
 def estimate_cost(provider, model, input_tokens, output_tokens, cached_tokens):
-    """Return (cost_usd, priced_bool). priced_bool False -> no pricing found."""
+    """Return (cost_usd, priced_bool). priced_bool False -> no pricing found.
+
+    Cached-token accounting is provider-dependent (see the "cached_in_input"
+    comment on PROVIDER_PRICING above): some providers report cached tokens
+    as a SUBSET already counted inside input_tokens (openai, gemini), others
+    report them ADDITIVELY/disjoint from input_tokens (anthropic). Charging
+    the naive `input*rate + output*rate + cached*rate` formula for a
+    subset-convention provider double-bills the cached portion, so we branch
+    on the flag instead of applying one formula universally.
+    """
     price = lookup_pricing(provider, model)
     if price is None:
         return (0.0, False)
-    cost = (
-        input_tokens / 1_000_000.0 * price["input"]
-        + output_tokens / 1_000_000.0 * price["output"]
-        + cached_tokens / 1_000_000.0 * price["cached_input"]
-    )
+    # Provider is guaranteed present in PROVIDER_PRICING here (lookup_pricing
+    # only returns non-None when it found a table for `provider`). Missing
+    # the flag defaults to False (additive/anthropic-style) -- the
+    # under-count-rather-than-double-count safer default.
+    cached_in_input = PROVIDER_PRICING[provider].get("cached_in_input", False)
+    if cached_in_input:
+        noncached_input = max(0, input_tokens - cached_tokens)
+        cost = (
+            noncached_input / 1_000_000.0 * price["input"]
+            + cached_tokens / 1_000_000.0 * price["cached_input"]
+            + output_tokens / 1_000_000.0 * price["output"]
+        )
+    else:
+        cost = (
+            input_tokens / 1_000_000.0 * price["input"]
+            + cached_tokens / 1_000_000.0 * price["cached_input"]
+            + output_tokens / 1_000_000.0 * price["output"]
+        )
     return (cost, True)
 
 
@@ -233,17 +282,19 @@ def parse_run_dir_name(leaf):
             provider_idx = i
             break
     if provider_idx is None:
-        # Fall back: assume no model segment, provider is second-to-last token.
-        if len(tokens) < 3:
-            return None
-        provider = tokens[-2]
-        scenario_id = "__".join(tokens[:-2])
-        model = ""
-    else:
-        scenario_id = "__".join(tokens[:provider_idx])
-        provider = tokens[provider_idx]
-        remaining = tokens[provider_idx + 1 : -1]
-        model = "__".join(remaining) if remaining else ""
+        # No known-provider token found -- do NOT guess a provider/model
+        # split. A leaf with both an unrecognized provider token AND a model
+        # segment (e.g. "s5__mockprov__mockmodel__r1") would silently
+        # mis-split under the old "assume no model segment, provider is
+        # second-to-last token" fallback, misreading scenario/provider/model
+        # and pulling foreign data into a wrong-but-plausible row. Returning
+        # None here routes through the caller's existing "could not parse
+        # run-dir name, skipping: <leaf>" warning instead.
+        return None
+    scenario_id = "__".join(tokens[:provider_idx])
+    provider = tokens[provider_idx]
+    remaining = tokens[provider_idx + 1 : -1]
+    model = "__".join(remaining) if remaining else ""
     if not scenario_id:
         return None
     return (scenario_id, provider, model, rep)
@@ -313,9 +364,15 @@ def scan_run_dir(run_dir, warnings):
         if matching:
             rec.check = matching[-1]
         elif check_lines:
-            # results.jsonl exists but no line matches this scenarioId.
-            rec.check = check_lines[-1]
-            rec.notes.append("results.jsonl present but scenarioId mismatch")
+            # results.jsonl exists but no line matches this scenarioId --
+            # treat as MISSING check data (leave rec.check None, same as the
+            # "missing results.jsonl" branch below) rather than silently
+            # substituting a foreign scenario's line, which would misreport
+            # pass/fail for this run under a wrong-but-plausible read.
+            rec.check = None
+            rec.notes.append(
+                "results.jsonl present but scenarioId mismatch (treated as missing)"
+            )
         else:
             rec.notes.append("missing results.jsonl (check result)")
 
@@ -415,6 +472,30 @@ def compute_group_stats(key, recs):
     }
 
 
+def compute_overall_rollup(stats_list):
+    """Pooled OVERALL rollup across a list of compute_group_stats() dicts.
+
+    pass@1 here is the POOLED aggregate sum(successes)/sum(n) across all
+    groups -- NOT the mean of each group's individual pass_at_1. Those two
+    differ whenever groups have unequal n (a group with 2 repeats and a group
+    with 100 repeats should not weigh equally in the overall figure).
+    """
+    total_n = sum(s["n"] for s in stats_list)
+    total_succ = sum(s["successes"] for s in stats_list)
+    groups_fully_reliable = sum(1 for s in stats_list if s["pass_at_k"] == 1)
+    overall_p1 = pass_at_1(total_succ, total_n)
+    lower, upper = wilson_score_interval(total_succ, total_n)
+    return {
+        "num_groups": len(stats_list),
+        "total_n": total_n,
+        "total_successes": total_succ,
+        "pass_at_1": overall_p1,
+        "wilson_lower": lower,
+        "wilson_upper": upper,
+        "groups_fully_reliable": groups_fully_reliable,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
@@ -470,17 +551,15 @@ def render_text_report(stats_list, warnings):
     for row in rows:
         lines.append(fmt_row(row))
 
-    # Overall roll-up.
-    total_n = sum(s["n"] for s in stats_list)
-    total_succ = sum(s["successes"] for s in stats_list)
-    groups_fully_reliable = sum(1 for s in stats_list if s["pass_at_k"] == 1)
-    overall_p1 = pass_at_1(total_succ, total_n)
-    lower, upper = wilson_score_interval(total_succ, total_n)
+    # Overall roll-up (pooled, not a mean-of-per-group-pass@1 -- see
+    # compute_overall_rollup()).
+    ov = compute_overall_rollup(stats_list)
     lines.append("")
     lines.append(
-        f"OVERALL: {len(stats_list)} groups, {total_n} repeats total, "
-        f"{total_succ} successes, pass@1={fmt_pct(overall_p1)} {fmt_ci(lower, upper)}, "
-        f"{groups_fully_reliable}/{len(stats_list)} groups fully reliable (pass^k=1)"
+        f"OVERALL: {ov['num_groups']} groups, {ov['total_n']} repeats total, "
+        f"{ov['total_successes']} successes, pass@1={fmt_pct(ov['pass_at_1'])} "
+        f"{fmt_ci(ov['wilson_lower'], ov['wilson_upper'])}, "
+        f"{ov['groups_fully_reliable']}/{ov['num_groups']} groups fully reliable (pass^k=1)"
     )
 
     if warnings:
@@ -511,16 +590,13 @@ def render_markdown_report(stats_list, warnings):
         ]
         lines.append("| " + " | ".join(row) + " |")
 
-    total_n = sum(s["n"] for s in stats_list)
-    total_succ = sum(s["successes"] for s in stats_list)
-    groups_fully_reliable = sum(1 for s in stats_list if s["pass_at_k"] == 1)
-    overall_p1 = pass_at_1(total_succ, total_n)
-    lower, upper = wilson_score_interval(total_succ, total_n)
+    ov = compute_overall_rollup(stats_list)
     lines.append("")
     lines.append(
-        f"**OVERALL**: {len(stats_list)} groups, {total_n} repeats total, "
-        f"{total_succ} successes, pass@1={fmt_pct(overall_p1)} {fmt_ci(lower, upper)}, "
-        f"{groups_fully_reliable}/{len(stats_list)} groups fully reliable (pass^k=1)"
+        f"**OVERALL**: {ov['num_groups']} groups, {ov['total_n']} repeats total, "
+        f"{ov['total_successes']} successes, pass@1={fmt_pct(ov['pass_at_1'])} "
+        f"{fmt_ci(ov['wilson_lower'], ov['wilson_upper'])}, "
+        f"{ov['groups_fully_reliable']}/{ov['num_groups']} groups fully reliable (pass^k=1)"
     )
     if warnings:
         lines.append("")
@@ -747,6 +823,44 @@ def selftest():
     if priced2:
         raise AssertionError("unknown provider should never be priced")
 
+    # --- FIX 1 regression: estimate_cost() cached-token accounting must
+    # branch per-provider (openai/gemini cached tokens are a SUBSET of
+    # input_tokens; anthropic's are additive/disjoint) -- see the
+    # "cached_in_input" comment on PROVIDER_PRICING. Each case below calls
+    # the REAL estimate_cost() (not a re-derivation of its formula) and pins
+    # the result against a hand-computed literal.
+
+    # OpenAI "gpt-4o" seeded rates (USD / 1M tokens): input=2.50,
+    # output=10.00, cached_input=1.25. Case: input_tokens=10000 (TOTAL,
+    # includes the 8000 cached), cached_tokens=8000 (subset), output=500.
+    # Corrected (non-double-counting) arithmetic:
+    #   noncached_input = 10000 - 8000 = 2000
+    #   cost = 2000/1e6*2.50 + 8000/1e6*1.25 + 500/1e6*10.00
+    #        = 0.005        + 0.01         + 0.005        = 0.02
+    # (The buggy pre-fix formula would have charged the full 10000 input
+    # tokens PLUS the 8000 cached tokens again: 10000/1e6*2.50 +
+    # 8000/1e6*1.25 + 500/1e6*10.00 = 0.025 + 0.01 + 0.005 = 0.04 -- 2x the
+    # correct cached-token charge.)
+    openai_cost, openai_priced = estimate_cost("openai", "gpt-4o", 10000, 500, 8000)
+    if not openai_priced:
+        raise AssertionError("expected openai/gpt-4o to be priced")
+    _assert_close(openai_cost, 0.02, 1e-9,
+                  "estimate_cost openai cached-as-subset (FIX 1 regression)")
+
+    # Anthropic "claude-sonnet" seeded rates: input=3.00, output=15.00,
+    # cached_input=0.30. Case: input_tokens=100000 (EXCLUDES cache reads,
+    # per anthropic's additive convention), cached_tokens=20000 (additive,
+    # separate from input_tokens), output=5000.
+    #   cost = 100000/1e6*3.00 + 20000/1e6*0.30 + 5000/1e6*15.00
+    #        = 0.3            + 0.006          + 0.075        = 0.381
+    anthropic_cost, anthropic_priced = estimate_cost(
+        "anthropic", "claude-3-5-sonnet-20241022", 100000, 5000, 20000
+    )
+    if not anthropic_priced:
+        raise AssertionError("expected anthropic/claude-sonnet to be priced")
+    _assert_close(anthropic_cost, 0.381, 1e-9,
+                  "estimate_cost anthropic additive cached tokens (FIX 1 regression)")
+
     # --- run-dir name parsing ---
     parsed = parse_run_dir_name("myScenario__anthropic__claude-3-5-sonnet__r1")
     if parsed != ("myScenario", "anthropic", "claude-3-5-sonnet", 1):
@@ -757,6 +871,59 @@ def selftest():
     parsed = parse_run_dir_name("not_a_valid_dir")
     if parsed is not None:
         raise AssertionError(f"parse_run_dir_name should reject malformed leaf, got {parsed}")
+
+    # --- FIX 4 regression: a leaf with BOTH an unrecognized provider token
+    # AND a model segment must never be guess-split into a wrong-but-
+    # plausible (scenario, provider) -- it must come back None so the caller
+    # skips it with a warning instead of silently pulling foreign data. ---
+    parsed = parse_run_dir_name("s5__mockprov__mockmodel__r1")
+    if parsed is not None:
+        raise AssertionError(
+            f"parse_run_dir_name must not guess-split an unrecognized "
+            f"provider+model leaf, got {parsed}"
+        )
+
+    # --- FIX 3 regression: per-group pass@1 and the pooled OVERALL rollup.
+    # compute_group_stats() takes in-memory RunRecord lists directly (no file
+    # IO needed), and compute_overall_rollup() takes the resulting stats
+    # dicts. Build two groups with DIFFERENT n so the pooled aggregate and
+    # the naive mean-of-per-group-pass@1 provably differ. ---
+    def _mk_rec(all_passed):
+        r = RunRecord()
+        r.check = {"allPassed": all_passed, "checkpointFraction": 1.0 if all_passed else 0.0}
+        r.result = {"terminalStatus": "success" if all_passed else "failed"}
+        r.input_tokens = r.output_tokens = r.cached_tokens = 0
+        return r
+
+    # Group A: 10 repeats, 8 successes -> pass@1 = 0.8
+    group_a = [_mk_rec(True)] * 8 + [_mk_rec(False)] * 2
+    stats_a = compute_group_stats(("scenA", "anthropic", ""), group_a)
+    if stats_a["n"] != 10 or stats_a["successes"] != 8:
+        raise AssertionError(f"group A n/successes wrong: {stats_a}")
+    _assert_close(stats_a["pass_at_1"], 0.8, 1e-12, "group A pass@1 = successes/n")
+
+    # Group B: 2 repeats, 0 successes -> pass@1 = 0.0
+    group_b = [_mk_rec(False)] * 2
+    stats_b = compute_group_stats(("scenB", "anthropic", ""), group_b)
+    if stats_b["n"] != 2 or stats_b["successes"] != 0:
+        raise AssertionError(f"group B n/successes wrong: {stats_b}")
+    _assert_close(stats_b["pass_at_1"], 0.0, 1e-12, "group B pass@1 = successes/n")
+
+    # Pooled OVERALL rollup: sum(successes)/sum(n) = (8+0)/(10+2) = 8/12 =
+    # 0.6666666666666666 -- NOT the naive mean of per-group pass@1, which
+    # would be (0.8 + 0.0) / 2 = 0.4. The two must differ given unequal n,
+    # proving the rollup is pooled and not a mean-of-means.
+    overall = compute_overall_rollup([stats_a, stats_b])
+    if overall["total_n"] != 12 or overall["total_successes"] != 8:
+        raise AssertionError(f"overall total_n/total_successes wrong: {overall}")
+    _assert_close(overall["pass_at_1"], 8.0 / 12.0, 1e-12,
+                  "pooled OVERALL pass@1 = sum(successes)/sum(n)")
+    naive_mean = (stats_a["pass_at_1"] + stats_b["pass_at_1"]) / 2.0
+    if abs(overall["pass_at_1"] - naive_mean) < 1e-9:
+        raise AssertionError(
+            "pooled OVERALL rollup must differ from the naive mean-of-"
+            "per-group-pass@1 when group sizes differ (test is degenerate)"
+        )
 
     print("eval_report selftest: ALL PASS")
     return 0
