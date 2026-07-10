@@ -591,6 +591,11 @@ final class ChatViewModel: ObservableObject {
         "agentChat.modelId.\(p.rawValue)"
     }
 
+    /// Review-round P2 (E1): the loaded scene's path, handed in by
+    /// RenderViewModel at sceneOpened -- the trajectory<->document
+    /// correlator for the session record.  Cleared at scene close.
+    private var currentScenePath: String = ""
+
     /// The per-session trajectory directory (evals/runs/gui, relative to
     /// the process working directory).  Created lazily by the file sink.
     private var trajectoryDirectory: String {
@@ -607,7 +612,7 @@ final class ChatViewModel: ObservableObject {
         // headVersion stays best-effort -1 on the GUI (no cheap accessor at
         // attach time; the headless runner populates it precisely).
         chatBridge.startTrajectory(directory: trajectoryDirectory,
-                                   scenePath: loadedFilePath ?? "",
+                                   scenePath: currentScenePath,
                                    headVersion: -1,
                                    enabled: recordTrajectories)
     }
@@ -707,10 +712,11 @@ final class ChatViewModel: ObservableObject {
     /// skills index ONCE by driving the read_skill verb through the
     /// live dispatcher (per the SetSkillIndex contract — the loop
     /// stays sans-IO; the driver does the fetch).
-    func sceneOpened(viewportBridge vb: RISEViewportBridge) {
+    func sceneOpened(viewportBridge vb: RISEViewportBridge, scenePath: String = "") {
         cancelTurn()
         sceneGeneration += 1
         viewportBridge = vb
+        currentScenePath = scenePath
         chatBridge.reset()
         transcript = []
         clearErrorAffordances()
@@ -756,6 +762,7 @@ final class ChatViewModel: ObservableObject {
         stopExternalHosting()
         sceneGeneration += 1
         viewportBridge = nil
+        currentScenePath = ""
         chatBridge.reset()
         // Eval-harness E1: reset() closed the session ("reset" summary to
         // the current file); detach so no file lingers between scenes (the

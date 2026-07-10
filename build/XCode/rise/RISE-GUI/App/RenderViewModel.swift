@@ -832,7 +832,7 @@ final class RenderViewModel: ObservableObject {
                     // about the previous scene) and fetches the skills
                     // index once via the live dispatcher's read_skill.
                     if let vb = vb {
-                        self.chat.sceneOpened(viewportBridge: vb)
+                        self.chat.sceneOpened(viewportBridge: vb, scenePath: self.loadedFilePath ?? "")
                     }
                 } else {
                     self.renderState = .error("Failed to load scene")
