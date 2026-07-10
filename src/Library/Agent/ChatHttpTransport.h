@@ -85,6 +85,14 @@ namespace RISE
 			virtual ChatHttpResponse Post( const ChatHttpRequest& req ) = 0;
 		};
 
+		//! The exact substring the Linux/Android "unsupported" transport stub
+		//! (TlsTransportUnsupported.cpp) embeds in its Post() error.  Hoisted
+		//! here so the CLI probe (commandconsole.cpp) and the unit test that
+		//! distinguish the stub from a real platform transport match on ONE
+		//! shared literal instead of three copies that could drift apart.
+		//! namespace-scope constexpr => internal linkage, no ODR concern.
+		constexpr const char* kUnsupportedTransportSentinel = "unsupported on this platform";
+
 		//! Construct the platform's system transport (macOS NSURLSession /
 		//! Windows WinHTTP / Linux honest-unsupported stub).  NEVER returns
 		//! null -- on Linux it returns the stub whose Post() honestly errors,

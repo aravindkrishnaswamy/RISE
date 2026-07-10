@@ -187,17 +187,21 @@ static void TestFactory()
 		req.body = "{}";
 		ChatHttpResponse r = t->Post( req );
 		Check( r.status <= 0, "real transport: loopback:0 POST does not reach an HTTP status" );
-		Check( r.error.find( "unsupported on this platform" ) == std::string::npos,
+		Check( r.error.find( kUnsupportedTransportSentinel ) == std::string::npos,
 		       "real transport: the error is a genuine transport failure, not the unsupported stub" );
-		Check( r.error.find( "127.0.0.1" ) != std::string::npos || !r.error.empty(),
-		       "real transport: a non-empty header-free error category is returned" );
+		// The intended property (not the tautology it replaced): a REAL platform
+		// transport, handed an unreachable endpoint, returns a status<=0 transport
+		// failure carrying a NON-EMPTY header-free error category.  (Header-freeness
+		// itself -- that the api key never appears -- is proven by T5's red-prove.)
+		Check( !r.error.empty(),
+		       "real transport: an unreachable endpoint yields a non-empty transport error" );
 	}
 #else
 	// Linux/other: the factory returns the honest "unsupported" stub.
 	if( t ) {
 		ChatHttpRequest req; req.url = "https://example.com"; req.body = "{}";
 		ChatHttpResponse r = t->Post( req );
-		Check( r.status == 0 && r.error.find( "unsupported on this platform" ) != std::string::npos,
+		Check( r.status == 0 && r.error.find( kUnsupportedTransportSentinel ) != std::string::npos,
 		       "Linux stub: Post honestly reports unsupported" );
 	}
 #endif
@@ -501,6 +505,54 @@ static void TestRunEvalMatrix()
 	}
 }
 
+//----------------------------------------------------------------------
+// T8: RunEvalMatrix REFUSES a duplicate scenario id (the id-collision guard
+//     -- the belt to the CLI's path-canonical dedup suspenders).  Two loaded
+//     scenarios sharing an id would collide into ONE per-run subdir, silently
+//     concatenating trajectory.jsonl (append) and overwriting result.jsonl
+//     (truncate).  This must fail loudly BEFORE any run executes.
+//----------------------------------------------------------------------
+static void TestRunEvalMatrixDuplicateId()
+{
+	std::printf( "T8: RunEvalMatrix refuses a duplicate scenario id...\n" );
+
+	AgentEvalScenario s;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", s, err ), "param_edit loads" );
+
+	// Two DISTINCT scenario objects that declare the SAME id (the case the
+	// CLI's path-dedup can't catch -- two different files, one id).
+	std::vector<AgentEvalScenario> scenarios;
+	scenarios.push_back( s );
+	scenarios.push_back( s );
+	Check( !scenarios[0].id.empty() && scenarios[0].id == scenarios[1].id,
+	       "precondition: both scenarios carry the same non-empty id" );
+
+	AgentEvalRunConfig cfg;
+	AgentEvalProviderConfig p; p.provider = "anthropic"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+	cfg.providers.push_back( p );
+	cfg.repeats = 1;
+	cfg.runDir = ScratchRunDir( "t8_dup_id" );
+
+	const std::string kFakeKey = "sk-ant-DUPID-FAKEKEY-DO-NOT-LEAK";
+	MockTransport mock;   // must NEVER be called -- the refusal precedes the run loop
+
+	AgentEvalMatrixOptions mo;
+	mo.transport = &mock;
+	mo.envLookup = [&]( const std::string& name ) -> const char* {
+		return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+	};
+
+	AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+	Check( !mr.errorMessage.empty(), "the matrix REFUSED loudly (non-empty errorMessage)" );
+	Check( mr.errorMessage.find( scenarios[0].id ) != std::string::npos,
+	       "the refusal names the duplicated scenario id" );
+	Check( mr.runsExecuted == 0 && mr.runsSkipped == 0 &&
+	       mr.providersUsed == 0 && mr.providersSkipped == 0,
+	       "the refusal fired BEFORE the provider/run loop (all counts 0)" );
+	Check( mock.seenRequests.empty(), "the transport was NEVER called on a refused matrix" );
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalLiveTransportTest (Eval-harness slice E4: live headless runner) ===\n" );
@@ -512,6 +564,7 @@ int main()
 	TestKeyHygieneRedProve();
 	TestRunConfigLoad();
 	TestRunEvalMatrix();
+	TestRunEvalMatrixDuplicateId();
 
 	std::printf( "=== AgentEvalLiveTransportTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

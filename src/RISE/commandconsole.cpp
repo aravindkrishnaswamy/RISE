@@ -24,6 +24,7 @@
 #include <cstring>
 #include <fstream>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <vector>
 #include "../Library/RISE_API.h"
@@ -453,6 +454,27 @@ static int RunAgentEval( const char* runConfigPath )
 		std::sort( matched.begin(), matched.end() );   // deterministic order
 		for( std::size_t m = 0; m < matched.size(); ++m ) scenarioPaths.push_back( matched[m] );
 	}
+
+	// De-duplicate by CANONICAL path before loading: a run config can name the
+	// same scenario twice (e.g. a literal path PLUS a glob that also matches
+	// it).  Loading it twice would land two runs in the same per-run subdir --
+	// trajectory.jsonl (append) gets two concatenated sessions and result.jsonl
+	// (truncate) silently overwrites.  Canonicalize (resolving `.`/`..`/symlinks;
+	// falling back to weakly_canonical then the raw path when a file can't be
+	// resolved) and keep only the FIRST occurrence, preserving order.
+	{
+		std::vector<std::string> deduped;
+		std::set<std::string>    seen;
+		for( std::size_t i = 0; i < scenarioPaths.size(); ++i ) {
+			std::error_code cec;
+			std::filesystem::path canon = std::filesystem::canonical( scenarioPaths[i], cec );
+			if( cec ) { canon = std::filesystem::weakly_canonical( scenarioPaths[i], cec ); }
+			const std::string key = cec ? scenarioPaths[i] : canon.string();
+			if( seen.insert( key ).second ) deduped.push_back( scenarioPaths[i] );
+		}
+		scenarioPaths.swap( deduped );
+	}
+
 	if( scenarioPaths.empty() ) {
 		std::cerr << "rise --agent-eval: no scenario files matched the run config's \"scenarios\".\n";
 		return 1;
@@ -478,7 +500,7 @@ static int RunAgentEval( const char* runConfigPath )
 		ChatHttpRequest probe;
 		probe.url = "https://127.0.0.1:0/__rise_agent_eval_probe__";
 		const ChatHttpResponse pr = transport->Post( probe );
-		if( pr.error.find( "unsupported on this platform" ) != std::string::npos ) {
+		if( pr.error.find( kUnsupportedTransportSentinel ) != std::string::npos ) {
 			std::cerr << "rise --agent-eval: " << pr.error << "\n"
 			          << "  (the live runner needs a platform-TLS transport; this build has none.)\n";
 			return 1;
@@ -498,6 +520,11 @@ static int RunAgentEval( const char* runConfigPath )
 	mo.log = []( const std::string& m ) { std::cerr << m << "\n"; };
 
 	const AgentEvalMatrixResult mr = RunEvalMatrix( config, scenarios, mo );
+
+	if( !mr.errorMessage.empty() ) {
+		std::cerr << "rise --agent-eval: " << mr.errorMessage << "\n";
+		return 1;
+	}
 
 	std::cerr << "rise --agent-eval: done. providers used=" << mr.providersUsed
 	          << " skipped=" << mr.providersSkipped

@@ -113,6 +113,20 @@ namespace RISE
 						return Finish( out, t0 );
 					}
 
+					// KEY HYGIENE: refuse ALL redirects.  A followed 3xx would
+					// replay the auth header (carrying the api key) to the redirect
+					// target -- possibly a different host.  Our providers answer
+					// 200/4xx directly, so a 3xx is returned to the codec as-is.
+					// Fail closed: if the policy can't be set we abort rather than
+					// send a request that might auto-follow and leak the key.
+					DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+					if( !WinHttpSetOption( hRequest, WINHTTP_OPTION_REDIRECT_POLICY,
+						&redirectPolicy, sizeof( redirectPolicy ) ) ) {
+						out.error = WinErr( "WinHttpSetOption" );
+						CloseAll( hRequest, hConnect, hSession );
+						return Finish( out, t0 );
+					}
+
 					// Build the request headers as one CRLF-joined block.
 					std::wstring headers;
 					for( std::size_t i = 0; i < req.headers.size(); ++i ) {
@@ -147,6 +161,8 @@ namespace RISE
 						WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
 						WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &scSize, WINHTTP_NO_HEADER_INDEX ) ) {
 						out.status = static_cast<long>( statusCode );
+					} else {
+						out.error = WinErr( "WinHttpQueryHeaders" );
 					}
 
 					// Drain the body.
@@ -187,6 +203,12 @@ namespace RISE
 					out.elapsedMs = static_cast<long>(
 						std::chrono::duration_cast<std::chrono::milliseconds>(
 							std::chrono::steady_clock::now() - t0 ).count() );
+					// A genuine transport error (a failed status query or a
+					// read-drain error) means the round-trip FAILED even if a
+					// partial status/body arrived -- force status 0 so the invariant
+					// below demotes it to a header-free failure with an empty body,
+					// rather than letting a truncated response masquerade as clean.
+					if( !out.error.empty() ) out.status = 0;
 					if( out.status == 0 && out.error.empty() )
 						out.error = "no HTTP response received";
 					// A transport failure never carries a body; a success never

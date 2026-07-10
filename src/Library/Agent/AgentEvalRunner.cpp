@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <system_error>
 
@@ -861,6 +862,29 @@ namespace RISE
 				return result;
 			}
 
+			// REFUSE LOUDLY on a duplicate scenario `id`.  Two scenarios with
+			// the same id resolve to the SAME per-run subdir leaf, colliding
+			// their trajectory.jsonl (append -> two concatenated sessions) and
+			// result.jsonl (truncate -> silent overwrite).  The CLI path also
+			// canonical-dedups scenario PATHS, but two DIFFERENT files can
+			// still declare the same id -- which path-dedup can't catch, so
+			// this id-level guard is the belt to that suspenders.  Caught here
+			// before any run executes; all counts stay 0.
+			{
+				std::set<std::string> seenIds;
+				for( std::size_t si = 0; si < scenarios.size(); ++si ) {
+					if( !seenIds.insert( scenarios[si].id ).second ) {
+						result.errorMessage =
+							"RunEvalMatrix: duplicate scenario id '" + scenarios[si].id +
+							"' -- two loaded scenarios share this id and would collide into the "
+							"same per-run output subdir (refusing to run to avoid silent "
+							"trajectory-append / result-overwrite corruption)";
+						logLine( result.errorMessage );
+						return result;
+					}
+				}
+			}
+
 			const int reps = config.repeats > 0 ? config.repeats : 0;
 
 			for( std::size_t pj = 0; pj < config.providers.size(); ++pj ) {
@@ -882,6 +906,7 @@ namespace RISE
 				ChatProvider providerEnum;
 				if( !ParseReplayProviderName( prov.provider, providerEnum ) ) {
 					++result.providersSkipped;
+					result.runsSkipped += static_cast<int>( scenarios.size() ) * reps;
 					logLine( "RunEvalMatrix: SKIP provider '" + prov.provider + "' -- unknown provider name" );
 					continue;
 				}

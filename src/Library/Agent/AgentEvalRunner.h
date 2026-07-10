@@ -432,6 +432,13 @@ namespace RISE
 			int runsSkipped    = 0;   //!< runs skipped because a provider's key env var was unset
 			int providersUsed  = 0;   //!< providers whose key resolved (non-empty)
 			int providersSkipped = 0; //!< providers skipped for a missing key
+
+			//! Non-empty iff the matrix REFUSED to run (a fatal config error
+			//! caught before any run executed) -- currently a duplicate
+			//! scenario `id` in the pre-loaded set, which would collide two
+			//! runs into the same per-run subdir (silent trajectory-append /
+			//! result-overwrite corruption).  When set, all counts are 0.
+			std::string errorMessage;
 		};
 
 		//! Run the full scenarios x providers x repeats matrix through

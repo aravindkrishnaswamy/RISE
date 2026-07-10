@@ -41,9 +41,11 @@ namespace RISE
 					ChatHttpResponse out;
 					out.status = 0;
 					out.body.clear();
+					// The sentinel substring lives in ChatHttpTransport.h so the
+					// CLI probe + unit test match ONE shared literal (not a copy).
 					out.error =
-						"live HTTP transport is unsupported on this platform "
-						"(v1 live runs are macOS/Windows only) -- use the replay "
+						std::string( "live HTTP transport is " ) + kUnsupportedTransportSentinel +
+						" (v1 live runs are macOS/Windows only) -- use the replay "
 						"backend (rise eval replay) for headless evaluation here";
 					out.elapsedMs = 0;
 					return out;
