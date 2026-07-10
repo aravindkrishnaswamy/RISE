@@ -277,6 +277,18 @@ namespace RISE
 			std::string trajectoryPath;   //!< "" iff terminalStatus == "load_error" (no sink was ever attached)
 			std::string resultPath;       //!< the <id>.result.jsonl this run wrote ("" iff runDir itself was invalid)
 			std::unique_ptr<AgentRpcDispatcher> dispatcher;
+
+			//! Eval-harness slice E3 (the "untouched" / PASS_TO_PASS
+			//! checkpoint seam): the head's canonical `.RISEscene` text AS
+			//! LOADED, captured BEFORE the first turn ran -- i.e.
+			//! session->ReadDocument() taken immediately after the scene
+			//! loaded and before any AddUserMessage/tool dispatch.  "" iff
+			//! terminalStatus == "load_error" (no session was ever
+			//! constructed to read from).  A checker compares a named
+			//! chunk's serialized bytes in THIS text against the same
+			//! chunk in the POST-run dispatcher->Session()->ReadDocument()
+			//! to prove an unrelated chunk was never touched.
+			std::string initialDocument;
 		};
 
 		//! Execute one scenario end-to-end through the REAL AgentChatLoop +
@@ -286,6 +298,61 @@ namespace RISE
 		//! full drive-loop description.  Never throws.
 		AgentEvalRunHandle RunScenario( const AgentEvalScenario& scenario,
 		                                const AgentEvalRunOptions& options );
+
+		//----------------------------------------------------------------
+		// 4. The checker engine (Eval-harness slice E3).
+		//----------------------------------------------------------------
+
+		//! One checkpoint's outcome -- an entry of AgentEvalCheckResult.
+		struct AgentEvalCheckpointResult
+		{
+			std::string kind;      //!< the checkpoint's "kind" field verbatim ("<malformed>" if the checkpoint itself was not a well-shaped object)
+			bool        passed = false;
+			double      weight = 1.0;   //!< the checkpoint's "weight" field (default 1.0; clamped to >= 0)
+			std::string detail;    //!< a human-readable explanation -- ALWAYS filled, pass or fail (never silent)
+		};
+
+		//! The result of checking one scenario's checkpoints[] against a
+		//! completed (or failed) AgentEvalRunHandle.  Partial credit:
+		//! `checkpointFraction` is the WEIGHTED pass fraction (sum of
+		//! passing checkpoints' weights / sum of all checkpoints'
+		//! weights); 1.0 (vacuous pass) when the scenario carries no
+		//! checkpoints at all.  `allPassed` is true iff every checkpoint
+		//! passed (equivalently: no failed entries in `checkpoints`,
+		//! independent of weight -- a single failed checkpoint, however
+		//! small its weight, means NOT allPassed).
+		struct AgentEvalCheckResult
+		{
+			std::string scenarioId;
+			std::vector<AgentEvalCheckpointResult> checkpoints;
+			double checkpointFraction = 1.0;
+			bool   allPassed = true;
+		};
+
+		//! Interpret and run `scenario.checkpoints` (see the file header's
+		//! CHECKPOINT KINDS list) against `handle` -- the seam being the
+		//! handle's STILL-ALIVE dispatcher/session (for document/
+		//! untouched/render/objectmap/diagnostics checkpoints, which
+		//! interrogate the post-run scene directly through AgentSession,
+		//! bypassing the JSON-RPC autonomy gate -- the checker is a
+		//! privileged verifier, not a further agent turn) and the emitted
+		//! trajectory file at handle.trajectoryPath (for the "trajectory"
+		//! checkpoint kind's structural asserts).  A checkpoint whose
+		//! shape is malformed, whose kind is unrecognized, or whose
+		//! verb/render call fails is a FAILED checkpoint carrying a
+		//! `detail` message -- CheckScenario NEVER throws and NEVER
+		//! crashes on a malformed checkpoint or a null/incomplete handle
+		//! (e.g. a "load_error" run with a null dispatcher).  As a side
+		//! effect, appends one JSON line (scenarioId, checkpointFraction,
+		//! allPassed, checkpoints[]) to <runDir>/results.jsonl, where
+		//! runDir is recovered from handle.trajectoryPath's (or, failing
+		//! that, handle.resultPath's) parent directory -- a no-op when
+		//! neither path is available (nothing was ever written for this
+		//! run).  Multiple scenarios' results in the same runDir share
+		//! one results.jsonl (append-only, like the trajectory's own
+		//! JSONL contract).
+		AgentEvalCheckResult CheckScenario( const AgentEvalRunHandle& handle, const AgentEvalScenario& scenario );
+
 	}
 }
 

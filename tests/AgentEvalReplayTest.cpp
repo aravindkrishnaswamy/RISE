@@ -149,10 +149,20 @@ static void TestLoadSeedScenarios()
 		       "param_edit budgets parsed" );
 		Check( s.replayFixturePath == "evals/fixtures/param_edit.fixture.jsonl",
 		       "param_edit replay.fixture path captured" );
-		Check( s.checkpoints.isArray() && s.checkpoints.size() == 1,
-		       "param_edit checkpoints carried opaquely (1 entry)" );
+		// Eval-harness slice E3: param_edit now carries THREE real
+		// checkpoints (document param_equals, an untouched guard on
+		// pnt_emit, a trajectory maxToolCalls bound) -- E2's own opaque-
+		// passthrough contract (LoadEvalScenario does not interpret kinds)
+		// still holds; only the E3 checker (AgentEvalCheckTest.cpp) gives
+		// them meaning.
+		Check( s.checkpoints.isArray() && s.checkpoints.size() == 3,
+		       "param_edit checkpoints carried opaquely (3 entries, wired by E3)" );
 		Check( s.checkpoints.at( 0 ).get( "kind" ).asString() == "document",
 		       "param_edit checkpoint[0].kind readable (opaque passthrough, not interpreted)" );
+		Check( s.checkpoints.at( 1 ).get( "kind" ).asString() == "untouched",
+		       "param_edit checkpoint[1].kind is the untouched PASS_TO_PASS guard" );
+		Check( s.checkpoints.at( 2 ).get( "kind" ).asString() == "trajectory",
+		       "param_edit checkpoint[2].kind is the trajectory bound" );
 	}
 	{
 		AgentEvalScenario s;
@@ -161,6 +171,13 @@ static void TestLoadSeedScenarios()
 		       "two_tool_observe.json loads (" + err + ")" );
 		Check( s.id == "two_tool_observe", "two_tool_observe id" );
 		Check( s.budgets.maxToolCalls == 5, "two_tool_observe budgets parsed" );
+		// Eval-harness slice E3: a render band + a trajectory bound.
+		Check( s.checkpoints.isArray() && s.checkpoints.size() == 2,
+		       "two_tool_observe checkpoints carried opaquely (2 entries, wired by E3)" );
+		Check( s.checkpoints.at( 0 ).get( "kind" ).asString() == "render",
+		       "two_tool_observe checkpoint[0].kind is the render band" );
+		Check( s.checkpoints.at( 1 ).get( "kind" ).asString() == "trajectory",
+		       "two_tool_observe checkpoint[1].kind is the trajectory bound" );
 	}
 	{
 		AgentEvalScenario s;
@@ -170,8 +187,14 @@ static void TestLoadSeedScenarios()
 		Check( s.id == "error_path", "error_path id" );
 		Check( s.budgets.maxToolCalls == -1 && s.budgets.maxLlmCalls == -1 && s.budgets.maxWallMs == -1,
 		       "error_path has no budgets object -> defaults are unlimited (-1)" );
-		Check( s.checkpoints.isArray() && s.checkpoints.size() == 0,
-		       "error_path has no checkpoints -> empty array default" );
+		// Eval-harness slice E3: a trajectory terminalStatus bound + a
+		// diagnostics clean check (error_path never edits the scene).
+		Check( s.checkpoints.isArray() && s.checkpoints.size() == 2,
+		       "error_path checkpoints carried opaquely (2 entries, wired by E3)" );
+		Check( s.checkpoints.at( 0 ).get( "kind" ).asString() == "trajectory",
+		       "error_path checkpoint[0].kind is the trajectory bound" );
+		Check( s.checkpoints.at( 1 ).get( "kind" ).asString() == "diagnostics",
+		       "error_path checkpoint[1].kind is the diagnostics check" );
 	}
 }
 

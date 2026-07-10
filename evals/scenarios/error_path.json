@@ -10,5 +10,9 @@
   ],
   "replay": {
     "fixture": "evals/fixtures/error_path.fixture.jsonl"
-  }
+  },
+  "checkpoints": [
+    { "kind": "trajectory", "terminalStatus": "provider_error" },
+    { "kind": "diagnostics", "expect": "clean" }
+  ]
 }

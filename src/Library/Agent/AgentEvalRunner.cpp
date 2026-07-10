@@ -14,6 +14,8 @@
 
 #include "AgentSession.h"
 #include "AgentRpc.h"
+#include "AgentDiagnostic.h"
+#include "../Cst/Cst.h"   // Eval-harness slice E3: the "document"/"untouched" checkpoint kinds walk the CST directly
 
 #include <cctype>
 #include <cstdio>
@@ -466,6 +468,13 @@ namespace RISE
 			handle.result.headVersionStart = headVersionStart;
 			handle.result.headVersionFinal = headVersionStart;
 
+			// Eval-harness slice E3 (the "untouched" checkpoint seam): capture
+			// the head's canonical text AS LOADED, before the first turn runs
+			// -- the ONLY point at which "the scene before the agent touched
+			// it" is observable (RunScenario is about to hand `session` off
+			// to the dispatcher, and every subsequent turn may mutate it).
+			handle.initialDocument = session->ReadDocument();
+
 			std::unique_ptr<AgentRpcDispatcher> dispatcher(
 				new AgentRpcDispatcher( std::move( session ), AutonomyForScenarioString( scenario.autonomy ) ) );
 
@@ -586,5 +595,598 @@ namespace RISE
 			handle.dispatcher = std::move( dispatcher );
 			return handle;
 		}
+
+
+			//====================================================================
+			// 4. The checker engine (Eval-harness slice E3).
+			//====================================================================
+			namespace
+			{
+				using RISE::Cst::Document;
+				using RISE::Cst::NodeRef;
+				using RISE::Cst::NodeKind;
+
+				//! The pass/fail + explanation a single checkpoint-kind handler
+				//! returns; CheckOneCheckpoint folds this into an
+				//! AgentEvalCheckpointResult (adding kind/weight).
+				struct CheckOutcome { bool passed; std::string detail; };
+
+				//----------------------------------------------------------
+				// CST helpers.  AgentSession.cpp has near-identical local
+				// helpers (SerializeNode et al.) but they are `static` to
+				// that TU -- duplicated here rather than exported, since
+				// they are each ~5 lines and exporting them would widen
+				// Cst.h's surface for a checker-only need.
+				//----------------------------------------------------------
+
+				//! Serialize a green node's bytes (leaves carry text; internal
+				//! nodes are the concatenation of their kids) -- the same
+				//! lossless-CST contract used throughout src/Library/Cst.
+				void CheckerSerializeNode( const NodeRef& n, std::string& out )
+				{
+					if( !n ) return;
+					if( n->kids.empty() ) out += n->text;
+					else for( const auto& k : n->kids ) CheckerSerializeNode( k, out );
+				}
+
+				std::string CheckerNodeBytes( const NodeRef& n )
+				{
+					std::string s;
+					CheckerSerializeNode( n, s );
+					return s;
+				}
+
+				//! A chunk's bare `name` param value ("" if unnamed / not found).
+				std::string CheckerChunkName( const NodeRef& chunk )
+				{
+					if( !chunk ) return std::string();
+					for( const auto& kid : chunk->kids ) {
+						if( kid->kind != NodeKind::Param ) continue;
+						std::string pname;
+						std::vector<std::string> values;
+						for( const auto& tk : kid->kids ) {
+							if( tk->kind != NodeKind::Token ) continue;
+							if( tk->role == "pname" ) pname = tk->text;
+							else if( tk->role == "pvalue" ) values.push_back( tk->text );
+						}
+						if( pname == "name" && !values.empty() ) return values[0];
+					}
+					return std::string();
+				}
+
+				//! A chunk's `paramName` value, space-joined across every
+				//! pvalue token (e.g. a vec3 "0.9 0.1 0.1").  Returns false
+				//! when the chunk carries no such param at all.
+				bool CheckerChunkParamValue( const NodeRef& chunk, const std::string& paramName, std::string& outValue )
+				{
+					if( !chunk ) return false;
+					for( const auto& kid : chunk->kids ) {
+						if( kid->kind != NodeKind::Param ) continue;
+						std::string pname;
+						std::vector<std::string> values;
+						for( const auto& tk : kid->kids ) {
+							if( tk->kind != NodeKind::Token ) continue;
+							if( tk->role == "pname" ) pname = tk->text;
+							else if( tk->role == "pvalue" ) values.push_back( tk->text );
+						}
+						if( pname != paramName ) continue;
+						std::string joined;
+						for( std::size_t i = 0; i < values.size(); ++i ) { if( i ) joined += ' '; joined += values[i]; }
+						outValue = joined;
+						return true;
+					}
+					return false;
+				}
+
+				//! Find a top-level chunk by optional kind (exact keyword
+				//! match; "" = no narrowing) + bare name.  Returns 0 (not
+				//! found), 1 (found -- fills outChunk), or -1 (AMBIGUOUS:
+				//! more than one chunk matches -- a caller must refuse rather
+				//! than guess which one the scenario author meant).
+				int CheckerFindChunk( const Document& doc, const std::string& kindOrEmpty, const std::string& name,
+				                      NodeRef& outChunk )
+				{
+					const int n = RISE::Cst::DocItemCount( doc );
+					int matches = 0;
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( doc, i );
+						if( !id ) continue;
+						NodeRef item = RISE::Cst::DocResolveNodeId( doc, id );
+						if( !item || item->kind != NodeKind::Chunk ) continue;
+						if( !kindOrEmpty.empty() && item->role != kindOrEmpty ) continue;
+						if( CheckerChunkName( item ) != name ) continue;
+						++matches;
+						outChunk = item;
+					}
+					if( matches == 0 ) return 0;
+					if( matches > 1 ) return -1;
+					return 1;
+				}
+
+				//! The OPTIONAL chunk-kind NARROWING field of a document/untouched
+				//! checkpoint (exact chunk-keyword match; "" = no narrowing).  It is
+				//! deliberately NOT named "kind": that name is already the top-level
+				//! checkpoint DISCRIMINATOR ("document"/"untouched"/...), and the JSON
+				//! codec is last-wins on duplicate keys, so a checkpoint carrying both
+				//! a "kind" discriminator and a "kind" narrowing would read the
+				//! narrowing value as the discriminator (dispatch then fails with
+				//! "unknown checkpoint kind").  The narrowing field is "chunkKind".
+				std::string OptKind( const JsonValue& cp )
+				{
+					return ( cp.has( "chunkKind" ) && cp.get( "chunkKind" ).isString() ) ? cp.get( "chunkKind" ).asString() : std::string();
+				}
+
+				//----------------------------------------------------------
+				// Per-checkpoint-kind handlers.
+				//----------------------------------------------------------
+
+				//! "document": {op:"param_equals",target,param,value,chunkKind?} |
+				//! {op:"chunk_exists",chunkKind?,name} | {op:"chunk_absent",chunkKind?,name}
+				//! -- asserted against the POST-run document
+				//! (session->ReadDocument(), reparsed via ParseToCst -- the
+				//! same idiom AgentChunkCrudTest/CstFirstSliceTest use to
+				//! inspect a document's chunks after an edit).
+				CheckOutcome CheckDocumentKind( const JsonValue& cp, AgentSession* session )
+				{
+					if( !session ) return { false, "document checkpoint: no live session (run did not complete)" };
+					if( !cp.has( "op" ) || !cp.get( "op" ).isString() )
+						return { false, "document checkpoint missing string field \"op\"" };
+					const std::string op = cp.get( "op" ).asString();
+					const Document doc = RISE::Cst::ParseToCst( session->ReadDocument() );
+
+					if( op == "param_equals" ) {
+						if( !cp.has( "target" ) || !cp.get( "target" ).isString() )
+							return { false, "param_equals missing string \"target\"" };
+						if( !cp.has( "param" ) || !cp.get( "param" ).isString() )
+							return { false, "param_equals missing string \"param\"" };
+						if( !cp.has( "value" ) || !cp.get( "value" ).isString() )
+							return { false, "param_equals missing string \"value\"" };
+						const std::string target = cp.get( "target" ).asString();
+						const std::string param  = cp.get( "param" ).asString();
+						const std::string expected = cp.get( "value" ).asString();
+						const std::string kind = OptKind( cp );
+
+						NodeRef chunk;
+						const int found = CheckerFindChunk( doc, kind, target, chunk );
+						if( found == 0 )
+							return { false, "param_equals: no chunk named '" + target + "' found" +
+								( kind.empty() ? std::string() : ( " (kind '" + kind + "')" ) ) };
+						if( found < 0 )
+							return { false, "param_equals: AMBIGUOUS -- more than one chunk named '" + target +
+								"' -- narrow with \"kind\"" };
+						std::string actual;
+						if( !CheckerChunkParamValue( chunk, param, actual ) )
+							return { false, "param_equals: chunk '" + target + "' has no param '" + param + "'" };
+						if( actual != expected )
+							return { false, "param_equals: '" + target + "." + param + "' == '" + actual +
+								"', expected '" + expected + "'" };
+						return { true, "param_equals: '" + target + "." + param + "' == '" + expected + "'" };
+					}
+
+					if( op == "chunk_exists" || op == "chunk_absent" ) {
+						if( !cp.has( "name" ) || !cp.get( "name" ).isString() )
+							return { false, op + " missing string \"name\"" };
+						const std::string name = cp.get( "name" ).asString();
+						const std::string kind = OptKind( cp );
+						NodeRef chunk;
+						const int found = CheckerFindChunk( doc, kind, name, chunk );
+						if( found < 0 )
+							return { false, op + ": AMBIGUOUS -- more than one chunk named '" + name +
+								"' -- narrow with \"kind\"" };
+						const bool exists = ( found == 1 );
+						if( op == "chunk_exists" )
+							return { exists, exists ? ( "chunk_exists: '" + name + "' found" )
+							                          : ( "chunk_exists: '" + name + "' NOT found" ) };
+						return { !exists, !exists ? ( "chunk_absent: '" + name + "' correctly absent" )
+						                            : ( "chunk_absent: '" + name + "' unexpectedly PRESENT" ) };
+					}
+
+					return { false, "document checkpoint: unknown op '" + op + "'" };
+				}
+
+				//! "untouched": {chunks:[{chunkKind?,name},...]} -- the PASS_TO_PASS
+				//! guard: every listed chunk must be byte-identical in
+				//! handle.initialDocument (the scene AS LOADED, before the
+				//! agent's first turn) vs. the POST-run document.
+				CheckOutcome CheckUntouchedKind( const JsonValue& cp, const AgentEvalRunHandle& handle )
+				{
+					if( !handle.dispatcher || !handle.dispatcher->Session() )
+						return { false, "untouched checkpoint: no live session (run did not complete: " +
+							handle.result.terminalStatus + ")" };
+					if( !cp.has( "chunks" ) || !cp.get( "chunks" ).isArray() || cp.get( "chunks" ).size() == 0 )
+						return { false, "untouched checkpoint missing non-empty array field \"chunks\"" };
+
+					const Document initialDoc = RISE::Cst::ParseToCst( handle.initialDocument );
+					const Document finalDoc = RISE::Cst::ParseToCst( handle.dispatcher->Session()->ReadDocument() );
+
+					const JsonValue& chunksArr = cp.get( "chunks" );
+					std::vector<std::string> problems;
+					for( std::size_t i = 0; i < chunksArr.size(); ++i ) {
+						const JsonValue& c = chunksArr.at( i );
+						if( !c.isObject() || !c.has( "name" ) || !c.get( "name" ).isString() ) {
+							problems.push_back( "chunks[" + std::to_string( i ) + "] must be an object with a string \"name\"" );
+							continue;
+						}
+						const std::string name = c.get( "name" ).asString();
+						const std::string kind = OptKind( c );
+
+						NodeRef initChunk, finalChunk;
+						const int foundInit  = CheckerFindChunk( initialDoc, kind, name, initChunk );
+						const int foundFinal = CheckerFindChunk( finalDoc, kind, name, finalChunk );
+						if( foundInit != 1 ) { problems.push_back( "'" + name + "' not uniquely found in the INITIAL scene" ); continue; }
+						if( foundFinal != 1 ) { problems.push_back( "'" + name + "' not uniquely found in the FINAL scene" ); continue; }
+						if( CheckerNodeBytes( initChunk ) != CheckerNodeBytes( finalChunk ) )
+							problems.push_back( "'" + name + "' CHANGED (not byte-identical to the initial scene)" );
+					}
+					if( !problems.empty() ) {
+						std::string detail = "untouched violated: ";
+						for( std::size_t i = 0; i < problems.size(); ++i ) { if( i ) detail += "; "; detail += problems[i]; }
+						return { false, detail };
+					}
+					return { true, "all " + std::to_string( chunksArr.size() ) + " named chunk(s) byte-identical to the initial scene" };
+				}
+
+				//! "render": {width?,height?,seed?,meanLumaMin?/Max?,meanRMin?/Max?,
+				//! meanGMin?/Max?,meanBMin?/Max?} -- a FRESH render through the
+				//! live session (AgentSession::Render, bypassing the JSON-RPC
+				//! layer -- the checker is a privileged verifier), asserted
+				//! against generous [min,max] bands.  `seed` is accepted (never
+				//! rejected -- an author may want to note the seed a fixture
+				//! was authored against) but has NO EFFECT: AgentSession::Render
+				//! exposes no seed/RNG-pinning control (see AgentRenderParams --
+				//! samples/width/height/camera/pinned/quality/mode only), so
+				//! per the plan's tolerance-banded rule, bands MUST be wide
+				//! enough to absorb ordinary MC noise between runs, not narrow
+				//! enough to require a pinned seed.  NEVER an exact-pixel match.
+				CheckOutcome CheckRenderKind( const JsonValue& cp, AgentSession* session )
+				{
+					if( !session ) return { false, "render checkpoint: no live session (run did not complete)" };
+
+					AgentRenderParams rp;
+					const bool haveW = cp.has( "width" )  && cp.get( "width" ).isNumber();
+					const bool haveH = cp.has( "height" ) && cp.get( "height" ).isNumber();
+					if( haveW && haveH ) {
+						rp.width  = static_cast<unsigned int>( cp.get( "width" ).asNumber() );
+						rp.height = static_cast<unsigned int>( cp.get( "height" ).asNumber() );
+					} else if( haveW != haveH ) {
+						return { false, "render checkpoint: \"width\"/\"height\" must both be supplied together" };
+					}
+
+					const AgentRenderResult rr = session->Render( rp );
+					if( !rr.ok ) return { false, "render checkpoint: render failed: " + rr.message };
+
+					// Rec.709 linear luma weights (RISEPel is Rec709RGBPel post
+					// the 2026-05-24 colour-space migration) -- a single scalar
+					// band that absorbs per-channel MC noise better than
+					// checking each channel independently when the author only
+					// cares about overall brightness.
+					const double meanLuma = 0.2126 * rr.meanR + 0.7152 * rr.meanG + 0.0722 * rr.meanB;
+
+					std::vector<std::string> failures;
+					auto checkBand = [&]( const char* minKey, const char* maxKey, const char* label, double actual ) {
+						if( cp.has( minKey ) && cp.get( minKey ).isNumber() ) {
+							const double lo = cp.get( minKey ).asNumber();
+							if( actual < lo )
+								failures.push_back( std::string( label ) + "=" + std::to_string( actual ) + " < min " + std::to_string( lo ) );
+						}
+						if( cp.has( maxKey ) && cp.get( maxKey ).isNumber() ) {
+							const double hi = cp.get( maxKey ).asNumber();
+							if( actual > hi )
+								failures.push_back( std::string( label ) + "=" + std::to_string( actual ) + " > max " + std::to_string( hi ) );
+						}
+					};
+					checkBand( "meanLumaMin", "meanLumaMax", "meanLuma", meanLuma );
+					checkBand( "meanRMin", "meanRMax", "meanR", rr.meanR );
+					checkBand( "meanGMin", "meanGMax", "meanG", rr.meanG );
+					checkBand( "meanBMin", "meanBMax", "meanB", rr.meanB );
+
+					if( !failures.empty() ) {
+						std::string detail = "render band(s) violated: ";
+						for( std::size_t i = 0; i < failures.size(); ++i ) { if( i ) detail += "; "; detail += failures[i]; }
+						return { false, detail };
+					}
+					char buf[256];
+					std::snprintf( buf, sizeof( buf ), "render bands satisfied (meanR=%.4f meanG=%.4f meanB=%.4f meanLuma=%.4f)",
+						rr.meanR, rr.meanG, rr.meanB, meanLuma );
+					return { true, std::string( buf ) };
+				}
+
+				//! "objectmap": {legendContains?,pixelCountFor?,pixelCountMin?,
+				//! pixelCountMax?,queryAt?:{x,y,expectName}} -- legendContains/
+				//! pixelCountFor run ONE mode:"objectmap" render (only if
+				//! needed); queryAt runs AgentSession::QueryObjectAt (which does
+				//! its own internal objectmap render regardless).  At least one
+				//! of the three assertions must be present.
+				CheckOutcome CheckObjectmapKind( const JsonValue& cp, AgentSession* session )
+				{
+					if( !session ) return { false, "objectmap checkpoint: no live session (run did not complete)" };
+					if( !cp.has( "legendContains" ) && !cp.has( "pixelCountFor" ) && !cp.has( "queryAt" ) )
+						return { false, "objectmap checkpoint carries none of legendContains/pixelCountFor/queryAt" };
+
+					std::vector<std::string> failures;
+					const bool needsLegend = cp.has( "legendContains" ) || cp.has( "pixelCountFor" );
+					AgentRenderResult rr;
+					if( needsLegend ) {
+						AgentRenderParams rp;
+						rp.renderTarget = AgentRenderTarget::ObjectMap;
+						rr = session->Render( rp );
+						if( !rr.ok ) return { false, "objectmap checkpoint: render failed: " + rr.message };
+					}
+
+					if( cp.has( "legendContains" ) && cp.get( "legendContains" ).isString() ) {
+						const std::string want = cp.get( "legendContains" ).asString();
+						bool found = false;
+						for( const auto& e : rr.legend ) if( e.name == want ) { found = true; break; }
+						if( !found ) failures.push_back( "legend does not contain '" + want + "'" );
+					}
+
+					if( cp.has( "pixelCountFor" ) && cp.get( "pixelCountFor" ).isString() ) {
+						const std::string name = cp.get( "pixelCountFor" ).asString();
+						const LegendEntry* entry = nullptr;
+						for( const auto& e : rr.legend ) if( e.name == name ) { entry = &e; break; }
+						if( !entry ) {
+							failures.push_back( "pixelCountFor: '" + name + "' not in legend" );
+						} else {
+							const double count = static_cast<double>( entry->pixelCount );
+							if( cp.has( "pixelCountMin" ) && cp.get( "pixelCountMin" ).isNumber() && count < cp.get( "pixelCountMin" ).asNumber() )
+								failures.push_back( "'" + name + "' pixelCount " + std::to_string( entry->pixelCount ) +
+									" < min " + std::to_string( cp.get( "pixelCountMin" ).asNumber() ) );
+							if( cp.has( "pixelCountMax" ) && cp.get( "pixelCountMax" ).isNumber() && count > cp.get( "pixelCountMax" ).asNumber() )
+								failures.push_back( "'" + name + "' pixelCount " + std::to_string( entry->pixelCount ) +
+									" > max " + std::to_string( cp.get( "pixelCountMax" ).asNumber() ) );
+						}
+					}
+
+					if( cp.has( "queryAt" ) && cp.get( "queryAt" ).isObject() ) {
+						const JsonValue& qa = cp.get( "queryAt" );
+						if( !qa.has( "x" ) || !qa.get( "x" ).isNumber() || !qa.has( "y" ) || !qa.get( "y" ).isNumber() ) {
+							failures.push_back( "queryAt requires numeric \"x\",\"y\"" );
+						} else if( !qa.has( "expectName" ) || !qa.get( "expectName" ).isString() ) {
+							failures.push_back( "queryAt requires string \"expectName\" (\"\" means expect a miss)" );
+						} else {
+							const int x = static_cast<int>( qa.get( "x" ).asNumber() );
+							const int y = static_cast<int>( qa.get( "y" ).asNumber() );
+							const std::string expectName = qa.get( "expectName" ).asString();
+							const AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( x, y );
+							if( qr.outOfRange ) {
+								failures.push_back( "queryAt(" + std::to_string( x ) + "," + std::to_string( y ) + ") out of range" );
+							} else if( expectName.empty() ) {
+								if( qr.hit ) failures.push_back( "queryAt expected a miss but hit '" + qr.name + "'" );
+							} else if( !qr.hit || qr.name != expectName ) {
+								failures.push_back( "queryAt(" + std::to_string( x ) + "," + std::to_string( y ) + ") expected '" +
+									expectName + "', got " + ( qr.hit ? ( "'" + qr.name + "'" ) : std::string( "a miss" ) ) );
+							}
+						}
+					}
+
+					if( !failures.empty() ) {
+						std::string detail; for( std::size_t i = 0; i < failures.size(); ++i ) { if( i ) detail += "; "; detail += failures[i]; }
+						return { false, detail };
+					}
+					return { true, "objectmap assertion(s) satisfied" };
+				}
+
+				//! "diagnostics": {expect:"clean"|"code",code?} -- validate run
+				//! against the CURRENT (post-run) document.
+				CheckOutcome CheckDiagnosticsKind( const JsonValue& cp, AgentSession* session )
+				{
+					if( !session ) return { false, "diagnostics checkpoint: no live session (run did not complete)" };
+					if( !cp.has( "expect" ) || !cp.get( "expect" ).isString() )
+						return { false, "diagnostics checkpoint missing string field \"expect\"" };
+					const std::string expect = cp.get( "expect" ).asString();
+					const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument() );
+
+					if( expect == "clean" ) {
+						if( diags.empty() ) return { true, "validate: clean (0 diagnostics)" };
+						return { false, "validate: expected clean but found " + std::to_string( diags.size() ) +
+							" diagnostic(s); first: " + diags[0].code + " " + diags[0].message };
+					}
+					if( expect == "code" ) {
+						if( !cp.has( "code" ) || !cp.get( "code" ).isString() )
+							return { false, "diagnostics checkpoint expect:\"code\" requires string field \"code\"" };
+						const std::string wantCode = cp.get( "code" ).asString();
+						for( const auto& d : diags )
+							if( d.code == wantCode ) return { true, "validate: found expected code '" + wantCode + "'" };
+						return { false, "validate: expected code '" + wantCode + "' not found among " +
+							std::to_string( diags.size() ) + " diagnostic(s)" };
+					}
+					return { false, "diagnostics checkpoint: unknown \"expect\" value '" + expect + "' (must be \"clean\" or \"code\")" };
+				}
+
+				//! "trajectory": {maxToolCalls?,maxLlmCalls?,terminalStatus?,
+				//! noAutonomyRefusal?,requiredToolInOrder?,noMechanicalLoop?}
+				//! -- maxToolCalls/maxLlmCalls/terminalStatus read straight off
+				//! handle.result (the SAME counters RunScenario wrote into the
+				//! summary line -- no need to re-derive them from the JSONL).
+				//! noAutonomyRefusal/requiredToolInOrder/noMechanicalLoop parse
+				//! handle.trajectoryPath's "tool" records (name/args/
+				//! jsonrpc.response), since those need per-call detail the
+				//! summary doesn't carry.
+				CheckOutcome CheckTrajectoryKind( const JsonValue& cp, const AgentEvalRunHandle& handle )
+				{
+					std::vector<std::string> failures;
+
+					if( cp.has( "maxToolCalls" ) && cp.get( "maxToolCalls" ).isNumber() ) {
+						const double m = cp.get( "maxToolCalls" ).asNumber();
+						if( handle.result.toolCalls > m )
+							failures.push_back( "toolCalls " + std::to_string( handle.result.toolCalls ) + " > maxToolCalls " + std::to_string( m ) );
+					}
+					if( cp.has( "maxLlmCalls" ) && cp.get( "maxLlmCalls" ).isNumber() ) {
+						const double m = cp.get( "maxLlmCalls" ).asNumber();
+						if( handle.result.llmCalls > m )
+							failures.push_back( "llmCalls " + std::to_string( handle.result.llmCalls ) + " > maxLlmCalls " + std::to_string( m ) );
+					}
+					if( cp.has( "terminalStatus" ) && cp.get( "terminalStatus" ).isString() ) {
+						const std::string want = cp.get( "terminalStatus" ).asString();
+						if( handle.result.terminalStatus != want )
+							failures.push_back( "terminalStatus '" + handle.result.terminalStatus + "' != expected '" + want + "'" );
+					}
+
+					const bool needsRecords = cp.has( "noAutonomyRefusal" ) || cp.has( "requiredToolInOrder" ) || cp.has( "noMechanicalLoop" );
+					if( needsRecords ) {
+						if( handle.trajectoryPath.empty() ) {
+							failures.push_back( "trajectory file unavailable (run did not complete) -- cannot check "
+								"noAutonomyRefusal/requiredToolInOrder/noMechanicalLoop" );
+						} else {
+							std::ifstream f( handle.trajectoryPath.c_str(), std::ios::binary );
+							if( !f ) {
+								failures.push_back( "trajectory file '" + handle.trajectoryPath + "' could not be opened" );
+							} else {
+								std::vector<JsonValue> toolRecords;
+								std::string line;
+								while( std::getline( f, line ) ) {
+									if( line.empty() ) continue;
+									JsonValue v; std::string perr;
+									if( !JsonParse( line, v, perr ) ) continue;   // tolerate a stray non-JSON line (never emitted by the recorder)
+									if( v.isObject() && v.get( "run_type" ).asString() == "tool" ) toolRecords.push_back( v );
+								}
+
+								if( cp.has( "noAutonomyRefusal" ) && cp.get( "noAutonomyRefusal" ).isBool() && cp.get( "noAutonomyRefusal" ).asBool() ) {
+									for( const auto& t : toolRecords ) {
+										// ChatTrajectory's EmbedJsonOrString embeds
+										// jsonrpc.response as a parsed OBJECT when it
+										// is valid JSON (every real response is), else
+										// falls back to a raw string -- handle both.
+										const JsonValue& resp = t.get( "jsonrpc.response" );
+										double code = 0.0;
+										bool hasCode = false;
+										if( resp.isObject() && resp.has( "error" ) ) {
+											code = resp.get( "error" ).get( "code" ).asNumber( 0.0 );
+											hasCode = true;
+										} else if( resp.isString() ) {
+											JsonValue parsed; std::string perr2;
+											if( JsonParse( resp.asString(), parsed, perr2 ) && parsed.isObject() && parsed.has( "error" ) ) {
+												code = parsed.get( "error" ).get( "code" ).asNumber( 0.0 );
+												hasCode = true;
+											}
+										}
+										if( hasCode && code == -32011.0 ) {
+											failures.push_back( "an autonomy refusal (-32011) occurred on tool '" + t.get( "name" ).asString() + "'" );
+											break;
+										}
+									}
+								}
+
+								if( cp.has( "requiredToolInOrder" ) && cp.get( "requiredToolInOrder" ).isArray() ) {
+									const JsonValue& req = cp.get( "requiredToolInOrder" );
+									std::size_t ri = 0;
+									for( std::size_t ti = 0; ti < toolRecords.size() && ri < req.size(); ++ti ) {
+										if( req.at( ri ).isString() && toolRecords[ti].get( "name" ).asString() == req.at( ri ).asString() ) ++ri;
+									}
+									if( ri < req.size() )
+										failures.push_back( "requiredToolInOrder: not satisfied as a subsequence (matched " +
+											std::to_string( ri ) + "/" + std::to_string( req.size() ) + ")" );
+								}
+
+								if( cp.has( "noMechanicalLoop" ) && cp.get( "noMechanicalLoop" ).isBool() && cp.get( "noMechanicalLoop" ).asBool() ) {
+									for( std::size_t ti = 1; ti < toolRecords.size(); ++ti ) {
+										const std::string prevName = toolRecords[ti - 1].get( "name" ).asString();
+										const std::string curName  = toolRecords[ti].get( "name" ).asString();
+										if( prevName != curName ) continue;
+										const std::string prevArgs = JsonSerialize( toolRecords[ti - 1].get( "args" ) );
+										const std::string curArgs  = JsonSerialize( toolRecords[ti].get( "args" ) );
+										if( prevArgs == curArgs ) {
+											failures.push_back( "mechanical loop: identical tool call '" + curName +
+												"' repeated consecutively (calls " + std::to_string( ti ) + "," + std::to_string( ti + 1 ) + ")" );
+											break;
+										}
+									}
+								}
+							}
+						}
+					}
+
+					if( !failures.empty() ) {
+						std::string detail; for( std::size_t i = 0; i < failures.size(); ++i ) { if( i ) detail += "; "; detail += failures[i]; }
+						return { false, detail };
+					}
+					return { true, "trajectory assertion(s) satisfied" };
+				}
+
+				//! Dispatch one checkpoint object by its "kind".  An
+				//! unrecognized kind is a FAILED checkpoint (loud), never a
+				//! silent skip -- see CheckScenario's doc.
+				CheckOutcome CheckOneCheckpoint( const JsonValue& cp, const AgentEvalRunHandle& handle )
+				{
+					if( !cp.isObject() || !cp.has( "kind" ) || !cp.get( "kind" ).isString() )
+						return { false, "checkpoint is not an object with a string \"kind\"" };
+					const std::string kind = cp.get( "kind" ).asString();
+					AgentSession* session = handle.dispatcher ? handle.dispatcher->Session() : nullptr;
+
+					if( kind == "document" )    return CheckDocumentKind( cp, session );
+					if( kind == "untouched" )   return CheckUntouchedKind( cp, handle );
+					if( kind == "render" )      return CheckRenderKind( cp, session );
+					if( kind == "objectmap" )   return CheckObjectmapKind( cp, session );
+					if( kind == "diagnostics" ) return CheckDiagnosticsKind( cp, session );
+					if( kind == "trajectory" )  return CheckTrajectoryKind( cp, handle );
+
+					return { false, "unknown checkpoint kind '" + kind + "'" };
+				}
+			}
+
+			AgentEvalCheckResult CheckScenario( const AgentEvalRunHandle& handle, const AgentEvalScenario& scenario )
+			{
+				AgentEvalCheckResult result;
+				result.scenarioId = scenario.id;
+
+				double weightSum = 0.0, passSum = 0.0;
+				for( std::size_t i = 0; i < scenario.checkpoints.size(); ++i ) {
+					const JsonValue& cp = scenario.checkpoints.at( i );
+
+					AgentEvalCheckpointResult r;
+					r.kind = ( cp.isObject() && cp.has( "kind" ) && cp.get( "kind" ).isString() )
+						? cp.get( "kind" ).asString() : std::string( "<malformed>" );
+					r.weight = ( cp.isObject() && cp.has( "weight" ) && cp.get( "weight" ).isNumber() )
+						? cp.get( "weight" ).asNumber() : 1.0;
+					if( r.weight < 0.0 ) r.weight = 0.0;   // a negative weight would corrupt the fraction -- clamp defensively
+
+					const CheckOutcome oc = CheckOneCheckpoint( cp, handle );
+					r.passed = oc.passed;
+					r.detail = oc.detail;
+
+					weightSum += r.weight;
+					if( r.passed ) passSum += r.weight;
+					result.checkpoints.push_back( r );
+				}
+
+				result.checkpointFraction = ( weightSum > 0.0 ) ? ( passSum / weightSum ) : 1.0;
+				result.allPassed = true;
+				for( const auto& c : result.checkpoints ) if( !c.passed ) { result.allPassed = false; break; }
+
+				// Write the results ledger alongside the trajectory.  runDir is
+				// recovered from trajectoryPath (or, failing that, resultPath)
+				// rather than taken as a parameter -- CheckScenario's signature
+				// is (handle, scenario) only, per the plan -- so a "load_error"
+				// handle (neither path set) simply skips the write; there is
+				// nothing on disk to sit "alongside" in that case anyway.
+				std::string runDir;
+				if( !handle.trajectoryPath.empty() )      runDir = std::filesystem::path( handle.trajectoryPath ).parent_path().string();
+				else if( !handle.resultPath.empty() )     runDir = std::filesystem::path( handle.resultPath ).parent_path().string();
+
+				if( !runDir.empty() ) {
+					JsonValue root = JsonValue::MakeObject();
+					root.set( "scenarioId", JsonValue::MakeString( result.scenarioId ) );
+					root.set( "checkpointFraction", JsonValue::MakeNumber( result.checkpointFraction ) );
+					root.set( "allPassed", JsonValue::MakeBool( result.allPassed ) );
+					JsonValue arr = JsonValue::MakeArray();
+					for( const auto& c : result.checkpoints ) {
+						JsonValue o = JsonValue::MakeObject();
+						o.set( "kind", JsonValue::MakeString( c.kind ) );
+						o.set( "passed", JsonValue::MakeBool( c.passed ) );
+						o.set( "weight", JsonValue::MakeNumber( c.weight ) );
+						o.set( "detail", JsonValue::MakeString( c.detail ) );
+						arr.push_back( o );
+					}
+					root.set( "checkpoints", arr );
+
+					std::error_code ec;
+					std::filesystem::create_directories( runDir, ec );
+					const std::string resultsPath = ( std::filesystem::path( runDir ) / "results.jsonl" ).string();
+					std::ofstream f( resultsPath.c_str(), std::ios::binary | std::ios::app );
+					if( f ) f << JsonSerialize( root ) << "\n";
+				}
+
+				return result;
+			}
 	}
 }
