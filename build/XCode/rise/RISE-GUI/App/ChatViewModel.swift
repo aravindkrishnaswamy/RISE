@@ -319,14 +319,29 @@ final class ChatViewModel: ObservableObject {
     /// list_proposals' wire shape (AgentRpc.h).  `summary` is a single
     /// human-readable line built from whichever fields are populated
     /// for this proposal's `kind` (param_edit vs insert_chunk /
-    /// remove_chunk) — the panel shows this instead of separate
-    /// per-field rows.
+    /// remove_chunk) — kept for any plain-text use; the diff-card
+    /// presentation (ProposalDiffCard) instead renders the structured
+    /// fields below directly, matching the RISE UI redesign comp.
     struct ProposalEntry: Identifiable {
         let id: UInt64
         let kind: String
         let sessionLabel: String
         let status: String
         let summary: String
+        /// Structured wire fields (AgentRpc.h's list_proposals shape),
+        /// echoed straight through for the diff card — empty string
+        /// when not meaningful for this `kind` (e.g. `param`/`value`
+        /// are empty for `insert_chunk`/`remove_chunk`).
+        let target: String
+        let entityKind: String
+        let param: String
+        let value: String
+        let chunkText: String
+        /// True when the wire clipped `value`/`chunkText` for this
+        /// listing (see AgentRpc.cpp's ClipProposalFieldEcho) — the
+        /// diff card must never present a clipped preview as the whole
+        /// (never-clipped) stored text without saying so.
+        let truncated: Bool
     }
 
     /// The proposals panel's current listing — pending AND recently
@@ -386,34 +401,38 @@ final class ChatViewModel: ObservableObject {
                 nextObservedAt[id] = observedAt
             }
 
-            var summary: String
-            switch kind {
-            case "insert_chunk":
-                let chunkText = (p["chunkText"] as? String) ?? ""
-                let firstLine = chunkText.split(separator: "\n").first.map(String.init) ?? chunkText
-                summary = "insert: \(firstLine)"
-            case "remove_chunk":
-                let target = p["target"] as? String ?? ""
-                let entityKind = p["entityKind"] as? String ?? ""
-                summary = entityKind.isEmpty ? "remove: \(target)" : "remove: \(target) (\(entityKind))"
-            default:
-                let target = p["target"] as? String ?? ""
-                let param = p["param"] as? String ?? ""
-                let value = p["value"] as? String ?? ""
-                summary = "\(target).\(param) = \(value)"
-            }
-
+            let target = p["target"] as? String ?? ""
+            let entityKind = p["entityKind"] as? String ?? ""
+            let param = p["param"] as? String ?? ""
+            let value = p["value"] as? String ?? ""
+            let chunkText = p["chunkText"] as? String ?? ""
             // Secure-MCP slice 6 fix round: the wire's per-proposal echo
             // cap (see AgentRpc.cpp's ClipProposalFieldEcho) marks
             // `truncated:true` whenever `value`/`chunkText` was clipped for
-            // the listing -- surface that here so the owner never mistakes
-            // a clipped preview for the whole (never-clipped) stored text.
-            if (p["truncated"] as? Bool) == true {
+            // the listing -- surface that here (both in `summary` and as
+            // its own field, for ProposalDiffCard) so the owner never
+            // mistakes a clipped preview for the whole (never-clipped)
+            // stored text.
+            let truncated = (p["truncated"] as? Bool) == true
+
+            var summary: String
+            switch kind {
+            case "insert_chunk":
+                let firstLine = chunkText.split(separator: "\n").first.map(String.init) ?? chunkText
+                summary = "insert: \(firstLine)"
+            case "remove_chunk":
+                summary = entityKind.isEmpty ? "remove: \(target)" : "remove: \(target) (\(entityKind))"
+            default:
+                summary = "\(target).\(param) = \(value)"
+            }
+            if truncated {
                 summary += " (truncated)"
             }
 
             next.append(ProposalEntry(
-                id: id, kind: kind, sessionLabel: sessionLabel, status: status, summary: summary))
+                id: id, kind: kind, sessionLabel: sessionLabel, status: status, summary: summary,
+                target: target, entityKind: entityKind, param: param, value: value,
+                chunkText: chunkText, truncated: truncated))
         }
         pendingProposals = next
         resolvedProposalObservedAt = nextObservedAt

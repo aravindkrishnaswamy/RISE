@@ -54,12 +54,33 @@ struct SceneTextEditor: NSViewRepresentable {
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isRichText = true
 
-        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        // RISE UI redesign (left panel, "SCENE FILE TAB"): a fixed dark
+        // editor surface + IBM Plex Mono, matching RISESceneTheme's
+        // fixed dark syntax palette (both commit to the same dark
+        // backdrop rather than following the OS light/dark appearance —
+        // see RISESceneTheme's doc for why).
+        let font = Theme.monoNSFont(12)
         textView.font = font
+        let textColor = NSColor(hex: 0xe6e7e9)
         textView.typingAttributes = [
             .font: font,
-            .foregroundColor: NSColor.labelColor,
+            .foregroundColor: textColor,
         ]
+        textView.backgroundColor = NSColor(hex: 0x17181b)
+        textView.drawsBackground = true
+        textView.insertionPointColor = NSColor(hex: 0x9ecbe8)
+        textView.selectedTextAttributes = [
+            .backgroundColor: NSColor(hex: 0x6db8e8, alpha: 0.30),
+            .foregroundColor: textColor,
+        ]
+        // Comfortable line spacing for the fixed-line-height scene text
+        // (matches the redesign's mono-line-height ~1.75 rhythm).
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = 3
+        textView.defaultParagraphStyle = paragraphStyle
+        textView.typingAttributes[.paragraphStyle] = paragraphStyle
+        scrollView.backgroundColor = NSColor(hex: 0x17181b)
+        scrollView.drawsBackground = true
 
         // Install the syntax highlighter as the text storage delegate.
         let highlighter = RISESceneSyntaxHighlighter()
@@ -125,10 +146,14 @@ struct SceneTextEditor: NSViewRepresentable {
 
             // Reset typing attributes so new keystrokes use default styling
             // rather than inheriting the color of the character at the cursor.
-            let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+            // Matches makeNSView's fixed dark-theme setup above.
+            let font = Theme.monoNSFont(12)
+            let paragraphStyle = NSMutableParagraphStyle()
+            paragraphStyle.lineSpacing = 3
             textView.typingAttributes = [
                 .font: font,
-                .foregroundColor: NSColor.labelColor,
+                .foregroundColor: NSColor(hex: 0xe6e7e9),
+                .paragraphStyle: paragraphStyle,
             ]
 
             if suppressAutoCompletion {
@@ -218,80 +243,183 @@ struct SceneTextEditor: NSViewRepresentable {
     }
 }
 
-/// Inline scene file editor panel that slides in from the left.
+/// Inline scene file editor panel — the left panel's "Scene file" tab.
+///
+/// RESTYLE NOTE (RISE UI redesign): header/toolbar/status-bar chrome
+/// restyled to the comp's "SCENE FILE TAB" using Theme.swift tokens.
+/// Every dirty-tracking / save / save&reload / revert / autocomplete /
+/// suggestion behavior below is unchanged from the pre-restyle version.
+///
+/// The pre-redesign header's "Close" button (which toggled
+/// `viewModel.isEditorVisible`) is dropped here: that flag predates the
+/// tab-based left panel (ContentView's `leftPanel` now switches on
+/// `leftTab`, gated only by `showLeftPanel`) and no longer has any
+/// visible effect — keeping a button that does nothing would be a fake
+/// affordance.  The design comp likewise has no close control on this
+/// tab (the Agent/Scene-file tab strip is the switch).
 struct SceneEditorPanel: View {
     @EnvironmentObject var viewModel: RenderViewModel
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                Text("Scene Editor")
-                    .font(.headline)
-
-                if viewModel.isEditorDirty {
-                    Text("Modified")
-                        .font(.caption)
-                        .foregroundColor(.orange)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
-                }
-
-                Spacer()
-
-                Button {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        viewModel.isEditorVisible = false
-                    }
-                } label: {
-                    Label("Close", systemImage: "sidebar.left")
-                }
-                .help("Close editor")
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color(nsColor: .windowBackgroundColor))
-
-            Divider()
-
-            // Toolbar
-            HStack(spacing: 8) {
-                Button {
-                    viewModel.revertEditorFile()
-                } label: {
-                    Label("Revert", systemImage: "arrow.uturn.backward")
-                }
-                .disabled(!viewModel.isEditorDirty)
-                .help("Revert all changes to the last saved version")
-
-                Button {
-                    viewModel.saveEditorFile()
-                } label: {
-                    Label("Save", systemImage: "square.and.arrow.down")
-                }
-                .disabled(!viewModel.isEditorDirty)
-                .keyboardShortcut("s", modifiers: .command)
-                .help("Save changes to disk")
-
-                Button {
-                    viewModel.saveAndReloadScene()
-                } label: {
-                    Label("Save & Reload", systemImage: "arrow.clockwise")
-                }
-                .disabled(viewModel.renderState == .cancelling || viewModel.renderState == .loading)
-                .help("Save to disk, clear the loaded scene, and reload from disk")
-
-                Spacer()
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color(nsColor: .windowBackgroundColor))
-
-            Divider()
+            header
+            Rectangle().fill(Theme.borderHairline).frame(height: 1)
+            toolbar
+            Rectangle().fill(Theme.borderHairline).frame(height: 1)
 
             SceneTextEditor(text: $viewModel.editorText)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            statusBar
         }
+        .background(Theme.bgPanel)
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text("Scene file")
+                .font(Theme.sans(11, .semibold))
+                .foregroundColor(Theme.textPrimary)
+
+            if viewModel.isEditorDirty {
+                HStack(spacing: 5) {
+                    Circle().fill(Theme.dirty).frame(width: 6, height: 6)
+                    Text("edited")
+                        .font(Theme.sans(10))
+                        .foregroundColor(Theme.dirty)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 34)
+        .background(Theme.bgHeader)
+    }
+
+    // MARK: - Toolbar
+
+    private var toolbar: some View {
+        HStack(spacing: 8) {
+            editorPill("Revert", disabled: !viewModel.isEditorDirty,
+                       help: "Revert all changes to the last saved version") {
+                viewModel.revertEditorFile()
+            }
+
+            editorPill("Save", disabled: !viewModel.isEditorDirty,
+                       help: "Save changes to disk",
+                       shortcutKey: "s", shortcutModifiers: .command) {
+                viewModel.saveEditorFile()
+            }
+
+            editorPill("Save & Reload",
+                       disabled: viewModel.renderState == .cancelling
+                                 || viewModel.renderState == .loading,
+                       help: "Save to disk, clear the loaded scene, and reload from disk") {
+                viewModel.saveAndReloadScene()
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Theme.bgHeader)
+    }
+
+    /// A compact bordered pill button matching the comp's toolbar
+    /// affordances (Revert / Save / Save & Reload): hairline border by
+    /// default, brightening on hover.  The keyboard shortcut, when
+    /// given, is applied directly to the underlying `Button` (inside
+    /// `EditorPillButton`) rather than to this wrapper view — matching
+    /// the pre-restyle code's pattern, since `.keyboardShortcut` needs
+    /// to sit on the actual control to bind reliably.
+    private func editorPill(_ title: String, disabled: Bool, help: String,
+                             shortcutKey: KeyEquivalent? = nil,
+                             shortcutModifiers: EventModifiers = .command,
+                             action: @escaping () -> Void) -> some View {
+        EditorPillButton(title: title, disabled: disabled,
+                          shortcutKey: shortcutKey, shortcutModifiers: shortcutModifiers,
+                          action: action)
+            .help(help)
+    }
+
+    // MARK: - Status bar
+
+    /// Honest client-side stats only — no "parsed · 0 errors" claim,
+    /// since there is no live parse surface wired to this editor yet
+    /// (see the slice brief).  Save state mirrors the dirty badge in
+    /// the header so it reads correctly even when the header scrolls
+    /// out of view on a very short window.
+    private var statusBar: some View {
+        HStack(spacing: 12) {
+            if viewModel.isEditorDirty {
+                Text("● unsaved edits")
+                    .foregroundColor(Theme.dirty)
+            } else {
+                Text("✓ saved")
+                    .foregroundColor(Theme.success)
+            }
+            Spacer(minLength: 0)
+            Text(bufferStats)
+                .foregroundColor(Theme.textDim)
+        }
+        .font(Theme.mono(10.5))
+        .padding(.horizontal, 12)
+        .frame(height: 32)
+        .background(Theme.bgHeader)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Theme.borderHairline).frame(height: 1)
+        }
+    }
+
+    private var bufferStats: String {
+        let text = viewModel.editorText
+        let chars = text.count
+        // Line count = newline count + 1 for the trailing (possibly
+        // empty) line, matching how editors conventionally report it;
+        // an empty buffer reads as 0 lines / 0 chars rather than 1.
+        let lines = text.isEmpty ? 0 : text.reduce(1) { $0 + ($1 == "\n" ? 1 : 0) }
+        return "\(chars) chars · \(lines) lines"
+    }
+}
+
+/// Hover-brightening bordered pill button shared by the scene-editor
+/// toolbar.  SwiftUI has no built-in hover-state border, so this tracks
+/// it with a plain `@State` + `.onHover`.
+private struct EditorPillButton: View {
+    let title: String
+    let disabled: Bool
+    var shortcutKey: KeyEquivalent? = nil
+    var shortcutModifiers: EventModifiers = .command
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Group {
+            if let shortcutKey {
+                button.keyboardShortcut(shortcutKey, modifiers: shortcutModifiers)
+            } else {
+                button
+            }
+        }
+    }
+
+    private var button: some View {
+        Button(action: action) {
+            Text(title)
+                .font(Theme.sans(11))
+                .padding(.horizontal, 11)
+                .padding(.vertical, 5)
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(disabled ? Theme.textDisabled : Theme.textTertiary)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusMedium)
+                .stroke(isHovered && !disabled ? Theme.borderHover : Theme.borderStrong, lineWidth: 1)
+        )
+        .disabled(disabled)
+        .onHover { isHovered = $0 }
     }
 }

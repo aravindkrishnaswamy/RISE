@@ -117,6 +117,12 @@ enum Theme {
     static let catMaterial = Color(hex: 0xc9a0d4)    // MAT
     static let catAnimation = teal                   // ANM
     static let catMedia = purple                     // MED
+    /// Output Settings (Film) tag — muted slate blue, distinct from
+    /// every other category accent.
+    static let catFilm = Color(hex: 0x8fa8c9)        // FLM
+    /// scene_variant overlay tag — soft violet, distinct from
+    /// catMaterial's purple and catMedia's purple.
+    static let catVariant = Color(hex: 0xcf9fd6)     // VAR
 
     // MARK: - Radii
 

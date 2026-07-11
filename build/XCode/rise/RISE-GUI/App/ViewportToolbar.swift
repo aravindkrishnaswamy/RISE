@@ -171,6 +171,15 @@ enum ViewportToolCategory: Int, CaseIterable, Identifiable {
     }
 }
 
+/// UI redesign center-column slice: this toolbar now lives INLINE in
+/// ContentView's 40pt viewport toolbar row (the design comp's compact
+/// segmented tool group), not floating over the rendered image — the
+/// `.ultraThinMaterial` translucent-over-image styling that made sense
+/// for a floating overlay is gone in favor of a flat `Theme.bgPanel`
+/// segmented-control look that matches the row's other chips.  Undo /
+/// Redo buttons were dropped from this row (the design comp's toolbar
+/// has no undo/redo affordance here) — both remain reachable via the
+/// Edit menu and its ⌘Z / ⇧⌘Z shortcuts, so no functionality is lost.
 struct ViewportToolbar: View {
     @Binding var selectedTool: ViewportTool
     /// Per-category last-used sub-tool memory.  Driven by the C++
@@ -180,11 +189,9 @@ struct ViewportToolbar: View {
     var lastSubToolForCategory: (ViewportToolCategory) -> ViewportTool = { cat in
         cat.subTools.first ?? .select
     }
-    var onUndo: () -> Void = {}
-    var onRedo: () -> Void = {}
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 2) {
             ForEach(ViewportToolCategory.allCases) { category in
                 CategorySlot(
                     category: category,
@@ -192,25 +199,13 @@ struct ViewportToolbar: View {
                     lastSubToolForCategory: lastSubToolForCategory
                 )
             }
-
-            Divider()
-                .frame(height: 20)
-                .padding(.horizontal, 4)
-
-            Button(action: onUndo) {
-                Image(systemName: "arrow.uturn.backward").frame(width: 28, height: 28)
-            }
-            .buttonStyle(.borderless)
-            .help("Undo — revert the last edit (per-drag composites are one entry)")
-
-            Button(action: onRedo) {
-                Image(systemName: "arrow.uturn.forward").frame(width: 28, height: 28)
-            }
-            .buttonStyle(.borderless)
-            .help("Redo — re-apply the most recently undone edit")
         }
-        .padding(6)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .padding(2)
+        .background(Theme.bgPanel, in: RoundedRectangle(cornerRadius: Theme.radiusMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusMedium)
+                .stroke(Theme.borderHairline, lineWidth: 1)
+        )
     }
 }
 
@@ -282,12 +277,12 @@ private struct SlotIcon: View {
         ZStack(alignment: .bottomTrailing) {
             Image(systemName: tool.iconName)
                 .symbolRenderingMode(.monochrome)
-                .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
-                .foregroundColor(isSelected ? .white : .primary)
-                .frame(width: 28, height: 28)
+                .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                .foregroundColor(isSelected ? .white : Theme.textTertiary)
+                .frame(width: 28, height: 24)
                 .background(
-                    isSelected ? Color.accentColor : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 5)
+                    isSelected ? Theme.fillActive : Color.clear,
+                    in: RoundedRectangle(cornerRadius: Theme.radiusSmall)
                 )
 
             if hasFlyout {
@@ -298,7 +293,7 @@ private struct SlotIcon: View {
                 Image(systemName: "triangle.fill")
                     .font(.system(size: 5))
                     .rotationEffect(.degrees(180))
-                    .foregroundColor(isSelected ? .white : .secondary)
+                    .foregroundColor(isSelected ? .white : Theme.textDim)
                     .padding(2)
             }
         }

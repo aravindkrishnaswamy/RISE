@@ -2,10 +2,16 @@
 //
 //  ViewportView.swift - Interactive 3D viewport for the macOS app.
 //
-//    Composition: render image + overlay toolbar + timeline + mouse
-//    event routing to the RISEViewportBridge.  All edit logic lives
-//    in C++ (SceneEditController); this view is purely a thin
-//    sink + event router.
+//    Composition: render image + gizmo overlay + region-of-interest
+//    overlay + selection chip + refinement pill + timeline.  All
+//    edit logic lives in C++ (SceneEditController); this view is
+//    purely a thin sink + event router.  The tool-category toolbar
+//    itself moved OUT of this view in the UI redesign center-column
+//    slice — it's now ContentView's 40pt row above the viewport;
+//    `selectedTool` is therefore an inbound Binding, not owned state,
+//    but this view still reacts to it (bridge.currentTool sync +
+//    gizmo refresh) since that side-effect has nothing to do with
+//    where the buttons live.
 //
 //    Phase 3 wires events through to the controller but the
 //    controller is in skeleton mode (no interactive rasterizer):
@@ -18,6 +24,8 @@ import SwiftUI
 import AppKit
 
 struct ViewportView: View {
+    @EnvironmentObject var viewModel: RenderViewModel
+
     let bridge: RISEViewportBridge
     @Binding var image: NSImage?
     let timelineVisible: Bool
@@ -39,7 +47,8 @@ struct ViewportView: View {
     /// Called whenever the active tool changes or a pointer-down
     /// event fires (which may have updated picking).  ContentView
     /// uses this to bump the property-panel refresh trigger so the
-    /// panel re-reads bridge.panelMode + propertySnapshot.
+    /// panel re-reads bridge.panelMode + propertySnapshot; this view
+    /// also uses it as the cue to re-pull its own selection-chip text.
     var onSelectionMayHaveChanged: () -> Void = {}
 
     /// Looping preview-play state + controls for the Play button by the
@@ -61,7 +70,19 @@ struct ViewportView: View {
     var interactiveEDRRenderer: MetalEDRRenderer? = nil
     var edrEnabled: Bool = false
 
-    @State private var selectedTool: ViewportTool = .select
+    /// UI redesign: owned by ContentView (the toolbar row that now
+    /// hosts the tool-category buttons needs it too), passed down so
+    /// this view's cursor/gizmo/pointer-routing logic still reacts to
+    /// tool changes exactly as before the toolbar moved out.
+    @Binding var selectedTool: ViewportTool
+    /// UI redesign design brief A4: true while the region chip is
+    /// "armed" — the next mouse-drag in the viewport draws a region
+    /// box instead of routing to the active tool.  Owned by
+    /// ContentView (the toolbar's REGION chip toggles it); this view
+    /// consumes it to branch pointer routing and disarms it once a
+    /// drag completes (or Esc is pressed).
+    @Binding var regionArmed: Bool
+
     /// Bumps each time the gizmo overlay should re-pull its handle
     /// snapshot.  Tied to pointer-down / pointer-up / tool change
     /// (which are the events that can change which gizmo is shown)
@@ -69,12 +90,39 @@ struct ViewportView: View {
     /// handle positions).
     @State private var gizmoRefreshTrigger: Int = 0
 
+    /// Region-of-interest drag-in-progress corners, in full-res
+    /// FILM-PIXEL space — the SAME space `onPointerDown` /
+    /// `onPointerMove` / `onPointerUp` already receive their `p`
+    /// argument in (see `ViewportNSView.surfacePoint(from:)`, which
+    /// maps through `bridge.cameraSurfaceDimensions`).  nil when no
+    /// drag is in progress.
+    @State private var regionDragStart: CGPoint? = nil
+    @State private var regionDragCurrent: CGPoint? = nil
+    /// Set when Esc cancels a region drag WHILE the mouse button is
+    /// still down.  AppKit keeps delivering `mouseDragged`/`mouseUp`
+    /// for the rest of that physical gesture even after we've reset
+    /// `regionDragStart`/`regionArmed` — without this flag, those
+    /// trailing events would fall through to the normal-tool branch
+    /// and forward a `pointerMove`/`pointerUp` to the bridge with NO
+    /// matching `pointerDown` (it was intercepted by the
+    /// region-armed branch at pointer-down time), corrupting the
+    /// controller's drag-anchor state.  Cleared on the next
+    /// `pointerUp`, which ends the physical gesture.
+    @State private var suppressPointerUntilUp: Bool = false
+
+    /// Local snapshot of the bridge's current selection, refreshed
+    /// alongside `onSelectionMayHaveChanged` — drives the top-left
+    /// selection chip.  Mirrors the same (selectionCategory,
+    /// selectionName) pair OutlinerView / PropertiesPanel read.
+    @State private var selectionCategory: RISEViewportCategory = .none
+    @State private var selectionNameText: String = ""
+
     var body: some View {
         VStack(spacing: 0) {
             ZStack(alignment: .top) {
                 ViewportCanvas(
                     image: $image,
-                    cursor: interactionEnabled ? selectedTool.nsCursor : .arrow,
+                    cursor: interactionEnabled ? (regionArmed ? .crosshair : selectedTool.nsCursor) : .arrow,
                     productionEDRRenderer:  edrEnabled ? productionEDRRenderer  : nil,
                     interactiveEDRRenderer: edrEnabled ? interactiveEDRRenderer : nil,
                     surfaceDimensionsProvider: { [weak bridge] in
@@ -82,16 +130,38 @@ struct ViewportView: View {
                     },
                     onPointerDown: { p in
                         guard interactionEnabled else { return }
+                        // Every pointer-down starts a NEW physical
+                        // gesture — any suppress flag left over from
+                        // an earlier interrupted gesture (e.g. the
+                        // mouse-up that should have cleared it never
+                        // reached us, such as a system modal
+                        // stealing the drag) is stale by definition.
+                        // Clearing here — rather than only on the
+                        // matching pointer-up — bounds the flag's
+                        // lifetime to at most one gesture instead of
+                        // "forever" if that pointer-up is ever lost.
+                        suppressPointerUntilUp = false
+                        if regionArmed {
+                            regionDragStart = p
+                            regionDragCurrent = p
+                            return
+                        }
                         bridge.pointerDown(x: Double(p.x), y: Double(p.y))
                         // Pointer-down on Select tool may have just
                         // picked an object; pointer-down on motion
                         // tools doesn't change selection but the
                         // panel refresh is cheap so we always notify.
                         onSelectionMayHaveChanged()
+                        refreshSelectionChip()
                         gizmoRefreshTrigger &+= 1
                     },
                     onPointerMove: { p in
                         guard interactionEnabled else { return }
+                        if suppressPointerUntilUp { return }
+                        if regionArmed {
+                            if regionDragStart != nil { regionDragCurrent = p }
+                            return
+                        }
                         bridge.pointerMove(x: Double(p.x), y: Double(p.y))
                         if bridge.gizmoDragActive {
                             gizmoRefreshTrigger &+= 1
@@ -99,8 +169,44 @@ struct ViewportView: View {
                     },
                     onPointerUp: { p in
                         guard interactionEnabled else { return }
+                        if suppressPointerUntilUp {
+                            // Last leg of a gesture Esc cancelled
+                            // mid-drag (see `suppressPointerUntilUp`'s
+                            // doc) — swallow it and reset for the
+                            // next physical gesture.
+                            suppressPointerUntilUp = false
+                            return
+                        }
+                        if regionArmed, let start = regionDragStart {
+                            commitRegionDrag(from: start, to: p)
+                            regionDragStart = nil
+                            regionDragCurrent = nil
+                            regionArmed = false
+                            return
+                        }
                         bridge.pointerUp(x: Double(p.x), y: Double(p.y))
                         gizmoRefreshTrigger &+= 1
+                    },
+                    onEscape: {
+                        // Design brief A4: Esc while armed disarms;
+                        // Esc with an active region clears it.  A
+                        // drag already in progress cancels first
+                        // (without committing a region) and arms
+                        // `suppressPointerUntilUp` so the rest of
+                        // this physical mouse-down gesture doesn't
+                        // leak a dangling pointerMove/pointerUp to
+                        // the bridge with no matching pointerDown.
+                        if regionDragStart != nil {
+                            regionDragStart = nil
+                            regionDragCurrent = nil
+                            regionArmed = false
+                            suppressPointerUntilUp = true
+                        } else if regionArmed {
+                            regionArmed = false
+                        } else if viewModel.activeRegion != nil {
+                            bridge.clearInteractiveRegion()
+                            viewModel.activeRegion = nil
+                        }
                     }
                 )
 
@@ -127,37 +233,72 @@ struct ViewportView: View {
                     .allowsHitTesting(false)
                 }
 
-                ViewportToolbar(
-                    selectedTool: $selectedTool,
-                    lastSubToolForCategory: { [weak bridge] cat in
-                        guard let b = bridge else { return cat.subTools.first ?? .select }
-                        let last = b.lastSubTool(for: cat.bridgeValue)
-                        return ViewportTool(rawValue: last.rawValue) ?? (cat.subTools.first ?? .select)
+                // Design brief A4 — region-of-interest overlay: the
+                // live drag-preview box while armed + dragging, or
+                // the persistent active-region box (with a clickable
+                // clear badge) once `viewModel.activeRegion` is set.
+                RegionOverlay(
+                    activeRegion: viewModel.activeRegion,
+                    dragStart: regionDragStart,
+                    dragCurrent: regionDragCurrent,
+                    surfaceDimensionsProvider: { [weak bridge] in
+                        bridge?.cameraSurfaceDimensions ?? .zero
                     },
-                    onUndo: { bridge.undo() },
-                    onRedo: { bridge.redo() }
+                    onClearActiveRegion: {
+                        bridge.clearInteractiveRegion()
+                        viewModel.activeRegion = nil
+                    }
                 )
-                .padding(.top, 8)
-                .disabled(!interactionEnabled)
-                .opacity(interactionEnabled ? 1.0 : 0.5)
-                .onChange(of: selectedTool) { _, newValue in
-                    bridge.currentTool = newValue.bridgeValue
-                    // Panel mode is derived from the current tool;
-                    // bump the refresh so the panel switches between
-                    // empty / camera / object as the user toggles.
-                    onSelectionMayHaveChanged()
-                    // Tool change can flip the gizmo shape (Translate
-                    // → Rotate switches between arrows and rings); a
-                    // refresh-trigger bump forces the overlay to
-                    // re-pull the handle array.
-                    gizmoRefreshTrigger &+= 1
+            }
+            .overlay(alignment: .topLeading) {
+                if selectionCategory != .none, !selectionNameText.isEmpty {
+                    selectionChip.padding(12)
                 }
-                .onChange(of: image) { _, _ in
-                    // Camera motion / preview-scale changes shift the
-                    // projected handle positions; rebuild the snapshot
-                    // each time a new frame arrives so the gizmo
-                    // tracks the rendered image.
-                    gizmoRefreshTrigger &+= 1
+            }
+            .overlay(alignment: .bottomLeading) {
+                refinementPill.padding(12)
+            }
+            .onChange(of: selectedTool) { _, newValue in
+                bridge.currentTool = newValue.bridgeValue
+                // Panel mode is derived from the current tool;
+                // bump the refresh so the panel switches between
+                // empty / camera / object as the user toggles.
+                onSelectionMayHaveChanged()
+                refreshSelectionChip()
+                // Tool change can flip the gizmo shape (Translate
+                // → Rotate switches between arrows and rings); a
+                // refresh-trigger bump forces the overlay to
+                // re-pull the handle array.
+                gizmoRefreshTrigger &+= 1
+            }
+            .onChange(of: image) { _, _ in
+                // Camera motion / preview-scale changes shift the
+                // projected handle positions; rebuild the snapshot
+                // each time a new frame arrives so the gizmo
+                // tracks the rendered image.
+                gizmoRefreshTrigger &+= 1
+            }
+            .onChange(of: interactionEnabled) { _, newValue in
+                // A production render can start mid-drag, or right
+                // after the user arms REGION but before they've
+                // started dragging (the Render menu / ⌘R aren't
+                // gated on the viewport's own drag/arm state).  Once
+                // interaction is disabled, pointer events stop
+                // reaching the region-drag branch above, so without
+                // this an in-progress drag's dashed preview box would
+                // be left stranded on screen with no way to clear it
+                // short of Esc, and an "armed" chip would sit lit
+                // with no drag able to ever consume it.  Clear both
+                // proactively — this only touches the UNCOMMITTED
+                // drag/arm state, not the persisted
+                // `viewModel.activeRegion` (which the core itself
+                // clears before the render); re-arming after the
+                // render finishes is one click away via the chip.
+                if !newValue {
+                    regionDragStart = nil
+                    regionDragCurrent = nil
+                    suppressPointerUntilUp = false
+                    regionArmed = false
                 }
             }
             // Re-sync the toolbar's selection to the underlying
@@ -165,13 +306,14 @@ struct ViewportView: View {
             // scene was loaded, or the bridge was rebuilt for any
             // other reason).  The new controller defaults to .select
             // internally; without this the toolbar's persisted
-            // @State would still highlight (say) Orbit while pointer
-            // events go to the Select tool.  `.task(id:)` runs on
-            // appear AND on id change, so it covers both initial
-            // attach and subsequent scene loads.
+            // selection would still highlight (say) Orbit while
+            // pointer events go to the Select tool.  `.task(id:)`
+            // runs on appear AND on id change, so it covers both
+            // initial attach and subsequent scene loads.
             .task(id: ObjectIdentifier(bridge)) {
                 bridge.currentTool = selectedTool.bridgeValue
                 onSelectionMayHaveChanged()
+                refreshSelectionChip()
             }
 
             if timelineVisible {
@@ -184,7 +326,6 @@ struct ViewportView: View {
                     onScrubBegin: { bridge.scrubTimeBegin() },
                     onScrubEnd:   { bridge.scrubTimeEnd() }
                 )
-                .padding([.horizontal, .bottom], 8)
                 .disabled(!interactionEnabled)
                 .opacity(interactionEnabled ? 1.0 : 0.5)
                 .onChange(of: sceneTime) { _, newValue in
@@ -196,6 +337,154 @@ struct ViewportView: View {
         // Bridge lifetime is owned by RenderViewModel — it runs from
         // scene-load until clearScene.  This view's appear/disappear
         // intentionally does NOT start/stop the bridge.
+    }
+
+    // MARK: - Region-of-interest commit
+
+    /// Convert the two drag corners (already in full-res film-pixel
+    /// space) into an inclusive box, clamp to the camera's surface
+    /// dimensions, and hand it to the bridge.  A near-zero drag (a
+    /// stray click while armed) is treated as "cancel arm" rather
+    /// than setting a degenerate 0-1px region.
+    private func commitRegionDrag(from a: CGPoint, to b: CGPoint) {
+        guard abs(a.x - b.x) >= 2 || abs(a.y - b.y) >= 2 else { return }
+        let dims = bridge.cameraSurfaceDimensions
+        guard dims.width > 1, dims.height > 1 else { return }
+        let maxX = dims.width - 1
+        let maxY = dims.height - 1
+        let x0 = min(max(min(a.x, b.x), 0), maxX)
+        let x1 = min(max(max(a.x, b.x), 0), maxX)
+        let y0 = min(max(min(a.y, b.y), 0), maxY)
+        let y1 = min(max(max(a.y, b.y), 0), maxY)
+        bridge.setInteractiveRegionLeft(UInt32(x0), top: UInt32(y0),
+                                         right: UInt32(x1), bottom: UInt32(y1))
+        // Immediate UI feedback rather than waiting up to 0.5s for
+        // RenderViewModel's next refinement-status poll to pick it up.
+        // `right`/`bottom` are INCLUSIVE (see
+        // RISEViewportBridge.h's setInteractiveRegionLeft:top:right:bottom:
+        // doc) — +1 so the drawn box's width/height matches the pixel
+        // COUNT actually restricted, not the coordinate delta.
+        viewModel.activeRegion = CGRect(x: x0, y: y0, width: x1 - x0 + 1, height: y1 - y0 + 1)
+    }
+
+    // MARK: - Selection chip
+
+    private func refreshSelectionChip() {
+        selectionCategory = bridge.selectionCategory
+        selectionNameText = bridge.selectionName
+    }
+
+    private var selectionChip: some View {
+        Text(selectionNameText)
+            .font(Theme.mono(10.5))
+            .foregroundColor(Theme.accentLight)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Theme.bgBase.opacity(0.72))
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(Theme.accent.opacity(0.3), lineWidth: 1))
+    }
+
+    // MARK: - Refinement pill
+
+    private var refinementPill: some View {
+        let isProduction = viewModel.renderState == .rendering
+        let isCancelling = viewModel.renderState == .cancelling
+        let status = RefinementStatusFormatter.status(
+            phase: viewModel.refinementPhase,
+            scaleDivisor: viewModel.refinementScaleDivisor,
+            isProduction: isProduction,
+            isCancelling: isCancelling,
+            productionProgress: viewModel.progress)
+        return HStack(spacing: 9) {
+            Text(status.text)
+                .font(Theme.mono(10.5))
+                .foregroundColor(Theme.textSecondary)
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Theme.fillTrough)
+                    .frame(width: 90, height: 3)
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Theme.spectralGradient)
+                    .frame(width: max(0, 90 * status.fraction), height: 3)
+            }
+            Text(status.label)
+                .font(Theme.sans(9))
+                .tracking(0.6)
+                .foregroundColor(Theme.success)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .background(Theme.bgBase.opacity(0.78))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.borderLight, lineWidth: 1))
+    }
+}
+
+// MARK: - Region-of-interest overlay
+
+/// Draws the design brief A4 region box: while a drag is in progress
+/// (`dragStart`/`dragCurrent` both non-nil), a live dashed preview
+/// following the pointer; otherwise, when `activeRegion` is set, the
+/// persistent dashed box with a clickable "REGION" clear badge.  Uses
+/// `ViewportLetterbox` (shared with `ViewportGizmoOverlay`) so the box
+/// lines up with the rendered image using the SAME aspect-fit formula
+/// `ViewportNSView.currentImageDrawRect()` uses to lay out the image.
+private struct RegionOverlay: View {
+    /// Full-res film-pixel space, inclusive box (matches
+    /// `RISEViewportBridge.getInteractiveRegionLeft:top:right:bottom:`).
+    let activeRegion: CGRect?
+    let dragStart: CGPoint?
+    let dragCurrent: CGPoint?
+    let surfaceDimensionsProvider: () -> CGSize
+    let onClearActiveRegion: () -> Void
+
+    var body: some View {
+        GeometryReader { geom in
+            let surface = surfaceDimensionsProvider()
+            if let fit = ViewportLetterbox.fit(surface: surface, in: geom.size) {
+                if let start = dragStart, let current = dragCurrent {
+                    dashedBox(widgetRect(filmRect(start, current), fit: fit))
+                } else if let region = activeRegion {
+                    let rect = widgetRect(region, fit: fit)
+                    ZStack(alignment: .topLeading) {
+                        dashedBox(rect)
+                        regionBadge
+                            .position(x: rect.minX + 34, y: max(9, rect.minY - 9))
+                            .onTapGesture { onClearActiveRegion() }
+                    }
+                }
+            }
+        }
+    }
+
+    private var regionBadge: some View {
+        Text("REGION")
+            .font(Theme.mono(9, .semibold))
+            .foregroundColor(.black)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(Theme.warn)
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+
+    private func filmRect(_ a: CGPoint, _ b: CGPoint) -> CGRect {
+        CGRect(x: min(a.x, b.x), y: min(a.y, b.y),
+              width: abs(a.x - b.x), height: abs(a.y - b.y))
+    }
+
+    private func widgetRect(_ rect: CGRect, fit: ViewportLetterbox.Fit) -> CGRect {
+        let origin = ViewportLetterbox.toWidget(rect.origin, fit: fit)
+        return CGRect(x: origin.x, y: origin.y,
+                      width: rect.width * fit.scale, height: rect.height * fit.scale)
+    }
+
+    private func dashedBox(_ rect: CGRect) -> some View {
+        RoundedRectangle(cornerRadius: 2)
+            .stroke(Theme.warn, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+            .frame(width: max(0, rect.width), height: max(0, rect.height))
+            .position(x: rect.midX, y: rect.midY)
+            .allowsHitTesting(false)
     }
 }
 
@@ -222,12 +511,17 @@ private struct ViewportCanvas: NSViewRepresentable {
     let onPointerDown: (CGPoint) -> Void
     let onPointerMove: (CGPoint) -> Void
     let onPointerUp:   (CGPoint) -> Void
+    /// UI redesign design brief A4 — fires on Esc key-down while the
+    /// viewport has keyboard focus.  nil is a valid no-op default for
+    /// call sites that don't need it.
+    var onEscape: (() -> Void)? = nil
 
     func makeNSView(context: Context) -> ViewportNSView {
         let v = ViewportNSView()
         v.onPointerDown = onPointerDown
         v.onPointerMove = onPointerMove
         v.onPointerUp   = onPointerUp
+        v.onEscape      = onEscape
         v.toolCursor    = cursor
         v.surfaceDimensionsProvider = surfaceDimensionsProvider
         // Order matters: setting production first adds its sublayer
@@ -243,6 +537,7 @@ private struct ViewportCanvas: NSViewRepresentable {
         nsView.onPointerDown = onPointerDown
         nsView.onPointerMove = onPointerMove
         nsView.onPointerUp   = onPointerUp
+        nsView.onEscape      = onEscape
         nsView.toolCursor = cursor
         nsView.surfaceDimensionsProvider = surfaceDimensionsProvider
         nsView.productionEDRRenderer  = productionEDRRenderer
@@ -281,6 +576,9 @@ final class ViewportNSView: NSView {
     var onPointerDown: ((CGPoint) -> Void)?
     var onPointerMove: ((CGPoint) -> Void)?
     var onPointerUp:   ((CGPoint) -> Void)?
+    /// UI redesign design brief A4 — Esc key-down while this view is
+    /// (or becomes) first responder.  See `keyDown(with:)`.
+    var onEscape: (() -> Void)?
 
     /// L5a round-6 — production + interactive EDR renderers BOTH
     /// drive a single shared CAMetalLayer ('m_edrLayer').  The
@@ -513,7 +811,12 @@ final class ViewportNSView: NSView {
     /// Returns nil when there's no image to map against.  Coords may
     /// land outside [0, image.size] if the user drags past the
     /// image's edge — the controller treats that as "no hit" for
-    /// picking and as a clamped delta for orbit / pan / zoom.
+    /// picking and as a clamped delta for orbit / pan / zoom.  This
+    /// SAME conversion is what ViewportView's region-of-interest
+    /// drag consumes (via onPointerDown/Move/Up's `p` argument) to
+    /// land in full-res film-pixel space — see ViewportView's
+    /// `commitRegionDrag`, which deliberately does NOT re-derive a
+    /// second mapping.
     private func surfacePoint(from event: NSEvent) -> CGPoint? {
         let p = self.convert(event.locationInWindow, from: nil)
         guard let drawRect = currentImageDrawRect() else { return nil }
@@ -563,6 +866,10 @@ final class ViewportNSView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        // Claim first responder so keyDown (Esc, design brief A4)
+        // reaches this view for the remainder of the interaction —
+        // AppKit doesn't do this automatically on click.
+        window?.makeFirstResponder(self)
         guard let p = surfacePoint(from: event) else { return }
         onPointerDown?(p)
     }
@@ -575,6 +882,16 @@ final class ViewportNSView: NSView {
     override func mouseUp(with event: NSEvent) {
         guard let p = surfacePoint(from: event) else { return }
         onPointerUp?(p)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        // 53 = kVK_Escape.  Anything else falls through to the
+        // default responder chain unchanged.
+        if event.keyCode == 53, let onEscape {
+            onEscape()
+            return
+        }
+        super.keyDown(with: event)
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }

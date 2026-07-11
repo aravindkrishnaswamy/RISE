@@ -373,10 +373,88 @@ final class RenderViewModel: ObservableObject {
 
     private let bridge = RISEBridge()
 
+    // MARK: - UI redesign (design brief A2/A4): refinement status, undo/redo, panel toggles
+
+    /// Interactive-refinement phase, mirrored from
+    /// `RISEViewportBridge.refinementPhase(scaleDivisor:)`:
+    /// -1 no controller, 0 Idle, 1 Rendering, 2 Refining, 3 Polishing,
+    /// 4 Paused.  Driven by `refinementPollTimer` below; TopBar reads
+    /// this to build its status readout.
+    @Published var refinementPhase: Int = -1
+    /// Preview-resolution divisor accompanying `refinementPhase` — a
+    /// power of two in 1...32 (1 = full res).  Only meaningful while
+    /// `refinementPhase == 2` (Refining); TopBar derives a "rung R/6"
+    /// label from it (R = 6 - log2(divisor)).
+    @Published var refinementScaleDivisor: UInt32 = 1
+    /// Mirrors `RISEViewportBridge.isRefinementPaused()`.
+    @Published var isRefinementPaused: Bool = false
+    /// UI redesign design brief A4 — the active interactive region,
+    /// in full-res FILM-PIXEL space (matches
+    /// `RISEViewportBridge.setInteractiveRegionLeft:top:right:bottom:`),
+    /// or nil when no region is set.  Mirrored from
+    /// `getInteractiveRegionLeft:top:right:bottom:` by the same
+    /// `refinementPollTimer` cadence as `refinementPhase` below, and
+    /// updated immediately (bypassing the poll) by ViewportView right
+    /// after a region drag commits, for instant UI feedback.  The
+    /// core auto-clears the region before any production render;
+    /// this poll picks that up within 0.5s like every other
+    /// refinement-status field.
+    @Published var activeRegion: CGRect? = nil
+    /// Mirrors `RISEViewportBridge.undoActionLabel()` / `redoActionLabel()`
+    /// — kept as published state (rather than a computed passthrough) so
+    /// the Edit-menu item titles update reliably off the same poll that
+    /// drives the refinement readout, independent of whatever else
+    /// happens to trigger a SwiftUI re-render.
+    @Published var undoLabel: String = ""
+    @Published var redoLabel: String = ""
+
+    /// View menu toggles (design brief workspace chrome).  Both default
+    /// on; persistence isn't required for slice 1.
+    @Published var showLeftPanel: Bool = true
+    @Published var showLogDrawer: Bool = true
+
+    /// ~2 Hz poll of the interactive controller's refinement/undo state
+    /// while a viewport bridge is attached.  Started/stopped from
+    /// `viewportBridge`'s didSet so every one of the four assignment
+    /// sites (`loadScene`, `continueMergeLoad`, `continueClearAndLoad`,
+    /// `finishSaveAndReload`, `clearScene`) tracks bridge lifetime
+    /// automatically — mirrors the `hostWindow` didSet pattern above.
+    private var refinementPollTimer: Timer? = nil
+
     /// Lazily constructed when a scene successfully loads; torn down on
     /// clearScene().  The viewport bridge borrows `bridge`'s job — its
     /// lifetime must not exceed `bridge`'s.
-    private(set) var viewportBridge: RISEViewportBridge? = nil
+    private(set) var viewportBridge: RISEViewportBridge? = nil {
+        didSet {
+            refinementPollTimer?.invalidate()
+            refinementPollTimer = nil
+            guard let vb = viewportBridge else {
+                refinementPhase = -1
+                refinementScaleDivisor = 1
+                isRefinementPaused = false
+                undoLabel = ""
+                redoLabel = ""
+                activeRegion = nil
+                return
+            }
+            pollRefinementState(vb)
+            // Re-read `self.viewportBridge` inside the Task rather than
+            // capturing the local `vb` across the closure boundary —
+            // RISEViewportBridge isn't Sendable (unlike RISEBridge,
+            // which is vouched-for at this file's top), so a weak
+            // capture of it in a @Sendable Task closure trips Swift
+            // concurrency's capture check.
+            let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                Task { @MainActor [weak self] in
+                    guard let self, let vb = self.viewportBridge else { return }
+                    self.pollRefinementState(vb)
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            refinementPollTimer = timer
+        }
+    }
     /// Drives the looping preview-play frame stepper (Play button).  Nil
     /// when not playing; cancelled + niled by stopPreviewPlay().
     private var previewPlayTask: Task<Void, Never>? = nil
@@ -573,8 +651,13 @@ final class RenderViewModel: ObservableObject {
     }
 
     private func prepareAndLoadScene(at path: String) {
-        // If the editor has unsaved changes, prompt the user before switching
-        if isEditorVisible && isEditorDirty {
+        // If the editor has unsaved changes, prompt the user before
+        // switching.  UI redesign: the scene-file editor is now a
+        // permanently-available tab (not a togglable sidebar), so the
+        // guard is purely dirty-driven — `isEditorVisible` no longer
+        // reflects whether the user could plausibly have unsaved text
+        // sitting there unseen.
+        if isEditorDirty {
             let saveAlert = NSAlert()
             saveAlert.messageText = "Unsaved Changes"
             saveAlert.informativeText = "The scene editor has unsaved changes. Would you like to save them before loading a new scene?"
@@ -1291,6 +1374,145 @@ final class RenderViewModel: ObservableObject {
         isEditorVisible = true
     }
 
+    // MARK: - UI redesign: refinement status poll
+
+    /// Refresh `refinementPhase` / `refinementScaleDivisor` /
+    /// `isRefinementPaused` / `undoLabel` / `redoLabel` from `vb`.
+    /// Called once immediately on bridge attach, then every 0.5 s by
+    /// `refinementPollTimer` — see `viewportBridge`'s didSet.
+    private func pollRefinementState(_ vb: RISEViewportBridge) {
+        var divisor: UInt32 = 1
+        let phase = vb.refinementPhase(withScaleDivisor: &divisor)
+        refinementPhase = Int(phase)
+        refinementScaleDivisor = divisor
+        isRefinementPaused = vb.isRefinementPaused()
+        undoLabel = vb.undoActionLabel()
+        redoLabel = vb.redoActionLabel()
+
+        // Design brief A4 — mirror the active region (full-res
+        // film-pixel space).  The core clears this automatically
+        // before any production render, so this poll is also how the
+        // UI notices that auto-clear rather than going stale.
+        var left: UInt32 = 0, top: UInt32 = 0, right: UInt32 = 0, bottom: UInt32 = 0
+        if vb.getInteractiveRegionLeft(&left, top: &top, right: &right, bottom: &bottom) {
+            // `right`/`bottom` are INCLUSIVE (see RISEViewportBridge.h)
+            // — +1 so width/height reflect the pixel COUNT restricted,
+            // matching ViewportView.commitRegionDrag's convention.
+            activeRegion = CGRect(x: CGFloat(left), y: CGFloat(top),
+                                  width: CGFloat(right) - CGFloat(left) + 1,
+                                  height: CGFloat(bottom) - CGFloat(top) + 1)
+        } else {
+            activeRegion = nil
+        }
+    }
+
+    // MARK: - UI redesign: refinement transport (TopBar / Render menu)
+
+    /// Pause interactive refinement.  No-op with no bridge, or while a
+    /// production render owns the scene (same gate as agent edits — see
+    /// `isProductionRenderRunning`).
+    func pauseRefinement() {
+        guard !isProductionRenderRunning, let vb = viewportBridge else { return }
+        vb.pauseRefinement()
+        isRefinementPaused = true
+    }
+
+    /// Resume interactive refinement.  No-op with no bridge, or while a
+    /// production render owns the scene.
+    func resumeRefinement() {
+        guard !isProductionRenderRunning, let vb = viewportBridge else { return }
+        vb.resumeRefinement()
+        isRefinementPaused = false
+    }
+
+    func togglePauseRefinement() {
+        if isRefinementPaused { resumeRefinement() } else { pauseRefinement() }
+    }
+
+    /// Restart refinement from scratch: stop the interactive render
+    /// thread and start it again (with its normal initial-render pass,
+    /// unlike the post-production `startSuppressingInitialRender` path).
+    /// No-op with no bridge, or while a production render owns the scene.
+    func restartRefinement() {
+        guard !isProductionRenderRunning, let vb = viewportBridge else { return }
+        vb.stop()
+        vb.start()
+    }
+
+    // MARK: - UI redesign: undo/redo passthrough (Edit menu)
+
+    func undo() {
+        guard !isProductionRenderRunning, let vb = viewportBridge else { return }
+        vb.undo()
+    }
+
+    func redo() {
+        guard !isProductionRenderRunning, let vb = viewportBridge else { return }
+        vb.redo()
+    }
+
+    // MARK: - UI redesign: TopBar Save
+
+    /// Writes in-memory edits to the originally-loaded path.  Mirrors
+    /// `PropertiesPanel.performSceneSave(useLoadedPath: true)`'s
+    /// in-place branch — kept as a small, deliberate duplication rather
+    /// than threading a shared helper through PropertiesPanel this
+    /// slice (PropertiesPanel is explicitly out of scope for slice 1;
+    /// it gets its own restyling pass later).  No-op with no bridge or
+    /// no loaded path (the TopBar Save button has no Save-As affordance
+    /// — that stays in the Properties panel).
+    func saveScene() {
+        guard let vb = viewportBridge, let path = loadedFilePath else { return }
+        var errMsg: NSString? = nil
+        let status = vb.saveScene(to: path, errorMessage: &errMsg)
+        switch status {
+        case 0:
+            // Saved.  Pull the just-written bytes back into the
+            // scene-editor pane so it reflects the round-tripped
+            // edits — unless the editor has its own unsaved text
+            // edits, in which case overwriting would silently discard
+            // them (same conflict surfaced in PropertiesPanel).
+            if !isEditorDirty {
+                refreshEditorContents()
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "Scene editor has unsaved text changes"
+                alert.informativeText =
+                    "Your interactive edits were saved to \(path).  " +
+                    "The scene editor pane still shows the pre-save text " +
+                    "plus your unsaved edits.  Clicking Save in the scene " +
+                    "editor will overwrite the just-saved interactive " +
+                    "changes — use Revert in the scene editor to discard " +
+                    "your text edits and pull the new file content."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
+        case 1:
+            break   // NoOp — nothing to write.
+        case 2:
+            showSaveAlert(title: "Save Refused",
+                          message: (errMsg as String?)
+                              ?? "The save engine declined to write this file.")
+        case 3:
+            showSaveAlert(title: "Save Failed",
+                          message: (errMsg as String?)
+                              ?? "An I/O error occurred while saving the file.")
+        default:
+            showSaveAlert(title: "Save Failed",
+                          message: "Unexpected save result (status \(status)).")
+        }
+    }
+
+    private func showSaveAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     // MARK: - Agent surface (Facet 5 slice 1c-1)
 
     /// Toggle the Agent (JSON-RPC) panel.  Mirrors `editSceneFile`.
@@ -1418,6 +1640,27 @@ final class RenderViewModel: ObservableObject {
 
     var canOpenScene: Bool {
         renderState != .rendering && renderState != .cancelling && renderState != .loading
+    }
+
+    /// UI redesign: gate for the Render menu's "Production Render" /
+    /// "Render Animation…" items and the old controls panel's Render
+    /// buttons before it — moved here (from a private ContentView
+    /// computed property) so RISEApp.swift's menu commands can read the
+    /// same rule.
+    var canStartProductionRender: Bool {
+        switch renderState {
+        case .sceneLoaded, .completed, .cancelled:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// UI redesign: gate for File > Close Scene — matches the retired
+    /// controls panel's "Clear" button (disabled while rendering,
+    /// cancelling, or when there's nothing loaded yet).
+    var canCloseScene: Bool {
+        renderState != .rendering && renderState != .cancelling && renderState != .idle
     }
 
     /// L5a round-9 — gate for File > Save Rendered Image.  The

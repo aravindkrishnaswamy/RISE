@@ -1,25 +1,26 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  PropertiesPanel.swift - Right-side accordion for the interactive
-//    viewport.  Five sections (Cameras / Rasterizer / Objects /
-//    Lights / Output Settings — the scene Film) each list the scene's
-//    entities for that category; clicking a row activates it on the
-//    C++ side and shows the selected entity's read-only/edit
-//    properties below.
+//  PropertiesPanel.swift - Right-panel inspector for the interactive
+//    viewport.  Shows the SCENE's currently selected entity (whatever
+//    RISEViewportBridge's PRIMARY selection is — set either by
+//    clicking a row in OutlinerView.swift above this panel, or by
+//    picking an object directly in the 3D viewport) with a
+//    descriptor-driven property list.
 //
-//    Single selection across the whole panel: picking a row in any
-//    section clears whichever was picked before, and auto-expands
-//    that section while collapsing the others.  Click-on-image
-//    object picking routes through the same machinery so the
-//    Objects section auto-expands and the picked row is highlighted.
+//    Pre-redesign this file also owned the nine-section stacked
+//    accordion (Cameras / Rasterizer / Objects / ... each listing its
+//    own entities).  That navigation role moved to OutlinerView.swift;
+//    this file keeps exactly the property-row rendering / editing
+//    machinery — kind-specific value cells, scrub-to-change numeric
+//    fields, preset quick-picks, focused-field edit protection — and
+//    restyles it to the redesign's token set (Theme.swift).
 //
 //////////////////////////////////////////////////////////////////////
 
 import SwiftUI
 
-/// Mirrors RISE::ValueKind in ChunkDescriptor.h.  Used to pick a
-/// suitable input control (single-line text for now; future phases
-/// can specialise for Bool / Enum / Reference).
+/// Mirrors RISE::ValueKind in ChunkDescriptor.h.  Selects which value
+/// cell renders for a property row.
 enum PropertyKind: Int {
     case bool       = 0
     case uint       = 1
@@ -67,26 +68,46 @@ struct PropertyRow: Identifiable {
     }
 }
 
-/// One section of the accordion — Cameras, Rasterizer, Objects, or
-/// Lights.  Wraps the bridge's RISEViewportCategory so the SwiftUI
-/// view can drive its DisclosureGroup binding cleanly.
-struct AccordionSection: Identifiable, Hashable {
-    let id: String                // stable identifier (matches the C-API name)
-    let title: String             // user-visible title
-    let category: RISEViewportCategory
+// MARK: - Category display metadata (Inspector header)
+
+/// Plural section title, mirrors the wording OutlinerView.swift uses
+/// for the same category so the header's meta line reads consistently
+/// with the tree above it.
+private func categoryTitle(_ cat: RISEViewportCategory) -> String {
+    switch cat {
+    case .camera:       return "Cameras"
+    case .rasterizer:   return "Rasterizer"
+    case .object:       return "Objects"
+    case .light:        return "Lights"
+    case .film:         return "Output Settings"
+    case .material:     return "Materials"
+    case .medium:       return "Media"
+    case .animation:    return "Animation"
+    case .sceneVariant: return "Variants"
+    case .none:         return "Scene"
+    default:            return "Scene"
+    }
 }
 
-private let kAccordionSections: [AccordionSection] = [
-    AccordionSection(id: "cameras",     title: "Cameras",         category: .camera),
-    AccordionSection(id: "animations",  title: "Animation",       category: .animation),
-    AccordionSection(id: "variants",    title: "Variants",        category: .sceneVariant),
-    AccordionSection(id: "rasterizer",  title: "Rasterizer",      category: .rasterizer),
-    AccordionSection(id: "objects",     title: "Objects",         category: .object),
-    AccordionSection(id: "lights",      title: "Lights",          category: .light),
-    AccordionSection(id: "materials",   title: "Materials",       category: .material),
-    AccordionSection(id: "media",       title: "Media",           category: .medium),
-    AccordionSection(id: "film",        title: "Output Settings", category: .film),
-]
+/// Plain-text glyph for the entity-header icon chip.  Design brief A6
+/// specifies these for the eight core categories; scene_variant isn't
+/// in the brief (it's a newer category than the design comp) so it
+/// gets a reasonable same-family glyph rather than being left blank.
+private func categoryGlyph(_ cat: RISEViewportCategory) -> String {
+    switch cat {
+    case .camera:       return "◉"
+    case .object:       return "◆"
+    case .light:        return "☀"
+    case .material:     return "◐"
+    case .rasterizer:   return "⚙"
+    case .film:         return "▦"
+    case .medium:       return "≈"
+    case .animation:    return "▶"
+    case .sceneVariant: return "⧉"
+    case .none:         return "•"
+    default:            return "•"
+    }
+}
 
 struct PropertiesPanel: View {
     let bridge: RISEViewportBridge
@@ -99,160 +120,278 @@ struct PropertiesPanel: View {
     // SwiftUI re-evaluates the header HStack on every transition.
     @EnvironmentObject var viewModel: RenderViewModel
 
-    @State private var rows: [PropertyRow] = []   // primary-section rows; kept for the header / panel-wide refresh trigger
-    @State private var rowsByCategory: [Int: [PropertyRow]] = [:]   // Phase 4b: per-section property rows
-    @State private var selectionByCategory: [Int: String] = [:]      // Phase 4b: per-section picked entity
-    @State private var expandedByCategory: [Int: Bool] = [:]         // Phase 4b: per-section accordion expansion (independent of selection)
-    @State private var header: String = ""
-    @State private var mode: RISEViewportPanelMode = .none
+    @State private var rows: [PropertyRow] = []
     @State private var selectionCategory: RISEViewportCategory = .none
     @State private var selectionName: String = ""
-    @State private var entitiesByCategory: [Int: [String]] = [:]
-    @State private var activeNameByCategory: [Int: String] = [:]
-    @State private var lastEpoch: UInt = 0
+    @State private var showAdvanced: Bool = false
+    @State private var lastEntityKey: String = ""
     // Tracks whether we've already shown the "new cameras only live in
     // memory" caveat in this session, so we surface it exactly once.
     @State private var addCameraCaveatShown: Bool = false
-    // Re-entry guard against the "+" button firing a second prompt
-    // while the first NSAlert is still on screen.  NSAlert.runModal()
-    // blocks AppKit's event loop for the alert window but does not
-    // disable the parent panel's button — a synthetic Return-key
-    // event or rapid double-click could open a second alert behind
-    // the first.  Set the flag for the modal's lifetime; the button's
-    // .disabled binding consults it.
+    // Re-entry guard against a second "Add Camera" prompt firing while
+    // the first NSAlert is still on screen.
     @State private var addCameraInFlight: Bool = false
 
+    private static let maxBasicRows = 8
+
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text(header.isEmpty ? "Scene" : header)
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.secondary)
-                Spacer()
-
-                // Phase 6.5: text-labeled buttons (matches Windows
-                // ViewportProperties + standard desktop affordance).
-                // SF-Symbol-only buttons disappear visually when
-                // .disabled in a .borderless style — text + .bordered
-                // stays discoverable even when greyed out.
-                //
-                // Save: in-place write to the originally-loaded path.
-                // Disabled when there's nothing to write OR no path
-                // was loaded (which would force Save-As anyway).
-                Button("Save") {
-                    performSceneSave(useLoadedPath: true)
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 13) {
+                    entityHeader
+                    propertyBody
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(!viewModel.sceneEditsDirty
-                          || viewModel.loadedFilePath == nil)
-                .help(saveButtonHelpText(forSaveAs: false))
-
-                // Save As… — opens NSSavePanel so the user can fork
-                // the in-memory edits to a different file.  Enabled
-                // whenever there are edits; the destination doesn't
-                // have to be the originally-loaded path.
-                Button("Save As…") {
-                    performSceneSave(useLoadedPath: false)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(!viewModel.sceneEditsDirty)
-                .help(saveButtonHelpText(forSaveAs: true))
-
-                Button {
-                    reload()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.borderless)
-                .help("Refresh from the live scene")
+                .padding(14)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color(nsColor: .windowBackgroundColor))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-            Divider()
-
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(kAccordionSections) { section in
-                        // Phase 4b: read expanded state + selection
-                        // INDEPENDENTLY from the controller.  A
-                        // section header click sends an empty-name
-                        // SetSelection — that sets expanded=true with
-                        // an empty pick, so the section opens with
-                        // its dropdown visible but no entity-specific
-                        // rows below.  Auto-sync of Material on an
-                        // Object pick is handled controller-side.
-                        let perCatPick = selectionByCategory[section.category.rawValue] ?? ""
-                        let resolvedName: String =
-                            !perCatPick.isEmpty
-                                ? perCatPick
-                                : (activeNameByCategory[section.category.rawValue] ?? "")
-                        let sectionExpanded = expandedByCategory[section.category.rawValue] ?? false
-                        let sectionRows = rowsByCategory[section.category.rawValue] ?? []
-                        AccordionSectionView(
-                            section: section,
-                            entities: entitiesByCategory[section.category.rawValue] ?? [],
-                            isExpanded: sectionExpanded,
-                            selectedName: resolvedName,
-                            onSelectRow: { name in
-                                bridge.setSelection(section.category, name: name)
-                                reload()
-                            },
-                            onToggle: { newExpanded in
-                                if newExpanded {
-                                    // Open this section: empty-name selection
-                                    // sets the expanded flag without picking
-                                    // a specific entity.
-                                    bridge.setSelection(section.category, name: "")
-                                } else if sectionExpanded {
-                                    // Collapse this section ONLY — leave
-                                    // other sections alone.  Pre-Phase-4b
-                                    // this was a panel-wide collapse via
-                                    // setSelection(.none, ...), but the
-                                    // multi-section model needs a per-
-                                    // section close.
-                                    bridge.collapseSection(for: section.category)
-                                }
-                                reload()
-                            },
-                            // Only the Cameras section gets the "+" action.
-                            // Other categories return nil → button hidden.
-                            onAddEntity: section.category == .camera
-                                ? { promptForNewCameraName(activeName: activeNameByCategory[section.category.rawValue] ?? "") }
-                                : nil
-                        )
-                        // Property rows render directly under each
-                        // expanded section.  Edit routes through the
-                        // per-category SetProperty so the Material
-                        // section's edits go to the right material
-                        // even when Object is the primary selection.
-                        if sectionExpanded && !sectionRows.isEmpty {
-                            PropertyList(
-                                rows: sectionRows,
-                                bridge: bridge,
-                                category: section.category,
-                                onCommitted: reload )
-                                .padding(.leading, 12)
-                        }
-                    }
-                }
-                .padding(8)
-            }
+            Rectangle().fill(Theme.borderHairline).frame(height: 1)
+            footer
         }
-        .frame(minWidth: 240, idealWidth: 280)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear { reload() }
         .onChange(of: refreshTrigger) { _, _ in reload() }
+    }
+
+    // MARK: - Entity header
+
+    private var entityHeader: some View {
+        HStack(spacing: 9) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Theme.accent.opacity(0.15))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.accent.opacity(0.3), lineWidth: 1))
+                Text(categoryGlyph(selectionCategory))
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.accentLight)
+            }
+            .frame(width: 26, height: 26)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(headerTitle)
+                    .font(Theme.sans(12.5, .semibold))
+                    .foregroundColor(Theme.textPrimary)
+                    .lineLimit(1)
+                Text(headerMeta)
+                    .font(Theme.mono(10))
+                    .foregroundColor(Theme.textDim)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+        }
+    }
+
+    private var headerTitle: String {
+        if !selectionName.isEmpty { return selectionName }
+        if selectionCategory != .none { return categoryTitle(selectionCategory) }
+        return "Scene"
+    }
+
+    private var headerMeta: String {
+        if selectionCategory == .none { return "Nothing selected" }
+        if !selectionName.isEmpty { return categoryTitle(selectionCategory) }
+        return "No entity selected"
+    }
+
+    // MARK: - Property body
+
+    @ViewBuilder
+    private var propertyBody: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if selectionCategory == .camera {
+                cameraAffordances
+            }
+            if rows.isEmpty {
+                Text(emptyRowsMessage)
+                    .font(Theme.sans(11))
+                    .foregroundColor(Theme.textDim)
+            } else {
+                let split = Self.splitBasicAdvanced(rows)
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(split.basic) { row in makeRow(row) }
+                }
+                if !split.advanced.isEmpty {
+                    advancedDisclosure(split.advanced)
+                }
+            }
+        }
+    }
+
+    private var emptyRowsMessage: String {
+        switch selectionCategory {
+        case .animation:    return "Selecting activates this animation path."
+        case .sceneVariant: return "Selecting activates this scene variant — the scene re-derives with it active."
+        case .none:         return "Select an item in the outliner."
+        default:            return "Select an entity in the outliner to see its properties."
+        }
+    }
+
+    private func makeRow(_ row: PropertyRow) -> some View {
+        PropertyRowView(
+            row: row,
+            onCommit: { newValue in
+                _ = bridge.setProperty(for: selectionCategory, name: row.name, value: newValue)
+                reload()
+            },
+            onScrubBegin: { bridge.beginPropertyScrub() },
+            onScrubEnd:   { bridge.endPropertyScrub()   }
+        )
+    }
+
+    private func advancedDisclosure(_ advanced: [PropertyRow]) -> some View {
+        AdvancedDisclosure(count: advanced.count, isOpen: $showAdvanced) {
+            VStack(alignment: .leading, spacing: 9) {
+                ForEach(advanced) { row in makeRow(row) }
+            }
+        }
+    }
+
+    /// Progressive disclosure (design brief A6, two levels max): the
+    /// first ~8 rows show inline as "Basic"; the rest collapse under
+    /// one "Advanced" toggle.  Priority for the Basic 8: editable rows
+    /// with quick-pick presets first (the ones most worth a click),
+    /// then whichever other rows come next in descriptor order, until
+    /// the cap is reached.  Both groups are then rendered back in
+    /// their ORIGINAL descriptor order — the priority pass only
+    /// decides membership, not display order, so a Basic row doesn't
+    /// visually jump ahead of a field that logically precedes it.
+    private static func splitBasicAdvanced(_ rows: [PropertyRow]) -> (basic: [PropertyRow], advanced: [PropertyRow]) {
+        guard rows.count > maxBasicRows else { return (rows, []) }
+
+        let withPresets = rows.filter { $0.editable && !$0.presets.isEmpty }
+        var selectedIDs = Set(withPresets.prefix(maxBasicRows).map { $0.id })
+        if selectedIDs.count < maxBasicRows {
+            for r in rows where !selectedIDs.contains(r.id) {
+                selectedIDs.insert(r.id)
+                if selectedIDs.count >= maxBasicRows { break }
+            }
+        }
+        let basic = rows.filter { selectedIDs.contains($0.id) }
+        let advanced = rows.filter { !selectedIDs.contains($0.id) }
+        return (basic, advanced)
+    }
+
+    // MARK: - Camera affordances
+
+    private var cameraAffordances: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                _ = bridge.setSelection(.camera, name: selectionName)
+                reload()
+            } label: {
+                Text("Use in viewport")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(OutlineAccentButtonStyle())
+            .disabled(selectionName.isEmpty)
+
+            Button {
+                promptForNewCameraName(activeName: bridge.activeName(for: .camera))
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "plus.circle")
+                        .font(.system(size: 10))
+                    Text("Add Camera")
+                        .font(Theme.mono(10.5))
+                }
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(Theme.textDim)
+            .disabled(addCameraInFlight)
+        }
     }
 
     /// Prompt the user for a new camera name, then call the bridge's
     /// `addCameraFromActive` to clone the current camera under that
     /// name.  Default proposal is "<active>_copy".  On first
     /// successful add per session, also surfaces a caveat alert that
-    /// the new camera lives in memory only (the SceneEditor's
+    /// the new camera lives in memory only.
+    private func promptForNewCameraName(activeName: String) {
+        if addCameraInFlight { return }
+        addCameraInFlight = true
+        defer { addCameraInFlight = false }
+
+        let alert = NSAlert()
+        alert.messageText = "Add Camera"
+        alert.informativeText =
+            "Cloning the current camera.  Pick a name for the new camera.\n\n" +
+            "Notes:\n" +
+            "  • The clone is in-memory only — saving the .RISEscene file\n" +
+            "    from the editor does not yet emit added cameras.\n" +
+            "  • Duplicate names get a numeric suffix appended."
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
+        let proposal = activeName.isEmpty ? "camera_copy" : "\(activeName)_copy"
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        input.stringValue = proposal
+        input.becomeFirstResponder()
+        alert.accessoryView = input
+        let response = alert.runModal()
+        if response != .alertFirstButtonReturn {
+            return
+        }
+        let chosenName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let newName = bridge.addCameraFromActive(proposedName: chosenName), !newName.isEmpty else {
+            let fail = NSAlert()
+            fail.messageText = "Couldn't add camera"
+            fail.informativeText = "The current camera could not be cloned.  See RISE_Log.txt for details."
+            fail.alertStyle = .warning
+            fail.runModal()
+            return
+        }
+        // Promote the new camera to the panel's selection so the user
+        // sees its properties immediately.
+        bridge.setSelection(.camera, name: newName)
+        reload()
+
+        // One-shot persistence caveat per session.
+        if !addCameraCaveatShown {
+            addCameraCaveatShown = true
+            let caveat = NSAlert()
+            caveat.messageText = "New camera \"\(newName)\" added"
+            caveat.informativeText =
+                "Heads up — added cameras are kept in memory only until the\n" +
+                "scene-text round-trip lands.  Save your scene file from a\n" +
+                "text editor to preserve them across reloads."
+            caveat.alertStyle = .informational
+            caveat.runModal()
+        }
+    }
+
+    // MARK: - Footer (Save / Save As / Refresh)
+
+    private var footer: some View {
+        HStack(spacing: 8) {
+            Button("Save") {
+                performSceneSave(useLoadedPath: true)
+            }
+            .buttonStyle(PillButtonStyle(filled: true))
+            .disabled(!viewModel.sceneEditsDirty || viewModel.loadedFilePath == nil)
+            .help(saveButtonHelpText(forSaveAs: false))
+
+            Button("Save As…") {
+                performSceneSave(useLoadedPath: false)
+            }
+            .buttonStyle(PillButtonStyle(filled: false))
+            .disabled(!viewModel.sceneEditsDirty)
+            .help(saveButtonHelpText(forSaveAs: true))
+
+            Spacer(minLength: 4)
+
+            Button {
+                reload()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textDim)
+            }
+            .buttonStyle(.plain)
+            .help("Refresh from the live scene")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
     // ----------------------------------------------------------------
     // Phase 6.5: scene-file save action.  Both header buttons route
     // here.  `useLoadedPath == true` writes to the originally-loaded
@@ -371,374 +510,513 @@ struct PropertiesPanel: View {
         alert.runModal()
     }
 
-    /// scene-text round-trip is not yet implemented; reloading the
-    /// .RISEscene file would drop it).
-    private func promptForNewCameraName(activeName: String) {
-        if addCameraInFlight { return }
-        addCameraInFlight = true
-        defer { addCameraInFlight = false }
-
-        let alert = NSAlert()
-        alert.messageText = "Add Camera"
-        alert.informativeText =
-            "Cloning the current camera.  Pick a name for the new camera.\n\n" +
-            "Notes:\n" +
-            "  • The clone is in-memory only — saving the .RISEscene file\n" +
-            "    from the editor does not yet emit added cameras.\n" +
-            "  • Duplicate names get a numeric suffix appended."
-        alert.addButton(withTitle: "Add")
-        alert.addButton(withTitle: "Cancel")
-        let proposal = activeName.isEmpty ? "camera_copy" : "\(activeName)_copy"
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        input.stringValue = proposal
-        input.becomeFirstResponder()
-        alert.accessoryView = input
-        let response = alert.runModal()
-        if response != .alertFirstButtonReturn {
-            return
-        }
-        let chosenName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let newName = bridge.addCameraFromActive(proposedName: chosenName), !newName.isEmpty else {
-            // Failure cases (no active camera, unclonable type, etc.)
-            // Surface a short alert so the user understands why the
-            // click had no effect — the controller already logged a
-            // warning to RISE_Log.txt with the details.
-            let fail = NSAlert()
-            fail.messageText = "Couldn't add camera"
-            fail.informativeText = "The current camera could not be cloned.  See RISE_Log.txt for details."
-            fail.alertStyle = .warning
-            fail.runModal()
-            return
-        }
-        // Promote the new camera to the panel's selection so the user
-        // sees its properties immediately.
-        bridge.setSelection(.camera, name: newName)
-        reload()
-
-        // One-shot persistence caveat per session.
-        if !addCameraCaveatShown {
-            addCameraCaveatShown = true
-            let caveat = NSAlert()
-            caveat.messageText = "New camera \"\(newName)\" added"
-            caveat.informativeText =
-                "Heads up — added cameras are kept in memory only until the\n" +
-                "scene-text round-trip lands.  Save your scene file from a\n" +
-                "text editor to preserve them across reloads."
-            caveat.alertStyle = .informational
-            caveat.runModal()
-        }
-    }
+    // MARK: - Reload
 
     private func reload() {
         bridge.refreshProperties()
-        mode = bridge.panelMode
-        header = bridge.panelHeader
         selectionCategory = bridge.selectionCategory
         selectionName = bridge.selectionName
         rows = bridge.propertySnapshot().map(PropertyRow.from)
 
-        // Phase 4b: per-category state.  Expansion + selection are
-        // tracked separately so a header click (empty-name
-        // SetSelection) opens the section without picking a row.
-        // The controller auto-fills the Material section's
-        // selection + expansion when an Object is picked.
-        var freshSelections: [Int: String] = [:]
-        var freshExpanded:   [Int: Bool]   = [:]
-        var freshRows:       [Int: [PropertyRow]] = [:]
-        for section in kAccordionSections {
-            let cat = section.category
-            let isExpanded = bridge.isSectionExpanded(for: cat)
-            freshExpanded[cat.rawValue] = isExpanded
-            freshSelections[cat.rawValue] = bridge.selectionName(for: cat)
-            if isExpanded {
-                // Property rows render for every expanded section,
-                // including ones with empty selection (Camera /
-                // Rasterizer / Film render their active-entity rows
-                // as a sensible default; Object / Light / Material
-                // stay empty until a pick).
-                freshRows[cat.rawValue] = bridge.propertySnapshot(for: cat).map(PropertyRow.from)
-            }
+        // Reset the Advanced disclosure whenever the selected entity's
+        // identity changes — otherwise it could stay open showing a
+        // stale row set as the user clicks between entities.
+        let key = "\(selectionCategory.rawValue)|\(selectionName)"
+        if key != lastEntityKey {
+            lastEntityKey = key
+            showAdvanced = false
         }
-        selectionByCategory = freshSelections
-        expandedByCategory  = freshExpanded
-        rowsByCategory      = freshRows
-
-        // Re-pull per-section entity lists when the scene epoch
-        // advances (scene reload, structural mutation).
-        let epoch = UInt(bridge.sceneEpoch)
-        if epoch != lastEpoch {
-            lastEpoch = epoch
-            var fresh: [Int: [String]] = [:]
-            for section in kAccordionSections {
-                fresh[section.category.rawValue] = bridge.categoryEntities(section.category)
-            }
-            entitiesByCategory = fresh
-        }
-
-        // Active-name lookup is cheap (one C-API hop per category) and
-        // can change between epochs (a SetActiveCamera can happen
-        // without adding/removing cameras).  Re-pull on every reload.
-        var freshActive: [Int: String] = [:]
-        for section in kAccordionSections {
-            freshActive[section.category.rawValue] = bridge.activeName(for: section.category)
-        }
-        activeNameByCategory = freshActive
     }
 }
 
-/// One accordion section: header + dropdown picker for the section's
-/// entity list.  All sections use the dropdown for visual consistency
-/// and to handle worst-case entity counts (Objects can run into the
-/// hundreds).  Output Settings is single-entry but uses the same widget
-/// chrome to keep the layout uniform.
-private struct AccordionSectionView: View {
-    let section: AccordionSection
-    let entities: [String]
-    let isExpanded: Bool
-    let selectedName: String
-    let onSelectRow: (String) -> Void
-    let onToggle: (Bool) -> Void
-    /// Optional "+" button action.  Currently only the Cameras section
-    /// supplies this; other sections pass `nil` and the button is
-    /// hidden.  When the section is collapsed the button is also
-    /// hidden (the only "add" action belongs alongside an open
-    /// section's content).
-    let onAddEntity: (() -> Void)?
+// MARK: - Advanced disclosure
+
+private struct AdvancedDisclosure<Content: View>: View {
+    let count: Int
+    @Binding var isOpen: Bool
+    @ViewBuilder let content: () -> Content
+
+    @State private var hovering = false
 
     var body: some View {
-        DisclosureGroup(
-            isExpanded: Binding(
-                get: { isExpanded },
-                set: { newValue in
-                    // Guard spurious set callbacks during the
-                    // animated disclosure transition — SwiftUI can
-                    // re-issue `set` with the value it just got from
-                    // `get`, which would re-route a no-op
-                    // setSelection.  Only forward real changes.
-                    if newValue != isExpanded { onToggle(newValue) }
-                }
-            ),
-            content: {
-                if entities.isEmpty {
-                    Text("(none)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(.vertical, 4)
-                        .padding(.leading, 8)
-                } else {
-                    EntityDropdown(
-                        entities: entities,
-                        selectedName: selectedName,
-                        onSelect: onSelectRow
-                    )
-                }
-            },
-            label: {
-                HStack(spacing: 4) {
-                    Text(section.title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.primary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                        .onTapGesture { onToggle(!isExpanded) }
-                    if isExpanded, let onAdd = onAddEntity {
-                        Button {
-                            onAdd()
-                        } label: {
-                            Image(systemName: "plus.circle")
-                                .font(.system(size: 12))
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Add — clone the current entity under a new name")
-                    }
-                }
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                Text("Advanced")
+                    .font(Theme.sans(11.5))
+                Text(isOpen ? "▾" : "▸")
+                    .font(.system(size: 9))
+                Spacer(minLength: 4)
+                Text("\(count) more")
+                    .font(Theme.mono(9.5))
+                    .foregroundColor(Theme.textDisabled)
             }
-        )
-        .padding(.vertical, 2)
-    }
-}
+            .foregroundColor(hovering ? Theme.textSecondary : Theme.textFaint)
+            .contentShape(Rectangle())
+            .onTapGesture { isOpen.toggle() }
+            .onHover { hovering = $0 }
 
-/// Dropdown picker for sections (Rasterizer / Object) that can hold
-/// many entries.  Uses a `Menu` so the selection UX matches the
-/// per-property presets dropdowns the rest of the panel uses.
-/// Picking an item routes through `onSelect` exactly as a list-row
-/// click did, so the rest of the selection plumbing is untouched.
-private struct EntityDropdown: View {
-    let entities: [String]
-    let selectedName: String
-    let onSelect: (String) -> Void
-
-    var body: some View {
-        HStack {
-            Menu {
-                ForEach(entities, id: \.self) { name in
-                    Button(name) {
-                        if name != selectedName { onSelect(name) }
-                    }
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(selectedName.isEmpty ? "(pick one)" : selectedName)
-                        .font(.system(size: 11, design: .monospaced))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .foregroundColor(selectedName.isEmpty ? .secondary : .primary)
-                    Spacer()
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(
-                    RoundedRectangle(cornerRadius: 4)
-                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                )
+            if isOpen {
+                content()
             }
-            .menuStyle(.borderlessButton)
-        }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 4)
-    }
-}
-
-/// The property-row list shown under whichever accordion section is
-/// currently expanded.  Same descriptor-driven rendering as before;
-/// kept as a separate view so each section's rows render in-place.
-private struct PropertyList: View {
-    let rows: [PropertyRow]
-    let bridge: RISEViewportBridge
-    let category: RISEViewportCategory      // Phase 4b: per-section edit routing
-    let onCommitted: () -> Void
-
-    var body: some View {
-        if rows.isEmpty {
-            Text("No properties available.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .padding(.vertical, 4)
-        } else {
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(rows) { row in
-                    PropertyRowView(
-                        row: row,
-                        onCommit: { newValue in
-                            // Per-category SetProperty so a Material
-                            // section row edits the bound material
-                            // even when Object is the primary
-                            // selection.
-                            _ = bridge.setProperty(for: category, name: row.name, value: newValue)
-                            onCommitted()
-                        },
-                        onScrubBegin: { bridge.beginPropertyScrub() },
-                        onScrubEnd:   { bridge.endPropertyScrub()   }
-                    )
-                }
-            }
-            .padding(.vertical, 4)
         }
     }
 }
 
-/// One row: label on top, editable text field below (or read-only text).
+// MARK: - Property row
+
+/// One label + value-cell row.  The value cell's presentation is
+/// picked by `row.kind`; all kinds share the same 82pt label column.
 private struct PropertyRowView: View {
     let row: PropertyRow
     let onCommit: (String) -> Void
     let onScrubBegin: () -> Void
     let onScrubEnd:   () -> Void
 
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(row.name)
+                .font(Theme.sans(11))
+                .foregroundColor(Theme.textFaint)
+                .frame(width: 82, alignment: .leading)
+                .padding(.top, 5)
+
+            VStack(alignment: .leading, spacing: 4) {
+                valueCell
+                if !row.description.isEmpty {
+                    Text(row.description)
+                        .font(Theme.mono(9.5))
+                        .foregroundColor(Theme.textGhost)
+                        .lineLimit(2)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var valueCell: some View {
+        switch row.kind {
+        case .bool:
+            BoolPillCell(row: row, onCommit: onCommit)
+        case .doubleVec3:
+            Vec3Cell(row: row, onCommit: onCommit)
+        case .filename:
+            FilenameCell(row: row, onCommit: onCommit)
+        case .reference:
+            ReferenceChipCell(row: row, onCommit: onCommit)
+        case .enumKind:
+            EnumChipCell(row: row, onCommit: onCommit)
+        case .double, .uint, .string:
+            TextWellCell(row: row, onCommit: onCommit, onScrubBegin: onScrubBegin, onScrubEnd: onScrubEnd)
+        }
+    }
+}
+
+// MARK: - Shared well chrome
+
+private func wellBackground() -> some View {
+    RoundedRectangle(cornerRadius: Theme.radiusSmall)
+        .fill(Theme.bgWell)
+        .overlay(RoundedRectangle(cornerRadius: Theme.radiusSmall).stroke(Theme.borderLight, lineWidth: 1))
+}
+
+/// Shared quick-pick presets menu (list-bullet icon button).
+private struct PresetMenu: View {
+    let row: PropertyRow
+    let onPick: (String) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(row.presets) { preset in
+                Button(preset.label) { onPick(preset.value) }
+            }
+        } label: {
+            Image(systemName: "list.bullet")
+                .font(.system(size: 10))
+                .foregroundColor(Theme.textDim)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Quick-pick presets")
+    }
+}
+
+// MARK: - Text / number well (String, Double, UInt — and the Enum /
+// Reference fallback when the descriptor declared no presets)
+
+private struct TextWellCell: View {
+    let row: PropertyRow
+    let onCommit: (String) -> Void
+    let onScrubBegin: () -> Void
+    let onScrubEnd: () -> Void
+
     @State private var text: String = ""
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(row.name)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.secondary)
-                Spacer()
-                if !row.editable {
-                    Text("read-only")
-                        .font(.system(size: 9))
-                        .foregroundColor(.tertiaryLabelColor)
-                }
-            }
-
+        HStack(spacing: 4) {
             if row.editable {
-                HStack(spacing: 4) {
-                    if isScrubbable(kind: row.kind) {
-                        ScrubHandle(
-                            text: $text,
-                            name: row.name,
-                            kind: row.kind,
-                            onScrubBegin: onScrubBegin,
-                            onScrub: { newValue in
-                                onCommit(newValue)
-                            },
-                            onScrubEnd: onScrubEnd
-                        )
-                    }
-                    TextField("", text: $text)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.caption, design: .monospaced))
-                        .focused($isFocused)
-                        .onSubmit { onCommit(text) }
-                        .onChange(of: isFocused) { _, focused in
-                            if !focused && text != row.initialValue {
-                                onCommit(text)
-                            }
+                if isScrubbable(kind: row.kind) {
+                    ScrubHandle(
+                        text: $text,
+                        name: row.name,
+                        kind: row.kind,
+                        onScrubBegin: onScrubBegin,
+                        onScrub: { onCommit($0) },
+                        onScrubEnd: onScrubEnd
+                    )
+                }
+                TextField("", text: $text)
+                    .textFieldStyle(.plain)
+                    .font(Theme.mono(11))
+                    .foregroundColor(Theme.textPrimary)
+                    .focused($isFocused)
+                    .onSubmit { onCommit(text) }
+                    .onChange(of: isFocused) { _, focused in
+                        if !focused && text != row.initialValue {
+                            onCommit(text)
                         }
-                    if !row.unitLabel.isEmpty {
-                        Text(row.unitLabel)
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                            .fixedSize()
                     }
-                    if !row.presets.isEmpty {
-                        Menu {
-                            ForEach(row.presets) { preset in
-                                Button(preset.label) {
-                                    text = preset.value
-                                    onCommit(preset.value)
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "list.bullet")
-                                .font(.system(size: 10))
-                        }
-                        .menuStyle(.borderlessButton)
+                if !row.unitLabel.isEmpty {
+                    Text(row.unitLabel)
+                        .font(Theme.mono(9.5))
+                        .foregroundColor(Theme.textDim)
                         .fixedSize()
-                        .help("Quick-pick presets")
+                }
+                if !row.presets.isEmpty {
+                    PresetMenu(row: row) { value in
+                        text = value
+                        onCommit(value)
                     }
                 }
             } else {
-                HStack(spacing: 4) {
-                    Text(text.isEmpty ? row.initialValue : text)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 2)
-                    if !row.unitLabel.isEmpty {
-                        Text(row.unitLabel)
-                            .font(.system(size: 10))
-                            .foregroundColor(.tertiaryLabelColor)
-                    }
+                Text(text.isEmpty ? row.initialValue : text)
+                    .font(Theme.mono(11))
+                    .foregroundColor(Theme.textMuted)
+                if !row.unitLabel.isEmpty {
+                    Text(row.unitLabel)
+                        .font(Theme.mono(9.5))
+                        .foregroundColor(Theme.textDim)
                 }
-            }
-
-            if !row.description.isEmpty {
-                Text(row.description)
-                    .font(.system(size: 10))
-                    .foregroundColor(.tertiaryLabelColor)
-                    .lineLimit(2)
+                Spacer(minLength: 4)
+                Text("read-only")
+                    .font(Theme.mono(9))
+                    .foregroundColor(Theme.textGhost)
             }
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(wellBackground())
         .onAppear { text = row.initialValue }
         .onChange(of: row.initialValue) { _, newValue in
             if !isFocused { text = newValue }
         }
     }
 }
+
+// MARK: - Bool pill toggle
+
+private struct BoolPillCell: View {
+    let row: PropertyRow
+    let onCommit: (String) -> Void
+
+    @State private var isOn: Bool = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button {
+                guard row.editable else { return }
+                isOn.toggle()
+                onCommit(isOn ? "true" : "false")
+            } label: {
+                ZStack(alignment: isOn ? .trailing : .leading) {
+                    RoundedRectangle(cornerRadius: 9)
+                        .fill(isOn ? Theme.accent : Theme.fillTrough)
+                        .frame(width: 32, height: 18)
+                    Circle()
+                        .fill(Color(hex: 0x0d1116))
+                        .frame(width: 14, height: 14)
+                        .padding(2)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(!row.editable)
+
+            if !row.editable {
+                Text("read-only")
+                    .font(Theme.mono(9))
+                    .foregroundColor(Theme.textGhost)
+            }
+            Spacer(minLength: 0)
+        }
+        .onAppear { isOn = Self.parseBool(row.initialValue) }
+        .onChange(of: row.initialValue) { _, v in isOn = Self.parseBool(v) }
+    }
+
+    private static func parseBool(_ s: String) -> Bool {
+        let l = s.lowercased()
+        return l == "true" || l == "1"
+    }
+}
+
+// MARK: - DoubleVec3 (three tinted wells)
+
+private struct Vec3Cell: View {
+    let row: PropertyRow
+    let onCommit: (String) -> Void
+
+    @State private var comps: [String] = ["0", "0", "0"]
+    @FocusState private var focusedIndex: Int?
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3, id: \.self) { i in
+                TextField("", text: Binding(
+                    get: { i < comps.count ? comps[i] : "0" },
+                    set: { newValue in
+                        while comps.count <= i { comps.append("0") }
+                        comps[i] = newValue
+                    }
+                ))
+                .textFieldStyle(.plain)
+                .font(Theme.mono(11))
+                .foregroundColor(vecColor(i))
+                .disabled(!row.editable)
+                .focused($focusedIndex, equals: i)
+                .onSubmit { commit() }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 5)
+                .background(wellBackground())
+            }
+        }
+        .onAppear { comps = Self.parseVec3(row.initialValue) }
+        .onChange(of: row.initialValue) { _, v in
+            if focusedIndex == nil { comps = Self.parseVec3(v) }
+        }
+        .onChange(of: focusedIndex) { old, new in
+            if old != nil && new == nil { commit() }
+        }
+    }
+
+    private func commit() {
+        onCommit(comps.joined(separator: " "))
+    }
+
+    private func vecColor(_ i: Int) -> Color {
+        switch i {
+        case 0:  return Theme.error
+        case 1:  return Theme.successLight
+        default: return Theme.accentLight
+        }
+    }
+
+    private static func parseVec3(_ s: String) -> [String] {
+        var parts = s.split(separator: " ").map(String.init)
+        while parts.count < 3 { parts.append("0") }
+        return Array(parts.prefix(3))
+    }
+}
+
+// MARK: - Filename (well + browse button)
+
+private struct FilenameCell: View {
+    let row: PropertyRow
+    let onCommit: (String) -> Void
+
+    @State private var text: String = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 4) {
+            TextField("", text: $text)
+                .textFieldStyle(.plain)
+                .font(Theme.mono(11))
+                .foregroundColor(row.editable ? Theme.textPrimary : Theme.textMuted)
+                .disabled(!row.editable)
+                .focused($isFocused)
+                .onSubmit { onCommit(text) }
+                .onChange(of: isFocused) { _, focused in
+                    if !focused && text != row.initialValue { onCommit(text) }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(wellBackground())
+
+            if row.editable {
+                Button {
+                    browse()
+                } label: {
+                    Image(systemName: "folder")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.textDim)
+                }
+                .buttonStyle(.plain)
+                .padding(6)
+                .background(wellBackground())
+                .help("Browse…")
+            }
+        }
+        .onAppear { text = row.initialValue }
+        .onChange(of: row.initialValue) { _, v in
+            if !isFocused { text = v }
+        }
+    }
+
+    private func browse() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        if panel.runModal() == .OK, let url = panel.url {
+            text = url.path
+            onCommit(url.path)
+        }
+    }
+}
+
+// MARK: - Reference (swatch + name chip)
+
+private struct ReferenceChipCell: View {
+    let row: PropertyRow
+    let onCommit: (String) -> Void
+
+    @State private var text: String = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // A generic identity dot, not a per-entity color swatch —
+            // the bridge doesn't expose the referenced entity's actual
+            // appearance (material color, etc.), so a swatch that
+            // implied one would be fabricated data.
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Theme.purple.opacity(0.5))
+                .frame(width: 16, height: 16)
+
+            if row.editable {
+                TextField("", text: $text)
+                    .textFieldStyle(.plain)
+                    .font(Theme.mono(11.5))
+                    .foregroundColor(Theme.textPrimary)
+                    .focused($isFocused)
+                    .onSubmit { onCommit(text) }
+                    .onChange(of: isFocused) { _, focused in
+                        if !focused && text != row.initialValue { onCommit(text) }
+                    }
+            } else {
+                Text(text.isEmpty ? row.initialValue : text)
+                    .font(Theme.mono(11.5))
+                    .foregroundColor(Theme.textMuted)
+            }
+            Spacer(minLength: 4)
+            if !row.presets.isEmpty {
+                PresetMenu(row: row) { value in
+                    text = value
+                    onCommit(value)
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(wellBackground())
+        .onAppear { text = row.initialValue }
+        .onChange(of: row.initialValue) { _, v in
+            if !isFocused { text = v }
+        }
+    }
+}
+
+// MARK: - Enum (bordered menu chip when presets exist, else a plain well)
+
+private struct EnumChipCell: View {
+    let row: PropertyRow
+    let onCommit: (String) -> Void
+
+    @State private var text: String = ""
+
+    var body: some View {
+        if row.editable && !row.presets.isEmpty {
+            Menu {
+                ForEach(row.presets) { preset in
+                    Button(preset.label) {
+                        text = preset.value
+                        onCommit(preset.value)
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(displayLabel)
+                        .font(Theme.mono(11))
+                        .foregroundColor(Theme.textPrimary)
+                    Spacer(minLength: 2)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8))
+                        .foregroundColor(Theme.textDim)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(wellBackground())
+            }
+            .menuStyle(.borderlessButton)
+            .onAppear { text = row.initialValue }
+            .onChange(of: row.initialValue) { _, v in text = v }
+        } else {
+            // No descriptor-declared presets for this enum — fall back
+            // to a plain editable well rather than inventing options.
+            TextWellCell(row: row, onCommit: onCommit, onScrubBegin: {}, onScrubEnd: {})
+        }
+    }
+
+    private var displayLabel: String {
+        row.presets.first(where: { $0.value == text })?.label ?? (text.isEmpty ? row.initialValue : text)
+    }
+}
+
+// MARK: - Button styles
+
+private struct PillButtonStyle: ButtonStyle {
+    var filled: Bool
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Theme.sans(11, .semibold))
+            .foregroundColor(filled ? Color.black.opacity(0.85) : Theme.textTertiary)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.radiusMedium)
+                    .fill(filled ? Theme.textPrimary : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radiusMedium)
+                    .stroke(filled ? Color.clear : Theme.borderStrong, lineWidth: 1)
+            )
+            .opacity(isEnabled ? (configuration.isPressed ? 0.85 : 1.0) : 0.4)
+    }
+}
+
+private struct OutlineAccentButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Theme.sans(11.5))
+            .foregroundColor(Theme.accentLight)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.radiusMedium)
+                    .fill(configuration.isPressed ? Theme.accent.opacity(0.1) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radiusMedium)
+                    .stroke(Theme.accent.opacity(0.35), lineWidth: 1)
+            )
+            .opacity(isEnabled ? 1.0 : 0.4)
+    }
+}
+
+// MARK: - Scrub helpers
 
 /// Single-numeric kinds get the scrub handle.  Multi-component (Vec3)
 /// and string-like fields don't — scrubbing a vector is ambiguous, and
@@ -770,7 +1048,7 @@ private struct ScrubHandle: View {
     var body: some View {
         Image(systemName: "chevron.up.chevron.down")
             .font(.system(size: 9, weight: .medium))
-            .foregroundColor(.secondary.opacity(dragStart == nil ? 0.7 : 1.0))
+            .foregroundColor(Theme.textDim.opacity(dragStart == nil ? 0.85 : 1.0))
             .frame(width: 16, height: 18)
             .contentShape(Rectangle())
             .onHover { entered in
@@ -840,8 +1118,4 @@ private func formatValue(_ v: Double, kind: PropertyKind) -> String {
     default:
         return String(format: "%g", v)
     }
-}
-
-private extension Color {
-    static var tertiaryLabelColor: Color { Color(nsColor: .tertiaryLabelColor) }
 }
