@@ -2811,10 +2811,15 @@ namespace RISE
 		//! Tells us whether anything is keyframed
 		virtual bool AreThereAnyKeyframedObjects() = 0;
 
-		//! Adds a keyframe for the specified element
+		//! Adds a keyframe for the specified element, routed to the implicit default
+		//! animation (equivalent to AddKeyframeToAnimation with a NULL/empty animation
+		//! name -- see that method's doc for the full element_type=="camera" targeting
+		//! semantics: `element` names a SPECIFIC camera by `name`; empty/"none" targets
+		//! the ACTIVE camera; a non-empty `element` naming no existing camera is a LOUD
+		//! failure (returns false), never a silent active-camera fallback).
 		virtual bool AddKeyframe(
 			const char* element_type,						///< [in] Type of element to keyframe (ie. camera, painter, geometry, object...)
-			const char* element,							///< [in] Name of the element to keyframe
+			const char* element,							///< [in] Name of the element to keyframe (camera: target camera's `name`; empty/"none" == active camera)
 			const char* param,								///< [in] Name of the parameter to keyframe
 			const char* value,								///< [in] Value at this keyframe
 			const double time,								///< [in] Time of the keyframe
@@ -2870,9 +2875,19 @@ namespace RISE
 
 		//! Adds a keyframe owned by a named animation.  A NULL/empty animation
 		//! routes to the implicit default animation (identical to AddKeyframe).
+		//!
+		//! Camera targeting (element_type=="camera"): `element` names the SPECIFIC
+		//! camera (by its `name`) to animate; an empty, NULL, or "none" `element`
+		//! falls back to the ACTIVE camera (back-compat for the common single-,
+		//! often unnamed-, camera scene).  A non-empty `element` that names no
+		//! existing camera is a LOUD failure -- returns false -- never a silent
+		//! active-camera fallback, so a CST dry-run derive rejects the edit instead
+		//! of animating the wrong camera.  ("none" is reserved as the scene
+		//! language's universal unbind sentinel and cannot itself be a camera's
+		//! `name` -- see Scene::AddCamera / RejectReservedCameraName.)
 		virtual bool AddKeyframeToAnimation(
 			const char* /*element_type*/,
-			const char* /*element*/,
+			const char* /*element*/,						///< camera: target camera's `name`; empty/NULL/"none" == active camera
 			const char* /*param*/,
 			const char* /*value*/,
 			const double /*time*/,

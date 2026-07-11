@@ -11436,6 +11436,19 @@ bool Job::AddKeyframeToAnimation(
 				GlobalLog()->PrintEx( eLog_Error,
 					"Job::AddKeyframeToAnimation:: camera `%s` not found -- cannot animate a non-existent camera (reference the camera's `name`, or omit `element` to animate the active camera)",
 					element );
+				// Surface the SPECIFIC reason through the Finalize-diagnostic sink (see
+				// GenericManager.h) so a CST derive (insert_chunk/validate) reports "camera
+				// `<name>` not found ..." to the agent instead of DeriveToJob's generic
+				// "<keyword>: apply failed (e.g. unresolved reference); see log" fallback.
+				// No "Job::AddKeyframeToAnimation: " prefix here -- DeriveToJob's PASS-2 apply
+				// loop already prepends `<keyword>: ` to whatever this sink carries.
+				if( RISE::g_cstFinalizeDiagSink ) {
+					char msg[256];
+					std::snprintf( msg, sizeof( msg ),
+						"camera `%s` not found -- cannot animate a non-existent camera (reference the camera's `name`, or omit `element` to animate the active camera)",
+						element );
+					*RISE::g_cstFinalizeDiagSink = msg;
+				}
 				return false;
 			}
 			pkf = pNamedCam;

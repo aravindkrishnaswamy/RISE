@@ -61,6 +61,7 @@
 #include "../Interfaces/IJobPriv.h"
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IObjectPriv.h"
+#include "../Managers/GenericManager.h"			// g_cstFinalizeDiagSink -- specific-reason channel for a Finalize failure (reserved camera name)
 // Phase B: descriptor-driven introspection used by
 // PopulateLoadedPropertySnapshot to capture loaded parameter values.
 #include "../SceneEditor/CameraIntrospection.h"
@@ -446,6 +447,37 @@ namespace RISE
 			// which itself has no callers.  Retained pending deletion.
 			static const std::string& LastAllocatedCameraName() {
 				return s_lastAllocatedCameraName;
+			}
+
+			// `none` is the scene language's universal unbind sentinel, and
+			// Job::AddKeyframeToAnimation's camera branch specifically treats
+			// element=="none" (or an empty element) as "target the ACTIVE
+			// camera" -- see that function's comment in Job.cpp.  A
+			// hand-authored scene naming a camera `name "none"` would create
+			// a camera that a `timeline`/`keyframe` chunk could never target
+			// by name (it would always silently fall back to the active
+			// camera instead).  Job::ApplyCstInsertChunk already refuses
+			// `none` as a chunk name for AGENT-driven inserts, but that gate
+			// sits above the parser and never runs for a scene file parsed/
+			// derived directly -- so the refusal has to be repeated here, at
+			// the point every camera chunk's Finalize allocates its runtime
+			// name, to close the hand-authored-scene gap.  Every camera
+			// Finalize must call this BEFORE AllocateCameraName and bail out
+			// (return false) if it returns true.  Wording matches
+			// Job::ApplyCstInsertChunk's "reserved name" diagnostic so the
+			// two refusal paths read as one policy to scene authors.
+			static bool RejectReservedCameraName( const std::string& keyword, const std::string& requestedName ) {
+				if( requestedName != "none" ) {
+					return false;
+				}
+				if( RISE::g_cstFinalizeDiagSink ) {
+					*RISE::g_cstFinalizeDiagSink =
+						"reserved name: `none` is the built-in unbind sentinel -- pick a different camera name";
+				}
+				GlobalLog()->PrintEx( eLog_Error,
+					"%s:: `none` is a reserved name (the active-camera / unbind sentinel used by timeline `element`) -- pick a different camera name",
+					keyword.c_str() );
+				return true;
 			}
 
 			// Per-parse reset.  Sole live caller: Cst::DeriveToJob (Cst/Cst.cpp), via the public
@@ -4232,7 +4264,9 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
+					std::string requestedCameraName = bag.GetString( "name", "" );
+					if( RejectReservedCameraName( "pinhole_camera", requestedCameraName ) ) return false;
+					std::string name = AllocateCameraName( requestedCameraName );
 					double fov          = 30.0 * DEG_TO_RAD;
 					if( bag.Has( "fov" ) ) fov = bag.GetDouble( "fov" ) * DEG_TO_RAD;
 					double exposure     = bag.GetDouble( "exposure",      0 );
@@ -4318,7 +4352,9 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
+					std::string requestedCameraName = bag.GetString( "name", "" );
+					if( RejectReservedCameraName( "onb_pinhole_camera", requestedCameraName ) ) return false;
+					std::string name = AllocateCameraName( requestedCameraName );
 					double fov          = 30.0 * DEG_TO_RAD;
 					if( bag.Has( "fov" ) ) fov = bag.GetDouble( "fov" ) * DEG_TO_RAD;
 					double exposure     = bag.GetDouble( "exposure",      0 );
@@ -4395,7 +4431,9 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
+					std::string requestedCameraName = bag.GetString( "name", "" );
+					if( RejectReservedCameraName( "thinlens_camera", requestedCameraName ) ) return false;
+					std::string name = AllocateCameraName( requestedCameraName );
 					// Photographic quartet — units (Phase 1.2):
 					//
 					//   sensor_size, focal_length, shift_x, shift_y
@@ -4622,7 +4660,9 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
+					std::string requestedCameraName = bag.GetString( "name", "" );
+					if( RejectReservedCameraName( "fisheye_camera", requestedCameraName ) ) return false;
+					std::string name = AllocateCameraName( requestedCameraName );
 					double exposure     = bag.GetDouble( "exposure",      0 );
 					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
 					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
@@ -4678,7 +4718,9 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
+					std::string requestedCameraName = bag.GetString( "name", "" );
+					if( RejectReservedCameraName( "orthographic_camera", requestedCameraName ) ) return false;
+					std::string name = AllocateCameraName( requestedCameraName );
 					double exposure   = bag.GetDouble( "exposure",      0 );
 					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
 					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
@@ -9691,14 +9733,19 @@ namespace RISE
 						// chunks (no `name` param exists) -- so unnamed multiplicity is legal, not a singleton.
 						cd.unnamedRepeatable = true;
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						// Same camera semantics as `timeline` (both funnel into AddKeyframeToAnimation,
-						// whose camera branch resolves `element` as the target camera's name, empty ==
-						// the active camera, non-existent name == a LOUD derive failure).
-						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name; for element_type camera this is the target camera's `name` (empty == the active camera; a name that matches no camera fails the derive)"; }
-						// NB: this legacy single-`keyframe` chunk hardwires the lookup to objects
-						// (see the AddKeyframe call above) -- it cannot target geometry/painter, so
-						// the hint deliberately stays {object,camera,light}.  Use `timeline` for those.
-						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light"}; p.description = "Element kind"; p.defaultValueHint = "object"; }
+						// Legacy chunk: `element` and `element_type` are declared below for
+						// scene-authoring familiarity, but Finalize (see the NOTE at the top of
+						// this struct's Finalize) never reads `element` and never propagates a
+						// user-supplied `element_type` into the AddKeyframe call -- both of
+						// AddKeyframe's targeting arguments are hardcoded to the literal string
+						// "object", so this chunk ALWAYS attempts to animate an object whose
+						// `name` is literally "object", regardless of what either field below is
+						// set to.  It CANNOT target a camera (or light/geometry/painter) --
+						// there is no reachable camera branch from this chunk.  Use `timeline`
+						// for real element/param targeting, including camera-by-name (see its
+						// own descriptor).
+						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Legacy field -- NOT read by Finalize; has no effect on which entity is animated (this chunk always targets an object literally named \"object\"). Use `timeline`'s `element` for real targeting."; }
+						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light"}; p.description = "Legacy field -- Finalize hardcodes the actual target type to \"object\" regardless of this value; the only observable effect of supplying it is a preserved legacy quirk that also forces `param` to \"object\". Use `timeline` for real element-type targeting (object/camera/light/geometry/painter)."; p.defaultValueHint = "object (fixed; not user-selectable in practice)"; }
 						{ auto& p = P(); p.name = "param";               p.kind = ValueKind::String; p.description = "Parameter name (e.g. position, orientation, scale)"; }
 						{ auto& p = P(); p.name = "value";               p.kind = ValueKind::String; p.description = "Value at this keyframe (whitespace-separated tokens)"; }
 						{ auto& p = P(); p.name = "time";                p.kind = ValueKind::Double; p.description = "Time (seconds) of the keyframe"; }

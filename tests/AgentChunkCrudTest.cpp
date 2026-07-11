@@ -1527,9 +1527,17 @@ static void TestRemoveChunkNameKeywordCoincidence()
 //   (a) two named cameras -> a timeline element=<non-active camera> animates
 //       THAT camera, proven by evaluating the keyframe at t=1;
 //   (b) a name that matches no camera is a LOUD derive rejection (NOT a
-//       silent active-camera fallback), head unchanged;
+//       silent active-camera fallback), head unchanged, and the rejection
+//       MESSAGE (not just the log) names the missing camera;
 //   (c) an empty element with a single unnamed camera falls back to the
-//       ACTIVE camera and applies (the eval-fixture's own golden path).
+//       ACTIVE camera and applies (the eval-fixture's own golden path);
+//   (d) (TestReservedCameraNameNoneAtDerive, below) a HAND-AUTHORED scene
+//       naming a camera `none` -- which never goes through the AGENT-insert
+//       gate (Job::ApplyCstInsertChunk's own "reserved name" early check) --
+//       is still refused, at the chunk-parser/derive layer, because a
+//       camera literally named "none" would collide with the unbind
+//       sentinel (a) above and (c) above both rely on to distinguish
+//       named-target vs active-camera-fallback.
 //----------------------------------------------------------------------
 static Point3 ReadCamLocation( ICamera* cam )
 {
@@ -1597,7 +1605,10 @@ static void TestCameraTimelineNamedTargeting()
 		Check( !rMiss.applied && rMiss.status == "rejected",
 		       "(b) naming a non-existent camera is REJECTED (no silent active-camera fallback)" );
 		Check( rMiss.message.find( "would not derive" ) != std::string::npos,
-		       "(b) the rejection is the derive-gate class (the missing camera name is named in the log)" );
+		       "(b) the rejection is the derive-gate class" );
+		Check( rMiss.message.find( "no_such_cam" ) != std::string::npos,
+		       "(b) the missing camera's name is named IN THE RESPONSE MESSAGE (via g_cstFinalizeDiagSink -- "
+		       "not just the log), so the agent can see the specific reason without reading the server log" );
 		Check( sess->ReadDocument() == headBefore,
 		       "(b) the rejected insert left the head byte-identical" );
 		Check( sess->HeadVersion() == vBefore,
@@ -1634,6 +1645,59 @@ static void TestCameraTimelineNamedTargeting()
 		pJob->release();
 		std::remove( tmp.c_str() );
 	}
+}
+
+//----------------------------------------------------------------------
+// G8(d): a camera explicitly named `none` collides with the scene
+// language's universal unbind sentinel -- Job::AddKeyframeToAnimation's
+// camera branch (exercised by (a)/(b)/(c) above) treats element=="none"
+// as "target the ACTIVE camera", never a named lookup, so a camera
+// actually named "none" could never be targeted by name.
+//
+// Job::ApplyCstInsertChunk already refuses `name none` for AGENT-driven
+// inserts (the "reserved name" early check, red-proved at line ~376
+// above via `sphere_geometry { name none }`), but that gate sits ABOVE
+// the parser and never runs for a scene parsed/derived directly -- e.g.
+// a hand-authored .RISEscene file loaded via LoadAsciiSceneViaCst. This
+// test goes DIRECTLY through RISE::Cst::ParseToCst + DeriveToJob (NOT
+// AgentSession::InsertChunk) specifically so it bypasses that early
+// gate and actually exercises the derive-layer refusal (Chunk-
+// ParserRegistry.cpp's RejectReservedCameraName, called from every
+// camera chunk's Finalize before AllocateCameraName) -- going through
+// InsertChunk here would silently test the WRONG gate.
+//----------------------------------------------------------------------
+static void TestReservedCameraNameNoneAtDerive()
+{
+	std::printf( "G8(d): a hand-authored `thinlens_camera { name none }` is refused at derive...\n" );
+
+	const std::string text =
+		"RISE ASCII SCENE 7\n"
+		"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+		"thinlens_camera\n{\n\tname none\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n"
+		"\tfocus_distance 3.5\n}\n";
+
+	RISE::Cst::Document doc = RISE::Cst::ParseToCst( text );
+	Job* j = new Job();
+	std::vector<std::string> diags;
+	RISE::Cst::DeriveToJob( doc, *j, &diags );
+
+	Check( !diags.empty(), "deriving a scene with `thinlens_camera { name none }` emits a diagnostic" );
+	if( !diags.empty() ) {
+		Check( diags[0].find( "thinlens_camera" ) != std::string::npos,
+		       "the diagnostic names the offending chunk `thinlens_camera`" );
+		Check( diags[0].find( "reserved name" ) != std::string::npos,
+		       "the diagnostic uses the same \"reserved name\" wording as the agent-insert gate "
+		       "(Job::ApplyCstInsertChunk)" );
+		Check( diags[0].find( "none" ) != std::string::npos,
+		       "the diagnostic names the reserved sentinel `none`" );
+	}
+	// The camera must never have been registered under the reserved name -- neither via the
+	// chunk-parser-level refusal above, nor (defense-in-depth) had it slipped past that, via
+	// Scene::AddCamera's own independent `none` refusal.
+	ICameraManager* cams = j->GetCameras();
+	Check( !cams || !cams->GetItem( "none" ), "no camera is ever registered under the reserved name `none`" );
+
+	j->release();
 }
 
 //----------------------------------------------------------------------
@@ -1814,6 +1878,7 @@ int main()
 	TestUnnamedRepeatableTimeline();
 	TestRemoveChunkNameKeywordCoincidence();
 	TestCameraTimelineNamedTargeting();
+	TestReservedCameraNameNoneAtDerive();
 	TestGltfImportPrefixCollision();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
