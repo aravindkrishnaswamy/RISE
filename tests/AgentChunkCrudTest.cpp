@@ -1289,6 +1289,135 @@ static void TestCameraSwapRecipe()
 	std::remove( tmp.c_str() );
 }
 
+//----------------------------------------------------------------------
+// G6: APPEND-class unnamed chunks (descriptor `unnamedRepeatable`).
+//
+// A `timeline` chunk carries no `name` param and derives by APPENDING an
+// independent effect (Job::AddKeyframeToAnimation), so a scene legitimately
+// carries MANY unnamed timelines (sdf_morph_torture has ~14).  Regression for
+// the false-rejection bug root-caused from a live gemini-3.5-flash trajectory:
+// the pre-fix unnamed-singleton rule refused ANY second unnamed chunk of a
+// keyword, wrongly rejecting a schema-conformant second timeline.
+//
+// RED-PROVE (pre-fix): before the descriptor `unnamedRepeatable` gate, the
+// UNNAMED branch of Job::ApplyCstInsertChunk ran an UNCONDITIONAL top-level
+// scan and returned -2 ("an unnamed `timeline` chunk already exists ...") for
+// the SECOND insert below -- so `r2.applied` was FALSE and this test failed on
+// the "second unnamed timeline applied" Check.  With `timeline.unnamedRepeatable
+// = true` the scan is skipped and the insert derives.
+//----------------------------------------------------------------------
+static void TestUnnamedRepeatableTimeline()
+{
+	std::printf( "G6: unnamedRepeatable -- a SECOND unnamed timeline is accepted (append-class), not a singleton...\n" );
+	const std::string tmp = TempPath( "agentcrud_g6.RISEscene" );
+
+	// --- Scenario A: two unnamed timelines coexist; ambiguous kind-only removal refuses. ---
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G6 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+
+		// Two schema-conformant, DERIVABLE unnamed timelines (object position animation of the two
+		// existing objects).  Both are unnamed (no `name` param on `timeline`).
+		Agent::AgentChunkResult r1 = sess->InsertChunk(
+			"timeline\n{\n\telement_type object\n\telement obj_sph\n\tparam position\n"
+			"\ttime 0\n\tvalue 0 0 0\n\ttime 1\n\tvalue 1 0 0\n}" );
+		Check( r1.applied && r1.status == "applied", "first unnamed timeline applied" );
+		Check( r1.kind == "timeline", "first timeline insert echoes the keyword" );
+
+		Agent::AgentChunkResult r2 = sess->InsertChunk(
+			"timeline\n{\n\telement_type object\n\telement obj_emit\n\tparam position\n"
+			"\ttime 0\n\tvalue 0 0 0\n\ttime 1\n\tvalue 0 1 0\n}" );
+		Check( r2.applied && r2.status == "applied",
+		       "SECOND unnamed timeline applied (the false-rejection bug is fixed)" );
+		Check( r2.rawCode == 2, "the second timeline insert is a full re-derive (rawCode 2)" );
+		Check( r2.headVersion.revision > v0.revision, "the second insert advanced the head revision" );
+
+		// BOTH timelines are present in the head, and it round-trips + still derives.
+		const std::string doc = sess->ReadDocument();
+		{
+			size_t first = doc.find( "timeline" );
+			size_t second = ( first == std::string::npos ) ? std::string::npos : doc.find( "timeline", first + 1 );
+			Check( first != std::string::npos && second != std::string::npos,
+			       "ReadDocument carries BOTH unnamed timeline chunks" );
+			RISE::Cst::Document rt = RISE::Cst::ParseToCst( doc );
+			Check( RISE::Cst::SerializeCst( rt ) == doc,
+			       "the two-timeline head round-trips through the CST parser byte-identically" );
+		}
+		// applied==true above already proves the dry-run derive passed; the render confirms end-to-end.
+		Agent::AgentRenderResult rr = sess->Render();
+		Check( rr.ok && rr.meanR + rr.meanG + rr.meanB > 0.0,
+		       "the scene with two appended timelines derives and renders non-black" );
+
+		// remove_chunk by kind alone is now AMBIGUOUS (2 unnamed timelines) -> honest refusal, head intact.
+		const std::string headBeforeRm = sess->ReadDocument();
+		Agent::AgentChunkResult rmAmb = sess->RemoveChunk( "timeline", "timeline" );
+		Check( !rmAmb.applied && rmAmb.status == "rejected",
+		       "kind-only removal of one of two unnamed timelines is REFUSED" );
+		Check( rmAmb.message.find( "ambiguous" ) != std::string::npos,
+		       "the refusal message names the ambiguity" );
+		Check( sess->ReadDocument() == headBeforeRm,
+		       "the ambiguity refusal left the head byte-identical" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// --- Scenario B: exactly ONE unnamed timeline removes fine (positional fallback). ---
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G6 scenario-B fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Check( sess->InsertChunk(
+			"timeline\n{\n\telement_type object\n\telement obj_sph\n\tparam position\n"
+			"\ttime 0\n\tvalue 0 0 0\n\ttime 1\n\tvalue 1 0 0\n}" ).applied,
+			"scenario-B: the sole unnamed timeline inserts" );
+
+		Agent::AgentChunkResult rmOne = sess->RemoveChunk( "timeline", "timeline" );
+		Check( rmOne.applied && rmOne.status == "applied",
+		       "the SOLE unnamed timeline removes cleanly (positional unique-in-kind fallback)" );
+		Check( rmOne.kind == "timeline", "the sole-timeline remove echoes the keyword" );
+		Check( sess->ReadDocument().find( "timeline" ) == std::string::npos,
+		       "the timeline chunk is gone from the head" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// --- Scenario C: schema exposes the flag for timeline but NOT for a singleton kind. ---
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G6 scenario-C fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const std::string tlSchema = sess->ReadSchema( "timeline" );
+		Check( tlSchema.find( "\"unnamedRepeatable\":true" ) != std::string::npos,
+		       "read_schema(timeline) advertises unnamedRepeatable:true" );
+		const std::string filmSchema = sess->ReadSchema( "film" );
+		Check( filmSchema.find( "unnamedRepeatable" ) == std::string::npos,
+		       "read_schema(film) carries NO unnamedRepeatable key (singleton, unbloated)" );
+
+		// The singleton rule is UNCHANGED for non-repeatable kinds: a second unnamed film still refuses.
+		Agent::AgentChunkResult rFilm = sess->InsertChunk( "film\n{\n\twidth 32\n\theight 32\n}" );
+		Check( !rFilm.applied && rFilm.status == "rejected",
+		       "a second unnamed film is STILL rejected (singleton rule intact)" );
+		Check( rFilm.message.find( "already exists" ) != std::string::npos,
+		       "the film-singleton refusal keeps its existing message" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk) ===\n" );
@@ -1307,6 +1436,7 @@ int main()
 	TestRasterizerInsertActivation();
 	TestVariantOverlayAndAmbiguityMessages();
 	TestCameraSwapRecipe();
+	TestUnnamedRepeatableTimeline();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

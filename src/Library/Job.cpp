@@ -10700,14 +10700,25 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 			// restore in the D2 tail is skipped for a rasterizer insert, so live matches what a
 			// save+reload's last-wins derive would activate).  O(N) top-level scan -- fine for a
 			// discrete verb.
-			const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
-			for( int i = 0; i < nHead; ++i ) {
-				const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *pCstDocument, RISE::Cst::DocNodeIdAt( *pCstDocument, i ) );
-				if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == keyword &&
-				    RISE::Cst::ChunkNamePath( it ).empty() ) {
-					S2CopyOut( outDiag, diagMax, "an unnamed `" + keyword + "` chunk already exists (unnamed chunks are singletons per keyword)" );
-					GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: an unnamed `%s` chunk already exists; insert rejected", keyword.c_str() );
-					return -2;
+			//
+			// EXCEPTION -- APPEND-class kinds (descriptor `unnamedRepeatable`): a `timeline` / `keyframe`
+			// chunk derives by APPENDING an independent effect (Job::AddKeyframeToAnimation / AddKeyframe),
+			// NOT last-wins, so scenes legitimately carry MANY unnamed instances (e.g. sdf_morph_torture
+			// carries ~14 unnamed `timeline` chunks).  The singleton rationale above is inapplicable to
+			// them -- a schema-conformant second unnamed timeline must NOT be falsely rejected.  The
+			// one-way-door concern the rationale worried about is instead handled at remove time (the
+			// ambiguity guard in ApplyCstRemoveChunk).
+			const ChunkDescriptor* unnamedDesc = DescriptorForKeyword( String( keyword.c_str() ) );
+			if( !( unnamedDesc && unnamedDesc->unnamedRepeatable ) ) {
+				const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
+				for( int i = 0; i < nHead; ++i ) {
+					const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *pCstDocument, RISE::Cst::DocNodeIdAt( *pCstDocument, i ) );
+					if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == keyword &&
+					    RISE::Cst::ChunkNamePath( it ).empty() ) {
+						S2CopyOut( outDiag, diagMax, "an unnamed `" + keyword + "` chunk already exists (unnamed chunks are singletons per keyword)" );
+						GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: an unnamed `%s` chunk already exists; insert rejected", keyword.c_str() );
+						return -2;
+					}
 				}
 			}
 		}
@@ -10855,9 +10866,43 @@ int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: no retained CST Document or empty target; remove rejected" );
 		return 0;
 	}
+	// APPEND-class unnamed kinds (descriptor `unnamedRepeatable`, e.g. timeline / keyframe): these carry no
+	// `name` param, so they are addressed by kind alone (target == keyword).  Two cases:
+	//   * exactly ONE unnamed instance -> resolvable by POSITION via the unique-in-kind fallback below
+	//     (same mechanism the sole unnamed camera uses), so a bare `remove_chunk timeline kind=timeline`
+	//     removes it cleanly;
+	//   * TWO OR MORE unnamed instances -> the bare/kind-only address is genuinely AMBIGUOUS -- removing
+	//     "the unnamed one" would delete an ARBITRARY instance (the one-way door the insert-side singleton
+	//     rationale worried about).  Refuse honestly here rather than silently erasing one.  A repeatable
+	//     kind has no name, so this can never intercept a NAMED-chunk removal.
+	const ChunkDescriptor* remDesc =
+		DescriptorForKeyword( String( ( kind && kind[0] ) ? kind : target ) );
+	const bool unnamedRepeatable = remDesc && remDesc->unnamedRepeatable;
+	if( unnamedRepeatable ) {
+		int unnamedCount = 0;
+		const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
+		for( int i = 0; i < nHead; ++i ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *pCstDocument, RISE::Cst::DocNodeIdAt( *pCstDocument, i ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == remDesc->keyword &&
+			    RISE::Cst::ChunkNamePath( it ).empty() )
+				++unnamedCount;
+		}
+		if( unnamedCount >= 2 ) {
+			char d[224];
+			std::snprintf( d, sizeof( d ),
+				"ambiguous: %d unnamed `%s` chunks exist -- removal by kind alone would delete an arbitrary one; edit the scene text directly or address a named chunk",
+				unnamedCount, remDesc->keyword.c_str() );
+			S2CopyOut( outKeyword, keywordMax, remDesc->keyword );
+			S2CopyOut( outDiag,    diagMax,    d );
+			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: %s", d );
+			return -2;
+		}
+	}
+
 	// Resolution mirrors ApplyCstParamEdit: cameras are the one editor-addressable kind that can be UNNAMED,
 	// so they get the unique-in-kind resolve-by-position fallback; always-named kinds keep strict refuse.
-	const bool uniqueFallback = ( kind && std::string( kind ) == "camera" );
+	// The sole-instance case of an `unnamedRepeatable` kind (handled above) gets the SAME positional fallback.
+	const bool uniqueFallback = ( kind && std::string( kind ) == "camera" ) || unnamedRepeatable;
 	int occ = 0;
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, target, &occ, kind ? kind : "", uniqueFallback );
 	if( id == 0 ) {

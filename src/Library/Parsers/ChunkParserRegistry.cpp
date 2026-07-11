@@ -9670,6 +9670,10 @@ namespace RISE
 						ChunkDescriptor cd;
 						cd.keyword = "keyframe"; cd.category = ChunkCategory::Animation;
 						cd.description = "Single keyframe for an element's parameter over time.";
+						// APPEND-class derive: Finalize -> Job::AddKeyframe inserts one independent keyframe
+						// into an element's timeline; a scene legitimately carries many unnamed `keyframe`
+						// chunks (no `name` param exists) -- so unnamed multiplicity is legal, not a singleton.
+						cd.unnamedRepeatable = true;
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name"; }
 						// NB: this legacy single-`keyframe` chunk hardwires the lookup to objects
@@ -9728,6 +9732,11 @@ namespace RISE
 						ChunkDescriptor cd;
 						cd.keyword = "timeline"; cd.category = ChunkCategory::Animation;
 						cd.description = "Sequence of keyframes for one element/parameter.";
+						// APPEND-class derive: Finalize -> Job::AddKeyframeToAnimation appends keyframes for one
+						// element/param; a scene legitimately carries many unnamed `timeline` chunks (no `name`
+						// param exists), one per animated element/param -- so unnamed multiplicity is legal, not
+						// a singleton (e.g. scenes/FeatureBased/SDF/sdf_morph_torture.RISEscene carries ~14).
+						cd.unnamedRepeatable = true;
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name"; }
 						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light","geometry","painter"}; p.description = "Element kind (geometry/painter animate a named geometry's or painter's intrinsic params, e.g. an sdf_geometry's part fields)"; p.defaultValueHint = "object"; }

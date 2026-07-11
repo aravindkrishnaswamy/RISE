@@ -164,6 +164,12 @@ namespace RISE
 				AppendJsonString( out, d.keyword );
 				out += ",\"category\":";
 				AppendJsonString( out, CategoryName( d.category ) );
+				// Emitted ONLY when true (keeps the common singleton case unbloated): tells the agent
+				// this keyword may legally appear UNNAMED more than once (the derive APPENDS), so a
+				// second unnamed insert is accepted and removal is by explicit text edit / named address.
+				if( d.unnamedRepeatable ) {
+					out += ",\"unnamedRepeatable\":true";
+				}
 				if( !d.description.empty() ) {
 					out += ",\"description\":";
 					AppendJsonString( out, d.description );
