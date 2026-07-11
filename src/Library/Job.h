@@ -3158,6 +3158,20 @@ namespace RISE
 		//! Count of override_object chunks that modified an object in place this derive
 		//! (see IJob::NoteObjectOverride).  The CST incremental apply refuses when > 0.
 		unsigned int m_objectOverrideCount;
+
+		//! `gltf_import` name_prefix values already consumed THIS derive (reset in
+		//! InitializeContainers, so a fresh Job -- or a ClearAll'd one -- starts empty).
+		//! A full CST re-derive builds exactly one Job (the agent dry-run's throwaway
+		//! `staging` Job, or `*this` for the real apply, or a freshly-loaded Job for a
+		//! plain scene open) and Finalizes every chunk on it in document order, so a
+		//! plain per-Job set is the correct scope: it catches TWO unnamed/defaulted
+		//! `gltf_import` chunks sharing a `name_prefix` in the SAME document, which
+		//! previously derived cleanly while one import's ~10+ entities (gltf.pnt.*,
+		//! gltf.mat.0, gltf.geom.m0.p0, __pbrmr_* ...) silently lost every
+		//! GenericManager::AddItem race to the other (see ImportGLTFScene).  Distinct
+		//! prefixes across multiple imports remain fully supported (sponza_new_ivy.RISEscene
+		//! precedent).
+		std::set<std::string> mGltfImportPrefixes;
 	};
 }
 

@@ -1508,7 +1508,7 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	// RAII backstop: clear the thread-local sinks on ANY exit (a Finalize that threw would
 	// otherwise leave them dangling at the loop-local vectors). RISE Finalize is C-style/no-
 	// throw, but this keeps the invariant unconditional.
-	struct SinkGuard { ~SinkGuard() { g_cstProductionSink = nullptr; g_cstResolutionSink = nullptr; } } sinkGuard;
+	struct SinkGuard { ~SinkGuard() { g_cstProductionSink = nullptr; g_cstResolutionSink = nullptr; g_cstFinalizeDiagSink = nullptr; } } sinkGuard;
 	(void)sinkGuard;
 
 	int count = 0;
@@ -1527,7 +1527,12 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 		}
 		std::vector<const void*> produced, resolved;
 		if( outRecorded ) { g_cstProductionSink = &produced; g_cstResolutionSink = &resolved; }
+		// See GenericManager.h: a Finalize that fails may set *g_cstFinalizeDiagSink to a
+		// specific reason instead of the generic "apply failed" message below.
+		std::string finalizeDiag;
+		g_cstFinalizeDiagSink = &finalizeDiag;
 		const bool ok = applyP->parser->Finalize( applyP->bag, pJob );
+		g_cstFinalizeDiagSink = nullptr;
 		if( outRecorded ) {
 			g_cstProductionSink = nullptr; g_cstResolutionSink = nullptr;   // no GetItem between here and the next set
 			for( const void* e : produced ) productionMap[ e ] = applyP->nodeId;  // this chunk's productions (incl. intra-chunk, so a self-ref self-skips)
@@ -1538,7 +1543,9 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 			}
 		}
 		if( ok ) { ++count; continue; }
-		diags.push_back( applyP->keyword + ": apply failed (e.g. unresolved reference); see log" );
+		diags.push_back( finalizeDiag.empty()
+			? applyP->keyword + ": apply failed (e.g. unresolved reference); see log"
+			: applyP->keyword + ": " + finalizeDiag );
 		break;
 	}
 	// #5 slice 4: expand instance_array generators AFTER the normal entities (so their template

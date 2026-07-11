@@ -444,6 +444,7 @@ void Job::InitializeContainers()
 	lightSampleRRThreshold = 0;
 	m_objectOverrideCount = 0;   // reset per derive/clear (override_object Finalize increments it)
 	ClearSceneVariants();        // doc 63: reset the scene-variant records per derive/clear (no cross-load leak)
+	mGltfImportPrefixes.clear(); // reset per derive/clear -- see Job.h member doc (gltf_import name_prefix collision guard)
 
 	// Allocate the load-time transform snapshots up front so
 	// IJobPriv::Get{Base,Loaded}TransformSnapshot return stable
@@ -4984,6 +4985,29 @@ bool Job::ImportGLTFScene(
 					const double emissive_tint_b
 					)
 {
+	// Prefix-collision guard (the "clean named diagnostic" layer -- see Job.h's
+	// mGltfImportPrefixes doc).  Every entity this importer registers is keyed off
+	// `name_prefix` (gltf.pnt.*, gltf.mat.0, gltf.geom.m0.p0, __pbrmr_* ...), so TWO
+	// imports sharing a prefix in the same derive would silently race every one of
+	// those GenericManager::AddItem calls -- the second import's entities lose and
+	// vanish, and (pre-fix) ImportScene's unconditional `return true` hid it entirely.
+	// Distinct prefixes are the supported multi-import idiom (sponza_new_ivy.RISEscene
+	// carries 2+ with an in-file comment blessing it) -- only a REPEAT prefix is refused.
+	// Checked BEFORE constructing the importer (no need to even open the file) so the
+	// failure is cheap and the diagnostic is precise.
+	const std::string prefixKey = ( name_prefix && name_prefix[0] ) ? name_prefix : "gltf";
+	if( !mGltfImportPrefixes.insert( prefixKey ).second ) {
+		char msg[256];
+		// NOTE: no "gltf_import: " prefix here -- DeriveToJob's PASS-2 apply loop
+		// (Cst.cpp) already prepends `<keyword>: ` to whatever this sink carries.
+		std::snprintf( msg, sizeof( msg ),
+			"name_prefix '%s' collides with an existing import -- give each import a unique name_prefix",
+			prefixKey.c_str() );
+		GlobalLog()->PrintEx( eLog_Error, "Job::ImportGLTFScene:: gltf_import: %s", msg );
+		if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = msg;
+		return false;
+	}
+
 	GLTFSceneImporter importer( filename );
 	if( !importer.IsValid() ) {
 		return false;	// constructor already logged the parse failure

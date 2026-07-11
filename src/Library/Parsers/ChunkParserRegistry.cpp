@@ -5188,6 +5188,22 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "gltf_import"; cd.category = ChunkCategory::Geometry;
+						// APPEND-class derive: Finalize -> Job::ImportGLTFScene walks the file's scene tree and
+						// APPENDS one independent set of geometry/material/object/light/camera entities per call
+						// (like timeline/keyframe's per-element appends, NOT a last-wins single-slot chunk) -- a
+						// scene legitimately carries MULTIPLE unnamed `gltf_import` chunks, one per asset, as long
+						// as each uses a distinct `name_prefix` (scenes/FeatureBased/Geometry/sponza_new_ivy.RISEscene
+						// carries 2+ with an in-file comment blessing the idiom).  This flag was DEFERRED in
+						// 436f604a pending a load-bearing fix: at the time, GLTFSceneImporter::ImportScene
+						// unconditionally `return true`d and silently swallowed every duplicate-name
+						// GenericManager::AddItem failure, so TWO unnamed imports sharing the SAME default
+						// name_prefix would pass the dry-run derive with the second import's entities silently
+						// masked.  That is now fixed: Job::ImportGLTFScene refuses a REPEATED name_prefix within
+						// the same derive up front (a per-Job `mGltfImportPrefixes` record), and ImportScene itself
+						// now propagates every entity-registration failure (material / geometry / object) as a
+						// hard `false` instead of discarding it -- prefix collisions (the common case) and stray
+						// entity-name collisions (the rare hand-authored case) both now fail the derive loudly.
+						cd.unnamedRepeatable = true;
 						cd.description = "Bulk-import of a glTF 2.0 (.gltf or .glb) scene.  Walks the "
 							"scene tree and registers per-primitive standard_objects, per-material "
 							"pbr_metallic_roughness materials (Schlick-from-F0 PBR with optional "
@@ -5213,7 +5229,7 @@ namespace RISE
 							"See docs/GLTF_IMPORT.md §7, §13, §15 for full status.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "file";               p.kind = ValueKind::Filename; p.description = "Source .gltf or .glb file"; }
-						{ auto& p = P(); p.name = "name_prefix";        p.kind = ValueKind::String;   p.description = "Prefix for created geometry / material / object / light / camera names"; p.defaultValueHint = "gltf"; }
+						{ auto& p = P(); p.name = "name_prefix";        p.kind = ValueKind::String;   p.description = "Prefix for created geometry / material / object / light / camera names.  MUST be unique across every `gltf_import` in the scene (including two chunks that both omit it and fall back to the same default) -- a repeated prefix is REFUSED at derive time (\"name_prefix '...' collides with an existing import\") rather than silently masking one import's entities."; p.defaultValueHint = "gltf"; }
 						{ auto& p = P(); p.name = "scene_index";        p.kind = ValueKind::UInt;     p.description = "Index into the file's scenes[] array.  Omit (or use UINT_MAX) to import the file's default scene (the `scene` field in the glTF JSON), which is what most authoring tools intend; explicit values force a particular array index."; p.defaultValueHint = "(default scene)"; }
 						{ auto& p = P(); p.name = "import_meshes";      p.kind = ValueKind::Bool;     p.description = "Create per-primitive standard_objects"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "import_materials";   p.kind = ValueKind::Bool;     p.description = "Create one PBR material per glTF material"; p.defaultValueHint = "TRUE"; }

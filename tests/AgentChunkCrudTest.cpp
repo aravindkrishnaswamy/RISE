@@ -48,6 +48,11 @@
 //        thinlens replacement renders.  (G3 additionally asserts the
 //        render result's `integrator` field tracks a rasterizer insert;
 //        H2 asserts the reserved-name `none` refusal message.)
+//    G9  gltf_import hardening: distinct-name_prefix multi-import still
+//        applies (sponza_new_ivy idiom); a REPEATED prefix is refused at
+//        derive time with a diagnostic naming it; a non-prefix entity-name
+//        collision (hand-authored chunk vs. a generated name) is also
+//        refused; read_schema advertises unnamedRepeatable:true.
 //
 //  Self-contained: no RISE_MEDIA_PATH, inline native-v7 scenes, OIDN off.
 //
@@ -1631,6 +1636,163 @@ static void TestCameraTimelineNamedTargeting()
 	}
 }
 
+//----------------------------------------------------------------------
+// G9: gltf_import hardening -- entity-name collisions fail loudly (2026-07-11),
+// THEN gltf_import is flagged unnamedRepeatable (same append-class idiom as
+// timeline/keyframe -- see G6).
+//
+// Background: GLTFSceneImporter::ImportScene used to unconditionally `return true`
+// and silently swallow every duplicate-name GenericManager::AddItem failure, so TWO
+// unnamed `gltf_import` chunks sharing the SAME (defaulted) name_prefix passed the
+// dry-run derive with the second import's ~10+ entities (gltf.pnt.*, gltf.mat.0,
+// gltf.geom.m0.p0, __pbrmr_* ...) silently masked.  This blocked flagging gltf_import
+// as unnamedRepeatable (deferred in 436f604a pending exactly this fix).  Fixed via
+// two layers: (1) Job::ImportGLTFScene refuses a REPEATED name_prefix within the same
+// derive up front (a per-Job `mGltfImportPrefixes` record, reset each derive) with a
+// diagnostic naming the prefix; (2) GLTFSceneImporter::ImportScene itself now
+// propagates any entity-registration failure (material / geometry / object) as a hard
+// `false` instead of discarding it -- belt-and-suspenders for a NON-prefix collision
+// (a hand-authored entity that happens to collide with a generated name).  Distinct
+// prefixes remain fully supported -- the multi-import idiom
+// scenes/FeatureBased/Geometry/sponza_new_ivy.RISEscene relies on (2+ imports, an
+// in-file comment blessing it).
+//
+// RED-PROVE (pre-fix): Scenario B's second-same-prefix-insert rejection is the
+// load-bearing regression -- pre-fix, ImportScene's unconditional `return true` meant
+// that insert passed the dry-run derive cleanly (r2.applied would be TRUE, not the
+// FALSE asserted below).  Scenario D's hand-authored-collision rejection is likewise
+// pre-fix-failing: ImportScene discarded CreateMaterial/AddPrebuiltTriangleMeshGeometry/
+// AddObjectMatrix's bool returns, so a colliding geometry name silently dropped that
+// one primitive instead of failing the import.  Both were verified by temporarily
+// reverting the Job::ImportGLTFScene prefix guard and the ImportScene
+// `anyRegistrationFailure` propagation (restoring the old unconditional `return true`)
+// -- both rejections flipped to false-positive "applied" passes, confirming the
+// Checks below actually exercise the new code.  Scenario A and C are NOT expected to
+// fail pre-fix (A predates this change entirely -- distinct prefixes always worked;
+// C is the flag flip itself, gated on this whole fix landing).
+//----------------------------------------------------------------------
+static void TestGltfImportPrefixCollision()
+{
+	std::printf( "G9: gltf_import hardening -- prefix + entity collisions fail loudly...\n" );
+	const std::string tmp = TempPath( "agentcrud_g9.RISEscene" );
+	const std::string kBoxAsset = "scenes/Tests/Geometry/assets/Box.glb";
+
+	// --- Scenario A: two DISTINCT prefixes -- both apply (the supported multi-import idiom). ---
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G9(A) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+
+		Agent::AgentChunkResult rA = sess->InsertChunk(
+			"gltf_import\n{\n\tfile " + kBoxAsset + "\n\tname_prefix boxA\n"
+			"\timport_lights FALSE\n\timport_cameras FALSE\n}" );
+		Check( rA.applied && rA.status == "applied", "G9(A) first gltf_import (prefix boxA) applies" );
+		const RISE::Cst::CstHeadVersion v1 = sess->HeadVersion();
+		Check( v1.revision > v0.revision, "G9(A) first import advanced the head revision" );
+
+		Agent::AgentChunkResult rB = sess->InsertChunk(
+			"gltf_import\n{\n\tfile " + kBoxAsset + "\n\tname_prefix boxB\n"
+			"\timport_lights FALSE\n\timport_cameras FALSE\n}" );
+		Check( rB.applied && rB.status == "applied",
+		       "G9(A) SECOND gltf_import (DISTINCT prefix boxB) also applies" );
+		const RISE::Cst::CstHeadVersion v2 = sess->HeadVersion();
+		Check( v2.revision > v1.revision, "G9(A) second import advanced the head revision AGAIN (head advances twice)" );
+
+		Check( pJob->GetGeometries() && pJob->GetGeometries()->GetItem( "boxA.geom.m0.p0" ) != nullptr,
+		       "G9(A) boxA's geometry is present" );
+		Check( pJob->GetGeometries() && pJob->GetGeometries()->GetItem( "boxB.geom.m0.p0" ) != nullptr,
+		       "G9(A) boxB's geometry is present (BOTH imports' entities survive)" );
+
+		// applied==true above already proves the dry-run derive passed; the render confirms end-to-end
+		// (matches the discipline G6 uses for its own two-unnamed-chunk scenario).
+		Agent::AgentRenderResult rr = sess->Render();
+		Check( rr.ok, "G9(A) the scene with two distinct-prefix gltf_import chunks renders" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// --- Scenario B: SAME (defaulted) prefix -- the second insert is REJECTED at derive. ---
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G9(B) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const std::string chunkText =
+			"gltf_import\n{\n\tfile " + kBoxAsset + "\n\timport_lights FALSE\n\timport_cameras FALSE\n}";
+		Agent::AgentChunkResult r1 = sess->InsertChunk( chunkText );
+		Check( r1.applied && r1.status == "applied", "G9(B) first unnamed gltf_import (default prefix `gltf`) applies" );
+		const std::string headAfterFirst = sess->ReadDocument();
+		const RISE::Cst::CstHeadVersion vAfterFirst = sess->HeadVersion();
+
+		// Second insert, SAME default prefix ("gltf") -- must be REJECTED, not silently masked.
+		Agent::AgentChunkResult r2 = sess->InsertChunk( chunkText );
+		Check( !r2.applied && r2.status == "rejected",
+		       "G9(B) SECOND same-prefix gltf_import is REJECTED (red-prove: this FAILS pre-fix)" );
+		Check( r2.message.find( "gltf" ) != std::string::npos && r2.message.find( "collides" ) != std::string::npos,
+		       "G9(B) the rejection message names the colliding prefix and says 'collides'" );
+		Check( sess->ReadDocument() == headAfterFirst,
+		       "G9(B) the rejected second import left the head byte-identical" );
+		Check( sess->HeadVersion() == vAfterFirst,
+		       "G9(B) the rejected second import did not advance the head revision" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// --- Scenario C: read_schema advertises unnamedRepeatable for gltf_import (matches G6/timeline). ---
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G9(C) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const std::string gltfSchema = sess->ReadSchema( "gltf_import" );
+		Check( gltfSchema.find( "\"unnamedRepeatable\":true" ) != std::string::npos,
+		       "G9(C) read_schema(gltf_import) advertises unnamedRepeatable:true" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// --- Scenario D: BELT-AND-SUSPENDERS -- a hand-authored entity collides with a
+	// gltf_import-GENERATED name.  This is the FIRST (and only) gltf_import in the
+	// derive, so the name_prefix guard (Scenario B's mechanism) does NOT fire -- the
+	// collision is caught by ImportScene's own AddItem-failure propagation instead. ---
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G9(D) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		// Box.glb's sole primitive derives the geometry name "gltf.geom.m0.p0" under
+		// the default (unspecified) name_prefix "gltf" -- hand-author a geometry
+		// chunk under exactly that name BEFORE the import.
+		Agent::AgentChunkResult rPre = sess->InsertChunk(
+			"sphere_geometry\n{\n\tname gltf.geom.m0.p0\n\tradius 0.1\n}" );
+		Check( rPre.applied && rPre.status == "applied", "G9(D) the colliding hand-authored geometry inserts" );
+		const std::string headAfterPre = sess->ReadDocument();
+
+		Agent::AgentChunkResult r = sess->InsertChunk(
+			"gltf_import\n{\n\tfile " + kBoxAsset + "\n\timport_lights FALSE\n\timport_cameras FALSE\n}" );
+		Check( !r.applied && r.status == "rejected",
+		       "G9(D) the gltf_import is REJECTED -- entity-name collision, not a prefix collision "
+		       "(red-prove: this FAILS pre-fix)" );
+		Check( sess->ReadDocument() == headAfterPre,
+		       "G9(D) the rejected import left the head byte-identical (the pre-authored geometry survives alone)" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk) ===\n" );
@@ -1652,6 +1814,7 @@ int main()
 	TestUnnamedRepeatableTimeline();
 	TestRemoveChunkNameKeywordCoincidence();
 	TestCameraTimelineNamedTargeting();
+	TestGltfImportPrefixCollision();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -22,6 +22,7 @@
 #include "../Utilities/RString.h"
 #include <map>
 #include <vector>
+#include <string>
 
 namespace RISE
 {
@@ -43,6 +44,19 @@ namespace RISE
 	// address is re-recorded as a producer before it can be resolved -- so it stays correct.
 	inline thread_local std::vector<const void*>* g_cstProductionSink = nullptr;
 	inline thread_local std::vector<const void*>* g_cstResolutionSink = nullptr;
+
+	// Finalize-failure detail sink.  Unlike the two D35 sinks above (production/resolution
+	// bookkeeping, gated behind `outRecorded`), this one is installed UNCONDITIONALLY around
+	// every chunk's Finalize call in DeriveToJob's PASS-2 apply loop (see Cst.cpp) so any
+	// Finalize -- however deep the call stack (e.g. Job::ImportGLTFScene calling into
+	// GLTFSceneImporter) -- has a way to hand back a SPECIFIC one-line reason for its failure
+	// instead of the generic "<keyword>: apply failed (e.g. unresolved reference); see log"
+	// diagnostic.  Contract: on failure, a Finalize (or anything it calls) may
+	// `if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = "specific reason";` before
+	// returning false; DeriveToJob reads + clears it immediately after the call and prefers
+	// it (non-empty) over the generic message.  NULL/empty is the default -- callers that
+	// never set it are byte-identical to before this existed.
+	inline thread_local std::string* g_cstFinalizeDiagSink = nullptr;
 
 	template< class T >
 	class GenericManager : public virtual Implementation::Reference, public virtual IManager<T>
