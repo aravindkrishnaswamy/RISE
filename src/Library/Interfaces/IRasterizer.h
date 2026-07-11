@@ -188,6 +188,16 @@ namespace RISE
 		//! `samples` param was authored).  Defaulted + declared last ->
 		//! ABI-stable.
 		virtual int GetSampleCountOverride() const { return -1; }
+
+		//! Whether RasterizeScene honors a non-null pRect region.  The
+		//! pixel-based integrators (PT/BDPT/VCM and the shaderop-graph
+		//! rasterizers) restrict work to the region via BoundsFromRect;
+		//! MLT's splat film is global and silently ignores pRect (see
+		//! MLTRasterizer::RasterizeScene), so region-render UIs must not
+		//! pretend a region box does anything there — this is the honesty
+		//! query those UIs consult.  Defaulted + declared last ->
+		//! ABI-stable (same convention as the overrides above).
+		virtual bool HonorsRegion() const { return true; }
 	};
 }
 

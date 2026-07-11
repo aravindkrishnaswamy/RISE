@@ -805,6 +805,74 @@ private:
     RISE_API_SceneEditController_Redo(_controller);
 }
 
+- (NSString *)undoActionLabel {
+    if (!_controller) return @"";
+    char buf[256] = {0};
+    if (!RISE_API_SceneEditController_UndoLabel(_controller, buf, sizeof(buf))) return @"";
+    return [NSString stringWithUTF8String:buf] ?: @"";
+}
+
+- (NSString *)redoActionLabel {
+    if (!_controller) return @"";
+    char buf[256] = {0};
+    if (!RISE_API_SceneEditController_RedoLabel(_controller, buf, sizeof(buf))) return @"";
+    return [NSString stringWithUTF8String:buf] ?: @"";
+}
+
+#pragma mark - Refinement pause + status (UI redesign, design brief A2)
+
+- (void)pauseRefinement {
+    if (!_controller) return;
+    RISE_API_SceneEditController_PauseRefinement(_controller);
+}
+
+- (void)resumeRefinement {
+    if (!_controller) return;
+    RISE_API_SceneEditController_ResumeRefinement(_controller);
+}
+
+- (BOOL)isRefinementPaused {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_IsRefinementPaused(_controller) ? YES : NO;
+}
+
+- (int)refinementPhaseWithScaleDivisor:(unsigned int *)scaleDivisor {
+    if (!_controller) {
+        if (scaleDivisor) *scaleDivisor = 1;
+        return -1;
+    }
+    return RISE_API_SceneEditController_GetRefinementStatus(_controller, scaleDivisor);
+}
+
+#pragma mark - Interactive region-of-interest (UI redesign, design brief A4)
+
+- (void)setInteractiveRegionLeft:(unsigned int)left
+                             top:(unsigned int)top
+                           right:(unsigned int)right
+                          bottom:(unsigned int)bottom {
+    if (!_controller) return;
+    RISE_API_SceneEditController_SetInteractiveRegion(_controller, left, top, right, bottom);
+}
+
+- (void)clearInteractiveRegion {
+    if (!_controller) return;
+    RISE_API_SceneEditController_ClearInteractiveRegion(_controller);
+}
+
+- (BOOL)getInteractiveRegionLeft:(unsigned int *)left
+                             top:(unsigned int *)top
+                           right:(unsigned int *)right
+                          bottom:(unsigned int *)bottom {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_GetInteractiveRegion(
+               _controller, left, top, right, bottom) ? YES : NO;
+}
+
+- (BOOL)interactiveRasterizerHonorsRegion {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_InteractiveRasterizerHonorsRegion(_controller) ? YES : NO;
+}
+
 #pragma mark - Scene-file save (Phase 6.5)
 
 - (BOOL)hasUnsavedSceneChanges {

@@ -359,6 +359,12 @@ namespace RISE
 				IRasterizeSequence* pRasterSequence
 				) const;
 
+			//! MLT's splat film is global — pRect is accepted but not
+			//! honored (see RasterizeScene's "Fields and pRect are not
+			//! yet honored" note).  Report that honestly so region-render
+			//! UIs can label the state instead of pretending.
+			bool HonorsRegion() const { return false; }
+
 			//! Render an animation by re-running the full MLT pipeline
 			//! per frame: bootstrap → CDF → chain init → round-based
 			//! mutations.  Markov chains do NOT carry across frames

@@ -243,6 +243,52 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 - (void)undo;
 - (void)redo;
 
+/// Human-readable label of the next undo/redo step ("Translate",
+/// "Agent Edit", ...) for the Edit-menu items.  Empty string when the
+/// corresponding stack is empty.
+- (NSString *)undoActionLabel;
+- (NSString *)redoActionLabel;
+
+#pragma mark - Refinement pause + status (UI redesign, design brief A2)
+
+/// Pause progressive refinement: the interactive render thread is
+/// joined, the on-screen image survives, CPU goes quiet.  Edits made
+/// while paused mutate the scene normally and appear on resume.
+- (void)pauseRefinement;
+/// Resume after pauseRefinement.  No-op when not paused.  Note any
+/// (re)start of the interactive loop — e.g. the post-production-render
+/// restart — also clears the paused state.
+- (void)resumeRefinement;
+- (BOOL)isRefinementPaused;
+
+/// Honest interactive-refinement readout: phase is
+/// 0 Idle / 1 Rendering / 2 Refining / 3 Polishing / 4 Paused
+/// (-1 when no controller).  scaleDivisor (when non-NULL) receives the
+/// preview-resolution divisor, 1..32 powers of two, 1 = full res.
+/// There is NO "pass N of M" in the interactive loop — it refines by a
+/// 6-level resolution ladder + a denoised polish pass; this reports
+/// exactly that.
+- (int)refinementPhaseWithScaleDivisor:(unsigned int *)scaleDivisor;
+
+#pragma mark - Interactive region-of-interest (UI redesign, design brief A4)
+
+/// Restrict full-resolution interactive passes to an INCLUSIVE box in
+/// full-res film pixel coordinates.  Coarse ladder passes still render
+/// full-frame; the region auto-clears before any production render.
+- (void)setInteractiveRegionLeft:(unsigned int)left
+                             top:(unsigned int)top
+                           right:(unsigned int)right
+                          bottom:(unsigned int)bottom;
+- (void)clearInteractiveRegion;
+/// TRUE (+ coords) when a region is active.
+- (BOOL)getInteractiveRegionLeft:(unsigned int *)left
+                             top:(unsigned int *)top
+                           right:(unsigned int *)right
+                          bottom:(unsigned int *)bottom;
+/// TRUE when the interactive rasterizer honors regions (honesty query;
+/// the stock interactive rasterizer always does).
+- (BOOL)interactiveRasterizerHonorsRegion;
+
 #pragma mark - Scene-file save (Phase 6.5)
 //
 // Persist transform edits + retained overrides back to a `.RISEscene`

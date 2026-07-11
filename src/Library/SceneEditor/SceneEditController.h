@@ -1169,6 +1169,79 @@ namespace RISE
 		//! a full Stop(), since Start() only ever looks at mRunning.
 		void StopInteractive();
 
+		// Refinement pause + status (UI redesign, design brief A2) ------
+		// "The viewport is the renderer": explicit user-facing Pause /
+		// Resume of progressive refinement, plus an HONEST status
+		// readout.  There is no sample-accumulation "pass N of M" in the
+		// interactive loop — it refines by walking a 6-level resolution
+		// ladder and then runs a denoised polish pass (see mPreviewScale
+		// / mPolishState) — so the status surfaces exactly that.
+
+		//! Pause progressive refinement: joins the interactive render
+		//! thread via StopInteractive(), so the on-screen image survives
+		//! and CPU goes quiet.  Edits made while paused mutate the scene
+		//! normally and appear on Resume.  Idempotent.
+		void PauseRefinement();
+
+		//! Resume after PauseRefinement(): respawns the render loop with
+		//! a normal initial pass, after which the idle-refinement ladder
+		//! walks back to full quality.  No-op when not paused.  Note any
+		//! Start() — including the post-production-render restart the
+		//! platform shells perform — also clears the paused flag; after
+		//! that restart the viewport genuinely is live again, so paused
+		//! state would be a lie.
+		void ResumeRefinement();
+
+		bool IsRefinementPaused() const;
+
+		//! Interactive-refinement phase for status chrome.  Values race
+		//! benignly with the render thread — this is a poll-for-display
+		//! API, not a synchronization point.
+		enum class RefinementPhase : int
+		{
+			Idle      = 0,   //!< converged: full res, nothing in flight
+			Rendering = 1,   //!< full-resolution pass in flight
+			Refining  = 2,   //!< walking the resolution ladder (divisor > 1)
+			Polishing = 3,   //!< denoised polish pass queued / in flight
+			Paused    = 4,   //!< PauseRefinement() is in effect
+		};
+
+		//! @param outScaleDivisor  Receives the current preview-scale
+		//!        divisor (1..32, powers of two; 1 = full resolution).
+		RefinementPhase GetRefinementStatus( unsigned int& outScaleDivisor ) const;
+
+		// Interactive region-of-interest (UI redesign, design brief A4) -
+		// A user-drawn box (full-resolution film pixel coordinates,
+		// INCLUSIVE on all four edges) that restricts FULL-RES
+		// interactive passes to the box, so iteration inside it is
+		// dramatically cheaper.  Coarse preview-ladder passes
+		// (divisor > 1) still render the whole frame — otherwise pixels
+		// outside the box would go stale at mismatched scales during
+		// navigation.  The region applies ONLY to the interactive
+		// viewport; production renders are always full-frame and
+		// SubmitProductionRenderSync clears any active region first
+		// (the Blender-style "region box leaks into the final render"
+		// footgun is designed against — docs/gui/DESIGN_BRIEF.md A4).
+		// right/bottom are clamped to the film at use; a box whose
+		// left/top lies outside the film is ignored for that pass
+		// (full-frame render) while still reported by
+		// GetInteractiveRegion.  A degenerate box is refused at set
+		// time.  Thread-safe; both mutators kick a render pass.
+
+		void SetInteractiveRegion( unsigned int left, unsigned int top,
+		                           unsigned int right, unsigned int bottom );
+		void ClearInteractiveRegion();
+
+		//! TRUE (+ coords) when a region is active.
+		bool GetInteractiveRegion( unsigned int& left, unsigned int& top,
+		                           unsigned int& right, unsigned int& bottom ) const;
+
+		//! TRUE when the interactive rasterizer honors a render region —
+		//! see IRasterizer::HonorsRegion.  (The stock interactive
+		//! rasterizer always does; this exists so the region UI never
+		//! has to assume.)
+		bool InteractiveRasterizerHonorsRegion() const;
+
 		//! Set the running flag false, trip the cancel flag, signal the
 		//! condvar, and join the render thread -- AND permanently retire
 		//! the agent-render worker (mAgentRenderThread), refusing every
@@ -1247,6 +1320,14 @@ namespace RISE
 
 		void Undo();
 		void Redo();
+
+		//! Human-readable labels for the next Undo()/Redo() step
+		//! ("Translate", "Agent Edit", …) for the platform shells'
+		//! Edit-menu items — thin forwards of EditHistory::LabelForUndo/
+		//! Redo.  Empty when the corresponding stack is empty.  UI-thread
+		//! only (the same thread that performs edits / Undo / Redo).
+		String UndoLabel() const;
+		String RedoLabel() const;
 
 		//! Canonical scene time tracked by the editor's edit history.
 		//! Updated by every OnTimeScrub call AND by Undo / Redo of a
@@ -2525,6 +2606,32 @@ namespace RISE
 		enum class PolishState : int { None = 0, FinalRegularRunning = 1, PolishQueued = 2 };
 		std::atomic<int>            mPolishState;
 		static constexpr unsigned int kPolishSampleCount = 4;
+
+		// Review-round-1 P1: Start()/StopInteractive() used to synchronize
+		// only via the mRunning CAS -- the mRenderThread OBJECT (spawn in
+		// Start, join in StopInteractive) had no lock.  With
+		// PauseRefinement/ResumeRefinement these become independently
+		// fireable user actions (any thread via the C API), and a Resume's
+		// Start() landing between a Pause's CAS and its join() would
+		// move-assign onto a still-joinable std::thread ->
+		// std::terminate().  mLifecycleMutex serializes the whole
+		// CAS+spawn / CAS+join sequences.  Never taken by the render
+		// thread itself, so holding it across the join cannot deadlock.
+		std::mutex                  mLifecycleMutex;
+
+		// User-facing refinement pause (PauseRefinement/ResumeRefinement).
+		// TRUE between Pause and Resume; cleared by any Start().  In-class
+		// init — the ctor predates this member and doesn't list it.
+		std::atomic<bool>           mRefinementPaused{ false };
+
+		// Interactive region-of-interest (SetInteractiveRegion).  The four
+		// INCLUSIVE full-res film coords are packed 16 bits each into one
+		// atomic (left<<48 | top<<32 | right<<16 | bottom) so the render
+		// thread reads a coherent tuple without a lock;
+		// mInteractiveRegionActive gates use.  Coords beyond 65535 are
+		// clamped at set time (no real film is that large).
+		std::atomic<bool>           mInteractiveRegionActive{ false };
+		std::atomic<std::uint64_t>  mInteractiveRegionPacked{ 0 };
 
 		// Properties-panel snapshot (rebuilt on RefreshProperties).
 		// `mProperties` is the PRIMARY-selection snapshot (kept for

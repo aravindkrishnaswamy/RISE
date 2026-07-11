@@ -3616,6 +3616,43 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_Undo( SceneEditController* p );
 	bool RISE_API_SceneEditController_Redo( SceneEditController* p );
 
+	//! Human-readable label of the next Undo/Redo step ("Translate",
+	//! "Agent Edit", ...) for the shells' Edit-menu items.  Empty string
+	//! when the corresponding stack is empty.
+	bool RISE_API_SceneEditController_UndoLabel(
+		SceneEditController* p, char* buf, unsigned int bufLen );
+	bool RISE_API_SceneEditController_RedoLabel(
+		SceneEditController* p, char* buf, unsigned int bufLen );
+
+	// ---- Refinement pause + status (UI redesign, design brief A2) ----
+	// See SceneEditController::PauseRefinement / GetRefinementStatus.
+
+	bool RISE_API_SceneEditController_PauseRefinement( SceneEditController* p );
+	bool RISE_API_SceneEditController_ResumeRefinement( SceneEditController* p );
+	bool RISE_API_SceneEditController_IsRefinementPaused( SceneEditController* p );
+
+	//! Returns the RefinementPhase as int (0 Idle, 1 Rendering,
+	//! 2 Refining, 3 Polishing, 4 Paused); -1 on null controller.
+	//! *outScaleDivisor receives the preview-scale divisor (1..32,
+	//! 1 = full resolution) when non-null.
+	int RISE_API_SceneEditController_GetRefinementStatus(
+		SceneEditController* p, unsigned int* outScaleDivisor );
+
+	// ---- Interactive region-of-interest (UI redesign, A4) ------------
+	// Full-resolution film pixel coords, INCLUSIVE.  See
+	// SceneEditController::SetInteractiveRegion for semantics (full-res
+	// passes only; cleared automatically before production renders).
+
+	bool RISE_API_SceneEditController_SetInteractiveRegion(
+		SceneEditController* p, unsigned int left, unsigned int top,
+		unsigned int right, unsigned int bottom );
+	bool RISE_API_SceneEditController_ClearInteractiveRegion( SceneEditController* p );
+	bool RISE_API_SceneEditController_GetInteractiveRegion(
+		SceneEditController* p, unsigned int* left, unsigned int* top,
+		unsigned int* right, unsigned int* bottom );
+	bool RISE_API_SceneEditController_InteractiveRasterizerHonorsRegion(
+		SceneEditController* p );
+
 	// ---- Phase 6.5 scene-file save ----------------------------------
 	// Round-trip-save bindings.  See docs/ROUND_TRIP_SAVE_PLAN.md §9.9
 	// + SceneEditController.h "Phase 6.5".

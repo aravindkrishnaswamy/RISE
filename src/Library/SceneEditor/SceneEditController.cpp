@@ -590,11 +590,21 @@ SceneEditController::~SceneEditController()
 
 void SceneEditController::Start( bool suppressInitialRender )
 {
+	// Review-round-1 P1: serialize against StopInteractive()'s join so a
+	// concurrent Resume/Start can never move-assign onto a still-joinable
+	// mRenderThread (std::terminate) -- see mLifecycleMutex's doc.
+	std::lock_guard<std::mutex> lifecycleLk( mLifecycleMutex );
+
 	bool expected = false;
 	if( !mRunning.compare_exchange_strong( expected, true ) )
 	{
 		return;  // already running
 	}
+
+	// Any Start un-pauses — see PauseRefinement()'s declaration doc.  A
+	// paused viewport that is being (re)started is genuinely live again,
+	// and a stale paused flag would make GetRefinementStatus lie.
+	mRefinementPaused.store( false, std::memory_order_release );
 
 	// Record the one-shot "skip the initial render" request before the
 	// render thread is spawned, so RenderLoop observes it on entry.
@@ -633,6 +643,9 @@ void SceneEditController::Start( bool suppressInitialRender )
 
 void SceneEditController::StopInteractive()
 {
+	// Review-round-1 P1: see Start() / mLifecycleMutex's doc.
+	std::lock_guard<std::mutex> lifecycleLk( mLifecycleMutex );
+
 	bool expected = true;
 	if( !mRunning.compare_exchange_strong( expected, false ) )
 	{
@@ -655,6 +668,126 @@ void SceneEditController::StopInteractive()
 	{
 		mRenderThread.join();
 	}
+}
+
+void SceneEditController::PauseRefinement()
+{
+	// Set the flag FIRST so a status poll during the join below already
+	// reads Paused; harmless when StopInteractive turns out to be a
+	// no-op (not running) — Resume/Start will clear it.
+	mRefinementPaused.store( true, std::memory_order_release );
+	StopInteractive();
+}
+
+void SceneEditController::ResumeRefinement()
+{
+	if( !mRefinementPaused.load( std::memory_order_acquire ) )
+	{
+		return;  // wasn't paused
+	}
+	// Start() clears the flag itself (any Start un-pauses) and is
+	// idempotent, so no exchange dance is needed here.  A normal
+	// (un-suppressed) start repaints promptly; the idle-refinement
+	// ladder then walks back to full quality.
+	Start( false );
+}
+
+bool SceneEditController::IsRefinementPaused() const
+{
+	return mRefinementPaused.load( std::memory_order_acquire );
+}
+
+SceneEditController::RefinementPhase
+SceneEditController::GetRefinementStatus( unsigned int& outScaleDivisor ) const
+{
+	outScaleDivisor = mPreviewScale.load( std::memory_order_acquire );
+	if( mRefinementPaused.load( std::memory_order_acquire ) )
+	{
+		return RefinementPhase::Paused;
+	}
+	const PolishState polish =
+		static_cast<PolishState>( mPolishState.load( std::memory_order_acquire ) );
+	const bool rendering = mRendering.load( std::memory_order_acquire );
+	if( rendering )
+	{
+		if( polish == PolishState::PolishQueued )
+		{
+			return RefinementPhase::Polishing;
+		}
+		return outScaleDivisor > kPreviewScaleMin ? RefinementPhase::Refining
+		                                          : RefinementPhase::Rendering;
+	}
+	if( outScaleDivisor > kPreviewScaleMin )
+	{
+		return RefinementPhase::Refining;   // ladder still walking down
+	}
+	if( polish != PolishState::None )
+	{
+		return RefinementPhase::Polishing;  // polish queued, pass not yet started
+	}
+	return RefinementPhase::Idle;
+}
+
+void SceneEditController::SetInteractiveRegion( unsigned int left, unsigned int top,
+                                                unsigned int right, unsigned int bottom )
+{
+	// Refuse a degenerate box rather than silently swapping — the
+	// bridges send normalized coords.
+	if( right < left || bottom < top )
+	{
+		return;
+	}
+	const std::uint64_t kMax16 = 0xffffu;
+	const std::uint64_t l = left   < kMax16 ? left   : kMax16;
+	const std::uint64_t t = top    < kMax16 ? top    : kMax16;
+	const std::uint64_t r = right  < kMax16 ? right  : kMax16;
+	const std::uint64_t b = bottom < kMax16 ? bottom : kMax16;
+	mInteractiveRegionPacked.store( ( l << 48 ) | ( t << 32 ) | ( r << 16 ) | b,
+	                                std::memory_order_release );
+	mInteractiveRegionActive.store( true, std::memory_order_release );
+	// Start refining inside the box right away.
+	KickRender();
+}
+
+void SceneEditController::ClearInteractiveRegion()
+{
+	if( !mInteractiveRegionActive.exchange( false, std::memory_order_acq_rel ) )
+	{
+		return;
+	}
+	// Repaint full-frame so pixels outside the (former) box catch up
+	// with any edits that landed while the region restricted passes.
+	KickRender();
+}
+
+bool SceneEditController::GetInteractiveRegion( unsigned int& left, unsigned int& top,
+                                                unsigned int& right, unsigned int& bottom ) const
+{
+	if( !mInteractiveRegionActive.load( std::memory_order_acquire ) )
+	{
+		return false;
+	}
+	const std::uint64_t packed = mInteractiveRegionPacked.load( std::memory_order_acquire );
+	left   = static_cast<unsigned int>( ( packed >> 48 ) & 0xffffu );
+	top    = static_cast<unsigned int>( ( packed >> 32 ) & 0xffffu );
+	right  = static_cast<unsigned int>( ( packed >> 16 ) & 0xffffu );
+	bottom = static_cast<unsigned int>(   packed         & 0xffffu );
+	return true;
+}
+
+bool SceneEditController::InteractiveRasterizerHonorsRegion() const
+{
+	return mInteractiveRasterizer ? mInteractiveRasterizer->HonorsRegion() : false;
+}
+
+String SceneEditController::UndoLabel() const
+{
+	return String( mEditor.History().LabelForUndo() );
+}
+
+String SceneEditController::RedoLabel() const
+{
+	return String( mEditor.History().LabelForRedo() );
 }
 
 void SceneEditController::Stop()
@@ -1895,6 +2028,15 @@ Scalar SceneEditController::LastSceneTime() const
 
 bool SceneEditController::RequestProductionRender()
 {
+	// Design brief A4 (review-round-1 P1): a region NEVER leaks into or
+	// past a production render.  This is the SECOND live production
+	// entry point (the Mac shell's -requestProductionRender lands here;
+	// the composed path goes through SubmitProductionRenderSync, which
+	// clears too) — both must uphold the invariant or the post-render
+	// interactive restart refines only a stale box.  Kick-free store:
+	// the interactive loop is being stopped right below anyway.
+	mInteractiveRegionActive.store( false, std::memory_order_release );
+
 	const bool wasRunning = IsRunning();
 	if( wasRunning )
 	{
@@ -1907,7 +2049,10 @@ bool SceneEditController::RequestProductionRender()
 		// Without a production rasterizer there's nothing to do; the
 		// caller should ensure one is configured by the time they
 		// click "Render".  We restart interactive and report failure.
-		if( wasRunning ) Start();
+		// Round-2 P2: don't silently un-pause — a Pause that raced this
+		// production render would otherwise be clobbered by the restart
+		// (Start() clears mRefinementPaused).  Mirrors ResumeRefinement.
+		if( wasRunning && !IsRefinementPaused() ) Start();
 		return false;
 	}
 
@@ -1943,7 +2088,8 @@ bool SceneEditController::RequestProductionRender()
 		ok = true;
 	}
 
-	if( wasRunning ) Start();
+	// Round-2 P2: same paused-guard as the early-exit restart above.
+	if( wasRunning && !IsRefinementPaused() ) Start();
 	return ok;
 }
 
@@ -4230,6 +4376,19 @@ bool SceneEditController::SubmitProductionRenderSync(
 	RenderJobId*          outJobId,
 	unsigned int          queueTimeoutMs )
 {
+	// Design brief A4: a region NEVER leaks into a production render.
+	// The production path renders full-frame regardless (it does not
+	// read mInteractiveRegion*), but clearing here also stops the
+	// post-render interactive restart from refining only a stale box
+	// over the finished production image — and keeps the UI badge
+	// state honest (the bridges re-query GetInteractiveRegion).
+	// Review-round-1 P2: clear WITHOUT the KickRender() the public
+	// ClearInteractiveRegion() performs — the shells stop the
+	// interactive loop before submitting production work, and waking
+	// it here would invite exactly the two-rasterizers-one-scene race
+	// that convention prevents.  No repaint is needed either: the
+	// production result replaces the framebuffer wholesale.
+	mInteractiveRegionActive.store( false, std::memory_order_release );
 	return SubmitAgentRenderSync( std::move( fn ), clientLabel, outJobId, queueTimeoutMs,
 		/*pinned=*/false, RenderClass::Production );
 }
@@ -5034,9 +5193,23 @@ void SceneEditController::RenderLoop()
 			const long long sinceEdit = now - mLastEditTimeMs.load( std::memory_order_acquire );
 			if( sinceEdit < kRefineIdleMs ) continue;
 
-			const unsigned int s = mPreviewScale.load( std::memory_order_acquire );
+			unsigned int s = mPreviewScale.load( std::memory_order_acquire );
 			if( s <= kPreviewScaleMin ) continue;
-			mPreviewScale.store( s / 2, std::memory_order_release );
+			// Review-round-1 P2: CAS, not a blind store.  A gesture-end
+			// reset (OnPointerUp / OnTimeScrubEnd / EndPropertyScrub all
+			// store kPreviewScaleMin from the UI thread) landing between
+			// the load above and a blind store(s/2) would be silently
+			// overwritten -- leaving the scale resting above min with no
+			// future wake to walk it down (the refine-mode predicate
+			// needs an active gesture), i.e. a stuck-coarse preview and
+			// a status readout stuck on "Refining".  On CAS failure the
+			// reset (or a new gesture's motion bump) won; just loop.
+			if( !mPreviewScale.compare_exchange_strong(
+					s, s / 2,
+					std::memory_order_acq_rel, std::memory_order_acquire ) )
+			{
+				continue;
+			}
 			mInRefinementPass = true;
 			// P2 (accepted, not fixed): if the mint-site re-check further
 			// below bounces this same iteration (mAgentRenderBlocksInteractive
@@ -6495,8 +6668,39 @@ void SceneEditController::DoOneRenderPass()
 		EnsureInteractiveFrameStore_( passW, passH );
 	}
 
+	// ----- Interactive region-of-interest (design brief A4) -----------
+	// Applied only at full resolution: coarse ladder passes render the
+	// whole frame so pixels outside the box never go stale at a
+	// mismatched scale, while the persistent frame store keeps the last
+	// full-res content outside the box as passes refine inside it.
+	// Coords are INCLUSIVE (Rect convention) and clamped to the film.
+	Rect regionRect( 0, 0, 0, 0 );
+	const Rect* pRegion = 0;
+	if( scale == 1 && mInteractiveRegionActive.load( std::memory_order_acquire ) )
+	{
+		unsigned int rl = 0, rt = 0, rr = 0, rb = 0;
+		if( GetInteractiveRegion( rl, rt, rr, rb ) )
+		{
+			// Review-round-1 P2: read the film dims FRESH here (render
+			// thread; at scale==1 no swap has run this pass) instead of
+			// the mFullResW/H cache, so a rect can never be validated
+			// against stale dims and re-expose BoundsFromRect's
+			// width-2 underflow on a shrunken film.
+			const IFilm* regionFilm = scene->GetFilm();
+			const unsigned int w = regionFilm ? regionFilm->GetWidth()  : 0;
+			const unsigned int h = regionFilm ? regionFilm->GetHeight() : 0;
+			if( w > 0 && h > 0 && rl < w && rt < h )
+			{
+				regionRect = Rect( rt, rl,
+				                   rb < h ? rb : h - 1,
+				                   rr < w ? rr : w - 1 );
+				pRegion = &regionRect;
+			}
+		}
+	}
+
 	const auto t0 = std::chrono::steady_clock::now();
-	mInteractiveRasterizer->RasterizeScene( *scene, /*pRect*/0, /*seq*/0 );
+	mInteractiveRasterizer->RasterizeScene( *scene, pRegion, /*seq*/0 );
 	const auto elapsed = std::chrono::steady_clock::now() - t0;
 	// restoreGuard's destructor runs at the end of this scope and
 	// restores rest dims whether we exited normally, via cancellation,

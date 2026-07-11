@@ -7588,6 +7588,73 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_SceneEditController_PauseRefinement( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->PauseRefinement();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_ResumeRefinement( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->ResumeRefinement();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_IsRefinementPaused( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->IsRefinementPaused();
+	}
+
+	int RISE_API_SceneEditController_GetRefinementStatus(
+		SceneEditController* p, unsigned int* outScaleDivisor )
+	{
+		if( !p ) return -1;
+		unsigned int scaleDiv = 1;
+		const int phase = static_cast<int>( p->GetRefinementStatus( scaleDiv ) );
+		if( outScaleDivisor ) *outScaleDivisor = scaleDiv;
+		return phase;
+	}
+
+	bool RISE_API_SceneEditController_SetInteractiveRegion(
+		SceneEditController* p, unsigned int left, unsigned int top,
+		unsigned int right, unsigned int bottom )
+	{
+		if( !p ) return false;
+		p->SetInteractiveRegion( left, top, right, bottom );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_ClearInteractiveRegion( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->ClearInteractiveRegion();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_GetInteractiveRegion(
+		SceneEditController* p, unsigned int* left, unsigned int* top,
+		unsigned int* right, unsigned int* bottom )
+	{
+		if( !p ) return false;
+		unsigned int l = 0, t = 0, r = 0, b = 0;
+		if( !p->GetInteractiveRegion( l, t, r, b ) ) return false;
+		if( left )   *left   = l;
+		if( top )    *top    = t;
+		if( right )  *right  = r;
+		if( bottom ) *bottom = b;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_InteractiveRasterizerHonorsRegion(
+		SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->InteractiveRasterizerHonorsRegion();
+	}
+
 	// ---- Phase 6.5 scene-file save ----------------------------------
 
 	bool RISE_API_SceneEditController_HasUnsavedChanges( SceneEditController* p )
@@ -7680,6 +7747,22 @@ namespace RISE
 	{
 		if( !p ) return false;
 		CopyToBuf( p->CurrentPanelHeader(), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_UndoLabel(
+		SceneEditController* p, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		CopyToBuf( p->UndoLabel(), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_RedoLabel(
+		SceneEditController* p, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		CopyToBuf( p->RedoLabel(), buf, bufLen );
 		return true;
 	}
 
