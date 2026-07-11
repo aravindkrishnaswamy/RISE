@@ -13,7 +13,11 @@
 //  Coverage:
 //    T1  "document" op:param_equals -- pass (value matches) / fail (value
 //        mismatch) / fail (unknown target) / fail (unknown param).
-//    T2  "document" op:chunk_exists / op:chunk_absent -- both pass/fail.
+//    T2  "document" op:chunk_exists / op:chunk_absent -- both pass/fail;
+//        op:chunk_count (min/max band over a chunkKind, for asserting on an
+//        UNNAMED non-singleton kind that param_equals/chunk_exists cannot
+//        address individually) -- exact-band pass, below-min/above-max fail,
+//        zero-match band both directions, missing chunkKind/min+max fail loudly.
 //    T3  "untouched" -- passes on an unperturbed chunk (pnt_emit, never
 //        touched by param_edit's edit), FAILS on the chunk the scenario
 //        actually edited (pnt_albedo) -- the guard catches a real
@@ -243,9 +247,28 @@ static void TestDocumentCheckpoint()
 	checkOne( "[{\"kind\":\"document\",\"op\":\"chunk_exists\",\"chunkKind\":\"sphere_geometry\",\"name\":\"pnt_albedo\"}]",
 		false, "chunk_exists wrong chunkKind narrowing correctly fails" );
 
+	// chunk_count: kScene carries exactly 2 uniformcolor_painter chunks
+	// (pnt_albedo, pnt_emit) and 2 standard_object chunks (obj_sph, obj_emit)
+	// -- both PASS on an exact [2,2] band, FAIL when the band excludes 2.
+	checkOne( "[{\"kind\":\"document\",\"op\":\"chunk_count\",\"chunkKind\":\"uniformcolor_painter\",\"min\":2,\"max\":2}]",
+		true, "chunk_count exact band [2,2] matches" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"chunk_count\",\"chunkKind\":\"standard_object\",\"min\":2,\"max\":2}]",
+		true, "chunk_count exact band [2,2] matches (standard_object)" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"chunk_count\",\"chunkKind\":\"uniformcolor_painter\",\"min\":3}]",
+		false, "chunk_count below min FAILS" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"chunk_count\",\"chunkKind\":\"uniformcolor_painter\",\"max\":1}]",
+		false, "chunk_count above max FAILS" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"chunk_count\",\"chunkKind\":\"does_not_exist_kind\",\"min\":1}]",
+		false, "chunk_count of a kind with zero matches FAILS a min:1 band" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"chunk_count\",\"chunkKind\":\"does_not_exist_kind\",\"max\":0}]",
+		true, "chunk_count of a kind with zero matches PASSES a max:0 band" );
+
 	// Malformed op / missing fields -- failed, not crashed.
 	checkOne( "[{\"kind\":\"document\",\"op\":\"not_a_real_op\"}]", false, "unknown op fails loudly" );
 	checkOne( "[{\"kind\":\"document\"}]", false, "missing \"op\" fails loudly" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"chunk_count\",\"min\":1}]", false, "chunk_count missing \"chunkKind\" fails loudly" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"chunk_count\",\"chunkKind\":\"standard_object\"}]",
+		false, "chunk_count missing both \"min\"/\"max\" fails loudly" );
 }
 
 //----------------------------------------------------------------------
@@ -769,7 +792,7 @@ static void TestPartialCreditArithmetic()
 }
 
 //----------------------------------------------------------------------
-// T10: the 3 committed evals/scenarios/*.json, run end-to-end through
+// T10: the 4 committed evals/scenarios/*.json, run end-to-end through
 // their OWN committed evals/fixtures/*.fixture.jsonl and checked against
 // their OWN wired checkpoints[] -- proves the seed scenarios' checkpoints
 // are actually TRUE of the fixtures that produce them, not just
@@ -777,11 +800,11 @@ static void TestPartialCreditArithmetic()
 //----------------------------------------------------------------------
 static void TestSeedScenariosCheckpointsAreTrue()
 {
-	std::printf( "T10: the 3 committed seed scenarios' checkpoints are TRUE of their own fixtures...\n" );
+	std::printf( "T10: the 4 committed seed scenarios' checkpoints are TRUE of their own fixtures...\n" );
 	const std::string dir = ScratchRunDir( "t10_seed_scenarios" );
 
-	const char* const ids[3] = { "param_edit", "two_tool_observe", "error_path" };
-	for( int i = 0; i < 3; ++i ) {
+	const char* const ids[4] = { "param_edit", "two_tool_observe", "error_path", "camera_orbit_timeline" };
+	for( int i = 0; i < 4; ++i ) {
 		const std::string path = std::string( "evals/scenarios/" ) + ids[i] + ".json";
 		AgentEvalScenario s;
 		std::string err;

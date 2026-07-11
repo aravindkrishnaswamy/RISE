@@ -1046,6 +1046,32 @@ namespace RISE
 					return 1;
 				}
 
+				//! Count top-level chunks whose keyword is EXACTLY `kind` (no
+				//! narrowing shorthand -- unlike CheckerFindChunk this has no
+				//! notion of "no narrowing", since a count over EVERY chunk
+				//! regardless of kind is not a meaningful scenario assertion).
+				//! Backs the "chunk_count" document op, which exists because
+				//! CheckerFindChunk's name-based lookup is unusable for the
+				//! common case of asserting on an UNNAMED, non-singleton chunk
+				//! kind (e.g. "how many `timeline` chunks are there now" --
+				//! every `timeline` chunk shares the empty bare name, so
+				//! CheckerFindChunk( doc, "timeline", "", ... ) is AMBIGUOUS
+				//! the moment a document carries more than one).
+				int CheckerCountChunksOfKind( const Document& doc, const std::string& kind )
+				{
+					const int n = RISE::Cst::DocItemCount( doc );
+					int count = 0;
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( doc, i );
+						if( !id ) continue;
+						NodeRef item = RISE::Cst::DocResolveNodeId( doc, id );
+						if( !item || item->kind != NodeKind::Chunk ) continue;
+						if( item->role != kind ) continue;
+						++count;
+					}
+					return count;
+				}
+
 				//! The OPTIONAL chunk-kind NARROWING field of a document/untouched
 				//! checkpoint (exact chunk-keyword match; "" = no narrowing).  It is
 				//! deliberately NOT named "kind": that name is already the top-level
@@ -1064,11 +1090,15 @@ namespace RISE
 				//----------------------------------------------------------
 
 				//! "document": {op:"param_equals",target,param,value,chunkKind?} |
-				//! {op:"chunk_exists",chunkKind?,name} | {op:"chunk_absent",chunkKind?,name}
-				//! -- asserted against the POST-run document
-				//! (session->ReadDocument(), reparsed via ParseToCst -- the
-				//! same idiom AgentChunkCrudTest/CstFirstSliceTest use to
-				//! inspect a document's chunks after an edit).
+				//! {op:"chunk_exists",chunkKind?,name} | {op:"chunk_absent",chunkKind?,name} |
+				//! {op:"chunk_count",chunkKind,min?,max?} -- asserted against the
+				//! POST-run document (session->ReadDocument(), reparsed via
+				//! ParseToCst -- the same idiom AgentChunkCrudTest/
+				//! CstFirstSliceTest use to inspect a document's chunks after
+				//! an edit).  chunk_count exists for UNNAMED, non-singleton
+				//! chunk kinds (e.g. `timeline`) that param_equals/chunk_exists
+				//! cannot address individually -- see CheckerCountChunksOfKind's
+				//! doc.  At least one of min/max is required (both is a band).
 				CheckOutcome CheckDocumentKind( const JsonValue& cp, AgentSession* session )
 				{
 					if( !session ) return { false, "document checkpoint: no live session (run did not complete)" };
@@ -1122,6 +1152,33 @@ namespace RISE
 							                          : ( "chunk_exists: '" + name + "' NOT found" ) };
 						return { !exists, !exists ? ( "chunk_absent: '" + name + "' correctly absent" )
 						                            : ( "chunk_absent: '" + name + "' unexpectedly PRESENT" ) };
+					}
+
+					if( op == "chunk_count" ) {
+						if( !cp.has( "chunkKind" ) || !cp.get( "chunkKind" ).isString() || cp.get( "chunkKind" ).asString().empty() )
+							return { false, "chunk_count missing non-empty string \"chunkKind\"" };
+						if( !cp.has( "min" ) && !cp.has( "max" ) )
+							return { false, "chunk_count requires at least one of \"min\"/\"max\"" };
+						const std::string kind = cp.get( "chunkKind" ).asString();
+						const int count = CheckerCountChunksOfKind( doc, kind );
+
+						std::vector<std::string> failures;
+						if( cp.has( "min" ) && cp.get( "min" ).isNumber() ) {
+							const double lo = cp.get( "min" ).asNumber();
+							if( count < lo )
+								failures.push_back( "count " + std::to_string( count ) + " < min " + std::to_string( lo ) );
+						}
+						if( cp.has( "max" ) && cp.get( "max" ).isNumber() ) {
+							const double hi = cp.get( "max" ).asNumber();
+							if( count > hi )
+								failures.push_back( "count " + std::to_string( count ) + " > max " + std::to_string( hi ) );
+						}
+						if( !failures.empty() ) {
+							std::string detail = "chunk_count '" + kind + "' violated: ";
+							for( std::size_t i = 0; i < failures.size(); ++i ) { if( i ) detail += "; "; detail += failures[i]; }
+							return { false, detail };
+						}
+						return { true, "chunk_count: " + std::to_string( count ) + " chunk(s) of kind '" + kind + "' satisfies band" };
 					}
 
 					return { false, "document checkpoint: unknown op '" + op + "'" };
