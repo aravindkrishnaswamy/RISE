@@ -66,6 +66,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <cmath>
 
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
@@ -73,6 +74,9 @@
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Interfaces/ILightManager.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Interfaces/ICameraManager.h"
+#include "../src/Library/Interfaces/IAnimator.h"
+#include "../src/Library/SceneEditor/CameraIntrospection.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
@@ -106,6 +110,24 @@ static const char* const kScene =
 	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
 	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
 	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+//----------------------------------------------------------------------
+// A derivable two-NAMED-camera fixture: camB is authored LAST, so
+// "last-added wins" makes camB the ACTIVE camera and camA a non-active
+// named camera -- the setup that distinguishes named camera-timeline
+// targeting from the active-camera fallback.
+//----------------------------------------------------------------------
+static const char* const kTwoCamScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tname camA\n\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"pinhole_camera\n{\n\tname camB\n\tlocation 0 0 9\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n";
 
 static std::string TempPath( const char* name )
 {
@@ -1495,6 +1517,120 @@ static void TestRemoveChunkNameKeywordCoincidence()
 	std::remove( tmp.c_str() );
 }
 
+//----------------------------------------------------------------------
+// G8: element_type camera resolves `element` as the TARGET camera's name.
+//   (a) two named cameras -> a timeline element=<non-active camera> animates
+//       THAT camera, proven by evaluating the keyframe at t=1;
+//   (b) a name that matches no camera is a LOUD derive rejection (NOT a
+//       silent active-camera fallback), head unchanged;
+//   (c) an empty element with a single unnamed camera falls back to the
+//       ACTIVE camera and applies (the eval-fixture's own golden path).
+//----------------------------------------------------------------------
+static Point3 ReadCamLocation( ICamera* cam )
+{
+	double x = 0, y = 0, z = 0;
+	if( cam ) {
+		const String v = CameraIntrospection::GetPropertyValue( *cam, String( "location" ) );
+		std::sscanf( v.c_str(), "%lf %lf %lf", &x, &y, &z );
+	}
+	return Point3( x, y, z );
+}
+
+static void TestCameraTimelineNamedTargeting()
+{
+	std::printf( "G8: element_type camera -- named targeting / loud miss / active fallback...\n" );
+	const std::string tmp = TempPath( "agentcrud_g7.RISEscene" );
+
+	// --- (a) named NON-active camera is the one animated. ---
+	{
+		Job* pJob = LoadScene( kTwoCamScene, tmp );
+		Check( pJob != nullptr, "(a) two-named-camera fixture loads" );
+		if( !pJob ) return;
+		Check( pJob->GetActiveCameraName() == "camB",
+		       "(a) camB (authored last) is the active camera; camA is non-active" );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentChunkResult rA = sess->InsertChunk(
+			"timeline\n{\n\telement_type camera\n\telement camA\n\tparam location\n"
+			"\ttime 0\n\tvalue 0 0 5\n\ttime 1\n\tvalue 7 0 5\n}" );
+		Check( rA.applied && rA.status == "applied",
+		       "(a) timeline targeting the NAMED non-active camera camA applies + derives" );
+
+		IAnimator* anim = pJob->GetScene() ? pJob->GetScene()->GetAnimator() : nullptr;
+		Check( anim != nullptr, "(a) the derived scene exposes an animator" );
+		if( anim ) anim->EvaluateAtTime( 1.0 );
+
+		ICameraManager* cams = pJob->GetCameras();
+		ICamera* camA = cams ? cams->GetItem( "camA" ) : nullptr;
+		ICamera* camB = cams ? cams->GetItem( "camB" ) : nullptr;
+		Check( camA && camB, "(a) both named cameras resolve in the derived scene" );
+		const Point3 aLoc = ReadCamLocation( camA );
+		const Point3 bLoc = ReadCamLocation( camB );
+		Check( std::fabs( aLoc.x - 7.0 ) < 1e-6,
+		       "(a) camA (the NAMED target) moved to the keyframed x=7 at t=1" );
+		Check( std::fabs( bLoc.x - 0.0 ) < 1e-6 && std::fabs( bLoc.z - 9.0 ) < 1e-6,
+		       "(a) camB (the ACTIVE camera) was NOT animated -- still at authored 0 0 9" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// --- (b) a name that matches no camera is a LOUD derive rejection. ---
+	{
+		Job* pJob = LoadScene( kTwoCamScene, tmp );
+		Check( pJob != nullptr, "(b) fixture reloads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const std::string headBefore = sess->ReadDocument();
+		const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
+
+		Agent::AgentChunkResult rMiss = sess->InsertChunk(
+			"timeline\n{\n\telement_type camera\n\telement no_such_cam\n\tparam location\n"
+			"\ttime 0\n\tvalue 0 0 5\n\ttime 1\n\tvalue 7 0 5\n}" );
+		Check( !rMiss.applied && rMiss.status == "rejected",
+		       "(b) naming a non-existent camera is REJECTED (no silent active-camera fallback)" );
+		Check( rMiss.message.find( "would not derive" ) != std::string::npos,
+		       "(b) the rejection is the derive-gate class (the missing camera name is named in the log)" );
+		Check( sess->ReadDocument() == headBefore,
+		       "(b) the rejected insert left the head byte-identical" );
+		Check( sess->HeadVersion() == vBefore,
+		       "(b) the rejected insert did not advance the revision" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// --- (c) empty element + single unnamed camera -> active-camera fallback. ---
+	{
+		Job* pJob = LoadScene( kScene, tmp );   // kScene has ONE unnamed camera
+		Check( pJob != nullptr, "(c) single-unnamed-camera fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentChunkResult rC = sess->InsertChunk(
+			"timeline\n{\n\telement_type camera\n\tparam location\n"
+			"\ttime 0\n\tvalue 0 0 3.5\n\ttime 1\n\tvalue 2 0 3.5\n}" );
+		Check( rC.applied && rC.status == "applied",
+		       "(c) a camera timeline with NO element falls back to the active camera + derives" );
+
+		IAnimator* anim = pJob->GetScene() ? pJob->GetScene()->GetAnimator() : nullptr;
+		if( anim ) anim->EvaluateAtTime( 1.0 );
+		ICameraManager* cams = pJob->GetCameras();
+		ICamera* active = cams ? cams->GetItem( pJob->GetActiveCameraName().c_str() ) : nullptr;
+		Check( active != nullptr, "(c) the active (unnamed -> auto-named) camera resolves" );
+		const Point3 loc = ReadCamLocation( active );
+		Check( std::fabs( loc.x - 2.0 ) < 1e-6,
+		       "(c) the fallback animated the active camera to x=2 at t=1" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk) ===\n" );
@@ -1515,6 +1651,7 @@ int main()
 	TestCameraSwapRecipe();
 	TestUnnamedRepeatableTimeline();
 	TestRemoveChunkNameKeywordCoincidence();
+	TestCameraTimelineNamedTargeting();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

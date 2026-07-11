@@ -448,7 +448,6 @@ standard_object
 timeline
 {
 	element_type	camera
-	element			camera
 	param			target_orientation
 	
 	interpolator	linear

@@ -9675,7 +9675,10 @@ namespace RISE
 						// chunks (no `name` param exists) -- so unnamed multiplicity is legal, not a singleton.
 						cd.unnamedRepeatable = true;
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name"; }
+						// Same camera semantics as `timeline` (both funnel into AddKeyframeToAnimation,
+						// whose camera branch resolves `element` as the target camera's name, empty ==
+						// the active camera, non-existent name == a LOUD derive failure).
+						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name; for element_type camera this is the target camera's `name` (empty == the active camera; a name that matches no camera fails the derive)"; }
 						// NB: this legacy single-`keyframe` chunk hardwires the lookup to objects
 						// (see the AddKeyframe call above) -- it cannot target geometry/painter, so
 						// the hint deliberately stays {object,camera,light}.  Use `timeline` for those.
@@ -9738,8 +9741,14 @@ namespace RISE
 						// a singleton (e.g. scenes/FeatureBased/SDF/sdf_morph_torture.RISEscene carries ~14).
 						cd.unnamedRepeatable = true;
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name"; }
-						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light","geometry","painter"}; p.description = "Element kind (geometry/painter animate a named geometry's or painter's intrinsic params, e.g. an sdf_geometry's part fields)"; p.defaultValueHint = "object"; }
+						// The camera clause below is LOAD-BEARING agent guidance: for element_type
+						// camera, `element` names the TARGET camera; omit it to animate the active
+						// camera (the common single-, often unnamed-, camera case needs no rename).
+						// Naming a camera that does not exist is a LOUD derive failure, so the agent
+						// must reference a real camera `name` (or leave `element` off) rather than
+						// inventing one.
+						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name; for element_type camera this is the target camera's `name` (empty == the active camera; a name that matches no camera fails the derive)"; }
+						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light","geometry","painter"}; p.description = "Element kind (camera animates the `element`-named camera, or the ACTIVE camera when `element` is empty; geometry/painter animate a named geometry's or painter's intrinsic params, e.g. an sdf_geometry's part fields)"; p.defaultValueHint = "object"; }
 						{ auto& p = P(); p.name = "param";               p.kind = ValueKind::String; p.description = "Parameter name"; }
 						{ auto& p = P(); p.name = "animation";           p.kind = ValueKind::String; p.description = "Owning named animation (default = the implicit default animation)"; p.defaultValueHint = "(default)"; }
 						{ auto& p = P(); p.name = "value";               p.kind = ValueKind::String; p.repeatable = true; p.description = "Value at the corresponding `time` (emits one keyframe per appearance)"; }

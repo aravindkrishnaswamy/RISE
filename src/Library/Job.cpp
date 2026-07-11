@@ -11394,7 +11394,30 @@ bool Job::AddKeyframeToAnimation(
 	if( type == "object" ) {
 		pkf = pObjectManager->GetItem( element );
 	} else if( type == "camera" ) {
-		pkf = pScene->GetCameraMutable();
+		// Camera keyframes target a SPECIFIC camera by name when `element`
+		// is provided; an empty / absent / "none" element falls back to the
+		// ACTIVE camera (back-compat -- the overwhelmingly common single-,
+		// often unnamed-, camera scene).  A non-empty element that names no
+		// existing camera is a LOUD derive failure (return false) -- never a
+		// silent active-camera fallback -- so the dry-run derive gate rejects
+		// the edit instead of animating the wrong camera.  Cameras are
+		// registered in the camera manager by name (unnamed chunks get an
+		// auto-allocated "default"), and ICamera IS-A IKeyframable, so a
+		// named GetItem() yields the same keyframable the active path does.
+		const bool haveName = *element && ( strcmp( element, "none" ) != 0 );
+		if( haveName ) {
+			ICameraManager* pCameras = pScene->GetCamerasMutable();
+			ICamera* pNamedCam = pCameras ? pCameras->GetItem( element ) : 0;
+			if( !pNamedCam ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"Job::AddKeyframeToAnimation:: camera `%s` not found -- cannot animate a non-existent camera (reference the camera's `name`, or omit `element` to animate the active camera)",
+					element );
+				return false;
+			}
+			pkf = pNamedCam;
+		} else {
+			pkf = pScene->GetCameraMutable();
+		}
 	} else if( type == "geometry" ) {
 		pkf = pGeomManager->GetItem( element );
 	} else if( type == "painter" ) {

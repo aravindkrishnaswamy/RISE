@@ -406,7 +406,6 @@ timeline
 timeline
 {
 	element_type		camera
-	element				camera
 	param				target_orientation
 
 	interpolator		hermite
