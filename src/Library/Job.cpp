@@ -10875,9 +10875,29 @@ int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
 	//     "the unnamed one" would delete an ARBITRARY instance (the one-way door the insert-side singleton
 	//     rationale worried about).  Refuse honestly here rather than silently erasing one.  A repeatable
 	//     kind has no name, so this can never intercept a NAMED-chunk removal.
+	//
+	// COINCIDENCE GUARD (P2 fix): the ambiguity check above only makes sense on the KEYWORD-interpretation
+	// path -- i.e. when `target` itself is being read as a bare kind address, which only happens when the
+	// caller did NOT pass an explicit `kind`.  Without this guard, a chunk of ANY OTHER kind that happens to
+	// be NAMED the same as a repeatable keyword (e.g. an omni_light literally named "timeline") could never
+	// be removed by bare name while 2+ unnamed timelines coexist: the code below would resolve `target` as
+	// the keyword "timeline" and refuse as ambiguous, even though DocFindByNameAnyRole would have uniquely
+	// resolved the NAME "timeline" to the light.  So when `kind` is omitted, try the plain name resolution
+	// FIRST (no kind hint, no positional fallback -- the same call the fall-through path below would make);
+	// if it finds ANY named match (unique -> proceed to remove it; ambiguous -> the existing occ>1 message
+	// below already reports that honestly), `target` is a NAME address and the keyword-ambiguity guard must
+	// not fire at all.  Only when the plain name lookup finds NOTHING does `target` fall through to being a
+	// bare KEYWORD address for a repeatable-unnamed kind -- exactly the case this guard exists to police.
+	// When `kind` IS explicitly provided, this pre-check is skipped and the guard applies exactly as before.
+	bool targetNamesAChunk = false;
+	if( !( kind && kind[0] ) ) {
+		int occName = 0;
+		RISE::Cst::DocFindByNameAnyRole( *pCstDocument, target, &occName, "", false );
+		targetNamesAChunk = occName > 0;   // any named-chunk hit (unique or ambiguous) means NAME, not keyword
+	}
 	const ChunkDescriptor* remDesc =
 		DescriptorForKeyword( String( ( kind && kind[0] ) ? kind : target ) );
-	const bool unnamedRepeatable = remDesc && remDesc->unnamedRepeatable;
+	const bool unnamedRepeatable = remDesc && remDesc->unnamedRepeatable && !targetNamesAChunk;
 	if( unnamedRepeatable ) {
 		int unnamedCount = 0;
 		const int nHead = RISE::Cst::DocItemCount( *pCstDocument );

@@ -141,6 +141,9 @@ namespace RISE
 					"replacement -- insert-first creates two cameras and strands the old "
 					"unnamed one (a NAMED second camera stays removable by name) "
 					"(the positional fallback requires exactly one). "
+					"Unnamed chunks are singletons per keyword EXCEPT append-class kinds "
+					"(timeline, keyframe -- see read_schema's unnamedRepeatable), which may "
+					"legally repeat unnamed. "
 					"Use read_schema for the chunk's parameters; for a BIG "
 					"addition, compose the full candidate document and validate it "
 					"FIRST, then insert chunk by chunk. Always pass the headVersion you "
@@ -179,7 +182,10 @@ namespace RISE
 					"pass the headVersion you last read as baseHeadVersion. There is no "
 					"rename verb -- the safe recipe: insert_chunk the renamed entity "
 					"(declarations are positioned before their consumers), retarget its "
-					"consumers via propose_patch, then remove_chunk the old one.",
+					"consumers via propose_patch, then remove_chunk the old one. "
+					"Removing a repeatable-unnamed kind (timeline, keyframe) by kind alone "
+					"while 2+ unnamed instances exist is refused as ambiguous -- address a "
+					"named chunk, or use kind only when exactly one unnamed instance remains.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"target\":{\"type\":\"string\",\"description\":"
 						"\"The bare NAME of the chunk to remove (a chunk name from the document).\"},"

@@ -1418,6 +1418,83 @@ static void TestUnnamedRepeatableTimeline()
 	}
 }
 
+//----------------------------------------------------------------------
+// G7: remove_chunk ambiguity guard must fire ONLY on the KEYWORD-interpretation path.
+//
+// Regression for the coincidence bug: the guard used to resolve
+// `DescriptorForKeyword((kind && kind[0]) ? kind : target)` -- with `kind`
+// omitted (the normal remove-by-name path), a chunk of ANY OTHER kind that
+// happens to be NAMED the same as a repeatable keyword (e.g. an omni_light
+// literally named "timeline") could never be removed by bare name while 2+
+// unnamed timelines coexist: the code resolved `target` as the KEYWORD
+// "timeline" and refused as ambiguous, even though DocFindByNameAnyRole
+// would have uniquely resolved the NAME "timeline" to the light.
+//
+// Fixed by trying plain name resolution FIRST when `kind` is omitted; only
+// when that finds NOTHING does `target` fall through to keyword
+// interpretation and the ambiguity guard.
+//----------------------------------------------------------------------
+static void TestRemoveChunkNameKeywordCoincidence()
+{
+	std::printf( "G7: remove_chunk name/keyword coincidence -- a chunk NAMED \"timeline\" resolves by NAME, not keyword...\n" );
+	const std::string tmp = TempPath( "agentcrud_g7.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "G7 fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	// Two unnamed timelines (so the repeatable-keyword ambiguity guard is IN PLAY for kind-only removal)...
+	Check( sess->InsertChunk(
+		"timeline\n{\n\telement_type object\n\telement obj_sph\n\tparam position\n"
+		"\ttime 0\n\tvalue 0 0 0\n\ttime 1\n\tvalue 1 0 0\n}" ).applied,
+		"G7: first unnamed timeline inserts" );
+	Check( sess->InsertChunk(
+		"timeline\n{\n\telement_type object\n\telement obj_emit\n\tparam position\n"
+		"\ttime 0\n\tvalue 0 0 0\n\ttime 1\n\tvalue 0 1 0\n}" ).applied,
+		"G7: second unnamed timeline inserts" );
+
+	// ...plus an omni_light literally NAMED "timeline" (a coincidental name/keyword clash).
+	Agent::AgentChunkResult rLight = sess->InsertChunk(
+		"omni_light\n{\n\tname timeline\n\tposition 2 2 2\n\tcolor 1 1 1\n\tpower 5.0\n}" );
+	Check( rLight.applied && rLight.status == "applied", "G7: the light named `timeline` inserts" );
+
+	const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
+	const std::string docBefore = sess->ReadDocument();
+	Check( docBefore.find( "omni_light" ) != std::string::npos, "G7 precondition: the light is present before removal" );
+
+	// remove_chunk(target="timeline", NO kind) must resolve the NAME first and remove THE LIGHT --
+	// not refuse as an ambiguous keyword address, even though "timeline" also names a repeatable kind
+	// with 2 unnamed instances.
+	Agent::AgentChunkResult rmByName = sess->RemoveChunk( "timeline" );
+	Check( rmByName.applied && rmByName.status == "applied",
+	       "remove_chunk(target=\"timeline\", no kind) REMOVES THE LIGHT (name wins over keyword coincidence)" );
+	Check( rmByName.kind == "omni_light", "the removal echoes the LIGHT's keyword, not `timeline`" );
+	Check( rmByName.headVersion.revision > vBefore.revision, "the removal advanced the head revision" );
+
+	const std::string docAfter = sess->ReadDocument();
+	Check( docAfter.find( "omni_light" ) == std::string::npos, "the light is gone from the head" );
+	{
+		size_t first = docAfter.find( "timeline" );
+		size_t second = ( first == std::string::npos ) ? std::string::npos : docAfter.find( "timeline", first + 1 );
+		Check( first != std::string::npos && second != std::string::npos,
+		       "BOTH unnamed timelines are still intact after removing the coincidentally-named light" );
+	}
+
+	// With `kind="timeline"` explicitly provided, the keyword-interpretation path IS in play and the
+	// ambiguity guard still fires exactly as before (2 unnamed timelines -> refuse).
+	Agent::AgentChunkResult rmByKeyword = sess->RemoveChunk( "timeline", "timeline" );
+	Check( !rmByKeyword.applied && rmByKeyword.status == "rejected",
+	       "remove_chunk(target=\"timeline\", kind=\"timeline\") is STILL refused as ambiguous (2 unnamed instances)" );
+	Check( rmByKeyword.message.find( "ambiguous" ) != std::string::npos,
+	       "the refusal message names the ambiguity" );
+	Check( sess->ReadDocument() == docAfter,
+	       "the ambiguity refusal left the head byte-identical (unaffected by the earlier name-resolved removal)" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk) ===\n" );
@@ -1437,6 +1514,7 @@ int main()
 	TestVariantOverlayAndAmbiguityMessages();
 	TestCameraSwapRecipe();
 	TestUnnamedRepeatableTimeline();
+	TestRemoveChunkNameKeywordCoincidence();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
