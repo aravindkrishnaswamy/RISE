@@ -7,6 +7,7 @@
 #include <QApplication>
 #include <QStyleFactory>
 #include "MainWindow.h"
+#include "Theme.h"
 
 int main(int argc, char* argv[])
 {
@@ -20,6 +21,10 @@ int main(int argc, char* argv[])
     QApplication app(argc, argv);
     app.setApplicationName("RISE");
     app.setOrganizationName("RISE");
+
+    // Register the bundled IBM Plex faces before any widget is created —
+    // Theme::sans/mono fall back to system fonts if this fails.
+    Theme::registerFonts();
 
     MainWindow window;
     window.resize(1024, 768);

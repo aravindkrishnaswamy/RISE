@@ -43,6 +43,8 @@
   <PropertyGroup>
     <QtMocExe>$(SolutionDir)vcpkg_installed\$(VcpkgTriplet)\$(VcpkgTriplet)\tools\Qt6\bin\moc.exe</QtMocExe>
     <QtMocOutDir>$(IntDir)moc\</QtMocOutDir>
+    <QtRccExe>$(SolutionDir)vcpkg_installed\$(VcpkgTriplet)\$(VcpkgTriplet)\tools\Qt6\bin\rcc.exe</QtRccExe>
+    <QtRccOutDir>$(IntDir)rcc\</QtRccOutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <OutDir>$(SolutionDir)..\..\dbin\</OutDir>
@@ -95,6 +97,7 @@
   <!-- Application source files -->
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="Theme.cpp" />
     <ClCompile Include="MainWindow.cpp" />
     <ClCompile Include="RenderEngine.cpp" />
     <ClCompile Include="RenderWidget.cpp" />
@@ -224,10 +227,22 @@
     </CustomBuild>
     <!-- Header without Q_OBJECT — no MOC needed -->
     <ClInclude Include="VideoEncoder.h" />
+    <ClInclude Include="Theme.h" />
   </ItemGroup>
-  <!-- Create the MOC output directory before building -->
+  <!-- Qt resources (bundled IBM Plex fonts) — rcc generates a self-registering
+       .cpp compiled into the exe -->
+  <ItemGroup>
+    <CustomBuild Include="resources.qrc">
+      <Command>"$(QtRccExe)" -name resources "%(FullPath)" -o "$(QtRccOutDir)qrc_%(Filename).cpp"</Command>
+      <Message>RCC %(Filename).qrc</Message>
+      <Outputs>$(QtRccOutDir)qrc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <ClCompile Include="$(QtRccOutDir)qrc_resources.cpp" />
+  </ItemGroup>
+  <!-- Create the MOC/RCC output directories before building -->
   <Target Name="CreateMocDir" BeforeTargets="CustomBuild">
-    <MakeDir Directories="$(QtMocOutDir)" />
+    <MakeDir Directories="$(QtMocOutDir);$(QtRccOutDir)" />
   </Target>
   <ItemGroup>
     <ProjectReference Include="..\Library\Library.vcxproj">
