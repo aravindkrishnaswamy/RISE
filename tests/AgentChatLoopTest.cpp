@@ -481,6 +481,20 @@ static void TestXaiAndLocalRequestShape()
 	// --- local (keyless): 127.0.0.1 default endpoint, qwen3:32b default,
 	//     NO Authorization header (assert its ABSENCE) ---
 	{
+		// Hermeticity: this block asserts the loopback DEFAULT, so a
+		// developer's exported RISE_LOCAL_LLM_BASE_URL (the smoke_local
+		// workflow) must not leak in.  Save + unset, restore after --
+		// same idiom as the override block below.
+		const char* const kEnv = "RISE_LOCAL_LLM_BASE_URL";
+		const char* saved = std::getenv( kEnv );
+		const std::string savedStr = saved ? std::string( saved ) : std::string();
+		const bool hadSaved = ( saved != nullptr );
+
+#if defined( _WIN32 )
+		_putenv_s( kEnv, "" );
+#else
+		unsetenv( kEnv );
+#endif
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Local );
 		Check( loop.Provider() == ChatProvider::Local, "provider is Local" );
@@ -495,6 +509,14 @@ static void TestXaiAndLocalRequestShape()
 		Check( HasHeaderNamed( req, "content-type" ), "local request still carries content-type" );
 		JsonValue root = ParseBody( req.body );
 		Check( root.get( "model" ).asString() == "qwen3:32b", "local body carries the qwen3:32b model id" );
+
+		// Restore the environment for the rest of the process.
+#if defined( _WIN32 )
+		_putenv_s( kEnv, hadSaved ? savedStr.c_str() : "" );
+#else
+		if( hadSaved ) setenv( kEnv, savedStr.c_str(), 1 );
+		else unsetenv( kEnv );
+#endif
 	}
 
 	// --- local WITH a key (a --api-key local server) -> Bearer header IS

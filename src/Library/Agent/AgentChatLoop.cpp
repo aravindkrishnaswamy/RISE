@@ -138,6 +138,13 @@ namespace RISE
 					// SetProvider), not mid-conversation.  The IP LITERAL
 					// 127.0.0.1 (not "localhost") is intentional: macOS ATS
 					// exempts IP literals from its cleartext-HTTP block.
+					// DESIGN SEAM: this getenv bypasses RunEvalMatrix's
+					// envLookup injection (deliberate -- envLookup exists to
+					// inject CREDENTIALS; this is config), so a matrix run
+					// resolves the local base URL from the REAL process
+					// environment.  If a future test needs to mock/override
+					// it, thread the URL through AgentEvalRunOptions instead
+					// of teaching envLookup about config reads.
 					OpenAIChatCodec::Config cfg;
 					const char* envUrl = std::getenv( "RISE_LOCAL_LLM_BASE_URL" );
 					cfg.providerName   = "local";

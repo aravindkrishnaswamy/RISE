@@ -428,7 +428,7 @@ namespace RISE
 				std::string providerName;    //!< "openai" / "xai" / "local" -- the ProviderName() label
 				std::string baseUrl;         //!< full chat/completions endpoint URL
 				std::string defaultModelId;  //!< model id when the caller leaves it empty
-				bool        requiresAuth;    //!< see the struct doc above
+				bool        requiresAuth = true;  //!< see the struct doc above; defaults fail-closed (require auth) so a default-constructed Config never reads indeterminate
 			};
 
 			//! Default: the OpenAI provider (byte-identical wire behaviour

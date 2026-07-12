@@ -582,6 +582,34 @@ static void TestRunEvalMatrix()
 				if( mock.seenRequests[i].headers[h].first == "authorization" ) anyAuth = true;
 		Check( !anyAuth, "keyless local matrix request carries NO Authorization header" );
 	}
+
+	// (D) Defense-in-depth: a non-"local" provider with an EMPTY keyEnvVar,
+	//     built PROGRAMMATICALLY (bypassing LoadEvalRunConfig, which is what
+	//     enforces "only local may omit keyEnvVar" on the config-file path)
+	//     -> RunEvalMatrix must still SKIP the column loudly rather than run
+	//     keyless against a live cloud endpoint.  Proves (a) the skip fires
+	//     with the same counters as the missing-key case and (b) the mock
+	//     transport is NEVER called.
+	{
+		AgentEvalRunConfig cfg;
+		AgentEvalProviderConfig p; p.provider = "anthropic"; /* keyEnvVar left EMPTY, no LoadEvalRunConfig involved */
+		cfg.providers.push_back( p );
+		cfg.repeats = 2;
+		cfg.runDir = ScratchRunDir( "t7_matrix_empty_keyenvvar" );
+
+		MockTransport mock;   // must never be called
+
+		AgentEvalMatrixOptions mo;
+		mo.transport = &mock;
+		mo.envLookup = []( const std::string& ) -> const char* { return nullptr; };   // must never be consulted
+
+		AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr.providersUsed == 0 && mr.providersSkipped == 1,
+		       "non-local provider with empty keyEnvVar is SKIPPED (defense-in-depth)" );
+		Check( mr.runsExecuted == 0, "no runs executed for an empty-keyEnvVar non-local provider" );
+		Check( mr.runsSkipped == static_cast<int>( scenarios.size() ) * 2, "skip count = scenarios x repeats" );
+		Check( mock.seenRequests.empty(), "the transport was NEVER called for an empty-keyEnvVar non-local provider" );
+	}
 }
 
 //----------------------------------------------------------------------

@@ -907,6 +907,23 @@ namespace RISE
 			for( std::size_t pj = 0; pj < config.providers.size(); ++pj ) {
 				const AgentEvalProviderConfig& prov = config.providers[pj];
 
+				// Defense-in-depth: LoadEvalRunConfig enforces that only
+				// "local" may omit keyEnvVar, but a matrix config built
+				// programmatically (bypassing LoadEvalRunConfig) could still
+				// hand RunEvalMatrix a non-"local" provider with an empty
+				// keyEnvVar -- running that keyless would send an empty
+				// Bearer credential ("Bearer ") to a live endpoint.  SKIP
+				// loudly here too, same counters/message style as the
+				// missing-key case below.
+				if( prov.keyEnvVar.empty() && prov.provider != "local" ) {
+					++result.providersSkipped;
+					result.runsSkipped += static_cast<int>( scenarios.size() ) * reps;
+					logLine( "RunEvalMatrix: SKIP provider '" + prov.provider +
+						"' -- keyEnvVar is required for this provider (empty/missing keyEnvVar; "
+						"only \"local\" may omit it)" );
+					continue;
+				}
+
 				// The ONE place a key enters the matrix: resolve it from the
 				// injected env lookup.  A provider that NAMES a keyEnvVar whose
 				// value is missing/empty SKIPS the whole provider column (never

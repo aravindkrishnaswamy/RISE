@@ -282,6 +282,17 @@ def load_jsonl(path, warnings):
 # unchanged, since those strings are already alnum-only), so we locate it by
 # scanning tokens for a known provider name. This tolerates scenarioIds that
 # themselves contain "__" (from sanitized whitespace/punctuation).
+#
+# By construction the provider token always comes AFTER the scenario id and
+# BEFORE the (optional) model + trailing "r<repeat>" tokens, so scan from the
+# RIGHT (last candidate token down to the first) and take the FIRST match
+# found that way -- i.e. the LAST known-provider token in the leaf. A
+# left-to-right scan would instead mis-attribute a leaf whose sanitized
+# scenario id happens to contain a standalone provider-name token as one of
+# its own "__"-separated pieces (e.g. scenario id "test, local, edit" ->
+# "test__local__edit", provider "anthropic" -> leaf
+# "test__local__edit__anthropic__<model>__r1" would find "local" first
+# left-to-right instead of the real provider "anthropic").
 # ---------------------------------------------------------------------------
 
 def parse_run_dir_name(leaf):
@@ -293,7 +304,7 @@ def parse_run_dir_name(leaf):
         return None
     rep = int(last[1:])
     provider_idx = None
-    for i in range(1, len(tokens) - 1):
+    for i in range(len(tokens) - 2, 0, -1):
         if tokens[i] in KNOWN_PROVIDERS:
             provider_idx = i
             break
@@ -919,6 +930,19 @@ def selftest():
         raise AssertionError(
             f"parse_run_dir_name must not guess-split an unrecognized "
             f"provider+model leaf, got {parsed}"
+        )
+
+    # --- provider-token scan direction regression: a scenario id that
+    # itself contains a standalone provider-name token (here "local", from a
+    # sanitized "test, local, edit") must not be mistaken for the real
+    # provider token, which always comes AFTER the scenario id. The real
+    # provider here is "anthropic". ---
+    parsed = parse_run_dir_name("test__local__edit__anthropic__claude-3-5-sonnet__r1")
+    if parsed != ("test__local__edit", "anthropic", "claude-3-5-sonnet", 1):
+        raise AssertionError(
+            f"parse_run_dir_name must pick the provider token AFTER the "
+            f"scenario id, not a provider-name-shaped token embedded in the "
+            f"scenario id itself, got {parsed}"
         )
 
     # --- FIX 3 regression: per-group pass@1 and the pooled OVERALL rollup.
