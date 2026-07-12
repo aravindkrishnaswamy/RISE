@@ -40,9 +40,12 @@
 #include <QPalette>
 #include <QSlider>
 #include <QStackedWidget>
+#include <QSplitter>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QTimer>
+
+#include <algorithm>
 
 // CST <-> scene-file live sync + auto-save (item 1/2): eLog_Warning for
 // the auto-save-refused/failed log line in performSceneSave.
@@ -104,11 +107,50 @@ MainWindow::MainWindow(QWidget* parent)
     mainAreaLayout->setContentsMargins(0, 0, 0, 0);
     mainAreaLayout->setSpacing(0);
 
+    // Wider, resizable left panel: m_leftPanel + the center column live
+    // inside a QSplitter so the user can drag the boundary between them.
+    // The right panel stays a fixed-width sibling outside the splitter
+    // (design brief only calls for the left edge to be resizable).
     m_leftPanel = buildLeftPanel();
-    mainAreaLayout->addWidget(m_leftPanel);
-
     QWidget* centerColumn = buildCenterColumn();
-    mainAreaLayout->addWidget(centerColumn, 1);
+
+    m_leftSplitter = new QSplitter(Qt::Horizontal, mainArea);
+    m_leftSplitter->setHandleWidth(5);
+    // Prevent a fast/careless drag from collapsing the left panel to 0 --
+    // its own min/max width (set in buildLeftPanel) then becomes the real
+    // drag bound instead of just a soft hint.
+    m_leftSplitter->setChildrenCollapsible(false);
+    m_leftSplitter->addWidget(m_leftPanel);
+    m_leftSplitter->addWidget(centerColumn);
+    m_leftSplitter->setStretchFactor(0, 0);   // left panel: user-sized
+    m_leftSplitter->setStretchFactor(1, 1);   // center column: takes the rest
+    m_leftSplitter->setStyleSheet(QStringLiteral(
+        "QSplitter::handle { background-color: %1; }"
+        "QSplitter::handle:hover { background-color: %2; }")
+        .arg(Theme::hex(Theme::borderHairline), Theme::hex(Theme::borderHover)));
+
+    // Persist the left panel's width across launches (QSettings
+    // "leftPanelWidth"), mirroring the macOS client's
+    // @AppStorage("leftPanelWidth") in ContentView.swift.  Default 520 —
+    // wider than the original 404px comp value so the scene file is
+    // actually readable; clamp to the same [360, 700] bounds the drag
+    // handle itself enforces, in case the persisted value predates this
+    // refinement or was hand-edited in the registry/INI.
+    {
+        QSettings splitterSettings;
+        const int savedLeftWidth = splitterSettings.value(QStringLiteral("leftPanelWidth"), 520).toInt();
+        const int clampedLeftWidth = std::clamp(savedLeftWidth, 360, 700);
+        m_leftSplitter->setSizes({ clampedLeftWidth, 10000 });
+    }
+    connect(m_leftSplitter, &QSplitter::splitterMoved, this, [this](int, int) {
+        if (!m_leftSplitter) return;
+        const QList<int> sizes = m_leftSplitter->sizes();
+        if (sizes.isEmpty()) return;
+        QSettings s;
+        s.setValue(QStringLiteral("leftPanelWidth"), sizes.first());
+    });
+
+    mainAreaLayout->addWidget(m_leftSplitter, 1);
 
     m_rightPanel = buildRightPanel();
     mainAreaLayout->addWidget(m_rightPanel);
@@ -144,6 +186,14 @@ MainWindow::MainWindow(QWidget* parent)
     });
 
     connect(m_topBar, &TopBar::saveClicked, this, &MainWindow::onSaveScene);
+    // Render-transport pill (TopBar, right side): idle-state clicks route
+    // through the SAME slot the Render menu action / Ctrl+R shortcut use,
+    // so the pre-render bookkeeping (stopping the viewport, cancelling an
+    // outstanding chat turn, advancing scene time) lives in exactly one
+    // place.  Pause/resume during Rendering are handled locally by
+    // TopBar via the engine's setProductionRenderPaused accessor and
+    // never reach this signal -- see TopBar::onRenderTransportClicked.
+    connect(m_topBar, &TopBar::renderTransportClicked, this, &MainWindow::onRender);
 
     // P1-2 fix (mirrors Mac's canUseSceneTransport): while a chat-driven
     // `render` tool call owns the scene, undo/redo and refinement
@@ -188,7 +238,15 @@ MainWindow::MainWindow(QWidget* parent)
 QWidget* MainWindow::buildLeftPanel()
 {
     auto* panel = new QWidget();
-    panel->setFixedWidth(404);
+    // Wider, resizable left panel: was setFixedWidth(404); now lives
+    // inside m_leftSplitter (see the constructor), user-draggable
+    // between these two bounds.  Initial/persisted width is set on the
+    // splitter itself, not here.
+    panel->setMinimumWidth(360);
+    // Review P2: 700 max (not 900) — at the 1320px minimum window the
+    // fixed 344px right panel + a 900px left panel would leave the
+    // center viewport ~71px.  700 keeps the center >= ~270px worst-case.
+    panel->setMaximumWidth(700);
     panel->setAutoFillBackground(true);
     {
         QPalette pal = panel->palette();
@@ -525,9 +583,12 @@ void MainWindow::createMenuBar()
     connect(m_pauseResumeAction, &QAction::triggered, this, [this]() {
         // Item 4: while a production render is in flight, this item
         // pauses/resumes THE RENDER instead of interactive refinement --
-        // mirrors the TopBar pause button's dual mode (TopBar::
-        // onPauseResumeClicked) and macOS RISEApp.swift's pauseMenuTitle
-        // / Render-menu Button.  Always available then (guarded only by
+        // mirrors macOS RISEApp.swift's pauseMenuTitle / Render-menu
+        // Button.  This is now the ONE remaining dual-mode pause
+        // affordance: the TopBar center button reverted to
+        // refinement-only when the render-transport pill took over
+        // production pause (see TopBar.cpp onPauseResumeClicked).
+        // Always available during a render (guarded only by
         // updateMenuActionStates keeping it disabled while Cancelling).
         if (m_engine->state() == RenderEngine::Rendering) {
             m_engine->setProductionRenderPaused(!m_engine->isProductionRenderPaused());
@@ -659,6 +720,11 @@ void MainWindow::updateMenuActionStates()
                          || state == RenderEngine::Completed
                          || state == RenderEngine::Cancelled);
     if (m_renderAction)     m_renderAction->setEnabled(canRender);
+    // TopBar's render-transport pill (right side) mirrors this SAME
+    // predicate for its idle "Render" state -- pushed in here rather
+    // than re-derived in TopBar so the two enable rules can never
+    // hand-copy-drift apart.  See TopBar::setCanStartProductionRender.
+    if (m_topBar)            m_topBar->setCanStartProductionRender(canRender);
     const bool canRenderAnim = canRender && m_engine->hasAnimation();
     if (m_renderAnimAction) m_renderAnimAction->setEnabled(canRenderAnim);
     if (m_viewportTimeline) m_viewportTimeline->setRenderMovieEnabled(canRenderAnim);

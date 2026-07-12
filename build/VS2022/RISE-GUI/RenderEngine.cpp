@@ -495,6 +495,15 @@ void RenderEngine::loadScene(const QString& filePath)
     m_cancelFlag = true;
     waitForWorkerToFinish();
     m_cancelFlag = false;
+    // Review P2 (mirrors macOS): waitForWorkerToFinish()'s
+    // removePostedEvents() (see its doc) discards any QUEUED completion
+    // lambda from an in-flight render this load just cancelled --
+    // meaning that lambda's own resetProductionPauseState() call (see
+    // startRender's completion handler) never runs for THIS exit path
+    // ("Open Scene" / Merge while a render, possibly paused, was still
+    // going).  Reset explicitly here too so stale pause bookkeeping
+    // from the cancelled render can't leak into whatever runs next.
+    resetProductionPauseState();
 
     setState(Loading);
     m_loadedFilePath = filePath;
@@ -625,6 +634,17 @@ void RenderEngine::startRender()
             // freed adapter.
             guard->m_activeProgressCallback = nullptr;
             delete progressCb;
+            // Review P2 (mirrors macOS RenderViewModel's completion-
+            // handler fix): clear pause bookkeeping on EVERY exit path
+            // (normal completion, cancel, error) -- not just at the next
+            // startRender/startAnimationRender.  Readers already
+            // re-derive "is paused" off m_activeProgressCallback==nullptr
+            // first today (see isProductionRenderPaused), which happens
+            // to make m_productionPausedAccumMs/m_productionPauseBeganMs
+            // inert until the next render starts -- but that's a
+            // duplicated invariant, not a guarantee, so reset explicitly
+            // here too.
+            guard->resetProductionPauseState();
 
             if (guard->m_cancelFlag) {
                 guard->setState(Cancelled);
@@ -764,6 +784,9 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
             // Set before setState(Completed) — onStateChanged reads it
             // synchronously when the Completed transition fires.
             guard->m_lastAnimationSummary = animationSummary;
+            // Review P2: see startRender's completion lambda for why this
+            // reset belongs here too, not just at the next start/cancel.
+            guard->resetProductionPauseState();
 
             if (guard->m_cancelFlag) {
                 guard->setState(Cancelled);
@@ -853,6 +876,13 @@ void RenderEngine::clearScene()
     m_cancelFlag = true;
     waitForWorkerToFinish();
     m_cancelFlag = false;
+    // Review P2 (mirrors macOS): see loadScene()'s matching comment --
+    // "Clear & Load" / "Close Scene" while a render (possibly paused)
+    // was in flight discards that render's queued completion lambda
+    // (and its resetProductionPauseState() call) via
+    // waitForWorkerToFinish()'s removePostedEvents().  Reset explicitly
+    // here too.
+    resetProductionPauseState();
 
     if (m_job) {
         // ClearAll wipes the rasterizer; we drop the rasterizer's

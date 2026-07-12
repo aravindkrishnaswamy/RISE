@@ -23,6 +23,7 @@ struct TopBar: View {
             Spacer(minLength: 0)
             renderStatusCluster
             Spacer(minLength: 0)
+            renderTransportButton
             saveStateChip
         }
         .padding(.horizontal, 14)
@@ -112,40 +113,23 @@ struct TopBar: View {
         !viewModel.canUseSceneTransport
     }
 
-    /// Item 4: during a production render the button pauses/resumes THE
-    /// RENDER (workers park at the bridge's pause gate); otherwise it
-    /// pauses/resumes interactive refinement as before.  Disabled only
-    /// while cancelling or when neither mode applies.
-    private var pauseShowsPlay: Bool {
-        isProduction ? viewModel.isProductionRenderPaused
-                     : viewModel.isRefinementPaused
-    }
-
-    private var pauseButtonDisabled: Bool {
-        if isProduction { return false }          // production pause always available
-        if isCancelling { return true }
-        return refinementControlsDisabled
-    }
-
+    /// Refinement-only again: the top bar's render-transport pill (right
+    /// side) owns production pause/resume — two pause affordances with
+    /// different targets in one bar would be confusing, so this one is
+    /// back to interactive refinement and disables during production.
     private var pauseResumeButton: some View {
         Button {
-            if isProduction {
-                viewModel.toggleProductionRenderPause()
-            } else {
-                viewModel.togglePauseRefinement()
-            }
+            viewModel.togglePauseRefinement()
         } label: {
-            Image(systemName: pauseShowsPlay ? "play.fill" : "pause.fill")
+            Image(systemName: viewModel.isRefinementPaused ? "play.fill" : "pause.fill")
                 .font(.system(size: 10))
                 .foregroundColor(Theme.textPrimary)
                 .frame(width: 26, height: 26)
                 .background(Theme.fillActive, in: RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
-        .disabled(pauseButtonDisabled)
-        .help(isProduction
-              ? (viewModel.isProductionRenderPaused ? "Resume the render" : "Pause the render — workers park, CPU goes quiet")
-              : "Pause / resume refinement (Space)")
+        .disabled(refinementControlsDisabled)
+        .help("Pause / resume refinement (Space)")
     }
 
     private var restartButton: some View {
@@ -232,6 +216,62 @@ struct TopBar: View {
     // actionable ONLY in the suspended state, where it doubles as the
     // one-click retry (mirrors File > Save Scene, which also clears the
     // suspension first).
+
+    // MARK: - Right: render transport (Render -> Pause -> Resume)
+
+    /// One slot that morphs with the production render's lifecycle:
+    /// idle -> "Render" (kicks a production render); rendering ->
+    /// "Pause" (parks the workers); paused -> "Resume".  Cancelling
+    /// shows a disabled label.  Any path that mutates or reloads the
+    /// scene while paused cancels the render (those paths all cancel
+    /// actives first) and this slot honestly falls back to "Render".
+    @ViewBuilder
+    private var renderTransportButton: some View {
+        if isCancelling {
+            Text("Cancelling…")
+                .font(Theme.sans(12, .semibold))
+                .foregroundColor(Theme.textDisabled)
+                .padding(.horizontal, 15)
+                .padding(.vertical, 6)
+        } else if isProduction {
+            if viewModel.isProductionRenderPaused {
+                transportPill("Resume", filled: true) {
+                    viewModel.toggleProductionRenderPause()
+                }
+                .help("Resume the render where it left off")
+            } else {
+                transportPill("Pause", filled: false) {
+                    viewModel.toggleProductionRenderPause()
+                }
+                .help("Pause the render — workers park, CPU goes quiet")
+            }
+        } else {
+            transportPill("Render", filled: true) {
+                viewModel.startRender()
+            }
+            .disabled(!viewModel.canStartProductionRender)
+            .opacity(viewModel.canStartProductionRender ? 1.0 : 0.4)
+            .help("Start a production render (⌘R)")
+        }
+    }
+
+    private func transportPill(_ title: String, filled: Bool,
+                               action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(Theme.sans(12, .semibold))
+                .foregroundColor(filled ? Color.black.opacity(0.92) : Theme.warn)
+                .padding(.horizontal, 15)
+                .padding(.vertical, 6)
+                .background(
+                    filled ? Theme.accent : Color.clear,
+                    in: RoundedRectangle(cornerRadius: Theme.radiusMedium))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusMedium)
+                        .stroke(filled ? Color.clear : Theme.warn.opacity(0.5), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
 
     @ViewBuilder
     private var saveStateChip: some View {

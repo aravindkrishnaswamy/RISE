@@ -50,6 +50,18 @@ struct ContentView: View {
     /// mutated by a drag).
     @State private var propertyRefresh: Int = 0
 
+    /// Left panel width — user-resizable via the drag handle between the
+    /// panel and the center column, persisted across launches.  Wider
+    /// default than the comp's 404 so the scene file is actually
+    /// readable (user refinement).
+    @AppStorage("leftPanelWidth") private var leftPanelWidth: Double = 520
+    @GestureState private var leftPanelDragStart: Double? = nil
+    private static let leftPanelMinWidth: Double = 360
+    // Review P2: 700 max (not 900) — at the 1320pt minimum window the
+    // fixed 344pt right panel + a 900pt left panel would leave the
+    // center viewport ~71pt.  700 keeps the center >= ~270pt worst-case.
+    private static let leftPanelMaxWidth: Double = 700
+
     /// Theme mode re-render hook (light/dark switching — see
     /// ThemeMode.swift). Mirrors the SAME `"themeMode"` UserDefaults
     /// key that `ThemeState.setMode(_:)` writes, so a theme toggle
@@ -101,6 +113,7 @@ struct ContentView: View {
         HStack(spacing: 0) {
             if viewModel.viewportBridge != nil && viewModel.showLeftPanel {
                 leftPanel
+                leftPanelResizeHandle
             }
 
             centerColumn
@@ -134,11 +147,37 @@ struct ContentView: View {
                 SceneEditorPanel()
             }
         }
-        .frame(width: 404)
+        .frame(width: CGFloat(leftPanelWidth))
         .background(Theme.bgPanel)
         .overlay(alignment: .trailing) {
             Rectangle().fill(Theme.borderHairline).frame(width: 1)
         }
+    }
+
+    /// 5pt drag strip between the left panel and the center column —
+    /// same interaction the pre-redesign editor sidebar had.  Cursor
+    /// flips to resize on hover; width clamps to [360, 900].
+    private var leftPanelResizeHandle: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(width: 5)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering { NSCursor.resizeLeftRight.push() }
+                else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .updating($leftPanelDragStart) { _, start, _ in
+                        if start == nil { start = leftPanelWidth }
+                    }
+                    .onChanged { value in
+                        let start = leftPanelDragStart ?? leftPanelWidth
+                        leftPanelWidth = min(Self.leftPanelMaxWidth,
+                                             max(Self.leftPanelMinWidth,
+                                                 start + Double(value.translation.width)))
+                    }
+            )
     }
 
     private var leftPanelTabStrip: some View {

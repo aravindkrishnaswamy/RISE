@@ -28,6 +28,7 @@ class ChatPanel;
 class TopBarLogoSwatch;
 class TopBarProgressStrip;
 class QFrame;
+class QGraphicsOpacityEffect;
 
 class TopBar : public QWidget
 {
@@ -71,7 +72,26 @@ signals:
     /// so in practice this only fires from the suspended-state click.
     void saveClicked();
 
+    /// The render-transport pill was clicked while idle (no render in
+    /// flight) -- a request to start a production render.  MainWindow
+    /// connects this to the SAME slot the Render menu action / Ctrl+R
+    /// shortcut use (onRender), so the pre-render bookkeeping (stopping
+    /// the viewport, cancelling an outstanding chat turn, advancing
+    /// scene time) lives in exactly one place.  Pause/resume, by
+    /// contrast, are handled locally by this bar via the engine's
+    /// setProductionRenderPaused accessor -- no signal needed for those
+    /// (mirrors onPauseResumeClicked's existing pattern for the
+    /// dual-mode production case).
+    void renderTransportClicked();
+
 public slots:
+    /// Mirrors the Render menu's "&Render" action's enable predicate
+    /// (MainWindow::updateMenuActionStates's `canRender`) -- pushed in
+    /// from MainWindow rather than re-derived here so the two can never
+    /// hand-copy-drift apart.  Only meaningful for the idle "Render"
+    /// pill state; the Pause/Resume/Cancelling states have their own
+    /// unconditional enable rules (see updateTransportButton).
+    void setCanStartProductionRender(bool canStart);
     /// Phase 6.5 dirty-state mirror — connect to
     /// ViewportBridge::dirtyChanged.  Also settable directly (e.g.
     /// reset to false right after a fresh scene load).
@@ -101,6 +121,14 @@ public slots:
 private slots:
     void onPauseResumeClicked();
     void onRestartClicked();
+    /// Click handler for the render-transport pill (right side).  While
+    /// Rendering, toggles production pause directly via the engine
+    /// (mirrors onPauseResumeClicked's now-removed dual-mode branch);
+    /// while idle/SceneLoaded/Completed/Cancelled, click-time rechecks
+    /// m_canStartProductionRender and emits renderTransportClicked();
+    /// while Cancelling, the button is disabled so this is unreachable
+    /// but still guards defensively.
+    void onRenderTransportClicked();
     void pollRefinementState();
     void onEngineStateChanged(int newState);
     void onEngineProgress(double fraction, const QString& title);
@@ -126,6 +154,13 @@ private:
     /// the right-side save-state chip's visibility/text/color/enabled
     /// state from m_loadedFilePath / m_dirty / m_autoSaveSuspended.
     void updateSaveChip();
+    /// Recomputes the render-transport pill's text/style/enabled state
+    /// from m_engineState, the engine's isProductionRenderPaused(), and
+    /// m_canStartProductionRender.  Called from updateControlsEnabled()
+    /// (see that method's call sites) so the pill refreshes at every
+    /// engine-state change, pause toggle, and chat/bridge transition --
+    /// the same set of triggers the pause/restart buttons already use.
+    void updateTransportButton();
 
     RenderEngine*   m_engine = nullptr;
     ViewportBridge* m_bridge = nullptr;
@@ -156,6 +191,20 @@ private:
     // when there's no resolved integrator to show, instead of always
     // rendering next to a misleading static "AUTO" placeholder.
     QFrame*      m_integratorSep = nullptr;
+
+    // Right: render transport (Render -> Pause -> Resume) -----------------
+    // One slot that morphs with the production render's lifecycle -- see
+    // updateTransportButton().  Placed before the save-state chip.
+    QPushButton* m_transportBtn = nullptr;
+    // Drives the Mac-mirrored 40% opacity on the disabled "Render" pill
+    // (a plain QSS :disabled rule can't express the Mac's whole-pill
+    // `.opacity(0.4)`, which dims background AND text together) --
+    // installed once in the constructor, toggled by updateTransportButton.
+    QGraphicsOpacityEffect* m_transportOpacity = nullptr;
+    // Mirrors the Render menu action's `canRender` predicate -- pushed in
+    // by MainWindow via setCanStartProductionRender() (see that slot's
+    // doc); only consulted while idle (SceneLoaded/Completed/Cancelled).
+    bool m_canStartProductionRender = false;
 
     // Right: save -------------------------------------------------------
     QPushButton* m_saveBtn = nullptr;

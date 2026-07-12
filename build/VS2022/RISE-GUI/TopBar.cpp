@@ -24,6 +24,7 @@
 #include <QStyle>
 #include <QFileInfo>
 #include <QFrame>
+#include <QGraphicsOpacityEffect>
 #include <cmath>
 #include <algorithm>
 
@@ -281,6 +282,24 @@ TopBar::TopBar(QWidget* parent)
     layout->addWidget(cluster);
     layout->addStretch(1);
 
+    // ---- Right: render transport (Render -> Pause -> Resume) ------------
+    // One slot that morphs with the production render's lifecycle:
+    // idle -> "Render" (kicks a production render); rendering -> "Pause"
+    // (parks the workers); paused -> "Resume".  Cancelling shows a
+    // disabled label.  See updateTransportButton() for the per-state
+    // text/style and TopBar.h's doc on renderTransportClicked() /
+    // setCanStartProductionRender() for the MainWindow wiring contract.
+    // Font/weight/style match the macOS transportPill (TopBar.swift).
+    m_transportBtn = new QPushButton(this);
+    m_transportBtn->setFont(Theme::sans(12, QFont::DemiBold));
+    m_transportBtn->setFlat(true);
+    m_transportBtn->setFixedHeight(28);
+    m_transportOpacity = new QGraphicsOpacityEffect(m_transportBtn);
+    m_transportOpacity->setOpacity(1.0);
+    m_transportBtn->setGraphicsEffect(m_transportOpacity);
+    connect(m_transportBtn, &QPushButton::clicked, this, &TopBar::onRenderTransportClicked);
+    layout->addWidget(m_transportBtn);
+
     // ---- Right: save-state chip ----------------------------------------
     // CST <-> scene-file live sync + auto-save (item 2): the explicit
     // Save button is gone -- edits auto-save to disk on a debounce (see
@@ -491,27 +510,23 @@ void TopBar::updateSceneIdentity()
 
 void TopBar::onPauseResumeClicked()
 {
-    // Item 4: during a production render this button pauses/resumes
-    // THE RENDER instead of interactive refinement -- workers park at
-    // RenderEngine's ProgressCallbackAdapter pause gate (mirrors
-    // macOS's BlockProgressCallback pause gate).  Always available
-    // while Rendering (disabled only while Cancelling, per
-    // updateControlsEnabled's pauseDisabled predicate).
-    if (m_engineState == RenderEngine::Rendering) {
-        if (m_engine) {
-            m_engine->setProductionRenderPaused(!m_engine->isProductionRenderPaused());
-        }
-        updateReadout();
-        updateControlsEnabled();
-        return;
-    }
-
+    // Refinement-only again: the render-transport pill (right side, see
+    // onRenderTransportClicked) owns production pause/resume now -- two
+    // pause affordances with different targets in one bar would be
+    // confusing.  This button reverts to its pre-"Item 4" behavior:
+    // always interactive refinement, disabled during Rendering/
+    // Cancelling per updateControlsEnabled's refinementDisabled
+    // predicate.  (The Render menu's "Pause Refinement"/"Pause Render"
+    // action keeps its own dual mode -- that's the keyboard path and is
+    // out of scope for this revert.)
+    //
     // Round-3 P2: click-time re-check mirroring MainWindow::
     // canUseSceneTransport (the button is ALSO disabled via
     // updateControlsEnabled, but a click racing a state flip must
     // refuse rather than drive transport under an in-flight render).
     if (!m_bridge) return;
-    if (m_engineState == RenderEngine::Cancelling
+    if (m_engineState == RenderEngine::Rendering
+     || m_engineState == RenderEngine::Cancelling
      || m_engineState == RenderEngine::Loading) return;
     if (m_chatPanel && m_chatPanel->isChatRenderOutstanding()) return;
     if (m_isRefinementPaused) {
@@ -520,6 +535,39 @@ void TopBar::onPauseResumeClicked()
         m_bridge->pauseRefinement();
     }
     pollRefinementState();
+}
+
+void TopBar::onRenderTransportClicked()
+{
+    // While Rendering, this pill pauses/resumes THE RENDER -- workers
+    // park at RenderEngine's ProgressCallbackAdapter pause gate (mirrors
+    // macOS's transportPill Resume/Pause branches and this class's own
+    // now-removed dual-mode pause-button code).  Always reachable while
+    // Rendering (the Cancelling state disables the button entirely, per
+    // updateTransportButton).
+    if (m_engineState == RenderEngine::Rendering) {
+        if (m_engine) {
+            m_engine->setProductionRenderPaused(!m_engine->isProductionRenderPaused());
+        }
+        updateReadout();
+        updateTransportButton();
+        return;
+    }
+
+    // Cancelling: the button is disabled (see updateTransportButton),
+    // so this shouldn't be reachable -- guard anyway rather than fall
+    // through to a render start mid-cancel.
+    if (m_engineState == RenderEngine::Cancelling) return;
+
+    // Idle / SceneLoaded / Completed / Cancelled / Loading / Error:
+    // click-time re-check mirroring the pause/restart buttons' Round-3
+    // P2 pattern -- the button is ALSO disabled via updateTransportButton
+    // whenever m_canStartProductionRender is false, but a click racing a
+    // state flip must refuse rather than kick a render MainWindow's own
+    // predicate would have refused.  MainWindow::onRender (connected to
+    // renderTransportClicked) owns all the actual pre-render bookkeeping.
+    if (!m_canStartProductionRender) return;
+    emit renderTransportClicked();
 }
 
 void TopBar::onRestartClicked()
@@ -674,37 +722,99 @@ void TopBar::updateControlsEnabled()
     // (P1-2 fix, mirrors canUseSceneTransport) a chat-driven render
     // owns it instead — the C++ controller's pauseRefinement/
     // resumeRefinement/start+stop no-op in that state anyway; disabling
-    // here just keeps the UI honest about it.  m_restartBtn always uses
-    // this predicate -- restart has no production-render meaning.
+    // here just keeps the UI honest about it.  Both m_restartBtn and
+    // m_pauseResumeBtn use this predicate directly -- restart has no
+    // production-render meaning, and (refinement-only revert) neither
+    // does this bar's pause button anymore now that the render-
+    // transport pill (see updateTransportButton) owns production pause.
     const bool refinementDisabled = !m_bridge
         || m_engineState == RenderEngine::Rendering
         || m_engineState == RenderEngine::Cancelling
         || (m_chatPanel && m_chatPanel->isChatRenderOutstanding());
     m_restartBtn->setEnabled(!refinementDisabled);
+    m_pauseResumeBtn->setEnabled(!refinementDisabled);
+    m_pauseResumeBtn->setIcon(style()->standardIcon(
+        m_isRefinementPaused ? QStyle::SP_MediaPlay : QStyle::SP_MediaPause));
 
-    // Item 4 (mirrors TopBar.swift's `pauseButtonDisabled`): during a
-    // production render the pause button is ALWAYS enabled (workers
-    // park at the pause gate on demand) except while Cancelling;
-    // every other state falls back to the refinement predicate above.
+    updateTransportButton();
+}
+
+void TopBar::setCanStartProductionRender(bool canStart)
+{
+    if (m_canStartProductionRender == canStart) return;
+    m_canStartProductionRender = canStart;
+    updateTransportButton();
+}
+
+void TopBar::updateTransportButton()
+{
+    if (!m_transportBtn) return;
+
     const bool isProduction = (m_engineState == RenderEngine::Rendering);
     const bool isCancelling = (m_engineState == RenderEngine::Cancelling);
-    bool pauseDisabled;
-    if (isProduction) {
-        pauseDisabled = false;
-    } else if (isCancelling) {
-        pauseDisabled = true;
-    } else {
-        pauseDisabled = refinementDisabled;
-    }
-    m_pauseResumeBtn->setEnabled(!pauseDisabled);
 
-    const bool isProductionPaused = isProduction && m_engine && m_engine->isProductionRenderPaused();
-    const bool showsPlay = isProduction ? isProductionPaused : m_isRefinementPaused;
-    m_pauseResumeBtn->setIcon(style()->standardIcon(
-        showsPlay ? QStyle::SP_MediaPlay : QStyle::SP_MediaPause));
-    m_pauseResumeBtn->setToolTip(isProduction
-        ? (isProductionPaused
-            ? QStringLiteral("Resume the render")
-            : QStringLiteral("Pause the render \xE2\x80\x94 workers park, CPU goes quiet"))
-        : QStringLiteral("Pause / resume refinement (Space)"));
+    // Shared "filled" pill style (accent bg, near-black text) --
+    // used for the idle "Render" state and the paused "Resume" state.
+    // Mirrors TopBar.swift's transportPill(filled: true).
+    const QString filledStyle = QStringLiteral(
+        "QPushButton { background-color: %1; color: rgba(0,0,0,0.92); border: none;"
+        " border-radius: %2px; padding: 6px 15px; }")
+        .arg(Theme::hex(Theme::accent))
+        .arg(Theme::radiusMedium);
+    // Shared "outlined" pill style (warn border/text, transparent bg) --
+    // used for the Rendering-and-not-paused "Pause" state.  Mirrors
+    // transportPill(filled: false).
+    const QString outlinedStyle = QStringLiteral(
+        "QPushButton { background: transparent; color: %1; border: 1px solid %2;"
+        " border-radius: %3px; padding: 6px 15px; }")
+        .arg(Theme::hex(Theme::warn))
+        .arg(Theme::rgba(QColor(Theme::warn.red(), Theme::warn.green(), Theme::warn.blue(),
+                                 static_cast<int>(0.5 * 255))))
+        .arg(Theme::radiusMedium);
+    // Plain disabled text, no chrome -- mirrors the Mac's disabled
+    // "Cancelling…" Text (no pill/border at all in that state).
+    const QString cancellingStyle = QStringLiteral(
+        "QPushButton { background: transparent; border: none; color: %1;"
+        " padding: 6px 15px; }")
+        .arg(Theme::hex(Theme::textDisabled));
+
+    if (isCancelling) {
+        m_transportBtn->setText(QStringLiteral("Cancelling\xE2\x80\xA6"));
+        m_transportBtn->setStyleSheet(cancellingStyle);
+        m_transportBtn->setEnabled(false);
+        m_transportBtn->setCursor(Qt::ArrowCursor);
+        m_transportBtn->setToolTip(QString());
+        if (m_transportOpacity) m_transportOpacity->setOpacity(1.0);
+        return;
+    }
+
+    if (isProduction) {
+        const bool paused = m_engine && m_engine->isProductionRenderPaused();
+        m_transportBtn->setEnabled(true);
+        m_transportBtn->setCursor(Qt::PointingHandCursor);
+        if (m_transportOpacity) m_transportOpacity->setOpacity(1.0);
+        if (paused) {
+            m_transportBtn->setText(QStringLiteral("Resume"));
+            m_transportBtn->setStyleSheet(filledStyle);
+            m_transportBtn->setToolTip(tr("Resume the render where it left off"));
+        } else {
+            m_transportBtn->setText(QStringLiteral("Pause"));
+            m_transportBtn->setStyleSheet(outlinedStyle);
+            m_transportBtn->setToolTip(tr("Pause the render \xE2\x80\x94 workers park, CPU goes quiet"));
+        }
+        return;
+    }
+
+    // Idle / SceneLoaded / Completed / Cancelled / Loading / Error:
+    // the "Render" pill, gated on m_canStartProductionRender (pushed in
+    // from MainWindow -- see setCanStartProductionRender's doc).
+    m_transportBtn->setText(QStringLiteral("Render"));
+    m_transportBtn->setStyleSheet(filledStyle);
+    m_transportBtn->setEnabled(m_canStartProductionRender);
+    m_transportBtn->setCursor(m_canStartProductionRender ? Qt::PointingHandCursor : Qt::ArrowCursor);
+    // Mirrors TopBar.swift's `.opacity(viewModel.canStartProductionRender
+    // ? 1.0 : 0.4)` -- QSS alone can't dim background AND text together
+    // as one "whole pill" opacity, hence the QGraphicsOpacityEffect.
+    if (m_transportOpacity) m_transportOpacity->setOpacity(m_canStartProductionRender ? 1.0 : 0.4);
+    m_transportBtn->setToolTip(tr("Start a production render (Ctrl+R)"));
 }

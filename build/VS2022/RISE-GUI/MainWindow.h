@@ -4,7 +4,8 @@
 //
 //  UI redesign (mirrors the macOS ContentView.swift + RISEApp.swift):
 //  central widget = TopBar over a 3-column workspace —
-//    left panel (404px fixed, Agent / Scene file tabs)
+//    left panel (user-resizable via QSplitter, 360-900px, 520px default,
+//      persisted to QSettings "leftPanelWidth"; Agent / Scene file tabs)
 //    center column (viewport stack / timeline / log drawer)
 //    right panel (344px fixed, ViewportProperties)
 //  The retired ControlsWidget's functions are rehoused: Open/Recent
@@ -32,6 +33,7 @@ class QLabel;
 class QStackedWidget;
 class QVBoxLayout;
 class QToolButton;
+class QSplitter;
 class RenderEngine;
 class RenderWidget;
 class HDRRenderWidget;
@@ -245,7 +247,13 @@ private:
     SceneEditor* m_sceneEditor = nullptr;
 
     // Left panel: slim Agent / Scene-file tab strip over a QStackedWidget.
+    // User-resizable (wider, resizable left panel refinement): m_leftPanel
+    // + the center column live inside m_leftSplitter (a QSplitter) so the
+    // user can drag the boundary; m_leftSplitter's own size is what
+    // buildLeftPanel/the constructor persist to QSettings ("leftPanelWidth"),
+    // not m_leftPanel's fixed width (there isn't one anymore).
     QWidget*      m_leftPanel = nullptr;
+    QSplitter*    m_leftSplitter = nullptr;
     QStackedWidget* m_leftPanelStack = nullptr;
     QToolButton*  m_agentTabBtn = nullptr;
     QToolButton*  m_sceneTabBtn = nullptr;
