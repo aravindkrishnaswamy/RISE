@@ -383,6 +383,84 @@ void RenderEngine::waitForWorkerToFinish()
     // because RenderEngine only receives events it posted to
     // itself (no incoming user events from other QObjects).
     QCoreApplication::removePostedEvents(this);
+
+    // If the drain above just discarded an in-flight render's queued
+    // completion lambda, that lambda's cleanup never runs -- recover
+    // the RENDER-SIDE portion here (adapter delete + published-pointer
+    // clear, Job progress-slot detach, timer stops, pause-bookkeeping
+    // reset) so every waitForWorkerToFinish caller (loadScene,
+    // clearScene, the dtor) gets it structurally.  NOT recovered here,
+    // deliberately: m_productionVFSAttachedToRasterizer -- see the
+    // reclaim body for why it CANNOT be reset uniformly; a future
+    // caller of this method that doesn't Free-and-clear the VFS
+    // attachment the way loadScene/clearScene do must handle that
+    // flag itself.
+    reclaimDiscardedRenderCompletion();
+}
+
+void RenderEngine::reclaimDiscardedRenderCompletion()
+{
+    // See the header doc for the full contract.  m_activeProgressCallback
+    // is non-null exactly when a render's completion lambda has NOT yet
+    // run (startRender/startAnimationRender publish it before spawning
+    // the worker; only the completion lambda -- or this method -- clears
+    // it).  Our caller has already joined the worker thread and drained
+    // the posted-event queue, so a non-null pointer here means the
+    // completion lambda was discarded unrun and can never fire: this
+    // method is the only remaining owner of the cleanup, and there is no
+    // double-delete window.
+    if (ProgressCallbackAdapter* orphan = m_activeProgressCallback) {
+        // Mirror the completion lambda's engine-state cleanup, minus
+        // three deliberate skips:
+        //   * setState -- every caller immediately establishes its own
+        //     state (Loading, Idle, or destruction), so no transient
+        //     Cancelled/Completed transition belongs here.
+        //   * the final pollProductionVFS() flush -- the render is
+        //     being abandoned for a scene swap / teardown; flushing its
+        //     last tiles would just post fresh queued events AFTER the
+        //     drain our caller performed (worst on the dtor path).
+        //   * m_productionVFSAttachedToRasterizer -- it CANNOT be reset
+        //     uniformly: after a discarded STILL render the rasterizer
+        //     genuinely still holds the VFS reference (flag true is the
+        //     truth; clearing it would double-Attach on the next
+        //     ensureProductionVFSAttachedToRasterizer -> duplicate
+        //     observer fires), while after a discarded ANIMATION render
+        //     the worker already ran FreeRasterizerOutputs.  The flag
+        //     stays owned by the Free-and-clear blocks in loadScene /
+        //     clearScene / startAnimationRender, which every current
+        //     caller reaches right after this method.
+        // Timers first: without the lambda they'd tick forever after
+        // the render's worker is gone.
+        m_elapsedTimer->stop();
+        m_progressivePollTimer->stop();
+        // Detach the Job's raw progress slot BEFORE deleting the
+        // adapter.  In the no-controller case startRender installed
+        // `orphan` directly, so the slot still points at it; leaving it
+        // would hand the next coordinator-routed render a dangling
+        // "prior" to capture-and-restore (RunProductionRenderComposed
+        // reads GetProgress() at entry), and after the delete below it
+        // would be a use-after-free waiting for the next Rasterize().
+        // In the controller-routed case the slot was already restored
+        // (typically to nullptr) by RunProductionRenderComposed's RAII
+        // guard on the worker thread, so this is a harmless no-op.
+        if (m_job) {
+            m_job->SetProgress(nullptr);
+        }
+        // Clear the published pointer before the delete so a
+        // setProductionRenderPaused/isProductionRenderPaused call can't
+        // observe a freed adapter (same ordering rule as the completion
+        // lambda; all on the UI thread, so no race -- just discipline).
+        m_activeProgressCallback = nullptr;
+        delete orphan;
+    }
+    // Always reset the pause bookkeeping, even when no adapter was
+    // orphaned: the ms accumulators are tracked independent of the
+    // adapter (see setProductionRenderPaused), so a scene transition
+    // must not leak a prior render's paused-time into the next one.
+    // This subsumes the explicit resetProductionPauseState() calls
+    // loadScene/clearScene used to make right after
+    // waitForWorkerToFinish().
+    resetProductionPauseState();
 }
 
 void RenderEngine::trackWorkerThread(QThread* thread)
@@ -493,17 +571,17 @@ void RenderEngine::loadScene(const QString& filePath)
     // VFS tile callbacks could race the new scene's rasterizer
     // construction.
     m_cancelFlag = true;
+    // waitForWorkerToFinish()'s removePostedEvents() discards any QUEUED
+    // completion lambda from an in-flight render this load just
+    // cancelled ("Open Scene" / Merge while a render, possibly paused,
+    // was still going); its trailing reclaimDiscardedRenderCompletion()
+    // recovers the render-side cleanup that lambda would have done
+    // (adapter delete, Job progress-slot detach, timer stops,
+    // pause-bookkeeping reset) -- see that method's doc.  The one piece
+    // it deliberately does NOT recover, the VFS-attachment flag, is
+    // handled by the Free-and-clear block just below.
     waitForWorkerToFinish();
     m_cancelFlag = false;
-    // Review P2 (mirrors macOS): waitForWorkerToFinish()'s
-    // removePostedEvents() (see its doc) discards any QUEUED completion
-    // lambda from an in-flight render this load just cancelled --
-    // meaning that lambda's own resetProductionPauseState() call (see
-    // startRender's completion handler) never runs for THIS exit path
-    // ("Open Scene" / Merge while a render, possibly paused, was still
-    // going).  Reset explicitly here too so stale pause bookkeeping
-    // from the cancelled render can't leak into whatever runs next.
-    resetProductionPauseState();
 
     setState(Loading);
     m_loadedFilePath = filePath;
@@ -607,10 +685,13 @@ void RenderEngine::startRender()
 
     // L4 round-6 P1 — QPointer guard for the queued completion
     // lambda; see ~RenderEngine() and loadScene's matching guard.
-    // If we early-return because the engine is gone, the
-    // ProgressCallbackAdapter still leaks (allocated above with
-    // `new`) — that's acceptable: the rasterizer is on its way down
-    // and the leak is bounded to one Render() invocation.
+    // Adapter ownership on the abnormal exits: if the queued lambda
+    // is DISCARDED by waitForWorkerToFinish's removePostedEvents
+    // (scene transition / destruction while this render is in
+    // flight), reclaimDiscardedRenderCompletion deletes the adapter;
+    // if the lambda runs after the guard cleared (can't happen today
+    // -- the dtor drains the queue -- but kept as defense in depth),
+    // the `delete progressCb` in its !guard branch does.
     QPointer<RenderEngine> guard(this);
     QThread* thread = QThread::create([this, progressCb, guard]() {
         IJobPriv* job = m_job;
@@ -874,15 +955,13 @@ void RenderEngine::clearScene()
     // L4 round-4 P1-A + round-5 P1-B — wait for any in-flight
     // worker (load OR render) before wiping scene state.
     m_cancelFlag = true;
+    // "Clear & Load" / "Close Scene" while a render (possibly paused)
+    // was in flight discards that render's queued completion lambda via
+    // waitForWorkerToFinish()'s removePostedEvents(); its trailing
+    // reclaimDiscardedRenderCompletion() recovers that lambda's cleanup
+    // -- see loadScene()'s matching comment.
     waitForWorkerToFinish();
     m_cancelFlag = false;
-    // Review P2 (mirrors macOS): see loadScene()'s matching comment --
-    // "Clear & Load" / "Close Scene" while a render (possibly paused)
-    // was in flight discards that render's queued completion lambda
-    // (and its resetProductionPauseState() call) via
-    // waitForWorkerToFinish()'s removePostedEvents().  Reset explicitly
-    // here too.
-    resetProductionPauseState();
 
     if (m_job) {
         // ClearAll wipes the rasterizer; we drop the rasterizer's
