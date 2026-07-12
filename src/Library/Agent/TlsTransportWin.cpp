@@ -43,9 +43,11 @@ namespace RISE
 	{
 		namespace
 		{
-			//! Matches the GUI drivers' 300s timeout, applied to each of
-			//! WinHTTP's four phases (resolve/connect/send/receive).
-			const int kTimeoutMs = 300000;
+			//! Resolve/connect phases stay on a short, fixed budget --
+			//! DNS + the TCP/TLS handshake either succeeds quickly or
+			//! the endpoint is unreachable; neither phase should inherit
+			//! the long per-request budget meant for generation time.
+			const int kResolveConnectTimeoutMs = 60000;
 
 			std::wstring WidenUtf8( const std::string& s )
 			{
@@ -94,7 +96,16 @@ namespace RISE
 						WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
 						WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0 );
 					if( !hSession ) { out.error = WinErr( "WinHttpOpen" ); return Finish( out, t0 ); }
-					WinHttpSetTimeouts( hSession, kTimeoutMs, kTimeoutMs, kTimeoutMs, kTimeoutMs );
+					// req.timeoutSeconds is the per-request budget (see
+					// ChatHttpRequest::timeoutSeconds): 300s for hosted
+					// providers, 900s for local inference (cold model swap +
+					// long generation legitimately exceeds 300s).  Resolve
+					// and connect stay on the short fixed budget above; send
+					// and receive get the full per-request budget.
+					const int sendReceiveTimeoutMs =
+						static_cast<int>( req.timeoutSeconds * 1000 );
+					WinHttpSetTimeouts( hSession, kResolveConnectTimeoutMs, kResolveConnectTimeoutMs,
+						sendReceiveTimeoutMs, sendReceiveTimeoutMs );
 
 					HINTERNET hConnect = WinHttpConnect( hSession, host, port, 0 );
 					if( !hConnect ) {

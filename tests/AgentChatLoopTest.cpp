@@ -412,6 +412,8 @@ static void TestOpenAIRequestShape()
 	Check( req.url == "https://api.openai.com/v1/chat/completions",
 	       "url is the OpenAI Chat Completions endpoint" );
 	CheckKeyOnlyInBearerHeader( req, "authorization", "T0" );
+	Check( req.timeoutSeconds == 300,
+	       "OpenAI (hosted) request carries the unchanged 300s transport timeout budget" );
 
 	JsonValue root = ParseBody( req.body );
 	Check( root.isObject(), "body parses as JSON" );
@@ -472,6 +474,8 @@ static void TestXaiAndLocalRequestShape()
 		Check( req.url == "https://api.x.ai/v1/chat/completions",
 		       "xAI url is the api.x.ai Chat Completions endpoint" );
 		CheckKeyOnlyInBearerHeader( req, "authorization", "T0x-xai" );
+		Check( req.timeoutSeconds == 300,
+		       "xAI (hosted) request carries the unchanged 300s transport timeout budget" );
 		JsonValue root = ParseBody( req.body );
 		Check( root.get( "model" ).asString() == "grok-4.5", "xAI body carries the grok-4.5 model id" );
 		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 10,
@@ -507,6 +511,9 @@ static void TestXaiAndLocalRequestShape()
 		Check( !HasHeaderNamed( req, "authorization" ),
 		       "keyless local request emits NO Authorization header (key-hygiene inverse)" );
 		Check( HasHeaderNamed( req, "content-type" ), "local request still carries content-type" );
+		Check( req.timeoutSeconds == 900,
+		       "local request carries the raised 900s transport timeout budget "
+		       "(cold model swap + long generation legitimately exceeds 300s, FIX 1)" );
 		JsonValue root = ParseBody( req.body );
 		Check( root.get( "model" ).asString() == "qwen3:32b", "local body carries the qwen3:32b model id" );
 
@@ -529,6 +536,8 @@ static void TestXaiAndLocalRequestShape()
 		Check( HasHeaderNamed( req, "authorization" ),
 		       "local WITH a key emits a Bearer Authorization header" );
 		CheckKeyOnlyInBearerHeader( req, "authorization", "T0x-local-keyed" );
+		Check( req.timeoutSeconds == 900,
+		       "local WITH a key still carries the raised 900s transport timeout budget" );
 	}
 
 	// --- RISE_LOCAL_LLM_BASE_URL override is read at codec construction
@@ -658,6 +667,8 @@ static void TestAnthropicRequestShape()
 			sawVersion = true;
 	Check( sawVersion, "anthropic-version: 2023-06-01 header present" );
 	CheckKeyOnlyInAuthHeader( req, "x-api-key", "T1" );
+	Check( req.timeoutSeconds == 300,
+	       "Anthropic (hosted) request carries the unchanged 300s transport timeout budget" );
 
 	// Body shape: model / max_tokens / system / all ten tools / the user turn.
 	JsonValue root = ParseBody( req.body );

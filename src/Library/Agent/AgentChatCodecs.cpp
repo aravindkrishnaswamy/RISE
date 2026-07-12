@@ -2074,6 +2074,7 @@ namespace RISE
 		{
 			ChatHttpRequest r;
 			r.url = mConfig.baseUrl;
+			r.timeoutSeconds = mConfig.requestTimeoutSeconds;
 			r.headers.push_back( std::make_pair( "content-type", "application/json" ) );
 			// Emit the Bearer header when the provider requires auth (OpenAI,
 			// xAI) OR when a key was supplied anyway (a local server started

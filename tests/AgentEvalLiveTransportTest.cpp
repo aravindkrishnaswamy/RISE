@@ -243,6 +243,14 @@ static void TestLiveRunViaMock()
 	Check( h.dispatcher != nullptr, "live run returns an ALIVE dispatcher (the E3 seam)" );
 	Check( mock.seenRequests.size() == 2, "the mock transport saw exactly 2 POSTs" );
 
+	// FIX 1 (per-request transport timeout): the hosted Anthropic provider's
+	// BuildRequest carries the unchanged 300s budget all the way out to what
+	// the transport actually receives -- proving the plumbing (codec Config
+	// -> ChatHttpRequest.timeoutSeconds -> the seam a real transport reads)
+	// rather than just the codec-level unit test in AgentChatLoopTest.cpp.
+	Check( !mock.seenRequests.empty() && mock.seenRequests[0].timeoutSeconds == 300,
+	       "the request the (mock) transport received carries timeoutSeconds==300 for a hosted provider" );
+
 	// The trajectory records the LIVE round through RecordHttpRound.
 	std::vector<JsonValue> recs = ReadJsonl( h.trajectoryPath );
 	const std::vector<std::string> expected = { "session", "user", "llm", "tool", "llm", "summary" };
@@ -356,6 +364,146 @@ static void TestKeyHygieneRedProve()
 	//     transport never echoing headers into its response.
 	Check( !AnyFileUnderContains( runDir, kFakeKey ),
 	       "the fake key appears in NO runDir output file (trajectory/result/results.jsonl)" );
+}
+
+//----------------------------------------------------------------------
+// T11: FIX 1 -- the LOCAL provider's raised 900s transport timeout budget
+//      reaches the (mock) transport, end-to-end through RunScenarioLive
+//      (not just the codec-level unit test in AgentChatLoopTest.cpp).
+//----------------------------------------------------------------------
+static void TestLiveLocalProviderTimeoutBudget()
+{
+	std::printf( "T11: local provider's 900s timeout budget reaches the transport (FIX 1)...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	// A single OpenAI-shaped final-text turn (the local provider reuses the
+	// OpenAI-compatible codec) ends the loop in one round.
+	mock.responses.push_back( { 200,
+		"{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Done.\"},"
+		"\"finish_reason\":\"stop\"}],"
+		"\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}", "", 2 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t11_live_local_timeout" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Local;
+	opts.apiKey = "";   // keyless local
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "local live run reaches final_text (got '" + h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+	Check( !mock.seenRequests.empty() && mock.seenRequests[0].timeoutSeconds == 900,
+	       "the request the (mock) transport received carries timeoutSeconds==900 for the local provider" );
+}
+
+//----------------------------------------------------------------------
+// T12: FIX 2 -- one automatic retry on a transient HTTP 5xx.  A 500 on the
+//      first attempt of a round is retried ONCE (same round, rebuilt
+//      request); the second attempt succeeds -> the scenario reaches
+//      final_text, having driven 2 llm rounds (an honest attempt-2/
+//      retry-of-1 sibling trajectory record), matching the observed
+//      Ollama-500-then-retry-succeeds shootout behaviour.
+//----------------------------------------------------------------------
+static void TestLiveHttp5xxRetrySucceeds()
+{
+	std::printf( "T12: HTTP 500 then success -> one retry, round succeeds (FIX 2)...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 500, "{\"error\":\"internal server error\"}", "", 3 } );
+	mock.responses.push_back( { 200, kBodyFinal, "", 4 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t12_live_5xx_retry_succeeds" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "a 500-then-200 round still reaches final_text (got '" + h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+	Check( h.result.llmCalls == 2, "both the 500 attempt and the retry are counted as llm rounds" );
+	Check( mock.seenRequests.size() == 2, "the transport saw exactly 2 POSTs (the retry rebuilt the SAME round)" );
+	Check( h.result.finalText == "Done: pnt_albedo is now red.", "the retried round's final text is captured" );
+
+	// The trajectory carries an honest sibling llm record: attempt 1 (the
+	// 500) and attempt 2 / retry_of 1 (the successful retry).
+	std::vector<JsonValue> recs = ReadJsonl( h.trajectoryPath );
+	int attempt1 = 0, attempt2RetryOf1 = 0;
+	for( std::size_t i = 0; i < recs.size(); ++i ) {
+		if( recs[i].get( "run_type" ).asString() != "llm" ) continue;
+		const int at = static_cast<int>( recs[i].get( "attempt" ).asNumber( -1.0 ) );
+		if( at == 1 ) ++attempt1;
+		if( at == 2 && recs[i].get( "retry_of" ).asNumber( -1.0 ) == 1.0 ) ++attempt2RetryOf1;
+	}
+	Check( attempt1 == 1, "exactly one attempt-1 llm record (the 500)" );
+	Check( attempt2RetryOf1 == 1, "exactly one attempt-2/retry_of-1 llm record (the successful retry)" );
+}
+
+//----------------------------------------------------------------------
+// T13: FIX 2 -- a SECOND 5xx (500-then-500) is NOT retried again; the round
+//      falls through to the unchanged provider_error path.  Proves the
+//      retry is bounded to exactly one attempt per round, not a loop.
+//----------------------------------------------------------------------
+static void TestLiveHttp5xxRetryStillFails()
+{
+	std::printf( "T13: HTTP 500 then 500 -> one retry, still provider_error (FIX 2)...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 500, "{\"error\":\"internal server error\"}", "", 3 } );
+	mock.responses.push_back( { 500, "{\"error\":\"internal server error again\"}", "", 3 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t13_live_5xx_retry_fails" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "provider_error",
+	       "500-then-500 falls through to provider_error (got '" + h.result.terminalStatus + "')" );
+	Check( h.result.llmCalls == 2, "exactly 2 llm rounds counted (the original attempt + the one retry, no more)" );
+	Check( mock.seenRequests.size() == 2,
+	       "the transport saw exactly 2 POSTs -- the retry is bounded to ONE attempt, not a loop" );
+}
+
+//----------------------------------------------------------------------
+// T14: FIX 2 -- a plain (non-multimodal) HTTP 400 is NOT retried.  Proves
+//      the 5xx retry is scoped to [500,599] and does not widen to 4xx.
+//----------------------------------------------------------------------
+static void TestLiveHttp400NotRetried()
+{
+	std::printf( "T14: a non-multimodal HTTP 400 is NOT retried (FIX 2 scope)...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 400, "{\"error\":{\"message\":\"invalid request: unknown field foo\"}}", "", 2 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t14_live_400_no_retry" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "provider_error",
+	       "a plain 400 -> provider_error immediately (got '" + h.result.terminalStatus + "')" );
+	Check( h.result.llmCalls == 1, "exactly 1 llm round -- a 4xx (non-multimodal) is never retried" );
+	Check( mock.seenRequests.size() == 1, "the transport saw exactly 1 POST -- no retry attempt" );
 }
 
 //----------------------------------------------------------------------
@@ -862,6 +1010,10 @@ int main()
 	TestLiveBudget();
 	TestTransportError();
 	TestKeyHygieneRedProve();
+	TestLiveLocalProviderTimeoutBudget();
+	TestLiveHttp5xxRetrySucceeds();
+	TestLiveHttp5xxRetryStillFails();
+	TestLiveHttp400NotRetried();
 	TestRunConfigLoad();
 	TestRunEvalMatrix();
 	TestRunEvalMatrixDuplicateId();

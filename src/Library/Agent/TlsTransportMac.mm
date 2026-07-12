@@ -75,12 +75,6 @@ namespace RISE
 	{
 		namespace
 		{
-			//! Matches the GUI drivers' 300s request timeout (the plan's
-			//! documented driver behaviour).  A single POST to an LLM
-			//! endpoint can legitimately take a couple of minutes on a long
-			//! generation, so this is deliberately generous.
-			const NSTimeInterval kRequestTimeoutSeconds = 300.0;
-
 			class MacUrlSessionTransport : public IChatHttpTransport
 			{
 			public:
@@ -108,14 +102,20 @@ namespace RISE
 						}
 						[r setHTTPBody:[NSData dataWithBytes:req.body.data()
 						                              length:static_cast<NSUInteger>( req.body.size() )]];
-						[r setTimeoutInterval:kRequestTimeoutSeconds];
+						// req.timeoutSeconds is the per-request budget (see
+						// ChatHttpRequest::timeoutSeconds): 300s for hosted
+						// providers, 900s for local inference (cold model
+						// swap + long generation legitimately exceeds 300s).
+						const NSTimeInterval requestTimeout =
+							static_cast<NSTimeInterval>( req.timeoutSeconds );
+						[r setTimeoutInterval:requestTimeout];
 
 						// Ephemeral: no on-disk cache / cookie jar / credential
 						// store -- nothing about this request (least of all the
 						// auth header) is persisted anywhere.
 						NSURLSessionConfiguration* cfg =
 							[NSURLSessionConfiguration ephemeralSessionConfiguration];
-						cfg.timeoutIntervalForRequest = kRequestTimeoutSeconds;
+						cfg.timeoutIntervalForRequest = requestTimeout;
 
 						// A delegate that refuses redirects (see the class comment
 						// above): without it a 3xx would replay the auth header to

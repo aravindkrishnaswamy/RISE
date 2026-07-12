@@ -149,6 +149,20 @@ namespace RISE
 			std::string url;      //!< absolute https URL (POST)
 			std::vector<std::pair<std::string, std::string>> headers;   //!< header name/value pairs (includes content-type + the auth header)
 			std::string body;     //!< the JSON request body
+
+			//! The per-request wall-clock budget, in seconds, that BOTH
+			//! platform transports (TlsTransportMac.mm's setTimeoutInterval
+			//! + session timeoutIntervalForRequest; TlsTransportWin.cpp's
+			//! WinHttpSetTimeouts send/receive phases) honor for THIS
+			//! request.  Default 300s matches the GUI drivers' hosted-
+			//! provider budget.  A codec that talks to a local inference
+			//! server (cold model swap loading 17-43GB + long 70B
+			//! generations legitimately exceeds 300s) raises this per
+			//! request via its own Config rather than the transports
+			//! guessing -- see OpenAIChatCodec::Config::requestTimeoutSeconds
+			//! and its LOCAL-provider instantiation in AgentChatLoop.cpp's
+			//! MakeCodec.
+			long timeoutSeconds = 300;
 		};
 
 			//! Token-usage counts parsed from ONE provider response body
@@ -444,6 +458,16 @@ namespace RISE
 				std::string baseUrl;         //!< full chat/completions endpoint URL
 				std::string defaultModelId;  //!< model id when the caller leaves it empty
 				bool        requiresAuth = true;  //!< see the struct doc above; defaults fail-closed (require auth) so a default-constructed Config never reads indeterminate
+
+				//! Rides straight through to BuildRequest's ChatHttpRequest.
+				//! timeoutSeconds -- the per-request budget the platform
+				//! transports honor.  Default 300s matches every hosted
+				//! provider (OpenAI, xAI).  MakeCodec's LOCAL provider
+				//! instantiation (AgentChatLoop.cpp) raises this to 900s: a
+				//! cold local-model swap (17-43GB load) plus a long 70B
+				//! generation legitimately exceeds the hosted-provider
+				//! budget and was observed timing out at 300s.
+				long        requestTimeoutSeconds = 300;
 			};
 
 			//! Default: the OpenAI provider (byte-identical wire behaviour

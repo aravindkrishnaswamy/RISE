@@ -527,15 +527,34 @@ namespace RISE
 						}
 
 						// Build -> fetch -> record -> handle, with at most ONE
-						// automatic image-elide retry: when a text-only model
-						// 400-rejects multimodal content, HandleResponse elides
-						// the images from the transcript and flags the step
-						// (retryWithoutImages).  Re-issue the SAME round once --
-						// the rebuilt request is image-free -- recording it as an
-						// honest sibling llm record (attempt 2, retryOf 1).  A
-						// second failure (retryWithoutImages false now: the loop's
-						// sticky state gates the retry once per session) falls
-						// through to the normal provider_error path unchanged.
+						// automatic retry per round, for EITHER of two
+						// independent causes:
+						//   (a) a text-only model 400-rejects multimodal
+						//       content -- HandleResponse elides the images
+						//       from the transcript and flags the step
+						//       (retryWithoutImages); the rebuilt (now
+						//       image-free) request is re-issued once.
+						//   (b) the provider answers with a transient 5xx
+						//       (observed: Ollama's template parser 500-ing
+						//       on malformed tool-call syntax a local model
+						//       emitted).  Sampling is nondeterministic, so
+						//       one retry of the SAME round often yields a
+						//       parseable reply; hosted providers can also
+						//       500 transiently.  Never retries a 4xx other
+						//       than the multimodal-400 case above.  This
+						//       cause is checked on `fo.status` (what the
+						//       transport actually returned), not a codec-
+						//       parsed field, and only bites on the LIVE
+						//       path -- the replay fetch above always
+						//       synthesizes status 200, so replay never hits
+						//       HTTP and never retries here.
+						// Either cause fires ONLY on attempt==1, so at most
+						// one retry happens per round; a second failure of
+						// either kind falls through to the normal
+						// provider_error path unchanged.  The retry is
+						// recorded as an honest sibling llm record (attempt
+						// 2, retryOf 1) via the existing RecordHttpRound
+						// attempt/retryOf plumbing.
 						ChatStepResult st;
 						bool roundStopped = false;
 						for( int attempt = 1; ; ++attempt ) {
@@ -560,6 +579,8 @@ namespace RISE
 							++llmCalls;
 							st = loop.HandleResponse( fo.status, fo.body );
 
+							if( attempt == 1 && fo.status >= 500 && fo.status <= 599 )
+								continue;   // one 5xx retry of this round
 							if( st.kind == ChatStepResult::Kind::ProviderError &&
 							    st.retryWithoutImages && attempt == 1 )
 								continue;   // one image-free retry of this round

@@ -159,6 +159,13 @@ namespace RISE
 					// key is supplied.
 					cfg.defaultModelId = "qwen3:32b";
 					cfg.requiresAuth   = false;
+					// Local inference legitimately exceeds the hosted-provider
+					// 300s budget: a cold model swap loads 17-43GB before the
+					// first token, and a long 70B generation can run minutes
+					// past that.  900s was observed sufficient where 300s
+					// produced NSURLErrorDomain -1001 ("The request timed
+					// out.") transport failures in the local-model shootout.
+					cfg.requestTimeoutSeconds = 900;
 					return std::unique_ptr<IChatProviderCodec>( new OpenAIChatCodec( cfg ) );
 				}
 				return std::unique_ptr<IChatProviderCodec>( new AnthropicChatCodec() );
