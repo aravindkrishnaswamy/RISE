@@ -501,12 +501,18 @@ private struct ChatSettingsView: View {
                 .fontWeight(.semibold)
                 .foregroundColor(.secondary)
 
+            // Menu style, not segmented: five providers' display names
+            // ("Grok (xAI)", "Local (Ollama)", ...) far exceed the
+            // popover's 300pt width as segments -- the segmented control
+            // overflowed the frame and made the whole popover unreadable
+            // (user-reported when providers 4+5 landed).  A menu scales
+            // to any provider count at constant width.
             Picker("Provider", selection: $draftProvider) {
                 ForEach(AgentChatProviderChoice.allCases) { p in
                     Text(p.displayName).tag(p)
                 }
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.menu)
             .labelsHidden()
             .onChange(of: draftProvider) { _, newProvider in
                 // Follow the picker with the provider's own stored
@@ -622,6 +628,10 @@ private struct ChatSettingsView: View {
                     Text(AgentChatProviderChoice.localResolvedEndpoint)
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
+                        // The URL is ~43 chars of monospace -- borderline at
+                        // the popover's 300pt.  Wrap rather than clip/expand
+                        // (an env-override URL can be arbitrarily long).
+                        .fixedSize(horizontal: false, vertical: true)
                     Text("No API key needed. Requires a running local server, e.g. "
                          + "`ollama serve`. Override the endpoint with the "
                          + "RISE_LOCAL_LLM_BASE_URL environment variable before launch.")
