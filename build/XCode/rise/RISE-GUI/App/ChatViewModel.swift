@@ -371,6 +371,18 @@ final class ChatViewModel: ObservableObject {
             resolvedProposalObservedAt = [:]
             return
         }
+        // Field fix (2026-07-11 "production render hangs the app"):
+        // a render — production, or this chat's own outstanding render
+        // job — holds the controller's mMutex for its WHOLE duration,
+        // and list_proposals serializes on that same mutex.  This poll
+        // runs synchronously on the main thread, so one tick during a
+        // render wedged the entire UI until the render finished (and
+        // with it, the production render's own progressive updates).
+        // Skipping is lossless: StageProposal takes the same mutex, so
+        // the queue cannot change while we're gated — the first
+        // allowed tick re-syncs.  Keep the current list on screen
+        // (don't clear) so the badge doesn't flicker during renders.
+        guard sceneEditable() else { return }
         let line = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"list_proposals\"}"
         let response = vb.agentHandleLine(line)
         guard let data = response.data(using: .utf8),

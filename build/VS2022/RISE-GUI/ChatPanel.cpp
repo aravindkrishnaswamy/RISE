@@ -1170,6 +1170,17 @@ void ChatPanel::cancelActiveTurn(const QString& statusLine)
 
 void ChatPanel::refreshProposals()
 {
+    // Field fix (2026-07-11, found on macOS first): a render --
+    // production, or this chat's own outstanding render job -- holds
+    // the controller's mMutex for its whole duration, and
+    // list_proposals serializes on that same mutex.  This poll runs
+    // synchronously on the GUI thread, so one tick during a render
+    // wedges the entire UI until the render finishes.  Skipping is
+    // lossless: StageProposal takes the same mutex, so the queue
+    // cannot change while we're gated -- the first allowed tick
+    // re-syncs.  m_sceneEditable already folds in BOTH the production
+    // render state and isChatRenderOutstanding.
+    if (!m_sceneEditable) return;
     if (!m_bridge) {
         m_resolvedProposalObservedAt.clear();
         rebuildProposalsUI({});
