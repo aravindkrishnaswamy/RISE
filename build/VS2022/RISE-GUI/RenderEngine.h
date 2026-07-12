@@ -133,6 +133,24 @@ signals:
     // of `m_hdrPixelBuffer`.
     void hdrImageUpdated(const QByteArray& halfFloats, int width, int height);
 
+public:
+    /// Synchronously cancel + join any in-flight background worker (load,
+    /// render, or animation), draining the worker's queued completion
+    /// events and reclaiming the per-render state a discarded completion
+    /// lambda would have cleaned up (see reclaimDiscardedRenderCompletion).
+    /// This is the shared prologue of loadScene()/clearScene(), exposed so
+    /// MainWindow's scene-transition paths can order it BEFORE tearing down
+    /// the viewport bridge: a coordinator-routed production render runs
+    /// through the bridge's SceneEditController, so the bridge must not be
+    /// destroyed until the render worker has been joined.  No-op when
+    /// nothing is in flight.  UI thread only.  CAVEAT: the one piece of
+    /// discarded-render state this does NOT recover is the
+    /// VFS-attachment flag (see reclaimDiscardedRenderCompletion's doc
+    /// for why it cannot be reset uniformly) -- every caller must
+    /// follow with loadScene()/clearScene(), whose Free-and-clear
+    /// blocks own that flag, before starting another render.
+    void cancelAndJoinInFlightWork();
+
 public slots:
     void loadScene(const QString& filePath);
     void startRender();
@@ -303,7 +321,7 @@ private:
     // Recovers the per-render state that a render's QUEUED completion
     // lambda would normally clean up, for the exit path where
     // waitForWorkerToFinish()'s removePostedEvents() discarded that
-    // lambda unrun ("Open Scene" / "Clear & Load" / Merge / engine
+    // lambda unrun ("Open Scene" / "Clear & Load" / engine
     // destruction while a render -- possibly paused -- was in flight).
     // Without this the ProgressCallbackAdapter leaked, the Job's
     // progress slot kept pointing at the orphan (a stale value the next

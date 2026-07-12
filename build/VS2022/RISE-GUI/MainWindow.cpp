@@ -1154,23 +1154,46 @@ void MainWindow::loadSceneFile(const QString& filePath)
         if (result == QMessageBox::Save) m_sceneEditor->save();
     }
 
-    // If a scene is already loaded, ask whether to clear or merge
+    // If a scene is already loaded, confirm the clear-and-load.
+    //
+    // The pre-CST "Merge" option is GONE (2026-07-12): every GUI load
+    // routes through the canonical CST path, whose load-once guard
+    // refuses a second load into a populated Job
+    // (Job::LoadAsciiSceneViaCst: "this Job already loaded a scene;
+    // re-load is not supported") -- the old Merge button could only ever
+    // end in the Error state.  It was also doubly broken at the bridge
+    // level even when the loader still allowed it: the merge-load
+    // mutated Job/manager state under the live interactive render
+    // thread, and the SceneLoaded bridge rebuild is gated on
+    // !m_viewportBridge, so the old bridge's SceneEditController/CST
+    // document never saw the merged chunks (and stayed permanently
+    // parked after a merge-while-rendering).  If scene merging is ever
+    // wanted, it is a CST-document-level feature, not a second parser
+    // pass over the live Job.
     if (m_engine->state() != RenderEngine::Idle) {
         QMessageBox msgBox(this);
         msgBox.setWindowTitle("Scene Already Loaded");
-        msgBox.setText("A scene is already loaded. How would you like to proceed?");
+        msgBox.setText("A scene is already loaded. Clear it and load the new scene?");
         auto* clearBtn = msgBox.addButton("Clear && Load", QMessageBox::AcceptRole);
-        auto* mergeBtn = msgBox.addButton("Merge", QMessageBox::ActionRole);
         msgBox.addButton(QMessageBox::Cancel);
         msgBox.exec();
 
-        if (msgBox.clickedButton() == clearBtn) {
-            m_engine->clearScene();
-        } else if (msgBox.clickedButton() == mergeBtn) {
-            // Don't clear — merge on top of existing scene
-        } else {
+        if (msgBox.clickedButton() != clearBtn) {
             return; // Cancel
         }
+        // Cancel + join any in-flight render BEFORE tearing down the
+        // viewport bridge: a coordinator-routed production render runs
+        // through the bridge's SceneEditController
+        // (RunProductionRenderThroughController), so destroying the
+        // bridge first would rip that controller out from under the
+        // render worker.  And the bridge must be torn down BEFORE
+        // clearScene()'s ClearAll destroys the Job/manager state its
+        // interactive render thread reads (mirrors macOS
+        // continueClearAndLoad, whose comment records the pre-fix
+        // crashes deep in IntegratePixel / DestroyContainers).
+        m_engine->cancelAndJoinInFlightWork();
+        teardownViewport();
+        m_engine->clearScene();
     }
 
     addToRecentFiles(filePath);
@@ -1207,6 +1230,13 @@ void MainWindow::onOpenScene()
 
 void MainWindow::onClear()
 {
+    // Close Scene is menu-gated off while Rendering/Cancelling, but make
+    // the join-before-teardown ordering structural rather than
+    // gate-dependent (see loadSceneFile's matching comment): the
+    // teardown below destroys the SceneEditController a coordinator-
+    // routed render would still be running through.  No-op when nothing
+    // is in flight.
+    m_engine->cancelAndJoinInFlightWork();
     teardownViewport();
     m_engine->clearScene();
     updateWindowTitle();
@@ -1458,6 +1488,13 @@ void MainWindow::onSceneSizeDetected(int width, int height)
 
 void MainWindow::onSaveAndReload(const QString& filePath)
 {
+    // Same join-then-teardown ordering as loadSceneFile / onClear (see
+    // loadSceneFile's comment): the bridge's interactive render thread
+    // must be stopped before clearScene()'s ClearAll destroys the
+    // manager state it reads, and any in-flight render must be joined
+    // before the bridge's controller is destroyed.
+    m_engine->cancelAndJoinInFlightWork();
+    teardownViewport();
     m_engine->clearScene();
     m_engine->loadScene(filePath);
 }
@@ -1532,7 +1569,7 @@ void MainWindow::rebuildViewportForLoadedScene()
 
     // CST <-> scene-file live sync + auto-save (item 1/2): a freshly-
     // attached bridge's current version becomes the sync baseline --
-    // the bytes that were just loaded/merged and the live CST agree at
+    // the bytes that were just loaded and the live CST agree at
     // this instant, so there is nothing to pull into the editor yet.
     // Only a LATER agent/GUI edit that bumps the revision should
     // overwrite the SceneEditor buffer.  Also resets the per-scene

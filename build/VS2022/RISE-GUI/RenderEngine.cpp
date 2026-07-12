@@ -195,7 +195,7 @@ public:
 // RunProductionRenderComposed itself still separately captures
 // job->GetProgress() at entry as the value it RESTORES to the Job's
 // progress slot on exit (typically nullptr here, matching this file's own
-// `SetProgress(nullptr)` at each render's completion) -- see that
+// ClearProgressIfCurrent detach at each render's completion) -- see that
 // method's header doc for why "restore" and "inner" are deliberately two
 // different values.
 static bool RunProductionRenderThroughController(
@@ -388,8 +388,9 @@ void RenderEngine::waitForWorkerToFinish()
     // completion lambda, that lambda's cleanup never runs -- recover
     // the RENDER-SIDE portion here (adapter delete + published-pointer
     // clear, Job progress-slot detach, timer stops, pause-bookkeeping
-    // reset) so every waitForWorkerToFinish caller (loadScene,
-    // clearScene, the dtor) gets it structurally.  NOT recovered here,
+    // reset) so every waitForWorkerToFinish caller (the dtor, plus
+    // loadScene/clearScene and MainWindow's scene transitions via
+    // cancelAndJoinInFlightWork) gets it structurally.  NOT recovered here,
     // deliberately: m_productionVFSAttachedToRasterizer -- see the
     // reclaim body for why it CANNOT be reset uniformly; a future
     // caller of this method that doesn't Free-and-clear the VFS
@@ -433,18 +434,24 @@ void RenderEngine::reclaimDiscardedRenderCompletion()
         // the render's worker is gone.
         m_elapsedTimer->stop();
         m_progressivePollTimer->stop();
-        // Detach the Job's raw progress slot BEFORE deleting the
-        // adapter.  In the no-controller case startRender installed
-        // `orphan` directly, so the slot still points at it; leaving it
-        // would hand the next coordinator-routed render a dangling
-        // "prior" to capture-and-restore (RunProductionRenderComposed
-        // reads GetProgress() at entry), and after the delete below it
-        // would be a use-after-free waiting for the next Rasterize().
-        // In the controller-routed case the slot was already restored
-        // (typically to nullptr) by RunProductionRenderComposed's RAII
-        // guard on the worker thread, so this is a harmless no-op.
+        // Detach the Job's progress slot BEFORE deleting the adapter.
+        // In the no-controller case startRender installed `orphan`
+        // directly, so the slot still points at it; leaving it would
+        // hand the next coordinator-routed render a dangling "prior" to
+        // capture-and-restore (RunProductionRenderComposed reads
+        // GetProgress() at entry), and after the delete below it would
+        // be a use-after-free waiting for the next Rasterize().
+        // Conditional (CAS) clear, not SetProgress(nullptr), for the
+        // same reason as the completion lambdas (see startRender's):
+        // an agent render claiming the coordinator right after our
+        // cancelled render released it may already have installed its
+        // own callback from the worker thread -- the CAS refuses
+        // instead of stomping it.  In the controller-routed case the
+        // slot never held `orphan` (RunProductionRenderComposed
+        // restored its prior on the worker thread), so the CAS is a
+        // clean refusal there too.
         if (m_job) {
-            m_job->SetProgress(nullptr);
+            m_job->ClearProgressIfCurrent(orphan);
         }
         // Clear the published pointer before the delete so a
         // setProductionRenderPaused/isProductionRenderPaused call can't
@@ -561,27 +568,33 @@ void RenderEngine::setupMediaPaths(const QString& sceneFilePath)
     }
 }
 
-void RenderEngine::loadScene(const QString& filePath)
+void RenderEngine::cancelAndJoinInFlightWork()
 {
-    if (!m_job) return;
-
     // L4 round-4 P1-A + round-5 P1-B — wait for any in-flight worker
-    // (load OR render) to finish before swapping scenes.  Otherwise
-    // the previous worker's m_job deref or post-completion lambda +
-    // VFS tile callbacks could race the new scene's rasterizer
-    // construction.
+    // (load OR render) to finish before the caller proceeds to swap or
+    // wipe scene state.  Otherwise the previous worker's m_job deref or
+    // post-completion lambda + VFS tile callbacks could race whatever
+    // the caller does next (rasterizer construction, ClearAll, viewport
+    // bridge teardown).
     m_cancelFlag = true;
     // waitForWorkerToFinish()'s removePostedEvents() discards any QUEUED
-    // completion lambda from an in-flight render this load just
-    // cancelled ("Open Scene" / Merge while a render, possibly paused,
+    // completion lambda from an in-flight render this call just
+    // cancelled ("Open Scene" while a render, possibly paused,
     // was still going); its trailing reclaimDiscardedRenderCompletion()
     // recovers the render-side cleanup that lambda would have done
     // (adapter delete, Job progress-slot detach, timer stops,
     // pause-bookkeeping reset) -- see that method's doc.  The one piece
     // it deliberately does NOT recover, the VFS-attachment flag, is
-    // handled by the Free-and-clear block just below.
+    // handled by loadScene/clearScene's Free-and-clear blocks.
     waitForWorkerToFinish();
     m_cancelFlag = false;
+}
+
+void RenderEngine::loadScene(const QString& filePath)
+{
+    if (!m_job) return;
+
+    cancelAndJoinInFlightWork();
 
     setState(Loading);
     m_loadedFilePath = filePath;
@@ -707,7 +720,17 @@ void RenderEngine::startRender()
             // the last 30 Hz tick and the OnFrameComplete fire.
             guard->m_progressivePollTimer->stop();
             guard->pollProductionVFS();
-            guard->m_job->SetProgress(nullptr);
+            // Conditional (CAS) clear, NOT SetProgress(nullptr): an agent
+            // render queued behind this one on the coordinator may have
+            // just installed ITS callback from the coordinator worker
+            // thread; an unconditional null here would stomp it (silently
+            // degrading that render's progress/cancel wiring).  The CAS
+            // clears only if the slot still holds OUR adapter -- true in
+            // the no-controller case (startRender installed it directly),
+            // a clean refusal otherwise (controller-routed renders never
+            // put progressCb in the slot; RunProductionRenderComposed
+            // already restored its prior on the worker thread).
+            guard->m_job->ClearProgressIfCurrent(progressCb);
             // Item 4: the adapter this pointer refers to is about to be
             // deleted -- clear it FIRST so a setProductionRenderPaused/
             // isProductionRenderPaused call landing right now (still on
@@ -856,7 +879,9 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
             // the last 30 Hz tick and the OnFrameComplete fire.
             guard->m_progressivePollTimer->stop();
             guard->pollProductionVFS();
-            guard->m_job->SetProgress(nullptr);
+            // CAS clear -- see startRender's completion lambda for why
+            // this must not be an unconditional SetProgress(nullptr).
+            guard->m_job->ClearProgressIfCurrent(progressCb);
             // Item 4: see startRender's completion lambda for why this
             // clear happens BEFORE the delete.
             guard->m_activeProgressCallback = nullptr;
@@ -952,16 +977,10 @@ void RenderEngine::setSceneTime(double t)
 
 void RenderEngine::clearScene()
 {
-    // L4 round-4 P1-A + round-5 P1-B — wait for any in-flight
-    // worker (load OR render) before wiping scene state.
-    m_cancelFlag = true;
-    // "Clear & Load" / "Close Scene" while a render (possibly paused)
-    // was in flight discards that render's queued completion lambda via
-    // waitForWorkerToFinish()'s removePostedEvents(); its trailing
-    // reclaimDiscardedRenderCompletion() recovers that lambda's cleanup
-    // -- see loadScene()'s matching comment.
-    waitForWorkerToFinish();
-    m_cancelFlag = false;
+    // Cancel + join any in-flight worker (load OR render) before wiping
+    // scene state -- see cancelAndJoinInFlightWork's doc for the
+    // discarded-completion reclaim this also performs.
+    cancelAndJoinInFlightWork();
 
     if (m_job) {
         // ClearAll wipes the rasterizer; we drop the rasterizer's

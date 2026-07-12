@@ -449,7 +449,7 @@ final class RenderViewModel: ObservableObject {
     /// ~2 Hz poll of the interactive controller's refinement/undo state
     /// while a viewport bridge is attached.  Started/stopped from
     /// `viewportBridge`'s didSet so every one of the four assignment
-    /// sites (`loadScene`, `continueMergeLoad`, `continueClearAndLoad`,
+    /// sites (`loadScene`, `continueClearAndLoad`,
     /// `finishSaveAndReload`, `clearScene`) tracks bridge lifetime
     /// automatically — mirrors the `hostWindow` didSet pattern above.
     private var refinementPollTimer: Timer? = nil
@@ -510,7 +510,7 @@ final class RenderViewModel: ObservableObject {
             }
             // CST <-> scene-file live sync (item 1): a freshly-attached
             // bridge's current version becomes the sync baseline — the
-            // bytes that were just loaded/merged and the live CST agree
+            // bytes that were just loaded and the live CST agree
             // at this instant, so there is nothing to pull into the
             // editor yet.  Only a LATER agent/GUI edit that bumps the
             // revision should overwrite `editorText`.  Also resets the
@@ -766,87 +766,57 @@ final class RenderViewModel: ObservableObject {
             }
         }
 
-        // If a scene is already loaded, warn about merge behavior
+        // If a scene is already loaded, confirm the clear-and-load.
+        //
+        // The pre-CST "Merge" option is GONE (2026-07-12, in lockstep with
+        // the Windows client): every GUI load routes through the canonical
+        // CST path, whose load-once guard refuses a second load into a
+        // populated Job (Job::LoadAsciiSceneViaCst: "this Job already
+        // loaded a scene; re-load is not supported") -- the old Merge
+        // button could only ever end in the load-failure alert.  If scene
+        // merging is ever wanted, it is a CST-document-level feature, not
+        // a second parser pass over the live Job.
         if loadedFilePath != nil {
             let alert = NSAlert()
             alert.messageText = "A scene is already loaded"
-            alert.informativeText = "Loading a new scene file will merge it with the current scene. Would you like to clear the current scene first, or merge the new scene into it?"
+            alert.informativeText = "Clear the current scene and load the new one?"
             alert.alertStyle = .warning
             alert.addButton(withTitle: "Clear & Load")
-            alert.addButton(withTitle: "Merge")
             alert.addButton(withTitle: "Cancel")
 
             let response = alert.runModal()
-            switch response {
-            case .alertFirstButtonReturn:
-                // Clear & Load.  We must:
-                //   1. Cancel any in-flight production render and await
-                //      its task — workers spawned by the rasterizer hold
-                //      pointers into Scene state that bridge.clearAll
-                //      is about to destroy.
-                //   2. Stop and shutdown the interactive viewport bridge
-                //      — its render thread also reads Scene state.
-                //   3. THEN call clearAll, which is now safe to destroy
-                //      managers because no thread can still be reading
-                //      them.
-                // saveAndReloadScene already implements this dance via
-                // finishSaveAndReload; we mirror it here.  Pre-fix, the
-                // production-render Tasks parked in workerLoop after
-                // rasterize() returned would still be reachable through
-                // the controller's interactive render thread (and
-                // through the production rasterizer's persisted thread
-                // pool), and clearAll would race them, manifesting as a
-                // crash deep in IntegratePixel / DestroyContainers.
-                if renderState == .rendering || renderState == .cancelling {
-                    cancelFlag.value = true
-                    renderState = .cancelling
-                    let task = renderTask
-                    Task { @MainActor [weak self] in
-                        await task?.value
-                        self?.continueClearAndLoad(at: path)
-                    }
-                    return
+            guard response == .alertFirstButtonReturn else { return }
+            // Clear & Load.  We must:
+            //   1. Cancel any in-flight production render and await
+            //      its task — workers spawned by the rasterizer hold
+            //      pointers into Scene state that bridge.clearAll
+            //      is about to destroy.
+            //   2. Stop and shutdown the interactive viewport bridge
+            //      — its render thread also reads Scene state.
+            //   3. THEN call clearAll, which is now safe to destroy
+            //      managers because no thread can still be reading
+            //      them.
+            // saveAndReloadScene already implements this dance via
+            // finishSaveAndReload; we mirror it here.  Pre-fix, the
+            // production-render Tasks parked in workerLoop after
+            // rasterize() returned would still be reachable through
+            // the controller's interactive render thread (and
+            // through the production rasterizer's persisted thread
+            // pool), and clearAll would race them, manifesting as a
+            // crash deep in IntegratePixel / DestroyContainers.
+            if renderState == .rendering || renderState == .cancelling {
+                cancelFlag.value = true
+                renderState = .cancelling
+                let task = renderTask
+                Task { @MainActor [weak self] in
+                    await task?.value
+                    self?.continueClearAndLoad(at: path)
                 }
-                continueClearAndLoad(at: path)
-                return
-            case .alertSecondButtonReturn:
-                // Merge — the parser will add chunks to the existing
-                // job.  This mutates manager state that the viewport's
-                // interactive render thread (and any in-flight
-                // production render) reads concurrently.  Same teardown
-                // dance as Clear & Load, minus the clearAll: stop the
-                // workers first so the merge can mutate state without a
-                // race.
-                if renderState == .rendering || renderState == .cancelling {
-                    cancelFlag.value = true
-                    renderState = .cancelling
-                    let task = renderTask
-                    Task { @MainActor [weak self] in
-                        await task?.value
-                        self?.continueMergeLoad(at: path)
-                    }
-                    return
-                }
-                continueMergeLoad(at: path)
-                return
-            default:
                 return
             }
+            continueClearAndLoad(at: path)
+            return
         }
-
-        loadScene(at: path)
-    }
-
-    /// Merge-load: stop the viewport bridge so the parser's chunk
-    /// additions don't race with the interactive render thread, then
-    /// load the new file (which appends into the existing job).  The
-    /// fresh viewport bridge is recreated inside loadScene's success
-    /// path.
-    private func continueMergeLoad(at path: String) {
-        stopPreviewPlay()   // halt a looping preview-play before the bridge it drives is torn down
-        chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
-        viewportBridge?.shutdown()
-        viewportBridge = nil
 
         loadScene(at: path)
     }
@@ -1198,7 +1168,7 @@ final class RenderViewModel: ObservableObject {
                 }
                 self.renderStartTime = nil
                 // Review P2: clear pause bookkeeping on EVERY exit path
-                // (normal completion, cancel, Clear & Load, Merge,
+                // (normal completion, cancel, Clear & Load,
                 // save-and-reload) — not just cancelRender + next start.
                 // The readers re-derive off renderState first today, but
                 // that's a duplicated invariant, not a guarantee.
@@ -1381,7 +1351,7 @@ final class RenderViewModel: ObservableObject {
                 }
                 self.renderStartTime = nil
                 // Review P2: clear pause bookkeeping on EVERY exit path
-                // (normal completion, cancel, Clear & Load, Merge,
+                // (normal completion, cancel, Clear & Load,
                 // save-and-reload) — not just cancelRender + next start.
                 // The readers re-derive off renderState first today, but
                 // that's a duplicated invariant, not a guarantee.
