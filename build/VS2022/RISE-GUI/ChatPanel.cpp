@@ -165,6 +165,8 @@ ChatPanel::ChatPanel(QWidget* parent)
     m_providerCombo->addItem("OpenAI");
     m_providerCombo->addItem("Anthropic");
     m_providerCombo->addItem("Gemini");
+    m_providerCombo->addItem("Grok (xAI)");
+    m_providerCombo->addItem("Local (Ollama)");
     m_modelEdit = new QLineEdit(defaultModelFor(Provider::OpenAI));
     m_modelEdit->setPlaceholderText("model");
     providerRow->addWidget(m_providerCombo);
@@ -340,7 +342,7 @@ void ChatPanel::sendMessage()
     if (m_busy || !m_bridge || !m_sceneEditable) return;
     const QString text = m_inputEdit->text().trimmed();
     if (text.isEmpty()) return;
-    if (m_apiKeyEdit->text().trimmed().isEmpty()) {
+    if (providerRequiresApiKey(m_appliedProvider) && m_apiKeyEdit->text().trimmed().isEmpty()) {
         refreshTranscript("Enter an API key before sending.");
         return;
     }
@@ -447,9 +449,37 @@ QString ChatPanel::defaultModelFor(Provider provider) const
     case Provider::Gemini:
         return QString::fromUtf8(GeminiChatCodec().DefaultModelId());
     case Provider::OpenAI:
-    default:
         return QString::fromUtf8(OpenAIChatCodec().DefaultModelId());
+    case Provider::XAI: {
+        // xAI rides the parameterized OpenAIChatCodec (no standalone
+        // XAIChatCodec type -- see AgentChatLoop.cpp's MakeCodec, which
+        // this mirrors for display purposes since there is no bridge
+        // accessor onto the loop's already-constructed codec config).
+        OpenAIChatCodec::Config cfg;
+        cfg.providerName   = "xai";
+        cfg.baseUrl        = "https://api.x.ai/v1/chat/completions";
+        cfg.defaultModelId = "grok-4.5";
+        cfg.requiresAuth   = true;
+        return QString::fromUtf8(OpenAIChatCodec(cfg).DefaultModelId());
     }
+    case Provider::Local: {
+        OpenAIChatCodec::Config cfg;
+        cfg.providerName   = "local";
+        cfg.baseUrl        = "http://127.0.0.1:11434/v1/chat/completions";
+        cfg.defaultModelId = "qwen3:32b";
+        cfg.requiresAuth   = false;
+        return QString::fromUtf8(OpenAIChatCodec(cfg).DefaultModelId());
+    }
+    }
+    // Every enum case is handled explicitly above -- reaching here means a
+    // new Provider value was added without a matching case (the switch is
+    // NOT exhaustive-checked by MSVC without a default, unlike Swift's
+    // enum, so this is the loud backstop).  Log and fall back to OpenAI
+    // rather than silently mis-defaulting.
+    qWarning("ChatPanel::defaultModelFor: unhandled Provider %d -- falling back to OpenAI",
+              static_cast<int>(provider));
+    Q_ASSERT(false && "ChatPanel::defaultModelFor: unhandled Provider");
+    return QString::fromUtf8(OpenAIChatCodec().DefaultModelId());
 }
 
 QString ChatPanel::envKeyFor(Provider provider) const
@@ -462,9 +492,31 @@ QString ChatPanel::envKeyFor(Provider provider) const
         return gemini.isEmpty() ? qEnvironmentVariable("GOOGLE_API_KEY") : gemini;
     }
     case Provider::OpenAI:
-    default:
         return qEnvironmentVariable("OPENAI_API_KEY");
+    case Provider::XAI:
+        return qEnvironmentVariable("XAI_API_KEY");
+    case Provider::Local:
+        // Keyless by design (OpenAIChatCodec::Config::requiresAuth=false
+        // for this provider) -- no env var to consult.  An empty return
+        // here is the correct/expected value, not a miss.
+        return QString();
     }
+    qWarning("ChatPanel::envKeyFor: unhandled Provider %d -- falling back to OpenAI",
+              static_cast<int>(provider));
+    Q_ASSERT(false && "ChatPanel::envKeyFor: unhandled Provider");
+    return qEnvironmentVariable("OPENAI_API_KEY");
+}
+
+bool ChatPanel::providerRequiresApiKey(Provider provider)
+{
+    return provider != Provider::Local;
+}
+
+QString ChatPanel::localResolvedEndpoint()
+{
+    const QString envUrl = qEnvironmentVariable("RISE_LOCAL_LLM_BASE_URL");
+    return envUrl.isEmpty() ? QStringLiteral("http://127.0.0.1:11434/v1/chat/completions")
+                             : envUrl;
 }
 
 void ChatPanel::applyProviderToLoop(bool resetModelToDefault)
@@ -492,11 +544,35 @@ void ChatPanel::applyProviderToLoop(bool resetModelToDefault)
     }
     m_apiKeyEdit->setText(newKey);
 
+    // No-key affordance for Provider::Local (keyless-by-design): there is
+    // no per-provider settings popover on this platform to swap in
+    // dedicated endpoint UI, so reuse the existing key field's placeholder
+    // to show where the chat is pointing plus a hint that a server has to
+    // actually be running -- the field itself stays enabled (a local
+    // server started with --api-key still accepts an optional key here).
+    m_apiKeyEdit->setPlaceholderText(
+        providerRequiresApiKey(newProvider)
+            ? QStringLiteral("API key")
+            : QStringLiteral("No key needed -- ") + localResolvedEndpoint() +
+                  QStringLiteral(" (requires a running local server, e.g. "
+                                 "`ollama serve`; override with RISE_LOCAL_LLM_BASE_URL)"));
+
     ChatProvider chatProvider = ChatProvider::OpenAI;
     if (newProvider == Provider::Anthropic) {
         chatProvider = ChatProvider::Anthropic;
     } else if (newProvider == Provider::Gemini) {
         chatProvider = ChatProvider::Gemini;
+    } else if (newProvider == Provider::XAI) {
+        chatProvider = ChatProvider::XAI;
+    } else if (newProvider == Provider::Local) {
+        chatProvider = ChatProvider::Local;
+    } else if (newProvider != Provider::OpenAI) {
+        // Same loud backstop as defaultModelFor/envKeyFor: a new Provider
+        // value reached here without a matching branch.  Falls back to
+        // the OpenAI default above rather than silently mis-routing.
+        qWarning("ChatPanel::applyProviderToLoop: unhandled Provider %d -- falling back to OpenAI",
+                  static_cast<int>(newProvider));
+        Q_ASSERT(false && "ChatPanel::applyProviderToLoop: unhandled Provider");
     }
     m_loop->SetProvider(chatProvider, toStdString(m_modelEdit->text().trimmed()));
     // Eval-harness E1: SetProvider closed the old session ("provider_switch"

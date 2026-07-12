@@ -50,6 +50,8 @@ typedef NS_ENUM(NSInteger, RISEAgentChatProvider) {
     RISEAgentChatProviderAnthropic = 0,
     RISEAgentChatProviderGemini    = 1,
     RISEAgentChatProviderOpenAI    = 2,
+    RISEAgentChatProviderXAI       = 3,
+    RISEAgentChatProviderLocal     = 4,
 };
 
 /// Mirrors RISE::Agent::ChatStepResult::Kind.

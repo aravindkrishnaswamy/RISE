@@ -236,6 +236,10 @@ static NSString *ToNS(const std::string& s) {
         p = Agent::ChatProvider::Gemini;
     } else if (provider == RISEAgentChatProviderOpenAI) {
         p = Agent::ChatProvider::OpenAI;
+    } else if (provider == RISEAgentChatProviderXAI) {
+        p = Agent::ChatProvider::XAI;
+    } else if (provider == RISEAgentChatProviderLocal) {
+        p = Agent::ChatProvider::Local;
     }
     _loop->SetProvider(p, ToStd(modelId));
 }
@@ -246,6 +250,12 @@ static NSString *ToNS(const std::string& s) {
     }
     if (_loop->Provider() == Agent::ChatProvider::OpenAI) {
         return RISEAgentChatProviderOpenAI;
+    }
+    if (_loop->Provider() == Agent::ChatProvider::XAI) {
+        return RISEAgentChatProviderXAI;
+    }
+    if (_loop->Provider() == Agent::ChatProvider::Local) {
+        return RISEAgentChatProviderLocal;
     }
     return RISEAgentChatProviderAnthropic;
 }
@@ -260,6 +270,26 @@ static NSString *ToNS(const std::string& s) {
     }
     if (provider == RISEAgentChatProviderOpenAI) {
         return ToNS(Agent::OpenAIChatCodec().DefaultModelId());
+    }
+    if (provider == RISEAgentChatProviderXAI) {
+        // The XAI codec is a parameterized OpenAIChatCodec instance
+        // (see AgentChatLoop.cpp's MakeCodec) -- there is no standalone
+        // XAIChatCodec type, so mirror MakeCodec's Config here rather
+        // than constructing a loop just to read its default model id.
+        Agent::OpenAIChatCodec::Config cfg;
+        cfg.providerName   = "xai";
+        cfg.baseUrl        = "https://api.x.ai/v1/chat/completions";
+        cfg.defaultModelId = "grok-4.5";
+        cfg.requiresAuth   = true;
+        return ToNS(Agent::OpenAIChatCodec(cfg).DefaultModelId());
+    }
+    if (provider == RISEAgentChatProviderLocal) {
+        Agent::OpenAIChatCodec::Config cfg;
+        cfg.providerName   = "local";
+        cfg.baseUrl        = "http://127.0.0.1:11434/v1/chat/completions";
+        cfg.defaultModelId = "qwen3:32b";
+        cfg.requiresAuth   = false;
+        return ToNS(Agent::OpenAIChatCodec(cfg).DefaultModelId());
     }
     return ToNS(Agent::AnthropicChatCodec().DefaultModelId());
 }

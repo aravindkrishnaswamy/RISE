@@ -108,6 +108,8 @@ enum AgentChatProviderChoice: String, CaseIterable, Identifiable {
     case anthropic
     case gemini
     case openai
+    case xai
+    case local
 
     var id: String { rawValue }
 
@@ -116,6 +118,8 @@ enum AgentChatProviderChoice: String, CaseIterable, Identifiable {
         case .anthropic: return "Anthropic"
         case .gemini:    return "Gemini"
         case .openai:    return "ChatGPT"
+        case .xai:       return "Grok (xAI)"
+        case .local:     return "Local (Ollama)"
         }
     }
 
@@ -124,6 +128,8 @@ enum AgentChatProviderChoice: String, CaseIterable, Identifiable {
         case .anthropic: return .anthropic
         case .gemini:    return .gemini
         case .openai:    return .openAI
+        case .xai:       return .XAI
+        case .local:     return .local
         }
     }
 
@@ -135,22 +141,53 @@ enum AgentChatProviderChoice: String, CaseIterable, Identifiable {
     /// gets two names because both are in conventional use by Gemini
     /// tooling (GEMINI_API_KEY is Google's own AI SDK convention;
     /// GOOGLE_API_KEY is the older/more widely-scripted one) — first
-    /// match wins.
+    /// match wins.  `local` is KEYLESS BY DESIGN (see MakeCodec in
+    /// AgentChatLoop.cpp — requiresAuth=false): empty list, never
+    /// prompted for, never resolved from the environment.
     var apiKeyEnvVars: [String] {
         switch self {
         case .anthropic: return ["ANTHROPIC_API_KEY"]
         case .gemini:    return ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
         case .openai:    return ["OPENAI_API_KEY"]
+        case .xai:       return ["XAI_API_KEY"]
+        case .local:     return []
         }
     }
 
     /// Back-compat single-name accessor — used where only "the" env
     /// var name is needed (e.g. the no-key error hint's launch
-    /// suggestion).  Always the first-checked name.
+    /// suggestion).  Always the first-checked name.  Never called for
+    /// `.local` (guarded by `requiresApiKey` at every call site).
     var apiKeyEnvVar: String { apiKeyEnvVars[0] }
+
+    /// False only for `.local` — a local/Ollama-style server is
+    /// keyless by design (an empty key omits the Authorization header
+    /// entirely; see OpenAIChatCodec::Config::requiresAuth).  The
+    /// settings UI shows the resolved endpoint instead of a key
+    /// prompt, and `driveTurn()` skips the no-key error for this case.
+    var requiresApiKey: Bool {
+        self != .local
+    }
 
     var defaultModelId: String {
         RISEAgentChatBridge.defaultModelId(for: bridgeValue)
+    }
+
+    /// `.local` only: the endpoint the settings UI shows in place of a
+    /// key prompt.  Mirrors MakeCodec's RISE_LOCAL_LLM_BASE_URL
+    /// override / Ollama-default fallback (src/Library/Agent/
+    /// AgentChatLoop.cpp) for DISPLAY purposes only — the GUI reads no
+    /// library API for this (a base URL is config, not a credential,
+    /// but there's no bridge accessor exposing the codec's resolved
+    /// config, so the literal default is mirrored here).  Changing the
+    /// env var takes effect on the next provider (re-)selection, same
+    /// as the library side.
+    static var localResolvedEndpoint: String {
+        if let env = ProcessInfo.processInfo.environment["RISE_LOCAL_LLM_BASE_URL"],
+           !env.isEmpty {
+            return env
+        }
+        return "http://127.0.0.1:11434/v1/chat/completions"
     }
 }
 
@@ -1493,7 +1530,16 @@ final class ChatViewModel: ObservableObject {
             guard viewportBridge != nil else { return }
             guard sceneEditableOrReportRenderConflict() else { return }
 
-            guard let apiKey = resolveApiKey() else {
+            let apiKey: String
+            if let resolved = resolveApiKey() {
+                apiKey = resolved
+            } else if !provider.requiresApiKey {
+                // Keyless-by-design (.local): an empty key omits the
+                // Authorization header entirely (OpenAIChatCodec::
+                // Config::requiresAuth=false) — this is the expected
+                // steady state, not an error.
+                apiKey = ""
+            } else {
                 transcript.append(Entry(
                     kind: .error,
                     text: "No API key for \(provider.displayName).  Add one in "

@@ -90,12 +90,25 @@ private:
     enum class Provider {
         OpenAI = 0,
         Anthropic = 1,
-        Gemini = 2
+        Gemini = 2,
+        XAI = 3,
+        Local = 4
     };
 
     Provider currentProvider() const;
     QString defaultModelFor(Provider provider) const;
     QString envKeyFor(Provider provider) const;
+    // False only for Provider::Local (keyless-by-design local/Ollama-style
+    // server -- OpenAIChatCodec::Config::requiresAuth=false).  Gates the
+    // "Enter an API key before sending" prompt in sendMessage() and the
+    // key-field placeholder in applyProviderToLoop().
+    static bool providerRequiresApiKey(Provider provider);
+    // Provider::Local only: the endpoint shown in the key field's
+    // placeholder in place of a key prompt.  Mirrors MakeCodec's
+    // RISE_LOCAL_LLM_BASE_URL override / Ollama-default fallback
+    // (src/Library/Agent/AgentChatLoop.cpp) for DISPLAY purposes only --
+    // there is no bridge accessor onto the loop's resolved codec config.
+    static QString localResolvedEndpoint();
     void applyProviderToLoop(bool resetModelToDefault);
     // P1-3: shared no-op / confirm-then-apply gate for providerChanged and
     // modelEditingFinished (both used to call applyProviderToLoop
