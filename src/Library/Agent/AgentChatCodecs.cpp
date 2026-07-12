@@ -1857,9 +1857,24 @@ namespace RISE
 		// (5) OpenAIChatCodec
 		//======================================================================
 
-		const char* OpenAIChatCodec::ProviderName() const { return "openai"; }
+		OpenAIChatCodec::OpenAIChatCodec()
+		{
+			// The default OpenAI provider -- byte-identical wire behaviour to
+			// the pre-parameterization codec (the AgentChatLoopTest URL/header
+			// assertions pin this).
+			mConfig.providerName   = "openai";
+			mConfig.baseUrl        = "https://api.openai.com/v1/chat/completions";
+			mConfig.defaultModelId = "gpt-5.5";
+			mConfig.requiresAuth   = true;
+		}
 
-		const char* OpenAIChatCodec::DefaultModelId() const { return "gpt-5.5"; }
+		OpenAIChatCodec::OpenAIChatCodec( const Config& config ) : mConfig( config )
+		{
+		}
+
+		const char* OpenAIChatCodec::ProviderName() const { return mConfig.providerName.c_str(); }
+
+		const char* OpenAIChatCodec::DefaultModelId() const { return mConfig.defaultModelId.c_str(); }
 
 		std::string OpenAIChatCodec::MakeUserEntry(
 			const std::string& text, const std::vector<ChatAttachment>& attachments ) const
@@ -2058,10 +2073,19 @@ namespace RISE
 			const std::vector<std::string>& rawEntries ) const
 		{
 			ChatHttpRequest r;
-			r.url = "https://api.openai.com/v1/chat/completions";
+			r.url = mConfig.baseUrl;
 			r.headers.push_back( std::make_pair( "content-type", "application/json" ) );
-			r.headers.push_back( std::make_pair( "authorization",
-				"Bearer " + SanitizeHeaderValue( apiKey ) ) );
+			// Emit the Bearer header when the provider requires auth (OpenAI,
+			// xAI) OR when a key was supplied anyway (a local server started
+			// with --api-key).  A KEYLESS local provider (requiresAuth=false,
+			// empty key) emits NO Authorization header at all -- Ollama and
+			// friends expect none, and an empty "Bearer " is worse than
+			// absent.  This is the key-hygiene inverse of the OpenAI path:
+			// no key in, no auth header out.
+			if( mConfig.requiresAuth || !apiKey.empty() ) {
+				r.headers.push_back( std::make_pair( "authorization",
+					"Bearer " + SanitizeHeaderValue( apiKey ) ) );
+			}
 
 			std::string body = "{\"model\":";
 			JsonAppendEscapedString( body, modelId );

@@ -402,9 +402,44 @@ namespace RISE
 		//! labels this provider "ChatGPT"; the wire endpoint is OpenAI's
 		//! chat/completions API because its messages/tool_calls transcript
 		//! shape matches this loop's provider-native raw-entry model.
+		//!
+		//! PARAMETERIZED (2026-07): the SAME wire codec drives every
+		//! OpenAI-Chat-Completions-compatible provider -- OpenAI itself,
+		//! xAI (Grok), and a local/Ollama-style server -- because the
+		//! request/response shape (messages, tools, tool_calls,
+		//! finish_reason, usage) is identical across them; only the
+		//! endpoint URL, provider label, default model id, and whether an
+		//! Authorization header is emitted differ.  Those four knobs are
+		//! captured in `Config`; the default constructor reproduces the
+		//! OpenAI wire behaviour byte-for-byte.  Do NOT copy-paste this
+		//! codec for a new compatible provider -- add a Config instead.
 		class OpenAIChatCodec : public IChatProviderCodec
 		{
 		public:
+			//! Wire config distinguishing one OpenAI-compatible provider
+			//! from another.  `requiresAuth` true -> ALWAYS emit the
+			//! `Authorization: Bearer <key>` header (OpenAI, xAI).  false
+			//! -> emit it ONLY when the api key is non-empty (a local
+			//! server: no key -> no header at all, matching Ollama, which
+			//! rejects nothing but also expects none; an explicit
+			//! --api-key local server still gets a Bearer header).
+			struct Config
+			{
+				std::string providerName;    //!< "openai" / "xai" / "local" -- the ProviderName() label
+				std::string baseUrl;         //!< full chat/completions endpoint URL
+				std::string defaultModelId;  //!< model id when the caller leaves it empty
+				bool        requiresAuth;    //!< see the struct doc above
+			};
+
+			//! Default: the OpenAI provider (byte-identical wire behaviour
+			//! to the pre-parameterization codec).
+			OpenAIChatCodec();
+
+			//! Parameterized: any OpenAI-compatible provider.  The caller
+			//! (MakeCodec) resolves any env-derived base URL BEFORE
+			//! constructing, so the codec itself reads no environment.
+			explicit OpenAIChatCodec( const Config& config );
+
 			virtual const char* ProviderName() const;
 			virtual const char* DefaultModelId() const;
 			virtual std::string MakeUserEntry(
@@ -423,6 +458,9 @@ namespace RISE
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
 			virtual ChatUsage ParseUsage( const std::string& rawBody ) const;
+
+		private:
+			Config mConfig;
 		};
 
 		//! True iff packing (call, raw JSON-RPC envelope line) would carry

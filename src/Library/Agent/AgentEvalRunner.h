@@ -366,16 +366,16 @@ namespace RISE
 		//! One provider entry of a run config's `providers[]`.
 		struct AgentEvalProviderConfig
 		{
-			std::string provider;   //!< "anthropic" / "gemini" / "openai" (validated)
+			std::string provider;   //!< "anthropic" / "gemini" / "openai" / "xai" / "local" (validated)
 			std::string model;      //!< model id ("" => the codec's default)
-			std::string keyEnvVar;  //!< the ENV VAR NAME to read the api key from (e.g. "ANTHROPIC_API_KEY") -- NEVER the key itself
+			std::string keyEnvVar;  //!< the ENV VAR NAME to read the api key from (e.g. "ANTHROPIC_API_KEY") -- NEVER the key itself; EMPTY only for a keyless "local" provider
 		};
 
 		//! A parsed run config (the `rise --agent-eval <runconfig.json>`
 		//! input).  Schema:
 		//!   {
 		//!     "scenarios": [ path-or-glob, ... ],   // >= 1; globs expanded by the CLI
-		//!     "providers": [ {"provider","model"?,"keyEnvVar"}, ... ],  // >= 1
+		//!     "providers": [ {"provider","model"?,"keyEnvVar"?}, ... ],  // >= 1; keyEnvVar required except for provider "local"
 		//!     "repeats":   N,                        // optional, default 3, >= 1
 		//!     "runDir":    "evals/runs/<stamp>"      // required, non-empty
 		//!   }
@@ -393,8 +393,10 @@ namespace RISE
 		//! success; false + a loud human-readable `err` on any malformed
 		//! shape (unreadable/non-object root, missing/empty scenarios, a
 		//! non-string scenario entry, missing/empty providers, a provider
-		//! entry missing a valid "provider"/"keyEnvVar" or naming an unknown
-		//! provider, a non-positive/non-number "repeats", or a
+		//! entry missing a valid "provider", a non-"local" provider missing
+		//! "keyEnvVar" (required for all but "local"), a present-but-empty
+		//! "keyEnvVar", naming an unknown provider, a non-positive/non-number
+		//! "repeats", or a
 		//! missing/empty "runDir").  Reads NO environment variable and NO
 		//! api key -- only the config's declared shape.
 		bool LoadEvalRunConfig( const std::string& path, AgentEvalRunConfig& out, std::string& err );

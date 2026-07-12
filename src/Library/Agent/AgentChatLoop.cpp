@@ -13,6 +13,8 @@
 
 #include "Json.h"
 
+#include <cstdlib>   // getenv -- ONLY for RISE_LOCAL_LLM_BASE_URL (config, not a credential; see MakeCodec)
+
 namespace RISE
 {
 	namespace Agent
@@ -109,6 +111,48 @@ namespace RISE
 					return std::unique_ptr<IChatProviderCodec>( new GeminiChatCodec() );
 				if( provider == ChatProvider::OpenAI )
 					return std::unique_ptr<IChatProviderCodec>( new OpenAIChatCodec() );
+				if( provider == ChatProvider::XAI ) {
+					// xAI (Grok): OpenAI-Chat-Completions-compatible endpoint,
+					// same Bearer auth (env convention XAI_API_KEY).  Default
+					// model id is the literal "grok-4.5"; xAI's usage block
+					// carries the OpenAI fields plus extras (e.g.
+					// cost_in_usd_ticks) that ParseUsage harmlessly ignores.
+					OpenAIChatCodec::Config cfg;
+					cfg.providerName   = "xai";
+					cfg.baseUrl        = "https://api.x.ai/v1/chat/completions";
+					cfg.defaultModelId = "grok-4.5";
+					cfg.requiresAuth   = true;
+					return std::unique_ptr<IChatProviderCodec>( new OpenAIChatCodec( cfg ) );
+				}
+				if( provider == ChatProvider::Local ) {
+					// A local OpenAI-compatible server (Ollama et al.).  The
+					// base URL is read ONCE here, at codec construction, from
+					// RISE_LOCAL_LLM_BASE_URL (falling back to Ollama's default
+					// loopback endpoint).  CREDENTIAL INVARIANT NOTE: the
+					// Library layer deliberately reads NO api key from the
+					// environment (keys arrive as parameters) -- but a BASE URL
+					// is CONFIG, not a secret, so this one getenv is acceptable.
+					// It is deliberately NOT in AgentEvalRunner (which stays
+					// wholly env-read-free).  Changing the env var takes effect
+					// only on the NEXT provider selection (MakeCodec re-runs on
+					// SetProvider), not mid-conversation.  The IP LITERAL
+					// 127.0.0.1 (not "localhost") is intentional: macOS ATS
+					// exempts IP literals from its cleartext-HTTP block.
+					OpenAIChatCodec::Config cfg;
+					const char* envUrl = std::getenv( "RISE_LOCAL_LLM_BASE_URL" );
+					cfg.providerName   = "local";
+					cfg.baseUrl        = ( envUrl && envUrl[0] != '\0' )
+						? std::string( envUrl )
+						: std::string( "http://127.0.0.1:11434/v1/chat/completions" );
+					// Default model "qwen3:32b" (a newer alternative tag is
+					// "qwen3.6:27b"); requiresAuth=false -> keyless local
+					// servers emit NO Authorization header, while a server
+					// started with --api-key still gets a Bearer header when a
+					// key is supplied.
+					cfg.defaultModelId = "qwen3:32b";
+					cfg.requiresAuth   = false;
+					return std::unique_ptr<IChatProviderCodec>( new OpenAIChatCodec( cfg ) );
+				}
 				return std::unique_ptr<IChatProviderCodec>( new AnthropicChatCodec() );
 			}
 		}

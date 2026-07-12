@@ -387,6 +387,8 @@ namespace RISE
 				if( name == "anthropic" ) { out = ChatProvider::Anthropic; return true; }
 				if( name == "gemini" )    { out = ChatProvider::Gemini;    return true; }
 				if( name == "openai" )    { out = ChatProvider::OpenAI;    return true; }
+				if( name == "xai" )       { out = ChatProvider::XAI;       return true; }
+				if( name == "local" )     { out = ChatProvider::Local;     return true; }
 				return false;
 			}
 
@@ -781,16 +783,31 @@ namespace RISE
 					ChatProvider dummy;
 					if( !ParseReplayProviderName( pc.provider, dummy ) ) {
 						err = "run config '" + path + "': providers[" + idx + "].provider '" + pc.provider +
-							"' is not a known provider (want \"anthropic\", \"gemini\", or \"openai\")";
+							"' is not a known provider (want \"anthropic\", \"gemini\", \"openai\", \"xai\", or \"local\")";
 						return false;
 					}
-					if( !p.has( "keyEnvVar" ) || !p.get( "keyEnvVar" ).isString() ||
-					    p.get( "keyEnvVar" ).asString().empty() ) {
+					// keyEnvVar is OPTIONAL for the "local" provider (a keyless
+					// local server emits no Authorization header) and REQUIRED
+					// for every other provider (a live cloud call without a key
+					// is refused loudly, never silently attempted).  When
+					// PRESENT it must still be a non-empty string for every
+					// provider (an empty/whitespace-blank env-var NAME is a
+					// config error regardless of provider).
+					const bool localProvider = ( pc.provider == "local" );
+					if( p.has( "keyEnvVar" ) ) {
+						if( !p.get( "keyEnvVar" ).isString() || p.get( "keyEnvVar" ).asString().empty() ) {
+							err = "run config '" + path + "': providers[" + idx +
+								"].keyEnvVar, when present, must be a non-empty string (the ENV VAR NAME holding the api key, never the key)";
+							return false;
+						}
+						pc.keyEnvVar = p.get( "keyEnvVar" ).asString();
+					}
+					else if( !localProvider ) {
 						err = "run config '" + path + "': providers[" + idx +
-							"].keyEnvVar must be a non-empty string (the ENV VAR NAME holding the api key, never the key)";
+							"].keyEnvVar must be a non-empty string (the ENV VAR NAME holding the api key, never the key); "
+							"only the \"local\" provider may omit it (keyless local server)";
 						return false;
 					}
-					pc.keyEnvVar = p.get( "keyEnvVar" ).asString();
 					if( p.has( "model" ) ) {
 						if( !p.get( "model" ).isString() ) {
 							err = "run config '" + path + "': providers[" + idx + "].model must be a string";
@@ -891,16 +908,24 @@ namespace RISE
 				const AgentEvalProviderConfig& prov = config.providers[pj];
 
 				// The ONE place a key enters the matrix: resolve it from the
-				// injected env lookup.  A missing/empty key SKIPS the whole
-				// provider column (never a crash) -- logged, never with the key.
-				const char* keyC = options.envLookup( prov.keyEnvVar );
-				const std::string key = keyC ? std::string( keyC ) : std::string();
-				if( key.empty() ) {
-					++result.providersSkipped;
-					result.runsSkipped += static_cast<int>( scenarios.size() ) * reps;
-					logLine( "RunEvalMatrix: SKIP provider '" + prov.provider + "' -- env var " +
-						prov.keyEnvVar + " is unset/empty (no key -> no live run for this provider)" );
-					continue;
+				// injected env lookup.  A provider that NAMES a keyEnvVar whose
+				// value is missing/empty SKIPS the whole provider column (never
+				// a crash) -- logged, never with the key.  A provider with NO
+				// keyEnvVar (only "local" may omit it -- LoadEvalRunConfig
+				// enforces that) is KEYLESS BY DESIGN, not missing: it is NOT
+				// skipped, and BuildRequest emits no Authorization header for
+				// the empty key.
+				std::string key;
+				if( !prov.keyEnvVar.empty() ) {
+					const char* keyC = options.envLookup( prov.keyEnvVar );
+					key = keyC ? std::string( keyC ) : std::string();
+					if( key.empty() ) {
+						++result.providersSkipped;
+						result.runsSkipped += static_cast<int>( scenarios.size() ) * reps;
+						logLine( "RunEvalMatrix: SKIP provider '" + prov.provider + "' -- env var " +
+							prov.keyEnvVar + " is unset/empty (no key -> no live run for this provider)" );
+						continue;
+					}
 				}
 
 				ChatProvider providerEnum;

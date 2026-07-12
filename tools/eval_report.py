@@ -125,13 +125,29 @@ PROVIDER_PRICING = {
         "gemini-1.5-pro": {"input": 1.25, "output": 5.00, "cached_input": 0.3125},
         "gemini-2.0-flash": {"input": 0.10, "output": 0.40, "cached_input": 0.025},
     },
+    "xai": {
+        # xAI (Grok) bills like OpenAI: cached-read tokens are a SUBSET of the
+        # reported input tokens, not additive.
+        "cached_in_input": True,
+        # EDIT-ME: grok-4.5 cached price unpublished as of 2026-07 -- billed at
+        # the input rate here (an OVERESTIMATE of true cost when caching hits).
+        "_default": {"input": 2.00, "output": 6.00, "cached_input": 2.00},
+        "grok-4.3": {"input": 1.25, "output": 2.50, "cached_input": 0.20},
+    },
+    "local": {
+        # Local inference (Ollama et al.): no marginal per-token cost, so every
+        # rate is 0.0 and cost reports $0.00.  cached_in_input matches the
+        # OpenAI-compatible convention it inherits (moot at zero rates).
+        "cached_in_input": True,
+        "_default": {"input": 0.0, "output": 0.0, "cached_input": 0.0},
+    },
 }
 
 # Must stay in lockstep with the provider set recognized by
 # `ParseReplayProviderName` / `ChatProvider` in
-# src/Library/Agent/AgentChatCodecs.{h,cpp} -- adding a 4th provider there
-# requires adding it here (and to PROVIDER_PRICING) too.
-KNOWN_PROVIDERS = ("anthropic", "openai", "gemini")
+# src/Library/Agent/AgentChatCodecs.{h,cpp} + AgentChatLoop.{h,cpp} -- adding a
+# provider there requires adding it here (and to PROVIDER_PRICING) too.
+KNOWN_PROVIDERS = ("anthropic", "openai", "gemini", "xai", "local")
 
 WILSON_Z = 1.96
 
@@ -860,6 +876,28 @@ def selftest():
         raise AssertionError("expected anthropic/claude-sonnet to be priced")
     _assert_close(anthropic_cost, 0.381, 1e-9,
                   "estimate_cost anthropic additive cached tokens (FIX 1 regression)")
+
+    # xAI "grok-4.5" (the _default) seeded rates: input=2.00, output=6.00,
+    # cached_input=2.00. xai is a SUBSET-convention provider (cached_in_input),
+    # so cached tokens are subtracted from input before charging. Case:
+    # input_tokens=10000 (TOTAL, includes 4000 cached), cached=4000, output=1000.
+    #   noncached_input = 10000 - 4000 = 6000
+    #   cost = 6000/1e6*2.00 + 4000/1e6*2.00 + 1000/1e6*6.00
+    #        = 0.012        + 0.008        + 0.006        = 0.026
+    xai_cost, xai_priced = estimate_cost("xai", "grok-4.5", 10000, 1000, 4000)
+    if not xai_priced:
+        raise AssertionError("expected xai/grok-4.5 to be priced")
+    _assert_close(xai_cost, 0.026, 1e-9,
+                  "estimate_cost xai cached-as-subset (grok-4.5 default)")
+
+    # local inference: every rate is 0.0, so any token counts report $0.00 --
+    # but the provider IS priced (the entry exists), distinguishing "$0.00 by
+    # policy" from "n/a (no pricing)".
+    local_cost, local_priced = estimate_cost("local", "qwen3:32b", 50000, 8000, 3000)
+    if not local_priced:
+        raise AssertionError("expected local/qwen3:32b to be priced (at $0.00)")
+    _assert_close(local_cost, 0.0, 1e-12,
+                  "estimate_cost local inference is $0.00")
 
     # --- run-dir name parsing ---
     parsed = parse_run_dir_name("myScenario__anthropic__claude-3-5-sonnet__r1")

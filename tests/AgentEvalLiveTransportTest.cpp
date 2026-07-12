@@ -395,6 +395,41 @@ static void TestRunConfigLoad()
 		Check( cfg.repeats == 3, "repeats defaults to 3" );
 	}
 
+	// xAI provider (keyEnvVar required, same as the cloud providers).
+	{
+		const std::string path = dir + "/xai.json";
+		WriteFile( path,
+			"{\"scenarios\":[\"a.json\"],\"providers\":[{\"provider\":\"xai\",\"model\":\"grok-4.5\",\"keyEnvVar\":\"XAI_API_KEY\"}],"
+			"\"runDir\":\"d\"}" );
+		AgentEvalRunConfig cfg; std::string err;
+		Check( LoadEvalRunConfig( path, cfg, err ), "xai run config loads (" + err + ")" );
+		Check( cfg.providers.size() == 1 && cfg.providers[0].provider == "xai" &&
+		       cfg.providers[0].keyEnvVar == "XAI_API_KEY", "xai provider fields captured" );
+	}
+
+	// local provider WITHOUT keyEnvVar -> loads (keyless local is allowed).
+	{
+		const std::string path = dir + "/local_keyless.json";
+		WriteFile( path,
+			"{\"scenarios\":[\"a.json\"],\"providers\":[{\"provider\":\"local\",\"model\":\"qwen3:32b\"}],"
+			"\"runDir\":\"d\"}" );
+		AgentEvalRunConfig cfg; std::string err;
+		Check( LoadEvalRunConfig( path, cfg, err ), "keyless local run config loads (" + err + ")" );
+		Check( cfg.providers.size() == 1 && cfg.providers[0].provider == "local" &&
+		       cfg.providers[0].keyEnvVar.empty(), "local provider loads with an EMPTY keyEnvVar" );
+	}
+
+	// local provider WITH keyEnvVar -> also allowed (a --api-key local server).
+	{
+		const std::string path = dir + "/local_keyed.json";
+		WriteFile( path,
+			"{\"scenarios\":[\"a.json\"],\"providers\":[{\"provider\":\"local\",\"keyEnvVar\":\"LOCAL_LLM_KEY\"}],"
+			"\"runDir\":\"d\"}" );
+		AgentEvalRunConfig cfg; std::string err;
+		Check( LoadEvalRunConfig( path, cfg, err ), "keyed local run config loads (" + err + ")" );
+		Check( cfg.providers[0].keyEnvVar == "LOCAL_LLM_KEY", "local provider may still name a keyEnvVar" );
+	}
+
 	// Malformed refusals.
 	auto refuse = [&]( const char* leaf, const std::string& json, const std::string& label ) {
 		const std::string path = dir + "/" + leaf;
@@ -420,6 +455,12 @@ static void TestRunConfigLoad()
 	refuse( "no_keyenv.json",
 		"{\"scenarios\":[\"a\"],\"providers\":[{\"provider\":\"anthropic\"}],\"runDir\":\"d\"}",
 		"provider missing keyEnvVar" );
+	refuse( "xai_no_keyenv.json",
+		"{\"scenarios\":[\"a\"],\"providers\":[{\"provider\":\"xai\"}],\"runDir\":\"d\"}",
+		"non-local (xai) missing keyEnvVar is still refused" );
+	refuse( "local_empty_keyenv.json",
+		"{\"scenarios\":[\"a\"],\"providers\":[{\"provider\":\"local\",\"keyEnvVar\":\"\"}],\"runDir\":\"d\"}",
+		"present-but-empty keyEnvVar refused even for local" );
 	refuse( "no_rundir.json",
 		"{\"scenarios\":[\"a\"],\"providers\":[{\"provider\":\"anthropic\",\"keyEnvVar\":\"K\"}]}",
 		"missing runDir" );
@@ -502,6 +543,44 @@ static void TestRunEvalMatrix()
 		Check( mr.runsExecuted == 0, "no runs executed for a keyless provider" );
 		Check( mr.runsSkipped == static_cast<int>( scenarios.size() ) * 3, "skip count = scenarios x repeats" );
 		Check( mock.seenRequests.empty(), "the transport was NEVER called for a keyless provider" );
+	}
+
+	// (C) The "local" provider with NO keyEnvVar is KEYLESS BY DESIGN, not
+	//     missing -> it is NOT skipped: the run executes against the mock, and
+	//     the request carries NO Authorization header (the key-hygiene
+	//     inverse, proven end-to-end through the matrix).  local reuses the
+	//     OpenAI codec, so the canned response is OpenAI-shaped.
+	{
+		AgentEvalRunConfig cfg;
+		AgentEvalProviderConfig p; p.provider = "local"; p.model = "qwen3:32b"; /* keyEnvVar left EMPTY */
+		cfg.providers.push_back( p );
+		cfg.repeats = 1;
+		cfg.runDir = ScratchRunDir( "t7_matrix_local_keyless" );
+
+		MockTransport mock;
+		// One OpenAI-shaped final-text turn ends the loop in a single round.
+		mock.responses.push_back( { 200,
+			"{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Done.\"},"
+			"\"finish_reason\":\"stop\"}],"
+			"\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}", "", 2 } );
+		mock.repeatLast = true;
+
+		AgentEvalMatrixOptions mo;
+		mo.transport = &mock;
+		// envLookup must NEVER be consulted for a keyless local provider, but
+		// provide a benign one anyway (returning nullptr).
+		mo.envLookup = []( const std::string& ) -> const char* { return nullptr; };
+
+		AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr.providersUsed == 1 && mr.providersSkipped == 0,
+		       "keyless LOCAL provider is USED (not skipped -- keyless by design)" );
+		Check( mr.runsExecuted == 1, "the keyless local run executes against the mock transport" );
+		Check( !mock.seenRequests.empty(), "the transport WAS called for the keyless local provider" );
+		bool anyAuth = false;
+		for( std::size_t i = 0; i < mock.seenRequests.size(); ++i )
+			for( std::size_t h = 0; h < mock.seenRequests[i].headers.size(); ++h )
+				if( mock.seenRequests[i].headers[h].first == "authorization" ) anyAuth = true;
+		Check( !anyAuth, "keyless local matrix request carries NO Authorization header" );
 	}
 }
 

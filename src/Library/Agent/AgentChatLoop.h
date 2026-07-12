@@ -139,12 +139,16 @@ namespace RISE
 {
 	namespace Agent
 	{
-		//! The selectable providers (each backed by a codec).
+		//! The selectable providers (each backed by a codec).  XAI and
+		//! Local both reuse the OpenAIChatCodec (OpenAI-Chat-Completions-
+		//! compatible wire shape) with a different Config -- see MakeCodec.
 		enum class ChatProvider
 		{
 			Anthropic,
 			Gemini,
-			OpenAI
+			OpenAI,
+			XAI,
+			Local
 		};
 
 		//! One transcript entry as the GUI sees it.  `rawJson` is the
