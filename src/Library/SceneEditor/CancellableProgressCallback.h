@@ -56,8 +56,30 @@ namespace RISE
 		//! L8 round 15 — override `IsCancelled` so `PixelBasedRasterizerHelper`'s
 		//! intra-block cancellation check can query without publishing a
 		//! stale progress reading (which bounced the UI progress bar
-		//! backward).  Forwards to the existing atomic cancel flag.
-		bool IsCancelled() const override { return IsCancelRequested(); }
+		//! backward).  Checks the atomic cancel flag AND the inner sink.
+		//!
+		//! Production-pause fix (2026-07-12): the inner consultation is
+		//! LOAD-BEARING, not decorative.  The GUI shells' production
+		//! renders route through the controller, which wraps the shell's
+		//! progress callback in THIS class — and the shells' pause gate
+		//! lives in that inner callback's Progress()/IsCancelled().
+		//! Without forwarding, the workers' per-tile + 100 ms intra-block
+		//! IsCancelled() polls never reached the gate, so "Pause Render"
+		//! only took effect at whole-block Progress() boundaries — at
+		//! production sample counts that read as "pause doesn't work"
+		//! (field report).  Forwarding parks the workers (and observes a
+		//! cancelled-while-paused inner) within one intra-block poll.
+		//! Cost when idle: one extra atomic load + a virtual call to a
+		//! one-atomic-load default.
+		bool IsCancelled() const override
+		{
+			if( IsCancelRequested() )
+			{
+				return true;
+			}
+			IProgressCallback* inner = mInner.load( std::memory_order_acquire );
+			return inner && inner->IsCancelled();
+		}
 
 	private:
 		std::atomic<IProgressCallback*> mInner;
