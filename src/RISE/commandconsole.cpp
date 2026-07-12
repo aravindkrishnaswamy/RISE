@@ -800,6 +800,17 @@ int main( int argc, char** argv )
 				}
 			}
 
+			// Detach the block-scoped StdOutProgress above -- it exists only for the parse.
+			// Without this the Job's progress slot keeps pointing at the STACK object after
+			// this block ends.  Dormant today only because every console render command
+			// (AsciiCommandParser::ParseRasterize/ParseRasterizeAnimation) installs a fresh
+			// callback before rasterizing -- but that is their invariant, not this site's;
+			// any future slot consumer between the load and the first render would read
+			// freed stack memory.  Unconditional (load success OR failure) because unlike
+			// drise_client this path proceeds to the interactive console loop either way.
+			// Same pattern as the drise_client.cpp fix.
+			pJob->SetProgress( 0 );
+
 #else
 			std::cout << "Loading ascii scene file: " << sceneArg << std::endl;
 			if( LoadScenePerEnv( pJob, sceneArg ) ) {

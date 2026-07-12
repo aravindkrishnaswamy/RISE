@@ -602,7 +602,7 @@ public:
 // through EXPLICITLY as the composed callback's `inner` -- this is
 // `_progressCallback`, the persistent BlockProgressCallback that
 // -setProgressBlock: installs on the Job for the app's whole lifetime
-// (see that method, ~line 759).  Because it is persistent, it is ALSO
+// (see that method below).  Because it is persistent, it is ALSO
 // what job->GetProgress() would read at composition time -- unlike
 // Windows, where startRender/startAnimationRender deliberately do not
 // install their per-render adapter on the Job when a controller is
@@ -821,6 +821,18 @@ static BOOL RunProductionRenderThroughController(
     _progressBlock = [block copy];
 
     if (_progressCallback) {
+        // Detach the Job's slot BEFORE the delete -- pre-fix, the slot
+        // kept pointing at the freed callback until the SetProgress
+        // further down, a dangling window for any concurrently-starting
+        // Job::Rasterize (unreachable today only because every caller
+        // awaits the in-flight render task first; don't rely on that).
+        // Conditional (CAS) clear rather than SetProgress(nullptr) so a
+        // callback some OTHER owner installed meanwhile (an agent render
+        // on the coordinator worker) is never stomped -- see the IJob.h
+        // ClearProgressIfCurrent tail doc.
+        if (_job) {
+            _job->ClearProgressIfCurrent(_progressCallback);
+        }
         delete _progressCallback;
         _progressCallback = nullptr;
     }
@@ -830,11 +842,10 @@ static BOOL RunProductionRenderThroughController(
         if (_job) {
             _job->SetProgress(_progressCallback);
         }
-    } else {
-        if (_job) {
-            _job->SetProgress(nullptr);
-        }
     }
+    // (No else: the old callback's slot entry was already conditionally
+    // cleared above; an unconditional SetProgress(nullptr) here would
+    // reintroduce the exact stomp the CAS exists to prevent.)
 }
 
 // Production pause (UI refinement item 4).  Flips the persistent

@@ -1536,7 +1536,12 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 				tileEdgeAnim, static_cast<unsigned int>( mFrameStore->TileEdge() ) );
 		}
 		MortonRasterizeSequence* irrad_seq = new MortonRasterizeSequence( tileEdgeAnim );
-		pProgressFunc->SetTitle( "Irradiance Pass: " );
+		// Null-guarded like the still-render twin above (RasterizeScene's irradiance block): a
+		// null pProgressFunc is the DESIGNED state for a progress-less render now that the
+		// Job::Rasterize family actively detaches the retained callback on a null progress slot.
+		if( pProgressFunc ) {
+			pProgressFunc->SetTitle( "Irradiance Pass: " );
+		}
 		// Use legacy per-pass progress for the irradiance pre-pass so
 		// it doesn't pollute the movie-wide progress accounting.
 		const double savedBase   = mProgressBase;
@@ -1549,7 +1554,9 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		mProgressTotal  = savedTotal;
 		pIrradianceCache->FinishedPrecomputation();
 		safe_release( irrad_seq );
-		pProgressFunc->SetTitle( "Rasterizing Animation: " );
+		if( pProgressFunc ) {
+			pProgressFunc->SetTitle( "Rasterizing Animation: " );
+		}
 	}
 
 	// Main render — progressive loop (VCM SPPM-style) or single pass.

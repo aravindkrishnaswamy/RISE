@@ -42,6 +42,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <memory>
@@ -4097,6 +4098,108 @@ static void RunViewportPauseThenProductionSubmitRedProveTest()
 	std::printf( "=== (bb) viewport-pause-then-production-submit RED-PROVE: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// (z2) Progress-slot ownership hardening (2026-07-11):
+//     (a) Job::ClearProgressIfCurrent is a CAS -- "clear what *I*
+//         installed" never stomps a callback some OTHER owner (an agent
+//         render on the coordinator worker thread) put in the slot in
+//         the meantime.  This is the API the GUI completion handlers
+//         now use instead of an unconditional SetProgress(nullptr).
+//     (b) a null-slot Rasterize() DETACHES the rasterizer's persistently
+//         retained progress callback (Rasterizer::SetProgressCallback
+//         keeps the raw pointer until the next call) instead of leaving
+//         it aimed at the previous render's -- typically deleted --
+//         callback.  Pre-fix, the second render below drove the OLD
+//         callback again through the retained pointer: with real
+//         callers (both GUIs delete their adapter after each render)
+//         that retained pointer is a dormant use-after-free.
+//////////////////////////////////////////////////////////////////////
+static void RunProgressSlotAtomicClearTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (z2) progress-slot CAS clear + null-slot rasterize detach ===\n" );
+
+	// kScene at 96x96 / 2 spp: the block dispatcher reports Progress()
+	// only from the SECOND block on (RasterizeDispatchers.h `idx > 0`),
+	// so the 24x24 shared scene -- a single block -- would fire zero
+	// ticks and starve the z2-b control assertion.  96x96 yields a
+	// multi-block grid at any plausible block size while staying fast.
+	std::string sceneText( kScene );
+	auto replaceOnce = []( std::string& s, const char* from, const char* to ) {
+		const std::string::size_type at = s.find( from );
+		Check( at != std::string::npos, std::string( "z2 scene tweak found its anchor: " ) + from );
+		if( at != std::string::npos ) s.replace( at, std::strlen( from ), to );
+	};
+	replaceOnce( sceneText, "width 24", "width 96" );
+	replaceOnce( sceneText, "height 24", "height 96" );
+	replaceOnce( sceneText, "samples 8", "samples 2" );
+	const std::string scenePath = WriteTemp( "rise_agent_progress_slot_clear.RISEscene", sceneText );
+	Check( !scenePath.empty(), "wrote the progress-slot scene to a temp file (z2)" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (z2)" );
+
+	class TickCountingCallback : public IProgressCallback
+	{
+	public:
+		std::atomic<int> ticks{ 0 };
+		bool Progress( const double, const double ) override
+		{
+			ticks.fetch_add( 1, std::memory_order_acq_rel );
+			return true;
+		}
+		void SetTitle( const char* ) override {}
+	};
+
+	// ---- (z2-a) CAS protocol, deterministic single-thread proof.
+	{
+		TickCountingCallback cbA, cbB;
+		pJob->SetProgress( &cbA );
+		Check( !pJob->ClearProgressIfCurrent( &cbB ), "ClearProgressIfCurrent(<not the installed callback>) refuses (z2-a)" );
+		Check( pJob->GetProgress() == &cbA, "...and leaves the installed callback untouched (z2-a)" );
+		Check( pJob->ClearProgressIfCurrent( &cbA ), "ClearProgressIfCurrent(<the installed callback>) clears (z2-a)" );
+		Check( pJob->GetProgress() == nullptr, "...and the slot reads null afterward (z2-a)" );
+		Check( !pJob->ClearProgressIfCurrent( &cbA ), "a repeat ClearProgressIfCurrent on the now-null slot refuses (idempotent, z2-a)" );
+		pJob->SetProgress( &cbA );
+		Check( !pJob->ClearProgressIfCurrent( nullptr ), "ClearProgressIfCurrent(nullptr) is refused by contract (z2-a)" );
+		Check( pJob->GetProgress() == &cbA, "...and a null `expected` leaves the installed callback untouched (z2-a)" );
+		Check( pJob->ClearProgressIfCurrent( &cbA ), "cleanup clear after the null-contract probe succeeds (z2-a)" );
+
+		// The reported cross-owner interleave, replayed deterministically:
+		// the GUI installed A for its render; before the GUI's clear
+		// landed, an agent render claimed the coordinator slot and
+		// installed B.  The GUI-side conditional clear must leave B alone
+		// -- an unconditional SetProgress(nullptr) here is exactly the
+		// stomp this API replaces.
+		pJob->SetProgress( &cbA );
+		pJob->SetProgress( &cbB );
+		Check( !pJob->ClearProgressIfCurrent( &cbA ),
+		       "MONEY (z2-a): the GUI-side conditional clear REFUSES once the agent render's callback occupies the slot" );
+		Check( pJob->GetProgress() == &cbB, "...and the agent render's callback is still installed afterward (z2-a)" );
+		pJob->SetProgress( nullptr );
+	}
+
+	// ---- (z2-b) null-slot rasterize detaches the retained callback.
+	{
+		TickCountingCallback cb;
+		pJob->SetProgress( &cb );
+		Check( pJob->Rasterize(), "control render with an installed progress callback succeeds (z2-b)" );
+		const int ticksAfterControl = cb.ticks.load( std::memory_order_acquire );
+		Check( ticksAfterControl > 0, "control: the installed callback received ticks -- the rasterizer really consumed it (z2-b)" );
+
+		pJob->SetProgress( nullptr );
+		Check( pJob->Rasterize(), "the null-slot re-render succeeds (z2-b)" );
+		Check( cb.ticks.load( std::memory_order_acquire ) == ticksAfterControl,
+		       "MONEY (z2-b): the null-slot re-render fired ZERO ticks on the previous render's callback -- pre-fix, "
+		       "Job::Rasterize skipped SetProgressCallback on a null slot and the rasterizer's retained pointer kept "
+		       "driving the old (with real callers: freed) callback" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (z2) progress-slot CAS clear + null-slot rasterize detach: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunAsyncReturnsQuicklyTest();
@@ -4131,6 +4234,7 @@ int main()
 	RunExplicitGuiProgressNotInstalledOnJobRedProveTest();
 	RunRefusedProductionSubmitNoFallbackRedProveTest();
 	RunViewportPauseThenProductionSubmitRedProveTest();
+	RunProgressSlotAtomicClearTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

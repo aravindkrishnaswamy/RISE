@@ -568,6 +568,14 @@ inline void BuildGizmoHandles_(
 SceneEditController::~SceneEditController()
 {
 	Stop();
+	// NOTE (2026-07-12): deliberately NOT scrubbing the Job's progress slot here (e.g. via
+	// mJob.ClearProgressIfCurrent( &mCancelProgress )) even though a stale &mCancelProgress can be
+	// left installed by RunProductionRenderComposed's outside-the-slot prior-capture -- this dtor
+	// CANNOT touch mJob: several owners (the test suites' `controller.Stop(); pJob->release();`
+	// pattern, with the stack controller destroyed after the release) legitimately destroy the Job
+	// first, so a scrub here is a use-after-free on mJob itself (SIGSEGV, caught by
+	// AgentRenderAsyncTest when it was tried).  The stale-prior hazard is tracked for the
+	// capture-inside-the-slot redesign of RunProductionRenderComposed instead.
 	if( mInteractiveRasterizer )
 	{
 		mInteractiveRasterizer->release();

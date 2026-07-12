@@ -9193,13 +9193,24 @@ bool Job::Rasterize(
 
 	IRasterizeSequence* pSeq = 0;
 
-	if( pGlobalProgress ) {
-		pRasterizer->SetProgressCallback( pGlobalProgress );
+	// One acquire read serves both the check and the uses below -- the slot is atomic (written
+	// from the GUI thread vs the coordinator worker), so a check-then-reread would be a TOCTOU.
+	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
+	if( progress ) {
+		pRasterizer->SetProgressCallback( progress );
 
 		pSeq = RasterizeSequenceFromOptions();
 		if( !pSeq ) {
 			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
 		}
+	} else {
+		// Null slot: DETACH the rasterizer's persistently-retained callback (Rasterizer::
+		// SetProgressCallback stores the raw pointer until the next call) rather than skipping the
+		// call.  Callers routinely delete their callback right after a render (both GUIs do);
+		// pre-fix, a later rasterize with no progress installed would run the whole render against
+		// the PREVIOUS caller's now-freed callback -- a dormant use-after-free.  This else is
+		// mirrored across the whole Rasterize family; this is the canonical comment.
+		pRasterizer->SetProgressCallback( 0 );
 	}
 
 	pRasterizer->RasterizeScene( *pScene, 0, pSeq );
@@ -9224,13 +9235,19 @@ bool Job::RasterizeAnimation(
 
 	IRasterizeSequence* pSeq = 0;
 
-	if( pGlobalProgress ) {
-		pRasterizer->SetProgressCallback( pGlobalProgress );
+	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
+	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
+	if( progress ) {
+		pRasterizer->SetProgressCallback( progress );
 
 		pSeq = RasterizeSequenceFromOptions();
 		if( !pSeq ) {
 			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
 		}
+	} else {
+		// Null slot: detach the rasterizer's persistently-retained callback -- see Job::Rasterize's
+		// matching else for the dormant use-after-free this closes (mirrored across the family).
+		pRasterizer->SetProgressCallback( 0 );
 	}
 
 	pRasterizer->RasterizeSceneAnimation( *pScene, time_start, time_end, num_frames, do_fields, invert_fields, 0, 0, pSeq );
@@ -9253,13 +9270,19 @@ bool Job::RasterizeRegion(
 
 	IRasterizeSequence* pSeq = 0;
 
-	if( pGlobalProgress ) {
-		pRasterizer->SetProgressCallback( pGlobalProgress );
+	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
+	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
+	if( progress ) {
+		pRasterizer->SetProgressCallback( progress );
 
 		pSeq = RasterizeSequenceFromOptions();
 		if( !pSeq ) {
 			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
 		}
+	} else {
+		// Null slot: detach the rasterizer's persistently-retained callback -- see Job::Rasterize's
+		// matching else for the dormant use-after-free this closes (mirrored across the family).
+		pRasterizer->SetProgressCallback( 0 );
 	}
 
 	Rect	rc( top, left, bottom, right );
@@ -11483,13 +11506,19 @@ bool Job::RasterizeAnimationUsingOptions(
 
 	IRasterizeSequence* pSeq = 0;
 
-	if( pGlobalProgress ) {
-		pRasterizer->SetProgressCallback( pGlobalProgress );
+	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
+	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
+	if( progress ) {
+		pRasterizer->SetProgressCallback( progress );
 
 		pSeq = RasterizeSequenceFromOptions( );
 		if( !pSeq ) {
 			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
 		}
+	} else {
+		// Null slot: detach the rasterizer's persistently-retained callback -- see Job::Rasterize's
+		// matching else for the dormant use-after-free this closes (mirrored across the family).
+		pRasterizer->SetProgressCallback( 0 );
 	}
 
 	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
@@ -11513,13 +11542,19 @@ bool Job::RasterizeAnimationUsingOptions(
 
 	IRasterizeSequence* pSeq = 0;
 
-	if( pGlobalProgress ) {
-		pRasterizer->SetProgressCallback( pGlobalProgress );
+	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
+	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
+	if( progress ) {
+		pRasterizer->SetProgressCallback( progress );
 
 		pSeq = RasterizeSequenceFromOptions();
 		if( !pSeq ) {
 			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
 		}
+	} else {
+		// Null slot: detach the rasterizer's persistently-retained callback -- see Job::Rasterize's
+		// matching else for the dormant use-after-free this closes (mirrored across the family).
+		pRasterizer->SetProgressCallback( 0 );
 	}
 
 	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
@@ -11532,7 +11567,23 @@ bool Job::RasterizeAnimationUsingOptions(
 }
 
 void Job::SetProgress( IProgressCallback* pProgress ) {
-	pGlobalProgress = pProgress;
+	// Release store: pairs with the acquire loads in GetProgress + the Rasterize family so a thread
+	// that observes the pointer also observes the callback object behind it fully constructed.
+	pGlobalProgress.store( pProgress, std::memory_order_release );
+}
+
+bool Job::ClearProgressIfCurrent( IProgressCallback* expected ) {
+	// A null `expected` is a contract error, not a request (a bare CAS would "succeed" null->null
+	// and return true, contradicting the interface doc's "TRUE iff the slot was cleared") --
+	// refuse it up front so the return value stays meaningful.
+	if( !expected ) {
+		return false;
+	}
+	// Compare-and-swap so "clear what *I* installed" can never stomp a callback another owner (an
+	// agent render installing from the coordinator worker thread) put in the slot in the meantime.
+	// See the IJob.h tail doc for the concrete GUI-vs-agent interleave this closes.
+	return pGlobalProgress.compare_exchange_strong(
+		expected, nullptr, std::memory_order_acq_rel, std::memory_order_acquire );
 }
 
 // ============================================================
