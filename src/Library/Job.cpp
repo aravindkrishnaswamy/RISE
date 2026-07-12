@@ -11586,6 +11586,21 @@ bool Job::ClearProgressIfCurrent( IProgressCallback* expected ) {
 		expected, nullptr, std::memory_order_acq_rel, std::memory_order_acquire );
 }
 
+IProgressCallback* Job::ExchangeProgress( IProgressCallback* next ) {
+	// One indivisible capture-and-install -- see the IJob.h tail doc for why the coordinator
+	// paths must not split this into GetProgress() + SetProgress().
+	return pGlobalProgress.exchange( next, std::memory_order_acq_rel );
+}
+
+bool Job::SetProgressIfCurrent( IProgressCallback* expected, IProgressCallback* next ) {
+	// Install-side CAS twin of ClearProgressIfCurrent -- see the IJob.h tail doc.  A null
+	// `expected` is MEANINGFUL here ("install only if the slot is empty"), unlike
+	// ClearProgressIfCurrent's null-refusal (there a null expected would make the return value a
+	// lie; here the compare against null is exactly the caller's intent).
+	return pGlobalProgress.compare_exchange_strong(
+		expected, next, std::memory_order_acq_rel, std::memory_order_acquire );
+}
+
 // ============================================================
 //  Rasterizer registry — see Job.h / IJob.h for the contract.
 //

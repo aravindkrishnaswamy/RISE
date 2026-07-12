@@ -569,13 +569,17 @@ SceneEditController::~SceneEditController()
 {
 	Stop();
 	// NOTE (2026-07-12): deliberately NOT scrubbing the Job's progress slot here (e.g. via
-	// mJob.ClearProgressIfCurrent( &mCancelProgress )) even though a stale &mCancelProgress can be
-	// left installed by RunProductionRenderComposed's outside-the-slot prior-capture -- this dtor
-	// CANNOT touch mJob: several owners (the test suites' `controller.Stop(); pJob->release();`
-	// pattern, with the stack controller destroyed after the release) legitimately destroy the Job
-	// first, so a scrub here is a use-after-free on mJob itself (SIGSEGV, caught by
-	// AgentRenderAsyncTest when it was tried).  The stale-prior hazard is tracked for the
-	// capture-inside-the-slot redesign of RunProductionRenderComposed instead.
+	// mJob.ClearProgressIfCurrent( &mCancelProgress )) -- this dtor CANNOT touch mJob: several
+	// owners (the test suites' `controller.Stop(); pJob->release();` pattern, with the stack
+	// controller destroyed after the release) legitimately destroy the Job first, so a scrub here
+	// is a use-after-free on mJob itself (SIGSEGV, caught by AgentRenderAsyncTest when it was
+	// tried).  The original motivation -- a stale &mCancelProgress left installed by
+	// RunProductionRenderComposed's outside-the-slot prior-capture -- was CLOSED the same day by
+	// the capture-inside-the-slot redesign (the composed closure now ExchangeProgress-captures its
+	// restore value inside the coordinator turn); the only residual way a stale &mCancelProgress
+	// survives in the slot is an exception escaping a restore itself (logged loudly in both
+	// restore guards: RunProductionRenderComposed's ProgressRestoreGuard here and
+	// AgentSession::RenderCore_'s in AgentSession.cpp).
 	if( mInteractiveRasterizer )
 	{
 		mInteractiveRasterizer->release();
@@ -4418,13 +4422,6 @@ bool SceneEditController::RunProductionRenderComposed(
 		return doRasterize();
 	}
 
-	// Fix-round 2 (Windows cancel regression): capture the RESTORE value
-	// ONCE, here, at entry -- honest for both platforms.  This is "whatever
-	// the Job's progress slot held right before this render claimed it",
-	// not an assumption about what the platform's callback is.  See the
-	// declaration's header doc for the full prior-vs-inner contract.
-	IProgressCallback* const priorProgress = job.GetProgress();
-
 	// RAII restore of the Job's progress-callback slot -- matches the house
 	// shape used throughout this file / AgentSession.cpp (Arm/Disarm,
 	// restore-on-every-exit-including-a-throw).
@@ -4499,19 +4496,44 @@ bool SceneEditController::RunProductionRenderComposed(
 	SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
 	const bool submitted = controller->SubmitProductionRenderSync(
 		[&]() {
+			// Slot-ownership hardening (2026-07-12): capture the RESTORE
+			// value HERE, inside the coordinator slot, NOT at function entry
+			// on the submitting thread.  The entry-time read ran BEFORE the
+			// fairness wait, so it could observe a TRANSIENT occupant -- an
+			// agent render's coordProgress installed from the coordinator
+			// worker -- and the restore below would then re-install that
+			// occupant's callback permanently: it stays in the slot after
+			// the render (each later composed render faithfully re-captures
+			// and re-restores it), and a Job outliving its controller then
+			// carries a dangling pointer into freed controller storage --
+			// the next Rasterize would install and drive freed memory.
+			// Inside the slot the read is race-free: every other slot
+			// writer (agent install/restore, another composed render) runs
+			// serialized in this same critical section, and GUI-thread
+			// clears are conditional (ClearProgressIfCurrent on their OWN
+			// adapter).  See the declaration's header doc for the full
+			// prior-vs-inner contract.
 			CancellableProgressCallback* coordProgress = static_cast<CancellableProgressCallback*>(
 				controller->AgentRenderProgress() );
 			// Fix-round 2: compose in the CALLER-SUPPLIED gui progress sink,
 			// not job.GetProgress() -- see the declaration's header doc for
-			// why those two are not interchangeable on Windows.
+			// why those two are not interchangeable on Windows.  SetInner
+			// runs BEFORE the exchange below so coordProgress is fully wired
+			// by the time it becomes live in the slot.
 			coordProgress->SetInner( guiProgress );
+
+			// Review round-2 P1 (same one-atomic-exchange rule as
+			// AgentSession's install site -- see the comment there): the
+			// prior capture and the coordProgress install are ONE
+			// ExchangeProgress call, so a platform adapter's conditional
+			// clear can never "succeed" against a pointer this render has
+			// already captured as its restore value.
+			IProgressCallback* const priorProgress = job.ExchangeProgress( coordProgress );
 
 			ProgressRestoreGuard progressGuard( job, priorProgress );
 			progressGuard.Arm();
 			InnerResetGuard innerGuard( *coordProgress );
 			innerGuard.Arm();
-
-			job.SetProgress( coordProgress );
 
 			result = doRasterize();
 

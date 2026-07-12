@@ -956,21 +956,31 @@ namespace RISE
 		//!     own cancel-by-return-false is honoured.  Callers pass their
 		//!     real progress sink here directly; there is no more guessing
 		//!     via GetProgress().
-		//!   - `prior = job.GetProgress()`, captured ONCE at entry to this
-		//!     function (before any install), is what gets RESTORED to the
-		//!     Job's progress slot on every exit.  This is deliberately NOT
-		//!     assumed to equal `guiProgress`: it is "whatever the Job's
-		//!     progress slot honestly held right before this render claimed
-		//!     it", which is the only thing a restore can correctly promise
-		//!     on EITHER platform.  On macOS this is the persistent
-		//!     BlockProgressCallback (equal to `guiProgress` there, since
-		//!     that IS what's installed).  On Windows this is typically
-		//!     nullptr (the slot startRender left it in after skipping the
-		//!     direct install), which is exactly what the Windows completion
-		//!     handler already re-asserts via its own `SetProgress(nullptr)`
-		//!     -- so the restore is a harmless no-op there, and the contract
-		//!     stays correct even if a future Windows change starts
-		//!     installing something on that slot.
+		//!   - `prior = job.GetProgress()`, captured INSIDE the submitted
+		//!     closure -- i.e. inside the coordinator slot, immediately
+		//!     before this render's install -- is what gets RESTORED to the
+		//!     Job's progress slot on every exit.  (Slot-ownership
+		//!     hardening, 2026-07-12: the capture used to happen ONCE at
+		//!     entry to this function, on the SUBMITTING thread, before the
+		//!     fairness wait -- which could observe a TRANSIENT occupant's
+		//!     callback (an agent render's coordProgress, installed from
+		//!     the coordinator worker) and then permanently re-install it
+		//!     on exit; a Job outliving its controller then carried a
+		//!     dangling pointer into freed controller storage.  Inside the
+		//!     slot the read is serialized against every other slot writer,
+		//!     so it observes the honest steady-state value.)  `prior` is
+		//!     deliberately NOT assumed to equal `guiProgress`: it is
+		//!     "whatever the Job's progress slot honestly held right before
+		//!     this render claimed it", which is the only thing a restore
+		//!     can correctly promise on EITHER platform.  On macOS this is
+		//!     the persistent BlockProgressCallback (equal to `guiProgress`
+		//!     there, since that IS what's installed).  On Windows this is
+		//!     typically nullptr (startRender skips the direct install when
+		//!     a controller is attached; the completion handler's own
+		//!     conditional clear then finds nothing of its adapter to
+		//!     remove) -- so the restore is a harmless no-op there, and the
+		//!     contract stays correct even if a future Windows change
+		//!     starts installing something on that slot.
 		//!
 		//! This controller's own mCancelProgress (AgentRenderProgress()) is
 		//! installed on the Job for the render's duration with `guiProgress`

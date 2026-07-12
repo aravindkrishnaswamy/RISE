@@ -192,10 +192,11 @@ public:
 // ProgressCallbackAdapter::Progress was never invoked, and the Windows
 // Cancel button + progress/ETA UI went dead for every coordinator-routed
 // production render -- the regression this fix-round closes.
-// RunProductionRenderComposed itself still separately captures
-// job->GetProgress() at entry as the value it RESTORES to the Job's
-// progress slot on exit (typically nullptr here, matching this file's own
-// ClearProgressIfCurrent detach at each render's completion) -- see that
+// RunProductionRenderComposed itself still separately captures the Job's
+// progress slot (via ExchangeProgress, inside its coordinator turn) as
+// the value it RESTORES on exit (typically nullptr here, matching this
+// file's own ClearProgressIfCurrent detach at each render's completion)
+// -- see that
 // method's header doc for why "restore" and "inner" are deliberately two
 // different values.
 static bool RunProductionRenderThroughController(
@@ -438,8 +439,10 @@ void RenderEngine::reclaimDiscardedRenderCompletion()
         // In the no-controller case startRender installed `orphan`
         // directly, so the slot still points at it; leaving it would
         // hand the next coordinator-routed render a dangling "prior" to
-        // capture-and-restore (RunProductionRenderComposed reads
-        // GetProgress() at entry), and after the delete below it would
+        // capture-and-restore (RunProductionRenderComposed exchange-
+        // captures the slot inside its coordinator turn; a stale orphan
+        // is a steady-state occupant, so it would still be captured), and
+        // after the delete below it would
         // be a use-after-free waiting for the next Rasterize().
         // Conditional (CAS) clear, not SetProgress(nullptr), for the
         // same reason as the completion lambdas (see startRender's):

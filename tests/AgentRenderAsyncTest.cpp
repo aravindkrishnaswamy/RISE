@@ -2096,8 +2096,11 @@ static void RunNoStaleOutstandingIdTest()
 // (o) Round-2 P2-A RED-PROVE: when a CONTROLLER-ATTACHED render's
 //     Rasterize() throws, the Job's progress-callback hook (installed as
 //     mController->AgentRenderProgress() before Rasterize()) is still
-//     restored to null -- the RAII ProgressRestoreGuard runs on the
-//     exceptional exit, not just the ordinary one.  Pre-fix, the
+//     restored to the in-slot prior (null in this test's config; since
+//     the 2026-07-12 hardening the restore value is whatever the
+//     exchange-capture found, not a hardcoded null) -- the RAII
+//     ProgressRestoreGuard runs on the exceptional exit, not just the
+//     ordinary one.  Pre-fix, the
 //     `mJob->SetProgress( nullptr )` call sat AFTER Rasterize() with no
 //     guard, so a throw skipped it entirely and left this controller's
 //     mCancelProgress installed as the Job's progress hook forever.
@@ -3669,7 +3672,7 @@ static void RunExplicitGuiProgressNotInstalledOnJobRedProveTest()
 		       "ZERO ticks -- the exact Windows Cancel/progress-UI regression this fix-round closes." );
 
 		Check( pJob->GetProgress() == nullptr,
-		       "the Job's progress hook is restored to nullptr (the honest entry-time prior) after completion (z-1)" );
+		       "the Job's progress hook is restored to nullptr (the honest in-slot prior) after completion (z-1)" );
 		Check( static_cast<CancellableProgressCallback*>( controller.AgentRenderProgress() )->IsCancelRequested() == false,
 		       "mCancelProgress's cancel flag is clear after a normal completion (control, z-1)" );
 
@@ -4164,6 +4167,22 @@ static void RunProgressSlotAtomicClearTest()
 		Check( pJob->GetProgress() == &cbA, "...and a null `expected` leaves the installed callback untouched (z2-a)" );
 		Check( pJob->ClearProgressIfCurrent( &cbA ), "cleanup clear after the null-contract probe succeeds (z2-a)" );
 
+		// Install-side CAS twin (SetProgressIfCurrent, 2026-07-12 hardening):
+		// unlike ClearProgressIfCurrent, a null `expected` is MEANINGFUL
+		// ("install only if the slot is empty").
+		Check( !pJob->SetProgressIfCurrent( &cbA, &cbB ), "SetProgressIfCurrent(<not current>, next) refuses on an empty slot (z2-a)" );
+		Check( pJob->GetProgress() == nullptr, "...and leaves the empty slot empty (z2-a)" );
+		Check( pJob->SetProgressIfCurrent( nullptr, &cbA ), "SetProgressIfCurrent(nullptr, next) claims an EMPTY slot (z2-a)" );
+		Check( pJob->GetProgress() == &cbA, "...and installs `next` (z2-a)" );
+		Check( !pJob->SetProgressIfCurrent( nullptr, &cbB ), "SetProgressIfCurrent(nullptr, next) refuses a slot someone else occupies (z2-a)" );
+		Check( pJob->GetProgress() == &cbA, "...and the occupant survives (z2-a)" );
+		Check( pJob->SetProgressIfCurrent( &cbA, &cbB ), "SetProgressIfCurrent(<current>, next) swaps (z2-a)" );
+		Check( pJob->GetProgress() == &cbB, "...to `next` (z2-a)" );
+		Check( pJob->SetProgressIfCurrent( &cbB, nullptr ), "SetProgressIfCurrent(<current>, nullptr) acts as a generalized clear (z2-a)" );
+		Check( pJob->GetProgress() == nullptr, "...leaving the slot empty (z2-a)" );
+		Check( pJob->SetProgressIfCurrent( nullptr, nullptr ), "SetProgressIfCurrent(nullptr, nullptr) on an empty slot succeeds VACUOUSLY -- TRUE means the compare matched, not that something was installed (documented edge, z2-a)" );
+		Check( pJob->GetProgress() == nullptr, "...and the slot is (still) empty (z2-a)" );
+
 		// The reported cross-owner interleave, replayed deterministically:
 		// the GUI installed A for its render; before the GUI's clear
 		// landed, an agent render claimed the coordinator slot and
@@ -4198,6 +4217,194 @@ static void RunProgressSlotAtomicClearTest()
 	std::remove( scenePath.c_str() );
 
 	std::printf( "=== (z2) progress-slot CAS clear + null-slot rasterize detach: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (z3) Slot-ownership hardening RED-PROVE (2026-07-12):
+//     RunProductionRenderComposed captures its RESTORE value ("prior")
+//     INSIDE the coordinator slot, not at function entry on the
+//     submitting thread.  Pre-hardening, the entry-time read ran BEFORE
+//     the fairness wait and could observe a TRANSIENT occupant's
+//     callback (an agent render's coordProgress installed from the
+//     coordinator worker); the restore then re-installed that
+//     occupant's callback permanently -- and a Job outliving its
+//     controller carried a dangling pointer into freed controller
+//     storage.  This test parks a fake agent occupant in the slot (its
+//     callback installed on the Job, exactly as AgentSession does),
+//     submits a composed production render DURING that occupancy, and
+//     asserts the post-render slot is what the slot held INSIDE the
+//     composed render's turn (null -- the occupant restored it), NOT
+//     the occupant's transient callback.
+//////////////////////////////////////////////////////////////////////
+static void RunComposedPriorCapturedInSlotRedProveTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (z3) RED-PROVE: composed render captures its restore value IN-SLOT, not the transient occupant ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_prior_in_slot.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the prior-in-slot scene to a temp file (z3)" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (z3)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	class NullProgress : public IProgressCallback
+	{
+	public:
+		bool Progress( const double, const double ) override { return true; }
+		void SetTitle( const char* ) override {}
+	};
+	NullProgress occupantCb;   // the transient agent occupant's callback
+	NullProgress guiCb;        // the composed render's explicit gui sink
+
+	std::atomic<bool> occupantInstalled{ false };
+	std::atomic<bool> releaseOccupant{ false };
+
+	// The occupant: claims the coordinator slot and installs its callback
+	// on the Job (exactly the AgentSession install shape), then parks
+	// until released, then restores what it found (null) -- so the honest
+	// in-slot steady-state value for the NEXT turn is null.
+	std::atomic<bool> occupantSubmitOk{ false };
+	std::thread occupantThread( [&]() {
+		SceneEditController::RenderJobId occupantJobId = SceneEditController::kInvalidRenderJobId;
+		const bool sub = controller.SubmitAgentRenderSync(
+			[&]() {
+				pJob->SetProgress( &occupantCb );
+				occupantInstalled.store( true, std::memory_order_release );
+				// Bounded park (10s cap) so a wedged main thread can never
+				// leave this worker spinning forever -- the deadline turns a
+				// hypothetical future hang into a loud test FAILURE instead
+				// of a silent CI stall (same rationale as RunWatchdogged).
+				for( int i = 0; i < 5000 && !releaseOccupant.load( std::memory_order_acquire ); ++i ) {
+					std::this_thread::sleep_for( std::chrono::milliseconds( 2 ) );
+				}
+				pJob->SetProgress( nullptr );
+			},
+			String( "z3_transient_occupant" ), &occupantJobId );
+		occupantSubmitOk.store( sub, std::memory_order_release );
+	} );
+
+	// Wait (bounded) until the occupant genuinely owns the slot with its
+	// callback installed -- the exact window the pre-hardening entry-time
+	// capture was vulnerable in.  A deadline rather than an unbounded spin:
+	// if a future regression makes the submission refuse, this must FAIL
+	// loudly, not hang the suite.
+	{
+		const auto installDeadline = std::chrono::steady_clock::now() + std::chrono::seconds( 10 );
+		while( !occupantInstalled.load( std::memory_order_acquire )
+		       && std::chrono::steady_clock::now() < installDeadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( occupantInstalled.load( std::memory_order_acquire ),
+	       "watchdog (z3): the occupant claimed the coordinator slot and installed its callback within 10s "
+	       "(a refusal/hang here is a regression in SubmitAgentRenderSync, not a slow pass)" );
+	if( !occupantInstalled.load( std::memory_order_acquire ) ) {
+		// Bail without the money assertions -- unblock + join whatever did
+		// start so the suite can keep reporting other tests.
+		releaseOccupant.store( true, std::memory_order_release );
+		occupantThread.join();
+		controller.Stop();
+		pJob->release();
+		std::remove( scenePath.c_str() );
+		return;
+	}
+	Check( pJob->GetProgress() == &occupantCb,
+	       "control (z3): the transient occupant's callback IS the Job's slot value during the fairness window" );
+
+	// Submit the composed production render DURING the occupancy.  Its
+	// (pre-hardening) entry-time GetProgress() read would capture
+	// &occupantCb here; it then blocks in the fairness wait until the
+	// occupant is released below.
+	std::atomic<bool> composedOk{ false };
+	std::thread composedThread( [&]() {
+		const bool ok = SceneEditController::RunProductionRenderComposed(
+			*pJob, &controller, String( "z3_composed" ), &guiCb,
+			[pJob]() -> bool { return pJob->Rasterize(); } );
+		composedOk.store( ok, std::memory_order_release );
+	} );
+
+	// Give the composed submission time to perform its (would-be)
+	// entry-time capture and enter the fairness wait, then release the
+	// occupant.  100ms is enormous headroom for two statements; the
+	// assertions below do not depend on this margin for CORRECTNESS
+	// (only the red-prove's ability to catch the pre-fix capture does).
+	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	releaseOccupant.store( true, std::memory_order_release );
+
+	composedThread.join();
+	occupantThread.join();
+
+	Check( occupantSubmitOk.load( std::memory_order_acquire ), "the occupant's SubmitAgentRenderSync was accepted (z3)" );
+	Check( composedOk.load( std::memory_order_acquire ), "the composed production render completes successfully (z3)" );
+	Check( pJob->GetProgress() == nullptr,
+	       "MONEY (z3): after the composed render, the Job's progress slot holds what the slot held INSIDE the composed "
+	       "render's coordinator turn (null -- the occupant had restored it), NOT the transient occupant's callback -- "
+	       "pre-hardening, the entry-time prior capture re-installed &occupantCb here, a pointer into (in real usage) "
+	       "freed controller storage once the occupant's controller was destroyed" );
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (z3) composed prior captured in-slot: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (z4) Slot-ownership hardening RED-PROVE (2026-07-12):
+//     an agent render restores the Job's progress slot to the IN-SLOT
+//     prior it found -- preserving a platform's PERSISTENT progress
+//     callback (the macOS RISEBridge shape) -- instead of the old
+//     hardcoded restore-to-null, which wiped the persistent callback
+//     from the slot after every agent render (the GUI's progress hook
+//     silently went dead until the next setProgressBlock:).
+//////////////////////////////////////////////////////////////////////
+static void RunAgentRenderRestoresPersistentCallbackRedProveTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (z4) RED-PROVE: agent render restores the persistent (mac-shape) progress callback ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_persistent_restore.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the persistent-restore scene to a temp file (z4)" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (z4)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	class NullProgress : public IProgressCallback
+	{
+	public:
+		bool Progress( const double, const double ) override { return true; }
+		void SetTitle( const char* ) override {}
+	} persistentCb;
+
+	// Simulate the macOS bridge: a persistent callback installed on the
+	// Job for the app's whole lifetime (setProgressBlock:).
+	pJob->SetProgress( &persistentCb );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the Job (z4)" );
+	if( session )
+	{
+		session->AttachController( &controller );
+		AgentRenderParams p;
+		const AgentRenderResult r = session->Render( p );
+		Check( r.ok, "the agent render completes successfully (z4)" );
+		Check( pJob->GetProgress() == &persistentCb,
+		       "MONEY (z4): the agent render restored the Job's progress slot to the persistent callback it found "
+		       "in-slot -- pre-hardening, AgentSession's hardcoded restore-to-null wiped the platform's persistent "
+		       "progress hook after every agent render on a live-GUI Job" );
+		session->AttachController( nullptr );
+	}
+
+	pJob->SetProgress( nullptr );
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (z4) agent render restores persistent callback: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
 int main()
@@ -4235,6 +4442,8 @@ int main()
 	RunRefusedProductionSubmitNoFallbackRedProveTest();
 	RunViewportPauseThenProductionSubmitRedProveTest();
 	RunProgressSlotAtomicClearTest();
+	RunComposedPriorCapturedInSlotRedProveTest();
+	RunAgentRenderRestoresPersistentCallbackRedProveTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -3050,6 +3050,19 @@ namespace RISE
 			IProgressCallback* expected					///< [in] Clear only if the installed callback is exactly this
 			);
 
+		//! Atomic conditional install (install-side CAS twin) -- see the IJob.h tail doc.
+		//! (Same deliberate no-`override` convention as ClearProgressIfCurrent above.)
+		bool SetProgressIfCurrent(
+			IProgressCallback* expected,				///< [in] Swap only if the installed callback is exactly this (null = empty slot)
+			IProgressCallback* next						///< [in] The callback to install on a successful compare
+			);
+
+		//! Atomic capture-and-install (returns the prior) -- see the IJob.h tail doc.
+		//! (Same deliberate no-`override` convention as the two conditional ops above.)
+		IProgressCallback* ExchangeProgress(
+			IProgressCallback* next						///< [in] The callback to install (may be null)
+			);
+
 		//! Registers a caller-owned, fully-built triangle mesh geometry under
 		//! `name`.  See IJob.h for the full contract.
 		/// \return TRUE if successful, FALSE otherwise

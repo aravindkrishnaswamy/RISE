@@ -1657,8 +1657,10 @@ namespace RISE
 			//! cancel hook that could confuse whatever installs (or fails to
 			//! install) a progress callback on this Job for the NEXT render.
 			//! Arm() once installed; the destructor restores (to whatever
-			//! value was live before the install -- always nullptr on this
-			//! call path, see doRenderWork's own comment) on every exit,
+			//! value was live before the install -- captured in-slot at the
+			//! install site since the 2026-07-12 hardening: the platform's
+			//! persistent callback on a live-GUI Job, nullptr headless --
+			//! see doRenderWork's own comment) on every exit,
 			//! ordinary or exceptional; the ordinary-path tail below calls
 			//! Disarm() after its own explicit restore so the destructor is
 			//! a no-op there (avoids a harmless but redundant double
@@ -2258,10 +2260,11 @@ namespace RISE
 				// (PixelBasedRasterizerHelper.cpp) polls IsCancelled()/Progress()
 				// between blocks -- the SAME mechanism the interactive preview
 				// rasterizer already relies on for cancel-and-park.  Restored to
-				// null afterward: nothing else in this call path ever installs a
-				// progress callback on this Job (headless agent renders have
-				// never set one), so null is the correct "back to how it was"
-				// value, not just a convenient default.
+				// the in-slot-captured prior afterward (see the capture below):
+				// on a live-GUI Job that is the platform's persistent progress
+				// callback; on a headless Job it is nullptr.  (The previous
+				// "restored to null -- nothing else ever installs on this Job"
+				// rationale was stale in the live-GUI configuration.)
 				//
 				// Round-2 P2-A: arm an RAII guard BEFORE the install so the
 				// restore runs on EVERY exit -- including an exception
@@ -2274,11 +2277,30 @@ namespace RISE
 				// controller-less caller, say) does with this Job's progress
 				// state.  The ordinary-path restore further down Disarm()s
 				// the guard so its destructor is a no-op there (avoids a
-				// harmless but redundant double SetProgress(nullptr) call).
-				ProgressRestoreGuard progressGuard( *mJob, /*priorValue=*/nullptr );
+				// harmless but redundant double restore).
+				// Slot-ownership hardening (2026-07-12): the restore value is no
+				// longer a hardcoded nullptr -- capture whatever the slot honestly
+				// holds HERE, inside the coordinator's cancel-and-park critical
+				// section (every controller-attached shape of this render runs
+				// in-slot -- see the S2a routing note below doRenderWork), so the
+				// read can't race another slot writer.  On a live-GUI Job this is
+				// the mac bridge's PERSISTENT BlockProgressCallback: the old
+				// restore-to-null WIPED it from the slot after every agent render
+				// (the GUI's progress hook silently went dead until the next
+				// setProgressBlock: at the next render start).  Headless agent
+				// renders read nullptr here, so their behaviour is unchanged.
+				// Review round-2 P1: the capture and the install are ONE atomic
+				// exchange, not a GetProgress() read followed by SetProgress().
+				// Split in two, a platform adapter's conditional clear could
+				// "succeed" (the slot still held its old callback) and delete
+				// an object THIS path had already captured as its restore
+				// value -- the exchange makes a successful adapter-side clear
+				// genuinely mean "no render holds that pointer as prior".
+				IProgressCallback* const priorProgress =
+					mController ? mJob->ExchangeProgress( mController->AgentRenderProgress() ) : nullptr;
+				ProgressRestoreGuard progressGuard( *mJob, priorProgress );
 				if( mController ) {
 					progressGuard.Arm();
-					mJob->SetProgress( mController->AgentRenderProgress() );
 				}
 
 				// Test-only seam (P1-A regression lock): force a throw
@@ -2302,7 +2324,7 @@ namespace RISE
 					// consuming read, but keep the order symmetric with the
 					// install-then-run-then-uninstall shape above.
 					wasCancelled = mController->IsCancelRequested();
-					mJob->SetProgress( nullptr );
+					mJob->SetProgress( priorProgress );
 					progressGuard.Disarm();
 				}
 				renderRan = true;

@@ -1423,6 +1423,17 @@ final class RenderViewModel: ObservableObject {
         productionPausedAccum = 0
         productionPauseBegan = nil
         if isProductionRenderPaused { isProductionRenderPaused = false }
+        // Also clear the C++-side pause gate on the bridge's persistent
+        // callback.  Normally redundant (a successful setProgressBlock:
+        // creates a fresh, un-paused callback per render) -- but a REFUSED
+        // swap (see RISEBridge setProgressBlock:'s hardening) keeps the OLD
+        // callback alive, and if its gate was left paused, the next
+        // composed render would park its workers instantly while the UI
+        // shows un-paused.  Safe here: this runs at production render
+        // start/finish, where no paused production occupant can exist (the
+        // callers await in-flight renders), and agent renders never route
+        // through this callback's gate.
+        bridge.setProductionRenderPaused(false)
     }
 
     // MARK: - Looping preview play (the Play button by the timeline)

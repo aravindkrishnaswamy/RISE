@@ -93,11 +93,11 @@ namespace RISE
 		virtual RISE::Cst::CstHeadVersion	GetCstHeadVersion() const = 0;
 
 		// Model-B F2 slice S2a fix round 2 (P2-A): read-only accessor for the progress callback
-		// installed via SetProgress -- null when none is installed.  Added so a test can assert the
-		// Job's progress hook is genuinely restored to null after a render whose Rasterize() call
-		// throws (AgentSession::RenderCore_'s ProgressRestoreGuard); no production caller needs this,
-		// but IJobPriv is the getters interface and a const read-only accessor belongs here rather
-		// than as a test-only friend hack.  Job is the sole implementer.
+		// installed via SetProgress -- null when none is installed.  Originally test-only (so a test
+		// can assert the Job's progress hook is genuinely restored after a throwing render); since
+		// the 2026-07-12 slot-ownership hardening it also has production callers (the macOS bridge's
+		// setProgressBlock: refusal check reads it; the coordinator render paths use the atomic
+		// ExchangeProgress instead for their capture).  Job is the sole implementer.
 		// APPENDED AT THE TRUE END OF THE VIRTUAL TAIL (append-only ABI convention -- do NOT insert mid-tail).
 		virtual IProgressCallback*			GetProgress() const = 0;
 	};

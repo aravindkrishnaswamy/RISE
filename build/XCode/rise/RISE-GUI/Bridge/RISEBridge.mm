@@ -818,29 +818,106 @@ static BOOL RunProductionRenderThroughController(
 }
 
 - (void)setProgressBlock:(RISEProgressBlock)block {
-    _progressBlock = [block copy];
+    // Install-side hardening (2026-07-12): REFUSE the whole swap while a
+    // render owns the Job's progress slot.  During any coordinator render
+    // (composed production OR agent) the slot holds the controller's
+    // coordProgress -- neither null nor our persistent callback -- and a
+    // composed render may hold the OLD _progressCallback as its `inner`
+    // (SetInner(guiProgress) in RunProductionRenderComposed): deleting it
+    // mid-render would be a use-after-free on the render worker, and
+    // installing the replacement would stomp the coordinator's slot claim.
+    // Unreachable today (every caller awaits the in-flight render task
+    // first -- RenderViewModel's loadScene/startRender/startAnimationRender).
+    // This check enforces the SLOT-OCCUPIED windows; a composed render that
+    // is merely QUEUED (fairness wait) has already captured
+    // _progressCallback as its guiProgress argument without owning the
+    // slot, so that narrower window still relies on the callers' awaited-
+    // task discipline -- defense in depth, not a complete substitute for
+    // it.  Likewise the CONTROLLER-LESS direct-Rasterize shape (no
+    // viewport bridge attached): there the slot legitimately holds
+    // _progressCallback itself mid-render, so `cur == _progressCallback`
+    // passes this check and only the same awaited-task discipline keeps
+    // the delete below off a live render's callback.  The refusal keeps
+    // the old block + callback fully intact, so the caller's retry at the
+    // next render start (every render start calls this method) heals it.
+    if (_job) {
+        IProgressCallback* cur = _job->GetProgress();
+        if (cur && cur != _progressCallback) {
+            GlobalLog()->PrintEx(eLog_Warning,
+                "RISEBridge setProgressBlock: refused -- a render currently owns the Job's "
+                "progress slot; the swap would delete a callback that render may hold as its "
+                "composed inner.  Retry after the render completes (the next render start "
+                "re-calls setProgressBlock).");
+            return;
+        }
+    }
 
+    // Detach-or-refuse the OLD callback BEFORE committing to anything
+    // (including the block copy): the delete below is only safe if the
+    // conditional clear SUCCEEDED.  A failed clear means the slot changed
+    // between the refusal check above and here -- a coordinator render
+    // claimed it via ExchangeProgress from the worker thread, and that
+    // exchange CAPTURED our old callback as the render's restore value
+    // (the exchange is precisely what makes "clear succeeded" mean "no
+    // render holds that pointer as its prior" -- see the IJob.h
+    // ExchangeProgress tail doc).  Deleting it now would dangle that
+    // render's restore.  Refuse instead, leaving block + callback fully
+    // intact for the next render start's retry.
     if (_progressCallback) {
-        // Detach the Job's slot BEFORE the delete -- pre-fix, the slot
-        // kept pointing at the freed callback until the SetProgress
-        // further down, a dangling window for any concurrently-starting
-        // Job::Rasterize (unreachable today only because every caller
-        // awaits the in-flight render task first; don't rely on that).
-        // Conditional (CAS) clear rather than SetProgress(nullptr) so a
-        // callback some OTHER owner installed meanwhile (an agent render
-        // on the coordinator worker) is never stomped -- see the IJob.h
-        // ClearProgressIfCurrent tail doc.
-        if (_job) {
-            _job->ClearProgressIfCurrent(_progressCallback);
+        if (_job && !_job->ClearProgressIfCurrent(_progressCallback)) {
+            // A failed clear has TWO distinct causes and only one is a
+            // refusal (round-2 review: conflating them wedged this method
+            // permanently after a lost install):
+            //   * slot NON-null: a render owns the slot, and it may have
+            //     exchange-captured our old callback as its restore value
+            //     -- deleting it now would dangle that restore.  Refuse;
+            //     the next render start retries.
+            //   * slot NULL: our callback simply is NOT installed (a
+            //     previous install lost the CAS race and the interloping
+            //     render restored the null it captured).  No render can
+            //     hold it as a restore value -- an exchange-captured prior
+            //     keeps the slot non-null until the restore re-publishes
+            //     the pointer itself -- and only THIS thread ever installs
+            //     this pointer, so the single null observation stays
+            //     decisive: the delete below is safe, and proceeding is
+            //     what heals the lost-install state.
+            if (_job->GetProgress() != nullptr) {
+                GlobalLog()->PrintEx(eLog_Warning,
+                    "RISEBridge setProgressBlock: refused -- a render claimed the Job's progress "
+                    "slot mid-swap and may hold the old callback as its restore value; retry after "
+                    "it completes (the next render start re-calls setProgressBlock).");
+                return;
+            }
         }
         delete _progressCallback;
         _progressCallback = nullptr;
     }
 
+    _progressBlock = [block copy];
+
     if (_progressBlock) {
         _progressCallback = new BlockProgressCallback(_progressBlock);
         if (_job) {
-            _job->SetProgress(_progressCallback);
+            // CAS install (install-side twin of the clear above): claim
+            // the slot only if it is still empty.  If an agent render
+            // claimed it from the coordinator worker in the microseconds
+            // since the clear above, skip rather than stomp -- that
+            // render's ExchangeProgress captured whatever it found (null
+            // here, since our install never landed) and its restore puts
+            // that back; the next render start's setProgressBlock then
+            // recovers via the slot-NULL branch of the clear-failure
+            // disambiguation above (its clear fails because ours was never
+            // installed, the null re-read proves the delete safe, and the
+            // fresh install proceeds).  (If our install WINS this race
+            // instead, the render's exchange captures the NEW callback and
+            // its restore faithfully re-installs it -- both interleavings
+            // converge on a correct slot.)
+            if (!_job->SetProgressIfCurrent(nullptr, _progressCallback)) {
+                GlobalLog()->PrintEx(eLog_Warning,
+                    "RISEBridge setProgressBlock: install skipped -- the Job's progress slot "
+                    "was claimed concurrently (agent render); it will be re-installed at the "
+                    "next render start.");
+            }
         }
     }
     // (No else: the old callback's slot entry was already conditionally
@@ -851,8 +928,13 @@ static BOOL RunProductionRenderThroughController(
 // Production pause (UI refinement item 4).  Flips the persistent
 // BlockProgressCallback's pause gate — see that class's doc for how the
 // workers park and why Cancel keeps working while paused.  A fresh
-// callback (and so an un-paused gate) is created by every
-// setProgressBlock: call, which startRender performs per render.
+// callback (and so an un-paused gate) is created by every SUCCESSFUL
+// setProgressBlock: call, which startRender performs per render.  A
+// REFUSED swap (see setProgressBlock:'s hardening) keeps the old
+// callback -- including its pause gate -- alive; RenderViewModel's
+// resetProductionPauseState explicitly clears the gate at every render
+// start/finish, so a stale paused=true can't silently park a later
+// render's workers.
 - (void)setProductionRenderPaused:(BOOL)paused {
     if (_progressCallback) {
         _progressCallback->_paused.store(paused ? true : false,
