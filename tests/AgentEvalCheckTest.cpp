@@ -272,6 +272,50 @@ static void TestDocumentCheckpoint()
 	checkOne( "[{\"kind\":\"document\",\"op\":\"chunk_count\",\"min\":1}]", false, "chunk_count missing \"chunkKind\" fails loudly" );
 	checkOne( "[{\"kind\":\"document\",\"op\":\"chunk_count\",\"chunkKind\":\"standard_object\"}]",
 		false, "chunk_count missing both \"min\"/\"max\" fails loudly" );
+
+	// param_references_kind (fixture-overfit fix): obj_sph.material names
+	// mat_diffuse, which IS a lambertian_material -- so the op passes
+	// name-agnostically for referencedKind lambertian_material, and fails
+	// when the referenced chunk is of a DIFFERENT kind (no
+	// pbr_metallic_roughness_material / sphere_geometry named mat_diffuse).
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_references_kind\",\"target\":\"obj_sph\",\"param\":\"material\",\"referencedKind\":\"lambertian_material\"}]",
+		true, "param_references_kind: material resolves to a lambertian_material" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_references_kind\",\"target\":\"obj_sph\",\"param\":\"material\",\"referencedKind\":\"pbr_metallic_roughness_material\"}]",
+		false, "param_references_kind: referencedKind mismatch (no PBR material of that name) FAILS" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_references_kind\",\"target\":\"obj_sph\",\"param\":\"material\",\"referencedKind\":\"sphere_geometry\"}]",
+		false, "param_references_kind: material name is not a sphere_geometry FAILS" );
+	// The TARGET chunk itself must exist; the param must be present.
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_references_kind\",\"target\":\"does_not_exist\",\"param\":\"material\",\"referencedKind\":\"lambertian_material\"}]",
+		false, "param_references_kind: unknown target FAILS" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_references_kind\",\"target\":\"obj_sph\",\"param\":\"no_such_param\",\"referencedKind\":\"lambertian_material\"}]",
+		false, "param_references_kind: unknown param on target FAILS" );
+	// Shape refusals: each required string missing.
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_references_kind\",\"param\":\"material\",\"referencedKind\":\"lambertian_material\"}]",
+		false, "param_references_kind missing \"target\" fails loudly" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_references_kind\",\"target\":\"obj_sph\",\"referencedKind\":\"lambertian_material\"}]",
+		false, "param_references_kind missing \"param\" fails loudly" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_references_kind\",\"target\":\"obj_sph\",\"param\":\"material\"}]",
+		false, "param_references_kind missing \"referencedKind\" fails loudly" );
+
+	// param_equals numeric tolerance (fixture-overfit fix): pnt_albedo.color
+	// is "0.9 0.1 0.1" after the recolor.  numeric:true grades a
+	// differently-formatted-but-equal value equal; a WRONG value, a
+	// component-count mismatch, and a non-numeric value each fail (the last
+	// LOUDLY, distinguishing "not numeric" from a plain mismatch).
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"value\":\"0.90 0.10 0.10\",\"numeric\":true}]",
+		true, "param_equals numeric: 0.90 0.10 0.10 == 0.9 0.1 0.1 within tol" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"value\":\"0.9 0.1 0.1\",\"numeric\":true}]",
+		true, "param_equals numeric: exact-string value still passes" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"value\":\"0.1 0.1 0.9\",\"numeric\":true}]",
+		false, "param_equals numeric: a genuinely different colour FAILS" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"value\":\"0.9 0.1\",\"numeric\":true}]",
+		false, "param_equals numeric: component-count mismatch FAILS" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"value\":\"red green blue\",\"numeric\":true}]",
+		false, "param_equals numeric: a non-numeric \"value\" refuses loudly" );
+	// Without numeric, the differently-formatted value is a raw-string
+	// mismatch -- proving the flag is what changes the behaviour.
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"value\":\"0.90 0.10 0.10\"}]",
+		false, "param_equals (no numeric): 0.90 0.10 0.10 is a raw-string mismatch" );
 }
 
 //----------------------------------------------------------------------

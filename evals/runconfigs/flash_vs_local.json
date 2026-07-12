@@ -1,0 +1,14 @@
+{
+  "scenarios": [
+    "evals/scenarios/remove_object.json",
+    "evals/scenarios/material_add_and_bind.json",
+    "evals/scenarios/conflict_retry.json",
+    "evals/scenarios/reserved_name_recovery.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" },
+    { "provider": "local",  "model": "qwen3:32b" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/flash_vs_local"
+}

@@ -14,6 +14,7 @@
 #include "Json.h"
 
 #include <cstdlib>   // getenv -- ONLY for RISE_LOCAL_LLM_BASE_URL (config, not a credential; see MakeCodec)
+#include <cstring>   // strlen -- ASCII case-insensitive substring match (multimodal-400 detection)
 
 namespace RISE
 {
@@ -182,7 +183,8 @@ namespace RISE
 			mProvider( ChatProvider::OpenAI ),
 			mModelId( mCodec->DefaultModelId() ),
 			mToolRounds( 0 ),
-			mSessionEmitted( false )
+			mSessionEmitted( false ),
+			mElideAllImages( false )
 		{
 		}
 
@@ -201,6 +203,9 @@ namespace RISE
 			mPendingResults.clear();
 			mToolLineStash.clear();
 			mToolRounds = 0;
+			// A fresh session may target a different, image-capable model --
+			// the text-only proof does not carry across a Reset/SetProvider.
+			mElideAllImages = false;
 		}
 
 		void AgentChatLoop::SetProvider( ChatProvider provider, const std::string& modelId )
@@ -227,6 +232,46 @@ namespace RISE
 					if( c != ' ' && c != '\t' && c != '\n' && c != '\r' ) return false;
 				}
 				return true;
+			}
+
+			//! Case-insensitive substring test (ASCII).
+			bool ContainsCI( const std::string& hay, const char* needle )
+			{
+				const std::size_t nlen = std::strlen( needle );
+				if( nlen == 0 ) return true;
+				if( hay.size() < nlen ) return false;
+				for( std::size_t i = 0; i + nlen <= hay.size(); ++i ) {
+					std::size_t j = 0;
+					for( ; j < nlen; ++j ) {
+						char a = hay[i + j];
+						char b = needle[j];
+						if( a >= 'A' && a <= 'Z' ) a = static_cast<char>( a - 'A' + 'a' );
+						if( b >= 'A' && b <= 'Z' ) b = static_cast<char>( b - 'A' + 'a' );
+						if( a != b ) break;
+					}
+					if( j == nlen ) return true;
+				}
+				return false;
+			}
+
+			//! TEXT-ONLY-MODEL IMAGE-REJECTION detection.  A text-only
+			//! backend (observed: Ollama's qwen3:32b via the OpenAI-
+			//! compatible Local provider) answers the NEXT request after an
+			//! image was packed into the conversation with HTTP 400 whose
+			//! body reads e.g. "Multimodal data provided, but model does not
+			//! support multimodal requests".  The match is deliberately
+			//! NARROW -- status must be exactly 400 AND the raw body must
+			//! contain BOTH "multimodal" and "not support" (case-
+			//! insensitive) -- so an ordinary bad-request 400 (malformed
+			//! JSON, unknown model, rate-limit-shaped 400, ...) does NOT
+			//! trigger the image-elide retry.  Both tokens are provider-
+			//! stable substrings of the observed message; requiring the
+			//! pair avoids matching a 400 that merely mentions one word.
+			bool IsMultimodalUnsupported400( long httpStatus, const std::string& rawBody )
+			{
+				if( httpStatus != 400 ) return false;
+				return ContainsCI( rawBody, "multimodal" ) &&
+				       ContainsCI( rawBody, "not support" );
 			}
 		}
 
@@ -346,6 +391,14 @@ namespace RISE
 		{
 			FlushPendingToolResults();
 
+			// TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: once a model has
+			// proven text-only, every request stays image-free -- strip any
+			// image the flush above may have just packed (a new read_image
+			// result) before it reaches the wire.  Idempotent no-op in the
+			// common case (nothing live), so the pre-fix byte shape is
+			// preserved for every image-capable session.
+			if( mElideAllImages ) ElideAllLiveImages();
+
 			// Nothing to send: refuse with an EMPTY request (url == "").
 			// Documented in the header; the caller must not perform it.
 			if( mTranscript.empty() )
@@ -394,6 +447,31 @@ namespace RISE
 			}
 
 			ChatParsedResponse pr = mCodec->ParseResponse( httpStatus, rawBody );
+
+			// TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: a text-only backend
+			// 400-rejects the request because a prior read_image (or a user
+			// attachment) put an image on the wire.  Detect it NARROWLY
+			// (status 400 + "multimodal"/"not support" in the body), and
+			// only the FIRST time (mElideAllImages gates once-per-session,
+			// which is also once-per-round: the retry request carries no
+			// image, so a well-behaved server cannot 400-multimodal it
+			// again; a misbehaving one that does finds mElideAllImages
+			// already set and falls through to the normal provider_error).
+			// On detection: elide EVERY live image from the transcript, set
+			// the sticky bool so later rounds stay image-free, and flag the
+			// step so the driver re-issues the SAME round once.  The step
+			// stays a ProviderError (errorKind Http) so that if the retry
+			// ALSO fails the existing error UX is unchanged; nothing is
+			// recorded either way (the ProviderError contract).
+			if( pr.step.kind == ChatStepResult::Kind::ProviderError &&
+			    pr.step.errorKind == ChatErrorKind::Http &&
+			    !mElideAllImages &&
+			    IsMultimodalUnsupported400( httpStatus, rawBody ) ) {
+				mElideAllImages = true;
+				ElideAllLiveImages();
+				pr.step.retryWithoutImages = true;
+				return pr.step;
+			}
 
 			if( pr.step.kind == ChatStepResult::Kind::ToolCalls ) {
 				// Iteration cap: the (kMaxToolRoundsPerTurn+1)-th tool round
@@ -619,6 +697,53 @@ namespace RISE
 			// Eval-harness E1: the turn's tool calls are done -- drop any
 			// remaining stamped lines (unanswered/synthesized calls).
 			mToolLineStash.clear();
+		}
+
+		void AgentChatLoop::ElideAllLiveImages()
+		{
+			// TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: rewrite every entry
+			// that still carries a live image to its already-elided form.
+			// Two independent kinds ride here, each with its own codec
+			// rewrite + its own liveness flag (mirroring the two retention
+			// policies already in this file):
+			//   * ToolResults entries (packed read_image PNGs) via
+			//     RewriteElidedImages -- clears carriesLiveImage.
+			//   * User entries (reference-image attachments) via
+			//     RewriteElidedUserImages(count) -- clears liveUserImageCount.
+			// Rewriting is legal ONLY because both entry kinds are
+			// loop-generated; assistant entries carry the byte-preservation
+			// contract and are never touched (their flags are always 0).
+			for( std::size_t i = 0; i < mTranscript.size(); ++i ) {
+				ChatTranscriptEntry& e = mTranscript[i];
+				if( e.role == ChatTranscriptEntry::Role::ToolResults && e.carriesLiveImage ) {
+					const std::size_t beforeBytes = e.rawJson.size();
+					e.rawJson = mCodec->RewriteElidedImages( e.rawJson );
+					e.carriesLiveImage = false;
+					if( mRecorder ) {
+						EnsureSessionRecordEmitted();
+						TrajectoryHistoryEditRecord h;
+						h.entryIndex = static_cast<int>( i );
+						h.beforeBytes = static_cast<long long>( beforeBytes );
+						h.afterBytes = static_cast<long long>( e.rawJson.size() );
+						h.reason = "multimodal_tool_image_elision";
+						mRecorder->EmitHistoryEdit( h );
+					}
+				}
+				else if( e.role == ChatTranscriptEntry::Role::User && e.liveUserImageCount > 0 ) {
+					const std::size_t beforeBytes = e.rawJson.size();
+					e.rawJson = mCodec->RewriteElidedUserImages( e.rawJson, e.liveUserImageCount );
+					e.liveUserImageCount = 0;
+					if( mRecorder ) {
+						EnsureSessionRecordEmitted();
+						TrajectoryHistoryEditRecord h;
+						h.entryIndex = static_cast<int>( i );
+						h.beforeBytes = static_cast<long long>( beforeBytes );
+						h.afterBytes = static_cast<long long>( e.rawJson.size() );
+						h.reason = "multimodal_user_image_elision";
+						mRecorder->EmitHistoryEdit( h );
+					}
+				}
+			}
 		}
 
 		const ChatTranscriptEntry& AgentChatLoop::TranscriptAt( std::size_t i ) const

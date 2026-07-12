@@ -25,12 +25,6 @@
     },
     {
       "kind": "document",
-      "op": "chunk_exists",
-      "chunkKind": "pinhole_camera",
-      "name": "overhead_cam"
-    },
-    {
-      "kind": "document",
       "op": "chunk_absent",
       "name": "none"
     },
@@ -55,7 +49,7 @@
     },
     {
       "kind": "trajectory",
-      "maxToolCalls": 4,
+      "maxToolCalls": 5,
       "noMechanicalLoop": true,
       "requiredToolInOrder": [
         "read_document",

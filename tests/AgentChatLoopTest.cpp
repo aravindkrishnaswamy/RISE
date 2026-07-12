@@ -3592,6 +3592,159 @@ static void TestGeminiFunctionResponseDedupe()
 	       "the kept nested \"c\" is likewise the LAST duplicate's value (2)" );
 }
 
+//----------------------------------------------------------------------
+// T33: text-only-model multimodal-400 image-elide retry (FIX 1, from the
+//      first live local-model eval run).  A text-only backend (observed:
+//      Ollama's qwen3:32b via the OpenAI-compatible Local provider)
+//      answers the NEXT request after a read_image PNG rode into the
+//      conversation with HTTP 400 "Multimodal data provided, but model
+//      does not support multimodal requests" -- and pre-fix that killed
+//      the whole session with provider_error.  The loop now detects the
+//      NARROW 400 (status 400 + "multimodal" + "not support"), elides
+//      EVERY image from the transcript, and flags the step so the driver
+//      re-issues the SAME round once, image-free.  The elide-all state is
+//      sticky (later rounds stay image-free) and the retry is guarded
+//      once-per-session.  A NON-multimodal 400 does none of this.
+//----------------------------------------------------------------------
+static void TestMultimodalRetry()
+{
+	std::printf( "T33: text-only-model multimodal-400 image-elide retry (FIX 1)...\n" );
+
+	const std::string b64 = Base64Encode( std::vector<unsigned char>( 48, 0xC3 ) );
+	const std::string imgEnv =
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"png_base64\":\"" + b64 +
+		"\",\"byteLength\":48}}";
+	// Both required tokens present ("multimodal" + "not support").
+	const std::string mm400 =
+		"{\"error\":{\"message\":\"Multimodal data provided, but model does not "
+		"support multimodal requests\"}}";
+	const std::string callFxA = OpenAIFixture( "null",
+		"[{\"id\":\"call_img\",\"type\":\"function\",\"function\":"
+		"{\"name\":\"read_image\",\"arguments\":\"{}\"}}]", "tool_calls" );
+
+	// --- Happy path: image in transcript -> 400 -> elide + retry flag ->
+	//     image-free request -> success.  A trajectory sink is attached to
+	//     verify the retry rides as an honest sibling llm record. ---
+	{
+		std::vector<std::string> lines;
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Local );
+		ChatTrajectoryConfig cfg;
+		cfg.traceId = "trace-mm-33";
+		loop.SetTrajectorySink(
+			[&lines]( const std::string& l ) { lines.push_back( l ); }, cfg );
+
+		loop.AddUserMessage( "render it and show me" );
+
+		// Round 1: the model asks for read_image (attempt 1).
+		(void)loop.BuildRequest( kApiKey );
+		loop.RecordHttpRound( 200, callFxA, 5, 1, -1 );
+		ChatStepResult st1 = loop.HandleResponse( 200, callFxA );
+		Check( st1.kind == ChatStepResult::Kind::ToolCalls && st1.toolCalls.size() == 1,
+		       "T33: round 1 requests read_image" );
+		if( st1.toolCalls.size() == 1 ) {
+			loop.ToolCallToJsonRpcLine( st1.toolCalls[0], 1 );
+			loop.AddToolResult( st1.toolCalls[0], imgEnv );
+		}
+
+		// Round 2: the rebuilt request now carries the PNG; the text-only
+		// server 400-rejects it (attempt 1 of this round).
+		const ChatHttpRequest imgReq = loop.BuildRequest( kApiKey );
+		Check( CountOccurrences( imgReq.body, b64 ) == 1,
+		       "T33: the round-2 request carries the live PNG (pre-400)" );
+		loop.RecordHttpRound( 400, mm400, 3, 1, -1 );
+		ChatStepResult st2 = loop.HandleResponse( 400, mm400 );
+		Check( st2.kind == ChatStepResult::Kind::ProviderError,
+		       "T33: the multimodal 400 is a ProviderError" );
+		Check( st2.errorKind == ChatErrorKind::Http,
+		       "T33: errorKind stays Http (the retriable kind)" );
+		Check( st2.retryWithoutImages,
+		       "T33: the step flags a one-shot image-free retry" );
+		Check( loop.TranscriptSize() == 3,
+		       "T33: the 400 records nothing (user + assistant + tool-results only)" );
+
+		// The retry request is image-free (elided at detection).
+		const ChatHttpRequest retryReq = loop.BuildRequest( kApiKey );
+		Check( CountOccurrences( retryReq.body, b64 ) == 0,
+		       "T33: the retry request carries NO image bytes" );
+		Check( retryReq.body.find( "image elided" ) != std::string::npos,
+		       "T33: the elided image leaves the elision note behind" );
+		JsonValue rroot = ParseBody( retryReq.body );
+		const JsonValue& msgs = rroot.get( "messages" );
+		int imageParts = 0;
+		for( std::size_t i = 0; i < msgs.size(); ++i ) {
+			const JsonValue& c = msgs.at( i ).get( "content" );
+			if( c.isArray() )
+				for( std::size_t j = 0; j < c.size(); ++j )
+					if( c.at( j ).get( "type" ).asString() == "image_url" ) ++imageParts;
+		}
+		Check( imageParts == 0, "T33: the retry request has zero image_url parts" );
+
+		// The image-free retry succeeds (attempt 2, sibling of attempt 1).
+		const std::string okFx = OpenAIFixture( "\"Done -- rendered and verified.\"", "", "stop" );
+		loop.RecordHttpRound( 200, okFx, 7, 2, 1 );
+		ChatStepResult st3 = loop.HandleResponse( 200, okFx );
+		Check( st3.kind == ChatStepResult::Kind::FinalText,
+		       "T33: the image-free retry round succeeds" );
+
+		// Sibling attempt numbering in the trajectory.
+		int llmAttempt1 = 0, llmAttempt2RetryOf1 = 0;
+		for( std::size_t i = 0; i < lines.size(); ++i ) {
+			JsonValue rec = ParseBody( lines[i] );
+			if( rec.get( "run_type" ).asString() != "llm" ) continue;
+			const int at = static_cast<int>( rec.get( "attempt" ).asNumber() );
+			if( at == 1 ) ++llmAttempt1;
+			if( at == 2 && rec.get( "retry_of" ).asNumber() == 1.0 ) ++llmAttempt2RetryOf1;
+		}
+		Check( llmAttempt1 == 2, "T33: two attempt-1 llm records (round-1 call + the 400)" );
+		Check( llmAttempt2RetryOf1 == 1,
+		       "T33: the retry is one honest sibling llm record (attempt 2, retry_of 1)" );
+
+		// Sticky: a NEW image later in the session is still stripped.
+		loop.AddUserMessage( "now show me again" );
+		const std::string callFxB = OpenAIFixture( "null",
+			"[{\"id\":\"call_img2\",\"type\":\"function\",\"function\":"
+			"{\"name\":\"read_image\",\"arguments\":\"{}\"}}]", "tool_calls" );
+		ChatStepResult st4 = loop.HandleResponse( 200, callFxB );
+		if( st4.toolCalls.size() == 1 ) {
+			loop.ToolCallToJsonRpcLine( st4.toolCalls[0], 2 );
+			const std::string imgEnv2 =
+				"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"png_base64\":\"" + b64 +
+				"\",\"byteLength\":48}}";
+			loop.AddToolResult( st4.toolCalls[0], imgEnv2 );
+		}
+		const ChatHttpRequest laterReq = loop.BuildRequest( kApiKey );
+		Check( CountOccurrences( laterReq.body, b64 ) == 0,
+		       "T33: subsequent rounds stay image-free (sticky elide-all)" );
+	}
+
+	// --- A NON-multimodal 400 must NOT trigger the retry / elision. ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Local );
+		loop.AddUserMessage( "hi" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult st1 = loop.HandleResponse( 200, callFxA );
+		if( st1.toolCalls.size() == 1 ) {
+			loop.ToolCallToJsonRpcLine( st1.toolCalls[0], 1 );
+			loop.AddToolResult( st1.toolCalls[0], imgEnv );
+		}
+		(void)loop.BuildRequest( kApiKey );
+
+		const std::string plain400 =
+			"{\"error\":{\"message\":\"invalid request: unknown field foo\"}}";
+		ChatStepResult st2 = loop.HandleResponse( 400, plain400 );
+		Check( st2.kind == ChatStepResult::Kind::ProviderError &&
+		       st2.errorKind == ChatErrorKind::Http,
+		       "T33: a plain 400 is still an Http ProviderError" );
+		Check( !st2.retryWithoutImages,
+		       "T33: a NON-multimodal 400 does NOT flag an image-free retry" );
+		const ChatHttpRequest afterReq = loop.BuildRequest( kApiKey );
+		Check( CountOccurrences( afterReq.body, b64 ) == 1,
+		       "T33: a NON-multimodal 400 leaves the image UNTOUCHED" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
@@ -3642,6 +3795,7 @@ int main()
 	TestGeminiMalformedArgs();
 	TestNullShapeDefensiveAudit();
 	TestGeminiFunctionResponseDedupe();
+	TestMultimodalRetry();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

@@ -21,7 +21,8 @@
       "op": "param_equals",
       "target": "pnt_albedo",
       "param": "color",
-      "value": "0.1 0.2 0.9"
+      "value": "0.1 0.2 0.9",
+      "numeric": true
     },
     {
       "kind": "untouched",

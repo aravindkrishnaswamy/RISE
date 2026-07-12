@@ -25,7 +25,9 @@
 #include "../Cst/Cst.h"   // Eval-harness slice E3: the "document"/"untouched" checkpoint kinds walk the CST directly
 
 #include <cctype>
+#include <cmath>     // std::isfinite -- numeric param_equals tolerance
 #include <cstdio>
+#include <cstdlib>   // std::strtod -- numeric param_equals token parse
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -524,23 +526,46 @@ namespace RISE
 							terminalStatus = "budget_llm_calls"; budgetHit = true; break;
 						}
 
-						const ChatHttpRequest req = loop.BuildRequest( apiKey );
-						if( req.url.empty() ) {
-							terminalStatus = "provider_error";
-							errorMessage = "BuildRequest returned an empty request mid-scenario";
+						// Build -> fetch -> record -> handle, with at most ONE
+						// automatic image-elide retry: when a text-only model
+						// 400-rejects multimodal content, HandleResponse elides
+						// the images from the transcript and flags the step
+						// (retryWithoutImages).  Re-issue the SAME round once --
+						// the rebuilt request is image-free -- recording it as an
+						// honest sibling llm record (attempt 2, retryOf 1).  A
+						// second failure (retryWithoutImages false now: the loop's
+						// sticky state gates the retry once per session) falls
+						// through to the normal provider_error path unchanged.
+						ChatStepResult st;
+						bool roundStopped = false;
+						for( int attempt = 1; ; ++attempt ) {
+							const ChatHttpRequest req = loop.BuildRequest( apiKey );
+							if( req.url.empty() ) {
+								terminalStatus = "provider_error";
+								errorMessage = "BuildRequest returned an empty request mid-scenario";
+								roundStopped = true;
+								break;
+							}
+
+							const FetchOutcome fo = fetch( req );
+							if( !fo.proceed ) {
+								terminalStatus = fo.stopStatus;
+								errorMessage = fo.stopError;
+								roundStopped = true;
+								break;
+							}
+
+							loop.RecordHttpRound( fo.status, fo.body, fo.elapsedMs,
+							                      attempt, attempt > 1 ? attempt - 1 : -1 );
+							++llmCalls;
+							st = loop.HandleResponse( fo.status, fo.body );
+
+							if( st.kind == ChatStepResult::Kind::ProviderError &&
+							    st.retryWithoutImages && attempt == 1 )
+								continue;   // one image-free retry of this round
 							break;
 						}
-
-						const FetchOutcome fo = fetch( req );
-						if( !fo.proceed ) {
-							terminalStatus = fo.stopStatus;
-							errorMessage = fo.stopError;
-							break;
-						}
-
-						loop.RecordHttpRound( fo.status, fo.body, fo.elapsedMs );
-						++llmCalls;
-						ChatStepResult st = loop.HandleResponse( fo.status, fo.body );
+						if( roundStopped ) break;
 
 						if( st.kind == ChatStepResult::Kind::ToolCalls ) {
 							for( std::size_t ci = 0; ci < st.toolCalls.size(); ++ci ) {
@@ -1063,6 +1088,28 @@ namespace RISE
 					return false;
 				}
 
+				//! Tokenize a space-separated string into finite doubles.
+				//! Returns false the moment ANY token fails to parse as a
+				//! complete number (trailing junk like "1abc" is rejected)
+				//! or is non-finite -- so the numeric param_equals refuses
+				//! LOUDLY on a non-numeric value rather than silently
+				//! treating an unparseable token as 0.
+				bool CheckerParseFloatTokens( const std::string& s, std::vector<double>& out )
+				{
+					out.clear();
+					std::istringstream iss( s );
+					std::string tok;
+					while( iss >> tok ) {
+						const char* begin = tok.c_str();
+						char* end = nullptr;
+						const double v = std::strtod( begin, &end );
+						if( end != begin + tok.size() ) return false;   // non-numeric / trailing junk
+						if( !std::isfinite( v ) ) return false;
+						out.push_back( v );
+					}
+					return true;
+				}
+
 				//! Find a top-level chunk by optional kind (exact keyword
 				//! match; "" = no narrowing) + bare name.  Returns 0 (not
 				//! found), 1 (found -- fills outChunk), or -1 (AMBIGUOUS:
@@ -1131,9 +1178,14 @@ namespace RISE
 				// Per-checkpoint-kind handlers.
 				//----------------------------------------------------------
 
-				//! "document": {op:"param_equals",target,param,value,chunkKind?} |
+				//! "document": {op:"param_equals",target,param,value,chunkKind?,numeric?} |
 				//! {op:"chunk_exists",chunkKind?,name} | {op:"chunk_absent",chunkKind?,name} |
-				//! {op:"chunk_count",chunkKind,min?,max?} -- asserted against the
+				//! {op:"chunk_count",chunkKind,min?,max?} |
+				//! {op:"param_references_kind",target,param,referencedKind,chunkKind?} --
+				//! the last passes iff target's param value NAMES an existing chunk
+				//! of referencedKind (grades a correctly-typed binding
+				//! name-agnostically); param_equals' optional numeric:true compares
+				//! both values as float tokens within 1e-4.  All asserted against the
 				//! POST-run document (session->ReadDocument(), reparsed via
 				//! ParseToCst -- the same idiom AgentChunkCrudTest/
 				//! CstFirstSliceTest use to inspect a document's chunks after
@@ -1172,6 +1224,37 @@ namespace RISE
 						std::string actual;
 						if( !CheckerChunkParamValue( chunk, param, actual ) )
 							return { false, "param_equals: chunk '" + target + "' has no param '" + param + "'" };
+
+						// Optional numeric tolerance: tokenize BOTH sides as
+						// floats and compare within 1e-4 per component, so a
+						// live model's "0.0 0.0 1.0" grades equal to a
+						// fixture's "0 0 1".  Refuses LOUDLY (not a silent
+						// mismatch) when the token counts differ or a token on
+						// either side is non-numeric -- a "numeric" checkpoint
+						// authored against a non-numeric param is a rubric bug
+						// worth surfacing.
+						const bool numeric = cp.has( "numeric" ) && cp.get( "numeric" ).isBool() && cp.get( "numeric" ).asBool();
+						if( numeric ) {
+							std::vector<double> av, ev;
+							if( !CheckerParseFloatTokens( expected, ev ) )
+								return { false, "param_equals(numeric): the checkpoint's \"value\" '" + expected +
+									"' is not all-numeric" };
+							if( !CheckerParseFloatTokens( actual, av ) )
+								return { false, "param_equals(numeric): '" + target + "." + param + "' == '" + actual +
+									"' is not all-numeric (expected numeric '" + expected + "')" };
+							if( av.size() != ev.size() )
+								return { false, "param_equals(numeric): '" + target + "." + param + "' has " +
+									std::to_string( av.size() ) + " component(s), expected " + std::to_string( ev.size() ) +
+									" ('" + actual + "' vs '" + expected + "')" };
+							for( std::size_t i = 0; i < av.size(); ++i ) {
+								if( std::fabs( av[i] - ev[i] ) > 1e-4 )
+									return { false, "param_equals(numeric): '" + target + "." + param + "' == '" + actual +
+										"', expected '" + expected + "' (component " + std::to_string( i ) + " differs)" };
+							}
+							return { true, "param_equals(numeric): '" + target + "." + param + "' == '" + expected +
+								"' (within 1e-4)" };
+						}
+
 						if( actual != expected )
 							return { false, "param_equals: '" + target + "." + param + "' == '" + actual +
 								"', expected '" + expected + "'" };
@@ -1221,6 +1304,54 @@ namespace RISE
 							return { false, detail };
 						}
 						return { true, "chunk_count: " + std::to_string( count ) + " chunk(s) of kind '" + kind + "' satisfies band" };
+					}
+
+					// param_references_kind: pass iff TARGET's PARAM value
+					// NAMES an existing chunk of REFERENCEDKIND.  Grades the
+					// SPACE of correct solutions name-agnostically: any
+					// correctly-typed, correctly-named binding passes,
+					// regardless of what NAME a live model chose for the new
+					// chunk (fixture-overfit fix -- a fixture named a material
+					// "mat_metal"; a live model may pick any name).  The
+					// optional "chunkKind" narrows the TARGET lookup (as in
+					// param_equals); "referencedKind" is the REQUIRED kind of
+					// the chunk the param must resolve to.
+					if( op == "param_references_kind" ) {
+						if( !cp.has( "target" ) || !cp.get( "target" ).isString() )
+							return { false, "param_references_kind missing string \"target\"" };
+						if( !cp.has( "param" ) || !cp.get( "param" ).isString() )
+							return { false, "param_references_kind missing string \"param\"" };
+						if( !cp.has( "referencedKind" ) || !cp.get( "referencedKind" ).isString() ||
+						    cp.get( "referencedKind" ).asString().empty() )
+							return { false, "param_references_kind missing non-empty string \"referencedKind\"" };
+						const std::string target = cp.get( "target" ).asString();
+						const std::string param  = cp.get( "param" ).asString();
+						const std::string referencedKind = cp.get( "referencedKind" ).asString();
+						const std::string kind = OptKind( cp );   // narrows the TARGET chunk
+
+						NodeRef chunk;
+						const int found = CheckerFindChunk( doc, kind, target, chunk );
+						if( found == 0 )
+							return { false, "param_references_kind: no chunk named '" + target + "' found" +
+								( kind.empty() ? std::string() : ( " (kind '" + kind + "')" ) ) };
+						if( found < 0 )
+							return { false, "param_references_kind: AMBIGUOUS -- more than one chunk named '" +
+								target + "' -- narrow with \"chunkKind\"" };
+						std::string referencedName;
+						if( !CheckerChunkParamValue( chunk, param, referencedName ) )
+							return { false, "param_references_kind: chunk '" + target + "' has no param '" + param + "'" };
+						if( referencedName.empty() )
+							return { false, "param_references_kind: '" + target + "." + param + "' has an empty value" };
+						NodeRef referenced;
+						const int refFound = CheckerFindChunk( doc, referencedKind, referencedName, referenced );
+						if( refFound == 0 )
+							return { false, "param_references_kind: '" + target + "." + param + "' names '" +
+								referencedName + "', but no chunk of kind '" + referencedKind + "' has that name" };
+						if( refFound < 0 )
+							return { false, "param_references_kind: '" + referencedName +
+								"' matches MORE THAN ONE chunk of kind '" + referencedKind + "'" };
+						return { true, "param_references_kind: '" + target + "." + param + "' -> '" + referencedName +
+							"' (a '" + referencedKind + "')" };
 					}
 
 					return { false, "document checkpoint: unknown op '" + op + "'" };

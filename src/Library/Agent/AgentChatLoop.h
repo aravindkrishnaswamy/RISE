@@ -385,6 +385,19 @@ namespace RISE
 			//! record so the recorded prompt matches the sent prompt.
 			std::string ComposeSystemPrompt() const;
 
+			//! TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: strip EVERY live
+			//! image from the WHOLE transcript in one sweep -- both packed
+			//! read_image tool-result images (via the codec's
+			//! RewriteElidedImages) and live user reference-image
+			//! attachments (via RewriteElidedUserImages), recording a
+			//! history_edit for each rewritten entry.  Idempotent (a second
+			//! sweep finds nothing live and is a no-op).  Invoked when a
+			//! text-only model 400-rejects multimodal content, and again at
+			//! the top of every later BuildRequest while mElideAllImages is
+			//! set, so once a model proves text-only the conversation never
+			//! re-sends an image.
+			void ElideAllLiveImages();
+
 			//! Emit the `session` record exactly once, on the first recorded
 			//! action, so it always leads the trajectory.  No-op with no sink.
 			void EnsureSessionRecordEmitted();
@@ -422,6 +435,15 @@ namespace RISE
 
 			int mToolRounds;   //!< tool rounds in the current conversation-turn
 
+			//! TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: sticky once a
+			//! text-only model 400-rejects multimodal content.  While set,
+			//! every BuildRequest strips images from the transcript, so the
+			//! session never re-sends an image to a model that proved it has
+			//! no vision.  Doubles as the once-per-round retry guard (a
+			//! second multimodal 400 finds it already true and does NOT
+			//! retry again).  Cleared by Reset() (a new session may target a
+			//! different, image-capable model).
+
 			//! Eval-harness E1 trajectory state (all inert when mRecorder is
 			//! null -- the non-recording path is byte-identical to pre-E1).
 			std::unique_ptr<ChatTrajectoryRecorder> mRecorder;
@@ -431,6 +453,10 @@ namespace RISE
 			std::function<int64_t()>                 mTrajectoryClock;
 			ChatHttpRequest                          mLastRequest;
 			std::vector<ToolLinePending>             mToolLineStash;
+
+			//! See the "TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY" note above
+			//! mToolRounds.
+			bool                                     mElideAllImages;
 		};
 	}
 }

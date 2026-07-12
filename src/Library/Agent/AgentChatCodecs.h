@@ -224,6 +224,21 @@ namespace RISE
 			//! show the model's narration while tools run.  Empty on
 			//! ProviderError.
 			std::string               assistantDisplayText;
+
+			//! TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY (set ONLY on a
+			//! ProviderError whose errorKind is Http): true when the loop
+			//! detected a text-only model rejecting image content
+			//! (HTTP 400 "...multimodal... not support...") and has ALREADY
+			//! elided every image from the transcript in response.  The
+			//! DRIVER should re-issue the SAME round once (rebuild via
+			//! BuildRequest -- now image-free -- fetch, and RecordHttpRound
+			//! with attempt=2/retryOf=1 so the retry is an honest sibling
+			//! llm record) instead of terminating.  Enforced once-per-round
+			//! by the loop's sticky elide-all state: a second multimodal 400
+			//! in the same session leaves this false (the normal
+			//! provider_error path proceeds unchanged).  Always false for
+			//! ToolCalls / FinalText and for every other error kind.
+			bool                      retryWithoutImages = false;
 		};
 
 		//! ParseResponse's full product: the step outcome PLUS the raw
