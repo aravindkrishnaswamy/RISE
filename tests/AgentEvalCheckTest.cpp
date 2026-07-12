@@ -48,10 +48,13 @@
 //    T9  Partial-credit arithmetic: a scenario with a 2:1-weighted mix of
 //        pass/fail checkpoints yields the exact expected fraction; a
 //        scenario with zero checkpoints is a vacuous pass (fraction 1.0).
-//    T10 The 3 committed evals/scenarios/*.json, run end-to-end through
-//        their OWN evals/fixtures/*.fixture.jsonl and checked against
-//        their OWN wired checkpoints[] -- every checkpoint is TRUE of the
-//        fixture that produces it (allPassed, checkpointFraction 1.0).
+//    T10 Every committed evals/scenarios/*.json (the 4 seed scenarios plus
+//        the "editing verbs & recovery" set: remove_object,
+//        material_add_and_bind, conflict_retry, reserved_name_recovery),
+//        run end-to-end through its OWN evals/fixtures/*.fixture.jsonl and
+//        checked against its OWN wired checkpoints[] -- every checkpoint
+//        is TRUE of the fixture that produces it (allPassed,
+//        checkpointFraction 1.0).
 //
 //  RED-PROVE (manual, not automated in this file -- see the final report):
 //    CheckDocumentKind's param_equals comparison was temporarily replaced
@@ -792,19 +795,39 @@ static void TestPartialCreditArithmetic()
 }
 
 //----------------------------------------------------------------------
-// T10: the 4 committed evals/scenarios/*.json, run end-to-end through
-// their OWN committed evals/fixtures/*.fixture.jsonl and checked against
-// their OWN wired checkpoints[] -- proves the seed scenarios' checkpoints
-// are actually TRUE of the fixtures that produce them, not just
-// plausible-looking JSON.
+// T10: every committed evals/scenarios/*.json, run end-to-end through
+// its OWN committed evals/fixtures/*.fixture.jsonl and checked against
+// its OWN wired checkpoints[] -- proves the committed scenarios'
+// checkpoints are actually TRUE of the fixtures that produce them, not
+// just plausible-looking JSON.  Covers the 4 seed scenarios plus the
+// "editing verbs & recovery" set (remove_object, material_add_and_bind,
+// conflict_retry, reserved_name_recovery).  A planned `diagnosed_fix`
+// scenario was deliberately NOT authored: status="diagnosed" (rawCode 3)
+// requires the full re-derive to diagnose AFTER the validate-before-
+// destroy dry-run of the SAME document passed (Job::
+// RederiveCstDocumentFull_), which no deterministic headless edit can
+// produce -- the same unreachability T6b proves for a validate-dirty
+// live document.
+//
+// Fixture-authoring rule proven here: a canned fixture must never carry
+// a baseHeadVersion it expects to MATCH -- the head uuid is minted per
+// LOAD from a process-global counter (Job.cpp NextCstHeadUuid), so its
+// value depends on how many loads ran earlier in the process.
+// conflict_retry's stale {uuid:0,revision:0} is the one safe authored
+// base (uuid 0 is never minted -> a GENUINE conflict from the real
+// dispatcher); its retry round omits baseHeadVersion (the documented
+// unconditional mode).
 //----------------------------------------------------------------------
 static void TestSeedScenariosCheckpointsAreTrue()
 {
-	std::printf( "T10: the 4 committed seed scenarios' checkpoints are TRUE of their own fixtures...\n" );
+	std::printf( "T10: the committed scenarios' checkpoints are TRUE of their own fixtures...\n" );
 	const std::string dir = ScratchRunDir( "t10_seed_scenarios" );
 
-	const char* const ids[4] = { "param_edit", "two_tool_observe", "error_path", "camera_orbit_timeline" };
-	for( int i = 0; i < 4; ++i ) {
+	const char* const ids[] = { "param_edit", "two_tool_observe", "error_path", "camera_orbit_timeline",
+	                            "remove_object", "material_add_and_bind", "conflict_retry",
+	                            "reserved_name_recovery" };
+	const int idCount = static_cast<int>( sizeof( ids ) / sizeof( ids[0] ) );
+	for( int i = 0; i < idCount; ++i ) {
 		const std::string path = std::string( "evals/scenarios/" ) + ids[i] + ".json";
 		AgentEvalScenario s;
 		std::string err;
