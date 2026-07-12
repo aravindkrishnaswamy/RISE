@@ -578,27 +578,23 @@ void MainWindow::createMenuBar()
     // Animation / Cancel buttons.
     auto* renderMenu = menuBar()->addMenu("&Render");
 
-    m_pauseResumeAction = renderMenu->addAction("Pause Refinement");
+    // Production-only now: the center-cluster refinement pause/resume
+    // button was removed from TopBar by user request (interactive
+    // refinement restarts on every edit anyway, so pausing it was a
+    // niche control -- see TopBar.cpp's tombstone comment on
+    // onPauseResumeClicked), so this menu item no longer has a
+    // refinement-side counterpart to defer to.  It now ONLY pauses/
+    // resumes THE RENDER, mirrors macOS RISEApp.swift's pauseMenuTitle /
+    // Render-menu Button, and is enabled only while Rendering (see
+    // updateMenuActionStates) -- not the dual-mode affordance the prior
+    // comment here described.
+    m_pauseResumeAction = renderMenu->addAction("Pause Render");
     m_pauseResumeAction->setShortcut(QKeySequence("Ctrl+Space"));
     connect(m_pauseResumeAction, &QAction::triggered, this, [this]() {
-        // Item 4: while a production render is in flight, this item
-        // pauses/resumes THE RENDER instead of interactive refinement --
-        // mirrors macOS RISEApp.swift's pauseMenuTitle / Render-menu
-        // Button.  This is now the ONE remaining dual-mode pause
-        // affordance: the TopBar center button reverted to
-        // refinement-only when the render-transport pill took over
-        // production pause (see TopBar.cpp onPauseResumeClicked).
-        // Always available during a render (guarded only by
-        // updateMenuActionStates keeping it disabled while Cancelling).
         if (m_engine->state() == RenderEngine::Rendering) {
             m_engine->setProductionRenderPaused(!m_engine->isProductionRenderPaused());
             updateMenuActionStates();
-            return;
         }
-        if (!canUseSceneTransport()) return;
-        if (m_viewportBridge->isRefinementPaused()) m_viewportBridge->resumeRefinement();
-        else m_viewportBridge->pauseRefinement();
-        updateMenuActionStates();
     });
 
     m_restartAction = renderMenu->addAction("Restart Refinement");
@@ -692,25 +688,16 @@ void MainWindow::updateMenuActionStates()
         || state == RenderEngine::Cancelling
         || chatRenderOutstanding;
     if (m_pauseResumeAction) {
-        // Item 4 (mirrors macOS RISEApp.swift's pauseMenuTitle /
-        // Button.disabled): while a production render is in flight,
-        // this item always stays enabled (except while Cancelling,
-        // still covered by `state == RenderEngine::Cancelling` below
-        // since `refinementDisabled` folds that in) and its label/
-        // action target THE RENDER instead of interactive refinement.
-        if (state == RenderEngine::Rendering) {
-            m_pauseResumeAction->setEnabled(true);
-            m_pauseResumeAction->setText(
-                m_engine->isProductionRenderPaused() ? "Resume Render" : "Pause Render");
-        } else if (state == RenderEngine::Cancelling) {
-            m_pauseResumeAction->setEnabled(false);
-            m_pauseResumeAction->setText("Pause Render");
-        } else {
-            m_pauseResumeAction->setEnabled(!refinementDisabled);
-            m_pauseResumeAction->setText(
-                (m_viewportBridge && m_viewportBridge->isRefinementPaused())
-                    ? "Resume Refinement" : "Pause Refinement");
-        }
+        // Production-only now (mirrors macOS RISEApp.swift's
+        // pauseMenuTitle / Button.disabled(viewModel.renderState !=
+        // .rendering)): the center-cluster refinement pause button is
+        // gone (see TopBar.cpp's tombstone comment), so this item has
+        // no refinement-side mode left to fall back to.  Enabled ONLY
+        // while Rendering; label/action always target THE RENDER.
+        m_pauseResumeAction->setEnabled(state == RenderEngine::Rendering);
+        m_pauseResumeAction->setText(
+            (state == RenderEngine::Rendering && m_engine->isProductionRenderPaused())
+                ? "Resume Render" : "Pause Render");
     }
     if (m_restartAction) {
         m_restartAction->setEnabled(!refinementDisabled);

@@ -2,8 +2,10 @@
 //
 //  TopBar.h - The workspace's persistent 44 pt top bar (design brief
 //    "Top bar"): scene identity (left), refinement-status cluster
-//    (center: pause/resume + restart + status readout + progress
-//    strip + integrator chip), Save (right).
+//    (center: restart + status readout + progress strip + integrator
+//    chip), render transport + Cancel + Save (right).  The refinement
+//    pause/resume button was removed from the center cluster -- see
+//    the tombstone comment on onRestartClicked's declaration below.
 //
 //  Mirrors the macOS TopBar.swift + RefinementStatusFormatter.swift.
 //  Native menu bar (MainWindow::createMenuBar) covers File / Edit /
@@ -44,8 +46,8 @@ public:
 
     /// The interactive viewport bridge, or nullptr while no scene is
     /// loaded (torn down between scene loads).  Starts/stops the
-    /// ~2 Hz refinement-status poll and gates the pause/resume/
-    /// restart buttons.  Safe to call repeatedly with a new pointer
+    /// ~2 Hz refinement-status poll and gates the restart button.
+    /// Safe to call repeatedly with a new pointer
     /// (e.g. on every scene load/clear).
     void setViewportBridge(ViewportBridge* bridge);
 
@@ -53,7 +55,7 @@ public:
 
     /// P1-2 fix (mirrors Mac's canUseSceneTransport): the panel whose
     /// isChatRenderOutstanding() feeds updateControlsEnabled(), so the
-    /// pause/resume/restart cluster goes disabled while a chat-driven
+    /// restart control goes disabled while a chat-driven
     /// render owns the scene even though nothing routes through
     /// RenderEngine::stateChanged for that transition.  Borrowed;
     /// MainWindow owns both for the app's lifetime.  Call once; safe to
@@ -77,11 +79,10 @@ signals:
     /// connects this to the SAME slot the Render menu action / Ctrl+R
     /// shortcut use (onRender), so the pre-render bookkeeping (stopping
     /// the viewport, cancelling an outstanding chat turn, advancing
-    /// scene time) lives in exactly one place.  Pause/resume, by
-    /// contrast, are handled locally by this bar via the engine's
-    /// setProductionRenderPaused accessor -- no signal needed for those
-    /// (mirrors onPauseResumeClicked's existing pattern for the
-    /// dual-mode production case).
+    /// scene time) lives in exactly one place.  Pause/resume and Cancel,
+    /// by contrast, are handled locally by this bar via the engine's
+    /// setProductionRenderPaused / cancelRender accessors -- no signal
+    /// needed for those (see onRenderTransportClicked / onCancelClicked).
     void renderTransportClicked();
 
 public slots:
@@ -113,22 +114,32 @@ public slots:
     void updateRemainingTime(double seconds, bool hasEstimate);
 
     /// P1-2 fix: connected to ChatPanel::chatRenderOutstandingChanged --
-    /// re-runs updateControlsEnabled() so the pause/resume/restart
-    /// cluster reacts immediately to a chat-driven render starting or
+    /// re-runs updateControlsEnabled() so the restart control
+    /// reacts immediately to a chat-driven render starting or
     /// finishing, not just to the next ~2 Hz poll tick.
     void onChatRenderOutstandingChanged();
 
 private slots:
-    void onPauseResumeClicked();
+    // (The center-cluster refinement pause/resume button and its click
+    // handler, onPauseResumeClicked, were removed by user request --
+    // interactive refinement restarts on every edit anyway, so pausing
+    // it was a niche control.  Production pause lives on the transport
+    // pill below; onRestartClicked remains.  Mirrors TopBar.swift.)
     void onRestartClicked();
     /// Click handler for the render-transport pill (right side).  While
-    /// Rendering, toggles production pause directly via the engine
-    /// (mirrors onPauseResumeClicked's now-removed dual-mode branch);
+    /// Rendering, toggles production pause directly via the engine;
     /// while idle/SceneLoaded/Completed/Cancelled, click-time rechecks
     /// m_canStartProductionRender and emits renderTransportClicked();
     /// while Cancelling, the button is disabled so this is unreachable
     /// but still guards defensively.
     void onRenderTransportClicked();
+    /// Click handler for the Cancel pill (right side, beside Pause/
+    /// Resume while Rendering).  Calls RenderEngine::cancelRender()
+    /// directly -- the exact same single-line body as MainWindow::
+    /// onCancel() (wired to the Render menu's Cancel action / Ctrl+.)
+    /// -- so there is exactly one cancel code path, not a duplicated
+    /// one.  Works while paused too: the pause gate observes cancel.
+    void onCancelClicked();
     void pollRefinementState();
     void onEngineStateChanged(int newState);
     void onEngineProgress(double fraction, const QString& title);
@@ -179,7 +190,9 @@ private:
     bool    m_autoSaveSuspended = false;
 
     // Center: render-status cluster -----------------------------------
-    QToolButton* m_pauseResumeBtn = nullptr;
+    // (m_pauseResumeBtn -- the refinement pause/resume tool button --
+    // was removed by user request; see the tombstone comment in the
+    // `private slots:` section above.)
     QToolButton* m_restartBtn = nullptr;
     QLabel*      m_statusRowLabel = nullptr;
     QLabel*      m_statusTagLabel = nullptr;
@@ -192,7 +205,7 @@ private:
     // rendering next to a misleading static "AUTO" placeholder.
     QFrame*      m_integratorSep = nullptr;
 
-    // Right: render transport (Render -> Pause -> Resume) -----------------
+    // Right: render transport (Render -> Pause -> Resume, + Cancel) -------
     // One slot that morphs with the production render's lifecycle -- see
     // updateTransportButton().  Placed before the save-state chip.
     QPushButton* m_transportBtn = nullptr;
@@ -205,14 +218,21 @@ private:
     // by MainWindow via setCanStartProductionRender() (see that slot's
     // doc); only consulted while idle (SceneLoaded/Completed/Cancelled).
     bool m_canStartProductionRender = false;
+    // Cancel pill, shown beside m_transportBtn only while Rendering
+    // (mirrors TopBar.swift's cancelPill).  Error-tinted outline; see
+    // updateTransportButton() and onCancelClicked().
+    QPushButton* m_cancelBtn = nullptr;
 
     // Right: save -------------------------------------------------------
     QPushButton* m_saveBtn = nullptr;
 
     // Mirrors RenderViewModel's refinement-status state (design brief A2).
+    // (m_isRefinementPaused was removed alongside m_pauseResumeBtn -- its
+    // only readers were that button's icon and click handler; the phase-4
+    // "Paused" readout below still reads m_refinementPhase directly from
+    // the poll, so no status-display capability was lost.)
     int          m_refinementPhase = -1;         // -1 no controller, 0 Idle .. 4 Paused
     unsigned int m_refinementScaleDivisor = 1;
-    bool         m_isRefinementPaused = false;
     int          m_engineState = 0;              // RenderEngine::Idle
     double       m_productionProgress = 0.0;
     double       m_lastNonPausedFraction = 0.0;

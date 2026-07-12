@@ -32,10 +32,7 @@ struct RISEApp: App {
     }
 
     private var pauseMenuTitle: String {
-        if viewModel.renderState == .rendering {
-            return viewModel.isProductionRenderPaused ? "Resume Render" : "Pause Render"
-        }
-        return viewModel.isRefinementPaused ? "Resume Refinement" : "Pause Refinement"
+        viewModel.isProductionRenderPaused ? "Resume Render" : "Pause Render"
     }
 
     var body: some Scene {
@@ -207,23 +204,15 @@ struct RISEApp: App {
                 // clickable regardless.
                 //
                 // P1-1 fix: disabled predicate is now `canUseSceneTransport`
-                // (matches `togglePauseRefinement`'s own guard) instead of
-                // a hand-copied `renderState` case list that missed the
-                // chat-driven-agent-render case.
-                // Item 4: during a production render this menu item
-                // pauses/resumes THE RENDER; otherwise interactive
-                // refinement, as before.
+                // Production-only now: refinement pause/resume was
+                // removed by user request (refinement restarts on every
+                // edit anyway), so this item pauses/resumes THE RENDER
+                // and is enabled only while one is in flight.
                 Button(pauseMenuTitle) {
-                    if viewModel.renderState == .rendering {
-                        viewModel.toggleProductionRenderPause()
-                    } else {
-                        viewModel.togglePauseRefinement()
-                    }
+                    viewModel.toggleProductionRenderPause()
                 }
                 .keyboardShortcut(.space, modifiers: [.control])
-                .disabled(viewModel.renderState == .rendering
-                          ? false
-                          : !viewModel.canUseSceneTransport)
+                .disabled(viewModel.renderState != .rendering)
 
                 Button("Restart Refinement") {
                     viewModel.restartRefinement()

@@ -79,7 +79,6 @@ struct TopBar: View {
 
     private var renderStatusCluster: some View {
         HStack(spacing: 10) {
-            pauseResumeButton
             restartButton
             readout
             // P2 fix: when there's no resolved integrator to show (not
@@ -113,24 +112,10 @@ struct TopBar: View {
         !viewModel.canUseSceneTransport
     }
 
-    /// Refinement-only again: the top bar's render-transport pill (right
-    /// side) owns production pause/resume — two pause affordances with
-    /// different targets in one bar would be confusing, so this one is
-    /// back to interactive refinement and disables during production.
-    private var pauseResumeButton: some View {
-        Button {
-            viewModel.togglePauseRefinement()
-        } label: {
-            Image(systemName: viewModel.isRefinementPaused ? "play.fill" : "pause.fill")
-                .font(.system(size: 10))
-                .foregroundColor(Theme.textPrimary)
-                .frame(width: 26, height: 26)
-                .background(Theme.fillActive, in: RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-        .disabled(refinementControlsDisabled)
-        .help("Pause / resume refinement (Space)")
-    }
+    // (The refinement pause/resume button was removed by user request —
+    // interactive refinement restarts on every edit anyway, so pausing
+    // it was a niche control.  Production pause lives on the transport
+    // pill; the restart button below remains.)
 
     private var restartButton: some View {
         Button {
@@ -234,16 +219,19 @@ struct TopBar: View {
                 .padding(.horizontal, 15)
                 .padding(.vertical, 6)
         } else if isProduction {
-            if viewModel.isProductionRenderPaused {
-                transportPill("Resume", filled: true) {
-                    viewModel.toggleProductionRenderPause()
+            HStack(spacing: 6) {
+                if viewModel.isProductionRenderPaused {
+                    transportPill("Resume", filled: true) {
+                        viewModel.toggleProductionRenderPause()
+                    }
+                    .help("Resume the render where it left off")
+                } else {
+                    transportPill("Pause", filled: false) {
+                        viewModel.toggleProductionRenderPause()
+                    }
+                    .help("Pause the render — workers park, CPU goes quiet")
                 }
-                .help("Resume the render where it left off")
-            } else {
-                transportPill("Pause", filled: false) {
-                    viewModel.toggleProductionRenderPause()
-                }
-                .help("Pause the render — workers park, CPU goes quiet")
+                cancelPill
             }
         } else {
             transportPill("Render", filled: true) {
@@ -253,6 +241,26 @@ struct TopBar: View {
             .opacity(viewModel.canStartProductionRender ? 1.0 : 0.4)
             .help("Start a production render (⌘R)")
         }
+    }
+
+    /// Cancel, shown beside Pause/Resume while a render is in flight —
+    /// error-tinted outline so it reads as the destructive option.
+    /// Works while paused too (the pause gate observes the cancel).
+    private var cancelPill: some View {
+        Button {
+            viewModel.cancelRender()
+        } label: {
+            Text("Cancel")
+                .font(Theme.sans(12, .semibold))
+                .foregroundColor(Theme.error)
+                .padding(.horizontal, 13)
+                .padding(.vertical, 6)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusMedium)
+                        .stroke(Theme.error.opacity(0.5), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help("Cancel the render (⌘.)")
     }
 
     private func transportPill(_ title: String, filled: Bool,

@@ -421,7 +421,6 @@ final class RenderViewModel: ObservableObject {
     /// label from it (R = 6 - log2(divisor)).
     @Published var refinementScaleDivisor: UInt32 = 1
     /// Mirrors `RISEViewportBridge.isRefinementPaused()`.
-    @Published var isRefinementPaused: Bool = false
     /// UI redesign design brief A4 — the active interactive region,
     /// in full-res FILM-PIXEL space (matches
     /// `RISEViewportBridge.setInteractiveRegionLeft:top:right:bottom:`),
@@ -499,7 +498,6 @@ final class RenderViewModel: ObservableObject {
             guard let vb = viewportBridge else {
                 refinementPhase = -1
                 refinementScaleDivisor = 1
-                isRefinementPaused = false
                 undoLabel = ""
                 redoLabel = ""
                 activeRegion = nil
@@ -1527,7 +1525,6 @@ final class RenderViewModel: ObservableObject {
         let phase = vb.refinementPhase(withScaleDivisor: &divisor)
         refinementPhase = Int(phase)
         refinementScaleDivisor = divisor
-        isRefinementPaused = vb.isRefinementPaused()
         undoLabel = vb.undoActionLabel()
         redoLabel = vb.redoActionLabel()
 
@@ -1596,33 +1593,18 @@ final class RenderViewModel: ObservableObject {
 
     // MARK: - UI redesign: refinement transport (TopBar / Render menu)
 
-    /// Pause interactive refinement.  No-op with no bridge, while a
-    /// production render owns the scene, OR while a chat-driven agent
-    /// render is outstanding on the controller's single-slot worker —
-    /// see `canUseSceneTransport` (P1-1 fix: this used to guard on
-    /// `!isProductionRenderRunning` alone, which cannot see that third
-    /// case).
-    func pauseRefinement() {
-        guard canUseSceneTransport, let vb = viewportBridge else { return }
-        vb.pauseRefinement()
-        isRefinementPaused = true
-    }
-
-    /// Resume interactive refinement.  Same gate as `pauseRefinement`.
-    func resumeRefinement() {
-        guard canUseSceneTransport, let vb = viewportBridge else { return }
-        vb.resumeRefinement()
-        isRefinementPaused = false
-    }
-
-    func togglePauseRefinement() {
-        if isRefinementPaused { resumeRefinement() } else { pauseRefinement() }
-    }
+    // (pauseRefinement/resumeRefinement/togglePauseRefinement were
+    // removed by user request — refinement restarts on every edit, so a
+    // user-facing pause for it was a niche control.  The controller's
+    // PauseRefinement API remains for future/programmatic use; the
+    // status formatter's Paused phase stays reachable through it.)
 
     /// Restart refinement from scratch: stop the interactive render
     /// thread and start it again (with its normal initial-render pass,
     /// unlike the post-production `startSuppressingInitialRender` path).
-    /// Same gate as `pauseRefinement` — see `canUseSceneTransport`.
+    /// No-op with no bridge, while a production render owns the scene,
+    /// or while a chat-driven agent render is outstanding — see
+    /// `canUseSceneTransport`.
     func restartRefinement() {
         guard canUseSceneTransport, let vb = viewportBridge else { return }
         vb.stop()

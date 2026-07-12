@@ -134,13 +134,13 @@ private:
     // would leave shortcuts like Ctrl+Space / Ctrl+R inert until the
     // user visited that menu at least once.  Each menu's aboutToShow
     // still calls this too, purely to guarantee the visible LABEL text
-    // (e.g. "Undo Translate", "Resume Refinement") is fresh at the
-    // instant the menu is seen — isRefinementPaused() / undo-redo
+    // (e.g. "Undo Translate", "Resume Render") is fresh at the
+    // instant the menu is seen — isProductionRenderPaused() / undo-redo
     // labels can change without any Qt signal firing into MainWindow.
     void updateMenuActionStates();
 
     /// Round-3 P2: the ONE click-time gate for scene-transport actions
-    /// (undo/redo, pause/resume/restart refinement) -- mirrors Mac's
+    /// (undo/redo, restart refinement) -- mirrors Mac's
     /// RenderViewModel.canUseSceneTransport so every caller inherits
     /// the production-render AND chat-render-outstanding clauses.  The
     /// setEnabled() plumbing uses the same terms; this closes the
