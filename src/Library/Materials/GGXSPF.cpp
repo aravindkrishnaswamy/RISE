@@ -145,6 +145,18 @@ void GGXSPF::Scatter(
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
 
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a wo that validates against the
+	// (tilted) shading normal can still point below the geometric surface --
+	// the continuation ray then tunnels into the solid.  Orient the
+	// geometric normal to the shading-normal side once here and gate every
+	// lobe's sample against it below.  Degenerate vGeomNormal (SquaredModulus
+	// guard, matches GlintModifier.cpp) falls back to the shading normal,
+	// making the gate a no-op.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+
 	Scalar alphaX = r_max( pAlphaX->GetValuesAt(ri).v[0], Scalar(1e-4) );
 	Scalar alphaY = r_max( pAlphaY->GetValuesAt(ri).v[0], Scalar(1e-4) );
 
@@ -177,7 +189,7 @@ void GGXSPF::Scatter(
 		const Vector3 wo = GeometricUtilities::CreateDiffuseVector( myonb, ptrand );
 		const Scalar cosTheta = Vector3Ops::Dot( wo, n );
 
-		if( cosTheta > 0 )
+		if( cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0 )
 		{
 			const Scalar diffPdf = cosTheta * INV_PI;
 			const Scalar specPdf = (alphaEff >= 1e-6) ?
@@ -218,7 +230,7 @@ void GGXSPF::Scatter(
 				const Vector3 wo = Vector3Ops::Normalize( m * (2.0 * wiDotM) - wi );
 				const Scalar cosTheta = Vector3Ops::Dot( wo, n );
 
-				if( cosTheta > 0 )
+				if( cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0 )
 				{
 					const Scalar vndfPdf = MicrofacetUtils::VNDF_Pdf_Aniso( wi, wo, myonb, alphaX, alphaY );
 
@@ -315,7 +327,7 @@ void GGXSPF::Scatter(
 			const Vector3 wo = GeometricUtilities::CreateDiffuseVector( myonb, ptrand );
 			const Scalar cosTheta = Vector3Ops::Dot( wo, n );
 
-			if( cosTheta > 0 )
+			if( cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0 )
 			{
 				const Scalar diffPdf = cosTheta * INV_PI;
 				const Scalar specPdf = (alphaEff >= 1e-6) ?
@@ -404,6 +416,18 @@ void GGXSPF::ScatterNM(
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
 
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a wo that validates against the
+	// (tilted) shading normal can still point below the geometric surface --
+	// the continuation ray then tunnels into the solid.  Orient the
+	// geometric normal to the shading-normal side once here and gate every
+	// lobe's sample against it below.  Degenerate vGeomNormal (SquaredModulus
+	// guard, matches GlintModifier.cpp) falls back to the shading normal,
+	// making the gate a no-op.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+
 	Scalar alphaX = r_max( pAlphaX->GetValueAtNM(ri,nm), Scalar(1e-4) );
 	Scalar alphaY = r_max( pAlphaY->GetValueAtNM(ri,nm), Scalar(1e-4) );
 
@@ -433,7 +457,7 @@ void GGXSPF::ScatterNM(
 		const Vector3 wo = GeometricUtilities::CreateDiffuseVector( myonb, ptrand );
 		const Scalar cosTheta = Vector3Ops::Dot( wo, n );
 
-		if( cosTheta > 0 )
+		if( cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0 )
 		{
 			const Scalar diffPdf = cosTheta * INV_PI;
 			const Scalar specPdf = (alphaEff >= 1e-6) ?
@@ -472,7 +496,7 @@ void GGXSPF::ScatterNM(
 				const Vector3 wo = Vector3Ops::Normalize( m * (2.0 * wiDotM) - wi );
 				const Scalar cosTheta = Vector3Ops::Dot( wo, n );
 
-				if( cosTheta > 0 )
+				if( cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0 )
 				{
 					const Scalar vndfPdf = MicrofacetUtils::VNDF_Pdf_Aniso( wi, wo, myonb, alphaX, alphaY );
 
@@ -562,7 +586,7 @@ void GGXSPF::ScatterNM(
 			const Vector3 wo = GeometricUtilities::CreateDiffuseVector( myonb, ptrand );
 			const Scalar cosTheta = Vector3Ops::Dot( wo, n );
 
-			if( cosTheta > 0 )
+			if( cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0 )
 			{
 				const Scalar diffPdf = cosTheta * INV_PI;
 				const Scalar specPdf = (alphaEff >= 1e-6) ?
@@ -646,6 +670,13 @@ Scalar GGXSPF::Pdf(
 	const Scalar cosTheta = Vector3Ops::Dot( woNorm, n );
 	if( cosTheta <= 0 ) return 0;
 
+	// Geometric-horizon gate (MIS consistency with Scatter's sampler-side
+	// gate): a wo the sampler can no longer emit contributes zero density.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( woNorm, geomN ) <= 0 ) return 0;
+
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
 
 	Scalar alphaX = r_max( pAlphaX->GetValuesAt(ri).v[0], Scalar(1e-4) );
@@ -688,6 +719,13 @@ Scalar GGXSPF::PdfNM(
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );
 	const Scalar cosTheta = Vector3Ops::Dot( woNorm, n );
 	if( cosTheta <= 0 ) return 0;
+
+	// Geometric-horizon gate (MIS consistency with Scatter's sampler-side
+	// gate): a wo the sampler can no longer emit contributes zero density.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( woNorm, geomN ) <= 0 ) return 0;
 
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
 

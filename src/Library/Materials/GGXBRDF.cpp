@@ -144,6 +144,18 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 		return RISEPel(0,0,0);
 	}
 
+	// Geometric-horizon gate (mirrors GGXSPF::Scatter's sampler-side gate):
+	// a GlintModifier-tilted shading normal can validate light/view
+	// directions that are still below the true geometric surface.  Reject
+	// here too so NEE evaluation stays consistent with what the sampler can
+	// actually emit.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
+		return RISEPel(0,0,0);
+	}
+
 	// Read roughness parameters, clamped to avoid division-by-zero in NDF
 	const Scalar alphaX = r_max( pAlphaX->GetValuesAt(ri).v[0], Scalar(1e-4) );
 	const Scalar alphaY = r_max( pAlphaY->GetValuesAt(ri).v[0], Scalar(1e-4) );
@@ -324,6 +336,15 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 	const Scalar nv = Vector3Ops::Dot( n, v );
 
 	if( nr < NEARZERO || nv < NEARZERO ) {
+		return 0;
+	}
+
+	// Geometric-horizon gate (mirrors GGXSPF::ScatterNM's sampler-side
+	// gate); see GGXBRDF::value for rationale.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
 		return 0;
 	}
 
