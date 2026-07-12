@@ -533,6 +533,7 @@ static int RunAgentEval( const char* runConfigPath )
 	          << " skipped=" << mr.providersSkipped
 	          << "; runs executed=" << mr.runsExecuted
 	          << " skipped(no-key)=" << mr.runsSkipped
+	          << " skipped(already-complete)=" << mr.runsAlreadyComplete
 	          << "; results under " << config.runDir << "\n";
 	return 0;
 }

@@ -432,6 +432,7 @@ namespace RISE
 		{
 			int runsExecuted   = 0;   //!< (scenario x provider-with-key x repeat) runs actually driven
 			int runsSkipped    = 0;   //!< runs skipped because a provider's key env var was unset
+			int runsAlreadyComplete = 0; //!< runs SKIPPED because their subdir already held a non-empty <scenarioId>.result.jsonl from a prior invocation into the same runDir -- the cross-invocation resume/idempotency guard (a subdir with NO result.jsonl, i.e. a crash mid-run, is instead wiped and re-run, NOT counted here)
 			int providersUsed  = 0;   //!< providers whose key resolved (non-empty)
 			int providersSkipped = 0; //!< providers skipped for a missing key
 
@@ -459,6 +460,22 @@ namespace RISE
 		//! pre-loaded (the CLI expands globs + LoadEvalScenario before
 		//! calling this, keeping matrix orchestration file-IO-light and
 		//! unit-testable with in-memory scenarios).  Never throws.
+		//!
+		//! Cross-invocation resume (idempotent completion): before executing
+		//! a run, its target subdir is checked for an already-present,
+		//! NON-EMPTY <scenarioId>.result.jsonl.  If found, the run is
+		//! SKIPPED (counted in result.runsAlreadyComplete) rather than
+		//! re-executed -- re-running the SAME runconfig into an EXISTING
+		//! runDir is therefore a no-op past the first invocation, and adding
+		//! a provider column later (e.g. exporting a new provider's api key
+		//! and re-running) executes ONLY the newly-added runs.  Without this,
+		//! a re-run would reopen each run's trajectory.jsonl in APPEND mode
+		//! (ChatTrajectory's file sink), concatenating two sessions into one
+		//! file, while truncate-overwriting result.jsonl -- silent
+		//! corruption.  A subdir that exists but holds NO (or an empty)
+		//! result.jsonl is treated as a crashed/interrupted run: its
+		//! contents are wiped before re-running so the trajectory sink's
+		//! append can't concatenate onto a partial file.
 		AgentEvalMatrixResult RunEvalMatrix( const AgentEvalRunConfig& config,
 		                                     const std::vector<AgentEvalScenario>& scenarios,
 		                                     const AgentEvalMatrixOptions& options );

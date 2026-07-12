@@ -987,6 +987,37 @@ namespace RISE
 						leaf += "__r" + std::to_string( rep );
 						const std::string runDir = ( std::filesystem::path( config.runDir ) / leaf ).string();
 
+						// Cross-invocation idempotent-resume guard.  A run
+						// whose subdir already carries a NON-EMPTY
+						// <scenarioId>.result.jsonl completed in a PRIOR
+						// invocation into this same runDir -- SKIP it rather
+						// than re-executing, which would reopen
+						// trajectory.jsonl in APPEND mode (concatenating two
+						// sessions into one file) while truncate-overwriting
+						// result.jsonl.  A subdir that exists but holds no
+						// (or an empty) result.jsonl is a crashed/interrupted
+						// run: wipe its contents first so the trajectory
+						// sink's append can't concatenate onto a partial
+						// file, then fall through and re-run it normally.
+						const std::string resultPath =
+							( std::filesystem::path( runDir ) / ( scenario.id + ".result.jsonl" ) ).string();
+						{
+							std::error_code ec;
+							const bool resultExists = std::filesystem::exists( resultPath, ec ) && !ec;
+							const std::uintmax_t resultSize =
+								resultExists ? std::filesystem::file_size( resultPath, ec ) : 0;
+							if( resultExists && !ec && resultSize > 0 ) {
+								++result.runsAlreadyComplete;
+								logLine( "RunEvalMatrix: SKIP " + leaf +
+									" -- already completed -- skipping (delete the subdir to re-run)" );
+								continue;
+							}
+							ec.clear();
+							if( std::filesystem::exists( runDir, ec ) && !ec ) {
+								std::filesystem::remove_all( runDir, ec );   // wipe a crashed/partial run's leftovers
+							}
+						}
+
 						logLine( "RunEvalMatrix: RUN " + leaf );
 
 						AgentEvalLiveRunOptions lo;

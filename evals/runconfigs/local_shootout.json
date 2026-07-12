@@ -1,0 +1,17 @@
+{
+  "scenarios": [
+    "evals/scenarios/remove_object.json",
+    "evals/scenarios/material_add_and_bind.json",
+    "evals/scenarios/conflict_retry.json",
+    "evals/scenarios/reserved_name_recovery.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" },
+    { "provider": "local",  "model": "qwen3:32b" },
+    { "provider": "local",  "model": "qwen3.6:27b" },
+    { "provider": "local",  "model": "qwen3-coder:30b" },
+    { "provider": "local",  "model": "llama3.3:70b-instruct-q4_K_M" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/local_shootout"
+}

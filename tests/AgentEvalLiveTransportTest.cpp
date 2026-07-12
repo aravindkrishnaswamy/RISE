@@ -36,6 +36,7 @@
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -430,6 +431,42 @@ static void TestRunConfigLoad()
 		Check( cfg.providers[0].keyEnvVar == "LOCAL_LLM_KEY", "local provider may still name a keyEnvVar" );
 	}
 
+	// Multiple provider entries sharing the SAME provider name but DISTINCT
+	// models -> ALL load (LoadEvalRunConfig has no provider-NAME dedup; a
+	// local-model shootout config legitimately wants several "local" rows,
+	// keyed by (provider, model), not by provider name alone -- see the
+	// committed evals/runconfigs/local_shootout.json for the real case).
+	{
+		const std::string path = dir + "/local_multi_model.json";
+		WriteFile( path,
+			"{\"scenarios\":[\"a.json\"],\"providers\":["
+			"{\"provider\":\"local\",\"model\":\"qwen3:32b\"},"
+			"{\"provider\":\"local\",\"model\":\"qwen3.6:27b\"},"
+			"{\"provider\":\"local\",\"model\":\"qwen3-coder:30b\"},"
+			"{\"provider\":\"local\",\"model\":\"llama3.3:70b-instruct-q4_K_M\"}],"
+			"\"runDir\":\"d\"}" );
+		AgentEvalRunConfig cfg; std::string err;
+		Check( LoadEvalRunConfig( path, cfg, err ),
+		       "4 same-provider-name/distinct-model entries ALL load (" + err + ")" );
+		Check( cfg.providers.size() == 4, "all 4 distinct-model 'local' provider rows are captured, none dropped/merged" );
+	}
+
+	// The committed local_shootout.json (5 provider rows: 1 gemini + 4
+	// distinct-model local) loads cleanly end-to-end.
+	{
+		AgentEvalRunConfig cfg; std::string err;
+		Check( LoadEvalRunConfig( "evals/runconfigs/local_shootout.json", cfg, err ),
+		       "evals/runconfigs/local_shootout.json loads (" + err + ")" );
+		Check( cfg.scenarios.size() == 4, "local_shootout.json: 4 scenarios" );
+		Check( cfg.providers.size() == 5, "local_shootout.json: 5 providers (1 gemini + 4 distinct-model local)" );
+		int localCount = 0;
+		for( std::size_t i = 0; i < cfg.providers.size(); ++i )
+			if( cfg.providers[i].provider == "local" ) ++localCount;
+		Check( localCount == 4, "local_shootout.json: 4 'local' rows survive loading (not deduped by provider name)" );
+		Check( cfg.repeats == 3, "local_shootout.json: repeats == 3" );
+		Check( cfg.runDir == "evals/runs/local_shootout", "local_shootout.json: runDir captured" );
+	}
+
 	// Malformed refusals.
 	auto refuse = [&]( const char* leaf, const std::string& json, const std::string& label ) {
 		const std::string path = dir + "/" + leaf;
@@ -660,6 +697,162 @@ static void TestRunEvalMatrixDuplicateId()
 	Check( mock.seenRequests.empty(), "the transport was NEVER called on a refused matrix" );
 }
 
+//----------------------------------------------------------------------
+// T9: RunEvalMatrix cross-invocation idempotent-resume -- re-running the
+//     SAME 1-scenario matrix into the SAME runDir a second time executes
+//     ZERO runs (all skipped-as-complete), and the second invocation's
+//     transport is NEVER called.  This is the fix for the observed bug:
+//     without the guard, the second invocation would reopen
+//     trajectory.jsonl in APPEND mode (two concatenated sessions) and
+//     truncate-overwrite result.jsonl.
+//----------------------------------------------------------------------
+static void TestRunEvalMatrixResumeSkipsCompleted()
+{
+	std::printf( "T9: RunEvalMatrix cross-invocation resume skips completed runs...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+	std::vector<AgentEvalScenario> scenarios;
+	scenarios.push_back( scenario );
+
+	AgentEvalRunConfig cfg;
+	AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+	cfg.providers.push_back( p );
+	cfg.repeats = 1;
+	cfg.runDir = ScratchRunDir( "t9_matrix_resume" );
+
+	const std::string kFakeKey = "sk-ant-RESUME-FAKEKEY-DO-NOT-LEAK";
+	AgentEvalMatrixOptions mo;
+	mo.envLookup = [&]( const std::string& name ) -> const char* {
+		return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+	};
+
+	const std::string runSub =
+		( std::filesystem::path( cfg.runDir ) / "param_edit__anthropic__claude-sonnet-5__r1" ).string();
+	const std::string trajPath = ( std::filesystem::path( runSub ) / "param_edit.trajectory.jsonl" ).string();
+
+	// First invocation: completes normally.
+	{
+		MockTransport mock1;
+		mock1.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		mock1.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		mock1.repeatLast = true;
+		mo.transport = &mock1;
+
+		AgentEvalMatrixResult mr1 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr1.runsExecuted == 1 && mr1.runsAlreadyComplete == 0,
+		       "first invocation: the run executes (nothing to resume yet)" );
+		Check( !mock1.seenRequests.empty(), "first invocation: the transport WAS called" );
+		Check( std::filesystem::exists( ( std::filesystem::path( runSub ) / "param_edit.result.jsonl" ) ),
+		       "first invocation: result.jsonl exists after completion" );
+	}
+
+	const std::vector<JsonValue> trajAfterFirst = ReadJsonl( trajPath );
+	Check( !trajAfterFirst.empty(), "first invocation: trajectory.jsonl has content" );
+
+	// Second invocation into the SAME runDir: must SKIP the already-complete
+	// run and never touch the transport.
+	{
+		MockTransport mock2;   // must NEVER be called
+		mo.transport = &mock2;
+
+		AgentEvalMatrixResult mr2 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr2.runsExecuted == 0, "second invocation: 0 runs executed" );
+		Check( mr2.runsAlreadyComplete == 1, "second invocation: 1 run skipped as already-complete" );
+		Check( mock2.seenRequests.empty(), "second invocation: the transport was NEVER called" );
+	}
+
+	// The trajectory file is untouched by the second (skipped) invocation --
+	// no re-open, no re-append.
+	const std::vector<JsonValue> trajAfterSecond = ReadJsonl( trajPath );
+	Check( trajAfterSecond.size() == trajAfterFirst.size(),
+	       "trajectory.jsonl record count is UNCHANGED by the skipped second invocation" );
+}
+
+//----------------------------------------------------------------------
+// T10: RunEvalMatrix cross-invocation resume -- a subdir left behind by a
+//     CRASHED/interrupted run (a trajectory.jsonl with a partial session
+//     but NO result.jsonl) is wiped and RE-RUN, rather than skipped or
+//     appended-to.  Proves the trajectory file holds exactly ONE session
+//     record afterward (not two concatenated sessions).
+//----------------------------------------------------------------------
+static void TestRunEvalMatrixResumeRerunsPartial()
+{
+	std::printf( "T10: RunEvalMatrix cross-invocation resume re-runs a crashed/partial run...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+	std::vector<AgentEvalScenario> scenarios;
+	scenarios.push_back( scenario );
+
+	AgentEvalRunConfig cfg;
+	AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+	cfg.providers.push_back( p );
+	cfg.repeats = 1;
+	cfg.runDir = ScratchRunDir( "t10_matrix_resume_partial" );
+
+	const std::string kFakeKey = "sk-ant-PARTIAL-FAKEKEY-DO-NOT-LEAK";
+	AgentEvalMatrixOptions mo;
+	mo.envLookup = [&]( const std::string& name ) -> const char* {
+		return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+	};
+
+	const std::string runSub =
+		( std::filesystem::path( cfg.runDir ) / "param_edit__anthropic__claude-sonnet-5__r1" ).string();
+	const std::string trajPath = ( std::filesystem::path( runSub ) / "param_edit.trajectory.jsonl" ).string();
+	const std::string resultPath = ( std::filesystem::path( runSub ) / "param_edit.result.jsonl" ).string();
+
+	// First invocation: completes normally (this leaves a full trajectory +
+	// result behind, which we then simulate a crash against below).
+	{
+		MockTransport mock1;
+		mock1.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		mock1.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		mock1.repeatLast = true;
+		mo.transport = &mock1;
+
+		AgentEvalMatrixResult mr1 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr1.runsExecuted == 1, "first invocation: the run executes" );
+	}
+
+	const std::vector<JsonValue> trajAfterFirst = ReadJsonl( trajPath );
+	const std::size_t sessionsAfterFirst =
+		static_cast<std::size_t>( std::count_if( trajAfterFirst.begin(), trajAfterFirst.end(),
+			[]( const JsonValue& v ) { return v.get( "run_type" ).asString() == "session"; } ) );
+	Check( sessionsAfterFirst == 1, "first invocation: trajectory holds exactly one session record" );
+
+	// Simulate a CRASH mid-run: delete only the result file, leaving the
+	// (now "partial" from the guard's point of view) trajectory behind.
+	Check( std::filesystem::remove( resultPath ), "simulated crash: result.jsonl removed, trajectory left behind" );
+	Check( std::filesystem::exists( trajPath ), "simulated crash: trajectory.jsonl still present with no result" );
+
+	// Second invocation: the subdir exists but carries NO result.jsonl -> it
+	// must be treated as crashed/interrupted, WIPED, and RE-RUN (not
+	// skipped, not appended-to).
+	{
+		MockTransport mock2;
+		mock2.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		mock2.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		mock2.repeatLast = true;
+		mo.transport = &mock2;
+
+		AgentEvalMatrixResult mr2 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr2.runsExecuted == 1, "second invocation: the crashed/partial run IS re-executed" );
+		Check( mr2.runsAlreadyComplete == 0, "second invocation: not counted as already-complete" );
+		Check( !mock2.seenRequests.empty(), "second invocation: the transport WAS called" );
+		Check( std::filesystem::exists( resultPath ), "second invocation: result.jsonl exists again after re-run" );
+	}
+
+	const std::vector<JsonValue> trajAfterSecond = ReadJsonl( trajPath );
+	const std::size_t sessionsAfterSecond =
+		static_cast<std::size_t>( std::count_if( trajAfterSecond.begin(), trajAfterSecond.end(),
+			[]( const JsonValue& v ) { return v.get( "run_type" ).asString() == "session"; } ) );
+	Check( sessionsAfterSecond == 1,
+	       "trajectory.jsonl holds exactly ONE session record after the re-run (old partial content was WIPED, not appended-to)" );
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalLiveTransportTest (Eval-harness slice E4: live headless runner) ===\n" );
@@ -672,6 +865,8 @@ int main()
 	TestRunConfigLoad();
 	TestRunEvalMatrix();
 	TestRunEvalMatrixDuplicateId();
+	TestRunEvalMatrixResumeSkipsCompleted();
+	TestRunEvalMatrixResumeRerunsPartial();
 
 	std::printf( "=== AgentEvalLiveTransportTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
