@@ -12,7 +12,14 @@ struct RISEApp: App {
         // force dark appearance so AppKit-native controls (NSAlert,
         // NSSavePanel, the menu bar's own rendering) match rather than
         // following System Settings' light/dark preference.
-        NSApp.appearance = NSAppearance(named: .darkAqua)
+        //
+        // MUST go through NSApplication.shared, NOT the NSApp global:
+        // SwiftUI runs App.init() BEFORE it creates the shared
+        // application object, so the implicitly-unwrapped NSApp is
+        // still nil here — unwrapping it crashed at launch
+        // (EXC_BREAKPOINT in RISEApp.init, field crash 2026-07-11).
+        // Accessing .shared instantiates the application first.
+        NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
     }
 
     var body: some Scene {
