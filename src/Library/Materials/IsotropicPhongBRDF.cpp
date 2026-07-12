@@ -75,6 +75,21 @@ static void ComputeDiffuseSpecularFactors(
 	if( (nr <= -NEARZERO) &&		// viewer is in front
 		(nv <= -NEARZERO) )			// light is in front
 	{
+		// Geometric-horizon gate: a GlintModifier-tilted shading normal can
+		// validate light/view directions that are still below the true
+		// geometric surface.  Oriented to this branch's effective normal
+		// (-n: both cosines are negative against the raw n here).  Degenerate
+		// vGeomNormal falls back to the shading normal (gate is a no-op).
+		{
+			const Vector3 nEff = -n;
+			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+				? ri.vGeomNormal : nEff;
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nEff ) >= 0 ) ? geomNRaw : -geomNRaw;
+			if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
+				return;
+			}
+		}
+
 		nr = -nr;
 		Point3 incident = Point3Ops::mkPoint3(Point3( r.x, r.y, r.z ), ((nr*-2.0)*n));
 		Scalar sd = Vector3Ops::Dot( Vector3Ops::Normalize(Vector3( incident.x, incident.y, incident.z )), v );
@@ -87,6 +102,17 @@ static void ComputeDiffuseSpecularFactors(
 	else if( (nr >= NEARZERO) &&	// viewer is behind
 			 (nv >= NEARZERO) )		// light is behind
 	{
+		// Geometric-horizon gate (mirrors the branch above; effective
+		// normal here is +n).
+		{
+			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+				? ri.vGeomNormal : n;
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+			if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
+				return;
+			}
+		}
+
 		Point3 incident = Point3Ops::mkPoint3( Point3( r.x, r.y, r.z ), ((nr*-2.0)*n));
 		Scalar sd = Vector3Ops::Dot( Vector3Ops::Normalize(Vector3( incident.x, incident.y, incident.z )), -v );
 		if( sd > 0 ) {

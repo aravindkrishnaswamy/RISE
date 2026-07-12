@@ -51,10 +51,24 @@ static bool ShouldReflect( const Vector3& vLightIn, const RayIntersectionGeometr
 
 	if( (nr <= -NEARZERO) &&		// viewer is in front	
 		(nv <= -NEARZERO) ) {		// light is in front
-		return true;
+		// Geometric-horizon gate: a GlintModifier-tilted shading normal can
+		// validate light/view directions that are still below the true
+		// geometric surface.  Oriented to this branch's effective normal
+		// (-n: both cosines are negative against the raw n here).  Degenerate
+		// vGeomNormal falls back to the shading normal (gate is a no-op).
+		const Vector3 nEff = -n;
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : nEff;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nEff ) >= 0 ) ? geomNRaw : -geomNRaw;
+		return Vector3Ops::Dot( v, geomN ) > 0 && Vector3Ops::Dot( r, geomN ) > 0;
 	} else if( (nr >= NEARZERO) &&	// viewer is behind
 				(nv >= NEARZERO) ) {	// light is behind
-		return true;
+		// Geometric-horizon gate (mirrors the branch above; effective
+		// normal here is +n).
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : n;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+		return Vector3Ops::Dot( v, geomN ) > 0 && Vector3Ops::Dot( r, geomN ) > 0;
 	}
    
 	return false;

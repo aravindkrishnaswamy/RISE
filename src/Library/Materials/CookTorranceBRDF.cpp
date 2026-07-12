@@ -93,6 +93,21 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 	const RISEPel alphaColor( alphaT.v[0], alphaT.v[1], alphaT.v[2] );
 	const Scalar scalarAlpha = alphaT.v[0];
 
+	const Vector3 vDirCheck = Vector3Ops::Normalize( vLightIn );
+	const Vector3 rDirCheck = Vector3Ops::Normalize( -ri.ray.Dir() );
+
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so light/view directions that validate
+	// against the (tilted) shading normal can still be below the geometric
+	// surface.  Reject here so NEE evaluation stays consistent with what the
+	// sampler can actually emit.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( vDirCheck, geomN ) <= 0 || Vector3Ops::Dot( rDirCheck, geomN ) <= 0 ) {
+		return RISEPel(0,0,0);
+	}
+
 	const RISEPel factor = ComputeFactor<RISEPel>( vLightIn, ri, n, alphaColor );
 
 	const RISEPel specColor = pSpecular->GetColor(ri);
@@ -139,6 +154,17 @@ Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersection
 	const Scalar specColor = pSpecular->GetColorNM(ri,nm);
 	const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
 	const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
+
+	const Vector3 vDirCheck = Vector3Ops::Normalize( vLightIn );
+	const Vector3 rDirCheck = Vector3Ops::Normalize( -ri.ray.Dir() );
+
+	// Geometric-horizon gate (mirrors value()'s gate above).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( vDirCheck, geomN ) <= 0 || Vector3Ops::Dot( rDirCheck, geomN ) <= 0 ) {
+		return 0;
+	}
 
 	Scalar specular = 0;
 

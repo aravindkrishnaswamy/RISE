@@ -122,8 +122,19 @@ static bool GenerateSpecularRay(
 		// Rather than using -k1, we just the original ri.ray.Dir()
 		Vector3 k2 = Vector3Ops::Normalize( ri.ray.Dir()/*-k1*/ + 2.0 * hdotk * h );
 
-		// If the ray goes into the material, then lets not use it
-		if( Vector3Ops::Dot(k2, ri.onb.w()) < 0 ) {
+		// If the ray goes into the material, then lets not use it.
+		// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+		// to 60 deg off the true surface, so a k2 that validates against the
+		// (tilted) shading normal can still point below the geometric surface --
+		// the continuation ray then tunnels into the solid.  Oriented to the
+		// passed-in onb's w() (the normal this lobe was sampled around).
+		// Degenerate vGeomNormal (SquaredModulus guard, matches
+		// GlintModifier.cpp) falls back to the shading normal, making the gate
+		// a no-op.
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : onb.w();
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, onb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
+		if( Vector3Ops::Dot(k2, ri.onb.w()) < 0 || Vector3Ops::Dot(k2, geomN) <= 0 ) {
 			return false;
 		}
 
@@ -164,6 +175,15 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
+
+	// Geometric-horizon gate for the diffuse lobe below (the specular lobe
+	// is gated inside GenerateSpecularRay): a wo that validates against a
+	// GlintModifier-tilted shading normal can still point below the
+	// geometric surface.  Degenerate vGeomNormal falls back to the shading
+	// normal (gate is a no-op).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : myonb.w();
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, myonb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
 
 	const ScalarTriple NUt = pNu->GetValuesAt(ri);
 	const ScalarTriple NVt = pNv->GetValuesAt(ri);
@@ -224,7 +244,9 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 	const RISEPel oneMinusRs = RISEPel(1,1,1) - rho;
 	diffuse.kray = pRd->GetColor(ri) * oneMinusRs * (diffuseNorm * fromK1 * fromK2);
 
-	scattered.AddScatteredRay( diffuse );
+	if( Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0 ) {
+		scattered.AddScatteredRay( diffuse );
+	}
 }
 
 void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
@@ -239,6 +261,15 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
+
+	// Geometric-horizon gate for the diffuse lobe below (the specular lobe
+	// is gated inside GenerateSpecularRay): a wo that validates against a
+	// GlintModifier-tilted shading normal can still point below the
+	// geometric surface.  Degenerate vGeomNormal falls back to the shading
+	// normal (gate is a no-op).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : myonb.w();
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, myonb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
 
 	const Scalar NU = pNu->GetValueAtNM(ri,nm);
 	const Scalar NV = pNv->GetValueAtNM(ri,nm);
@@ -273,7 +304,9 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 		static const Scalar diffuseNorm = 28.0 / 23.0;
 
 		diffuse.krayNM = pRd->GetColorNM(ri,nm) * (1.0 - rho) * (diffuseNorm * fromK1 * fromK2);
-		scattered.AddScatteredRay( diffuse );
+		if( Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0 ) {
+			scattered.AddScatteredRay( diffuse );
+		}
 	}
 }
 
@@ -294,6 +327,15 @@ static Scalar AshikminShirleySpecularPdf(
 	const Scalar cos_theta_o = Vector3Ops::Dot( wo, n );
 
 	if( cos_theta_i <= 0.0 || cos_theta_o <= 0.0 ) {
+		return 0.0;
+	}
+
+	// Geometric-horizon gate (MIS consistency with the sampler-side gates):
+	// a wo the sampler can no longer emit contributes zero density.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( wo, geomN ) <= 0 ) {
 		return 0.0;
 	}
 

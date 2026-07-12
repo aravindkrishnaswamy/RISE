@@ -250,10 +250,21 @@ void SchlickSPF::Scatter(
 		myonb.FlipW();
 	}
 
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a direction that validates against
+	// the (tilted) shading normal can still point below the geometric
+	// surface -- the continuation ray then tunnels into the solid.  Oriented
+	// to myonb.w() (the normal the lobes are sampled around).  Degenerate
+	// vGeomNormal (SquaredModulus guard, matches GlintModifier.cpp) falls
+	// back to the shading normal, making the gate a no-op.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : myonb.w();
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, myonb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
+
 	ScatteredRay d, s;
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
 
-	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 ) {
+	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
 		d.kray = pDiffuse->GetColor(ri);
 		// Cosine-weighted hemisphere PDF
 		const Scalar cosTheta = Vector3Ops::Dot( d.ray.Dir(), myonb.w() );
@@ -278,7 +289,7 @@ void SchlickSPF::Scatter(
 		Scalar fresnel = 0;
 		GenerateSpecularRay( s, fresnel, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), rt.v[0], it.v[0] );
 
-		if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
+		if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
 			const RISEPel rho = pSpecular->GetColor(ri);
 			s.kray = rho + (RISEPel(1.0,1.0,1.0)-rho) * fresnel;
 			s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), rt.v[0], it.v[0] );
@@ -295,7 +306,7 @@ void SchlickSPF::Scatter(
 			Scalar fresnel = 0;
 			GenerateSpecularRay( s, fresnel, myonb, ri, ptrand, rt.v[i], it.v[i] );
 
-			if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
+			if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
 				s.kray = 0;
 				s.kray[i] = rho[i] + (1.0-rho[i]) * fresnel;
 				s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), rt.v[i], it.v[i] );
@@ -319,6 +330,17 @@ void SchlickSPF::ScatterNM(
 		myonb.FlipW();
 	}
 
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a direction that validates against
+	// the (tilted) shading normal can still point below the geometric
+	// surface -- the continuation ray then tunnels into the solid.  Oriented
+	// to myonb.w() (the normal the lobes are sampled around).  Degenerate
+	// vGeomNormal (SquaredModulus guard, matches GlintModifier.cpp) falls
+	// back to the shading normal, making the gate a no-op.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : myonb.w();
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, myonb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
+
 	ScatteredRay d, s;
 	Scalar fresnel = 0;
 	Scalar roughnessNM = pRoughness->GetValueAtNM(ri,nm);
@@ -332,7 +354,7 @@ void SchlickSPF::ScatterNM(
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
 	GenerateSpecularRay( s, fresnel, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), roughnessNM, isotropyNM );
 
-	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 ) {
+	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
 		d.krayNM = pDiffuse->GetColorNM(ri,nm);
 		const Scalar cosTheta = Vector3Ops::Dot( d.ray.Dir(), myonb.w() );
 		d.pdf = (cosTheta > 0) ? cosTheta * INV_PI : 0;
@@ -340,7 +362,7 @@ void SchlickSPF::ScatterNM(
 		scattered.AddScatteredRay( d );
 	}
 
-	if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
+	if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
 		const Scalar rho = pSpecular->GetColorNM(ri,nm);
 		s.krayNM = rho + (1.0-rho) * fresnel;
 		s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), roughnessNM, isotropyNM );
@@ -363,6 +385,15 @@ Scalar SchlickSPF::Pdf(
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );
 	const Scalar cosTheta = Vector3Ops::Dot( woNorm, myonb.w() );
 	if( cosTheta <= 0 ) {
+		return 0;
+	}
+
+	// Geometric-horizon gate (MIS consistency with Scatter's sampler-side
+	// gate): a wo the sampler can no longer emit contributes zero density.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : myonb.w();
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, myonb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( woNorm, geomN ) <= 0 ) {
 		return 0;
 	}
 
@@ -410,6 +441,15 @@ Scalar SchlickSPF::PdfNM(
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );
 	const Scalar cosTheta = Vector3Ops::Dot( woNorm, myonb.w() );
 	if( cosTheta <= 0 ) {
+		return 0;
+	}
+
+	// Geometric-horizon gate (MIS consistency with Scatter's sampler-side
+	// gate): a wo the sampler can no longer emit contributes zero density.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : myonb.w();
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, myonb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( woNorm, geomN ) <= 0 ) {
 		return 0;
 	}
 

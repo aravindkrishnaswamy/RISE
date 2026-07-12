@@ -143,6 +143,20 @@ Scalar DielectricSPF::GenerateScatteredRay(
 
 	bDielectric = bFresnel = true;
 
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a Fresnel reflection direction that
+	// validates against the (tilted) shading normal can still point below the
+	// geometric surface -- the continuation ray then tunnels into the solid.
+	// Orient the geometric normal to the crossing's outward side (entering:
+	// +onb.w(); leaving: -onb.w() -- the side the reflection must stay on).
+	// Degenerate
+	// vGeomNormal (SquaredModulus guard, matches GlintModifier.cpp) falls back
+	// to the shading normal, making the gate a no-op.
+	const Vector3 nEff = bFromInside ? -ri.onb.w() : ri.onb.w();
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : nEff;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nEff ) >= 0 ) ? geomNRaw : -geomNRaw;
+
 	if( bFromInside )
 	{
 		// Determine the exit IOR: the medium the ray enters after leaving
@@ -195,6 +209,10 @@ Scalar DielectricSPF::GenerateScatteredRay(
 		} else {
 			fresnel.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
 		}
+	}
+
+	if( Vector3Ops::Dot( fresnel.ray.Dir(), geomN ) <= 0 ) {
+		bFresnel = false;
 	}
 
 	// refracted ray

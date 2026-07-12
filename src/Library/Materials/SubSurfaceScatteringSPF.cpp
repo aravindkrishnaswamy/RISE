@@ -119,6 +119,20 @@ void SubSurfaceScatteringSPF::Scatter(
 			const Scalar nWo = Vector3Ops::Dot( ri.onb.w(), wo );
 			if( nWo <= 1e-10 ) return;
 
+			// Geometric-horizon gate: GlintModifier can tilt the shading normal
+			// up to 60 deg off the true surface, so a wo that validates against
+			// the (tilted) shading normal can still point below the geometric
+			// surface -- the continuation ray then tunnels into the solid.
+			// Orient the geometric normal to the front-face side (ri.onb.w(),
+			// the normal this reflection was sampled around).  Degenerate
+			// vGeomNormal (SquaredModulus guard, matches GlintModifier.cpp)
+			// falls back to the shading normal, making the gate a no-op.  Drop
+			// (no sibling lobe; BSSRDF entry is handled by the integrator).
+			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+				? ri.vGeomNormal : ri.onb.w();
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.onb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
+			if( Vector3Ops::Dot( wo, geomN ) <= 0 ) return;
+
 			// Fresnel at the microfacet normal (not geometric normal)
 			// Must match BSDF evaluation which uses F(OdotH)
 			const Scalar F = DielectricFresnelCos( wiDotM, Ni, n );
@@ -148,14 +162,30 @@ void SubSurfaceScatteringSPF::Scatter(
 		else
 		{
 			// Smooth surface: perfect specular reflection (delta)
-			ScatteredRay reflectedRay;
-			reflectedRay.type = ScatteredRay::eRayReflection;
-			reflectedRay.isDelta = true;
-			reflectedRay.pdf = 1.0;
-			reflectedRay.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
-			reflectedRay.kray = RISEPel( R, R, R );
+			const Vector3 rvDir = Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() );
 
-			scattered.AddScatteredRay( reflectedRay );
+			// Geometric-horizon gate: derived-direction delta lobe -- compute
+			// the reflection direction first, gate it, and drop the lobe
+			// entirely on failure (no redistribution).  Oriented to the
+			// ray-facing side (+ri.onb.w() for this front-face hit): the
+			// reflect formula is sign-invariant in its normal argument, so
+			// the reflection physically lands on the incoming ray's side.
+			const Vector3 nRef = ri.onb.w();
+			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+				? ri.vGeomNormal : nRef;
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nRef ) >= 0 ) ? geomNRaw : -geomNRaw;
+
+			if( Vector3Ops::Dot( rvDir, geomN ) > 0 )
+			{
+				ScatteredRay reflectedRay;
+				reflectedRay.type = ScatteredRay::eRayReflection;
+				reflectedRay.isDelta = true;
+				reflectedRay.pdf = 1.0;
+				reflectedRay.ray = Ray( ri.ptIntersection, rvDir );
+				reflectedRay.kray = RISEPel( R, R, R );
+
+				scattered.AddScatteredRay( reflectedRay );
+			}
 		}
 	}
 	else
@@ -185,17 +215,31 @@ void SubSurfaceScatteringSPF::Scatter(
 		}
 
 		// Delta reflection back into the medium
-		ScatteredRay reflectedRay;
-		reflectedRay.type = ScatteredRay::eRayReflection;
-		reflectedRay.isDelta = true;
-		reflectedRay.pdf = 1.0;
-		reflectedRay.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
-		reflectedRay.kray = RISEPel( R, R, R );
+		const Vector3 rvDirBack = Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() );
 
-		reflectedRay.ior_stack = new IORStack( ior_stack );
-		GlobalLog()->PrintNew( reflectedRay.ior_stack, __FILE__, __LINE__, "ior stack" );
+		// Geometric-horizon gate (sign flip vs the front smooth-reflection
+		// branch: the ray arrives from inside here, so the reflection back
+		// into the medium lands on the -ri.onb.w() side).  Drop on fail
+		// (no redistribution).
+		const Vector3 nRefBack = -ri.onb.w();
+		const Vector3& geomNRawBack = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : nRefBack;
+		const Vector3 geomNBack = ( Vector3Ops::Dot( geomNRawBack, nRefBack ) >= 0 ) ? geomNRawBack : -geomNRawBack;
 
-		scattered.AddScatteredRay( reflectedRay );
+		if( Vector3Ops::Dot( rvDirBack, geomNBack ) > 0 )
+		{
+			ScatteredRay reflectedRay;
+			reflectedRay.type = ScatteredRay::eRayReflection;
+			reflectedRay.isDelta = true;
+			reflectedRay.pdf = 1.0;
+			reflectedRay.ray = Ray( ri.ptIntersection, rvDirBack );
+			reflectedRay.kray = RISEPel( R, R, R );
+
+			reflectedRay.ior_stack = new IORStack( ior_stack );
+			GlobalLog()->PrintNew( reflectedRay.ior_stack, __FILE__, __LINE__, "ior stack" );
+
+			scattered.AddScatteredRay( reflectedRay );
+		}
 
 		// Also emit exit refraction if possible (for light subpaths
 		// that need to escape the medium)
@@ -265,6 +309,12 @@ void SubSurfaceScatteringSPF::ScatterNM(
 			const Scalar nWo = Vector3Ops::Dot( ri.onb.w(), wo );
 			if( nWo <= 1e-10 ) return;
 
+			// Geometric-horizon gate (mirrors Scatter()'s rough-reflection gate).
+			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+				? ri.vGeomNormal : ri.onb.w();
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.onb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
+			if( Vector3Ops::Dot( wo, geomN ) <= 0 ) return;
+
 			// Fresnel at the microfacet normal (matching BSDF)
 			const Scalar F = DielectricFresnelCos( wiDotM, Ni, n );
 			const Scalar G1wo = MicrofacetUtils::GGX_G1( alpha, nWo );
@@ -290,14 +340,25 @@ void SubSurfaceScatteringSPF::ScatterNM(
 		else
 		{
 			// Smooth surface: perfect specular reflection (delta)
-			ScatteredRay reflectedRay;
-			reflectedRay.type = ScatteredRay::eRayReflection;
-			reflectedRay.isDelta = true;
-			reflectedRay.pdf = 1.0;
-			reflectedRay.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
-			reflectedRay.krayNM = R;
+			const Vector3 rvDir = Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() );
 
-			scattered.AddScatteredRay( reflectedRay );
+			// Geometric-horizon gate (mirrors Scatter()'s smooth-reflection gate).
+			const Vector3 nRef = ri.onb.w();
+			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+				? ri.vGeomNormal : nRef;
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nRef ) >= 0 ) ? geomNRaw : -geomNRaw;
+
+			if( Vector3Ops::Dot( rvDir, geomN ) > 0 )
+			{
+				ScatteredRay reflectedRay;
+				reflectedRay.type = ScatteredRay::eRayReflection;
+				reflectedRay.isDelta = true;
+				reflectedRay.pdf = 1.0;
+				reflectedRay.ray = Ray( ri.ptIntersection, rvDir );
+				reflectedRay.krayNM = R;
+
+				scattered.AddScatteredRay( reflectedRay );
+			}
 		}
 	}
 	else
@@ -320,17 +381,28 @@ void SubSurfaceScatteringSPF::ScatterNM(
 			R = 1.0;
 		}
 
-		ScatteredRay reflectedRay;
-		reflectedRay.type = ScatteredRay::eRayReflection;
-		reflectedRay.isDelta = true;
-		reflectedRay.pdf = 1.0;
-		reflectedRay.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
-		reflectedRay.krayNM = R;
+		const Vector3 rvDirBack = Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() );
 
-		reflectedRay.ior_stack = new IORStack( ior_stack );
-		GlobalLog()->PrintNew( reflectedRay.ior_stack, __FILE__, __LINE__, "ior stack" );
+		// Geometric-horizon gate (mirrors Scatter()'s back-face gate).
+		const Vector3 nRefBack = -ri.onb.w();
+		const Vector3& geomNRawBack = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : nRefBack;
+		const Vector3 geomNBack = ( Vector3Ops::Dot( geomNRawBack, nRefBack ) >= 0 ) ? geomNRawBack : -geomNRawBack;
 
-		scattered.AddScatteredRay( reflectedRay );
+		if( Vector3Ops::Dot( rvDirBack, geomNBack ) > 0 )
+		{
+			ScatteredRay reflectedRay;
+			reflectedRay.type = ScatteredRay::eRayReflection;
+			reflectedRay.isDelta = true;
+			reflectedRay.pdf = 1.0;
+			reflectedRay.ray = Ray( ri.ptIntersection, rvDirBack );
+			reflectedRay.krayNM = R;
+
+			reflectedRay.ior_stack = new IORStack( ior_stack );
+			GlobalLog()->PrintNew( reflectedRay.ior_stack, __FILE__, __LINE__, "ior stack" );
+
+			scattered.AddScatteredRay( reflectedRay );
+		}
 
 		if( R < 1.0 )
 		{
@@ -371,7 +443,14 @@ Scalar SubSurfaceScatteringSPF::Pdf(
 			const Vector3 woNorm = Vector3Ops::Normalize( wo );
 			const Vector3 n = ri.onb.w();
 
-			if( Vector3Ops::Dot( woNorm, n ) > 0 && Vector3Ops::Dot( wi, n ) > 0 ) {
+			// Geometric-horizon gate (MIS consistency with Scatter()'s
+			// sampler-side gate): a wo the sampler can no longer emit
+			// contributes zero density.
+			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+				? ri.vGeomNormal : n;
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+
+			if( Vector3Ops::Dot( woNorm, n ) > 0 && Vector3Ops::Dot( wi, n ) > 0 && Vector3Ops::Dot( woNorm, geomN ) > 0 ) {
 				return MicrofacetUtils::VNDF_Pdf( wi, woNorm, n, alpha );
 			}
 		}

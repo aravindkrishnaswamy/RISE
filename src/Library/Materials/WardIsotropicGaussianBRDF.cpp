@@ -60,6 +60,18 @@ static void ComputeFactors(
 	const Scalar nv = Vector3Ops::Dot(n,v);
 
 	if( (nr >= NEARZERO) && (nv >= NEARZERO) ) {
+		// Geometric-horizon gate: a GlintModifier-tilted shading normal can
+		// validate light/view directions that are still below the true
+		// geometric surface.  Reject here so NEE evaluation stays consistent
+		// with what the sampler can actually emit.  Degenerate vGeomNormal
+		// falls back to the shading normal (gate is a no-op).
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : n;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+		if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
+			return;
+		}
+
 		diffuse = INV_PI;
 
 		const Vector3 h = Vector3Ops::Normalize(v+r);

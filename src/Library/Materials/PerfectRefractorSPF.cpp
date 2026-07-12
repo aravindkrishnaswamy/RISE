@@ -78,6 +78,21 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	//   cosine = dot(normal, ray_dir), so cosine < NEARZERO means entering.
 	const bool bEntering = !ior_stack.containsCurrent();
 
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a Fresnel reflection direction that
+	// validates against the (tilted) shading normal can still point below the
+	// geometric surface -- the continuation ray then tunnels into the solid.
+	// Orient the geometric normal to the side of the normal this reflection is
+	// actually built around (bEntering -> +onb.w(), else -> -onb.w(), mirroring
+	// the two branches below).  Degenerate vGeomNormal (SquaredModulus guard,
+	// matches GlintModifier.cpp) falls back to the shading normal, making the
+	// gate a no-op.  Drop (not redistribute) the Fresnel lobe on failure.
+	const Vector3 nEff = bEntering ? ri.onb.w() : -ri.onb.w();
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : nEff;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nEff ) >= 0 ) ? geomNRaw : -geomNRaw;
+	bool bDropFresnel = false;
+
 	Scalar ref = 0;
 	if( bEntering )
 	{
@@ -94,6 +109,9 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 
 		if( ref > 0.0 ) {
 			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
+			if( Vector3Ops::Dot( fresnel.ray.Dir(), geomN ) <= 0 ) {
+				bDropFresnel = true;
+			}
 		}
 	}
 	else
@@ -115,6 +133,9 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 			fresnel.ior_stack = new IORStack( ior_stack );
 			GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
 			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
+			if( Vector3Ops::Dot( fresnel.ray.Dir(), geomN ) <= 0 ) {
+				bDropFresnel = true;
+			}
 		}
 	}
 
@@ -129,7 +150,7 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 		scattered.AddScatteredRay( specular );
 	}
 
-	if( ref > 0.0 ) {
+	if( ref > 0.0 && !bDropFresnel ) {
 		if( oneofthree ) {
 			fresnel.kray[oneofthree-1] = ref;
 		} else {
@@ -189,6 +210,21 @@ void PerfectRefractorSPF::ScatterNM(
 	// determination when available (see DoSingleRGBComponent for details)
 	const bool bEntering = !ior_stack.containsCurrent();
 
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a Fresnel reflection direction that
+	// validates against the (tilted) shading normal can still point below the
+	// geometric surface -- the continuation ray then tunnels into the solid.
+	// Orient the geometric normal to the side of the normal this reflection is
+	// actually built around (bEntering -> +onb.w(), else -> -onb.w(), mirroring
+	// the two branches below).  Degenerate vGeomNormal (SquaredModulus guard,
+	// matches GlintModifier.cpp) falls back to the shading normal, making the
+	// gate a no-op.  Drop (not redistribute) the Fresnel lobe on failure.
+	const Vector3 nEff = bEntering ? ri.onb.w() : -ri.onb.w();
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : nEff;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nEff ) >= 0 ) ? geomNRaw : -geomNRaw;
+	bool bDropFresnel = false;
+
 	Scalar ref = 0;
 	if( bEntering )
 	{
@@ -205,6 +241,9 @@ void PerfectRefractorSPF::ScatterNM(
 
 		if( ref > 0.0 ) {
 			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
+			if( Vector3Ops::Dot( fresnel.ray.Dir(), geomN ) <= 0 ) {
+				bDropFresnel = true;
+			}
 		}
 	}
 	else
@@ -227,6 +266,9 @@ void PerfectRefractorSPF::ScatterNM(
 			fresnel.ior_stack = new IORStack( ior_stack );
 			GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
 			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
+			if( Vector3Ops::Dot( fresnel.ray.Dir(), geomN ) <= 0 ) {
+				bDropFresnel = true;
+			}
 		}
 	}
 
@@ -237,7 +279,7 @@ void PerfectRefractorSPF::ScatterNM(
 		scattered.AddScatteredRay( specular );
 	}
 
-	if( ref > 0.0 ) {
+	if( ref > 0.0 && !bDropFresnel ) {
 		fresnel.krayNM = ref;
 
 		scattered.AddScatteredRay( fresnel );

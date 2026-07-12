@@ -67,6 +67,19 @@ void TranslucentSPF::Scatter(
 	ScatteredRay	trans;
 
 	const Vector3& n = ri.onb.w();
+
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a front-lobe direction that
+	// validates against the (tilted) shading normal can still point below
+	// the geometric surface -- the continuation ray then tunnels into the
+	// solid.  Only the entering-branch front (reflection) lobe is gated;
+	// all `trans` lobes and the exit-face re-emission are transmission and
+	// stay exempt.  Degenerate vGeomNormal (SquaredModulus guard, matches
+	// GlintModifier.cpp) falls back to the shading normal, making the gate
+	// a no-op.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
 	OrthonormalBasis3D	myonb = ri.onb;
 
 	const Vector3	r = ri.ray.Dir();
@@ -94,7 +107,9 @@ void TranslucentSPF::Scatter(
 			front.ray.Set( ri.ptIntersection, rv );
 			front.pdf = fabs( Vector3Ops::Dot( front.ray.Dir(), ri.onb.w() ) ) * INV_PI;
 			front.isDelta = false;
-			scattered.AddScatteredRay( front );
+			if( Vector3Ops::Dot( front.ray.Dir(), geomN ) > 0 ) {
+				scattered.AddScatteredRay( front );
+			}
 		}
 
 		trans.kray = pTrans->GetColor(ri);
@@ -238,6 +253,11 @@ void TranslucentSPF::ScatterNM(
 	ScatteredRay	trans;
 
 	const Vector3& n = ri.onb.w();
+
+	// Geometric-horizon gate (mirrors Scatter()'s front-lobe gate).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
 	OrthonormalBasis3D	myonb = ri.onb;
 
 	const Vector3	r = ri.ray.Dir();
@@ -259,7 +279,9 @@ void TranslucentSPF::ScatterNM(
 			front.ray.Set( ri.ptIntersection, rv );
 			front.pdf = fabs( Vector3Ops::Dot( front.ray.Dir(), ri.onb.w() ) ) * INV_PI;
 			front.isDelta = false;
-			scattered.AddScatteredRay( front );
+			if( Vector3Ops::Dot( front.ray.Dir(), geomN ) > 0 ) {
+				scattered.AddScatteredRay( front );
+			}
 		}
 
 		trans.krayNM = pTrans->GetColorNM(ri,nm);
@@ -355,6 +377,19 @@ Scalar TranslucentSPF::Pdf(
 	const Scalar cosTheta = bFrontFace ?
 		Vector3Ops::Dot( wo, ri.onb.w() ) :
 		-Vector3Ops::Dot( wo, ri.onb.w() );
+
+	// Geometric-horizon gate (MIS consistency with Scatter's sampler-side
+	// gate, front-hemisphere lobe only): a wo the sampler can no longer
+	// emit contributes zero density.
+	if( bFrontFace )
+	{
+		const Vector3& n = ri.onb.w();
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : n;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+		if( Vector3Ops::Dot( wo, geomN ) <= 0 ) return 0;
+	}
+
 	return (cosTheta > 0) ? cosTheta * INV_PI : 0;
 }
 
