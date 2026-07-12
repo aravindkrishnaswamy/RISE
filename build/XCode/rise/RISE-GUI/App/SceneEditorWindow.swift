@@ -308,9 +308,15 @@ struct SceneEditorPanel: View {
                 viewModel.revertEditorFile()
             }
 
+            // P1-3 fix: no keyboard shortcut here.  ⌘S was bound both
+            // here AND on File > "Save Rendered Image…" (RISEApp.swift);
+            // the responder chain resolves this pill's shortcut FIRST,
+            // so ⌘S silently overwrote the loaded .RISEscene with the
+            // raw editor buffer instead of saving the rendered image the
+            // menu item's label promises.  The pill stays clickable —
+            // only the keyboard binding is gone.
             editorPill("Save", disabled: !viewModel.isEditorDirty,
-                       help: "Save changes to disk",
-                       shortcutKey: "s", shortcutModifiers: .command) {
+                       help: "Save changes to disk") {
                 viewModel.saveEditorFile()
             }
 

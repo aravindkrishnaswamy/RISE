@@ -81,8 +81,15 @@ struct TopBar: View {
             pauseResumeButton
             restartButton
             readout
-            Rectangle().fill(Theme.borderLight).frame(width: 1, height: 22)
-            integratorChip
+            // P2 fix: when there's no resolved integrator to show (not
+            // using the auto-dispatcher, or no render yet), omit the
+            // chip AND its divider entirely rather than rendering a
+            // misleading static "AUTO" — the scene may not even use
+            // the auto-dispatcher.
+            if let integ = viewModel.resolvedIntegrator {
+                Rectangle().fill(Theme.borderLight).frame(width: 1, height: 22)
+                integratorChip(integ)
+            }
         }
         .padding(.vertical, 5)
         .padding(.horizontal, 6)
@@ -93,14 +100,16 @@ struct TopBar: View {
         )
     }
 
-    /// True while no bridge is attached, or a production render owns
-    /// the scene — the same window `pauseRefinement`/`resumeRefinement`/
-    /// `restartRefinement` no-op in on the view-model side; disabling
-    /// the buttons here keeps the UI honest about it.
+    /// P1-1 fix: was `viewModel.viewportBridge == nil || renderState ==
+    /// .rendering || .cancelling` — a hand-copy of
+    /// `isProductionRenderRunning`'s case list that (like the five
+    /// transport methods it gates) missed the "a chat-driven agent
+    /// render is outstanding" case.  Single-sourced on
+    /// `canUseSceneTransport` now, which the transport methods
+    /// themselves guard on — so this predicate and the actual no-op
+    /// behavior can never drift apart again.
     private var refinementControlsDisabled: Bool {
-        viewModel.viewportBridge == nil
-            || viewModel.renderState == .rendering
-            || viewModel.renderState == .cancelling
+        !viewModel.canUseSceneTransport
     }
 
     private var pauseResumeButton: some View {
@@ -142,6 +151,16 @@ struct TopBar: View {
                     .font(Theme.sans(9))
                     .tracking(0.6)
                     .foregroundColor(statusLabelColor)
+                // P1-5 fix: elapsed/remaining time was tracked on the
+                // view model (formattedElapsedTime / formattedRemainingTime)
+                // but never surfaced anywhere in the redesigned TopBar —
+                // restore it as a compact caption alongside the status
+                // text during a production render.
+                if isProduction || isCancelling {
+                    Text(elapsedRemainingText)
+                        .font(Theme.mono(9.5))
+                        .foregroundColor(Theme.textDim)
+                }
             }
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 2)
@@ -153,22 +172,34 @@ struct TopBar: View {
             }
         }
         .padding(.trailing, 4)
+        // P1-5 / P1-6: surface whichever of "why is this in an error
+        // state" (highest priority) or "what stage is production on"
+        // is meaningful right now — empty string is a no-op tooltip.
+        .help(readoutHelp)
     }
 
-    private var integratorChip: some View {
-        Group {
-            if let integ = viewModel.resolvedIntegrator {
-                Text("AUTO → \(integ.uppercased())")
-                    .font(Theme.mono(10))
-                    .foregroundColor(Theme.success)
-                    .help(viewModel.resolveReason ?? "")
-            } else {
-                Text("AUTO")
-                    .font(Theme.mono(10))
-                    .foregroundColor(Theme.textDim)
-            }
+    /// P1-5 fix: `formattedElapsedTime`, plus `· ~<remaining> remaining`
+    /// when the ETA has warmed up (`formattedRemainingTime` is nil
+    /// while it's still warming up or otherwise unavailable).
+    private var elapsedRemainingText: String {
+        guard let remaining = viewModel.formattedRemainingTime else {
+            return viewModel.formattedElapsedTime
         }
-        .padding(.horizontal, 4)
+        return "\(viewModel.formattedElapsedTime) · ~\(remaining) remaining"
+    }
+
+    private var readoutHelp: String {
+        if let msg = errorMessage { return msg }
+        if !viewModel.progressTitle.isEmpty { return viewModel.progressTitle }
+        return ""
+    }
+
+    private func integratorChip(_ integ: String) -> some View {
+        Text("AUTO → \(integ.uppercased())")
+            .font(Theme.mono(10))
+            .foregroundColor(Theme.success)
+            .help(viewModel.resolveReason ?? "")
+            .padding(.horizontal, 4)
     }
 
     // MARK: - Right: Save
@@ -194,11 +225,27 @@ struct TopBar: View {
     private var isProduction: Bool { viewModel.renderState == .rendering }
     private var isCancelling: Bool { viewModel.renderState == .cancelling }
 
+    /// P1-6 fix: `renderState == .error(msg)` used to fall through to
+    /// RefinementStatusFormatter, which has no `.error` case in its
+    /// (phase, isProduction, isCancelling) input space — it silently
+    /// rendered as "Settled" (phase 0's default), hiding a real
+    /// failure behind the same look as "everything's fine."  Checked
+    /// BEFORE calling into the shared formatter so an error always
+    /// wins regardless of whatever refinement phase happens to be
+    /// cached from before the failure.
+    ///
     /// One shared mapping with the viewport's refinement pill
     /// (RefinementStatusFormatter) so the two readouts can never
-    /// disagree at a glance.
+    /// disagree at a glance — this is why the error branch is handled
+    /// HERE rather than by adding an `.error` case to the formatter's
+    /// own state space (TopBar is the only surface that needs it: the
+    /// bottom-left refinement pill only shows during interactive
+    /// editing, which is unreachable once `renderState` is `.error`).
     private var status: RefinementStatusFormatter.Status {
-        RefinementStatusFormatter.status(
+        if errorMessage != nil {
+            return RefinementStatusFormatter.Status(text: "Error", label: "ERROR", fraction: 0)
+        }
+        return RefinementStatusFormatter.status(
             phase: viewModel.refinementPhase,
             scaleDivisor: viewModel.refinementScaleDivisor,
             isProduction: isProduction,
@@ -206,10 +253,17 @@ struct TopBar: View {
             productionProgress: viewModel.progress)
     }
 
+    /// The failure message when `renderState == .error(msg)`, else nil.
+    private var errorMessage: String? {
+        if case .error(let msg) = viewModel.renderState { return msg }
+        return nil
+    }
+
     private var statusRow1: String { status.text }
     private var statusLabel: String { status.label }
 
     private var statusLabelColor: Color {
+        if errorMessage != nil { return Theme.error }
         if isCancelling { return Theme.warn }
         if isProduction { return Theme.success }
         switch viewModel.refinementPhase {

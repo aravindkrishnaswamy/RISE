@@ -110,18 +110,30 @@ struct RISEApp: App {
             // step label ("Translate", "Agent Edit", ...).  Empty label
             // means the corresponding stack is empty — falls back to a
             // bare "Undo" / "Redo" title rather than a trailing space.
+            //
+            // P1-1 / P2 fix: this menu used to gate on
+            // `viewportBridge == nil || !canOpenScene` — a THIRD,
+            // independently hand-copied version of the "is a production
+            // render occupying the controller" case list (the other two
+            // being `isProductionRenderRunning` and TopBar's old
+            // `refinementControlsDisabled`), and one that also missed
+            // the chat-driven-agent-render case those two now share via
+            // `canUseSceneTransport`.  Single-sourced on
+            // `canUseSceneTransport` (which already folds in the
+            // bridge-nil check), same as `undo()`/`redo()` themselves
+            // guard on.
             CommandGroup(replacing: .undoRedo) {
                 Button(viewModel.undoLabel.isEmpty ? "Undo" : "Undo \(viewModel.undoLabel)") {
                     viewModel.undo()
                 }
                 .keyboardShortcut("z", modifiers: .command)
-                .disabled(viewModel.viewportBridge == nil || !viewModel.canOpenScene)
+                .disabled(!viewModel.canUseSceneTransport)
 
                 Button(viewModel.redoLabel.isEmpty ? "Redo" : "Redo \(viewModel.redoLabel)") {
                     viewModel.redo()
                 }
                 .keyboardShortcut("z", modifiers: [.command, .shift])
-                .disabled(viewModel.viewportBridge == nil || !viewModel.canOpenScene)
+                .disabled(!viewModel.canUseSceneTransport)
             }
 
             // UI redesign (design brief A2): refinement transport +
@@ -137,20 +149,26 @@ struct RISEApp: App {
                 // claim globally.  Bound to ⌃Space instead; the TopBar
                 // button (no keyboard involved) still reads "(Space)"
                 // in its tooltip per the design brief's literal text.
+                // Also note: macOS's default Input Source switcher
+                // shortcut is bound to ⌃Space out of the box on many
+                // systems, so it may intercept this keystroke before it
+                // reaches the app — the menu item itself remains fully
+                // clickable regardless.
+                //
+                // P1-1 fix: disabled predicate is now `canUseSceneTransport`
+                // (matches `togglePauseRefinement`'s own guard) instead of
+                // a hand-copied `renderState` case list that missed the
+                // chat-driven-agent-render case.
                 Button(viewModel.isRefinementPaused ? "Resume Refinement" : "Pause Refinement") {
                     viewModel.togglePauseRefinement()
                 }
                 .keyboardShortcut(.space, modifiers: [.control])
-                .disabled(viewModel.viewportBridge == nil
-                          || viewModel.renderState == .rendering
-                          || viewModel.renderState == .cancelling)
+                .disabled(!viewModel.canUseSceneTransport)
 
                 Button("Restart Refinement") {
                     viewModel.restartRefinement()
                 }
-                .disabled(viewModel.viewportBridge == nil
-                          || viewModel.renderState == .rendering
-                          || viewModel.renderState == .cancelling)
+                .disabled(!viewModel.canUseSceneTransport)
 
                 Divider()
 

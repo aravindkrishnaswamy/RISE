@@ -445,8 +445,25 @@ final class ChatViewModel: ObservableObject {
     /// refused outright). Refreshes the listing immediately afterward so
     /// the panel reflects the new status without waiting for the next
     /// timer tick.
+    ///
+    /// P1-2 fix: gated on `sceneEditable()` — the SAME closure `send()`
+    /// checks (see its guard above) and every other agent-mutation
+    /// surface (the raw JSON-RPC debug panel's `sendAgentRequest`)
+    /// consumes.  Applying a proposal drives a CST re-derive through the
+    /// live controller exactly like a `propose_patch` tool call does;
+    /// without this guard a user could hit Apply/Reject while a
+    /// production render's workers are reading Scene state off-main, or
+    /// while a chat-driven agent render is outstanding on the
+    /// controller's single-slot worker — the same race `sceneEditable`
+    /// exists to prevent everywhere else.  No user-visible error row
+    /// here (unlike `send()`'s turn-based error entry): the button
+    /// itself is disabled on the same predicate in ProposalCard's
+    /// `pendingFooter`, so reaching this guard's false branch means a
+    /// state change raced the click between render and dispatch — a
+    /// silent no-op is the right degrade, matching `sendAgentRequest`'s
+    /// nil-bridge branch.
     func resolveProposal(id: UInt64, approve: Bool) {
-        guard let vb = viewportBridge else { return }
+        guard let vb = viewportBridge, sceneEditable() else { return }
         let line = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"resolve_proposal\"," +
                    "\"params\":{\"proposalId\":\(id),\"approve\":\(approve ? "true" : "false")}}"
         _ = vb.agentHandleLine(line)

@@ -201,6 +201,15 @@ struct ProposalDiffCard: View {
         }
     }
 
+    /// P1-2 fix: same gate `ChatViewModel.resolveProposal` itself
+    /// enforces (`sceneEditable()`, backed by
+    /// `RenderViewModel.isSceneEditableForAgents`) — disabling the
+    /// buttons here is the honest-UI half of that fix; the view-model
+    /// guard is the one that actually matters for correctness.
+    private var applyRejectDisabled: Bool {
+        !viewModel.isSceneEditableForAgents
+    }
+
     private var pendingFooter: some View {
         HStack(spacing: 8) {
             Button {
@@ -214,6 +223,9 @@ struct ProposalDiffCard: View {
             .buttonStyle(.plain)
             .background(Theme.accent, in: RoundedRectangle(cornerRadius: 7))
             .foregroundColor(Color(hex: 0x0d1116))
+            .disabled(applyRejectDisabled)
+            .opacity(applyRejectDisabled ? 0.4 : 1.0)
+            .help(applyRejectDisabled ? "Unavailable while a render is in flight" : "")
 
             Button {
                 chat.resolveProposal(id: proposal.id, approve: false)
@@ -228,6 +240,9 @@ struct ProposalDiffCard: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 7).stroke(Theme.borderStrong, lineWidth: 1)
             )
+            .disabled(applyRejectDisabled)
+            .opacity(applyRejectDisabled ? 0.4 : 1.0)
+            .help(applyRejectDisabled ? "Unavailable while a render is in flight" : "")
         }
         .padding(10)
         .background(Theme.bgCardDeep)

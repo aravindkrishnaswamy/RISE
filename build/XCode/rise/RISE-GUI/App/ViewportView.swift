@@ -82,6 +82,16 @@ struct ViewportView: View {
     /// consumes it to branch pointer routing and disarms it once a
     /// drag completes (or Esc is pressed).
     @Binding var regionArmed: Bool
+    /// P1-4 fix: bumped by ContentView (the SAME `propertyRefresh`
+    /// counter OutlinerView / PropertiesPanel already key off of)
+    /// whenever selection may have changed through a surface OTHER
+    /// than this view's own pointer/tool events — most importantly
+    /// the outliner's click-to-select.  Before this existed, the
+    /// top-left selection chip only refreshed from
+    /// `onPointerDown`/tool-change/bridge-attach, so selecting an
+    /// object in the outliner left the viewport's chip showing the
+    /// previous (or no) selection until the next viewport click.
+    @Binding var refreshTrigger: Int
 
     /// Bumps each time the gizmo overlay should re-pull its handle
     /// snapshot.  Tied to pointer-down / pointer-up / tool change
@@ -315,6 +325,11 @@ struct ViewportView: View {
                 onSelectionMayHaveChanged()
                 refreshSelectionChip()
             }
+            // P1-4 fix: re-pull the selection snapshot whenever
+            // something OTHER than this view's own pointer/tool events
+            // may have changed it (e.g. an outliner click) — see
+            // `refreshTrigger`'s doc.
+            .onChange(of: refreshTrigger) { _, _ in refreshSelectionChip() }
 
             if timelineVisible {
                 TimelineSlider(
@@ -322,9 +337,18 @@ struct ViewportView: View {
                     range: 0...timelineMax,
                     isPlaying: isPreviewPlaying,
                     onPlayToggle: onPlayToggle,
-                    onUserScrubBegan: onUserScrubBegan,
-                    onScrubBegin: { bridge.scrubTimeBegin() },
-                    onScrubEnd:   { bridge.scrubTimeEnd() }
+                    onUserScrubBegan: {
+                        guard interactionEnabled else { return }
+                        onUserScrubBegan()
+                    },
+                    onScrubBegin: {
+                        guard interactionEnabled else { return }
+                        bridge.scrubTimeBegin()
+                    },
+                    onScrubEnd: {
+                        guard interactionEnabled else { return }
+                        bridge.scrubTimeEnd()
+                    }
                 )
                 .disabled(!interactionEnabled)
                 .opacity(interactionEnabled ? 1.0 : 0.5)

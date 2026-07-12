@@ -42,16 +42,8 @@ struct FlowLayout: Layout {
     }
 }
 
-/// Which tab is frontmost in the left panel.
-private enum LeftPanelTab {
-    case agent
-    case sceneFile
-}
-
 struct ContentView: View {
     @EnvironmentObject var viewModel: RenderViewModel
-
-    @State private var leftTab: LeftPanelTab = .agent
 
     /// Bumped on every frame update so the right-side properties panel
     /// re-snapshots from the live camera (which may have just been
@@ -119,7 +111,7 @@ struct ContentView: View {
     private var leftPanel: some View {
         VStack(spacing: 0) {
             leftPanelTabStrip
-            switch leftTab {
+            switch viewModel.leftTab {
             case .agent:
                 agentTabBody
             case .sceneFile:
@@ -135,11 +127,11 @@ struct ContentView: View {
 
     private var leftPanelTabStrip: some View {
         HStack(spacing: 2) {
-            leftPanelTabButton(title: "Agent", isActive: leftTab == .agent, showDot: true) {
-                leftTab = .agent
+            leftPanelTabButton(title: "Agent", isActive: viewModel.leftTab == .agent, showDot: true) {
+                viewModel.leftTab = .agent
             }
-            leftPanelTabButton(title: "Scene file", isActive: leftTab == .sceneFile, showDot: false) {
-                leftTab = .sceneFile
+            leftPanelTabButton(title: "Scene file", isActive: viewModel.leftTab == .sceneFile, showDot: false) {
+                viewModel.leftTab = .sceneFile
             }
             Spacer(minLength: 0)
         }
@@ -222,7 +214,8 @@ struct ContentView: View {
                     interactiveEDRRenderer: viewModel.interactiveEDRRenderer,
                     edrEnabled: edrActive,
                     selectedTool: $selectedTool,
-                    regionArmed: $regionArmed
+                    regionArmed: $regionArmed,
+                    refreshTrigger: $propertyRefresh
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .onChange(of: viewModel.renderedImage) { _, _ in

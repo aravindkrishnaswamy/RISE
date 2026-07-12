@@ -32,6 +32,15 @@ enum RenderState: Equatable {
     case error(String)
 }
 
+/// Which tab is frontmost in the left panel.  Lives on the view model
+/// (moved from a ContentView-private `@State` in the P1-6 fix) so
+/// `loadScene`'s failure branch can switch it programmatically —
+/// ContentView-local state isn't reachable from RenderViewModel.
+enum LeftPanelTab {
+    case agent
+    case sceneFile
+}
+
 /// Thread-safe image buffer that accumulates progressive RGBA16 render updates
 /// and converts them to NSImage for display.
 final class RenderImageBuffer: @unchecked Sendable {
@@ -146,11 +155,11 @@ final class RenderViewModel: ObservableObject {
     @Published var resolveReason: String? = nil
     // nil while the ETA is still warming up or otherwise unavailable.
     @Published var remainingTime: TimeInterval? = nil
-    @Published var sceneSize: CGSize? = nil
     @Published var logMessages: [LogMessage] = []
-    @Published var isEditorVisible: Bool = false
     @Published var editorText: String = ""
     @Published var editorOriginalText: String = ""
+    /// Which left-panel tab is frontmost — see `LeftPanelTab`.
+    @Published var leftTab: LeftPanelTab = .agent
 
     // Facet 5 slice 1c-1: the live agent (JSON-RPC) panel.  A minimal
     // "agent + user co-edit" affordance — a typed JSON-RPC request is
@@ -162,26 +171,19 @@ final class RenderViewModel: ObservableObject {
     // as the raw-wire debug surface against the LIVE controller (the
     // headless CLI agent session is a separate process/session and isn't
     // affected either way).  Gated behind a developer toggle, default
-    // OFF — see `showAgentDebugPanel` below.
-    /// Whether the Agent (JSON-RPC) panel is showing.  Mirrors
-    /// `isEditorVisible` as the show/hide toggle pattern.  Meaningful only
-    /// when `showAgentDebugPanel` is true; the button/panel are hidden
-    /// entirely otherwise (see ContentView).
-    @Published var isAgentPanelVisible: Bool = false
+    // OFF — see `showAgentDebugPanel` below.  (The panel's own
+    // show/hide toggle, `isAgentPanelVisible`, was removed as dead state
+    // in the UI redesign's P3 cleanup — the Agent tab's visibility is
+    // driven entirely by `showAgentDebugPanel` now; see ContentView's
+    // `agentTabBody`.)
 
     /// Developer toggle: reveals the Agent (JSON-RPC) debug panel's
     /// button + inline panel at all.  Persisted in UserDefaults (a UI
     /// preference, not a secret) so it survives relaunch; default OFF —
     /// the Chat panel is the everyday surface, this is a wire-debug tool.
-    /// Switching this off while the panel is open hides it gracefully
-    /// (and clears the visibility flag so re-enabling later doesn't
-    /// surprise-pop a stale panel back open).
     @Published var showAgentDebugPanel: Bool = false {
         didSet {
             UserDefaults.standard.set(showAgentDebugPanel, forKey: Self.showAgentDebugPanelKey)
-            if !showAgentDebugPanel {
-                isAgentPanelVisible = false
-            }
         }
     }
     /// The JSON-RPC request text the user is composing.
@@ -194,9 +196,10 @@ final class RenderViewModel: ObservableObject {
     // turn driver live in ChatViewModel (which wraps the C++
     // AgentChatLoop via RISEAgentChatBridge); this view model only
     // owns its lifetime and forwards the per-scene bind/unbind so the
-    // chat driver never touches a torn-down viewport bridge.
-    /// Whether the Chat panel is showing.  Mirrors `isAgentPanelVisible`.
-    @Published var isChatPanelVisible: Bool = false
+    // chat driver never touches a torn-down viewport bridge.  (The
+    // panel's own show/hide toggle, `isChatPanelVisible`, was removed
+    // as dead state in the UI redesign's P3 cleanup — the Agent tab is
+    // permanently part of the left panel now, not a togglable overlay.)
     /// App-lifetime chat state (provider/model selection outlives any
     /// one scene; the conversation itself resets per scene).
     let chat = ChatViewModel()
@@ -243,6 +246,22 @@ final class RenderViewModel: ObservableObject {
     var isSceneEditableForAgents: Bool {
         !chat.isChatRenderOutstanding && !isProductionRenderRunning
     }
+
+    /// P1-1 fix: single-sourced gate for the refinement-transport +
+    /// undo/redo controls (TopBar, Render menu, Edit menu).  Before this
+    /// property existed, `pauseRefinement`/`resumeRefinement`/
+    /// `restartRefinement`/`undo`/`redo` each guarded on
+    /// `!isProductionRenderRunning` alone — which does NOT cover a
+    /// chat-driven agent render outstanding on the controller's
+    /// single-slot worker (see `isSceneEditableForAgents`'s S2b clause).
+    /// A user could hit Undo, or the TopBar pause button, while a chat
+    /// `render` tool call's async render was still in flight, racing the
+    /// SAME controller the chat driver's own tool calls touch.  This
+    /// property folds in that ADDITIVE clause by reusing
+    /// `isSceneEditableForAgents` wholesale (not a hand-copy) plus the
+    /// bridge-presence check every one of those five callers already
+    /// needed.
+    var canUseSceneTransport: Bool { viewportBridge != nil && isSceneEditableForAgents }
 
     /// S2b P2-1: THE single source for the `renderState` case-list that
     /// means "a production render is currently occupying the
@@ -653,10 +672,10 @@ final class RenderViewModel: ObservableObject {
     private func prepareAndLoadScene(at path: String) {
         // If the editor has unsaved changes, prompt the user before
         // switching.  UI redesign: the scene-file editor is now a
-        // permanently-available tab (not a togglable sidebar), so the
-        // guard is purely dirty-driven — `isEditorVisible` no longer
-        // reflects whether the user could plausibly have unsaved text
-        // sitting there unseen.
+        // permanently-available left-panel tab (not a togglable
+        // sidebar), so the guard is purely dirty-driven rather than
+        // also checking whether the editor happens to be the
+        // frontmost tab right now.
         if isEditorDirty {
             let saveAlert = NSAlert()
             saveAlert.messageText = "Unsaved Changes"
@@ -783,7 +802,6 @@ final class RenderViewModel: ObservableObject {
         progressTitle = ""
         elapsedTime = 0
         remainingTime = nil
-        sceneSize = nil
         imageBuffer.reset()
         logMessages.removeAll()
 
@@ -842,11 +860,6 @@ final class RenderViewModel: ObservableObject {
         Task.detached { [weak self] in
             let success = bridgeRef.loadAsciiScene(path)
 
-            // Read camera dimensions on the background thread before
-            // switching to MainActor, since the bridge accesses C++ state.
-            let camWidth = bridgeRef.cameraWidth()
-            let camHeight = bridgeRef.cameraHeight()
-
             await MainActor.run { [weak self] in
                 guard let self = self else { return }
                 self.loadedFilePath = path
@@ -854,10 +867,6 @@ final class RenderViewModel: ObservableObject {
                     self.renderState = .sceneLoaded
                     self.progressTitle = ""
                     self.hasAnimation = bridgeRef.hasAnimatedObjects()
-                    if camWidth > 0 && camHeight > 0 {
-                        self.sceneSize = CGSize(width: CGFloat(camWidth),
-                                                height: CGFloat(camHeight))
-                    }
                     // Tear down any previous viewport bridge (e.g. from
                     // a prior scene) and stand up a fresh one over the
                     // newly-loaded job.
@@ -920,9 +929,18 @@ final class RenderViewModel: ObservableObject {
                 } else {
                     self.renderState = .error("Failed to load scene")
                 }
-                // Always open the editor so the user can fix errors
                 self.refreshEditorContents()
-                self.isEditorVisible = true
+                if !success {
+                    // P1-6 fix: switch the left panel to the Scene-file
+                    // tab on a load failure so the user actually sees
+                    // the file content that needs fixing, instead of
+                    // leaving the Agent tab frontmost with only the
+                    // TopBar's error readout as a clue.  (The old
+                    // `isEditorVisible = true` write here predated the
+                    // tab-based left panel and had no observable effect
+                    // — see SceneEditorPanel's header comment.)
+                    self.leftTab = .sceneFile
+                }
             }
         }
     }
@@ -1048,23 +1066,12 @@ final class RenderViewModel: ObservableObject {
         }
 
         let buffer = imageBuffer
-        let sceneSizeReported = AtomicBool(false)
         bridge.setImageOutputBlock { [weak self]
             (pImageData: UnsafePointer<UInt16>?,
              width: UInt32, height: UInt32,
              rcTop: UInt32, rcLeft: UInt32,
              rcBottom: UInt32, rcRight: UInt32) in
             guard let pImageData = pImageData else { return }
-
-            // Capture scene dimensions from the first output block
-            if !sceneSizeReported.value {
-                sceneSizeReported.value = true
-                let w = CGFloat(width)
-                let h = CGFloat(height)
-                Task { @MainActor [weak self] in
-                    self?.sceneSize = CGSize(width: w, height: h)
-                }
-            }
 
             guard let nsImage = buffer.handleOutput(
                 pImageData: pImageData,
@@ -1216,22 +1223,12 @@ final class RenderViewModel: ObservableObject {
         }
 
         let buffer = imageBuffer
-        let sceneSizeReported = AtomicBool(false)
         bridge.setImageOutputBlock { [weak self]
             (pImageData: UnsafePointer<UInt16>?,
              width: UInt32, height: UInt32,
              rcTop: UInt32, rcLeft: UInt32,
              rcBottom: UInt32, rcRight: UInt32) in
             guard let pImageData = pImageData else { return }
-
-            if !sceneSizeReported.value {
-                sceneSizeReported.value = true
-                let w = CGFloat(width)
-                let h = CGFloat(height)
-                Task { @MainActor [weak self] in
-                    self?.sceneSize = CGSize(width: w, height: h)
-                }
-            }
 
             guard let nsImage = buffer.handleOutput(
                 pImageData: pImageData,
@@ -1362,17 +1359,6 @@ final class RenderViewModel: ObservableObject {
         viewportBridge?.scrubTimeEnd()
     }
 
-    func editSceneFile() {
-        guard loadedFilePath != nil else { return }
-
-        if isEditorVisible {
-            isEditorVisible = false
-            return
-        }
-
-        refreshEditorContents()
-        isEditorVisible = true
-    }
 
     // MARK: - UI redesign: refinement status poll
 
@@ -1408,19 +1394,21 @@ final class RenderViewModel: ObservableObject {
 
     // MARK: - UI redesign: refinement transport (TopBar / Render menu)
 
-    /// Pause interactive refinement.  No-op with no bridge, or while a
-    /// production render owns the scene (same gate as agent edits — see
-    /// `isProductionRenderRunning`).
+    /// Pause interactive refinement.  No-op with no bridge, while a
+    /// production render owns the scene, OR while a chat-driven agent
+    /// render is outstanding on the controller's single-slot worker —
+    /// see `canUseSceneTransport` (P1-1 fix: this used to guard on
+    /// `!isProductionRenderRunning` alone, which cannot see that third
+    /// case).
     func pauseRefinement() {
-        guard !isProductionRenderRunning, let vb = viewportBridge else { return }
+        guard canUseSceneTransport, let vb = viewportBridge else { return }
         vb.pauseRefinement()
         isRefinementPaused = true
     }
 
-    /// Resume interactive refinement.  No-op with no bridge, or while a
-    /// production render owns the scene.
+    /// Resume interactive refinement.  Same gate as `pauseRefinement`.
     func resumeRefinement() {
-        guard !isProductionRenderRunning, let vb = viewportBridge else { return }
+        guard canUseSceneTransport, let vb = viewportBridge else { return }
         vb.resumeRefinement()
         isRefinementPaused = false
     }
@@ -1432,22 +1420,24 @@ final class RenderViewModel: ObservableObject {
     /// Restart refinement from scratch: stop the interactive render
     /// thread and start it again (with its normal initial-render pass,
     /// unlike the post-production `startSuppressingInitialRender` path).
-    /// No-op with no bridge, or while a production render owns the scene.
+    /// Same gate as `pauseRefinement` — see `canUseSceneTransport`.
     func restartRefinement() {
-        guard !isProductionRenderRunning, let vb = viewportBridge else { return }
+        guard canUseSceneTransport, let vb = viewportBridge else { return }
         vb.stop()
         vb.start()
     }
 
     // MARK: - UI redesign: undo/redo passthrough (Edit menu)
 
+    /// Same gate as `pauseRefinement` — see `canUseSceneTransport`.
     func undo() {
-        guard !isProductionRenderRunning, let vb = viewportBridge else { return }
+        guard canUseSceneTransport, let vb = viewportBridge else { return }
         vb.undo()
     }
 
+    /// Same gate as `pauseRefinement` — see `canUseSceneTransport`.
     func redo() {
-        guard !isProductionRenderRunning, let vb = viewportBridge else { return }
+        guard canUseSceneTransport, let vb = viewportBridge else { return }
         vb.redo()
     }
 
@@ -1514,17 +1504,6 @@ final class RenderViewModel: ObservableObject {
     }
 
     // MARK: - Agent surface (Facet 5 slice 1c-1)
-
-    /// Toggle the Agent (JSON-RPC) panel.  Mirrors `editSceneFile`.
-    func toggleAgentPanel() {
-        isAgentPanelVisible.toggle()
-    }
-
-    /// Facet 5 slice B2: toggle the LLM Chat panel.  Mirrors
-    /// `toggleAgentPanel`.
-    func toggleChatPanel() {
-        isChatPanelVisible.toggle()
-    }
 
     /// Facet 5 slice 1c-1: hand one JSON-RPC request line to the live
     /// agent dispatcher and return its response line.
@@ -1626,7 +1605,6 @@ final class RenderViewModel: ObservableObject {
         progressTitle = ""
         elapsedTime = 0
         remainingTime = nil
-        sceneSize = nil
         imageBuffer.reset()
         logMessages.removeAll()
 
@@ -1805,23 +1783,14 @@ final class RenderViewModel: ObservableObject {
         progressTitle = ""
         elapsedTime = 0
         remainingTime = nil
-        sceneSize = nil
         imageBuffer.reset()
         logMessages.removeAll()
         hasAnimation = false
-        isEditorVisible = false
         editorText = ""
         editorOriginalText = ""
-        // Mirror the editor: the Agent panel is per-scene too -- its
-        // dispatcher lives in the (now torn-down) viewport bridge, so
-        // reset its visibility + the stale response when the scene clears.
-        isAgentPanelVisible = false
+        // The Agent debug panel's response text is per-scene too — its
+        // dispatcher lives in the (now torn-down) viewport bridge.
         agentResponseText = ""
-        // Facet 5 slice B2: the Chat panel is per-scene too — its tool
-        // executor lives in the (now torn-down) viewport bridge.  The
-        // conversation itself was already reset by chat.sceneClosed()
-        // above; here we just hide the panel (mirrors the Agent panel).
-        isChatPanelVisible = false
     }
 
     func clearLog() {
