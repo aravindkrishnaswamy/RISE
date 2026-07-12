@@ -784,9 +784,21 @@ namespace RISE
 						else if( !kw->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'keyword' must be a string" );
 					}
-					const std::string schemaText =
-						keyword.empty() ? RISE::Agent::SchemaGenAll()
-						                 : RISE::Agent::SchemaGenForChunk( keyword );
+					// CHEAP LISTING mode (discovery-cost fix): {category:"<name>"}
+					// with NO keyword returns just the keyword list (+ one-line
+					// descriptions) of that category, NOT the ~300KB full dump.
+					// `keyword` takes precedence if BOTH are supplied (a single
+					// chunk is more specific than its category).
+					std::string category;
+					if( const JsonValue* cat = params.find( "category" ) ) {
+						if( cat->isString() ) category = cat->asString();
+						else if( !cat->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'category' must be a string" );
+					}
+					std::string schemaText;
+					if( !keyword.empty() )       schemaText = RISE::Agent::SchemaGenForChunk( keyword );
+					else if( !category.empty() ) schemaText = RISE::Agent::SchemaGenCategory( category );
+					else                         schemaText = RISE::Agent::SchemaGenAll();
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "schema", SchemaAsJson( schemaText ) );
 					return MakeSuccess( idValue, result );

@@ -210,6 +210,53 @@ int main()
 		}
 	}
 
+	// Discovery-cost fix: SchemaGenCategory("<name>") is the CHEAP listing
+	// mode -- just {keyword, description} per chunk in the category, NOT the
+	// full per-parameter dump.  Proven on "material": it lists the material
+	// kinds, is a valid {category, chunks[]} object, and is DRAMATICALLY
+	// smaller than the whole-grammar dump (no "properties" parameter trees).
+	{
+		std::printf( "[read_schema] SchemaGenCategory cheap listing mode\n" );
+		const std::string mats = RISE::Agent::SchemaGenCategory( "material" );
+
+		JsonValue root;
+		std::string perr;
+		Check( JsonParse( mats, root, perr ) && root.isObject(),
+		       "SchemaGenCategory(material) parses as a JSON object" );
+		Check( root.isObject() && root.get( "category" ).asString() == "material",
+		       "SchemaGenCategory(material) echoes the category" );
+		Check( root.isObject() && root.get( "chunks" ).isArray() && root.get( "chunks" ).size() > 0,
+		       "SchemaGenCategory(material) lists a non-empty chunks array" );
+		Check( mats.find( "lambertian_material" ) != std::string::npos &&
+		       mats.find( "pbr_metallic_roughness_material" ) != std::string::npos,
+		       "SchemaGenCategory(material) enumerates the material keywords" );
+		// The listing must NOT include the per-parameter schema (that is the
+		// expensive dump it exists to AVOID) -- the whole-grammar/per-chunk
+		// dumps emit a "properties" parameter tree; the cheap listing never
+		// does (a word like "reflectance" may still appear inside a chunk's
+		// one-line DESCRIPTION, so "properties" is the right marker).
+		Check( mats.find( "\"properties\"" ) == std::string::npos,
+		       "SchemaGenCategory(material) omits per-parameter schemas (cheap listing)" );
+		// A one-line description rides each entry.
+		Check( mats.find( "\"description\"" ) != std::string::npos,
+		       "SchemaGenCategory(material) carries one-line descriptions" );
+		// It is far smaller than the whole grammar.
+		Check( mats.size() * 4 < session->ReadSchema().size(),
+		       "SchemaGenCategory(material) is much smaller than the whole-grammar dump" );
+
+		// A geometry category also resolves (not hardcoded to material).
+		const std::string geo = RISE::Agent::SchemaGenCategory( "geometry" );
+		Check( geo.find( "sphere_geometry" ) != std::string::npos,
+		       "SchemaGenCategory(geometry) lists sphere_geometry" );
+
+		// An unknown/empty category fails LOUDLY with an "error" key + empty list.
+		const std::string bad = RISE::Agent::SchemaGenCategory( "not_a_category" );
+		Check( bad.find( "\"error\"" ) != std::string::npos,
+		       "SchemaGenCategory(unknown) carries an error key" );
+		Check( bad.find( "\"chunks\":[]" ) != std::string::npos,
+		       "SchemaGenCategory(unknown) has an empty chunks array" );
+	}
+
 	//----------------------------------------------------------------------
 	// Validate -- the keystone.
 	//----------------------------------------------------------------------

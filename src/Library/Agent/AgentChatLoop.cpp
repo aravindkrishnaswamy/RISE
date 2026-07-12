@@ -34,7 +34,10 @@ namespace RISE
 				"1. read_document to see the scene and its headVersion (read_schema "
 				"when unsure about a chunk or parameter; consult read_skill before "
 				"scene-authoring tasks -- the skills carry the conventions that make "
-				"scenes render correctly on the first try).\n"
+				"scenes render correctly on the first try). To discover which chunk "
+				"kinds exist, call read_schema {category:\"material\"|\"geometry\"|...} "
+				"for a cheap keyword list; a bare read_schema (whole grammar) is "
+				"expensive and rarely needed.\n"
 				"2. propose_patch (or insert_chunk / remove_chunk) with the "
 				"headVersion you just read as baseHeadVersion. On status=conflict, "
 				"re-read and re-propose; on "
@@ -956,6 +959,19 @@ namespace RISE
 		void AgentChatLoop::FinishTrajectory( const std::string& status )
 		{
 			CloseTrajectorySession( status );
+		}
+
+		void AgentChatLoop::RecordHistoryEdit( const std::string& reason, long long beforeBytes,
+		                                       long long afterBytes, int entryIndex )
+		{
+			if( !mRecorder ) return;
+			EnsureSessionRecordEmitted();   // keep the `session` record leading, like RecordHttpRound
+			TrajectoryHistoryEditRecord rec;
+			rec.entryIndex  = entryIndex;
+			rec.beforeBytes = beforeBytes;
+			rec.afterBytes  = afterBytes;
+			rec.reason      = reason;
+			mRecorder->EmitHistoryEdit( rec );
 		}
 	}
 }

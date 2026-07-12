@@ -243,6 +243,48 @@ static void TestLoadScenarioGates()
 	tryLoad( "slash_id.json",
 		"{\"id\":\"a/b\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[\"hi\"]}",
 		"id containing a path separator" );
+
+	// interventions (Part B): each malformed shape refuses LOUDLY.
+	const char* const ivHead = "{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[\"hi\"],\"interventions\":";
+	tryLoad( "iv_not_array.json",
+		std::string( ivHead ) + "{\"afterToolCalls\":1}}",
+		"interventions is not an array" );
+	tryLoad( "iv_elem_not_object.json",
+		std::string( ivHead ) + "[\"nope\"]}",
+		"intervention element is not an object" );
+	tryLoad( "iv_missing_after.json",
+		std::string( ivHead ) + "[{\"op\":\"param_edit\",\"target\":\"a\",\"param\":\"b\",\"value\":\"c\"}]}",
+		"intervention missing afterToolCalls" );
+	tryLoad( "iv_after_zero.json",
+		std::string( ivHead ) + "[{\"afterToolCalls\":0,\"op\":\"param_edit\",\"target\":\"a\",\"param\":\"b\",\"value\":\"c\"}]}",
+		"intervention afterToolCalls < 1" );
+	tryLoad( "iv_bad_op.json",
+		std::string( ivHead ) + "[{\"afterToolCalls\":1,\"op\":\"remove_chunk\",\"target\":\"a\",\"param\":\"b\",\"value\":\"c\"}]}",
+		"intervention op other than param_edit" );
+	tryLoad( "iv_empty_target.json",
+		std::string( ivHead ) + "[{\"afterToolCalls\":1,\"op\":\"param_edit\",\"target\":\"\",\"param\":\"b\",\"value\":\"c\"}]}",
+		"intervention empty target" );
+	tryLoad( "iv_missing_value.json",
+		std::string( ivHead ) + "[{\"afterToolCalls\":1,\"op\":\"param_edit\",\"target\":\"a\",\"param\":\"b\"}]}",
+		"intervention missing value" );
+
+	// A WELL-FORMED intervention loads and populates scenario.interventions.
+	{
+		const std::string path = dir + "/iv_ok.json";
+		Check( WriteFile( path, std::string( ivHead ) +
+			"[{\"afterToolCalls\":2,\"op\":\"param_edit\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"value\":\"0.9 0.9 0.1\"}]}" ),
+			"iv_ok: wrote the scenario file" );
+		AgentEvalScenario s;
+		std::string err;
+		Check( LoadEvalScenario( path, s, err ), "iv_ok: a well-formed intervention loads (" + err + ")" );
+		Check( s.interventions.size() == 1, "iv_ok: one intervention parsed" );
+		if( s.interventions.size() == 1 ) {
+			Check( s.interventions[0].afterToolCalls == 2, "iv_ok: afterToolCalls parsed" );
+			Check( s.interventions[0].op == "param_edit", "iv_ok: op parsed" );
+			Check( s.interventions[0].target == "pnt_albedo" && s.interventions[0].param == "color" &&
+				s.interventions[0].value == "0.9 0.9 0.1", "iv_ok: target/param/value parsed" );
+		}
+	}
 }
 
 //----------------------------------------------------------------------

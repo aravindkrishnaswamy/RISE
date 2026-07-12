@@ -361,6 +361,61 @@ namespace RISE
 				out.checkpoints = cps;   // carried OPAQUELY -- E3 interprets kinds
 			}
 
+			// interventions: OPTIONAL array of scripted co-editor edits (see
+			// AgentEvalIntervention).  Validated LOUDLY here so a malformed
+			// intervention is a load_error, never a silently-skipped no-op.
+			out.interventions.clear();
+			if( root.has( "interventions" ) ) {
+				if( !root.get( "interventions" ).isArray() ) {
+					err = "scenario '" + out.id + "': \"interventions\" must be an array";
+					return false;
+				}
+				const JsonValue& iv = root.get( "interventions" );
+				for( std::size_t i = 0; i < iv.size(); ++i ) {
+					const std::string idx = std::to_string( i );
+					const JsonValue& e = iv.at( i );
+					if( !e.isObject() ) {
+						err = "scenario '" + out.id + "': interventions[" + idx + "] must be an object";
+						return false;
+					}
+					AgentEvalIntervention it;
+					if( !e.has( "afterToolCalls" ) || !e.get( "afterToolCalls" ).isNumber() ) {
+						err = "scenario '" + out.id + "': interventions[" + idx +
+							"] missing required number field \"afterToolCalls\"";
+						return false;
+					}
+					it.afterToolCalls = static_cast<int>( e.get( "afterToolCalls" ).asNumber() );
+					if( it.afterToolCalls < 1 ) {
+						err = "scenario '" + out.id + "': interventions[" + idx +
+							"].afterToolCalls must be >= 1 (an intervention fires AFTER a tool call; got " +
+							std::to_string( it.afterToolCalls ) + ")";
+						return false;
+					}
+					if( !e.has( "op" ) || !e.get( "op" ).isString() ) {
+						err = "scenario '" + out.id + "': interventions[" + idx + "] missing string field \"op\"";
+						return false;
+					}
+					it.op = e.get( "op" ).asString();
+					if( it.op != "param_edit" ) {
+						err = "scenario '" + out.id + "': interventions[" + idx + "].op '" + it.op +
+							"' is not supported (only \"param_edit\" today)";
+						return false;
+					}
+					const char* const strFields[] = { "target", "param", "value" };
+					std::string* const dests[] = { &it.target, &it.param, &it.value };
+					for( int f = 0; f < 3; ++f ) {
+						if( !e.has( strFields[f] ) || !e.get( strFields[f] ).isString() ||
+						    e.get( strFields[f] ).asString().empty() ) {
+							err = "scenario '" + out.id + "': interventions[" + idx + "].op=\"param_edit\" requires a "
+								"non-empty string \"" + strFields[f] + "\"";
+							return false;
+						}
+						*dests[f] = e.get( strFields[f] ).asString();
+					}
+					out.interventions.push_back( it );
+				}
+			}
+
 			return true;
 		}
 
@@ -598,6 +653,33 @@ namespace RISE
 								const std::string resp = dispatcher->HandleLine( line );
 								loop.AddToolResult( call, resp );
 								++toolCalls;
+
+								// Scenario interventions: a scripted co-editor edit
+								// fires AFTER this (the toolCalls-th) dispatched tool
+								// call and BEFORE the next LLM round, mutating the
+								// SHARED head through the live session WITHOUT
+								// consuming a model turn -- so the agent's next patch,
+								// built against the head it last read, genuinely
+								// conflicts.  Applied via ProposePatch with NO
+								// baseVersion (an unconditional Owner commit that bumps
+								// the head's revision -- the SAME edit pathway the GUI
+								// property panel / the checker's own inspection use);
+								// recorded honestly as a `history_edit` (reason
+								// "scenario_intervention").
+								for( const AgentEvalIntervention& iv : scenario.interventions ) {
+									if( iv.afterToolCalls != toolCalls ) continue;
+									AgentSession* sess = dispatcher->Session();
+									if( !sess ) continue;
+									const long long beforeBytes = static_cast<long long>( sess->ReadDocument().size() );
+									AgentSetPatch patch;
+									patch.target = iv.target;
+									patch.param  = iv.param;
+									patch.value  = iv.value;
+									// hasBaseVersion stays false -> UNCONDITIONAL commit.
+									sess->ProposePatch( patch );
+									const long long afterBytes = static_cast<long long>( sess->ReadDocument().size() );
+									loop.RecordHistoryEdit( "scenario_intervention", beforeBytes, afterBytes );
+								}
 							}
 							if( !terminalStatus.empty() ) break;   // a budget tripped mid tool-batch -- honest stop
 						}
@@ -1231,13 +1313,17 @@ namespace RISE
 				//----------------------------------------------------------
 
 				//! "document": {op:"param_equals",target,param,value,chunkKind?,numeric?} |
+				//! {op:"param_range",target,param,min:[...],max:[...],chunkKind?} |
 				//! {op:"chunk_exists",chunkKind?,name} | {op:"chunk_absent",chunkKind?,name} |
 				//! {op:"chunk_count",chunkKind,min?,max?} |
-				//! {op:"param_references_kind",target,param,referencedKind,chunkKind?} --
+				//! {op:"param_references_kind",target,param,referencedKind|referencedKinds:[...],chunkKind?} --
 				//! the last passes iff target's param value NAMES an existing chunk
-				//! of referencedKind (grades a correctly-typed binding
-				//! name-agnostically); param_equals' optional numeric:true compares
-				//! both values as float tokens within 1e-4.  All asserted against the
+				//! of referencedKind (or ANY kind in referencedKinds) (grades a
+				//! correctly-typed binding name-agnostically); param_equals' optional
+				//! numeric:true compares both values as float tokens within 1e-4;
+				//! param_range grades a value COMPONENT-WISE against per-component
+				//! [min_i,max_i] bands (a tolerant "any reasonable blue" grade that
+				//! is not overfit to one fixture's exact numbers).  All asserted against the
 				//! POST-run document (session->ReadDocument(), reparsed via
 				//! ParseToCst -- the same idiom AgentChunkCrudTest/
 				//! CstFirstSliceTest use to inspect a document's chunks after
@@ -1358,27 +1444,125 @@ namespace RISE
 						return { true, "chunk_count: " + std::to_string( count ) + " chunk(s) of kind '" + kind + "' satisfies band" };
 					}
 
+					// param_range: pass iff TARGET's PARAM value, tokenized as
+					// floats, has EXACTLY as many components as the min/max arrays
+					// and each component_i is within [min_i, max_i].  Grades a
+					// value-with-tolerance ("any reasonable blue") rather than one
+					// fixture's exact numbers -- the fix for a value-level overfit
+					// checkpoint.  Loud shape refusals: missing/non-array min or
+					// max, a non-numeric array element, a min/max length mismatch,
+					// an empty band, a component-count mismatch, or a non-numeric
+					// param value.
+					if( op == "param_range" ) {
+						if( !cp.has( "target" ) || !cp.get( "target" ).isString() )
+							return { false, "param_range missing string \"target\"" };
+						if( !cp.has( "param" ) || !cp.get( "param" ).isString() )
+							return { false, "param_range missing string \"param\"" };
+						if( !cp.has( "min" ) || !cp.get( "min" ).isArray() )
+							return { false, "param_range missing array \"min\"" };
+						if( !cp.has( "max" ) || !cp.get( "max" ).isArray() )
+							return { false, "param_range missing array \"max\"" };
+						const std::string target = cp.get( "target" ).asString();
+						const std::string param  = cp.get( "param" ).asString();
+						const std::string kind   = OptKind( cp );
+
+						const JsonValue& minArr = cp.get( "min" );
+						const JsonValue& maxArr = cp.get( "max" );
+						std::vector<double> mins, maxs;
+						for( std::size_t i = 0; i < minArr.size(); ++i ) {
+							if( !minArr.at( i ).isNumber() )
+								return { false, "param_range: \"min\"[" + std::to_string( i ) + "] is not a number" };
+							mins.push_back( minArr.at( i ).asNumber() );
+						}
+						for( std::size_t i = 0; i < maxArr.size(); ++i ) {
+							if( !maxArr.at( i ).isNumber() )
+								return { false, "param_range: \"max\"[" + std::to_string( i ) + "] is not a number" };
+							maxs.push_back( maxArr.at( i ).asNumber() );
+						}
+						if( mins.empty() )
+							return { false, "param_range: \"min\"/\"max\" must be non-empty arrays" };
+						if( mins.size() != maxs.size() )
+							return { false, "param_range: \"min\" has " + std::to_string( mins.size() ) +
+								" component(s) but \"max\" has " + std::to_string( maxs.size() ) + " -- they must match" };
+
+						NodeRef chunk;
+						const int found = CheckerFindChunk( doc, kind, target, chunk );
+						if( found == 0 )
+							return { false, "param_range: no chunk named '" + target + "' found" +
+								( kind.empty() ? std::string() : ( " (kind '" + kind + "')" ) ) };
+						if( found < 0 )
+							return { false, "param_range: AMBIGUOUS -- more than one chunk named '" + target +
+								"' -- narrow with \"chunkKind\"" };
+						std::string actual;
+						if( !CheckerChunkParamValue( chunk, param, actual ) )
+							return { false, "param_range: chunk '" + target + "' has no param '" + param + "'" };
+
+						std::vector<double> av;
+						if( !CheckerParseFloatTokens( actual, av ) )
+							return { false, "param_range: '" + target + "." + param + "' == '" + actual +
+								"' is not all-numeric" };
+						if( av.size() != mins.size() )
+							return { false, "param_range: '" + target + "." + param + "' has " +
+								std::to_string( av.size() ) + " component(s), expected " + std::to_string( mins.size() ) +
+								" ('" + actual + "')" };
+						for( std::size_t i = 0; i < av.size(); ++i ) {
+							if( av[i] < mins[i] || av[i] > maxs[i] )
+								return { false, "param_range: '" + target + "." + param + "' == '" + actual +
+									"', component " + std::to_string( i ) + " (" + std::to_string( av[i] ) +
+									") outside [" + std::to_string( mins[i] ) + ", " + std::to_string( maxs[i] ) + "]" };
+						}
+						return { true, "param_range: '" + target + "." + param + "' == '" + actual +
+							"' within all " + std::to_string( av.size() ) + " band(s)" };
+					}
+
 					// param_references_kind: pass iff TARGET's PARAM value
-					// NAMES an existing chunk of REFERENCEDKIND.  Grades the
+					// NAMES an existing chunk of REFERENCEDKIND (or of ANY kind
+					// in REFERENCEDKINDS -- the any-of array form).  Grades the
 					// SPACE of correct solutions name-agnostically: any
 					// correctly-typed, correctly-named binding passes,
 					// regardless of what NAME a live model chose for the new
 					// chunk (fixture-overfit fix -- a fixture named a material
-					// "mat_metal"; a live model may pick any name).  The
+					// "mat_metal"; a live model may pick any name).  The array
+					// form additionally grades KIND-agnostically across a set of
+					// equivalent kinds (e.g. any of RISE's metallic-capable
+					// material kinds satisfies "shiny metallic"), so the rubric
+					// is not overfit to ONE fixture's chosen material kind.  The
 					// optional "chunkKind" narrows the TARGET lookup (as in
-					// param_equals); "referencedKind" is the REQUIRED kind of
-					// the chunk the param must resolve to.
+					// param_equals); provide EXACTLY ONE of "referencedKind"
+					// (a string) or "referencedKinds" (a non-empty string array).
 					if( op == "param_references_kind" ) {
 						if( !cp.has( "target" ) || !cp.get( "target" ).isString() )
 							return { false, "param_references_kind missing string \"target\"" };
 						if( !cp.has( "param" ) || !cp.get( "param" ).isString() )
 							return { false, "param_references_kind missing string \"param\"" };
-						if( !cp.has( "referencedKind" ) || !cp.get( "referencedKind" ).isString() ||
-						    cp.get( "referencedKind" ).asString().empty() )
-							return { false, "param_references_kind missing non-empty string \"referencedKind\"" };
+
+						// Collect the accepted kinds from EITHER the singular
+						// "referencedKind" (a string) OR the "referencedKinds"
+						// any-of array -- exactly one must be supplied.
+						std::vector<std::string> acceptedKinds;
+						const bool hasSingular = cp.has( "referencedKind" );
+						const bool hasArray    = cp.has( "referencedKinds" );
+						if( hasSingular == hasArray )
+							return { false, "param_references_kind requires EXACTLY ONE of "
+								"\"referencedKind\" (string) or \"referencedKinds\" (array)" };
+						if( hasSingular ) {
+							if( !cp.get( "referencedKind" ).isString() || cp.get( "referencedKind" ).asString().empty() )
+								return { false, "param_references_kind: \"referencedKind\" must be a non-empty string" };
+							acceptedKinds.push_back( cp.get( "referencedKind" ).asString() );
+						} else {
+							const JsonValue& arr = cp.get( "referencedKinds" );
+							if( !arr.isArray() || arr.size() == 0 )
+								return { false, "param_references_kind: \"referencedKinds\" must be a non-empty array" };
+							for( std::size_t i = 0; i < arr.size(); ++i ) {
+								if( !arr.at( i ).isString() || arr.at( i ).asString().empty() )
+									return { false, "param_references_kind: \"referencedKinds\"[" + std::to_string( i ) +
+										"] must be a non-empty string" };
+								acceptedKinds.push_back( arr.at( i ).asString() );
+							}
+						}
+
 						const std::string target = cp.get( "target" ).asString();
 						const std::string param  = cp.get( "param" ).asString();
-						const std::string referencedKind = cp.get( "referencedKind" ).asString();
 						const std::string kind = OptKind( cp );   // narrows the TARGET chunk
 
 						NodeRef chunk;
@@ -1394,16 +1578,28 @@ namespace RISE
 							return { false, "param_references_kind: chunk '" + target + "' has no param '" + param + "'" };
 						if( referencedName.empty() )
 							return { false, "param_references_kind: '" + target + "." + param + "' has an empty value" };
-						NodeRef referenced;
-						const int refFound = CheckerFindChunk( doc, referencedKind, referencedName, referenced );
-						if( refFound == 0 )
-							return { false, "param_references_kind: '" + target + "." + param + "' names '" +
-								referencedName + "', but no chunk of kind '" + referencedKind + "' has that name" };
-						if( refFound < 0 )
-							return { false, "param_references_kind: '" + referencedName +
-								"' matches MORE THAN ONE chunk of kind '" + referencedKind + "'" };
-						return { true, "param_references_kind: '" + target + "." + param + "' -> '" + referencedName +
-							"' (a '" + referencedKind + "')" };
+
+						// ANY-OF: the binding passes as soon as the named chunk
+						// resolves under one accepted kind.  An AMBIGUOUS match
+						// under ANY single kind is a hard rubric failure (the
+						// referenced name is not uniquely a chunk of that kind).
+						std::string joinedKinds;
+						for( std::size_t i = 0; i < acceptedKinds.size(); ++i ) {
+							if( i ) joinedKinds += ", ";
+							joinedKinds += "'" + acceptedKinds[i] + "'";
+						}
+						for( const std::string& refKind : acceptedKinds ) {
+							NodeRef referenced;
+							const int refFound = CheckerFindChunk( doc, refKind, referencedName, referenced );
+							if( refFound < 0 )
+								return { false, "param_references_kind: '" + referencedName +
+									"' matches MORE THAN ONE chunk of kind '" + refKind + "'" };
+							if( refFound == 1 )
+								return { true, "param_references_kind: '" + target + "." + param + "' -> '" +
+									referencedName + "' (a '" + refKind + "')" };
+						}
+						return { false, "param_references_kind: '" + target + "." + param + "' names '" +
+							referencedName + "', but no chunk of kind(s) " + joinedKinds + " has that name" };
 					}
 
 					return { false, "document checkpoint: unknown op '" + op + "'" };

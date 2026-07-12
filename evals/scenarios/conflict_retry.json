@@ -15,14 +15,23 @@
   "replay": {
     "fixture": "evals/fixtures/conflict_retry.fixture.jsonl"
   },
+  "interventions": [
+    {
+      "afterToolCalls": 1,
+      "op": "param_edit",
+      "target": "pnt_albedo",
+      "param": "color",
+      "value": "0.9 0.9 0.1"
+    }
+  ],
   "checkpoints": [
     {
       "kind": "document",
-      "op": "param_equals",
+      "op": "param_range",
       "target": "pnt_albedo",
       "param": "color",
-      "value": "0.1 0.2 0.9",
-      "numeric": true
+      "min": [0, 0, 0.5],
+      "max": [0.45, 0.45, 1.0]
     },
     {
       "kind": "untouched",

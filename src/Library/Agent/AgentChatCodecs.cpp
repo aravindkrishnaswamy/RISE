@@ -63,12 +63,20 @@ namespace RISE
 				{
 					"read_schema",
 					"Read the scene-language schema (chunk and parameter reference). Call "
-					"with a chunk keyword to learn one chunk's parameters, or with no "
-					"keyword for the whole grammar. Use this before proposing a patch "
-					"whose parameter name or value format you are not sure about.",
+					"with a chunk keyword to learn one chunk's parameters. To DISCOVER "
+					"which chunk kinds exist under a category (e.g. which material or "
+					"geometry types are available), pass category (\"material\", "
+					"\"geometry\", \"painter\", \"light\", \"rasterizer\", ...) with NO "
+					"keyword -- that returns just the cheap keyword list + one-line "
+					"descriptions, so you pick a kind then fetch its full schema by "
+					"keyword. Omitting BOTH returns the whole grammar (large; rarely "
+					"needed). Use this before proposing a patch whose parameter name or "
+					"value format you are not sure about.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"keyword\":{\"type\":\"string\",\"description\":"
-						"\"A single chunk keyword (e.g. sphere_geometry) to fetch just that chunk's schema; omit for the whole grammar.\"}"
+						"\"A single chunk keyword (e.g. sphere_geometry) to fetch just that chunk's schema.\"},"
+						"\"category\":{\"type\":\"string\",\"description\":"
+						"\"A chunk category (e.g. material, geometry, painter, light, rasterizer) to CHEAPLY list its chunk keywords + one-line descriptions; omit keyword to use this. Omit both for the whole grammar.\"}"
 					"}}"
 				},
 				{

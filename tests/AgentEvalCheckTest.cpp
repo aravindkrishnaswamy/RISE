@@ -75,6 +75,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -135,6 +136,13 @@ static const char* const kNoLoopFixture =
 static const char* const kMutatingAttemptFixture =
 	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_1\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"toolu_p1\\\",\\\"name\\\":\\\"propose_patch\\\",\\\"input\\\":{\\\"target\\\":\\\"pnt_albedo\\\",\\\"param\\\":\\\"color\\\",\\\"value\\\":\\\"0.1 0.1 0.9\\\"}}],\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":100,\\\"output_tokens\\\":40}}\"}\n"
 	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_2\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"could not edit\\\"}],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":30,\\\"output_tokens\\\":8}}\"}\n";
+
+// A read_document then a plain end_turn (ONE tool call, no model edit) --
+// the substrate for the scenario-intervention test: the runner's scripted
+// co-editor is what mutates the head here, not the model.
+static const char* const kReadThenDoneFixture =
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_1\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"reading\\\"},{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"toolu_rd\\\",\\\"name\\\":\\\"read_document\\\",\\\"input\\\":{}}],\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":50,\\\"output_tokens\\\":10}}\"}\n"
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_2\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"done\\\"}],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":30,\\\"output_tokens\\\":8}}\"}\n";
 
 // A degenerate blank end_turn -- the loop's own documented ProviderError
 // (matches evals/fixtures/error_path.fixture.jsonl).
@@ -316,6 +324,50 @@ static void TestDocumentCheckpoint()
 	// mismatch -- proving the flag is what changes the behaviour.
 	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"value\":\"0.90 0.10 0.10\"}]",
 		false, "param_equals (no numeric): 0.90 0.10 0.10 is a raw-string mismatch" );
+
+	// param_range (value-level-overfit fix): pnt_albedo.color is
+	// "0.9 0.1 0.1" after the recolor.  A component-wise band that CONTAINS
+	// it passes; a band that excludes any component fails; the shape
+	// refusals (missing/non-array min or max, length mismatch,
+	// component-count mismatch, non-numeric element) each fail LOUDLY.
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_range\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"min\":[0.5,0,0],\"max\":[1.0,0.5,0.5]}]",
+		true, "param_range: 0.9 0.1 0.1 inside a reddish band" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_range\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"min\":[0.9,0.1,0.1],\"max\":[0.9,0.1,0.1]}]",
+		true, "param_range: an exact-point band (degenerate min==max) still passes" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_range\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"min\":[0,0,0.5],\"max\":[0.45,0.45,1.0]}]",
+		false, "param_range: a BLUE band excludes red 0.9 (component 0 out of [0,0.45]) FAILS" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_range\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"max\":[1,1,1]}]",
+		false, "param_range missing \"min\" array fails loudly" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_range\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"min\":[0,0,0]}]",
+		false, "param_range missing \"max\" array fails loudly" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_range\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"min\":\"0 0 0\",\"max\":[1,1,1]}]",
+		false, "param_range non-array \"min\" fails loudly" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_range\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"min\":[0,0],\"max\":[1,1,1]}]",
+		false, "param_range min/max length mismatch fails loudly" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_range\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"min\":[0,0],\"max\":[1,1]}]",
+		false, "param_range component-count mismatch (2 bands vs a 3-vec value) fails loudly" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_range\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"min\":[0,0,\"lo\"],\"max\":[1,1,1]}]",
+		false, "param_range non-numeric \"min\" element fails loudly" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_range\",\"target\":\"does_not_exist\",\"param\":\"color\",\"min\":[0,0,0],\"max\":[1,1,1]}]",
+		false, "param_range unknown target fails loudly" );
+
+	// param_references_kind ANY-OF array form (kind-overfit fix):
+	// obj_sph.material names mat_diffuse, a lambertian_material.  An array
+	// that INCLUDES lambertian_material passes; one that omits it fails; the
+	// shape refusals (both/neither of the singular/array key, empty array,
+	// non-string element) each fail LOUDLY.
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_references_kind\",\"target\":\"obj_sph\",\"param\":\"material\",\"referencedKinds\":[\"pbr_metallic_roughness_material\",\"lambertian_material\"]}]",
+		true, "param_references_kind referencedKinds: any-of matches lambertian_material" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_references_kind\",\"target\":\"obj_sph\",\"param\":\"material\",\"referencedKinds\":[\"pbr_metallic_roughness_material\",\"ggx_material\"]}]",
+		false, "param_references_kind referencedKinds: none of the accepted kinds matches FAILS" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_references_kind\",\"target\":\"obj_sph\",\"param\":\"material\",\"referencedKind\":\"lambertian_material\",\"referencedKinds\":[\"lambertian_material\"]}]",
+		false, "param_references_kind: BOTH referencedKind and referencedKinds fails loudly" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_references_kind\",\"target\":\"obj_sph\",\"param\":\"material\"}]",
+		false, "param_references_kind: NEITHER referencedKind nor referencedKinds fails loudly" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_references_kind\",\"target\":\"obj_sph\",\"param\":\"material\",\"referencedKinds\":[]}]",
+		false, "param_references_kind: empty referencedKinds array fails loudly" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_references_kind\",\"target\":\"obj_sph\",\"param\":\"material\",\"referencedKinds\":[123]}]",
+		false, "param_references_kind: non-string referencedKinds element fails loudly" );
 }
 
 //----------------------------------------------------------------------
@@ -898,6 +950,65 @@ static void TestSeedScenariosCheckpointsAreTrue()
 	}
 }
 
+//----------------------------------------------------------------------
+// Scenario interventions (Part B): a scripted co-editor edit fires AFTER
+// the Nth dispatched tool call, mutating the shared head WITHOUT a model
+// turn -- proving the runner's intervention seam applies through the live
+// session and bumps headVersion.  The fixture does read_document then a
+// plain end_turn (ONE tool call, no model edit), so ANY change to the head
+// is the intervention's doing.
+//----------------------------------------------------------------------
+static void TestScenarioIntervention()
+{
+	std::printf( "T-intervention: a scenario intervention fires after tool call N and bumps headVersion...\n" );
+	const std::string dir = ScratchRunDir( "t_intervention" );
+
+	// Control: the SAME fixture with NO intervention leaves the head where
+	// it started (the model performs no edit).
+	{
+		AgentEvalScenario s = MakeScenario( "iv_control", kScene, "Read only", "commit",
+			kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "iv_control: reached final_text" );
+		Check( h.result.toolCalls == 1, "iv_control: exactly one tool call dispatched" );
+		Check( h.result.headVersionFinal == h.result.headVersionStart,
+			"iv_control: head UNCHANGED with no intervention" );
+	}
+
+	// With an intervention after tool call 1: the head moves, the document
+	// carries the intervention's value, and headVersionFinal bumps by 1.
+	{
+		AgentEvalScenario s = MakeScenario( "iv_edit", kScene, "Read only", "commit",
+			kReadThenDoneFixture, dir, "[]" );
+		AgentEvalIntervention iv;
+		iv.afterToolCalls = 1;
+		iv.op = "param_edit";
+		iv.target = "pnt_albedo";
+		iv.param = "color";
+		iv.value = "0.42 0.42 0.42";
+		s.interventions.push_back( iv );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "iv_edit: reached final_text" );
+		Check( h.result.toolCalls == 1, "iv_edit: exactly one tool call dispatched (intervention is NOT a tool call)" );
+		Check( h.result.headVersionFinal == h.result.headVersionStart + 1,
+			"iv_edit: head revision bumped by exactly 1 (the intervention committed)" );
+		Check( h.dispatcher && h.dispatcher->Session(), "iv_edit: live dispatcher/session survives" );
+		if( h.dispatcher && h.dispatcher->Session() ) {
+			const std::string finalDoc = h.dispatcher->Session()->ReadDocument();
+			Check( finalDoc.find( "0.42 0.42 0.42" ) != std::string::npos,
+				"iv_edit: the post-run document carries the intervention's value" );
+		}
+		// The trajectory records the intervention honestly as a history_edit.
+		std::ifstream tf( h.trajectoryPath.c_str(), std::ios::binary );
+		std::string body( ( std::istreambuf_iterator<char>( tf ) ), std::istreambuf_iterator<char>() );
+		Check( body.find( "scenario_intervention" ) != std::string::npos,
+			"iv_edit: the trajectory carries a history_edit with reason scenario_intervention" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalCheckTest (Eval-harness slice E3: the checker engine) ===\n" );
@@ -911,6 +1022,7 @@ int main()
 	TestTrajectoryCheckpoint();
 	TestUnknownKindAndMalformedShape();
 	TestPartialCreditArithmetic();
+	TestScenarioIntervention();
 	TestSeedScenariosCheckpointsAreTrue();
 
 	std::printf( "=== AgentEvalCheckTest: %d passed, %d failed ===\n", g_pass, g_fail );

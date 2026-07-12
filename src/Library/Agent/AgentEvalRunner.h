@@ -151,6 +151,32 @@ namespace RISE
 			long long maxWallMs    = -1;   //!< wall-clock budget, per RunScenario's clock (see AgentEvalRunOptions.clock)
 		};
 
+		//! One SCENARIO INTERVENTION (evals/scenarios/*.json optional
+		//! `interventions`): a scripted co-editor edit the runner applies
+		//! DIRECTLY to the live head partway through a run -- the "user
+		//! edited the scene while the agent worked" simulation.  It fires
+		//! AFTER the `afterToolCalls`-th dispatched tool call completes and
+		//! BEFORE the next LLM round, mutating the shared head (bumping its
+		//! headVersion) WITHOUT consuming a model turn -- so a subsequent
+		//! agent patch built against the head the agent last read GENUINELY
+		//! conflicts, making the read-conflict-reread-repropose contract
+		//! live-gradable instead of fixture-staged.  Schema:
+		//!   {"afterToolCalls": N>=1, "op": "param_edit",
+		//!    "target": "<chunk name>", "param": "<param>", "value": "<text>"}
+		//! `op` today is ONLY "param_edit" (a set-one-param commit, the same
+		//! edit pathway ProposePatch takes with no baseVersion -> an
+		//! unconditional Owner commit).  Applied via the runner's live
+		//! AgentSession, recorded honestly in the trajectory as a
+		//! `history_edit` (reason "scenario_intervention").
+		struct AgentEvalIntervention
+		{
+			int         afterToolCalls = 0;   //!< fire AFTER this many dispatched tool calls (>= 1)
+			std::string op;                   //!< "param_edit" (the only supported op today)
+			std::string target;               //!< the chunk NAME to edit
+			std::string param;                //!< the parameter to set
+			std::string value;                //!< the new value as scene-language text
+		};
+
 		//! One parsed evals/scenarios/*.json.  See the file header for the
 		//! schema; `checkpoints` is carried OPAQUELY (E3's job to
 		//! interpret).
@@ -191,6 +217,15 @@ namespace RISE
 			//! kinds; this slice only validates that each element parses
 			//! as a JSON object (LoadEvalScenario).
 			JsonValue checkpoints = JsonValue::MakeArray();
+
+			//! OPTIONAL scripted co-editor interventions (see
+			//! AgentEvalIntervention).  Empty when the scenario omits the
+			//! field.  LoadEvalScenario validates the shape LOUDLY (array of
+			//! objects; afterToolCalls a number >= 1; op == "param_edit";
+			//! target/param/value non-empty strings).  RunScenario /
+			//! RunScenarioLive apply each after its afterToolCalls-th tool
+			//! call through the live session.
+			std::vector<AgentEvalIntervention> interventions;
 		};
 
 		//! Parse `path` (an evals/scenarios/*.json file) into `out`.

@@ -21,13 +21,12 @@
       "op": "param_references_kind",
       "target": "obj_sph",
       "param": "material",
-      "referencedKind": "pbr_metallic_roughness_material"
-    },
-    {
-      "kind": "document",
-      "op": "chunk_count",
-      "chunkKind": "pbr_metallic_roughness_material",
-      "min": 1
+      "referencedKinds": [
+        "pbr_metallic_roughness_material",
+        "ggx_material",
+        "cooktorrance_material",
+        "perfectreflector_material"
+      ]
     },
     {
       "kind": "untouched",

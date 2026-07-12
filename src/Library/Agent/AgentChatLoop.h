@@ -369,6 +369,19 @@ namespace RISE
 			//! True while a trajectory sink is attached.
 			bool TrajectoryActive() const { return mRecorder != nullptr; }
 
+			//! Eval-harness (scenario interventions): emit a `history_edit`
+			//! trajectory record for a NON-LLM, NON-tool, history-visible
+			//! event that mutated the shared head BETWEEN the model's turns
+			//! WITHOUT consuming a turn -- e.g. the eval runner's simulated
+			//! co-editor applying a param edit while the agent is mid-task.
+			//! `reason` is a short machine tag (e.g. "scenario_intervention");
+			//! `beforeBytes`/`afterBytes` record the affected document's byte
+			//! size before/after the edit; `entryIndex` is advisory (-1 = not
+			//! tied to a transcript entry, the intervention case).  No-op when
+			//! no trajectory sink is attached.
+			void RecordHistoryEdit( const std::string& reason, long long beforeBytes = 0,
+			                        long long afterBytes = 0, int entryIndex = -1 );
+
 		private:
 			AgentChatLoop( const AgentChatLoop& );             // deleted
 			AgentChatLoop& operator=( const AgentChatLoop& );  // deleted

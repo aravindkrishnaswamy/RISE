@@ -239,5 +239,54 @@ namespace RISE
 			out += '}';
 			return out;
 		}
+
+		std::string SchemaGenCategory( const std::string& category )
+		{
+			// Same enumeration + keyword-dedup discipline as SchemaGenAll
+			// (see its comment): one entry per registered parser, deduped by
+			// keyword so an alias never lists twice.  Here we filter to ONE
+			// category and emit ONLY {keyword, description} -- the cheap
+			// discovery listing, not the full per-parameter schema.
+			const SceneEditorSuggestions::SceneGrammar& g = SceneEditorSuggestions::SceneGrammar::Instance();
+			const std::vector<const ChunkDescriptor*>& all = g.AllChunks();
+
+			std::set<std::string> seen;
+			std::string chunks;
+			bool first = true;
+			for( const ChunkDescriptor* d : all ) {
+				if( !d ) continue;
+				if( category != CategoryName( d->category ) ) continue;
+				if( !seen.insert( d->keyword ).second ) continue;
+				if( !first ) chunks += ',';
+				first = false;
+				chunks += "{\"keyword\":";
+				AppendJsonString( chunks, d->keyword );
+				if( !d->description.empty() ) {
+					chunks += ",\"description\":";
+					AppendJsonString( chunks, d->description );
+				}
+				chunks += '}';
+			}
+
+			std::string out;
+			out += "{\"category\":";
+			AppendJsonString( out, category );
+			out += ",\"chunks\":[";
+			out += chunks;
+			out += ']';
+			// An empty result means the caller named a category that no chunk
+			// declares -- either a typo or an empty-string request.  Surface
+			// it LOUDLY as an `"error"` key (a caller can test for it) rather
+			// than silently returning an empty listing that looks legitimate.
+			if( seen.empty() ) {
+				out += ",\"error\":";
+				AppendJsonString( out, "unknown or empty category '" + category +
+					"' (want one of: painter, function, material, camera, film, geometry, "
+					"modifier, medium, object, shaderop, shader, rasterizer, rasterizer_output, "
+					"light, photon_map, photon_gather, irradiance_cache, animation, scene_variant)" );
+			}
+			out += '}';
+			return out;
+		}
 	}
 }
