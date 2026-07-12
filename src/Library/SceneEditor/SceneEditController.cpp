@@ -5017,10 +5017,18 @@ void SceneEditController::KickRender()
 SaveResult SceneEditController::RequestSave( const std::string& filePath )
 {
 	// ---- Step 1: park render thread + mark save in flight -----------
+	// Editor live-sync follow-up: remember whether we CANCELLED an
+	// in-flight pass to get here — that pass's frame is left partially
+	// updated, and with debounced auto-save (UI refinement item 1)
+	// this now happens routinely, not just on a manual Save click.
+	// Step 3 re-kicks a render when it does, so a save never strands a
+	// half-painted viewport.
+	bool interruptedPass = false;
 	{
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( mRendering.load() ) {
 			mCancelProgress.RequestCancel();
+			interruptedPass = true;
 		}
 		mCV.wait( lk, [&]{ return !mRendering.load(); } );
 		mSaving.store( true );
@@ -5063,10 +5071,34 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 		} else {
 			mLastSaveError = result.errorMessage;
 		}
+		if( interruptedPass ) {
+			// Repaint the pass this save cancelled (KickRender's shape:
+			// flag + notify under the SAME mutex the waiter blocks on).
+			mEditPending.store( true, std::memory_order_release );
+		}
 		mCV.notify_one();
 	}
 
 	return result;
+}
+
+String SceneEditController::SerializedSceneText() const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( !mJob.HasRetainedCstDocument() ) return String();
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return String();
+	const std::string bytes = RISE::Cst::SerializeCst( *doc );
+	return String( bytes.c_str() );
+}
+
+void SceneEditController::GetSceneTextVersion( std::uint64_t& outUuid,
+                                               std::uint64_t& outRevision ) const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	const RISE::Cst::CstHeadVersion v = mJob.GetCstHeadVersion();
+	outUuid     = v.uuid;
+	outRevision = v.revision;
 }
 
 std::string SceneEditController::LastSaveError() const

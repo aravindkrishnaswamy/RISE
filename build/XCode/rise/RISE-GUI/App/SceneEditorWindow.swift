@@ -54,23 +54,32 @@ struct SceneTextEditor: NSViewRepresentable {
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isRichText = true
 
-        // RISE UI redesign (left panel, "SCENE FILE TAB"): a fixed dark
+        // RISE UI redesign (left panel, "SCENE FILE TAB"): a fixed
         // editor surface + IBM Plex Mono, matching RISESceneTheme's
-        // fixed dark syntax palette (both commit to the same dark
-        // backdrop rather than following the OS light/dark appearance —
-        // see RISESceneTheme's doc for why).
+        // fixed syntax palette (both commit to the same fixed backdrop
+        // — keyed off RISE's own `ThemeState.mode`, not the OS
+        // light/dark appearance — rather than following adaptive
+        // system colors; see RISESceneTheme's doc for why). Install
+        // the syntax highlighter first so its `theme` (chosen from the
+        // current `ThemeState.mode`) can drive the surrounding chrome
+        // colors below too, keeping a single source of truth.
+        let highlighter = RISESceneSyntaxHighlighter()
+        textView.textStorage?.delegate = highlighter
+        context.coordinator.highlighter = highlighter
+        let theme = highlighter.theme
+
         let font = Theme.monoNSFont(12)
         textView.font = font
-        let textColor = NSColor(hex: 0xe6e7e9)
+        let textColor = theme.defaultText
         textView.typingAttributes = [
             .font: font,
             .foregroundColor: textColor,
         ]
-        textView.backgroundColor = NSColor(hex: 0x17181b)
+        textView.backgroundColor = theme.editorBackground
         textView.drawsBackground = true
-        textView.insertionPointColor = NSColor(hex: 0x9ecbe8)
+        textView.insertionPointColor = theme.caret
         textView.selectedTextAttributes = [
-            .backgroundColor: NSColor(hex: 0x6db8e8, alpha: 0.30),
+            .backgroundColor: theme.selectionBackground,
             .foregroundColor: textColor,
         ]
         // Comfortable line spacing for the fixed-line-height scene text
@@ -79,13 +88,8 @@ struct SceneTextEditor: NSViewRepresentable {
         paragraphStyle.lineSpacing = 3
         textView.defaultParagraphStyle = paragraphStyle
         textView.typingAttributes[.paragraphStyle] = paragraphStyle
-        scrollView.backgroundColor = NSColor(hex: 0x17181b)
+        scrollView.backgroundColor = theme.editorBackground
         scrollView.drawsBackground = true
-
-        // Install the syntax highlighter as the text storage delegate.
-        let highlighter = RISESceneSyntaxHighlighter()
-        textView.textStorage?.delegate = highlighter
-        context.coordinator.highlighter = highlighter
 
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.isHorizontallyResizable = true
@@ -146,13 +150,13 @@ struct SceneTextEditor: NSViewRepresentable {
 
             // Reset typing attributes so new keystrokes use default styling
             // rather than inheriting the color of the character at the cursor.
-            // Matches makeNSView's fixed dark-theme setup above.
+            // Matches makeNSView's fixed-theme setup above.
             let font = Theme.monoNSFont(12)
             let paragraphStyle = NSMutableParagraphStyle()
             paragraphStyle.lineSpacing = 3
             textView.typingAttributes = [
                 .font: font,
-                .foregroundColor: NSColor(hex: 0xe6e7e9),
+                .foregroundColor: highlighter?.theme.defaultText ?? NSColor(hex: 0xe6e7e9),
                 .paragraphStyle: paragraphStyle,
             ]
 
@@ -304,7 +308,8 @@ struct SceneEditorPanel: View {
     private var toolbar: some View {
         HStack(spacing: 8) {
             editorPill("Revert", disabled: !viewModel.isEditorDirty,
-                       help: "Revert all changes to the last saved version") {
+                       help: "Discard buffer edits and reload the current live scene "
+                           + "(not just the last-saved-to-disk version)") {
                 viewModel.revertEditorFile()
             }
 
@@ -358,6 +363,14 @@ struct SceneEditorPanel: View {
     /// (see the slice brief).  Save state mirrors the dirty badge in
     /// the header so it reads correctly even when the header scrolls
     /// out of view on a very short window.
+    ///
+    /// CST <-> scene-file live sync (item 1): `editorBehindLiveScene`
+    /// only ever goes true alongside `isEditorDirty` (the poll can't set
+    /// it while the buffer is clean — see `pollRefinementState`), so the
+    /// amber warning appears BESIDE "unsaved edits" rather than
+    /// replacing it — both facts are true at once: the buffer has
+    /// unsaved text AND the live scene has since moved on elsewhere
+    /// (agent edit, GUI edit, ...).
     private var statusBar: some View {
         HStack(spacing: 12) {
             if viewModel.isEditorDirty {
@@ -366,6 +379,10 @@ struct SceneEditorPanel: View {
             } else {
                 Text("✓ saved")
                     .foregroundColor(Theme.success)
+            }
+            if viewModel.editorBehindLiveScene {
+                Text("⚠ scene changed elsewhere — buffer is stale")
+                    .foregroundColor(Theme.warn)
             }
             Spacer(minLength: 0)
             Text(bufferStats)

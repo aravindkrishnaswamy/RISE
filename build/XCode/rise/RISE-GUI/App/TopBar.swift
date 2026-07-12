@@ -23,7 +23,7 @@ struct TopBar: View {
             Spacer(minLength: 0)
             renderStatusCluster
             Spacer(minLength: 0)
-            saveButton
+            saveStateChip
         }
         .padding(.horizontal, 14)
         .frame(height: 44)
@@ -112,19 +112,40 @@ struct TopBar: View {
         !viewModel.canUseSceneTransport
     }
 
+    /// Item 4: during a production render the button pauses/resumes THE
+    /// RENDER (workers park at the bridge's pause gate); otherwise it
+    /// pauses/resumes interactive refinement as before.  Disabled only
+    /// while cancelling or when neither mode applies.
+    private var pauseShowsPlay: Bool {
+        isProduction ? viewModel.isProductionRenderPaused
+                     : viewModel.isRefinementPaused
+    }
+
+    private var pauseButtonDisabled: Bool {
+        if isProduction { return false }          // production pause always available
+        if isCancelling { return true }
+        return refinementControlsDisabled
+    }
+
     private var pauseResumeButton: some View {
         Button {
-            viewModel.togglePauseRefinement()
+            if isProduction {
+                viewModel.toggleProductionRenderPause()
+            } else {
+                viewModel.togglePauseRefinement()
+            }
         } label: {
-            Image(systemName: viewModel.isRefinementPaused ? "play.fill" : "pause.fill")
+            Image(systemName: pauseShowsPlay ? "play.fill" : "pause.fill")
                 .font(.system(size: 10))
                 .foregroundColor(Theme.textPrimary)
                 .frame(width: 26, height: 26)
                 .background(Theme.fillActive, in: RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
-        .disabled(refinementControlsDisabled)
-        .help("Pause / resume refinement (Space)")
+        .disabled(pauseButtonDisabled)
+        .help(isProduction
+              ? (viewModel.isProductionRenderPaused ? "Resume the render" : "Pause the render — workers park, CPU goes quiet")
+              : "Pause / resume refinement (Space)")
     }
 
     private var restartButton: some View {
@@ -202,22 +223,42 @@ struct TopBar: View {
             .padding(.horizontal, 4)
     }
 
-    // MARK: - Right: Save
+    // MARK: - Right: save-state indicator
+    //
+    // CST <-> scene-file live sync + auto-save: the explicit Save
+    // button is gone — edits auto-save to disk on a debounce (see
+    // RenderViewModel.pollRefinementState's item 2), so this is a
+    // passive status readout rather than an action.  It becomes
+    // actionable ONLY in the suspended state, where it doubles as the
+    // one-click retry (mirrors File > Save Scene, which also clears the
+    // suspension first).
 
-    private var saveButton: some View {
-        Button {
-            viewModel.saveScene()
-        } label: {
-            Text("Save")
-                .font(Theme.sans(12, .semibold))
-                .foregroundColor(Color.black.opacity(0.92))
-                .padding(.horizontal, 15)
-                .padding(.vertical, 6)
-                .background(Theme.textPrimary, in: RoundedRectangle(cornerRadius: Theme.radiusMedium))
+    @ViewBuilder
+    private var saveStateChip: some View {
+        if viewModel.loadedFilePath != nil {
+            if viewModel.autoSaveSuspended {
+                Button {
+                    viewModel.retrySaveAfterSuspension()
+                } label: {
+                    Text("⚠ not saved — file changed on disk")
+                        .font(Theme.mono(10))
+                        .foregroundColor(Theme.warn)
+                }
+                .buttonStyle(.plain)
+                .help("The scene file was modified outside RISE, so auto-save "
+                    + "backed off rather than overwrite it. Use File > Save Scene "
+                    + "to retry (this will overwrite the on-disk file), or reload "
+                    + "the scene to pick up the external changes.")
+            } else if viewModel.sceneEditsDirty {
+                Text("● saving…")
+                    .font(Theme.mono(10))
+                    .foregroundColor(Theme.dirty)
+            } else {
+                Text("✓ saved")
+                    .font(Theme.mono(10))
+                    .foregroundColor(Theme.textDim)
+            }
         }
-        .buttonStyle(.plain)
-        .opacity(viewModel.sceneEditsDirty ? 1.0 : 0.4)
-        .disabled(!viewModel.sceneEditsDirty)
     }
 
     // MARK: - Status text derivation
@@ -250,7 +291,8 @@ struct TopBar: View {
             scaleDivisor: viewModel.refinementScaleDivisor,
             isProduction: isProduction,
             isCancelling: isCancelling,
-            productionProgress: viewModel.progress)
+            productionProgress: viewModel.progress,
+            isProductionPaused: viewModel.isProductionRenderPaused)
     }
 
     /// The failure message when `renderState == .error(msg)`, else nil.

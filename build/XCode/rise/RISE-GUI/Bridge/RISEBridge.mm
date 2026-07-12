@@ -51,6 +51,8 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <thread>
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -65,9 +67,46 @@ public:
     RISEProgressBlock _block;
     std::string _currentTitle;
 
+    // Production pause (UI refinement item 4).  When _paused is set the
+    // render workers park HERE at their next progress/cancel check —
+    // PixelBasedRasterizerHelper polls IsCancelled() per block and per
+    // 100 ms intra-block flush, so every worker reaches this gate within
+    // one block.  The gate consults the Swift progress block once per
+    // tick so Cancel keeps working WHILE paused (the block returns false
+    // once the view model's cancel flag is set).  _pauseMutex serializes
+    // the polling so N parked workers don't hammer the Swift block (and
+    // its ETA-estimator call) concurrently — the fast not-paused path is
+    // a single relaxed atomic load and never touches the mutex.
+    std::atomic<bool>   _paused{false};
+    std::atomic<double> _lastProg{0.0};
+    std::atomic<double> _lastTotal{0.0};
+    mutable std::mutex  _pauseMutex;
+
     BlockProgressCallback(RISEProgressBlock block) : _block(block) {}
 
+    //! Returns false when the render was cancelled while paused.
+    bool PauseGateContinue() const {
+        if (!_paused.load(std::memory_order_acquire)) return true;   // fast path
+        std::lock_guard<std::mutex> lk(_pauseMutex);   // one poller; others park here
+        while (_paused.load(std::memory_order_acquire)) {
+            if (_block) {
+                @autoreleasepool {
+                    NSString *title = [NSString stringWithUTF8String:_currentTitle.c_str()];
+                    if (!(bool)_block(_lastProg.load(std::memory_order_relaxed),
+                                      _lastTotal.load(std::memory_order_relaxed), title)) {
+                        return false;   // cancelled while paused
+                    }
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        return true;
+    }
+
     bool Progress(const double progress, const double total) override {
+        _lastProg.store(progress, std::memory_order_relaxed);
+        _lastTotal.store(total, std::memory_order_relaxed);
+        if (!PauseGateContinue()) return false;
         if (_block) {
             @autoreleasepool {
                 NSString *title = [NSString stringWithUTF8String:_currentTitle.c_str()];
@@ -75,6 +114,13 @@ public:
             }
         }
         return true;
+    }
+
+    //! Base default is false (cancellation normally flows via Progress's
+    //! return value); this override adds ONLY the pause gate — when not
+    //! paused the behavior is byte-identical to the base.
+    bool IsCancelled() const override {
+        return !PauseGateContinue();
     }
 
     void SetTitle(const char* title) override {
@@ -789,6 +835,23 @@ static BOOL RunProductionRenderThroughController(
             _job->SetProgress(nullptr);
         }
     }
+}
+
+// Production pause (UI refinement item 4).  Flips the persistent
+// BlockProgressCallback's pause gate — see that class's doc for how the
+// workers park and why Cancel keeps working while paused.  A fresh
+// callback (and so an un-paused gate) is created by every
+// setProgressBlock: call, which startRender performs per render.
+- (void)setProductionRenderPaused:(BOOL)paused {
+    if (_progressCallback) {
+        _progressCallback->_paused.store(paused ? true : false,
+                                         std::memory_order_release);
+    }
+}
+
+- (BOOL)isProductionRenderPaused {
+    return (_progressCallback
+            && _progressCallback->_paused.load(std::memory_order_acquire)) ? YES : NO;
 }
 
 - (void)setImageOutputBlock:(RISEImageOutputBlock)block {

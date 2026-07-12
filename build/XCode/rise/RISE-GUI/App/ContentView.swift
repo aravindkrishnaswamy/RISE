@@ -50,6 +50,20 @@ struct ContentView: View {
     /// mutated by a drag).
     @State private var propertyRefresh: Int = 0
 
+    /// Theme mode re-render hook (light/dark switching — see
+    /// ThemeMode.swift). Mirrors the SAME `"themeMode"` UserDefaults
+    /// key that `ThemeState.setMode(_:)` writes, so a theme toggle
+    /// anywhere in the app (the File-menu toggle calls
+    /// `ThemeState.setMode(_:)` directly, not through this view model)
+    /// is observed here via `@AppStorage` and forces the `.id()` below
+    /// to rebuild the whole tree — the only way to get every
+    /// already-evaluated `Theme.*` token in the view hierarchy to
+    /// re-read `ThemeState.mode`, since Theme.swift's tokens are plain
+    /// computed properties, not something SwiftUI can subscribe to on
+    /// its own. This is a rare user action, so the rebuild cost is
+    /// acceptable.
+    @AppStorage(ThemeState.userDefaultsKey) private var themeModeRaw: String = ThemeMode.dark.rawValue
+
     // MARK: - UI redesign center-column slice: viewport toolbar state
     //
     // Moved up from ViewportView (which used to own `selectedTool` as
@@ -77,6 +91,8 @@ struct ContentView: View {
         .navigationTitle(windowTitle)
         .navigationSubtitle("RISE \(viewModel.versionString)")
         .frame(minWidth: 1320, minHeight: 760)
+        // Theme mode re-render hook — see `themeModeRaw` doc above.
+        .id(themeModeRaw)
     }
 
     // MARK: - Main workspace (left panel / center / right panel)

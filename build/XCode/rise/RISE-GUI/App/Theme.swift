@@ -5,10 +5,21 @@
 //  Design tokens for the RISE UI redesign (docs/gui/DESIGN_BRIEF.md).
 //  Single source of truth for color, type, spacing and radii on macOS.
 //  The Windows client mirrors these values in build/VS2022/RISE-GUI/Theme.h;
-//  the two files are kept in sync by convention — change both together.
+//  the two files are kept in sync by convention — change both together,
+//  INCLUDING the light palette added below once Windows gains one too.
 //
 //  Palette lifted from the approved "RISE Prototype" design-comp
 //  (claude.ai/design project "RISE UI Full Screen Layout").
+//
+//  Dark is the primary/first-class theme; light is the secondary,
+//  mirrored theme (added for runtime light/dark switching — see
+//  ThemeMode.swift). Every public token below is a computed `static
+//  var` that forwards to `DarkPalette` or `LightPalette` based on
+//  `ThemeState.mode`, so every existing call site (`Theme.bgPanel`,
+//  `Theme.textPrimary`, ...) keeps compiling completely unchanged
+//  while gaining runtime theme switching. Radii, fonts, and the
+//  spectral identity gradient are theme-invariant and stay plain
+//  `static let`s.
 //
 
 import SwiftUI
@@ -16,84 +27,215 @@ import CoreText
 
 enum Theme {
 
+    // MARK: - Dark palette (primary theme)
+
+    private enum DarkPalette {
+        // Surfaces
+        static let bgBase = Color(hex: 0x131416)
+        static let bgTopBar = Color(hex: 0x18191c)
+        static let bgPanel = Color(hex: 0x17181b)
+        static let bgCenter = Color(hex: 0x0e0f11)
+        static let bgWell = Color(hex: 0x101114)
+        static let bgCard = Color(hex: 0x131417)
+        static let bgCardDeep = Color(hex: 0x131518)
+        static let bgPopup = Color(hex: 0x1c1e22)
+        static let bgHeader = Color(hex: 0x141518)
+        static let bgTimeline = Color(hex: 0x111214)
+        static let bgBubbleUser = Color(hex: 0x24262b)
+
+        // Text ramp
+        static let textPrimary = Color(hex: 0xe6e7e9)
+        static let textSecondary = Color(hex: 0xc9cbd1)
+        static let textTertiary = Color(hex: 0xb8bac0)
+        static let textMuted = Color(hex: 0x9a9da4)
+        static let textFaint = Color(hex: 0x8b8e94)
+        static let textDim = Color(hex: 0x6f7278)
+        static let textDisabled = Color(hex: 0x5c5f66)
+        static let textGhost = Color(hex: 0x494c52)
+
+        // Accents
+        static let accent = Color(hex: 0x6db8e8)
+        static let accentLight = Color(hex: 0x9ecbe8)
+        static let accentSoft = Color(hex: 0x8fb8e8)
+        static let success = Color(hex: 0x7fb98a)
+        static let successLight = Color(hex: 0xa9d4b1)
+        static let warn = Color(hex: 0xe0b25a)
+        static let dirty = Color(hex: 0xe8a33d)
+        static let error = Color(hex: 0xe09a9a)
+        static let errorStrong = Color(hex: 0xe05a5a)
+        static let purple = Color(hex: 0xc8a0e8)
+        static let gold = Color(hex: 0xd4b98a)
+        static let teal = Color(hex: 0x8fd4c4)
+
+        // Category tag colors that don't forward to another token
+        static let catMaterial = Color(hex: 0xc9a0d4)
+        static let catFilm = Color(hex: 0x8fa8c9)
+        static let catVariant = Color(hex: 0xcf9fd6)
+
+        // Borders — white at fixed opacities
+        static let borderHairline = Color.white.opacity(0.07)
+        static let borderLight = Color.white.opacity(0.09)
+        static let borderMedium = Color.white.opacity(0.12)
+        static let borderStrong = Color.white.opacity(0.14)
+        static let borderHover = Color.white.opacity(0.25)
+
+        // Fills
+        static let fillHover = Color.white.opacity(0.08)
+        static let fillActive = Color.white.opacity(0.12)
+        static let fillTrough = Color.white.opacity(0.10)
+    }
+
+    // MARK: - Light palette (secondary theme, mirror of dark)
+    //
+    // Neutral (non-tinted) grays for color-accurate render surround.
+    // `bgCenter` is deliberately a mid neutral gray rather than
+    // bright white: the center column is the image-forward viewport
+    // surround, and a bright-white surround would bias perceived
+    // image brightness/contrast during color-critical evaluation —
+    // same reason the dark palette uses its darkest surface there.
+    // Accent hues are darkened from their dark-mode counterparts to
+    // clear ~4.5:1 contrast against light backgrounds while staying
+    // recognizably the same color family. Border/fill tokens switch
+    // from white-opacity to black-opacity (white-opacity overlays are
+    // invisible on a light background).
+
+    private enum LightPalette {
+        // Surfaces
+        static let bgBase = Color(hex: 0xececee)
+        static let bgTopBar = Color(hex: 0xf4f4f6)
+        static let bgPanel = Color(hex: 0xf0f0f2)
+        static let bgCenter = Color(hex: 0xb8b8bc)
+        static let bgWell = Color(hex: 0xffffff)
+        static let bgCard = Color(hex: 0xf7f7f9)
+        static let bgCardDeep = Color(hex: 0xf2f3f5)
+        static let bgPopup = Color(hex: 0xffffff)
+        static let bgHeader = Color(hex: 0xebebee)
+        static let bgTimeline = Color(hex: 0xf0f0f3)
+        static let bgBubbleUser = Color(hex: 0xdde4ee)
+
+        // Text ramp (inverted: dark text on light surfaces)
+        static let textPrimary = Color(hex: 0x1a1b1e)
+        static let textSecondary = Color(hex: 0x33353a)
+        static let textTertiary = Color(hex: 0x4a4d54)
+        static let textMuted = Color(hex: 0x5f636b)
+        static let textFaint = Color(hex: 0x767a83)
+        static let textDim = Color(hex: 0x8f939c)
+        static let textDisabled = Color(hex: 0xa6aab2)
+        static let textGhost = Color(hex: 0xc2c5cb)
+
+        // Accents (darkened for contrast, same hue family)
+        static let accent = Color(hex: 0x1a6fa8)
+        static let accentLight = Color(hex: 0x2580bd)
+        static let accentSoft = Color(hex: 0x3a77ad)
+        static let success = Color(hex: 0x2e7d43)
+        static let successLight = Color(hex: 0x3d8f52)
+        static let warn = Color(hex: 0x9a6b10)
+        static let dirty = Color(hex: 0xa86e14)
+        static let error = Color(hex: 0xb03a3a)
+        static let errorStrong = Color(hex: 0xc23030)
+        static let purple = Color(hex: 0x7b4fa6)
+        static let gold = Color(hex: 0x8a6c2f)
+        static let teal = Color(hex: 0x2b7d6e)
+
+        // Category tag colors that don't forward to another token
+        static let catMaterial = Color(hex: 0x8a5a9e)
+        static let catFilm = Color(hex: 0x56708f)
+        static let catVariant = Color(hex: 0x93589e)
+
+        // Borders — black at fixed opacities
+        static let borderHairline = Color.black.opacity(0.10)
+        static let borderLight = Color.black.opacity(0.13)
+        static let borderMedium = Color.black.opacity(0.18)
+        static let borderStrong = Color.black.opacity(0.22)
+        static let borderHover = Color.black.opacity(0.35)
+
+        // Fills
+        static let fillHover = Color.black.opacity(0.06)
+        static let fillActive = Color.black.opacity(0.10)
+        static let fillTrough = Color.black.opacity(0.08)
+    }
+
     // MARK: - Surfaces (dark-first, neutral grays — color-accurate surround)
 
     /// Window / deepest background.
-    static let bgBase = Color(hex: 0x131416)
+    static var bgBase: Color { ThemeState.mode == .dark ? DarkPalette.bgBase : LightPalette.bgBase }
     /// Top bar background.
-    static let bgTopBar = Color(hex: 0x18191c)
+    static var bgTopBar: Color { ThemeState.mode == .dark ? DarkPalette.bgTopBar : LightPalette.bgTopBar }
     /// Side panel background (left agent/scene panel, right outliner/inspector).
-    static let bgPanel = Color(hex: 0x17181b)
-    /// Center viewport-column background (darkest, image-forward surround).
-    static let bgCenter = Color(hex: 0x0e0f11)
+    static var bgPanel: Color { ThemeState.mode == .dark ? DarkPalette.bgPanel : LightPalette.bgPanel }
+    /// Center viewport-column background (darkest in dark mode / mid-gray in light mode, image-forward surround).
+    static var bgCenter: Color { ThemeState.mode == .dark ? DarkPalette.bgCenter : LightPalette.bgCenter }
     /// Input wells, value fields, log body, segmented-control troughs.
-    static let bgWell = Color(hex: 0x101114)
+    static var bgWell: Color { ThemeState.mode == .dark ? DarkPalette.bgWell : LightPalette.bgWell }
     /// Cards inside panels (hero widgets, diff card body).
-    static let bgCard = Color(hex: 0x131417)
+    static var bgCard: Color { ThemeState.mode == .dark ? DarkPalette.bgCard : LightPalette.bgCard }
     /// Card footers / slightly deeper card region.
-    static let bgCardDeep = Color(hex: 0x131518)
+    static var bgCardDeep: Color { ThemeState.mode == .dark ? DarkPalette.bgCardDeep : LightPalette.bgCardDeep }
     /// Menus, popovers, toasts.
-    static let bgPopup = Color(hex: 0x1c1e22)
+    static var bgPopup: Color { ThemeState.mode == .dark ? DarkPalette.bgPopup : LightPalette.bgPopup }
     /// Section header strips (log header, sub-toolbars).
-    static let bgHeader = Color(hex: 0x141518)
+    static var bgHeader: Color { ThemeState.mode == .dark ? DarkPalette.bgHeader : LightPalette.bgHeader }
     /// Timeline strip.
-    static let bgTimeline = Color(hex: 0x111214)
+    static var bgTimeline: Color { ThemeState.mode == .dark ? DarkPalette.bgTimeline : LightPalette.bgTimeline }
     /// User chat bubble.
-    static let bgBubbleUser = Color(hex: 0x24262b)
+    static var bgBubbleUser: Color { ThemeState.mode == .dark ? DarkPalette.bgBubbleUser : LightPalette.bgBubbleUser }
 
     // MARK: - Text
 
-    static let textPrimary = Color(hex: 0xe6e7e9)
-    static let textSecondary = Color(hex: 0xc9cbd1)
-    static let textTertiary = Color(hex: 0xb8bac0)
-    static let textMuted = Color(hex: 0x9a9da4)
-    static let textFaint = Color(hex: 0x8b8e94)
-    static let textDim = Color(hex: 0x6f7278)
-    static let textDisabled = Color(hex: 0x5c5f66)
-    static let textGhost = Color(hex: 0x494c52)
+    static var textPrimary: Color { ThemeState.mode == .dark ? DarkPalette.textPrimary : LightPalette.textPrimary }
+    static var textSecondary: Color { ThemeState.mode == .dark ? DarkPalette.textSecondary : LightPalette.textSecondary }
+    static var textTertiary: Color { ThemeState.mode == .dark ? DarkPalette.textTertiary : LightPalette.textTertiary }
+    static var textMuted: Color { ThemeState.mode == .dark ? DarkPalette.textMuted : LightPalette.textMuted }
+    static var textFaint: Color { ThemeState.mode == .dark ? DarkPalette.textFaint : LightPalette.textFaint }
+    static var textDim: Color { ThemeState.mode == .dark ? DarkPalette.textDim : LightPalette.textDim }
+    static var textDisabled: Color { ThemeState.mode == .dark ? DarkPalette.textDisabled : LightPalette.textDisabled }
+    static var textGhost: Color { ThemeState.mode == .dark ? DarkPalette.textGhost : LightPalette.textGhost }
 
     // MARK: - Accents
 
     /// Primary accent — selection, agent presence, links, active states.
-    static let accent = Color(hex: 0x6db8e8)
+    static var accent: Color { ThemeState.mode == .dark ? DarkPalette.accent : LightPalette.accent }
     /// Lighter accent for text on dark chips.
-    static let accentLight = Color(hex: 0x9ecbe8)
+    static var accentLight: Color { ThemeState.mode == .dark ? DarkPalette.accentLight : LightPalette.accentLight }
     /// Softer accent for diff block headers / gutters.
-    static let accentSoft = Color(hex: 0x8fb8e8)
+    static var accentSoft: Color { ThemeState.mode == .dark ? DarkPalette.accentSoft : LightPalette.accentSoft }
     /// Success / parse-OK / additions.
-    static let success = Color(hex: 0x7fb98a)
+    static var success: Color { ThemeState.mode == .dark ? DarkPalette.success : LightPalette.success }
     /// Lighter success for diff "+" text.
-    static let successLight = Color(hex: 0xa9d4b1)
+    static var successLight: Color { ThemeState.mode == .dark ? DarkPalette.successLight : LightPalette.successLight }
     /// Warnings, region badge, WARN counts, gold values.
-    static let warn = Color(hex: 0xe0b25a)
+    static var warn: Color { ThemeState.mode == .dark ? DarkPalette.warn : LightPalette.warn }
     /// Dirty-dot amber.
-    static let dirty = Color(hex: 0xe8a33d)
+    static var dirty: Color { ThemeState.mode == .dark ? DarkPalette.dirty : LightPalette.dirty }
     /// Errors / deletions (soft red text).
-    static let error = Color(hex: 0xe09a9a)
+    static var error: Color { ThemeState.mode == .dark ? DarkPalette.error : LightPalette.error }
     /// Strong red for diff-deletion backgrounds (use with opacity ~0.1).
-    static let errorStrong = Color(hex: 0xe05a5a)
+    static var errorStrong: Color { ThemeState.mode == .dark ? DarkPalette.errorStrong : LightPalette.errorStrong }
     /// Agent / reference / material identity.
-    static let purple = Color(hex: 0xc8a0e8)
+    static var purple: Color { ThemeState.mode == .dark ? DarkPalette.purple : LightPalette.purple }
     /// Values / units gold (scene-text values, lens readouts).
-    static let gold = Color(hex: 0xd4b98a)
+    static var gold: Color { ThemeState.mode == .dark ? DarkPalette.gold : LightPalette.gold }
     /// Animation-category teal.
-    static let teal = Color(hex: 0x8fd4c4)
+    static var teal: Color { ThemeState.mode == .dark ? DarkPalette.teal : LightPalette.teal }
 
-    // MARK: - Borders (white at fixed opacities)
+    // MARK: - Borders (white-opacity in dark mode, black-opacity in light mode)
 
-    static let borderHairline = Color.white.opacity(0.07)
-    static let borderLight = Color.white.opacity(0.09)
-    static let borderMedium = Color.white.opacity(0.12)
-    static let borderStrong = Color.white.opacity(0.14)
-    static let borderHover = Color.white.opacity(0.25)
+    static var borderHairline: Color { ThemeState.mode == .dark ? DarkPalette.borderHairline : LightPalette.borderHairline }
+    static var borderLight: Color { ThemeState.mode == .dark ? DarkPalette.borderLight : LightPalette.borderLight }
+    static var borderMedium: Color { ThemeState.mode == .dark ? DarkPalette.borderMedium : LightPalette.borderMedium }
+    static var borderStrong: Color { ThemeState.mode == .dark ? DarkPalette.borderStrong : LightPalette.borderStrong }
+    static var borderHover: Color { ThemeState.mode == .dark ? DarkPalette.borderHover : LightPalette.borderHover }
 
     // MARK: - Fills
 
-    static let fillHover = Color.white.opacity(0.08)
-    static let fillActive = Color.white.opacity(0.12)
-    static let fillTrough = Color.white.opacity(0.10)
+    static var fillHover: Color { ThemeState.mode == .dark ? DarkPalette.fillHover : LightPalette.fillHover }
+    static var fillActive: Color { ThemeState.mode == .dark ? DarkPalette.fillActive : LightPalette.fillActive }
+    static var fillTrough: Color { ThemeState.mode == .dark ? DarkPalette.fillTrough : LightPalette.fillTrough }
 
     // MARK: - Spectral identity gradient (380–780 nm motif)
+    //
+    // Theme-invariant: the spectral gradient is a brand/identity motif,
+    // not a surface or text color, so it does not switch with mode.
 
     static let spectralStops: [Gradient.Stop] = [
         .init(color: Color(hex: 0x5b21b6), location: 0.00),
@@ -110,19 +252,19 @@ enum Theme {
 
     // MARK: - Category tag colors (outliner)
 
-    static let catRender = warn                      // RND
-    static let catCamera = accentSoft                // CAM
-    static let catLight = gold                       // LGT
-    static let catObject = accentLight               // OBJ
-    static let catMaterial = Color(hex: 0xc9a0d4)    // MAT
-    static let catAnimation = teal                   // ANM
-    static let catMedia = purple                     // MED
+    static var catRender: Color { warn }                      // RND
+    static var catCamera: Color { accentSoft }                // CAM
+    static var catLight: Color { gold }                       // LGT
+    static var catObject: Color { accentLight }               // OBJ
+    static var catMaterial: Color { ThemeState.mode == .dark ? DarkPalette.catMaterial : LightPalette.catMaterial } // MAT
+    static var catAnimation: Color { teal }                   // ANM
+    static var catMedia: Color { purple }                     // MED
     /// Output Settings (Film) tag — muted slate blue, distinct from
     /// every other category accent.
-    static let catFilm = Color(hex: 0x8fa8c9)        // FLM
+    static var catFilm: Color { ThemeState.mode == .dark ? DarkPalette.catFilm : LightPalette.catFilm }        // FLM
     /// scene_variant overlay tag — soft violet, distinct from
     /// catMaterial's purple and catMedia's purple.
-    static let catVariant = Color(hex: 0xcf9fd6)     // VAR
+    static var catVariant: Color { ThemeState.mode == .dark ? DarkPalette.catVariant : LightPalette.catVariant } // VAR
 
     // MARK: - Radii
 

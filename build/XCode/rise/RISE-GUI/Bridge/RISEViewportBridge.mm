@@ -819,6 +819,26 @@ private:
     return [NSString stringWithUTF8String:buf] ?: @"";
 }
 
+#pragma mark - Editor live-sync (UI refinement item 1)
+
+- (NSString *)serializedSceneText {
+    if (!_controller) return @"";
+    char* text = RISE_API_SceneEditController_SerializedSceneTextAlloc(_controller);
+    if (!text) return @"";
+    NSString* out = [NSString stringWithUTF8String:text] ?: @"";
+    RISE_API_FreeString(text);
+    return out;
+}
+
+- (BOOL)getSceneTextVersionUuid:(unsigned long long *)outUuid
+                       revision:(unsigned long long *)outRevision {
+    if (outUuid)     *outUuid = 0;
+    if (outRevision) *outRevision = 0;
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_GetSceneTextVersion(
+               _controller, outUuid, outRevision) ? YES : NO;
+}
+
 #pragma mark - Refinement pause + status (UI redesign, design brief A2)
 
 - (void)pauseRefinement {

@@ -419,7 +419,8 @@ struct ViewportView: View {
             scaleDivisor: viewModel.refinementScaleDivisor,
             isProduction: isProduction,
             isCancelling: isCancelling,
-            productionProgress: viewModel.progress)
+            productionProgress: viewModel.progress,
+            isProductionPaused: viewModel.isProductionRenderPaused)
         return HStack(spacing: 9) {
             Text(status.text)
                 .font(Theme.mono(10.5))

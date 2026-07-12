@@ -158,6 +158,21 @@ final class RenderViewModel: ObservableObject {
     @Published var logMessages: [LogMessage] = []
     @Published var editorText: String = ""
     @Published var editorOriginalText: String = ""
+    /// CST <-> scene-file live sync (item 1): true when the live CST has
+    /// moved on (`getSceneTextVersionUuid:revision:` differs from the
+    /// last-synced version) while the editor buffer has unsaved text
+    /// edits (`isEditorDirty`), so the poll couldn't safely overwrite
+    /// `editorText`/`editorOriginalText` without discarding them.
+    /// Cleared whenever a sync succeeds or the buffer stops being dirty
+    /// — see `pollRefinementState`.
+    @Published var editorBehindLiveScene: Bool = false
+    /// Debounced auto-save (item 2): true once an auto-save attempt has
+    /// been refused or has I/O-failed (e.g. the save engine detects the
+    /// file changed on disk externally).  While true, the poll stops
+    /// attempting further auto-saves — a manual File > Save Scene (or
+    /// the TopBar status chip) clears it and retries.  Never true for a
+    /// scene with no loaded path (auto-save doesn't run there either).
+    @Published var autoSaveSuspended: Bool = false
     /// Which left-panel tab is frontmost — see `LeftPanelTab`.
     @Published var leftTab: LeftPanelTab = .agent
 
@@ -440,6 +455,40 @@ final class RenderViewModel: ObservableObject {
     /// automatically — mirrors the `hostWindow` didSet pattern above.
     private var refinementPollTimer: Timer? = nil
 
+    /// CST <-> scene-file live sync — cheap change-detector pair from
+    /// `RISEViewportBridge.getSceneTextVersionUuid:revision:`.  uuid is
+    /// fresh per load; revision bumps iff content changed.
+    private struct SceneTextVersion: Equatable {
+        let uuid: UInt64
+        let revision: UInt64
+    }
+
+    /// The version last mirrored into `editorText`/`editorOriginalText`
+    /// (item 1), or set at load time so the file-on-disk bytes and the
+    /// live CST start in agreement.  nil before any scene has loaded.
+    private var lastSyncedSceneTextVersion: SceneTextVersion? = nil
+    /// The version observed on the PREVIOUS poll tick — the debounce
+    /// signal for auto-save (item 2): only save once the version has
+    /// been stable across one full tick, so a burst of agent/GUI edits
+    /// coalesces into a single write instead of saving mid-burst.
+    private var previousPollSceneTextVersion: SceneTextVersion? = nil
+    /// The version an auto-save was last attempted against, so a
+    /// stable-but-already-tried version doesn't re-fire every tick
+    /// (successful saves flip `sceneEditsDirty` false anyway, and
+    /// failed ones set `autoSaveSuspended`, but this is the direct
+    /// guard against a same-version retry loop).
+    private var lastAutoSaveAttemptVersion: SceneTextVersion? = nil
+
+    /// Reads the live CST's current (uuid, revision) pair.  Same
+    /// do-not-call-during-renders caveat as `serializedSceneText` — only
+    /// call while `isSceneEditableForAgents`.
+    private func currentSceneTextVersion(_ vb: RISEViewportBridge) -> SceneTextVersion? {
+        var uuid: UInt64 = 0
+        var revision: UInt64 = 0
+        guard vb.getSceneTextVersionUuid(&uuid, revision: &revision) else { return nil }
+        return SceneTextVersion(uuid: uuid, revision: revision)
+    }
+
     /// Lazily constructed when a scene successfully loads; torn down on
     /// clearScene().  The viewport bridge borrows `bridge`'s job — its
     /// lifetime must not exceed `bridge`'s.
@@ -454,8 +503,31 @@ final class RenderViewModel: ObservableObject {
                 undoLabel = ""
                 redoLabel = ""
                 activeRegion = nil
+                lastSyncedSceneTextVersion = nil
+                previousPollSceneTextVersion = nil
+                lastAutoSaveAttemptVersion = nil
+                editorBehindLiveScene = false
+                autoSaveSuspended = false
                 return
             }
+            // CST <-> scene-file live sync (item 1): a freshly-attached
+            // bridge's current version becomes the sync baseline — the
+            // bytes that were just loaded/merged and the live CST agree
+            // at this instant, so there is nothing to pull into the
+            // editor yet.  Only a LATER agent/GUI edit that bumps the
+            // revision should overwrite `editorText`.  Also resets the
+            // per-scene auto-save/behind-live-scene state so it doesn't
+            // leak across scene loads.  Gated on `isSceneEditableForAgents`
+            // like every other `serializedSceneText`-family call — every
+            // assignment site sets `viewportBridge` only after
+            // `renderState` has already left `.loading`, so this is
+            // always safe in practice, but the gate is kept anyway
+            // rather than assuming that invariant holds forever.
+            lastSyncedSceneTextVersion = isSceneEditableForAgents ? currentSceneTextVersion(vb) : nil
+            previousPollSceneTextVersion = lastSyncedSceneTextVersion
+            lastAutoSaveAttemptVersion = nil
+            editorBehindLiveScene = false
+            autoSaveSuspended = false
             pollRefinementState(vb)
             // Re-read `self.viewportBridge` inside the Task rather than
             // capturing the local `vb` across the closure boundary —
@@ -988,6 +1060,7 @@ final class RenderViewModel: ObservableObject {
         renderState = .rendering
         progress = 0.0
         cancelFlag.value = false
+        resetProductionPauseState()
         renderedImage = nil
         imageBuffer.reset()
         elapsedTime = 0
@@ -999,8 +1072,14 @@ final class RenderViewModel: ObservableObject {
         displayTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self, let start = self.renderStartTime else { return }
+                // Elapsed = wall time minus time spent paused (item 4) —
+                // the readout reflects actual render work and freezes
+                // visibly while paused.
+                let pausedNow = self.productionPauseBegan.map { Date().timeIntervalSince($0) } ?? 0
                 self.elapsedTime = Date().timeIntervalSince(start)
-                self.remainingTime = bridgeForTimer.etaRemainingSeconds()?.doubleValue
+                                   - self.productionPausedAccum - pausedNow
+                self.remainingTime = self.isProductionRenderPaused
+                    ? nil : bridgeForTimer.etaRemainingSeconds()?.doubleValue
             }
         }
 
@@ -1055,8 +1134,14 @@ final class RenderViewModel: ObservableObject {
 
         let cancelRef = cancelFlag
         let bridgeForProgress = bridge
+        let pausedRef = productionPausedRef
         bridge.setProgressBlock { [weak self] (prog: Double, total: Double, title: String) -> Bool in
-            bridgeForProgress.etaUpdateProgress(prog, total: total)
+            // Don't feed the ETA estimator while paused (item 4): wall
+            // time advances with zero progress, which would poison the
+            // estimate.  Re-converges after resume.
+            if !pausedRef.value {
+                bridgeForProgress.etaUpdateProgress(prog, total: total)
+            }
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 self.progress = total > 0 ? prog / total : 0
@@ -1114,6 +1199,12 @@ final class RenderViewModel: ObservableObject {
                     self.elapsedTime = Date().timeIntervalSince(start)
                 }
                 self.renderStartTime = nil
+                // Review P2: clear pause bookkeeping on EVERY exit path
+                // (normal completion, cancel, Clear & Load, Merge,
+                // save-and-reload) — not just cancelRender + next start.
+                // The readers re-derive off renderState first today, but
+                // that's a duplicated invariant, not a guarantee.
+                self.resetProductionPauseState()
                 self.remainingTime = nil
 
                 if cancelRef.value {
@@ -1165,6 +1256,7 @@ final class RenderViewModel: ObservableObject {
         renderState = .rendering
         progress = 0.0
         cancelFlag.value = false
+        resetProductionPauseState()
         renderedImage = nil
         imageBuffer.reset()
         elapsedTime = 0
@@ -1176,8 +1268,14 @@ final class RenderViewModel: ObservableObject {
         displayTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self, let start = self.renderStartTime else { return }
+                // Elapsed = wall time minus time spent paused (item 4) —
+                // the readout reflects actual render work and freezes
+                // visibly while paused.
+                let pausedNow = self.productionPauseBegan.map { Date().timeIntervalSince($0) } ?? 0
                 self.elapsedTime = Date().timeIntervalSince(start)
-                self.remainingTime = bridgeForTimer.etaRemainingSeconds()?.doubleValue
+                                   - self.productionPausedAccum - pausedNow
+                self.remainingTime = self.isProductionRenderPaused
+                    ? nil : bridgeForTimer.etaRemainingSeconds()?.doubleValue
             }
         }
 
@@ -1212,8 +1310,14 @@ final class RenderViewModel: ObservableObject {
 
         let cancelRef = cancelFlag
         let bridgeForProgress = bridge
+        let pausedRef = productionPausedRef
         bridge.setProgressBlock { [weak self] (prog: Double, total: Double, title: String) -> Bool in
-            bridgeForProgress.etaUpdateProgress(prog, total: total)
+            // Don't feed the ETA estimator while paused (item 4): wall
+            // time advances with zero progress, which would poison the
+            // estimate.  Re-converges after resume.
+            if !pausedRef.value {
+                bridgeForProgress.etaUpdateProgress(prog, total: total)
+            }
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 self.progress = total > 0 ? prog / total : 0
@@ -1278,6 +1382,12 @@ final class RenderViewModel: ObservableObject {
                     self.elapsedTime = Date().timeIntervalSince(start)
                 }
                 self.renderStartTime = nil
+                // Review P2: clear pause bookkeeping on EVERY exit path
+                // (normal completion, cancel, Clear & Load, Merge,
+                // save-and-reload) — not just cancelRender + next start.
+                // The readers re-derive off renderState first today, but
+                // that's a duplicated invariant, not a guarantee.
+                self.resetProductionPauseState()
                 self.remainingTime = nil
 
                 if cancelRef.value {
@@ -1298,7 +1408,53 @@ final class RenderViewModel: ObservableObject {
 
     func cancelRender() {
         cancelFlag.value = true
+        // Cancel-while-paused: unpark the workers so the cancel lands
+        // promptly (the pause gate also self-detects cancellation via
+        // the progress block, but resuming here is snappier and keeps
+        // the pause UI state honest during the cancelling window).
+        if isProductionRenderPaused { setProductionRenderPaused(false) }
         renderState = .cancelling
+    }
+
+    // MARK: - Production render pause (UI refinement item 4)
+
+    /// TRUE while the in-flight production render is paused (workers
+    /// parked at the bridge's pause gate; partial image stays up).
+    @Published var isProductionRenderPaused = false
+
+    /// Wall-clock spent paused this render — subtracted from the
+    /// elapsed-time display so the readout reflects actual work time.
+    /// (The ETA estimator is NOT fed while paused; its estimate
+    /// re-converges over the first ticks after resume.)
+    private var productionPausedAccum: TimeInterval = 0
+    private var productionPauseBegan: Date? = nil
+    /// Captured by the progress blocks (cancelRef pattern) so render
+    /// threads can read pause state without touching MainActor self.
+    let productionPausedRef = AtomicBool(false)
+
+    func toggleProductionRenderPause() {
+        guard renderState == .rendering else { return }
+        setProductionRenderPaused(!isProductionRenderPaused)
+    }
+
+    private func setProductionRenderPaused(_ paused: Bool) {
+        bridge.setProductionRenderPaused(paused)
+        productionPausedRef.value = paused
+        if paused {
+            productionPauseBegan = Date()
+        } else if let began = productionPauseBegan {
+            productionPausedAccum += Date().timeIntervalSince(began)
+            productionPauseBegan = nil
+        }
+        isProductionRenderPaused = paused
+    }
+
+    /// Reset all pause bookkeeping — called at render start and finish.
+    private func resetProductionPauseState() {
+        productionPausedRef.value = false
+        productionPausedAccum = 0
+        productionPauseBegan = nil
+        if isProductionRenderPaused { isProductionRenderPaused = false }
     }
 
     // MARK: - Looping preview play (the Play button by the timeline)
@@ -1390,6 +1546,52 @@ final class RenderViewModel: ObservableObject {
         } else {
             activeRegion = nil
         }
+
+        // CST <-> scene-file live sync + debounced auto-save.  Gated on
+        // `isSceneEditableForAgents` — `serializedSceneText` and
+        // `getSceneTextVersionUuid:revision:` both take the controller's
+        // commit mutex, which a production render (or an outstanding
+        // chat-driven render) owns; calling either then would hang this
+        // poll on the main actor.  `viewportBridge != nil` is already
+        // guaranteed by every caller of this method.
+        if isSceneEditableForAgents, let currentVersion = currentSceneTextVersion(vb) {
+            // Item 1 — mirror the live CST into the editor buffer.
+            if !isEditorDirty {
+                // No unsaved buffer edits: safe to pull fresh text,
+                // and this is also how a `editorBehindLiveScene` stale
+                // flag clears once the user's buffer catches back up
+                // (e.g. after Revert) without waiting for a new sync.
+                if currentVersion != lastSyncedSceneTextVersion {
+                    let text = vb.serializedSceneText()
+                    editorText = text
+                    editorOriginalText = text
+                    lastSyncedSceneTextVersion = currentVersion
+                }
+                editorBehindLiveScene = false
+            } else if currentVersion != lastSyncedSceneTextVersion {
+                // The user has unsaved buffer edits AND the live scene
+                // has moved on since the last sync — don't clobber the
+                // buffer; just flag that it's stale.
+                editorBehindLiveScene = true
+            }
+
+            // Item 2 — debounced auto-save.  `sceneEditsDirty` mirrors
+            // the CONTROLLER's dirty flag (agent/GUI edits pending a
+            // write), independent of the text-editor buffer above.
+            // Debounce: only save once the version has been stable
+            // across one full poll tick, so a burst of edits coalesces
+            // into a single write instead of saving mid-burst.  Never
+            // runs with no loaded path (an untitled/no-path scene has
+            // nowhere to auto-save to) or while suspended.
+            if sceneEditsDirty, !autoSaveSuspended, loadedFilePath != nil,
+               let previousVersion = previousPollSceneTextVersion,
+               previousVersion == currentVersion,
+               lastAutoSaveAttemptVersion != currentVersion {
+                lastAutoSaveAttemptVersion = currentVersion
+                _ = saveScene(auto: true)
+            }
+            previousPollSceneTextVersion = currentVersion
+        }
     }
 
     // MARK: - UI redesign: refinement transport (TopBar / Render menu)
@@ -1451,47 +1653,112 @@ final class RenderViewModel: ObservableObject {
     /// it gets its own restyling pass later).  No-op with no bridge or
     /// no loaded path (the TopBar Save button has no Save-As affordance
     /// — that stays in the Properties panel).
-    func saveScene() {
-        guard let vb = viewportBridge, let path = loadedFilePath else { return }
+    ///
+    /// `auto`: true when called from the debounced auto-save poll (item
+    /// 2 of the CST-sync design, `pollRefinementState`).  Auto-save
+    /// must never alert-spam a modal on every failed 0.5 s poll tick,
+    /// so on refusal/failure it logs one warning line and sets
+    /// `autoSaveSuspended` instead of showing an `NSAlert` — a manual
+    /// retry (the TopBar chip or File > Save Scene, both `auto: false`)
+    /// clears the suspension first and keeps the original alert
+    /// behavior.  Returns true on a successful (or no-op) save, false
+    /// on refusal / I/O failure, so the poll can decide whether to
+    /// suspend further attempts.
+    @discardableResult
+    func saveScene(auto: Bool = false) -> Bool {
+        guard let vb = viewportBridge, let path = loadedFilePath else { return false }
+        if !auto {
+            // A manual save is always a fresh retry — clears any prior
+            // auto-save suspension even before we know this attempt's
+            // own outcome.
+            autoSaveSuspended = false
+        }
         var errMsg: NSString? = nil
         let status = vb.saveScene(to: path, errorMessage: &errMsg)
         switch status {
         case 0:
+            autoSaveSuspended = false
             // Saved.  Pull the just-written bytes back into the
             // scene-editor pane so it reflects the round-tripped
             // edits — unless the editor has its own unsaved text
             // edits, in which case overwriting would silently discard
-            // them (same conflict surfaced in PropertiesPanel).
-            if !isEditorDirty {
-                refreshEditorContents()
-            } else {
-                let alert = NSAlert()
-                alert.messageText = "Scene editor has unsaved text changes"
-                alert.informativeText =
-                    "Your interactive edits were saved to \(path).  " +
-                    "The scene editor pane still shows the pre-save text " +
-                    "plus your unsaved edits.  Clicking Save in the scene " +
-                    "editor will overwrite the just-saved interactive " +
-                    "changes — use Revert in the scene editor to discard " +
-                    "your text edits and pull the new file content."
-                alert.alertStyle = .warning
-                alert.addButton(withTitle: "OK")
-                alert.runModal()
+            // them (same conflict surfaced in PropertiesPanel).  Only
+            // for a MANUAL save — an auto-save success is silent (item
+            // 2: "nothing else, dirty flips false via the existing
+            // push"); the next poll tick's item-1 sync handles mirroring
+            // the editor once the version bumps, so there's no need to
+            // duplicate that here via a disk re-read.
+            if !auto {
+                if !isEditorDirty {
+                    refreshEditorContents()
+                } else {
+                    let alert = NSAlert()
+                    alert.messageText = "Scene editor has unsaved text changes"
+                    alert.informativeText =
+                        "Your interactive edits were saved to \(path).  " +
+                        "The scene editor pane still shows the pre-save text " +
+                        "plus your unsaved edits.  Clicking Save in the scene " +
+                        "editor will overwrite the just-saved interactive " +
+                        "changes — use Revert in the scene editor to discard " +
+                        "your text edits and pull the new file content."
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: "OK")
+                    alert.runModal()
+                }
             }
+            return true
         case 1:
-            break   // NoOp — nothing to write.
+            return true   // NoOp — nothing to write.
         case 2:
-            showSaveAlert(title: "Save Refused",
-                          message: (errMsg as String?)
-                              ?? "The save engine declined to write this file.")
+            let message = (errMsg as String?) ?? "The save engine declined to write this file."
+            if auto {
+                autoSaveSuspended = true
+                logAutoSaveWarning("Auto-save refused: \(message)")
+            } else {
+                showSaveAlert(title: "Save Refused", message: message)
+            }
+            return false
         case 3:
-            showSaveAlert(title: "Save Failed",
-                          message: (errMsg as String?)
-                              ?? "An I/O error occurred while saving the file.")
+            let message = (errMsg as String?) ?? "An I/O error occurred while saving the file."
+            if auto {
+                autoSaveSuspended = true
+                logAutoSaveWarning("Auto-save failed: \(message)")
+            } else {
+                showSaveAlert(title: "Save Failed", message: message)
+            }
+            return false
         default:
-            showSaveAlert(title: "Save Failed",
-                          message: "Unexpected save result (status \(status)).")
+            let message = "Unexpected save result (status \(status))."
+            if auto {
+                autoSaveSuspended = true
+                logAutoSaveWarning("Auto-save failed: \(message)")
+            } else {
+                showSaveAlert(title: "Save Failed", message: message)
+            }
+            return false
         }
+    }
+
+    /// One-shot warning line into the existing log-drawer mechanism
+    /// (`logMessages`, normally populated from `bridge.setLogBlock`) —
+    /// the auto-save poll's only feedback channel, deliberately NOT an
+    /// `NSAlert` (see `saveScene(auto:)`'s doc).
+    private func logAutoSaveWarning(_ message: String) {
+        let entry = LogMessage(level: .warning, text: "Auto-save: \(message)", timestamp: Date())
+        logMessages.append(entry)
+        if logMessages.count > Self.maxLogMessages {
+            logMessages.removeFirst(logMessages.count - Self.maxLogMessages)
+        }
+    }
+
+    /// Manual retry entry point for the TopBar's "not saved" chip and
+    /// File > Save Scene's suspended state — clears `autoSaveSuspended`
+    /// then attempts a normal (alerting) save.  `saveScene(auto: false)`
+    /// already clears the suspension itself, so this is a thin, more
+    /// intention-revealing name for call sites that specifically mean
+    /// "retry after a suspension" rather than "the ordinary Save action."
+    func retrySaveAfterSuspension() {
+        saveScene()
     }
 
     private func showSaveAlert(title: String, message: String) {
@@ -1557,8 +1824,26 @@ final class RenderViewModel: ObservableObject {
         }
     }
 
+    /// Discards the editor buffer's unsaved text edits.  In a
+    /// live-synced world "revert" means "go back to what the scene
+    /// actually IS right now" (the live CST's serialization), not "go
+    /// back to a stale at-load/at-last-sync snapshot" — so this pulls
+    /// `bridge.serializedSceneText` fresh rather than reusing
+    /// `editorOriginalText`.  Falls back to `editorOriginalText` (the
+    /// pre-redesign behavior) when the live text isn't reachable right
+    /// now — no bridge, or a production render / outstanding chat render
+    /// currently owns the scene (`isSceneEditableForAgents` false) —
+    /// same gate as every other `serializedSceneText` call site.
     func revertEditorFile() {
-        editorText = editorOriginalText
+        guard let vb = viewportBridge, isSceneEditableForAgents else {
+            editorText = editorOriginalText
+            return
+        }
+        let text = vb.serializedSceneText()
+        editorText = text
+        editorOriginalText = text
+        lastSyncedSceneTextVersion = currentSceneTextVersion(vb)
+        editorBehindLiveScene = false
     }
 
     func saveAndReloadScene() {

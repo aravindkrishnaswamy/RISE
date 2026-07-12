@@ -42,13 +42,20 @@ enum RefinementStatusFormatter {
                         scaleDivisor: UInt32,
                         isProduction: Bool,
                         isCancelling: Bool,
-                        productionProgress: Double) -> Status {
+                        productionProgress: Double,
+                        isProductionPaused: Bool = false) -> Status {
         if isCancelling {
             return Status(text: "Cancelling…", label: "CANCELLING",
                           fraction: CGFloat(productionProgress))
         }
         if isProduction {
             let pct = Int(productionProgress * 100)
+            if isProductionPaused {
+                // Item 4: workers parked at the bridge's pause gate —
+                // progress honestly frozen at the pause point.
+                return Status(text: "Paused \(pct)%", label: "PAUSED — PRODUCTION",
+                              fraction: CGFloat(productionProgress))
+            }
             return Status(text: "Production \(pct)%", label: "PRODUCTION \(pct)%",
                           fraction: CGFloat(productionProgress))
         }

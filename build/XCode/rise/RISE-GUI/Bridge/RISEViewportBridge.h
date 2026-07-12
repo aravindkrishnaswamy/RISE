@@ -249,6 +249,20 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 - (NSString *)undoActionLabel;
 - (NSString *)redoActionLabel;
 
+#pragma mark - Editor live-sync (UI refinement item 1)
+
+/// The retained CST Document's serialization — the exact bytes a save
+/// would write.  Empty string when no document is retained.  Takes the
+/// controller's commit mutex: DO NOT call while a render owns the scene
+/// (gate on the scene-editable predicate, like the proposals poll).
+- (NSString *)serializedSceneText;
+
+/// Retained CST head version — uuid is fresh per load, revision bumps
+/// iff the document content changed.  Returns NO (and zeros) with no
+/// controller.  Same do-not-call-during-renders caveat as above.
+- (BOOL)getSceneTextVersionUuid:(unsigned long long *)outUuid
+                       revision:(unsigned long long *)outRevision;
+
 #pragma mark - Refinement pause + status (UI redesign, design brief A2)
 
 /// Pause progressive refinement: the interactive render thread is

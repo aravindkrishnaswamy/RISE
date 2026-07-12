@@ -3660,6 +3660,21 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! Drives the GUI's "Save Scene" button enable state.
 	bool RISE_API_SceneEditController_HasUnsavedChanges( SceneEditController* p );
 
+	// ---- Editor live-sync (UI refinement item 1) ---------------------
+	// See SceneEditController::SerializedSceneText — callers must NOT
+	// poll while a render owns the scene (both take the controller's
+	// commit mutex).
+
+	//! Malloc'd NUL-terminated copy of the serialized scene text, or
+	//! NULL when no document is retained.  Free with RISE_API_FreeString.
+	char* RISE_API_SceneEditController_SerializedSceneTextAlloc( SceneEditController* p );
+	//! Frees a string returned by *_SerializedSceneTextAlloc.  NULL-safe.
+	void RISE_API_FreeString( char* s );
+	//! Retained CST head version (uuid, revision); both 0 when none.
+	bool RISE_API_SceneEditController_GetSceneTextVersion(
+		SceneEditController* p,
+		unsigned long long* outUuid, unsigned long long* outRevision );
+
 	//! Save the in-memory edits to `filePath`.  Returns the engine's
 	//! SaveResult.status numerically (0=Saved, 1=NoOp, 2=Refused,
 	//! 3=Failed).  On Refused / Failed, `errOut` is filled with the

@@ -4,14 +4,21 @@ import SwiftUI
 struct RISEApp: App {
     @StateObject private var viewModel = RenderViewModel()
 
+    /// Mirrors ThemeState's persisted mode so the File > Theme menu
+    /// checkmarks stay live (ThemeState.setMode writes this same
+    /// UserDefaults key, which also drives ContentView's root .id()
+    /// rebuild).
+    @AppStorage(ThemeState.userDefaultsKey)
+    private var themeModeRaw: String = ThemeMode.dark.rawValue
+
     init() {
         // Register the bundled IBM Plex faces before any view renders —
         // Theme.sans/mono fall back to system fonts if this fails.
         FontBootstrap.registerBundledFonts()
-        // UI redesign: the workspace chrome (Theme.swift) is dark-only —
-        // force dark appearance so AppKit-native controls (NSAlert,
-        // NSSavePanel, the menu bar's own rendering) match rather than
-        // following System Settings' light/dark preference.
+        // Theme: load the persisted light/dark choice, then pin the
+        // AppKit appearance to match so native controls (NSAlert,
+        // NSSavePanel, menu rendering) follow the workspace theme
+        // rather than System Settings.
         //
         // MUST go through NSApplication.shared, NOT the NSApp global:
         // SwiftUI runs App.init() BEFORE it creates the shared
@@ -19,7 +26,16 @@ struct RISEApp: App {
         // still nil here — unwrapping it crashed at launch
         // (EXC_BREAKPOINT in RISEApp.init, field crash 2026-07-11).
         // Accessing .shared instantiates the application first.
-        NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
+        ThemeState.loadPersisted()
+        NSApplication.shared.appearance = NSAppearance(
+            named: ThemeState.mode == .dark ? .darkAqua : .aqua)
+    }
+
+    private var pauseMenuTitle: String {
+        if viewModel.renderState == .rendering {
+            return viewModel.isProductionRenderPaused ? "Resume Render" : "Pause Render"
+        }
+        return viewModel.isRefinementPaused ? "Resume Refinement" : "Pause Refinement"
     }
 
     var body: some Scene {
@@ -29,9 +45,14 @@ struct RISEApp: App {
                 .onAppear {
                     // Set a fixed initial window size on launch
                     if let window = NSApplication.shared.windows.first {
-                        let frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
+                        // Item 2: launch maximized — fill the screen's
+                        // visible frame (menu bar + Dock respected), not
+                        // macOS fullscreen.  Falls back to 1440x900 when
+                        // no screen is reported (headless edge case).
+                        let frame = window.screen?.visibleFrame
+                            ?? NSScreen.main?.visibleFrame
+                            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
                         window.setFrame(frame, display: true)
-                        window.center()
                         // L5a round-2 P1-3 fix — register the host
                         // window with the view model so EDR
                         // headroom can be probed against the
@@ -90,15 +111,21 @@ struct RISEApp: App {
 
                 Divider()
 
-                // UI redesign: the TopBar's Save button always targets
-                // the loaded path (no Save-As affordance there — that
-                // stays in the Properties panel); this menu item is the
-                // keyboard-driven twin of that same button.
+                // CST <-> scene-file live sync + auto-save: the TopBar's
+                // Save button was replaced by a passive save-state chip
+                // (edits now auto-save to disk on a debounce — see
+                // RenderViewModel.pollRefinementState's item 2), so this
+                // menu item is now the manual escape hatch / retry path
+                // rather than a keyboard twin of a button.  Enabled both
+                // for the ordinary "there's something unsaved" case and
+                // for `autoSaveSuspended` (the file changed on disk
+                // externally and auto-save backed off) — clearing the
+                // suspension is exactly what a manual retry means here.
                 Button("Save Scene") {
-                    viewModel.saveScene()
+                    viewModel.retrySaveAfterSuspension()
                 }
                 .keyboardShortcut("s", modifiers: [.command, .option])
-                .disabled(!viewModel.sceneEditsDirty)
+                .disabled(!viewModel.sceneEditsDirty && !viewModel.autoSaveSuspended)
 
                 // UI redesign: rehouses the retired controls panel's
                 // "Clear" button.  ⇧⌘W rather than the system-owned ⌘W
@@ -108,6 +135,23 @@ struct RISEApp: App {
                 }
                 .keyboardShortcut("w", modifiers: [.command, .shift])
                 .disabled(!viewModel.canCloseScene)
+
+                Divider()
+
+                // UI refinement item 3: light/dark theme switch (user
+                // asked for it in the File menu).  ThemeState.setMode
+                // persists the choice, flips the AppKit appearance, and
+                // (via the shared UserDefaults key ContentView's root
+                // .id() watches) rebuilds the whole view tree with the
+                // other palette.
+                Menu("Theme") {
+                    Toggle("Dark", isOn: Binding(
+                        get: { themeModeRaw == ThemeMode.dark.rawValue },
+                        set: { if $0 { ThemeState.setMode(.dark) } }))
+                    Toggle("Light", isOn: Binding(
+                        get: { themeModeRaw == ThemeMode.light.rawValue },
+                        set: { if $0 { ThemeState.setMode(.light) } }))
+                }
             }
 
             // UI redesign: the retired controls panel exposed Undo/Redo
@@ -166,11 +210,20 @@ struct RISEApp: App {
                 // (matches `togglePauseRefinement`'s own guard) instead of
                 // a hand-copied `renderState` case list that missed the
                 // chat-driven-agent-render case.
-                Button(viewModel.isRefinementPaused ? "Resume Refinement" : "Pause Refinement") {
-                    viewModel.togglePauseRefinement()
+                // Item 4: during a production render this menu item
+                // pauses/resumes THE RENDER; otherwise interactive
+                // refinement, as before.
+                Button(pauseMenuTitle) {
+                    if viewModel.renderState == .rendering {
+                        viewModel.toggleProductionRenderPause()
+                    } else {
+                        viewModel.togglePauseRefinement()
+                    }
                 }
                 .keyboardShortcut(.space, modifiers: [.control])
-                .disabled(!viewModel.canUseSceneTransport)
+                .disabled(viewModel.renderState == .rendering
+                          ? false
+                          : !viewModel.canUseSceneTransport)
 
                 Button("Restart Refinement") {
                     viewModel.restartRefinement()

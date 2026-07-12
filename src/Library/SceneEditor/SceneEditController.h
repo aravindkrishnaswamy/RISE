@@ -1679,6 +1679,28 @@ namespace RISE
 		//! trackers.
 		bool HasUnsavedChanges() const { return mEditor.HasUnsavedChanges(); }
 
+		// Editor live-sync (UI refinement item 1) -----------------------
+		// The Scene-file editor mirrors the live CST: every committed
+		// mutation (GUI edit, agent edit, undo/redo) is visible as text
+		// without a manual sync step.
+
+		//! The retained CST Document's serialization — the exact bytes
+		//! RequestSave would write.  Empty when no document is retained.
+		//! Takes mMutex (a commit on another thread must not be observed
+		//! half-applied), so CALLERS MUST NOT POLL DURING A RENDER — the
+		//! render worker holds mMutex for the render's whole duration
+		//! and this would wedge the caller (the shells gate their poll
+		//! on the scene-editable predicate, same as the proposals poll).
+		String SerializedSceneText() const;
+
+		//! Cheap change detector for the editor's poll: the retained CST
+		//! head version (uuid fresh per load; revision bumps iff content
+		//! changed).  Same mMutex caveat as SerializedSceneText — the
+		//! 16-byte version must not be read torn.  Both 0 when no
+		//! document is retained.
+		void GetSceneTextVersion( std::uint64_t& outUuid,
+		                          std::uint64_t& outRevision ) const;
+
 		//! Phase 6.5 UI hook: install a listener that fires when
 		//! `HasUnsavedChanges()` flips (clean→dirty or dirty→clean).
 		//! The listener runs on the thread that drove the transition

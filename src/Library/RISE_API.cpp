@@ -7657,6 +7657,36 @@ namespace RISE
 
 	// ---- Phase 6.5 scene-file save ----------------------------------
 
+	char* RISE_API_SceneEditController_SerializedSceneTextAlloc( SceneEditController* p )
+	{
+		if( !p ) return 0;
+		const String text = p->SerializedSceneText();
+		const char* src = text.c_str();
+		if( !src ) return 0;
+		const size_t len = strlen( src );
+		char* out = static_cast<char*>( malloc( len + 1 ) );
+		if( !out ) return 0;
+		memcpy( out, src, len + 1 );
+		return out;
+	}
+
+	void RISE_API_FreeString( char* s )
+	{
+		if( s ) free( s );
+	}
+
+	bool RISE_API_SceneEditController_GetSceneTextVersion(
+		SceneEditController* p,
+		unsigned long long* outUuid, unsigned long long* outRevision )
+	{
+		if( !p ) return false;
+		std::uint64_t uuid = 0, revision = 0;
+		p->GetSceneTextVersion( uuid, revision );
+		if( outUuid )     *outUuid     = uuid;
+		if( outRevision ) *outRevision = revision;
+		return true;
+	}
+
 	bool RISE_API_SceneEditController_HasUnsavedChanges( SceneEditController* p )
 	{
 		if( !p ) return false;
