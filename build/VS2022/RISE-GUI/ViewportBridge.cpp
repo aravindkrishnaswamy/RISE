@@ -417,6 +417,79 @@ void ViewportBridge::endPropertyScrub()   { if (m_controller) RISE_API_SceneEdit
 void ViewportBridge::undo() { if (m_controller) RISE_API_SceneEditController_Undo(m_controller); }
 void ViewportBridge::redo() { if (m_controller) RISE_API_SceneEditController_Redo(m_controller); }
 
+QString ViewportBridge::undoActionLabel() const
+{
+    if (!m_controller) return QString();
+    char buf[256] = {0};
+    if (!RISE_API_SceneEditController_UndoLabel(m_controller, buf, sizeof(buf))) return QString();
+    return QString::fromUtf8(buf);
+}
+
+QString ViewportBridge::redoActionLabel() const
+{
+    if (!m_controller) return QString();
+    char buf[256] = {0};
+    if (!RISE_API_SceneEditController_RedoLabel(m_controller, buf, sizeof(buf))) return QString();
+    return QString::fromUtf8(buf);
+}
+
+// ---- Refinement pause + status (UI redesign, design brief A2) ------
+
+void ViewportBridge::pauseRefinement()
+{
+    if (!m_controller) return;
+    RISE_API_SceneEditController_PauseRefinement(m_controller);
+}
+
+void ViewportBridge::resumeRefinement()
+{
+    if (!m_controller) return;
+    RISE_API_SceneEditController_ResumeRefinement(m_controller);
+}
+
+bool ViewportBridge::isRefinementPaused() const
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_IsRefinementPaused(m_controller);
+}
+
+int ViewportBridge::refinementPhase(unsigned int* outScaleDivisor) const
+{
+    if (!m_controller) {
+        if (outScaleDivisor) *outScaleDivisor = 1;
+        return -1;
+    }
+    return RISE_API_SceneEditController_GetRefinementStatus(m_controller, outScaleDivisor);
+}
+
+// ---- Interactive region-of-interest (UI redesign, A4) ---------------
+
+void ViewportBridge::setInteractiveRegion(unsigned int left, unsigned int top,
+                                           unsigned int right, unsigned int bottom)
+{
+    if (!m_controller) return;
+    RISE_API_SceneEditController_SetInteractiveRegion(m_controller, left, top, right, bottom);
+}
+
+void ViewportBridge::clearInteractiveRegion()
+{
+    if (!m_controller) return;
+    RISE_API_SceneEditController_ClearInteractiveRegion(m_controller);
+}
+
+bool ViewportBridge::getInteractiveRegion(unsigned int* left, unsigned int* top,
+                                           unsigned int* right, unsigned int* bottom) const
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_GetInteractiveRegion(m_controller, left, top, right, bottom);
+}
+
+bool ViewportBridge::interactiveRasterizerHonorsRegion() const
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_InteractiveRasterizerHonorsRegion(m_controller);
+}
+
 // ---- Phase 6.5 scene-file save -------------------------------------
 
 bool ViewportBridge::hasUnsavedSceneChanges() const

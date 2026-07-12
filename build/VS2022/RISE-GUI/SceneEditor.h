@@ -48,7 +48,13 @@ private:
     QPushButton* m_saveBtn = nullptr;
     QPushButton* m_saveReloadBtn = nullptr;
     QPushButton* m_closeBtn = nullptr;
-    QLabel* m_modifiedBadge = nullptr;
+    QLabel* m_dirtyDot = nullptr;
+
+    // Bottom status bar (RISE UI redesign): save-state label ("● unsaved
+    // edits" amber / "✓ saved" green) + honest client-side line/char
+    // counts.  Mirrors the design comp's Scene file tab footer strip.
+    QLabel* m_saveStateLabel = nullptr;
+    QLabel* m_countsLabel = nullptr;
 
     QString m_filePath;
     QString m_originalText;

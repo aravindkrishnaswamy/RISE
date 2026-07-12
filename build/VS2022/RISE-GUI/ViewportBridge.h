@@ -244,6 +244,44 @@ public:
     void undo();
     void redo();
 
+    /// Human-readable label of the next Undo/Redo step ("Translate",
+    /// "Agent Edit", ...) for the Edit menu's dynamic item titles.
+    /// Empty string when the corresponding stack is empty (or no
+    /// controller is attached).
+    QString undoActionLabel() const;
+    QString redoActionLabel() const;
+
+    // ---- Refinement pause + status (UI redesign, design brief A2) --
+    // Mirrors the macOS RISEViewportBridge pauseRefinement /
+    // resumeRefinement / isRefinementPaused / refinementPhase.
+
+    /// Freeze the interactive refinement ladder at its current rung.
+    /// No-op when no controller is attached or already paused.
+    void pauseRefinement();
+    /// Resume after pauseRefinement().  No-op when not paused.
+    void resumeRefinement();
+    bool isRefinementPaused() const;
+
+    /// Returns the RefinementPhase as int (0 Idle, 1 Rendering,
+    /// 2 Refining, 3 Polishing, 4 Paused); -1 when no controller is
+    /// attached.  `*outScaleDivisor` receives the preview-scale
+    /// divisor (1..32, 1 = full resolution) when non-null.
+    int refinementPhase(unsigned int* outScaleDivisor) const;
+
+    // ---- Interactive region-of-interest (UI redesign, A4) -----------
+    // Full-resolution film-pixel coordinates, INCLUSIVE.  Cleared
+    // automatically before production renders.
+
+    void setInteractiveRegion(unsigned int left, unsigned int top,
+                               unsigned int right, unsigned int bottom);
+    void clearInteractiveRegion();
+    bool getInteractiveRegion(unsigned int* left, unsigned int* top,
+                               unsigned int* right, unsigned int* bottom) const;
+    /// True iff the active interactive rasterizer actually honors a
+    /// set region (some rasterizers ignore it entirely).  Drives the
+    /// viewport toolbar's REGION chip disable/tooltip state.
+    bool interactiveRasterizerHonorsRegion() const;
+
     // ---- Phase 6.5 scene-file save ----------------------------------
     // Round-trip-save bindings.  Mirrors the macOS RISEViewportBridge
     // `hasUnsavedSceneChanges` / `saveSceneTo:errorMessage:` /

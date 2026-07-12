@@ -1,21 +1,18 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  ViewportProperties.cpp - Right-side accordion implementation.
-//    Five sections (Cameras / Rasterizer / Objects / Lights / Output
-//    Settings), single selection, descriptor-driven property rows
-//    under the expanded section.  See header for layout and macOS /
-//    Android counterparts.
+//  ViewportProperties.cpp - Single-entity inspector implementation.
+//    See header for the macOS PropertiesPanel.swift cross-reference.
 //
 //////////////////////////////////////////////////////////////////////
 
 #include "ViewportProperties.h"
 #include "ViewportBridge.h"
+#include "Theme.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QLabel>
-#include <QComboBox>
 #include <QScrollArea>
 #include <QFrame>
 #include <QMouseEvent>
@@ -29,18 +26,19 @@
 #include <QFileInfo>
 #include <QInputDialog>
 #include <QMessageBox>
+#include <QSet>
+#include <QStringList>
 
 #include <cmath>
 #include <functional>
+#include <memory>
 #include <utility>
-
-using SectionWidgets = ViewportPropertiesInternal::AccordionSectionWidgets;
 
 namespace {
 
 // Single-numeric ValueKind values (Bool=0, UInt=1, Double=2,
 // DoubleVec3=3, ...).  Vector / string / reference kinds get no
-// scrub handle — scrubbing a vector is ambiguous and keyboard
+// scrub handle -- scrubbing a vector is ambiguous and keyboard
 // entry is the natural input for non-numeric fields.
 inline bool isScrubbableKind(int kind)
 {
@@ -76,6 +74,21 @@ inline QString formatScrubbed(double v, int kind)
     return QString::asprintf("%.6g", v);
 }
 
+// Shared well chrome (Theme::bgWell fill + hairline border) -- mirrors
+// the comp's typed value cells and PropertiesPanel.swift's wellBackground().
+QString wellStyleSheet()
+{
+    return QStringLiteral("background-color: %1; border: 1px solid %2; border-radius: %3px;")
+        .arg(Theme::hex(Theme::bgWell), Theme::hex(Theme::borderLight))
+        .arg(Theme::radiusSmall);
+}
+
+QString lineEditStyleSheet(const QColor& textColor)
+{
+    return QStringLiteral("QLineEdit { background: transparent; border: none; color: %1; }")
+        .arg(Theme::hex(textColor));
+}
+
 // Click-and-drag chevron handle for scrubbing numeric property values.
 class ScrubHandle : public QLabel
 {
@@ -98,10 +111,9 @@ public:
         , m_beginBracket(std::move(beginBracket))
         , m_endBracket(std::move(endBracket))
     {
-        // Glyph is painted in paintEvent — we draw two filled triangles
+        // Glyph is painted in paintEvent -- we draw two filled triangles
         // rather than rely on a Unicode arrow glyph being present in the
-        // system font (Mac uses the SF Symbol `chevron.up.chevron.down`;
-        // there is no portable Windows-font equivalent).
+        // system font.
         setFixedSize(16, 18);
         setCursor(Qt::SizeVerCursor);
         setToolTip(QObject::tr(
@@ -167,16 +179,10 @@ protected:
 
     void paintEvent(QPaintEvent*) override
     {
-        // Two filled triangles, up over down, matching SF Symbol
-        // `chevron.up.chevron.down`.  Geometry is in widget-local
-        // coordinates with a 2 px border so the glyph never clips at
-        // odd DPI scales.
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         p.setPen(Qt::NoPen);
-        QColor c = palette().color(QPalette::PlaceholderText);
-        if (!c.isValid()) c = palette().color(QPalette::WindowText);
-        p.setBrush(c);
+        p.setBrush(Theme::textDim);
 
         const qreal w  = width();
         const qreal h  = height();
@@ -208,32 +214,165 @@ private:
     bool       m_dragging   = false;
 };
 
-struct AccordionSectionDef {
-    ViewportBridge::Category category;
-    const char*              title;
+// Bool-kind value cell: a pill toggle mirroring the comp's rounded
+// switch (Theme::accent when on, Theme::fillTrough when off).  No
+// Q_OBJECT -- a pure click target reporting through a std::function,
+// same pattern as ScrubHandle above.
+class BoolPill : public QWidget
+{
+public:
+    using CommitFn = std::function<void(bool)>;
+
+    BoolPill(bool initialOn, bool editable, CommitFn commit, QWidget* parent = nullptr)
+        : QWidget(parent)
+        , m_on(initialOn)
+        , m_editable(editable)
+        , m_commit(std::move(commit))
+    {
+        setFixedSize(32, 18);
+        if (m_editable) setCursor(Qt::PointingHandCursor);
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent* e) override
+    {
+        if (m_editable && e->button() == Qt::LeftButton) {
+            m_on = !m_on;
+            update();
+            if (m_commit) m_commit(m_on);
+            e->accept();
+            return;
+        }
+        QWidget::mousePressEvent(e);
+    }
+
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(m_on ? Theme::accent : Theme::fillTrough);
+        p.drawRoundedRect(rect(), 9, 9);
+        const int knobD = 14;
+        const int x = m_on ? (width() - knobD - 2) : 2;
+        p.setBrush(QColor(0x0d, 0x11, 0x16));
+        p.drawEllipse(QRect(x, 2, knobD, knobD));
+    }
+
+private:
+    bool     m_on;
+    bool     m_editable;
+    CommitFn m_commit;
 };
 
-// Top-down order: Cameras first (most-used), Animation right under it
-// (picking a named animation re-points the timeline, like activating a
-// camera), Rasterizer (scene-global), Objects (long lists), Lights, then
-// Output Settings (Film — last because it's a one-row global config the
-// user typically touches once at the start of a session).  Animation has
-// no editable properties — selecting a row just activates that animation
-// (the section renders generically: combo populated from categoryEntities,
-// pick routed through setSelection).
-static const AccordionSectionDef kSectionDefs[] = {
-    { ViewportBridge::Category::Camera,     "Cameras"         },
-    { ViewportBridge::Category::Animation,  "Animation"       },
-    { ViewportBridge::Category::SceneVariant, "Variants"      },
-    { ViewportBridge::Category::Rasterizer, "Rasterizer"      },
-    { ViewportBridge::Category::Object,     "Objects"         },
-    { ViewportBridge::Category::Light,      "Lights"          },
-    { ViewportBridge::Category::Material,   "Materials"       },
-    { ViewportBridge::Category::Medium,     "Media"           },
-    { ViewportBridge::Category::Film,       "Output Settings" },
+// A row that reports a plain left-click via a std::function callback.
+// No Q_OBJECT / signals -- same pattern as ScrubHandle/BoolPill above
+// (and OutlinerWidget.cpp's ClickableRow), used here for the
+// "Advanced" disclosure toggle row.
+class ClickableRow : public QWidget
+{
+public:
+    using ClickFn = std::function<void()>;
+
+    explicit ClickableRow(ClickFn onClick, QWidget* parent = nullptr)
+        : QWidget(parent)
+        , m_onClick(std::move(onClick))
+    {
+    }
+
+protected:
+    void mouseReleaseEvent(QMouseEvent* e) override
+    {
+        if (e->button() == Qt::LeftButton && rect().contains(e->pos()) && m_onClick) {
+            m_onClick();
+        }
+        QWidget::mouseReleaseEvent(e);
+    }
+
+private:
+    ClickFn m_onClick;
 };
+
+static constexpr int kMaxBasicRows = 8;
+
+// Progressive disclosure (two levels max): the first kMaxBasicRows
+// rows show inline as "Basic"; the rest collapse under one "Advanced"
+// toggle.  Priority for the Basic set: editable rows with quick-pick
+// presets first (the ones most worth a click), then whichever other
+// rows come next in descriptor order, until the cap is reached.  Both
+// groups are then rendered back in their ORIGINAL descriptor order --
+// the priority pass only decides membership, not display order.
+void splitBasicAdvanced(const QVector<ViewportProperty>& rows,
+                         QVector<ViewportProperty>& basic,
+                         QVector<ViewportProperty>& advanced)
+{
+    basic.clear();
+    advanced.clear();
+    if (rows.size() <= kMaxBasicRows) {
+        basic = rows;
+        return;
+    }
+
+    QSet<QString> selected;
+    for (const ViewportProperty& p : rows) {
+        if (selected.size() >= kMaxBasicRows) break;
+        if (p.editable && !p.presets.isEmpty()) selected.insert(p.name);
+    }
+    if (selected.size() < kMaxBasicRows) {
+        for (const ViewportProperty& p : rows) {
+            if (selected.size() >= kMaxBasicRows) break;
+            if (!selected.contains(p.name)) selected.insert(p.name);
+        }
+    }
+    for (const ViewportProperty& p : rows) {
+        if (selected.contains(p.name)) basic.append(p);
+        else advanced.append(p);
+    }
+}
 
 }  // namespace
+
+// ============================================================
+// Category display metadata
+// ============================================================
+
+QString ViewportProperties::categoryTitle(Category cat)
+{
+    switch (cat) {
+    case Category::Camera:       return tr("Cameras");
+    case Category::Rasterizer:   return tr("Rasterizer");
+    case Category::Object:       return tr("Objects");
+    case Category::Light:        return tr("Lights");
+    case Category::Film:         return tr("Output Settings");
+    case Category::Material:     return tr("Materials");
+    case Category::Medium:       return tr("Media");
+    case Category::Animation:    return tr("Animation");
+    case Category::SceneVariant: return tr("Variants");
+    case Category::None:
+    default:                     return tr("Scene");
+    }
+}
+
+QString ViewportProperties::categoryGlyph(Category cat)
+{
+    switch (cat) {
+    case Category::Camera:       return QString::fromUtf8("\xE2\x97\x89");   // ◉
+    case Category::Object:       return QString::fromUtf8("\xE2\x97\x86");   // ◆
+    case Category::Light:        return QString::fromUtf8("\xE2\x98\x80");   // ☀
+    case Category::Material:     return QString::fromUtf8("\xE2\x97\x90");   // ◐
+    case Category::Rasterizer:   return QString::fromUtf8("\xE2\x9A\x99");   // ⚙
+    case Category::Film:         return QString::fromUtf8("\xE2\x96\xA6");   // ▦
+    case Category::Medium:       return QString::fromUtf8("\xE2\x89\x88");   // ≈
+    case Category::Animation:    return QString::fromUtf8("\xE2\x96\xB6");   // ▶
+    case Category::SceneVariant: return QString::fromUtf8("\xE2\xA7\x89");   // ⧉
+    case Category::None:
+    default:                     return QString::fromUtf8("\xE2\x80\xA2");   // •
+    }
+}
+
+// ============================================================
+// Construction
+// ============================================================
 
 ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
     : QWidget(parent)
@@ -243,42 +382,186 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    // Phase 6.5: header row with Save / Save As… buttons on the right.
-    // Mirrors the macOS PropertiesPanel.swift header HStack.  The
-    // buttons are stored as members so the dirtyChanged slot can
-    // re-evaluate their enable state.
-    auto* headerRow = new QWidget(this);
-    auto* headerLayout = new QHBoxLayout(headerRow);
-    headerLayout->setContentsMargins(8, 4, 8, 4);
-    headerLayout->setSpacing(4);
+    m_scroll = new QScrollArea(this);
+    m_scroll->setWidgetResizable(true);
+    m_scroll->setFrameShape(QFrame::NoFrame);
 
-    m_headerLabel = new QLabel(tr("Scene"), headerRow);
-    m_headerLabel->setStyleSheet("font-weight: bold;");
-    headerLayout->addWidget(m_headerLabel);
-    headerLayout->addStretch(1);
+    auto* body = new QWidget(m_scroll);
+    m_bodyLayout = new QVBoxLayout(body);
+    m_bodyLayout->setContentsMargins(14, 12, 14, 12);
+    m_bodyLayout->setSpacing(13);
 
-    m_saveButton = new QToolButton(headerRow);
-    m_saveButton->setText(tr("Save"));
-    m_saveButton->setEnabled(false);   // updated by onDirtyChanged
-    m_saveButton->setToolTip(tr("No changes to save"));
-    connect(m_saveButton, &QToolButton::clicked,
-            this, [this]() { performSceneSave(/*useLoadedPath=*/true); });
-    headerLayout->addWidget(m_saveButton);
+    // ---- Entity header: icon chip + name + meta -----------------------
+    auto* headerRow = new QWidget(body);
+    auto* headerRowLayout = new QHBoxLayout(headerRow);
+    headerRowLayout->setContentsMargins(0, 0, 0, 0);
+    headerRowLayout->setSpacing(9);
 
-    m_saveAsButton = new QToolButton(headerRow);
-    m_saveAsButton->setText(tr("Save As…"));
-    m_saveAsButton->setEnabled(false);
-    m_saveAsButton->setToolTip(tr("No changes to save"));
-    connect(m_saveAsButton, &QToolButton::clicked,
-            this, [this]() { performSceneSave(/*useLoadedPath=*/false); });
-    headerLayout->addWidget(m_saveAsButton);
+    m_iconChip = new QLabel(headerRow);
+    m_iconChip->setFixedSize(26, 26);
+    m_iconChip->setAlignment(Qt::AlignCenter);
+    m_iconChip->setFont(Theme::sans(12));
+    m_iconChip->setStyleSheet(QStringLiteral(
+        "background-color: %1; border: 1px solid %2; border-radius: 6px; color: %3;")
+        .arg(Theme::rgba(QColor(Theme::accent.red(), Theme::accent.green(), Theme::accent.blue(), static_cast<int>(0.15 * 255))),
+             Theme::rgba(QColor(Theme::accent.red(), Theme::accent.green(), Theme::accent.blue(), static_cast<int>(0.3 * 255))),
+             Theme::hex(Theme::accentLight)));
+    headerRowLayout->addWidget(m_iconChip);
 
-    root->addWidget(headerRow);
+    auto* nameCol = new QWidget(headerRow);
+    auto* nameColLayout = new QVBoxLayout(nameCol);
+    nameColLayout->setContentsMargins(0, 0, 0, 0);
+    nameColLayout->setSpacing(1);
+    m_nameLabel = new QLabel(nameCol);
+    m_nameLabel->setFont(Theme::sans(12, QFont::DemiBold));
+    m_nameLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
+    nameColLayout->addWidget(m_nameLabel);
+    m_metaLabel = new QLabel(nameCol);
+    m_metaLabel->setFont(Theme::mono(10));
+    m_metaLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    nameColLayout->addWidget(m_metaLabel);
+    headerRowLayout->addWidget(nameCol);
+    headerRowLayout->addStretch(1);
 
+    m_bodyLayout->addWidget(headerRow);
+
+    // ---- Camera-only affordances ---------------------------------------
+    m_cameraAffordances = new QWidget(body);
+    auto* camLayout = new QVBoxLayout(m_cameraAffordances);
+    camLayout->setContentsMargins(0, 0, 0, 0);
+    camLayout->setSpacing(6);
+
+    m_useInViewportBtn = new QToolButton(m_cameraAffordances);
+    m_useInViewportBtn->setText(tr("Use in viewport"));
+    m_useInViewportBtn->setFont(Theme::sans(11));
+    m_useInViewportBtn->setCursor(Qt::PointingHandCursor);
+    m_useInViewportBtn->setStyleSheet(QStringLiteral(
+        "QToolButton { color: %1; border: 1px solid %2; border-radius: %3px; padding: 7px 0; }"
+        "QToolButton:disabled { color: %4; border-color: %5; }")
+        .arg(Theme::hex(Theme::accentLight),
+             Theme::rgba(QColor(Theme::accent.red(), Theme::accent.green(), Theme::accent.blue(), static_cast<int>(0.35 * 255))))
+        .arg(Theme::radiusMedium)
+        .arg(Theme::hex(Theme::textDisabled), Theme::hex(Theme::borderLight)));
+    connect(m_useInViewportBtn, &QToolButton::clicked, this, &ViewportProperties::onUseInViewportClicked);
+    camLayout->addWidget(m_useInViewportBtn);
+
+    m_addCameraBtn = new QToolButton(m_cameraAffordances);
+    m_addCameraBtn->setText(QStringLiteral("+ ") + tr("Add Camera"));
+    m_addCameraBtn->setFont(Theme::mono(10));
+    m_addCameraBtn->setCursor(Qt::PointingHandCursor);
+    m_addCameraBtn->setStyleSheet(QStringLiteral(
+        "QToolButton { color: %1; border: none; padding: 2px 0; }")
+        .arg(Theme::hex(Theme::textDim)));
+    connect(m_addCameraBtn, &QToolButton::clicked, this, &ViewportProperties::onAddCameraClicked);
+    camLayout->addWidget(m_addCameraBtn);
+
+    m_bodyLayout->addWidget(m_cameraAffordances);
+
+    // ---- Empty-selection message ----------------------------------------
+    m_emptyMessage = new QLabel(body);
+    m_emptyMessage->setFont(Theme::sans(11));
+    m_emptyMessage->setWordWrap(true);
+    m_emptyMessage->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    m_bodyLayout->addWidget(m_emptyMessage);
+
+    // ---- Basic property rows --------------------------------------------
+    auto* basicContainer = new QWidget(body);
+    m_basicLayout = new QVBoxLayout(basicContainer);
+    m_basicLayout->setContentsMargins(0, 0, 0, 0);
+    m_basicLayout->setSpacing(9);
+    m_bodyLayout->addWidget(basicContainer);
+
+    // ---- Advanced disclosure ---------------------------------------------
+    m_advancedToggleRow = new ClickableRow([this]() { onAdvancedToggleClicked(); }, body);
+    m_advancedToggleRow->setCursor(Qt::PointingHandCursor);
+    auto* advToggleLayout = new QHBoxLayout(m_advancedToggleRow);
+    advToggleLayout->setContentsMargins(0, 0, 0, 0);
+    advToggleLayout->setSpacing(6);
+    auto* advLabel = new QLabel(tr("Advanced"), m_advancedToggleRow);
+    advLabel->setFont(Theme::sans(11));
+    advLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textFaint)));
+    advToggleLayout->addWidget(advLabel);
+    m_advancedArrowLabel = new QLabel(m_advancedToggleRow);
+    m_advancedArrowLabel->setFont(Theme::sans(9));
+    m_advancedArrowLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textFaint)));
+    advToggleLayout->addWidget(m_advancedArrowLabel);
+    advToggleLayout->addStretch(1);
+    m_advancedCountLabel = new QLabel(m_advancedToggleRow);
+    m_advancedCountLabel->setFont(Theme::mono(9));
+    m_advancedCountLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDisabled)));
+    advToggleLayout->addWidget(m_advancedCountLabel);
+    m_bodyLayout->addWidget(m_advancedToggleRow);
+
+    m_advancedContainer = new QWidget(body);
+    m_advancedLayout = new QVBoxLayout(m_advancedContainer);
+    m_advancedLayout->setContentsMargins(0, 0, 0, 0);
+    m_advancedLayout->setSpacing(9);
+    m_bodyLayout->addWidget(m_advancedContainer);
+
+    m_bodyLayout->addStretch(1);
+
+    m_scroll->setWidget(body);
+    root->addWidget(m_scroll, 1);
+
+    // ---- Footer: Save / Save As... ----------------------------------------
     auto* sep = new QFrame(this);
     sep->setFrameShape(QFrame::HLine);
-    sep->setFrameShadow(QFrame::Sunken);
+    sep->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderHairline)));
     root->addWidget(sep);
+
+    auto* footer = new QWidget(this);
+    auto* footerLayout = new QHBoxLayout(footer);
+    footerLayout->setContentsMargins(14, 8, 14, 8);
+    footerLayout->setSpacing(8);
+
+    m_saveButton = new QToolButton(footer);
+    m_saveButton->setText(tr("Save"));
+    m_saveButton->setFont(Theme::sans(11, QFont::DemiBold));
+    m_saveButton->setEnabled(false);
+    m_saveButton->setToolTip(tr("No changes to save"));
+    m_saveButton->setStyleSheet(QStringLiteral(
+        "QToolButton { color: #0d1116; background-color: %1; border: none; border-radius: %2px; padding: 5px 11px; }"
+        "QToolButton:disabled { color: %3; background-color: %4; }")
+        .arg(Theme::hex(Theme::textPrimary))
+        .arg(Theme::radiusMedium)
+        .arg(Theme::hex(Theme::textDisabled), Theme::rgba(Theme::whiteAlpha(int(0.08 * 255)))));
+    connect(m_saveButton, &QToolButton::clicked,
+            this, [this]() { performSceneSave(/*useLoadedPath=*/true); });
+    footerLayout->addWidget(m_saveButton);
+
+    m_saveAsButton = new QToolButton(footer);
+    m_saveAsButton->setText(tr("Save As\xE2\x80\xA6"));
+    m_saveAsButton->setFont(Theme::sans(11));
+    m_saveAsButton->setEnabled(false);
+    m_saveAsButton->setToolTip(tr("No changes to save"));
+    m_saveAsButton->setStyleSheet(QStringLiteral(
+        "QToolButton { color: %1; border: 1px solid %2; border-radius: %3px; padding: 5px 11px; }"
+        "QToolButton:disabled { color: %4; border-color: %5; }")
+        .arg(Theme::hex(Theme::textTertiary), Theme::hex(Theme::borderStrong))
+        .arg(Theme::radiusMedium)
+        .arg(Theme::hex(Theme::textDisabled), Theme::hex(Theme::borderLight)));
+    connect(m_saveAsButton, &QToolButton::clicked,
+            this, [this]() { performSceneSave(/*useLoadedPath=*/false); });
+    footerLayout->addWidget(m_saveAsButton);
+
+    footerLayout->addStretch(1);
+
+    auto* refreshBtn = new QToolButton(footer);
+    refreshBtn->setText(QString::fromUtf8("\xE2\x86\xBB"));   // ↻
+    refreshBtn->setToolTip(tr("Refresh from the live scene"));
+    refreshBtn->setStyleSheet(QStringLiteral("QToolButton { color: %1; border: none; }")
+        .arg(Theme::hex(Theme::textDim)));
+    connect(refreshBtn, &QToolButton::clicked, this, &ViewportProperties::refresh);
+    footerLayout->addWidget(refreshBtn);
+
+    root->addWidget(footer);
+
+    setAutoFillBackground(true);
+    {
+        QPalette pal = palette();
+        pal.setColor(QPalette::Window, Theme::bgPanel);
+        setPalette(pal);
+    }
 
     // The dirtyChanged signal is emitted via QueuedConnection from
     // the bridge's C-trampoline (see ViewportBridge ctor), so a
@@ -288,129 +571,6 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
                 this, &ViewportProperties::onDirtyChanged);
     }
 
-    m_scroll = new QScrollArea(this);
-    m_scroll->setWidgetResizable(true);
-    m_scroll->setFrameShape(QFrame::NoFrame);
-
-    auto* listHolder = new QWidget(m_scroll);
-    m_listLayout = new QVBoxLayout(listHolder);
-    m_listLayout->setContentsMargins(8, 8, 8, 8);
-    m_listLayout->setSpacing(4);
-
-    // Build each accordion section.  Each section is a
-    // QToolButton header (toggleable arrow indicator) over a body
-    // QFrame holding a list + a properties container.
-    for (const auto& def : kSectionDefs) {
-        SectionWidgets w;
-        w.container = new QWidget(listHolder);
-        auto* col = new QVBoxLayout(w.container);
-        col->setContentsMargins(0, 0, 0, 0);
-        col->setSpacing(0);
-
-        w.toggle = new QToolButton(w.container);
-        w.toggle->setText(QString::fromUtf8(def.title));
-        w.toggle->setCheckable(true);
-        w.toggle->setChecked(false);
-        w.toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-        w.toggle->setArrowType(Qt::RightArrow);
-        w.toggle->setStyleSheet(
-            "QToolButton { font-weight: bold; padding: 4px; border: none; text-align: left; }"
-            "QToolButton:checked { background-color: palette(highlight); color: palette(highlighted-text); }");
-        w.toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        col->addWidget(w.toggle);
-
-        w.body = new QFrame(w.container);
-        w.body->setVisible(false);
-        auto* bodyLayout = new QVBoxLayout(w.body);
-        bodyLayout->setContentsMargins(8, 4, 0, 4);
-        bodyLayout->setSpacing(4);
-
-        // Every section uses a dropdown combo so the panel surface is
-        // visually consistent across categories.  Rasterizers list 8
-        // standard types; Objects can run into the hundreds; Cameras
-        // and Lights are usually a handful but pick the same widget
-        // for parity.
-        const ViewportBridge::Category cat = def.category;
-
-        w.combo = new QComboBox(w.body);
-        w.combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        w.combo->setStyleSheet(
-            "QComboBox { padding: 2px 6px; border: 1px solid palette(mid); border-radius: 3px; }");
-
-        // Cameras section gets a "+" button next to the combo for
-        // cloning the active camera under a new name.  Other sections
-        // use the combo alone — no add affordance for them yet.
-        if (cat == Category::Camera) {
-            auto* row = new QHBoxLayout();
-            row->setContentsMargins(0, 0, 0, 0);
-            row->setSpacing(4);
-            row->addWidget(w.combo, 1);
-            auto* addBtn = new QToolButton(w.body);
-            addBtn->setText(QStringLiteral("+"));
-            addBtn->setToolTip(tr("Clone the active camera under a new name"));
-            addBtn->setStyleSheet("QToolButton { padding: 1px 6px; }");
-            connect(addBtn, &QToolButton::clicked, this, &ViewportProperties::onAddCameraClicked);
-            row->addWidget(addBtn);
-            bodyLayout->addLayout(row);
-        } else {
-            bodyLayout->addWidget(w.combo);
-        }
-
-        w.propsFrame = new QFrame(w.body);
-        w.propsLayout = new QVBoxLayout(w.propsFrame);
-        w.propsLayout->setContentsMargins(0, 4, 0, 0);
-        w.propsLayout->setSpacing(6);
-        bodyLayout->addWidget(w.propsFrame);
-
-        col->addWidget(w.body);
-        m_listLayout->addWidget(w.container);
-
-        const int catInt = static_cast<int>(def.category);
-        m_sections.insert(catInt, w);
-
-        // Toggle: clicking the header expands/collapses the section.
-        // Phase 4b multi-section model:
-        //  - Open: empty-name SetSelection sets the per-cat expanded
-        //    flag without picking a specific entity.
-        //  - Close: per-section CollapseSection (clears just THIS
-        //    section's expanded flag + per-cat selection, leaves
-        //    other sections alone).  Pre-Phase-4b this was a panel-
-        //    wide collapse via SetSelection(None), which would now
-        //    close every expanded section including the auto-synced
-        //    Material section.
-        connect(w.toggle, &QToolButton::toggled, this,
-                [this, cat](bool checked) {
-                    if (!m_bridge) return;
-                    if (checked) {
-                        m_bridge->setSelection(cat, QString());
-                    } else {
-                        m_bridge->collapseSection(cat);
-                    }
-                    refresh();
-                });
-
-        // Combo activation: routes a (category, name) selection
-        // through the bridge.  `activated` only fires on user choice
-        // (not programmatic `setCurrentIndex`), so the re-entry guard
-        // via m_currentSelectionName below is belt-and-suspenders for
-        // pathological cases (e.g. a duplicate-named entity).
-        QComboBox* comboPtr = w.combo;
-        connect(comboPtr, &QComboBox::activated, this,
-                [this, cat, comboPtr](int /*index*/) {
-                    if (!m_bridge || !comboPtr) return;
-                    const QString name = comboPtr->currentText();
-                    if (name.isEmpty()) return;
-                    if (m_currentSelectionCat == cat && m_currentSelectionName == name) return;
-                    m_bridge->setSelection(cat, name);
-                    refresh();
-                });
-    }
-
-    m_listLayout->addStretch(1);
-
-    m_scroll->setWidget(listHolder);
-    root->addWidget(m_scroll, 1);
-
     setMinimumWidth(260);
 
     // Initial pull so the panel renders immediately.
@@ -418,17 +578,13 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
 }
 
 // ============================================================
-// Phase 6.5: scene-file save.  Header buttons drive these.
+// Phase 6.5: scene-file save.  Footer buttons drive these.
 // ============================================================
 
 void ViewportProperties::onDirtyChanged(bool hasUnsavedChanges)
 {
     if (!m_saveButton || !m_saveAsButton || !m_bridge) return;
     const QString loaded = m_bridge->loadedFilePath();
-    // In-place Save needs both: edits AND a known target path
-    // (otherwise the click would have to fall through to a
-    // dialog anyway — we let the user explicitly pick Save As…
-    // in that case to surface the intent).
     m_saveButton->setEnabled(hasUnsavedChanges && !loaded.isEmpty());
     m_saveAsButton->setEnabled(hasUnsavedChanges);
 
@@ -437,9 +593,9 @@ void ViewportProperties::onDirtyChanged(bool hasUnsavedChanges)
         m_saveAsButton->setToolTip(tr("No changes to save"));
     } else {
         m_saveButton->setToolTip(loaded.isEmpty()
-            ? tr("Use Save As… (no loaded path)")
+            ? tr("Use Save As\xE2\x80\xA6 (no loaded path)")
             : tr("Save scene to %1").arg(loaded));
-        m_saveAsButton->setToolTip(tr("Save scene to a chosen path…"));
+        m_saveAsButton->setToolTip(tr("Save scene to a chosen path\xE2\x80\xA6"));
     }
 }
 
@@ -452,8 +608,6 @@ void ViewportProperties::performSceneSave(bool useLoadedPath)
         target = m_bridge->loadedFilePath();
     }
     if (target.isEmpty()) {
-        // Either the caller explicitly asked for Save As… or the
-        // in-place save fell through because no path was known.
         const QString loaded = m_bridge->loadedFilePath();
         QString dir;
         QString suggestedName = QStringLiteral("untitled.RISEscene");
@@ -478,15 +632,9 @@ void ViewportProperties::performSceneSave(bool useLoadedPath)
         m_bridge->saveSceneTo(target, errMsg);
     switch (status) {
     case ViewportBridge::SaveStatus::Saved:
-        // Re-anchor + refresh the scene-editor text pane via
-        // MainWindow (only it owns RenderEngine + SceneEditor).
-        // dirtyChanged(false) already flipped the Save buttons back
-        // to disabled on the C++ side.
         emit sceneSavedToPath(target);
         break;
     case ViewportBridge::SaveStatus::NoOp:
-        // Silent success — file unchanged on disk; no re-anchor or
-        // refresh needed.
         break;
     case ViewportBridge::SaveStatus::Refused:
         QMessageBox::warning(
@@ -513,83 +661,66 @@ void ViewportProperties::performSceneSave(bool useLoadedPath)
     }
 }
 
+// ============================================================
+// Entity header + property rows
+// ============================================================
+
+void ViewportProperties::rebuildEntityHeader()
+{
+    m_iconChip->setText(categoryGlyph(m_currentSelectionCat));
+
+    const QString title = !m_currentSelectionName.isEmpty()
+        ? m_currentSelectionName
+        : (m_currentSelectionCat != Category::None ? categoryTitle(m_currentSelectionCat) : tr("Scene"));
+    m_nameLabel->setText(title);
+
+    QString meta;
+    if (m_currentSelectionCat == Category::None) {
+        meta = tr("Nothing selected");
+    } else if (!m_currentSelectionName.isEmpty()) {
+        meta = categoryTitle(m_currentSelectionCat);
+    } else {
+        meta = tr("No entity selected");
+    }
+    m_metaLabel->setText(meta);
+
+    const bool isCamera = (m_currentSelectionCat == Category::Camera);
+    m_cameraAffordances->setVisible(isCamera);
+    if (isCamera && m_useInViewportBtn) {
+        m_useInViewportBtn->setEnabled(!m_currentSelectionName.isEmpty());
+    }
+}
+
 void ViewportProperties::clearPropertyRows()
 {
-    // Tear down rows from every section's propsFrame.  Rows are
-    // entity-specific and shouldn't bleed across selection changes.
-    for (auto it = m_sections.begin(); it != m_sections.end(); ++it) {
-        SectionWidgets& w = it.value();
+    auto clearInto = [](QVBoxLayout* layout) {
+        if (!layout) return;
         QLayoutItem* item;
-        while ((item = w.propsLayout->takeAt(0)) != nullptr) {
-            if (QWidget* widget = item->widget()) {
-                widget->deleteLater();
-            }
+        while ((item = layout->takeAt(0)) != nullptr) {
+            if (QWidget* widget = item->widget()) widget->deleteLater();
             delete item;
         }
-    }
+    };
+    clearInto(m_basicLayout);
+    clearInto(m_advancedLayout);
     m_fields.clear();
     m_readOnly.clear();
     m_lastValue.clear();
 }
 
-void ViewportProperties::rebuildEntityLists()
+void ViewportProperties::updateAdvancedToggleLabel(int advancedCount)
 {
-    if (!m_bridge) return;
-
-    for (auto it = m_sections.begin(); it != m_sections.end(); ++it) {
-        const Category cat = static_cast<Category>(it.key());
-        SectionWidgets& w = it.value();
-        if (!w.combo) continue;
-        const QStringList names = m_bridge->categoryEntities(cat);
-
-        // Block activate signals during repopulation.  Without the
-        // block, `clear()` followed by `addItems()` could fire
-        // change callbacks that round-trip a bogus setSelection and
-        // stomp on the user's actual choice.
-        const QSignalBlocker blocker(w.combo);
-        w.combo->clear();
-        for (const QString& n : names) {
-            w.combo->addItem(n);
-        }
-    }
+    m_advancedArrowLabel->setText(m_advancedExpanded
+        ? QString::fromUtf8("\xE2\x96\xBE")    // ▾
+        : QString::fromUtf8("\xE2\x96\xB8"));  // ▸
+    m_advancedCountLabel->setText(tr("%1 more").arg(advancedCount));
 }
 
-void ViewportProperties::syncAccordionFromSelection()
+void ViewportProperties::onAdvancedToggleClicked()
 {
-    if (!m_bridge) return;
-
-    // Track primary for the panel header etc.
-    m_currentSelectionCat  = m_bridge->selectionCategory();
-    m_currentSelectionName = m_bridge->selectionName();
-
-    // Phase 4b: per-category expansion is tracked SEPARATELY from
-    // the per-category selection (so a header click expands the
-    // section even when no entity is picked yet).  Auto-sync of
-    // Material expansion on Object pick is handled controller-side.
-    for (auto it = m_sections.begin(); it != m_sections.end(); ++it) {
-        SectionWidgets& w = it.value();
-        const Category sectionCat = static_cast<Category>(it.key());
-        const QString perCatName = m_bridge->selectionNameForCategory(sectionCat);
-        const bool open = m_bridge->isSectionExpanded(sectionCat);
-
-        const QSignalBlocker toggleBlock(w.toggle);
-        w.toggle->setChecked(open);
-        w.toggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
-        w.body->setVisible(open);
-
-        if (w.combo) {
-            const QSignalBlocker comboBlock(w.combo);
-            QString display = !perCatName.isEmpty()
-                                  ? perCatName
-                                  : m_bridge->activeNameForCategory(sectionCat);
-            if (!display.isEmpty()) {
-                const int idx = w.combo->findText(display, Qt::MatchExactly);
-                w.combo->setCurrentIndex(idx);
-            } else {
-                w.combo->setCurrentIndex(-1);
-            }
-        }
-    }
+    m_advancedExpanded = !m_advancedExpanded;
+    m_advancedContainer->setVisible(m_advancedExpanded);
+    updateAdvancedToggleLabel(m_advancedLayout ? m_advancedLayout->count() : 0);
 }
 
 void ViewportProperties::rebuildPropertyRows()
@@ -597,224 +728,292 @@ void ViewportProperties::rebuildPropertyRows()
     if (!m_bridge) return;
     clearPropertyRows();
 
-    // Force a refresh so the controller's per-category snapshots
-    // are up to date before we read them per-section.
+    // Force a refresh so the controller's per-category snapshot for the
+    // PRIMARY selection is up to date before we read it.
     (void)m_bridge->propertySnapshot();
 
-    // Phase 4b: build property rows for every section that is
-    // currently expanded.  Empty-selection expanded sections still
-    // get a (possibly empty) row list — Camera/Rasterizer/Film
-    // render their active-entity rows even when no specific entity
-    // is picked.  Edits route through SetPropertyForCategory so the
-    // right per-section entity is targeted.
-    for (auto it = m_sections.begin(); it != m_sections.end(); ++it) {
-        const Category sectionCat = static_cast<Category>(it.key());
-        SectionWidgets& section = it.value();
-        QVBoxLayout* propsLayout = section.propsLayout;
-        if (!propsLayout) continue;
+    const QVector<ViewportProperty> props = m_bridge->propertySnapshotFor(m_currentSelectionCat);
 
-        if (!m_bridge->isSectionExpanded(sectionCat)) continue;
-
-        rebuildPropertyRowsFor(sectionCat, section);
+    if (props.isEmpty()) {
+        QString msg;
+        switch (m_currentSelectionCat) {
+        case Category::Animation:
+            msg = tr("Selecting activates this animation path.");
+            break;
+        case Category::SceneVariant:
+            msg = tr("Selecting activates this scene variant \xE2\x80\x94 the scene re-derives with it active.");
+            break;
+        case Category::None:
+            msg = tr("Select an item in the outliner.");
+            break;
+        default:
+            msg = tr("Select an entity in the outliner to see its properties.");
+            break;
+        }
+        m_emptyMessage->setText(msg);
+        m_emptyMessage->setVisible(true);
+        m_advancedToggleRow->setVisible(false);
+        m_advancedContainer->setVisible(false);
+        return;
     }
+
+    m_emptyMessage->setVisible(false);
+
+    QVector<ViewportProperty> basic, advanced;
+    splitBasicAdvanced(props, basic, advanced);
+
+    for (const ViewportProperty& p : basic) buildPropertyRow(p, m_basicLayout);
+    for (const ViewportProperty& p : advanced) buildPropertyRow(p, m_advancedLayout);
+
+    m_advancedToggleRow->setVisible(!advanced.isEmpty());
+    updateAdvancedToggleLabel(advanced.size());
+    m_advancedContainer->setVisible(!advanced.isEmpty() && m_advancedExpanded);
 }
 
-void ViewportProperties::rebuildPropertyRowsFor(Category sectionCat, SectionWidgets& section)
+void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout* into)
 {
-    if (!m_bridge) return;
-    QVBoxLayout* propsLayout = section.propsLayout;
-    if (!propsLayout) return;
+    auto* row = new QWidget;
+    auto* rowLayout = new QHBoxLayout(row);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(8);
+    rowLayout->setAlignment(Qt::AlignTop);
 
-    const QVector<ViewportProperty> props = m_bridge->propertySnapshotFor(sectionCat);
-    for (const ViewportProperty& p : props) {
-        if (p.editable) {
-            auto* container = new QWidget;
-            auto* col = new QVBoxLayout(container);
-            col->setContentsMargins(0, 0, 0, 0);
-            col->setSpacing(2);
+    auto* label = new QLabel(p.name);
+    label->setFont(Theme::sans(11));
+    label->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textFaint)));
+    label->setFixedWidth(82);
+    label->setWordWrap(true);
+    label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    rowLayout->addWidget(label);
 
-            auto* label = new QLabel(p.name);
-            QFont f = label->font();
-            f.setBold(true);
-            label->setFont(f);
-            label->setStyleSheet("color: palette(window-text);");
+    auto* cellCol = new QWidget;
+    auto* cellColLayout = new QVBoxLayout(cellCol);
+    cellColLayout->setContentsMargins(0, 0, 0, 0);
+    cellColLayout->setSpacing(4);
 
-            auto* edit = new QLineEdit;
-            edit->setObjectName(p.name);
-            // Phase 4b: tag every QLineEdit with its section's
-            // category so onLineEditFinished routes through the
-            // per-category SetProperty.  Without this, edits in the
-            // Material section while Object is the primary would
-            // wrong-target the object.
-            edit->setProperty("riseSectionCategory", static_cast<int>(sectionCat));
-            edit->setText(p.value);
-            connect(edit, &QLineEdit::editingFinished,
-                    this, &ViewportProperties::onLineEditFinished);
+    if (!p.editable) {
+        // Read-only well.
+        auto* wellWidget = new QWidget;
+        wellWidget->setStyleSheet(wellStyleSheet());
+        auto* wellLayout = new QHBoxLayout(wellWidget);
+        wellLayout->setContentsMargins(8, 5, 8, 5);
+        wellLayout->setSpacing(6);
 
-            col->addWidget(label);
+        auto* valueLbl = new QLabel(p.value);
+        valueLbl->setFont(Theme::mono(11));
+        valueLbl->setWordWrap(true);
+        valueLbl->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textMuted)));
+        wellLayout->addWidget(valueLbl, 1);
 
-            if (isScrubbableKind(p.kind) || !p.presets.isEmpty() || !p.unitLabel.isEmpty()) {
-                auto* fieldRow = new QHBoxLayout;
-                fieldRow->setContentsMargins(0, 0, 0, 0);
-                fieldRow->setSpacing(4);
-                if (isScrubbableKind(p.kind)) {
-                    auto* handle = new ScrubHandle(
-                        edit, p.name, p.kind,
-                        [this, sectionCat](const QString& n, const QString& v) {
-                            if (!m_bridge) return;
-                            // A2: don't gate on the bool return — a
-                            // per-drag-tick callback can't afford a
-                            // full refresh() (rebuildPropertyRows()
-                            // would deleteLater() the very ScrubHandle
-                            // whose mouseMoveEvent is on the stack, see
-                            // the m_scrubbing guard in refresh()), so
-                            // re-pull this property's LAST-KNOWN
-                            // CACHED value (propertySnapshotFor reads
-                            // the controller's cache, which refresh()
-                            // won't repopulate while m_scrubbing -- so
-                            // this is pre-drag, NOT live) and cache
-                            // THAT rather than the submitted string.
-                            // Harmless: m_lastValue's only consumer is
-                            // onLineEditFinished, unreachable mid-drag;
-                            // the drag-end path (endBracket below) does
-                            // a full refresh() that re-seeds from the
-                            // genuinely live snapshot.
-                            m_bridge->setPropertyForCategory(sectionCat, n, v);
-                            const QVector<ViewportProperty> live =
-                                m_bridge->propertySnapshotFor(sectionCat);
-                            for (const ViewportProperty& lp : live) {
-                                if (lp.name == n) {
-                                    m_lastValue.insert(n, lp.value);
-                                    break;
-                                }
-                            }
-                        },
-                        [this]() {
-                            m_scrubbing = true;
-                            if (m_bridge) m_bridge->beginPropertyScrub();
-                        },
-                        [this]() {
-                            m_scrubbing = false;
-                            if (m_bridge) m_bridge->endPropertyScrub();
-                            // Pull canonical values back after the user lets go.
-                            refresh();
-                        });
-                    fieldRow->addWidget(handle);
-                }
-                fieldRow->addWidget(edit, 1);
-                if (!p.unitLabel.isEmpty()) {
-                    auto* unit = new QLabel(p.unitLabel);
-                    QFont uf = unit->font();
-                    uf.setPointSizeF(uf.pointSizeF() * 0.85);
-                    unit->setFont(uf);
-                    unit->setStyleSheet("color: palette(placeholder-text);");
-                    fieldRow->addWidget(unit);
-                }
-                if (!p.presets.isEmpty()) {
-                    auto* presetButton = new QToolButton;
-                    presetButton->setText(QStringLiteral("⋮"));
-                    presetButton->setToolTip(tr("Quick-pick presets"));
-                    presetButton->setPopupMode(QToolButton::InstantPopup);
-                    auto* menu = new QMenu(presetButton);
-                    const QString propName = p.name;
-                    for (const ViewportPropertyPreset& preset : p.presets) {
-                        const QString lbl = preset.label;
-                        const QString val = preset.value;
-                        QAction* action = menu->addAction(lbl);
-                        connect(action, &QAction::triggered, this,
-                                [this, sectionCat, propName, val]() {
-                                    if (!m_bridge) return;
-                                    // A2: refresh unconditionally — see
-                                    // the onLineEditFinished comment
-                                    // above for the full rationale.
-                                    m_bridge->setPropertyForCategory(sectionCat, propName, val);
-                                    refresh();
-                                });
-                    }
-                    presetButton->setMenu(menu);
-                    fieldRow->addWidget(presetButton);
-                }
-                col->addLayout(fieldRow);
-            } else {
-                col->addWidget(edit);
-            }
-            if (!p.description.isEmpty()) {
-                auto* desc = new QLabel(p.description);
-                desc->setWordWrap(true);
-                QFont df = desc->font();
-                df.setPointSizeF(df.pointSizeF() * 0.85);
-                desc->setFont(df);
-                desc->setStyleSheet("color: palette(placeholder-text);");
-                col->addWidget(desc);
-            }
-            propsLayout->addWidget(container);
-            m_fields.insert(p.name, edit);
-            m_lastValue.insert(p.name, p.value);
-        } else {
-            auto* container = new QWidget;
-            auto* col = new QVBoxLayout(container);
-            col->setContentsMargins(0, 0, 0, 0);
-            col->setSpacing(2);
-
-            auto* hdr = new QHBoxLayout;
-            hdr->setContentsMargins(0, 0, 0, 0);
-            auto* label = new QLabel(p.name);
-            QFont f = label->font();
-            f.setBold(true);
-            label->setFont(f);
-            hdr->addWidget(label);
-            auto* badge = new QLabel(tr("read-only"));
-            QFont bf = badge->font();
-            bf.setPointSizeF(bf.pointSizeF() * 0.75);
-            badge->setFont(bf);
-            badge->setStyleSheet("color: palette(placeholder-text);");
-            hdr->addStretch(1);
-            hdr->addWidget(badge);
-            col->addLayout(hdr);
-
-            auto* lbl = new QLabel(p.value);
-            lbl->setStyleSheet("color: palette(placeholder-text); font-family: monospace;");
-            lbl->setWordWrap(true);
-            col->addWidget(lbl);
-
-            if (!p.description.isEmpty()) {
-                auto* desc = new QLabel(p.description);
-                desc->setWordWrap(true);
-                QFont df = desc->font();
-                df.setPointSizeF(df.pointSizeF() * 0.85);
-                desc->setFont(df);
-                desc->setStyleSheet("color: palette(placeholder-text);");
-                col->addWidget(desc);
-            }
-            propsLayout->addWidget(container);
-            m_readOnly.insert(p.name, lbl);
+        if (!p.unitLabel.isEmpty()) {
+            auto* unit = new QLabel(p.unitLabel);
+            unit->setFont(Theme::mono(9));
+            unit->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+            wellLayout->addWidget(unit);
         }
+        auto* badge = new QLabel(tr("read-only"));
+        badge->setFont(Theme::mono(9));
+        badge->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textGhost)));
+        wellLayout->addWidget(badge);
+
+        cellColLayout->addWidget(wellWidget);
+        m_readOnly.insert(p.name, valueLbl);
+    } else if (p.kind == 0 /* Bool */) {
+        const bool isOn = p.value.trimmed().compare(QLatin1String("true"), Qt::CaseInsensitive) == 0
+            || p.value.trimmed() == QLatin1String("1");
+        const QString name = p.name;
+        auto* pill = new BoolPill(isOn, /*editable=*/true, [this, name](bool newVal) {
+            commitEdit(name, newVal ? QStringLiteral("true") : QStringLiteral("false"));
+        });
+        auto* pillRow = new QWidget;
+        auto* pillRowLayout = new QHBoxLayout(pillRow);
+        pillRowLayout->setContentsMargins(0, 0, 0, 0);
+        pillRowLayout->addWidget(pill);
+        pillRowLayout->addStretch(1);
+        cellColLayout->addWidget(pillRow);
+    } else if (p.kind == 3 /* DoubleVec3 */) {
+        // Three tinted wells (X red / Y green / Z blue) -- the wire
+        // format is three space-separated %.6g doubles (see
+        // CameraIntrospection.cpp's FormatVec3/FormatPoint3); joining
+        // the three edited fields back with spaces round-trips exactly.
+        auto* vecRow = new QWidget;
+        auto* vecLayout = new QHBoxLayout(vecRow);
+        vecLayout->setContentsMargins(0, 0, 0, 0);
+        vecLayout->setSpacing(4);
+
+        QStringList comps = p.value.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        while (comps.size() < 3) comps.append(QStringLiteral("0"));
+
+        const QColor tint[3] = { Theme::error, Theme::successLight, Theme::accentLight };
+        auto edits = std::make_shared<QVector<QLineEdit*>>();
+        for (int i = 0; i < 3; ++i) {
+            auto* wellWidget = new QWidget;
+            wellWidget->setStyleSheet(wellStyleSheet());
+            auto* wellLayout = new QHBoxLayout(wellWidget);
+            wellLayout->setContentsMargins(8, 5, 8, 5);
+            auto* edit = new QLineEdit(comps.value(i, QStringLiteral("0")));
+            edit->setFont(Theme::mono(11));
+            edit->setFrame(false);
+            edit->setStyleSheet(lineEditStyleSheet(tint[i]));
+            edit->setEnabled(p.editable);
+            wellLayout->addWidget(edit);
+            vecLayout->addWidget(wellWidget, 1);
+            edits->append(edit);
+        }
+        const QString name = p.name;
+        for (QLineEdit* edit : *edits) {
+            connect(edit, &QLineEdit::editingFinished, this, [this, edits, name]() {
+                QStringList parts;
+                for (QLineEdit* e : *edits) parts << e->text();
+                commitEdit(name, parts.join(QLatin1Char(' ')));
+            });
+        }
+        cellColLayout->addWidget(vecRow);
+    } else {
+        auto* wellWidget = new QWidget;
+        wellWidget->setStyleSheet(wellStyleSheet());
+        auto* fieldRowLayout = new QHBoxLayout(wellWidget);
+        fieldRowLayout->setContentsMargins(6, 3, 6, 3);
+        fieldRowLayout->setSpacing(4);
+
+        auto* edit = new QLineEdit(p.value);
+        edit->setObjectName(p.name);
+        edit->setFont(Theme::mono(11));
+        edit->setFrame(false);
+        edit->setStyleSheet(lineEditStyleSheet(Theme::textPrimary));
+        connect(edit, &QLineEdit::editingFinished,
+                this, &ViewportProperties::onLineEditFinished);
+
+        if (isScrubbableKind(p.kind)) {
+            auto* handle = new ScrubHandle(
+                edit, p.name, p.kind,
+                [this](const QString& n, const QString& v) {
+                    // A2: don't gate on the bool return -- a per-drag-
+                    // tick callback can't afford a full refresh()
+                    // (rebuildPropertyRows() would deleteLater() the
+                    // very ScrubHandle whose mouseMoveEvent is on the
+                    // stack; see the m_scrubbing guard in refresh()),
+                    // so re-pull this property's LAST-KNOWN CACHED
+                    // value and cache THAT rather than the submitted
+                    // string.  Harmless: m_lastValue's only consumer
+                    // is onLineEditFinished, unreachable mid-drag; the
+                    // drag-end path (endBracket below) does a full
+                    // refresh() that re-seeds from the genuinely live
+                    // snapshot.
+                    if (!m_bridge) return;
+                    m_bridge->setPropertyForCategory(m_currentSelectionCat, n, v);
+                    const QVector<ViewportProperty> live =
+                        m_bridge->propertySnapshotFor(m_currentSelectionCat);
+                    for (const ViewportProperty& lp : live) {
+                        if (lp.name == n) {
+                            m_lastValue.insert(n, lp.value);
+                            break;
+                        }
+                    }
+                },
+                [this]() {
+                    m_scrubbing = true;
+                    if (m_bridge) m_bridge->beginPropertyScrub();
+                },
+                [this]() {
+                    m_scrubbing = false;
+                    if (m_bridge) m_bridge->endPropertyScrub();
+                    refresh();
+                });
+            fieldRowLayout->addWidget(handle);
+        }
+        fieldRowLayout->addWidget(edit, 1);
+
+        if (!p.unitLabel.isEmpty()) {
+            auto* unit = new QLabel(p.unitLabel);
+            unit->setFont(Theme::mono(9));
+            unit->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+            fieldRowLayout->addWidget(unit);
+        }
+
+        if (p.kind == 7 /* Filename */) {
+            auto* browseBtn = new QToolButton;
+            browseBtn->setText(QString::fromUtf8("\xE2\x80\xA6"));   // …
+            browseBtn->setToolTip(tr("Browse\xE2\x80\xA6"));
+            browseBtn->setStyleSheet(QStringLiteral("QToolButton { color: %1; border: none; }")
+                .arg(Theme::hex(Theme::textDim)));
+            const QString name = p.name;
+            connect(browseBtn, &QToolButton::clicked, this, [this, edit, name]() {
+                const QString picked = QFileDialog::getOpenFileName(this, tr("Choose File"));
+                if (picked.isEmpty()) return;
+                edit->setText(picked);
+                commitEdit(name, picked);
+            });
+            fieldRowLayout->addWidget(browseBtn);
+        } else if (!p.presets.isEmpty()) {
+            auto* presetButton = new QToolButton;
+            presetButton->setText(QStringLiteral("\xE2\x8B\xAE"));   // ⋮
+            presetButton->setToolTip(tr("Quick-pick presets"));
+            presetButton->setPopupMode(QToolButton::InstantPopup);
+            presetButton->setStyleSheet(QStringLiteral("QToolButton { color: %1; border: none; }")
+                .arg(Theme::hex(Theme::textDim)));
+            auto* menu = new QMenu(presetButton);
+            const QString propName = p.name;
+            for (const ViewportPropertyPreset& preset : p.presets) {
+                const QString lbl = preset.label;
+                const QString val = preset.value;
+                QAction* action = menu->addAction(lbl);
+                connect(action, &QAction::triggered, this,
+                        [this, propName, val]() { commitEdit(propName, val); });
+            }
+            presetButton->setMenu(menu);
+            fieldRowLayout->addWidget(presetButton);
+        }
+
+        cellColLayout->addWidget(wellWidget);
+        m_fields.insert(p.name, edit);
+        m_lastValue.insert(p.name, p.value);
     }
+
+    if (!p.description.isEmpty()) {
+        auto* desc = new QLabel(p.description);
+        desc->setWordWrap(true);
+        desc->setFont(Theme::mono(9));
+        desc->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textGhost)));
+        cellColLayout->addWidget(desc);
+    }
+
+    rowLayout->addWidget(cellCol, 1);
+    into->addWidget(row);
 }
 
 void ViewportProperties::refresh()
 {
     if (!m_bridge) return;
-    // While a ScrubHandle drag is in flight, do NOT rebuild the rows —
+    // While a ScrubHandle drag is in flight, do NOT rebuild the rows --
     // doing so would deleteLater() the handle whose mouseMoveEvent put
-    // setProperty() → imageUpdated → here on the stack, killing the
+    // setProperty() -> imageUpdated -> here on the stack, killing the
     // mouse grab.  endPropertyScrub calls refresh() once the user lets
     // go to re-sync canonical values.
     if (m_scrubbing) return;
 
-    m_headerLabel->setText(m_bridge->panelHeader());
+    m_currentSelectionCat = m_bridge->selectionCategory();
+    m_currentSelectionName = m_bridge->selectionName();
 
-    // Re-pull entity lists when the scene epoch advances.  Cheap to
-    // pull on every refresh too — small lists — but the epoch gate
-    // keeps the C-API chatter down on busy frames.
-    const unsigned int epoch = m_bridge->sceneEpoch();
-    if (epoch != m_lastEpoch) {
-        m_lastEpoch = epoch;
-        rebuildEntityLists();
+    const QString key = QStringLiteral("%1|%2")
+        .arg(static_cast<int>(m_currentSelectionCat)).arg(m_currentSelectionName);
+    if (key != m_lastEntityKey) {
+        m_lastEntityKey = key;
+        m_advancedExpanded = false;
     }
 
-    syncAccordionFromSelection();
+    rebuildEntityHeader();
     rebuildPropertyRows();
+}
+
+void ViewportProperties::commitEdit(const QString& name, const QString& value)
+{
+    if (!m_bridge) return;
+    // A2 contract (see SceneEditController::SetProperty doc comments):
+    // `false` does not always mean "nothing happened", so refresh()
+    // unconditionally rather than gating on the return value.
+    m_bridge->setPropertyForCategory(m_currentSelectionCat, name, value);
+    refresh();
 }
 
 void ViewportProperties::onLineEditFinished()
@@ -824,23 +1023,13 @@ void ViewportProperties::onLineEditFinished()
     const QString name = edit->objectName();
     const QString val  = edit->text();
     if (val == m_lastValue.value(name)) return;
-    // Phase 4b: read the section's category off the edit widget so
-    // the edit routes through SetPropertyForCategory.  Pre-Phase-4b
-    // this used the primary selection, which was wrong for rows in
-    // an auto-synced secondary section (e.g. Material rows when
-    // Object was primary).
-    const int catInt = edit->property("riseSectionCategory").toInt();
-    const Category cat = static_cast<Category>(catInt);
-    // A2 contract (see SceneEditController::SetProperty /
-    // RISE_API_SceneEditController_SetProperty doc comments):
-    // `false` does not always mean "nothing happened" — a live Object
-    // edit can apply while the CST transform-commit follow-through
-    // fails, in which case the scene DID change.  So refresh()
-    // unconditionally rather than gating on the return value; refresh()
-    // re-pulls m_lastValue from the live snapshot (rebuildPropertyRowsFor
-    // below), never from the submitted text, so a failed commit doesn't
-    // leave a stale cache that silently swallows a later identical retype.
-    m_bridge->setPropertyForCategory(cat, name, val);
+    commitEdit(name, val);
+}
+
+void ViewportProperties::onUseInViewportClicked()
+{
+    if (!m_bridge || m_currentSelectionName.isEmpty()) return;
+    m_bridge->setSelection(Category::Camera, m_currentSelectionName);
     refresh();
 }
 
@@ -859,9 +1048,9 @@ void ViewportProperties::onAddCameraClicked()
         this,
         tr("Add Camera"),
         tr("Cloning the current camera.  Pick a name for the new camera.\n\n"
-           "• The clone is in-memory only — saving the .RISEscene file\n"
+           "\xE2\x80\xA2 The clone is in-memory only \xE2\x80\x94 saving the .RISEscene file\n"
            "  from the editor does not yet emit added cameras.\n"
-           "• Duplicate names get a numeric suffix appended."),
+           "\xE2\x80\xA2 Duplicate names get a numeric suffix appended."),
         QLineEdit::Normal,
         defaultProposal,
         &ok);
@@ -877,18 +1066,15 @@ void ViewportProperties::onAddCameraClicked()
         return;
     }
 
-    // Promote the new camera to the panel's selection so the user
-    // sees its properties immediately.
     m_bridge->setSelection(Category::Camera, chosenName);
     refresh();
 
-    // One-shot persistence caveat per session.
     if (!m_addCameraCaveatShown) {
         m_addCameraCaveatShown = true;
         QMessageBox::information(
             this,
             tr("New camera \"%1\" added").arg(chosenName),
-            tr("Heads up — added cameras are kept in memory only until the\n"
+            tr("Heads up \xE2\x80\x94 added cameras are kept in memory only until the\n"
                "scene-text round-trip lands.  Save your scene file from a\n"
                "text editor to preserve them across reloads."));
     }

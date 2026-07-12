@@ -5,19 +5,17 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <QApplication>
-#include <QStyleFactory>
 #include "MainWindow.h"
 #include "Theme.h"
 
 int main(int argc, char* argv[])
 {
-    // Request the Windows 11 Fluent Design style (rounded corners,
-    // Mica backdrop, system accent colors).  Falls back gracefully
-    // to the default Windows style on older OS versions.
-    if (QStyleFactory::keys().contains("windows11", Qt::CaseInsensitive)) {
-        QApplication::setStyle("windows11");
-    }
-
+    // UI redesign: the workspace chrome (Theme.h) is dark-only.  The
+    // "windows11" Fluent style ignores QPalette in several places
+    // (menus, scrollbars), which fights that design — Fusion + an
+    // explicit dark QPalette built from the Theme tokens is the
+    // reliable cross-widget dark path.  Mirrors the macOS client's
+    // blanket `NSApp.appearance = .darkAqua` in RISEApp.swift.
     QApplication app(argc, argv);
     app.setApplicationName("RISE");
     app.setOrganizationName("RISE");
@@ -26,8 +24,14 @@ int main(int argc, char* argv[])
     // Theme::sans/mono fall back to system fonts if this fails.
     Theme::registerFonts();
 
+    // Must run before MainWindow (or any other widget) is constructed
+    // so every widget picks up the dark palette + app font from the
+    // start rather than needing a repaint after the fact.
+    Theme::applyDarkPalette(app);
+
+    // MainWindow's constructor sets its own default size (1440x900)
+    // and minimum size (1320x760) — see MainWindow.cpp.
     MainWindow window;
-    window.resize(1024, 768);
     window.show();
 
     return app.exec();

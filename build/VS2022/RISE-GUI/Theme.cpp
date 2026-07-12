@@ -8,7 +8,10 @@
 
 #include "Theme.h"
 
+#include <QApplication>
 #include <QFontDatabase>
+#include <QPalette>
+#include <QStyleFactory>
 
 namespace Theme {
 
@@ -110,6 +113,38 @@ QFont mono(int pixelSize, QFont::Weight weight)
 	return makeFont(QStringLiteral("IBM Plex Mono"),
 	                abbrevFor(QStringLiteral("IBM Plex Mono"), weight),
 	                pixelSize, weight);
+}
+
+void applyDarkPalette(QApplication& app)
+{
+	if (QStyleFactory::keys().contains(QStringLiteral("Fusion"), Qt::CaseInsensitive)) {
+		QApplication::setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
+	}
+
+	QPalette pal;
+	pal.setColor(QPalette::Window, bgBase);
+	pal.setColor(QPalette::WindowText, textPrimary);
+	pal.setColor(QPalette::Base, bgWell);
+	pal.setColor(QPalette::AlternateBase, bgCard);
+	pal.setColor(QPalette::ToolTipBase, bgPopup);
+	pal.setColor(QPalette::ToolTipText, textPrimary);
+	pal.setColor(QPalette::Text, textPrimary);
+	pal.setColor(QPalette::Button, bgPanel);
+	pal.setColor(QPalette::ButtonText, textPrimary);
+	pal.setColor(QPalette::BrightText, textPrimary);
+	pal.setColor(QPalette::Link, accent);
+	pal.setColor(QPalette::LinkVisited, accentSoft);
+	pal.setColor(QPalette::Highlight, accent);
+	pal.setColor(QPalette::HighlightedText, QColor(0x0a, 0x0b, 0x0c));
+
+	pal.setColor(QPalette::Disabled, QPalette::WindowText, textDisabled);
+	pal.setColor(QPalette::Disabled, QPalette::Text, textDisabled);
+	pal.setColor(QPalette::Disabled, QPalette::ButtonText, textDisabled);
+	pal.setColor(QPalette::Disabled, QPalette::Highlight, borderMedium);
+	pal.setColor(QPalette::Disabled, QPalette::HighlightedText, textDisabled);
+
+	app.setPalette(pal);
+	app.setFont(sans(13));
 }
 
 } // namespace Theme

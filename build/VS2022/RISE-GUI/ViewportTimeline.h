@@ -36,10 +36,23 @@ public:
     // Idempotent / safe to call when not playing.
     void stopPlayback();
 
+public slots:
+    /// Mirrors MainWindow::updateMenuActionStates' gate on
+    /// m_renderAnimAction (canRender && hasAnimation) -- the "Render
+    /// movie…" chip must never be clickable when the menu equivalent
+    /// isn't either.
+    void setRenderMovieEnabled(bool enabled);
+
 signals:
     void scrubBegin();
     void scrubEnd();
     void timeChanged(double t);
+
+    /// "Render movie…" chip clicked -- MainWindow connects this to
+    /// onRenderAnimation() (the SAME slot the Render > Render Animation
+    /// menu item drives), so there is exactly one render-animation code
+    /// path regardless of which affordance the user clicked.
+    void renderMovieClicked();
 
 private slots:
     void onSliderPressed();
@@ -50,6 +63,9 @@ private slots:
     void onPlayToggled(bool play);
     void onPlayTick();
 
+    void onRewindClicked();
+    void onToEndClicked();
+
 private:
     void updateLabels();
 
@@ -59,10 +75,19 @@ private:
     // setter too would double-fire).
     void setTimeValue(double t);
 
+    // Jump directly to `t`, bracketed as a single scrub (one undo
+    // entry) -- shared by the ⏮ rewind and ⏭ to-end transport buttons.
+    void jumpToTime(double t);
+
+    static QString formatTime(double seconds);
+
+    QToolButton* m_rewindButton = nullptr;
+    QToolButton* m_toEndButton  = nullptr;
     QSlider*     m_slider = nullptr;
     QLabel*      m_currentLabel = nullptr;
     QLabel*      m_maxLabel = nullptr;
     QToolButton* m_playButton = nullptr;
+    QToolButton* m_renderMovieBtn = nullptr;
     QTimer*      m_playTimer = nullptr;
     double       m_minT = 0.0;
     double       m_maxT = 5.0;

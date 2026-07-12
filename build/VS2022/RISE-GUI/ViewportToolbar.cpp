@@ -1,39 +1,70 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  ViewportToolbar.cpp - Photoshop-style category-slot toolbar.
+//  ViewportToolbar.cpp - Photoshop-style category-slot toolbar +
+//    (RISE UI redesign) the right-hand status-chip cluster.
 //
 //////////////////////////////////////////////////////////////////////
 
 #include "ViewportToolbar.h"
+#include "Theme.h"
 
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QVBoxLayout>
+#include <QLabel>
 #include <QMenu>
+#include <QWidgetAction>
 #include <QStyle>
+#include <QTimer>
 
 ViewportToolbar::ViewportToolbar(QWidget* parent)
     : QWidget(parent)
 {
-    auto* layout = new QHBoxLayout(this);
-    layout->setContentsMargins(6, 4, 6, 4);
-    layout->setSpacing(4);
+    setFixedHeight(40);
+    setAutoFillBackground(true);
+    {
+        QPalette pal = palette();
+        pal.setColor(QPalette::Window, Theme::bgCenter);
+        setPalette(pal);
+    }
+    // objectName-scoped selector (rather than a bare declaration list)
+    // so it can safely combine with the QToolButton{...} rules appended
+    // below in one setStyleSheet call -- mixing a bare "prop: value;"
+    // declaration with a later selector block in the same stylesheet
+    // string is not a combination Qt's CSS subset reliably supports.
+    setObjectName(QStringLiteral("viewportToolbar"));
 
-    // Accent-coloured fill + white icon when the slot's category is
-    // active — mirrors macOS SlotIcon's `isSelected` highlight.  Per-
-    // category visibility of the highlight is driven via `setChecked`.
-    setStyleSheet(
+    auto* layout = new QHBoxLayout(this);
+    layout->setContentsMargins(12, 0, 12, 0);
+    layout->setSpacing(8);
+
+    // ---- Segmented tool group -------------------------------------------
+    auto* toolGroup = new QWidget(this);
+    toolGroup->setObjectName(QStringLiteral("toolGroup"));
+    toolGroup->setStyleSheet(QStringLiteral(
+        "#toolGroup { background-color: %1; border: 1px solid %2; border-radius: %3px; }")
+        .arg(Theme::hex(Theme::bgPanel), Theme::hex(Theme::borderHairline))
+        .arg(Theme::radiusMedium));
+    auto* toolGroupLayout = new QHBoxLayout(toolGroup);
+    toolGroupLayout->setContentsMargins(2, 2, 2, 2);
+    toolGroupLayout->setSpacing(2);
+
+    setStyleSheet(QStringLiteral(
+        "#viewportToolbar { border-bottom: 1px solid %1; }"
         "QToolButton {"
         "  border: 1px solid transparent;"
-        "  border-radius: 4px;"
+        "  border-radius: %2px;"
         "  padding: 2px;"
         "}"
-        "QToolButton:hover { background: palette(midlight); }"
+        "QToolButton:hover { background: %3; }"
         "QToolButton:checked {"
-        "  background: palette(highlight);"
-        "  color: palette(highlighted-text);"
-        "  border: 1px solid palette(highlight);"
-        "}"
-    );
+        "  background: %4;"
+        "  color: #0d1116;"
+        "  border: 1px solid %4;"
+        "}")
+        .arg(Theme::hex(Theme::borderHairline))
+        .arg(Theme::radiusSmall)
+        .arg(Theme::rgba(Theme::fillHover), Theme::hex(Theme::accent)));
 
     // Three category slots, in canonical order: Select, Camera,
     // ObjectTransform.  Numeric values mirror
@@ -49,36 +80,139 @@ ViewportToolbar::ViewportToolbar(QWidget* parent)
         Slot s;
         s.category = c;
         s.button   = makeSlotButton(c);
-        layout->addWidget(s.button);
+        toolGroupLayout->addWidget(s.button);
         m_slots.append(s);
     }
+    layout->addWidget(toolGroup);
 
-    auto* sep = new QFrame(this);
-    sep->setFrameShape(QFrame::VLine);
-    sep->setFrameShadow(QFrame::Sunken);
-    layout->addWidget(sep);
+    auto* sep1 = new QFrame(this);
+    sep1->setFrameShape(QFrame::VLine);
+    sep1->setFixedHeight(18);
+    sep1->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
+    layout->addWidget(sep1);
 
-    auto* undoBtn = new QToolButton(this);
-    undoBtn->setIcon(style()->standardIcon(QStyle::SP_ArrowBack));
-    undoBtn->setToolTip(tr("Undo — revert the last edit (per-drag composites are one entry)"));
-    connect(undoBtn, &QToolButton::clicked, this, &ViewportToolbar::undoClicked);
-    layout->addWidget(undoBtn);
+    m_undoBtn = new QToolButton(this);
+    m_undoBtn->setIcon(style()->standardIcon(QStyle::SP_ArrowBack));
+    m_undoBtn->setToolTip(tr("Undo — revert the last edit (per-drag composites are one entry)"));
+    connect(m_undoBtn, &QToolButton::clicked, this, &ViewportToolbar::undoClicked);
+    layout->addWidget(m_undoBtn);
 
-    auto* redoBtn = new QToolButton(this);
-    redoBtn->setIcon(style()->standardIcon(QStyle::SP_ArrowForward));
-    redoBtn->setToolTip(tr("Redo — re-apply the most recently undone edit"));
-    connect(redoBtn, &QToolButton::clicked, this, &ViewportToolbar::redoClicked);
-    layout->addWidget(redoBtn);
+    m_redoBtn = new QToolButton(this);
+    m_redoBtn->setIcon(style()->standardIcon(QStyle::SP_ArrowForward));
+    m_redoBtn->setToolTip(tr("Redo — re-apply the most recently undone edit"));
+    connect(m_redoBtn, &QToolButton::clicked, this, &ViewportToolbar::redoClicked);
+    layout->addWidget(m_redoBtn);
+
+    auto* sep2 = new QFrame(this);
+    sep2->setFrameShape(QFrame::VLine);
+    sep2->setFixedHeight(18);
+    sep2->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
+    layout->addWidget(sep2);
+
+    // ---- Active-camera chip (read-only) ----------------------------------
+    m_cameraChip = new QLabel(this);
+    m_cameraChip->setFont(Theme::sans(11));
+    m_cameraChip->setStyleSheet(QStringLiteral(
+        "color: %1; background-color: %2; border: 1px solid %3; border-radius: %4px; padding: 5px 11px;")
+        .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::bgPanel), Theme::hex(Theme::borderHairline))
+        .arg(Theme::radiusMedium));
+    layout->addWidget(m_cameraChip);
 
     layout->addStretch(1);
 
+    // ---- REGION chip -------------------------------------------------------
+    m_regionChip = new QToolButton(this);
+    m_regionChip->setFont(Theme::mono(10));
+    m_regionChip->setCursor(Qt::PointingHandCursor);
+    m_regionChip->setToolTip(tr("Toggle region refinement"));
+    connect(m_regionChip, &QToolButton::clicked, this, &ViewportToolbar::onRegionChipClicked);
+    layout->addWidget(m_regionChip);
+
+    // ---- EV chip (popup exposure slider) ------------------------------------
+    m_evChip = new QToolButton(this);
+    m_evChip->setFont(Theme::mono(10));
+    m_evChip->setCursor(Qt::PointingHandCursor);
+    m_evChip->setPopupMode(QToolButton::InstantPopup);
+    m_evChip->setStyleSheet(QStringLiteral(
+        "QToolButton { color: %1; border: 1px solid %2; border-radius: 4px; padding: 2px 7px; }"
+        "QToolButton::menu-indicator { image: none; }")
+        .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderLight)));
+
+    m_evMenu = new QMenu(m_evChip);
+    auto* evPopup = new QWidget();
+    auto* evPopupLayout = new QVBoxLayout(evPopup);
+    evPopupLayout->setContentsMargins(12, 10, 12, 10);
+    evPopupLayout->setSpacing(6);
+    auto* evTitle = new QLabel(tr("Exposure"), evPopup);
+    evTitle->setFont(Theme::sans(10));
+    evTitle->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textFaint)));
+    evPopupLayout->addWidget(evTitle);
+    m_exposureSlider = new ExposureSlider(evPopup);
+    m_exposureSlider->setRange(kExposureSliderMin, kExposureSliderMax);
+    m_exposureSlider->setValue(0);
+    m_exposureSlider->setSingleStep(1);
+    m_exposureSlider->setPageStep(10);
+    m_exposureSlider->setMinimumWidth(180);
+    m_exposureSlider->setToolTip(tr("Display exposure in EV stops.  Double-click the slider to reset to 0."));
+    evPopupLayout->addWidget(m_exposureSlider);
+    m_evValueLabel = new QLabel(QStringLiteral("0.0 EV"), evPopup);
+    m_evValueLabel->setFont(Theme::mono(10));
+    m_evValueLabel->setAlignment(Qt::AlignRight);
+    m_evValueLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textFaint)));
+    evPopupLayout->addWidget(m_evValueLabel);
+    auto* evWidgetAction = new QWidgetAction(m_evMenu);
+    evWidgetAction->setDefaultWidget(evPopup);
+    m_evMenu->addAction(evWidgetAction);
+    m_evChip->setMenu(m_evMenu);
+    connect(m_exposureSlider, &QSlider::valueChanged, this, &ViewportToolbar::updateEvChipLabel);
+    connect(m_exposureSlider, &ExposureSlider::resetRequested, this, [this]() { m_exposureSlider->setValue(0); });
+    layout->addWidget(m_evChip);
+
+    // ---- EDR chip ------------------------------------------------------------
+    m_edrChip = new QToolButton(this);
+    m_edrChip->setText(QStringLiteral("EDR"));
+    m_edrChip->setFont(Theme::mono(10));
+    m_edrChip->setCursor(Qt::PointingHandCursor);
+    m_edrChip->setEnabled(false);
+    connect(m_edrChip, &QToolButton::clicked, this, &ViewportToolbar::onEdrChipClicked);
+    layout->addWidget(m_edrChip);
+
+    m_pollTimer = new QTimer(this);
+    m_pollTimer->setInterval(500);
+    connect(m_pollTimer, &QTimer::timeout, this, &ViewportToolbar::pollState);
+    m_pollTimer->start();
+
     refreshAllSlots();
+    updateRegionChip();
+    updateCameraChip();
+    updateEvChipLabel(0);
+    setEdrChecked(false);
+    setEdrEnabled(false);
+}
+
+void ViewportToolbar::setUndoRedoEnabled(bool enabled)
+{
+    if (m_undoBtn) {
+        m_undoBtn->setEnabled(enabled);
+        m_undoBtn->setToolTip(enabled
+            ? tr("Undo — revert the last edit (per-drag composites are one entry)")
+            : tr("Unavailable while a render is in flight"));
+    }
+    if (m_redoBtn) {
+        m_redoBtn->setEnabled(enabled);
+        m_redoBtn->setToolTip(enabled
+            ? tr("Redo — re-apply the most recently undone edit")
+            : tr("Unavailable while a render is in flight"));
+    }
 }
 
 void ViewportToolbar::setBridge(ViewportBridge* bridge)
 {
     m_bridge = bridge;
+    m_regionArmed = false;
     refreshAllSlots();
+    updateRegionChip();
+    updateCameraChip();
 }
 
 QToolButton* ViewportToolbar::makeSlotButton(ViewportBridge::ToolCategory cat)
@@ -239,4 +373,133 @@ void ViewportToolbar::applyToolSelection(ViewportTool t)
     m_current = t;
     refreshAllSlots();
     emit toolChanged(m_current);
+}
+
+// ============================================================
+// RISE UI redesign: right-hand status-chip cluster
+// ============================================================
+
+void ViewportToolbar::pollState()
+{
+    updateCameraChip();
+    updateRegionChip();
+}
+
+void ViewportToolbar::updateCameraChip()
+{
+    if (!m_cameraChip) return;
+    const QString name = m_bridge
+        ? m_bridge->activeNameForCategory(ViewportBridge::Category::Camera)
+        : QString();
+    m_cameraChip->setText(QString::fromUtf8("\xE2\x97\x89 ")
+        + (name.isEmpty() ? tr("No camera") : name));
+}
+
+void ViewportToolbar::updateRegionChip()
+{
+    if (!m_regionChip) return;
+
+    const bool honors = m_bridge && m_bridge->interactiveRasterizerHonorsRegion();
+    m_regionChip->setEnabled(honors);
+    m_regionChip->setToolTip(honors
+        ? tr("Toggle region refinement")
+        : tr("This rasterizer doesn't support region refinement"));
+
+    unsigned int l = 0, t = 0, r = 0, b = 0;
+    const bool hasRegion = honors && m_bridge && m_bridge->getInteractiveRegion(&l, &t, &r, &b);
+
+    // A drag completed since we armed -- disarm now that the bridge
+    // reports an active region.  Poll-driven rather than event-driven
+    // so ViewportWidget doesn't need a back-channel signal.
+    if (hasRegion && m_regionArmed) {
+        m_regionArmed = false;
+        emit regionArmedChanged(false);
+    }
+
+    QString text;
+    QColor color;
+    if (!honors) {
+        text = tr("REGION");
+        color = Theme::textDisabled;
+    } else if (hasRegion) {
+        text = tr("REGION");
+        color = Theme::warn;
+    } else if (m_regionArmed) {
+        text = tr("REGION \xE2\x80\xA6");
+        color = Theme::warn;
+    } else {
+        text = tr("REGION off");
+        color = Theme::textFaint;
+    }
+    m_regionChip->setText(text);
+    m_regionChip->setStyleSheet(QStringLiteral(
+        "QToolButton { color: %1; border: 1px solid %2; border-radius: 4px; padding: 2px 7px; }")
+        .arg(Theme::hex(color),
+             Theme::rgba(QColor(color.red(), color.green(), color.blue(), static_cast<int>(0.35 * 255)))));
+}
+
+void ViewportToolbar::onRegionChipClicked()
+{
+    if (!m_bridge || !m_regionChip->isEnabled()) return;
+
+    unsigned int l = 0, t = 0, r = 0, b = 0;
+    const bool hasRegion = m_bridge->getInteractiveRegion(&l, &t, &r, &b);
+    if (hasRegion) {
+        m_bridge->clearInteractiveRegion();
+        m_regionArmed = false;
+    } else {
+        // Toggle armed on/off (a second click while armed cancels
+        // without ever drawing a box).
+        m_regionArmed = !m_regionArmed;
+    }
+    emit regionArmedChanged(m_regionArmed);
+    updateRegionChip();
+}
+
+void ViewportToolbar::cancelRegionArm()
+{
+    if (!m_regionArmed) return;
+    m_regionArmed = false;
+    emit regionArmedChanged(false);
+    updateRegionChip();
+}
+
+void ViewportToolbar::updateEvChipLabel(int sliderValue)
+{
+    const double ev = sliderValue / 10.0;
+    const QString text = QStringLiteral("EV %1%2")
+        .arg(ev > 0 ? QStringLiteral("+") : QString())
+        .arg(ev, 0, 'f', 1);
+    if (m_evChip) m_evChip->setText(text);
+    if (m_evValueLabel) m_evValueLabel->setText(text);
+}
+
+void ViewportToolbar::setEvEnabled(bool enabled)
+{
+    if (m_evChip) m_evChip->setEnabled(enabled);
+    if (m_exposureSlider) m_exposureSlider->setEnabled(enabled);
+}
+
+void ViewportToolbar::setEdrChecked(bool checked)
+{
+    m_edrChecked = checked;
+    if (!m_edrChip) return;
+    m_edrChip->setStyleSheet(QStringLiteral(
+        "QToolButton { color: %1; background-color: %2; border: 1px solid %3; border-radius: 4px; padding: 2px 7px; }")
+        .arg(Theme::hex(checked ? Theme::accentLight : Theme::textFaint),
+             checked ? Theme::rgba(QColor(Theme::accent.red(), Theme::accent.green(), Theme::accent.blue(), static_cast<int>(0.16 * 255)))
+                     : QStringLiteral("transparent"),
+             Theme::hex(checked ? Theme::accent : Theme::borderLight)));
+}
+
+void ViewportToolbar::setEdrEnabled(bool enabled)
+{
+    m_edrAvailable = enabled;
+    if (m_edrChip) m_edrChip->setEnabled(enabled);
+}
+
+void ViewportToolbar::onEdrChipClicked()
+{
+    if (!m_edrAvailable) return;
+    emit edrToggleClicked();
 }

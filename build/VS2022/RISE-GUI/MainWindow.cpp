@@ -2,7 +2,8 @@
 //
 //  MainWindow.cpp - Main window implementation.
 //
-//  Ported from the Mac app's ContentView.swift + RISEApp.swift.
+//  UI redesign — mirrors the macOS app's ContentView.swift +
+//  RISEApp.swift.  See MainWindow.h for the layout / rehousing map.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -10,7 +11,7 @@
 #include "RenderEngine.h"
 #include "RenderWidget.h"
 #include "HDRRenderWidget.h"
-#include "ControlsWidget.h"
+#include "TopBar.h"
 #include "ChatPanel.h"
 #include "LogWidget.h"
 #include "SceneEditor.h"
@@ -19,9 +20,13 @@
 #include "ViewportToolbar.h"
 #include "ViewportTimeline.h"
 #include "ViewportProperties.h"
+#include "OutlinerWidget.h"
+#include "Theme.h"
 
 #include <QAction>
 #include <QActionGroup>
+#include <QButtonGroup>
+#include <QToolButton>
 
 #include <QMenuBar>
 #include <QStatusBar>
@@ -32,7 +37,8 @@
 #include <QApplication>
 #include <QScreen>
 #include <QSettings>
-#include <QFileInfo>
+#include <QPalette>
+#include <QSlider>
 #include <QStackedWidget>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -40,7 +46,8 @@
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
-    setMinimumSize(900, 600);
+    resize(1440, 900);
+    setMinimumSize(1320, 760);
 
     // Load recent files from settings
     QSettings settings;
@@ -54,11 +61,6 @@ MainWindow::MainWindow(QWidget* parent)
     // Create widgets
     m_renderWidget = new RenderWidget();
     m_hdrRenderWidget = new HDRRenderWidget();  // L5b — Windows HDR
-    m_controlsWidget = new ControlsWidget();
-    m_chatPanel = new ChatPanel();
-    m_chatPanel->hide();
-    m_logWidget = new LogWidget();
-    m_sceneEditor = new SceneEditor();
 
     // L5b — production-pane sub-stack: SDR widget at idx 0,
     // HDR widget at idx 1.  The View > HDR Preview action flips
@@ -72,53 +74,48 @@ MainWindow::MainWindow(QWidget* parent)
     m_productionPaneStack->addWidget(m_hdrRenderWidget);  // index 1 — HDR
     m_productionPaneStack->setCurrentIndex(0);
 
-    auto* controlsColumn = new QWidget();
-    auto* controlsColumnLayout = new QVBoxLayout(controlsColumn);
-    controlsColumnLayout->setContentsMargins(0, 0, 0, 0);
-    controlsColumnLayout->setSpacing(0);
-    controlsColumnLayout->addWidget(m_controlsWidget);
-    controlsColumnLayout->addWidget(m_chatPanel);
-
-    // Bottom splitter: controls/chat (320px) | log
-    m_bottomSplitter = new QSplitter(Qt::Horizontal);
-    m_bottomSplitter->addWidget(controlsColumn);
-    m_bottomSplitter->addWidget(m_logWidget);
-    m_bottomSplitter->setSizes({320, 600});
-    m_bottomSplitter->setStretchFactor(0, 0);
-    m_bottomSplitter->setStretchFactor(1, 1);
-
     // Stacked widget toggles between the passive render view and the
     // interactive viewport pane.  The viewport pane is built lazily
     // when a scene loads (see rebuildViewportForLoadedScene).
-    // L5b: at index 0 we now host the production-pane sub-stack
-    // (SDR | HDR) instead of the bare RenderWidget; the View > HDR
-    // Preview toggle flips the inner stack.
     m_viewStack = new QStackedWidget();
     m_viewStack->addWidget(m_productionPaneStack);   // index 0
 
-    // Right splitter: stack | bottom panel (280px fixed height)
-    m_rightSplitter = new QSplitter(Qt::Vertical);
-    m_rightSplitter->addWidget(m_viewStack);
-    m_rightSplitter->addWidget(m_bottomSplitter);
-    m_rightSplitter->setSizes({500, 280});
-    m_rightSplitter->setStretchFactor(0, 1);
-    m_rightSplitter->setStretchFactor(1, 0);
+    m_topBar = new TopBar();
+    m_topBar->setEngine(m_engine);
 
-    // Main splitter: editor (hidden) | right content
-    m_mainSplitter = new QSplitter(Qt::Horizontal);
-    m_mainSplitter->addWidget(m_sceneEditor);
-    m_mainSplitter->addWidget(m_rightSplitter);
-    m_mainSplitter->setSizes({0, 1024});
-    m_sceneEditor->hide();
+    m_chatPanel = new ChatPanel();
+    m_logWidget = new LogWidget();
+    m_sceneEditor = new SceneEditor();
 
-    setCentralWidget(m_mainSplitter);
+    // ---- Central widget: TopBar over a 3-column workspace -----------
+    auto* central = new QWidget(this);
+    auto* centralLayout = new QVBoxLayout(central);
+    centralLayout->setContentsMargins(0, 0, 0, 0);
+    centralLayout->setSpacing(0);
+    centralLayout->addWidget(m_topBar);
+
+    auto* mainArea = new QWidget(central);
+    auto* mainAreaLayout = new QHBoxLayout(mainArea);
+    mainAreaLayout->setContentsMargins(0, 0, 0, 0);
+    mainAreaLayout->setSpacing(0);
+
+    m_leftPanel = buildLeftPanel();
+    mainAreaLayout->addWidget(m_leftPanel);
+
+    QWidget* centerColumn = buildCenterColumn();
+    mainAreaLayout->addWidget(centerColumn, 1);
+
+    m_rightPanel = buildRightPanel();
+    mainAreaLayout->addWidget(m_rightPanel);
+
+    centralLayout->addWidget(mainArea, 1);
+    setCentralWidget(central);
 
     createMenuBar();
     createStatusBar();
 
     // Connect engine signals
     connect(m_engine, &RenderEngine::stateChanged, this, &MainWindow::onStateChanged);
-    connect(m_engine, &RenderEngine::progressUpdated, m_controlsWidget, &ControlsWidget::updateProgress);
     connect(m_engine, &RenderEngine::progressUpdated, m_renderWidget, [this](double fraction, const QString&) {
         m_renderWidget->setProgress(fraction);
     });
@@ -132,44 +129,220 @@ MainWindow::MainWindow(QWidget* parent)
             this, &MainWindow::onHDRAvailabilityChanged);
     connect(m_engine, &RenderEngine::sceneSizeDetected, this, &MainWindow::onSceneSizeDetected);
     connect(m_engine, &RenderEngine::logMessage, m_logWidget, &LogWidget::appendLog);
-    connect(m_engine, &RenderEngine::elapsedTimeUpdated, m_controlsWidget, &ControlsWidget::updateElapsedTime);
-    connect(m_engine, &RenderEngine::remainingTimeUpdated, m_controlsWidget, &ControlsWidget::updateRemainingTime);
-    connect(m_engine, &RenderEngine::hasAnimationChanged, m_controlsWidget, &ControlsWidget::setHasAnimation);
+    // UI redesign: elapsed/remaining now surface via the TopBar
+    // readout's tooltip (see TopBar::updateReadoutTooltip) instead of
+    // the retired ControlsWidget's dedicated labels.
+    connect(m_engine, &RenderEngine::elapsedTimeUpdated, m_topBar, &TopBar::updateElapsedTime);
+    connect(m_engine, &RenderEngine::remainingTimeUpdated, m_topBar, &TopBar::updateRemainingTime);
     connect(m_engine, &RenderEngine::errorOccurred, this, [this](const QString& msg) {
         statusBar()->showMessage("Error: " + msg, 5000);
     });
 
-    // Connect controls signals
-    connect(m_controlsWidget, &ControlsWidget::openSceneClicked, this, &MainWindow::onOpenScene);
-    connect(m_controlsWidget, &ControlsWidget::editClicked, this, &MainWindow::onEditToggle);
-    connect(m_controlsWidget, &ControlsWidget::clearClicked, this, &MainWindow::onClear);
-    connect(m_controlsWidget, &ControlsWidget::renderClicked, this, &MainWindow::onRender);
-    connect(m_controlsWidget, &ControlsWidget::renderAnimationClicked, this, &MainWindow::onRenderAnimation);
-    connect(m_controlsWidget, &ControlsWidget::cancelClicked, this, &MainWindow::onCancel);
-    connect(m_controlsWidget, &ControlsWidget::chatClicked, this, &MainWindow::onChatToggle);
+    connect(m_topBar, &TopBar::saveClicked, this, &MainWindow::onSaveScene);
 
-    // The active named animation is picked in the right-side panel's
-    // "Animation" accordion category — no dropdown wiring needed here.
+    // P1-2 fix (mirrors Mac's canUseSceneTransport): while a chat-driven
+    // `render` tool call owns the scene, undo/redo and refinement
+    // transport must go stale-free even though nothing routes through
+    // RenderEngine::stateChanged for that transition -- it's entirely
+    // internal to ChatPanel's async poll timer.  Refresh both the menu
+    // actions and TopBar's own control-enable state at every transition.
+    m_topBar->setChatPanel(m_chatPanel);
+    connect(m_chatPanel, &ChatPanel::chatRenderOutstandingChanged, this, &MainWindow::updateMenuActionStates);
+    connect(m_chatPanel, &ChatPanel::chatRenderOutstandingChanged, m_topBar, &TopBar::onChatRenderOutstandingChanged);
 
-    // L5e — exposure slider drives engine.setViewExposureEV.
-    // Engine is mid-render-safe (atomic + Repaint, no rasterizer
-    // re-run), so even rapid drag updates settle in <1 frame.
-    connect(m_controlsWidget, &ControlsWidget::exposureChanged,
-            m_engine, &RenderEngine::setViewExposureEV);
-
-    // Connect editor signals
-    connect(m_sceneEditor, &SceneEditor::closeRequested, this, &MainWindow::onEditToggle);
+    // Connect editor signals.  UI redesign: the Scene file tab has no
+    // "close" concept of its own (the tab strip always offers both
+    // tabs) — the editor's inline "X" button now just flips back to
+    // the Agent tab instead of hiding a splitter pane.
+    connect(m_sceneEditor, &SceneEditor::closeRequested, this, [this]() { setLeftTab(0); });
     connect(m_sceneEditor, &SceneEditor::saveAndReloadRequested, this, &MainWindow::onSaveAndReload);
 
     // Set initial status
-    statusBar()->showMessage(QString("RISE %1 \u2014 Ready").arg(m_engine->versionString()));
+    statusBar()->showMessage(QString("RISE %1 — Ready").arg(m_engine->versionString()));
 
-    // L5b \u2014 initial HDR-availability probe.  HDRRenderWidget is at
+    // L5b — initial HDR-availability probe.  HDRRenderWidget is at
     // index 1 of the production sub-stack and so won't fire its own
-    // Show event until the toggle is flipped \u2014 chicken-and-egg.
+    // Show event until the toggle is flipped — chicken-and-egg.
     // The static probe enumerates all DXGI outputs without needing
     // a swap chain.
     onHDRAvailabilityChanged(HDRRenderWidget::probeAnyAdapterHDRAvailable());
+}
+
+// ============================================================
+// Workspace chrome construction (UI redesign)
+// ============================================================
+
+QWidget* MainWindow::buildLeftPanel()
+{
+    auto* panel = new QWidget();
+    panel->setFixedWidth(404);
+    panel->setAutoFillBackground(true);
+    {
+        QPalette pal = panel->palette();
+        pal.setColor(QPalette::Window, Theme::bgPanel);
+        panel->setPalette(pal);
+    }
+    panel->setStyleSheet(QStringLiteral("border-right: 1px solid %1;").arg(Theme::hex(Theme::borderHairline)));
+
+    auto* layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    // Slim tab strip: "Agent" / "Scene file", spectral-underline on
+    // the active tab.  Mirrors ContentView.swift's leftPanelTabStrip.
+    auto* tabStrip = new QWidget(panel);
+    tabStrip->setFixedHeight(42);
+    tabStrip->setStyleSheet(QStringLiteral("border-bottom: 1px solid %1;").arg(Theme::hex(Theme::borderHairline)));
+
+    auto* tabStripLayout = new QHBoxLayout(tabStrip);
+    tabStripLayout->setContentsMargins(15, 0, 15, 0);
+    tabStripLayout->setSpacing(18);
+
+    auto makeTabButton = [tabStrip](const QString& label) {
+        auto* btn = new QToolButton(tabStrip);
+        btn->setText(label);
+        btn->setCheckable(true);
+        btn->setAutoRaise(true);
+        btn->setFixedHeight(40);
+        btn->setCursor(Qt::PointingHandCursor);
+        btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        return btn;
+    };
+
+    m_agentTabBtn = makeTabButton(QStringLiteral("Agent"));
+    m_sceneTabBtn = makeTabButton(QStringLiteral("Scene file"));
+
+    auto* tabGroup = new QButtonGroup(tabStrip);
+    tabGroup->setExclusive(true);
+    tabGroup->addButton(m_agentTabBtn);
+    tabGroup->addButton(m_sceneTabBtn);
+
+    tabStripLayout->addWidget(m_agentTabBtn);
+    tabStripLayout->addWidget(m_sceneTabBtn);
+    tabStripLayout->addStretch(1);
+    layout->addWidget(tabStrip);
+
+    m_leftPanelStack = new QStackedWidget(panel);
+    m_leftPanelStack->addWidget(m_chatPanel);     // index 0 — Agent
+    m_leftPanelStack->addWidget(m_sceneEditor);   // index 1 — Scene file
+    layout->addWidget(m_leftPanelStack, 1);
+
+    connect(m_agentTabBtn, &QToolButton::clicked, this, [this]() { setLeftTab(0); });
+    connect(m_sceneTabBtn, &QToolButton::clicked, this, [this]() { setLeftTab(1); });
+
+    setLeftTab(0);   // Agent tab is active on launch
+
+    return panel;
+}
+
+void MainWindow::setLeftTab(int index)
+{
+    if (!m_leftPanelStack) return;
+    m_leftPanelStack->setCurrentIndex(index);
+
+    const bool agentActive = (index == 0);
+    m_agentTabBtn->setChecked(agentActive);
+    m_sceneTabBtn->setChecked(!agentActive);
+    m_agentTabBtn->setFont(Theme::sans(12, agentActive ? QFont::DemiBold : QFont::Normal));
+    m_sceneTabBtn->setFont(Theme::sans(12, !agentActive ? QFont::DemiBold : QFont::Normal));
+
+    const QString activeStyle = QStringLiteral(
+        "QToolButton { color: %1; border: none; border-bottom: 2px solid %2; background: transparent; }")
+        .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::accent));
+    const QString inactiveStyle = QStringLiteral(
+        "QToolButton { color: %1; border: none; border-bottom: 2px solid transparent; background: transparent; }")
+        .arg(Theme::hex(Theme::textFaint));
+    m_agentTabBtn->setStyleSheet(agentActive ? activeStyle : inactiveStyle);
+    m_sceneTabBtn->setStyleSheet(!agentActive ? activeStyle : inactiveStyle);
+
+    // Matches the pre-redesign Edit-toggle behavior: switching into
+    // the Scene file tab (re-)loads the current file from disk.
+    if (!agentActive && m_engine && !m_engine->loadedFilePath().isEmpty()) {
+        m_sceneEditor->loadFile(m_engine->loadedFilePath());
+    }
+}
+
+QWidget* MainWindow::buildCenterColumn()
+{
+    auto* col = new QWidget();
+    col->setAutoFillBackground(true);
+    {
+        QPalette pal = col->palette();
+        pal.setColor(QPalette::Window, Theme::bgCenter);
+        col->setPalette(pal);
+    }
+
+    m_centerColumnLayout = new QVBoxLayout(col);
+    m_centerColumnLayout->setContentsMargins(0, 0, 0, 0);
+    m_centerColumnLayout->setSpacing(0);
+    m_centerColumnLayout->addWidget(m_viewStack, 1);   // index 0 — grows
+    // index 1 is reserved for m_viewportTimeline, inserted/removed by
+    // rebuildViewportForLoadedScene / teardownViewport alongside the
+    // per-scene viewport bridge.
+
+    m_logDrawerContainer = buildLogDrawer();
+    m_centerColumnLayout->addWidget(m_logDrawerContainer);   // index 1 (or 2 once timeline is present)
+
+    return col;
+}
+
+QWidget* MainWindow::buildLogDrawer()
+{
+    auto* container = new QWidget();
+    auto* layout = new QVBoxLayout(container);
+    layout->setContentsMargins(10, 4, 10, 8);
+    layout->setSpacing(4);
+
+    // UI redesign slice B: the exposure slider moved to the viewport
+    // toolbar's EV chip popup (ViewportToolbar::exposureSlider()) --
+    // wired fresh in rebuildViewportForLoadedScene each time a scene
+    // loads.  See MainWindow.h's header doc.
+    layout->addWidget(m_logWidget, 1);
+
+    return container;
+}
+
+QWidget* MainWindow::buildRightPanel()
+{
+    auto* panel = new QWidget();
+    panel->setFixedWidth(344);
+    panel->setAutoFillBackground(true);
+    {
+        QPalette pal = panel->palette();
+        pal.setColor(QPalette::Window, Theme::bgPanel);
+        panel->setPalette(pal);
+    }
+    panel->setStyleSheet(QStringLiteral("border-left: 1px solid %1;").arg(Theme::hex(Theme::borderHairline)));
+
+    m_rightPanelLayout = new QVBoxLayout(panel);
+    m_rightPanelLayout->setContentsMargins(0, 0, 0, 0);
+    m_rightPanelLayout->setSpacing(0);
+
+    // OutlinerWidget is persistent (built once, like TopBar/ChatPanel) --
+    // it just shows nothing until setBridge() gives it a live scene.
+    // ViewportProperties (below it) is per-scene: rebuildViewportForLoadedScene
+    // inserts a fresh instance; teardownViewport removes it.  See
+    // MainWindow.h's header doc.
+    m_outlinerWidget = new OutlinerWidget(panel);
+    m_rightPanelLayout->addWidget(m_outlinerWidget);
+
+    return panel;
+}
+
+void MainWindow::onExposureSliderChanged(int value)
+{
+    // UI redesign slice B: the label lives inside ViewportToolbar's EV
+    // chip now (self-updating from the same valueChanged signal) --
+    // this slot's only remaining job is the RenderEngine business logic.
+    const double ev = value / 10.0;
+    if (m_engine) m_engine->setViewExposureEV(ev);
+}
+
+void MainWindow::onExposureResetRequested()
+{
+    if (m_viewportToolbar && m_viewportToolbar->exposureSlider()) {
+        m_viewportToolbar->exposureSlider()->setValue(0);
+    }
 }
 
 void MainWindow::createMenuBar()
@@ -186,45 +359,69 @@ void MainWindow::createMenuBar()
 
     fileMenu->addSeparator();
 
-    auto* saveAction = fileMenu->addAction("&Save Scene", [this]() {
-        if (m_sceneEditor->isVisible()) m_sceneEditor->save();
-    });
-    saveAction->setShortcut(QKeySequence::Save);
-
     // L5d — Save Rendered Image action (parity with macOS File >
     // Save Rendered Image…).  Disabled until the engine has at
     // least started a render; remains enabled across the rest of
     // the app's lifetime so the user can save the LAST rendered
     // result even after a cancel or scene reload's Render click.
-    // The QFileDialog filter defaults to EXR (HDR archival) with
-    // PNG / TIFF as LDR alternatives.
     m_saveImageAction = fileMenu->addAction("Save Rendered &Image...",
         this, &MainWindow::onSaveRenderedImage);
     m_saveImageAction->setShortcut(QKeySequence("Ctrl+Shift+S"));
     m_saveImageAction->setEnabled(false);  // toggled by onStateChanged
 
     fileMenu->addSeparator();
+
+    // UI redesign: "Save Scene" now performs the interactive
+    // round-trip save via ViewportBridge (Phase 6.5) — the same
+    // action as the TopBar's Save pill — rather than the raw
+    // scene-editor text save.  The Scene file tab's own inline
+    // Save / Revert / Save & Reload buttons still cover that lower-
+    // level text-file editing workflow, unaffected by this item.
+    m_saveSceneAction = fileMenu->addAction("&Save Scene", this, &MainWindow::onSaveScene);
+    m_saveSceneAction->setShortcut(QKeySequence("Ctrl+Alt+S"));
+    m_saveSceneAction->setEnabled(false);
+
+    // Rehouses the retired ControlsWidget's "Clear" button.
+    m_closeSceneAction = fileMenu->addAction("&Close Scene", this, &MainWindow::onClear);
+    m_closeSceneAction->setShortcut(QKeySequence("Ctrl+Shift+W"));
+    m_closeSceneAction->setEnabled(false);
+
+    connect(fileMenu, &QMenu::aboutToShow, this, &MainWindow::updateMenuActionStates);
+
+    fileMenu->addSeparator();
     auto* exitAction = fileMenu->addAction("E&xit", this, &QWidget::close);
     exitAction->setShortcut(QKeySequence::Quit);
 
     // --- Edit menu ---
+    // UI redesign: the retired ControlsWidget exposed Undo/Redo
+    // nowhere explicit (only via the interactive viewport's own key
+    // handling); the redesign surfaces them as first-class Edit-menu
+    // items with the C++ controller's human-readable step label.
     auto* editMenu = menuBar()->addMenu("&Edit");
-    auto* undoAction = editMenu->addAction("&Undo");
-    undoAction->setShortcut(QKeySequence::Undo);
-    auto* redoAction = editMenu->addAction("&Redo");
-    redoAction->setShortcut(QKeySequence::Redo);
+    m_undoAction = editMenu->addAction("Undo");
+    m_undoAction->setShortcut(QKeySequence::Undo);
+    connect(m_undoAction, &QAction::triggered, this, [this]() {
+        if (!canUseSceneTransport()) return;
+        m_viewportBridge->undo();
+    });
+
+    m_redoAction = editMenu->addAction("Redo");
+    m_redoAction->setShortcut(QKeySequence::Redo);
+    connect(m_redoAction, &QAction::triggered, this, [this]() {
+        if (!canUseSceneTransport()) return;
+        m_viewportBridge->redo();
+    });
+
     editMenu->addSeparator();
     auto* findAction = editMenu->addAction("&Find...");
     findAction->setShortcut(QKeySequence::Find);
 
+    connect(editMenu, &QMenu::aboutToShow, this, &MainWindow::updateMenuActionStates);
+
     // --- View menu ---
     // L5b — adds the HDR Preview toggle.  Disabled by default; the
     // HDRRenderWidget enables it once it confirms the active monitor
-    // reports an HDR colorspace + max luminance > SDR (queried via
-    // IDXGIOutput6::GetDesc1 on widget creation and on screen-change
-    // events).  Same UX pattern as the macOS ContentView toggle
-    // gated by NSScreen.maximumPotentialExtendedDynamicRangeColor-
-    // ComponentValue.
+    // reports an HDR colorspace + max luminance > SDR.
     auto* viewMenu = menuBar()->addMenu("&View");
     m_hdrToggleAction = viewMenu->addAction("&HDR Preview");
     m_hdrToggleAction->setCheckable(true);
@@ -236,8 +433,7 @@ void MainWindow::createMenuBar()
     // L5e — Tone Curve submenu.  Mirror of the macOS
     // View > Tone Curve picker.  Exclusive QActionGroup gives the
     // submenu radio-button semantics; engine default = 2 (ACES).
-    // Greyed out when HDR Preview is on (HDR display path is
-    // by-construction tone-curve-free).
+    // Greyed out when HDR Preview is on.
     auto* toneCurveMenu = viewMenu->addMenu("&Tone Curve");
     m_toneCurveGroup = new QActionGroup(this);
     m_toneCurveGroup->setExclusive(true);
@@ -262,12 +458,146 @@ void MainWindow::createMenuBar()
             });
     m_toneCurveMenu = toneCurveMenu;
 
+    // UI redesign: show/hide the left panel (Agent / Scene file tabs)
+    // and the bottom log drawer.  Both default on; toggling doesn't
+    // persist across launches in slice 1.
+    viewMenu->addSeparator();
+    auto* leftPanelAction = viewMenu->addAction("Left Panel");
+    leftPanelAction->setCheckable(true);
+    leftPanelAction->setChecked(true);
+    connect(leftPanelAction, &QAction::toggled, this, [this](bool on) {
+        if (m_leftPanel) m_leftPanel->setVisible(on);
+    });
+
+    auto* logAction = viewMenu->addAction("Log");
+    logAction->setCheckable(true);
+    logAction->setChecked(true);
+    logAction->setShortcut(QKeySequence("Alt+L"));
+    connect(logAction, &QAction::toggled, this, [this](bool on) {
+        if (m_logDrawerContainer) m_logDrawerContainer->setVisible(on);
+    });
+
     // --- Render menu ---
+    // UI redesign (design brief A2): refinement transport + production
+    // render, rehousing the retired ControlsWidget's Render / Render
+    // Animation / Cancel buttons.
     auto* renderMenu = menuBar()->addMenu("&Render");
-    renderMenu->addAction("&Render", this, &MainWindow::onRender);
-    renderMenu->addAction("Render &Animation", this, &MainWindow::onRenderAnimation);
+
+    m_pauseResumeAction = renderMenu->addAction("Pause Refinement");
+    m_pauseResumeAction->setShortcut(QKeySequence("Ctrl+Space"));
+    connect(m_pauseResumeAction, &QAction::triggered, this, [this]() {
+        if (!canUseSceneTransport()) return;
+        if (m_viewportBridge->isRefinementPaused()) m_viewportBridge->resumeRefinement();
+        else m_viewportBridge->pauseRefinement();
+        updateMenuActionStates();
+    });
+
+    m_restartAction = renderMenu->addAction("Restart Refinement");
+    connect(m_restartAction, &QAction::triggered, this, [this]() {
+        if (!canUseSceneTransport()) return;
+        m_viewportBridge->stop();
+        m_viewportBridge->start();
+    });
+
     renderMenu->addSeparator();
-    renderMenu->addAction("&Cancel", this, &MainWindow::onCancel);
+
+    m_renderAction = renderMenu->addAction("&Render", this, &MainWindow::onRender);
+    m_renderAction->setShortcut(QKeySequence("Ctrl+R"));
+
+    m_renderAnimAction = renderMenu->addAction("Render &Animation", this, &MainWindow::onRenderAnimation);
+
+    m_cancelAction = renderMenu->addAction("&Cancel", this, &MainWindow::onCancel);
+    m_cancelAction->setShortcut(QKeySequence("Ctrl+."));
+
+    connect(renderMenu, &QMenu::aboutToShow, this, &MainWindow::updateMenuActionStates);
+
+    // Initial sync — gives every action above its correct
+    // enabled/disabled state (and label) from the moment the window
+    // opens, independent of whether the user has ever opened a menu.
+    updateMenuActionStates();
+}
+
+bool MainWindow::canUseSceneTransport() const
+{
+    if (!m_viewportBridge) return false;
+    const auto state = m_engine->state();
+    const bool productionActive = (state == RenderEngine::Rendering
+                                || state == RenderEngine::Cancelling
+                                || state == RenderEngine::Loading);
+    const bool chatOutstanding = m_chatPanel && m_chatPanel->isChatRenderOutstanding();
+    return !productionActive && !chatOutstanding;
+}
+
+void MainWindow::updateMenuActionStates()
+{
+    const auto state = m_engine->state();
+    const bool interacting = (state != RenderEngine::Rendering
+                           && state != RenderEngine::Cancelling
+                           && state != RenderEngine::Loading);
+
+    if (m_saveSceneAction) {
+        m_saveSceneAction->setEnabled(m_viewportBridge && m_viewportBridge->hasUnsavedSceneChanges());
+    }
+    if (m_closeSceneAction) {
+        m_closeSceneAction->setEnabled(interacting && state != RenderEngine::Idle);
+    }
+
+    // P1-2 fix (mirrors Mac's canUseSceneTransport / TopBar.swift:103-113):
+    // a chat-driven `render` tool call owns the scene for the duration of
+    // its async job just as surely as a production render does -- undo/
+    // redo and refinement transport must not run underneath it.  Scoped
+    // to just these two clauses (NOT into the broader `interacting` term
+    // above, which also gates viewport/outliner/properties enable state
+    // that has no scene-transport hazard) to mirror the Mac split.
+    const bool chatRenderOutstanding = m_chatPanel && m_chatPanel->isChatRenderOutstanding();
+
+    const bool bridgeInteractingEnabled = (m_viewportBridge != nullptr) && interacting && !chatRenderOutstanding;
+    if (m_undoAction) {
+        const QString label = m_viewportBridge ? m_viewportBridge->undoActionLabel() : QString();
+        m_undoAction->setText(label.isEmpty() ? QStringLiteral("Undo") : QStringLiteral("Undo %1").arg(label));
+        m_undoAction->setEnabled(bridgeInteractingEnabled);
+    }
+    if (m_redoAction) {
+        const QString label = m_viewportBridge ? m_viewportBridge->redoActionLabel() : QString();
+        m_redoAction->setText(label.isEmpty() ? QStringLiteral("Redo") : QStringLiteral("Redo %1").arg(label));
+        m_redoAction->setEnabled(bridgeInteractingEnabled);
+    }
+    // Round-2 P1: the viewport toolbar's undo/redo buttons are a second
+    // affordance for the same scene-transport path -- gate them with the
+    // IDENTICAL term so the two can never drift (the toolbar's broader
+    // setEnabled(interacting) alone misses the chat-render clause).
+    if (m_viewportToolbar) m_viewportToolbar->setUndoRedoEnabled(bridgeInteractingEnabled);
+
+    const bool refinementDisabled = !m_viewportBridge
+        || state == RenderEngine::Rendering
+        || state == RenderEngine::Cancelling
+        || chatRenderOutstanding;
+    if (m_pauseResumeAction) {
+        m_pauseResumeAction->setEnabled(!refinementDisabled);
+        m_pauseResumeAction->setText(
+            (m_viewportBridge && m_viewportBridge->isRefinementPaused())
+                ? "Resume Refinement" : "Pause Refinement");
+    }
+    if (m_restartAction) {
+        m_restartAction->setEnabled(!refinementDisabled);
+    }
+
+    const bool canRender = (state == RenderEngine::SceneLoaded
+                         || state == RenderEngine::Completed
+                         || state == RenderEngine::Cancelled);
+    if (m_renderAction)     m_renderAction->setEnabled(canRender);
+    const bool canRenderAnim = canRender && m_engine->hasAnimation();
+    if (m_renderAnimAction) m_renderAnimAction->setEnabled(canRenderAnim);
+    if (m_viewportTimeline) m_viewportTimeline->setRenderMovieEnabled(canRenderAnim);
+    if (m_cancelAction)     m_cancelAction->setEnabled(state == RenderEngine::Rendering);
+}
+
+void MainWindow::updateEvEnabledState()
+{
+    if (!m_viewportToolbar) return;
+    const bool notIdle = m_engine && m_engine->state() != RenderEngine::Idle;
+    const bool hdrOff = !(m_hdrToggleAction && m_hdrToggleAction->isChecked());
+    m_viewportToolbar->setEvEnabled(notIdle && hdrOff);
 }
 
 // ============================================================
@@ -291,12 +621,18 @@ void MainWindow::onHDRToggled(bool checked)
     if (m_toneCurveMenu) {
         m_toneCurveMenu->setEnabled(!checked);
     }
-    // L5e round-2 — Same gate for the exposure slider.  Applying
-    // exposure on top of the HDR compositor's dynamic-range map
-    // double-maps the radiance signal — flicker / hue shifts on
+    // L5e round-2 / P2 fix — Same gate for the exposure slider (now the
+    // viewport toolbar's EV chip), now combined with the "not idle"
+    // clause (updateEvEnabledState) instead of just the HDR interlock.
+    // Applying exposure on top of the HDR compositor's dynamic-range
+    // map double-maps the radiance signal — flicker / hue shifts on
     // HDR-capable monitors.
-    if (m_controlsWidget) {
-        m_controlsWidget->setHDREnabled(checked);
+    updateEvEnabledState();
+    // UI redesign: the EDR chip mirrors this same action's checked
+    // state -- keep it in sync regardless of which affordance the user
+    // drove the toggle from (menu item vs chip).
+    if (m_viewportToolbar) {
+        m_viewportToolbar->setEdrChecked(checked);
     }
 }
 
@@ -409,6 +745,66 @@ void MainWindow::createStatusBar()
 }
 
 // ============================================================
+// Scene-file save (interactive round-trip, Phase 6.5)
+// ============================================================
+
+void MainWindow::onSaveScene()
+{
+    // Note: no Save-As affordance here — matches the macOS TopBar's
+    // Save pill.  Save-As lives in ViewportProperties (right panel).
+    if (!m_viewportBridge) return;
+    const QString path = m_viewportBridge->loadedFilePath();
+    if (path.isEmpty()) return;
+
+    QString errMsg;
+    const ViewportBridge::SaveStatus status = m_viewportBridge->saveSceneTo(path, errMsg);
+    switch (status) {
+    case ViewportBridge::SaveStatus::Saved:
+        onSceneSavedToPath(path);
+        break;
+    case ViewportBridge::SaveStatus::NoOp:
+        // Silent success — file unchanged on disk.
+        break;
+    case ViewportBridge::SaveStatus::Refused:
+        QMessageBox::warning(this, "Save Refused",
+            errMsg.isEmpty() ? "The save engine declined to write this file." : errMsg);
+        break;
+    case ViewportBridge::SaveStatus::Failed:
+        QMessageBox::warning(this, "Save Failed",
+            errMsg.isEmpty() ? "An I/O error occurred while saving the file." : errMsg);
+        break;
+    case ViewportBridge::SaveStatus::Error:
+        QMessageBox::warning(this, "Save Failed",
+            QString("Unexpected save state (%1).").arg(errMsg));
+        break;
+    }
+}
+
+void MainWindow::onSceneSavedToPath(const QString& path)
+{
+    // Shared by TopBar's Save pill (onSaveScene above), the File >
+    // Save Scene menu item, and ViewportProperties' own Save / Save
+    // As… buttons (connected below in rebuildViewportForLoadedScene).
+    updateWindowTitle();
+    if (!m_sceneEditor) return;
+    if (!m_sceneEditor->isDirty()) {
+        m_sceneEditor->loadFile(path);
+    } else {
+        QMessageBox::warning(
+            this,
+            tr("Scene editor has unsaved text changes"),
+            tr("Your interactive edits were saved to %1.  "
+               "The scene editor pane still shows the "
+               "pre-save text plus your unsaved edits.  "
+               "Clicking Save in the scene editor will "
+               "overwrite the just-saved interactive "
+               "changes — use Revert in the scene editor "
+               "to discard your text edits and pull the "
+               "new file content.").arg(path));
+    }
+}
+
+// ============================================================
 // Recent Files
 // ============================================================
 
@@ -490,7 +886,7 @@ void MainWindow::onClearRecentFiles()
 void MainWindow::loadSceneFile(const QString& filePath)
 {
     // Check for unsaved editor changes
-    if (m_sceneEditor->isVisible() && m_sceneEditor->isDirty()) {
+    if (m_sceneEditor->isDirty()) {
         auto result = QMessageBox::question(this, "Unsaved Changes",
             "The editor has unsaved changes. Save before opening a new scene?",
             QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
@@ -521,13 +917,10 @@ void MainWindow::loadSceneFile(const QString& filePath)
     m_engine->loadScene(filePath);
     updateWindowTitle();
 
-    // Auto-open editor when scene loads (matching Mac app behavior)
-    if (!m_editorVisible) {
-        onEditToggle();
-    } else {
-        // Refresh editor contents if already visible
-        m_sceneEditor->loadFile(filePath);
-    }
+    // UI redesign: the Scene file tab is always embedded (no Edit
+    // toggle) — just refresh its contents from the freshly-loaded
+    // file, whichever tab happens to be frontmost.
+    m_sceneEditor->loadFile(filePath);
 }
 
 void MainWindow::onOpenScene()
@@ -549,27 +942,6 @@ void MainWindow::onOpenScene()
 }
 
 // ============================================================
-// Editor
-// ============================================================
-
-void MainWindow::onEditToggle()
-{
-    m_editorVisible = !m_editorVisible;
-
-    if (m_editorVisible) {
-        // Load file into editor if we have a scene
-        if (!m_engine->loadedFilePath().isEmpty()) {
-            m_sceneEditor->loadFile(m_engine->loadedFilePath());
-        }
-        m_sceneEditor->show();
-        m_mainSplitter->setSizes({600, m_mainSplitter->width() - 600});
-    } else {
-        m_sceneEditor->hide();
-        m_mainSplitter->setSizes({0, m_mainSplitter->width()});
-    }
-}
-
-// ============================================================
 // Render controls
 // ============================================================
 
@@ -577,11 +949,6 @@ void MainWindow::onClear()
 {
     teardownViewport();
     m_engine->clearScene();
-    m_controlsWidget->setHasScene(false);
-    // The "Animation" accordion category is rebuilt with the viewport
-    // (teardownViewport above destroys the old ViewportProperties); the
-    // next scene load repopulates it.  Nothing animation-specific to
-    // reset on the controls panel anymore.
     updateWindowTitle();
     updateStatusBar();
 }
@@ -609,6 +976,12 @@ void MainWindow::onRender()
     // into the scene the production rasterizer is about to read.
     if (m_viewportTimeline) m_viewportTimeline->stopPlayback();
     if (m_viewportBridge) m_viewportBridge->stop();
+
+    // UI redesign (A4 region refinement): a region "armed" for a
+    // not-yet-drawn drag can no longer land against Scene state the
+    // production rasterizer is about to read off-main — clear it so
+    // the REGION chip doesn't lie about being armed through a render.
+    if (m_viewportToolbar) m_viewportToolbar->cancelRegionArm();
 
     // Advance scene state to the canonical scrubbed time AND
     // regenerate photon maps before the production rasterizer fires.
@@ -651,28 +1024,13 @@ void MainWindow::onRenderAnimation()
     // alone is insufficient).
     if (m_viewportTimeline) m_viewportTimeline->stopPlayback();
     if (m_viewportBridge) m_viewportBridge->stop();
+    if (m_viewportToolbar) m_viewportToolbar->cancelRegionArm();
     m_engine->startAnimationRender(videoPath);
 }
 
 void MainWindow::onCancel()
 {
     m_engine->cancelRender();
-}
-
-void MainWindow::onChatToggle()
-{
-    m_chatVisible = !m_chatVisible;
-    if (m_chatPanel) {
-        m_chatPanel->setVisible(m_chatVisible);
-    }
-    if (m_rightSplitter) {
-        const int h = m_rightSplitter->height();
-        if (m_chatVisible) {
-            m_rightSplitter->setSizes({qMax(220, h - 460), 460});
-        } else {
-            m_rightSplitter->setSizes({qMax(220, h - 280), 280});
-        }
-    }
 }
 
 // ============================================================
@@ -684,10 +1042,6 @@ void MainWindow::onStateChanged(int newState)
     auto state = static_cast<RenderEngine::State>(newState);
 
     m_renderWidget->setRenderState(state);
-    m_controlsWidget->setRenderState(state);
-
-    bool hasScene = (state != RenderEngine::Idle);
-    m_controlsWidget->setHasScene(hasScene);
 
     // L5d — gate File > Save Rendered Image.  The production VFS's
     // FrameStore exists once the rasterizer has emitted at least
@@ -769,7 +1123,14 @@ void MainWindow::onStateChanged(int newState)
     if (m_viewportWidget)   m_viewportWidget->setEnabled(interacting);
     if (m_viewportTimeline) m_viewportTimeline->setEnabled(interacting);
     if (m_viewportProps)    m_viewportProps->setEnabled(interacting);
+    if (m_outlinerWidget)   m_outlinerWidget->setEnabled(interacting);
     if (m_chatPanel)        m_chatPanel->setSceneEditable(interacting && m_viewportBridge != nullptr);
+
+    // P2 fix: re-derive the EV chip's "not idle" half on every state
+    // transition (rebuildViewportForLoadedScene/onHDRToggled already
+    // cover the other two triggers) -- a no-op while m_viewportToolbar
+    // is null (no scene loaded yet).
+    updateEvEnabledState();
 
     // Gizmo overlay gate — narrower than `interacting` (which also
     // hides during `.loading` / `.cancelling` transitions).  Only
@@ -784,19 +1145,31 @@ void MainWindow::onStateChanged(int newState)
     // Disable Open Recent during active operations
     m_recentFilesMenu->setEnabled(interacting);
 
+    // Covers both axes updateMenuActionStates() depends on: render
+    // state (just changed) and viewport-bridge presence (rebuilt /
+    // torn down synchronously above, if this transition triggered it).
+    updateMenuActionStates();
+
     updateStatusBar();
     updateWindowTitle();
 }
 
 void MainWindow::onSceneSizeDetected(int width, int height)
 {
-    // Auto-resize window to fit scene, matching Mac app behavior
-    int bottomHeight = 280;
+    // Auto-resize window to fit scene, matching Mac app behavior.
+    // UI redesign: the left/right panels are now fixed-width chrome
+    // (404 + 344) rather than a togglable editor splitter, so the
+    // width budget is constant regardless of which left-panel tab is
+    // frontmost.
+    const int kLeftPanelWidth = 404;
+    const int kRightPanelWidth = 344;
+    const int kTopBarHeight = 44;
+    const int kBottomHeight = 190;   // timeline + log drawer, approx
     int statusHeight = 30;
     int menuHeight = menuBar()->height();
 
-    int targetW = width + (m_editorVisible ? 600 : 0) + 40;
-    int targetH = height + bottomHeight + menuHeight + statusHeight + 40;
+    int targetW = width + kLeftPanelWidth + kRightPanelWidth + 40;
+    int targetH = height + kBottomHeight + kTopBarHeight + menuHeight + statusHeight + 40;
 
     // Clamp to screen size with smart scaling
     QScreen* screen = QApplication::primaryScreen();
@@ -807,13 +1180,13 @@ void MainWindow::onSceneSizeDetected(int width, int height)
 
         if (targetW > maxW || targetH > maxH) {
             // Scale down while preserving aspect ratio of render area
-            double scaleW = static_cast<double>(maxW - (m_editorVisible ? 600 : 0) - 40) / width;
-            double scaleH = static_cast<double>(maxH - bottomHeight - menuHeight - statusHeight - 40) / height;
+            double scaleW = static_cast<double>(maxW - kLeftPanelWidth - kRightPanelWidth - 40) / width;
+            double scaleH = static_cast<double>(maxH - kBottomHeight - kTopBarHeight - menuHeight - statusHeight - 40) / height;
             double scale = qMin(scaleW, scaleH);
             scale = qMin(scale, 1.0); // Don't upscale
 
-            targetW = static_cast<int>(width * scale) + (m_editorVisible ? 600 : 0) + 40;
-            targetH = static_cast<int>(height * scale) + bottomHeight + menuHeight + statusHeight + 40;
+            targetW = static_cast<int>(width * scale) + kLeftPanelWidth + kRightPanelWidth + 40;
+            targetH = static_cast<int>(height * scale) + kBottomHeight + kTopBarHeight + menuHeight + statusHeight + 40;
         }
     }
 
@@ -837,8 +1210,10 @@ void MainWindow::updateWindowTitle()
     } else {
         title = "RISE";
     }
-    title += QString(" \u2014 RISE %1").arg(m_engine->versionString());
+    title += QString(" — RISE %1").arg(m_engine->versionString());
     setWindowTitle(title);
+
+    if (m_topBar) m_topBar->setLoadedFilePath(m_engine->loadedFilePath());
 }
 
 void MainWindow::updateStatusBar()
@@ -855,22 +1230,18 @@ void MainWindow::updateStatusBar()
     case RenderEngine::Error:      stateText = "Error"; break;
     }
 
-    // Phase 7c -- when the active rasterizer is the auto-dispatcher, surface the
-    // concrete integrator it resolved to (mirrors the macOS status bar).
+    // UI redesign: the resolved-integrator display now lives in the
+    // TopBar cluster's "AUTO → X" chip (see TopBar::updateIntegratorChip).
+    // The animation-output summary isn't covered by the TopBar, so it
+    // stays here rather than being dropped.
     if (m_engine->state() == RenderEngine::Completed) {
-        const QString integ = m_engine->autoResolvedIntegrator();
-        if (!integ.isEmpty()) {
-            stateText += QString(" \u00b7 Auto \u2192 %1").arg(integ.toUpper());
-        }
-        // Animation export: surface the video file(s) written so the user
-        // doesn't have to open the log to confirm the .mov / .mp4 landed.
         const QString animOut = m_engine->lastAnimationOutputsSummary();
         if (!animOut.isEmpty()) {
-            stateText += QString(" \u00b7 %1").arg(animOut);
+            stateText += QString(" · %1").arg(animOut);
         }
     }
 
-    statusBar()->showMessage(QString("RISE %1 \u2014 %2")
+    statusBar()->showMessage(QString("RISE %1 — %2")
         .arg(m_engine->versionString(), stateText));
 }
 
@@ -887,6 +1258,17 @@ void MainWindow::rebuildViewportForLoadedScene()
         m_chatPanel->setViewportBridge(m_viewportBridge);
         m_chatPanel->setSceneEditable(true);
     }
+    if (m_topBar) {
+        m_topBar->setViewportBridge(m_viewportBridge);
+    }
+    // Phase 6.5: mirror the dirty-state transition into the TopBar's
+    // Save-pill enable state + dirty dot, AND the File > Save Scene
+    // menu item's enable state (updateMenuActionStates reads
+    // hasUnsavedSceneChanges()).  QueuedConnection-emitted by the
+    // bridge's C trampoline (see ViewportBridge ctor), so a direct
+    // Qt::AutoConnection here delivers on the GUI thread.
+    connect(m_viewportBridge, &ViewportBridge::dirtyChanged, m_topBar, &TopBar::setSceneEditsDirty);
+    connect(m_viewportBridge, &ViewportBridge::dirtyChanged, this, [this](bool) { updateMenuActionStates(); });
 
     m_viewportToolbar  = new ViewportToolbar();
     m_viewportToolbar->setBridge(m_viewportBridge);
@@ -894,6 +1276,45 @@ void MainWindow::rebuildViewportForLoadedScene()
     m_viewportTimeline = new ViewportTimeline();
     m_viewportProps    = new ViewportProperties(m_viewportBridge);
     m_viewportTimeline->setVisible(m_engine->hasAnimation());
+
+    // UI redesign slice B — EV chip: the exposure slider widget lives
+    // inside the fresh per-scene ViewportToolbar; re-establish the
+    // RenderEngine-facing connections and seed the HDR interlock from
+    // the CURRENT View > HDR Preview state (a scene can be (re)loaded
+    // while HDR Preview is already on).
+    connect(m_viewportToolbar->exposureSlider(), &QSlider::valueChanged,
+            this, &MainWindow::onExposureSliderChanged);
+    connect(m_viewportToolbar->exposureSlider(), &ExposureSlider::resetRequested,
+            this, &MainWindow::onExposureResetRequested);
+    const bool hdrOn = m_hdrToggleAction && m_hdrToggleAction->isChecked();
+    updateEvEnabledState();
+    m_viewportToolbar->setEdrChecked(hdrOn);
+    m_viewportToolbar->setEdrEnabled(m_hdrToggleAction && m_hdrToggleAction->isEnabled());
+
+    // EDR chip <-> View > HDR Preview: single source of truth is the
+    // QAction; the chip forwards a click to toggle() it (which then
+    // fires onHDRToggled, which mirrors the new checked state back
+    // onto the chip) rather than driving RenderEngine state directly.
+    connect(m_viewportToolbar, &ViewportToolbar::edrToggleClicked, this, [this]() {
+        if (m_hdrToggleAction && m_hdrToggleAction->isEnabled()) m_hdrToggleAction->toggle();
+    });
+
+    // REGION arm/drag hand-off between the toolbar chip and the
+    // viewport surface -- both directions, see each signal's doc.
+    connect(m_viewportToolbar, &ViewportToolbar::regionArmedChanged,
+            m_viewportWidget, &ViewportWidget::setRegionArmed);
+    connect(m_viewportWidget, &ViewportWidget::regionArmCancelled,
+            m_viewportToolbar, &ViewportToolbar::cancelRegionArm);
+
+    if (m_outlinerWidget) {
+        m_outlinerWidget->setBridge(m_viewportBridge);
+        // A pick in the outliner (category open/close, entity select)
+        // doesn't itself touch the interactive rasterizer, so there's
+        // no imageUpdated to ride -- follow it explicitly so the
+        // single-entity inspector below updates immediately.
+        connect(m_outlinerWidget, &OutlinerWidget::selectionActivated,
+                m_viewportProps, &ViewportProperties::refresh);
+    }
 
     // Pull the timeline range from the scene's animation_options
     // chunk via the bridge.  Defaults are (0, 1) when the scene
@@ -916,24 +1337,24 @@ void MainWindow::rebuildViewportForLoadedScene()
     // activates a pick via setSelection(Category::Animation, …).  The
     // timeline still follows the active animation via animationOptions().
 
-    // Compose the pane: VBox{ toolbar, viewport, timeline } | properties
+    // Viewport pane: VBox{ toolbar, viewport widget } — hosted inside
+    // m_viewStack (the center column's persistent top slot).  The
+    // timeline and properties panel are no longer nested here; they're
+    // inserted into the persistent center-column / right-panel chrome
+    // below instead (see MainWindow.h's header doc) — their C++
+    // lifetime is still scene-scoped, created here and destroyed by
+    // teardownViewport, only their PARENT LAYOUT changed.
     auto* col = new QVBoxLayout;
     col->setContentsMargins(0, 0, 0, 0);
     col->setSpacing(0);
     col->addWidget(m_viewportToolbar);
     col->addWidget(m_viewportWidget, 1);
-    col->addWidget(m_viewportTimeline);
-    auto* leftSide = new QWidget;
-    leftSide->setLayout(col);
-
-    auto* row = new QHBoxLayout;
-    row->setContentsMargins(0, 0, 0, 0);
-    row->setSpacing(0);
-    row->addWidget(leftSide, 1);
-    row->addWidget(m_viewportProps);
     m_viewportPane = new QWidget;
-    m_viewportPane->setLayout(row);
+    m_viewportPane->setLayout(col);
     m_viewStack->addWidget(m_viewportPane);   // index 1
+
+    m_centerColumnLayout->insertWidget(1, m_viewportTimeline);
+    m_rightPanelLayout->addWidget(m_viewportProps);
 
     // Wire signals.
     connect(m_viewportToolbar,  &ViewportToolbar::toolChanged,
@@ -947,10 +1368,19 @@ void MainWindow::rebuildViewportForLoadedScene()
             m_viewportProps,    [this](ViewportTool) {
                 if (m_viewportProps) m_viewportProps->refresh();
             });
+    // Round-2 P1 belt-and-suspenders: route through a gate that
+    // re-checks at click time (the buttons are ALSO disabled via
+    // setUndoRedoEnabled, but a click racing a state flip must refuse).
     connect(m_viewportToolbar,  &ViewportToolbar::undoClicked,
-            m_viewportBridge,   &ViewportBridge::undo);
+            this, [this]() {
+                if (!canUseSceneTransport()) return;
+                m_viewportBridge->undo();
+            });
     connect(m_viewportToolbar,  &ViewportToolbar::redoClicked,
-            m_viewportBridge,   &ViewportBridge::redo);
+            this, [this]() {
+                if (!canUseSceneTransport()) return;
+                m_viewportBridge->redo();
+            });
 
     connect(m_viewportTimeline, &ViewportTimeline::scrubBegin,
             m_viewportBridge,   &ViewportBridge::scrubTimeBegin);
@@ -958,48 +1388,33 @@ void MainWindow::rebuildViewportForLoadedScene()
             m_viewportBridge,   &ViewportBridge::scrubTimeEnd);
     connect(m_viewportTimeline, &ViewportTimeline::timeChanged,
             m_viewportBridge,   &ViewportBridge::scrubTime);
+    // "Render movie…" chip -- same slot the Render > Render Animation
+    // menu item drives; setRenderMovieEnabled above keeps it gated
+    // identically to that menu item.
+    connect(m_viewportTimeline, &ViewportTimeline::renderMovieClicked,
+            this, &MainWindow::onRenderAnimation);
+    m_viewportTimeline->setRenderMovieEnabled(
+        m_renderAnimAction && m_renderAnimAction->isEnabled());
 
-    // Live-preview frames from the bridge \u2192 viewport widget + props refresh.
+    // Live-preview frames from the bridge → viewport widget + props refresh.
     connect(m_viewportBridge, &ViewportBridge::imageUpdated,
             m_viewportWidget, &ViewportWidget::setImage);
     connect(m_viewportBridge, &ViewportBridge::imageUpdated,
             m_viewportProps,  &ViewportProperties::refresh);
+    if (m_outlinerWidget) {
+        connect(m_viewportBridge, &ViewportBridge::imageUpdated,
+                m_outlinerWidget, &OutlinerWidget::refresh);
+    }
 
     // Round-trip save success: pull the just-written bytes into the
     // SceneEditor text pane so it reflects the saved edits, refresh
-    // the window title (Save-As may have re-anchored loadedFilePath
-    // inside ViewportBridge::saveSceneTo already, but title update is
-    // a GUI concern this lambda owns), and surface a warning if the
-    // user also has unsaved text-editor edits (clicking the editor's
-    // own Save would otherwise overwrite the just-saved interactive
-    // changes \u2014 adversarial-review round 1 P1).
-    //
-    // The Save-As path re-anchor of `m_engine->m_loadedFilePath` is
-    // owned by ViewportBridge::saveSceneTo (Phase 6.5); we do NOT
-    // re-anchor here to avoid a duplicate write \u2014 adversarial-review
-    // round 1 P2.
+    // the window title, and surface a warning if the user also has
+    // unsaved text-editor edits.  Shared with TopBar's Save pill /
+    // File > Save Scene via the onSceneSavedToPath slot.
     connect(m_viewportProps, &ViewportProperties::sceneSavedToPath,
-            this, [this](const QString& path) {
-                updateWindowTitle();
-                if (!m_sceneEditor) return;
-                if (!m_sceneEditor->isDirty()) {
-                    m_sceneEditor->loadFile(path);
-                } else {
-                    QMessageBox::warning(
-                        this,
-                        tr("Scene editor has unsaved text changes"),
-                        tr("Your interactive edits were saved to %1.  "
-                           "The scene editor pane still shows the "
-                           "pre-save text plus your unsaved edits.  "
-                           "Clicking Save in the scene editor will "
-                           "overwrite the just-saved interactive "
-                           "changes \u2014 use Revert in the scene editor "
-                           "to discard your text edits and pull the "
-                           "new file content.").arg(path));
-                }
-            });
+            this, &MainWindow::onSceneSavedToPath);
 
-    // Production-render frames from the engine \u2192 also flow to the
+    // Production-render frames from the engine → also flow to the
     // viewport widget so clicking "Render" updates the live view.
     connect(m_engine, &RenderEngine::imageUpdated,
             m_viewportWidget, &ViewportWidget::setImage);
@@ -1011,8 +1426,13 @@ void MainWindow::teardownViewport()
 
     if (m_chatPanel) {
         m_chatPanel->setViewportBridge(nullptr);
-        m_chatPanel->hide();
-        m_chatVisible = false;
+    }
+    if (m_topBar) {
+        m_topBar->setViewportBridge(nullptr);
+        m_topBar->setSceneEditsDirty(false);
+    }
+    if (m_outlinerWidget) {
+        m_outlinerWidget->setBridge(nullptr);
     }
 
     // Close any looping preview-play (and its open scrub bracket) through the
@@ -1023,18 +1443,25 @@ void MainWindow::teardownViewport()
     // Stop the render thread BEFORE the bridge dies.
     m_viewportBridge->stop();
 
+    if (m_viewportTimeline) {
+        m_centerColumnLayout->removeWidget(m_viewportTimeline);
+        delete m_viewportTimeline;
+        m_viewportTimeline = nullptr;
+    }
+    if (m_viewportProps) {
+        m_rightPanelLayout->removeWidget(m_viewportProps);
+        delete m_viewportProps;
+        m_viewportProps = nullptr;
+    }
     if (m_viewportPane) {
         m_viewStack->removeWidget(m_viewportPane);
         delete m_viewportPane;
         m_viewportPane = nullptr;
         m_viewportToolbar = nullptr;
         m_viewportWidget = nullptr;
-        m_viewportTimeline = nullptr;
-        m_viewportProps = nullptr;
     }
     delete m_viewportBridge;
     m_viewportBridge = nullptr;
     // Fall back to the passive RenderWidget when no scene is loaded.
     m_viewStack->setCurrentIndex(0);
 }
-

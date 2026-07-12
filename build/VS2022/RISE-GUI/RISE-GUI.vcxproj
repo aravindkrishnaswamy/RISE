@@ -99,11 +99,13 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Theme.cpp" />
     <ClCompile Include="MainWindow.cpp" />
+    <ClCompile Include="TopBar.cpp" />
     <ClCompile Include="RenderEngine.cpp" />
     <ClCompile Include="RenderWidget.cpp" />
     <ClCompile Include="HDRRenderWidget.cpp" />
-    <ClCompile Include="ControlsWidget.cpp" />
     <ClCompile Include="ChatPanel.cpp" />
+    <ClCompile Include="ProposalCard.cpp" />
+    <ClCompile Include="OutlinerWidget.cpp" />
     <ClCompile Include="LogWidget.cpp" />
     <ClCompile Include="SceneEditor.cpp" />
     <ClCompile Include="SceneTextEdit.cpp" />
@@ -118,11 +120,13 @@
   <!-- MOC-generated source files (compiled like regular .cpp) -->
   <ItemGroup>
     <ClCompile Include="$(QtMocOutDir)moc_MainWindow.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_TopBar.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_RenderEngine.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_RenderWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_HDRRenderWidget.cpp" />
-    <ClCompile Include="$(QtMocOutDir)moc_ControlsWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_ChatPanel.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_ProposalCard.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_OutlinerWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_LogWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_SceneEditor.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_SceneTextEdit.cpp" />
@@ -136,6 +140,12 @@
   <!-- Headers with Q_OBJECT — CustomBuild runs moc.exe on each -->
   <ItemGroup>
     <CustomBuild Include="MainWindow.h">
+      <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
+      <Message>MOC %(Filename).h</Message>
+      <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="TopBar.h">
       <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
       <Message>MOC %(Filename).h</Message>
       <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
@@ -159,13 +169,19 @@
       <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
       <AdditionalInputs>%(FullPath)</AdditionalInputs>
     </CustomBuild>
-    <CustomBuild Include="ControlsWidget.h">
+    <CustomBuild Include="ChatPanel.h">
       <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
       <Message>MOC %(Filename).h</Message>
       <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
       <AdditionalInputs>%(FullPath)</AdditionalInputs>
     </CustomBuild>
-    <CustomBuild Include="ChatPanel.h">
+    <CustomBuild Include="ProposalCard.h">
+      <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
+      <Message>MOC %(Filename).h</Message>
+      <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="OutlinerWidget.h">
       <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
       <Message>MOC %(Filename).h</Message>
       <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>

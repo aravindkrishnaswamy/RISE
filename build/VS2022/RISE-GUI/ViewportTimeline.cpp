@@ -5,46 +5,117 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "ViewportTimeline.h"
+#include "Theme.h"
 
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPalette>
 #include <QSlider>
 #include <QToolButton>
 #include <QTimer>
 #include <QStyle>
 #include <QSignalBlocker>
 
+#include <algorithm>
+
 ViewportTimeline::ViewportTimeline(QWidget* parent)
     : QWidget(parent)
 {
+    setFixedHeight(58);
+    setAutoFillBackground(true);
+    {
+        QPalette pal = palette();
+        pal.setColor(QPalette::Window, Theme::bgTimeline);
+        setPalette(pal);
+    }
+    setObjectName(QStringLiteral("viewportTimeline"));
+    setStyleSheet(QStringLiteral("#viewportTimeline { border-top: 1px solid %1; }")
+        .arg(Theme::hex(Theme::borderHairline)));
+
     auto* layout = new QHBoxLayout(this);
-    layout->setContentsMargins(8, 4, 8, 4);
-    layout->setSpacing(8);
+    layout->setContentsMargins(12, 0, 12, 0);
+    layout->setSpacing(10);
+
+    // ---- Transport: rewind / play-stop / to-end ------------------------
+    auto* transport = new QWidget(this);
+    auto* transportLayout = new QHBoxLayout(transport);
+    transportLayout->setContentsMargins(0, 0, 0, 0);
+    transportLayout->setSpacing(7);
+
+    m_rewindButton = new QToolButton(transport);
+    m_rewindButton->setText(QString::fromUtf8("\xE2\x8F\xAE"));   // ⏮
+    m_rewindButton->setToolTip(tr("Jump to start"));
+    m_rewindButton->setStyleSheet(QStringLiteral("QToolButton { color: %1; border: none; }")
+        .arg(Theme::hex(Theme::textFaint)));
+    transportLayout->addWidget(m_rewindButton);
 
     // Play/Stop toggle.  Checkable — checked = playing.  Uses the
     // platform style's media-play icon so the affordance reads as a
     // transport control rather than a generic button.
-    m_playButton = new QToolButton(this);
+    m_playButton = new QToolButton(transport);
     m_playButton->setCheckable(true);
+    m_playButton->setFixedSize(24, 24);
     m_playButton->setToolTip("Play the active animation (loops until stopped)");
     m_playButton->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+    m_playButton->setStyleSheet(QStringLiteral(
+        "QToolButton { background-color: %1; border-radius: 6px; color: %2; }"
+        "QToolButton:checked { background-color: %3; }")
+        .arg(Theme::rgba(Theme::whiteAlpha(int(0.1 * 255))), Theme::hex(Theme::textPrimary),
+             Theme::rgba(Theme::whiteAlpha(int(0.2 * 255)))));
+    transportLayout->addWidget(m_playButton);
 
+    m_toEndButton = new QToolButton(transport);
+    m_toEndButton->setText(QString::fromUtf8("\xE2\x8F\xAD"));   // ⏭
+    m_toEndButton->setToolTip(tr("Jump to end"));
+    m_toEndButton->setStyleSheet(QStringLiteral("QToolButton { color: %1; border: none; }")
+        .arg(Theme::hex(Theme::textFaint)));
+    transportLayout->addWidget(m_toEndButton);
+
+    layout->addWidget(transport);
+
+    // "MM:SS / MM:SS" -- two adjacent labels (current, dim "/ max")
+    // rather than a single interpolated string, so setRange()/
+    // updateLabels() keep independently updating each half exactly as
+    // before; only the paint (mono font, dim max) and position (both
+    // before the track, matching the comp) changed.
     m_currentLabel = new QLabel(this);
-    m_currentLabel->setMinimumWidth(60);
+    m_currentLabel->setFont(Theme::mono(11));
+    m_currentLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
     m_currentLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    layout->addWidget(m_currentLabel);
 
+    m_maxLabel = new QLabel(this);
+    m_maxLabel->setFont(Theme::mono(11));
+    m_maxLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    m_maxLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    layout->addWidget(m_maxLabel);
+
+    // Thin custom track: QSS-restyled QSlider (trough/fill/2px-wide
+    // playhead) rather than a from-scratch reimplementation, so the
+    // EXISTING press/moved/released scrub contract (and its undo-
+    // bracketing semantics) carries over unchanged -- only the paint
+    // is different.
     m_slider = new QSlider(Qt::Horizontal, this);
     m_slider->setRange(0, 1000);   // virtual ticks; we map to [m_minT, m_maxT]
     m_slider->setValue(0);
-
-    m_maxLabel = new QLabel(this);
-    m_maxLabel->setMinimumWidth(60);
-    m_maxLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-
-    layout->addWidget(m_playButton);
-    layout->addWidget(m_currentLabel);
+    m_slider->setStyleSheet(QStringLiteral(
+        "QSlider::groove:horizontal { height: 2px; background: %1; border-radius: 1px; }"
+        "QSlider::sub-page:horizontal { height: 2px; background: %2; border-radius: 1px; }"
+        "QSlider::handle:horizontal { width: 2px; margin: -6px 0; background: %3; border-radius: 1px; }")
+        .arg(Theme::rgba(Theme::whiteAlpha(int(0.12 * 255))), Theme::hex(Theme::accent), Theme::hex(Theme::textPrimary)));
     layout->addWidget(m_slider, 1);
-    layout->addWidget(m_maxLabel);
+
+    m_renderMovieBtn = new QToolButton(this);
+    m_renderMovieBtn->setText(tr("Render movie\xE2\x80\xA6"));
+    m_renderMovieBtn->setFont(Theme::sans(11));
+    m_renderMovieBtn->setCursor(Qt::PointingHandCursor);
+    m_renderMovieBtn->setStyleSheet(QStringLiteral(
+        "QToolButton { color: %1; border: 1px solid %2; border-radius: 6px; padding: 5px 11px; }"
+        "QToolButton:disabled { color: %3; border-color: %4; }")
+        .arg(Theme::hex(Theme::textTertiary), Theme::hex(Theme::borderLight),
+             Theme::hex(Theme::textDisabled), Theme::hex(Theme::borderHairline)));
+    connect(m_renderMovieBtn, &QToolButton::clicked, this, &ViewportTimeline::renderMovieClicked);
+    layout->addWidget(m_renderMovieBtn);
 
     // Playback pacing timer.  Coarse type is fine for a ~30 fps
     // preview — we don't need sub-ms accuracy and CoarseTimer is
@@ -60,6 +131,8 @@ ViewportTimeline::ViewportTimeline(QWidget* parent)
     connect(m_slider, &QSlider::sliderMoved,    this, &ViewportTimeline::onSliderMoved);
     connect(m_playButton, &QToolButton::toggled, this, &ViewportTimeline::onPlayToggled);
     connect(m_playTimer,  &QTimer::timeout,      this, &ViewportTimeline::onPlayTick);
+    connect(m_rewindButton, &QToolButton::clicked, this, &ViewportTimeline::onRewindClicked);
+    connect(m_toEndButton,  &QToolButton::clicked, this, &ViewportTimeline::onToEndClicked);
 
     updateLabels();
 }
@@ -105,10 +178,20 @@ void ViewportTimeline::onSliderMoved(int sliderValue)
     emit timeChanged(m_time);
 }
 
+QString ViewportTimeline::formatTime(double seconds)
+{
+    const int totalSeconds = static_cast<int>(std::max(0.0, seconds) + 0.5);
+    const int mm = totalSeconds / 60;
+    const int ss = totalSeconds % 60;
+    return QStringLiteral("%1:%2")
+        .arg(mm, 2, 10, QLatin1Char('0'))
+        .arg(ss, 2, 10, QLatin1Char('0'));
+}
+
 void ViewportTimeline::updateLabels()
 {
-    m_currentLabel->setText(QString::number(m_time, 'f', 2) + "s");
-    m_maxLabel->setText(QString::number(m_maxT, 'f', 2) + "s");
+    m_currentLabel->setText(formatTime(m_time));
+    m_maxLabel->setText(QStringLiteral("/ %1").arg(formatTime(m_maxT)));
 }
 
 void ViewportTimeline::setTimeValue(double t)
@@ -197,4 +280,31 @@ void ViewportTimeline::stopPlayback()
     if (m_playing && m_playButton) {
         m_playButton->setChecked(false);
     }
+}
+
+void ViewportTimeline::jumpToTime(double t)
+{
+    // A running Play interrupts the same way a manual scrub does
+    // (routes through the Play button's own toggle, closing ITS scrub
+    // bracket cleanly) before this jump opens its own single-step one.
+    stopPlayback();
+    emit scrubBegin();
+    setTimeValue(t);
+    emit timeChanged(m_time);
+    emit scrubEnd();
+}
+
+void ViewportTimeline::onRewindClicked()
+{
+    jumpToTime(m_minT);
+}
+
+void ViewportTimeline::onToEndClicked()
+{
+    jumpToTime(m_maxT);
+}
+
+void ViewportTimeline::setRenderMovieEnabled(bool enabled)
+{
+    if (m_renderMovieBtn) m_renderMovieBtn->setEnabled(enabled);
 }

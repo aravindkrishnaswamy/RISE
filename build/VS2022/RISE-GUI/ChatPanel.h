@@ -13,10 +13,14 @@
 
 #include <QWidget>
 #include <QHash>
+#include <QMap>
+#include <QDateTime>
+#include <QVector>
 #include <memory>
 #include <vector>
 
 #include "Agent/AgentChatCodecs.h"
+#include "ProposalCard.h"
 
 class QComboBox;
 class QLabel;
@@ -24,7 +28,8 @@ class QLineEdit;
 class QNetworkAccessManager;
 class QNetworkReply;
 class QPushButton;
-class QTextEdit;
+class QScrollArea;
+class QVBoxLayout;
 class QTimer;
 class ViewportBridge;
 
@@ -46,6 +51,16 @@ public:
     void setSceneEditable(bool editable);
     bool isBusy() const { return m_busy; }
 
+    // P1-2 fix (mirrors Mac's canUseSceneTransport / TopBar.swift:103-113):
+    // true while a chat-driven `render` tool call has an async job
+    // outstanding on the controller's single-slot agent-render worker.
+    // While true, the scene is not safe for any OTHER scene-transport
+    // action (undo/redo, refinement pause/resume/restart, proposal
+    // Apply/Reject) to touch concurrently -- consulted by
+    // MainWindow::updateMenuActionStates and TopBar::updateControlsEnabled
+    // via the chatRenderOutstandingChanged() signal below.
+    bool isChatRenderOutstanding() const { return m_outstandingRenderJobId != 0; }
+
 public slots:
     void requestStop();
     void resetConversation();
@@ -61,6 +76,16 @@ public slots:
     // an HTTP await or a render_wait poll.
     void productionRenderStarting();
 
+signals:
+    // P1-2 fix: fired whenever isChatRenderOutstanding() transitions
+    // (both directions -- job submitted, and job resolved/cancelled).
+    // MainWindow relays this into updateMenuActionStates() (undo/redo,
+    // pause/resume/restart) and TopBar's own control-enable refresh, so
+    // neither surface stays stale across a chat-driven render that runs
+    // entirely on this panel's async poll timer rather than through the
+    // usual RenderEngine::stateChanged path.
+    void chatRenderOutstandingChanged();
+
 private slots:
     void sendMessage();
     void providerChanged(int index);
@@ -72,6 +97,16 @@ private slots:
     // call has an async job outstanding; each tick is a fast
     // render_wait(timeoutMs:0) poll-once through agentHandleLine.
     void pollOutstandingRender();
+
+    // Secure-MCP slice 5c (Windows parity, RISE UI redesign): poll
+    // list_proposals over the same in-process agentHandleLine transport
+    // the tool-call loop uses, and route Apply/Reject/Undo clicks from
+    // the resulting ProposalCard widgets.  Mirrors the macOS
+    // ChatViewModel.refreshProposals / resolveProposal.
+    void refreshProposals();
+    void onProposalApplyClicked(quint64 proposalId);
+    void onProposalRejectClicked(quint64 proposalId);
+    void onProposalUndoClicked();
 
 private:
     enum class Provider {
@@ -115,6 +150,43 @@ private:
     void drainPendingToolCallsAsCancelled();
     void cancelActiveTurn(const QString& statusLine);
 
+    // Rebuild the scrollable transcript from m_loop's transcript entries,
+    // classifying each by Role into a bubble (User), plain narration
+    // text (Assistant), or a trace chip (ToolResults) -- mirrors the
+    // macOS ChatTranscriptRow.  The busy/"Thinking..."/error status line
+    // stays a separate small label below the transcript (m_statusLabel),
+    // matching the previous QTextEdit-based layout's two-area split.
+    void rebuildTranscriptWidgets();
+    void clearLayout(QVBoxLayout* layout);
+
+    // Secure-MCP slice 5c (Windows parity): rebuild the proposals
+    // column from a freshly-parsed list_proposals response.
+    void rebuildProposalsUI(const QVector<ProposalEntry>& proposals);
+    // Re-applies the current m_sceneEditable gate to every live
+    // ProposalCard's Apply/Reject buttons without waiting for the next
+    // poll tick -- called from setSceneEditable() so the panel reacts
+    // immediately to a production render starting/ending, matching the
+    // Mac card's live `applyRejectDisabled` binding.
+    void updateProposalCardsEnabled();
+
+    // P1-2 fix: single source of truth for m_sceneEditable, which is now
+    // derived from TWO independent inputs -- the externally-supplied
+    // production-render gate (m_sceneEditableExternal, set only by
+    // setSceneEditable) AND this panel's own isChatRenderOutstanding().
+    // setSceneEditable() only fires when MainWindow's render state
+    // changes; it never re-runs merely because m_outstandingRenderJobId
+    // flips, so setOutstandingRenderJobId() below calls back into this
+    // whenever that happens too -- otherwise Apply/Reject/undo/etc.
+    // would stay stale for the lifetime of a chat-driven render.
+    void recomputeSceneEditable();
+    // Single mutator for m_outstandingRenderJobId: recomputes
+    // m_sceneEditable and emits chatRenderOutstandingChanged() exactly
+    // when the outstanding/not-outstanding state actually flips, so no
+    // call site can update the job id without also refreshing the
+    // dependent UI (a bare assignment previously left this out at three
+    // of four sites).
+    void setOutstandingRenderJobId(quint64 jobId);
+
     std::unique_ptr<RISE::Agent::AgentChatLoop> m_loop;
     ViewportBridge* m_bridge = nullptr;   // borrowed; owned by MainWindow
     QNetworkAccessManager* m_network = nullptr;
@@ -123,7 +195,31 @@ private:
     QComboBox* m_providerCombo = nullptr;
     QLineEdit* m_modelEdit = nullptr;
     QLineEdit* m_apiKeyEdit = nullptr;
-    QTextEdit* m_transcript = nullptr;
+
+    // Transcript -- restyled (RISE UI redesign) from a single QTextEdit
+    // into a scrollable column of per-entry widgets (bubbles / plain
+    // text / trace chips) so each row can carry its own alignment,
+    // background, and font per the design comp.  m_transcriptLayout is
+    // torn down and rebuilt wholesale on every refreshTranscript() call,
+    // same rebuild granularity the old setPlainText() had.
+    QScrollArea* m_transcriptScroll = nullptr;
+    QWidget*     m_transcriptContent = nullptr;
+    QVBoxLayout* m_transcriptLayout = nullptr;
+
+    // Secure-MCP slice 5c (Windows parity, RISE UI redesign): the
+    // pending/recently-resolved proposals column, shown above the
+    // transcript.  Polled on a 1s QTimer via the same in-process
+    // agentHandleLine transport the tool-call loop uses.
+    QWidget*     m_proposalsContainer = nullptr;
+    QVBoxLayout* m_proposalsLayout = nullptr;
+    QTimer*      m_proposalsPollTimer = nullptr;
+    QVector<ProposalCard*> m_currentProposalCards;   // children of m_proposalsLayout; not separately owned
+    // proposalId -> the moment it was first observed leaving "pending" --
+    // drives the "show briefly, then drop" behaviour for resolved
+    // entries, mirroring ChatViewModel.resolvedProposalObservedAt.
+    QMap<quint64, QDateTime> m_resolvedProposalObservedAt;
+    static constexpr double kResolvedProposalLingerSeconds = 4.0;
+
     QLineEdit* m_inputEdit = nullptr;
     QPushButton* m_sendBtn = nullptr;
     QPushButton* m_stopBtn = nullptr;
@@ -133,6 +229,13 @@ private:
 
     bool m_busy = false;
     bool m_stopRequested = false;
+    // The EXTERNALLY-supplied half of the editable gate -- set only by
+    // setSceneEditable(), which MainWindow drives off production-render
+    // state.  m_sceneEditable (below) is the effective gate every other
+    // member reads: m_sceneEditableExternal && !isChatRenderOutstanding(),
+    // recomputed by recomputeSceneEditable() whenever either input
+    // changes.
+    bool m_sceneEditableExternal = false;
     bool m_sceneEditable = false;
     int m_nextRpcId = 1;
 
@@ -170,7 +273,10 @@ private:
     RISE::Agent::ChatToolCall m_activeRenderCall;
     bool m_activeRenderPending = false;
     // 0 = no async chat-render job outstanding on the controller's
-    // single-slot agent-render worker.
+    // single-slot agent-render worker.  Never assign this directly --
+    // go through setOutstandingRenderJobId() so isChatRenderOutstanding()
+    // consumers (recomputeSceneEditable, MainWindow, TopBar) stay
+    // synchronized with every transition.
     quint64 m_outstandingRenderJobId = 0;
     // Lazily created on the first async render tool call; reused
     // (started/stopped) for every subsequent one.

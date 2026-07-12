@@ -1,0 +1,607 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  TopBar.cpp - Implementation.  See TopBar.h for the design-brief
+//    cross reference.
+//
+//////////////////////////////////////////////////////////////////////
+
+#include "TopBar.h"
+#include "RenderEngine.h"
+#include "ViewportBridge.h"
+#include "ChatPanel.h"
+#include "Theme.h"
+
+#include "Utilities/RenderETAEstimator.h"
+
+#include <QHBoxLayout>
+#include <QVBoxLayout>
+#include <QLabel>
+#include <QToolButton>
+#include <QPushButton>
+#include <QTimer>
+#include <QPainter>
+#include <QLinearGradient>
+#include <QStyle>
+#include <QFileInfo>
+#include <QFrame>
+#include <cmath>
+#include <algorithm>
+
+// =====================================================================
+// TopBarLogoSwatch — the 20x20 rounded-rect spectral-gradient logo
+// mark, left of the "RISE" wordmark.  Mirrors TopBar.swift's
+// `logoGradient` RoundedRectangle.  No Q_OBJECT: pure paint, no
+// signals/slots, so it needs no moc registration of its own (moc
+// only runs on TopBar.h, which is enough to pull in every QObject
+// declared there — this class isn't one).
+// =====================================================================
+class TopBarLogoSwatch : public QWidget
+{
+public:
+    explicit TopBarLogoSwatch(QWidget* parent = nullptr) : QWidget(parent)
+    {
+        setFixedSize(20, 20);
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QLinearGradient grad(QPointF(0, 0), QPointF(width(), height()));
+        Theme::applySpectralStops(grad);
+        p.setPen(Qt::NoPen);
+        p.setBrush(grad);
+        p.drawRoundedRect(rect(), Theme::radiusSmall, Theme::radiusSmall);
+    }
+};
+
+// =====================================================================
+// TopBarProgressStrip — the 150x3 spectral-gradient mini progress bar
+// in the render-status readout.  Mirrors TopBar.swift's ZStack of two
+// RoundedRectangles (trough + gradient fill).  No Q_OBJECT — see
+// TopBarLogoSwatch's note above.
+// =====================================================================
+class TopBarProgressStrip : public QWidget
+{
+public:
+    explicit TopBarProgressStrip(QWidget* parent = nullptr) : QWidget(parent)
+    {
+        setFixedSize(150, 3);
+    }
+
+    void setFraction(double f)
+    {
+        f = std::max(0.0, std::min(1.0, f));
+        if (std::abs(f - m_fraction) < 1e-6) return;
+        m_fraction = f;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+
+        p.setBrush(Theme::fillTrough);
+        p.drawRoundedRect(rect(), 2, 2);
+
+        const int fillW = static_cast<int>(width() * m_fraction + 0.5);
+        if (fillW > 0) {
+            QRect fillRect(0, 0, fillW, height());
+            QLinearGradient grad(QPointF(0, 0), QPointF(width(), 0));
+            Theme::applySpectralStops(grad);
+            p.setBrush(grad);
+            p.drawRoundedRect(fillRect, 2, 2);
+        }
+    }
+
+private:
+    double m_fraction = 0.0;
+};
+
+// =====================================================================
+// Refinement-status text mapping — ported verbatim from the macOS
+// RefinementStatusFormatter.swift so the two readouts (this bar; a
+// future viewport pill in slice B) can never disagree at a glance.
+// =====================================================================
+namespace {
+
+struct RefinementStatus {
+    QString text;
+    QString label;
+    double  fraction = 0.0;
+};
+
+int RefinementRung(unsigned int scaleDivisor)
+{
+    const unsigned int d = std::max(1u, scaleDivisor);
+    const int log2d = static_cast<int>(std::round(std::log2(static_cast<double>(d))));
+    return std::max(1, std::min(6, 6 - log2d));
+}
+
+RefinementStatus ComputeRefinementStatus(int phase, unsigned int scaleDivisor,
+                                          bool isProduction, bool isCancelling,
+                                          double productionProgress)
+{
+    if (isCancelling) {
+        return { QStringLiteral("Cancelling…"), QStringLiteral("CANCELLING"), productionProgress };
+    }
+    if (isProduction) {
+        const int pct = static_cast<int>(productionProgress * 100);
+        return { QStringLiteral("Production %1%").arg(pct),
+                 QStringLiteral("PRODUCTION %1%").arg(pct),
+                 productionProgress };
+    }
+    const int r = RefinementRung(scaleDivisor);
+    switch (phase) {
+    case 4: return { QStringLiteral("Paused"), QStringLiteral("PAUSED"), r / 6.0 };
+    case 2: return { QStringLiteral("Refining · rung %1/6").arg(r), QStringLiteral("REFINING"), r / 6.0 };
+    case 1: return { QStringLiteral("Rendering"), QStringLiteral("REFINING"), r / 6.0 };
+    case 3: return { QStringLiteral("Polishing"), QStringLiteral("DENOISED — NOT FINAL"), 1.0 };
+    case 0: return { QStringLiteral("Settled"), QStringLiteral("SETTLED"), 1.0 };
+    default: return { QStringLiteral("—"), QStringLiteral("—"), 0.0 };
+    }
+}
+
+} // namespace
+
+// =====================================================================
+// TopBar
+// =====================================================================
+
+TopBar::TopBar(QWidget* parent)
+    : QWidget(parent)
+{
+    setFixedHeight(44);
+
+    auto* layout = new QHBoxLayout(this);
+    layout->setContentsMargins(14, 0, 14, 0);
+    layout->setSpacing(14);
+
+    // ---- Left: scene identity --------------------------------------
+    auto* identity = new QWidget(this);
+    auto* idLayout = new QHBoxLayout(identity);
+    idLayout->setContentsMargins(0, 0, 0, 0);
+    idLayout->setSpacing(9);
+
+    m_logoSwatch = new TopBarLogoSwatch(identity);
+    idLayout->addWidget(m_logoSwatch);
+
+    auto* wordmark = new QLabel(QStringLiteral("RISE"), identity);
+    wordmark->setFont(Theme::sans(13, QFont::Bold));
+    wordmark->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
+    idLayout->addWidget(wordmark);
+
+    auto* sep1 = new QFrame(identity);
+    sep1->setFrameShape(QFrame::VLine);
+    sep1->setFixedHeight(20);
+    sep1->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
+    idLayout->addWidget(sep1);
+
+    m_sceneFileLabel = new QLabel(QStringLiteral("No scene"), identity);
+    m_sceneFileLabel->setFont(Theme::mono(12));
+    m_sceneFileLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    idLayout->addWidget(m_sceneFileLabel);
+
+    m_dirtyDotLabel = new QLabel(QString::fromUtf8("\xE2\x97\x8F"), identity);   // U+25CF BLACK CIRCLE
+    m_dirtyDotLabel->setStyleSheet(QStringLiteral("color: %1; font-size: 6px;").arg(Theme::hex(Theme::dirty)));
+    m_dirtyDotLabel->hide();
+    idLayout->addWidget(m_dirtyDotLabel);
+
+    m_dirtyTextLabel = new QLabel(QStringLiteral("edited"), identity);
+    m_dirtyTextLabel->setFont(Theme::sans(10));
+    m_dirtyTextLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::dirty)));
+    m_dirtyTextLabel->hide();
+    idLayout->addWidget(m_dirtyTextLabel);
+
+    layout->addWidget(identity);
+    layout->addStretch(1);
+
+    // ---- Center: render-status cluster -------------------------------
+    auto* cluster = new QWidget(this);
+    cluster->setObjectName(QStringLiteral("topBarCluster"));
+    cluster->setStyleSheet(QStringLiteral(
+        "#topBarCluster { background-color: %1; border: 1px solid %2; border-radius: %3px; }")
+        .arg(Theme::hex(Theme::bgWell), Theme::hex(Theme::borderLight))
+        .arg(Theme::radiusLarge));
+    auto* clusterLayout = new QHBoxLayout(cluster);
+    clusterLayout->setContentsMargins(6, 5, 6, 5);
+    clusterLayout->setSpacing(10);
+
+    m_pauseResumeBtn = new QToolButton(cluster);
+    m_pauseResumeBtn->setFixedSize(26, 26);
+    m_pauseResumeBtn->setToolTip(QStringLiteral("Pause / resume refinement (Space)"));
+    m_pauseResumeBtn->setIcon(style()->standardIcon(QStyle::SP_MediaPause));
+    connect(m_pauseResumeBtn, &QToolButton::clicked, this, &TopBar::onPauseResumeClicked);
+    clusterLayout->addWidget(m_pauseResumeBtn);
+
+    m_restartBtn = new QToolButton(cluster);
+    m_restartBtn->setFixedSize(26, 26);
+    m_restartBtn->setToolTip(QStringLiteral("Restart refinement"));
+    m_restartBtn->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
+    connect(m_restartBtn, &QToolButton::clicked, this, &TopBar::onRestartClicked);
+    clusterLayout->addWidget(m_restartBtn);
+
+    m_readoutContainer = new QWidget(cluster);
+    auto* readoutLayout = new QVBoxLayout(m_readoutContainer);
+    readoutLayout->setContentsMargins(0, 0, 4, 0);
+    readoutLayout->setSpacing(3);
+
+    auto* readoutRow = new QWidget(m_readoutContainer);
+    auto* readoutRowLayout = new QHBoxLayout(readoutRow);
+    readoutRowLayout->setContentsMargins(0, 0, 0, 0);
+    readoutRowLayout->setSpacing(8);
+
+    m_statusRowLabel = new QLabel(QStringLiteral("—"), readoutRow);
+    m_statusRowLabel->setFont(Theme::mono(11));
+    m_statusRowLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
+    readoutRowLayout->addWidget(m_statusRowLabel);
+
+    m_statusTagLabel = new QLabel(QStringLiteral("—"), readoutRow);
+    m_statusTagLabel->setFont(Theme::sans(9));
+    m_statusTagLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    readoutRowLayout->addWidget(m_statusTagLabel);
+    readoutRowLayout->addStretch(1);
+
+    readoutLayout->addWidget(readoutRow);
+
+    m_progressStrip = new TopBarProgressStrip(m_readoutContainer);
+    readoutLayout->addWidget(m_progressStrip);
+
+    clusterLayout->addWidget(m_readoutContainer);
+
+    m_integratorSep = new QFrame(cluster);
+    m_integratorSep->setFrameShape(QFrame::VLine);
+    m_integratorSep->setFixedHeight(22);
+    m_integratorSep->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
+    clusterLayout->addWidget(m_integratorSep);
+
+    // P2 fix: placeholder text only -- both this label AND
+    // m_integratorSep get their real text/visibility from the
+    // updateIntegratorChip() call at the end of this constructor
+    // (before the widget is ever shown), which hides both unless a
+    // real resolved integrator is available.
+    m_integratorChip = new QLabel(QStringLiteral("AUTO"), cluster);
+    m_integratorChip->setFont(Theme::mono(10));
+    m_integratorChip->setStyleSheet(QStringLiteral("color: %1; padding: 0 4px;").arg(Theme::hex(Theme::textDim)));
+    clusterLayout->addWidget(m_integratorChip);
+
+    layout->addWidget(cluster);
+    layout->addStretch(1);
+
+    // ---- Right: Save --------------------------------------------------
+    m_saveBtn = new QPushButton(QStringLiteral("Save"), this);
+    m_saveBtn->setFont(Theme::sans(12, QFont::DemiBold));
+    m_saveBtn->setCursor(Qt::PointingHandCursor);
+    m_saveBtn->setFlat(true);
+    m_saveBtn->setFixedHeight(28);
+    m_saveBtn->setStyleSheet(QStringLiteral(
+        "QPushButton { background-color: %1; color: #171819; border: none;"
+        " border-radius: %2px; padding: 0 15px; }"
+        "QPushButton:disabled { background-color: %3; color: %4; }")
+        .arg(Theme::hex(Theme::textPrimary))
+        .arg(Theme::radiusMedium)
+        .arg(Theme::rgba(Theme::whiteAlpha(int(0.4 * 255))))
+        .arg(Theme::hex(Theme::textDisabled)));
+    m_saveBtn->setEnabled(false);
+    connect(m_saveBtn, &QPushButton::clicked, this, &TopBar::saveClicked);
+    layout->addWidget(m_saveBtn);
+
+    m_pollTimer = new QTimer(this);
+    m_pollTimer->setInterval(500);
+    connect(m_pollTimer, &QTimer::timeout, this, &TopBar::pollRefinementState);
+
+    updateReadout();
+    updateIntegratorChip();
+    updateControlsEnabled();
+}
+
+void TopBar::paintEvent(QPaintEvent* event)
+{
+    QPainter p(this);
+    p.fillRect(rect(), Theme::bgTopBar);
+    p.setPen(Theme::borderHairline);
+    p.drawLine(0, height() - 1, width(), height() - 1);
+    QWidget::paintEvent(event);
+}
+
+void TopBar::setEngine(RenderEngine* engine)
+{
+    if (m_engine == engine) return;
+    m_engine = engine;
+    if (!m_engine) return;
+
+    connect(m_engine, &RenderEngine::stateChanged, this, &TopBar::onEngineStateChanged);
+    connect(m_engine, &RenderEngine::progressUpdated, this, &TopBar::onEngineProgress);
+    // P1-3 fix: surface Error state in the persistent readout, not just
+    // MainWindow's transient 5s status-bar message.
+    connect(m_engine, &RenderEngine::errorOccurred, this, &TopBar::onEngineError);
+
+    m_engineState = static_cast<int>(m_engine->state());
+    updateReadout();
+    updateIntegratorChip();
+    updateControlsEnabled();
+}
+
+void TopBar::setViewportBridge(ViewportBridge* bridge)
+{
+    m_bridge = bridge;
+    if (m_bridge) {
+        pollRefinementState();
+        m_pollTimer->start();
+    } else {
+        m_pollTimer->stop();
+        m_refinementPhase = -1;
+        m_refinementScaleDivisor = 1;
+        m_isRefinementPaused = false;
+        updateReadout();
+    }
+    updateControlsEnabled();
+}
+
+void TopBar::setLoadedFilePath(const QString& path)
+{
+    m_loadedFilePath = path;
+    updateSceneIdentity();
+}
+
+void TopBar::setChatPanel(ChatPanel* chatPanel)
+{
+    m_chatPanel = chatPanel;
+    updateControlsEnabled();
+}
+
+void TopBar::onChatRenderOutstandingChanged()
+{
+    updateControlsEnabled();
+}
+
+void TopBar::setSceneEditsDirty(bool dirty)
+{
+    if (m_dirty == dirty) return;
+    m_dirty = dirty;
+    updateSceneIdentity();
+    if (m_saveBtn) m_saveBtn->setEnabled(m_dirty);
+}
+
+void TopBar::updateElapsedTime(double seconds)
+{
+    m_lastElapsed = seconds;
+    updateReadoutTooltip();
+}
+
+void TopBar::updateRemainingTime(double seconds, bool hasEstimate)
+{
+    m_lastRemaining = seconds;
+    m_haveRemainingEstimate = hasEstimate;
+    updateReadoutTooltip();
+}
+
+void TopBar::updateReadoutTooltip()
+{
+    if (!m_readoutContainer) return;
+
+    // P1-3 / P2 fix (mirrors TopBar.swift's `readoutHelp`): priority
+    // order is (1) "why is this in an error state" -- the single most
+    // important thing to surface and the only one that can explain a
+    // render that silently stopped progressing; (2) the current
+    // progress-callback title (P2 fix -- previously discarded by
+    // onEngineProgress); (3) the elapsed/remaining-time caption this
+    // tooltip has always shown.  Each tier is a no-op fallthrough to
+    // the next, matching the Swift `if let ... return` chain.
+    if (m_engineState == RenderEngine::Error && !m_lastErrorMessage.isEmpty()) {
+        m_readoutContainer->setToolTip(m_lastErrorMessage);
+        return;
+    }
+
+    QString tip = QStringLiteral("Elapsed: %1")
+        .arg(QString::fromStdString(RISE::RenderETAEstimator::FormatDuration(m_lastElapsed)));
+    if (m_haveRemainingEstimate) {
+        tip += QStringLiteral("  ·  Remaining: ~%1")
+            .arg(QString::fromStdString(RISE::RenderETAEstimator::FormatDuration(m_lastRemaining)));
+    } else {
+        tip += QStringLiteral("  ·  Remaining: estimating…");
+    }
+    if (!m_progressTitle.isEmpty()) {
+        tip += QStringLiteral("  ·  %1").arg(m_progressTitle);
+    }
+    m_readoutContainer->setToolTip(tip);
+}
+
+void TopBar::updateSceneIdentity()
+{
+    if (m_loadedFilePath.isEmpty()) {
+        m_sceneFileLabel->setText(QStringLiteral("No scene"));
+        m_sceneFileLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+        m_dirtyDotLabel->hide();
+        m_dirtyTextLabel->hide();
+        return;
+    }
+    m_sceneFileLabel->setText(QFileInfo(m_loadedFilePath).fileName());
+    m_sceneFileLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
+    m_dirtyDotLabel->setVisible(m_dirty);
+    m_dirtyTextLabel->setVisible(m_dirty);
+}
+
+void TopBar::onPauseResumeClicked()
+{
+    // Round-3 P2: click-time re-check mirroring MainWindow::
+    // canUseSceneTransport (the button is ALSO disabled via
+    // updateControlsEnabled, but a click racing a state flip must
+    // refuse rather than drive transport under an in-flight render).
+    if (!m_bridge) return;
+    if (m_engineState == RenderEngine::Rendering
+     || m_engineState == RenderEngine::Cancelling
+     || m_engineState == RenderEngine::Loading) return;
+    if (m_chatPanel && m_chatPanel->isChatRenderOutstanding()) return;
+    if (m_isRefinementPaused) {
+        m_bridge->resumeRefinement();
+    } else {
+        m_bridge->pauseRefinement();
+    }
+    pollRefinementState();
+}
+
+void TopBar::onRestartClicked()
+{
+    // Round-3 P2: same click-time re-check as onPauseResumeClicked.
+    if (!m_bridge) return;
+    const bool disabled = (m_engineState == RenderEngine::Rendering
+                         || m_engineState == RenderEngine::Cancelling
+                         || m_engineState == RenderEngine::Loading
+                         || (m_chatPanel && m_chatPanel->isChatRenderOutstanding()));
+    if (disabled) return;
+    m_bridge->stop();
+    m_bridge->start();
+    pollRefinementState();
+}
+
+void TopBar::pollRefinementState()
+{
+    if (!m_bridge) {
+        m_refinementPhase = -1;
+        m_refinementScaleDivisor = 1;
+        m_isRefinementPaused = false;
+    } else {
+        unsigned int sd = 1;
+        m_refinementPhase = m_bridge->refinementPhase(&sd);
+        m_refinementScaleDivisor = sd;
+        m_isRefinementPaused = m_bridge->isRefinementPaused();
+    }
+    updateReadout();
+    updateControlsEnabled();
+}
+
+void TopBar::onEngineStateChanged(int newState)
+{
+    m_engineState = newState;
+    updateReadout();
+    updateIntegratorChip();
+    updateControlsEnabled();
+}
+
+void TopBar::onEngineProgress(double fraction, const QString& title)
+{
+    m_productionProgress = fraction;
+    // P2 fix: title was previously discarded -- store it so
+    // updateReadoutTooltip() (called by updateReadout(), below) can
+    // surface it (mirrors Mac's TopBar.swift `readoutHelp` falling
+    // back to `viewModel.progressTitle`).
+    m_progressTitle = title;
+    updateReadout();
+}
+
+void TopBar::onEngineError(const QString& message)
+{
+    // P1-3 fix: stash for updateReadout()/updateReadoutTooltip() (the
+    // latter called by the former) -- both short-circuit on
+    // m_engineState == Error, which onEngineStateChanged's own
+    // updateReadout() call (fired for the SAME state transition) will
+    // already have picked up by the time this arrives, but re-running
+    // here is cheap and covers the signal-ordering edge case where
+    // errorOccurred is emitted before stateChanged reaches this slot.
+    m_lastErrorMessage = message;
+    updateReadout();
+}
+
+void TopBar::updateReadout()
+{
+    // P1-3 fix (mirrors TopBar.swift's `status` computed property):
+    // Error has no representation in ComputeRefinementStatus's
+    // (phase, isProduction, isCancelling) input space -- falling
+    // through to it would render an error state as whatever the
+    // refinement phase happened to be cached at before the failure
+    // (typically "Settled"), hiding a real failure behind a look
+    // identical to "everything's fine".  Checked BEFORE the shared
+    // formatter so an error always wins regardless of stale phase state.
+    if (m_engineState == RenderEngine::Error) {
+        m_statusRowLabel->setText(QStringLiteral("Error"));
+        m_statusTagLabel->setText(QStringLiteral("ERROR"));
+        m_statusTagLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::error)));
+        m_lastNonPausedFraction = 0.0;
+        if (m_progressStrip) m_progressStrip->setFraction(0.0);
+        updateReadoutTooltip();
+        return;
+    }
+
+    const bool isProduction = (m_engineState == RenderEngine::Rendering);
+    const bool isCancelling = (m_engineState == RenderEngine::Cancelling);
+
+    const RefinementStatus s = ComputeRefinementStatus(
+        m_refinementPhase, m_refinementScaleDivisor, isProduction, isCancelling, m_productionProgress);
+
+    m_statusRowLabel->setText(s.text);
+    m_statusTagLabel->setText(s.label);
+
+    QColor tagColor = Theme::success;
+    if (isCancelling) {
+        tagColor = Theme::warn;
+    } else if (isProduction) {
+        tagColor = Theme::success;
+    } else {
+        switch (m_refinementPhase) {
+        case 4:  tagColor = Theme::warn;    break;
+        case -1: tagColor = Theme::textDim; break;
+        default: tagColor = Theme::success; break;
+        }
+    }
+    m_statusTagLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(tagColor)));
+
+    // Freeze the progress fraction while paused (and not mid-
+    // production) instead of collapsing it to whatever a -1/0
+    // phase would compute — mirrors TopBar.swift's
+    // `progressFraction` / `syncLastFraction`.
+    const bool freeze = (m_refinementPhase == 4 && !isProduction);
+    const double fraction = freeze ? m_lastNonPausedFraction : s.fraction;
+    if (!freeze) {
+        m_lastNonPausedFraction = s.fraction;
+    }
+    if (m_progressStrip) m_progressStrip->setFraction(fraction);
+    updateReadoutTooltip();
+}
+
+void TopBar::updateIntegratorChip()
+{
+    QString integ, reason;
+    if (m_engine && m_engineState == RenderEngine::Completed) {
+        integ = m_engine->autoResolvedIntegrator();
+        reason = m_engine->autoResolveReason();
+    }
+    // P2 fix (mirrors the Mac fix -- TopBar.swift's `if let integ =
+    // viewModel.resolvedIntegrator`): when there's no resolved
+    // integrator to show (not using the auto-dispatcher, or no render
+    // yet), hide BOTH the chip AND its divider entirely rather than
+    // rendering a misleading static "AUTO" placeholder next to a
+    // divider that now separates the readout from nothing meaningful.
+    const bool hasIntegrator = !integ.isEmpty();
+    if (m_integratorSep) m_integratorSep->setVisible(hasIntegrator);
+    m_integratorChip->setVisible(hasIntegrator);
+    if (hasIntegrator) {
+        m_integratorChip->setText(QStringLiteral("AUTO → %1").arg(integ.toUpper()));
+        m_integratorChip->setStyleSheet(QStringLiteral("color: %1; padding: 0 4px;").arg(Theme::hex(Theme::success)));
+        m_integratorChip->setToolTip(reason);
+    } else {
+        m_integratorChip->setToolTip(QString());
+    }
+}
+
+void TopBar::updateControlsEnabled()
+{
+    // Mirrors TopBar.swift's `refinementControlsDisabled`: true while
+    // no bridge is attached, a production render owns the scene, or
+    // (P1-2 fix, mirrors canUseSceneTransport) a chat-driven render
+    // owns it instead — the C++ controller's pauseRefinement/
+    // resumeRefinement/start+stop no-op in that state anyway; disabling
+    // here just keeps the UI honest about it.
+    const bool disabled = !m_bridge
+        || m_engineState == RenderEngine::Rendering
+        || m_engineState == RenderEngine::Cancelling
+        || (m_chatPanel && m_chatPanel->isChatRenderOutstanding());
+    m_pauseResumeBtn->setEnabled(!disabled);
+    m_restartBtn->setEnabled(!disabled);
+    m_pauseResumeBtn->setIcon(style()->standardIcon(
+        m_isRefinementPaused ? QStyle::SP_MediaPlay : QStyle::SP_MediaPause));
+}

@@ -20,6 +20,8 @@
 #include <QLinearGradient>
 #include <QString>
 
+class QApplication;
+
 namespace Theme {
 
 // ---------------------------------------------------------------- Surfaces
@@ -108,6 +110,12 @@ inline const QColor catObject = accentLight;             // OBJ
 inline const QColor catMaterial{ 0xc9, 0xa0, 0xd4 };     // MAT
 inline const QColor catAnimation = teal;                 // ANM
 inline const QColor catMedia = purple;                   // MED
+// Output Settings (Film) tag — muted slate blue, distinct from every
+// other category accent.  Mirrors Theme.swift's catFilm.
+inline const QColor catFilm{ 0x8f, 0xa8, 0xc9 };         // FLM
+// scene_variant overlay tag — soft violet, distinct from catMaterial's
+// and catMedia's purples.  Mirrors Theme.swift's catVariant.
+inline const QColor catVariant{ 0xcf, 0x9f, 0xd6 };      // VAR
 
 // ------------------------------------------------------------------- Radii
 
@@ -129,6 +137,16 @@ bool fontsAvailable();
 void registerFonts();
 QFont sans(int pixelSize, QFont::Weight weight = QFont::Normal);
 QFont mono(int pixelSize, QFont::Weight weight = QFont::Normal);
+
+// ------------------------------------------------------------ App style
+//
+// Qt's "windows11" style ignores QPalette in several places (menus,
+// scrollbars), which fights a dark-only design.  Fusion + an explicit
+// QPalette built from the tokens above is the reliable cross-widget
+// dark path — apply BEFORE constructing any widget (main.cpp calls this
+// before `MainWindow window;`).  Mirrors the macOS client's blanket
+// `NSApp.appearance = NSAppearance(named: .darkAqua)` in RISEApp.swift.
+void applyDarkPalette(QApplication& app);
 
 // css-style helpers for the scattered setStyleSheet call sites
 inline QString rgba(const QColor& c)
