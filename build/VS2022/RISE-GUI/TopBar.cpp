@@ -315,16 +315,14 @@ TopBar::TopBar(QWidget* parent)
     layout->addWidget(m_cancelBtn);
 
     // ---- Right: save-state chip ----------------------------------------
-    // CST <-> scene-file live sync + auto-save (item 2): the explicit
-    // Save button is gone -- edits auto-save to disk on a debounce (see
-    // MainWindow::onCstSyncTick).  This is a passive status readout
-    // rather than an action; it becomes actionable ONLY in the
-    // suspended state, where it doubles as the one-click retry
-    // (mirrors File > Save Scene, which also clears the suspension
-    // first).  Kept as a QPushButton (flat, no background/border) so
-    // the existing click -> saveClicked() wiring stays intact; disabled
-    // in every state except suspended, so a stray click elsewhere is a
-    // no-op.  See updateSaveChip() for the per-state text/color.
+    // Explicit-save-only (user decision 2026-07-12): UI edits never
+    // auto-save to disk -- this chip is the ONLY way a save gets
+    // triggered from this bar.  Dirty -> an ACTIVE bordered "Save" pill
+    // (click -> saveClicked()); clean -> a passive "✓ saved" label; no
+    // loaded path -> hidden.  Kept as a QPushButton (flat) so the
+    // existing click -> saveClicked() wiring stays intact; enabled only
+    // while dirty, so a stray click on the passive "saved" text is a
+    // no-op.  See updateSaveChip() for the per-state text/color/style.
     m_saveBtn = new QPushButton(this);
     m_saveBtn->setFont(Theme::mono(10));
     m_saveBtn->setFlat(true);
@@ -383,10 +381,6 @@ void TopBar::setViewportBridge(ViewportBridge* bridge)
         m_refinementScaleDivisor = 1;
         updateReadout();
     }
-    // CST <-> scene-file live sync + auto-save (item 2): a torn-down
-    // bridge means no auto-save can be in flight anymore -- don't let a
-    // stale suspension leak into the next scene load.
-    m_autoSaveSuspended = false;
     updateControlsEnabled();
     updateSaveChip();
 }
@@ -417,13 +411,6 @@ void TopBar::setSceneEditsDirty(bool dirty)
     updateSaveChip();
 }
 
-void TopBar::setAutoSaveSuspended(bool suspended)
-{
-    if (m_autoSaveSuspended == suspended) return;
-    m_autoSaveSuspended = suspended;
-    updateSaveChip();
-}
-
 void TopBar::updateSaveChip()
 {
     if (!m_saveBtn) return;
@@ -434,32 +421,32 @@ void TopBar::updateSaveChip()
     }
     m_saveBtn->show();
 
-    QColor color;
-    QString text;
-    QString tooltip;
-    if (m_autoSaveSuspended) {
-        color = Theme::warn;
-        text = QString::fromUtf8("\xE2\x9A\xA0 not saved \xE2\x80\x94 file changed on disk");
-        tooltip = tr(
-            "The scene file was modified outside RISE, so auto-save backed off rather than "
-            "overwrite it. Click to retry (this will overwrite the on-disk file), or reload "
-            "the scene to pick up the external changes.");
-    } else if (m_dirty) {
-        color = Theme::dirty;
-        text = QString::fromUtf8("\xE2\x97\x8F saving\xE2\x80\xA6");   // ● saving…
+    if (m_dirty) {
+        // Active, bordered "Save" pill -- mirrors the macOS TopBar.swift
+        // saveStateChip's dirty branch (sans 12 demibold, textPrimary,
+        // borderStrong border, fillHover background).
+        m_saveBtn->setFont(Theme::sans(12, QFont::DemiBold));
+        m_saveBtn->setText(tr("Save"));
+        m_saveBtn->setToolTip(tr("Write the scene file to disk (Ctrl+Alt+S) — edits are never auto-saved"));
+        m_saveBtn->setStyleSheet(QStringLiteral(
+            "QPushButton { background-color: %1; border: 1px solid %2; border-radius: %3px; "
+            "color: %4; padding: 6px 13px; }")
+            .arg(Theme::hex(Theme::fillHover), Theme::hex(Theme::borderStrong))
+            .arg(Theme::radiusMedium)
+            .arg(Theme::hex(Theme::textPrimary)));
+        m_saveBtn->setEnabled(true);
+        m_saveBtn->setCursor(Qt::PointingHandCursor);
     } else {
-        color = Theme::textDim;
-        text = QString::fromUtf8("\xE2\x9C\x93 saved");   // ✓ saved
+        // Passive, non-interactive "saved" readout.
+        m_saveBtn->setFont(Theme::mono(10));
+        m_saveBtn->setText(QString::fromUtf8("\xE2\x9C\x93 saved"));   // ✓ saved
+        m_saveBtn->setToolTip(QString());
+        m_saveBtn->setStyleSheet(QStringLiteral(
+            "QPushButton { background: transparent; border: none; color: %1; padding: 0; }")
+            .arg(Theme::hex(Theme::textDim)));
+        m_saveBtn->setEnabled(false);
+        m_saveBtn->setCursor(Qt::ArrowCursor);
     }
-    m_saveBtn->setText(text);
-    m_saveBtn->setToolTip(tooltip);
-    m_saveBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { background: transparent; border: none; color: %1; padding: 0; }")
-        .arg(Theme::hex(color)));
-    // Only the suspended state is a click target (matches the macOS
-    // chip: the other two states are plain, non-interactive text).
-    m_saveBtn->setEnabled(m_autoSaveSuspended);
-    m_saveBtn->setCursor(m_autoSaveSuspended ? Qt::PointingHandCursor : Qt::ArrowCursor);
 }
 
 void TopBar::updateElapsedTime(double seconds)

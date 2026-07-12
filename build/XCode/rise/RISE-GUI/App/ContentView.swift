@@ -297,22 +297,21 @@ struct ContentView: View {
 
     // MARK: - Viewport toolbar row (design comp: ~239-264)
 
-    /// A 40pt row above the viewport: tool-category segmented group,
-    /// active-camera chip, region-of-interest toggle, then (right-
-    /// aligned) the EV readout + EDR chip.  Replaces the pre-redesign
-    /// floating toolbar that used to overlay the rendered image
-    /// itself (see ViewportToolbar.swift's file header).
+    /// A 52pt row above the viewport: tool group (every tool an
+    /// individual labeled button — see ViewportToolbar.swift's file
+    /// header for the discoverability redesign), active-camera chip,
+    /// region-of-interest toggle, then (right-aligned) the EV readout
+    /// + EDR chip.  Replaces the pre-redesign floating toolbar that
+    /// used to overlay the rendered image itself.  Row grew from the
+    /// original 40pt to fit the toolbar's now-labeled ~44pt-tall
+    /// buttons; the other chips are unchanged in height and simply
+    /// re-center within the taller row (HStack's default `.center`
+    /// alignment).
     private func viewportToolbarRow(_ vb: RISEViewportBridge) -> some View {
         HStack(spacing: 10) {
-            ViewportToolbar(
-                selectedTool: $selectedTool,
-                lastSubToolForCategory: { cat in
-                    let last = vb.lastSubTool(for: cat.bridgeValue)
-                    return ViewportTool(rawValue: last.rawValue) ?? (cat.subTools.first ?? .select)
-                }
-            )
-            .disabled(!interacting)
-            .opacity(interacting ? 1.0 : 0.5)
+            ViewportToolbar(selectedTool: $selectedTool)
+                .disabled(!interacting)
+                .opacity(interacting ? 1.0 : 0.5)
 
             Rectangle().fill(Theme.borderLight).frame(width: 1, height: 18)
 
@@ -326,22 +325,33 @@ struct ContentView: View {
             edrChip
         }
         .padding(.horizontal, 12)
-        .frame(height: 40)
+        .frame(height: 52)
         .background(Theme.bgCenter)
         .overlay(alignment: .bottom) {
             Rectangle().fill(Theme.borderHairline).frame(height: 1)
         }
     }
 
-    /// "◉ <activeCameraName>" — non-interactive (switching cameras
-    /// stays the outliner's job); lens summary is omitted per this
-    /// slice's SKIP list (no per-camera lens-string data available
-    /// off the bridge cheaply enough to fake honestly).
+    /// "◉ <activeCameraName> 50mm · f/4.0" — non-interactive (switching
+    /// cameras stays the outliner's job).  The lens summary is appended
+    /// ONLY when real per-parameter data is available for the ACTIVE
+    /// camera (see `cameraLensSummary` below) — no fabricated units, no
+    /// guessed defaults.  Refreshes on the same trigger every sibling
+    /// chip/panel in this row uses (`propertyRefresh`, bumped on
+    /// selection change / property edits — see the view-body callers),
+    /// not per-frame; reads the bridge unconditionally, same as the
+    /// pre-existing name-only read did (no extra scene-editable gate —
+    /// this is a read-only display, not an interactive affordance, matching
+    /// `regionChip`'s own pattern of gating INTERACTION, not the read).
     private func cameraChip(_ vb: RISEViewportBridge) -> some View {
         let name = vb.activeName(for: .camera)
+        let lens = cameraLensSummary(vb, activeCameraName: name)
         return HStack(spacing: 6) {
             Text("◉").foregroundColor(Theme.accentSoft)
             Text(name.isEmpty ? "—" : name)
+            if let lens {
+                Text(lens).foregroundColor(Theme.textDim)
+            }
         }
         .font(Theme.mono(11.5))
         .foregroundColor(Theme.textPrimary)
@@ -353,6 +363,57 @@ struct ContentView: View {
                 .stroke(Theme.borderHairline, lineWidth: 1)
         )
         .help("Active camera — switch in the outliner")
+    }
+
+    /// Lens summary for the active camera, e.g. "50mm · f/4.0" (ThinLens)
+    /// or "62° FOV · f/8" (Pinhole — no focal_length parameter exists on
+    /// that camera type, so this honestly shows FOV instead of fabricating
+    /// a focal length). Returns nil (name-only fallback) when there is
+    /// nothing honest to show.
+    ///
+    /// DATA SOURCE CAVEAT: reads `propertySnapshot(for: .camera)`, which is
+    /// keyed to the Properties panel's OWN camera-category SELECTION
+    /// (`SceneEditController::mSelectionByCategory[Camera]`), not directly
+    /// to the scene's active camera. Those two are the SAME thing for any
+    /// camera the user has actually clicked in the outliner/panel —
+    /// `SetSelection(Camera, name)` is what calls `IScene::SetActiveCamera`
+    /// in the first place — but immediately after scene load, before any
+    /// camera selection, the panel's selection can be empty while a camera
+    /// is nonetheless active by scene default. This function ONLY trusts
+    /// the snapshot when the panel's current selection name already
+    /// echoes `activeCameraName`; otherwise it returns nil rather than
+    /// either showing stale/wrong data or forcing `SetSelection` as a side
+    /// effect of a toolbar read (that call is a real scene mutation with
+    /// its own cancel-and-park serialization — not something a read-only
+    /// chip should trigger).
+    private func cameraLensSummary(_ vb: RISEViewportBridge, activeCameraName: String) -> String? {
+        guard !activeCameraName.isEmpty,
+              vb.selectionCategory == .camera,
+              vb.selectionName == activeCameraName
+        else { return nil }
+
+        var focalLengthMm: String?
+        var fovDegrees: String?
+        var fstop: String?
+        for row in vb.propertySnapshot(for: .camera) {
+            switch row.name {
+            case "focal_length": focalLengthMm = row.value
+            case "fov":          fovDegrees = row.value
+            case "fstop":        fstop = row.value
+            default: break
+            }
+        }
+
+        var parts: [String] = []
+        if let focalLengthMm {
+            parts.append("\(focalLengthMm)mm")
+        } else if let fovDegrees {
+            parts.append("\(fovDegrees)° FOV")
+        }
+        if let fstop {
+            parts.append("f/\(fstop)")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// Design brief A4 region-of-interest toggle.  Three visual

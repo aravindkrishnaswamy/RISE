@@ -58,6 +58,11 @@ private let kOutlinerCategories: [OutlinerCategoryDef] = [
 struct OutlinerView: View {
     let bridge: RISEViewportBridge
     @Binding var refreshTrigger: Int
+    // "Reveal in scene file" context-menu item routes through the shared
+    // view model (same bridge call PropertiesPanel's ⌗ chip uses) —
+    // available via the environment the same way PropertiesPanel picks
+    // it up, since both live under ContentView's rightPanel.
+    @EnvironmentObject var viewModel: RenderViewModel
 
     @State private var entitiesByCategory: [Int: [String]] = [:]
     @State private var activeByCategory: [Int: String] = [:]
@@ -80,7 +85,15 @@ struct OutlinerView: View {
                                     name: child,
                                     isSelected: selectionCategory == cat.category && selectionName == child,
                                     isActive: isActiveEntity(cat: cat, name: child),
-                                    onSelect: { selectChild(cat: cat, name: child) }
+                                    // Review P3: Rasterizer/Film rows have no
+                                    // chunk address (registry/preset names, not
+                                    // chunk names) — a silent no-op menu item is
+                                    // worse than a disabled one.
+                                    canReveal: viewModel.isSceneEditableForAgents
+                                        && cat.category != .rasterizer
+                                        && cat.category != .film,
+                                    onSelect: { selectChild(cat: cat, name: child) },
+                                    onReveal: { viewModel.revealEntityInSceneText(category: cat.category, name: child) }
                                 )
                             }
                         }
@@ -206,7 +219,16 @@ private struct OutlinerChildRow: View {
     let name: String
     let isSelected: Bool
     let isActive: Bool
+    /// Mirrors `RenderViewModel.isSceneEditableForAgents` — gates the
+    /// "Reveal in scene file" context-menu item so it's not offered
+    /// while a render owns the scene (the underlying bridge call would
+    /// wedge on the controller's commit mutex). Resolvability (a
+    /// particular name/category actually having a chunk location) isn't
+    /// pre-checked here — an unresolvable target just no-ops, same as
+    /// the properties-panel chip when hidden mid-render.
+    let canReveal: Bool
     let onSelect: () -> Void
+    let onReveal: () -> Void
 
     @State private var hovering = false
 
@@ -234,5 +256,9 @@ private struct OutlinerChildRow: View {
         .contentShape(Rectangle())
         .onTapGesture { onSelect() }
         .onHover { hovering = $0 }
+        .contextMenu {
+            Button("Reveal in scene file", action: onReveal)
+                .disabled(!canReveal)
+        }
     }
 }

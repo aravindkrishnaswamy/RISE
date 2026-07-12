@@ -522,19 +522,25 @@ static bool TestBRDFvsSPFMultiscatter()
 		CookTorranceSPF* spf = stk.MakeSPF();
 
 		// SPF lobe-selection weights (ScatterNM): wd=GetColorNM(diffuse)=0,
-		// ws=GetColorNM(spec), wms=ws*(1-Eavg).  pMSSelect = wms/total.
+		// ws=GetColorNM(spec).  H6 (2026-07): wms is now DIRECTION-AWARE --
+		// ws*(1-Ess(cosWi,alpha)), not ws*(1-Eavg) -- see MicrofacetEnergyLUT.h
+		// header comment above MSLobeZ/SampleMSCosTheta/MSPdf and
+		// GGXSPF.cpp/CookTorranceSPF.cpp's "H6:" comments.  pMSSelect = wms/total.
 		const Scalar wd = stk.diffuse->GetColorNM( ri, nm );	// 0
 		const Scalar ws = stk.specular->GetColorNM( ri, nm );
-		const Scalar wms = ws * ( 1.0 - Eavg );
+		const Scalar cosWi = Vector3Ops::Dot( Vector3Ops::Normalize( -ri.ray.Dir() ), n );
+		const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );
+		const Scalar wms = ws * ( 1.0 - Ess_i );
 		const Scalar total = wd + ws + wms;
 		const Scalar pDiffuseSelect = ( total > 1e-10 ) ? wd / total : 1.0;
 		const Scalar pSpecSelect    = ( total > 1e-10 ) ? ws / total : 0.0;
 		const Scalar pMSSelect = 1.0 - pDiffuseSelect - pSpecSelect;
+		const Scalar msZ = MicrofacetEnergyLUT::MSLobeZ( alpha );
 
 		// Drive uLobe into the MULTISCATTER branch: uLobe must be >=
 		// pDiffuseSelect + pSpecSelect.  First draw = uLobe, then two draws
-		// for the cosine-hemisphere direction.  Use 0.999 (safely past the
-		// spec cutoff) then mid draws.
+		// for the (H6) MS-lobe direction sampler.  Use 0.999 (safely past
+		// the spec cutoff) then mid draws.
 		const Scalar script[] = { 0.999, 0.5, 0.5 };
 		ScriptedSampler smp( script, 3, 0.5 );
 		ScatteredRayContainer sc;
@@ -548,15 +554,16 @@ static bool TestBRDFvsSPFMultiscatter()
 			if( sc[k].type == ScatteredRay::eRayDiffuse ) { idx = (int) k; break; }
 		if( idx < 0 ) { spf->release(); continue; }
 
-		// krayNM = F_ms * (1-Ess_o)(1-Ess_i)/((1-Eavg)*pMSSelect).  The SPF
-		// samples wo via cosine hemisphere, so Ess_o is at the SAMPLED
-		// cosTheta, not the BRDF's view cosWo — recompute Ess at the SPF's
-		// actual wo to match (the specColor-in-Fms factor is wo-independent).
+		// H6: krayNM = f_ms*cosWo/(msPdf(cosWo)*pMSSelect), the honest f/pdf
+		// estimator (was the hard-coded (1-Eavg)-only closed form).  The SPF
+		// samples wo via the MS-lobe importance sampler, so Ess_o is at the
+		// SAMPLED cosTheta, not the BRDF's view cosWo — recompute Ess/msPdf at
+		// the SPF's actual wo to match (the specColor-in-Fms factor is
+		// wo-independent).
 		const Vector3 wo = Vector3Ops::Normalize( sc[idx].ray.Dir() );
 		const Scalar cosThetaWo = Vector3Ops::Dot( wo, n );
-		const Scalar cosWi = Vector3Ops::Dot( Vector3Ops::Normalize( -ri.ray.Dir() ), n );
 		const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( cosThetaWo, alpha );
-		const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );
+		const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosThetaWo, alpha, msZ );
 
 		// Reconstruct F_ms the SPF SHOULD have used (NEW form): specColor
 		// INSIDE.  specColor in the SPF is GetColorNM (== ws here).
@@ -564,7 +571,9 @@ static bool TestBRDFvsSPFMultiscatter()
 		const Scalar extVal = stk.ext->GetValueAtNM( ri, nm );
 		const Scalar Favg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
 		const Scalar fmsNew = MicrofacetEnergyLUT::ComputeFms<Scalar>( ws * Favg, Eavg );
-		const Scalar krayExpected = fmsNew * ( 1.0 - Ess_o ) * ( 1.0 - Ess_i ) / ( ( 1.0 - Eavg ) * pMSSelect );
+		const Scalar f_ms = fmsNew * ( 1.0 - Ess_o ) * ( 1.0 - Ess_i ) * INV_PI / ( 1.0 - Eavg );
+		const Scalar krayExpected = ( msPdfHere > 1e-14 ) ?
+			f_ms * cosThetaWo / ( msPdfHere * pMSSelect ) : Scalar(0);
 
 		const Scalar krayGot = sc[idx].krayNM;
 		const double rel = std::fabs( krayGot - krayExpected ) / r_max( std::fabs( krayExpected ), Scalar( 1e-12 ) );
@@ -586,6 +595,259 @@ static bool TestBRDFvsSPFMultiscatter()
 	return s_fail == startFail;
 }
 
+// ============================================================
+//  H6 (2026-07): multiscatter-lobe estimator reformulation tests.
+// ============================================================
+//  These three tests validate MicrofacetEnergyLUT.h's MSLobeZ / MSPdf /
+//  SampleMSCosTheta DIRECTLY (no SPF/BRDF construction needed) -- they are
+//  the "pdf integrates to 1", "histogram matches pdf", and "kray collapses
+//  to a bounded constant" checks from the H6 design note.  A fourth test
+//  exercises the actual GGXSPF/CookTorranceSPF end-to-end at grazing
+//  incidence, reproducing the original defect's regime (alpha~0.02,
+//  cosWi->0) and checking the reported kray no longer blows up.
+
+namespace
+{
+	// Composite Simpson's rule for f over [a,b] with nSeg (even) intervals.
+	template< class F >
+	Scalar SimpsonIntegrate( F f, Scalar a, Scalar b, int nSeg )
+	{
+		if( nSeg % 2 != 0 ) ++nSeg;
+		const Scalar h = ( b - a ) / nSeg;
+		Scalar sum = f( a ) + f( b );
+		for( int i = 1; i < nSeg; ++i )
+		{
+			const Scalar x = a + i * h;
+			sum += ( i % 2 == 0 ) ? 2.0 * f( x ) : 4.0 * f( x );
+		}
+		return sum * h / 3.0;
+	}
+}
+
+// ---- H6 Test 1: msPdf hemisphere-integrates to 1 -------------------
+static bool TestMSPdfIntegratesToOne()
+{
+	std::cout << "\n--- H6 Test 1: MSPdf integrates to 1 over the hemisphere ---\n";
+	const bool startFail = s_fail;
+
+	const Scalar alphas[] = { 0.01, 0.02, 0.1, 0.5 };
+	bool allOk = true;
+
+	for( Scalar alpha : alphas )
+	{
+		const Scalar Z = MicrofacetEnergyLUT::MSLobeZ( alpha );
+		auto pdfOfCos = [&]( Scalar c ) { return MicrofacetEnergyLUT::MSPdf( c, alpha, Z ); };
+		// hemisphereIntegral = integral over solid angle = 2*PI * integral_0^1 pdf(cos) dcos
+		// (azimuth uniform; cos itself is the sampling variable, matching the
+		// codebase's cosTheta*INV_PI convention for cosine-hemisphere pdfs).
+		const Scalar integCos = SimpsonIntegrate( pdfOfCos, Scalar(0.0), Scalar(1.0), 20000 );
+		const Scalar hemiInteg = TWO_PI * integCos;
+		const double rel = std::fabs( hemiInteg - 1.0 );
+
+		std::cout << "  alpha=" << std::fixed << std::setprecision( 3 ) << alpha
+				  << "  Z=" << std::setprecision( 6 ) << Z
+				  << "  hemisphereIntegral=" << std::setprecision( 8 ) << hemiInteg
+				  << "  |1-integral|=" << std::scientific << std::setprecision( 3 ) << rel << "\n";
+
+		if( rel > 1e-4 ) allOk = false;
+	}
+
+	Check( allOk, "MSPdf hemisphere-integrates to 1.0 (within 1e-4) for alpha in {0.01,0.02,0.1,0.5}" );
+	return s_fail == startFail;
+}
+
+// ---- H6 Test 2: histogram of SampleMSCosTheta matches MSPdf ---------
+static bool TestMSHistogramVsPdf()
+{
+	std::cout << "\n--- H6 Test 2: SampleMSCosTheta histogram vs MSPdf ---\n";
+	const bool startFail = s_fail;
+
+	const Scalar alphas[] = { 0.02, 0.5 };
+	const int nBins = 20;
+	const long nSamples = 300000;
+	bool allOk = true;
+
+	for( Scalar alpha : alphas )
+	{
+		const Scalar Z = MicrofacetEnergyLUT::MSLobeZ( alpha );
+
+		long hist[nBins] = { 0 };
+		for( long s = 0; s < nSamples; ++s )
+		{
+			const Scalar u1 = GlobalRNG().CanonicalRandom();
+			const Scalar c = MicrofacetEnergyLUT::SampleMSCosTheta( alpha, u1 );
+			int bin = (int) ( c * nBins );
+			if( bin < 0 ) bin = 0;
+			if( bin >= nBins ) bin = nBins - 1;
+			++hist[bin];
+		}
+
+		bool alphaOk = true;
+		for( int b = 0; b < nBins; ++b )
+		{
+			const Scalar lo = Scalar(b) / nBins;
+			const Scalar hi = Scalar(b+1) / nBins;
+			// Analytic bin probability mass: integral_lo^hi 2*PI*MSPdf(cos) dcos.
+			auto pdfOfCos = [&]( Scalar c ) { return MicrofacetEnergyLUT::MSPdf( c, alpha, Z ); };
+			const Scalar analyticP = TWO_PI * SimpsonIntegrate( pdfOfCos, lo, hi, 40 );
+			const Scalar empiricalP = Scalar( hist[b] ) / Scalar( nSamples );
+
+			// Generous statistical tolerance: 5-sigma binomial + a 1% floor
+			// (guards near-zero-probability bins where 5-sigma itself -> 0).
+			const Scalar sigma = sqrt( r_max( Scalar(0.0), analyticP * ( 1.0 - analyticP ) / nSamples ) );
+			const Scalar tol = r_max( Scalar(0.01), Scalar(5.0) * sigma );
+			const bool binOk = std::fabs( empiricalP - analyticP ) <= tol;
+			if( !binOk ) alphaOk = false;
+		}
+
+		std::cout << "  alpha=" << std::fixed << std::setprecision( 3 ) << alpha
+				  << "  nSamples=" << nSamples << "  bins " << ( alphaOk ? "all within tolerance" : "SOME OUT OF TOLERANCE" ) << "\n";
+		if( !alphaOk )
+		{
+			for( int b = 0; b < nBins; ++b )
+			{
+				const Scalar lo = Scalar(b) / nBins;
+				const Scalar hi = Scalar(b+1) / nBins;
+				auto pdfOfCos = [&]( Scalar c ) { return MicrofacetEnergyLUT::MSPdf( c, alpha, Z ); };
+				const Scalar analyticP = TWO_PI * SimpsonIntegrate( pdfOfCos, lo, hi, 40 );
+				const Scalar empiricalP = Scalar( hist[b] ) / Scalar( nSamples );
+				std::cout << "    bin[" << lo << "," << hi << "] analytic=" << analyticP << " empirical=" << empiricalP << "\n";
+			}
+		}
+
+		if( !alphaOk ) allOk = false;
+	}
+
+	Check( allOk, "SampleMSCosTheta's empirical histogram matches MSPdf's analytic bin mass (5-sigma binomial tolerance)" );
+	return s_fail == startFail;
+}
+
+// ---- H6 Test 3: MS-lobe kray collapses to a bounded constant --------
+//  Reproduces the design note's derivation directly:
+//    f_ms = F_ms*(1-Ess_o)*(1-Ess_i)/(PI*(1-Eavg))     (BRDF value; UNCHANGED)
+//    kray = f_ms * cosWo / (MSPdf(cosWo) * pMSSelect)
+//  With F_ms and pMSSelect held at 1 (they are cosWo-independent constants
+//  that only rescale the whole expression), kray must reduce to EXACTLY
+//  Z*(1-Ess_i)/(1-Eavg) for EVERY probe cosWo -- this is the algebraic
+//  cancellation that eliminates the old estimator's grazing-incidence
+//  blow-up.  Checked at alphaEff in {0.01,0.02,0.1,0.5} x grazing-to-normal
+//  cosWi in {0.999,0.5,0.05,0.005}, each against 7 probe cosWo spanning the
+//  full [0,1] range including both LUT end-caps.
+static bool TestMSKrayClosedFormConstant()
+{
+	std::cout << "\n--- H6 Test 3: MS-lobe kray == closed-form constant (grazing cosWi incl.) ---\n";
+	const bool startFail = s_fail;
+
+	const Scalar alphas[] = { 0.01, 0.02, 0.1, 0.5 };
+	const Scalar cosWis[]  = { 0.999, 0.5, 0.05, 0.005 };
+	const Scalar cosWos[]  = { 0.001, 0.01, 0.05, 0.2, 0.5, 0.8, 0.999 };
+
+	double maxRel = 0.0;
+	int nChecked = 0;
+
+	for( Scalar alpha : alphas )
+	{
+		const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alpha );
+		const Scalar Z = MicrofacetEnergyLUT::MSLobeZ( alpha );
+
+		for( Scalar cosWi : cosWis )
+		{
+			const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );
+			const Scalar closedForm = Z * ( 1.0 - Ess_i ) / ( 1.0 - Eavg );
+
+			for( Scalar cosWo : cosWos )
+			{
+				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( cosWo, alpha );
+				const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosWo, alpha, Z );
+				// f_ms with a synthetic F_ms=1 (material-dependent Fresnel
+				// factors are cosWo-independent and drop straight through).
+				const Scalar f_ms = ( 1.0 - Ess_o ) * ( 1.0 - Ess_i ) * INV_PI / ( 1.0 - Eavg );
+				const Scalar reducedKray = ( msPdfHere > 1e-14 ) ? f_ms * cosWo / msPdfHere : Scalar(-1);
+
+				if( reducedKray < 0 ) continue;	// msPdf underflowed at this probe; skip
+
+				const double rel = std::fabs( reducedKray - closedForm ) / r_max( std::fabs( closedForm ), Scalar( 1e-12 ) );
+				if( rel > maxRel ) maxRel = rel;
+				++nChecked;
+			}
+		}
+		std::cout << "  alpha=" << std::fixed << std::setprecision( 3 ) << alpha
+				  << "  Eavg=" << std::setprecision( 5 ) << Eavg
+				  << "  Z=" << std::setprecision( 6 ) << Z << "\n";
+	}
+
+	std::cout << "  checked " << nChecked << " (alpha,cosWi,cosWo) combinations, maxRel=" << std::scientific << std::setprecision( 3 ) << maxRel << "\n";
+
+	Check( nChecked >= 100, "kray closed-form check exercised across the full alpha x cosWi x cosWo grid" );
+	Check( maxRel < 1e-6, "MS-lobe reduced kray == Z*(1-Ess_i)/(1-Eavg) within 1e-6 relative, for ALL probe cosWo including grazing cosWi" );
+
+	return s_fail == startFail;
+}
+
+// ---- H6 Test 4: end-to-end SPF grazing-incidence kray sanity --------
+//  Reproduces the ORIGINAL defect's regime directly through the real SPF:
+//  alpha~0.02 (smooth), cosWi->0 (grazing, e.g. a glint-tilted shading
+//  frame).  Before H6, kray was measured up to ~96 at selection probability
+//  ~6e-4 on this regime; after H6 it must stay bounded and (for a FIXED
+//  incident direction) constant across independently-sampled MS-lobe wo's.
+static bool TestMSSPFGrazingKraySanity()
+{
+	std::cout << "\n--- H6 Test 4: CookTorranceSPF MS-lobe kray at grazing cosWi ---\n";
+	const bool startFail = s_fail;
+
+	const Scalar alpha = 0.02;	// smooth: 1-Eavg is tiny, the old estimator's danger zone
+	const Scalar rs = 0.9;
+	const Scalar nm = 560.0;
+
+	// A near-grazing incident ray: wi close to the tangent plane (cosWi small).
+	const Vector3 wiDir = Vector3Ops::Normalize( Vector3( std::sin( Scalar(1.55) ), 0, std::cos( Scalar(1.55) ) ) );	// ~cosWi=0.02
+	RayIntersectionGeometric ri = MakeRI( -wiDir );
+	const Vector3 n = ri.onb.w();
+	const Scalar cosWi = Vector3Ops::Dot( wiDir, n );
+	std::cout << "  cosWi=" << std::fixed << std::setprecision( 4 ) << cosWi << " (grazing)\n";
+
+	Stack stk( alpha, rs );
+	CookTorranceSPF* spf = stk.MakeSPF();
+
+	// Draw the MS lobe several times with DIFFERENT u1ms (different wo each
+	// time) via a scripted sampler: first draw pins uLobe into the MS
+	// branch, second/third draws are (u1ms,u2ms).
+	const Scalar u1msProbes[] = { 0.05, 0.25, 0.5, 0.75, 0.95 };
+	double maxKray = 0.0;
+	double minKray = 1e300;
+	int nDrawn = 0;
+
+	for( Scalar u1ms : u1msProbes )
+	{
+		const Scalar script[] = { 0.999, u1ms, 0.37 };
+		ScriptedSampler smp( script, 3, 0.5 );
+		ScatteredRayContainer sc;
+		IORStack ist( 1.0 );
+		spf->ScatterNM( ri, smp, nm, sc, ist );
+
+		int idx = -1;
+		for( unsigned int k = 0; k < sc.Count(); ++k )
+			if( sc[k].type == ScatteredRay::eRayDiffuse ) { idx = (int) k; break; }
+		if( idx < 0 ) continue;
+
+		const Scalar kray = sc[idx].krayNM;
+		std::cout << "  u1ms=" << std::fixed << std::setprecision( 2 ) << u1ms
+				  << "  krayNM=" << std::scientific << std::setprecision( 5 ) << kray << "\n";
+		if( kray > maxKray ) maxKray = kray;
+		if( kray < minKray ) minKray = kray;
+		++nDrawn;
+	}
+
+	spf->release();
+
+	Check( nDrawn >= 4, "MS lobe sampled successfully across multiple u1ms draws at grazing cosWi" );
+	Check( maxKray < 5.0, "MS-lobe kray stays bounded (<5) at grazing cosWi on a smooth surface (was up to ~96 pre-H6)" );
+	const double spread = ( minKray > 1e-12 ) ? ( maxKray - minKray ) / minKray : 0.0;
+	Check( spread < 1e-4, "MS-lobe kray is CONSTANT (within 1e-4 relative) across independently-sampled wo's at fixed cosWi" );
+
+	return s_fail == startFail;
+}
+
 int main()
 {
 	std::cout << "=== Cook-Torrance Multiscatter (tinted energy fix) Test ===\n";
@@ -594,6 +856,10 @@ int main()
 	TestRGBSpecColorInsideMultiscatter();
 	TestNMSpecColorInsideMultiscatter();
 	TestBRDFvsSPFMultiscatter();
+	TestMSPdfIntegratesToOne();
+	TestMSHistogramVsPdf();
+	TestMSKrayClosedFormConstant();
+	TestMSSPFGrazingKraySanity();
 
 	std::cout << "\n=== CookTorranceMultiscatterTest: " << s_pass << " passed, " << s_fail << " failed ===\n";
 	return s_fail == 0 ? 0 : 1;

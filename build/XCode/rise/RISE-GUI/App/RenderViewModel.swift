@@ -166,15 +166,22 @@ final class RenderViewModel: ObservableObject {
     /// Cleared whenever a sync succeeds or the buffer stops being dirty
     /// — see `pollRefinementState`.
     @Published var editorBehindLiveScene: Bool = false
-    /// Debounced auto-save (item 2): true once an auto-save attempt has
-    /// been refused or has I/O-failed (e.g. the save engine detects the
-    /// file changed on disk externally).  While true, the poll stops
-    /// attempting further auto-saves — a manual File > Save Scene (or
-    /// the TopBar status chip) clears it and retries.  Never true for a
-    /// scene with no loaded path (auto-save doesn't run there either).
-    @Published var autoSaveSuspended: Bool = false
     /// Which left-panel tab is frontmost — see `LeftPanelTab`.
     @Published var leftTab: LeftPanelTab = .agent
+
+    /// "Reveal in scene file" (design comp ⌗ affordance): where to scroll
+    /// + select in the Scene-file tab's editor, set by
+    /// `revealEntityInSceneText`.  `generation` is a monotonic counter
+    /// (not just the byte offset) so a REPEAT click on the SAME entity —
+    /// same offset, buffer unchanged — still re-triggers the scroll/flash;
+    /// without it, SceneTextEditor's Coordinator would see an unchanged
+    /// value and skip the reveal on the second click.
+    struct EditorRevealRequest {
+        let byteOffset: UInt64
+        let generation: Int
+    }
+    @Published var editorRevealRequest: EditorRevealRequest? = nil
+    private var nextEditorRevealGeneration = 1
 
     // Facet 5 slice 1c-1: the live agent (JSON-RPC) panel.  A minimal
     // "agent + user co-edit" affordance — a typed JSON-RPC request is
@@ -466,17 +473,6 @@ final class RenderViewModel: ObservableObject {
     /// (item 1), or set at load time so the file-on-disk bytes and the
     /// live CST start in agreement.  nil before any scene has loaded.
     private var lastSyncedSceneTextVersion: SceneTextVersion? = nil
-    /// The version observed on the PREVIOUS poll tick — the debounce
-    /// signal for auto-save (item 2): only save once the version has
-    /// been stable across one full tick, so a burst of agent/GUI edits
-    /// coalesces into a single write instead of saving mid-burst.
-    private var previousPollSceneTextVersion: SceneTextVersion? = nil
-    /// The version an auto-save was last attempted against, so a
-    /// stable-but-already-tried version doesn't re-fire every tick
-    /// (successful saves flip `sceneEditsDirty` false anyway, and
-    /// failed ones set `autoSaveSuspended`, but this is the direct
-    /// guard against a same-version retry loop).
-    private var lastAutoSaveAttemptVersion: SceneTextVersion? = nil
 
     /// Reads the live CST's current (uuid, revision) pair.  Same
     /// do-not-call-during-renders caveat as `serializedSceneText` — only
@@ -502,10 +498,7 @@ final class RenderViewModel: ObservableObject {
                 redoLabel = ""
                 activeRegion = nil
                 lastSyncedSceneTextVersion = nil
-                previousPollSceneTextVersion = nil
-                lastAutoSaveAttemptVersion = nil
                 editorBehindLiveScene = false
-                autoSaveSuspended = false
                 return
             }
             // CST <-> scene-file live sync (item 1): a freshly-attached
@@ -514,18 +507,15 @@ final class RenderViewModel: ObservableObject {
             // at this instant, so there is nothing to pull into the
             // editor yet.  Only a LATER agent/GUI edit that bumps the
             // revision should overwrite `editorText`.  Also resets the
-            // per-scene auto-save/behind-live-scene state so it doesn't
-            // leak across scene loads.  Gated on `isSceneEditableForAgents`
+            // per-scene behind-live-scene state so it doesn't leak
+            // across scene loads.  Gated on `isSceneEditableForAgents`
             // like every other `serializedSceneText`-family call — every
             // assignment site sets `viewportBridge` only after
             // `renderState` has already left `.loading`, so this is
             // always safe in practice, but the gate is kept anyway
             // rather than assuming that invariant holds forever.
             lastSyncedSceneTextVersion = isSceneEditableForAgents ? currentSceneTextVersion(vb) : nil
-            previousPollSceneTextVersion = lastSyncedSceneTextVersion
-            lastAutoSaveAttemptVersion = nil
             editorBehindLiveScene = false
-            autoSaveSuspended = false
             pollRefinementState(vb)
             // Re-read `self.viewportBridge` inside the Task rather than
             // capturing the local `vb` across the closure boundary —
@@ -1525,7 +1515,11 @@ final class RenderViewModel: ObservableObject {
             activeRegion = nil
         }
 
-        // CST <-> scene-file live sync + debounced auto-save.  Gated on
+        // CST <-> scene-file live sync (item 1 only — explicit-save-only
+        // design, user decision 2026-07-12: UI edits never write the
+        // .RISEscene to disk automatically, so there is no item-2
+        // debounced auto-save here anymore; a disk write happens ONLY
+        // from a user-initiated `saveScene()` call).  Gated on
         // `isSceneEditableForAgents` — `serializedSceneText` and
         // `getSceneTextVersionUuid:revision:` both take the controller's
         // commit mutex, which a production render (or an outstanding
@@ -1552,23 +1546,6 @@ final class RenderViewModel: ObservableObject {
                 // buffer; just flag that it's stale.
                 editorBehindLiveScene = true
             }
-
-            // Item 2 — debounced auto-save.  `sceneEditsDirty` mirrors
-            // the CONTROLLER's dirty flag (agent/GUI edits pending a
-            // write), independent of the text-editor buffer above.
-            // Debounce: only save once the version has been stable
-            // across one full poll tick, so a burst of edits coalesces
-            // into a single write instead of saving mid-burst.  Never
-            // runs with no loaded path (an untitled/no-path scene has
-            // nowhere to auto-save to) or while suspended.
-            if sceneEditsDirty, !autoSaveSuspended, loadedFilePath != nil,
-               let previousVersion = previousPollSceneTextVersion,
-               previousVersion == currentVersion,
-               lastAutoSaveAttemptVersion != currentVersion {
-                lastAutoSaveAttemptVersion = currentVersion
-                _ = saveScene(auto: true)
-            }
-            previousPollSceneTextVersion = currentVersion
         }
     }
 
@@ -1617,111 +1594,58 @@ final class RenderViewModel: ObservableObject {
     /// no loaded path (the TopBar Save button has no Save-As affordance
     /// — that stays in the Properties panel).
     ///
-    /// `auto`: true when called from the debounced auto-save poll (item
-    /// 2 of the CST-sync design, `pollRefinementState`).  Auto-save
-    /// must never alert-spam a modal on every failed 0.5 s poll tick,
-    /// so on refusal/failure it logs one warning line and sets
-    /// `autoSaveSuspended` instead of showing an `NSAlert` — a manual
-    /// retry (the TopBar chip or File > Save Scene, both `auto: false`)
-    /// clears the suspension first and keeps the original alert
-    /// behavior.  Returns true on a successful (or no-op) save, false
-    /// on refusal / I/O failure, so the poll can decide whether to
-    /// suspend further attempts.
+    /// Explicit-save-only (user decision 2026-07-12): this is the ONLY
+    /// place a .RISEscene write ever happens.  UI edits mutate the live
+    /// CST in memory and the CST-to-editor mirror (`pollRefinementState`
+    /// item 1) keeps the Scene-file tab following those edits live, but
+    /// none of that touches disk — a write happens only when the user
+    /// explicitly triggers this method (the TopBar Save button or
+    /// File > Save Scene).  Always alerts on refusal / I/O failure;
+    /// there is no silent/suspended auto-save path to distinguish from.
     @discardableResult
-    func saveScene(auto: Bool = false) -> Bool {
+    func saveScene() -> Bool {
         guard let vb = viewportBridge, let path = loadedFilePath else { return false }
-        if !auto {
-            // A manual save is always a fresh retry — clears any prior
-            // auto-save suspension even before we know this attempt's
-            // own outcome.
-            autoSaveSuspended = false
-        }
         var errMsg: NSString? = nil
         let status = vb.saveScene(to: path, errorMessage: &errMsg)
         switch status {
         case 0:
-            autoSaveSuspended = false
             // Saved.  Pull the just-written bytes back into the
             // scene-editor pane so it reflects the round-tripped
             // edits — unless the editor has its own unsaved text
             // edits, in which case overwriting would silently discard
-            // them (same conflict surfaced in PropertiesPanel).  Only
-            // for a MANUAL save — an auto-save success is silent (item
-            // 2: "nothing else, dirty flips false via the existing
-            // push"); the next poll tick's item-1 sync handles mirroring
-            // the editor once the version bumps, so there's no need to
-            // duplicate that here via a disk re-read.
-            if !auto {
-                if !isEditorDirty {
-                    refreshEditorContents()
-                } else {
-                    let alert = NSAlert()
-                    alert.messageText = "Scene editor has unsaved text changes"
-                    alert.informativeText =
-                        "Your interactive edits were saved to \(path).  " +
-                        "The scene editor pane still shows the pre-save text " +
-                        "plus your unsaved edits.  Clicking Save in the scene " +
-                        "editor will overwrite the just-saved interactive " +
-                        "changes — use Revert in the scene editor to discard " +
-                        "your text edits and pull the new file content."
-                    alert.alertStyle = .warning
-                    alert.addButton(withTitle: "OK")
-                    alert.runModal()
-                }
+            // them (same conflict surfaced in PropertiesPanel).
+            if !isEditorDirty {
+                refreshEditorContents()
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "Scene editor has unsaved text changes"
+                alert.informativeText =
+                    "Your interactive edits were saved to \(path).  " +
+                    "The scene editor pane still shows the pre-save text " +
+                    "plus your unsaved edits.  Clicking Save in the scene " +
+                    "editor will overwrite the just-saved interactive " +
+                    "changes — use Revert in the scene editor to discard " +
+                    "your text edits and pull the new file content."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
             }
             return true
         case 1:
             return true   // NoOp — nothing to write.
         case 2:
             let message = (errMsg as String?) ?? "The save engine declined to write this file."
-            if auto {
-                autoSaveSuspended = true
-                logAutoSaveWarning("Auto-save refused: \(message)")
-            } else {
-                showSaveAlert(title: "Save Refused", message: message)
-            }
+            showSaveAlert(title: "Save Refused", message: message)
             return false
         case 3:
             let message = (errMsg as String?) ?? "An I/O error occurred while saving the file."
-            if auto {
-                autoSaveSuspended = true
-                logAutoSaveWarning("Auto-save failed: \(message)")
-            } else {
-                showSaveAlert(title: "Save Failed", message: message)
-            }
+            showSaveAlert(title: "Save Failed", message: message)
             return false
         default:
             let message = "Unexpected save result (status \(status))."
-            if auto {
-                autoSaveSuspended = true
-                logAutoSaveWarning("Auto-save failed: \(message)")
-            } else {
-                showSaveAlert(title: "Save Failed", message: message)
-            }
+            showSaveAlert(title: "Save Failed", message: message)
             return false
         }
-    }
-
-    /// One-shot warning line into the existing log-drawer mechanism
-    /// (`logMessages`, normally populated from `bridge.setLogBlock`) —
-    /// the auto-save poll's only feedback channel, deliberately NOT an
-    /// `NSAlert` (see `saveScene(auto:)`'s doc).
-    private func logAutoSaveWarning(_ message: String) {
-        let entry = LogMessage(level: .warning, text: "Auto-save: \(message)", timestamp: Date())
-        logMessages.append(entry)
-        if logMessages.count > Self.maxLogMessages {
-            logMessages.removeFirst(logMessages.count - Self.maxLogMessages)
-        }
-    }
-
-    /// Manual retry entry point for the TopBar's "not saved" chip and
-    /// File > Save Scene's suspended state — clears `autoSaveSuspended`
-    /// then attempts a normal (alerting) save.  `saveScene(auto: false)`
-    /// already clears the suspension itself, so this is a thin, more
-    /// intention-revealing name for call sites that specifically mean
-    /// "retry after a suspension" rather than "the ordinary Save action."
-    func retrySaveAfterSuspension() {
-        saveScene()
     }
 
     private func showSaveAlert(title: String, message: String) {
@@ -1807,6 +1731,34 @@ final class RenderViewModel: ObservableObject {
         editorOriginalText = text
         lastSyncedSceneTextVersion = currentSceneTextVersion(vb)
         editorBehindLiveScene = false
+    }
+
+    /// "Reveal in scene file" (design comp's ⌗ affordance): resolve
+    /// `(category, name)` to its position in the scene text, switch to
+    /// the Scene-file tab, and publish `editorRevealRequest` so
+    /// `SceneTextEditor` scrolls/selects/flashes that line.  Same
+    /// scene-editable gate as every other bridge call that reads the
+    /// live CST (`isSceneEditableForAgents` — do not call while a
+    /// production render or an outstanding chat render owns the
+    /// controller).  A no-op (no tab switch, no publish) when the bridge
+    /// is absent, the gate is closed, or the entity doesn't resolve
+    /// (unnamed/ambiguous, or a category with no chunk-name addressing
+    /// scheme — see `SceneEditController::EntitySourceLocation`).
+    func revealEntityInSceneText(category: RISEViewportCategory, name: String) {
+        guard let vb = viewportBridge, isSceneEditableForAgents else { return }
+        var offset: UInt64 = 0
+        var line: UInt32 = 0
+        guard vb.getEntitySourceLocation(for: category, name: name, byteOffset: &offset, line: &line) else { return }
+        leftTab = .sceneFile
+        // Review P2: the offset addresses the LIVE serialization.  When
+        // the editor buffer has unsaved hand edits it may differ without
+        // being shorter, so a scroll could land on the WRONG line while
+        // looking authoritative.  Switch tabs only in that case (the
+        // stale-buffer warning is already showing) — a reveal must be
+        // right or absent, never misleading.
+        guard !isEditorDirty else { return }
+        editorRevealRequest = EditorRevealRequest(byteOffset: offset, generation: nextEditorRevealGeneration)
+        nextEditorRevealGeneration += 1
     }
 
     func saveAndReloadScene() {

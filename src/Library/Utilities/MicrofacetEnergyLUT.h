@@ -119,6 +119,202 @@ namespace MicrofacetEnergyLUT
 		return (1-af) * E_avg_TABLE[ai0] + af * E_avg_TABLE[ai1];
 	}
 
+	//////////////////////////////////////////////////////////////////
+	// H6: multiscatter-lobe outgoing-direction sampler + matching pdf.
+	//
+	// The MS lobe's true energy in outgoing direction wo is proportional
+	// to (1-Ess(cosWo,alpha))*cosWo -- the definition of E_avg above is
+	// exactly its cosine-weighted hemisphere average:
+	//   2 * integral_0^1 (1-Ess(alpha,mu)) * mu dmu == 1 - E_avg(alpha)
+	// Sampling wo from THIS shape (instead of plain cosine-hemisphere)
+	// makes the MS-lobe's importance-sampling weight collapse to a
+	// bounded per-shading-point constant instead of blowing up at
+	// grazing incidence (docs/... H6 design note; the old
+	// ws*(1-Eavg) selection weight + cosine-sampled wo assumed
+	// (1-Ess)=(1-Eavg) everywhere, which fails badly near cosTheta->0
+	// on smooth surfaces).
+	//
+	// LookupEss(cosTheta,alpha) is PIECEWISE-LINEAR in cosTheta between
+	// adjacent LUT bin centers (with flat clamping outside the first/
+	// last centers) -- exactly what its bilinear-interpolation code
+	// computes, and bilinear interpolation is separable, so blending the
+	// two alpha rows first and then interpolating cosTheta (as done
+	// below) is algebraically IDENTICAL to LookupEss's simultaneous
+	// bilinear form for any (cosTheta, alpha).  That makes
+	// shape(cos) = (1-LookupEss(cos,alpha))*cos a piecewise-QUADRATIC
+	// function of cos with an EXACT closed-form integral and an exactly
+	// invertible per-segment CDF (monotone; solved with a bracketed
+	// Newton-bisection hybrid -- no numerical-quadrature approximation
+	// anywhere).  MSPdf() below evaluates LookupEss directly, so the
+	// density it reports for ANY cosWo is algebraically identical to the
+	// shape MSLobeZ/SampleMSCosTheta integrate and sample: pdf and
+	// sampler share the SAME LookupEss piecewise-linear model and cannot
+	// drift apart.
+	//////////////////////////////////////////////////////////////////
+
+	namespace MSLobeDetail
+	{
+		// One [lo,hi] segment of the piecewise-linear-in-cosTheta Ess
+		// model: either a flat end-cap (below the first / above the
+		// last bin center) or the linear span between two adjacent bin
+		// centers.  Ess(cos) = essLo + slope*(cos-lo) for cos in [lo,hi].
+		struct Segment
+		{
+			Scalar lo, hi;
+			Scalar essLo, slope;
+		};
+
+		// Build the LUT_SIZE+1 segments (33: 1 left cap + LUT_SIZE-1
+		// interior spans + 1 right cap) for a fixed alphaEff, using
+		// EXACTLY LookupEss's alpha-row blend.
+		inline void BuildSegments( const Scalar alphaEff, Segment segs[LUT_SIZE + 1], int& nSegs )
+		{
+			Scalar a = r_max(0.0, r_min(1.0, (alphaEff - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
+			int ai0 = (int)a;
+			int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
+			Scalar af = a - ai0;
+
+			Scalar essRow[LUT_SIZE];
+			for( int k = 0; k < LUT_SIZE; k++ )
+				essRow[k] = (1-af) * E_ss_TABLE[ai0][k] + af * E_ss_TABLE[ai1][k];
+
+			nSegs = 0;
+			const Scalar c0 = 0.5 / Scalar(LUT_SIZE);
+			const Scalar cLast = (Scalar(LUT_SIZE) - 0.5) / Scalar(LUT_SIZE);
+
+			// Left flat end-cap [0, c0]: Ess clamped to row 0.
+			segs[nSegs].lo = 0.0; segs[nSegs].hi = c0;
+			segs[nSegs].essLo = essRow[0]; segs[nSegs].slope = 0.0;
+			nSegs++;
+
+			// Interior linear spans between adjacent bin centers.
+			for( int k = 0; k < LUT_SIZE - 1; k++ )
+			{
+				const Scalar ck  = (k + 0.5) / Scalar(LUT_SIZE);
+				const Scalar ck1 = (k + 1.5) / Scalar(LUT_SIZE);
+				segs[nSegs].lo = ck; segs[nSegs].hi = ck1;
+				segs[nSegs].essLo = essRow[k];
+				segs[nSegs].slope = (essRow[k+1] - essRow[k]) / (ck1 - ck);
+				nSegs++;
+			}
+
+			// Right flat end-cap [cLast, 1]: Ess clamped to row LUT_SIZE-1.
+			segs[nSegs].lo = cLast; segs[nSegs].hi = 1.0;
+			segs[nSegs].essLo = essRow[LUT_SIZE-1]; segs[nSegs].slope = 0.0;
+			nSegs++;
+		}
+
+		// shape(cos) = (1-Ess(cos))*cos within a segment; y = cos - lo.
+		inline Scalar SegShape( const Segment& s, const Scalar y )
+		{
+			const Scalar ess = s.essLo + s.slope * y;
+			return r_max( 0.0, (1.0 - ess) * (s.lo + y) );
+		}
+
+		// Exact antiderivative F(y) = integral_0^y SegShape(t) dt.
+		// shape(y) = P + Q*y + R*y^2 with P=(1-essLo)*lo, Q=(1-essLo)-slope*lo,
+		// R=-slope (obtained by expanding (1-essLo-slope*y)*(lo+y)).
+		inline Scalar SegCDF( const Segment& s, const Scalar y )
+		{
+			const Scalar P = (1.0 - s.essLo) * s.lo;
+			const Scalar Q = (1.0 - s.essLo) - s.slope * s.lo;
+			const Scalar R = -s.slope;
+			return P * y + Q * y * y * 0.5 + R * y * y * y * (1.0 / 3.0);
+		}
+
+		inline Scalar SegTotal( const Segment& s )
+		{
+			return SegCDF( s, s.hi - s.lo );
+		}
+
+		// Invert F(y) = target for y in [0,w] via Newton-bisection (F is
+		// monotone non-decreasing since SegShape >= 0 everywhere shape is
+		// physical).  30 iterations is comfortably converged for a cubic
+		// on a bounded interval; the bisection fallback guarantees
+		// convergence even if a Newton step would leave the bracket.
+		inline Scalar SegInvert( const Segment& s, const Scalar target, const Scalar w )
+		{
+			Scalar ylo = 0.0, yhi = w;
+			Scalar y = w * 0.5;
+			for( int it = 0; it < 30; it++ )
+			{
+				const Scalar Fy = SegCDF( s, y );
+				const Scalar diff = Fy - target;
+				if( fabs(diff) < 1e-13 ) break;
+				if( diff > 0 ) yhi = y; else ylo = y;
+
+				const Scalar deriv = SegShape( s, y );
+				Scalar yNext = (deriv > 1e-12) ? (y - diff / deriv) : (0.5 * (ylo + yhi));
+				if( !(yNext > ylo && yNext < yhi) ) yNext = 0.5 * (ylo + yhi);
+				y = yNext;
+			}
+			return y;
+		}
+	}
+
+	/// Exact normalization for the MS-lobe outgoing-direction shape:
+	///   I(alpha) = integral_0^1 (1-Ess(alpha,mu))*mu dmu   (segment-exact)
+	///   Z(alpha) = 2 * I(alpha)  (== 1-E_avg(alpha) in the continuum
+	///   limit; computed here from the SAME piecewise-linear Ess model
+	///   that LookupEss / SampleMSCosTheta use, so it cannot drift out of
+	///   sync with either).
+	inline Scalar MSLobeZ( const Scalar alphaEff )
+	{
+		MSLobeDetail::Segment segs[LUT_SIZE + 1];
+		int nSegs = 0;
+		MSLobeDetail::BuildSegments( alphaEff, segs, nSegs );
+		Scalar I = 0.0;
+		for( int i = 0; i < nSegs; i++ )
+			I += MSLobeDetail::SegTotal( segs[i] );
+		return 2.0 * I;
+	}
+
+	/// Sample cosWo ~ (1-Ess(alpha,cosWo))*cosWo / I(alpha) via exact
+	/// per-segment CDF inversion.  u1 in [0,1). Returns cosWo in [0,1].
+	/// Azimuth is NOT handled here (uniform; caller draws it separately).
+	inline Scalar SampleMSCosTheta( const Scalar alphaEff, const Scalar u1 )
+	{
+		MSLobeDetail::Segment segs[LUT_SIZE + 1];
+		int nSegs = 0;
+		MSLobeDetail::BuildSegments( alphaEff, segs, nSegs );
+
+		Scalar totals[LUT_SIZE + 1];
+		Scalar I = 0.0;
+		for( int i = 0; i < nSegs; i++ )
+		{
+			totals[i] = MSLobeDetail::SegTotal( segs[i] );
+			I += totals[i];
+		}
+		if( I <= 1e-15 ) return r_max( 0.0, r_min( 1.0, u1 ) );	// degenerate fallback
+
+		const Scalar target = r_max( 0.0, r_min( I, u1 * I ) );
+		int seg = 0;
+		Scalar running = 0.0;
+		while( seg < nSegs - 1 && running + totals[seg] < target )
+		{
+			running += totals[seg];
+			seg++;
+		}
+		const Scalar localTarget = r_max( 0.0, r_min( totals[seg], target - running ) );
+		const Scalar y = MSLobeDetail::SegInvert( segs[seg], localTarget, segs[seg].hi - segs[seg].lo );
+		return r_max( 0.0, r_min( 1.0, segs[seg].lo + y ) );
+	}
+
+	/// Solid-angle density of SampleMSCosTheta's output, expressed the
+	/// same way as this codebase's other cosine-hemisphere pdfs (a
+	/// function of cosTheta alone; azimuth is uniform and already folded
+	/// in).  Uses LookupEss directly -- the SAME piecewise-linear model
+	/// the sampler above is built from -- so this can never drift out of
+	/// sync with what was actually sampled (see file-header comment).
+	/// `Z` must be MSLobeZ(alphaEff) (callers compute it once per shading
+	/// point and reuse it across the diffuse/specular/MS mixPdf sites).
+	inline Scalar MSPdf( const Scalar cosTheta, const Scalar alphaEff, const Scalar Z )
+	{
+		if( Z <= 1e-15 ) return 0.0;
+		const Scalar c = r_max( 0.0, r_min( 1.0, cosTheta ) );
+		return r_max( 0.0, (1.0 - LookupEss( c, alphaEff )) * c / (RISE::PI * Z) );
+	}
+
 	/// 21-point Gauss-Legendre quadrature nodes on [0,1].
 	static const int GL_N = 21;
 	static const Scalar GL_nodes[21] = {

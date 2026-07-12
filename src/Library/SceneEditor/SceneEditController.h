@@ -1711,6 +1711,35 @@ namespace RISE
 		void GetSceneTextVersion( std::uint64_t& outUuid,
 		                          std::uint64_t& outRevision ) const;
 
+		//! "Reveal in scene file" (the design comp's ⌗ affordance): resolve
+		//! ENTITY (cat, name) to WHERE it sits in SerializedSceneText() --
+		//! its top-level chunk's byte offset and 1-based line number.
+		//! Resolution mirrors the SAME DocFindByNameAnyRole call + role-
+		//! kind-suffix / unique-fallback convention CaptureAgentPriorParamValue_
+		//! and Job::ApplyCstParamEditImpl_ use for entity addressing (see the
+		//! RoleKindSuffixForCategory table at the .cpp definition) -- so a
+		//! resolvable name here is guaranteed to be the SAME chunk an agent
+		//! edit against (cat, name) would land on.  Categories with no CST
+		//! chunk-name addressing scheme (Rasterizer/Film -- their
+		//! CategoryEntityName/CategoryActiveName values are registry TYPE
+		//! names or a synthetic preset label, not a chunk `name` param) and
+		//! Category::None always return false.
+		//! Takes mMutex -- SAME caveat as SerializedSceneText: CALLERS MUST
+		//! NOT POLL DURING A RENDER (the render worker holds mMutex for the
+		//! render's whole duration; gate on the scene-editable predicate).
+		//! Returns false (outputs unchanged) when: no retained Document, the
+		//! name doesn't resolve (absent or ambiguous under DocFindByNameAnyRole),
+		//! or the resolved chunk is not (anymore) a top-level item.
+		//! COST: O(log N) to resolve the chunk's position (DocFindByNameAnyRole
+		//! is an O(N) name scan today -- see its own doc comment -- followed
+		//! by O(log N) DocIndexOfNodeId + DocByteOffsetOfItem), plus an O(doc
+		//! bytes) newline count over the serialized PREFIX to turn the byte
+		//! offset into a line number (SerializeCst has no partial/prefix-only
+		//! form).  Fine at click/selection cadence (this is not a per-frame
+		//! or per-keystroke path); not something to poll in a loop.
+		bool EntitySourceLocation( Category cat, const String& name,
+		                          std::uint64_t& outByteOffset, std::uint32_t& outLine ) const;
+
 		//! Phase 6.5 UI hook: install a listener that fires when
 		//! `HasUnsavedChanges()` flips (clean→dirty or dirty→clean).
 		//! The listener runs on the thread that drove the transition

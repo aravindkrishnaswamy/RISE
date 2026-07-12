@@ -27,6 +27,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QTimer>
 #include <QUrl>
@@ -124,6 +125,13 @@ namespace
 }
 
 namespace {
+
+// Agent autonomy selector (2026-07 GUI composer chips): QSettings key,
+// shared between the constructor's read and setAutonomyLevel()'s
+// write.  Same key name as the Mac client's UserDefaults key
+// ("agentAutonomyLevel") -- not load-bearing (each platform's settings
+// store is separate), just a nice cross-platform naming consistency.
+const char* const kAutonomyLevelSettingsKey = "agentAutonomyLevel";
 
 // Small bordered pill button shared by the header's Retry/Reset and the
 // provider/model chips below -- mirrors the comp's hairline-bordered
@@ -308,6 +316,41 @@ ChatPanel::ChatPanel(QWidget* parent)
 
     outer->addWidget(composerWell);
 
+    // ---- Agent autonomy selector (2026-07 GUI composer chips) ---------
+    // "Read" / "Propose" / "Apply" -- mirrors the design comp's L0/L1/L2
+    // chips (ChatPanel.swift's composerFooter autonomySelector).  Placed
+    // in its own row just below the composer, matching the Mac layout's
+    // "footer strip beneath the input" positioning.
+    auto* autonomyRow = new QHBoxLayout();
+    autonomyRow->setSpacing(10);
+    autonomyRow->addStretch(1);
+    m_autonomyReadBtn = makeAutonomyChip(tr("Read"), AutonomyLevel::Read,
+        tr("Read: agent can read the scene and render, never edit."));
+    m_autonomyProposeBtn = makeAutonomyChip(tr("Propose"), AutonomyLevel::Propose,
+        tr("Propose: edits are staged as proposals for your review."));
+    m_autonomyApplyBtn = makeAutonomyChip(tr("Apply"), AutonomyLevel::Apply,
+        tr("Apply: edits apply directly — still one undo step each."));
+    autonomyRow->addWidget(m_autonomyReadBtn);
+    autonomyRow->addWidget(m_autonomyProposeBtn);
+    autonomyRow->addWidget(m_autonomyApplyBtn);
+    outer->addLayout(autonomyRow);
+
+    // Restore the persisted choice (default Apply -- see AutonomyLevel's
+    // header doc for why Propose is NOT the default).  Reads the raw int
+    // and validates the range rather than trusting an out-of-range value
+    // from a hand-edited or corrupted settings file.
+    {
+        QSettings settings;
+        const int storedRaw = settings.value(QLatin1String(kAutonomyLevelSettingsKey),
+            static_cast<int>(AutonomyLevel::Apply)).toInt();
+        m_autonomyLevel = (storedRaw == static_cast<int>(AutonomyLevel::Read)
+                            || storedRaw == static_cast<int>(AutonomyLevel::Propose)
+                            || storedRaw == static_cast<int>(AutonomyLevel::Apply))
+            ? static_cast<AutonomyLevel>(storedRaw)
+            : AutonomyLevel::Apply;
+    }
+    updateAutonomyChipsStyle();
+
     m_statusLabel = new QLabel();
     m_statusLabel->setFont(Theme::sans(11));
     m_statusLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
@@ -345,6 +388,57 @@ ChatPanel::~ChatPanel()
     }
 }
 
+// ============================================================
+// Agent autonomy selector (2026-07 GUI composer chips)
+// ============================================================
+
+QPushButton* ChatPanel::makeAutonomyChip(const QString& title, AutonomyLevel level, const QString& help)
+{
+    auto* btn = new QPushButton(title, this);
+    btn->setFont(Theme::mono(10));
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setFlat(true);
+    btn->setToolTip(help);
+    connect(btn, &QPushButton::clicked, this, [this, level]() { setAutonomyLevel(level); });
+    return btn;
+}
+
+void ChatPanel::updateAutonomyChipsStyle()
+{
+    auto style = [](QPushButton* btn, bool active) {
+        if (!btn) return;
+        btn->setStyleSheet(QStringLiteral(
+            "QPushButton { background: transparent; border: none; padding: 0; color: %1; font-weight: %2; }")
+            .arg(active ? Theme::hex(Theme::accentLight) : Theme::hex(Theme::textDim))
+            .arg(active ? QStringLiteral("600") : QStringLiteral("400")));
+    };
+    style(m_autonomyReadBtn,    m_autonomyLevel == AutonomyLevel::Read);
+    style(m_autonomyProposeBtn, m_autonomyLevel == AutonomyLevel::Propose);
+    style(m_autonomyApplyBtn,   m_autonomyLevel == AutonomyLevel::Apply);
+}
+
+// DEFAULT IS Apply, matching today's actual behaviour byte-for-byte:
+// the in-app chat's own tool calls have ALWAYS committed directly
+// (Owner authority + Commit autonomy) -- the existing "staged
+// proposal" path (ProposalCard / onProposalApplyClicked etc.) is fed
+// ONLY by proposals an EXTERNAL MCP client staged, never by this
+// in-app chat driver.  So Propose is a genuinely NEW behaviour for the
+// in-app chat, not a re-labeling of something already true by default
+// -- defaulting to it would silently change what happens when a user
+// who has never touched this control sends a message, which the
+// feature brief explicitly rules out.  See the header's AutonomyLevel
+// doc for the numeric-value mirror of ViewportBridge::AgentAutonomyLevel.
+void ChatPanel::setAutonomyLevel(AutonomyLevel level)
+{
+    m_autonomyLevel = level;
+    QSettings settings;
+    settings.setValue(QLatin1String(kAutonomyLevelSettingsKey), static_cast<int>(level));
+    if (m_bridge) {
+        m_bridge->setAgentAutonomyLevel(static_cast<ViewportBridge::AgentAutonomyLevel>(level));
+    }
+    updateAutonomyChipsStyle();
+}
+
 void ChatPanel::setViewportBridge(ViewportBridge* bridge)
 {
     if (!bridge) {
@@ -357,6 +451,12 @@ void ChatPanel::setViewportBridge(ViewportBridge* bridge)
     m_sceneEditableExternal = (bridge != nullptr);
     recomputeSceneEditable();
     if (m_bridge) {
+        // Agent autonomy selector: a fresh bridge's dispatchers default
+        // to Apply (see ViewportBridge.h's doc) until told otherwise --
+        // apply THIS panel's persisted choice immediately so a scene
+        // switch never silently resets a user's Read/Propose selection
+        // back to Apply.
+        m_bridge->setAgentAutonomyLevel(static_cast<ViewportBridge::AgentAutonomyLevel>(m_autonomyLevel));
         fetchSkillIndex();
         // Secure-MCP slice 5c (Windows parity): a freshly-opened scene
         // never inherits a stale proposals list from whatever was
@@ -967,7 +1067,13 @@ void ChatPanel::processNextToolCall()
 
         // Every other verb keeps the existing synchronous contract: fast
         // CST reads/edits with no render-duration cost to amortize.
-        const QString response = m_bridge->agentHandleLine(toQString(line));
+        // Agent autonomy selector: routes to whichever dispatcher
+        // matches the composer's CURRENT level (see ViewportBridge.h's
+        // agentHandleToolCall doc) -- Read refuses edit verbs, Propose
+        // stages them, Apply commits them directly (today's behaviour).
+        // `render` is excluded from this routing on purpose (handled in
+        // the `if` branch above via the level-independent agentHandleLine).
+        const QString response = m_bridge->agentHandleToolCall(toQString(line));
         m_loop->AddToolResult(call, toStdString(response));
         processNextToolCall();
         return;

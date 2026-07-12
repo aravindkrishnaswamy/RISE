@@ -108,21 +108,18 @@ struct RISEApp: App {
 
                 Divider()
 
-                // CST <-> scene-file live sync + auto-save: the TopBar's
-                // Save button was replaced by a passive save-state chip
-                // (edits now auto-save to disk on a debounce — see
-                // RenderViewModel.pollRefinementState's item 2), so this
-                // menu item is now the manual escape hatch / retry path
-                // rather than a keyboard twin of a button.  Enabled both
-                // for the ordinary "there's something unsaved" case and
-                // for `autoSaveSuspended` (the file changed on disk
-                // externally and auto-save backed off) — clearing the
-                // suspension is exactly what a manual retry means here.
+                // Explicit-save-only (user decision 2026-07-12): UI edits
+                // never write the .RISEscene to disk automatically — the
+                // CST <-> editor live mirror keeps the Scene-file tab
+                // following live edits, but a disk write happens ONLY
+                // here (or via the TopBar's Save button, which calls the
+                // same `saveScene()`).  Disabled while there's nothing
+                // unsaved; no suspension/retry state to fold in anymore.
                 Button("Save Scene") {
-                    viewModel.retrySaveAfterSuspension()
+                    viewModel.saveScene()
                 }
                 .keyboardShortcut("s", modifiers: [.command, .option])
-                .disabled(!viewModel.sceneEditsDirty && !viewModel.autoSaveSuspended)
+                .disabled(!viewModel.sceneEditsDirty)
 
                 // UI redesign: rehouses the retired controls panel's
                 // "Clear" button.  ⇧⌘W rather than the system-owned ⌘W

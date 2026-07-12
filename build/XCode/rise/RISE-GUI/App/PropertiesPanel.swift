@@ -134,6 +134,14 @@ struct PropertiesPanel: View {
     @State private var selectionName: String = ""
     @State private var showAdvanced: Bool = false
     @State private var lastEntityKey: String = ""
+    // "Reveal in scene file" (design comp ⌗ affordance): the selected
+    // entity's 1-based line in the scene text, or nil when unavailable
+    // (no CST document, unresolvable/ambiguous name, or a category with
+    // no chunk-name addressing scheme).  Refetched only on an entity-
+    // IDENTITY change (see `reload`'s `lastEntityKey` gate) — NOT on
+    // every reload — so it costs one bridge call per selection, not one
+    // per frame / per property edit.
+    @State private var sourceLine: UInt32? = nil
     // Tracks whether we've already shown the "new cameras only live in
     // memory" caveat in this session, so we surface it exactly once.
     @State private var addCameraCaveatShown: Bool = false
@@ -177,10 +185,17 @@ struct PropertiesPanel: View {
             .frame(width: 26, height: 26)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(headerTitle)
-                    .font(Theme.sans(12.5, .semibold))
-                    .foregroundColor(Theme.textPrimary)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(headerTitle)
+                        .font(Theme.sans(12.5, .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                        .lineLimit(1)
+                    if let line = sourceLine {
+                        SourceLineChip(line: line) {
+                            viewModel.revealEntityInSceneText(category: selectionCategory, name: selectionName)
+                        }
+                    }
+                }
                 Text(headerMeta)
                     .font(Theme.mono(10))
                     .foregroundColor(Theme.textDim)
@@ -531,10 +546,61 @@ struct PropertiesPanel: View {
         // identity changes — otherwise it could stay open showing a
         // stale row set as the user clicks between entities.
         let key = "\(selectionCategory.rawValue)|\(selectionName)"
-        if key != lastEntityKey {
+        let keyChanged = key != lastEntityKey
+        if keyChanged {
             lastEntityKey = key
             showAdvanced = false
         }
+
+        // "Reveal in scene file": fetch on selection change, and ALSO
+        // re-arm when a selection made mid-render becomes fetchable once
+        // the render finishes (review P2: the gate below failed then, and
+        // nothing re-triggered for the SAME still-selected entity).  The
+        // `sourceLine == nil` re-arm never fires per-frame on entities
+        // whose line IS known.  Gated on `isSceneEditableForAgents`:
+        // calling the bridge while a render owns the scene would wedge on
+        // the controller's commit mutex (same caveat as every other
+        // scene-text bridge call).
+        if keyChanged || (sourceLine == nil && viewModel.isSceneEditableForAgents) {
+            if viewModel.isSceneEditableForAgents, !selectionName.isEmpty {
+                var offset: UInt64 = 0
+                var line: UInt32 = 0
+                sourceLine = bridge.getEntitySourceLocation(
+                    for: selectionCategory, name: selectionName, byteOffset: &offset, line: &line) ? line : nil
+            } else {
+                sourceLine = nil
+            }
+        }
+    }
+}
+
+// MARK: - Source-line chip ("reveal in scene file")
+
+/// The design comp's "⌗ L<line>" affordance: a small bordered pill next
+/// to the entity name that scrolls the Scene-file tab to this entity's
+/// chunk.  Hidden entirely by the caller when no location is available
+/// (see `PropertiesPanel.sourceLine`), so this view is only ever shown
+/// with a resolved line number.
+private struct SourceLineChip: View {
+    let line: UInt32
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text("⌗ L\(line)")
+                .font(Theme.mono(10))
+                .foregroundColor(isHovered ? Theme.textSecondary : Theme.textDim)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+        }
+        .buttonStyle(.plain)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusSmall)
+                .stroke(isHovered ? Theme.borderStrong : Theme.borderHairline, lineWidth: 1)
+        )
+        .onHover { isHovered = $0 }
+        .help("Reveal in scene file")
     }
 }
 

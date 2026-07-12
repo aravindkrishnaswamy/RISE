@@ -5131,6 +5131,88 @@ void SceneEditController::GetSceneTextVersion( std::uint64_t& outUuid,
 	outRevision = v.revision;
 }
 
+namespace {
+
+// "Reveal in scene file": the CST role-kind-suffix + unique-fallback DocFindByNameAnyRole
+// needs to resolve a Category's entity name to its chunk, mirroring the SAME table
+// SceneEditor::ClassifyCstEntityKind walks in REVERSE (CST role string -> EntityCategory) --
+// see that function's suffix list (endsWith "_camera"/"_light"/"_material"/"_medium", or the
+// bare "camera"/"material" role). Object's role is exactly "standard_object" (no suffix
+// family), so its "suffix" is the whole role name -- DocFindByNameAnyRole's `role ==
+// roleKindSuffix` arm matches it directly.
+//
+// Animation/SceneVariant are ALWAYS-NAMED top-level chunks (role "animation" /
+// "scene_variant" exactly) with no cross-category collision risk, so no unique-fallback
+// is needed for them either.
+//
+// Rasterizer and Film are declared NOT addressable here, on purpose: CategoryEntityName /
+// CategoryActiveName for Rasterizer return REGISTRY TYPE names (the picker list of
+// available rasterizer kinds), not a chunk's `name` param -- a rasterizer chunk in the
+// scene is normally unnamed and singleton (the "_rasterizer"-suffixed active integrator).
+// Film's CategoryActiveName returns a synthetic PRESET LABEL ("1080p" etc.), not a name
+// either. Resolving either against DocFindByNameAnyRole's `bareName` parameter would be
+// searching for the wrong string. A future extension COULD special-case Rasterizer/Film
+// through the SAME unique-fallback path SceneEditController::Category::Camera already
+// uses for an unnamed sole camera (both chunks are typically singleton `role ==
+// roleKindSuffix` chunks) -- deferred; not wired today, so EntitySourceLocation refuses
+// them cleanly (returns false) rather than guessing.
+bool RoleKindSuffixForCategory( SceneEditController::Category cat, std::string& outSuffix, bool& outUniqueFallback )
+{
+	using Category = SceneEditController::Category;
+	outUniqueFallback = false;
+	switch( cat ) {
+	case Category::Camera:       outSuffix = "camera";         outUniqueFallback = true; return true;   // same unnamed-active-camera fallback as CaptureAgentPriorParamValue_
+	case Category::Object:       outSuffix = "standard_object"; return true;
+	case Category::Light:        outSuffix = "light";           return true;
+	case Category::Material:     outSuffix = "material";        return true;
+	case Category::Medium:       outSuffix = "medium";          return true;
+	case Category::Animation:    outSuffix = "animation";       return true;
+	case Category::SceneVariant: outSuffix = "scene_variant";   return true;
+	case Category::Rasterizer:
+	case Category::Film:
+	case Category::None:
+	default: return false;   // no chunk-name addressing scheme for this category -- see comment above
+	}
+}
+
+}  // namespace
+
+bool SceneEditController::EntitySourceLocation( Category cat, const String& name,
+                                                 std::uint64_t& outByteOffset, std::uint32_t& outLine ) const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( !mJob.HasRetainedCstDocument() ) return false;
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return false;
+
+	std::string suffix; bool uniqueFallback = false;
+	if( !RoleKindSuffixForCategory( cat, suffix, uniqueFallback ) ) return false;
+	if( name.size() <= 1 && !uniqueFallback ) return false;   // an empty name only resolves via the unique-fallback (unnamed sole entity of its kind)
+
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *doc, name.c_str(), nullptr, suffix, uniqueFallback );
+	if( id == 0 ) return false;   // absent, or ambiguous -- refuse rather than guess (same contract as DocFindByNameAnyRole itself)
+
+	RISE::Cst::NodeRef item;
+	const int idx = RISE::Cst::DocIndexOfNodeId( *doc, id, &item );
+	if( idx < 0 ) return false;   // resolved id is not (any longer) a top-level item
+
+	const size_t off = RISE::Cst::DocByteOffsetOfItem( *doc, idx );
+	if( off == static_cast<size_t>( -1 ) ) return false;
+
+	// Line number: 1-based count of '\n' bytes in the serialized PREFIX before `off`.
+	// SerializeCst has no partial/prefix-only form, so this walks the WHOLE doc's bytes
+	// (O(doc bytes)) -- documented above as fine at click/selection cadence, not a
+	// per-frame path.
+	const std::string full = RISE::Cst::SerializeCst( *doc );
+	if( off > full.size() ) return false;   // defensive: should be unreachable given DocByteOffsetOfItem's own bound
+	unsigned int line = 1;
+	for( size_t i = 0; i < off; ++i ) if( full[i] == '\n' ) ++line;
+
+	outByteOffset = static_cast<std::uint64_t>( off );
+	outLine       = line;
+	return true;
+}
+
 std::string SceneEditController::LastSaveError() const
 {
 	// Snapshot under the lock for the diagnostic-logger thread-safety

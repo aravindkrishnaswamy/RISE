@@ -47,10 +47,6 @@
 
 #include <algorithm>
 
-// CST <-> scene-file live sync + auto-save (item 1/2): eLog_Warning for
-// the auto-save-refused/failed log line in performSceneSave.
-#include "Interfaces/ILog.h"
-
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
@@ -205,10 +201,10 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_chatPanel, &ChatPanel::chatRenderOutstandingChanged, this, &MainWindow::updateMenuActionStates);
     connect(m_chatPanel, &ChatPanel::chatRenderOutstandingChanged, m_topBar, &TopBar::onChatRenderOutstandingChanged);
 
-    // CST <-> scene-file live sync + auto-save (item 1/2).  ~2 Hz, same
-    // cadence as TopBar's own refinement-status poll.  Started/stopped
-    // alongside the viewport bridge -- see rebuildViewportForLoadedScene
-    // / teardownViewport.
+    // CST <-> scene-file live sync (item 1).  ~2 Hz, same cadence as
+    // TopBar's own refinement-status poll.  Started/stopped alongside
+    // the viewport bridge -- see rebuildViewportForLoadedScene /
+    // teardownViewport.
     m_cstSyncTimer = new QTimer(this);
     m_cstSyncTimer->setInterval(500);
     connect(m_cstSyncTimer, &QTimer::timeout, this, &MainWindow::onCstSyncTick);
@@ -396,6 +392,19 @@ QWidget* MainWindow::buildRightPanel()
     // MainWindow.h's header doc.
     m_outlinerWidget = new OutlinerWidget(panel);
     m_rightPanelLayout->addWidget(m_outlinerWidget);
+
+    // "Reveal in scene file" (item 3): connected ONCE here (not in
+    // rebuildViewportForLoadedScene) because m_outlinerWidget is
+    // persistent but `this` (the receiver) is not recreated per scene
+    // load -- connecting inside rebuildViewportForLoadedScene would
+    // accumulate a duplicate connection on every scene reload.  The
+    // signal carries ViewportBridge::Category; adapt to the int-typed
+    // slot so MainWindow.h doesn't need to include ViewportBridge.h
+    // (see revealEntityInSceneText's doc).
+    connect(m_outlinerWidget, &OutlinerWidget::revealRequested, this,
+            [this](ViewportBridge::Category category, const QString& name) {
+                revealEntityInSceneText(static_cast<int>(category), name);
+            });
 
     return panel;
 }
@@ -641,17 +650,12 @@ void MainWindow::updateMenuActionStates()
                            && state != RenderEngine::Loading);
 
     if (m_saveSceneAction) {
-        // CST <-> scene-file live sync + auto-save (item 1/2): manual
-        // escape hatch, so enabled for both "there's something unsaved"
-        // (though edits now auto-save on a debounce, this covers the
-        // window before the next auto-save tick fires) AND
-        // `m_autoSaveSuspended` (the file changed on disk externally
-        // and auto-save backed off) -- clicking is exactly a manual
-        // retry in that case.  Mirrors macOS RISEApp.swift's "Save
-        // Scene" menu item gate.
+        // Explicit-save-only (user decision 2026-07-12): enabled iff
+        // there's something unsaved -- no auto-save-suspended state to
+        // fold in anymore.  Mirrors macOS RISEApp.swift's "Save Scene"
+        // menu item gate.
         m_saveSceneAction->setEnabled(
-            (m_viewportBridge && m_viewportBridge->hasUnsavedSceneChanges())
-            || m_autoSaveSuspended);
+            m_viewportBridge && m_viewportBridge->hasUnsavedSceneChanges());
     }
     if (m_closeSceneAction) {
         m_closeSceneAction->setEnabled(interacting && state != RenderEngine::Idle);
@@ -682,6 +686,16 @@ void MainWindow::updateMenuActionStates()
     // IDENTICAL term so the two can never drift (the toolbar's broader
     // setEnabled(interacting) alone misses the chat-render clause).
     if (m_viewportToolbar) m_viewportToolbar->setUndoRedoEnabled(bridgeInteractingEnabled);
+
+    // "Reveal in scene file" (item 3): the properties panel's ⌗ chip
+    // and the outliner's context-menu item both call
+    // ViewportBridge::getEntitySourceLocation, which takes the SAME
+    // commit mutex as every other serializedSceneText()-family call --
+    // gate both on the IDENTICAL bridgeInteractingEnabled term used for
+    // undo/redo above (mirrors Mac's isSceneEditableForAgents), so a
+    // chat-driven render can never be wedged against by either affordance.
+    if (m_viewportProps)  m_viewportProps->setSceneEditable(bridgeInteractingEnabled);
+    if (m_outlinerWidget) m_outlinerWidget->setSceneEditable(bridgeInteractingEnabled);
 
     const bool refinementDisabled = !m_viewportBridge
         || state == RenderEngine::Rendering
@@ -889,28 +903,27 @@ void MainWindow::onThemeModeChanged(Theme::ThemeMode newMode)
 
 // ============================================================
 // Scene-file save (interactive round-trip, Phase 6.5) +
-// CST <-> scene-file live sync / auto-save (UI refinement item 1/2)
+// CST <-> scene-file live sync (UI refinement item 1)
 // ============================================================
 
 void MainWindow::onSaveScene()
 {
-    // Manual entry point -- File > Save Scene and the TopBar chip's
-    // suspended-state retry click both land here (see TopBar::saveClicked).
-    performSceneSave(/*isAutoSave=*/false);
+    // Entry point -- File > Save Scene and the TopBar's Save pill both
+    // land here (see TopBar::saveClicked).
+    performSceneSave();
 }
 
-// Shared behind onSaveScene() (isAutoSave=false) and onCstSyncTick()'s
-// debounced auto-save (isAutoSave=true).  Mirrors macOS
-// RenderViewModel.saveScene(auto:) -- see that method's doc for the
-// full "why": a manual save is always a fresh retry that clears any
-// prior suspension up front; an auto-save failure logs one warning
-// line and suspends further attempts instead of alert-spamming a
-// modal on every 500ms poll tick; a manual retry (this method with
-// isAutoSave=false) clears the suspension and keeps the original
-// alert behavior.  Returns true on a successful (or no-op) save,
-// false on refusal/I-O failure, so onCstSyncTick can decide whether
-// to suspend further attempts.
-bool MainWindow::performSceneSave(bool isAutoSave)
+// Shared behind onSaveScene() (File > Save Scene / the TopBar's Save
+// pill) and ViewportProperties' own Save button.  Mirrors macOS
+// RenderViewModel.saveScene().  Explicit-save-only (user decision
+// 2026-07-12): this is the ONLY place a .RISEscene write ever happens
+// from this method's callers -- UI edits mutate the live CST in memory
+// and onCstSyncTick's item-1 mirror keeps the SceneEditor buffer
+// following those edits live, but none of that touches disk.  Always
+// alerts on refusal / I/O failure; there is no silent/suspended auto-
+// save path to distinguish from.  Returns true on a successful (or
+// no-op) save, false on refusal/failure.
+bool MainWindow::performSceneSave()
 {
     // Note: no Save-As affordance here — matches the macOS TopBar's
     // Save pill.  Save-As lives in ViewportProperties (right panel).
@@ -918,74 +931,45 @@ bool MainWindow::performSceneSave(bool isAutoSave)
     const QString path = m_viewportBridge->loadedFilePath();
     if (path.isEmpty()) return false;
 
-    if (!isAutoSave) {
-        m_autoSaveSuspended = false;
-        if (m_topBar) m_topBar->setAutoSaveSuspended(false);
-    }
-
     QString errMsg;
     const ViewportBridge::SaveStatus status = m_viewportBridge->saveSceneTo(path, errMsg);
     switch (status) {
     case ViewportBridge::SaveStatus::Saved:
-        m_autoSaveSuspended = false;
-        if (m_topBar) m_topBar->setAutoSaveSuspended(false);
-        // Manual save: pull the just-written bytes into the scene-
-        // editor pane (unless it has its own unsaved text edits) and
-        // refresh the window title.  An auto-save success stays
-        // silent (mirrors macOS item 2: "nothing else, dirty flips
-        // false via the existing push") -- the next onCstSyncTick's
-        // item-1 sync mirrors the editor once the CST version bumps,
-        // so there's no need to duplicate that here via a disk re-read.
-        if (!isAutoSave) {
-            onSceneSavedToPath(path);
-        }
+        // Pull the just-written bytes into the scene-editor pane
+        // (unless it has its own unsaved text edits) and refresh the
+        // window title.
+        onSceneSavedToPath(path);
         return true;
     case ViewportBridge::SaveStatus::NoOp:
         return true;   // Silent success — file unchanged on disk.
     case ViewportBridge::SaveStatus::Refused: {
         const QString message = errMsg.isEmpty()
             ? tr("The save engine declined to write this file.") : errMsg;
-        if (isAutoSave) {
-            m_autoSaveSuspended = true;
-            if (m_topBar) m_topBar->setAutoSaveSuspended(true);
-            if (m_logWidget) m_logWidget->appendLog(RISE::eLog_Warning, tr("Auto-save refused: %1").arg(message));
-        } else {
-            QMessageBox::warning(this, "Save Refused", message);
-        }
+        QMessageBox::warning(this, "Save Refused", message);
         return false;
     }
     case ViewportBridge::SaveStatus::Failed: {
         const QString message = errMsg.isEmpty()
             ? tr("An I/O error occurred while saving the file.") : errMsg;
-        if (isAutoSave) {
-            m_autoSaveSuspended = true;
-            if (m_topBar) m_topBar->setAutoSaveSuspended(true);
-            if (m_logWidget) m_logWidget->appendLog(RISE::eLog_Warning, tr("Auto-save failed: %1").arg(message));
-        } else {
-            QMessageBox::warning(this, "Save Failed", message);
-        }
+        QMessageBox::warning(this, "Save Failed", message);
         return false;
     }
     case ViewportBridge::SaveStatus::Error: {
         const QString message = tr("Unexpected save state (%1).").arg(errMsg);
-        if (isAutoSave) {
-            m_autoSaveSuspended = true;
-            if (m_topBar) m_topBar->setAutoSaveSuspended(true);
-            if (m_logWidget) m_logWidget->appendLog(RISE::eLog_Warning, tr("Auto-save failed: %1").arg(message));
-        } else {
-            QMessageBox::warning(this, "Save Failed", message);
-        }
+        QMessageBox::warning(this, "Save Failed", message);
         return false;
     }
     }
     return false;
 }
 
-// CST <-> scene-file live sync (item 1) + debounced auto-save (item 2).
-// Driven at ~2 Hz by m_cstSyncTimer while a viewport bridge is attached
-// (started in rebuildViewportForLoadedScene, stopped in
-// teardownViewport).  Mirrors macOS RenderViewModel.pollRefinementState's
-// items 1+2.
+// CST <-> scene-file live sync (item 1).  Driven at ~2 Hz by
+// m_cstSyncTimer while a viewport bridge is attached (started in
+// rebuildViewportForLoadedScene, stopped in teardownViewport).  Mirrors
+// macOS RenderViewModel.pollRefinementState's item 1.  Explicit-save-
+// only (user decision 2026-07-12): this mirrors the live CST into the
+// SceneEditor buffer ONLY -- UI edits never write the .RISEscene to
+// disk automatically; a write happens only from performSceneSave().
 void MainWindow::onCstSyncTick()
 {
     // Same gate as ChatPanel's chat-render poll (see its
@@ -1020,24 +1004,6 @@ void MainWindow::onCstSyncTick()
             m_sceneEditor->setBehindLiveScene(true);
         }
     }
-
-    // Item 2 — debounced auto-save.  hasUnsavedSceneChanges() mirrors
-    // the CONTROLLER's dirty flag (agent/GUI edits pending a write),
-    // independent of the SceneEditor text-editor buffer above.
-    // Debounce: only save once the version has been stable across one
-    // full poll tick, so a burst of edits coalesces into a single
-    // write instead of saving mid-burst.  Never runs with no loaded
-    // path or while suspended.
-    if (m_viewportBridge->hasUnsavedSceneChanges()
-        && !m_autoSaveSuspended
-        && !m_engine->loadedFilePath().isEmpty()
-        && m_previousPollSceneTextVersion.valid
-        && m_previousPollSceneTextVersion == current
-        && m_lastAutoSaveAttemptVersion != current) {
-        m_lastAutoSaveAttemptVersion = current;
-        performSceneSave(/*isAutoSave=*/true);
-    }
-    m_previousPollSceneTextVersion = current;
 }
 
 void MainWindow::onSceneSavedToPath(const QString& path)
@@ -1061,6 +1027,32 @@ void MainWindow::onSceneSavedToPath(const QString& path)
                "changes — use Revert in the scene editor "
                "to discard your text edits and pull the "
                "new file content.").arg(path));
+    }
+}
+
+// ============================================================
+// "Reveal in scene file" (item 3)
+// ============================================================
+
+void MainWindow::revealEntityInSceneText(int category, const QString& name)
+{
+    if (!m_viewportBridge || !canUseSceneTransport()) return;
+
+    quint64 offset = 0;
+    quint32 line = 0;
+    const auto cat = static_cast<ViewportBridge::Category>(category);
+    if (!m_viewportBridge->getEntitySourceLocation(cat, name, &offset, &line)) return;
+
+    setLeftTab(1);   // Scene file tab
+
+    // The offset addresses the LIVE serialization.  When the editor
+    // buffer has unsaved hand edits it may differ without being
+    // shorter, so a scroll could land on the WRONG line while looking
+    // authoritative.  Switch tabs only in that case (the stale-buffer
+    // warning is already showing) -- a reveal must be right or absent,
+    // never misleading.
+    if (m_sceneEditor && !m_sceneEditor->isDirty()) {
+        m_sceneEditor->revealAt(offset);
     }
 }
 
@@ -1567,30 +1559,26 @@ void MainWindow::rebuildViewportForLoadedScene()
     connect(m_viewportBridge, &ViewportBridge::dirtyChanged, m_topBar, &TopBar::setSceneEditsDirty);
     connect(m_viewportBridge, &ViewportBridge::dirtyChanged, this, [this](bool) { updateMenuActionStates(); });
 
-    // CST <-> scene-file live sync + auto-save (item 1/2): a freshly-
-    // attached bridge's current version becomes the sync baseline --
-    // the bytes that were just loaded and the live CST agree at
-    // this instant, so there is nothing to pull into the editor yet.
-    // Only a LATER agent/GUI edit that bumps the revision should
-    // overwrite the SceneEditor buffer.  Also resets the per-scene
-    // auto-save/stale-warning state so it doesn't leak across scene
-    // loads.  Mirrors macOS RISEViewportBridge's `viewportBridge`
-    // didSet baseline-setting.  Gated on canUseSceneTransport() like
-    // every other getSceneTextVersion()/serializedSceneText() call
-    // site (see onCstSyncTick's doc) -- every caller of this method
-    // only reaches it once renderState has already left Loading, so
-    // this is always true in practice, but the gate is kept anyway
-    // rather than assuming that invariant holds forever.
+    // CST <-> scene-file live sync (item 1): a freshly-attached bridge's
+    // current version becomes the sync baseline -- the bytes that were
+    // just loaded and the live CST agree at this instant, so there is
+    // nothing to pull into the editor yet.  Only a LATER agent/GUI edit
+    // that bumps the revision should overwrite the SceneEditor buffer.
+    // Also resets the per-scene stale-warning state so it doesn't leak
+    // across scene loads.  Mirrors macOS RISEViewportBridge's
+    // `viewportBridge` didSet baseline-setting.  Gated on
+    // canUseSceneTransport() like every other getSceneTextVersion()/
+    // serializedSceneText() call site (see onCstSyncTick's doc) -- every
+    // caller of this method only reaches it once renderState has
+    // already left Loading, so this is always true in practice, but the
+    // gate is kept anyway rather than assuming that invariant holds
+    // forever.
     {
         quint64 uuid = 0, revision = 0;
         m_lastSyncedSceneTextVersion =
             (canUseSceneTransport() && m_viewportBridge->getSceneTextVersion(&uuid, &revision))
             ? SceneTextVersion{ uuid, revision, true } : SceneTextVersion{};
     }
-    m_previousPollSceneTextVersion = m_lastSyncedSceneTextVersion;
-    m_lastAutoSaveAttemptVersion = SceneTextVersion{};
-    m_autoSaveSuspended = false;
-    if (m_topBar) m_topBar->setAutoSaveSuspended(false);
     if (m_sceneEditor) m_sceneEditor->setBehindLiveScene(false);
     if (m_cstSyncTimer) m_cstSyncTimer->start();
 
@@ -1738,6 +1726,18 @@ void MainWindow::rebuildViewportForLoadedScene()
     connect(m_viewportProps, &ViewportProperties::sceneSavedToPath,
             this, &MainWindow::onSceneSavedToPath);
 
+    // "Reveal in scene file" (item 3): m_viewportProps is per-scene
+    // (recreated above), so this connects fresh each load -- the OLD
+    // instance's connection to `this` is auto-dropped when it's
+    // destroyed by teardownViewport, matching the sceneSavedToPath
+    // connect just above.  Adapts the Category-typed signal to the
+    // int-typed slot for the same reason as the outliner's connect in
+    // buildRightPanel (see revealEntityInSceneText's doc).
+    connect(m_viewportProps, &ViewportProperties::revealRequested, this,
+            [this](ViewportBridge::Category category, const QString& name) {
+                revealEntityInSceneText(static_cast<int>(category), name);
+            });
+
     // Production-render frames from the engine → also flow to the
     // viewport widget so clicking "Render" updates the live view.
     connect(m_engine, &RenderEngine::imageUpdated,
@@ -1748,14 +1748,11 @@ void MainWindow::teardownViewport()
 {
     if (!m_viewportBridge) return;
 
-    // CST <-> scene-file live sync + auto-save (item 1/2): no bridge,
-    // no sync/auto-save -- stop polling and drop all per-scene state so
-    // it can't leak into the next scene load.
+    // CST <-> scene-file live sync (item 1): no bridge, no sync -- stop
+    // polling and drop all per-scene state so it can't leak into the
+    // next scene load.
     if (m_cstSyncTimer) m_cstSyncTimer->stop();
     m_lastSyncedSceneTextVersion = SceneTextVersion{};
-    m_previousPollSceneTextVersion = SceneTextVersion{};
-    m_lastAutoSaveAttemptVersion = SceneTextVersion{};
-    m_autoSaveSuspended = false;
     if (m_sceneEditor) m_sceneEditor->setBehindLiveScene(false);
 
     if (m_chatPanel) {
@@ -1764,7 +1761,6 @@ void MainWindow::teardownViewport()
     if (m_topBar) {
         m_topBar->setViewportBridge(nullptr);
         m_topBar->setSceneEditsDirty(false);
-        m_topBar->setAutoSaveSuspended(false);
     }
     if (m_outlinerWidget) {
         m_outlinerWidget->setBridge(nullptr);

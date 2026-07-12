@@ -1,7 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  ViewportToolbar.cpp - Photoshop-style category-slot toolbar +
-//    (RISE UI redesign) the right-hand status-chip cluster.
+//  ViewportToolbar.cpp - Grouped always-visible tool buttons (see the
+//    header's discoverability-redesign doc) + (RISE UI redesign) the
+//    right-hand status-chip cluster.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -15,12 +16,19 @@
 #include <QMenu>
 #include <QWidgetAction>
 #include <QStyle>
+#include <QStringList>
+#include <QSize>
 #include <QTimer>
 
 ViewportToolbar::ViewportToolbar(QWidget* parent)
     : QWidget(parent)
 {
-    setFixedHeight(40);
+    // Discoverability redesign: grown from 40 to 52pt to fit the now-
+    // labeled ~44pt-tall tool buttons (icon + 9px label below) -- mirrors
+    // ContentView.swift's viewportToolbarRow height bump.  The rest of
+    // the row's chips are unchanged in height and simply re-center
+    // within the taller row (QHBoxLayout's default vertical centering).
+    setFixedHeight(52);
     setAutoFillBackground(true);
     {
         QPalette pal = palette();
@@ -38,7 +46,12 @@ ViewportToolbar::ViewportToolbar(QWidget* parent)
     layout->setContentsMargins(12, 0, 12, 0);
     layout->setSpacing(8);
 
-    // ---- Segmented tool group -------------------------------------------
+    // ---- Grouped tool buttons ---------------------------------------
+    // Discoverability redesign (see header doc): every tool is now its
+    // own always-visible, labeled button -- no more category slot +
+    // right-click flyout.  Three visually separated clusters inside one
+    // bordered container: Select | Camera (Orbit/Pan/Zoom/Roll) |
+    // Object (Move/Rotate/Scale).
     auto* toolGroup = new QWidget(this);
     toolGroup->setObjectName(QStringLiteral("toolGroup"));
     toolGroup->setStyleSheet(QStringLiteral(
@@ -47,41 +60,55 @@ ViewportToolbar::ViewportToolbar(QWidget* parent)
         .arg(Theme::radiusMedium));
     auto* toolGroupLayout = new QHBoxLayout(toolGroup);
     toolGroupLayout->setContentsMargins(2, 2, 2, 2);
-    toolGroupLayout->setSpacing(2);
+    toolGroupLayout->setSpacing(0);
 
     setStyleSheet(QStringLiteral(
         "#viewportToolbar { border-bottom: 1px solid %1; }"
-        "QToolButton {"
-        "  border: 1px solid transparent;"
+        "QToolButton#toolBtn {"
+        "  border: none;"
+        "  border-bottom: 2px solid transparent;"
         "  border-radius: %2px;"
-        "  padding: 2px;"
+        "  padding: 2px 4px;"
+        "  color: %3;"
         "}"
-        "QToolButton:hover { background: %3; }"
-        "QToolButton:checked {"
-        "  background: %4;"
-        "  color: #0d1116;"
-        "  border: 1px solid %4;"
+        "QToolButton#toolBtn:hover { background: %4; }"
+        "QToolButton#toolBtn:checked {"
+        "  background: %5;"
+        "  color: #ffffff;"
+        "  border-bottom: 2px solid %6;"
         "}")
         .arg(Theme::hex(Theme::borderHairline))
         .arg(Theme::radiusSmall)
-        .arg(Theme::rgba(Theme::fillHover), Theme::hex(Theme::accent)));
+        .arg(Theme::hex(Theme::textTertiary))
+        .arg(Theme::rgba(Theme::fillHover), Theme::rgba(Theme::fillActive), Theme::hex(Theme::accent)));
 
-    // Three category slots, in canonical order: Select, Camera,
-    // ObjectTransform.  Numeric values mirror
-    // RISE::SceneEditController::ToolCategory and the C-API
-    // SceneEditToolCategory_* constants.  ScrubTimeline lives in the
-    // bottom timeline bar, not in the toolbar.
+    // Numeric category values mirror RISE::SceneEditController::ToolCategory
+    // and the C-API SceneEditToolCategory_* constants; `subToolsForCategory`
+    // is still the single source of truth for which tools belong to which
+    // visual group.  ScrubTimeline lives in the bottom timeline bar, not
+    // in this toolbar.
     const ViewportBridge::ToolCategory cats[] = {
         ViewportBridge::ToolCategory::Select,
         ViewportBridge::ToolCategory::Camera,
         ViewportBridge::ToolCategory::ObjectTransform,
     };
+    bool firstGroup = true;
     for (auto c : cats) {
-        Slot s;
-        s.category = c;
-        s.button   = makeSlotButton(c);
-        toolGroupLayout->addWidget(s.button);
-        m_slots.append(s);
+        if (!firstGroup) {
+            auto* divider = new QFrame(toolGroup);
+            divider->setFrameShape(QFrame::VLine);
+            divider->setFixedHeight(30);
+            divider->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
+            toolGroupLayout->addWidget(divider);
+        }
+        firstGroup = false;
+        for (ViewportTool t : subToolsForCategory(c)) {
+            ToolButtonEntry entry;
+            entry.tool   = t;
+            entry.button = makeToolButton(t);
+            toolGroupLayout->addWidget(entry.button);
+            m_toolButtons.append(entry);
+        }
     }
     layout->addWidget(toolGroup);
 
@@ -182,7 +209,7 @@ ViewportToolbar::ViewportToolbar(QWidget* parent)
     connect(m_pollTimer, &QTimer::timeout, this, &ViewportToolbar::pollState);
     m_pollTimer->start();
 
-    refreshAllSlots();
+    refreshAllToolButtons();
     updateRegionChip();
     updateCameraChip();
     updateEvChipLabel(0);
@@ -210,39 +237,33 @@ void ViewportToolbar::setBridge(ViewportBridge* bridge)
 {
     m_bridge = bridge;
     m_regionArmed = false;
-    refreshAllSlots();
+    refreshAllToolButtons();
     updateRegionChip();
     updateCameraChip();
 }
 
-QToolButton* ViewportToolbar::makeSlotButton(ViewportBridge::ToolCategory cat)
+QToolButton* ViewportToolbar::makeToolButton(ViewportTool t)
 {
     auto* btn = new QToolButton(this);
+    btn->setObjectName(QStringLiteral("toolBtn"));   // matches the QSS selector installed in the ctor
     btn->setCheckable(true);
-    btn->setProperty("category", static_cast<int>(cat));
-    btn->setToolTip(tooltipForCategory(cat));
-    btn->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(btn, &QToolButton::clicked, this, &ViewportToolbar::onSlotClicked);
+    btn->setProperty("tool", static_cast<int>(t));
+    btn->setToolTip(tooltipForTool(t));
+    btn->setFixedSize(44, 44);
+    btn->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+    btn->setIconSize(QSize(15, 15));
+    btn->setFont(Theme::sans(9));
 
-    // Right-click flyout — same list as macOS's secondary-action menu.
-    // Single-tool slots (Select) skip the menu entirely.
-    const auto subs = subToolsForCategory(cat);
-    if (subs.size() > 1) {
-        connect(btn, &QToolButton::customContextMenuRequested,
-                this, [this, btn, subs](const QPoint& pos) {
-            QMenu menu(btn);
-            for (auto sub : subs) {
-                QIcon icon = iconForTool(sub);
-                QAction* act = icon.isNull()
-                    ? menu.addAction(labelForTool(sub))
-                    : menu.addAction(icon, labelForTool(sub));
-                connect(act, &QAction::triggered, this, [this, sub] {
-                    applyToolSelection(sub);
-                });
-            }
-            menu.exec(btn->mapToGlobal(pos));
-        });
+    const QIcon icon = iconForTool(t);
+    if (!icon.isNull()) {
+        btn->setIcon(icon);
     }
+    // Full label always shown below the icon (or alone, when the local
+    // icon theme has no themed glyph for this tool) -- every tool is
+    // discoverable by name now, not just by a 2-letter abbreviation.
+    btn->setText(labelForTool(t));
+
+    connect(btn, &QToolButton::clicked, this, &ViewportToolbar::onToolButtonClicked);
     return btn;
 }
 
@@ -289,7 +310,10 @@ QString ViewportToolbar::labelForTool(ViewportTool t) const
 {
     switch (t) {
     case ViewportTool::Select:          return tr("Select");
-    case ViewportTool::TranslateObject: return tr("Translate");
+    // Discoverability redesign: "Translate" -> "Move" (mirrors
+    // ViewportToolbar.swift's rename — the button reads as a verb a
+    // first-time user recognizes without already knowing the jargon).
+    case ViewportTool::TranslateObject: return tr("Move");
     case ViewportTool::RotateObject:    return tr("Rotate");
     case ViewportTool::ScaleObject:     return tr("Scale");
     case ViewportTool::OrbitCamera:     return tr("Orbit");
@@ -301,77 +325,58 @@ QString ViewportToolbar::labelForTool(ViewportTool t) const
     return QString();
 }
 
-QString ViewportToolbar::tooltipForCategory(ViewportBridge::ToolCategory cat) const
+QString ViewportToolbar::tooltipForTool(ViewportTool t) const
 {
-    switch (cat) {
-    case ViewportBridge::ToolCategory::Select:
-        return tr("Select — click an object in the viewport to make it the next edit's target");
-    case ViewportBridge::ToolCategory::Camera:
-        return tr("Camera — orbit, pan, zoom, or roll the camera (right-click to switch sub-tool)");
-    case ViewportBridge::ToolCategory::ObjectTransform:
-        return tr("Transform — translate, rotate, or scale the selected object via the gizmo (right-click to switch sub-tool)");
+    // No keyboard-shortcut hint is appended -- none of these tools are
+    // bound to a keyboard shortcut anywhere in this app (checked
+    // MainWindow::createMenuBar's QAction::setShortcut list), so a
+    // fabricated hint would mislead rather than help.  Mirrors
+    // ViewportToolbar.swift's per-tool tooltip strings verbatim.
+    switch (t) {
+    case ViewportTool::Select:
+        return tr("Select — click an object in the viewport to make it the target of the next edit");
+    case ViewportTool::TranslateObject:
+        return tr("Move — drag the selected object to move it through the scene");
+    case ViewportTool::RotateObject:
+        return tr("Rotate — drag to rotate the selected object around its origin");
+    case ViewportTool::ScaleObject:
+        return tr("Scale — drag up/down to scale the selected object");
+    case ViewportTool::OrbitCamera:
+        return tr("Orbit Camera — drag to rotate the camera around the scene");
+    case ViewportTool::PanCamera:
+        return tr("Pan Camera — drag to translate the camera in screen plane");
+    case ViewportTool::ZoomCamera:
+        return tr("Zoom Camera — drag to dolly the camera closer or farther");
+    case ViewportTool::RollCamera:
+        return tr("Roll Camera — drag horizontally to roll the camera around the (camera→look-at) axis");
+    case ViewportTool::ScrubTimeline:
+        return tr("Scrub Timeline — drag the timeline slider at the bottom to scrub through animation");
     }
     return QString();
 }
 
-void ViewportToolbar::refreshSlot(const Slot& s)
+void ViewportToolbar::refreshAllToolButtons()
 {
-    // Pick which tool's icon/label to show on the slot button.  If
-    // the current tool belongs to the slot's category, show it.
-    // Otherwise the bridge's per-category last-used pick — or the
-    // category default when the bridge isn't wired (test mode).
-    ViewportTool shown;
-    if (ViewportBridge::categoryForTool(m_current) == s.category) {
-        shown = m_current;
-    } else if (m_bridge) {
-        shown = m_bridge->lastSubToolForCategory(s.category);
-    } else {
-        shown = ViewportBridge::defaultSubToolForCategory(s.category);
+    for (const auto& entry : m_toolButtons) {
+        entry.button->setChecked(entry.tool == m_current);
     }
-    QIcon icon = iconForTool(shown);
-    if (!icon.isNull()) {
-        s.button->setIcon(icon);
-        s.button->setText(QString());
-        s.button->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    } else {
-        // No icon theme — use a 2-char abbreviation so the slot still
-        // distinguishes the active sub-tool at a glance.
-        s.button->setText(labelForTool(shown).left(2));
-        s.button->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    }
-    const bool isActiveCategory =
-        ( ViewportBridge::categoryForTool(m_current) == s.category );
-    s.button->setChecked(isActiveCategory);
 }
 
-void ViewportToolbar::refreshAllSlots()
-{
-    for (const auto& s : m_slots) refreshSlot(s);
-}
-
-void ViewportToolbar::onSlotClicked()
+void ViewportToolbar::onToolButtonClicked()
 {
     auto* sender = qobject_cast<QToolButton*>(this->sender());
     if (!sender) return;
-    const auto cat = static_cast<ViewportBridge::ToolCategory>(
-        sender->property("category").toInt());
-    // Click activates the slot's currently-shown sub-tool (last-used
-    // memory).  Matches macOS Button-action behavior.
-    ViewportTool shown;
-    if (ViewportBridge::categoryForTool(m_current) == cat) {
-        shown = m_current;
-    } else if (m_bridge) {
-        shown = m_bridge->lastSubToolForCategory(cat);
-    } else {
-        shown = ViewportBridge::defaultSubToolForCategory(cat);
-    }
-    applyToolSelection(shown);
+    // Discoverability redesign: a click activates EXACTLY the tool this
+    // button represents -- no more "shown sub-tool" indirection, since
+    // every tool now has its own always-visible button.
+    const auto t = static_cast<ViewportTool>(sender->property("tool").toInt());
+    applyToolSelection(t);
 }
 
 void ViewportToolbar::applyToolSelection(ViewportTool t)
 {
     m_current = t;
-    refreshAllSlots();
+    refreshAllToolButtons();
     emit toolChanged(m_current);
 }
 
@@ -391,8 +396,70 @@ void ViewportToolbar::updateCameraChip()
     const QString name = m_bridge
         ? m_bridge->activeNameForCategory(ViewportBridge::Category::Camera)
         : QString();
-    m_cameraChip->setText(QString::fromUtf8("\xE2\x97\x89 ")
-        + (name.isEmpty() ? tr("No camera") : name));
+    QString text = QString::fromUtf8("\xE2\x97\x89 ") + (name.isEmpty() ? tr("No camera") : name);
+    // Camera chip lens summary (design brief "Camera chip lens
+    // summary"): appended ONLY when honestly available -- see
+    // cameraLensSummary's doc for the selection-echo gate.
+    const QString lens = cameraLensSummary(name);
+    if (!lens.isEmpty()) {
+        text += QStringLiteral("   ") + lens;
+    }
+    m_cameraChip->setText(text);
+}
+
+QString ViewportToolbar::cameraLensSummary(const QString& activeCameraName) const
+{
+    // Lens summary for the active camera, e.g. "50mm · f/4" (ThinLens)
+    // or "62° FOV · f/8" (Pinhole -- no focal_length parameter exists on
+    // that camera type, so this honestly shows FOV instead of
+    // fabricating a focal length).  Returns an empty string (name-only
+    // fallback) when there is nothing honest to show.
+    //
+    // DATA SOURCE CAVEAT (mirrors ContentView.swift's cameraLensSummary):
+    // propertySnapshotFor(Camera) is keyed to the Properties panel's OWN
+    // camera-category SELECTION (SceneEditController::mSelectionByCategory
+    // [Camera]), not directly to the scene's active camera.  Those two are
+    // the SAME thing for any camera the user has actually clicked in the
+    // outliner/panel -- setSelection(Camera, name) is what calls
+    // IScene::SetActiveCamera in the first place -- but immediately after
+    // scene load, before any camera selection, the panel's selection can
+    // be empty while a camera is nonetheless active by scene default.
+    // This function ONLY trusts the snapshot when the panel's current
+    // selection name already echoes activeCameraName; otherwise it
+    // returns empty rather than either showing stale/wrong data or
+    // forcing setSelection as a side effect of a toolbar read (that call
+    // is a real scene mutation with its own cancel-and-park
+    // serialization -- not something a read-only chip should trigger).
+    if (!m_bridge || activeCameraName.isEmpty()) return QString();
+    if (m_bridge->selectionCategory() != ViewportBridge::Category::Camera) return QString();
+    if (m_bridge->selectionName() != activeCameraName) return QString();
+
+    // propertySnapshotFor's own doc requires a fresh propertySnapshot()
+    // call in the same cycle to guarantee RefreshProperties() ran --
+    // ViewportProperties::refresh() already does this on every preview
+    // frame in practice, but this poll (500ms, independent of render
+    // frames) can't rely on that timing, so force it here.
+    m_bridge->propertySnapshot();
+
+    QString focalLengthMm, fovDegrees, fstop;
+    const QVector<ViewportProperty> props =
+        m_bridge->propertySnapshotFor(ViewportBridge::Category::Camera);
+    for (const auto& row : props) {
+        if (row.name == QLatin1String("focal_length")) focalLengthMm = row.value;
+        else if (row.name == QLatin1String("fov"))      fovDegrees = row.value;
+        else if (row.name == QLatin1String("fstop"))     fstop = row.value;
+    }
+
+    QStringList parts;
+    if (!focalLengthMm.isEmpty()) {
+        parts << focalLengthMm + QStringLiteral("mm");
+    } else if (!fovDegrees.isEmpty()) {
+        parts << fovDegrees + QString::fromUtf8("\xC2\xB0 FOV");
+    }
+    if (!fstop.isEmpty()) {
+        parts << QStringLiteral("f/") + fstop;
+    }
+    return parts.join(QStringLiteral(" \xC2\xB7 "));
 }
 
 void ViewportToolbar::updateRegionChip()

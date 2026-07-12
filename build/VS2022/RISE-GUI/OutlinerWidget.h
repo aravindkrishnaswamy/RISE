@@ -47,6 +47,15 @@ public slots:
     /// selection change this widget itself triggers.
     void refresh();
 
+    /// "Reveal in scene file" (item 3): pushed by MainWindow::
+    /// updateMenuActionStates with the SAME bridgeInteractingEnabled
+    /// term that gates undo/redo (mirrors Mac's
+    /// isSceneEditableForAgents) -- gates each child row's context-menu
+    /// item so ViewportBridge::getEntitySourceLocation() is never
+    /// called while a production or chat-driven render owns the
+    /// controller's commit mutex.
+    void setSceneEditable(bool editable);
+
 signals:
     /// Fired after this widget calls a bridge selection/expansion
     /// mutator -- MainWindow forwards this to
@@ -54,6 +63,12 @@ signals:
     /// follows the outliner's pick immediately rather than waiting for
     /// the next imageUpdated-driven refresh.
     void selectionActivated();
+
+    /// "Reveal in scene file" context-menu item was clicked on a child
+    /// row.  MainWindow connects this to its own
+    /// revealEntityInSceneText(), the SAME slot the properties panel's
+    /// ⌗ chip drives.
+    void revealRequested(ViewportBridge::Category category, const QString& name);
 
 private:
     using Category = ViewportBridge::Category;
@@ -79,6 +94,10 @@ private:
     // ViewportProperties::rebuildEntityLists.
     QHash<int, QStringList> m_entitiesByCategory;
     unsigned int             m_lastEpoch = 0;
+
+    // "Reveal in scene file" (item 3): see setSceneEditable's doc.
+    // Consulted by rebuild() to compute each child row's canReveal.
+    bool m_sceneEditable = false;
 };
 
 #endif // OUTLINERWIDGET_H

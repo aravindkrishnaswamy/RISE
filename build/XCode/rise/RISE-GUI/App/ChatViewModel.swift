@@ -252,6 +252,39 @@ final class ChatViewModel: ObservableObject {
     // to the Keychain only.
     @Published private(set) var provider: AgentChatProviderChoice
     @Published private(set) var modelId: String
+
+    // MARK: - Agent autonomy selector (2026-07 GUI composer chips)
+
+    /// The composer's current autonomy level for the CHAT AGENT's OWN tool
+    /// calls (RISEViewportBridge's `-agentHandleToolCall:` routing — see
+    /// that method's doc for the exact per-level verb behaviour). Persisted
+    /// in UserDefaults so the choice survives relaunch; applied to a fresh
+    /// `RISEViewportBridge` on every `sceneOpened(viewportBridge:)` (a new
+    /// scene builds a NEW bridge, whose own dispatchers default to
+    /// `.apply` until told otherwise — see the bridge header's doc).
+    ///
+    /// DEFAULT IS `.apply`, matching today's actual behaviour byte-for-
+    /// byte: investigation for this feature (2026-07) found that the
+    /// in-app chat's own tool calls have ALWAYS committed directly (Owner
+    /// authority + Commit autonomy) — the existing "staged proposal" path
+    /// (ProposalCard / `resolveProposal` below) is fed ONLY by the
+    /// SEPARATE external-hosted-MCP-server session (`startExternalHosting`),
+    /// never by this in-app chat driver. So `.propose` is a genuinely NEW
+    /// behaviour for the in-app chat, not a re-labeling of something
+    /// already true by default — defaulting to it would silently change
+    /// what happens when a user who has never touched this control sends a
+    /// message, which the feature brief explicitly rules out.
+    @Published private(set) var autonomyLevel: RISEAgentAutonomyLevel
+    private static let autonomyLevelKey = "agentAutonomyLevel"
+
+    /// Change the composer's autonomy level: persist it and push it onto
+    /// the live bridge (if any) immediately, so an in-flight session
+    /// reflects the new choice on its very next tool call.
+    func setAutonomyLevel(_ level: RISEAgentAutonomyLevel) {
+        autonomyLevel = level
+        UserDefaults.standard.set(level.rawValue, forKey: Self.autonomyLevelKey)
+        viewportBridge?.agentAutonomyLevel = level
+    }
     /// Bumped whenever a key is saved/cleared so the settings UI
     /// re-derives the key-source caption.
     @Published private(set) var keyStateEpoch: Int = 0
@@ -698,6 +731,12 @@ final class ChatViewModel: ObservableObject {
         provider = storedProvider
         modelId = storedModelId.isEmpty ? storedProvider.defaultModelId : storedModelId
         chatBridge.setProvider(storedProvider.bridgeValue, modelId: storedModelId)
+
+        // Agent autonomy selector: an absent/out-of-range stored value
+        // resolves to `.apply` — see `autonomyLevel`'s doc for why that
+        // (not `.propose`) is the honest default.
+        let storedAutonomyRaw = UserDefaults.standard.object(forKey: Self.autonomyLevelKey) as? Int
+        autonomyLevel = storedAutonomyRaw.flatMap(RISEAgentAutonomyLevel.init(rawValue:)) ?? .apply
     }
 
     // MARK: Scene lifecycle (driven by RenderViewModel)
@@ -711,6 +750,12 @@ final class ChatViewModel: ObservableObject {
         cancelTurn()
         sceneGeneration += 1
         viewportBridge = vb
+        // Agent autonomy selector: a fresh bridge's dispatchers default to
+        // `.apply` (see the bridge header's doc) until told otherwise —
+        // apply THIS view model's persisted choice immediately so a scene
+        // switch never silently resets a user's Read/Propose selection
+        // back to Apply.
+        vb.agentAutonomyLevel = autonomyLevel
         chatBridge.reset()
         transcript = []
         clearErrorAffordances()
@@ -1537,7 +1582,15 @@ final class ChatViewModel: ObservableObject {
                             call: call, submitLine: line, vb: vb)
                     } else {
                         // Synchronous, on main — the 1c-1 executor contract.
-                        responseLine = vb.agentHandleLine(line)
+                        // Agent autonomy selector: routes to whichever
+                        // dispatcher matches the composer's CURRENT level
+                        // (see RISEViewportBridge.h's `-agentHandleToolCall:`
+                        // doc) — Read refuses edit verbs, Propose stages
+                        // them, Apply commits them directly (today's
+                        // behaviour). `render` is excluded from this
+                        // routing on purpose (handled in the `if` branch
+                        // above via the level-independent `agentHandleLine`).
+                        responseLine = vb.agentHandleToolCall(line)
                     }
 
                     // The awaited render path above can suspend across

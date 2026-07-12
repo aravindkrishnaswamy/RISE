@@ -7687,6 +7687,20 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_SceneEditController_GetEntitySourceLocation(
+		SceneEditController* p, int category, const char* name,
+		unsigned long long* outByteOffset, unsigned int* outLine )
+	{
+		if( !p || !name ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		std::uint64_t byteOffset = 0; std::uint32_t line = 0;
+		if( !p->EntitySourceLocation( cat, String( name ), byteOffset, line ) ) return false;
+		if( outByteOffset ) *outByteOffset = byteOffset;
+		if( outLine )       *outLine       = line;
+		return true;
+	}
+
 	bool RISE_API_SceneEditController_HasUnsavedChanges( SceneEditController* p )
 	{
 		if( !p ) return false;

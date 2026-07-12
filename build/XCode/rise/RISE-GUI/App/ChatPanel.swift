@@ -277,11 +277,7 @@ struct ChatPanel: View {
 
             Spacer(minLength: 4)
 
-            // NOTE: the design comp shows an L0–L3 autonomy selector
-            // here.  ChatViewModel exposes no autonomy-level state (the
-            // seven agent verbs run at a single trust level today), so
-            // per the slice brief this control is DELIBERATELY omitted
-            // rather than faked — see the implementation report.
+            autonomySelector
 
             Button {
                 showSettings = true
@@ -296,6 +292,38 @@ struct ChatPanel: View {
             }
         }
         .font(Theme.mono(10.5))
+    }
+
+    // MARK: - Agent autonomy selector (2026-07 GUI composer chips)
+
+    /// The comp's L0/L1/L2 chips — "Read" / "Propose" / "Apply".  Each
+    /// level maps 1:1 to `RISEAgentAutonomyLevel` (RISEViewportBridge.h);
+    /// the `.help` text states EXACTLY what the level does — see that
+    /// header's doc for the underlying routing this description must stay
+    /// truthful to.
+    private var autonomySelector: some View {
+        HStack(spacing: 4) {
+            autonomyChip("Read", level: .read,
+                         help: "Read: agent can read the scene and render, never edit.")
+            autonomyChip("Propose", level: .propose,
+                         help: "Propose: edits are staged as proposals for your review.")
+            autonomyChip("Apply", level: .apply,
+                         help: "Apply: edits apply directly — still one undo step each.")
+        }
+    }
+
+    private func autonomyChip(_ title: String, level: RISEAgentAutonomyLevel,
+                               help: String) -> some View {
+        let isActive = chat.autonomyLevel == level
+        return Button {
+            chat.setAutonomyLevel(level)
+        } label: {
+            Text(title)
+                .font(Theme.mono(10, isActive ? .semibold : .regular))
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(isActive ? Theme.accentLight : Theme.textDim)
+        .help(help)
     }
 
     // MARK: - Shared pill button

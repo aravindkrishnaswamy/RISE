@@ -16,6 +16,8 @@
 #include <QFrame>
 #include <QMouseEvent>
 #include <QPalette>
+#include <QMenu>
+#include <QAction>
 
 #include <functional>
 #include <utility>
@@ -140,6 +142,17 @@ void OutlinerWidget::refresh()
         }
     }
 
+    rebuild();
+}
+
+void OutlinerWidget::setSceneEditable(bool editable)
+{
+    if (m_sceneEditable == editable) return;
+    m_sceneEditable = editable;
+    // Re-derive each row's context-menu enable state immediately rather
+    // than waiting for the next epoch-gated refresh() -- a render
+    // finishing (or starting) should flip the item's enabled state on
+    // the SAME tick, matching PropertiesPanel.swift's live binding.
     rebuild();
 }
 
@@ -270,6 +283,30 @@ void OutlinerWidget::rebuild()
                     activeBadge->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::accentLight)));
                     childLayout->addWidget(activeBadge);
                 }
+
+                // "Reveal in scene file" context-menu item (item 3):
+                // Rasterizer/Film rows have no chunk address (registry/
+                // preset names, not chunk names) -- disabled rather than
+                // a silent no-op, mirroring OutlinerView.swift's review-
+                // P3 fix.  Resolvability of a particular name/category
+                // (does it actually HAVE a chunk location) isn't pre-
+                // checked here -- an unresolvable target just no-ops on
+                // the MainWindow side, same as the properties-panel chip
+                // when hidden mid-render.
+                const bool canReveal = m_sceneEditable
+                    && def.category != Category::Rasterizer
+                    && def.category != Category::Film;
+                childRow->setContextMenuPolicy(Qt::CustomContextMenu);
+                connect(childRow, &QWidget::customContextMenuRequested, this,
+                        [this, childRow, cat = def.category, childName, canReveal](const QPoint& pos) {
+                    QMenu menu(childRow);
+                    QAction* revealAction = menu.addAction(tr("Reveal in scene file"));
+                    revealAction->setEnabled(canReveal);
+                    QAction* triggered = menu.exec(childRow->mapToGlobal(pos));
+                    if (triggered == revealAction) {
+                        emit revealRequested(cat, childName);
+                    }
+                });
 
                 m_listLayout->addWidget(childRow);
             }

@@ -47,6 +47,18 @@ public slots:
     /// discard them).
     void refreshFromLiveScene(const QString& text);
 
+    /// "Reveal in scene file" (item 3): scroll to the line containing
+    /// UTF-8 byte offset `byteOffset` in the editor's CURRENT buffer,
+    /// select the whole line, and briefly flash it.  ASSUMPTION
+    /// (documented per the design brief): the buffer is byte-identical
+    /// to the CST serialization `byteOffset` was resolved against --
+    /// MainWindow::revealEntityInSceneText only calls this when
+    /// `!isDirty()`, so the buffer's last mirror (refreshFromLiveScene)
+    /// is exactly what the bridge resolved the offset against.  A
+    /// stale/out-of-range offset bails out silently rather than
+    /// crashing or landing on the wrong line.
+    void revealAt(quint64 byteOffset);
+
     /// Amber "scene changed elsewhere" warning: true when the live CST
     /// has moved on while the buffer still has unsaved edits (set by
     /// MainWindow's poll; only ever true alongside isDirty() -- see

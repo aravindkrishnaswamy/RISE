@@ -95,11 +95,15 @@ private slots:
     // until then).
     void onSaveRenderedImage();
 
-    // CST <-> scene-file live sync + auto-save (UI refinement item 1).
-    // ~2 Hz poll of the live CST while a viewport bridge is attached --
-    // mirrors macOS RenderViewModel.pollRefinementState's items 1+2.
-    // Started/stopped alongside the bridge in
-    // rebuildViewportForLoadedScene / teardownViewport.
+    // CST <-> scene-file live sync (UI refinement item 1) -- ~2 Hz poll
+    // of the live CST while a viewport bridge is attached, mirroring
+    // macOS RenderViewModel.pollRefinementState's item 1.  Started/
+    // stopped alongside the bridge in rebuildViewportForLoadedScene /
+    // teardownViewport.  Explicit-save-only (user decision 2026-07-12):
+    // this poll mirrors the live CST into the SceneEditor buffer ONLY --
+    // there is no debounced auto-save branch anymore (formerly "item 2").
+    // A disk write happens ONLY via performSceneSave(), triggered by the
+    // TopBar's Save pill or File > Save Scene.
     void onCstSyncTick();
 
 protected:
@@ -161,8 +165,8 @@ private:
     // other the way two independent inline `setEvEnabled` calls could.
     void updateEvEnabledState();
 
-    // CST <-> scene-file live sync + auto-save (UI refinement item 1).
-    // Cheap change-detector pair from ViewportBridge::getSceneTextVersion.
+    // CST <-> scene-file live sync (UI refinement item 1).  Cheap
+    // change-detector pair from ViewportBridge::getSceneTextVersion.
     // uuid is fresh per load; revision bumps iff content changed.
     // `valid` stands in for macOS's `SceneTextVersion?` optional --
     // false means "no version observed yet" (never compares equal to
@@ -182,33 +186,36 @@ private:
     /// or set at bridge-attach time so the file-on-disk bytes and the
     /// live CST start in agreement.  Invalid before any bridge attaches.
     SceneTextVersion m_lastSyncedSceneTextVersion;
-    /// The version observed on the PREVIOUS poll tick -- the debounce
-    /// signal for auto-save (item 2): only save once the version has
-    /// been stable across one full tick, so a burst of agent/GUI edits
-    /// coalesces into a single write instead of saving mid-burst.
-    SceneTextVersion m_previousPollSceneTextVersion;
-    /// The version an auto-save was last attempted against, so a
-    /// stable-but-already-tried version doesn't re-fire every tick.
-    SceneTextVersion m_lastAutoSaveAttemptVersion;
-    /// Debounced auto-save (item 2): true once an auto-save attempt has
-    /// been refused or I/O-failed.  While true, onCstSyncTick stops
-    /// attempting further auto-saves -- a manual File > Save Scene (or
-    /// the TopBar chip) clears it and retries.  Mirrored into
-    /// m_topBar's chip via TopBar::setAutoSaveSuspended.
-    bool m_autoSaveSuspended = false;
     /// ~2 Hz poll driving onCstSyncTick.  Started in
     /// rebuildViewportForLoadedScene, stopped in teardownViewport.
     QTimer* m_cstSyncTimer = nullptr;
 
-    /// Shared implementation behind File > Save Scene / the TopBar
-    /// chip's retry click (isAutoSave=false) and onCstSyncTick's
-    /// debounced auto-save (isAutoSave=true).  Mirrors macOS
-    /// RenderViewModel.saveScene(auto:).  A manual (non-auto) call
-    /// always clears m_autoSaveSuspended first, even before its own
-    /// outcome is known -- matches the "manual retry" contract.
-    /// Returns true on a successful (or no-op) save, false on
-    /// refusal/failure.
-    bool performSceneSave(bool isAutoSave);
+    /// Shared implementation behind File > Save Scene and the TopBar's
+    /// Save pill.  Mirrors macOS RenderViewModel.saveScene().
+    /// Explicit-save-only (user decision 2026-07-12): this is the ONLY
+    /// place a .RISEscene write ever happens -- there is no debounced
+    /// auto-save path to distinguish from, so every outcome (including
+    /// refusal / I/O failure) always alerts the user.  Returns true on
+    /// a successful (or no-op) save, false on refusal/failure.
+    bool performSceneSave();
+
+    /// "Reveal in scene file" (item 3): resolve (category, name) via
+    /// the bridge, switch to the Scene-file tab, and scroll/select/
+    /// flash the resolved line in the SceneEditor.  Mirrors macOS
+    /// RenderViewModel.revealEntityInSceneText.  `category` uses the
+    /// SAME numbering as SceneEditCategory_* / ViewportBridge::Category
+    /// (kept as a raw int here rather than the bridge's nested enum type,
+    /// so this header doesn't need to pull in ViewportBridge.h -- matches
+    /// every other cross-widget slot in this class; the two call sites in
+    /// MainWindow.cpp adapt via a small lambda).  Switches tabs even when
+    /// the SceneEditor buffer has unsaved edits (the stale-buffer warning
+    /// is already showing then) but SKIPS the scroll in that case -- the
+    /// offset addresses the LIVE text and could land on the wrong line.
+    /// A no-op (no tab switch, no scroll) when there's no bridge, the
+    /// scene isn't editable (canUseSceneTransport() gate, same as every
+    /// other serializedSceneText()-family call), or the entity doesn't
+    /// resolve.
+    void revealEntityInSceneText(int category, const QString& name);
 
     // UI refinement item 3: File > Theme handler.  No-op if `newMode`
     // is already active (also guards the redundant re-click of an

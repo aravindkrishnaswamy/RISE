@@ -194,13 +194,17 @@ struct TopBar: View {
 
     // MARK: - Right: save-state indicator
     //
-    // CST <-> scene-file live sync + auto-save: the explicit Save
-    // button is gone — edits auto-save to disk on a debounce (see
-    // RenderViewModel.pollRefinementState's item 2), so this is a
-    // passive status readout rather than an action.  It becomes
-    // actionable ONLY in the suspended state, where it doubles as the
-    // one-click retry (mirrors File > Save Scene, which also clears the
-    // suspension first).
+    // Explicit-save-only (user decision 2026-07-12): UI edits never
+    // write the .RISEscene to disk automatically — the CST <-> editor
+    // live mirror (RenderViewModel.pollRefinementState's item 1) keeps
+    // the Scene-file tab following live edits, but a disk write happens
+    // ONLY when the user explicitly saves.  So this chip is actionable
+    // while dirty (an active Save button that calls `viewModel.saveScene()`
+    // directly) and passive once clean ("saved").  There is no
+    // auto-save-suspended state to surface here anymore — a save that's
+    // refused or I/O-fails (e.g. the file changed on disk externally)
+    // is reported through `saveScene()`'s own NSAlert at the moment the
+    // user clicks Save, not as a standing chip state.
 
     // MARK: - Right: render transport (Render -> Pause -> Resume)
 
@@ -284,23 +288,24 @@ struct TopBar: View {
     @ViewBuilder
     private var saveStateChip: some View {
         if viewModel.loadedFilePath != nil {
-            if viewModel.autoSaveSuspended {
+            if viewModel.sceneEditsDirty {
                 Button {
-                    viewModel.retrySaveAfterSuspension()
+                    viewModel.saveScene()
                 } label: {
-                    Text("⚠ not saved — file changed on disk")
-                        .font(Theme.mono(10))
-                        .foregroundColor(Theme.warn)
+                    Text("Save")
+                        .font(Theme.sans(12, .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 6)
+                        .background(
+                            Theme.fillHover,
+                            in: RoundedRectangle(cornerRadius: Theme.radiusMedium))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Theme.radiusMedium)
+                                .stroke(Theme.borderStrong, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
-                .help("The scene file was modified outside RISE, so auto-save "
-                    + "backed off rather than overwrite it. Use File > Save Scene "
-                    + "to retry (this will overwrite the on-disk file), or reload "
-                    + "the scene to pick up the external changes.")
-            } else if viewModel.sceneEditsDirty {
-                Text("● saving…")
-                    .font(Theme.mono(10))
-                    .foregroundColor(Theme.dirty)
+                .help("Write the scene file to disk (⌥⌘S) — edits are never auto-saved")
             } else {
                 Text("✓ saved")
                     .font(Theme.mono(10))

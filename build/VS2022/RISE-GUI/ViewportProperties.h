@@ -50,11 +50,28 @@ public slots:
     /// selection change, and by OutlinerWidget::selectionActivated.
     void refresh();
 
+    /// "Reveal in scene file" (item 3): pushed by MainWindow::
+    /// updateMenuActionStates with the SAME bridgeInteractingEnabled
+    /// term that gates undo/redo (mirrors Mac's
+    /// isSceneEditableForAgents) -- gates the ⌗ chip's fetch so
+    /// getEntitySourceLocation() is never called while a production or
+    /// chat-driven render owns the controller's commit mutex.
+    void setSceneEditable(bool editable);
+
 signals:
     /// Fired after a successful in-place / Save-As round-trip save.
     /// MainWindow connects to re-anchor RenderEngine::loadedFilePath
     /// and refresh the SceneEditor text pane.  Not emitted on NoOp.
     void sceneSavedToPath(const QString& path);
+
+    /// "Reveal in scene file": the header's ⌗ chip was clicked for the
+    /// current primary selection.  MainWindow connects this to its own
+    /// revealEntityInSceneText(), which switches to the Scene-file tab
+    /// and scrolls/selects/flashes the resolved line.  Uses the fully
+    /// qualified `ViewportBridge::Category` (rather than this class's
+    /// private `Category` alias) since a signal declared here, ahead of
+    /// that private using-declaration, must name an already-visible type.
+    void revealRequested(ViewportBridge::Category category, const QString& name);
 
 private slots:
     void onLineEditFinished();
@@ -104,6 +121,11 @@ private:
     QLabel* m_iconChip  = nullptr;
     QLabel* m_nameLabel = nullptr;
     QLabel* m_metaLabel = nullptr;
+    // "Reveal in scene file" (item 3): the "⌗ L<n>" chip next to
+    // m_nameLabel.  Hidden entirely unless m_sourceLineKnown -- mirrors
+    // PropertiesPanel.swift's SourceLineChip, which is only ever shown
+    // with a resolved line number.
+    QToolButton* m_sourceLineChip = nullptr;
 
     // ---- Camera-only affordances ("Use in viewport" / "Add Camera") -
     QWidget*     m_cameraAffordances = nullptr;
@@ -136,6 +158,17 @@ private:
     // "<cat>|<name>" -- resets the Advanced disclosure whenever the
     // selected entity's identity changes, matching PropertiesPanel.swift.
     QString  m_lastEntityKey;
+
+    // "Reveal in scene file" (item 3): the selected entity's 1-based
+    // line in the scene text (m_sourceLine), valid iff
+    // m_sourceLineKnown.  Refetched on an entity-IDENTITY change AND
+    // re-armed once m_sceneEditable flips back on for the SAME still-
+    // selected entity (mirrors PropertiesPanel.swift's reload() re-arm
+    // fix) -- NOT on every reload, so this costs one bridge call per
+    // selection/editability transition, not one per frame.
+    bool     m_sceneEditable  = false;
+    bool     m_sourceLineKnown = false;
+    quint32  m_sourceLine      = 0;
 
     /// Tracks whether we've already surfaced the in-memory-only caveat
     /// in this session, so the alert fires exactly once per session.

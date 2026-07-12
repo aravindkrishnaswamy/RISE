@@ -1,12 +1,35 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  ViewportToolbar.h - Photoshop-style toolbar for the interactive
-//    viewport, restyled (RISE UI redesign, design brief "Viewport
-//    toolbar") into a segmented tool group + a right-hand cluster of
-//    status chips: active-camera (read-only), REGION (3-state:
-//    off/armed/active), EV (click opens an exposure-slider popup),
-//    and EDR (mirrors View > HDR Preview).  Mirrors the macOS
+//  ViewportToolbar.h - Toolbar for the interactive viewport, restyled
+//    (RISE UI redesign, design brief "Viewport toolbar") into grouped
+//    tool buttons + a right-hand cluster of status chips: active-camera
+//    (read-only, now with an honest lens summary when the primary
+//    selection verifiably is the active camera), REGION (3-state:
+//    off/armed/active), EV (click opens an exposure-slider popup), and
+//    EDR (mirrors View > HDR Preview).  Mirrors the macOS
 //    ContentView.swift's viewport toolbar row.
+//
+//  Discoverability redesign (2026-07, mirrors ViewportToolbar.swift):
+//  the PREVIOUS design put one button per CATEGORY (Select / Camera /
+//  ObjectTransform), with the camera/transform sub-tools (orbit, pan,
+//  zoom, roll; translate, rotate, scale) hidden behind a right-click
+//  flyout menu.  User testing found nobody discovered the flyout, so
+//  heavily-used sub-tools were effectively invisible.  Every tool is
+//  now its OWN always-visible, labeled button, grouped into three
+//  visually separated clusters:
+//
+//    Select  — Select
+//    Camera  — Orbit, Pan, Zoom, Roll
+//    Object  — Move, Rotate, Scale   (gizmo overlay renders in
+//               ViewportWidget when an Object tool is active)
+//
+//  `ViewportBridge::lastSubToolForCategory` (the "remember the last-
+//  used sub-tool per category" controller-side memory the old flyout
+//  UI queried on every poll to decide which icon to show on a
+//  collapsed slot) is no longer called from this file — there is no
+//  collapsed slot left to populate.  The bridge method itself is
+//  untouched and may still be meaningful controller-side state; it is
+//  simply dead from this toolbar's point of view now.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -50,10 +73,9 @@ class ViewportToolbar : public QWidget
 public:
     explicit ViewportToolbar(QWidget* parent = nullptr);
 
-    /// Borrows the bridge for `lastSubToolForCategory` lookups, the
-    /// active-camera chip, and the REGION chip's 3-state poll.  Safe
-    /// to call multiple times (e.g., on scene reload that swaps the
-    /// bridge).
+    /// Borrows the bridge for the active-camera chip (incl. its lens
+    /// summary), and the REGION chip's 3-state poll.  Safe to call
+    /// multiple times (e.g., on scene reload that swaps the bridge).
     void setBridge(ViewportBridge* bridge);
 
     ViewportTool currentTool() const { return m_current; }
@@ -122,35 +144,43 @@ public slots:
     void cancelRegionArm();
 
 private slots:
-    void onSlotClicked();
+    void onToolButtonClicked();
     void onRegionChipClicked();
     void onEdrChipClicked();
     void pollState();
 
 private:
-    /// One Photoshop-style slot.  Holds the category and a pointer to
-    /// the QToolButton that renders it; updated by `refreshSlot()`
-    /// whenever the current tool changes or the bridge's last-used
-    /// memory shifts.
-    struct Slot {
-        ViewportBridge::ToolCategory category;
-        QToolButton*                 button;
+    /// One always-visible tool button.  Holds the tool and a pointer to
+    /// the QToolButton that renders it; `refreshAllToolButtons()` syncs
+    /// every button's checked state to `m_current` on every tool change.
+    struct ToolButtonEntry {
+        ViewportTool  tool;
+        QToolButton*  button;
     };
 
-    QToolButton* makeSlotButton(ViewportBridge::ToolCategory cat);
-    void         refreshSlot(const Slot& s);
-    void         refreshAllSlots();
+    QToolButton* makeToolButton(ViewportTool t);
+    void         refreshAllToolButtons();
     void         applyToolSelection(ViewportTool t);
     QIcon        iconForTool(ViewportTool t) const;
     QString      labelForTool(ViewportTool t) const;
-    QString      tooltipForCategory(ViewportBridge::ToolCategory cat) const;
+    /// Per-tool tooltip — every button gets its own descriptive text
+    /// now that there's no category-level flyout to describe instead.
+    QString      tooltipForTool(ViewportTool t) const;
     QVector<ViewportTool> subToolsForCategory(ViewportBridge::ToolCategory cat) const;
 
     void updateRegionChip();
     void updateCameraChip();
+    /// Lens summary appended to the camera chip, e.g. "50mm · f/4" or
+    /// "62° FOV · f/8" — mirrors ContentView.swift's cameraLensSummary.
+    /// Returns an empty string (name-only fallback) unless the PANEL's
+    /// current selection verifiably echoes `activeCameraName` (same
+    /// honesty gate as the Mac chip — see the .cpp for the full
+    /// rationale on why this can't just trust `activeNameForCategory`
+    /// alone).
+    QString cameraLensSummary(const QString& activeCameraName) const;
     void updateEvChipLabel(int sliderValue);
 
-    QVector<Slot>    m_slots;
+    QVector<ToolButtonEntry> m_toolButtons;
     ViewportTool     m_current = ViewportTool::Select;
     ViewportBridge*  m_bridge  = nullptr;   // borrowed; outlives the toolbar
 

@@ -412,10 +412,37 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
     auto* nameColLayout = new QVBoxLayout(nameCol);
     nameColLayout->setContentsMargins(0, 0, 0, 0);
     nameColLayout->setSpacing(1);
-    m_nameLabel = new QLabel(nameCol);
+
+    // Title row: entity name + (when available) the "Reveal in scene
+    // file" ⌗ line chip, side by side -- mirrors PropertiesPanel.swift's
+    // HStack(headerTitle, SourceLineChip).
+    auto* titleRow = new QWidget(nameCol);
+    auto* titleRowLayout = new QHBoxLayout(titleRow);
+    titleRowLayout->setContentsMargins(0, 0, 0, 0);
+    titleRowLayout->setSpacing(6);
+    m_nameLabel = new QLabel(titleRow);
     m_nameLabel->setFont(Theme::sans(12, QFont::DemiBold));
     m_nameLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
-    nameColLayout->addWidget(m_nameLabel);
+    titleRowLayout->addWidget(m_nameLabel);
+
+    m_sourceLineChip = new QToolButton(titleRow);
+    m_sourceLineChip->setFont(Theme::mono(10));
+    m_sourceLineChip->setCursor(Qt::PointingHandCursor);
+    m_sourceLineChip->setToolTip(tr("Reveal in scene file"));
+    m_sourceLineChip->setStyleSheet(QStringLiteral(
+        "QToolButton { color: %1; border: 1px solid %2; border-radius: %3px; padding: 2px 6px; }"
+        "QToolButton:hover { color: %4; border-color: %5; }")
+        .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::borderHairline))
+        .arg(Theme::radiusSmall)
+        .arg(Theme::hex(Theme::textSecondary), Theme::hex(Theme::borderStrong)));
+    m_sourceLineChip->hide();
+    connect(m_sourceLineChip, &QToolButton::clicked, this, [this]() {
+        emit revealRequested(m_currentSelectionCat, m_currentSelectionName);
+    });
+    titleRowLayout->addWidget(m_sourceLineChip);
+    titleRowLayout->addStretch(1);
+    nameColLayout->addWidget(titleRow);
+
     m_metaLabel = new QLabel(nameCol);
     m_metaLabel->setFont(Theme::mono(10));
     m_metaLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
@@ -683,6 +710,17 @@ void ViewportProperties::rebuildEntityHeader()
         meta = tr("No entity selected");
     }
     m_metaLabel->setText(meta);
+
+    // "Reveal in scene file": hidden entirely unless a location was
+    // resolved for the CURRENT selection (see refresh()'s fetch gate).
+    if (m_sourceLineChip) {
+        if (m_sourceLineKnown) {
+            m_sourceLineChip->setText(QString::fromUtf8("\xE2\x8C\x97 L%1").arg(m_sourceLine));   // ⌗ L<n>
+            m_sourceLineChip->show();
+        } else {
+            m_sourceLineChip->hide();
+        }
+    }
 
     const bool isCamera = (m_currentSelectionCat == Category::Camera);
     m_cameraAffordances->setVisible(isCamera);
@@ -997,13 +1035,41 @@ void ViewportProperties::refresh()
 
     const QString key = QStringLiteral("%1|%2")
         .arg(static_cast<int>(m_currentSelectionCat)).arg(m_currentSelectionName);
-    if (key != m_lastEntityKey) {
+    const bool keyChanged = (key != m_lastEntityKey);
+    if (keyChanged) {
         m_lastEntityKey = key;
         m_advancedExpanded = false;
     }
 
+    // "Reveal in scene file": fetch on selection change, and ALSO
+    // re-arm when a selection made mid-render becomes fetchable once
+    // the render finishes (mirrors PropertiesPanel.swift's review-P2
+    // re-arm fix: the gate below failed then, and nothing re-triggered
+    // for the SAME still-selected entity).  The `!m_sourceLineKnown`
+    // re-arm never fires per-frame on entities whose line IS known.
+    // Gated on m_sceneEditable: calling the bridge while a render owns
+    // the scene would wedge on the controller's commit mutex (same
+    // caveat as every other scene-text bridge call).
+    if (keyChanged || (!m_sourceLineKnown && m_sceneEditable)) {
+        if (m_sceneEditable && !m_currentSelectionName.isEmpty()) {
+            quint64 offset = 0;
+            quint32 line = 0;
+            m_sourceLineKnown = m_bridge->getEntitySourceLocation(
+                m_currentSelectionCat, m_currentSelectionName, &offset, &line);
+            m_sourceLine = m_sourceLineKnown ? line : 0;
+        } else {
+            m_sourceLineKnown = false;
+            m_sourceLine = 0;
+        }
+    }
+
     rebuildEntityHeader();
     rebuildPropertyRows();
+}
+
+void ViewportProperties::setSceneEditable(bool editable)
+{
+    m_sceneEditable = editable;
 }
 
 void ViewportProperties::commitEdit(const QString& name, const QString& value)

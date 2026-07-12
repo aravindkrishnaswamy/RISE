@@ -1,17 +1,21 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  ViewportToolbar.swift - Tool-mode picker for the interactive
-//    3D viewport, organised Photoshop-style: each toolbar slot is
-//    a CATEGORY (Select / Camera / ObjectTransform), and a slot
-//    button on regular click activates the category's last-used
-//    sub-tool.  Long-press / right-click opens a flyout with all
-//    sub-tools so the user can change the last-used pick.
+//    3D viewport.
 //
-//  Three slots:
-//    1. Select          — single tool (no flyout)
-//    2. Camera          — Orbit, Pan, Zoom, Roll
-//    3. ObjectTransform — Translate, Rotate, Scale  (gizmo overlay
-//                          renders in ViewportView when active)
+//  UI-redesign discoverability pass: the previous Photoshop-style
+//  design put a single button per CATEGORY (Select / Camera /
+//  ObjectTransform), with the camera/transform sub-tools (orbit, pan,
+//  zoom, roll; translate, rotate, scale) hidden behind a right-click
+//  flyout.  User testing / bug report: nobody discovered the flyout,
+//  so heavily-used sub-tools were effectively invisible.  All tools
+//  are now individual, always-visible, labeled buttons grouped into
+//  three visually separated clusters:
+//
+//    Select  — Select
+//    Camera  — Orbit, Pan, Zoom, Roll
+//    Object  — Move, Rotate, Scale   (gizmo overlay renders in
+//               ViewportView when an Object tool is active)
 //
 //  Numeric values mirror SceneEditController::Tool /
 //  SceneEditController::ToolCategory so the controller still
@@ -37,8 +41,8 @@ enum ViewportTool: Int, CaseIterable, Identifiable {
 
     var id: Int { rawValue }
 
-    /// Category the tool belongs to in the Photoshop-style slot
-    /// model.  Mirrors RISE::SceneEditController::CategoryForTool.
+    /// Category the tool belongs to in the toolbar's grouping model.
+    /// Mirrors RISE::SceneEditController::CategoryForTool.
     var category: ViewportToolCategory {
         switch self {
         case .select:           return .select
@@ -54,31 +58,32 @@ enum ViewportTool: Int, CaseIterable, Identifiable {
     }
 
     /// SF Symbol name for the toolbar button icon.  Force monochrome
-    /// rendering at the call site (see `SlotIcon` below) — macOS 26's
-    /// SF Symbols catalog renders several of these in multicolor mode
-    /// by default, which on the toolbar reads as ambiguous discs
-    /// instead of recognizable arrow glyphs.  These four-arrow /
-    /// diagonal-arrow / rotation-arrow symbols are the canonical
-    /// "translate / rotate / scale" icons used across Photoshop,
-    /// Blender, and Maya.
+    /// rendering at the call site (see `ToolButton` below) — macOS
+    /// 26's SF Symbols catalog renders several of these in multicolor
+    /// mode by default, which on the toolbar reads as ambiguous discs
+    /// instead of recognizable arrow glyphs.  Every symbol below is
+    /// distinct (no icon is reused across two different tools) so the
+    /// glyph alone disambiguates even before the label is read; all
+    /// names verified present in the local SF Symbols catalog.
     var iconName: String {
         switch self {
         case .select:          return "cursorarrow"
-        case .translateObject: return "arrow.up.and.down.and.arrow.left.and.right"
-        case .rotateObject:    return "arrow.triangle.2.circlepath"
-        case .scaleObject:     return "arrow.up.left.and.arrow.down.right"
-        case .orbitCamera:     return "rotate.3d"
+        case .translateObject: return "move.3d"
+        case .rotateObject:    return "rotate.3d"
+        case .scaleObject:     return "scale.3d"
+        case .orbitCamera:     return "arrow.trianglehead.2.counterclockwise.rotate.90"
         case .panCamera:       return "hand.draw"
         case .zoomCamera:      return "plus.magnifyingglass"
         case .scrubTimeline:   return "timeline.selection"
-        case .rollCamera:      return "arrow.clockwise.circle"
+        case .rollCamera:      return "rotate.right"
         }
     }
 
+    /// Short label drawn under the icon on the toolbar button.
     var label: String {
         switch self {
         case .select:          return "Select"
-        case .translateObject: return "Translate"
+        case .translateObject: return "Move"
         case .rotateObject:    return "Rotate"
         case .scaleObject:     return "Scale"
         case .orbitCamera:     return "Orbit"
@@ -106,13 +111,18 @@ enum ViewportTool: Int, CaseIterable, Identifiable {
         }
     }
 
-    /// Descriptive tooltip — what the tool does when active.
+    /// Descriptive tooltip — what the tool does when active.  Shown
+    /// verbatim as each button's `.help` text; no keyboard-shortcut
+    /// hint is appended because none of these tools are bound to a
+    /// keyboard shortcut anywhere in the app (checked RISEApp.swift's
+    /// `.keyboardShortcut` menu-command list) — a fabricated hint
+    /// would mislead rather than help.
     var tooltip: String {
         switch self {
         case .select:
             return "Select — click an object in the viewport to make it the target of the next edit"
         case .translateObject:
-            return "Translate — drag the selected object to move it through the scene"
+            return "Move — drag the selected object to move it through the scene"
         case .rotateObject:
             return "Rotate — drag to rotate the selected object around its origin"
         case .scaleObject:
@@ -135,8 +145,8 @@ enum ViewportTool: Int, CaseIterable, Identifiable {
     }
 }
 
-/// Photoshop-style toolbar slot.  Mirrors
-/// `RISE::SceneEditController::ToolCategory` / `RISEViewportToolCategory`.
+/// Toolbar grouping.  Mirrors `RISE::SceneEditController::ToolCategory`
+/// / `RISEViewportToolCategory`.
 enum ViewportToolCategory: Int, CaseIterable, Identifiable {
     case select          = 0
     case camera          = 1
@@ -144,8 +154,7 @@ enum ViewportToolCategory: Int, CaseIterable, Identifiable {
 
     var id: Int { rawValue }
 
-    /// Sub-tools surfaced in the category's flyout.  Order matters —
-    /// shown top-to-bottom in the menu.
+    /// Tools shown in this group, left to right.
     var subTools: [ViewportTool] {
         switch self {
         case .select:          return [.select]
@@ -154,50 +163,39 @@ enum ViewportToolCategory: Int, CaseIterable, Identifiable {
         }
     }
 
-    /// Slot tooltip describing what the category covers.
-    var tooltip: String {
-        switch self {
-        case .select:
-            return "Select — click an object in the viewport to make it the next edit's target"
-        case .camera:
-            return "Camera — orbit, pan, zoom, or roll the camera (right-click to switch sub-tool)"
-        case .objectTransform:
-            return "Transform — translate, rotate, or scale the selected object via the gizmo (right-click to switch sub-tool)"
-        }
-    }
-
     var bridgeValue: RISEViewportToolCategory {
         return RISEViewportToolCategory(rawValue: rawValue) ?? .select
     }
 }
 
-/// UI redesign center-column slice: this toolbar now lives INLINE in
-/// ContentView's 40pt viewport toolbar row (the design comp's compact
-/// segmented tool group), not floating over the rendered image — the
-/// `.ultraThinMaterial` translucent-over-image styling that made sense
-/// for a floating overlay is gone in favor of a flat `Theme.bgPanel`
-/// segmented-control look that matches the row's other chips.  Undo /
+/// UI redesign center-column slice: this toolbar lives INLINE in
+/// ContentView's viewport toolbar row (the design comp's tool group),
+/// not floating over the rendered image.  Flat `Theme.bgPanel`
+/// segmented-group look that matches the row's other chips.  Undo /
 /// Redo buttons were dropped from this row (the design comp's toolbar
 /// has no undo/redo affordance here) — both remain reachable via the
 /// Edit menu and its ⌘Z / ⇧⌘Z shortcuts, so no functionality is lost.
+///
+/// Discoverability redesign (see file header): every tool is now its
+/// own always-visible, labeled button — no more category slot +
+/// long-press/right-click flyout.  `RISEViewportBridge`'s
+/// `lastSubToolForCategory:` (the "remember the last-used sub-tool
+/// per category" Objective-C++ method the old flyout UI queried on
+/// every render to decide which icon to show on a collapsed slot) is
+/// no longer called from Swift — there is no collapsed slot left to
+/// populate.  The bridge method itself is untouched and may still be
+/// meaningful controller-side state; it is simply dead from the
+/// Swift UI's point of view now.
 struct ViewportToolbar: View {
     @Binding var selectedTool: ViewportTool
-    /// Per-category last-used sub-tool memory.  Driven by the C++
-    /// controller (so it stays consistent across cmd-Z and re-renders);
-    /// the SwiftUI parent passes a closure that reads from the bridge.
-    /// Defaults to category-defaults if no bridge is attached yet.
-    var lastSubToolForCategory: (ViewportToolCategory) -> ViewportTool = { cat in
-        cat.subTools.first ?? .select
-    }
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(ViewportToolCategory.allCases) { category in
-                CategorySlot(
-                    category: category,
-                    selectedTool: $selectedTool,
-                    lastSubToolForCategory: lastSubToolForCategory
-                )
+        HStack(spacing: 0) {
+            ForEach(Array(ViewportToolCategory.allCases.enumerated()), id: \.offset) { index, category in
+                if index > 0 {
+                    groupDivider
+                }
+                toolGroup(category.subTools)
             }
         }
         .padding(2)
@@ -207,95 +205,78 @@ struct ViewportToolbar: View {
                 .stroke(Theme.borderHairline, lineWidth: 1)
         )
     }
-}
 
-/// One Photoshop-style toolbar slot: a button showing the category's
-/// last-used sub-tool icon, with a right-click / control-click
-/// flyout to switch the active sub-tool.  Clicking activates the
-/// shown sub-tool; right-clicking opens the sub-tool list (matches
-/// AppKit's NSMenu-on-secondary-click idiom).
-///
-/// Long-press was tried (Adobe's "press and hold" gesture) but
-/// SwiftUI on macOS 26 routes both `.simultaneousGesture` and
-/// `.onLongPressGesture` through the Button's tap recognizer in a
-/// way that swallows the tap entirely — single clicks stopped
-/// activating the slot.  Right-click is the workable alternative
-/// and remains the standard macOS secondary-action gesture.
-///
-/// Uses a plain `Button` rather than SwiftUI's `Menu` because `Menu`
-/// (even with `.borderlessButton` menuStyle) strips the label's
-/// background modifiers, so the slot would never show its depressed
-/// / active highlight.  `Button` with `.buttonStyle(.plain)` renders
-/// the label exactly as authored, letting the inner `SlotIcon`'s
-/// accent-coloured background appear when the category is active.
-private struct CategorySlot: View {
-    let category: ViewportToolCategory
-    @Binding var selectedTool: ViewportTool
-    let lastSubToolForCategory: (ViewportToolCategory) -> ViewportTool
-
-    var body: some View {
-        let tools = category.subTools
-        let hasFlyout = tools.count > 1
-        // The tool icon to show on the slot button: if the current
-        // selectedTool belongs to this category, use it (so the slot
-        // always reflects what's active).  Otherwise the category's
-        // last-used (via the bridge) — or its first sub-tool as a
-        // fallback when the bridge has no memory yet.
-        let shownTool: ViewportTool = {
-            if selectedTool.category == category { return selectedTool }
-            return lastSubToolForCategory(category)
-        }()
-        let isSelected = (selectedTool.category == category)
-
-        Button {
-            selectedTool = shownTool
-        } label: {
-            SlotIcon(tool: shownTool, isSelected: isSelected, hasFlyout: hasFlyout)
-        }
-        .buttonStyle(.plain)
-        .help(category.tooltip)
-        .contextMenu {
-            if hasFlyout {
-                ForEach(tools) { sub in
-                    Button {
-                        selectedTool = sub
-                    } label: {
-                        Label(sub.label, systemImage: sub.iconName)
-                    }
-                }
+    private func toolGroup(_ tools: [ViewportTool]) -> some View {
+        HStack(spacing: 2) {
+            ForEach(tools) { tool in
+                ToolButton(
+                    tool: tool,
+                    isSelected: selectedTool == tool,
+                    action: { selectedTool = tool }
+                )
             }
         }
+        .padding(.horizontal, 2)
+    }
+
+    private var groupDivider: some View {
+        Rectangle()
+            .fill(Theme.borderLight)
+            .frame(width: 1, height: 30)
+            .padding(.horizontal, 3)
     }
 }
 
-private struct SlotIcon: View {
+/// One always-visible tool button: icon + short label, sized well
+/// past the 34×30 minimum hit area (grows to ~44×44 with the label)
+/// so it reads clearly at a glance rather than requiring the user to
+/// already know the glyph.  Active tool gets a filled background, a
+/// white glyph/label, and a thin accent underline strip along the
+/// bottom edge so "which tool is on" is unmistakable even at a
+/// glance.
+private struct ToolButton: View {
     let tool: ViewportTool
     let isSelected: Bool
-    let hasFlyout: Bool
+    let action: () -> Void
+
+    @State private var isHovering = false
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            Image(systemName: tool.iconName)
-                .symbolRenderingMode(.monochrome)
-                .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-                .foregroundColor(isSelected ? .white : Theme.textTertiary)
-                .frame(width: 28, height: 24)
-                .background(
-                    isSelected ? Theme.fillActive : Color.clear,
-                    in: RoundedRectangle(cornerRadius: Theme.radiusSmall)
-                )
-
-            if hasFlyout {
-                // Tiny chevron in the bottom-right corner so the
-                // affordance for "more sub-tools available" is
-                // visible (matches Adobe Photoshop's small triangle
-                // on multi-tool slots).
-                Image(systemName: "triangle.fill")
-                    .font(.system(size: 5))
-                    .rotationEffect(.degrees(180))
-                    .foregroundColor(isSelected ? .white : Theme.textDim)
-                    .padding(2)
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: tool.iconName)
+                    .symbolRenderingMode(.monochrome)
+                    .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
+                Text(tool.label)
+                    .font(Theme.sans(9, isSelected ? .medium : .regular))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .foregroundColor(isSelected ? .white : Theme.textTertiary)
+            .frame(minWidth: 44, minHeight: 44)
+            .padding(.horizontal, 4)
+            .background(
+                backgroundColor,
+                in: RoundedRectangle(cornerRadius: Theme.radiusSmall)
+            )
+            .overlay(alignment: .bottom) {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Theme.accent)
+                        .frame(height: 2)
+                        .padding(.horizontal, 7)
+                        .padding(.bottom, 2)
+                }
             }
         }
+        .buttonStyle(.plain)
+        .help(tool.tooltip)
+        .onHover { hovering in isHovering = hovering }
+    }
+
+    private var backgroundColor: Color {
+        if isSelected { return Theme.fillActive }
+        if isHovering { return Theme.fillHover }
+        return Color.clear
     }
 }

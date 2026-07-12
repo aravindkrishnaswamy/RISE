@@ -51,6 +51,33 @@ public:
     void setSceneEditable(bool editable);
     bool isBusy() const { return m_busy; }
 
+    // ---- Agent autonomy selector (2026-07 GUI composer chips) -------
+    // Mirrors the macOS ChatViewModel's autonomyLevel / setAutonomyLevel
+    // plus RISEViewportBridge's RISEAgentAutonomyLevel.  A LOCAL enum
+    // (not `ViewportBridge::AgentAutonomyLevel` directly) so this header
+    // doesn't need to pull in ViewportBridge.h -- ChatPanel.h only
+    // forward-declares `class ViewportBridge` — matching every other
+    // cross-widget type boundary in this class; numeric values are
+    // identical to ViewportBridge::AgentAutonomyLevel and cast 1:1 at
+    // the boundary in setAutonomyLevel()'s .cpp implementation.
+    enum class AutonomyLevel : int {
+        Read    = 0,
+        Propose = 1,
+        Apply   = 2
+    };
+
+    /// The composer's current autonomy level for the CHAT AGENT's OWN
+    /// tool calls (routed through ViewportBridge::agentHandleToolCall —
+    /// see that method's doc for the exact per-level verb behaviour).
+    AutonomyLevel autonomyLevel() const { return m_autonomyLevel; }
+
+    /// Change the composer's autonomy level: persist it to QSettings
+    /// ("agentAutonomyLevel") and push it onto the live bridge (if any)
+    /// immediately, so an in-flight session reflects the new choice on
+    /// its very next tool call.  Also refreshes the three chip buttons'
+    /// active/inactive styling.
+    void setAutonomyLevel(AutonomyLevel level);
+
     // P1-2 fix (mirrors Mac's canUseSceneTransport / TopBar.swift:103-113):
     // true while a chat-driven `render` tool call has an async job
     // outstanding on the controller's single-slot agent-render worker.
@@ -118,6 +145,13 @@ private:
     Provider currentProvider() const;
     QString defaultModelFor(Provider provider) const;
     QString envKeyFor(Provider provider) const;
+
+    // ---- Agent autonomy selector (2026-07 GUI composer chips) -------
+    QPushButton* makeAutonomyChip(const QString& title, AutonomyLevel level, const QString& help);
+    /// Refreshes the three chips' active/inactive styling from
+    /// m_autonomyLevel.  Called by setAutonomyLevel() and once at
+    /// construction.
+    void updateAutonomyChipsStyle();
     void applyProviderToLoop(bool resetModelToDefault);
     // P1-3: shared no-op / confirm-then-apply gate for providerChanged and
     // modelEditingFinished (both used to call applyProviderToLoop
@@ -195,6 +229,16 @@ private:
     QComboBox* m_providerCombo = nullptr;
     QLineEdit* m_modelEdit = nullptr;
     QLineEdit* m_apiKeyEdit = nullptr;
+
+    // ---- Agent autonomy selector (2026-07 GUI composer chips) -------
+    // Default Apply -- matches today's actual behaviour byte-for-byte
+    // (see setAutonomyLevel's .cpp doc for why Propose is NOT the
+    // default).  Overwritten from QSettings ("agentAutonomyLevel") in
+    // the constructor if a valid persisted value exists.
+    AutonomyLevel m_autonomyLevel = AutonomyLevel::Apply;
+    QPushButton*  m_autonomyReadBtn    = nullptr;
+    QPushButton*  m_autonomyProposeBtn = nullptr;
+    QPushButton*  m_autonomyApplyBtn   = nullptr;
 
     // Transcript -- restyled (RISE UI redesign) from a single QTextEdit
     // into a scrollable column of per-entry widgets (bubbles / plain

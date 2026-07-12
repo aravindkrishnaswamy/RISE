@@ -168,6 +168,42 @@ ViewportBridge::ViewportBridge(RenderEngine* engine, QObject* parent)
         m_agentDispatcher.reset(new Agent::AgentRpcDispatcher(std::move(session)));
     }
 
+    // Agent autonomy selector (2026-07): stand up the two sibling
+    // tool-call dispatchers alongside `m_agentDispatcher` above -- see
+    // the header's ivar-block doc for why these are separate instances
+    // rather than one dispatcher whose autonomy gets mutated in place.
+    // Both borrow the SAME `m_controller` as `m_agentDispatcher`'s own
+    // session is attached to.
+    {
+        std::unique_ptr<Agent::AgentSession> ownerSession =
+            Agent::AgentSession::WrapJob(pJob);
+        if (ownerSession) {
+            ownerSession->AttachController(m_controller);
+        }
+        // Starts at Commit -- matches m_agentAutonomyLevel's Apply
+        // default, so this dispatcher's observable behaviour is
+        // identical to m_agentDispatcher's until the Qt composer
+        // explicitly picks a different level.
+        m_agentToolDispatcherOwner.reset(new Agent::AgentRpcDispatcher(
+            std::move(ownerSession), Agent::AgentAutonomy::Commit));
+
+        std::unique_ptr<Agent::AgentSession> proposeSession =
+            Agent::AgentSession::WrapJob(pJob, Agent::AgentAuthority::External);
+        if (proposeSession) {
+            proposeSession->AttachController(m_controller);
+            // Diagnostic only (SceneEditController::AgentProposal::sessionLabel)
+            // -- distinguishes an in-app "Propose" chip proposal from an
+            // external-MCP-client one in the proposals panel.
+            proposeSession->SetSessionLabel("in-app-propose");
+        }
+        // Fixed for this dispatcher's whole life -- Propose autonomy is
+        // the posture that PAIRS with External authority (AgentRpc.h's
+        // file header); there is no level under which this instance
+        // should ever run as anything else.
+        m_agentToolDispatcherPropose.reset(new Agent::AgentRpcDispatcher(
+            std::move(proposeSession), Agent::AgentAutonomy::Propose));
+    }
+
     // Phase 6.5: hook up the C dirty-changed callback.  userData
     // is a __raw pointer to this; the controller's listener
     // outlives the trampoline (we detach in the destructor before
@@ -226,6 +262,17 @@ ViewportBridge::~ViewportBridge()
         m_agentDispatcher->Session()->AttachController(nullptr);
     }
     m_agentDispatcher.reset();
+    // Agent autonomy selector (2026-07): same detach-then-reset
+    // discipline for the two sibling tool-call dispatchers -- they
+    // borrow the SAME m_controller and must not outlive it either.
+    if (m_agentToolDispatcherOwner && m_agentToolDispatcherOwner->Session()) {
+        m_agentToolDispatcherOwner->Session()->AttachController(nullptr);
+    }
+    m_agentToolDispatcherOwner.reset();
+    if (m_agentToolDispatcherPropose && m_agentToolDispatcherPropose->Session()) {
+        m_agentToolDispatcherPropose->Session()->AttachController(nullptr);
+    }
+    m_agentToolDispatcherPropose.reset();
     if (m_controller) {
         // Phase 6.5: detach the dirty-changed C callback BEFORE the
         // controller (and its std::function listener) goes away so
@@ -586,6 +633,44 @@ QString ViewportBridge::agentHandleLine(const QString& jsonRpcRequest)
     return QString::fromUtf8(response.c_str());
 }
 
+void ViewportBridge::setAgentAutonomyLevel(AgentAutonomyLevel level)
+{
+    if (level != AgentAutonomyLevel::Read && level != AgentAutonomyLevel::Propose
+        && level != AgentAutonomyLevel::Apply) {
+        return;   // out-of-range: no-op, keep the previous level (see the .h doc)
+    }
+    m_agentAutonomyLevel = level;
+    // Only the OWNER tool dispatcher's autonomy ever changes at runtime
+    // -- m_agentToolDispatcherPropose stays fixed at Propose for its
+    // whole life, and m_agentDispatcher (the administrative path) is
+    // never touched here at all.
+    if (m_agentToolDispatcherOwner) {
+        m_agentToolDispatcherOwner->SetAutonomy(
+            level == AgentAutonomyLevel::Read ? Agent::AgentAutonomy::Read
+                                               : Agent::AgentAutonomy::Commit);
+    }
+}
+
+QString ViewportBridge::agentHandleToolCall(const QString& jsonRpcRequest)
+{
+    static const char* const kNoDispatcher =
+        "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":"
+        "{\"code\":-32603,\"message\":\"internal error: agent dispatcher unavailable\"}}";
+
+    Agent::AgentRpcDispatcher* dispatcher =
+        (m_agentAutonomyLevel == AgentAutonomyLevel::Propose)
+            ? m_agentToolDispatcherPropose.get()
+            : m_agentToolDispatcherOwner.get();
+    if (!dispatcher) {
+        return QString::fromUtf8(kNoDispatcher);
+    }
+
+    const QByteArray utf8 = jsonRpcRequest.toUtf8();
+    const std::string response =
+        dispatcher->HandleLine(std::string(utf8.constData(), static_cast<std::size_t>(utf8.size())));
+    return QString::fromUtf8(response.c_str());
+}
+
 ViewportBridge::PanelMode ViewportBridge::panelMode() const
 {
     if (!m_controller) return PanelMode::None;
@@ -671,6 +756,18 @@ unsigned int ViewportBridge::sceneEpoch() const
 {
     if (!m_controller) return 0;
     return RISE_API_SceneEditController_SceneEpoch(m_controller);
+}
+
+bool ViewportBridge::getEntitySourceLocation(Category category, const QString& name,
+                                              quint64* outByteOffset, quint32* outLine) const
+{
+    if (outByteOffset) *outByteOffset = 0;
+    if (outLine)        *outLine       = 0;
+    if (!m_controller || name.isEmpty()) return false;
+    const QByteArray utf8 = name.toUtf8();
+    return RISE_API_SceneEditController_GetEntitySourceLocation(
+        m_controller, static_cast<int>(category), utf8.constData(),
+        outByteOffset, outLine);
 }
 
 QString ViewportBridge::addCameraFromActive(const QString& proposedName)

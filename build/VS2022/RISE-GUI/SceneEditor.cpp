@@ -18,8 +18,11 @@
 #include <QFile>
 #include <QFrame>
 #include <QPalette>
+#include <QTextCursor>
 #include <QTextDocument>
+#include <QTextEdit>
 #include <QTextStream>
+#include <QTimer>
 #include <QMessageBox>
 
 namespace {
@@ -249,6 +252,52 @@ void SceneEditor::refreshFromLiveScene(const QString& text)
     m_editor->setPlainText(text);
     m_behindLiveScene = false;
     updateDirtyState();
+}
+
+void SceneEditor::revealAt(quint64 byteOffset)
+{
+    if (!m_editor) return;
+
+    // Convert the UTF-8 byte offset (what
+    // SceneEditController::EntitySourceLocation resolved against) into
+    // a UTF-16 code-unit index (what QTextCursor::setPosition wants) --
+    // the inverse of SceneTextEdit::cursorByteOffsetUtf8.  A byte
+    // offset at or past the end of the buffer means the caller's
+    // assumption (buffer == the serialization the offset was resolved
+    // against) no longer holds; bail out silently rather than landing
+    // on the wrong line.
+    const QString text = m_editor->toPlainText();
+    const QByteArray utf8 = text.toUtf8();
+    if (byteOffset >= static_cast<quint64>(utf8.size())) return;
+    const QByteArray prefix = utf8.left(static_cast<int>(byteOffset));
+    const int charIndex = QString::fromUtf8(prefix).length();
+    if (charIndex < 0 || charIndex > text.length()) return;
+
+    QTextCursor cursor(m_editor->document());
+    cursor.setPosition(charIndex);
+    cursor.select(QTextCursor::LineUnderCursor);
+    m_editor->setTextCursor(cursor);
+    m_editor->ensureCursorVisible();
+    m_editor->setFocus();
+
+    // Brief flash: a temporary extra-selection highlight, cleared after
+    // a short delay.  Purely cosmetic -- extra selections never mutate
+    // the document's permanent text/formatting, so this can't desync
+    // from `text` / the dirty-tracking in updateDirtyState().
+    QColor flashColor = Theme::accent;
+    flashColor.setAlpha(90);   // ~0.35 alpha, matches the design brief's flash intensity
+    QTextEdit::ExtraSelection selection;
+    selection.cursor = cursor;
+    selection.format.setBackground(flashColor);
+    selection.format.setProperty(QTextFormat::FullWidthSelection, true);
+    m_editor->setExtraSelections({ selection });
+
+    // Context-object overload: the lambda is dropped automatically if
+    // `this` is destroyed before the timer fires (e.g. the SceneEditor
+    // is torn down mid-flash), so no dangling-pointer guard is needed.
+    QTimer::singleShot(600, this, [this]() {
+        if (m_editor) m_editor->setExtraSelections({});
+    });
 }
 
 void SceneEditor::setBehindLiveScene(bool behind)

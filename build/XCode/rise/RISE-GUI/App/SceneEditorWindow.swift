@@ -18,6 +18,11 @@ let sceneEditorPanelWidth: CGFloat = {
 /// A monospaced text editor backed by NSTextView for editing RISE scene files.
 struct SceneTextEditor: NSViewRepresentable {
     @Binding var text: String
+    /// "Reveal in scene file" (design comp ⌗ affordance): when non-nil and
+    /// its `generation` hasn't been applied yet, `updateNSView` scrolls to
+    /// `byteOffset`, selects the containing line, and briefly flashes it.
+    /// See `RenderViewModel.revealEntityInSceneText`.
+    var revealRequest: RenderViewModel.EditorRevealRequest? = nil
 
     func makeNSView(context: Context) -> NSScrollView {
         // Build an NSScrollView around our custom SceneSuggestionTextView
@@ -117,11 +122,74 @@ struct SceneTextEditor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
-        guard let textView = context.coordinator.textView,
-              textView.string != text else { return }
-        let selectedRanges = textView.selectedRanges
-        textView.string = text
-        textView.selectedRanges = selectedRanges
+        guard let textView = context.coordinator.textView else { return }
+        if textView.string != text {
+            let selectedRanges = textView.selectedRanges
+            textView.string = text
+            textView.selectedRanges = selectedRanges
+        }
+        // "Reveal in scene file": apply a NEW reveal generation once, even
+        // when `text` itself didn't change this pass (e.g. a repeat click
+        // on the same entity, or a click that landed right after an
+        // unrelated text edit already handled above).
+        if let request = revealRequest, request.generation != context.coordinator.lastAppliedRevealGeneration {
+            context.coordinator.lastAppliedRevealGeneration = request.generation
+            // Review P1: on a fresh mount (switching to the Scene tab
+            // recreates this view) makeNSView's DEFERRED population
+            // (`textView.string = self.text` on the next run-loop turn)
+            // would run AFTER a synchronous reveal and reset scroll +
+            // selection — the reveal flashed for one frame, then the
+            // editor snapped to the top.  Enqueue the reveal on the same
+            // main queue: FIFO ordering puts it strictly after the
+            // population closure on a fresh mount, and on the
+            // steady-state path (view already mounted) the deferral is
+            // harmless.
+            let text = self.text
+            let byteOffset = request.byteOffset
+            let flash = context.coordinator.highlighter?.theme.caret
+            DispatchQueue.main.async { [weak textView] in
+                guard let textView else { return }
+                Self.reveal(in: textView, text: text, byteOffset: byteOffset,
+                            flashColor: flash)
+            }
+        }
+    }
+
+    /// Scrolls `textView` to the line containing UTF-8 byte offset
+    /// `byteOffset`, selects the full line, and briefly flashes it.
+    ///
+    /// ASSUMPTION (documented per the design brief): `text` — the
+    /// editor buffer — is byte-identical to the CST serialization
+    /// `byteOffset` was resolved against, i.e. the editor is live-synced
+    /// and the user has not since typed into the buffer.  If `text` is
+    /// user-dirty and SHORTER than `byteOffset` (edits removed content
+    /// before the target), this bails out silently rather than crashing
+    /// or landing on the wrong line — a stale reveal is a no-op, not a
+    /// misleading one.
+    private static func reveal(in textView: NSTextView, text: String, byteOffset: UInt64, flashColor: NSColor?) {
+        let utf8 = text.utf8
+        guard byteOffset < UInt64(utf8.count) else { return }
+        guard let byteIndex = utf8.index(utf8.startIndex, offsetBy: Int(byteOffset), limitedBy: utf8.endIndex),
+              let stringIndex = byteIndex.samePosition(in: text) else { return }
+
+        let lineRange = text.lineRange(for: stringIndex..<stringIndex)
+        let nsRange = NSRange(lineRange, in: text)
+
+        textView.scrollRangeToVisible(nsRange)
+        textView.setSelectedRange(nsRange)
+        // Harmless no-op if textView is already first responder.
+        textView.window?.makeFirstResponder(textView)
+
+        // Brief flash: a temporary background attribute over the line,
+        // reverted after a short delay.  Purely cosmetic — never mutates
+        // `textStorage`'s permanent attributes or the underlying string,
+        // so it can't desync from `text`/`textDidChange`.
+        guard let color = flashColor, let layoutManager = textView.layoutManager else { return }
+        layoutManager.addTemporaryAttribute(.backgroundColor, value: color.withAlphaComponent(0.35), forCharacterRange: nsRange)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak textView] in
+            guard let textView, let layoutManager = textView.layoutManager else { return }
+            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: nsRange)
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -134,6 +202,10 @@ struct SceneTextEditor: NSViewRepresentable {
         weak var suggestionTextView: SceneSuggestionTextView?
         /// Strong reference to keep the syntax highlighter alive.
         var highlighter: RISESceneSyntaxHighlighter?
+        /// "Reveal in scene file": the last `EditorRevealRequest.generation`
+        /// already applied, so `updateNSView` re-scrolls/flashes only on a
+        /// NEW request (0 never matches a real generation, which starts at 1).
+        var lastAppliedRevealGeneration = 0
         /// Debounce timer for the automatic complete(_:) trigger.
         private var completionDebounceItem: DispatchWorkItem?
         /// When true, the next textDidChange is the result of our own
@@ -271,7 +343,7 @@ struct SceneEditorPanel: View {
             toolbar
             Rectangle().fill(Theme.borderHairline).frame(height: 1)
 
-            SceneTextEditor(text: $viewModel.editorText)
+            SceneTextEditor(text: $viewModel.editorText, revealRequest: viewModel.editorRevealRequest)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             statusBar
