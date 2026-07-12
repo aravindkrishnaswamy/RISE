@@ -490,6 +490,26 @@ bool ViewportBridge::interactiveRasterizerHonorsRegion() const
     return RISE_API_SceneEditController_InteractiveRasterizerHonorsRegion(m_controller);
 }
 
+// ---- Editor live-sync (UI refinement item 1) ------------------------
+
+QString ViewportBridge::serializedSceneText() const
+{
+    if (!m_controller) return QString();
+    char* text = RISE_API_SceneEditController_SerializedSceneTextAlloc(m_controller);
+    if (!text) return QString();
+    QString out = QString::fromUtf8(text);
+    RISE_API_FreeString(text);
+    return out;
+}
+
+bool ViewportBridge::getSceneTextVersion(quint64* outUuid, quint64* outRevision) const
+{
+    if (outUuid)     *outUuid = 0;
+    if (outRevision) *outRevision = 0;
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_GetSceneTextVersion(m_controller, outUuid, outRevision);
+}
+
 // ---- Phase 6.5 scene-file save -------------------------------------
 
 bool ViewportBridge::hasUnsavedSceneChanges() const

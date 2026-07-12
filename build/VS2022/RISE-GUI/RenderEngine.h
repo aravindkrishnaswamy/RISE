@@ -186,6 +186,24 @@ public slots:
     /// the caller should already be in a "rendering" UI state.
     void setSceneTime(double t);
 
+    // ---- Production render pause (UI refinement item 4) -------------
+    // Mirrors the macOS RISEBridge.mm BlockProgressCallback pause gate:
+    // flips the in-flight render's progress-callback adapter's pause
+    // flag.  Workers park at their next Progress()/IsCancelled() check
+    // (see ProgressCallbackAdapter::PauseGateContinue in the .cpp for
+    // the parking loop + the known composed-controller-path caveat).
+    // No-op with no render currently in flight -- the adapter is only
+    // alive between startRender/startAnimationRender and their
+    // completion lambda.
+
+    /// Pause/resume the in-flight production render.  No-op if no
+    /// render is currently running.
+    void setProductionRenderPaused(bool paused);
+    /// True while the in-flight production render is paused.  False
+    /// with no render in flight (also false immediately after a fresh
+    /// startRender/startAnimationRender -- see resetProductionPauseState).
+    bool isProductionRenderPaused() const;
+
 private:
     void setState(State newState);
     void setupMediaPaths(const QString& sceneFilePath);
@@ -292,6 +310,37 @@ private:
     // Forward declarations for callback adapters (defined in .cpp)
     friend class ProgressCallbackAdapter;
     friend class LogPrinterAdapter;
+
+    // ---- Production render pause (UI refinement item 4) -------------
+
+    /// The progress-callback adapter for the CURRENTLY in-flight render,
+    /// or nullptr when no render is running.  Assigned right after
+    /// `new ProgressCallbackAdapter(this)` in startRender/
+    /// startAnimationRender; cleared back to nullptr in each render's
+    /// completion lambda (on the Qt main thread, same as every other
+    /// access to this pointer -- setProductionRenderPaused/
+    /// isProductionRenderPaused are UI-thread-only calls, so no lock is
+    /// needed for the pointer itself; the pause flag it points at is a
+    /// std::atomic<bool> read from worker threads).
+    ProgressCallbackAdapter* m_activeProgressCallback = nullptr;
+    /// Resets the pause bookkeeping below.  Called at the start of
+    /// startRender/startAnimationRender so a stale pause request from a
+    /// PRIOR render (impossible in practice -- the adapter is deleted
+    /// at that render's finish -- but mirrors the belt-and-suspenders
+    /// reset macOS's RenderViewModel.resetProductionPauseState does)
+    /// never leaks into the elapsed-time accounting of a fresh one.
+    void resetProductionPauseState();
+
+    /// Wall-clock spent paused THIS render, in milliseconds -- subtracted
+    /// from `m_renderClock.elapsed()` in the elapsed-timer tick so the
+    /// readout reflects actual work time (mirrors macOS RenderViewModel's
+    /// `productionPausedAccum`).  The ETA estimator is likewise NOT fed
+    /// while paused (see onProgress); its estimate re-converges over the
+    /// first ticks after resume.
+    qint64 m_productionPausedAccumMs = 0;
+    /// `m_renderClock.elapsed()` at the moment the CURRENT pause began,
+    /// or -1 when not currently paused.
+    qint64 m_productionPauseBeganMs = -1;
 
     // L4c — ViewportFrameStore replaces the legacy ImageOutputAdapter.
     // The engine owns one persistent VFS reference for the engine's

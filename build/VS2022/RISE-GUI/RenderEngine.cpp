@@ -50,6 +50,9 @@
 #include <atomic>
 #include <cstdlib>
 #include <algorithm>
+#include <chrono>
+#include <mutex>
+#include <thread>
 
 using namespace RISE;
 using namespace RISE::FrameStoreOutput;
@@ -62,9 +65,56 @@ public:
     RenderEngine* engine;
     std::string currentTitle;
 
+    // Production pause (UI refinement item 4).  Mirrors macOS
+    // RISEBridge.mm's BlockProgressCallback pause gate: when `paused`
+    // is set, the render worker that calls Progress()/IsCancelled()
+    // parks HERE at its next call -- PixelBasedRasterizerHelper calls
+    // Progress() at high frequency (per tile/pixel-batch; see its
+    // callers in PixelBasedRasterizerHelper.cpp), so parking inside
+    // Progress() is enough to make a pause visibly quiet the CPU
+    // without needing every call site to also poll IsCancelled().
+    // `pauseMutex` serializes the polling loop so N parked workers
+    // don't all spin; the fast not-paused path is a single relaxed
+    // atomic load and never touches the mutex.
+    //
+    // KNOWN GAP vs macOS (documented, not silently papered over): when
+    // a SceneEditController is attached, the Job's installed progress
+    // object is the controller's CancellableProgressCallback
+    // (`coordProgress`, see RunProductionRenderThroughController
+    // above), which composes THIS adapter as its `inner` and forwards
+    // every Progress() call to it (CancellableProgressCallback::Progress)
+    // -- so the parking loop below still engages and pause AND
+    // cancel-while-paused both work correctly through that path.
+    // However CancellableProgressCallback::IsCancelled() does NOT
+    // forward to `inner`'s IsCancelled() (it only reports its own
+    // cancel flag) -- src/Library/SceneEditor/CancellableProgressCallback.cpp
+    // is out of scope for this GUI-only change -- so
+    // PixelBasedRasterizerHelper's periodic query-only 100ms mid-block
+    // IsCancelled() flush (a check that does NOT itself call Progress())
+    // will not immediately park a worker that happens to hit ONLY that
+    // check during a pause window; that worker parks on its next
+    // Progress() call instead, which workers call far more often in
+    // practice.  Not expected to be user-visible, but it's an honest
+    // architectural difference from macOS's flat BlockProgressCallback,
+    // which IS the object installed directly on the Job in every case.
+    std::atomic<bool>  paused{false};
+    mutable std::mutex pauseMutex;
+
     ProgressCallbackAdapter(RenderEngine* e) : engine(e) {}
 
+    //! Returns false when the render was cancelled while paused.
+    bool PauseGateContinue() const {
+        if (!paused.load(std::memory_order_acquire)) return true;   // fast path
+        std::lock_guard<std::mutex> lk(pauseMutex);   // one poller; others park here
+        while (paused.load(std::memory_order_acquire)) {
+            if (engine->m_cancelFlag.load()) return false;   // cancelled while paused
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        return !engine->m_cancelFlag.load();
+    }
+
     bool Progress(const double progress, const double total) override {
+        if (!PauseGateContinue()) return false;
         if (engine) {
             engine->onProgress(progress, total, currentTitle);
         }
@@ -73,6 +123,13 @@ public:
 
     void SetTitle(const char* title) override {
         currentTitle = title ? title : "";
+    }
+
+    //! Base default is false (cancellation normally flows via Progress's
+    //! return value); this override adds ONLY the pause gate -- when
+    //! not paused the behavior is byte-identical to the base.
+    bool IsCancelled() const override {
+        return !PauseGateContinue();
     }
 };
 
@@ -198,11 +255,25 @@ RenderEngine::RenderEngine(QObject* parent)
     m_elapsedTimer = new QTimer(this);
     m_elapsedTimer->setInterval(500);
     connect(m_elapsedTimer, &QTimer::timeout, this, [this]() {
-        emit elapsedTimeUpdated(m_renderClock.elapsed() / 1000.0);
+        // Item 4: elapsed = wall time minus time spent paused, so the
+        // readout reflects actual render work and freezes visibly
+        // while paused.  Mirrors macOS RenderViewModel's displayTimer
+        // tick (productionPausedAccum + productionPauseBegan).
+        const bool isPaused = isProductionRenderPaused();
+        qint64 pausedNowMs = 0;
+        if (isPaused && m_productionPauseBeganMs >= 0) {
+            pausedNowMs = m_renderClock.elapsed() - m_productionPauseBeganMs;
+        }
+        const qint64 elapsedMs = m_renderClock.elapsed() - m_productionPausedAccumMs - pausedNowMs;
+        emit elapsedTimeUpdated(std::max<qint64>(0, elapsedMs) / 1000.0);
 
+        // Item 4: don't surface an ETA while paused -- wall time is
+        // frozen from the user's perspective and the estimate isn't
+        // being fed (see onProgress), so a stale number would mislead.
+        // Re-appears once the estimator re-converges after resume.
         double remaining = 0.0;
         bool hasEstimate = false;
-        {
+        if (!isPaused) {
             std::lock_guard<std::mutex> lock(m_etaMutex);
             hasEstimate = m_eta.RemainingSeconds(remaining);
         }
@@ -500,6 +571,11 @@ void RenderEngine::startRender()
     if (!m_viewportController) {
         m_job->SetProgress(progressCb);
     }
+    // Item 4: publish the fresh (unpaused) adapter so
+    // setProductionRenderPaused/isProductionRenderPaused can reach it,
+    // and reset this render's pause-time bookkeeping.
+    m_activeProgressCallback = progressCb;
+    resetProductionPauseState();
 
     // Install ViewportFrameStore as the rasterizer's IRasterizerOutput.
     // The engine owns the initial reference; Attach() addrefs the
@@ -542,6 +618,12 @@ void RenderEngine::startRender()
             guard->m_progressivePollTimer->stop();
             guard->pollProductionVFS();
             guard->m_job->SetProgress(nullptr);
+            // Item 4: the adapter this pointer refers to is about to be
+            // deleted -- clear it FIRST so a setProductionRenderPaused/
+            // isProductionRenderPaused call landing right now (still on
+            // this same Qt main thread, so no race) can't dereference a
+            // freed adapter.
+            guard->m_activeProgressCallback = nullptr;
             delete progressCb;
 
             if (guard->m_cancelFlag) {
@@ -586,6 +668,10 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
     if (!m_viewportController) {
         m_job->SetProgress(progressCb);
     }
+    // Item 4: same publish + reset as startRender -- see that method's
+    // comment.
+    m_activeProgressCallback = progressCb;
+    resetProductionPauseState();
 
     // (Re-)attach VFS to the rasterizer for this render pass.
     ensureProductionVFSAttachedToRasterizer();
@@ -670,6 +756,9 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
             guard->m_progressivePollTimer->stop();
             guard->pollProductionVFS();
             guard->m_job->SetProgress(nullptr);
+            // Item 4: see startRender's completion lambda for why this
+            // clear happens BEFORE the delete.
+            guard->m_activeProgressCallback = nullptr;
             delete progressCb;
             guard->m_productionVFSAttachedToRasterizer = false;
             // Set before setState(Completed) — onStateChanged reads it
@@ -694,8 +783,52 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
 void RenderEngine::cancelRender()
 {
     if (m_state == Rendering) {
-        setState(Cancelling);
         m_cancelFlag = true;
+        // Item 4: cancel-while-paused -- unpark the workers so the
+        // cancel lands promptly (the pause gate also self-detects
+        // cancellation via m_cancelFlag on its next 100ms poll tick,
+        // but resuming here is snappier and keeps the pause UI state
+        // honest during the cancelling window).  Mirrors macOS
+        // RenderViewModel.cancelRender.
+        if (isProductionRenderPaused()) {
+            setProductionRenderPaused(false);
+        }
+        setState(Cancelling);
+    }
+}
+
+// ---- Production render pause (UI refinement item 4) -----------------
+
+void RenderEngine::setProductionRenderPaused(bool paused)
+{
+    if (m_activeProgressCallback) {
+        m_activeProgressCallback->paused.store(paused, std::memory_order_release);
+    }
+    // Elapsed-time pause accounting -- see the header doc for
+    // m_productionPausedAccumMs/m_productionPauseBeganMs.  Tracked
+    // independent of whether an adapter happens to be attached so the
+    // readout stays honest even in edge cases.
+    if (paused) {
+        m_productionPauseBeganMs = m_renderClock.isValid() ? m_renderClock.elapsed() : 0;
+    } else if (m_productionPauseBeganMs >= 0) {
+        const qint64 now = m_renderClock.isValid() ? m_renderClock.elapsed() : m_productionPauseBeganMs;
+        m_productionPausedAccumMs += (now - m_productionPauseBeganMs);
+        m_productionPauseBeganMs = -1;
+    }
+}
+
+bool RenderEngine::isProductionRenderPaused() const
+{
+    return m_activeProgressCallback
+        && m_activeProgressCallback->paused.load(std::memory_order_acquire);
+}
+
+void RenderEngine::resetProductionPauseState()
+{
+    m_productionPausedAccumMs = 0;
+    m_productionPauseBeganMs = -1;
+    if (m_activeProgressCallback) {
+        m_activeProgressCallback->paused.store(false, std::memory_order_release);
     }
 }
 
@@ -759,8 +892,17 @@ void RenderEngine::onProgress(double progress, double total, const std::string& 
     double fraction = (total > 0) ? progress / total : 0.0;
     QString qtTitle = QString::fromUtf8(title.c_str());
 
-    // Feed the ETA estimator on the worker thread; the UI thread reads it
-    // on the next elapsed-timer tick.
+    // Item 4: the ETA estimator is NOT fed while paused -- structurally
+    // guaranteed rather than an extra flag check here: this method is
+    // only ever called from ProgressCallbackAdapter::Progress() AFTER
+    // its PauseGateContinue() pause loop has returned (i.e. not
+    // currently paused at that instant), so onProgress simply never
+    // runs during a paused span.  (macOS's RenderViewModel adds a
+    // second, redundant `!pausedRef.value` guard around its own
+    // etaUpdateProgress call for extra safety against a race between
+    // its Swift-side pause flag and the C++-side one; Windows has only
+    // one pause flag -- the adapter's own `paused` -- so there is no
+    // analogous second flag to race against.)
     {
         std::lock_guard<std::mutex> lock(m_etaMutex);
         m_eta.Update(progress, total);

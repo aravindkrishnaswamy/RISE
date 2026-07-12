@@ -60,11 +60,15 @@ public:
     void setChatPanel(ChatPanel* chatPanel);
 
 signals:
-    /// User clicked the Save pill.  MainWindow performs the actual
-    /// round-trip save (it owns the SceneEditor refresh + error
-    /// dialog plumbing shared with ViewportProperties' own Save
-    /// button) — this bar has no Save-As affordance, matching the
-    /// macOS TopBar.
+    /// User clicked the save-state chip while it's in the suspended
+    /// (amber "not saved") state -- a retry request.  MainWindow
+    /// performs the actual round-trip save (it owns the SceneEditor
+    /// refresh + error dialog plumbing shared with ViewportProperties'
+    /// own Save button) — this bar has no Save-As affordance, matching
+    /// the macOS TopBar.  Named `saveClicked` for back-compat with the
+    /// existing MainWindow wiring; CST <-> scene-file live sync + auto-
+    /// save (item 2) means edits now auto-save to disk on a debounce,
+    /// so in practice this only fires from the suspended-state click.
     void saveClicked();
 
 public slots:
@@ -72,6 +76,15 @@ public slots:
     /// ViewportBridge::dirtyChanged.  Also settable directly (e.g.
     /// reset to false right after a fresh scene load).
     void setSceneEditsDirty(bool dirty);
+
+    /// CST <-> scene-file live sync + auto-save (item 2): true once an
+    /// auto-save attempt has been refused or I/O-failed (e.g. the save
+    /// engine detects the file changed on disk externally).  Flips the
+    /// save-state chip to the amber "not saved" state, which doubles
+    /// as the one-click retry (see saveClicked() above).  Cleared by a
+    /// manual save attempt (successful or not) and by a fresh scene
+    /// load/bridge teardown.
+    void setAutoSaveSuspended(bool suspended);
 
     /// Mirrors the retired ControlsWidget's elapsed/remaining-time
     /// display — surfaced here as the readout's tooltip so the
@@ -109,6 +122,10 @@ private:
     void updateReadoutTooltip();
     void updateIntegratorChip();
     void updateControlsEnabled();
+    /// CST <-> scene-file live sync + auto-save (item 2): recomputes
+    /// the right-side save-state chip's visibility/text/color/enabled
+    /// state from m_loadedFilePath / m_dirty / m_autoSaveSuspended.
+    void updateSaveChip();
 
     RenderEngine*   m_engine = nullptr;
     ViewportBridge* m_bridge = nullptr;
@@ -122,6 +139,9 @@ private:
     QLabel* m_dirtyTextLabel = nullptr;
     QString m_loadedFilePath;
     bool    m_dirty = false;
+    // CST <-> scene-file live sync + auto-save (item 2) — see
+    // setAutoSaveSuspended's doc.
+    bool    m_autoSaveSuspended = false;
 
     // Center: render-status cluster -----------------------------------
     QToolButton* m_pauseResumeBtn = nullptr;

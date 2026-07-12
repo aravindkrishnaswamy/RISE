@@ -124,13 +124,22 @@ int RefinementRung(unsigned int scaleDivisor)
 
 RefinementStatus ComputeRefinementStatus(int phase, unsigned int scaleDivisor,
                                           bool isProduction, bool isCancelling,
-                                          double productionProgress)
+                                          double productionProgress,
+                                          bool isProductionPaused = false)
 {
     if (isCancelling) {
         return { QStringLiteral("Cancelling…"), QStringLiteral("CANCELLING"), productionProgress };
     }
     if (isProduction) {
         const int pct = static_cast<int>(productionProgress * 100);
+        // Item 4: workers parked at RenderEngine's pause gate --
+        // progress honestly frozen at the pause point.  Mirrors
+        // RefinementStatusFormatter.swift's isProductionPaused branch.
+        if (isProductionPaused) {
+            return { QStringLiteral("Paused %1%").arg(pct),
+                     QStringLiteral("PAUSED \xE2\x80\x94 PRODUCTION"),
+                     productionProgress };
+        }
         return { QStringLiteral("Production %1%").arg(pct),
                  QStringLiteral("PRODUCTION %1%").arg(pct),
                  productionProgress };
@@ -272,21 +281,23 @@ TopBar::TopBar(QWidget* parent)
     layout->addWidget(cluster);
     layout->addStretch(1);
 
-    // ---- Right: Save --------------------------------------------------
-    m_saveBtn = new QPushButton(QStringLiteral("Save"), this);
-    m_saveBtn->setFont(Theme::sans(12, QFont::DemiBold));
-    m_saveBtn->setCursor(Qt::PointingHandCursor);
+    // ---- Right: save-state chip ----------------------------------------
+    // CST <-> scene-file live sync + auto-save (item 2): the explicit
+    // Save button is gone -- edits auto-save to disk on a debounce (see
+    // MainWindow::onCstSyncTick).  This is a passive status readout
+    // rather than an action; it becomes actionable ONLY in the
+    // suspended state, where it doubles as the one-click retry
+    // (mirrors File > Save Scene, which also clears the suspension
+    // first).  Kept as a QPushButton (flat, no background/border) so
+    // the existing click -> saveClicked() wiring stays intact; disabled
+    // in every state except suspended, so a stray click elsewhere is a
+    // no-op.  See updateSaveChip() for the per-state text/color.
+    m_saveBtn = new QPushButton(this);
+    m_saveBtn->setFont(Theme::mono(10));
     m_saveBtn->setFlat(true);
     m_saveBtn->setFixedHeight(28);
-    m_saveBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: %1; color: #171819; border: none;"
-        " border-radius: %2px; padding: 0 15px; }"
-        "QPushButton:disabled { background-color: %3; color: %4; }")
-        .arg(Theme::hex(Theme::textPrimary))
-        .arg(Theme::radiusMedium)
-        .arg(Theme::rgba(Theme::whiteAlpha(int(0.4 * 255))))
-        .arg(Theme::hex(Theme::textDisabled)));
     m_saveBtn->setEnabled(false);
+    m_saveBtn->hide();
     connect(m_saveBtn, &QPushButton::clicked, this, &TopBar::saveClicked);
     layout->addWidget(m_saveBtn);
 
@@ -297,6 +308,7 @@ TopBar::TopBar(QWidget* parent)
     updateReadout();
     updateIntegratorChip();
     updateControlsEnabled();
+    updateSaveChip();
 }
 
 void TopBar::paintEvent(QPaintEvent* event)
@@ -339,13 +351,19 @@ void TopBar::setViewportBridge(ViewportBridge* bridge)
         m_isRefinementPaused = false;
         updateReadout();
     }
+    // CST <-> scene-file live sync + auto-save (item 2): a torn-down
+    // bridge means no auto-save can be in flight anymore -- don't let a
+    // stale suspension leak into the next scene load.
+    m_autoSaveSuspended = false;
     updateControlsEnabled();
+    updateSaveChip();
 }
 
 void TopBar::setLoadedFilePath(const QString& path)
 {
     m_loadedFilePath = path;
     updateSceneIdentity();
+    updateSaveChip();
 }
 
 void TopBar::setChatPanel(ChatPanel* chatPanel)
@@ -364,7 +382,52 @@ void TopBar::setSceneEditsDirty(bool dirty)
     if (m_dirty == dirty) return;
     m_dirty = dirty;
     updateSceneIdentity();
-    if (m_saveBtn) m_saveBtn->setEnabled(m_dirty);
+    updateSaveChip();
+}
+
+void TopBar::setAutoSaveSuspended(bool suspended)
+{
+    if (m_autoSaveSuspended == suspended) return;
+    m_autoSaveSuspended = suspended;
+    updateSaveChip();
+}
+
+void TopBar::updateSaveChip()
+{
+    if (!m_saveBtn) return;
+    if (m_loadedFilePath.isEmpty()) {
+        m_saveBtn->hide();
+        m_saveBtn->setEnabled(false);
+        return;
+    }
+    m_saveBtn->show();
+
+    QColor color;
+    QString text;
+    QString tooltip;
+    if (m_autoSaveSuspended) {
+        color = Theme::warn;
+        text = QString::fromUtf8("\xE2\x9A\xA0 not saved \xE2\x80\x94 file changed on disk");
+        tooltip = tr(
+            "The scene file was modified outside RISE, so auto-save backed off rather than "
+            "overwrite it. Click to retry (this will overwrite the on-disk file), or reload "
+            "the scene to pick up the external changes.");
+    } else if (m_dirty) {
+        color = Theme::dirty;
+        text = QString::fromUtf8("\xE2\x97\x8F saving\xE2\x80\xA6");   // ● saving…
+    } else {
+        color = Theme::textDim;
+        text = QString::fromUtf8("\xE2\x9C\x93 saved");   // ✓ saved
+    }
+    m_saveBtn->setText(text);
+    m_saveBtn->setToolTip(tooltip);
+    m_saveBtn->setStyleSheet(QStringLiteral(
+        "QPushButton { background: transparent; border: none; color: %1; padding: 0; }")
+        .arg(Theme::hex(color)));
+    // Only the suspended state is a click target (matches the macOS
+    // chip: the other two states are plain, non-interactive text).
+    m_saveBtn->setEnabled(m_autoSaveSuspended);
+    m_saveBtn->setCursor(m_autoSaveSuspended ? Qt::PointingHandCursor : Qt::ArrowCursor);
 }
 
 void TopBar::updateElapsedTime(double seconds)
@@ -428,13 +491,27 @@ void TopBar::updateSceneIdentity()
 
 void TopBar::onPauseResumeClicked()
 {
+    // Item 4: during a production render this button pauses/resumes
+    // THE RENDER instead of interactive refinement -- workers park at
+    // RenderEngine's ProgressCallbackAdapter pause gate (mirrors
+    // macOS's BlockProgressCallback pause gate).  Always available
+    // while Rendering (disabled only while Cancelling, per
+    // updateControlsEnabled's pauseDisabled predicate).
+    if (m_engineState == RenderEngine::Rendering) {
+        if (m_engine) {
+            m_engine->setProductionRenderPaused(!m_engine->isProductionRenderPaused());
+        }
+        updateReadout();
+        updateControlsEnabled();
+        return;
+    }
+
     // Round-3 P2: click-time re-check mirroring MainWindow::
     // canUseSceneTransport (the button is ALSO disabled via
     // updateControlsEnabled, but a click racing a state flip must
     // refuse rather than drive transport under an in-flight render).
     if (!m_bridge) return;
-    if (m_engineState == RenderEngine::Rendering
-     || m_engineState == RenderEngine::Cancelling
+    if (m_engineState == RenderEngine::Cancelling
      || m_engineState == RenderEngine::Loading) return;
     if (m_chatPanel && m_chatPanel->isChatRenderOutstanding()) return;
     if (m_isRefinementPaused) {
@@ -529,9 +606,11 @@ void TopBar::updateReadout()
 
     const bool isProduction = (m_engineState == RenderEngine::Rendering);
     const bool isCancelling = (m_engineState == RenderEngine::Cancelling);
+    const bool isProductionPaused = isProduction && m_engine && m_engine->isProductionRenderPaused();
 
     const RefinementStatus s = ComputeRefinementStatus(
-        m_refinementPhase, m_refinementScaleDivisor, isProduction, isCancelling, m_productionProgress);
+        m_refinementPhase, m_refinementScaleDivisor, isProduction, isCancelling, m_productionProgress,
+        isProductionPaused);
 
     m_statusRowLabel->setText(s.text);
     m_statusTagLabel->setText(s.label);
@@ -595,13 +674,37 @@ void TopBar::updateControlsEnabled()
     // (P1-2 fix, mirrors canUseSceneTransport) a chat-driven render
     // owns it instead — the C++ controller's pauseRefinement/
     // resumeRefinement/start+stop no-op in that state anyway; disabling
-    // here just keeps the UI honest about it.
-    const bool disabled = !m_bridge
+    // here just keeps the UI honest about it.  m_restartBtn always uses
+    // this predicate -- restart has no production-render meaning.
+    const bool refinementDisabled = !m_bridge
         || m_engineState == RenderEngine::Rendering
         || m_engineState == RenderEngine::Cancelling
         || (m_chatPanel && m_chatPanel->isChatRenderOutstanding());
-    m_pauseResumeBtn->setEnabled(!disabled);
-    m_restartBtn->setEnabled(!disabled);
+    m_restartBtn->setEnabled(!refinementDisabled);
+
+    // Item 4 (mirrors TopBar.swift's `pauseButtonDisabled`): during a
+    // production render the pause button is ALWAYS enabled (workers
+    // park at the pause gate on demand) except while Cancelling;
+    // every other state falls back to the refinement predicate above.
+    const bool isProduction = (m_engineState == RenderEngine::Rendering);
+    const bool isCancelling = (m_engineState == RenderEngine::Cancelling);
+    bool pauseDisabled;
+    if (isProduction) {
+        pauseDisabled = false;
+    } else if (isCancelling) {
+        pauseDisabled = true;
+    } else {
+        pauseDisabled = refinementDisabled;
+    }
+    m_pauseResumeBtn->setEnabled(!pauseDisabled);
+
+    const bool isProductionPaused = isProduction && m_engine && m_engine->isProductionRenderPaused();
+    const bool showsPlay = isProduction ? isProductionPaused : m_isRefinementPaused;
     m_pauseResumeBtn->setIcon(style()->standardIcon(
-        m_isRefinementPaused ? QStyle::SP_MediaPlay : QStyle::SP_MediaPause));
+        showsPlay ? QStyle::SP_MediaPlay : QStyle::SP_MediaPause));
+    m_pauseResumeBtn->setToolTip(isProduction
+        ? (isProductionPaused
+            ? QStringLiteral("Resume the render")
+            : QStringLiteral("Pause the render \xE2\x80\x94 workers park, CPU goes quiet"))
+        : QStringLiteral("Pause / resume refinement (Space)"));
 }

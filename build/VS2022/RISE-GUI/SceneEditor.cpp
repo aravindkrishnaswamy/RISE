@@ -138,6 +138,18 @@ SceneEditor::SceneEditor(QWidget* parent)
     m_saveStateLabel = new QLabel(statusBar);
     m_saveStateLabel->setFont(Theme::mono(10));
     statusLayout->addWidget(m_saveStateLabel);
+
+    // CST <-> scene-file live sync (item 1): amber "buffer is stale"
+    // warning, hidden by default -- shown BESIDE m_saveStateLabel, not
+    // in place of it, when the poll sets m_behindLiveScene (see
+    // setBehindLiveScene's doc).
+    m_staleWarningLabel = new QLabel(
+        QString::fromUtf8("\xE2\x9A\xA0 scene changed elsewhere \xE2\x80\x94 buffer is stale"), statusBar);
+    m_staleWarningLabel->setFont(Theme::mono(10));
+    m_staleWarningLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::warn)));
+    m_staleWarningLabel->hide();
+    statusLayout->addWidget(m_staleWarningLabel);
+
     statusLayout->addStretch();
 
     m_countsLabel = new QLabel(statusBar);
@@ -231,6 +243,21 @@ void SceneEditor::onTextChanged()
     updateDirtyState();
 }
 
+void SceneEditor::refreshFromLiveScene(const QString& text)
+{
+    m_originalText = text;
+    m_editor->setPlainText(text);
+    m_behindLiveScene = false;
+    updateDirtyState();
+}
+
+void SceneEditor::setBehindLiveScene(bool behind)
+{
+    if (m_behindLiveScene == behind) return;
+    m_behindLiveScene = behind;
+    updateDirtyState();
+}
+
 void SceneEditor::updateDirtyState()
 {
     const bool dirty = isDirty();
@@ -245,6 +272,13 @@ void SceneEditor::updateDirtyState()
     } else {
         m_saveStateLabel->setText(QString::fromUtf8("\xE2\x9C\x93 saved"));   // ✓ saved
         m_saveStateLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::success)));
+    }
+
+    // CST <-> scene-file live sync (item 1): only ever true alongside
+    // `dirty` (see setBehindLiveScene's doc / MainWindow's poll) --
+    // shown beside "unsaved edits" rather than replacing it.
+    if (m_staleWarningLabel) {
+        m_staleWarningLabel->setVisible(m_behindLiveScene);
     }
 
     // Honest client-side counts — the editor's own document, no

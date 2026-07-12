@@ -20,8 +20,12 @@
 
 #include <QMainWindow>
 #include <QStringList>
+#include <QtGlobal>
+
+#include "Theme.h"
 
 class QAction;
+class QTimer;
 class QActionGroup;
 class QMenu;
 class QLabel;
@@ -89,6 +93,13 @@ private slots:
     // until then).
     void onSaveRenderedImage();
 
+    // CST <-> scene-file live sync + auto-save (UI refinement item 1).
+    // ~2 Hz poll of the live CST while a viewport bridge is attached --
+    // mirrors macOS RenderViewModel.pollRefinementState's items 1+2.
+    // Started/stopped alongside the bridge in
+    // rebuildViewportForLoadedScene / teardownViewport.
+    void onCstSyncTick();
+
 protected:
     // L5b — re-probe HDR availability on window screen change.
     // The HDRRenderWidget's own event() handler covers the case
@@ -147,6 +158,60 @@ private:
     // onStateChanged) from being able to drift out of sync with each
     // other the way two independent inline `setEvEnabled` calls could.
     void updateEvEnabledState();
+
+    // CST <-> scene-file live sync + auto-save (UI refinement item 1).
+    // Cheap change-detector pair from ViewportBridge::getSceneTextVersion.
+    // uuid is fresh per load; revision bumps iff content changed.
+    // `valid` stands in for macOS's `SceneTextVersion?` optional --
+    // false means "no version observed yet" (never compares equal to
+    // itself while false, matching Swift's `nil != nil` being false
+    // but every comparison here first null-checks `valid`).
+    struct SceneTextVersion {
+        quint64 uuid = 0;
+        quint64 revision = 0;
+        bool    valid = false;
+        bool operator==(const SceneTextVersion& o) const {
+            return valid && o.valid && uuid == o.uuid && revision == o.revision;
+        }
+        bool operator!=(const SceneTextVersion& o) const { return !(*this == o); }
+    };
+
+    /// The version last mirrored into the SceneEditor buffer (item 1),
+    /// or set at bridge-attach time so the file-on-disk bytes and the
+    /// live CST start in agreement.  Invalid before any bridge attaches.
+    SceneTextVersion m_lastSyncedSceneTextVersion;
+    /// The version observed on the PREVIOUS poll tick -- the debounce
+    /// signal for auto-save (item 2): only save once the version has
+    /// been stable across one full tick, so a burst of agent/GUI edits
+    /// coalesces into a single write instead of saving mid-burst.
+    SceneTextVersion m_previousPollSceneTextVersion;
+    /// The version an auto-save was last attempted against, so a
+    /// stable-but-already-tried version doesn't re-fire every tick.
+    SceneTextVersion m_lastAutoSaveAttemptVersion;
+    /// Debounced auto-save (item 2): true once an auto-save attempt has
+    /// been refused or I/O-failed.  While true, onCstSyncTick stops
+    /// attempting further auto-saves -- a manual File > Save Scene (or
+    /// the TopBar chip) clears it and retries.  Mirrored into
+    /// m_topBar's chip via TopBar::setAutoSaveSuspended.
+    bool m_autoSaveSuspended = false;
+    /// ~2 Hz poll driving onCstSyncTick.  Started in
+    /// rebuildViewportForLoadedScene, stopped in teardownViewport.
+    QTimer* m_cstSyncTimer = nullptr;
+
+    /// Shared implementation behind File > Save Scene / the TopBar
+    /// chip's retry click (isAutoSave=false) and onCstSyncTick's
+    /// debounced auto-save (isAutoSave=true).  Mirrors macOS
+    /// RenderViewModel.saveScene(auto:).  A manual (non-auto) call
+    /// always clears m_autoSaveSuspended first, even before its own
+    /// outcome is known -- matches the "manual retry" contract.
+    /// Returns true on a successful (or no-op) save, false on
+    /// refusal/failure.
+    bool performSceneSave(bool isAutoSave);
+
+    // UI refinement item 3: File > Theme handler.  No-op if `newMode`
+    // is already active (also guards the redundant re-click of an
+    // already-checked radio item in the File > Theme submenu).
+    void onThemeModeChanged(Theme::ThemeMode newMode);
 
     // Recent files
     QStringList m_recentFiles;

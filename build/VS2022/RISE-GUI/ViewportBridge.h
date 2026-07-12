@@ -16,6 +16,7 @@
 #include <QImage>
 #include <QString>
 #include <QVector>
+#include <QtGlobal>
 #include <memory>
 
 class RenderEngine;
@@ -281,6 +282,25 @@ public:
     /// set region (some rasterizers ignore it entirely).  Drives the
     /// viewport toolbar's REGION chip disable/tooltip state.
     bool interactiveRasterizerHonorsRegion() const;
+
+    // ---- Editor live-sync (UI refinement item 1) --------------------
+    // Mirrors the macOS RISEViewportBridge `serializedSceneText` /
+    // `getSceneTextVersionUuid:revision:`.  CAUTION: both take the
+    // controller's commit mutex, the SAME mutex a production render (or
+    // an outstanding chat-driven agent render) holds for its duration --
+    // callers MUST NOT poll these while the scene isn't editable (see
+    // MainWindow::canUseSceneTransport / ChatPanel::refreshProposals's
+    // gate comment for the "would wedge the GUI thread against the
+    // render" hazard this guards against).
+
+    /// Serialized text of the live CST document, or an empty string
+    /// when no controller is attached / no document is retained.
+    QString serializedSceneText() const;
+
+    /// Retained CST head version (uuid, revision).  uuid is fresh per
+    /// load; revision bumps iff content changed.  Both outputs are
+    /// zeroed and the return is false when no controller is attached.
+    bool getSceneTextVersion(quint64* outUuid, quint64* outRevision) const;
 
     // ---- Phase 6.5 scene-file save ----------------------------------
     // Round-trip-save bindings.  Mirrors the macOS RISEViewportBridge
