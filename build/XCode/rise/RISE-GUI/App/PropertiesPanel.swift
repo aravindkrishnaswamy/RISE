@@ -22,14 +22,23 @@ import SwiftUI
 /// Mirrors RISE::ValueKind in ChunkDescriptor.h.  Selects which value
 /// cell renders for a property row.
 enum PropertyKind: Int {
+    // Raw values MUST match the parser's ValueKind wire enum exactly
+    // (src/Library/Parsers/ChunkDescriptor.h) — the bridge sends
+    // `ValueKind` cast to int.  A prior version of this enum omitted
+    // DoubleVec4/DoubleMat4 and packed the tail as 4..7, silently
+    // misrouting every String/Filename/Enum/Reference row (a
+    // DoubleMat4 even rendered a filename browse button).  Found by
+    // the Windows-port slice mirroring the real wire values.
     case bool       = 0
     case uint       = 1
     case double     = 2
     case doubleVec3 = 3
-    case string     = 4
-    case filename   = 5
-    case enumKind   = 6
-    case reference  = 7
+    case doubleVec4 = 4
+    case doubleMat4 = 5
+    case string     = 6
+    case filename   = 7
+    case enumKind   = 8
+    case reference  = 9
 }
 
 /// Single quick-pick preset option, mirrors RISEViewportPropertyPreset.
@@ -605,7 +614,9 @@ private struct PropertyRowView: View {
             ReferenceChipCell(row: row, onCommit: onCommit)
         case .enumKind:
             EnumChipCell(row: row, onCommit: onCommit)
-        case .double, .uint, .string:
+        case .double, .uint, .string, .doubleVec4, .doubleMat4:
+            // Vec4/Mat4 get the plain well: no bespoke multi-field
+            // editor yet, and free-text is the honest fallback.
             TextWellCell(row: row, onCommit: onCommit, onScrubBegin: onScrubBegin, onScrubEnd: onScrubEnd)
         }
     }
