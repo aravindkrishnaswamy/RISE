@@ -20,6 +20,10 @@ const QRegularExpression RISESyntaxHighlighter::s_macroRefRegex(QStringLiteral("
 const QRegularExpression RISESyntaxHighlighter::s_mathExprRegex(QStringLiteral("\\$\\([^)]*\\)"));
 const QRegularExpression RISESyntaxHighlighter::s_numberRegex(QStringLiteral("(?<=\\s)-?(?:\\d+\\.?\\d*|\\.\\d+)(?=\\s|$)"));
 const QRegularExpression RISESyntaxHighlighter::s_propertyKeyRegex(QStringLiteral("^(\\t+)(\\w+)"));
+// Double-quoted string / file-path literals ("vase.obj") -- a single
+// line's worth (RISE scene text has no multi-line quoted strings),
+// non-greedy so back-to-back "a" "b" colors as two tokens.
+const QRegularExpression RISESyntaxHighlighter::s_stringRegex(QStringLiteral("\"[^\"\\n]*\""));
 
 // Block keywords — populated from SceneEditorSuggestions::SceneGrammar on
 // first call.  The parser's chunk registry is the single source of truth;
@@ -46,49 +50,56 @@ RISESyntaxHighlighter::RISESyntaxHighlighter(QTextDocument* parent)
     QFont boldFont = monoFont;
     boldFont.setBold(true);
 
-    // Comment: green
-    m_commentFmt.setForeground(QColor(0, 160, 0));
+    // Colors mirror the macOS RISESceneSyntaxHighlighter.swift's
+    // RISESceneTheme hex values exactly, per the design comp.
+
+    // Comment: dim gray (Theme::textDisabled)
+    m_commentFmt.setForeground(QColor(0x5c, 0x5f, 0x66));
     m_commentFmt.setFont(monoFont);
 
     // File header: purple bold
-    m_fileHeaderFmt.setForeground(QColor(128, 0, 128));
+    m_fileHeaderFmt.setForeground(QColor(0xc8, 0xa0, 0xe8));
     m_fileHeaderFmt.setFont(boldFont);
 
-    // Block keyword: blue bold
-    m_blockKeywordFmt.setForeground(QColor(0, 80, 255));
+    // Block keyword: soft blue bold (Theme::accentSoft)
+    m_blockKeywordFmt.setForeground(QColor(0x8f, 0xb8, 0xe8));
     m_blockKeywordFmt.setFont(boldFont);
 
-    // Property key: indigo
-    m_propertyKeyFmt.setForeground(QColor(75, 0, 130));
+    // Property key: muted gray (Theme::textMuted)
+    m_propertyKeyFmt.setForeground(QColor(0x9a, 0x9d, 0xa4));
     m_propertyKeyFmt.setFont(monoFont);
 
-    // Command: teal
-    m_commandFmt.setForeground(QColor(0, 128, 128));
+    // Command (> directive): teal
+    m_commandFmt.setForeground(QColor(0x8f, 0xd4, 0xc4));
     m_commandFmt.setFont(monoFont);
 
-    // Preprocessor: orange
-    m_preprocessorFmt.setForeground(QColor(230, 140, 0));
+    // Preprocessor: amber (Theme::warn)
+    m_preprocessorFmt.setForeground(QColor(0xe0, 0xb2, 0x5a));
     m_preprocessorFmt.setFont(monoFont);
 
-    // Loop directive: orange bold
-    m_loopDirectiveFmt.setForeground(QColor(230, 140, 0));
+    // Loop directive: amber bold
+    m_loopDirectiveFmt.setForeground(QColor(0xe0, 0xb2, 0x5a));
     m_loopDirectiveFmt.setFont(boldFont);
 
-    // Macro reference: red
-    m_macroRefFmt.setForeground(QColor(220, 30, 30));
+    // Macro reference (@NAME): purple
+    m_macroRefFmt.setForeground(QColor(0xc8, 0xa0, 0xe8));
     m_macroRefFmt.setFont(monoFont);
 
-    // Math expression: pink
-    m_mathExprFmt.setForeground(QColor(255, 105, 180));
+    // Math expression $(...): muted purple/pink
+    m_mathExprFmt.setForeground(QColor(0xc9, 0xa0, 0xd4));
     m_mathExprFmt.setFont(monoFont);
 
-    // Number: cyan
-    m_numberFmt.setForeground(QColor(0, 170, 190));
+    // Number / vector literal: soft green (Theme::successLight)
+    m_numberFmt.setForeground(QColor(0xa9, 0xd4, 0xb1));
     m_numberFmt.setFont(monoFont);
 
-    // Braces: gray
-    m_bracesFmt.setForeground(QColor(128, 128, 128));
+    // Braces: dim gray (Theme::textDim)
+    m_bracesFmt.setForeground(QColor(0x6f, 0x72, 0x78));
     m_bracesFmt.setFont(monoFont);
+
+    // Quoted string / file-path values: gold (Theme::gold)
+    m_stringFmt.setForeground(QColor(0xd4, 0xb9, 0x8a));
+    m_stringFmt.setFont(monoFont);
 }
 
 void RISESyntaxHighlighter::highlightBlock(const QString& text)
@@ -158,6 +169,13 @@ void RISESyntaxHighlighter::highlightLineContents(const QString& text)
     while (it.hasNext()) {
         QRegularExpressionMatch match = it.next();
         setFormat(match.capturedStart(), match.capturedLength(), m_bracesFmt);
+    }
+
+    // Quoted string / file-path literals
+    it = s_stringRegex.globalMatch(text);
+    while (it.hasNext()) {
+        QRegularExpressionMatch match = it.next();
+        setFormat(match.capturedStart(), match.capturedLength(), m_stringFmt);
     }
 
     // Macro references (@NAME)

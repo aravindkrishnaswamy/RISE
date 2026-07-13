@@ -39,6 +39,11 @@
 //    9. Hostile-coordinate determinism: the 2^40 cell fold keeps
 //       FindFacet finite, stable, and bit-deterministic at extreme
 //       object-space coordinates.
+//    10. Ray-anchored geometric-horizon gate (a4fb884d regression pin):
+//        in the DISAGREEMENT BAND (front-facing hit whose shading
+//        normal is tilted past the view), GGXSPF never emits a
+//        tunnelling ray and Pdf/value agree it's zero/black for a
+//        probe pointing into the object.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -991,6 +996,139 @@ static void TestNonFiniteInert()
 }
 
 // ============================================================
+//  Test 8bb: TIR under a tilted (glint-perturbed) shading frame does
+//  NOT drop the mandatory Fresnel lobe (review-round-1 F1)
+// ============================================================
+
+//! Review-round-1 F1: when a delta dielectric hits Total Internal
+//! Reflection from inside (no transmission lobe will ever be emitted),
+//! the geometric-horizon gate must not silently drop the reflection --
+//! it must re-derive the reflection direction about the TRUE geometric
+//! normal instead.  This constructs the tilted-frame scenario directly
+//! (rather than searching the GlintModifier's stochastic facet field
+//! for a qualifying hit) so the incidence/tilt angles are exact and the
+//! TIR condition is guaranteed by construction:
+//!
+//!   - Flat geometric normal geomN = +Z.
+//!   - Shading (facet) normal tilted 55 deg off geomN in the X-Z plane
+//!     -- within GlintModifier's 60-degree tilt ceiling.
+//!   - Ray travelling from inside straight along +Z (normal incidence
+//!     against the FLAT surface, but 55 deg off the TILTED shading
+//!     normal).
+//!   - IOR 1.55 (glass) -> 1.0 (air): critical angle is asin(1/1.55) =
+//!     ~40.2 deg, so the 55-degree incidence angle against the shading
+//!     normal is comfortably past it => guaranteed TIR (ref forced to
+//!     1.0; CalculateRefractedRay returns false).
+//!
+//!   Reflecting about the tilted shading normal sends the ray to a
+//!   positive-Z (outward / tunnelling) direction -- the naive gate
+//!   would fail and (pre-fix) drop the ONLY ray this delta material
+//!   could emit, a fully black sample.  The fix must instead emit
+//!   exactly one reflection ray, staying on the true geometric-normal
+//!   side (non-positive Z: reflected back into the medium, as a TIR
+//!   event must).
+static void TestDielectricTIRUnderTiltedNormal()
+{
+	std::cout << "--- Test 8bb: TIR under tilted shading frame keeps the mandatory lobe ---" << std::endl;
+
+	StubObject* stub = new StubObject();
+	stub->addref();
+
+	UniformScalarPainter* tau  = new UniformScalarPainter( 1.0 );		tau->addref();
+	UniformScalarPainter* ior  = new UniformScalarPainter( 1.55 );		ior->addref();
+	UniformScalarPainter* scat = new UniformScalarPainter( 1000000.0 );	scat->addref();
+
+	DielectricSPF* spf = new DielectricSPF( *tau, *ior, *scat, false );	spf->addref();
+
+	class FixedSampler : public ISampler
+	{
+	public:
+		Scalar Get1D() { return 0.5; }
+		Point2 Get2D() { return Point2( 0.5, 0.5 ); }
+		void StartStream( int ) {}
+	};
+	FixedSampler sampler;
+
+	const Scalar tiltRad = 55.0 * PI / 180.0;
+	const Vector3 geomN( 0, 0, 1 );
+	const Vector3 nShade = Vector3Ops::Normalize( Vector3( sin( tiltRad ), 0, cos( tiltRad ) ) );
+	const Vector3 inDir( 0, 0, 1 );	// from inside, normal incidence vs the FLAT surface
+
+	Ray inRay( Point3( 0, 0, -1 ), inDir );
+	RasterizerState rs = { 0, 0 };
+	RayIntersectionGeometric ri( inRay, rs );
+	ri.bHit = true;
+	ri.range = 1.0;
+	ri.ptIntersection = Point3( 0, 0, 0 );
+	ri.ptObjIntersec = Point3( 0, 0, 0 );
+	ri.vNormal = nShade;
+	ri.vGeomNormal = geomN;
+	ri.onb.CreateFromW( nShade );
+	ri.ptCoord = Point2( 0.5, 0.5 );
+
+	// From-inside IOR stack: current object pushed with the glass IOR,
+	// base environment is air (matches DielectricARTest's "FROM INSIDE"
+	// stack pattern).
+	IORStack iorStack( 1.0 );
+	iorStack.SetCurrentObject( stub );
+	iorStack.push( 1.55 );
+
+	// --- RGB path ---
+	{
+		ScatteredRayContainer scattered;
+		spf->Scatter( ri, sampler, scattered, iorStack );
+
+		int nReflect = 0, nOther = 0;
+		Vector3 reflectDir( 0, 0, 0 );
+		for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+			if( scattered[i].type == ScatteredRay::eRayReflection ) {
+				nReflect++;
+				reflectDir = scattered[i].ray.Dir();
+			} else {
+				nOther++;
+			}
+		}
+
+		CHECK( nReflect == 1, "TIR must emit exactly one mandatory reflection ray (RGB), got " << nReflect );
+		CHECK( nOther == 0, "TIR must not also emit a transmission ray (RGB), got " << nOther );
+		if( nReflect == 1 ) {
+			const Scalar dotGeom = Vector3Ops::Dot( reflectDir, geomN );
+			CHECK( dotGeom <= 1e-6, "TIR reflection tunnelled through the geometric horizon (RGB, dot=" << dotGeom << ")" );
+		}
+	}
+
+	// --- Spectral (NM) path ---
+	{
+		ScatteredRayContainer scattered;
+		spf->ScatterNM( ri, sampler, 550.0, scattered, iorStack );
+
+		int nReflect = 0, nOther = 0;
+		Vector3 reflectDir( 0, 0, 0 );
+		for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+			if( scattered[i].type == ScatteredRay::eRayReflection ) {
+				nReflect++;
+				reflectDir = scattered[i].ray.Dir();
+			} else {
+				nOther++;
+			}
+		}
+
+		CHECK( nReflect == 1, "TIR must emit exactly one mandatory reflection ray (NM), got " << nReflect );
+		CHECK( nOther == 0, "TIR must not also emit a transmission ray (NM), got " << nOther );
+		if( nReflect == 1 ) {
+			const Scalar dotGeom = Vector3Ops::Dot( reflectDir, geomN );
+			CHECK( dotGeom <= 1e-6, "TIR reflection tunnelled through the geometric horizon (NM, dot=" << dotGeom << ")" );
+		}
+	}
+
+	spf->release();
+	tau->release();
+	ior->release();
+	scat->release();
+	stub->release();
+}
+
+// ============================================================
 //  Test 8c: zero vGeomNormal falls back to the shading normal
 // ============================================================
 
@@ -1020,6 +1158,147 @@ static void TestZeroGeomNormalFallback()
 	}
 	std::cout << "  " << perturbed << "/5000 hits perturbed with zero vGeomNormal" << std::endl;
 	CHECK( perturbed > 1500, "modifier silently inert under zero vGeomNormal (" << perturbed << ")" );
+}
+
+// ============================================================
+//  Test 8d: ray-anchored geometric-horizon gate holds in the
+//  DISAGREEMENT BAND (review-round-4 W1 regression pin; a4fb884d)
+// ============================================================
+
+//! a4fb884d fixed an INVERTED gate.  The pre-fix orientation rule
+//! picked geomN's side by checking AGREEMENT WITH THE SHADING FRAME
+//! (`Dot(geomNRaw, n) >= 0`), where `n` is the shading normal AFTER
+//! GGXSPF::Scatter's FlipW.  In the DISAGREEMENT BAND -- a genuinely
+//! front-facing hit (Dot(rayDir, vGeomNormal) < 0) whose shading normal
+//! is tilted far enough that Dot(rayDir, vNormal) > 0 -- FlipW fires on
+//! that front-facing hit and flips the shading frame INWARD; the old
+//! rule then flipped geomN inward too, so the gate accepted ONLY
+//! directions tunnelling into the object (the exact mechanism behind
+//! the glint firefly outlier growth 82->95->127 across the spp ladder
+//! documented in the commit).  The fix anchors geomN's orientation to
+//! `ri.ray.Dir()` alone (`Dot(geomNRaw, ri.ray.Dir()) < 0`), which
+//! cannot be fooled by the shading frame at all.
+//!
+//! This test pins that disagreement-band configuration DIRECTLY
+//! (mirroring TestDielectricTIRUnderTiltedNormal's construction style)
+//! rather than searching GlintModifier's stochastic facet field for a
+//! qualifying hit, so the regression can never silently return: the
+//! gate must anchor to the RAY, not the shading frame.
+static void TestRayAnchoredGateDisagreementBand()
+{
+	std::cout << "--- Test 8d: ray-anchored gate holds in the disagreement band (a4fb884d) ---" << std::endl;
+
+	GlobalLog();		// initialize logger before material construction
+
+	StubObject* stub = new StubObject();
+	stub->addref();
+
+	// Near-mirror silver GGX -- alpha 0.02 (near-specular) with the same
+	// approximate visible-band silver conductor ior/ext used by Test 6's
+	// consistency check and by glint_flakes.RISEscene's silver.
+	UniformColorPainter* diffuse = new UniformColorPainter( RISEPel( 0.0, 0.0, 0.0 ) );	diffuse->addref();
+	UniformColorPainter* specular = new UniformColorPainter( RISEPel( 0.95, 0.95, 0.95 ) );	specular->addref();
+	UniformScalarPainter* alphaX = new UniformScalarPainter( 0.02 );	alphaX->addref();
+	UniformScalarPainter* alphaY = new UniformScalarPainter( 0.02 );	alphaY->addref();
+	UniformScalarPainter* ior = new UniformScalarPainter( 0.15 );		ior->addref();
+	UniformScalarPainter* ext = new UniformScalarPainter( 3.5 );		ext->addref();
+
+	GGXSPF* spf = new GGXSPF( *diffuse, *specular, *alphaX, *alphaY, *ior, *ext, eFresnelConductor );	spf->addref();
+	GGXBRDF* brdf = new GGXBRDF( *diffuse, *specular, *alphaX, *alphaY, *ior, *ext, eFresnelConductor );	brdf->addref();
+
+	// Disagreement-band construction: flat geometric surface (true
+	// outward normal = +Z), a ray that genuinely hits the FRONT face
+	// (Dot(rayDir, geomN) < 0, ~-0.42 -- matching the commit's own
+	// firefly-trace numbers), but a shading normal tilted far enough
+	// off +Z that Dot(rayDir, vNormal) > 0 (~+0.12) -- the exact
+	// sign(rayDir.Ns) != sign(rayDir.Ng) band the fix targets.
+	const Vector3 geomNTrue( 0, 0, 1 );
+	const Scalar rayTiltDeg = 65.17;		// ray's angle off normal incidence
+	const Scalar shadeTiltDeg = 31.73;		// shading normal's tilt off geomNTrue
+	const Vector3 rayDir = Vector3Ops::Normalize(
+		Vector3( sin( rayTiltDeg * DEG_TO_RAD ), 0, -cos( rayTiltDeg * DEG_TO_RAD ) ) );
+	const Vector3 nShade = Vector3Ops::Normalize(
+		Vector3( sin( shadeTiltDeg * DEG_TO_RAD ), 0, cos( shadeTiltDeg * DEG_TO_RAD ) ) );
+
+	const Scalar dotGeom = Vector3Ops::Dot( rayDir, geomNTrue );
+	const Scalar dotShade = Vector3Ops::Dot( rayDir, nShade );
+	CHECK( dotGeom < -0.1, "test construction: ray must clearly hit the front face (dotGeom=" << dotGeom << ")" );
+	CHECK( dotShade > 0.01, "test construction: shading normal must be tilted past the view (dotShade=" << dotShade << ")" );
+
+	Ray inRay( Point3( -rayDir.x, -rayDir.y, -rayDir.z ), rayDir );
+	RasterizerState rs = { 0, 0 };
+	RayIntersectionGeometric ri( inRay, rs );
+	ri.bHit = true;
+	ri.range = 1.0;
+	ri.ptIntersection = Point3( 0, 0, 0 );
+	ri.ptObjIntersec = Point3( 0, 0, 0 );
+	ri.vNormal = nShade;
+	ri.vGeomNormal = geomNTrue;
+	ri.onb.CreateFromW( nShade );
+	ri.ptCoord = Point2( 0.5, 0.5 );
+
+	IORStack iorStack = MakeTestIORStack( stub );
+	RandomNumberGenerator rng( 4177 );
+	IndependentSampler sampler( rng );
+
+	const int nDraws = 2000;
+	int nEmitted = 0;
+
+	for( int i = 0; i < nDraws; i++ )
+	{
+		ScatteredRayContainer scattered;
+		spf->Scatter( ri, sampler, scattered, iorStack );
+		for( unsigned int s = 0; s < scattered.Count(); s++ ) {
+			nEmitted++;
+			const Scalar dotOut = Vector3Ops::Dot( scattered[s].ray.Dir(), geomNTrue );
+			CHECK( dotOut > 0, "RGB emitted ray tunnelled through the geometric horizon (dot=" << dotOut << ")" );
+		}
+	}
+
+	int nEmittedNM = 0;
+	const Scalar nm = 550.0;
+	for( int i = 0; i < nDraws; i++ )
+	{
+		ScatteredRayContainer scattered;
+		spf->ScatterNM( ri, sampler, nm, scattered, iorStack );
+		for( unsigned int s = 0; s < scattered.Count(); s++ ) {
+			nEmittedNM++;
+			const Scalar dotOut = Vector3Ops::Dot( scattered[s].ray.Dir(), geomNTrue );
+			CHECK( dotOut > 0, "NM emitted ray tunnelled through the geometric horizon (dot=" << dotOut << ")" );
+		}
+	}
+
+	std::cout << "  dotGeom=" << dotGeom << " dotShade=" << dotShade
+	          << "  RGB emitted=" << nEmitted << "/" << nDraws
+	          << " NM emitted=" << nEmittedNM << "/" << nDraws
+	          << " (0 tunnelling emissions required, of any count)" << std::endl;
+
+	// Pdf()/PdfNM() must independently agree: a probe direction pointing
+	// straight INTO the object (-geomNTrue) has zero density -- the
+	// sampler could never emit it, so density must be zero for MIS
+	// consistency (GGXSPF::Pdf's own gate comment).
+	const Vector3 intoObject = -geomNTrue;
+	const Scalar pdfInto = spf->Pdf( ri, intoObject, iorStack );
+	const Scalar pdfIntoNM = spf->PdfNM( ri, intoObject, nm, iorStack );
+	CHECK( pdfInto == 0.0, "Pdf() nonzero for a direction pointing into the object (" << pdfInto << ")" );
+	CHECK( pdfIntoNM == 0.0, "PdfNM() nonzero for a direction pointing into the object (" << pdfIntoNM << ")" );
+
+	// value()/valueNM() (the companion BRDF) must independently agree:
+	// black for the same into-the-object probe direction.
+	const RISEPel valInto = brdf->value( intoObject, ri );
+	const Scalar valIntoNM = brdf->valueNM( intoObject, ri, nm );
+	CHECK( ColorMath::MaxValue( valInto ) == 0.0, "value() nonzero for a direction pointing into the object (" << ColorMath::MaxValue( valInto ) << ")" );
+	CHECK( valIntoNM == 0.0, "valueNM() nonzero for a direction pointing into the object (" << valIntoNM << ")" );
+
+	brdf->release();
+	spf->release();
+	diffuse->release();
+	specular->release();
+	alphaX->release();
+	alphaY->release();
+	ior->release();
+	ext->release();
+	stub->release();
 }
 
 // ============================================================
@@ -1079,8 +1358,10 @@ int main()
 	TestNearestWins();
 	TestFlippedOrientationGuard();
 	TestDielectricAtPerturbedHits();
+	TestDielectricTIRUnderTiltedNormal();
 	TestNonFiniteInert();
 	TestZeroGeomNormalFallback();
+	TestRayAnchoredGateDisagreementBand();
 	TestHostileCoordinates();
 
 	ReleaseMods();

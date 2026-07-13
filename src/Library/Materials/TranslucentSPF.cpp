@@ -67,6 +67,20 @@ void TranslucentSPF::Scatter(
 	ScatteredRay	trans;
 
 	const Vector3& n = ri.onb.w();
+
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a front-lobe direction that
+	// validates against the (tilted) shading normal can still point below
+	// the geometric surface -- the continuation ray then tunnels into the
+	// solid.  Only the entering-branch front (reflection) lobe is gated;
+	// all `trans` lobes and the exit-face re-emission are transmission and
+	// stay exempt.  Degenerate vGeomNormal (SquaredModulus guard, matches
+	// GlintModifier.cpp) falls back to the shading normal, making the gate
+	// a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	OrthonormalBasis3D	myonb = ri.onb;
 
 	const Vector3	r = ri.ray.Dir();
@@ -94,7 +108,9 @@ void TranslucentSPF::Scatter(
 			front.ray.Set( ri.ptIntersection, rv );
 			front.pdf = fabs( Vector3Ops::Dot( front.ray.Dir(), ri.onb.w() ) ) * INV_PI;
 			front.isDelta = false;
-			scattered.AddScatteredRay( front );
+			if( Vector3Ops::Dot( front.ray.Dir(), geomN ) > 0 ) {
+				scattered.AddScatteredRay( front );
+			}
 		}
 
 		trans.kray = pTrans->GetColor(ri);
@@ -238,6 +254,11 @@ void TranslucentSPF::ScatterNM(
 	ScatteredRay	trans;
 
 	const Vector3& n = ri.onb.w();
+
+	// Geometric-horizon gate (mirrors Scatter()'s front-lobe gate).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	OrthonormalBasis3D	myonb = ri.onb;
 
 	const Vector3	r = ri.ray.Dir();
@@ -259,7 +280,9 @@ void TranslucentSPF::ScatterNM(
 			front.ray.Set( ri.ptIntersection, rv );
 			front.pdf = fabs( Vector3Ops::Dot( front.ray.Dir(), ri.onb.w() ) ) * INV_PI;
 			front.isDelta = false;
-			scattered.AddScatteredRay( front );
+			if( Vector3Ops::Dot( front.ray.Dir(), geomN ) > 0 ) {
+				scattered.AddScatteredRay( front );
+			}
 		}
 
 		trans.krayNM = pTrans->GetColorNM(ri,nm);
@@ -306,7 +329,14 @@ void TranslucentSPF::ScatterNM(
 					TWO_PI * sampler.Get1D() );
 
 				trans.type = ScatteredRay::eRayTranslucent;
-				trans.krayNM *= scat;
+				// RGB twin (Scatter(), ~line 182) assigns
+				// `trans.kray = front.kray * scat;` -- trans.krayNM was never
+				// assigned before this point (ScatteredRay's ctor defaults
+				// krayNM to 0), so `*= scat` left this lobe at 0 (dead) in
+				// every spectral render.  Mirror the RGB twin: derive it from
+				// front.krayNM (the extinction-attenuated pass-through, set
+				// just above).
+				trans.krayNM = front.krayNM * scat;
 				trans.ray.Set( ri.ptIntersection, rv );
 				// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
 				{
@@ -351,10 +381,29 @@ Scalar TranslucentSPF::Pdf(
 	// For the front hemisphere diffuse component, return cosine-weighted PDF
 	// For the translucent (back hemisphere) component, return 0
 	// (translucent paths have a complex mixed PDF that we approximate as 0)
-	const bool bFrontFace = Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) <= NEARZERO;
+	//
+	// Use the IOR stack as the authoritative source for inside/outside,
+	// matching Scatter()/ScatterNM()'s bEntering test: the normal-based
+	// dot-product test misclassifies a back-scattered ray hitting an
+	// enclosing surface from inside the cavity as "exiting" (ISPF::Pdf
+	// already threads ior_stack through, so no interface change is needed).
+	const bool bFrontFace = !ior_stack.containsCurrent();
 	const Scalar cosTheta = bFrontFace ?
 		Vector3Ops::Dot( wo, ri.onb.w() ) :
 		-Vector3Ops::Dot( wo, ri.onb.w() );
+
+	// Geometric-horizon gate (MIS consistency with Scatter's sampler-side
+	// gate, front-hemisphere lobe only): a wo the sampler can no longer
+	// emit contributes zero density.
+	if( bFrontFace )
+	{
+		const Vector3& n = ri.onb.w();
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : n;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+		if( Vector3Ops::Dot( wo, geomN ) <= 0 ) return 0;
+	}
+
 	return (cosTheta > 0) ? cosTheta * INV_PI : 0;
 }
 

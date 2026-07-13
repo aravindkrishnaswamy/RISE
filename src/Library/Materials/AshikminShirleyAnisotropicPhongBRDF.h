@@ -38,12 +38,20 @@ namespace RISE
 			const IPainter*			pRs;		// specular reflectance
 
 		public:
+			//! n/u/v are the (possibly FlipW'd) ray-facing frame -- callers on a
+			//! back-face hit must pass the SAME flipped frame their sampler used
+			//! (see WardIsotropicGaussianSPF-style FlipW convention), not the raw
+			//! ri.onb, or ndotk2 comes out negative and the early-out silently
+			//! drops every back-face sample.
 			template< class T >
 			static void ComputeDiffuseSpecularFactors(
 				T& diffuse,
 				T& specular,
 				const Vector3& vLightIn,
 				const RayIntersectionGeometric& ri,
+				const Vector3& n,
+				const Vector3& u,
+				const Vector3& v,
 				const T& NU,
 				const T& NV,
 				const T& Rs

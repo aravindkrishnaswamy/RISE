@@ -19,6 +19,7 @@
 
 #include "Interfaces/IJobPriv.h"
 #include <cstdint>
+#include <atomic>
 #include "Interfaces/IScenePriv.h"
 #include "Interfaces/IMaterial.h"
 #include "Interfaces/IRayIntersectionModifier.h"
@@ -282,7 +283,12 @@ namespace RISE
 		void RegisterAndActivateRasterizer( const std::string& name, IRasterizer* pRaster,
 			const RasterizerParams& params );
 
-		IProgressCallback*							pGlobalProgress;	// A global progress reporter
+		// A global progress reporter.  Atomic: the slot is written from more than one thread (a
+		// GUI's UI-thread SetProgress/ClearProgressIfCurrent vs the SceneEditController coordinator
+		// worker's install/restore in AgentSession::RenderCore_ / RunProductionRenderComposed) and
+		// read on whichever thread calls the Rasterize family.  See SetProgress /
+		// ClearProgressIfCurrent in Job.cpp for the ordering contract.
+		std::atomic<IProgressCallback*>				pGlobalProgress;	// A global progress reporter
 
 		double										lightSampleRRThreshold;	// Light-sample RR threshold (0=disabled)
 
@@ -376,7 +382,7 @@ namespace RISE
 		RISE::Cst::CstHeadVersion	GetCstHeadVersion() const			{ return mCstHeadVersion; }
 		// Model-B F2 slice S2a fix round 2 (P2-A): read-only accessor for pGlobalProgress -- see
 		// IJobPriv::GetProgress's doc.  Inline, no-`override` convention like the other getters.
-		IProgressCallback*			GetProgress() const					{ return pGlobalProgress; }
+		IProgressCallback*			GetProgress() const					{ return pGlobalProgress.load( std::memory_order_acquire ); }
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.
@@ -3035,6 +3041,26 @@ namespace RISE
 		//! Sets progress class to report progress for anything we do
 		void SetProgress(
 			IProgressCallback* pProgress				///< [in] The progress function
+			);
+
+		//! Atomic conditional clear of the progress hook -- see the IJob.h tail doc for the race
+		//! this exists for.  (Deliberately no `override` keyword: Job.h omits it on all of its IJob
+		//! overrides; marking just this one would wake -Winconsistent-missing-override file-wide.)
+		bool ClearProgressIfCurrent(
+			IProgressCallback* expected					///< [in] Clear only if the installed callback is exactly this
+			);
+
+		//! Atomic conditional install (install-side CAS twin) -- see the IJob.h tail doc.
+		//! (Same deliberate no-`override` convention as ClearProgressIfCurrent above.)
+		bool SetProgressIfCurrent(
+			IProgressCallback* expected,				///< [in] Swap only if the installed callback is exactly this (null = empty slot)
+			IProgressCallback* next						///< [in] The callback to install on a successful compare
+			);
+
+		//! Atomic capture-and-install (returns the prior) -- see the IJob.h tail doc.
+		//! (Same deliberate no-`override` convention as the two conditional ops above.)
+		IProgressCallback* ExchangeProgress(
+			IProgressCallback* next						///< [in] The callback to install (may be null)
 			);
 
 		//! Registers a caller-owned, fully-built triangle mesh geometry under

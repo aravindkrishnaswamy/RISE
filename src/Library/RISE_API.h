@@ -3437,8 +3437,10 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditCategory_Light      = 4,
 		SceneEditCategory_Film       = 5,  ///< Output Settings (single Film per scene)
 		SceneEditCategory_Material   = 6,  ///< Materials (editable for non-composed types)
-		SceneEditCategory_Medium     = 7   ///< Participating media (Homogeneous editable;
+		SceneEditCategory_Medium     = 7,  ///< Participating media (Homogeneous editable;
 		                                   ///< Heterogeneous read-only)
+		SceneEditCategory_Animation  = 8,  ///< Named animations (Category::Animation)
+		SceneEditCategory_SceneVariant = 9 ///< scene_variant overlays (Category::SceneVariant)
 	};
 
 	//! Construct a SceneEditController over an existing job.
@@ -3616,12 +3618,78 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_Undo( SceneEditController* p );
 	bool RISE_API_SceneEditController_Redo( SceneEditController* p );
 
+	//! Human-readable label of the next Undo/Redo step ("Translate",
+	//! "Agent Edit", ...) for the shells' Edit-menu items.  Empty string
+	//! when the corresponding stack is empty.
+	bool RISE_API_SceneEditController_UndoLabel(
+		SceneEditController* p, char* buf, unsigned int bufLen );
+	bool RISE_API_SceneEditController_RedoLabel(
+		SceneEditController* p, char* buf, unsigned int bufLen );
+
+	// ---- Refinement pause + status (UI redesign, design brief A2) ----
+	// See SceneEditController::PauseRefinement / GetRefinementStatus.
+
+	bool RISE_API_SceneEditController_PauseRefinement( SceneEditController* p );
+	bool RISE_API_SceneEditController_ResumeRefinement( SceneEditController* p );
+	bool RISE_API_SceneEditController_IsRefinementPaused( SceneEditController* p );
+
+	//! Returns the RefinementPhase as int (0 Idle, 1 Rendering,
+	//! 2 Refining, 3 Polishing, 4 Paused); -1 on null controller.
+	//! *outScaleDivisor receives the preview-scale divisor (1..32,
+	//! 1 = full resolution) when non-null.
+	int RISE_API_SceneEditController_GetRefinementStatus(
+		SceneEditController* p, unsigned int* outScaleDivisor );
+
+	// ---- Interactive region-of-interest (UI redesign, A4) ------------
+	// Full-resolution film pixel coords, INCLUSIVE.  See
+	// SceneEditController::SetInteractiveRegion for semantics (full-res
+	// passes only; cleared automatically before production renders).
+
+	bool RISE_API_SceneEditController_SetInteractiveRegion(
+		SceneEditController* p, unsigned int left, unsigned int top,
+		unsigned int right, unsigned int bottom );
+	bool RISE_API_SceneEditController_ClearInteractiveRegion( SceneEditController* p );
+	bool RISE_API_SceneEditController_GetInteractiveRegion(
+		SceneEditController* p, unsigned int* left, unsigned int* top,
+		unsigned int* right, unsigned int* bottom );
+	bool RISE_API_SceneEditController_InteractiveRasterizerHonorsRegion(
+		SceneEditController* p );
+
 	// ---- Phase 6.5 scene-file save ----------------------------------
 	// Round-trip-save bindings.  See docs/ROUND_TRIP_SAVE_PLAN.md §9.9
 	// + SceneEditController.h "Phase 6.5".
 
 	//! Drives the GUI's "Save Scene" button enable state.
 	bool RISE_API_SceneEditController_HasUnsavedChanges( SceneEditController* p );
+
+	// ---- Editor live-sync (UI refinement item 1) ---------------------
+	// See SceneEditController::SerializedSceneText — callers must NOT
+	// poll while a render owns the scene (both take the controller's
+	// commit mutex).
+
+	//! Malloc'd NUL-terminated copy of the serialized scene text, or
+	//! NULL when no document is retained.  Free with RISE_API_FreeString.
+	char* RISE_API_SceneEditController_SerializedSceneTextAlloc( SceneEditController* p );
+	//! Frees a string returned by *_SerializedSceneTextAlloc.  NULL-safe.
+	void RISE_API_FreeString( char* s );
+	//! Retained CST head version (uuid, revision); both 0 when none.
+	bool RISE_API_SceneEditController_GetSceneTextVersion(
+		SceneEditController* p,
+		unsigned long long* outUuid, unsigned long long* outRevision );
+
+	//! "Reveal in scene file": resolve entity (category, name) to its byte
+	//! offset + 1-based line number inside SerializedSceneTextAlloc's text.
+	//! `category` uses the SAME SceneEditCategory_* numbering as PanelMode
+	//! (see RISE_API_SceneEditController_PanelMode below). Returns false
+	//! (outputs unchanged) on a null controller/name, no retained CST
+	//! document, an unresolvable/ambiguous name, or a category with no
+	//! chunk-name addressing scheme (Rasterizer/Film/None — see
+	//! SceneEditController::EntitySourceLocation's doc comment). Same
+	//! mMutex caveat as the rest of this section: callers must NOT poll
+	//! while a render owns the scene.
+	bool RISE_API_SceneEditController_GetEntitySourceLocation(
+		SceneEditController* p, int category, const char* name,
+		unsigned long long* outByteOffset, unsigned int* outLine );
 
 	//! Save the in-memory edits to `filePath`.  Returns the engine's
 	//! SaveResult.status numerically (0=Saved, 1=NoOp, 2=Refused,

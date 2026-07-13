@@ -289,6 +289,39 @@ final class ChatViewModel: ObservableObject {
     // to the Keychain only.
     @Published private(set) var provider: AgentChatProviderChoice
     @Published private(set) var modelId: String
+
+    // MARK: - Agent autonomy selector (2026-07 GUI composer chips)
+
+    /// The composer's current autonomy level for the CHAT AGENT's OWN tool
+    /// calls (RISEViewportBridge's `-agentHandleToolCall:` routing — see
+    /// that method's doc for the exact per-level verb behaviour). Persisted
+    /// in UserDefaults so the choice survives relaunch; applied to a fresh
+    /// `RISEViewportBridge` on every `sceneOpened(viewportBridge:)` (a new
+    /// scene builds a NEW bridge, whose own dispatchers default to
+    /// `.apply` until told otherwise — see the bridge header's doc).
+    ///
+    /// DEFAULT IS `.apply`, matching today's actual behaviour byte-for-
+    /// byte: investigation for this feature (2026-07) found that the
+    /// in-app chat's own tool calls have ALWAYS committed directly (Owner
+    /// authority + Commit autonomy) — the existing "staged proposal" path
+    /// (ProposalCard / `resolveProposal` below) is fed ONLY by the
+    /// SEPARATE external-hosted-MCP-server session (`startExternalHosting`),
+    /// never by this in-app chat driver. So `.propose` is a genuinely NEW
+    /// behaviour for the in-app chat, not a re-labeling of something
+    /// already true by default — defaulting to it would silently change
+    /// what happens when a user who has never touched this control sends a
+    /// message, which the feature brief explicitly rules out.
+    @Published private(set) var autonomyLevel: RISEAgentAutonomyLevel
+    private static let autonomyLevelKey = "agentAutonomyLevel"
+
+    /// Change the composer's autonomy level: persist it and push it onto
+    /// the live bridge (if any) immediately, so an in-flight session
+    /// reflects the new choice on its very next tool call.
+    func setAutonomyLevel(_ level: RISEAgentAutonomyLevel) {
+        autonomyLevel = level
+        UserDefaults.standard.set(level.rawValue, forKey: Self.autonomyLevelKey)
+        viewportBridge?.agentAutonomyLevel = level
+    }
     /// Bumped whenever a key is saved/cleared so the settings UI
     /// re-derives the key-source caption.
     @Published private(set) var keyStateEpoch: Int = 0
@@ -362,14 +395,29 @@ final class ChatViewModel: ObservableObject {
     /// list_proposals' wire shape (AgentRpc.h).  `summary` is a single
     /// human-readable line built from whichever fields are populated
     /// for this proposal's `kind` (param_edit vs insert_chunk /
-    /// remove_chunk) — the panel shows this instead of separate
-    /// per-field rows.
+    /// remove_chunk) — kept for any plain-text use; the diff-card
+    /// presentation (ProposalDiffCard) instead renders the structured
+    /// fields below directly, matching the RISE UI redesign comp.
     struct ProposalEntry: Identifiable {
         let id: UInt64
         let kind: String
         let sessionLabel: String
         let status: String
         let summary: String
+        /// Structured wire fields (AgentRpc.h's list_proposals shape),
+        /// echoed straight through for the diff card — empty string
+        /// when not meaningful for this `kind` (e.g. `param`/`value`
+        /// are empty for `insert_chunk`/`remove_chunk`).
+        let target: String
+        let entityKind: String
+        let param: String
+        let value: String
+        let chunkText: String
+        /// True when the wire clipped `value`/`chunkText` for this
+        /// listing (see AgentRpc.cpp's ClipProposalFieldEcho) — the
+        /// diff card must never present a clipped preview as the whole
+        /// (never-clipped) stored text without saying so.
+        let truncated: Bool
     }
 
     /// The proposals panel's current listing — pending AND recently
@@ -399,6 +447,18 @@ final class ChatViewModel: ObservableObject {
             resolvedProposalObservedAt = [:]
             return
         }
+        // Field fix (2026-07-11 "production render hangs the app"):
+        // a render — production, or this chat's own outstanding render
+        // job — holds the controller's mMutex for its WHOLE duration,
+        // and list_proposals serializes on that same mutex.  This poll
+        // runs synchronously on the main thread, so one tick during a
+        // render wedged the entire UI until the render finished (and
+        // with it, the production render's own progressive updates).
+        // Skipping is lossless: StageProposal takes the same mutex, so
+        // the queue cannot change while we're gated — the first
+        // allowed tick re-syncs.  Keep the current list on screen
+        // (don't clear) so the badge doesn't flicker during renders.
+        guard sceneEditable() else { return }
         let line = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"list_proposals\"}"
         let response = vb.agentHandleLine(line)
         guard let data = response.data(using: .utf8),
@@ -429,34 +489,38 @@ final class ChatViewModel: ObservableObject {
                 nextObservedAt[id] = observedAt
             }
 
-            var summary: String
-            switch kind {
-            case "insert_chunk":
-                let chunkText = (p["chunkText"] as? String) ?? ""
-                let firstLine = chunkText.split(separator: "\n").first.map(String.init) ?? chunkText
-                summary = "insert: \(firstLine)"
-            case "remove_chunk":
-                let target = p["target"] as? String ?? ""
-                let entityKind = p["entityKind"] as? String ?? ""
-                summary = entityKind.isEmpty ? "remove: \(target)" : "remove: \(target) (\(entityKind))"
-            default:
-                let target = p["target"] as? String ?? ""
-                let param = p["param"] as? String ?? ""
-                let value = p["value"] as? String ?? ""
-                summary = "\(target).\(param) = \(value)"
-            }
-
+            let target = p["target"] as? String ?? ""
+            let entityKind = p["entityKind"] as? String ?? ""
+            let param = p["param"] as? String ?? ""
+            let value = p["value"] as? String ?? ""
+            let chunkText = p["chunkText"] as? String ?? ""
             // Secure-MCP slice 6 fix round: the wire's per-proposal echo
             // cap (see AgentRpc.cpp's ClipProposalFieldEcho) marks
             // `truncated:true` whenever `value`/`chunkText` was clipped for
-            // the listing -- surface that here so the owner never mistakes
-            // a clipped preview for the whole (never-clipped) stored text.
-            if (p["truncated"] as? Bool) == true {
+            // the listing -- surface that here (both in `summary` and as
+            // its own field, for ProposalDiffCard) so the owner never
+            // mistakes a clipped preview for the whole (never-clipped)
+            // stored text.
+            let truncated = (p["truncated"] as? Bool) == true
+
+            var summary: String
+            switch kind {
+            case "insert_chunk":
+                let firstLine = chunkText.split(separator: "\n").first.map(String.init) ?? chunkText
+                summary = "insert: \(firstLine)"
+            case "remove_chunk":
+                summary = entityKind.isEmpty ? "remove: \(target)" : "remove: \(target) (\(entityKind))"
+            default:
+                summary = "\(target).\(param) = \(value)"
+            }
+            if truncated {
                 summary += " (truncated)"
             }
 
             next.append(ProposalEntry(
-                id: id, kind: kind, sessionLabel: sessionLabel, status: status, summary: summary))
+                id: id, kind: kind, sessionLabel: sessionLabel, status: status, summary: summary,
+                target: target, entityKind: entityKind, param: param, value: value,
+                chunkText: chunkText, truncated: truncated))
         }
         pendingProposals = next
         resolvedProposalObservedAt = nextObservedAt
@@ -469,8 +533,25 @@ final class ChatViewModel: ObservableObject {
     /// refused outright). Refreshes the listing immediately afterward so
     /// the panel reflects the new status without waiting for the next
     /// timer tick.
+    ///
+    /// P1-2 fix: gated on `sceneEditable()` — the SAME closure `send()`
+    /// checks (see its guard above) and every other agent-mutation
+    /// surface (the raw JSON-RPC debug panel's `sendAgentRequest`)
+    /// consumes.  Applying a proposal drives a CST re-derive through the
+    /// live controller exactly like a `propose_patch` tool call does;
+    /// without this guard a user could hit Apply/Reject while a
+    /// production render's workers are reading Scene state off-main, or
+    /// while a chat-driven agent render is outstanding on the
+    /// controller's single-slot worker — the same race `sceneEditable`
+    /// exists to prevent everywhere else.  No user-visible error row
+    /// here (unlike `send()`'s turn-based error entry): the button
+    /// itself is disabled on the same predicate in ProposalCard's
+    /// `pendingFooter`, so reaching this guard's false branch means a
+    /// state change raced the click between render and dispatch — a
+    /// silent no-op is the right degrade, matching `sendAgentRequest`'s
+    /// nil-bridge branch.
     func resolveProposal(id: UInt64, approve: Bool) {
-        guard let vb = viewportBridge else { return }
+        guard let vb = viewportBridge, sceneEditable() else { return }
         let line = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"resolve_proposal\"," +
                    "\"params\":{\"proposalId\":\(id),\"approve\":\(approve ? "true" : "false")}}"
         _ = vb.agentHandleLine(line)
@@ -770,6 +851,12 @@ final class ChatViewModel: ObservableObject {
         recordTrajectories =
             (UserDefaults.standard.object(forKey: Self.recordTrajectoriesKey) as? Bool) ?? true
         chatBridge.setProvider(storedProvider.bridgeValue, modelId: storedModelId)
+
+        // Agent autonomy selector: an absent/out-of-range stored value
+        // resolves to `.apply` — see `autonomyLevel`'s doc for why that
+        // (not `.propose`) is the honest default.
+        let storedAutonomyRaw = UserDefaults.standard.object(forKey: Self.autonomyLevelKey) as? Int
+        autonomyLevel = storedAutonomyRaw.flatMap(RISEAgentAutonomyLevel.init(rawValue:)) ?? .apply
     }
 
     // MARK: Scene lifecycle (driven by RenderViewModel)
@@ -787,6 +874,12 @@ final class ChatViewModel: ObservableObject {
         cancelTurn()
         sceneGeneration += 1
         viewportBridge = vb
+        // Agent autonomy selector: a fresh bridge's dispatchers default to
+        // `.apply` (see the bridge header's doc) until told otherwise —
+        // apply THIS view model's persisted choice immediately so a scene
+        // switch never silently resets a user's Read/Propose selection
+        // back to Apply.
+        vb.agentAutonomyLevel = autonomyLevel
         currentScenePath = scenePath
         chatBridge.reset()
         transcript = []
@@ -1646,7 +1739,15 @@ final class ChatViewModel: ObservableObject {
                             call: call, submitLine: line, vb: vb)
                     } else {
                         // Synchronous, on main — the 1c-1 executor contract.
-                        responseLine = vb.agentHandleLine(line)
+                        // Agent autonomy selector: routes to whichever
+                        // dispatcher matches the composer's CURRENT level
+                        // (see RISEViewportBridge.h's `-agentHandleToolCall:`
+                        // doc) — Read refuses edit verbs, Propose stages
+                        // them, Apply commits them directly (today's
+                        // behaviour). `render` is excluded from this
+                        // routing on purpose (handled in the `if` branch
+                        // above via the level-independent `agentHandleLine`).
+                        responseLine = vb.agentHandleToolCall(line)
                     }
 
                     // The awaited render path above can suspend across

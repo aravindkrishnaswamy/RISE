@@ -29,7 +29,9 @@ protected:
 private:
     void highlightLineContents(const QString& text);
 
-    // Colors
+    // Colors -- lifted from the approved design comp; mirrors the macOS
+    // RISESceneSyntaxHighlighter.swift's RISESceneTheme hex values 1:1
+    // (see that file's doc comment for the per-category rationale).
     QTextCharFormat m_commentFmt;
     QTextCharFormat m_fileHeaderFmt;
     QTextCharFormat m_blockKeywordFmt;
@@ -41,6 +43,11 @@ private:
     QTextCharFormat m_mathExprFmt;
     QTextCharFormat m_numberFmt;
     QTextCharFormat m_bracesFmt;
+    // Quoted string / file-path values (e.g. "vase.obj") -- a category
+    // added for the redesign; the pre-redesign highlighter had no
+    // distinct color for these (they fell through to the default text
+    // color), matching the comp's dedicated "string/file values" color.
+    QTextCharFormat m_stringFmt;
 
     // Regex patterns
     static const QRegularExpression s_bracesRegex;
@@ -48,6 +55,7 @@ private:
     static const QRegularExpression s_mathExprRegex;
     static const QRegularExpression s_numberRegex;
     static const QRegularExpression s_propertyKeyRegex;
+    static const QRegularExpression s_stringRegex;
 
     // Block keywords — lazily populated from SceneGrammar on first call so the
     // 126-entry list is the parser's Describe() output (single source of truth),

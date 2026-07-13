@@ -38,6 +38,36 @@ public slots:
     void revert();
     void saveAndReload();
 
+    /// CST <-> scene-file live sync (UI refinement item 1): mirror the
+    /// live CST's serialized text into the buffer, resetting the dirty
+    /// baseline so the buffer reads as clean immediately afterward.
+    /// Caller (MainWindow's poll) only calls this when !isDirty() --
+    /// this method does NOT itself check that, so it must never be
+    /// called while the user has unsaved edits (that would silently
+    /// discard them).
+    void refreshFromLiveScene(const QString& text);
+
+    /// "Reveal in scene file" (item 3): scroll to the line containing
+    /// UTF-8 byte offset `byteOffset` in the editor's CURRENT buffer,
+    /// select the whole line, and briefly flash it.  ASSUMPTION
+    /// (documented per the design brief): the buffer is byte-identical
+    /// to the CST serialization `byteOffset` was resolved against --
+    /// MainWindow::revealEntityInSceneText only calls this when
+    /// `!isDirty()`, so the buffer's last mirror (refreshFromLiveScene)
+    /// is exactly what the bridge resolved the offset against.  A
+    /// stale/out-of-range offset bails out silently rather than
+    /// crashing or landing on the wrong line.
+    void revealAt(quint64 byteOffset);
+
+    /// Amber "scene changed elsewhere" warning: true when the live CST
+    /// has moved on while the buffer still has unsaved edits (set by
+    /// MainWindow's poll; only ever true alongside isDirty() -- see
+    /// that poll's doc).  Cleared by refreshFromLiveScene() directly,
+    /// and every poll tick MainWindow observes the buffer as clean
+    /// again (this class does not watch its own dirty transitions to
+    /// auto-clear the flag; the poll drives it explicitly either way).
+    void setBehindLiveScene(bool behind);
+
 private slots:
     void onTextChanged();
 
@@ -48,10 +78,23 @@ private:
     QPushButton* m_saveBtn = nullptr;
     QPushButton* m_saveReloadBtn = nullptr;
     QPushButton* m_closeBtn = nullptr;
-    QLabel* m_modifiedBadge = nullptr;
+    QLabel* m_dirtyDot = nullptr;
+
+    // Bottom status bar (RISE UI redesign): save-state label ("● unsaved
+    // edits" amber / "✓ saved" green) + honest client-side line/char
+    // counts.  Mirrors the design comp's Scene file tab footer strip.
+    QLabel* m_saveStateLabel = nullptr;
+    // CST <-> scene-file live sync (item 1): amber "buffer is stale"
+    // warning, shown BESIDE m_saveStateLabel (not replacing it) when
+    // m_behindLiveScene is true -- mirrors SceneEditorWindow.swift's
+    // statusBar, which shows both facts at once ("unsaved edits" AND
+    // "scene changed elsewhere").
+    QLabel* m_staleWarningLabel = nullptr;
+    QLabel* m_countsLabel = nullptr;
 
     QString m_filePath;
     QString m_originalText;
+    bool m_behindLiveScene = false;
 
     void updateDirtyState();
 };

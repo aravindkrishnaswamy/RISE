@@ -30,6 +30,7 @@
 	#include <ImfIO.h>
 	#include <ImfArray.h>
 	#include <vector>
+	#include <limits>
 #endif
 
 namespace RISE
@@ -86,6 +87,25 @@ namespace RISE
 			unsigned int			scanlines;
 
 		#ifndef NO_EXR_SUPPORT
+			// A finite double narrowed to float/half overflows to +/-Inf once its
+			// magnitude exceeds the target type's finite range (IEEE-754 narrowing
+			// rule).  Clamp the magnitude, sign preserved, before the cast; the
+			// producers (renderer, tonemapper) are the real fix for legitimately
+			// huge values, this is just a backstop against a silent Inf leaking
+			// into the file.  Plain magnitude comparisons only (no isnan/isfinite
+			// branching, per the repo's -ffast-math convention) — a NaN input
+			// fails both the > and < comparisons and passes through unchanged.
+			static double ClampMagnitudeForCast( const double v, const double limit )
+			{
+				if( v > limit ) {
+					return limit;
+				}
+				if( v < -limit ) {
+					return -limit;
+				}
+				return v;
+			}
+
 			template< typename T >
 			void WriteColorToEXRBuffer( const T& c, const unsigned int x, const unsigned int y )
 			{
@@ -94,17 +114,19 @@ namespace RISE
 					// 32-bit FLOAT path: stores the full linear-radiance range.
 					// half (FP16) caps at 65504, which silently turns legitimate
 					// bright HDR pixels (caustic / specular fireflies) into +Inf.
+					static const double kFloatMax = static_cast<double>( std::numeric_limits<float>::max() );
 					const std::size_t idx =
 						( static_cast<std::size_t>( y ) * horzpixels + x ) * 4u;
-					floatbuffer[idx + 0u] = static_cast<float>( c.base.r * c.a );
-					floatbuffer[idx + 1u] = static_cast<float>( c.base.g * c.a );
-					floatbuffer[idx + 2u] = static_cast<float>( c.base.b * c.a );
-					floatbuffer[idx + 3u] = static_cast<float>( c.a );
+					floatbuffer[idx + 0u] = static_cast<float>( ClampMagnitudeForCast( c.base.r * c.a, kFloatMax ) );
+					floatbuffer[idx + 1u] = static_cast<float>( ClampMagnitudeForCast( c.base.g * c.a, kFloatMax ) );
+					floatbuffer[idx + 2u] = static_cast<float>( ClampMagnitudeForCast( c.base.b * c.a, kFloatMax ) );
+					floatbuffer[idx + 3u] = static_cast<float>( ClampMagnitudeForCast( c.a, kFloatMax ) );
 				} else {
-					exrbuffer[y][x].r = half( static_cast<float>( c.base.r*c.a ) );
-					exrbuffer[y][x].g = half( static_cast<float>( c.base.g*c.a ) );
-					exrbuffer[y][x].b = half( static_cast<float>( c.base.b*c.a ) );
-					exrbuffer[y][x].a = half( static_cast<float>( c.a ) );
+					static const double kHalfMax = 65504.0;
+					exrbuffer[y][x].r = half( static_cast<float>( ClampMagnitudeForCast( c.base.r*c.a, kHalfMax ) ) );
+					exrbuffer[y][x].g = half( static_cast<float>( ClampMagnitudeForCast( c.base.g*c.a, kHalfMax ) ) );
+					exrbuffer[y][x].b = half( static_cast<float>( ClampMagnitudeForCast( c.base.b*c.a, kHalfMax ) ) );
+					exrbuffer[y][x].a = half( static_cast<float>( ClampMagnitudeForCast( c.a, kHalfMax ) ) );
 				}
 			}
 		#endif

@@ -60,6 +60,22 @@ static void ComputeFactors(
 	const Scalar nv = Vector3Ops::Dot(n,v);
 
 	if( (nr >= NEARZERO) && (nv >= NEARZERO) ) {
+		// Geometric-horizon gate: a GlintModifier-tilted shading normal can
+		// validate light/view directions that are still below the true
+		// geometric surface.  This is a DEFENSIVE check (a valid exterior hit
+		// already satisfies it) rather than a literal sampler-consistency one
+		// -- NEE's light direction isn't sampler-drawn -- but it guards
+		// against the same tilt pathology.  Degenerate vGeomNormal falls
+		// back to the shading normal (gate is a no-op).
+		// (r is tautologically inside the gate: r = -ri.ray.Dir() and geomN is
+		// ray-anchored, so Dot(r,geomN) > 0 always holds -- see LambertianBRDF.cpp:57-60.)
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : n;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+		if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
+			return;
+		}
+
 		diffuse = INV_PI;
 
 		const Vector3 h = Vector3Ops::Normalize(v+r);
@@ -79,7 +95,13 @@ RISEPel WardIsotropicGaussianBRDF::value( const Vector3& vLightIn, const RayInte
 	RISEPel d, s;
 	const ScalarTriple at = pAlpha->GetValuesAt(ri);
 	const RISEPel a( at.v[0], at.v[1], at.v[2] );
-	ComputeFactors<RISEPel>( d, s, vLightIn, ri, ri.onb.w(), a );
+
+	// Flip to the ray-facing frame, mirroring WardIsotropicGaussianSPF's
+	// FlipW (same condition), so value() agrees with Scatter()/Pdf() on
+	// back-face hits -- ComputeFactors' geomN gate orients to whatever n
+	// it's given, so the flip propagates through automatically.
+	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
+	ComputeFactors<RISEPel>( d, s, vLightIn, ri, n, a );
 
 	return d*pDiffuse->GetColor(ri) + s*pSpecular->GetColor(ri);
 }
@@ -87,7 +109,10 @@ RISEPel WardIsotropicGaussianBRDF::value( const Vector3& vLightIn, const RayInte
 Scalar WardIsotropicGaussianBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	Scalar d=0, s=0;
-	ComputeFactors<Scalar>( d, s, vLightIn, ri, ri.onb.w(), pAlpha->GetValueAtNM(ri,nm) );
+
+	// Same ray-facing flip as value() above.
+	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
+	ComputeFactors<Scalar>( d, s, vLightIn, ri, n, pAlpha->GetValueAtNM(ri,nm) );
 
 	return d*pDiffuse->GetColorNM(ri,nm) + s*pSpecular->GetColorNM(ri,nm);
 }

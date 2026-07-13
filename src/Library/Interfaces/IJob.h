@@ -3665,6 +3665,57 @@ namespace RISE
 			if( outDiag && diagMax ) outDiag[0] = '\0';
 			return 0;
 		}
+
+		//! Atomically clears the progress callback IFF the slot still holds `expected` -- the
+		//! conditional twin of `SetProgress(nullptr)` for callers that share this Job with renders
+		//! driven from OTHER threads.  The concrete race this exists for: a GUI completion handler
+		//! calls SetProgress(nullptr) on the UI thread to detach the adapter it installed, while an
+		//! agent render -- queued behind the GUI render on the SceneEditController coordinator --
+		//! has just installed ITS callback from the coordinator worker thread; the unconditional
+		//! null stomps that installation and silently degrades the agent render's progress/cancel
+		//! wiring.  This compare-and-swap clears the slot only when it still points at the caller's
+		//! OWN installation.  \return TRUE iff the slot was cleared; a null `expected` is refused
+		//! (returns false, slot untouched) so the return value stays meaningful.  Default returns
+		//! false without touching anything; only Job overrides.
+		//! NB: appended at the IJob tail (append-only convention).  Caveat for out-of-tree readers:
+		//! IJobPriv derives from IJob and declares further virtuals, so a base-class tail append
+		//! still shifts IJobPriv's slots -- fine here because every IJobPriv consumer is in-tree
+		//! and rebuilds with the library.
+		virtual bool ClearProgressIfCurrent(
+			IProgressCallback* /*expected*/				///< [in] Clear only if the installed callback is exactly this
+			) { return false; }
+
+		//! Atomically INSTALLS `next` as the progress callback IFF the slot currently holds
+		//! `expected` -- the install-side twin of ClearProgressIfCurrent, for callers whose
+		//! unconditional install could stomp a callback another owner (an agent render on the
+		//! coordinator worker thread) placed in the slot between the caller's clear and its
+		//! install.  Unlike ClearProgressIfCurrent, a null `expected` is MEANINGFUL here
+		//! ("install only if the slot is empty") and `next` may be null (generalized conditional
+		//! swap; note the null->null edge: on an empty slot, SetProgressIfCurrent(nullptr, nullptr)
+		//! "succeeds" vacuously -- the TRUE means "the compare matched", not "something was
+		//! installed").  \return TRUE iff the swap happened.  Default returns false without
+		//! touching anything; only Job overrides.
+		//! NB: appended at the IJob tail (append-only convention; same IJobPriv-slot-shift
+		//! caveat as ClearProgressIfCurrent above).
+		virtual bool SetProgressIfCurrent(
+			IProgressCallback* /*expected*/,			///< [in] Swap only if the installed callback is exactly this (null = empty slot)
+			IProgressCallback* /*next*/					///< [in] The callback to install on a successful compare
+			) { return false; }
+
+		//! Atomically installs `next` as the progress callback and returns what the slot held --
+		//! capture-the-prior + install as ONE indivisible operation.  This is what the
+		//! coordinator render paths (AgentSession::RenderCore_, SceneEditController::
+		//! RunProductionRenderComposed) use to claim the slot: a separate GetProgress() read
+		//! followed by SetProgress() leaves a window in which a platform adapter's
+		//! conditional-clear can "succeed" (the slot still held the old callback) and delete an
+		//! object the coordinator has ALREADY captured as its restore value -- the exchange makes
+		//! "your conditional clear succeeded" genuinely mean "no render holds that pointer as its
+		//! prior".  Default returns null without touching anything; only Job overrides.
+		//! NB: appended at the IJob tail (append-only convention; same IJobPriv-slot-shift
+		//! caveat as ClearProgressIfCurrent above).
+		virtual IProgressCallback* ExchangeProgress(
+			IProgressCallback* /*next*/					///< [in] The callback to install (may be null)
+			) { return nullptr; }
 	};
 
 

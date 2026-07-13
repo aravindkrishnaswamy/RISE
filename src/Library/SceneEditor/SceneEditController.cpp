@@ -569,6 +569,18 @@ inline void BuildGizmoHandles_(
 SceneEditController::~SceneEditController()
 {
 	Stop();
+	// NOTE (2026-07-12): deliberately NOT scrubbing the Job's progress slot here (e.g. via
+	// mJob.ClearProgressIfCurrent( &mCancelProgress )) -- this dtor CANNOT touch mJob: several
+	// owners (the test suites' `controller.Stop(); pJob->release();` pattern, with the stack
+	// controller destroyed after the release) legitimately destroy the Job first, so a scrub here
+	// is a use-after-free on mJob itself (SIGSEGV, caught by AgentRenderAsyncTest when it was
+	// tried).  The original motivation -- a stale &mCancelProgress left installed by
+	// RunProductionRenderComposed's outside-the-slot prior-capture -- was CLOSED the same day by
+	// the capture-inside-the-slot redesign (the composed closure now ExchangeProgress-captures its
+	// restore value inside the coordinator turn); the only residual way a stale &mCancelProgress
+	// survives in the slot is an exception escaping a restore itself (logged loudly in both
+	// restore guards: RunProductionRenderComposed's ProgressRestoreGuard here and
+	// AgentSession::RenderCore_'s in AgentSession.cpp).
 	if( mInteractiveRasterizer )
 	{
 		mInteractiveRasterizer->release();
@@ -591,11 +603,21 @@ SceneEditController::~SceneEditController()
 
 void SceneEditController::Start( bool suppressInitialRender )
 {
+	// Review-round-1 P1: serialize against StopInteractive()'s join so a
+	// concurrent Resume/Start can never move-assign onto a still-joinable
+	// mRenderThread (std::terminate) -- see mLifecycleMutex's doc.
+	std::lock_guard<std::mutex> lifecycleLk( mLifecycleMutex );
+
 	bool expected = false;
 	if( !mRunning.compare_exchange_strong( expected, true ) )
 	{
 		return;  // already running
 	}
+
+	// Any Start un-pauses — see PauseRefinement()'s declaration doc.  A
+	// paused viewport that is being (re)started is genuinely live again,
+	// and a stale paused flag would make GetRefinementStatus lie.
+	mRefinementPaused.store( false, std::memory_order_release );
 
 	// Record the one-shot "skip the initial render" request before the
 	// render thread is spawned, so RenderLoop observes it on entry.
@@ -634,6 +656,9 @@ void SceneEditController::Start( bool suppressInitialRender )
 
 void SceneEditController::StopInteractive()
 {
+	// Review-round-1 P1: see Start() / mLifecycleMutex's doc.
+	std::lock_guard<std::mutex> lifecycleLk( mLifecycleMutex );
+
 	bool expected = true;
 	if( !mRunning.compare_exchange_strong( expected, false ) )
 	{
@@ -656,6 +681,126 @@ void SceneEditController::StopInteractive()
 	{
 		mRenderThread.join();
 	}
+}
+
+void SceneEditController::PauseRefinement()
+{
+	// Set the flag FIRST so a status poll during the join below already
+	// reads Paused; harmless when StopInteractive turns out to be a
+	// no-op (not running) — Resume/Start will clear it.
+	mRefinementPaused.store( true, std::memory_order_release );
+	StopInteractive();
+}
+
+void SceneEditController::ResumeRefinement()
+{
+	if( !mRefinementPaused.load( std::memory_order_acquire ) )
+	{
+		return;  // wasn't paused
+	}
+	// Start() clears the flag itself (any Start un-pauses) and is
+	// idempotent, so no exchange dance is needed here.  A normal
+	// (un-suppressed) start repaints promptly; the idle-refinement
+	// ladder then walks back to full quality.
+	Start( false );
+}
+
+bool SceneEditController::IsRefinementPaused() const
+{
+	return mRefinementPaused.load( std::memory_order_acquire );
+}
+
+SceneEditController::RefinementPhase
+SceneEditController::GetRefinementStatus( unsigned int& outScaleDivisor ) const
+{
+	outScaleDivisor = mPreviewScale.load( std::memory_order_acquire );
+	if( mRefinementPaused.load( std::memory_order_acquire ) )
+	{
+		return RefinementPhase::Paused;
+	}
+	const PolishState polish =
+		static_cast<PolishState>( mPolishState.load( std::memory_order_acquire ) );
+	const bool rendering = mRendering.load( std::memory_order_acquire );
+	if( rendering )
+	{
+		if( polish == PolishState::PolishQueued )
+		{
+			return RefinementPhase::Polishing;
+		}
+		return outScaleDivisor > kPreviewScaleMin ? RefinementPhase::Refining
+		                                          : RefinementPhase::Rendering;
+	}
+	if( outScaleDivisor > kPreviewScaleMin )
+	{
+		return RefinementPhase::Refining;   // ladder still walking down
+	}
+	if( polish != PolishState::None )
+	{
+		return RefinementPhase::Polishing;  // polish queued, pass not yet started
+	}
+	return RefinementPhase::Idle;
+}
+
+void SceneEditController::SetInteractiveRegion( unsigned int left, unsigned int top,
+                                                unsigned int right, unsigned int bottom )
+{
+	// Refuse a degenerate box rather than silently swapping — the
+	// bridges send normalized coords.
+	if( right < left || bottom < top )
+	{
+		return;
+	}
+	const std::uint64_t kMax16 = 0xffffu;
+	const std::uint64_t l = left   < kMax16 ? left   : kMax16;
+	const std::uint64_t t = top    < kMax16 ? top    : kMax16;
+	const std::uint64_t r = right  < kMax16 ? right  : kMax16;
+	const std::uint64_t b = bottom < kMax16 ? bottom : kMax16;
+	mInteractiveRegionPacked.store( ( l << 48 ) | ( t << 32 ) | ( r << 16 ) | b,
+	                                std::memory_order_release );
+	mInteractiveRegionActive.store( true, std::memory_order_release );
+	// Start refining inside the box right away.
+	KickRender();
+}
+
+void SceneEditController::ClearInteractiveRegion()
+{
+	if( !mInteractiveRegionActive.exchange( false, std::memory_order_acq_rel ) )
+	{
+		return;
+	}
+	// Repaint full-frame so pixels outside the (former) box catch up
+	// with any edits that landed while the region restricted passes.
+	KickRender();
+}
+
+bool SceneEditController::GetInteractiveRegion( unsigned int& left, unsigned int& top,
+                                                unsigned int& right, unsigned int& bottom ) const
+{
+	if( !mInteractiveRegionActive.load( std::memory_order_acquire ) )
+	{
+		return false;
+	}
+	const std::uint64_t packed = mInteractiveRegionPacked.load( std::memory_order_acquire );
+	left   = static_cast<unsigned int>( ( packed >> 48 ) & 0xffffu );
+	top    = static_cast<unsigned int>( ( packed >> 32 ) & 0xffffu );
+	right  = static_cast<unsigned int>( ( packed >> 16 ) & 0xffffu );
+	bottom = static_cast<unsigned int>(   packed         & 0xffffu );
+	return true;
+}
+
+bool SceneEditController::InteractiveRasterizerHonorsRegion() const
+{
+	return mInteractiveRasterizer ? mInteractiveRasterizer->HonorsRegion() : false;
+}
+
+String SceneEditController::UndoLabel() const
+{
+	return String( mEditor.History().LabelForUndo() );
+}
+
+String SceneEditController::RedoLabel() const
+{
+	return String( mEditor.History().LabelForRedo() );
 }
 
 void SceneEditController::Stop()
@@ -1896,6 +2041,15 @@ Scalar SceneEditController::LastSceneTime() const
 
 bool SceneEditController::RequestProductionRender()
 {
+	// Design brief A4 (review-round-1 P1): a region NEVER leaks into or
+	// past a production render.  This is the SECOND live production
+	// entry point (the Mac shell's -requestProductionRender lands here;
+	// the composed path goes through SubmitProductionRenderSync, which
+	// clears too) — both must uphold the invariant or the post-render
+	// interactive restart refines only a stale box.  Kick-free store:
+	// the interactive loop is being stopped right below anyway.
+	mInteractiveRegionActive.store( false, std::memory_order_release );
+
 	const bool wasRunning = IsRunning();
 	if( wasRunning )
 	{
@@ -1908,7 +2062,10 @@ bool SceneEditController::RequestProductionRender()
 		// Without a production rasterizer there's nothing to do; the
 		// caller should ensure one is configured by the time they
 		// click "Render".  We restart interactive and report failure.
-		if( wasRunning ) Start();
+		// Round-2 P2: don't silently un-pause — a Pause that raced this
+		// production render would otherwise be clobbered by the restart
+		// (Start() clears mRefinementPaused).  Mirrors ResumeRefinement.
+		if( wasRunning && !IsRefinementPaused() ) Start();
 		return false;
 	}
 
@@ -1944,7 +2101,8 @@ bool SceneEditController::RequestProductionRender()
 		ok = true;
 	}
 
-	if( wasRunning ) Start();
+	// Round-2 P2: same paused-guard as the early-exit restart above.
+	if( wasRunning && !IsRefinementPaused() ) Start();
 	return ok;
 }
 
@@ -4231,6 +4389,19 @@ bool SceneEditController::SubmitProductionRenderSync(
 	RenderJobId*          outJobId,
 	unsigned int          queueTimeoutMs )
 {
+	// Design brief A4: a region NEVER leaks into a production render.
+	// The production path renders full-frame regardless (it does not
+	// read mInteractiveRegion*), but clearing here also stops the
+	// post-render interactive restart from refining only a stale box
+	// over the finished production image — and keeps the UI badge
+	// state honest (the bridges re-query GetInteractiveRegion).
+	// Review-round-1 P2: clear WITHOUT the KickRender() the public
+	// ClearInteractiveRegion() performs — the shells stop the
+	// interactive loop before submitting production work, and waking
+	// it here would invite exactly the two-rasterizers-one-scene race
+	// that convention prevents.  No repaint is needed either: the
+	// production result replaces the framebuffer wholesale.
+	mInteractiveRegionActive.store( false, std::memory_order_release );
 	return SubmitAgentRenderSync( std::move( fn ), clientLabel, outJobId, queueTimeoutMs,
 		/*pinned=*/false, RenderClass::Production );
 }
@@ -4251,13 +4422,6 @@ bool SceneEditController::RunProductionRenderComposed(
 	{
 		return doRasterize();
 	}
-
-	// Fix-round 2 (Windows cancel regression): capture the RESTORE value
-	// ONCE, here, at entry -- honest for both platforms.  This is "whatever
-	// the Job's progress slot held right before this render claimed it",
-	// not an assumption about what the platform's callback is.  See the
-	// declaration's header doc for the full prior-vs-inner contract.
-	IProgressCallback* const priorProgress = job.GetProgress();
 
 	// RAII restore of the Job's progress-callback slot -- matches the house
 	// shape used throughout this file / AgentSession.cpp (Arm/Disarm,
@@ -4333,19 +4497,44 @@ bool SceneEditController::RunProductionRenderComposed(
 	SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
 	const bool submitted = controller->SubmitProductionRenderSync(
 		[&]() {
+			// Slot-ownership hardening (2026-07-12): capture the RESTORE
+			// value HERE, inside the coordinator slot, NOT at function entry
+			// on the submitting thread.  The entry-time read ran BEFORE the
+			// fairness wait, so it could observe a TRANSIENT occupant -- an
+			// agent render's coordProgress installed from the coordinator
+			// worker -- and the restore below would then re-install that
+			// occupant's callback permanently: it stays in the slot after
+			// the render (each later composed render faithfully re-captures
+			// and re-restores it), and a Job outliving its controller then
+			// carries a dangling pointer into freed controller storage --
+			// the next Rasterize would install and drive freed memory.
+			// Inside the slot the read is race-free: every other slot
+			// writer (agent install/restore, another composed render) runs
+			// serialized in this same critical section, and GUI-thread
+			// clears are conditional (ClearProgressIfCurrent on their OWN
+			// adapter).  See the declaration's header doc for the full
+			// prior-vs-inner contract.
 			CancellableProgressCallback* coordProgress = static_cast<CancellableProgressCallback*>(
 				controller->AgentRenderProgress() );
 			// Fix-round 2: compose in the CALLER-SUPPLIED gui progress sink,
 			// not job.GetProgress() -- see the declaration's header doc for
-			// why those two are not interchangeable on Windows.
+			// why those two are not interchangeable on Windows.  SetInner
+			// runs BEFORE the exchange below so coordProgress is fully wired
+			// by the time it becomes live in the slot.
 			coordProgress->SetInner( guiProgress );
+
+			// Review round-2 P1 (same one-atomic-exchange rule as
+			// AgentSession's install site -- see the comment there): the
+			// prior capture and the coordProgress install are ONE
+			// ExchangeProgress call, so a platform adapter's conditional
+			// clear can never "succeed" against a pointer this render has
+			// already captured as its restore value.
+			IProgressCallback* const priorProgress = job.ExchangeProgress( coordProgress );
 
 			ProgressRestoreGuard progressGuard( job, priorProgress );
 			progressGuard.Arm();
 			InnerResetGuard innerGuard( *coordProgress );
 			innerGuard.Arm();
-
-			job.SetProgress( coordProgress );
 
 			result = doRasterize();
 
@@ -4859,10 +5048,18 @@ void SceneEditController::KickRender()
 SaveResult SceneEditController::RequestSave( const std::string& filePath )
 {
 	// ---- Step 1: park render thread + mark save in flight -----------
+	// Editor live-sync follow-up: remember whether we CANCELLED an
+	// in-flight pass to get here — that pass's frame is left partially
+	// updated, and with debounced auto-save (UI refinement item 1)
+	// this now happens routinely, not just on a manual Save click.
+	// Step 3 re-kicks a render when it does, so a save never strands a
+	// half-painted viewport.
+	bool interruptedPass = false;
 	{
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( mRendering.load() ) {
 			mCancelProgress.RequestCancel();
+			interruptedPass = true;
 		}
 		mCV.wait( lk, [&]{ return !mRendering.load(); } );
 		mSaving.store( true );
@@ -4905,10 +5102,116 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 		} else {
 			mLastSaveError = result.errorMessage;
 		}
+		if( interruptedPass ) {
+			// Repaint the pass this save cancelled (KickRender's shape:
+			// flag + notify under the SAME mutex the waiter blocks on).
+			mEditPending.store( true, std::memory_order_release );
+		}
 		mCV.notify_one();
 	}
 
 	return result;
+}
+
+String SceneEditController::SerializedSceneText() const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( !mJob.HasRetainedCstDocument() ) return String();
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return String();
+	const std::string bytes = RISE::Cst::SerializeCst( *doc );
+	return String( bytes.c_str() );
+}
+
+void SceneEditController::GetSceneTextVersion( std::uint64_t& outUuid,
+                                               std::uint64_t& outRevision ) const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	const RISE::Cst::CstHeadVersion v = mJob.GetCstHeadVersion();
+	outUuid     = v.uuid;
+	outRevision = v.revision;
+}
+
+namespace {
+
+// "Reveal in scene file": the CST role-kind-suffix + unique-fallback DocFindByNameAnyRole
+// needs to resolve a Category's entity name to its chunk, mirroring the SAME table
+// SceneEditor::ClassifyCstEntityKind walks in REVERSE (CST role string -> EntityCategory) --
+// see that function's suffix list (endsWith "_camera"/"_light"/"_material"/"_medium", or the
+// bare "camera"/"material" role). Object's role is exactly "standard_object" (no suffix
+// family), so its "suffix" is the whole role name -- DocFindByNameAnyRole's `role ==
+// roleKindSuffix` arm matches it directly.
+//
+// Animation/SceneVariant are ALWAYS-NAMED top-level chunks (role "animation" /
+// "scene_variant" exactly) with no cross-category collision risk, so no unique-fallback
+// is needed for them either.
+//
+// Rasterizer and Film are declared NOT addressable here, on purpose: CategoryEntityName /
+// CategoryActiveName for Rasterizer return REGISTRY TYPE names (the picker list of
+// available rasterizer kinds), not a chunk's `name` param -- a rasterizer chunk in the
+// scene is normally unnamed and singleton (the "_rasterizer"-suffixed active integrator).
+// Film's CategoryActiveName returns a synthetic PRESET LABEL ("1080p" etc.), not a name
+// either. Resolving either against DocFindByNameAnyRole's `bareName` parameter would be
+// searching for the wrong string. A future extension COULD special-case Rasterizer/Film
+// through the SAME unique-fallback path SceneEditController::Category::Camera already
+// uses for an unnamed sole camera (both chunks are typically singleton `role ==
+// roleKindSuffix` chunks) -- deferred; not wired today, so EntitySourceLocation refuses
+// them cleanly (returns false) rather than guessing.
+bool RoleKindSuffixForCategory( SceneEditController::Category cat, std::string& outSuffix, bool& outUniqueFallback )
+{
+	using Category = SceneEditController::Category;
+	outUniqueFallback = false;
+	switch( cat ) {
+	case Category::Camera:       outSuffix = "camera";         outUniqueFallback = true; return true;   // same unnamed-active-camera fallback as CaptureAgentPriorParamValue_
+	case Category::Object:       outSuffix = "standard_object"; return true;
+	case Category::Light:        outSuffix = "light";           return true;
+	case Category::Material:     outSuffix = "material";        return true;
+	case Category::Medium:       outSuffix = "medium";          return true;
+	case Category::Animation:    outSuffix = "animation";       return true;
+	case Category::SceneVariant: outSuffix = "scene_variant";   return true;
+	case Category::Rasterizer:
+	case Category::Film:
+	case Category::None:
+	default: return false;   // no chunk-name addressing scheme for this category -- see comment above
+	}
+}
+
+}  // namespace
+
+bool SceneEditController::EntitySourceLocation( Category cat, const String& name,
+                                                 std::uint64_t& outByteOffset, std::uint32_t& outLine ) const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( !mJob.HasRetainedCstDocument() ) return false;
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return false;
+
+	std::string suffix; bool uniqueFallback = false;
+	if( !RoleKindSuffixForCategory( cat, suffix, uniqueFallback ) ) return false;
+	if( name.size() <= 1 && !uniqueFallback ) return false;   // an empty name only resolves via the unique-fallback (unnamed sole entity of its kind)
+
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *doc, name.c_str(), nullptr, suffix, uniqueFallback );
+	if( id == 0 ) return false;   // absent, or ambiguous -- refuse rather than guess (same contract as DocFindByNameAnyRole itself)
+
+	RISE::Cst::NodeRef item;
+	const int idx = RISE::Cst::DocIndexOfNodeId( *doc, id, &item );
+	if( idx < 0 ) return false;   // resolved id is not (any longer) a top-level item
+
+	const size_t off = RISE::Cst::DocByteOffsetOfItem( *doc, idx );
+	if( off == static_cast<size_t>( -1 ) ) return false;
+
+	// Line number: 1-based count of '\n' bytes in the serialized PREFIX before `off`.
+	// SerializeCst has no partial/prefix-only form, so this walks the WHOLE doc's bytes
+	// (O(doc bytes)) -- documented above as fine at click/selection cadence, not a
+	// per-frame path.
+	const std::string full = RISE::Cst::SerializeCst( *doc );
+	if( off > full.size() ) return false;   // defensive: should be unreachable given DocByteOffsetOfItem's own bound
+	unsigned int line = 1;
+	for( size_t i = 0; i < off; ++i ) if( full[i] == '\n' ) ++line;
+
+	outByteOffset = static_cast<std::uint64_t>( off );
+	outLine       = line;
+	return true;
 }
 
 std::string SceneEditController::LastSaveError() const
@@ -5035,9 +5338,23 @@ void SceneEditController::RenderLoop()
 			const long long sinceEdit = now - mLastEditTimeMs.load( std::memory_order_acquire );
 			if( sinceEdit < kRefineIdleMs ) continue;
 
-			const unsigned int s = mPreviewScale.load( std::memory_order_acquire );
+			unsigned int s = mPreviewScale.load( std::memory_order_acquire );
 			if( s <= kPreviewScaleMin ) continue;
-			mPreviewScale.store( s / 2, std::memory_order_release );
+			// Review-round-1 P2: CAS, not a blind store.  A gesture-end
+			// reset (OnPointerUp / OnTimeScrubEnd / EndPropertyScrub all
+			// store kPreviewScaleMin from the UI thread) landing between
+			// the load above and a blind store(s/2) would be silently
+			// overwritten -- leaving the scale resting above min with no
+			// future wake to walk it down (the refine-mode predicate
+			// needs an active gesture), i.e. a stuck-coarse preview and
+			// a status readout stuck on "Refining".  On CAS failure the
+			// reset (or a new gesture's motion bump) won; just loop.
+			if( !mPreviewScale.compare_exchange_strong(
+					s, s / 2,
+					std::memory_order_acq_rel, std::memory_order_acquire ) )
+			{
+				continue;
+			}
 			mInRefinementPass = true;
 			// P2 (accepted, not fixed): if the mint-site re-check further
 			// below bounces this same iteration (mAgentRenderBlocksInteractive
@@ -6600,8 +6917,39 @@ void SceneEditController::DoOneRenderPass()
 		EnsureInteractiveFrameStore_( passW, passH );
 	}
 
+	// ----- Interactive region-of-interest (design brief A4) -----------
+	// Applied only at full resolution: coarse ladder passes render the
+	// whole frame so pixels outside the box never go stale at a
+	// mismatched scale, while the persistent frame store keeps the last
+	// full-res content outside the box as passes refine inside it.
+	// Coords are INCLUSIVE (Rect convention) and clamped to the film.
+	Rect regionRect( 0, 0, 0, 0 );
+	const Rect* pRegion = 0;
+	if( scale == 1 && mInteractiveRegionActive.load( std::memory_order_acquire ) )
+	{
+		unsigned int rl = 0, rt = 0, rr = 0, rb = 0;
+		if( GetInteractiveRegion( rl, rt, rr, rb ) )
+		{
+			// Review-round-1 P2: read the film dims FRESH here (render
+			// thread; at scale==1 no swap has run this pass) instead of
+			// the mFullResW/H cache, so a rect can never be validated
+			// against stale dims and re-expose BoundsFromRect's
+			// width-2 underflow on a shrunken film.
+			const IFilm* regionFilm = scene->GetFilm();
+			const unsigned int w = regionFilm ? regionFilm->GetWidth()  : 0;
+			const unsigned int h = regionFilm ? regionFilm->GetHeight() : 0;
+			if( w > 0 && h > 0 && rl < w && rt < h )
+			{
+				regionRect = Rect( rt, rl,
+				                   rb < h ? rb : h - 1,
+				                   rr < w ? rr : w - 1 );
+				pRegion = &regionRect;
+			}
+		}
+	}
+
 	const auto t0 = std::chrono::steady_clock::now();
-	mInteractiveRasterizer->RasterizeScene( *scene, /*pRect*/0, /*seq*/0 );
+	mInteractiveRasterizer->RasterizeScene( *scene, pRegion, /*seq*/0 );
 	const auto elapsed = std::chrono::steady_clock::now() - t0;
 	// restoreGuard's destructor runs at the end of this scope and
 	// restores rest dims whether we exited normally, via cancellation,

@@ -111,6 +111,19 @@ void IsotropicPhongSPF::Scatter(
 	const Vector3 n = rdotn > 0 ? -ri.onb.w() : ri.onb.w();
 	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a direction that validates against
+	// the (tilted) shading normal can still point below the geometric
+	// surface -- the continuation ray then tunnels into the solid.  The
+	// vGeomNormal use above only PICKS the face side; this gate REJECTS
+	// below-horizon lobes.  Degenerate vGeomNormal (SquaredModulus guard,
+	// matches GlintModifier.cpp) falls back to the shading normal, making
+	// the gate a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
 	const ScalarTriple Nt = pExponent->GetValuesAt(ri);
 	const Scalar N[3] = { Nt.v[0], Nt.v[1], Nt.v[2] };
 
@@ -143,7 +156,9 @@ void IsotropicPhongSPF::Scatter(
 		}
 		specular.isDelta = false;
 
-		scattered.AddScatteredRay( specular );
+		if( Vector3Ops::Dot( specular.ray.Dir(), geomN ) > 0 ) {
+			scattered.AddScatteredRay( specular );
+		}
 	} else {
 		const RISEPel spec = pRs->GetColor(ri);
 		const Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
@@ -163,12 +178,16 @@ void IsotropicPhongSPF::Scatter(
 			}
 			specular.isDelta = false;
 
-			scattered.AddScatteredRay( specular );
+			if( Vector3Ops::Dot( specular.ray.Dir(), geomN ) > 0 ) {
+				scattered.AddScatteredRay( specular );
+			}
 		}
 	}
 
 	diffuse.kray = pRd->GetColor(ri);
-	scattered.AddScatteredRay( diffuse );
+	if( Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0 ) {
+		scattered.AddScatteredRay( diffuse );
+	}
 }
 
 
@@ -187,6 +206,19 @@ void IsotropicPhongSPF::ScatterNM(
 	const Scalar rdotn = Vector3Ops::Dot(ri.ray.Dir(), ri.vGeomNormal);
 	const Vector3 n = rdotn > 0 ? -ri.onb.w() : ri.onb.w();
 	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
+
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a direction that validates against
+	// the (tilted) shading normal can still point below the geometric
+	// surface -- the continuation ray then tunnels into the solid.  The
+	// vGeomNormal use above only PICKS the face side; this gate REJECTS
+	// below-horizon lobes.  Degenerate vGeomNormal (SquaredModulus guard,
+	// matches GlintModifier.cpp) falls back to the shading normal, making
+	// the gate a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 	ScatteredRay diffuse, specular;
 	const Scalar N = pExponent->GetValueAtNM(ri,nm);
@@ -217,8 +249,12 @@ void IsotropicPhongSPF::ScatterNM(
 		specular.isDelta = false;
 	}
 
-	scattered.AddScatteredRay( diffuse );
-	scattered.AddScatteredRay( specular );
+	if( Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0 ) {
+		scattered.AddScatteredRay( diffuse );
+	}
+	if( Vector3Ops::Dot( specular.ray.Dir(), geomN ) > 0 ) {
+		scattered.AddScatteredRay( specular );
+	}
 }
 
 Scalar IsotropicPhongSPF::Pdf(
@@ -235,6 +271,15 @@ Scalar IsotropicPhongSPF::Pdf(
 	const Vector3 n = rdotn > 0 ? -ri.onb.w() : ri.onb.w();
 	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );
+
+	// Geometric-horizon gate (MIS consistency with Scatter's sampler-side
+	// gate): a wo the sampler can no longer emit contributes zero density.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( woNorm, geomN ) <= 0 ) {
+		return 0;
+	}
 
 	// Diffuse component: cosine-weighted hemisphere
 	const Scalar cosTheta = Vector3Ops::Dot( woNorm, n );
@@ -276,6 +321,15 @@ Scalar IsotropicPhongSPF::PdfNM(
 	const Vector3 n = rdotn > 0 ? -ri.onb.w() : ri.onb.w();
 	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );
+
+	// Geometric-horizon gate (MIS consistency with Scatter's sampler-side
+	// gate): a wo the sampler can no longer emit contributes zero density.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( woNorm, geomN ) <= 0 ) {
+		return 0;
+	}
 
 	// Diffuse component
 	const Scalar cosTheta = Vector3Ops::Dot( woNorm, n );

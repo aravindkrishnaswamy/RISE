@@ -50,11 +50,13 @@ void WardAnisotropicEllipticalGaussianBRDF::SetAlphaX( const IScalarPainter& v )
 void WardAnisotropicEllipticalGaussianBRDF::SetAlphaY( const IScalarPainter& v ) { v.addref(); safe_release( pAlphaY );   pAlphaY   = &v; }
 
 template< class T >
-static void ComputeFactors( 
-    T& diffuse, 
+static void ComputeFactors(
+    T& diffuse,
 	T& specular,
-	const Vector3& vLightIn, 
-	const RayIntersectionGeometric& ri, 
+	const Vector3& vLightIn,
+	const RayIntersectionGeometric& ri,
+	const Vector3& n,
+	const Vector3& u,
 	const T& alphax,
 	const T& alphay
 	)
@@ -62,17 +64,32 @@ static void ComputeFactors(
 	Vector3 l = Vector3Ops::Normalize(vLightIn); // light vector
 	Vector3 r = Vector3Ops::Normalize(-ri.ray.Dir()); // outgoing ray vector
 
-	const Vector3& n = ri.onb.w();
 	const Scalar nr = Vector3Ops::Dot(n,r);
 	const Scalar nl = Vector3Ops::Dot(n,l);	
 
 	if( (nr >= 0) && (nl >= 0) ) {
+		// Geometric-horizon gate: a GlintModifier-tilted shading normal can
+		// validate light/view directions that are still below the true
+		// geometric surface.  This is a DEFENSIVE check (a valid exterior hit
+		// already satisfies it) rather than a literal sampler-consistency one
+		// -- NEE's light direction isn't sampler-drawn -- but it guards
+		// against the same tilt pathology.  Degenerate vGeomNormal falls
+		// back to the shading normal (gate is a no-op).
+		// (r is tautologically inside the gate: r = -ri.ray.Dir() and geomN is
+		// ray-anchored, so Dot(r,geomN) > 0 always holds -- see LambertianBRDF.cpp:57-60.)
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : n;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+		if( Vector3Ops::Dot( l, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
+			return;
+		}
+
 		diffuse = INV_PI;
 
 		const Vector3 h = Vector3Ops::Normalize(l+r);
 		const Scalar nh = Vector3Ops::Dot(n,h);
 
-		const Scalar phi = acos(Vector3Ops::Dot(ri.onb.u(),Vector3Ops::Normalize(h-(nh*n))));
+		const Scalar phi = acos(Vector3Ops::Dot(u,Vector3Ops::Normalize(h-(nh*n))));
 
 		const Scalar first = 1.0 / (sqrt(nr*nl));
 		const Scalar tanh = tan(acos(nh));
@@ -92,7 +109,19 @@ RISEPel WardAnisotropicEllipticalGaussianBRDF::value( const Vector3& vLightIn, c
 	const ScalarTriple ayt = pAlphaY->GetValuesAt(ri);
 	const RISEPel ax( axt.v[0], axt.v[1], axt.v[2] );
 	const RISEPel ay( ayt.v[0], ayt.v[1], ayt.v[2] );
-	ComputeFactors<RISEPel>( d, s, vLightIn, ri, ax, ay );
+
+	// Flip to the ray-facing frame, mirroring
+	// WardAnisotropicEllipticalGaussianSPF's FlipW (same condition), so
+	// value() agrees with Scatter()/Pdf() on back-face hits.  FlipW negates
+	// both W and U (OrthonormalBasis3D::FlipW), so both are re-derived here
+	// even though ComputeFactors' phi term happens to be U-sign-invariant
+	// (acos()/squared usage) -- match the SPF's frame convention exactly
+	// rather than relying on that invariance.
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	ComputeFactors<RISEPel>( d, s, vLightIn, ri, myonb.w(), myonb.u(), ax, ay );
 
 	return d*pDiffuse->GetColor(ri) + s*pSpecular->GetColor(ri);
 }
@@ -100,7 +129,13 @@ RISEPel WardAnisotropicEllipticalGaussianBRDF::value( const Vector3& vLightIn, c
 Scalar WardAnisotropicEllipticalGaussianBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	Scalar d=0, s=0;
-	ComputeFactors<Scalar>( d, s, vLightIn, ri, pAlphaX->GetValueAtNM(ri,nm), pAlphaY->GetValueAtNM(ri,nm) );
+
+	// Same ray-facing flip as value() above.
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	ComputeFactors<Scalar>( d, s, vLightIn, ri, myonb.w(), myonb.u(), pAlphaX->GetValueAtNM(ri,nm), pAlphaY->GetValueAtNM(ri,nm) );
 
 	return d*pDiffuse->GetColorNM(ri,nm) + s*pSpecular->GetColorNM(ri,nm);
 }

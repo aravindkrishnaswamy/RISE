@@ -385,6 +385,27 @@ namespace
 		}
 		return NodeRef();
 	}
+	//! Byte offset where in-order index `index` STARTS (the exact reverse of
+	//! SeqAtOffset: index -> offset, instead of offset -> index). Iterative
+	//! descent mirroring SeqItemAt, accumulating the left-subtree/left-
+	//! sibling byte widths from the cached aggregates -- O(log N), no item
+	//! re-walk. `++visits` per node descended, same convention as
+	//! SeqAtOffset/IdRankByLabel. Returns (size_t)-1 if `index` is out of
+	//! range (caller is expected to have range-checked already; this is the
+	//! defensive fallback).
+	size_t SeqOffsetAt( const SeqRef& s, int index, int& visits )
+	{
+		const SeqNode* cur = s.get();
+		size_t base = 0;
+		while( cur ) {
+			++visits;
+			const int li = SeqCount( cur->left );
+			if( index <  li ) cur = cur->left.get();
+			else if( index == li ) return base + SeqBytes( cur->left );
+			else { base += SeqBytes( cur->left ) + cur->itemBytes; index -= li + 1; cur = cur->right.get(); }
+		}
+		return (size_t)-1;
+	}
 
 	//----------------------------------------------------------------------
 	// Item 4 -- identity side-map + name-path index (both persistent, separate
@@ -2973,6 +2994,20 @@ int DocItemAtByteOffset( const Document& doc, size_t offset, NodeRef* outItem, s
 	if( visits ) *visits = v;
 	if( idx >= 0 ) { if( outItem ) *outItem = item; if( outStart ) *outStart = start; }
 	return idx;
+}
+
+//! The exact reverse of DocItemAtByteOffset: byte offset where top-level
+//! item `index` STARTS in SerializeCst(doc). Descends the SAME cached
+//! byte-width aggregate spine (SeqOffsetAt, mirroring SeqAtOffset's
+//! convention) -- O(log N), no serialization walk. Out-of-range `index`
+//! (negative or >= DocItemCount) is refused, returning the sentinel
+//! (size_t)-1 (never a valid offset, since offset 0 is only valid for
+//! index 0 -- any other index's true offset is > 0).
+size_t DocByteOffsetOfItem( const Document& doc, int index )
+{
+	if( index < 0 || index >= SeqCount( doc.items ) ) return (size_t)-1;
+	int visits = 0;
+	return SeqOffsetAt( doc.items, index, visits );
 }
 
 Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* visits, std::vector<NodeId>* invalidated )

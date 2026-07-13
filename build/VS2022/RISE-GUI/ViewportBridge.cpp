@@ -168,6 +168,42 @@ ViewportBridge::ViewportBridge(RenderEngine* engine, QObject* parent)
         m_agentDispatcher.reset(new Agent::AgentRpcDispatcher(std::move(session)));
     }
 
+    // Agent autonomy selector (2026-07): stand up the two sibling
+    // tool-call dispatchers alongside `m_agentDispatcher` above -- see
+    // the header's ivar-block doc for why these are separate instances
+    // rather than one dispatcher whose autonomy gets mutated in place.
+    // Both borrow the SAME `m_controller` as `m_agentDispatcher`'s own
+    // session is attached to.
+    {
+        std::unique_ptr<Agent::AgentSession> ownerSession =
+            Agent::AgentSession::WrapJob(pJob);
+        if (ownerSession) {
+            ownerSession->AttachController(m_controller);
+        }
+        // Starts at Commit -- matches m_agentAutonomyLevel's Apply
+        // default, so this dispatcher's observable behaviour is
+        // identical to m_agentDispatcher's until the Qt composer
+        // explicitly picks a different level.
+        m_agentToolDispatcherOwner.reset(new Agent::AgentRpcDispatcher(
+            std::move(ownerSession), Agent::AgentAutonomy::Commit));
+
+        std::unique_ptr<Agent::AgentSession> proposeSession =
+            Agent::AgentSession::WrapJob(pJob, Agent::AgentAuthority::External);
+        if (proposeSession) {
+            proposeSession->AttachController(m_controller);
+            // Diagnostic only (SceneEditController::AgentProposal::sessionLabel)
+            // -- distinguishes an in-app "Propose" chip proposal from an
+            // external-MCP-client one in the proposals panel.
+            proposeSession->SetSessionLabel("in-app-propose");
+        }
+        // Fixed for this dispatcher's whole life -- Propose autonomy is
+        // the posture that PAIRS with External authority (AgentRpc.h's
+        // file header); there is no level under which this instance
+        // should ever run as anything else.
+        m_agentToolDispatcherPropose.reset(new Agent::AgentRpcDispatcher(
+            std::move(proposeSession), Agent::AgentAutonomy::Propose));
+    }
+
     // Phase 6.5: hook up the C dirty-changed callback.  userData
     // is a __raw pointer to this; the controller's listener
     // outlives the trampoline (we detach in the destructor before
@@ -226,6 +262,17 @@ ViewportBridge::~ViewportBridge()
         m_agentDispatcher->Session()->AttachController(nullptr);
     }
     m_agentDispatcher.reset();
+    // Agent autonomy selector (2026-07): same detach-then-reset
+    // discipline for the two sibling tool-call dispatchers -- they
+    // borrow the SAME m_controller and must not outlive it either.
+    if (m_agentToolDispatcherOwner && m_agentToolDispatcherOwner->Session()) {
+        m_agentToolDispatcherOwner->Session()->AttachController(nullptr);
+    }
+    m_agentToolDispatcherOwner.reset();
+    if (m_agentToolDispatcherPropose && m_agentToolDispatcherPropose->Session()) {
+        m_agentToolDispatcherPropose->Session()->AttachController(nullptr);
+    }
+    m_agentToolDispatcherPropose.reset();
     if (m_controller) {
         // Phase 6.5: detach the dirty-changed C callback BEFORE the
         // controller (and its std::function listener) goes away so
@@ -417,6 +464,99 @@ void ViewportBridge::endPropertyScrub()   { if (m_controller) RISE_API_SceneEdit
 void ViewportBridge::undo() { if (m_controller) RISE_API_SceneEditController_Undo(m_controller); }
 void ViewportBridge::redo() { if (m_controller) RISE_API_SceneEditController_Redo(m_controller); }
 
+QString ViewportBridge::undoActionLabel() const
+{
+    if (!m_controller) return QString();
+    char buf[256] = {0};
+    if (!RISE_API_SceneEditController_UndoLabel(m_controller, buf, sizeof(buf))) return QString();
+    return QString::fromUtf8(buf);
+}
+
+QString ViewportBridge::redoActionLabel() const
+{
+    if (!m_controller) return QString();
+    char buf[256] = {0};
+    if (!RISE_API_SceneEditController_RedoLabel(m_controller, buf, sizeof(buf))) return QString();
+    return QString::fromUtf8(buf);
+}
+
+// ---- Refinement pause + status (UI redesign, design brief A2) ------
+
+void ViewportBridge::pauseRefinement()
+{
+    if (!m_controller) return;
+    RISE_API_SceneEditController_PauseRefinement(m_controller);
+}
+
+void ViewportBridge::resumeRefinement()
+{
+    if (!m_controller) return;
+    RISE_API_SceneEditController_ResumeRefinement(m_controller);
+}
+
+bool ViewportBridge::isRefinementPaused() const
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_IsRefinementPaused(m_controller);
+}
+
+int ViewportBridge::refinementPhase(unsigned int* outScaleDivisor) const
+{
+    if (!m_controller) {
+        if (outScaleDivisor) *outScaleDivisor = 1;
+        return -1;
+    }
+    return RISE_API_SceneEditController_GetRefinementStatus(m_controller, outScaleDivisor);
+}
+
+// ---- Interactive region-of-interest (UI redesign, A4) ---------------
+
+void ViewportBridge::setInteractiveRegion(unsigned int left, unsigned int top,
+                                           unsigned int right, unsigned int bottom)
+{
+    if (!m_controller) return;
+    RISE_API_SceneEditController_SetInteractiveRegion(m_controller, left, top, right, bottom);
+}
+
+void ViewportBridge::clearInteractiveRegion()
+{
+    if (!m_controller) return;
+    RISE_API_SceneEditController_ClearInteractiveRegion(m_controller);
+}
+
+bool ViewportBridge::getInteractiveRegion(unsigned int* left, unsigned int* top,
+                                           unsigned int* right, unsigned int* bottom) const
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_GetInteractiveRegion(m_controller, left, top, right, bottom);
+}
+
+bool ViewportBridge::interactiveRasterizerHonorsRegion() const
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_InteractiveRasterizerHonorsRegion(m_controller);
+}
+
+// ---- Editor live-sync (UI refinement item 1) ------------------------
+
+QString ViewportBridge::serializedSceneText() const
+{
+    if (!m_controller) return QString();
+    char* text = RISE_API_SceneEditController_SerializedSceneTextAlloc(m_controller);
+    if (!text) return QString();
+    QString out = QString::fromUtf8(text);
+    RISE_API_FreeString(text);
+    return out;
+}
+
+bool ViewportBridge::getSceneTextVersion(quint64* outUuid, quint64* outRevision) const
+{
+    if (outUuid)     *outUuid = 0;
+    if (outRevision) *outRevision = 0;
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_GetSceneTextVersion(m_controller, outUuid, outRevision);
+}
+
 // ---- Phase 6.5 scene-file save -------------------------------------
 
 bool ViewportBridge::hasUnsavedSceneChanges() const
@@ -490,6 +630,44 @@ QString ViewportBridge::agentHandleLine(const QString& jsonRpcRequest)
     const QByteArray utf8 = jsonRpcRequest.toUtf8();
     const std::string response =
         m_agentDispatcher->HandleLine(std::string(utf8.constData(), static_cast<std::size_t>(utf8.size())));
+    return QString::fromUtf8(response.c_str());
+}
+
+void ViewportBridge::setAgentAutonomyLevel(AgentAutonomyLevel level)
+{
+    if (level != AgentAutonomyLevel::Read && level != AgentAutonomyLevel::Propose
+        && level != AgentAutonomyLevel::Apply) {
+        return;   // out-of-range: no-op, keep the previous level (see the .h doc)
+    }
+    m_agentAutonomyLevel = level;
+    // Only the OWNER tool dispatcher's autonomy ever changes at runtime
+    // -- m_agentToolDispatcherPropose stays fixed at Propose for its
+    // whole life, and m_agentDispatcher (the administrative path) is
+    // never touched here at all.
+    if (m_agentToolDispatcherOwner) {
+        m_agentToolDispatcherOwner->SetAutonomy(
+            level == AgentAutonomyLevel::Read ? Agent::AgentAutonomy::Read
+                                               : Agent::AgentAutonomy::Commit);
+    }
+}
+
+QString ViewportBridge::agentHandleToolCall(const QString& jsonRpcRequest)
+{
+    static const char* const kNoDispatcher =
+        "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":"
+        "{\"code\":-32603,\"message\":\"internal error: agent dispatcher unavailable\"}}";
+
+    Agent::AgentRpcDispatcher* dispatcher =
+        (m_agentAutonomyLevel == AgentAutonomyLevel::Propose)
+            ? m_agentToolDispatcherPropose.get()
+            : m_agentToolDispatcherOwner.get();
+    if (!dispatcher) {
+        return QString::fromUtf8(kNoDispatcher);
+    }
+
+    const QByteArray utf8 = jsonRpcRequest.toUtf8();
+    const std::string response =
+        dispatcher->HandleLine(std::string(utf8.constData(), static_cast<std::size_t>(utf8.size())));
     return QString::fromUtf8(response.c_str());
 }
 
@@ -578,6 +756,18 @@ unsigned int ViewportBridge::sceneEpoch() const
 {
     if (!m_controller) return 0;
     return RISE_API_SceneEditController_SceneEpoch(m_controller);
+}
+
+bool ViewportBridge::getEntitySourceLocation(Category category, const QString& name,
+                                              quint64* outByteOffset, quint32* outLine) const
+{
+    if (outByteOffset) *outByteOffset = 0;
+    if (outLine)        *outLine       = 0;
+    if (!m_controller || name.isEmpty()) return false;
+    const QByteArray utf8 = name.toUtf8();
+    return RISE_API_SceneEditController_GetEntitySourceLocation(
+        m_controller, static_cast<int>(category), utf8.constData(),
+        outByteOffset, outLine);
 }
 
 QString ViewportBridge::addCameraFromActive(const QString& proposedName)

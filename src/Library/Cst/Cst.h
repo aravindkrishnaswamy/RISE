@@ -434,6 +434,15 @@ namespace RISE
 		int DocItemAtByteOffset( const Document& doc, size_t offset,
 		                         NodeRef* outItem, size_t* outStart, int* visits );
 
+		//! The exact reverse of DocItemAtByteOffset: the byte offset where
+		//! top-level item `index` starts in SerializeCst(doc) -- the node->byte
+		//! map a UI uses for "where is this entity in the text" (e.g. a
+		//! reveal-in-scene-file affordance driven by DocIndexOfNodeId).
+		//! O(log N), descending the same cached byte-width aggregate spine.
+		//! Out-of-range `index` (negative or >= DocItemCount) returns the
+		//! sentinel (size_t)-1.
+		size_t DocByteOffsetOfItem( const Document& doc, int index );
+
 		//! Replace top-level item `index` with `newItem` (path-copy: O(log N) new
 		//! sequence nodes, the rest shared by pointer; aggregates recomputed along
 		//! the spine). `*visits` (if non-null) receives the rebuilt-node count.

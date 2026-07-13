@@ -130,9 +130,17 @@ namespace
 
 RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
-	// Landing 8: rotate the tangent frame per anisotropy_rotation.
-	// effOnb == ri.onb when no rotation painter is set.
-	const OrthonormalBasis3D effOnb = ResolveTangentONB( ri.onb, pTangentRotation, ri );
+	// Flip to the ray-facing frame first, mirroring GGXSPF::Scatter's FlipW
+	// (same condition), so value() agrees with Scatter()/Pdf() on back-face
+	// hits.  Landing 8: apply anisotropy_rotation AFTER the flip -- same
+	// order as GGXSPF::ApplyTangentRotation -- so a rotated tangent frame on
+	// a back-face hit still matches the sampler's frame.  effOnb == ri.onb
+	// when no rotation painter is set and the hit is front-face.
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	const OrthonormalBasis3D effOnb = ResolveTangentONB( myonb, pTangentRotation, ri );
 	const Vector3 n = effOnb.w();
 	const Vector3 v = Vector3Ops::Normalize( vLightIn );         // light direction (toward light)
 	const Vector3 r = Vector3Ops::Normalize( -ri.ray.Dir() );    // view direction (toward viewer)
@@ -141,6 +149,22 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 	const Scalar nv = Vector3Ops::Dot( n, v );
 
 	if( nr < NEARZERO || nv < NEARZERO ) {
+		return RISEPel(0,0,0);
+	}
+
+	// Geometric-horizon gate (mirrors GGXSPF::Scatter's sampler-side gate):
+	// a GlintModifier-tilted shading normal can validate light/view
+	// directions that are still below the true geometric surface.  This is
+	// a DEFENSIVE check (a valid exterior hit already satisfies it), not a
+	// literal sampler-consistency one -- NEE's light direction isn't
+	// sampler-drawn -- but it guards against the same tilt pathology.
+	// (r is tautologically inside this gate: r = -ri.ray.Dir() and geomN is
+	// anchored to ri.ray.Dir(), so Dot(r,geomN) > 0 always holds -- only v,
+	// the light half, can actually reject.  See LambertianBRDF.cpp:57-60.)
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
 		return RISEPel(0,0,0);
 	}
 
@@ -314,8 +338,12 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 
 Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
-	// Landing 8: rotate the tangent frame per anisotropy_rotation.
-	const OrthonormalBasis3D effOnb = ResolveTangentONB( ri.onb, pTangentRotation, ri );
+	// Same ray-facing flip (before the tangent rotation) as value() above.
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	const OrthonormalBasis3D effOnb = ResolveTangentONB( myonb, pTangentRotation, ri );
 	const Vector3 n = effOnb.w();
 	const Vector3 v = Vector3Ops::Normalize( vLightIn );
 	const Vector3 r = Vector3Ops::Normalize( -ri.ray.Dir() );
@@ -324,6 +352,16 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 	const Scalar nv = Vector3Ops::Dot( n, v );
 
 	if( nr < NEARZERO || nv < NEARZERO ) {
+		return 0;
+	}
+
+	// Geometric-horizon gate (mirrors GGXSPF::ScatterNM's sampler-side
+	// gate); see GGXBRDF::value for rationale.
+	// r is tautologically inside the gate here too (see value()'s note).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
 		return 0;
 	}
 

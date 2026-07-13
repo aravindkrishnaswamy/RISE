@@ -10,9 +10,16 @@ import Combine
 // same dispatcher the Agent (JSON-RPC) debug panel drives by hand.
 // All state + the turn driver live in ChatViewModel; this file is
 // presentation only.
-
-/// The chat panel body, shown inline in the Controls column (mirrors
-/// the Agent debug panel's placement + show/hide pattern).
+//
+// RESTYLE NOTE (RISE UI redesign, left panel "AGENT TAB" — see
+// /docs/gui and the approved design comp): the tab chrome, transcript
+// bubbles, tool-call trace chips, the diff card (now ProposalCard.swift)
+// and the composer below were restyled to the comp using Theme.swift
+// tokens.  Every disabled()/help()/onDrop/gating predicate below is
+// unchanged from the pre-restyle version — this pass touches
+// presentation only, never the underlying gates.  ChatSettingsView
+// (provider/model/API-key popover) is unchanged in this pass; only its
+// trigger affordance moved into the restyled composer footer.
 struct ChatPanel: View {
     @EnvironmentObject var viewModel: RenderViewModel
     @ObservedObject var chat: ChatViewModel
@@ -23,191 +30,197 @@ struct ChatPanel: View {
     @State private var isDropTargeted = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Header: title + provider/model summary + settings gear.
-            HStack {
-                Image(systemName: "bubble.left.and.bubble.right")
-                    .imageScale(.small)
-                Text("Chat")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.secondary)
-                Spacer()
-                Text("\(chat.provider.displayName) · \(chat.modelId)")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Button {
-                    showSettings = true
-                } label: {
-                    Image(systemName: "gearshape")
-                        .imageScale(.small)
-                }
-                .buttonStyle(.borderless)
-                .help("Provider, model, and API-key settings")
-                .popover(isPresented: $showSettings, arrowEdge: .trailing) {
-                    ChatSettingsView(chat: chat)
-                }
-            }
-
-            // Secure-MCP slice 5c: pending proposals from an EXTERNAL
-            // agent (staged via the GUI-hosted MCP endpoint above) that
-            // need your approval before they touch the scene.  Present
-            // regardless of whether hosting is CURRENTLY on — a
-            // proposal already staged stays visible/resolvable even
-            // after the toggle is switched off (the queue lives on the
-            // controller, not on the hosted-server connection).
+        VStack(alignment: .leading, spacing: 10) {
             ProposalsPanel(chat: chat)
+            transcript
+            errorAffordances
+            attachmentErrorBanner
+            pendingAttachmentStrip
+            composer
+        }
+    }
 
-            // Transcript.
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 6) {
-                        if chat.transcript.isEmpty {
-                            Text("Describe a scene change — e.g. “make the "
-                                 + "orange objects red”.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        ForEach(chat.transcript) { entry in
-                            ChatTranscriptRow(entry: entry)
-                                .id(entry.id)
-                        }
+    // MARK: - Transcript
+
+    private var transcript: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 15) {
+                    if chat.transcript.isEmpty {
+                        Text("Describe a scene change — e.g. “make the "
+                             + "orange objects red”.")
+                            .font(Theme.sans(12.5))
+                            .foregroundColor(Theme.textDim)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.top, 24)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(6)
+                    ForEach(chat.transcript) { entry in
+                        ChatTranscriptRow(entry: entry)
+                            .id(entry.id)
+                    }
                 }
-                .frame(height: 200)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 4)
-                        .stroke(Color(nsColor: .separatorColor))
-                )
-                .onChange(of: chat.transcript.count) { _, _ in
-                    if let last = chat.transcript.last {
-                        proxy.scrollTo(last.id, anchor: .bottom)
-                    }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+            }
+            .frame(minHeight: 220, maxHeight: 420)
+            .background(Theme.bgPanel)
+            .onChange(of: chat.transcript.count) { _, _ in
+                if let last = chat.transcript.last {
+                    proxy.scrollTo(last.id, anchor: .bottom)
                 }
             }
+        }
+    }
 
-            // Error affordances.  Retry appears only for the retriable
-            // (Http-kind / network) failures; Reset after repeated
-            // HTTP 400s (honest poison scoping).  MaxTokens and
-            // IterationCap deliberately get NO retry button — their
-            // recovery is a new user message.
-            if chat.retryAvailable || chat.resetOffered {
-                HStack(spacing: 8) {
-                    if chat.retryAvailable {
-                        Button {
-                            chat.retry()
-                        } label: {
-                            Label("Retry", systemImage: "arrow.clockwise")
-                        }
-                        .disabled(chat.isBusy || !viewModel.isSceneEditableForAgents)
-                        .help("Retry the failed request — your message is kept and replays; no duplicate is recorded")
-                    }
-                    if chat.resetOffered {
-                        Button(role: .destructive) {
-                            chat.resetConversation()
-                        } label: {
-                            Label("Reset conversation", systemImage: "trash")
-                        }
-                        .disabled(chat.isBusy)
-                        .help("Drop the conversation history (keeps provider / model / keys)")
-                    }
-                    Spacer()
+    // MARK: - Error affordances
+
+    /// Retry appears only for the retriable (Http-kind / network)
+    /// failures; Reset after repeated HTTP 400s (honest poison
+    /// scoping).  MaxTokens and IterationCap deliberately get NO retry
+    /// button — their recovery is a new user message.
+    @ViewBuilder
+    private var errorAffordances: some View {
+        if chat.retryAvailable || chat.resetOffered {
+            HStack(spacing: 8) {
+                if chat.retryAvailable {
+                    pillButton(
+                        "↻ Retry", tint: Theme.accentLight,
+                        disabled: chat.isBusy || !viewModel.isSceneEditableForAgents
+                    ) { chat.retry() }
+                    .help("Retry the failed request — your message is kept and replays; no duplicate is recorded")
                 }
-            }
-
-            // Attachment error banner (rejected mimeType / unreadable
-            // file) — a user-visible message, never a silent drop.
-            if let error = chat.attachmentError {
-                HStack(spacing: 4) {
-                    Image(systemName: "exclamationmark.triangle")
-                    Text(error)
-                    Spacer()
-                    Button {
-                        chat.attachmentError = nil
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                    }
-                    .buttonStyle(.borderless)
+                if chat.resetOffered {
+                    pillButton(
+                        "⌫ Reset conversation", tint: Theme.error,
+                        disabled: chat.isBusy
+                    ) { chat.resetConversation() }
+                    .help("Drop the conversation history (keeps provider / model / keys)")
                 }
-                .font(.caption2)
-                .foregroundColor(.orange)
+                Spacer(minLength: 0)
             }
+        }
+    }
 
-            // Pending-attachment thumbnail strip (Model-B F5 chat image
-            // attachments) — shows what will go out with the NEXT send.
-            if !chat.pendingAttachments.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(chat.pendingAttachments) { attachment in
-                            ZStack(alignment: .topTrailing) {
-                                Image(nsImage: attachment.thumbnail)
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fill)
-                                    .frame(width: 40, height: 40)
-                                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                                Button {
-                                    chat.removePendingAttachment(attachment.id)
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .foregroundColor(.white)
-                                        .background(Circle().fill(Color.black.opacity(0.6)))
-                                }
-                                .buttonStyle(.borderless)
-                                .offset(x: 4, y: -4)
+    // MARK: - Attachment banner + pending strip
+
+    @ViewBuilder
+    private var attachmentErrorBanner: some View {
+        if let error = chat.attachmentError {
+            HStack(alignment: .top, spacing: 6) {
+                Text("⚠").foregroundColor(Theme.warn)
+                Text(error)
+                    .font(Theme.sans(11))
+                    .foregroundColor(Theme.warn)
+                Spacer(minLength: 4)
+                Button {
+                    chat.attachmentError = nil
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(Theme.textDim)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    /// Pending-attachment thumbnail strip (Model-B F5 chat image
+    /// attachments) — shows what will go out with the NEXT send.
+    @ViewBuilder
+    private var pendingAttachmentStrip: some View {
+        if !chat.pendingAttachments.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(chat.pendingAttachments) { attachment in
+                        ZStack(alignment: .topTrailing) {
+                            Image(nsImage: attachment.thumbnail)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 40, height: 40)
+                                .clipShape(RoundedRectangle(cornerRadius: 5))
+                            Button {
+                                chat.removePendingAttachment(attachment.id)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.white)
+                                    .background(Circle().fill(Color.black.opacity(0.6)))
                             }
+                            .buttonStyle(.plain)
+                            .offset(x: 4, y: -4)
                         }
                     }
-                    .padding(.vertical, 2)
                 }
+                .padding(.vertical, 2)
             }
+        }
+    }
 
-            // Input row.  Send / typing are additionally gated on the
-            // scene being editable (B2 review round 1): during a
-            // production render, tool calls would mutate Scene state
-            // the render workers read off-main.  The driver enforces
-            // the same predicate; this is the visible layer.  Drag-and-
-            // drop an image file straight onto this row attaches it —
-            // the same accept/downscale/cap pipeline as the picker
-            // button.
-            HStack(spacing: 6) {
+    // MARK: - Composer
+
+    /// Input row (attach / text / send-or-stop) + a footer row with the
+    /// provider/model chip, capability caption, and the settings gear —
+    /// restyled to the comp's composer.  Send / typing are additionally
+    /// gated on the scene being editable (B2 review round 1): during a
+    /// production render, tool calls would mutate Scene state the
+    /// render workers read off-main.  Drag-and-drop an image file
+    /// straight onto the input row attaches it — the same accept/
+    /// downscale/cap pipeline as the paperclip picker.
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
                 Button {
                     chat.attachImageFiles()
                 } label: {
                     Image(systemName: "paperclip")
+                        .imageScale(.medium)
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
+                .foregroundColor(Theme.textFaint)
                 .disabled(chat.isBusy || viewModel.viewportBridge == nil
                           || !viewModel.isSceneEditableForAgents
                           || chat.pendingAttachments.count >= RISEAgentChatBridge.maxLiveUserImages)
                 .help("Attach reference image(s) — up to "
                       + "\(RISEAgentChatBridge.maxLiveUserImages) per message")
 
-                TextField("Ask for a scene change…", text: $chat.inputText)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption)
-                    .onSubmit { chat.send() }
-                    .disabled(chat.isBusy || viewModel.viewportBridge == nil
-                              || !viewModel.isSceneEditableForAgents)
+                TextField(
+                    "", text: $chat.inputText,
+                    prompt: Text("Ask the agent — reads, edits, validates, renders…")
+                        .foregroundColor(Theme.textDim)
+                )
+                .textFieldStyle(.plain)
+                .font(Theme.sans(12.5))
+                .foregroundColor(Theme.textPrimary)
+                .onSubmit { chat.send() }
+                .disabled(chat.isBusy || viewModel.viewportBridge == nil
+                          || !viewModel.isSceneEditableForAgents)
+
                 if chat.isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.7)
                     Button {
                         chat.requestStop()
                     } label: {
-                        Label("Stop", systemImage: "stop.fill")
+                        Image(systemName: "stop.fill")
                     }
+                    .buttonStyle(.plain)
+                    .foregroundColor(Theme.error)
                     .help("Stop now — aborts an in-flight request; pending "
                           + "tool calls are reported to the model as cancelled")
-                    ProgressView()
-                        .controlSize(.small)
                 } else {
                     Button {
                         chat.send()
                     } label: {
-                        Label("Send", systemImage: "paperplane.fill")
+                        HStack(spacing: 5) {
+                            Text("Send")
+                            Text("⌘↵").foregroundColor(Theme.accentLight.opacity(0.65))
+                        }
+                        .font(Theme.sans(11.5, .semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
                     }
+                    .buttonStyle(.plain)
+                    .foregroundColor(Theme.accentLight)
+                    .background(Theme.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 7))
                     .disabled(viewModel.viewportBridge == nil
                               || !viewModel.isSceneEditableForAgents
                               || (chat.inputText.trimmingCharacters(
@@ -219,10 +232,13 @@ struct ChatPanel: View {
                             + "running — wait for it to finish")
                 }
             }
-            .padding(4)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(Theme.bgWell, in: RoundedRectangle(cornerRadius: 10))
             .overlay(
-                RoundedRectangle(cornerRadius: 4)
-                    .stroke(isDropTargeted ? Color.accentColor : Color.clear, lineWidth: 2)
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isDropTargeted ? Theme.accent : Theme.borderLight,
+                            lineWidth: isDropTargeted ? 2 : 1)
             )
             .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
                 Self.loadDroppedURLs(providers) { urls in
@@ -230,8 +246,100 @@ struct ChatPanel: View {
                 }
                 return true
             }
+
+            composerFooter
         }
-        .padding(.top, 4)
+    }
+
+    private var composerFooter: some View {
+        HStack(spacing: 7) {
+            Button {
+                showSettings = true
+            } label: {
+                HStack(spacing: 4) {
+                    Text("\(chat.provider.displayName) \(chat.modelId)")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text("▾").foregroundColor(Theme.textGhost)
+                }
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(Theme.textFaint)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.borderLight, lineWidth: 1))
+
+            Text("sees scene + framebuffer")
+                .foregroundColor(Theme.textDim)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.borderLight, lineWidth: 1))
+
+            Spacer(minLength: 4)
+
+            autonomySelector
+
+            Button {
+                showSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(Theme.textDim)
+            .help("Provider, model, and API-key settings")
+            .popover(isPresented: $showSettings, arrowEdge: .trailing) {
+                ChatSettingsView(chat: chat)
+            }
+        }
+        .font(Theme.mono(10.5))
+    }
+
+    // MARK: - Agent autonomy selector (2026-07 GUI composer chips)
+
+    /// The comp's L0/L1/L2 chips — "Read" / "Propose" / "Apply".  Each
+    /// level maps 1:1 to `RISEAgentAutonomyLevel` (RISEViewportBridge.h);
+    /// the `.help` text states EXACTLY what the level does — see that
+    /// header's doc for the underlying routing this description must stay
+    /// truthful to.
+    private var autonomySelector: some View {
+        HStack(spacing: 4) {
+            autonomyChip("Read", level: .read,
+                         help: "Read: agent can read the scene and render, never edit.")
+            autonomyChip("Propose", level: .propose,
+                         help: "Propose: edits are staged as proposals for your review.")
+            autonomyChip("Apply", level: .apply,
+                         help: "Apply: edits apply directly — still one undo step each.")
+        }
+    }
+
+    private func autonomyChip(_ title: String, level: RISEAgentAutonomyLevel,
+                               help: String) -> some View {
+        let isActive = chat.autonomyLevel == level
+        return Button {
+            chat.setAutonomyLevel(level)
+        } label: {
+            Text(title)
+                .font(Theme.mono(10, isActive ? .semibold : .regular))
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(isActive ? Theme.accentLight : Theme.textDim)
+        .help(help)
+    }
+
+    // MARK: - Shared pill button
+
+    private func pillButton(_ title: String, tint: Color, disabled: Bool,
+                             action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(Theme.sans(11))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(disabled ? Theme.textDisabled : tint)
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.borderStrong, lineWidth: 1))
+        .disabled(disabled)
     }
 
     /// Resolve a drop's NSItemProviders to file URLs off-main (the
@@ -271,192 +379,152 @@ struct ChatPanel: View {
 /// Secure-MCP slice 5c: the pending-proposals list — an external MCP
 /// client's staged edits, approved/rejected here through the OWNER
 /// dispatcher (ChatViewModel.resolveProposal, NOT the external server).
-/// A disclosure group so it stays out of the way when empty/collapsed;
-/// auto-expands the FIRST time a proposal appears so a new arrival is
-/// never missed silently.
+/// Restyled per the redesign comp: proposals render inline as full diff
+/// cards (ProposalCard.swift) rather than a collapsible summary list —
+/// the comp shows the proposal as part of the natural conversation
+/// flow, not tucked behind a disclosure toggle.  Present regardless of
+/// whether external hosting is CURRENTLY on — a proposal already staged
+/// stays visible/resolvable even after the toggle is switched off (the
+/// queue lives on the controller, not on the hosted-server connection).
 private struct ProposalsPanel: View {
     @ObservedObject var chat: ChatViewModel
-    @State private var isExpanded = false
-    @State private var hasAutoExpandedOnce = false
 
-    /// Poll cadence while the section is visible (expanded) — cheap
-    /// (a single synchronous in-process HandleLine call against the
-    /// controller's in-memory queue), so a sub-second interval is fine;
-    /// matches the RenderViewModel Timer pattern used elsewhere in this
-    /// app rather than a Combine/async-sleep loop.
+    /// Poll cadence — cheap (a single synchronous in-process
+    /// HandleLine call against the controller's in-memory queue), so a
+    /// sub-second interval is fine; matches the RenderViewModel Timer
+    /// pattern used elsewhere in this app rather than a Combine/async-
+    /// sleep loop.
     private static let pollInterval: TimeInterval = 1.0
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 4) {
-                if chat.pendingProposals.isEmpty {
-                    Text("No proposals.")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                } else {
+        Group {
+            if !chat.pendingProposals.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
                     ForEach(chat.pendingProposals) { proposal in
-                        ProposalRow(chat: chat, proposal: proposal)
+                        VStack(alignment: .leading, spacing: 6) {
+                            ProposalDiffCard(chat: chat, proposal: proposal)
+                            if proposal.status == "pending" {
+                                HStack(spacing: 6) {
+                                    Text("↺").foregroundColor(Theme.accentSoft)
+                                    Text("joins the shared undo history — one step")
+                                        .foregroundColor(Theme.textDim)
+                                }
+                                .font(Theme.mono(10.5))
+                            }
+                        }
                     }
                 }
             }
-            .padding(.top, 2)
-            .onAppear { chat.refreshProposals() }
-            .onReceive(Timer.publish(every: Self.pollInterval, on: .main, in: .common).autoconnect()) { _ in
-                chat.refreshProposals()
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "tray.and.arrow.down")
-                    .imageScale(.small)
-                Text("Proposals")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.secondary)
-                let pendingCount = chat.pendingProposals.filter { $0.status == "pending" }.count
-                if pendingCount > 0 {
-                    Text("\(pendingCount)")
-                        .font(.caption2)
-                        .fontWeight(.bold)
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(Color.accentColor))
-                }
-                Spacer()
-            }
         }
-        .font(.caption)
-        // Always refresh once when the panel first appears (even
-        // collapsed) so the pending-count badge is accurate without
-        // requiring the user to expand it first.
         .onAppear { chat.refreshProposals() }
-        .onChange(of: chat.pendingProposals.count) { _, newCount in
-            if newCount > 0 && !hasAutoExpandedOnce {
-                isExpanded = true
-                hasAutoExpandedOnce = true
-            }
+        .onReceive(Timer.publish(every: Self.pollInterval, on: .main, in: .common).autoconnect()) { _ in
+            chat.refreshProposals()
         }
     }
 }
 
-/// One proposal row: a summary line + Approve/Reject (pending) or a
-/// terminal status label (applied/rejected/conflict, shown briefly —
-/// see ChatViewModel.refreshProposals' linger window).
-private struct ProposalRow: View {
-    @ObservedObject var chat: ChatViewModel
-    let proposal: ChatViewModel.ProposalEntry
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 4) {
-                Text(proposal.kind)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundColor(.secondary)
-                if !proposal.sessionLabel.isEmpty {
-                    Text("· \(proposal.sessionLabel)")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-                statusLabel
-            }
-            Text(proposal.summary)
-                .font(.caption)
-                .textSelection(.enabled)
-                .lineLimit(2)
-            if proposal.status == "pending" {
-                HStack(spacing: 8) {
-                    Button {
-                        chat.resolveProposal(id: proposal.id, approve: true)
-                    } label: {
-                        Label("Approve", systemImage: "checkmark")
-                    }
-                    .help("Apply this edit to the live scene")
-                    Button(role: .destructive) {
-                        chat.resolveProposal(id: proposal.id, approve: false)
-                    } label: {
-                        Label("Reject", systemImage: "xmark")
-                    }
-                    .help("Discard this proposal without applying it")
-                    Spacer()
-                }
-            }
-        }
-        .padding(6)
-        .background(
-            RoundedRectangle(cornerRadius: 4)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-    }
-
-    @ViewBuilder
-    private var statusLabel: some View {
-        switch proposal.status {
-        case "applied":
-            Label("Applied", systemImage: "checkmark.circle.fill")
-                .foregroundColor(.green)
-                .font(.caption2)
-        case "rejected":
-            Label("Rejected", systemImage: "xmark.circle.fill")
-                .foregroundColor(.secondary)
-                .font(.caption2)
-        case "conflict":
-            Label("Conflict", systemImage: "exclamationmark.triangle.fill")
-                .foregroundColor(.orange)
-                .font(.caption2)
-        default:
-            EmptyView()
-        }
-    }
-}
-
-/// One transcript row, styled by kind.
+/// One transcript row, styled by kind per the redesign comp:
+///   - `.user`: a right-aligned bubble (Theme.bgBubbleUser).
+///   - `.assistant`: plain left-aligned narration text.
+///   - `.toolActivity`: a compact hairline-bordered "trace chip".
+///   - `.error` / `.notice`: unchanged in spirit, restyled to tokens.
 private struct ChatTranscriptRow: View {
     let entry: ChatViewModel.Entry
+
+    /// Matches the comp's "max-width:86%" bubble constraint against
+    /// the fixed 404pt left-panel width (404 − 2×14 padding ≈ 376pt
+    /// content column; 86% of that ≈ 320pt).
+    private static let userBubbleMaxWidth: CGFloat = 320
 
     var body: some View {
         switch entry.kind {
         case .user:
-            VStack(alignment: .leading, spacing: 4) {
-                if !entry.attachmentThumbnails.isEmpty {
-                    HStack(spacing: 4) {
-                        ForEach(Array(entry.attachmentThumbnails.enumerated()), id: \.offset) { _, thumb in
-                            Image(nsImage: thumb)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(width: 32, height: 32)
-                                .clipShape(RoundedRectangle(cornerRadius: 3))
-                        }
+            userBubble
+        case .assistant:
+            assistantText
+        case .toolActivity:
+            traceChip
+        case .error:
+            errorRow
+        case .notice:
+            noticeRow
+        }
+    }
+
+    private var userBubble: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            if !entry.attachmentThumbnails.isEmpty {
+                HStack(spacing: 4) {
+                    ForEach(Array(entry.attachmentThumbnails.enumerated()), id: \.offset) { _, thumb in
+                        Image(nsImage: thumb)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 32, height: 32)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                 }
-                if !entry.text.isEmpty {
-                    Text("\(Text("You").bold().foregroundColor(.accentColor))  \(entry.text)")
-                        .font(.caption)
-                        .textSelection(.enabled)
-                } else {
-                    Text("You").bold().foregroundColor(.accentColor)
-                        .font(.caption)
-                }
             }
-        case .assistant:
-            Text(entry.text)
-                .font(.caption)
-                .textSelection(.enabled)
-        case .toolActivity:
-            Text(entry.text)
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundColor(.secondary)
-        case .error:
-            Text("\(Image(systemName: "exclamationmark.triangle"))  \(entry.text)")
-                .font(.caption)
-                .foregroundColor(.orange)
-                .textSelection(.enabled)
-        case .notice:
-            Text(entry.text)
-                .font(.caption)
-                .italic()
-                .foregroundColor(.secondary)
+            if !entry.text.isEmpty {
+                Text(entry.text)
+                    .font(Theme.sans(12.5))
+                    .foregroundColor(Theme.textPrimary)
+                    .lineSpacing(3)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 10)
+                    .background(Theme.bgBubbleUser)
+                    .clipShape(UnevenRoundedRectangle(
+                        topLeadingRadius: 12, bottomLeadingRadius: 12,
+                        bottomTrailingRadius: 4, topTrailingRadius: 12))
+                    .frame(maxWidth: Self.userBubbleMaxWidth, alignment: .trailing)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    private var assistantText: some View {
+        Text(entry.text)
+            .font(Theme.sans(12.5))
+            .foregroundColor(Theme.textSecondary)
+            .lineSpacing(6)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The comp's compact "trace chip" — one per tool call.  The comp
+    /// merges several sequential verbs into a single chip with a
+    /// grammar-version/error-count trailer ("grammar v2.3 · 0 errors");
+    /// ChatViewModel records one `.toolActivity` entry per call and
+    /// exposes no grammar/error-count data, so each tool call renders
+    /// its own chip here instead of a fabricated merged trailer.
+    private var traceChip: some View {
+        let label = entry.text.hasPrefix("→ ") ? String(entry.text.dropFirst(2)) : entry.text
+        return HStack(spacing: 7) {
+            Text("✓").foregroundColor(Theme.success)
+            Text(label)
+            Spacer(minLength: 0)
+        }
+        .font(Theme.mono(10.5))
+        .foregroundColor(Theme.textMuted)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.borderHairline, lineWidth: 1))
+    }
+
+    private var errorRow: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text("⚠").foregroundColor(Theme.error)
+            Text(entry.text)
+                .font(Theme.sans(12.5))
+                .foregroundColor(Theme.error)
+                .textSelection(.enabled)
+        }
+    }
+
+    private var noticeRow: some View {
+        Text(entry.text)
+            .font(Theme.sans(12.5).italic())
+            .foregroundColor(Theme.textDim)
     }
 }
 

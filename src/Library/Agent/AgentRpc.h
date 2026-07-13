@@ -589,18 +589,46 @@ namespace RISE
 			//! the policy.
 			AgentAutonomy Autonomy() const { return mAutonomy; }
 
+			//! GUI in-app autonomy selector (2026-07): re-point this
+			//! dispatcher's posture after construction.  The file header's
+			//! "never settable by the model, a scene file, or any request
+			//! parameter" invariant is about the WIRE surface -- no RPC verb
+			//! reaches this method, so a remote/embedded caller can never
+			//! trigger it.  This is a SEPARATE, narrower door: a trusted
+			//! FIRST-PARTY embedder (the Mac GUI's own Swift composer, in
+			//! reaction to an explicit user click on the Read/Propose/Apply
+			//! chips -- see RISEViewportBridge's -setAgentAutonomyLevel:)
+			//! choosing which posture ITS OWN local dispatcher instance runs
+			//! with next.  Same single-threaded-caller contract as the rest
+			//! of this class (AgentSession's, no lock): call only from the
+			//! thread that owns this dispatcher (the GUI's case: the main /
+			//! UI thread, same thread HandleLine itself must be called from).
+			//! Does NOT touch the wrapped AgentSession's own AgentAuthority
+			//! (Owner vs External) -- that stays wire-immutable at the
+			//! session layer (AgentSession.h); an Owner-authority session's
+			//! mutating verbs keep committing directly no matter what this
+			//! dispatcher's autonomy is set to (see AgentSession::ProposePatch's
+			//! authority gate) -- so flipping THIS dispatcher alone to
+			//! Propose over an Owner-authority session does not make it
+			//! stage.  RISEViewportBridge accordingly keeps a SEPARATE
+			//! External-authority dispatcher instance for its Propose level
+			//! rather than calling SetAutonomy(Propose) on an Owner one; see
+			//! that file's doc for the full routing.
+			void SetAutonomy( AgentAutonomy autonomy ) { mAutonomy = autonomy; }
+
 		private:
 			AgentRpcDispatcher( const AgentRpcDispatcher& );             // deleted
 			AgentRpcDispatcher& operator=( const AgentRpcDispatcher& );  // deleted
 
 			std::unique_ptr<AgentSession> mSession;
-			// Secure-MCP slice 2 hardening: const -- compiler-enforced
-			// immutability of the launch-time posture. Copy-assign is
-			// already deleted above, so a const member introduces no new
-			// restriction on this class's usable operations; it just
-			// forecloses a future setter from reintroducing a way to
-			// change the posture after construction.
-			const AgentAutonomy            mAutonomy;
+			// Secure-MCP slice 2 hardening (2026-07 update): NOT const --
+			// see SetAutonomy above.  The original const was compiler-
+			// enforced immutability against a WIRE-reachable re-posture;
+			// that property is preserved (SetAutonomy is not, and can never
+			// become, an RPC-dispatched verb -- HandleLine's method switch
+			// has no path to it). What changed is a narrow, deliberate door
+			// for a trusted embedder to re-point its OWN local instance.
+			AgentAutonomy                  mAutonomy;
 		};
 	}
 }

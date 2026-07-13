@@ -16,6 +16,7 @@
 #include <QImage>
 #include <QString>
 #include <QVector>
+#include <QtGlobal>
 #include <memory>
 
 class RenderEngine;
@@ -244,6 +245,63 @@ public:
     void undo();
     void redo();
 
+    /// Human-readable label of the next Undo/Redo step ("Translate",
+    /// "Agent Edit", ...) for the Edit menu's dynamic item titles.
+    /// Empty string when the corresponding stack is empty (or no
+    /// controller is attached).
+    QString undoActionLabel() const;
+    QString redoActionLabel() const;
+
+    // ---- Refinement pause + status (UI redesign, design brief A2) --
+    // Mirrors the macOS RISEViewportBridge pauseRefinement /
+    // resumeRefinement / isRefinementPaused / refinementPhase.
+
+    /// Freeze the interactive refinement ladder at its current rung.
+    /// No-op when no controller is attached or already paused.
+    void pauseRefinement();
+    /// Resume after pauseRefinement().  No-op when not paused.
+    void resumeRefinement();
+    bool isRefinementPaused() const;
+
+    /// Returns the RefinementPhase as int (0 Idle, 1 Rendering,
+    /// 2 Refining, 3 Polishing, 4 Paused); -1 when no controller is
+    /// attached.  `*outScaleDivisor` receives the preview-scale
+    /// divisor (1..32, 1 = full resolution) when non-null.
+    int refinementPhase(unsigned int* outScaleDivisor) const;
+
+    // ---- Interactive region-of-interest (UI redesign, A4) -----------
+    // Full-resolution film-pixel coordinates, INCLUSIVE.  Cleared
+    // automatically before production renders.
+
+    void setInteractiveRegion(unsigned int left, unsigned int top,
+                               unsigned int right, unsigned int bottom);
+    void clearInteractiveRegion();
+    bool getInteractiveRegion(unsigned int* left, unsigned int* top,
+                               unsigned int* right, unsigned int* bottom) const;
+    /// True iff the active interactive rasterizer actually honors a
+    /// set region (some rasterizers ignore it entirely).  Drives the
+    /// viewport toolbar's REGION chip disable/tooltip state.
+    bool interactiveRasterizerHonorsRegion() const;
+
+    // ---- Editor live-sync (UI refinement item 1) --------------------
+    // Mirrors the macOS RISEViewportBridge `serializedSceneText` /
+    // `getSceneTextVersionUuid:revision:`.  CAUTION: both take the
+    // controller's commit mutex, the SAME mutex a production render (or
+    // an outstanding chat-driven agent render) holds for its duration --
+    // callers MUST NOT poll these while the scene isn't editable (see
+    // MainWindow::canUseSceneTransport / ChatPanel::refreshProposals's
+    // gate comment for the "would wedge the GUI thread against the
+    // render" hazard this guards against).
+
+    /// Serialized text of the live CST document, or an empty string
+    /// when no controller is attached / no document is retained.
+    QString serializedSceneText() const;
+
+    /// Retained CST head version (uuid, revision).  uuid is fresh per
+    /// load; revision bumps iff content changed.  Both outputs are
+    /// zeroed and the return is false when no controller is attached.
+    bool getSceneTextVersion(quint64* outUuid, quint64* outRevision) const;
+
     // ---- Phase 6.5 scene-file save ----------------------------------
     // Round-trip-save bindings.  Mirrors the macOS RISEViewportBridge
     // `hasUnsavedSceneChanges` / `saveSceneTo:errorMessage:` /
@@ -288,9 +346,98 @@ public:
     bool requestProductionRender();
 
     /// Execute one Agent JSON-RPC request against the live scene.
-    /// Mirrors macOS RISEViewportBridge.agentHandleLine and is the
-    /// bridge the Windows chat panel uses for model-requested tools.
+    /// Mirrors macOS RISEViewportBridge.agentHandleLine.  This ALWAYS
+    /// runs at Owner authority + Commit autonomy, regardless of
+    /// `agentAutonomyLevel()` below -- it's the "administrative" path
+    /// (list_proposals / resolve_proposal / render submit+poll / the
+    /// one-time read_skill index fetch all go through it) and MUST
+    /// stay that way: resolve_proposal is refused outright under
+    /// Propose/Read autonomy (see AgentRpc.h), so if this method
+    /// tracked the composer's level, setting the composer to
+    /// Read/Propose would silently disable the Owner's own "Approve"/
+    /// "Reject" buttons on already-staged proposals, which has nothing
+    /// to do with what the CHAT AGENT is permitted to do.  The chat
+    /// driver's own model-requested tool calls go through
+    /// `agentHandleToolCall()` instead — see that method's doc.
     QString agentHandleLine(const QString& jsonRpcRequest);
+
+    // ---- Agent autonomy selector (2026-07 GUI composer chips) -------
+    // Mirrors the macOS RISEViewportBridge's three-dispatcher design
+    // (RISEAgentAutonomyLevel / -agentHandleToolCall:).
+
+    /// Mirrors RISE::Agent::AgentAutonomy plus the routing choice THIS
+    /// bridge makes for Propose (see `agentHandleToolCall()` below) --
+    /// NOT a 1:1 re-export, since the C++ enum alone cannot express
+    /// "and which AgentSession authority backs it."
+    enum class AgentAutonomyLevel : int {
+        Read    = 0,   ///< read-safe verbs only; render allowed; every edit verb refused (kAutonomyRefused).
+        Propose = 1,   ///< edit verbs STAGE a proposal (External authority) instead of committing; the owner reviews via the existing proposals panel (list_proposals/resolve_proposal, both still through agentHandleLine()).
+        Apply   = 2    ///< today's unrestricted behaviour: edit verbs commit directly (Owner authority, Commit autonomy). The default.
+    };
+
+    /// The chat composer's current autonomy level for its OWN tool
+    /// calls (the LLM-issued propose_patch/insert_chunk/remove_chunk/
+    /// etc. driven by `agentHandleToolCall()`, NOT the administrative
+    /// calls `agentHandleLine()` makes on its own — see that method's
+    /// note).  Defaults to Apply at construction time, matching every
+    /// pre-existing call site's behaviour byte-for-byte until the Qt
+    /// composer explicitly sets a persisted choice (see ChatPanel's
+    /// QSettings-backed "agentAutonomyLevel" key — this accessor does
+    /// NOT read QSettings itself; the Qt layer applies the persisted
+    /// value on attach).  Setting an out-of-range value is a no-op
+    /// (keeps the previous level) rather than undefined behaviour.
+    AgentAutonomyLevel agentAutonomyLevel() const { return m_agentAutonomyLevel; }
+    void setAgentAutonomyLevel(AgentAutonomyLevel level);
+
+    /// Hand one JSON-RPC 2.0 request line to whichever internal
+    /// dispatcher matches `agentAutonomyLevel()` right now, and return
+    /// the response line.  This is the entry point ChatPanel's OWN
+    /// tool-call execution uses (processNextToolCall, for every
+    /// non-"render" tool call) — the verb-by-verb behaviour per level:
+    ///   * Read    -> the read-safe allowlist dispatches;
+    ///                propose_patch/insert_chunk/remove_chunk (and any
+    ///                other verb) are REFUSED (kAutonomyRefused,
+    ///                -32011) — this is Owner authority under Read
+    ///                autonomy, so even the refusal path never reaches
+    ///                ProposePatch/InsertChunk/RemoveChunk.
+    ///   * Propose -> the read-safe allowlist dispatches AS BEFORE, but
+    ///                this level runs over a SEPARATE, External-
+    ///                authority AgentSession sharing the SAME live
+    ///                SceneEditController `agentHandleLine()`'s Owner
+    ///                session is attached to — so propose_patch/
+    ///                insert_chunk/remove_chunk STAGE a real proposal
+    ///                onto that controller's ONE queue (the exact queue
+    ///                the existing proposals panel already reads via
+    ///                `agentHandleLine()`'s list_proposals/
+    ///                resolve_proposal), rather than committing.
+    ///                resolve_proposal itself is refused at THIS level
+    ///                (by design); the chat driver never calls it, only
+    ///                the Owner-authority proposals-panel code path
+    ///                does, via `agentHandleLine()`.
+    ///   * Apply   -> byte-for-byte today's behaviour: routes to the
+    ///                SAME Owner-authority, Commit-autonomy posture
+    ///                `agentHandleLine()` uses (a separate dispatcher
+    ///                INSTANCE over a separate AgentSession, but
+    ///                identical authority+autonomy, so observably
+    ///                indistinguishable).
+    ///
+    /// A "render" tool call is deliberately NOT routed through this
+    /// level selector — ChatPanel's async submit/poll/cancel sequence
+    /// spans multiple agentHandleLine-shaped calls against ONE
+    /// session's per-job result cache, and the user can change
+    /// `agentAutonomyLevel()` mid-poll; routing those calls through
+    /// whichever dispatcher happens to be current at each poll tick
+    /// would risk polling a DIFFERENT session than the one that
+    /// submitted the job, missing its cached result.  `render` is
+    /// read-safe at every level anyway (it never mutates the CST
+    /// document), so there is no honesty cost to always running it
+    /// over the stable Owner/Commit session `agentHandleLine()`
+    /// already uses — ChatPanel's startAsyncRenderToolCall /
+    /// pollOutstandingRender keep calling `agentHandleLine()` directly.
+    ///
+    /// Same nil-safety contract as `agentHandleLine()`: never returns
+    /// an empty string, always well-formed JSON-RPC.
+    QString agentHandleToolCall(const QString& jsonRpcRequest);
 
     // Properties panel ------------------------------------------------
 
@@ -383,6 +530,21 @@ public:
     /// advances.
     unsigned int sceneEpoch() const;
 
+    /// "Reveal in scene file" (design comp ⌗ affordance): resolve
+    /// entity (category, name) to its byte offset + 1-based line
+    /// number inside `serializedSceneText()`.  `category` uses the
+    /// SAME numbering as `Category` above (identical to the C-API's
+    /// SceneEditCategory_*).  Returns false (outputs left untouched)
+    /// on a null controller, no retained CST document, an
+    /// unresolvable/ambiguous name, or a category with no chunk-name
+    /// addressing scheme (Rasterizer/Film/None — see
+    /// SceneEditController::EntitySourceLocation's doc comment).  Same
+    /// do-not-call-during-renders caveat as `serializedSceneText()` /
+    /// `getSceneTextVersion()` — both take the controller's commit
+    /// mutex.
+    bool getEntitySourceLocation(Category category, const QString& name,
+                                  quint64* outByteOffset, quint32* outLine) const;
+
     /// Clone the currently-active camera under a new name and
     /// promote the clone to active.  `proposedName` is the user's
     /// choice; on duplicate the controller appends a numeric dedup
@@ -421,6 +583,29 @@ private:
     RISE::IRasterizer*         m_interactiveRasterizer = nullptr;
     ViewportPreviewSink*       m_previewSink = nullptr;
     std::unique_ptr<RISE::Agent::AgentRpcDispatcher> m_agentDispatcher;
+    // Agent autonomy selector (2026-07): TWO more in-process
+    // dispatchers, sibling to `m_agentDispatcher` above, that exist for
+    // the whole bridge lifetime so `agentHandleToolCall()` never has to
+    // construct one mid-turn.  `m_agentToolDispatcherOwner` borrows an
+    // Owner-authority AgentSession (its own instance, separate from
+    // `m_agentDispatcher`'s — `m_agentDispatcher` must stay permanently
+    // Commit-capable for resolve_proposal, so ONLY this separate
+    // instance's autonomy is ever toggled between Read/Commit via
+    // AgentRpcDispatcher::SetAutonomy as `agentAutonomyLevel()`
+    // changes).  `m_agentToolDispatcherPropose` borrows a SEPARATE
+    // External-authority AgentSession, fixed at Propose autonomy for
+    // its whole life.  Both AttachController'd to the SAME
+    // `m_controller` as `m_agentDispatcher`'s session, so a staged
+    // proposal lands on the SAME queue list_proposals/resolve_proposal
+    // already read.  Torn down alongside `m_agentDispatcher` in the
+    // destructor (same borrows-the-controller lifetime rule).  All
+    // three dispatchers are called only from the main/UI thread
+    // (matching AgentRpcDispatcher's single-caller contract), so there
+    // is no cross-instance locking concern despite three coexisting
+    // instances.
+    std::unique_ptr<RISE::Agent::AgentRpcDispatcher> m_agentToolDispatcherOwner;
+    std::unique_ptr<RISE::Agent::AgentRpcDispatcher> m_agentToolDispatcherPropose;
+    AgentAutonomyLevel         m_agentAutonomyLevel = AgentAutonomyLevel::Apply;
     bool                       m_running = false;
 };
 

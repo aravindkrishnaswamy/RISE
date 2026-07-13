@@ -1,23 +1,91 @@
 import AppKit
 
 /// Color and font theme for RISE scene file syntax highlighting.
-/// All colors use NSColor.system* variants that automatically adapt to light/dark mode.
+///
+/// RISE UI redesign (left panel, "SCENE FILE TAB"): fixed-per-mode
+/// colors lifted from the approved design comp (dark) and its mirrored
+/// light variant, replacing the previous NSColor.system* variants —
+/// the redesigned editor commits to a fixed backdrop that follows
+/// RISE's own `ThemeState.mode` rather than the OS light/dark
+/// appearance (see SceneEditorWindow's SceneTextEditor, which sets the
+/// matching fixed editor background/caret/selection), so adaptive
+/// system colors would fight the fixed backdrop rather than complement
+/// it. Every field is chosen at `init()` time from `ThemeState.mode`,
+/// so a fresh `RISESceneTheme()` — created afresh on every
+/// `SceneTextEditor.makeNSView` call, which itself re-runs whenever
+/// ContentView's root `.id()` hook rebuilds the tree on a theme flip —
+/// always reflects the current mode.
 struct RISESceneTheme {
-    let defaultText: NSColor = .labelColor
-    let comment: NSColor = .systemGreen
-    let fileHeader: NSColor = .systemPurple
-    let blockKeyword: NSColor = .systemBlue
-    let propertyKey: NSColor = .systemIndigo
-    let preprocessor: NSColor = .systemOrange
-    let loopDirective: NSColor = .systemOrange
-    let command: NSColor = .systemTeal
-    let macroRef: NSColor = .systemRed
-    let mathExpr: NSColor = .systemPink
-    let number: NSColor = .systemCyan
-    let braces: NSColor = .systemGray
+    /// Entity / plain text.
+    let defaultText: NSColor
+    let comment: NSColor
+    let fileHeader: NSColor
+    let blockKeyword: NSColor
+    let propertyKey: NSColor
+    let preprocessor: NSColor
+    let loopDirective: NSColor
+    let command: NSColor
+    /// References / macros (`@NAME`).
+    let macroRef: NSColor
+    let mathExpr: NSColor
+    /// Numbers / vectors.
+    let number: NSColor
+    let braces: NSColor
+    /// Quoted string / file-path values (e.g. `"vase.obj"`) — a new
+    /// category added for the redesign; the pre-redesign highlighter
+    /// had no distinct color for quoted strings (they fell through to
+    /// `defaultText`), but the comp calls out "string/file values" as
+    /// its own color, so `Self.stringRegex` below now classifies them.
+    let string: NSColor
 
-    let font: NSFont = .monospacedSystemFont(ofSize: 12, weight: .regular)
-    let boldFont: NSFont = .monospacedSystemFont(ofSize: 12, weight: .bold)
+    /// Editor chrome (background / caret / selection) — kept alongside
+    /// the syntax palette so SceneEditorWindow's NSTextView setup reads
+    /// a single theme-consistent source instead of its own hex literals.
+    let editorBackground: NSColor
+    let caret: NSColor
+    let selectionBackground: NSColor
+
+    let font: NSFont = Theme.monoNSFont(12)
+    let boldFont: NSFont = Theme.monoNSFont(12, .semibold)
+
+    init() {
+        switch ThemeState.mode {
+        case .dark:
+            defaultText = NSColor(hex: 0xe6e7e9)
+            comment = NSColor(hex: 0x5c5f66)
+            fileHeader = NSColor(hex: 0xc8a0e8)
+            blockKeyword = NSColor(hex: 0x8fb8e8)
+            propertyKey = NSColor(hex: 0x9a9da4)
+            preprocessor = NSColor(hex: 0xe0b25a)
+            loopDirective = NSColor(hex: 0xe0b25a)
+            command = NSColor(hex: 0x8fd4c4)
+            macroRef = NSColor(hex: 0xc8a0e8)
+            mathExpr = NSColor(hex: 0xc9a0d4)
+            number = NSColor(hex: 0xa9d4b1)
+            braces = NSColor(hex: 0x6f7278)
+            string = NSColor(hex: 0xd4b98a)
+            editorBackground = NSColor(hex: 0x17181b)
+            caret = NSColor(hex: 0x9ecbe8)
+            selectionBackground = NSColor(hex: 0x6db8e8, alpha: 0.30)
+        case .light:
+            defaultText = NSColor(hex: 0x1a1b1e)
+            comment = NSColor(hex: 0x8f939c)
+            fileHeader = NSColor(hex: 0x7b4fa6)
+            blockKeyword = NSColor(hex: 0x2e6da8)
+            propertyKey = NSColor(hex: 0x5f636b)
+            preprocessor = NSColor(hex: 0x9a6b10)
+            loopDirective = NSColor(hex: 0x9a6b10)
+            command = NSColor(hex: 0x2b7d6e)
+            macroRef = NSColor(hex: 0x7b4fa6)
+            mathExpr = NSColor(hex: 0x8a5a9e)
+            number = NSColor(hex: 0x2e7d43)
+            braces = NSColor(hex: 0xa6aab2)
+            string = NSColor(hex: 0x8a6c2f)
+            editorBackground = NSColor(hex: 0xffffff)
+            caret = NSColor(hex: 0x1a6fa8)
+            selectionBackground = NSColor(hex: 0x1a6fa8, alpha: 0.20)
+        }
+    }
 }
 
 /// Applies syntax highlighting to RISE .RISEscene file content in an NSTextStorage.
@@ -51,6 +119,11 @@ final class RISESceneSyntaxHighlighter: NSObject, NSTextStorageDelegate {
     private static let numberRegex = try! NSRegularExpression(
         pattern: #"(?<=\s)-?(?:\d+\.?\d*|\.\d+)(?=\s|$)"#
     )
+    /// Double-quoted string / file-path literals (`"vase.obj"`) — a
+    /// single line's worth (RISE scene text has no multi-line quoted
+    /// strings), non-greedy so back-to-back `"a" "b"` colors as two
+    /// tokens rather than one.
+    private static let stringRegex = try! NSRegularExpression(pattern: #""[^"\n]*""#)
     private static let propertyKeyRegex = try! NSRegularExpression(
         pattern: #"^(\t+)(\w+)"#, options: .anchorsMatchLines
     )
@@ -186,6 +259,12 @@ final class RISESceneSyntaxHighlighter: NSObject, NSTextStorageDelegate {
         // Braces
         applyRegex(
             Self.bracesRegex, color: theme.braces,
+            in: nsString, searchRange: lineRange, storage: storage
+        )
+
+        // Quoted string / file-path literals.
+        applyRegex(
+            Self.stringRegex, color: theme.string,
             in: nsString, searchRange: lineRange, storage: storage
         )
 

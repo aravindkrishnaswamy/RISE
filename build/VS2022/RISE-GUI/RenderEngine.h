@@ -133,6 +133,24 @@ signals:
     // of `m_hdrPixelBuffer`.
     void hdrImageUpdated(const QByteArray& halfFloats, int width, int height);
 
+public:
+    /// Synchronously cancel + join any in-flight background worker (load,
+    /// render, or animation), draining the worker's queued completion
+    /// events and reclaiming the per-render state a discarded completion
+    /// lambda would have cleaned up (see reclaimDiscardedRenderCompletion).
+    /// This is the shared prologue of loadScene()/clearScene(), exposed so
+    /// MainWindow's scene-transition paths can order it BEFORE tearing down
+    /// the viewport bridge: a coordinator-routed production render runs
+    /// through the bridge's SceneEditController, so the bridge must not be
+    /// destroyed until the render worker has been joined.  No-op when
+    /// nothing is in flight.  UI thread only.  CAVEAT: the one piece of
+    /// discarded-render state this does NOT recover is the
+    /// VFS-attachment flag (see reclaimDiscardedRenderCompletion's doc
+    /// for why it cannot be reset uniformly) -- every caller must
+    /// follow with loadScene()/clearScene(), whose Free-and-clear
+    /// blocks own that flag, before starting another render.
+    void cancelAndJoinInFlightWork();
+
 public slots:
     void loadScene(const QString& filePath);
     void startRender();
@@ -185,6 +203,24 @@ public slots:
     /// Photon-heavy scenes may pause many seconds inside this call;
     /// the caller should already be in a "rendering" UI state.
     void setSceneTime(double t);
+
+    // ---- Production render pause (UI refinement item 4) -------------
+    // Mirrors the macOS RISEBridge.mm BlockProgressCallback pause gate:
+    // flips the in-flight render's progress-callback adapter's pause
+    // flag.  Workers park at their next Progress()/IsCancelled() check
+    // (see ProgressCallbackAdapter::PauseGateContinue in the .cpp for
+    // the parking loop + the known composed-controller-path caveat).
+    // No-op with no render currently in flight -- the adapter is only
+    // alive between startRender/startAnimationRender and their
+    // completion lambda.
+
+    /// Pause/resume the in-flight production render.  No-op if no
+    /// render is currently running.
+    void setProductionRenderPaused(bool paused);
+    /// True while the in-flight production render is paused.  False
+    /// with no render in flight (also false immediately after a fresh
+    /// startRender/startAnimationRender -- see resetProductionPauseState).
+    bool isProductionRenderPaused() const;
 
 private:
     void setState(State newState);
@@ -282,6 +318,20 @@ private:
     QThread*    m_workerThread = nullptr;
     std::mutex  m_workerThreadMutex;
     void waitForWorkerToFinish();
+    // Recovers the per-render state that a render's QUEUED completion
+    // lambda would normally clean up, for the exit path where
+    // waitForWorkerToFinish()'s removePostedEvents() discarded that
+    // lambda unrun ("Open Scene" / "Clear & Load" / engine
+    // destruction while a render -- possibly paused -- was in flight).
+    // Without this the ProgressCallbackAdapter leaked, the Job's
+    // progress slot kept pointing at the orphan (a stale value the next
+    // coordinator-routed render would capture as its restore target),
+    // m_activeProgressCallback reported a render that no longer exists,
+    // and the elapsed/progressive-poll timers ticked forever.  Called
+    // ONLY from waitForWorkerToFinish (UI thread, after the worker is
+    // joined and the queue drained, so the discarded lambda can never
+    // also run).  No-ops when the completion lambda already ran.
+    void reclaimDiscardedRenderCompletion();
     // Helper used by every QThread::create site to publish the
     // newly-spawned thread into m_workerThread + register the
     // auto-clear connection on QThread::finished.  Centralises the
@@ -292,6 +342,41 @@ private:
     // Forward declarations for callback adapters (defined in .cpp)
     friend class ProgressCallbackAdapter;
     friend class LogPrinterAdapter;
+
+    // ---- Production render pause (UI refinement item 4) -------------
+
+    /// The progress-callback adapter for the CURRENTLY in-flight render,
+    /// or nullptr when no render is running.  Assigned right after
+    /// `new ProgressCallbackAdapter(this)` in startRender/
+    /// startAnimationRender; cleared back to nullptr in each render's
+    /// completion lambda -- or, when that queued lambda is discarded by
+    /// a scene transition / destruction, by
+    /// reclaimDiscardedRenderCompletion (on the Qt main thread, same as every other
+    /// access to this pointer -- setProductionRenderPaused/
+    /// isProductionRenderPaused are UI-thread-only calls, so no lock is
+    /// needed for the pointer itself; the pause flag it points at is a
+    /// std::atomic<bool> read from worker threads).
+    ProgressCallbackAdapter* m_activeProgressCallback = nullptr;
+    /// Resets the pause bookkeeping below.  Called (a) at the start of
+    /// startRender/startAnimationRender, (b) in each render's queued
+    /// completion lambda, and (c) unconditionally at the tail of
+    /// reclaimDiscardedRenderCompletion -- i.e. after EVERY
+    /// waitForWorkerToFinish -- so a stale pause request from a PRIOR
+    /// render never leaks into the elapsed-time accounting of a fresh
+    /// one (mirrors the belt-and-suspenders reset macOS's
+    /// RenderViewModel.resetProductionPauseState does).
+    void resetProductionPauseState();
+
+    /// Wall-clock spent paused THIS render, in milliseconds -- subtracted
+    /// from `m_renderClock.elapsed()` in the elapsed-timer tick so the
+    /// readout reflects actual work time (mirrors macOS RenderViewModel's
+    /// `productionPausedAccum`).  The ETA estimator is likewise NOT fed
+    /// while paused (see onProgress); its estimate re-converges over the
+    /// first ticks after resume.
+    qint64 m_productionPausedAccumMs = 0;
+    /// `m_renderClock.elapsed()` at the moment the CURRENT pause began,
+    /// or -1 when not currently paused.
+    qint64 m_productionPauseBeganMs = -1;
 
     // L4c — ViewportFrameStore replaces the legacy ImageOutputAdapter.
     // The engine owns one persistent VFS reference for the engine's

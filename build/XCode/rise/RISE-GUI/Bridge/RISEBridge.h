@@ -78,6 +78,14 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
 /// Sets the progress callback block. Pass nil to clear.
 - (void)setProgressBlock:(nullable RISEProgressBlock)block;
 
+/// Production pause (UI refinement item 4): while paused, render workers
+/// park at their next per-block progress/cancel check — CPU goes quiet,
+/// the partial image stays on screen, and Cancel still works.  The pause
+/// state resets whenever a new progress block is installed (i.e. per
+/// render).  No-op when no production render is active.
+- (void)setProductionRenderPaused:(BOOL)paused;
+- (BOOL)isProductionRenderPaused;
+
 /// PRODUCTION-render LDR callback.  Fires on every tile/frame event
 /// from the production rasterizer (the one driven by Render +
 /// Render-Animation buttons), when HDR is OFF.  Pass nil to clear.

@@ -158,6 +158,12 @@ namespace RISE
 			virtual const char* ResolvedIntegratorName() const;
 			virtual const char* ResolveReason() const { return mResolveReason.c_str(); }
 
+			//! Region honesty follows the RESOLVED integrator (today's
+			//! candidate set PT/BDPT/VCM all honor regions, so this is
+			//! future-proofing: if a non-region-honoring integrator ever
+			//! joins the candidate set, the query stays truthful).
+			virtual bool HonorsRegion() const { return mDelegate ? mDelegate->HonorsRegion() : true; }
+
 			//! Total wall-clock seconds the Tier-2 probe spent rendering
 			//! candidate integrators (0 if the probe didn't run).  Exposed
 			//! so the §6.2 resolution/cost sweep can read the REAL in-process
