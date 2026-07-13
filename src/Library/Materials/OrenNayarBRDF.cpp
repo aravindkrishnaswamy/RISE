@@ -111,7 +111,13 @@ RISEPel OrenNayarBRDF::value( const Vector3& vLightIn, const RayIntersectionGeom
 	RISEPel L1, L2;
 	const ScalarTriple r = pRoughness->GetValuesAt(ri);
 	const RISEPel roughness( r.v[0], r.v[1], r.v[2] );
-	ComputeFactor<RISEPel>( L1, L2, vLightIn, ri, ri.onb.w(), roughness );
+
+	// Flip to the ray-facing frame, mirroring OrenNayarSPF::Scatter's FlipW
+	// (same condition), so value() agrees with Scatter()/Pdf() on back-face
+	// hits -- ComputeFactor's geomN gate orients to whatever n it's given,
+	// so the flip propagates through automatically.
+	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
+	ComputeFactor<RISEPel>( L1, L2, vLightIn, ri, n, roughness );
 	const RISEPel rho = pReflectance->GetColor(ri);
 
 	return (L1*INV_PI*rho) + (L2*INV_PI*(rho*rho));
@@ -120,7 +126,10 @@ RISEPel OrenNayarBRDF::value( const Vector3& vLightIn, const RayIntersectionGeom
 Scalar OrenNayarBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	Scalar L1=0, L2=0;
-	ComputeFactor<Scalar>( L1, L2, vLightIn, ri, ri.onb.w(), pRoughness->GetValueAtNM(ri,nm) );
+
+	// Same ray-facing flip as value() above.
+	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
+	ComputeFactor<Scalar>( L1, L2, vLightIn, ri, n, pRoughness->GetValueAtNM(ri,nm) );
 	const Scalar rho = pReflectance->GetColorNM(ri,nm);
 
 	return (L1*INV_PI*rho) + (L2*INV_PI*(rho*rho));

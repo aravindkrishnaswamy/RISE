@@ -88,7 +88,10 @@ T CookTorranceBRDF::ComputeFactor( const Vector3& vLightIn, const RayIntersectio
 
 RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
-	const Vector3 n = ri.onb.w();
+	// Flip to the ray-facing frame, mirroring CookTorranceSPF::Scatter's
+	// FlipW (same condition), so value() agrees with Scatter()/Pdf() on
+	// back-face hits.
+	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
 	const ScalarTriple alphaT = pMasking->GetValuesAt(ri);
 	const RISEPel alphaColor( alphaT.v[0], alphaT.v[1], alphaT.v[2] );
 	const Scalar scalarAlpha = alphaT.v[0];
@@ -151,7 +154,8 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 
 Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
-	const Vector3 n = ri.onb.w();
+	// Same ray-facing flip as value() above.
+	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
 	const Scalar alpha = pMasking->GetValueAtNM(ri,nm);
 	const Scalar specColor = pSpecular->GetColorNM(ri,nm);
 	const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);

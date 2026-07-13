@@ -42,14 +42,17 @@ void AshikminShirleyAnisotropicPhongBRDF::SetRd( const IPainter& v )       { v.a
 void AshikminShirleyAnisotropicPhongBRDF::SetRs( const IPainter& v )       { v.addref(); safe_release( pRs ); pRs = &v; }
 
 template< class T >
-void AshikminShirleyAnisotropicPhongBRDF::ComputeDiffuseSpecularFactors( 
-	T& diffuse, 
+void AshikminShirleyAnisotropicPhongBRDF::ComputeDiffuseSpecularFactors(
+	T& diffuse,
 	T& specular,
-	const Vector3& vLightIn, 
+	const Vector3& vLightIn,
 	const RayIntersectionGeometric& ri,
-	const T& NU, 
-	const T& NV, 
-	const T& Rs 
+	const Vector3& n,
+	const Vector3& u,
+	const Vector3& v,
+	const T& NU,
+	const T& NV,
+	const T& Rs
 	)
 {
 	diffuse = specular = 0;
@@ -59,9 +62,6 @@ void AshikminShirleyAnisotropicPhongBRDF::ComputeDiffuseSpecularFactors(
 	Vector3 h = Vector3Ops::Normalize(k1+k2);
 
 	const Vector3& k = k2;
-	const Vector3& n = ri.onb.w();
-	const Vector3& u = ri.onb.u();
-	const Vector3& v = ri.onb.v();
 
 	const Scalar hdotk = Vector3Ops::Dot(h,k);
 	Scalar ndotk1 = Vector3Ops::Dot(n,k1);
@@ -141,7 +141,16 @@ RISEPel AshikminShirleyAnisotropicPhongBRDF::value( const Vector3& vLightIn, con
 	const ScalarTriple nv = pNv->GetValuesAt(ri);
 	const RISEPel NUp( nu.v[0], nu.v[1], nu.v[2] );
 	const RISEPel NVp( nv.v[0], nv.v[1], nv.v[2] );
-	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, NUp, NVp, rsCol );
+
+	// Flip to the ray-facing frame, mirroring AshikminShirleyAnisotropicPhongSPF's
+	// FlipW (same condition), so value() agrees with Scatter()/Pdf() on
+	// back-face hits -- the raw ri.onb.w() made ndotk2 negative there and
+	// silently dropped every back-face NEE sample via the helper's early-out.
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, myonb.w(), myonb.u(), myonb.v(), NUp, NVp, rsCol );
 
 	const RISEPel diffuse = (pRd->GetColor(ri) * OMRs * diffuseFactor);
 	// specularFactor already contains Fresnel F(h·k) = Rs + (1-Rs)(1-cos)^5,
@@ -157,7 +166,13 @@ Scalar AshikminShirleyAnisotropicPhongBRDF::valueNM( const Vector3& vLightIn, co
 	const Scalar	OMRs = 1.0 - rsCol;
 
 	Scalar diffuseFactor, specularFactor;
-	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, pNu->GetValueAtNM(ri,nm), pNv->GetValueAtNM(ri,nm), rsCol );
+
+	// Same ray-facing flip as value() above.
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, myonb.w(), myonb.u(), myonb.v(), pNu->GetValueAtNM(ri,nm), pNv->GetValueAtNM(ri,nm), rsCol );
 
 	const Scalar diffuse = (pRd->GetColorNM(ri,nm) * OMRs * diffuseFactor);
 	// specularFactor already contains Fresnel — no extra Rs multiplication

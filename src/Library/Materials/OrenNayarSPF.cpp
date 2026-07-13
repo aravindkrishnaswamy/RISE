@@ -82,11 +82,15 @@ void OrenNayarSPF::Scatter(
 
 	diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( myonb, ptrand ) );
 
-	// Compute the weight
+	// Compute the weight.  Uses myonb.w() (the frame the lobe was actually
+	// sampled around, post-FlipW) -- NOT the raw ri.onb.w(), which differs
+	// by sign on a back-face hit and fed ComputeFactor's geomN gate the
+	// wrong-oriented normal, silently zeroing the back-face NM twin's
+	// symmetric case (ScatterNM below already used myonb.w() correctly).
 	RISEPel L1, L2;
 	const ScalarTriple r = pRoughness->GetValuesAt(ri);
 	const RISEPel roughness( r.v[0], r.v[1], r.v[2] );
-	OrenNayarBRDF::ComputeFactor<RISEPel>( L1, L2, diffuse.ray.Dir(), ri, ri.onb.w(), roughness );
+	OrenNayarBRDF::ComputeFactor<RISEPel>( L1, L2, diffuse.ray.Dir(), ri, myonb.w(), roughness );
 
 	const RISEPel rho = pReflectance->GetColor(ri);
 	diffuse.kray = L1*rho + (L2*rho*rho);

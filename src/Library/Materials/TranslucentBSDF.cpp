@@ -45,15 +45,22 @@ static char GetReflectedSide( T& intensity, const Vector3& vLightIn, const RayIn
 	const Scalar nr = Vector3Ops::Dot(n,r);
 	const Scalar nv = Vector3Ops::Dot(n,v);
 
-	// Mirror-reflect r about n using the SIGNED cosine, matching
-	// IsotropicPhongBRDF::ComputeDiffuseSpecularFactors' two branches
-	// (:93 flips nr to positive when the viewer is in front; :116 leaves
-	// it as-is when the viewer is behind, since nr is already positive
-	// there).  The old `fabs(nr)*-2.0*n` construction plus an un-normalized
-	// dot gave |incident|^2 = 1+8nr^2 for nr<0 (a non-unit vector), so its
-	// dot with v could exceed 1 and pow(sd, exponent) could exceed 1 or go
-	// NaN for a tilted shading frame.  Normalize before the dot, exactly
-	// as IsotropicPhongBRDF does.
+	// Build the specular lobe direction from |n.r| (nrSigned is a magnitude,
+	// not a signed, per-branch mirror-reflect of r about n the way
+	// IsotropicPhongBRDF::ComputeDiffuseSpecularFactors does it) -- this is
+	// a pre-existing, intentionally-simple approximation: GetReflectedSide's
+	// case 0 (the transmission lobe, `intensity` consumed by value()'s
+	// `case 0`) fires for TWO geometrically distinct configurations (viewer
+	// front/light back, and viewer back/light front) and reuses this one
+	// `sd` formula for both, where IsotropicPhongBRDF has no equivalent
+	// mismatched-sign case to be equivalent to (its two branches only cover
+	// matched-sign viewer/light pairs).  What actually changed here: the old
+	// construction dotted an UN-normalized `incident` (|incident|^2 = 1+8nr^2
+	// for nr<0) against v, so sd could exceed 1 and pow(sd, exponent) could
+	// blow up to Inf for a tilted shading frame.  Normalizing before the dot
+	// bounds sd to [0,1] by construction, which is the actual fix -- it does
+	// not make this construction equivalent to a Householder mirror
+	// reflection for the nr<0 sub-case.
 	Scalar nrSigned = nr;
 	if( nrSigned <= 0 ) {
 		nrSigned = -nrSigned;

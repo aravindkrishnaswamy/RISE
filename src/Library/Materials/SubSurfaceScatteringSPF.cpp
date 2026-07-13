@@ -127,11 +127,32 @@ void SubSurfaceScatteringSPF::Scatter(
 			// the normal this reflection was sampled around).  Degenerate
 			// vGeomNormal (SquaredModulus guard, matches GlintModifier.cpp)
 			// falls back to the shading normal, making the gate a no-op.  Drop
-			// (no sibling lobe; BSSRDF entry is handled by the integrator).
+			// (no sibling lobe; BSSRDF entry is handled by the integrator) --
+			// UNLESS the reflection is MANDATORY (R >= 1.0, i.e. TIR at the
+			// entry boundary, reachable when the SSS medium's ambient IOR
+			// exceeds its own): there is no refraction channel here at all
+			// (BSSRDF entry is the integrator's business, not emitted by this
+			// SPF), so dropping would be total, deterministic energy loss.
+			// Fall back to a single delta reflection about the TRUE geometric
+			// normal instead of the VNDF-sampled wo -- guaranteed to satisfy
+			// the gate (no re-check needed): for a ray arriving against geomN,
+			// dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0.
 			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 				? ri.vGeomNormal : ri.onb.w();
 			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.onb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
-			if( Vector3Ops::Dot( wo, geomN ) <= 0 ) return;
+			if( Vector3Ops::Dot( wo, geomN ) <= 0 ) {
+				if( R >= 1.0 ) {
+					ScatteredRay reflectedRay;
+					reflectedRay.type = ScatteredRay::eRayReflection;
+					reflectedRay.isDelta = true;
+					reflectedRay.pdf = 1.0;
+					reflectedRay.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
+					reflectedRay.kray = RISEPel( R, R, R );
+
+					scattered.AddScatteredRay( reflectedRay );
+				}
+				return;
+			}
 
 			// Fresnel at the microfacet normal (not geometric normal)
 			// Must match BSDF evaluation which uses F(OdotH)
@@ -162,12 +183,21 @@ void SubSurfaceScatteringSPF::Scatter(
 		else
 		{
 			// Smooth surface: perfect specular reflection (delta)
-			const Vector3 rvDir = Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() );
+			Vector3 rvDir = Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() );
 
 			// Geometric-horizon gate: derived-direction delta lobe -- compute
 			// the reflection direction first, gate it, and drop the lobe
-			// entirely on failure (no redistribution).  Oriented to the
-			// ray-facing side (+ri.onb.w() for this front-face hit): the
+			// entirely on failure (no redistribution) UNLESS the reflection is
+			// MANDATORY (R >= 1.0, i.e. TIR at the entry boundary, reachable
+			// when the SSS medium's ambient IOR exceeds its own): there is no
+			// refraction channel here at all (BSSRDF entry is the
+			// integrator's business, not emitted by this SPF), so dropping
+			// here would be total, deterministic energy loss.  Re-derive the
+			// reflection direction about the TRUE geometric normal instead of
+			// the shading normal -- guaranteed to satisfy the gate (no
+			// re-check needed): for a ray arriving against geomN,
+			// dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0.  Oriented to
+			// the ray-facing side (+ri.onb.w() for this front-face hit): the
 			// reflect formula is sign-invariant in its normal argument, so
 			// the reflection physically lands on the incoming ray's side.
 			const Vector3 nRef = ri.onb.w();
@@ -175,7 +205,13 @@ void SubSurfaceScatteringSPF::Scatter(
 				? ri.vGeomNormal : nRef;
 			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nRef ) >= 0 ) ? geomNRaw : -geomNRaw;
 
-			if( Vector3Ops::Dot( rvDir, geomN ) > 0 )
+			bool bEmit = Vector3Ops::Dot( rvDir, geomN ) > 0;
+			if( !bEmit && R >= 1.0 ) {
+				rvDir = Optics::CalculateReflectedRay( ri.ray.Dir(), geomN );
+				bEmit = true;
+			}
+
+			if( bEmit )
 			{
 				ScatteredRay reflectedRay;
 				reflectedRay.type = ScatteredRay::eRayReflection;
@@ -322,11 +358,25 @@ void SubSurfaceScatteringSPF::ScatterNM(
 			const Scalar nWo = Vector3Ops::Dot( ri.onb.w(), wo );
 			if( nWo <= 1e-10 ) return;
 
-			// Geometric-horizon gate (mirrors Scatter()'s rough-reflection gate).
+			// Geometric-horizon gate (mirrors Scatter()'s rough-reflection gate)
+			// -- including the R >= 1.0 mandatory-lobe fallback: no drop when
+			// the reflection is the only channel (entry-side TIR).
 			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 				? ri.vGeomNormal : ri.onb.w();
 			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.onb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
-			if( Vector3Ops::Dot( wo, geomN ) <= 0 ) return;
+			if( Vector3Ops::Dot( wo, geomN ) <= 0 ) {
+				if( R >= 1.0 ) {
+					ScatteredRay reflectedRay;
+					reflectedRay.type = ScatteredRay::eRayReflection;
+					reflectedRay.isDelta = true;
+					reflectedRay.pdf = 1.0;
+					reflectedRay.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
+					reflectedRay.krayNM = R;
+
+					scattered.AddScatteredRay( reflectedRay );
+				}
+				return;
+			}
 
 			// Fresnel at the microfacet normal (matching BSDF)
 			const Scalar F = DielectricFresnelCos( wiDotM, Ni, n );
@@ -353,15 +403,25 @@ void SubSurfaceScatteringSPF::ScatterNM(
 		else
 		{
 			// Smooth surface: perfect specular reflection (delta)
-			const Vector3 rvDir = Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() );
+			Vector3 rvDir = Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() );
 
-			// Geometric-horizon gate (mirrors Scatter()'s smooth-reflection gate).
+			// Geometric-horizon gate (mirrors Scatter()'s smooth-reflection
+			// gate) -- including the R >= 1.0 mandatory-lobe fallback: no drop
+			// when the reflection is the only channel (entry-side TIR); the
+			// direction is re-derived about the TRUE geometric normal, which
+			// is guaranteed to satisfy the gate (no re-check needed).
 			const Vector3 nRef = ri.onb.w();
 			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 				? ri.vGeomNormal : nRef;
 			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nRef ) >= 0 ) ? geomNRaw : -geomNRaw;
 
-			if( Vector3Ops::Dot( rvDir, geomN ) > 0 )
+			bool bEmit = Vector3Ops::Dot( rvDir, geomN ) > 0;
+			if( !bEmit && R >= 1.0 ) {
+				rvDir = Optics::CalculateReflectedRay( ri.ray.Dir(), geomN );
+				bEmit = true;
+			}
+
+			if( bEmit )
 			{
 				ScatteredRay reflectedRay;
 				reflectedRay.type = ScatteredRay::eRayReflection;

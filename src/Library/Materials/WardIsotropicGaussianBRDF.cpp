@@ -93,7 +93,13 @@ RISEPel WardIsotropicGaussianBRDF::value( const Vector3& vLightIn, const RayInte
 	RISEPel d, s;
 	const ScalarTriple at = pAlpha->GetValuesAt(ri);
 	const RISEPel a( at.v[0], at.v[1], at.v[2] );
-	ComputeFactors<RISEPel>( d, s, vLightIn, ri, ri.onb.w(), a );
+
+	// Flip to the ray-facing frame, mirroring WardIsotropicGaussianSPF's
+	// FlipW (same condition), so value() agrees with Scatter()/Pdf() on
+	// back-face hits -- ComputeFactors' geomN gate orients to whatever n
+	// it's given, so the flip propagates through automatically.
+	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
+	ComputeFactors<RISEPel>( d, s, vLightIn, ri, n, a );
 
 	return d*pDiffuse->GetColor(ri) + s*pSpecular->GetColor(ri);
 }
@@ -101,7 +107,10 @@ RISEPel WardIsotropicGaussianBRDF::value( const Vector3& vLightIn, const RayInte
 Scalar WardIsotropicGaussianBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	Scalar d=0, s=0;
-	ComputeFactors<Scalar>( d, s, vLightIn, ri, ri.onb.w(), pAlpha->GetValueAtNM(ri,nm) );
+
+	// Same ray-facing flip as value() above.
+	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
+	ComputeFactors<Scalar>( d, s, vLightIn, ri, n, pAlpha->GetValueAtNM(ri,nm) );
 
 	return d*pDiffuse->GetColorNM(ri,nm) + s*pSpecular->GetColorNM(ri,nm);
 }

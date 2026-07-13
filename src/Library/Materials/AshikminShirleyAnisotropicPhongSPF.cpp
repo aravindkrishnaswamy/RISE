@@ -152,9 +152,15 @@ static bool GenerateSpecularRay(
 
 		const Scalar inv_actual_density = (4.0 * hdotk) / (factor1*factor2);
 
-		// Compute the density of what we actually want (from the BRDF)
+		// Compute the density of what we actually want (from the BRDF).
+		// Pass `onb` (the caller's possibly-FlipW'd myonb) explicitly -- NOT
+		// the raw ri.onb -- so ndotk2 = Dot(n,k2) agrees in sign with the k2
+		// this function validated above; the raw ri.onb.w() went negative on
+		// back-face hits and made the helper's ndotk2 early-out silently
+		// drop the density computation for every legitimately-sampled
+		// back-face specular ray.
 		Scalar brdf;
-		AshikminShirleyAnisotropicPhongBRDF::ComputeDiffuseSpecularFactors( diffuseFactor, brdf, k2, ri, NU, NV, Rs );
+		AshikminShirleyAnisotropicPhongBRDF::ComputeDiffuseSpecularFactors( diffuseFactor, brdf, k2, ri, onb.w(), onb.u(), onb.v(), NU, NV, Rs );
 
 		// The weighing factor is then the inverse of the actual density multiplied by the density
 		// we truly want.  This should be as close to 1 as possible, but it won't always be so
