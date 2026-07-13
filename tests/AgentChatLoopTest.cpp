@@ -405,7 +405,7 @@ static void TestOpenAIRequestShape()
 	std::printf( "T0: OpenAI/ChatGPT default request shape + key-leak check...\n" );
 	AgentChatLoop loop;
 	Check( loop.Provider() == ChatProvider::OpenAI, "default provider is ChatGPT/OpenAI" );
-	Check( loop.ModelId() == "gpt-5.5", "default OpenAI model id is gpt-5.5" );
+	Check( loop.ModelId() == "gpt-5.6-terra", "default OpenAI model id is gpt-5.6-terra" );
 
 	loop.AddUserMessage( "Make the sphere red" );
 	const ChatHttpRequest req = loop.BuildRequest( kApiKey );
@@ -417,7 +417,7 @@ static void TestOpenAIRequestShape()
 
 	JsonValue root = ParseBody( req.body );
 	Check( root.isObject(), "body parses as JSON" );
-	Check( root.get( "model" ).asString() == "gpt-5.5", "body carries the default model id" );
+	Check( root.get( "model" ).asString() == "gpt-5.6-terra", "body carries the default model id" );
 	Check( root.get( "max_completion_tokens" ).asNumber() == 16000.0,
 	       "body carries max_completion_tokens 16000" );
 	const JsonValue& messages = root.get( "messages" );

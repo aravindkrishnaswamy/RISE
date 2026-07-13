@@ -1872,7 +1872,7 @@ namespace RISE
 			// assertions pin this).
 			mConfig.providerName   = "openai";
 			mConfig.baseUrl        = "https://api.openai.com/v1/chat/completions";
-			mConfig.defaultModelId = "gpt-5.5";
+			mConfig.defaultModelId = "gpt-5.6-terra";
 			mConfig.requiresAuth   = true;
 		}
 

@@ -606,7 +606,7 @@ static void TestRunConfigLoad()
 		Check( LoadEvalRunConfig( "evals/runconfigs/local_shootout.json", cfg, err ),
 		       "evals/runconfigs/local_shootout.json loads (" + err + ")" );
 		Check( cfg.scenarios.size() == 4, "local_shootout.json: 4 scenarios" );
-		Check( cfg.providers.size() == 5, "local_shootout.json: 5 providers (1 gemini + 4 distinct-model local)" );
+		Check( cfg.providers.size() == 6, "local_shootout.json: 6 providers (gemini + openai + 4 distinct-model local)" );
 		int localCount = 0;
 		for( std::size_t i = 0; i < cfg.providers.size(); ++i )
 			if( cfg.providers[i].provider == "local" ) ++localCount;
