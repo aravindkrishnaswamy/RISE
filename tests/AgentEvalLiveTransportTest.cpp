@@ -300,18 +300,22 @@ static void TestLiveBudget()
 }
 
 //----------------------------------------------------------------------
-// T4: transport failure maps to terminalStatus transport_error.
+// T4: a transport failure that fails on BOTH attempts still maps to
+//     terminalStatus transport_error -- and is BOUNDED to exactly 2 POSTs
+//     (the original attempt + the one same-round retry from FIX 3), not an
+//     unbounded retry loop.
 //----------------------------------------------------------------------
 static void TestTransportError()
 {
-	std::printf( "T4: a transport failure -> transport_error...\n" );
+	std::printf( "T4: a transport failure on both attempts -> transport_error, bounded to 2 POSTs (FIX 3)...\n" );
 
 	AgentEvalScenario scenario;
 	std::string err;
 	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
 
 	MockTransport mock;
-	mock.responses.push_back( { 0, "", "transport error [NSURLErrorDomain -1004]: Could not connect", 5 } );
+	mock.responses.push_back( { 0, "", "transport error [NSURLErrorDomain -1005]: connection lost", 5 } );
+	mock.responses.push_back( { 0, "", "transport error [NSURLErrorDomain -1005]: connection lost", 5 } );
 
 	AgentEvalLiveRunOptions opts;
 	opts.runDir = ScratchRunDir( "t4_transport_error" );
@@ -321,10 +325,139 @@ static void TestTransportError()
 
 	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
 	Check( h.result.terminalStatus == "transport_error",
-	       "a status-0 transport response -> transport_error (got '" + h.result.terminalStatus + "')" );
-	Check( h.result.errorMessage.find( "Could not connect" ) != std::string::npos,
+	       "a status-0 transport response on both attempts -> transport_error (got '" + h.result.terminalStatus + "')" );
+	Check( h.result.errorMessage.find( "connection lost" ) != std::string::npos,
 	       "the transport's header-free error category propagates to errorMessage" );
-	Check( h.result.llmCalls == 0, "no llm round was counted for a transport failure" );
+	Check( h.result.llmCalls == 0, "no llm round was counted for a transport failure (neither attempt got an HTTP status)" );
+	Check( mock.seenRequests.size() == 2,
+	       "the transport saw exactly 2 POSTs -- the retry is bounded to ONE attempt, not a loop" );
+}
+
+//----------------------------------------------------------------------
+// T16: FIX 3 -- one automatic same-round retry on a transport-class failure
+//      (status<=0, e.g. NSURLError -1005 connection-lost / -1009 offline).
+//      Chat-completions POSTs are stateless, so re-issuing the SAME round
+//      once is safe.  The first attempt never reaches HTTP (no body), so no
+//      llm round is recorded for it; the retry succeeds and the scenario
+//      reaches final_text having driven exactly 1 recorded llm round from
+//      exactly 2 POSTs.
+//----------------------------------------------------------------------
+static void TestLiveTransportRetrySucceeds()
+{
+	std::printf( "T16: transport failure then success -> one retry, round succeeds (FIX 3)...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 0, "", "transport error [NSURLErrorDomain -1005]: connection lost", 5 } );
+	mock.responses.push_back( { 200, kBodyToolUse, "", 4 } );
+	mock.responses.push_back( { 200, kBodyFinal,   "", 4 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t16_live_transport_retry_succeeds" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "a transport-fail-then-200 round still reaches final_text (got '" + h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+	Check( h.result.llmCalls == 2, "both real HTTP rounds (tool_use, final) are counted as llm calls -- the failed transport attempt is NOT" );
+	Check( mock.seenRequests.size() == 3,
+	       "the transport saw exactly 3 POSTs: the failed attempt + its retry, then the second turn's round" );
+	Check( h.result.finalText == "Done: pnt_albedo is now red.", "the retried round's eventual final text is captured" );
+
+	// The trajectory carries NO llm record for the failed transport attempt
+	// (RecordHttpRound is never reached when fo.proceed is false) -- only the
+	// two REAL rounds.  The first round's inner attempt counter had already
+	// advanced past the failed transport try before it got its first HTTP
+	// response, so that round is recorded as attempt 2 / retry_of 1 (an
+	// honest sibling record, same convention as the 5xx/400 retries in
+	// T12/T15); the second round's assistant turn succeeds on its own first
+	// try and is recorded as attempt 1 / retry_of -1.
+	std::vector<JsonValue> recs = ReadJsonl( h.trajectoryPath );
+	int llmRecords = 0, attempt2RetryOf1 = 0, attempt1NoRetry = 0;
+	for( std::size_t i = 0; i < recs.size(); ++i ) {
+		if( recs[i].get( "run_type" ).asString() != "llm" ) continue;
+		++llmRecords;
+		const int at = static_cast<int>( recs[i].get( "attempt" ).asNumber( -1.0 ) );
+		const int ro = static_cast<int>( recs[i].get( "retry_of" ).asNumber( -1.0 ) );
+		if( at == 2 && ro == 1 ) ++attempt2RetryOf1;
+		if( at == 1 && ro == -1 ) ++attempt1NoRetry;
+	}
+	Check( llmRecords == 2, "exactly 2 llm trajectory records -- the transport-failed attempt left none" );
+	Check( attempt2RetryOf1 == 1, "the round whose first try was the transport failure is recorded as attempt 2 / retry_of 1" );
+	Check( attempt1NoRetry == 1, "the second round's assistant turn succeeded first-try and is recorded as attempt 1 / retry_of -1" );
+}
+
+//----------------------------------------------------------------------
+// T17: FIX 3 -- a SECOND transport failure (fail-then-fail) is NOT retried
+//      again; the round falls through to the unchanged transport_error
+//      termination.  Proves the retry is bounded to exactly one attempt per
+//      round, not a loop.  (Same property as T4; kept as its own case to
+//      match the fail-fail / fail-succeed pairing used for FIX 2's 5xx
+//      retry in T12/T13.)
+//----------------------------------------------------------------------
+static void TestLiveTransportRetryStillFails()
+{
+	std::printf( "T17: transport failure then transport failure -> transport_error, bounded (FIX 3)...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 0, "", "transport error [NSURLErrorDomain -1009]: offline", 2 } );
+	mock.responses.push_back( { 0, "", "transport error [NSURLErrorDomain -1009]: offline", 2 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t17_live_transport_retry_fails" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "transport_error",
+	       "fail-then-fail falls through to transport_error (got '" + h.result.terminalStatus + "')" );
+	Check( h.result.llmCalls == 0, "no llm round was counted -- neither attempt reached an HTTP status" );
+	Check( mock.seenRequests.size() == 2,
+	       "the transport saw exactly 2 POSTs -- the retry is bounded to ONE attempt, not a loop" );
+}
+
+//----------------------------------------------------------------------
+// T18: FIX 3 independence -- a transport failure on attempt 1 followed by an
+//      HTTP 500 on attempt 2 falls through to provider_error after exactly
+//      2 POSTs.  Proves the transport-retry and the 5xx-retry (FIX 2) do
+//      NOT stack into two retries of the same round: the attempt counter is
+//      shared across causes, so whichever cause fires first consumes the
+//      round's single allowed retry.
+//----------------------------------------------------------------------
+static void TestLiveTransportRetryDoesNotStackWith5xx()
+{
+	std::printf( "T18: transport failure then 500 -> provider_error after 2 POSTs, retries do not stack (FIX 2+3 independence)...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 0, "", "transport error [NSURLErrorDomain -1005]: connection lost", 2 } );
+	mock.responses.push_back( { 500, "{\"error\":\"internal server error\"}", "", 3 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t18_live_transport_then_5xx" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "provider_error",
+	       "transport-fail-then-500 falls through to provider_error, not a second retry (got '" + h.result.terminalStatus + "')" );
+	Check( h.result.llmCalls == 1, "exactly 1 llm round counted -- the 500 (the transport failure recorded none)" );
+	Check( mock.seenRequests.size() == 2,
+	       "the transport saw exactly 2 POSTs total -- the two independent retry causes did not stack" );
 }
 
 //----------------------------------------------------------------------
@@ -1079,6 +1212,9 @@ int main()
 	TestLiveHttp5xxRetryStillFails();
 	TestLiveHttp400NotRetried();
 	TestLiveReasoningEffort400RetrySucceeds();
+	TestLiveTransportRetrySucceeds();
+	TestLiveTransportRetryStillFails();
+	TestLiveTransportRetryDoesNotStackWith5xx();
 	TestRunConfigLoad();
 	TestRunEvalMatrix();
 	TestRunEvalMatrixDuplicateId();

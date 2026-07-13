@@ -582,7 +582,7 @@ namespace RISE
 						}
 
 						// Build -> fetch -> record -> handle, with at most ONE
-						// automatic retry per round, for EITHER of three
+						// automatic retry per round, for EITHER of four
 						// independent causes:
 						//   (a) a text-only model 400-rejects multimodal
 						//       content -- HandleResponse elides the images
@@ -613,10 +613,24 @@ namespace RISE
 						//       the step (retryReasoningEffortNone); the
 						//       rebuilt request (now carrying the override)
 						//       is re-issued once.
+						//   (d) a transport-class failure -- fo.proceed is
+						//       false with fo.stopStatus == "transport_error"
+						//       (observed live: NSURLError -1005 connection-
+						//       lost / -1009 offline mid-run).  Chat-
+						//       completions POSTs are stateless, so re-
+						//       issuing the SAME round once is safe.  No HTTP
+						//       response reached us, so there is no body to
+						//       hand RecordHttpRound -- the failed attempt
+						//       is simply never recorded (matches (a)-(c),
+						//       which likewise only record attempts that got
+						//       a response).  Live path only: the replay
+						//       fetch never returns proceed==false with this
+						//       stopStatus, so replay never retries here.
 						// Every cause fires ONLY on attempt==1, so at most
 						// one retry happens per round; a second failure of
 						// any kind falls through to the normal
-						// provider_error path unchanged.  The retry is
+						// provider_error / transport_error path unchanged.
+						// A retry that DOES reach RecordHttpRound is
 						// recorded as an honest sibling llm record (attempt
 						// 2, retryOf 1) via the existing RecordHttpRound
 						// attempt/retryOf plumbing.
@@ -633,6 +647,8 @@ namespace RISE
 
 							const FetchOutcome fo = fetch( req );
 							if( !fo.proceed ) {
+								if( attempt == 1 && fo.stopStatus == "transport_error" )
+									continue;   // one same-round retry of a transport failure
 								terminalStatus = fo.stopStatus;
 								errorMessage = fo.stopError;
 								roundStopped = true;
