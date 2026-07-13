@@ -735,6 +735,50 @@ static void CheckProbeRoute(
 }
 
 //////////////////////////////////////////////////////////////////////
+// CheckProbeRouteNotVCM -- Pel-domain sibling of
+// CheckSpectralProbeRouteNotVCM (see its header), for a probe case whose
+// documented invariant is "a VCM gate correctly kept VCM OUT" and whose
+// PT-vs-BDPT fallthrough tail is the design-acknowledged noise band.
+//
+// Used for jewel_vault (the §6.2 transport-reach over-fire lock).  Its
+// σ²·T ratio was measured over 50 runs at 0.07..1.07 with occasional
+// spikes past τ_bdpt=1.35 (a genuine BDPT resolution seen in the wild) —
+// because jewel_vault is documented as "the NOISIEST PT" at probe spp
+// (AutoRasterizer.cpp §6.2) and the σ² signal is multi-thread float-
+// accumulation nondeterminism (no seed to pin).  The stable, meaningful
+// lock is the WINSORIZED reach gate keeping VCM out (raw VCM mean spiked
+// past 1.50 ~2.6% of the time pre-fix); the PT-vs-BDPT tail is not a
+// stable decision the probe promises at spp 4.  Contrast the stable
+// strict cases kept on CheckProbeRoute: gi_spheres (ratio 11..32, big
+// BDPT win), ggx_showcase (0.11..0.38), env_only (0.00), corridor
+// (0.00..0.12) — all far from τ, none flaky.
+static void CheckProbeRouteNotVCM(
+	const char* label, const char* corpusPath, const char* tag )
+{
+	std::cout << "Testing auto_rasterizer probe routing: " << label << std::endl;
+	const std::string scene = MakeAutoProbeScene( corpusPath, /*samples*/ 4, /*dim*/ 128 );
+	if( scene.empty() ) {
+		Check( false, std::string("corpus scene readable + has a rasterizer chunk: ") + label
+			+ " (" + corpusPath + ")" );
+		return;
+	}
+	const std::string p = WriteSceneToTempFile( scene.c_str(), tag );
+	if( p.empty() ) { Check( false, std::string("temp scene written: ") + label ); return; }
+	const ImageStats a = RenderAndComputeStats( p.c_str() );
+	std::remove( p.c_str() );
+
+	PrintStats( "probe", a );
+	Check( a.valid,   std::string("probe render produced output: ") + label );
+	if( !a.valid ) return;
+	Check( a.wasAuto, std::string("active rasterizer is an AutoRasterizer: ") + label );
+	Check( a.queryApiOK && a.resolvedName == ChoiceName(a.resolved),
+		std::string("query API (name+reason) consistent with resolved choice: ") + label );
+	Check( a.resolved != AutoIntegratorChoice::VCM,
+		std::string("probe kept VCM out (reach gate rejects the over-fire; resolved '")
+		+ ChoiceName(a.resolved) + "'): " + label );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Phase-1b spectral probe harness.  Spectral sibling of MakeAutoProbeScene:
 // swap the rasterizer chunk for an `auto_spectral_rasterizer { probe true }`
 // carrying the scene's spectral-core params, strip the legacy caustic
@@ -800,9 +844,36 @@ static std::string MakeAutoSpectralProbeScene(
 	return joined;
 }
 
-static void CheckSpectralProbeRoute(
+// (An exact-choice spectral probe-route helper — the Pel-domain
+// CheckProbeRoute's sibling — previously lived here but had only one
+// caller, the spectral_caustic case, which is deliberately marginal in
+// its PT-vs-BDPT tail and now uses CheckSpectralProbeRouteNotVCM below.
+// If a future spectral probe route needs an EXACT assertion, it's a
+// near-copy of CheckProbeRoute against MakeAutoSpectralProbeScene.)
+
+//////////////////////////////////////////////////////////////////////
+// CheckSpectralProbeRouteNotVCM -- variant for a scene whose probe
+// decision is DELIBERATELY marginal in its PT-vs-BDPT tail.  The only
+// invariant this scene locks is the documented one: the transport-reach
+// gate keeps VCM OUT (VCM-spectral's luminance-proxy merge can't reach
+// the dispersive caustic -- SPECTRAL_PARITY_AUDIT §3, design doc
+// §6.2.2).  After the reach gate rejects VCM, the general σ²·T
+// PT-vs-BDPT fallthrough reads right in the "marginal, not cheaply
+// separable, low-stakes" band the probe is DESIGNED to treat as noise
+// (see AutoRasterizer::RunProbe's τ_bdpt comment: marginal ~1.5× BDPT
+// wins collapse to ~1.1× at probe spp and correctly stay PT).  At the
+// test's deliberately-cheap probe config (spp 4, quarter-res, 2
+// variance renders) that reading straddles τ_bdpt run-to-run, because
+// the σ² signal is multi-thread float-accumulation nondeterminism BY
+// DESIGN (the QMC stream itself is deterministic -- there is no seed to
+// pin).  So an exact-PT assertion here is an assertion on noise; assert
+// the real invariant (never VCM) instead, which faithfully guards the
+// VCM-spectral-can't-reach regression without depending on the coin-flip
+// tail the probe intentionally leaves marginal.
+//////////////////////////////////////////////////////////////////////
+static void CheckSpectralProbeRouteNotVCM(
 	const char* label, const char* corpusPath, const char* specParams,
-	const char* tag, AutoIntegratorChoice expected )
+	const char* tag )
 {
 	std::cout << "Testing auto_spectral_rasterizer probe routing: " << label << std::endl;
 	const std::string scene = MakeAutoSpectralProbeScene( corpusPath, specParams, /*samples*/ 4, /*dim*/ 96 );
@@ -819,11 +890,15 @@ static void CheckSpectralProbeRoute(
 	Check( a.valid,   std::string("probe render produced output: ") + label );
 	if( !a.valid ) return;
 	Check( a.wasAuto, std::string("active rasterizer is an AutoRasterizer: ") + label );
-	Check( a.queryApiOK && a.resolvedName == ChoiceName(expected),
-		std::string("query API (name+reason) consistent: ") + label );
-	const bool ok = ( a.resolved == expected );
-	Check( ok, std::string("probe resolved to '") + ChoiceName(expected)
-		+ "' (got '" + ChoiceName(a.resolved) + "'): " + label );
+	// Query API consistency: the reported name must track whatever it
+	// actually resolved to (expected-independent — the string API is wired
+	// to the real decision, whichever way the marginal tail lands).
+	Check( a.queryApiOK && a.resolvedName == ChoiceName(a.resolved),
+		std::string("query API (name+reason) consistent with resolved choice: ") + label );
+	// The locked invariant: the reach gate keeps VCM out.
+	Check( a.resolved != AutoIntegratorChoice::VCM,
+		std::string("probe kept VCM out (reach gate rejects VCM-spectral; resolved '")
+		+ ChoiceName(a.resolved) + "'): " + label );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1111,15 +1186,24 @@ int main()
 	// scene whose caustic MEDIAN gate fires at probe spp (PT's hard indirect is
 	// transiently under-converged) but whose transport-reach (mean-lum) gate does
 	// NOT — PT reaches the same energy VCM does, so it is NOT a real caustic and
-	// must route PT (its σ²·T winner), not VCM.  Pre-fix this resolved to VCM.
-	// The reach uses a firefly-ROBUST VCM mean (upper-tail winsorized, p99): at
-	// the cheap probe spp VCM's sparse merge fireflies spiked the raw VCM mean
-	// past 1.50 ~2.6% of the time -> a flaky false VCM route.  Winsorizing the
-	// VCM numerator (PT denominator stays raw) drops jewel_vault's reach to a
-	// stable ~0.6-0.9 (30/30 runs < 1.50) while glass_pavilion's BROAD caustic
-	// survives at ~25x — see AutoRasterizer.cpp WinsorizedMeanLuminance.
-	CheckProbeRoute( "jewel_vault -> PT (over-fire rejected by transport-reach gate)",
-		"scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene", "p4_jewel", AutoIntegratorChoice::PT );
+	// must NOT route VCM.  Pre-fix this resolved to VCM.  The reach uses a
+	// firefly-ROBUST VCM mean (upper-tail winsorized, p99): at the cheap probe
+	// spp VCM's sparse merge fireflies spiked the raw VCM mean past 1.50 ~2.6%
+	// of the time -> a flaky false VCM route.  Winsorizing the VCM numerator (PT
+	// denominator stays raw) drops jewel_vault's reach to a stable ~0.6-0.9
+	// (< 1.50) while glass_pavilion's BROAD caustic survives at ~25x — see
+	// AutoRasterizer.cpp WinsorizedMeanLuminance.
+	//
+	// Assertion is "never VCM", not "exactly PT": after the reach gate rejects
+	// VCM the decision falls through to the σ²·T PT-vs-BDPT gate, and
+	// jewel_vault (documented as the NOISIEST PT at probe spp, §6.2) reads a
+	// σ²·T ratio that straddles τ_bdpt=1.35 run-to-run (measured 0.07..1.07,
+	// spikes past τ in the wild -> a genuine BDPT resolution), because that
+	// signal is multi-thread float-accumulation nondeterminism.  Asserting
+	// exact PT was a coin flip; "never VCM" is the stable over-fire lock.  See
+	// CheckProbeRouteNotVCM's header.
+	CheckProbeRouteNotVCM( "jewel_vault -> not VCM (over-fire rejected by transport-reach gate)",
+		"scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene", "p4_jewel" );
 	CheckProbeRoute( "env_only -> PT (env-IBL gate rejects VCM env-bias)",
 		"scenes/Tests/UnifiedLighting/envmap_nee_test_pt.RISEscene", "p4_env", AutoIntegratorChoice::PT );
 	CheckProbeRoute( "corridor_100lights -> PT (non-dielectric many-light)",
@@ -1152,12 +1236,21 @@ int main()
 	// LIMITATION (design doc §6.2.2): the median gate fires (~2.9x) but the
 	// transport-reach gate FAILS (~0.7x) because VCM-spectral's luminance-proxy
 	// merge loses dispersion energy (SPECTRAL_PARITY_AUDIT §3), so VCM's
-	// RGB-projected mean does NOT exceed PT's -> the SAME two-gate decision the
-	// Pel path uses routes PT here.  This LOCKS that behavior (a regression
-	// guard); closing it to VCM needs per-wavelength VCM photons (out of scope).
-	CheckSpectralProbeRoute( "spectral_caustic -> PT (reach gate defeated by VCM-spectral merge; documented)",
+	// RGB-projected mean does NOT exceed PT's -> the reach gate rejects VCM.
+	// This LOCKS that behavior (a regression guard); closing it to VCM needs
+	// per-wavelength VCM photons (out of scope).
+	//
+	// The assertion is "never VCM", not "exactly PT": once the reach gate
+	// rejects VCM the decision falls through to the general σ²·T PT-vs-BDPT
+	// gate, whose reading for this scene sits in the marginal band the probe
+	// is DESIGNED to treat as noise (RunProbe's τ_bdpt comment), so at the
+	// cheap test probe config it straddles τ_bdpt run-to-run (the σ² signal
+	// is multi-thread float-accumulation nondeterminism — there is no seed to
+	// pin).  Asserting exact PT was a coin flip; "never VCM" is the real,
+	// stable invariant.  See CheckSpectralProbeRouteNotVCM's header.
+	CheckSpectralProbeRouteNotVCM( "spectral_caustic -> not VCM (reach gate defeats VCM-spectral merge; documented)",
 		"scenes/Tests/Spectral/spectral_dispersive_caustic.RISEscene",
-		"\tnmbegin 405\n\tnmend 705\n\tnum_wavelengths 8\n", "as_probe_caustic", AutoIntegratorChoice::PT );
+		"\tnmbegin 405\n\tnmend 705\n\tnum_wavelengths 8\n", "as_probe_caustic" );
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
