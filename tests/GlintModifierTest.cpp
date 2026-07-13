@@ -991,6 +991,139 @@ static void TestNonFiniteInert()
 }
 
 // ============================================================
+//  Test 8bb: TIR under a tilted (glint-perturbed) shading frame does
+//  NOT drop the mandatory Fresnel lobe (review-round-1 F1)
+// ============================================================
+
+//! Review-round-1 F1: when a delta dielectric hits Total Internal
+//! Reflection from inside (no transmission lobe will ever be emitted),
+//! the geometric-horizon gate must not silently drop the reflection --
+//! it must re-derive the reflection direction about the TRUE geometric
+//! normal instead.  This constructs the tilted-frame scenario directly
+//! (rather than searching the GlintModifier's stochastic facet field
+//! for a qualifying hit) so the incidence/tilt angles are exact and the
+//! TIR condition is guaranteed by construction:
+//!
+//!   - Flat geometric normal geomN = +Z.
+//!   - Shading (facet) normal tilted 55 deg off geomN in the X-Z plane
+//!     -- within GlintModifier's 60-degree tilt ceiling.
+//!   - Ray travelling from inside straight along +Z (normal incidence
+//!     against the FLAT surface, but 55 deg off the TILTED shading
+//!     normal).
+//!   - IOR 1.55 (glass) -> 1.0 (air): critical angle is asin(1/1.55) =
+//!     ~40.2 deg, so the 55-degree incidence angle against the shading
+//!     normal is comfortably past it => guaranteed TIR (ref forced to
+//!     1.0; CalculateRefractedRay returns false).
+//!
+//!   Reflecting about the tilted shading normal sends the ray to a
+//!   positive-Z (outward / tunnelling) direction -- the naive gate
+//!   would fail and (pre-fix) drop the ONLY ray this delta material
+//!   could emit, a fully black sample.  The fix must instead emit
+//!   exactly one reflection ray, staying on the true geometric-normal
+//!   side (non-positive Z: reflected back into the medium, as a TIR
+//!   event must).
+static void TestDielectricTIRUnderTiltedNormal()
+{
+	std::cout << "--- Test 8bb: TIR under tilted shading frame keeps the mandatory lobe ---" << std::endl;
+
+	StubObject* stub = new StubObject();
+	stub->addref();
+
+	UniformScalarPainter* tau  = new UniformScalarPainter( 1.0 );		tau->addref();
+	UniformScalarPainter* ior  = new UniformScalarPainter( 1.55 );		ior->addref();
+	UniformScalarPainter* scat = new UniformScalarPainter( 1000000.0 );	scat->addref();
+
+	DielectricSPF* spf = new DielectricSPF( *tau, *ior, *scat, false );	spf->addref();
+
+	class FixedSampler : public ISampler
+	{
+	public:
+		Scalar Get1D() { return 0.5; }
+		Point2 Get2D() { return Point2( 0.5, 0.5 ); }
+		void StartStream( int ) {}
+	};
+	FixedSampler sampler;
+
+	const Scalar tiltRad = 55.0 * PI / 180.0;
+	const Vector3 geomN( 0, 0, 1 );
+	const Vector3 nShade = Vector3Ops::Normalize( Vector3( sin( tiltRad ), 0, cos( tiltRad ) ) );
+	const Vector3 inDir( 0, 0, 1 );	// from inside, normal incidence vs the FLAT surface
+
+	Ray inRay( Point3( 0, 0, -1 ), inDir );
+	RasterizerState rs = { 0, 0 };
+	RayIntersectionGeometric ri( inRay, rs );
+	ri.bHit = true;
+	ri.range = 1.0;
+	ri.ptIntersection = Point3( 0, 0, 0 );
+	ri.ptObjIntersec = Point3( 0, 0, 0 );
+	ri.vNormal = nShade;
+	ri.vGeomNormal = geomN;
+	ri.onb.CreateFromW( nShade );
+	ri.ptCoord = Point2( 0.5, 0.5 );
+
+	// From-inside IOR stack: current object pushed with the glass IOR,
+	// base environment is air (matches DielectricARTest's "FROM INSIDE"
+	// stack pattern).
+	IORStack iorStack( 1.0 );
+	iorStack.SetCurrentObject( stub );
+	iorStack.push( 1.55 );
+
+	// --- RGB path ---
+	{
+		ScatteredRayContainer scattered;
+		spf->Scatter( ri, sampler, scattered, iorStack );
+
+		int nReflect = 0, nOther = 0;
+		Vector3 reflectDir( 0, 0, 0 );
+		for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+			if( scattered[i].type == ScatteredRay::eRayReflection ) {
+				nReflect++;
+				reflectDir = scattered[i].ray.Dir();
+			} else {
+				nOther++;
+			}
+		}
+
+		CHECK( nReflect == 1, "TIR must emit exactly one mandatory reflection ray (RGB), got " << nReflect );
+		CHECK( nOther == 0, "TIR must not also emit a transmission ray (RGB), got " << nOther );
+		if( nReflect == 1 ) {
+			const Scalar dotGeom = Vector3Ops::Dot( reflectDir, geomN );
+			CHECK( dotGeom <= 1e-6, "TIR reflection tunnelled through the geometric horizon (RGB, dot=" << dotGeom << ")" );
+		}
+	}
+
+	// --- Spectral (NM) path ---
+	{
+		ScatteredRayContainer scattered;
+		spf->ScatterNM( ri, sampler, 550.0, scattered, iorStack );
+
+		int nReflect = 0, nOther = 0;
+		Vector3 reflectDir( 0, 0, 0 );
+		for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+			if( scattered[i].type == ScatteredRay::eRayReflection ) {
+				nReflect++;
+				reflectDir = scattered[i].ray.Dir();
+			} else {
+				nOther++;
+			}
+		}
+
+		CHECK( nReflect == 1, "TIR must emit exactly one mandatory reflection ray (NM), got " << nReflect );
+		CHECK( nOther == 0, "TIR must not also emit a transmission ray (NM), got " << nOther );
+		if( nReflect == 1 ) {
+			const Scalar dotGeom = Vector3Ops::Dot( reflectDir, geomN );
+			CHECK( dotGeom <= 1e-6, "TIR reflection tunnelled through the geometric horizon (NM, dot=" << dotGeom << ")" );
+		}
+	}
+
+	spf->release();
+	tau->release();
+	ior->release();
+	scat->release();
+	stub->release();
+}
+
+// ============================================================
 //  Test 8c: zero vGeomNormal falls back to the shading normal
 // ============================================================
 
@@ -1079,6 +1212,7 @@ int main()
 	TestNearestWins();
 	TestFlippedOrientationGuard();
 	TestDielectricAtPerturbedHits();
+	TestDielectricTIRUnderTiltedNormal();
 	TestNonFiniteInert();
 	TestZeroGeomNormalFallback();
 	TestHostileCoordinates();

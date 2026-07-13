@@ -146,9 +146,10 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 
 	// Geometric-horizon gate (mirrors GGXSPF::Scatter's sampler-side gate):
 	// a GlintModifier-tilted shading normal can validate light/view
-	// directions that are still below the true geometric surface.  Reject
-	// here too so NEE evaluation stays consistent with what the sampler can
-	// actually emit.
+	// directions that are still below the true geometric surface.  This is
+	// a DEFENSIVE check (a valid exterior hit already satisfies it), not a
+	// literal sampler-consistency one -- NEE's light direction isn't
+	// sampler-drawn -- but it guards against the same tilt pathology.
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;

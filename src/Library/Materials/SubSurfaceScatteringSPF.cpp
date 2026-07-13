@@ -215,18 +215,31 @@ void SubSurfaceScatteringSPF::Scatter(
 		}
 
 		// Delta reflection back into the medium
-		const Vector3 rvDirBack = Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() );
+		Vector3 rvDirBack = Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() );
 
 		// Geometric-horizon gate (sign flip vs the front smooth-reflection
 		// branch: the ray arrives from inside here, so the reflection back
 		// into the medium lands on the -ri.onb.w() side).  Drop on fail
-		// (no redistribution).
+		// (no redistribution) UNLESS the reflection is MANDATORY (R >= 1.0,
+		// i.e. TIR at the inside boundary): the exit-refraction lobe below is
+		// gated on `R < 1.0`, so when R >= 1.0 there is no companion channel
+		// to carry the energy and dropping here would be total, deterministic
+		// energy loss.  Re-derive the reflection direction about the TRUE
+		// geometric normal instead of the shading normal -- guaranteed to
+		// satisfy the gate (no re-check needed): for a ray arriving against
+		// geomNBack, dot(reflect(d,geomNBack), geomNBack) = -dot(d,geomNBack) > 0.
 		const Vector3 nRefBack = -ri.onb.w();
 		const Vector3& geomNRawBack = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 			? ri.vGeomNormal : nRefBack;
 		const Vector3 geomNBack = ( Vector3Ops::Dot( geomNRawBack, nRefBack ) >= 0 ) ? geomNRawBack : -geomNRawBack;
 
-		if( Vector3Ops::Dot( rvDirBack, geomNBack ) > 0 )
+		bool bEmitBack = Vector3Ops::Dot( rvDirBack, geomNBack ) > 0;
+		if( !bEmitBack && R >= 1.0 ) {
+			rvDirBack = Optics::CalculateReflectedRay( ri.ray.Dir(), geomNBack );
+			bEmitBack = true;
+		}
+
+		if( bEmitBack )
 		{
 			ScatteredRay reflectedRay;
 			reflectedRay.type = ScatteredRay::eRayReflection;
@@ -381,15 +394,26 @@ void SubSurfaceScatteringSPF::ScatterNM(
 			R = 1.0;
 		}
 
-		const Vector3 rvDirBack = Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() );
+		Vector3 rvDirBack = Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() );
 
-		// Geometric-horizon gate (mirrors Scatter()'s back-face gate).
+		// Geometric-horizon gate (mirrors Scatter()'s back-face gate).  Drop on
+		// fail UNLESS mandatory (R >= 1.0, TIR at the inside boundary -- the
+		// exit-refraction lobe below is gated on `R < 1.0`, so there is no
+		// companion channel and dropping would be total energy loss); in that
+		// case re-derive the reflection about the TRUE geometric normal, which
+		// is guaranteed to satisfy the gate (no re-check needed).
 		const Vector3 nRefBack = -ri.onb.w();
 		const Vector3& geomNRawBack = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 			? ri.vGeomNormal : nRefBack;
 		const Vector3 geomNBack = ( Vector3Ops::Dot( geomNRawBack, nRefBack ) >= 0 ) ? geomNRawBack : -geomNRawBack;
 
-		if( Vector3Ops::Dot( rvDirBack, geomNBack ) > 0 )
+		bool bEmitBack = Vector3Ops::Dot( rvDirBack, geomNBack ) > 0;
+		if( !bEmitBack && R >= 1.0 ) {
+			rvDirBack = Optics::CalculateReflectedRay( ri.ray.Dir(), geomNBack );
+			bEmitBack = true;
+		}
+
+		if( bEmitBack )
 		{
 			ScatteredRay reflectedRay;
 			reflectedRay.type = ScatteredRay::eRayReflection;

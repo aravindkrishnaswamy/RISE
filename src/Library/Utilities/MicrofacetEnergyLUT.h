@@ -31,6 +31,7 @@
 #include "Math3D/Math3D.h"
 #include "Optics.h"
 #include "math_utils.h"
+#include <array>
 
 namespace RISE
 {
@@ -165,19 +166,10 @@ namespace MicrofacetEnergyLUT
 		};
 
 		// Build the LUT_SIZE+1 segments (33: 1 left cap + LUT_SIZE-1
-		// interior spans + 1 right cap) for a fixed alphaEff, using
-		// EXACTLY LookupEss's alpha-row blend.
-		inline void BuildSegments( const Scalar alphaEff, Segment segs[LUT_SIZE + 1], int& nSegs )
+		// interior spans + 1 right cap) from an already-resolved essRow
+		// (either a single exact LUT row, or LookupEss's alpha-blended row).
+		inline void BuildSegmentsFromRow( const Scalar essRow[LUT_SIZE], Segment segs[LUT_SIZE + 1], int& nSegs )
 		{
-			Scalar a = r_max(0.0, r_min(1.0, (alphaEff - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
-			int ai0 = (int)a;
-			int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
-			Scalar af = a - ai0;
-
-			Scalar essRow[LUT_SIZE];
-			for( int k = 0; k < LUT_SIZE; k++ )
-				essRow[k] = (1-af) * E_ss_TABLE[ai0][k] + af * E_ss_TABLE[ai1][k];
-
 			nSegs = 0;
 			const Scalar c0 = 0.5 / Scalar(LUT_SIZE);
 			const Scalar cLast = (Scalar(LUT_SIZE) - 0.5) / Scalar(LUT_SIZE);
@@ -202,6 +194,22 @@ namespace MicrofacetEnergyLUT
 			segs[nSegs].lo = cLast; segs[nSegs].hi = 1.0;
 			segs[nSegs].essLo = essRow[LUT_SIZE-1]; segs[nSegs].slope = 0.0;
 			nSegs++;
+		}
+
+		// Build the segments for a fixed alphaEff, using EXACTLY LookupEss's
+		// alpha-row blend.
+		inline void BuildSegments( const Scalar alphaEff, Segment segs[LUT_SIZE + 1], int& nSegs )
+		{
+			Scalar a = r_max(0.0, r_min(1.0, (alphaEff - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
+			int ai0 = (int)a;
+			int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
+			Scalar af = a - ai0;
+
+			Scalar essRow[LUT_SIZE];
+			for( int k = 0; k < LUT_SIZE; k++ )
+				essRow[k] = (1-af) * E_ss_TABLE[ai0][k] + af * E_ss_TABLE[ai1][k];
+
+			BuildSegmentsFromRow( essRow, segs, nSegs );
 		}
 
 		// shape(cos) = (1-Ess(cos))*cos within a segment; y = cos - lo.
@@ -258,15 +266,47 @@ namespace MicrofacetEnergyLUT
 	///   limit; computed here from the SAME piecewise-linear Ess model
 	///   that LookupEss / SampleMSCosTheta use, so it cannot drift out of
 	///   sync with either).
+	///
+	/// H6 perf note: this used to call BuildSegments() (O(LUT_SIZE) to
+	/// build the blended row + O(LUT_SIZE) segment integrals) on EVERY
+	/// call, and it is evaluated per-NEE-light-sample from GGXSPF /
+	/// CookTorranceSPF's Pdf/PdfNM.  Per LookupEss's own alpha blend,
+	/// essRow(af) = (1-af)*E_ss_TABLE[ai0] + af*E_ss_TABLE[ai1] is LINEAR
+	/// in af for a fixed (ai0,ai1) pair; SegCDF/SegTotal are themselves
+	/// linear in (essLo, slope) (see their definitions above), and
+	/// (essLo, slope) are each linear in essRow -- so I(alpha), and hence
+	/// Z(alpha) = 2*I(alpha), is an EXACT affine (linear) function of af
+	/// within one alpha bin.  That means Z(alphaEff) can be obtained by
+	/// precomputing the exact per-row Z (Z evaluated with essRow pinned
+	/// to a single LUT row, i.e. af=0) ONCE per row and then doing the
+	/// SAME (1-af)/af blend LookupEss uses for Ess itself -- an O(1)
+	/// lookup that is algebraically IDENTICAL to re-running
+	/// BuildSegments+SegTotal every call, not an approximation.
 	inline Scalar MSLobeZ( const Scalar alphaEff )
 	{
-		MSLobeDetail::Segment segs[LUT_SIZE + 1];
-		int nSegs = 0;
-		MSLobeDetail::BuildSegments( alphaEff, segs, nSegs );
-		Scalar I = 0.0;
-		for( int i = 0; i < nSegs; i++ )
-			I += MSLobeDetail::SegTotal( segs[i] );
-		return 2.0 * I;
+		// Per-alpha-row Z, computed once (C++11 magic-statics: thread-safe
+		// initialization, no locking on the steady-state read path).
+		static const std::array<Scalar, LUT_SIZE> rowZ = []() {
+			std::array<Scalar, LUT_SIZE> z{};
+			for( int row = 0; row < LUT_SIZE; row++ )
+			{
+				MSLobeDetail::Segment segs[LUT_SIZE + 1];
+				int nSegs = 0;
+				MSLobeDetail::BuildSegmentsFromRow( E_ss_TABLE[row], segs, nSegs );
+				Scalar I = 0.0;
+				for( int i = 0; i < nSegs; i++ )
+					I += MSLobeDetail::SegTotal( segs[i] );
+				z[row] = 2.0 * I;
+			}
+			return z;
+		}();
+
+		// Same alpha -> (ai0, ai1, af) mapping as LookupEss/BuildSegments.
+		const Scalar a = r_max(0.0, r_min(1.0, (alphaEff - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
+		const int ai0 = (int)a;
+		const int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
+		const Scalar af = a - ai0;
+		return (1.0 - af) * rowZ[ai0] + af * rowZ[ai1];
 	}
 
 	/// Sample cosWo ~ (1-Ess(alpha,cosWo))*cosWo / I(alpha) via exact

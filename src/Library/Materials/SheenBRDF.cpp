@@ -73,9 +73,11 @@ RISEPel SheenBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometri
 
 	// Geometric-horizon gate: a GlintModifier-tilted shading normal can
 	// validate light/view directions that are still below the true geometric
-	// surface.  Reject here so NEE evaluation stays consistent with what the
-	// sampler can actually emit.  Degenerate vGeomNormal falls back to the
-	// shading normal (gate is a no-op).
+	// surface.  This is a DEFENSIVE check, not a sampler-consistency one --
+	// NEE's light direction isn't sampler-drawn, but a valid exterior hit
+	// already satisfies it, and rejecting here guards against the same tilt
+	// pathology the sampler-side gate targets.  Degenerate vGeomNormal falls
+	// back to the shading normal (gate is a no-op).
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;

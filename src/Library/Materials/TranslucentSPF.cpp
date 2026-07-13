@@ -373,7 +373,13 @@ Scalar TranslucentSPF::Pdf(
 	// For the front hemisphere diffuse component, return cosine-weighted PDF
 	// For the translucent (back hemisphere) component, return 0
 	// (translucent paths have a complex mixed PDF that we approximate as 0)
-	const bool bFrontFace = Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) <= NEARZERO;
+	//
+	// Use the IOR stack as the authoritative source for inside/outside,
+	// matching Scatter()/ScatterNM()'s bEntering test: the normal-based
+	// dot-product test misclassifies a back-scattered ray hitting an
+	// enclosing surface from inside the cavity as "exiting" (ISPF::Pdf
+	// already threads ior_stack through, so no interface change is needed).
+	const bool bFrontFace = !ior_stack.containsCurrent();
 	const Scalar cosTheta = bFrontFace ?
 		Vector3Ops::Dot( wo, ri.onb.w() ) :
 		-Vector3Ops::Dot( wo, ri.onb.w() );

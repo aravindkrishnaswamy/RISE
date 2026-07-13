@@ -158,12 +158,21 @@ static Scalar ComputeSchlickSpecularPdf(
 		return 0;
 	}
 
+	// Mirror Scatter()'s FlipW: GenerateSpecularRay() builds its half-vector
+	// relative to the (possibly flipped) myonb, so this helper must use the
+	// same frame or it returns 0 for directions Scatter legitimately emits
+	// on a back-face hit.
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );
 
 	// Compute half-vector
 	Vector3 h = Vector3Ops::Normalize( wi + woNorm );
-	const Scalar hdotn = Vector3Ops::Dot( h, ri.onb.w() );
+	const Scalar hdotn = Vector3Ops::Dot( h, myonb.w() );
 	if( hdotn <= 0 ) {
 		return 0;
 	}
@@ -204,9 +213,10 @@ static Scalar ComputeSchlickSpecularPdf(
 	// p(phi) = p / (2*pi*(cos^2(phi) + p^2*sin^2(phi)))
 	// This integrates to 1 over [0, 2pi].
 
-	// Project h onto tangent plane to get phi
-	const Scalar hu = Vector3Ops::Dot( h, ri.onb.u() );
-	const Scalar hv = Vector3Ops::Dot( h, ri.onb.v() );
+	// Project h onto tangent plane to get phi (myonb, not ri.onb -- see the
+	// FlipW comment above).
+	const Scalar hu = Vector3Ops::Dot( h, myonb.u() );
+	const Scalar hv = Vector3Ops::Dot( h, myonb.v() );
 
 	Scalar phi_pdf;
 	if( sin2_theta_h < NEARZERO ) {
@@ -264,7 +274,11 @@ void SchlickSPF::Scatter(
 	ScatteredRay d, s;
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
 
-	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
+	// Accept-check tests myonb.w() (the frame lobes are actually sampled
+	// around, post-FlipW) rather than the raw ri.onb.w() -- on a back-face
+	// hit the two differ by sign, and testing the unflipped normal here
+	// silently dropped every legitimately-sampled back-face lobe.
+	if( Vector3Ops::Dot( d.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
 		d.kray = pDiffuse->GetColor(ri);
 		// Cosine-weighted hemisphere PDF
 		const Scalar cosTheta = Vector3Ops::Dot( d.ray.Dir(), myonb.w() );
@@ -289,7 +303,8 @@ void SchlickSPF::Scatter(
 		Scalar fresnel = 0;
 		GenerateSpecularRay( s, fresnel, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), rt.v[0], it.v[0] );
 
-		if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
+		// Accept-check uses myonb.w() -- see the diffuse-lobe comment above.
+		if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
 			const RISEPel rho = pSpecular->GetColor(ri);
 			s.kray = rho + (RISEPel(1.0,1.0,1.0)-rho) * fresnel;
 			s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), rt.v[0], it.v[0] );
@@ -306,7 +321,8 @@ void SchlickSPF::Scatter(
 			Scalar fresnel = 0;
 			GenerateSpecularRay( s, fresnel, myonb, ri, ptrand, rt.v[i], it.v[i] );
 
-			if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
+			// Accept-check uses myonb.w() -- see the diffuse-lobe comment above.
+			if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
 				s.kray = 0;
 				s.kray[i] = rho[i] + (1.0-rho[i]) * fresnel;
 				s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), rt.v[i], it.v[i] );
@@ -354,7 +370,10 @@ void SchlickSPF::ScatterNM(
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
 	GenerateSpecularRay( s, fresnel, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), roughnessNM, isotropyNM );
 
-	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
+	// Accept-checks use myonb.w() -- see Scatter()'s comment: it is the
+	// frame lobes are actually sampled around (post-FlipW), not the raw
+	// ri.onb.w() which differs by sign on a back-face hit.
+	if( Vector3Ops::Dot( d.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
 		d.krayNM = pDiffuse->GetColorNM(ri,nm);
 		const Scalar cosTheta = Vector3Ops::Dot( d.ray.Dir(), myonb.w() );
 		d.pdf = (cosTheta > 0) ? cosTheta * INV_PI : 0;
@@ -362,7 +381,7 @@ void SchlickSPF::ScatterNM(
 		scattered.AddScatteredRay( d );
 	}
 
-	if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
+	if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
 		const Scalar rho = pSpecular->GetColorNM(ri,nm);
 		s.krayNM = rho + (1.0-rho) * fresnel;
 		s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), roughnessNM, isotropyNM );

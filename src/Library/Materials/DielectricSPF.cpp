@@ -212,7 +212,20 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	}
 
 	if( Vector3Ops::Dot( fresnel.ray.Dir(), geomN ) <= 0 ) {
-		bFresnel = false;
+		if( ref >= 1.0 ) {
+			// Mandatory reflection: ref forced to 1.0 above means TIR (or an
+			// exact grazing Fresnel of 1.0) -- no transmission lobe will be
+			// emitted at all (see the `bDielectric && ref < 1.0` gate below),
+			// so dropping the Fresnel lobe here would be total, deterministic
+			// energy loss.  TIR has no companion channel: re-derive the
+			// reflection direction about the TRUE geometric normal instead of
+			// the shading normal.  This is guaranteed to satisfy the gate (no
+			// re-check needed): for a ray arriving against geomN,
+			// dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0.
+			fresnel.ray.SetDir( Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
+		} else {
+			bFresnel = false;
+		}
 	}
 
 	// refracted ray

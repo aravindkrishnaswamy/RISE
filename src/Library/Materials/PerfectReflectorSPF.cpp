@@ -44,17 +44,48 @@ void PerfectReflectorSPF::Scatter(
 		const IORStack& ior_stack								///< [in/out] Index of refraction stack
 		) const
 {
+	OrthonormalBasis3D myonb = ri.onb;
+
+	// Ensure normal faces the incoming ray (matches GGXSPF / the rest of the
+	// geometric-horizon sweep).  This file previously reflected around the
+	// raw, un-flipped ri.onb.w(), which silently swallowed every back-face
+	// hit (a mirror seen from behind rendered as a black facet).
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	const Vector3 n = myonb.w();
+
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a reflection direction that
+	// validates against the (tilted) shading normal can still point below
+	// the geometric surface -- the continuation ray then tunnels into the
+	// solid.  Degenerate vGeomNormal (SquaredModulus guard, matches
+	// GlintModifier.cpp) falls back to the shading normal, making the gate
+	// a no-op.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+
 	ScatteredRay specular;
 	specular.type = ScatteredRay::eRayReflection;
 	specular.isDelta = true;
 	specular.pdf = 1.0;
 
-	specular.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
+	specular.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), n ) );
 	specular.kray = pReflectivity->GetColor(ri);
 
-	if( Vector3Ops::Dot( specular.ray.Dir(), ri.onb.w() ) > 0.0 ) {
-		scattered.AddScatteredRay( specular );
+	if( Vector3Ops::Dot( specular.ray.Dir(), geomN ) <= 0 ) {
+		// A perfect mirror has no companion lobe to carry the energy -- there
+		// is nothing else in the container, so dropping here would be total,
+		// deterministic energy loss (a mirror facet that returns nothing is a
+		// black hole).  Re-derive the reflection direction about the TRUE
+		// geometric normal instead of the shading normal.  This is guaranteed
+		// to satisfy the gate (no re-check needed): for a ray arriving against
+		// geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0.
+		specular.ray.SetDir( Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 	}
+
+	scattered.AddScatteredRay( specular );
 }
 
 void PerfectReflectorSPF::ScatterNM( 
@@ -65,17 +96,33 @@ void PerfectReflectorSPF::ScatterNM(
 	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
+	OrthonormalBasis3D myonb = ri.onb;
+
+	// Ensure normal faces the incoming ray (mirrors Scatter()).
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	const Vector3 n = myonb.w();
+
+	// Geometric-horizon gate (mirrors Scatter()).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+
 	ScatteredRay specular;
 	specular.type = ScatteredRay::eRayReflection;
 	specular.isDelta = true;
 	specular.pdf = 1.0;
 
-	specular.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
+	specular.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), n ) );
 	specular.krayNM = pReflectivity->GetColorNM(ri,nm);
 
-	if( Vector3Ops::Dot( specular.ray.Dir(), ri.onb.w() ) > 0.0 ) {
-		scattered.AddScatteredRay( specular );
+	if( Vector3Ops::Dot( specular.ray.Dir(), geomN ) <= 0 ) {
+		// Mandatory (no companion lobe) -- see Scatter() for the rationale.
+		specular.ray.SetDir( Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 	}
+
+	scattered.AddScatteredRay( specular );
 }
 
 Scalar PerfectReflectorSPF::Pdf(

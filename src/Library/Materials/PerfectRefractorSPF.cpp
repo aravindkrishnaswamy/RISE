@@ -110,7 +110,19 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 		if( ref > 0.0 ) {
 			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 			if( Vector3Ops::Dot( fresnel.ray.Dir(), geomN ) <= 0 ) {
-				bDropFresnel = true;
+				if( ref >= 1.0 ) {
+					// Mandatory reflection: ref forced to 1.0 above means TIR -- no
+					// transmission lobe will be emitted at all (see the `ref < 1.0`
+					// gate below), so dropping the Fresnel lobe here would be total,
+					// deterministic energy loss.  TIR has no companion channel:
+					// re-derive the reflection direction about the TRUE geometric
+					// normal instead of the shading normal.  This is guaranteed to
+					// satisfy the gate (no re-check needed): for a ray arriving
+					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0.
+					fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
+				} else {
+					bDropFresnel = true;
+				}
 			}
 		}
 	}
@@ -134,7 +146,19 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 			GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
 			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
 			if( Vector3Ops::Dot( fresnel.ray.Dir(), geomN ) <= 0 ) {
-				bDropFresnel = true;
+				if( ref >= 1.0 ) {
+					// Mandatory reflection: ref forced to 1.0 above means TIR -- no
+					// transmission lobe will be emitted at all (see the `ref < 1.0`
+					// gate below), so dropping the Fresnel lobe here would be total,
+					// deterministic energy loss.  TIR has no companion channel:
+					// re-derive the reflection direction about the TRUE geometric
+					// normal instead of the shading normal.  This is guaranteed to
+					// satisfy the gate (no re-check needed): for a ray arriving
+					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0.
+					fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
+				} else {
+					bDropFresnel = true;
+				}
 			}
 		}
 	}
@@ -242,7 +266,19 @@ void PerfectRefractorSPF::ScatterNM(
 		if( ref > 0.0 ) {
 			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 			if( Vector3Ops::Dot( fresnel.ray.Dir(), geomN ) <= 0 ) {
-				bDropFresnel = true;
+				if( ref >= 1.0 ) {
+					// Mandatory reflection: ref forced to 1.0 above means TIR -- no
+					// transmission lobe will be emitted at all (see the `ref < 1.0`
+					// gate below), so dropping the Fresnel lobe here would be total,
+					// deterministic energy loss.  TIR has no companion channel:
+					// re-derive the reflection direction about the TRUE geometric
+					// normal instead of the shading normal.  This is guaranteed to
+					// satisfy the gate (no re-check needed): for a ray arriving
+					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0.
+					fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
+				} else {
+					bDropFresnel = true;
+				}
 			}
 		}
 	}
@@ -267,7 +303,19 @@ void PerfectRefractorSPF::ScatterNM(
 			GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
 			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
 			if( Vector3Ops::Dot( fresnel.ray.Dir(), geomN ) <= 0 ) {
-				bDropFresnel = true;
+				if( ref >= 1.0 ) {
+					// Mandatory reflection: ref forced to 1.0 above means TIR -- no
+					// transmission lobe will be emitted at all (see the `ref < 1.0`
+					// gate below), so dropping the Fresnel lobe here would be total,
+					// deterministic energy loss.  TIR has no companion channel:
+					// re-derive the reflection direction about the TRUE geometric
+					// normal instead of the shading normal.  This is guaranteed to
+					// satisfy the gate (no re-check needed): for a ray arriving
+					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0.
+					fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
+				} else {
+					bDropFresnel = true;
+				}
 			}
 		}
 	}

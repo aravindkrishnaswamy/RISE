@@ -70,11 +70,13 @@ void OrenNayarBRDF::ComputeFactor(
 	if( (nr >= NEARZERO) &&	(nv >= NEARZERO) ) {
 		// Geometric-horizon gate: a GlintModifier-tilted shading normal can
 		// validate light/view directions that are still below the true
-		// geometric surface.  Reject here so NEE evaluation stays consistent
-		// with what the sampler can actually emit; the early return leaves
-		// L1/L2 at the caller's zero-init, identical to the guard falling
-		// through.  Degenerate vGeomNormal falls back to the shading normal
-		// (gate is a no-op).
+		// geometric surface.  This is a DEFENSIVE check (a valid exterior hit
+		// already satisfies it) rather than a literal sampler-consistency one
+		// -- NEE's light direction isn't sampler-drawn -- but it guards
+		// against the same tilt pathology; the early return leaves L1/L2 at
+		// the caller's zero-init, identical to the guard falling through.
+		// Degenerate vGeomNormal falls back to the shading normal (gate is a
+		// no-op).
 		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 			? ri.vGeomNormal : n;
 		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;

@@ -134,12 +134,19 @@ static bool GenerateSpecularRay(
 		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 			? ri.vGeomNormal : onb.w();
 		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, onb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
-		if( Vector3Ops::Dot(k2, ri.onb.w()) < 0 || Vector3Ops::Dot(k2, geomN) <= 0 ) {
+		// Reject against the frame this lobe was actually sampled around
+		// (the `onb` parameter, which is the caller's possibly-FlipW'd
+		// myonb) -- not the raw ri.onb.w(), which differs by sign on a
+		// back-face hit and silently dropped every legitimately-sampled
+		// back-face specular lobe.
+		if( Vector3Ops::Dot(k2, onb.w()) < 0 || Vector3Ops::Dot(k2, geomN) <= 0 ) {
 			return false;
 		}
 
-		// Compute the density of the perturbed ray
-		const Scalar hdotn = Vector3Ops::Dot( ri.onb.w(), h );
+		// Compute the density of the perturbed ray (against `onb`, the frame
+		// h was actually built in above -- NOT ri.onb.w(), which differs by
+		// sign on a back-face hit and would feed pow() a negative base).
+		const Scalar hdotn = Vector3Ops::Dot( onb.w(), h );
 		const Scalar factor1 = sqrt((NU+1.0)*(NV+1.0)) / TWO_PI;
 		const Scalar factor2 = pow( hdotn, (NU*cos_phi*cos_phi + NV*sin_phi*sin_phi));
 
@@ -320,8 +327,18 @@ static Scalar AshikminShirleySpecularPdf(
 	const Scalar wDiff
 	)
 {
+	// Mirror Scatter()'s FlipW: orient the frame to face the incoming ray so
+	// this Pdf agrees with Scatter's actual sampling frame on backface hits
+	// (Scatter/GenerateSpecularRay sample both lobes relative to the
+	// flipped myonb, so a raw ri.onb.w()/u()/v() here returned 0 for
+	// directions Scatter legitimately emits).
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
-	const Vector3& n = ri.onb.w();
+	const Vector3 n = myonb.w();
 
 	const Scalar cos_theta_i = Vector3Ops::Dot( wi, n );
 	const Scalar cos_theta_o = Vector3Ops::Dot( wo, n );
@@ -355,8 +372,9 @@ static Scalar AshikminShirleySpecularPdf(
 		return pdf_diffuse;
 	}
 
-	const Scalar hu = Vector3Ops::Dot( h, ri.onb.u() );
-	const Scalar hv = Vector3Ops::Dot( h, ri.onb.v() );
+	// myonb, not ri.onb -- see the FlipW comment above.
+	const Scalar hu = Vector3Ops::Dot( h, myonb.u() );
+	const Scalar hv = Vector3Ops::Dot( h, myonb.v() );
 
 	// Exponent: (nu * (h.u)^2 + nv * (h.v)^2) / (1 - (h.n)^2)
 	const Scalar sin_theta_h_sq = 1.0 - hdotn * hdotn;
@@ -398,8 +416,16 @@ Scalar AshikminShirleyAnisotropicPhongSPF::Pdf(
 	// where specFactor = fresnel/max(cos_i,cos_o) and diffFactor depends on
 	// the direction.  Using the mirror direction gives constant weights that
 	// are much more representative than raw Rs/Rd, especially at grazing.
+	// Mirror Scatter()'s FlipW (see AshikminShirleySpecularPdf): this
+	// cos_i gate must agree with the frame Scatter actually samples in, or
+	// it returns 0 on every back-face hit even though Scatter legitimately
+	// emits there.
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
-	const Vector3& n = ri.onb.w();
+	const Vector3 n = myonb.w();
 	const Scalar cos_i = Vector3Ops::Dot( wi, n );
 
 	if( cos_i <= 0 ) {
@@ -432,8 +458,13 @@ Scalar AshikminShirleyAnisotropicPhongSPF::PdfNM(
 	const Scalar nv_val = pNv->GetValueAtNM(ri,nm);
 
 	// Representative weights at mirror direction (same as Pdf)
+	// Mirror Scatter()'s FlipW (same rationale as Pdf() above).
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
-	const Vector3& n = ri.onb.w();
+	const Vector3 n = myonb.w();
 	const Scalar cos_i = Vector3Ops::Dot( wi, n );
 
 	if( cos_i <= 0 ) {

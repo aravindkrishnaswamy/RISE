@@ -99,8 +99,10 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
 	// to 60 deg off the true surface, so light/view directions that validate
 	// against the (tilted) shading normal can still be below the geometric
-	// surface.  Reject here so NEE evaluation stays consistent with what the
-	// sampler can actually emit.
+	// surface.  This is a DEFENSIVE check (a valid exterior hit already
+	// satisfies it) rather than a sampler-consistency one -- NEE's light
+	// direction isn't sampler-drawn -- but it guards against the same tilt
+	// pathology.
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
