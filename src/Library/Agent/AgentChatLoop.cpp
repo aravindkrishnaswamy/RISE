@@ -238,7 +238,8 @@ namespace RISE
 			mModelId( mCodec->DefaultModelId() ),
 			mToolRounds( 0 ),
 			mSessionEmitted( false ),
-			mElideAllImages( false )
+			mElideAllImages( false ),
+			mForceReasoningEffortNone( false )
 		{
 		}
 
@@ -260,6 +261,9 @@ namespace RISE
 			// A fresh session may target a different, image-capable model --
 			// the text-only proof does not carry across a Reset/SetProvider.
 			mElideAllImages = false;
+			// Likewise, a fresh session may target a different model that
+			// has no reasoning-vs-tools conflict at all.
+			mForceReasoningEffortNone = false;
 		}
 
 		void AgentChatLoop::SetProvider( ChatProvider provider, const std::string& modelId )
@@ -325,6 +329,27 @@ namespace RISE
 			{
 				if( httpStatus != 400 ) return false;
 				return ContainsCI( rawBody, "multimodal" ) &&
+				       ContainsCI( rawBody, "not support" );
+			}
+
+			//! REASONING-MODEL TOOLS-VS-EFFORT 400 detection.  An OpenAI-
+			//! family reasoning model (observed: gpt-5.6-terra, over
+			//! /v1/chat/completions) answers a function-tools request with
+			//! HTTP 400: "Function tools with reasoning_effort are not
+			//! supported for gpt-5.6-terra in /v1/chat/completions. To use
+			//! function tools, use /v1/responses or set reasoning_effort to
+			//! 'none'." -- the model's server-side default reasoning_effort
+			//! is incompatible with tool calling on this endpoint, even
+			//! though this codebase never sends a reasoning_effort field
+			//! itself.  The match is deliberately NARROW, mirroring
+			//! IsMultimodalUnsupported400 -- status must be exactly 400 AND
+			//! the raw body must contain BOTH "reasoning_effort" and
+			//! "not support" (case-insensitive) -- so an ordinary bad-
+			//! request 400 does not trigger the retry.
+			bool IsReasoningEffortToolsUnsupported400( long httpStatus, const std::string& rawBody )
+			{
+				if( httpStatus != 400 ) return false;
+				return ContainsCI( rawBody, "reasoning_effort" ) &&
 				       ContainsCI( rawBody, "not support" );
 			}
 		}
@@ -469,8 +494,12 @@ namespace RISE
 			const std::string systemPrompt = ComposeSystemPrompt();
 
 			// The key goes straight through to the codec's auth header and
-			// is retained NOWHERE in this object.
-			ChatHttpRequest req = mCodec->BuildRequest( mModelId, apiKey, systemPrompt, rawEntries );
+			// is retained NOWHERE in this object.  REASONING-MODEL TOOLS-
+			// VS-EFFORT 400 RECOVERY: once a reasoning model has proven the
+			// tools/effort conflict, every request explicitly asks for
+			// reasoning_effort "none" (see mForceReasoningEffortNone).
+			ChatHttpRequest req = mCodec->BuildRequest(
+				mModelId, apiKey, systemPrompt, rawEntries, mForceReasoningEffortNone );
 
 			// Eval-harness E1: cache the request for RecordHttpRound's
 			// convenience overload -- but with EVERY auth header STRIPPED so
@@ -524,6 +553,31 @@ namespace RISE
 				mElideAllImages = true;
 				ElideAllLiveImages();
 				pr.step.retryWithoutImages = true;
+				return pr.step;
+			}
+
+			// REASONING-MODEL TOOLS-VS-EFFORT 400 RECOVERY: an OpenAI-family
+			// reasoning model 400-rejects a function-tools request because
+			// its server-side default reasoning_effort conflicts with tool
+			// calling over /v1/chat/completions.  Detect it NARROWLY (status
+			// 400 + "reasoning_effort"/"not support" in the body), and only
+			// the FIRST time (mForceReasoningEffortNone gates once-per-
+			// session/once-per-round, mirroring the image-rejection
+			// recovery above).  On detection: set the sticky bool so this
+			// and every later BuildRequest explicitly sends
+			// "reasoning_effort":"none" (the documented remedy for staying
+			// on /v1/chat/completions -- see mForceReasoningEffortNone's
+			// header comment for why this is an ADD, not an omission), and
+			// flag the step so the driver re-issues the SAME round once.
+			// The step stays a ProviderError (errorKind Http) so that if the
+			// retry ALSO fails the existing error UX is unchanged; nothing
+			// is recorded either way (the ProviderError contract).
+			if( pr.step.kind == ChatStepResult::Kind::ProviderError &&
+			    pr.step.errorKind == ChatErrorKind::Http &&
+			    !mForceReasoningEffortNone &&
+			    IsReasoningEffortToolsUnsupported400( httpStatus, rawBody ) ) {
+				mForceReasoningEffortNone = true;
+				pr.step.retryReasoningEffortNone = true;
 				return pr.step;
 			}
 

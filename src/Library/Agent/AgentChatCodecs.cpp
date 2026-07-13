@@ -997,8 +997,13 @@ namespace RISE
 			const std::string& modelId,
 			const std::string& apiKey,
 			const std::string& systemPrompt,
-			const std::vector<std::string>& rawEntries ) const
+			const std::vector<std::string>& rawEntries,
+			bool /*forceReasoningEffortNone*/ ) const
 		{
+			// Anthropic has no reasoning_effort field / tools-vs-effort 400
+			// -- the parameter exists only to satisfy the shared
+			// IChatProviderCodec::BuildRequest signature (see its header
+			// doc); this codec ignores it.
 			ChatHttpRequest r;
 			r.url = "https://api.anthropic.com/v1/messages";
 			// The key appears ONLY here, in the auth header -- control
@@ -1528,8 +1533,13 @@ namespace RISE
 			const std::string& modelId,
 			const std::string& apiKey,
 			const std::string& systemPrompt,
-			const std::vector<std::string>& rawEntries ) const
+			const std::vector<std::string>& rawEntries,
+			bool /*forceReasoningEffortNone*/ ) const
 		{
+			// Gemini has no reasoning_effort field / tools-vs-effort 400 --
+			// the parameter exists only to satisfy the shared
+			// IChatProviderCodec::BuildRequest signature (see its header
+			// doc); this codec ignores it.
 			ChatHttpRequest r;
 			// The model id is percent-escaped so it cannot alter the URL
 			// path or smuggle query parameters.
@@ -2078,7 +2088,8 @@ namespace RISE
 			const std::string& modelId,
 			const std::string& apiKey,
 			const std::string& systemPrompt,
-			const std::vector<std::string>& rawEntries ) const
+			const std::vector<std::string>& rawEntries,
+			bool forceReasoningEffortNone ) const
 		{
 			ChatHttpRequest r;
 			r.url = mConfig.baseUrl;
@@ -2099,6 +2110,16 @@ namespace RISE
 			std::string body = "{\"model\":";
 			JsonAppendEscapedString( body, modelId );
 			body += ",\"max_completion_tokens\":" + std::to_string( kOpenAIMaxCompletionTokens );
+			// REASONING-MODEL TOOLS-VS-EFFORT 400 RECOVERY (see
+			// ChatStepResult::retryReasoningEffortNone): a reasoning-family
+			// model's server-side default reasoning_effort is incompatible
+			// with function tools over this endpoint.  This codec never
+			// sends reasoning_effort otherwise -- there is no default value
+			// to omit -- so once the loop has proven the conflict, EXPLICITLY
+			// override it to "none" (the alternative the provider's own
+			// error message documents, short of switching off
+			// /v1/chat/completions entirely).
+			if( forceReasoningEffortNone ) body += ",\"reasoning_effort\":\"none\"";
 			body += ",\"messages\":[{\"role\":\"system\",\"content\":";
 			JsonAppendEscapedString( body, systemPrompt );
 			body += "}";

@@ -3756,6 +3756,166 @@ static void TestMultimodalRetry()
 	}
 }
 
+//----------------------------------------------------------------------
+// T34: OpenAI reasoning-model tools-vs-effort 400 retry (provider-compat
+//      fix, from the first live gpt-5.6-terra eval run).  Every run died
+//      on round 1 with HTTP 400: "Function tools with reasoning_effort
+//      are not supported for gpt-5.6-terra in /v1/chat/completions. To
+//      use function tools, use /v1/responses or set reasoning_effort to
+//      'none'." (param "reasoning_effort").  NOTE this codec never sends
+//      a reasoning_effort field on its own (verified: neither BuildRequest
+//      nor any caller emits it pre-fix) -- the 400 comes from the MODEL's
+//      server-side default, not a client-sent value, so the fix is an
+//      ADD, not an omission: on detection the loop sets a sticky flag so
+//      the retry (and every later request this session) EXPLICITLY sends
+//      "reasoning_effort":"none".  Detection is NARROW (status 400 +
+//      "reasoning_effort" + "not support"), mirroring T33's multimodal
+//      detection exactly; the retry is guarded once-per-session/round the
+//      same way.  A different 400 does none of this, and the two sticky
+//      flags (image-elision, reasoning-effort-none) are independent.
+//----------------------------------------------------------------------
+static void TestReasoningEffortRetry()
+{
+	std::printf( "T34: OpenAI reasoning-model tools-vs-effort 400 retry...\n" );
+
+	// The exact observed provider error body (param "reasoning_effort",
+	// both required detection tokens present: "reasoning_effort" + "not
+	// support").
+	const std::string effort400 =
+		"{\"error\":{\"message\":\"Function tools with reasoning_effort are "
+		"not supported for gpt-5.6-terra in /v1/chat/completions. To use "
+		"function tools, use /v1/responses or set reasoning_effort to "
+		"'none'.\",\"type\":\"invalid_request_error\","
+		"\"param\":\"reasoning_effort\",\"code\":null}}";
+
+	// --- Happy path: round 1 -> 400 -> sticky flag + retry flag -> retry
+	//     request carries "reasoning_effort":"none" -> success.  A
+	//     trajectory sink verifies the retry rides as an honest sibling
+	//     llm record, exactly like T33. ---
+	{
+		std::vector<std::string> lines;
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::OpenAI );
+		ChatTrajectoryConfig cfg;
+		cfg.traceId = "trace-reff-34";
+		loop.SetTrajectorySink(
+			[&lines]( const std::string& l ) { lines.push_back( l ); }, cfg );
+
+		loop.AddUserMessage( "remove the sphere" );
+
+		// Round 1, attempt 1: no reasoning_effort key at all pre-fix.
+		const ChatHttpRequest req1 = loop.BuildRequest( kApiKey );
+		JsonValue root1 = ParseBody( req1.body );
+		Check( root1.find( "reasoning_effort" ) == nullptr,
+		       "T34: the FIRST request carries no reasoning_effort key "
+		       "(this codec never sends one on its own)" );
+
+		loop.RecordHttpRound( 400, effort400, 4, 1, -1 );
+		ChatStepResult st1 = loop.HandleResponse( 400, effort400 );
+		Check( st1.kind == ChatStepResult::Kind::ProviderError,
+		       "T34: the reasoning_effort 400 is a ProviderError" );
+		Check( st1.errorKind == ChatErrorKind::Http,
+		       "T34: errorKind stays Http (the retriable kind)" );
+		Check( st1.retryReasoningEffortNone,
+		       "T34: the step flags a one-shot reasoning_effort:none retry" );
+		Check( !st1.retryWithoutImages,
+		       "T34: the reasoning_effort 400 does NOT also flag an "
+		       "image-free retry (independent flags)" );
+
+		// The retry request explicitly carries reasoning_effort:"none".
+		const ChatHttpRequest retryReq = loop.BuildRequest( kApiKey );
+		JsonValue rroot = ParseBody( retryReq.body );
+		const JsonValue* re = rroot.find( "reasoning_effort" );
+		Check( re != nullptr && re->isString() && re->asString() == "none",
+		       "T34: the retry request explicitly sets reasoning_effort:\"none\"" );
+
+		// The retry succeeds (attempt 2, sibling of attempt 1).
+		const std::string okFx = OpenAIFixture(
+			"\"Done -- the sphere is removed.\"", "", "stop" );
+		loop.RecordHttpRound( 200, okFx, 6, 2, 1 );
+		ChatStepResult st2 = loop.HandleResponse( 200, okFx );
+		Check( st2.kind == ChatStepResult::Kind::FinalText,
+		       "T34: the reasoning_effort:none retry round succeeds" );
+
+		// Sibling attempt numbering in the trajectory (same shape as T33).
+		int llmAttempt1 = 0, llmAttempt2RetryOf1 = 0;
+		for( std::size_t i = 0; i < lines.size(); ++i ) {
+			JsonValue rec = ParseBody( lines[i] );
+			if( rec.get( "run_type" ).asString() != "llm" ) continue;
+			const int at = static_cast<int>( rec.get( "attempt" ).asNumber() );
+			if( at == 1 ) ++llmAttempt1;
+			if( at == 2 && rec.get( "retry_of" ).asNumber() == 1.0 ) ++llmAttempt2RetryOf1;
+		}
+		Check( llmAttempt1 == 1, "T34: one attempt-1 llm record (the 400)" );
+		Check( llmAttempt2RetryOf1 == 1,
+		       "T34: the retry is one honest sibling llm record (attempt 2, retry_of 1)" );
+
+		// Sticky: a LATER round in the same session still carries the
+		// override, with no re-detection needed.
+		loop.AddUserMessage( "now add a cube" );
+		const ChatHttpRequest laterReq = loop.BuildRequest( kApiKey );
+		JsonValue lroot = ParseBody( laterReq.body );
+		const JsonValue* lre = lroot.find( "reasoning_effort" );
+		Check( lre != nullptr && lre->isString() && lre->asString() == "none",
+		       "T34: subsequent rounds stay reasoning_effort:none (sticky)" );
+	}
+
+	// --- A NON-reasoning_effort 400 must NOT trigger the retry / override. ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::OpenAI );
+		loop.AddUserMessage( "hi" );
+		(void)loop.BuildRequest( kApiKey );
+
+		const std::string plain400 =
+			"{\"error\":{\"message\":\"invalid request: unknown field foo\"}}";
+		ChatStepResult st = loop.HandleResponse( 400, plain400 );
+		Check( st.kind == ChatStepResult::Kind::ProviderError &&
+		       st.errorKind == ChatErrorKind::Http,
+		       "T34: a plain 400 is still an Http ProviderError" );
+		Check( !st.retryReasoningEffortNone,
+		       "T34: a NON-reasoning_effort 400 does NOT flag a retry" );
+
+		const ChatHttpRequest afterReq = loop.BuildRequest( kApiKey );
+		JsonValue aroot = ParseBody( afterReq.body );
+		Check( aroot.find( "reasoning_effort" ) == nullptr,
+		       "T34: a NON-reasoning_effort 400 leaves the request UNCHANGED "
+		       "(still no reasoning_effort key)" );
+	}
+
+	// --- Coexistence: the image-elision and reasoning_effort-none sticky
+	//     flags are independent -- tripping one does not trip or block
+	//     the other later in the SAME session. ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::OpenAI );
+		loop.AddUserMessage( "remove the sphere" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult st1 = loop.HandleResponse( 400, effort400 );
+		Check( st1.retryReasoningEffortNone && !st1.retryWithoutImages,
+		       "T34: the reasoning_effort 400 trips ONLY its own flag" );
+
+		// A later multimodal 400 in the SAME session still fires
+		// independently, and the earlier override survives untouched.
+		const std::string mm400 =
+			"{\"error\":{\"message\":\"Multimodal data provided, but model "
+			"does not support multimodal requests\"}}";
+		loop.AddUserMessage( "show me a picture" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult st2 = loop.HandleResponse( 400, mm400 );
+		Check( st2.retryWithoutImages,
+		       "T34: a later multimodal 400 still trips its OWN flag "
+		       "after reasoning_effort was already stuck" );
+
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		JsonValue root = ParseBody( req.body );
+		const JsonValue* re = root.find( "reasoning_effort" );
+		Check( re != nullptr && re->isString() && re->asString() == "none",
+		       "T34: reasoning_effort:none survives a later, independent "
+		       "multimodal-400 retry" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
@@ -3807,6 +3967,7 @@ int main()
 	TestNullShapeDefensiveAudit();
 	TestGeminiFunctionResponseDedupe();
 	TestMultimodalRetry();
+	TestReasoningEffortRetry();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

@@ -253,6 +253,26 @@ namespace RISE
 			//! provider_error path proceeds unchanged).  Always false for
 			//! ToolCalls / FinalText and for every other error kind.
 			bool                      retryWithoutImages = false;
+
+			//! REASONING-MODEL TOOLS-VS-EFFORT 400 RECOVERY (set ONLY on a
+			//! ProviderError whose errorKind is Http): true when the loop
+			//! detected an OpenAI-family reasoning model rejecting a
+			//! function-tools request over /v1/chat/completions (HTTP 400
+			//! "...reasoning_effort... not support...") and has ALREADY set
+			//! its sticky state so every later BuildRequest (including the
+			//! retry) explicitly sends `"reasoning_effort":"none"`.  This is
+			//! NOT an omission -- this codebase never sends a
+			//! reasoning_effort field on its own, so the 400 comes from the
+			//! model's server-side default; the codec must actively ADD the
+			//! override.  The DRIVER should re-issue the SAME round once
+			//! (rebuild via BuildRequest, fetch, and RecordHttpRound with
+			//! attempt=2/retryOf=1 so the retry is an honest sibling llm
+			//! record) instead of terminating.  Enforced once-per-round by
+			//! the loop's sticky state: a second such 400 in the same
+			//! session leaves this false (the normal provider_error path
+			//! proceeds unchanged).  Always false for ToolCalls / FinalText
+			//! and for every other error kind.
+			bool                      retryReasoningEffortNone = false;
 		};
 
 		//! ParseResponse's full product: the step outcome PLUS the raw
@@ -354,11 +374,19 @@ namespace RISE
 			//! retained, not placed in the body/url, and never logged.
 			//! `rawEntries` are the transcript entries in order (each a
 			//! provider-native message JSON produced by this codec).
+			//! `forceReasoningEffortNone` (REASONING-MODEL TOOLS-VS-EFFORT
+			//! 400 RECOVERY, see ChatStepResult::retryReasoningEffortNone):
+			//! when true, EXPLICITLY add `"reasoning_effort":"none"` to the
+			//! request body.  Only OpenAIChatCodec acts on it -- Anthropic
+			//! and Gemini accept and ignore the parameter, since neither
+			//! provider has this field.  Defaults false so every pre-
+			//! existing call site is unaffected.
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
 				const std::string& systemPrompt,
-				const std::vector<std::string>& rawEntries ) const = 0;
+				const std::vector<std::string>& rawEntries,
+				bool forceReasoningEffortNone = false ) const = 0;
 
 			//! Parse one raw HTTP response.  `httpStatus` is the status
 			//! code the caller observed (non-200 -> ProviderError carrying
@@ -392,7 +420,8 @@ namespace RISE
 				const std::string& modelId,
 				const std::string& apiKey,
 				const std::string& systemPrompt,
-				const std::vector<std::string>& rawEntries ) const;
+				const std::vector<std::string>& rawEntries,
+				bool forceReasoningEffortNone = false ) const;
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
 			virtual ChatUsage ParseUsage( const std::string& rawBody ) const;
@@ -421,7 +450,8 @@ namespace RISE
 				const std::string& modelId,
 				const std::string& apiKey,
 				const std::string& systemPrompt,
-				const std::vector<std::string>& rawEntries ) const;
+				const std::vector<std::string>& rawEntries,
+				bool forceReasoningEffortNone = false ) const;
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
 			virtual ChatUsage ParseUsage( const std::string& rawBody ) const;
@@ -493,7 +523,8 @@ namespace RISE
 				const std::string& modelId,
 				const std::string& apiKey,
 				const std::string& systemPrompt,
-				const std::vector<std::string>& rawEntries ) const;
+				const std::vector<std::string>& rawEntries,
+				bool forceReasoningEffortNone = false ) const;
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
 			virtual ChatUsage ParseUsage( const std::string& rawBody ) const;

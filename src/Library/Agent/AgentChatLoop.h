@@ -470,6 +470,24 @@ namespace RISE
 			//! See the "TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY" note above
 			//! mToolRounds.
 			bool                                     mElideAllImages;
+
+			//! REASONING-MODEL TOOLS-VS-EFFORT 400 RECOVERY: sticky once an
+			//! OpenAI-family reasoning model (observed: gpt-5.6-terra) 400-
+			//! rejects a function-tools request over /v1/chat/completions
+			//! because its server-side default reasoning_effort is
+			//! incompatible with tool calling on that endpoint ("Function
+			//! tools with reasoning_effort are not supported for <model> in
+			//! /v1/chat/completions. To use function tools, use
+			//! /v1/responses or set reasoning_effort to 'none'.").  This
+			//! codebase never SENDS a reasoning_effort field itself (the
+			//! model's default applies server-side), so the fix is NOT an
+			//! omission -- there is nothing to strip.  Instead, while set,
+			//! every BuildRequest asks the codec to EXPLICITLY add
+			//! `"reasoning_effort":"none"` to the request body, which is the
+			//! documented remedy for staying on /v1/chat/completions.
+			//! Doubles as the once-per-round retry guard, mirroring
+			//! mElideAllImages exactly.  Cleared by Reset().
+			bool                                     mForceReasoningEffortNone;
 		};
 	}
 }

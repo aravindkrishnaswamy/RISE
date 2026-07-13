@@ -507,6 +507,70 @@ static void TestLiveHttp400NotRetried()
 }
 
 //----------------------------------------------------------------------
+// T15: provider-compat fix -- an OpenAI-family reasoning model's 400
+//      "Function tools with reasoning_effort are not supported ... To use
+//      function tools, use /v1/responses or set reasoning_effort to
+//      'none'." (observed on every gpt-5.6-terra live eval round) is
+//      retried ONCE with an explicit "reasoning_effort":"none" override;
+//      the second attempt succeeds -> the scenario reaches final_text,
+//      having driven 2 llm rounds (an honest attempt-2/retry-of-1 sibling
+//      trajectory record), proving the RunScenarioLive attempt-loop wiring
+//      (not just the AgentChatLoopTest.cpp T34 codec-level unit test).
+//----------------------------------------------------------------------
+static void TestLiveReasoningEffort400RetrySucceeds()
+{
+	std::printf( "T15: reasoning_effort-400 then success -> one retry, round succeeds (provider-compat fix)...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 400,
+		"{\"error\":{\"message\":\"Function tools with reasoning_effort are "
+		"not supported for gpt-5.6-terra in /v1/chat/completions. To use "
+		"function tools, use /v1/responses or set reasoning_effort to "
+		"'none'.\",\"type\":\"invalid_request_error\","
+		"\"param\":\"reasoning_effort\",\"code\":null}}", "", 3 } );
+	mock.responses.push_back( { 200,
+		"{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Done.\"},"
+		"\"finish_reason\":\"stop\"}],"
+		"\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}", "", 4 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t15_live_reasoning_effort_retry_succeeds" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::OpenAI;
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "a reasoning_effort-400-then-200 round still reaches final_text (got '" + h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+	Check( h.result.llmCalls == 2, "both the 400 attempt and the retry are counted as llm rounds" );
+	Check( mock.seenRequests.size() == 2, "the transport saw exactly 2 POSTs (the retry rebuilt the SAME round)" );
+
+	// The FIRST request carries no reasoning_effort key (this codec never
+	// sends one on its own); the RETRY explicitly overrides it to "none".
+	Check( mock.seenRequests[0].body.find( "reasoning_effort" ) == std::string::npos,
+	       "the first request carries no reasoning_effort key" );
+	Check( mock.seenRequests[1].body.find( "\"reasoning_effort\":\"none\"" ) != std::string::npos,
+	       "the retry request explicitly sets reasoning_effort:\"none\"" );
+
+	// The trajectory carries an honest sibling llm record: attempt 1 (the
+	// 400) and attempt 2 / retry_of 1 (the successful retry).
+	std::vector<JsonValue> recs = ReadJsonl( h.trajectoryPath );
+	int attempt1 = 0, attempt2RetryOf1 = 0;
+	for( std::size_t i = 0; i < recs.size(); ++i ) {
+		if( recs[i].get( "run_type" ).asString() != "llm" ) continue;
+		const int at = static_cast<int>( recs[i].get( "attempt" ).asNumber( -1.0 ) );
+		if( at == 1 ) ++attempt1;
+		if( at == 2 && recs[i].get( "retry_of" ).asNumber( -1.0 ) == 1.0 ) ++attempt2RetryOf1;
+	}
+	Check( attempt1 == 1, "exactly one attempt-1 llm record (the 400)" );
+	Check( attempt2RetryOf1 == 1, "exactly one attempt-2/retry_of-1 llm record (the successful retry)" );
+}
+
+//----------------------------------------------------------------------
 // T6: LoadEvalRunConfig -- happy path + malformed refusals.
 //----------------------------------------------------------------------
 static void TestRunConfigLoad()
@@ -1014,6 +1078,7 @@ int main()
 	TestLiveHttp5xxRetrySucceeds();
 	TestLiveHttp5xxRetryStillFails();
 	TestLiveHttp400NotRetried();
+	TestLiveReasoningEffort400RetrySucceeds();
 	TestRunConfigLoad();
 	TestRunEvalMatrix();
 	TestRunEvalMatrixDuplicateId();

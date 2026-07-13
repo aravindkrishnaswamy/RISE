@@ -582,7 +582,7 @@ namespace RISE
 						}
 
 						// Build -> fetch -> record -> handle, with at most ONE
-						// automatic retry per round, for EITHER of two
+						// automatic retry per round, for EITHER of three
 						// independent causes:
 						//   (a) a text-only model 400-rejects multimodal
 						//       content -- HandleResponse elides the images
@@ -596,16 +596,26 @@ namespace RISE
 						//       one retry of the SAME round often yields a
 						//       parseable reply; hosted providers can also
 						//       500 transiently.  Never retries a 4xx other
-						//       than the multimodal-400 case above.  This
-						//       cause is checked on `fo.status` (what the
-						//       transport actually returned), not a codec-
-						//       parsed field, and only bites on the LIVE
-						//       path -- the replay fetch above always
-						//       synthesizes status 200, so replay never hits
-						//       HTTP and never retries here.
-						// Either cause fires ONLY on attempt==1, so at most
+						//       than the multimodal-400 / reasoning_effort-400
+						//       cases here.  This cause is checked on
+						//       `fo.status` (what the transport actually
+						//       returned), not a codec-parsed field, and only
+						//       bites on the LIVE path -- the replay fetch
+						//       above always synthesizes status 200, so
+						//       replay never hits HTTP and never retries here.
+						//   (c) an OpenAI-family reasoning model (observed:
+						//       gpt-5.6-terra) 400-rejects a function-tools
+						//       request because its server-side default
+						//       reasoning_effort conflicts with tool calling
+						//       over /v1/chat/completions -- HandleResponse
+						//       sets the loop's sticky
+						//       "reasoning_effort":"none" override and flags
+						//       the step (retryReasoningEffortNone); the
+						//       rebuilt request (now carrying the override)
+						//       is re-issued once.
+						// Every cause fires ONLY on attempt==1, so at most
 						// one retry happens per round; a second failure of
-						// either kind falls through to the normal
+						// any kind falls through to the normal
 						// provider_error path unchanged.  The retry is
 						// recorded as an honest sibling llm record (attempt
 						// 2, retryOf 1) via the existing RecordHttpRound
@@ -639,6 +649,9 @@ namespace RISE
 							if( st.kind == ChatStepResult::Kind::ProviderError &&
 							    st.retryWithoutImages && attempt == 1 )
 								continue;   // one image-free retry of this round
+							if( st.kind == ChatStepResult::Kind::ProviderError &&
+							    st.retryReasoningEffortNone && attempt == 1 )
+								continue;   // one reasoning_effort:none retry of this round
 							break;
 						}
 						if( roundStopped ) break;
