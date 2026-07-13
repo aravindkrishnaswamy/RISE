@@ -173,6 +173,17 @@ namespace RISE
 			//! entry point used by `Job::AddGLTFTriangleMeshGeometry` (the
 			//! `gltf_geometry` chunk parser's target) — a chunk that imports
 			//! one named primitive without the full scene walk.
+			//!
+			//! `outRegistrationFailed` (optional, default NULL — existing
+			//! callers are unaffected): when non-NULL, set to TRUE iff the
+			//! geometry built successfully but `job.AddPrebuiltTriangleMeshGeometry`
+			//! (the GenericManager::AddItem registration step) is what failed
+			//! — i.e. an entity-NAME COLLISION, not a structural/malformed-
+			//! primitive failure.  ImportScene's scene walk uses this to fail
+			//! the whole import loudly on a genuine collision while still
+			//! warn-and-skipping a merely malformed primitive (unsupported
+			//! topology, Draco, etc. — BuildGeometryFromPrimitive's existing
+			//! tolerant behaviour, unchanged).
 			bool ImportPrimitive(
 				IJob& job,
 				const char* geomName,
@@ -180,7 +191,8 @@ namespace RISE
 				unsigned int primIdx,
 				bool doubleSided,
 				bool faceNormals,
-				bool flipV );
+				bool flipV,
+				bool* outRegistrationFailed = nullptr );
 
 			//! Lower-level building block: fill the caller-owned geometry
 			//! with the named primitive's vertex / index data.  Does NOT

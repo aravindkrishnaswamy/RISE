@@ -18,7 +18,7 @@
 //      line count check below accounts for exactly 3 response lines for
 //      4 REQUEST lines sent -- the notification is the one with no
 //      response).
-//    * tools/list lists the 14 tools.
+//    * tools/list lists the 16 tools.
 //    * the tools/call response carries the matching id.
 //    * the child exits 0 on stdin EOF.
 //
@@ -206,8 +206,8 @@ int main()
 		       "SECOND response echoes id==2 (tools/list -- the notification in between produced no line)" );
 		if( ok ) {
 			const JsonValue& tools = env.get( "result" ).get( "tools" );
-			Check( tools.isArray() && tools.size() == 14,
-			       "tools/list response lists exactly the 14 agent verbs" );
+			Check( tools.isArray() && tools.size() == 16,
+			       "tools/list response lists exactly the 16 agent verbs" );
 		}
 	}
 

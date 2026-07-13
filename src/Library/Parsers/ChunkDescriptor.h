@@ -316,6 +316,7 @@ namespace RISE
 		ChunkCategory                    category = ChunkCategory::Painter;
 		std::vector<ParameterDescriptor> parameters;
 		std::string                      description;
+		bool                             unnamedRepeatable = false;              //!< true iff multiple UNNAMED chunks of this keyword may coexist -- the derive APPENDS rather than last-wins (e.g. timeline); consumed by the agent insert/remove verbs
 	};
 
 	inline void ParseStateBag::ValidateAccess(const std::string& key) const

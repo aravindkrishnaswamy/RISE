@@ -1189,6 +1189,7 @@ void MainWindow::loadSceneFile(const QString& filePath)
     }
 
     addToRecentFiles(filePath);
+    if (m_chatPanel) m_chatPanel->setScenePath(filePath);   // E1: session-record scene identity
     m_engine->loadScene(filePath);
     updateWindowTitle();
 
@@ -1757,6 +1758,10 @@ void MainWindow::teardownViewport()
 
     if (m_chatPanel) {
         m_chatPanel->setViewportBridge(nullptr);
+        // (master merge) clear the trajectory scene identity; the
+        // pre-redesign hide()/m_chatVisible teardown does NOT apply —
+        // the redesigned chat panel is a permanent left-panel tab.
+        m_chatPanel->setScenePath(QString());
     }
     if (m_topBar) {
         m_topBar->setViewportBridge(nullptr);

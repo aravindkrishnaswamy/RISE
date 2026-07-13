@@ -108,6 +108,8 @@ enum AgentChatProviderChoice: String, CaseIterable, Identifiable {
     case anthropic
     case gemini
     case openai
+    case xai
+    case local
 
     var id: String { rawValue }
 
@@ -116,6 +118,8 @@ enum AgentChatProviderChoice: String, CaseIterable, Identifiable {
         case .anthropic: return "Anthropic"
         case .gemini:    return "Gemini"
         case .openai:    return "ChatGPT"
+        case .xai:       return "Grok (xAI)"
+        case .local:     return "Local (Ollama)"
         }
     }
 
@@ -124,6 +128,8 @@ enum AgentChatProviderChoice: String, CaseIterable, Identifiable {
         case .anthropic: return .anthropic
         case .gemini:    return .gemini
         case .openai:    return .openAI
+        case .xai:       return .XAI
+        case .local:     return .local
         }
     }
 
@@ -135,22 +141,53 @@ enum AgentChatProviderChoice: String, CaseIterable, Identifiable {
     /// gets two names because both are in conventional use by Gemini
     /// tooling (GEMINI_API_KEY is Google's own AI SDK convention;
     /// GOOGLE_API_KEY is the older/more widely-scripted one) — first
-    /// match wins.
+    /// match wins.  `local` is KEYLESS BY DESIGN (see MakeCodec in
+    /// AgentChatLoop.cpp — requiresAuth=false): empty list, never
+    /// prompted for, never resolved from the environment.
     var apiKeyEnvVars: [String] {
         switch self {
         case .anthropic: return ["ANTHROPIC_API_KEY"]
         case .gemini:    return ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
         case .openai:    return ["OPENAI_API_KEY"]
+        case .xai:       return ["XAI_API_KEY"]
+        case .local:     return []
         }
     }
 
     /// Back-compat single-name accessor — used where only "the" env
     /// var name is needed (e.g. the no-key error hint's launch
-    /// suggestion).  Always the first-checked name.
+    /// suggestion).  Always the first-checked name.  Never called for
+    /// `.local` (guarded by `requiresApiKey` at every call site).
     var apiKeyEnvVar: String { apiKeyEnvVars[0] }
+
+    /// False only for `.local` — a local/Ollama-style server is
+    /// keyless by design (an empty key omits the Authorization header
+    /// entirely; see OpenAIChatCodec::Config::requiresAuth).  The
+    /// settings UI shows the resolved endpoint instead of a key
+    /// prompt, and `driveTurn()` skips the no-key error for this case.
+    var requiresApiKey: Bool {
+        self != .local
+    }
 
     var defaultModelId: String {
         RISEAgentChatBridge.defaultModelId(for: bridgeValue)
+    }
+
+    /// `.local` only: the endpoint the settings UI shows in place of a
+    /// key prompt.  Mirrors MakeCodec's RISE_LOCAL_LLM_BASE_URL
+    /// override / Ollama-default fallback (src/Library/Agent/
+    /// AgentChatLoop.cpp) for DISPLAY purposes only — the GUI reads no
+    /// library API for this (a base URL is config, not a credential,
+    /// but there's no bridge accessor exposing the codec's resolved
+    /// config, so the literal default is mirrored here).  Changing the
+    /// env var takes effect on the next provider (re-)selection, same
+    /// as the library side.
+    static var localResolvedEndpoint: String {
+        if let env = ProcessInfo.processInfo.environment["RISE_LOCAL_LLM_BASE_URL"],
+           !env.isEmpty {
+            return env
+        }
+        return "http://127.0.0.1:11434/v1/chat/completions"
     }
 }
 
@@ -288,6 +325,12 @@ final class ChatViewModel: ObservableObject {
     /// Bumped whenever a key is saved/cleared so the settings UI
     /// re-derives the key-source caption.
     @Published private(set) var keyStateEpoch: Int = 0
+
+    /// Eval-harness E1: when ON (default), every chat session writes a
+    /// trajectory JSONL under evals/runs/gui/.  Redaction of api-key-shaped
+    /// content is unconditional in the core regardless of this toggle;
+    /// this switch only controls whether a file is written at all.
+    @Published private(set) var recordTrajectories: Bool
 
     // MARK: - Secure-MCP slice 5c: GUI-hosted external MCP endpoint +
     // proposals panel.  See `startExternalHosting()` / `stopExternalHosting()`
@@ -661,8 +704,81 @@ final class ChatViewModel: ObservableObject {
     var isChatRenderOutstanding: Bool { outstandingChatRenderJobId != 0 }
 
     private static let providerKey = "agentChat.provider"
+    private static let recordTrajectoriesKey = "agentChat.recordTrajectories"
     private static func modelIdKey(_ p: AgentChatProviderChoice) -> String {
         "agentChat.modelId.\(p.rawValue)"
+    }
+
+    /// Review-round P2 (E1): the loaded scene's path, handed in by
+    /// RenderViewModel at sceneOpened -- the trajectory<->document
+    /// correlator for the session record.  Cleared at scene close.
+    private var currentScenePath: String = ""
+
+    /// The per-session trajectory directory.
+    ///
+    /// A GUI app's process CWD is meaningless -- Finder-launched, it's "/"
+    /// (creating "/evals" under it fails with a permission error); Xcode-
+    /// launched, it's some DerivedData build directory nobody would think
+    /// to look in.  Either way `evals/runs/gui` relative to it silently
+    /// never got created and every trajectory line vanished into a sink
+    /// that opened nothing (recording toggle said ON; nothing was
+    /// written -- see MakeTrajectoryFileSink's loud-once-failure log,
+    /// which is the ONLY place that ever surfaced this before the fix).
+    ///
+    /// Default is a deterministic, always-writable location under the
+    /// app's Application Support directory.  `RISE_TRAJECTORY_DIR`
+    /// overrides it verbatim when set + non-empty -- the dev workflow of
+    /// running the GUI straight out of the repo and wanting files under
+    /// `evals/runs/gui` there.
+    ///
+    /// Not private: ChatPanel reads it to show the resolved path in the
+    /// "Record chat trajectories" toggle's help text (closing-verify D) --
+    /// a toggle that's silently ON with no visible destination is exactly
+    /// the discoverability gap this fix closes.
+    var trajectoryDirectory: String {
+        if let override = ProcessInfo.processInfo.environment["RISE_TRAJECTORY_DIR"],
+           !override.isEmpty {
+            return override
+        }
+        if let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask).first {
+            return appSupport.appendingPathComponent("RISE/trajectories/gui").path
+        }
+        // Application Support should always resolve on macOS; this is a
+        // last-ditch fallback that keeps the property total rather than
+        // introducing an optional the many call sites would need to unwrap.
+        return NSTemporaryDirectory() + "RISE/trajectories/gui"
+    }
+
+    /// (Re)start the per-session trajectory file for the current scene, or
+    /// DETACH when recording is disabled.  Invoked at scene open, on a
+    /// provider switch, and when the toggle changes.
+    private func startTrajectory() {
+        // Review-round P2: the session record's scene-identity fields were
+        // shipped dead (""/-1) -- the scene PATH is the trajectory<->document
+        // correlator the eval harness needs, and it is available right here.
+        // headVersion stays best-effort -1 on the GUI (no cheap accessor at
+        // attach time; the headless runner populates it precisely).
+        chatBridge.startTrajectory(directory: trajectoryDirectory,
+                                   scenePath: currentScenePath,
+                                   headVersion: -1,
+                                   enabled: recordTrajectories)
+    }
+
+    /// Toggle trajectory recording (persisted).  Turning it OFF finishes
+    /// the current session's summary line, then detaches; turning it ON
+    /// starts a fresh session file.
+    func setRecordTrajectories(_ on: Bool) {
+        guard on != recordTrajectories else { return }
+        recordTrajectories = on
+        UserDefaults.standard.set(on, forKey: Self.recordTrajectoriesKey)
+        if on {
+            startTrajectory()
+        } else {
+            chatBridge.finishTrajectory(status: "toggle_off")
+            chatBridge.startTrajectory(directory: trajectoryDirectory,
+                                       scenePath: "", headVersion: -1, enabled: false)
+        }
     }
 
     // MARK: - Image attachments (Model-B F5)
@@ -730,6 +846,10 @@ final class ChatViewModel: ObservableObject {
             forKey: Self.modelIdKey(storedProvider)) ?? ""
         provider = storedProvider
         modelId = storedModelId.isEmpty ? storedProvider.defaultModelId : storedModelId
+        // Eval-harness E1: default ON (records every session under
+        // evals/runs/gui/).  The actual file is attached at scene open.
+        recordTrajectories =
+            (UserDefaults.standard.object(forKey: Self.recordTrajectoriesKey) as? Bool) ?? true
         chatBridge.setProvider(storedProvider.bridgeValue, modelId: storedModelId)
 
         // Agent autonomy selector: an absent/out-of-range stored value
@@ -746,7 +866,11 @@ final class ChatViewModel: ObservableObject {
     /// skills index ONCE by driving the read_skill verb through the
     /// live dispatcher (per the SetSkillIndex contract — the loop
     /// stays sans-IO; the driver does the fetch).
-    func sceneOpened(viewportBridge vb: RISEViewportBridge) {
+    /// NOTE: `scenePath` has a compatibility default, but every real call
+    /// site must pass the loaded path (RenderViewModel does) -- a future
+    /// caller that omits it silently ships a session record with no
+    /// scene identity (closing-verify P3).
+    func sceneOpened(viewportBridge vb: RISEViewportBridge, scenePath: String = "") {
         cancelTurn()
         sceneGeneration += 1
         viewportBridge = vb
@@ -756,6 +880,7 @@ final class ChatViewModel: ObservableObject {
         // switch never silently resets a user's Read/Propose selection
         // back to Apply.
         vb.agentAutonomyLevel = autonomyLevel
+        currentScenePath = scenePath
         chatBridge.reset()
         transcript = []
         clearErrorAffordances()
@@ -777,6 +902,11 @@ final class ChatViewModel: ObservableObject {
         let indexLine = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"read_skill\"}"
         chatBridge.setSkillIndex(
             Self.renderSkillIndex(fromRpcResponse: vb.agentHandleLine(indexLine)))
+
+        // Eval-harness E1: a freshly-opened scene starts a NEW trajectory
+        // file (the skill index is set above, so the session record captures
+        // the full system prompt including skills on first user message).
+        startTrajectory()
     }
 
     /// The scene is closing (clearScene / reload): stop any in-flight
@@ -796,7 +926,13 @@ final class ChatViewModel: ObservableObject {
         stopExternalHosting()
         sceneGeneration += 1
         viewportBridge = nil
+        currentScenePath = ""
         chatBridge.reset()
+        // Eval-harness E1: reset() closed the session ("reset" summary to
+        // the current file); detach so no file lingers between scenes (the
+        // next sceneOpened starts a fresh one).
+        chatBridge.startTrajectory(directory: trajectoryDirectory,
+                                   scenePath: "", headVersion: -1, enabled: false)
         transcript = []
         inputText = ""
         clearErrorAffordances()
@@ -847,6 +983,10 @@ final class ChatViewModel: ObservableObject {
         transcript = []
         clearErrorAffordances()
         consecutiveHttp400s = 0
+        // Eval-harness E1: setProvider closed the old session (a
+        // "provider_switch" summary to the old file); begin a new file so
+        // the new provider's session records land separately.
+        startTrajectory()
     }
 
     /// Persisted model id for `p` ("" = provider default).  Lets the
@@ -1483,7 +1623,16 @@ final class ChatViewModel: ObservableObject {
             guard viewportBridge != nil else { return }
             guard sceneEditableOrReportRenderConflict() else { return }
 
-            guard let apiKey = resolveApiKey() else {
+            let apiKey: String
+            if let resolved = resolveApiKey() {
+                apiKey = resolved
+            } else if !provider.requiresApiKey {
+                // Keyless-by-design (.local): an empty key omits the
+                // Authorization header entirely (OpenAIChatCodec::
+                // Config::requiresAuth=false) — this is the expected
+                // steady state, not an error.
+                apiKey = ""
+            } else {
                 transcript.append(Entry(
                     kind: .error,
                     text: "No API key for \(provider.displayName).  Add one in "
@@ -1509,10 +1658,13 @@ final class ChatViewModel: ObservableObject {
 
             let data: Data
             let status: Int
+            let httpStarted = Date()
+            var elapsedMs: Int64 = 0
             do {
                 let (body, response) = try await URLSession.shared.data(for: urlRequest)
                 data = body
                 status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                elapsedMs = Int64(Date().timeIntervalSince(httpStarted) * 1000.0)
             } catch {
                 if Task.isCancelled || stopRequested { return }
                 // Transport-level failure: nothing reached the loop,
@@ -1534,8 +1686,13 @@ final class ChatViewModel: ObservableObject {
             // check, this closes the rest).
             guard sceneEditableOrReportRenderConflict() else { return }
 
-            let step = chatBridge.handleResponse(
-                status: status, body: String(data: data, encoding: .utf8) ?? "")
+            let bodyString = String(data: data, encoding: .utf8) ?? ""
+            // Eval-harness E1: record the LLM round (status/body/latency)
+            // into the trajectory BEFORE handling it (no-op when recording
+            // is off).  The bridge strips auth headers from the cached
+            // request; the writer redacts every line unconditionally.
+            chatBridge.recordHttpRound(status: status, body: bodyString, elapsedMs: elapsedMs)
+            let step = chatBridge.handleResponse(status: status, body: bodyString)
 
             switch step.kind {
             case .toolCalls:

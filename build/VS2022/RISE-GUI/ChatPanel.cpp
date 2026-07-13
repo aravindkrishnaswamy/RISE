@@ -9,6 +9,7 @@
 #include "ViewportBridge.h"
 #include "Theme.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDebug>
 #include <QFileInfo>
@@ -29,6 +30,8 @@
 #include <QScrollBar>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QStandardPaths>
+#include <QTextEdit>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -36,7 +39,10 @@
 
 #include <utility>
 
+#include <ctime>
+
 #include "Agent/AgentChatLoop.h"
+#include "Agent/ChatTrajectory.h"
 
 using RISE::Agent::AgentChatLoop;
 using RISE::Agent::AnthropicChatCodec;
@@ -213,6 +219,8 @@ ChatPanel::ChatPanel(QWidget* parent)
     m_providerCombo->addItem("OpenAI");
     m_providerCombo->addItem("Anthropic");
     m_providerCombo->addItem("Gemini");
+    m_providerCombo->addItem("Grok (xAI)");
+    m_providerCombo->addItem("Local (Ollama)");
     m_providerCombo->setFont(Theme::mono(10));
     m_providerCombo->setStyleSheet(QStringLiteral(
         "QComboBox { color: %1; background: transparent; border: 1px solid %2; border-radius: 5px; padding: 3px 8px; }")
@@ -351,12 +359,32 @@ ChatPanel::ChatPanel(QWidget* parent)
     }
     updateAutonomyChipsStyle();
 
+    // Eval-harness E1: trajectory recording toggle (default ON).  The
+    // redaction pass in the core is unconditional; this only controls
+    // whether a per-session JSONL file is written under
+    // trajectoryDirectory() (see that method's doc for the resolved path).
+    {
+        QSettings settings;
+        m_recordTrajectories =
+            settings.value("agentChat/recordTrajectories", true).toBool();
+    }
+    m_recordTrajectoriesCheck = new QCheckBox("Record chat trajectories");
+    m_recordTrajectoriesCheck->setChecked(m_recordTrajectories);
+    m_recordTrajectoriesCheck->setToolTip(
+        "Write a per-session JSONL log under " + trajectoryDirectory() +
+        " (system prompt, each request/response, tool calls, tokens, timings).  "
+        "API-key-shaped content is always redacted regardless of this setting.  "
+        "Set RISE_TRAJECTORY_DIR to record elsewhere.");
+    outer->addWidget(m_recordTrajectoriesCheck);
+
     m_statusLabel = new QLabel();
     m_statusLabel->setFont(Theme::sans(11));
     m_statusLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
     m_statusLabel->setWordWrap(true);
     outer->addWidget(m_statusLabel);
 
+    connect(m_recordTrajectoriesCheck, &QCheckBox::toggled,
+            this, &ChatPanel::recordTrajectoriesToggled);
     connect(m_providerCombo, static_cast<void(QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
             this, &ChatPanel::providerChanged);
     connect(m_modelEdit, &QLineEdit::editingFinished,
@@ -464,11 +492,17 @@ void ChatPanel::setViewportBridge(ViewportBridge* bridge)
         m_resolvedProposalObservedAt.clear();
         refreshProposals();
         m_proposalsPollTimer->start();
+        // Eval-harness E1: a freshly-bound scene starts a NEW trajectory
+        // file (skills are set above, so the session record captures the
+        // full system prompt on the first user message).
+        startTrajectory();
     } else {
         m_proposalsPollTimer->stop();
         m_resolvedProposalObservedAt.clear();
         rebuildProposalsUI({});
         m_loop->Reset();
+        // Detach so no file lingers between scenes.
+        startTrajectory();
         refreshTranscript();
     }
     updateButtonStates();
@@ -539,6 +573,9 @@ void ChatPanel::resetConversation()
 {
     requestStop();
     m_loop->Reset();
+    // Eval-harness E1: Reset() closed the session ("reset" summary); start
+    // a fresh file for the post-reset conversation (or detach if off).
+    startTrajectory();
     clearErrorAffordances();
     refreshTranscript();
     updateButtonStates();
@@ -571,7 +608,7 @@ void ChatPanel::sendMessage()
     if (m_busy || !m_bridge || !m_sceneEditable) return;
     const QString text = m_inputEdit->text().trimmed();
     if (text.isEmpty()) return;
-    if (m_apiKeyEdit->text().trimmed().isEmpty()) {
+    if (providerRequiresApiKey(m_appliedProvider) && m_apiKeyEdit->text().trimmed().isEmpty()) {
         refreshTranscript("Enter an API key before sending.");
         return;
     }
@@ -640,8 +677,13 @@ void ChatPanel::networkFinished()
     }
 
     const long httpStatus = status == 0 ? 0 : status;
-    const ChatStepResult step =
-        m_loop->HandleResponse(httpStatus, std::string(body.constData(), static_cast<std::size_t>(body.size())));
+    const std::string bodyStd(body.constData(), static_cast<std::size_t>(body.size()));
+    // Eval-harness E1: record the LLM round (status/body/latency) BEFORE
+    // handling it (no-op when recording is off).  The loop strips auth
+    // headers from its cached request; the writer redacts every line.
+    const qint64 elapsedMs = m_httpTimer.isValid() ? m_httpTimer.elapsed() : 0;
+    m_loop->RecordHttpRound(httpStatus, bodyStd, static_cast<int64_t>(elapsedMs));
+    const ChatStepResult step = m_loop->HandleResponse(httpStatus, bodyStd);
     refreshTranscript(step.assistantDisplayText.empty() ? QString() : "Running tools...");
 
     if (step.kind == ChatStepResult::Kind::ProviderError) {
@@ -673,9 +715,37 @@ QString ChatPanel::defaultModelFor(Provider provider) const
     case Provider::Gemini:
         return QString::fromUtf8(GeminiChatCodec().DefaultModelId());
     case Provider::OpenAI:
-    default:
         return QString::fromUtf8(OpenAIChatCodec().DefaultModelId());
+    case Provider::XAI: {
+        // xAI rides the parameterized OpenAIChatCodec (no standalone
+        // XAIChatCodec type -- see AgentChatLoop.cpp's MakeCodec, which
+        // this mirrors for display purposes since there is no bridge
+        // accessor onto the loop's already-constructed codec config).
+        OpenAIChatCodec::Config cfg;
+        cfg.providerName   = "xai";
+        cfg.baseUrl        = "https://api.x.ai/v1/chat/completions";
+        cfg.defaultModelId = "grok-4.5";
+        cfg.requiresAuth   = true;
+        return QString::fromUtf8(OpenAIChatCodec(cfg).DefaultModelId());
     }
+    case Provider::Local: {
+        OpenAIChatCodec::Config cfg;
+        cfg.providerName   = "local";
+        cfg.baseUrl        = "http://127.0.0.1:11434/v1/chat/completions";
+        cfg.defaultModelId = "qwen3:32b";
+        cfg.requiresAuth   = false;
+        return QString::fromUtf8(OpenAIChatCodec(cfg).DefaultModelId());
+    }
+    }
+    // Every enum case is handled explicitly above -- reaching here means a
+    // new Provider value was added without a matching case (the switch is
+    // NOT exhaustive-checked by MSVC without a default, unlike Swift's
+    // enum, so this is the loud backstop).  Log and fall back to OpenAI
+    // rather than silently mis-defaulting.
+    qWarning("ChatPanel::defaultModelFor: unhandled Provider %d -- falling back to OpenAI",
+              static_cast<int>(provider));
+    Q_ASSERT(false && "ChatPanel::defaultModelFor: unhandled Provider");
+    return QString::fromUtf8(OpenAIChatCodec().DefaultModelId());
 }
 
 QString ChatPanel::envKeyFor(Provider provider) const
@@ -688,9 +758,31 @@ QString ChatPanel::envKeyFor(Provider provider) const
         return gemini.isEmpty() ? qEnvironmentVariable("GOOGLE_API_KEY") : gemini;
     }
     case Provider::OpenAI:
-    default:
         return qEnvironmentVariable("OPENAI_API_KEY");
+    case Provider::XAI:
+        return qEnvironmentVariable("XAI_API_KEY");
+    case Provider::Local:
+        // Keyless by design (OpenAIChatCodec::Config::requiresAuth=false
+        // for this provider) -- no env var to consult.  An empty return
+        // here is the correct/expected value, not a miss.
+        return QString();
     }
+    qWarning("ChatPanel::envKeyFor: unhandled Provider %d -- falling back to OpenAI",
+              static_cast<int>(provider));
+    Q_ASSERT(false && "ChatPanel::envKeyFor: unhandled Provider");
+    return qEnvironmentVariable("OPENAI_API_KEY");
+}
+
+bool ChatPanel::providerRequiresApiKey(Provider provider)
+{
+    return provider != Provider::Local;
+}
+
+QString ChatPanel::localResolvedEndpoint()
+{
+    const QString envUrl = qEnvironmentVariable("RISE_LOCAL_LLM_BASE_URL");
+    return envUrl.isEmpty() ? QStringLiteral("http://127.0.0.1:11434/v1/chat/completions")
+                             : envUrl;
 }
 
 void ChatPanel::applyProviderToLoop(bool resetModelToDefault)
@@ -718,13 +810,40 @@ void ChatPanel::applyProviderToLoop(bool resetModelToDefault)
     }
     m_apiKeyEdit->setText(newKey);
 
+    // No-key affordance for Provider::Local (keyless-by-design): there is
+    // no per-provider settings popover on this platform to swap in
+    // dedicated endpoint UI, so reuse the existing key field's placeholder
+    // to show where the chat is pointing plus a hint that a server has to
+    // actually be running -- the field itself stays enabled (a local
+    // server started with --api-key still accepts an optional key here).
+    m_apiKeyEdit->setPlaceholderText(
+        providerRequiresApiKey(newProvider)
+            ? QStringLiteral("API key")
+            : QStringLiteral("No key needed -- ") + localResolvedEndpoint() +
+                  QStringLiteral(" (requires a running local server, e.g. "
+                                 "`ollama serve`; override with RISE_LOCAL_LLM_BASE_URL)"));
+
     ChatProvider chatProvider = ChatProvider::OpenAI;
     if (newProvider == Provider::Anthropic) {
         chatProvider = ChatProvider::Anthropic;
     } else if (newProvider == Provider::Gemini) {
         chatProvider = ChatProvider::Gemini;
+    } else if (newProvider == Provider::XAI) {
+        chatProvider = ChatProvider::XAI;
+    } else if (newProvider == Provider::Local) {
+        chatProvider = ChatProvider::Local;
+    } else if (newProvider != Provider::OpenAI) {
+        // Same loud backstop as defaultModelFor/envKeyFor: a new Provider
+        // value reached here without a matching branch.  Falls back to
+        // the OpenAI default above rather than silently mis-routing.
+        qWarning("ChatPanel::applyProviderToLoop: unhandled Provider %d -- falling back to OpenAI",
+                  static_cast<int>(newProvider));
+        Q_ASSERT(false && "ChatPanel::applyProviderToLoop: unhandled Provider");
     }
     m_loop->SetProvider(chatProvider, toStdString(m_modelEdit->text().trimmed()));
+    // Eval-harness E1: SetProvider closed the old session ("provider_switch"
+    // summary to the old file); begin a new file for the new provider.
+    startTrajectory();
     refreshTranscript();
 
     m_appliedProvider = newProvider;
@@ -922,6 +1041,8 @@ void ChatPanel::runNextStep()
             QByteArray(header.second.c_str(), static_cast<int>(header.second.size())));
     }
 
+    // Eval-harness E1: measure the round-trip latency for the llm record.
+    m_httpTimer.start();
     m_reply = m_network->post(
         netReq,
         QByteArray(req.body.c_str(), static_cast<int>(req.body.size())));
@@ -942,6 +1063,73 @@ void ChatPanel::fetchSkillIndex()
     const QString line =
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"read_skill\",\"params\":{}}";
     m_loop->SetSkillIndex(toStdString(renderSkillIndex(m_bridge->agentHandleLine(line))));
+}
+
+QString ChatPanel::trajectoryDirectory() const
+{
+    // Dev-workflow override: running the GUI straight out of the repo and
+    // wanting files under evals/runs/gui there.
+    const QString dirOverride = qEnvironmentVariable("RISE_TRAJECTORY_DIR");
+    if (!dirOverride.isEmpty()) return dirOverride;
+
+    // QDir::currentPath() is nondeterministic for a GUI app (whatever the
+    // shell/shortcut/Explorer launched it from happened to be) and can be
+    // unwritable outright under Program Files -- either way "evals/runs/gui"
+    // relative to it silently never got created and every trajectory line
+    // vanished into a sink that opened nothing (recording toggle said ON;
+    // nothing was written -- see MakeTrajectoryFileSink's loud-once-failure
+    // log, which is the ONLY place that ever surfaced this before the fix).
+    // AppDataLocation already folds in the organizationName/applicationName
+    // set on QCoreApplication in main.cpp ("RISE"/"RISE"), so this resolves
+    // to a deterministic, always-writable per-user directory.
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    return base + "/trajectories/gui";
+}
+
+void ChatPanel::startTrajectory()
+{
+    // Detach when recording is off or no scene is bound.
+    if (!m_recordTrajectories || !m_bridge) {
+        m_loop->SetTrajectorySink(std::function<void(const std::string&)>());
+        return;
+    }
+    const std::string dir = toStdString(trajectoryDirectory());
+
+    // Rotate BEFORE creating the new file (keep ~50 newest / ~200 MB).
+    RISE::Agent::PruneTrajectoryDir(dir, 50, 200LL * 1024 * 1024);
+
+    const std::string traceId = RISE::Agent::MakeTrajectoryTraceId();
+    char ts[32];
+    std::time_t nowT = std::time(nullptr);
+    std::tm tmv;
+#ifdef _WIN32
+    gmtime_s(&tmv, &nowT);
+#else
+    gmtime_r(&nowT, &tmv);
+#endif
+    std::strftime(ts, sizeof(ts), "%Y%m%dT%H%M%SZ", &tmv);
+    const std::string path =
+        dir + "/" + std::string(ts) + "-" + traceId.substr(0, 8) + ".jsonl";
+
+    RISE::Agent::ChatTrajectoryConfig cfg;
+    cfg.traceId = traceId;
+    cfg.scenePath = toStdString(m_scenePath);
+    cfg.sceneHeadVersion = -1;   // best-effort on the GUI; the headless runner populates it precisely
+    m_loop->SetTrajectorySink(RISE::Agent::MakeTrajectoryFileSink(path), cfg);
+}
+
+void ChatPanel::recordTrajectoriesToggled(bool on)
+{
+    if (on == m_recordTrajectories) return;
+    m_recordTrajectories = on;
+    QSettings settings;
+    settings.setValue("agentChat/recordTrajectories", on);
+    if (on) {
+        startTrajectory();
+    } else {
+        m_loop->FinishTrajectory("toggle_off");
+        m_loop->SetTrajectorySink(std::function<void(const std::string&)>());
+    }
 }
 
 QString ChatPanel::renderSkillIndex(const QString& rpcResponse) const

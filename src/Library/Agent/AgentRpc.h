@@ -57,10 +57,32 @@
 //                                            disambiguation hint; a still-referenced
 //                                            target fails the dry-run -> rejected with
 //                                            the diagnostic, head byte-identical.)
-//      render       {samples?,width?,height?,camera?,pinned?}
+//      render       {samples?,width?,height?,camera?,pinned?,quality?,mode?}
 //                                        -> {ok,width,height,meanR,meanG,meanB,integrator,
 //                                            previewWidth,previewHeight,cameraOverridden,message,
-//                                            renderJobId,samplesOverridden,effectiveSamples}
+//                                            renderJobId,samplesOverridden,effectiveSamples,renderMode,
+//                                            legend?}
+//                                           (Toolkit slice 3a: `mode` (OPTIONAL
+//                                            string, "beauty"|"objectmap",
+//                                            default "beauty") selects the render
+//                                            TARGET.  "objectmap" paints each hit
+//                                            object a flat identity colour and adds
+//                                            a `legend` array of {name,colorHex,
+//                                            pixelCount} to the result --
+//                                            renderMode reads "objectmap";
+//                                            `quality`/`samples` are ignored (one
+//                                            fidelity).  Read the objectmap PNG at
+//                                            NATIVE size -- read_image's maxEdge
+//                                            box-downscale blends identity colours
+//                                            and breaks legend matching.  `legend`
+//                                            is present ONLY for an objectmap
+//                                            render.  A generator-synthesized legend
+//                                            name (e.g. "grid[0,1]" from an
+//                                            instance_array) identifies the instance
+//                                            in the map but is NOT a CST chunk -- to
+//                                            EDIT it, target the GENERATOR chunk
+//                                            (strip the "[i,j]" suffix: "grid"), not
+//                                            the instance name.
 //                                           (`integrator` is the ACTIVE rasterizer's
 //                                            registered type name = its scene-file
 //                                            chunk keyword, e.g.
@@ -130,7 +152,52 @@
 //                                            controller Stop() still cancel
 //                                            it -- pinned guards against
 //                                            supersession, not against an
-//                                            explicit cancel/teardown).)
+//                                            explicit cancel/teardown).
+//                                            Toolkit slice 2: `quality`
+//                                            (OPTIONAL string, "draft" or
+//                                            "production"; absent = today's
+//                                            EXACT "production" behaviour,
+//                                            strictly additive) selects an
+//                                            EPHEMERAL, per-call rasterizer
+//                                            override -- NEVER a scene
+//                                            mutation.  "draft" renders
+//                                            through a wholly SEPARATE
+//                                            preview pipeline (the SAME
+//                                            fixed studio-preview shader the
+//                                            GUI's live interactive editor
+//                                            uses) that IGNORES the scene's
+//                                            authored materials and
+//                                            lighting entirely -- geometry,
+//                                            composition, and camera framing
+//                                            are representative; materials,
+//                                            lighting, exposure, and colour
+//                                            are NOT.  NEVER judge those
+//                                            from a draft image -- render at
+//                                            quality:"production" (or read
+//                                            the LIVE viewport via
+//                                            read_viewport) for that.  A
+//                                            draft render CAPS `samples` at
+//                                            4 regardless of the requested
+//                                            value (absent a request, the
+//                                            preview pipeline's own 1-SPP
+//                                            default is used); the additive
+//                                            result field `renderMode`
+//                                            ("production"/"draft") reports
+//                                            which pipeline actually ran,
+//                                            and is DISTINCT from
+//                                            `integrator`, which always
+//                                            names the head's ACTIVE
+//                                            (production) rasterizer
+//                                            regardless of `quality` -- use
+//                                            `renderMode`, not `integrator`,
+//                                            to tell which shading produced
+//                                            THIS image.  `width`/`height`/
+//                                            `camera`/`pinned` compose with
+//                                            `quality` exactly as they do
+//                                            today (both render modes share
+//                                            the same film-dims/camera-pose
+//                                            override and cancel/single-slot
+//                                            machinery).)
 //      read_image   {maxEdge?}           -> {png_base64:string, byteLength:number,
 //                                            width:number, height:number}
 //                                           (Facet 5 preview-render: `maxEdge`
@@ -139,7 +206,95 @@
 //                                            preserving, never upscales -- before
 //                                            base64-encoding; no re-render.
 //                                            `width`/`height` report the dims of
-//                                            the returned image.)
+//                                            the returned image.  Toolkit slice 3a:
+//                                            after an objectmap render, read at
+//                                            NATIVE size -- OMIT maxEdge, since a
+//                                            box-downscale blends the flat identity
+//                                            colours and breaks the exact-byte
+//                                            legend match.)
+//      read_viewport {maxEdge?}          -> {available:bool, reason:string,
+//                                            png_base64:string, byteLength:number,
+//                                            width:number, height:number}
+//                                           (Toolkit slice 1: the LIVE interactive
+//                                            GUI viewport's CURRENT pixels -- the frame
+//                                            the user is looking at right now, NOT the
+//                                            agent's own last render (contrast
+//                                            read_image).  NEVER triggers a render --
+//                                            the cheapest observe; it copies whatever
+//                                            the interactive render loop last produced.
+//                                            `available` is false with reason
+//                                            "no_controller" (headless session, no
+//                                            viewport) or "no_frame_yet" (controller
+//                                            attached but no interactive frame produced
+//                                            yet); png_base64 is "" and the numeric
+//                                            fields 0 in that case.  available:false is
+//                                            a STRUCTURED SUCCESS result, NOT an error
+//                                            (the list_proposals precedent) -- only "no
+//                                            session loaded" is a MakeError.  maxEdge
+//                                            (clamped [16,1024]) downscales exactly as
+//                                            read_image does (box filter, aspect-
+//                                            preserving, never upscales), no re-render.
+//                                            DELIBERATE CONTRAST with read_image, which
+//                                            returns a silent empty image with no
+//                                            availability flag -- the explicit
+//                                            available/reason pair distinguishes "no
+//                                            live viewport" from "an all-black frame";
+//                                            do NOT harmonize the two shapes.)
+//      query_object_at {x,y,camera?,width?,height?}
+//                                        -> {hit,name,kind,pixelX,pixelY,width,height,
+//                                            message}
+//                                           (Toolkit slice 3b: the cheap single-pixel
+//                                            companion to render mode:"objectmap" --
+//                                            "which WORLD-VISIBLE object is under
+//                                            pixel (x,y)?" IMPLEMENTATION: reuses the
+//                                            objectmap ephemeral pipeline WHOLESALE
+//                                            (one full identity render at the
+//                                            effective dims, decoding ONE pixel back
+//                                            against that render's legend by exact
+//                                            colorHex byte) rather than a bespoke
+//                                            single-ray probe -- costs one identity
+//                                            render (~20ms at 256x256), not a second
+//                                            code path; see AgentSession::
+//                                            QueryObjectAt's doc for the full
+//                                            rationale. `x`/`y` are INTEGER pixel
+//                                            coordinates in the EFFECTIVE film dims
+//                                            (the override dims when `width`+`height`
+//                                            are BOTH supplied, else the Document's
+//                                            authored Film dims) -- an out-of-range
+//                                            (x,y) is a CLEAN -32602 (kInvalidParams),
+//                                            checked BEFORE the render runs (a cheap
+//                                            read-only Film query). `camera`/`width`/
+//                                            `height` compose EXACTLY like render's own
+//                                            overrides (ephemeral, captured + restored,
+//                                            never touch the Document) -- aim the
+//                                            camera with these, then query. `hit:false`
+//                                            is a STRUCTURED SUCCESS (never an error):
+//                                            the probe pixel resolved to the reserved
+//                                            background colour (the ray missed every
+//                                            object) -- `name` is "" in that case.
+//                                            `name` is the SAME legend name a
+//                                            mode:"objectmap" render's legend carries
+//                                            (the generator-synthesized `grid[i,j]`-
+//                                            is-not-a-CST-chunk caveat applies
+//                                            identically -- see render's `mode` doc).
+//                                            `kind` is currently ALWAYS "" -- no cheap
+//                                            manager-kind accessor exists yet (see
+//                                            AgentQueryObjectResult::kind's doc);
+//                                            wired for a future accessor rather than
+//                                            guessed. `pixelX`/`pixelY`/`width`/
+//                                            `height` echo the queried pixel and the
+//                                            EFFECTIVE dims this call resolved.
+//                                            Never mutates the retained Document
+//                                            (ReadDocument() is byte-identical before
+//                                            and after, exactly like render). Works on
+//                                            a head with NO active production
+//                                            rasterizer -- mirrors the quality:"draft"
+//                                            / mode:"objectmap" gate, since the
+//                                            underlying render this reuses never
+//                                            dereferences the production rasterizer.
+//                                            READ-SAFE: available under every
+//                                            autonomy posture, including Read (a pure
+//                                            read, exactly like render itself).)
 //      list_proposals {}                 -> {proposals:[{id,kind,target,entityKind,
 //                                            param,value,chunkText,truncated,
 //                                            baseVersion:{uuid,revision},
@@ -252,10 +407,13 @@
 //    Secure-MCP slice 2 (headless autonomy policy): AgentAutonomy is a
 //    LAUNCH-TIME-ONLY posture -- never settable by the model, a scene
 //    file, or any request parameter.  Post-hardening, the choke point is
-//    DENY-BY-DEFAULT: `Read` allows ONLY the 9-verb read-safe allowlist
+//    DENY-BY-DEFAULT: `Read` allows ONLY the read-safe allowlist
 //    (read_document, read_schema, read_skill, validate, render,
-//    render_status, render_wait, render_cancel, read_image -- IsReadSafeVerb
-//    in AgentRpc.cpp) and refuses EVERYTHING else, including the 3 known-
+//    render_status, render_wait, render_cancel, read_image,
+//    list_proposals, read_viewport, query_object_at -- IsReadSafeVerb in
+//    AgentRpc.cpp, the single source of truth for membership; keep this
+//    enumeration in sync when a verb is added) and refuses EVERYTHING else,
+//    including the 3 known-
 //    mutating verbs (propose_patch, insert_chunk, remove_chunk), any
 //    unrecognized/typo'd method name, and any FUTURE verb added to the
 //    dispatch below without also being added to the read-safe list.  This
@@ -277,6 +435,8 @@
 //    conflict.  render (and every other verb on the read-safe allowlist)
 //    is DELIBERATELY allowed under `Read` -- it does not mutate the
 //    retained Document, and rendering is the core value of a read-only
+//    observer session.  `Commit` is today's behaviour: no refusal, every
+//    verb dispatches as before.
 //
 //    Secure-MCP slice 6 (limits hardening): two SIBLING app-range codes in
 //    the same -320xx family as kAutonomyRefused, each a distinct
@@ -288,14 +448,13 @@
 //    TRANSPORT layer, before a request reaches this dispatcher, so it is
 //    deliberately NOT reachable via `rise --agent-stdio`) when a mutating
 //    verb exceeds the fixed-window call-rate cap.
-//    observer session.  `Commit` is today's behaviour: no refusal, every
-//    verb dispatches as before.
 //
 //    Secure-MCP slice 5b (`Propose` autonomy): a THIRD posture, between
-//    Read and Commit.  Under `Propose`, the read-safe 9-verb allowlist
-//    still passes (same as Read) PLUS list_proposals (also read-safe under
-//    every posture, see below) PLUS the 3 mutating verbs (propose_patch,
-//    insert_chunk, remove_chunk) are let THROUGH to the wrapped
+//    Read and Commit.  Under `Propose`, the read-safe allowlist
+//    (IsReadSafeVerb -- includes list_proposals, read-safe under every
+//    posture, see below) still passes (same as Read) PLUS the 3 mutating
+//    verbs (propose_patch, insert_chunk, remove_chunk) are let THROUGH
+//    to the wrapped
 //    AgentSession rather than refused at this dispatcher's choke point --
 //    see IsProposeSafeVerb in AgentRpc.cpp.  Crucially, this dispatcher-
 //    layer gate does NOT itself decide whether a mutating verb commits or
@@ -370,7 +529,7 @@ namespace RISE
 		//! the full class-default-vs-binary-default rationale.
 		enum class AgentAutonomy
 		{
-			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/list_proposals) dispatches; every other method, including the 3 known-mutating verbs (propose_patch/insert_chunk/remove_chunk), resolve_proposal, and any future unclassified verb, is refused.
+			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at) dispatches; every other method, including the 3 known-mutating verbs (propose_patch/insert_chunk/remove_chunk), resolve_proposal, and any future unclassified verb, is refused.
 			//! Secure-MCP slice 5b: the read-safe allowlist PLUS the 3 mutating
 			//! verbs (propose_patch/insert_chunk/remove_chunk) dispatch -- but
 			//! dispatching only reaches AgentSession, whose OWN Owner/External
@@ -412,8 +571,9 @@ namespace RISE
 			//! response line in slice 0c (the stdio transport is strictly
 			//! request/response; true fire-and-forget notifications are not
 			//! part of this set).  Secure-MCP slice 2 hardening: under
-			//! AgentAutonomy::Read, any method NOT on the 9-verb read-safe
-			//! allowlist (IsReadSafeVerb) -- the 3 mutating verbs, an
+			//! AgentAutonomy::Read, any method NOT on the read-safe
+			//! allowlist (IsReadSafeVerb, the single source of truth for
+			//! membership) -- the 3 mutating verbs, an
 			//! unrecognized method, or any future verb not yet classified --
 			//! returns kAutonomyRefused (-32011) instead of dispatching; see
 			//! the file header's policy-refusal doc.

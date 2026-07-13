@@ -4,7 +4,7 @@
 //    LLM chat loop (see AgentChatCodecs.h).
 //
 //  Layout:
-//    (1) the NINE provider-neutral tool definitions (1:1 with the
+//    (1) the TEN provider-neutral tool definitions (1:1 with the
 //        AgentRpc verbs; parameter names/shapes mirror AgentRpc.cpp),
 //    (2) a small raw-span JSON scanner (byte-exact extraction of the
 //        assistant content from a response body, so provider-opaque
@@ -24,6 +24,7 @@
 #include "Json.h"
 
 #include <cstring>
+#include <map>
 #include <string>
 
 namespace RISE
@@ -140,6 +141,9 @@ namespace RISE
 					"replacement -- insert-first creates two cameras and strands the old "
 					"unnamed one (a NAMED second camera stays removable by name) "
 					"(the positional fallback requires exactly one). "
+					"Unnamed chunks are singletons per keyword EXCEPT append-class kinds "
+					"(timeline, keyframe -- see read_schema's unnamedRepeatable), which may "
+					"legally repeat unnamed. "
 					"Use read_schema for the chunk's parameters; for a BIG "
 					"addition, compose the full candidate document and validate it "
 					"FIRST, then insert chunk by chunk. Always pass the headVersion you "
@@ -178,7 +182,10 @@ namespace RISE
 					"pass the headVersion you last read as baseHeadVersion. There is no "
 					"rename verb -- the safe recipe: insert_chunk the renamed entity "
 					"(declarations are positioned before their consumers), retarget its "
-					"consumers via propose_patch, then remove_chunk the old one.",
+					"consumers via propose_patch, then remove_chunk the old one. "
+					"Removing a repeatable-unnamed kind (timeline, keyframe) by kind alone "
+					"while 2+ unnamed instances exist is refused as ambiguous -- address a "
+					"named chunk, or use kind only when exactly one unnamed instance remains.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"target\":{\"type\":\"string\",\"description\":"
 						"\"The bare NAME of the chunk to remove (a chunk name from the document).\"},"
@@ -207,12 +214,22 @@ namespace RISE
 					"chunk -- the override is EPHEMERAL (restored after this one render) "
 					"and never touches the document, so it's the cheap way to look at a "
 					"scene from the side/above/behind before committing to a placement. "
-					"Reserve full-size, full-sample renders (no width/height/camera "
-					"override) for the FINAL verification once you're confident the edit "
-					"is right.",
+					"For the CHEAPEST possible orientation check (is the geometry/camera "
+					"roughly right, nothing else), set quality:\"draft\" -- it renders "
+					"through a fixed studio-preview shader that IGNORES the scene's "
+					"authored materials and lighting entirely, capped at 4 samples. "
+					"Geometry/composition/camera framing ARE representative in a draft "
+					"image; materials, lighting, exposure, and colour are NOT -- never "
+					"judge those from a draft, and check the result's `renderMode` field "
+					"(not `integrator`, which never changes with quality) to confirm which "
+					"pipeline actually ran. "
+					"Reserve full-size, full-sample, quality:\"production\" renders (the "
+					"default; no width/height/camera override) for the FINAL verification "
+					"once you're confident the edit is right, and for ANY judgement of "
+					"materials/lighting/exposure/colour.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"samples\":{\"type\":\"number\",\"description\":"
-						"\"Optional sample-count override (currently advisory; the authored count is used).\"},"
+						"\"Optional sample-count override. Honoured by the pixel-based rasterizer family (PT, spectral PT, BDPT, VCM) via a transient, non-mutating setter -- check the result's samplesOverridden/effectiveSamples fields. On an unsupported rasterizer (MLT, photon-map-only, Auto's outer wrapper) the override is honestly reported as NOT applied, never silently ignored. Under quality:draft this is instead a firm request CAPPED at 4.\"},"
 						"\"width\":{\"type\":\"number\",\"description\":"
 						"\"Optional TRANSIENT preview width in pixels, clamped to [16,512]. Must be paired with height -- if only one of width/height is given, NEITHER is applied and the render silently proceeds at the scene's authored dimensions (not rejected); check previewWidth/previewHeight in the result to confirm an override took. Does not touch the document -- use 128-192 for cheap placement checks.\"},"
 						"\"height\":{\"type\":\"number\",\"description\":"
@@ -224,7 +241,11 @@ namespace RISE
 							"\"lookat\":{\"type\":\"string\",\"description\":\"Target point, a string of EXACTLY 3 finite numbers \\\"x y z\\\" -- required if camera is given. Same shape rule as location.\"},"
 							"\"up\":{\"type\":\"string\",\"description\":\"Optional up vector, a string of EXACTLY 3 finite numbers \\\"x y z\\\"; defaults to the camera's current up. Same shape rule as location.\"},"
 							"\"fov\":{\"type\":\"number\",\"description\":\"Optional field of view in degrees, EXCLUSIVE range (0, 180); defaults to the camera's current fov. 0, 180, negative, or non-finite values are rejected.\"}"
-						"},\"required\":[\"location\",\"lookat\"]}"
+						"},\"required\":[\"location\",\"lookat\"]},"
+						"\"quality\":{\"type\":\"string\",\"enum\":[\"draft\",\"production\"],\"description\":"
+						"\"Optional, default \\\"production\\\" (today's exact behaviour). \\\"draft\\\" renders through a wholly SEPARATE, cheap studio-preview pipeline (same fixed shader the GUI's live interactive editor uses) that IGNORES the scene's authored materials and lighting -- geometry/composition/camera framing are representative, materials/lighting/exposure/colour are NOT. Samples are capped at 4 under draft. Check the result's `renderMode` field to see which pipeline ran; `integrator` does not change with `quality`.\"},"
+						"\"mode\":{\"type\":\"string\",\"enum\":[\"beauty\",\"objectmap\"],\"description\":"
+						"\"Optional, default \\\"beauty\\\". \\\"objectmap\\\" renders a flat per-object IDENTITY segmentation -- each scene object a distinct high-contrast colour, no lighting/materials -- and adds a `legend` array of {name,colorHex,pixelCount} to the result. Use it to reason about which object is where and how much of the frame each covers. Read the objectmap image at NATIVE size (do NOT pass read_image maxEdge -- downscaling box-blends the identity colours and corrupts colorHex matching). quality/samples are ignored under objectmap (one fidelity). Orthogonal to quality (objectmap = geometry identity, draft = cheap shading); check renderMode==\\\"objectmap\\\" in the result. A generator-synthesized legend name (e.g. grid[0,1] from an instance_array) identifies the instance but is NOT a CST chunk -- to EDIT it, target the generator chunk (strip the [i,j] suffix, e.g. grid), not the instance name.\"}"
 					"}}"
 				},
 				{
@@ -236,11 +257,48 @@ namespace RISE
 					"TOKEN ECONOMY: pass maxEdge ~192 for a modeling/placement check -- the "
 					"image is downscaled (no re-render) before being sent to you, so a "
 					"quick look costs far fewer tokens than the full-resolution image. "
-					"Omit maxEdge only for the final, full-detail look once you're done.",
+					"Omit maxEdge only for the final, full-detail look once you're done. "
+					"EXCEPTION -- objectmap: if the last render was mode:\"objectmap\", read at "
+					"NATIVE size (omit maxEdge). Downscaling box-blends the flat identity "
+					"colours and corrupts the exact-byte legend match; the ~192 economy "
+					"pattern applies to beauty/draft renders only.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"maxEdge\":{\"type\":\"number\",\"description\":"
 						"\"Optional long-edge bound in pixels, clamped to [16,1024]. Downscales (box filter, aspect-preserving, never upscales) the cached image before sending -- no re-render. Use ~192 for cheap modeling checks.\"}"
 					"}}"
+				},
+				{
+					"query_object_at",
+					"Identify WHICH single object is at one pixel (x,y) -- the cheap way to "
+					"answer \"what is that\" / locate ONE object before acting on it (e.g. "
+					"before a propose_patch that moves or recolors it), without paying for a "
+					"full render mode:\"objectmap\" segmentation. Returns hit:false (a NORMAL "
+					"result, not an error) when the pixel is empty background -- name is empty "
+					"in that case. width/height/camera compose EXACTLY like render's own "
+					"overrides (ephemeral, restored automatically, never touch the document) -- "
+					"use camera to aim at a spot, then query a known pixel (e.g. the image "
+					"center) to name what's there. An out-of-range x/y for the effective film "
+					"dims is refused as an error, never a silent hit:false. Works even with no "
+					"active production rasterizer -- it runs its own cheap identity render "
+					"internally.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"x\":{\"type\":\"number\",\"description\":"
+						"\"Required integer pixel X coordinate, in the EFFECTIVE film dims (the width/height override below when both are given, else the scene's authored dims).\"},"
+						"\"y\":{\"type\":\"number\",\"description\":"
+						"\"Required integer pixel Y coordinate, same effective-dims rule as x.\"},"
+						"\"width\":{\"type\":\"number\",\"description\":"
+						"\"Optional TRANSIENT film-width override in pixels, clamped to [16,512]. Must be paired with height.\"},"
+						"\"height\":{\"type\":\"number\",\"description\":"
+						"\"Optional TRANSIENT film-height override in pixels, clamped to [16,512]. Must be paired with width.\"},"
+						"\"camera\":{\"type\":\"object\",\"description\":"
+						"\"Optional EPHEMERAL camera-pose override for this ONE query -- captured and restored automatically, never touches the document.\","
+						"\"properties\":{"
+							"\"location\":{\"type\":\"string\",\"description\":\"Eye position, a string of EXACTLY 3 finite numbers \\\"x y z\\\" -- required if camera is given.\"},"
+							"\"lookat\":{\"type\":\"string\",\"description\":\"Target point, a string of EXACTLY 3 finite numbers \\\"x y z\\\" -- required if camera is given.\"},"
+							"\"up\":{\"type\":\"string\",\"description\":\"Optional up vector, a string of EXACTLY 3 finite numbers \\\"x y z\\\".\"},"
+							"\"fov\":{\"type\":\"number\",\"description\":\"Optional field of view in degrees, EXCLUSIVE range (0, 180).\"}"
+						"},\"required\":[\"location\",\"lookat\"]}"
+					"},\"required\":[\"x\",\"y\"]}"
 				},
 			};
 
@@ -1125,9 +1183,76 @@ namespace RISE
 			return out;
 		}
 
+		ChatUsage AnthropicChatCodec::ParseUsage( const std::string& rawBody ) const
+		{
+			ChatUsage u;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) return u;
+			const JsonValue& usage = root.get( "usage" );
+			if( !usage.isObject() ) return u;
+			if( usage.get( "input_tokens" ).isNumber() )
+				u.inputTokens = static_cast<long long>( usage.get( "input_tokens" ).asNumber() );
+			if( usage.get( "output_tokens" ).isNumber() )
+				u.outputTokens = static_cast<long long>( usage.get( "output_tokens" ).asNumber() );
+			if( usage.get( "cache_read_input_tokens" ).isNumber() )
+				u.cacheReadInputTokens = static_cast<long long>( usage.get( "cache_read_input_tokens" ).asNumber() );
+			return u;
+		}
+
 		//======================================================================
 		// (4) GeminiChatCodec
 		//======================================================================
+
+		namespace
+		{
+			//! Gemini's functionResponse.response rides the wire as a protobuf
+			//! Struct, which HARD-REJECTS duplicate map keys ("Repeated map
+			//! key: '...'" -> HTTP 400, killing the whole turn).  Our JsonValue
+			//! happily round-trips duplicate object keys (Json.h: "duplicate
+			//! object keys: last wins ... we store an ordered vector of
+			//! pairs" -- JsonValue::find() scans from the end so LOOKUPS
+			//! already resolve last-wins; only *serialization* blindly
+			//! re-emits every stored pair).  A tool result can legitimately
+			//! arrive with duplicate keys -- e.g. read_schema's SchemaGenAll()
+			//! used to emit the same chunk keyword twice when a legacy alias
+			//! (mis_pathtracing_shaderop) shared a descriptor with its
+			//! canonical keyword (pathtracing_shaderop); see SchemaGen.cpp for
+			//! the source-side fix.  This is the wire-side backstop: whatever
+			//! a tool emits, no duplicate key ever reaches Gemini.  Recurses
+			//! into array/object children so a nested duplicate (inside an
+			//! array element, say) is caught too.  Keeps the LAST value per
+			//! key, matching JsonValue::find()'s documented last-wins lookup
+			//! semantics so behavior here is consistent with what the rest of
+			//! the loop already sees when it reads the (un-deduplicated)
+			//! JsonValue via find()/get().  Deliberately scoped to this file
+			//! (not JsonParse/JsonSerialize) -- other JsonValue consumers
+			//! (e.g. the eval-harness E3 checker) depend on today's
+			//! preserve-duplicates serialize behavior.
+			JsonValue DedupeJsonKeysLastWins( const JsonValue& v )
+			{
+				if( v.isArray() ) {
+					JsonValue out = JsonValue::MakeArray();
+					for( std::size_t i = 0; i < v.size(); ++i )
+						out.push_back( DedupeJsonKeysLastWins( v.at( i ) ) );
+					return out;
+				}
+				if( !v.isObject() ) return v;
+
+				const std::vector<std::pair<std::string, JsonValue>>& mem = v.members();
+				std::vector<std::string> order;             // first-seen key order
+				std::map<std::string, JsonValue> latest;    // key -> last raw value
+				for( std::size_t i = 0; i < mem.size(); ++i ) {
+					if( latest.find( mem[i].first ) == latest.end() )
+						order.push_back( mem[i].first );
+					latest[ mem[i].first ] = mem[i].second;  // later duplicate overwrites -> last wins
+				}
+				JsonValue out = JsonValue::MakeObject();
+				for( std::size_t i = 0; i < order.size(); ++i )
+					out.set( order[i], DedupeJsonKeysLastWins( latest[ order[i] ] ) );
+				return out;
+			}
+		}
 
 		const char* GeminiChatCodec::ProviderName() const { return "gemini"; }
 
@@ -1274,7 +1399,15 @@ namespace RISE
 				if( !call.idSynthesized && !call.id.empty() )
 					fr.set( "id", JsonValue::MakeString( call.id ) );
 				fr.set( "name", JsonValue::MakeString( call.name ) );
-				fr.set( "response", respObj );
+				// Wire-side backstop (see DedupeJsonKeysLastWins above): every
+				// branch above (`error` echo, image-strip, `respObj = result`,
+				// the scalar/array `result` wrap) can embed a JsonValue parsed
+				// straight from the tool's JSON-RPC line, which may carry
+				// duplicate object keys our JsonValue tolerates but Gemini's
+				// protobuf Struct backend rejects outright.  Applying the
+				// dedupe here, once, downstream of every branch, covers all
+				// of them without needing a call site in each.
+				fr.set( "response", DedupeJsonKeysLastWins( respObj ) );
 				if( !b64.empty() ) {
 					// FunctionResponse.parts: [{inlineData:{mimeType,data}}]
 					// (FunctionResponsePart / FunctionResponseBlob, per the
@@ -1703,13 +1836,45 @@ namespace RISE
 			return out;
 		}
 
+		ChatUsage GeminiChatCodec::ParseUsage( const std::string& rawBody ) const
+		{
+			ChatUsage u;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) return u;
+			const JsonValue& m = root.get( "usageMetadata" );
+			if( !m.isObject() ) return u;
+			if( m.get( "promptTokenCount" ).isNumber() )
+				u.inputTokens = static_cast<long long>( m.get( "promptTokenCount" ).asNumber() );
+			if( m.get( "candidatesTokenCount" ).isNumber() )
+				u.outputTokens = static_cast<long long>( m.get( "candidatesTokenCount" ).asNumber() );
+			if( m.get( "cachedContentTokenCount" ).isNumber() )
+				u.cacheReadInputTokens = static_cast<long long>( m.get( "cachedContentTokenCount" ).asNumber() );
+			return u;
+		}
+
 		//======================================================================
 		// (5) OpenAIChatCodec
 		//======================================================================
 
-		const char* OpenAIChatCodec::ProviderName() const { return "openai"; }
+		OpenAIChatCodec::OpenAIChatCodec()
+		{
+			// The default OpenAI provider -- byte-identical wire behaviour to
+			// the pre-parameterization codec (the AgentChatLoopTest URL/header
+			// assertions pin this).
+			mConfig.providerName   = "openai";
+			mConfig.baseUrl        = "https://api.openai.com/v1/chat/completions";
+			mConfig.defaultModelId = "gpt-5.5";
+			mConfig.requiresAuth   = true;
+		}
 
-		const char* OpenAIChatCodec::DefaultModelId() const { return "gpt-5.5"; }
+		OpenAIChatCodec::OpenAIChatCodec( const Config& config ) : mConfig( config )
+		{
+		}
+
+		const char* OpenAIChatCodec::ProviderName() const { return mConfig.providerName.c_str(); }
+
+		const char* OpenAIChatCodec::DefaultModelId() const { return mConfig.defaultModelId.c_str(); }
 
 		std::string OpenAIChatCodec::MakeUserEntry(
 			const std::string& text, const std::vector<ChatAttachment>& attachments ) const
@@ -1908,10 +2073,19 @@ namespace RISE
 			const std::vector<std::string>& rawEntries ) const
 		{
 			ChatHttpRequest r;
-			r.url = "https://api.openai.com/v1/chat/completions";
+			r.url = mConfig.baseUrl;
 			r.headers.push_back( std::make_pair( "content-type", "application/json" ) );
-			r.headers.push_back( std::make_pair( "authorization",
-				"Bearer " + SanitizeHeaderValue( apiKey ) ) );
+			// Emit the Bearer header when the provider requires auth (OpenAI,
+			// xAI) OR when a key was supplied anyway (a local server started
+			// with --api-key).  A KEYLESS local provider (requiresAuth=false,
+			// empty key) emits NO Authorization header at all -- Ollama and
+			// friends expect none, and an empty "Bearer " is worse than
+			// absent.  This is the key-hygiene inverse of the OpenAI path:
+			// no key in, no auth header out.
+			if( mConfig.requiresAuth || !apiKey.empty() ) {
+				r.headers.push_back( std::make_pair( "authorization",
+					"Bearer " + SanitizeHeaderValue( apiKey ) ) );
+			}
 
 			std::string body = "{\"model\":";
 			JsonAppendEscapedString( body, modelId );
@@ -2109,6 +2283,41 @@ namespace RISE
 				fallback.set( "content", msg.get( "content" ) );
 				if( toolCalls.isArray() ) fallback.set( "tool_calls", toolCalls );
 				out.assistantEntryJson = JsonSerialize( fallback );
+			}
+			return out;
+		}
+
+		ChatUsage OpenAIChatCodec::ParseUsage( const std::string& rawBody ) const
+		{
+			ChatUsage u;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) return u;
+			const JsonValue& usage = root.get( "usage" );
+			if( !usage.isObject() ) return u;
+			if( usage.get( "prompt_tokens" ).isNumber() )
+				u.inputTokens = static_cast<long long>( usage.get( "prompt_tokens" ).asNumber() );
+			if( usage.get( "completion_tokens" ).isNumber() )
+				u.outputTokens = static_cast<long long>( usage.get( "completion_tokens" ).asNumber() );
+			const JsonValue& details = usage.get( "prompt_tokens_details" );
+			if( details.isObject() && details.get( "cached_tokens" ).isNumber() )
+				u.cacheReadInputTokens = static_cast<long long>( details.get( "cached_tokens" ).asNumber() );
+			return u;
+		}
+
+		//======================================================================
+		// Eval-harness E1: provider-neutral tool-definition fingerprint.
+		//======================================================================
+		std::string ChatToolDefsFingerprint()
+		{
+			std::string out;
+			for( std::size_t i = 0; i < kToolDefCount; ++i ) {
+				out += kToolDefs[i].name;
+				out += '\n';
+				out += kToolDefs[i].description;
+				out += '\n';
+				if( kToolDefs[i].schemaJson ) out += kToolDefs[i].schemaJson;
+				out += '\n';
 			}
 			return out;
 		}

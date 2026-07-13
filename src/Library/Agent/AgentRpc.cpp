@@ -74,10 +74,11 @@ namespace RISE
 			// translation unit that never triggers it.
 
 			//! Secure-MCP slice 2 hardening: the gate is now DENY-BY-
-			//! DEFAULT -- an explicit allowlist of the 9 READ-SAFE verb
+			//! DEFAULT -- an explicit allowlist of the READ-SAFE verb
 			//! names (read_document, read_schema, read_skill, validate,
 			//! render, render_status, render_wait, render_cancel,
-			//! read_image), the ONE list the choke point in HandleLine
+			//! read_image, read_viewport, list_proposals, query_object_at),
+			//! the ONE list the choke point in HandleLine
 			//! consults.  Anything NOT on this list -- including the 3
 			//! known-mutating verbs (propose_patch, insert_chunk,
 			//! remove_chunk) AND any FUTURE verb added to the dispatch
@@ -103,6 +104,12 @@ namespace RISE
 				       method == "render_wait"     ||
 				       method == "render_cancel"   ||
 				       method == "read_image"      ||
+				       // Toolkit slice 1: read_viewport is a PURE READ of the
+				       // live interactive viewport pixels -- it never renders
+				       // and never mutates the scene, so it belongs in the
+				       // read-safe allowlist (available under every autonomy
+				       // posture, including Read).
+				       method == "read_viewport"   ||
 				       // Secure-MCP slice 5b: list_proposals is a READ, not a
 				       // mutation or a resolve -- it lists the SAME scene's
 				       // staged-proposal queue a caller is already allowed to
@@ -112,7 +119,15 @@ namespace RISE
 				       // the loopback transport is already token-gated, so the
 				       // proposal queue isn't secret to an authenticated
 				       // co-editing client).
-				       method == "list_proposals";
+				       method == "list_proposals"  ||
+				       // Toolkit slice 3b: query_object_at is a PURE READ --
+				       // it never mutates the retained Document (the
+				       // ephemeral objectmap render it reuses composes
+				       // camera/dims overrides exactly like render's own,
+				       // captured and restored) -- available under every
+				       // autonomy posture, including Read, exactly like
+				       // render itself.
+				       method == "query_object_at";
 			}
 
 			//! Secure-MCP slice 5b: the additional verbs `Propose` autonomy lets
@@ -419,6 +434,34 @@ namespace RISE
 				// AgentRenderResult::samplesOverridden's doc.
 				result.set( "samplesOverridden", JsonValue::MakeBool( rr.samplesOverridden ) );
 				result.set( "effectiveSamples", JsonValue::MakeNumber( static_cast<double>( rr.effectiveSamples ) ) );
+				// Toolkit slice 2 ADDITIVE wire field -- see
+				// AgentRenderResult::renderMode's doc.  "production" or
+				// "draft"; distinct from `integrator`, which always names
+				// the head's ACTIVE (production) rasterizer regardless of
+				// which mode this render actually used.
+				result.set( "renderMode", JsonValue::MakeString( rr.renderMode ) );
+				// Toolkit slice 3a ADDITIVE wire field: the object-colour
+				// `legend` of an OBJECTMAP render.  Emitted ONLY when this
+				// render was an objectmap (renderMode=="objectmap") -- a
+				// CONDITIONAL key, but sync `render` and `render_wait` both
+				// serialize through THIS function, so their key sets stay
+				// identical to each other (the S2b contract); the existing
+				// render-result tests probe specific keys, never assert an
+				// exact key set, so a beauty render simply omitting `legend`
+				// keeps them green.  Each entry is {name,colorHex,pixelCount};
+				// read the objectmap PNG at NATIVE size (read_image's maxEdge
+				// box-downscale blends identity colours and breaks matching).
+				if( rr.renderMode == "objectmap" ) {
+					JsonValue legend = JsonValue::MakeArray();
+					for( std::size_t i = 0; i < rr.legend.size(); ++i ) {
+						JsonValue e = JsonValue::MakeObject();
+						e.set( "name",       JsonValue::MakeString( rr.legend[i].name ) );
+						e.set( "colorHex",   JsonValue::MakeString( rr.legend[i].colorHex ) );
+						e.set( "pixelCount", JsonValue::MakeNumber( static_cast<double>( rr.legend[i].pixelCount ) ) );
+						legend.push_back( e );
+					}
+					result.set( "legend", legend );
+				}
 				return result;
 			}
 
@@ -1081,6 +1124,55 @@ namespace RISE
 					}
 					rparams.pinned = wantPinned;
 
+					// Toolkit slice 2 ADDITIVE param: {"quality":"draft"|
+					// "production"} -> AgentRenderParams::quality.  Absent
+					// or "production" is today's EXACT behaviour
+					// (strictly additive); "draft" routes this ONE render
+					// through the ephemeral studio-preview pipeline -- see
+					// AgentRenderQuality's doc.  Any other string (or a
+					// non-string, non-null value) is a clean -32602, not a
+					// silent fall-through to production.
+					if( const JsonValue* qv = params.find( "quality" ) ) {
+						if( qv->isString() ) {
+							const std::string qs = qv->asString();
+							if( qs == "draft" ) {
+								rparams.quality = AgentRenderQuality::Draft;
+							} else if( qs == "production" ) {
+								rparams.quality = AgentRenderQuality::Production;
+							} else {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'quality' must be \"draft\" or \"production\"" );
+							}
+						}
+						else if( !qv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'quality' must be a string" );
+					}
+
+					// Toolkit slice 3a ADDITIVE param: {"mode":"beauty"|
+					// "objectmap"} -> AgentRenderParams::renderTarget.  Absent
+					// or "beauty" is today's EXACT behaviour (strictly
+					// additive); "objectmap" routes this ONE render through the
+					// ephemeral identity pipeline and returns a per-object
+					// `legend` in the result -- see AgentRenderTarget's doc.
+					// `quality`/`samples` are ignored under objectmap (noted in
+					// the result message).  Any other string (or a non-string,
+					// non-null value) is a clean -32602.
+					if( const JsonValue* mv = params.find( "mode" ) ) {
+						if( mv->isString() ) {
+							const std::string ms = mv->asString();
+							if( ms == "objectmap" ) {
+								rparams.renderTarget = AgentRenderTarget::ObjectMap;
+							} else if( ms == "beauty" ) {
+								rparams.renderTarget = AgentRenderTarget::Beauty;
+							} else {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'mode' must be \"beauty\" or \"objectmap\"" );
+							}
+						}
+						else if( !mv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'mode' must be a string" );
+					}
+
 					if( wantAsync ) {
 						const AgentSession::AgentRenderAsyncResult ar = s->RenderAsync( rparams );
 						JsonValue result = JsonValue::MakeObject();
@@ -1280,6 +1372,134 @@ namespace RISE
 					result.set( "byteLength", JsonValue::MakeNumber( static_cast<double>( png.size() ) ) );
 					result.set( "width",  JsonValue::MakeNumber( static_cast<double>( imgW ) ) );
 					result.set( "height", JsonValue::MakeNumber( static_cast<double>( imgH ) ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// read_viewport {maxEdge?} -> {available:bool,reason:string,
+				//                              png_base64:string,byteLength:number,
+				//                              width:number,height:number}
+				//   Toolkit slice 1: the LIVE interactive GUI viewport's CURRENT
+				//   pixels -- the exact frame the user is looking at right now,
+				//   NOT the agent's own last render (contrast read_image, which
+				//   returns THIS session's last headless render).  NEVER
+				//   triggers a render -- it copies whatever the interactive
+				//   render loop has most recently produced (the cheapest
+				//   observe).  `available` is false with reason "no_controller"
+				//   (headless session -- no viewport at all) or "no_frame_yet"
+				//   (controller attached but no interactive frame produced yet);
+				//   in both cases png_base64 is "" and byteLength/width/height
+				//   are 0.  available:false is a STRUCTURED SUCCESS result, NOT
+				//   a JSON-RPC error (the list_proposals precedent) -- only "no
+				//   session loaded" is the usual MakeError gate.  maxEdge
+				//   (OPTIONAL, clamped [16,1024]) downscales exactly as
+				//   read_image's maxEdge does (box filter, aspect-preserving,
+				//   never upscales), no re-render.
+				//
+				//   DELIBERATE CONTRAST with read_image: read_image returns a
+				//   silent EMPTY image (png_base64 "", byteLength 0) with no
+				//   availability flag when nothing has rendered; read_viewport
+				//   instead carries an explicit available/reason pair because
+				//   "no live viewport" and "an all-black frame" are genuinely
+				//   different states a caller must distinguish.  Do NOT
+				//   "harmonize" the two shapes -- the asymmetry is intentional.
+				//--------------------------------------------------------------
+				if( m == "read_viewport" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					unsigned int maxEdge = 0;
+					std::string meErr;
+					const int mePresent = ParseClampedUInt( params, "maxEdge", 16, 1024, maxEdge, meErr );
+					if( mePresent < 0 ) return MakeError( idValue, kInvalidParams, meErr );
+					unsigned int imgW = 0, imgH = 0;
+					bool available = false;
+					std::string reason;
+					const std::vector<unsigned char> png =
+						s->ReadViewport( ( mePresent == 1 ) ? maxEdge : 0, imgW, imgH, available, reason );
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "available",  JsonValue::MakeBool( available ) );
+					result.set( "reason",     JsonValue::MakeString( reason ) );
+					result.set( "png_base64", JsonValue::MakeString( Base64Encode( png ) ) );
+					result.set( "byteLength", JsonValue::MakeNumber( static_cast<double>( png.size() ) ) );
+					result.set( "width",  JsonValue::MakeNumber( static_cast<double>( imgW ) ) );
+					result.set( "height", JsonValue::MakeNumber( static_cast<double>( imgH ) ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// query_object_at {x,y,camera?,width?,height?} ->
+				//   {hit,name,kind,pixelX,pixelY,width,height,message}
+				//   Toolkit slice 3b: the cheap single-pixel companion to
+				//   render mode:"objectmap" -- see AgentSession::
+				//   QueryObjectAt's doc for the full contract (reuses the
+				//   objectmap ephemeral pipeline wholesale; camera/width/
+				//   height compose exactly like render's own overrides).
+				//   `x`/`y` are REQUIRED integer pixel coordinates; an
+				//   out-of-range (x,y) for the EFFECTIVE film dims is a
+				//   clean -32602 (checked BEFORE the render runs), NOT a
+				//   structured hit:false.
+				//--------------------------------------------------------------
+				if( m == "query_object_at" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+
+					const JsonValue* xv = params.find( "x" );
+					const JsonValue* yv = params.find( "y" );
+					if( !xv || !xv->isNumber() || !yv || !yv->isNumber() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'x' and 'y' (numbers) are required" );
+					}
+					const double xd = xv->asNumber();
+					const double yd = yv->asNumber();
+					// Same explicit finite-range guard idiom as every other
+					// numeric parse in this file (NOT std::isfinite -- dead
+					// code under -ffinite-math-only; see the 'samples' parse
+					// above) -- guards the narrowing casts below against a
+					// hostile/typo'd 1e999 or NaN.
+					if( !( xd >= -2147483648.0 && xd <= 2147483647.0 ) ||
+					    !( yd >= -2147483648.0 && yd <= 2147483647.0 ) )
+					{
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'x' and 'y' must be finite, in-range numbers" );
+					}
+					const int qx = static_cast<int>( xd );
+					const int qy = static_cast<int>( yd );
+
+					// Same width/height/camera override composition as
+					// render (ParseClampedUInt/ParseCameraOverrideParam are
+					// the SAME helpers render's dispatch uses just above).
+					AgentQueryObjectParams qparams;
+					unsigned int qw = 0, qh = 0;
+					std::string qDimErr;
+					const int qwPresent = ParseClampedUInt( params, "width",  16, 512, qw, qDimErr );
+					if( qwPresent < 0 ) return MakeError( idValue, kInvalidParams, qDimErr );
+					const int qhPresent = ParseClampedUInt( params, "height", 16, 512, qh, qDimErr );
+					if( qhPresent < 0 ) return MakeError( idValue, kInvalidParams, qDimErr );
+					if( qwPresent == 1 && qhPresent == 1 ) {
+						qparams.width  = qw;
+						qparams.height = qh;
+					}
+
+					AgentCameraOverride qCamOverride;
+					std::string qCamErr;
+					const int qCamPresent = ParseCameraOverrideParam( params, qCamOverride, qCamErr );
+					if( qCamPresent < 0 ) return MakeError( idValue, kInvalidParams, qCamErr );
+					if( qCamPresent == 1 ) qparams.camera = qCamOverride;
+
+					const AgentSession::AgentQueryObjectResult qr = s->QueryObjectAt( qx, qy, qparams );
+					if( qr.outOfRange ) {
+						return MakeError( idValue, kInvalidParams,
+							qr.message.empty()
+								? "Invalid params: 'x'/'y' out of range for the effective film dims"
+								: qr.message );
+					}
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "hit",     JsonValue::MakeBool( qr.hit ) );
+					result.set( "name",    JsonValue::MakeString( qr.name ) );
+					result.set( "kind",    JsonValue::MakeString( qr.kind ) );
+					result.set( "pixelX",  JsonValue::MakeNumber( static_cast<double>( qr.pixelX ) ) );
+					result.set( "pixelY",  JsonValue::MakeNumber( static_cast<double>( qr.pixelY ) ) );
+					result.set( "width",   JsonValue::MakeNumber( static_cast<double>( qr.width ) ) );
+					result.set( "height",  JsonValue::MakeNumber( static_cast<double>( qr.height ) ) );
+					result.set( "message", JsonValue::MakeString( qr.message ) );
 					return MakeSuccess( idValue, result );
 				}
 

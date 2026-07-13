@@ -444,6 +444,7 @@ void Job::InitializeContainers()
 	lightSampleRRThreshold = 0;
 	m_objectOverrideCount = 0;   // reset per derive/clear (override_object Finalize increments it)
 	ClearSceneVariants();        // doc 63: reset the scene-variant records per derive/clear (no cross-load leak)
+	mGltfImportPrefixes.clear(); // reset per derive/clear -- see Job.h member doc (gltf_import name_prefix collision guard)
 
 	// Allocate the load-time transform snapshots up front so
 	// IJobPriv::Get{Base,Loaded}TransformSnapshot return stable
@@ -1997,13 +1998,36 @@ bool Job::AddTexturePaintersBatch(
 	// + IPainter*, fully independent of the other workers' state.  All three
 	// stay alive until after the manager AddItem step, then release in
 	// reverse order.
+	//
+	// Decoded owns whatever non-null pointers a worker leaves in it.  The
+	// serial registration loop below is the normal owner: on success it
+	// safe_release()s (which also nulls, per safe_release's by-reference
+	// contract) every field it consumes.  ~Decoded() is purely a release-
+	// on-throw safety net: since commit 2692d1af, ThreadPool::ParallelFor
+	// propagates a worker exception (e.g. std::bad_alloc) to this caller
+	// instead of std::terminate'ing, which unwinds straight through the
+	// registration loop below and would otherwise leak every
+	// already-decoded slot.  Non-copyable so a slot's ownership is never
+	// duplicated; `decoded` is sized once via vector(count) and never
+	// reallocated, so no copy/move is ever needed.
 	struct Decoded
 	{
 		IPainter*               pPainter;     // null on decode failure
 		IRasterImageAccessor*   pRIA;
 		IRasterImage*           pImage;
+
+		Decoded() : pPainter( nullptr ), pRIA( nullptr ), pImage( nullptr ) {}
+		Decoded( const Decoded& ) = delete;
+		Decoded& operator=( const Decoded& ) = delete;
+
+		~Decoded()
+		{
+			safe_release( pPainter );
+			safe_release( pRIA );
+			safe_release( pImage );
+		}
 	};
-	std::vector<Decoded> decoded( numRequests, Decoded{ nullptr, nullptr, nullptr } );
+	std::vector<Decoded> decoded( numRequests );
 
 	// Parallel decode.  Worker bodies touch only their own slot of
 	// `decoded[]` and the constant `requests[i]`; no shared mutable state.
@@ -4961,6 +4985,29 @@ bool Job::ImportGLTFScene(
 					const double emissive_tint_b
 					)
 {
+	// Prefix-collision guard (the "clean named diagnostic" layer -- see Job.h's
+	// mGltfImportPrefixes doc).  Every entity this importer registers is keyed off
+	// `name_prefix` (gltf.pnt.*, gltf.mat.0, gltf.geom.m0.p0, __pbrmr_* ...), so TWO
+	// imports sharing a prefix in the same derive would silently race every one of
+	// those GenericManager::AddItem calls -- the second import's entities lose and
+	// vanish, and (pre-fix) ImportScene's unconditional `return true` hid it entirely.
+	// Distinct prefixes are the supported multi-import idiom (sponza_new_ivy.RISEscene
+	// carries 2+ with an in-file comment blessing it) -- only a REPEAT prefix is refused.
+	// Checked BEFORE constructing the importer (no need to even open the file) so the
+	// failure is cheap and the diagnostic is precise.
+	const std::string prefixKey = ( name_prefix && name_prefix[0] ) ? name_prefix : "gltf";
+	if( !mGltfImportPrefixes.insert( prefixKey ).second ) {
+		char msg[256];
+		// NOTE: no "gltf_import: " prefix here -- DeriveToJob's PASS-2 apply loop
+		// (Cst.cpp) already prepends `<keyword>: ` to whatever this sink carries.
+		std::snprintf( msg, sizeof( msg ),
+			"name_prefix '%s' collides with an existing import -- give each import a unique name_prefix",
+			prefixKey.c_str() );
+		GlobalLog()->PrintEx( eLog_Error, "Job::ImportGLTFScene:: gltf_import: %s", msg );
+		if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = msg;
+		return false;
+	}
+
 	GLTFSceneImporter importer( filename );
 	if( !importer.IsValid() ) {
 		return false;	// constructor already logged the parse failure
@@ -9213,7 +9260,20 @@ bool Job::Rasterize(
 		pRasterizer->SetProgressCallback( 0 );
 	}
 
-	pRasterizer->RasterizeScene( *pScene, 0, pSeq );
+	// pSeq must be released on every exit, including a worker exception
+	// propagated up through RasterizeScene (ThreadPool::ParallelFor has
+	// surfaced such exceptions to the caller since commit 2692d1af,
+	// instead of std::terminate'ing) -- otherwise a throw here leaks the
+	// refcounted sequence object.  Release-and-rethrow keeps the success
+	// path's release at the exact same point (right after RasterizeScene
+	// returns) as before this fix.
+	try {
+		pRasterizer->RasterizeScene( *pScene, 0, pSeq );
+	}
+	catch( ... ) {
+		safe_release( pSeq );
+		throw;
+	}
 	safe_release( pSeq );
 
 	return true;
@@ -9286,7 +9346,18 @@ bool Job::RasterizeRegion(
 	}
 
 	Rect	rc( top, left, bottom, right );
-	pRasterizer->RasterizeScene( *pScene, &rc, pSeq );
+
+	// See the matching comment in Job::Rasterize: pSeq must be released
+	// on every exit, including a worker exception propagated up through
+	// RasterizeScene since ThreadPool::ParallelFor stopped
+	// std::terminate'ing on those (commit 2692d1af).
+	try {
+		pRasterizer->RasterizeScene( *pScene, &rc, pSeq );
+	}
+	catch( ... ) {
+		safe_release( pSeq );
+		throw;
+	}
 	safe_release( pSeq );
 
 	return true;
@@ -10676,14 +10747,25 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 			// restore in the D2 tail is skipped for a rasterizer insert, so live matches what a
 			// save+reload's last-wins derive would activate).  O(N) top-level scan -- fine for a
 			// discrete verb.
-			const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
-			for( int i = 0; i < nHead; ++i ) {
-				const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *pCstDocument, RISE::Cst::DocNodeIdAt( *pCstDocument, i ) );
-				if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == keyword &&
-				    RISE::Cst::ChunkNamePath( it ).empty() ) {
-					S2CopyOut( outDiag, diagMax, "an unnamed `" + keyword + "` chunk already exists (unnamed chunks are singletons per keyword)" );
-					GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: an unnamed `%s` chunk already exists; insert rejected", keyword.c_str() );
-					return -2;
+			//
+			// EXCEPTION -- APPEND-class kinds (descriptor `unnamedRepeatable`): a `timeline` / `keyframe`
+			// chunk derives by APPENDING an independent effect (Job::AddKeyframeToAnimation / AddKeyframe),
+			// NOT last-wins, so scenes legitimately carry MANY unnamed instances (e.g. sdf_morph_torture
+			// carries ~14 unnamed `timeline` chunks).  The singleton rationale above is inapplicable to
+			// them -- a schema-conformant second unnamed timeline must NOT be falsely rejected.  The
+			// one-way-door concern the rationale worried about is instead handled at remove time (the
+			// ambiguity guard in ApplyCstRemoveChunk).
+			const ChunkDescriptor* unnamedDesc = DescriptorForKeyword( String( keyword.c_str() ) );
+			if( !( unnamedDesc && unnamedDesc->unnamedRepeatable ) ) {
+				const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
+				for( int i = 0; i < nHead; ++i ) {
+					const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *pCstDocument, RISE::Cst::DocNodeIdAt( *pCstDocument, i ) );
+					if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == keyword &&
+					    RISE::Cst::ChunkNamePath( it ).empty() ) {
+						S2CopyOut( outDiag, diagMax, "an unnamed `" + keyword + "` chunk already exists (unnamed chunks are singletons per keyword)" );
+						GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: an unnamed `%s` chunk already exists; insert rejected", keyword.c_str() );
+						return -2;
+					}
 				}
 			}
 		}
@@ -10831,9 +10913,63 @@ int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: no retained CST Document or empty target; remove rejected" );
 		return 0;
 	}
+	// APPEND-class unnamed kinds (descriptor `unnamedRepeatable`, e.g. timeline / keyframe): these carry no
+	// `name` param, so they are addressed by kind alone (target == keyword).  Two cases:
+	//   * exactly ONE unnamed instance -> resolvable by POSITION via the unique-in-kind fallback below
+	//     (same mechanism the sole unnamed camera uses), so a bare `remove_chunk timeline kind=timeline`
+	//     removes it cleanly;
+	//   * TWO OR MORE unnamed instances -> the bare/kind-only address is genuinely AMBIGUOUS -- removing
+	//     "the unnamed one" would delete an ARBITRARY instance (the one-way door the insert-side singleton
+	//     rationale worried about).  Refuse honestly here rather than silently erasing one.  A repeatable
+	//     kind has no name, so this can never intercept a NAMED-chunk removal.
+	//
+	// COINCIDENCE GUARD (P2 fix): the ambiguity check above only makes sense on the KEYWORD-interpretation
+	// path -- i.e. when `target` itself is being read as a bare kind address, which only happens when the
+	// caller did NOT pass an explicit `kind`.  Without this guard, a chunk of ANY OTHER kind that happens to
+	// be NAMED the same as a repeatable keyword (e.g. an omni_light literally named "timeline") could never
+	// be removed by bare name while 2+ unnamed timelines coexist: the code below would resolve `target` as
+	// the keyword "timeline" and refuse as ambiguous, even though DocFindByNameAnyRole would have uniquely
+	// resolved the NAME "timeline" to the light.  So when `kind` is omitted, try the plain name resolution
+	// FIRST (no kind hint, no positional fallback -- the same call the fall-through path below would make);
+	// if it finds ANY named match (unique -> proceed to remove it; ambiguous -> the existing occ>1 message
+	// below already reports that honestly), `target` is a NAME address and the keyword-ambiguity guard must
+	// not fire at all.  Only when the plain name lookup finds NOTHING does `target` fall through to being a
+	// bare KEYWORD address for a repeatable-unnamed kind -- exactly the case this guard exists to police.
+	// When `kind` IS explicitly provided, this pre-check is skipped and the guard applies exactly as before.
+	bool targetNamesAChunk = false;
+	if( !( kind && kind[0] ) ) {
+		int occName = 0;
+		RISE::Cst::DocFindByNameAnyRole( *pCstDocument, target, &occName, "", false );
+		targetNamesAChunk = occName > 0;   // any named-chunk hit (unique or ambiguous) means NAME, not keyword
+	}
+	const ChunkDescriptor* remDesc =
+		DescriptorForKeyword( String( ( kind && kind[0] ) ? kind : target ) );
+	const bool unnamedRepeatable = remDesc && remDesc->unnamedRepeatable && !targetNamesAChunk;
+	if( unnamedRepeatable ) {
+		int unnamedCount = 0;
+		const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
+		for( int i = 0; i < nHead; ++i ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *pCstDocument, RISE::Cst::DocNodeIdAt( *pCstDocument, i ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == remDesc->keyword &&
+			    RISE::Cst::ChunkNamePath( it ).empty() )
+				++unnamedCount;
+		}
+		if( unnamedCount >= 2 ) {
+			char d[224];
+			std::snprintf( d, sizeof( d ),
+				"ambiguous: %d unnamed `%s` chunks exist -- removal by kind alone would delete an arbitrary one; edit the scene text directly or address a named chunk",
+				unnamedCount, remDesc->keyword.c_str() );
+			S2CopyOut( outKeyword, keywordMax, remDesc->keyword );
+			S2CopyOut( outDiag,    diagMax,    d );
+			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: %s", d );
+			return -2;
+		}
+	}
+
 	// Resolution mirrors ApplyCstParamEdit: cameras are the one editor-addressable kind that can be UNNAMED,
 	// so they get the unique-in-kind resolve-by-position fallback; always-named kinds keep strict refuse.
-	const bool uniqueFallback = ( kind && std::string( kind ) == "camera" );
+	// The sole-instance case of an `unnamedRepeatable` kind (handled above) gets the SAME positional fallback.
+	const bool uniqueFallback = ( kind && std::string( kind ) == "camera" ) || unnamedRepeatable;
 	int occ = 0;
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, target, &occ, kind ? kind : "", uniqueFallback );
 	if( id == 0 ) {
@@ -11305,7 +11441,43 @@ bool Job::AddKeyframeToAnimation(
 	if( type == "object" ) {
 		pkf = pObjectManager->GetItem( element );
 	} else if( type == "camera" ) {
-		pkf = pScene->GetCameraMutable();
+		// Camera keyframes target a SPECIFIC camera by name when `element`
+		// is provided; an empty / absent / "none" element falls back to the
+		// ACTIVE camera (back-compat -- the overwhelmingly common single-,
+		// often unnamed-, camera scene).  A non-empty element that names no
+		// existing camera is a LOUD derive failure (return false) -- never a
+		// silent active-camera fallback -- so the dry-run derive gate rejects
+		// the edit instead of animating the wrong camera.  Cameras are
+		// registered in the camera manager by name (unnamed chunks get an
+		// auto-allocated "default"), and ICamera IS-A IKeyframable, so a
+		// named GetItem() yields the same keyframable the active path does.
+		const bool haveName = *element && ( strcmp( element, "none" ) != 0 );
+		if( haveName ) {
+			ICameraManager* pCameras = pScene->GetCamerasMutable();
+			ICamera* pNamedCam = pCameras ? pCameras->GetItem( element ) : 0;
+			if( !pNamedCam ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"Job::AddKeyframeToAnimation:: camera `%s` not found -- cannot animate a non-existent camera (reference the camera's `name`, or omit `element` to animate the active camera)",
+					element );
+				// Surface the SPECIFIC reason through the Finalize-diagnostic sink (see
+				// GenericManager.h) so a CST derive (insert_chunk/validate) reports "camera
+				// `<name>` not found ..." to the agent instead of DeriveToJob's generic
+				// "<keyword>: apply failed (e.g. unresolved reference); see log" fallback.
+				// No "Job::AddKeyframeToAnimation: " prefix here -- DeriveToJob's PASS-2 apply
+				// loop already prepends `<keyword>: ` to whatever this sink carries.
+				if( RISE::g_cstFinalizeDiagSink ) {
+					char msg[256];
+					std::snprintf( msg, sizeof( msg ),
+						"camera `%s` not found -- cannot animate a non-existent camera (reference the camera's `name`, or omit `element` to animate the active camera)",
+						element );
+					*RISE::g_cstFinalizeDiagSink = msg;
+				}
+				return false;
+			}
+			pkf = pNamedCam;
+		} else {
+			pkf = pScene->GetCameraMutable();
+		}
 	} else if( type == "geometry" ) {
 		pkf = pGeomManager->GetItem( element );
 	} else if( type == "painter" ) {

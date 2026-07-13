@@ -4,7 +4,9 @@
 //
 //  Thin UI/IO driver around RISE::Agent::AgentChatLoop.  The loop owns
 //  transcript/tool-call state; this widget performs HTTPS requests and
-//  executes model-requested tools through ViewportBridge::agentHandleLine.
+//  executes model-requested tools through ViewportBridge::agentHandleToolCall
+//  (autonomy-routed); agentHandleLine is administrative-only (proposals,
+//  render submit/poll, skill index).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -16,12 +18,14 @@
 #include <QMap>
 #include <QDateTime>
 #include <QVector>
+#include <QElapsedTimer>
 #include <memory>
 #include <vector>
 
 #include "Agent/AgentChatCodecs.h"
 #include "ProposalCard.h"
 
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -48,6 +52,14 @@ public:
     ~ChatPanel() override;
 
     void setViewportBridge(ViewportBridge* bridge);
+
+    //! Review-round P2 (E1): the scene path is the trajectory<->document
+    //! correlator; MainWindow sets it at scene load, clears it at teardown.
+    //! Takes effect at the NEXT startTrajectory (no mid-session restart).
+    //! PUBLIC: called cross-class from MainWindow, like setViewportBridge
+    //! (the closing verifier caught the original private placement -- a
+    //! certain MSVC C2248 on the next Windows pass).
+    void setScenePath(const QString& path) { m_scenePath = path; }
     void setSceneEditable(bool editable);
     bool isBusy() const { return m_busy; }
 
@@ -120,6 +132,9 @@ private slots:
     void networkFinished();
     void retryLastRequest();
 
+    // Eval-harness E1: the "Record chat trajectories" checkbox (default ON).
+    void recordTrajectoriesToggled(bool on);
+
     // P1-2: fires on a ~250ms QTimer while a chat-driven `render` tool
     // call has an async job outstanding; each tick is a fast
     // render_wait(timeoutMs:0) poll-once through agentHandleLine.
@@ -139,7 +154,9 @@ private:
     enum class Provider {
         OpenAI = 0,
         Anthropic = 1,
-        Gemini = 2
+        Gemini = 2,
+        XAI = 3,
+        Local = 4
     };
 
     Provider currentProvider() const;
@@ -152,6 +169,18 @@ private:
     /// m_autonomyLevel.  Called by setAutonomyLevel() and once at
     /// construction.
     void updateAutonomyChipsStyle();
+
+    // False only for Provider::Local (keyless-by-design local/Ollama-style
+    // server -- OpenAIChatCodec::Config::requiresAuth=false).  Gates the
+    // "Enter an API key before sending" prompt in sendMessage() and the
+    // key-field placeholder in applyProviderToLoop().
+    static bool providerRequiresApiKey(Provider provider);
+    // Provider::Local only: the endpoint shown in the key field's
+    // placeholder in place of a key prompt.  Mirrors MakeCodec's
+    // RISE_LOCAL_LLM_BASE_URL override / Ollama-default fallback
+    // (src/Library/Agent/AgentChatLoop.cpp) for DISPLAY purposes only --
+    // there is no bridge accessor onto the loop's resolved codec config.
+    static QString localResolvedEndpoint();
     void applyProviderToLoop(bool resetModelToDefault);
     // P1-3: shared no-op / confirm-then-apply gate for providerChanged and
     // modelEditingFinished (both used to call applyProviderToLoop
@@ -164,6 +193,14 @@ private:
     void runNextStep();
     void finishBusy(const QString& statusLine = QString());
     void fetchSkillIndex();
+    // Eval-harness E1: (re)attach the per-session trajectory file for the
+    // current scene, or detach when recording is off / no scene is bound.
+    void startTrajectory();
+    // The resolved trajectory directory: RISE_TRAJECTORY_DIR verbatim when
+    // set + non-empty, else QStandardPaths::AppDataLocation + "/trajectories/gui"
+    // (a deterministic, per-user-writable location -- QDir::currentPath()
+    // is nondeterministic for a GUI app and unwritable under Program Files).
+    QString trajectoryDirectory() const;
     QString renderSkillIndex(const QString& rpcResponse) const;
     QString cancelledToolResultJson(int rpcId, const QString& message) const;
     void clearErrorAffordances();
@@ -225,6 +262,12 @@ private:
     ViewportBridge* m_bridge = nullptr;   // borrowed; owned by MainWindow
     QNetworkAccessManager* m_network = nullptr;
     QNetworkReply* m_reply = nullptr;
+
+    // Eval-harness E1: trajectory recording UI + timing.
+    QCheckBox* m_recordTrajectoriesCheck = nullptr;
+    bool m_recordTrajectories = true;
+    QString m_scenePath;   // scene-identity for the session record (may be empty)
+    QElapsedTimer m_httpTimer;   //!< started at post(), read at networkFinished()
 
     QComboBox* m_providerCombo = nullptr;
     QLineEdit* m_modelEdit = nullptr;

@@ -569,12 +569,18 @@ private struct ChatSettingsView: View {
                 .fontWeight(.semibold)
                 .foregroundColor(.secondary)
 
+            // Menu style, not segmented: five providers' display names
+            // ("Grok (xAI)", "Local (Ollama)", ...) far exceed the
+            // popover's 300pt width as segments -- the segmented control
+            // overflowed the frame and made the whole popover unreadable
+            // (user-reported when providers 4+5 landed).  A menu scales
+            // to any provider count at constant width.
             Picker("Provider", selection: $draftProvider) {
                 ForEach(AgentChatProviderChoice.allCases) { p in
                     Text(p.displayName).tag(p)
                 }
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.menu)
             .labelsHidden()
             .onChange(of: draftProvider) { _, newProvider in
                 // Follow the picker with the provider's own stored
@@ -623,59 +629,84 @@ private struct ChatSettingsView: View {
 
             Divider()
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("API key — \(draftProvider.displayName)")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                SecureField("Paste key (stored in Keychain)", text: $draftKey)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption)
-                HStack {
-                    Button("Save Key") {
-                        switch chat.saveApiKey(draftKey, for: draftProvider) {
-                        case .saved:
-                            keySaveNotice = nil
-                            draftKey = ""
-                        case .emptyInput:
-                            // No-op, not a delete — Clear Key owns
-                            // deletion.  Hint instead of silently
-                            // doing nothing.
-                            keySaveNotice = "Enter a key first, or use Clear Key to remove one."
-                        case .keychainError:
-                            keySaveNotice = "Keychain write failed."
-                        }
-                    }
-                    .disabled(draftKey.trimmingCharacters(
-                        in: .whitespacesAndNewlines).isEmpty)
-                    .help("Store in the macOS Keychain (service “RISE Agent Chat”) "
-                          + "for \(draftProvider.displayName)")
-                    Button("Clear Key") {
-                        keySaveNotice = chat.clearApiKey(for: draftProvider)
-                            ? nil : "Keychain delete failed."
-                        draftKey = ""
-                    }
-                    .disabled(chat.keySource(for: draftProvider) != .keychain)
-                    .help("Delete this provider's key from the Keychain")
-                    Spacer()
-                }
-                if let notice = keySaveNotice {
-                    Text(notice)
+            if draftProvider.requiresApiKey {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("API key — \(draftProvider.displayName)")
                         .font(.caption2)
-                        .foregroundColor(.orange)
+                        .foregroundColor(.secondary)
+                    SecureField("Paste key (stored in Keychain)", text: $draftKey)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+                    HStack {
+                        Button("Save Key") {
+                            switch chat.saveApiKey(draftKey, for: draftProvider) {
+                            case .saved:
+                                keySaveNotice = nil
+                                draftKey = ""
+                            case .emptyInput:
+                                // No-op, not a delete — Clear Key owns
+                                // deletion.  Hint instead of silently
+                                // doing nothing.
+                                keySaveNotice = "Enter a key first, or use Clear Key to remove one."
+                            case .keychainError:
+                                keySaveNotice = "Keychain write failed."
+                            }
+                        }
+                        .disabled(draftKey.trimmingCharacters(
+                            in: .whitespacesAndNewlines).isEmpty)
+                        .help("Store in the macOS Keychain (service “RISE Agent Chat”) "
+                              + "for \(draftProvider.displayName)")
+                        Button("Clear Key") {
+                            keySaveNotice = chat.clearApiKey(for: draftProvider)
+                                ? nil : "Keychain delete failed."
+                            draftKey = ""
+                        }
+                        .disabled(chat.keySource(for: draftProvider) != .keychain)
+                        .help("Delete this provider's key from the Keychain")
+                        Spacer()
+                    }
+                    if let notice = keySaveNotice {
+                        Text(notice)
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
+                    // Which source would be used for THIS provider (the
+                    // one shown above / being edited here) RIGHT NOW —
+                    // never the key itself.  Resolution: Keychain first,
+                    // then each environment fallback in order.  Recomputed
+                    // on every keyStateEpoch bump (save/clear) so it never
+                    // lags a successful write.
+                    Text("Active source: \(chat.keySource(for: draftProvider).label)"
+                         + " · Keychain first, then "
+                         + "\(draftProvider.apiKeyEnvVars.joined(separator: " or ")).")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .id(chat.keyStateEpoch)
                 }
-                // Which source would be used for THIS provider (the
-                // one shown above / being edited here) RIGHT NOW —
-                // never the key itself.  Resolution: Keychain first,
-                // then each environment fallback in order.  Recomputed
-                // on every keyStateEpoch bump (save/clear) so it never
-                // lags a successful write.
-                Text("Active source: \(chat.keySource(for: draftProvider).label)"
-                     + " · Keychain first, then "
-                     + "\(draftProvider.apiKeyEnvVars.joined(separator: " or ")).")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .id(chat.keyStateEpoch)
+            } else {
+                // .local is keyless by design — no key prompt, no
+                // Keychain storage.  Show the resolved endpoint instead
+                // so the user knows where the chat is pointing, plus a
+                // hint that a local server has to actually be running.
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Endpoint — \(draftProvider.displayName)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text(AgentChatProviderChoice.localResolvedEndpoint)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        // The URL is ~43 chars of monospace -- borderline at
+                        // the popover's 300pt.  Wrap rather than clip/expand
+                        // (an env-override URL can be arbitrarily long).
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("No API key needed. Requires a running local server, e.g. "
+                         + "`ollama serve`. Override the endpoint with the "
+                         + "RISE_LOCAL_LLM_BASE_URL environment variable before launch.")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Divider()
@@ -687,6 +718,27 @@ private struct ChatSettingsView: View {
             }
             .disabled(!chat.hasConversation)
             .help("Drop the conversation history (keeps provider / model / keys)")
+
+            Divider()
+
+            // Eval-harness E1: chat trajectory recording (default ON).
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Diagnostics")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Toggle("Record chat trajectories", isOn: Binding(
+                    get: { chat.recordTrajectories },
+                    set: { newValue in chat.setRecordTrajectories(newValue) }
+                ))
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                .help("Write a per-session JSONL log under "
+                      + chat.trajectoryDirectory
+                      + " (system prompt, each request/response, tool calls, "
+                      + "tokens, timings).  API-key-shaped content is always "
+                      + "redacted regardless of this setting.  Set "
+                      + "RISE_TRAJECTORY_DIR to record elsewhere.")
+            }
 
             Divider()
 

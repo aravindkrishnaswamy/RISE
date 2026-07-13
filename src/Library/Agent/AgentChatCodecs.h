@@ -104,7 +104,7 @@
 //        silently dropping it, since core-layer gating is optional by
 //        design (documented in the skill / CLAUDE.md deviation notes).
 //
-//    The nine tool definitions (mapping 1:1 to the AgentRpc verbs) are
+//    The ten tool definitions (mapping 1:1 to the AgentRpc verbs) are
 //    defined ONCE, provider-neutrally, in AgentChatCodecs.cpp; each
 //    codec maps them into its native tool declaration shape.  Their
 //    parameter names/shapes mirror AgentRpc.cpp exactly.
@@ -150,6 +150,21 @@ namespace RISE
 			std::vector<std::pair<std::string, std::string>> headers;   //!< header name/value pairs (includes content-type + the auth header)
 			std::string body;     //!< the JSON request body
 		};
+
+			//! Token-usage counts parsed from ONE provider response body
+			//! (Eval-harness E1 -- fed into the trajectory `llm` record's
+			//! OTel `gen_ai.usage.*` fields).  Each field is -1 when the
+			//! provider omitted it (absent-tolerant, null-safe): Anthropic
+			//! `usage.{input_tokens,output_tokens,cache_read_input_tokens}`,
+			//! Gemini `usageMetadata.{promptTokenCount,candidatesTokenCount,
+			//! cachedContentTokenCount}`, OpenAI `usage.{prompt_tokens,
+			//! completion_tokens,prompt_tokens_details.cached_tokens}`.
+			struct ChatUsage
+			{
+				long long inputTokens          = -1;   //!< prompt / input tokens (-1 = absent)
+				long long outputTokens         = -1;   //!< completion / output tokens (-1 = absent)
+				long long cacheReadInputTokens = -1;   //!< cache-read input tokens (-1 = absent)
+			};
 
 		//! One tool call the model requested.  `id` is the provider's
 		//! tool-call id (Anthropic `tool_use.id`; Gemini
@@ -321,6 +336,13 @@ namespace RISE
 			//! the provider's error.message when parseable).  NEVER throws.
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const = 0;
+
+			//! Parse the token-usage block from ONE raw response body into a
+			//! ChatUsage (Eval-harness E1).  Absent-tolerant and null-safe:
+			//! every field defaults to -1 and stays -1 when the provider
+			//! omits it or the body does not parse.  NEVER throws.  Pure
+			//! (like every codec method) -- the raw body is the sole input.
+			virtual ChatUsage ParseUsage( const std::string& rawBody ) const = 0;
 		};
 
 		//! Anthropic Messages API codec (see file header).
@@ -344,6 +366,7 @@ namespace RISE
 				const std::vector<std::string>& rawEntries ) const;
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
+			virtual ChatUsage ParseUsage( const std::string& rawBody ) const;
 		};
 
 		//! Google Gemini v1beta REST codec (see file header).  The
@@ -372,15 +395,51 @@ namespace RISE
 				const std::vector<std::string>& rawEntries ) const;
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
+			virtual ChatUsage ParseUsage( const std::string& rawBody ) const;
 		};
 
 		//! OpenAI Chat Completions codec (see file header).  The GUI
 		//! labels this provider "ChatGPT"; the wire endpoint is OpenAI's
 		//! chat/completions API because its messages/tool_calls transcript
 		//! shape matches this loop's provider-native raw-entry model.
+		//!
+		//! PARAMETERIZED (2026-07): the SAME wire codec drives every
+		//! OpenAI-Chat-Completions-compatible provider -- OpenAI itself,
+		//! xAI (Grok), and a local/Ollama-style server -- because the
+		//! request/response shape (messages, tools, tool_calls,
+		//! finish_reason, usage) is identical across them; only the
+		//! endpoint URL, provider label, default model id, and whether an
+		//! Authorization header is emitted differ.  Those four knobs are
+		//! captured in `Config`; the default constructor reproduces the
+		//! OpenAI wire behaviour byte-for-byte.  Do NOT copy-paste this
+		//! codec for a new compatible provider -- add a Config instead.
 		class OpenAIChatCodec : public IChatProviderCodec
 		{
 		public:
+			//! Wire config distinguishing one OpenAI-compatible provider
+			//! from another.  `requiresAuth` true -> ALWAYS emit the
+			//! `Authorization: Bearer <key>` header (OpenAI, xAI).  false
+			//! -> emit it ONLY when the api key is non-empty (a local
+			//! server: no key -> no header at all, matching Ollama, which
+			//! rejects nothing but also expects none; an explicit
+			//! --api-key local server still gets a Bearer header).
+			struct Config
+			{
+				std::string providerName;    //!< "openai" / "xai" / "local" -- the ProviderName() label
+				std::string baseUrl;         //!< full chat/completions endpoint URL
+				std::string defaultModelId;  //!< model id when the caller leaves it empty
+				bool        requiresAuth = true;  //!< see the struct doc above; defaults fail-closed (require auth) so a default-constructed Config never reads indeterminate
+			};
+
+			//! Default: the OpenAI provider (byte-identical wire behaviour
+			//! to the pre-parameterization codec).
+			OpenAIChatCodec();
+
+			//! Parameterized: any OpenAI-compatible provider.  The caller
+			//! (MakeCodec) resolves any env-derived base URL BEFORE
+			//! constructing, so the codec itself reads no environment.
+			explicit OpenAIChatCodec( const Config& config );
+
 			virtual const char* ProviderName() const;
 			virtual const char* DefaultModelId() const;
 			virtual std::string MakeUserEntry(
@@ -398,6 +457,10 @@ namespace RISE
 				const std::vector<std::string>& rawEntries ) const;
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
+			virtual ChatUsage ParseUsage( const std::string& rawBody ) const;
+
+		private:
+			Config mConfig;
 		};
 
 		//! True iff packing (call, raw JSON-RPC envelope line) would carry
@@ -425,6 +488,16 @@ namespace RISE
 		//! entry.  Returns 0 for a non-user entry, or one that does not
 		//! parse.
 		int ChatUserEntryLiveImageCount( const std::string& userEntryJson );
+
+		//! A stable, provider-neutral fingerprint SOURCE string for the ten
+		//! tool definitions (Eval-harness E1): the concatenation of every
+		//! neutral tool's name + description + parameter-schema, in order.
+		//! The trajectory `session` record hashes this so a tool-definition
+		//! change is visible as a changed tool_defs hash across replays.
+		//! Provider-neutral by construction -- it reads the ONE kToolDefs
+		//! table every codec maps from, so the fingerprint never depends on
+		//! which provider is selected.
+		std::string ChatToolDefsFingerprint();
 	}
 }
 

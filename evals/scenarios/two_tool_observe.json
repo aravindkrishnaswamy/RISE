@@ -1,0 +1,22 @@
+{
+  "id": "two_tool_observe",
+  "title": "Render the scene and read the image back",
+  "scene": {
+    "inline": "RISE ASCII SCENE 7\nstandard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\npathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\nfilm\n{\n\twidth 24\n\theight 24\n}\n\npinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\nuniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\nlambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\nsphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\nstandard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\nuniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\nlambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\nclippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\nstandard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n"
+  },
+  "autonomy": "commit",
+  "prompts": [
+    "Render the scene and describe what you see"
+  ],
+  "budgets": {
+    "maxToolCalls": 5,
+    "maxLlmCalls": 5
+  },
+  "replay": {
+    "fixture": "evals/fixtures/two_tool_observe.fixture.jsonl"
+  },
+  "checkpoints": [
+    { "kind": "render", "meanLumaMin": 0.001, "meanLumaMax": 5.0 },
+    { "kind": "trajectory", "maxToolCalls": 2, "noMechanicalLoop": true }
+  ]
+}

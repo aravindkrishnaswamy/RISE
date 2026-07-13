@@ -428,7 +428,7 @@ static void TestOpenAIRequestShape()
 	       "user text rides as a Chat Completions user message" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 9, "body carries exactly nine OpenAI tools" );
+	Check( tools.isArray() && tools.size() == 10, "body carries exactly ten OpenAI tools" );
 	bool sawReadDocument = false;
 	for( std::size_t i = 0; i < tools.size(); ++i ) {
 		const JsonValue& fn = tools.at( i ).get( "function" );
@@ -441,6 +441,154 @@ static void TestOpenAIRequestShape()
 		}
 	}
 	Check( sawReadDocument, "OpenAI tool list includes read_document" );
+}
+
+//----------------------------------------------------------------------
+// T0x: xAI (Grok) + local providers reuse the OpenAI codec with a
+//      different Config -- exact endpoint URL, default model, and the
+//      Authorization-header presence/absence rule.  Local carries the
+//      key-hygiene INVERSE of T0: keyless -> NO auth header at all.
+//----------------------------------------------------------------------
+static bool HasHeaderNamed( const ChatHttpRequest& req, const char* name )
+{
+	for( std::size_t i = 0; i < req.headers.size(); ++i )
+		if( req.headers[i].first == name ) return true;
+	return false;
+}
+
+static void TestXaiAndLocalRequestShape()
+{
+	std::printf( "T0x: xAI + local (OpenAI-compatible) request shapes...\n" );
+
+	// --- xAI (Grok): api.x.ai endpoint, grok-4.5 default, Bearer auth ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::XAI );
+		Check( loop.Provider() == ChatProvider::XAI, "provider is xAI" );
+		Check( loop.ModelId() == "grok-4.5", "default xAI model id is grok-4.5" );
+
+		loop.AddUserMessage( "Make the sphere red" );
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		Check( req.url == "https://api.x.ai/v1/chat/completions",
+		       "xAI url is the api.x.ai Chat Completions endpoint" );
+		CheckKeyOnlyInBearerHeader( req, "authorization", "T0x-xai" );
+		JsonValue root = ParseBody( req.body );
+		Check( root.get( "model" ).asString() == "grok-4.5", "xAI body carries the grok-4.5 model id" );
+		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 10,
+		       "xAI body carries the same ten tools" );
+	}
+
+	// --- local (keyless): 127.0.0.1 default endpoint, qwen3:32b default,
+	//     NO Authorization header (assert its ABSENCE) ---
+	{
+		// Hermeticity: this block asserts the loopback DEFAULT, so a
+		// developer's exported RISE_LOCAL_LLM_BASE_URL (the smoke_local
+		// workflow) must not leak in.  Save + unset, restore after --
+		// same idiom as the override block below.
+		const char* const kEnv = "RISE_LOCAL_LLM_BASE_URL";
+		const char* saved = std::getenv( kEnv );
+		const std::string savedStr = saved ? std::string( saved ) : std::string();
+		const bool hadSaved = ( saved != nullptr );
+
+#if defined( _WIN32 )
+		_putenv_s( kEnv, "" );
+#else
+		unsetenv( kEnv );
+#endif
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Local );
+		Check( loop.Provider() == ChatProvider::Local, "provider is Local" );
+		Check( loop.ModelId() == "qwen3:32b", "default local model id is qwen3:32b" );
+
+		loop.AddUserMessage( "Make the sphere red" );
+		const ChatHttpRequest req = loop.BuildRequest( std::string() );   // NO key
+		Check( req.url == "http://127.0.0.1:11434/v1/chat/completions",
+		       "local url is the 127.0.0.1 loopback default (IP literal, not localhost)" );
+		Check( !HasHeaderNamed( req, "authorization" ),
+		       "keyless local request emits NO Authorization header (key-hygiene inverse)" );
+		Check( HasHeaderNamed( req, "content-type" ), "local request still carries content-type" );
+		JsonValue root = ParseBody( req.body );
+		Check( root.get( "model" ).asString() == "qwen3:32b", "local body carries the qwen3:32b model id" );
+
+		// Restore the environment for the rest of the process.
+#if defined( _WIN32 )
+		_putenv_s( kEnv, hadSaved ? savedStr.c_str() : "" );
+#else
+		if( hadSaved ) setenv( kEnv, savedStr.c_str(), 1 );
+		else unsetenv( kEnv );
+#endif
+	}
+
+	// --- local WITH a key (a --api-key local server) -> Bearer header IS
+	//     emitted, same as OpenAI/xAI ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Local );
+		loop.AddUserMessage( "Make the sphere red" );
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		Check( HasHeaderNamed( req, "authorization" ),
+		       "local WITH a key emits a Bearer Authorization header" );
+		CheckKeyOnlyInBearerHeader( req, "authorization", "T0x-local-keyed" );
+	}
+
+	// --- RISE_LOCAL_LLM_BASE_URL override is read at codec construction
+	//     (SetProvider); set it, re-select, assert the override URL, restore ---
+	{
+		const char* const kEnv = "RISE_LOCAL_LLM_BASE_URL";
+		const char* saved = std::getenv( kEnv );
+		const std::string savedStr = saved ? std::string( saved ) : std::string();
+		const bool hadSaved = ( saved != nullptr );
+
+#if defined( _WIN32 )
+		_putenv_s( kEnv, "http://10.0.0.7:1234/v1/chat/completions" );
+#else
+		setenv( kEnv, "http://10.0.0.7:1234/v1/chat/completions", 1 );
+#endif
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Local );   // reads the env NOW
+		loop.AddUserMessage( "hi" );
+		const ChatHttpRequest req = loop.BuildRequest( std::string() );
+		Check( req.url == "http://10.0.0.7:1234/v1/chat/completions",
+		       "RISE_LOCAL_LLM_BASE_URL override is honored at provider selection" );
+
+		// Restore the environment for the rest of the process.
+#if defined( _WIN32 )
+		_putenv_s( kEnv, hadSaved ? savedStr.c_str() : "" );
+#else
+		if( hadSaved ) setenv( kEnv, savedStr.c_str(), 1 );
+		else unsetenv( kEnv );
+#endif
+	}
+}
+
+//----------------------------------------------------------------------
+// T0y: ParseUsage tolerates xAI's extra usage fields (cost_in_usd_ticks
+//      etc.) -- input/output/cached parse from the OpenAI-shaped subset.
+//----------------------------------------------------------------------
+static void TestXaiUsageParse()
+{
+	std::printf( "T0y: xAI usage parse (extra fields ignored)...\n" );
+	// An xAI-shaped 200 body: OpenAI choices + a usage block that carries the
+	// OpenAI fields AND xAI extras the parser must ignore, not choke on.
+	const std::string body =
+		"{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},"
+		"\"finish_reason\":\"stop\"}],"
+		"\"usage\":{\"prompt_tokens\":1234,\"completion_tokens\":567,"
+		"\"prompt_tokens_details\":{\"cached_tokens\":800,\"text_tokens\":434},"
+		"\"total_tokens\":1801,\"cost_in_usd_ticks\":42,\"num_sources_used\":3}}";
+	OpenAIChatCodec codec;   // ParseUsage is provider-neutral across the OpenAI-compatible set
+	const ChatUsage u = codec.ParseUsage( body );
+	Check( u.inputTokens == 1234, "xAI usage: prompt_tokens -> inputTokens (extras ignored)" );
+	Check( u.outputTokens == 567, "xAI usage: completion_tokens -> outputTokens" );
+	Check( u.cacheReadInputTokens == 800, "xAI usage: prompt_tokens_details.cached_tokens -> cacheRead" );
+
+	// Ollama's minimal usage (no prompt_tokens_details) -> cached stays the
+	// "absent" sentinel (-1), input/output parse from the two present fields.
+	const std::string minimal =
+		"{\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}";
+	const ChatUsage m = codec.ParseUsage( minimal );
+	Check( m.inputTokens == 10 && m.outputTokens == 5 && m.cacheReadInputTokens == -1,
+	       "minimal (Ollama-shaped) usage parses; cached stays absent (-1)" );
 }
 
 //----------------------------------------------------------------------
@@ -511,7 +659,7 @@ static void TestAnthropicRequestShape()
 	Check( sawVersion, "anthropic-version: 2023-06-01 header present" );
 	CheckKeyOnlyInAuthHeader( req, "x-api-key", "T1" );
 
-	// Body shape: model / max_tokens / system / all nine tools / the user turn.
+	// Body shape: model / max_tokens / system / all ten tools / the user turn.
 	JsonValue root = ParseBody( req.body );
 	Check( root.isObject(), "body parses as JSON" );
 	Check( root.get( "model" ).asString() == "claude-sonnet-5", "body carries the model id" );
@@ -524,11 +672,11 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 9, "body carries exactly nine tools" );
+	Check( tools.isArray() && tools.size() == 10, "body carries exactly ten tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
 	                           "propose_patch", "insert_chunk", "remove_chunk",
-	                           "render", "read_image" };
-	for( int t = 0; t < 9; ++t ) {
+	                           "render", "read_image", "query_object_at" };
+	for( int t = 0; t < 10; ++t ) {
 		bool found = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() == expected[t] ) {
@@ -941,7 +1089,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 9, "nine functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 10, "ten functionDeclarations" );
 		bool sawPatch = false, sawInsert = false, sawRemove = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {
@@ -3377,6 +3525,73 @@ static void TestNullShapeDefensiveAudit()
 	}
 }
 
+//----------------------------------------------------------------------
+// T32: user-reported live-Gemini failure -- a bare read_schema call used
+//      to kill the whole chat with HTTP 400.  Root cause: SchemaGenAll()
+//      (SchemaGen.cpp) iterated the scene grammar with no dedupe, so a
+//      legacy alias parser entry (mis_pathtracing_shaderop, which shares
+//      its Describe() with the canonical pathtracing_shaderop) emitted
+//      the same top-level keyword TWICE.  Our JsonValue tolerates
+//      duplicate object keys on the wire (Json.h: serialization re-emits
+//      every stored pair; only lookup is last-wins), but Gemini's
+//      functionResponse.response rides as a protobuf Struct, which
+//      HARD-REJECTS a repeated map key -- HTTP 400, whole turn dead.
+//
+//      SchemaGen.cpp now dedupes at the source.  This test proves the
+//      INDEPENDENT wire-side backstop in the Gemini codec
+//      (DedupeJsonKeysLastWins, AgentChatCodecs.cpp, applied right
+//      before functionResponse.response is set in PackToolResults):
+//      ANY tool result carrying duplicate JSON object keys -- from
+//      read_schema or any future tool -- must never reach the Gemini
+//      wire with those duplicates intact, at any nesting depth.
+//----------------------------------------------------------------------
+static void TestGeminiFunctionResponseDedupe()
+{
+	std::printf( "T32: gemini functionResponse dedupes duplicate JSON keys (read_schema HTTP-400 regression)...\n" );
+	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Gemini );
+	loop.AddUserMessage( "read the schema" );
+
+	// A no-id functionCall (the pre-3.x shape) is enough to get one
+	// pending call to answer; the tool name just needs to route through
+	// the plain "respObj = result" object branch in PackToolResults (i.e.
+	// NOT read_image, which takes the inlineData path).
+	const std::string fx = GeminiFixture(
+		"{\"parts\":[{\"functionCall\":{\"name\":\"read_document\",\"args\":{}}}],\"role\":\"model\"}",
+		"STOP" );
+	ChatStepResult st = loop.HandleResponse( 200, fx );
+	Check( st.kind == ChatStepResult::Kind::ToolCalls && st.toolCalls.size() == 1,
+	       "one functionCall -> one pending ToolCall" );
+	if( st.toolCalls.size() != 1 ) return;
+
+	// Hand-crafted JSON-RPC response line with a duplicated key at TWO
+	// nesting depths: top-level "a" (mirrors a repeated top-level chunk
+	// keyword) and, inside an array element nested two levels down, "c"
+	// (proves the recursive case -- an array-of-objects, not just a bare
+	// nested object).
+	const std::string dupResultLine =
+		"{\"result\":{\"a\":1,\"a\":2,\"nested\":{\"b\":[{\"c\":1,\"c\":2}]}}}";
+	loop.AddToolResult( st.toolCalls[0], dupResultLine );
+
+	const std::string reqBody = loop.BuildRequest( kApiKey ).body;
+
+	auto CountOccurrences = []( const std::string& hay, const std::string& needle ) {
+		int n = 0;
+		for( std::size_t pos = hay.find( needle ); pos != std::string::npos; pos = hay.find( needle, pos + 1 ) )
+			++n;
+		return n;
+	};
+	Check( CountOccurrences( reqBody, "\"a\":" ) == 1,
+	       "the serialized gemini request body carries \"a\": exactly once (deduped)" );
+	Check( reqBody.find( "\"a\":2" ) != std::string::npos,
+	       "the kept top-level \"a\" is the LAST duplicate's value (2), matching "
+	       "JsonValue::find()'s documented last-wins lookup semantics" );
+	Check( CountOccurrences( reqBody, "\"c\":" ) == 1,
+	       "the nested duplicate \"c\" (inside an array element two levels down) is deduped too" );
+	Check( reqBody.find( "\"c\":2" ) != std::string::npos,
+	       "the kept nested \"c\" is likewise the LAST duplicate's value (2)" );
+}
+
 int main()
 {
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
@@ -3391,6 +3606,8 @@ int main()
 	AgentRpcDispatcher rpc( std::move( session ) );
 
 	TestOpenAIRequestShape();
+	TestXaiAndLocalRequestShape();
+	TestXaiUsageParse();
 	TestOpenAIToolLoop();
 	TestAnthropicRequestShape();
 	TestAnthropicToolLoop( rpc );
@@ -3424,6 +3641,7 @@ int main()
 	TestAnthropicMalformedInput();
 	TestGeminiMalformedArgs();
 	TestNullShapeDefensiveAudit();
+	TestGeminiFunctionResponseDedupe();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

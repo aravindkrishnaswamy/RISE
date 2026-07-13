@@ -380,7 +380,7 @@ scenes/Tests/Volumes/pt_painter_wavelet3d_grid.RISEscene  4dda1a813ec3f39270b356
 scenes/Tests/Volumes/pt_painter_worley3d_fog.RISEscene  1b125856fe3ea7482a0143ef7a4d3e86b7ad091eedf59c19c4a09a18220aade4  3029  50
 scenes/Tests/Volumes/pt_painter_worley3d_grid.RISEscene  04e2f55213f80fee8d195c48b9e2c96a181bb482c20805623736370d59719417  5729  67
 scenes/Tests/Volumes/pt_thick_fog_corridor.RISEscene  5bf342a631784785ebc59b9b28ad3204f69894faa6c2062637c7ef1d10c800a4  1942  32
-scenes/Tests/Volumes/pt_volumetric_caustics.RISEscene  7863653e77c2d984bde420942bdfad3362b68113488f553c5f3644d5d557f8b9  2485  40
+scenes/Tests/Volumes/pt_volumetric_caustics.RISEscene  9478a16e0a45dcca945e7d95d62bd4258c506e66dc1417392494da2da5ec136d  2482  40
 scenes/Tests/Volumes/vcm_env_through_fog.RISEscene  becf6ffb4657a63b09d7c3224fa2d2ce508bc54a1191941a7c3c8ca37ca1525f  1655  32
 scenes/iorstack.RISEscene  5ff06ef1a2b1595bd7c2b5cec64cf00937c1c6f788bd86207b156de7ff1bff81  1834  34
 scenes/povray_colors.RISEscene  279e1d124ff6c0f00ddfc4020755f88c98922b7783d90677e1c3dba7f745a112  1907  108

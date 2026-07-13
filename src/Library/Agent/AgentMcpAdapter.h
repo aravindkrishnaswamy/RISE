@@ -5,7 +5,7 @@
 //
 //    RISE already speaks its OWN JSON-RPC 2.0 dispatch for the 14 agent
 //    verbs (AgentRpc.h's AgentRpcDispatcher::HandleLine).  This adapter
-//    wraps that dispatcher and re-frames the SAME 14 verbs as MCP tools,
+//    wraps that dispatcher and re-frames the SAME verb surface as MCP tools,
 //    so an MCP client (Claude Code, or any other MCP host) can drive
 //    RISE over `rise --agent-stdio --mcp <scene>`.  ZERO changes to
 //    AgentRpcDispatcher / AgentSession / verb semantics -- this is
@@ -21,7 +21,7 @@
 //                                        the server respond with an empty
 //                                        object result ({}), handled here
 //                                        directly (no dispatch).
-//      MCP `tools/list`              -> the 14 verbs, each as an MCP Tool
+//      MCP `tools/list`              -> every dispatcher verb, each as an MCP Tool
 //                                        {name, description, inputSchema}
 //      MCP `tools/call {name,args}`  -> builds an internal JSON-RPC
 //                                        request line for the named verb,

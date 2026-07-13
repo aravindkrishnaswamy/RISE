@@ -61,6 +61,7 @@
 #include "../Interfaces/IJobPriv.h"
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IObjectPriv.h"
+#include "../Managers/GenericManager.h"			// g_cstFinalizeDiagSink -- specific-reason channel for a Finalize failure (reserved camera name)
 // Phase B: descriptor-driven introspection used by
 // PopulateLoadedPropertySnapshot to capture loaded parameter values.
 #include "../SceneEditor/CameraIntrospection.h"
@@ -446,6 +447,37 @@ namespace RISE
 			// which itself has no callers.  Retained pending deletion.
 			static const std::string& LastAllocatedCameraName() {
 				return s_lastAllocatedCameraName;
+			}
+
+			// `none` is the scene language's universal unbind sentinel, and
+			// Job::AddKeyframeToAnimation's camera branch specifically treats
+			// element=="none" (or an empty element) as "target the ACTIVE
+			// camera" -- see that function's comment in Job.cpp.  A
+			// hand-authored scene naming a camera `name "none"` would create
+			// a camera that a `timeline`/`keyframe` chunk could never target
+			// by name (it would always silently fall back to the active
+			// camera instead).  Job::ApplyCstInsertChunk already refuses
+			// `none` as a chunk name for AGENT-driven inserts, but that gate
+			// sits above the parser and never runs for a scene file parsed/
+			// derived directly -- so the refusal has to be repeated here, at
+			// the point every camera chunk's Finalize allocates its runtime
+			// name, to close the hand-authored-scene gap.  Every camera
+			// Finalize must call this BEFORE AllocateCameraName and bail out
+			// (return false) if it returns true.  Wording matches
+			// Job::ApplyCstInsertChunk's "reserved name" diagnostic so the
+			// two refusal paths read as one policy to scene authors.
+			static bool RejectReservedCameraName( const std::string& keyword, const std::string& requestedName ) {
+				if( requestedName != "none" ) {
+					return false;
+				}
+				if( RISE::g_cstFinalizeDiagSink ) {
+					*RISE::g_cstFinalizeDiagSink =
+						"reserved name: `none` is the built-in unbind sentinel -- pick a different camera name";
+				}
+				GlobalLog()->PrintEx( eLog_Error,
+					"%s:: `none` is a reserved name (the active-camera / unbind sentinel used by timeline `element`) -- pick a different camera name",
+					keyword.c_str() );
+				return true;
 			}
 
 			// Per-parse reset.  Sole live caller: Cst::DeriveToJob (Cst/Cst.cpp), via the public
@@ -4232,7 +4264,9 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
+					std::string requestedCameraName = bag.GetString( "name", "" );
+					if( RejectReservedCameraName( "pinhole_camera", requestedCameraName ) ) return false;
+					std::string name = AllocateCameraName( requestedCameraName );
 					double fov          = 30.0 * DEG_TO_RAD;
 					if( bag.Has( "fov" ) ) fov = bag.GetDouble( "fov" ) * DEG_TO_RAD;
 					double exposure     = bag.GetDouble( "exposure",      0 );
@@ -4318,7 +4352,9 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
+					std::string requestedCameraName = bag.GetString( "name", "" );
+					if( RejectReservedCameraName( "onb_pinhole_camera", requestedCameraName ) ) return false;
+					std::string name = AllocateCameraName( requestedCameraName );
 					double fov          = 30.0 * DEG_TO_RAD;
 					if( bag.Has( "fov" ) ) fov = bag.GetDouble( "fov" ) * DEG_TO_RAD;
 					double exposure     = bag.GetDouble( "exposure",      0 );
@@ -4395,7 +4431,9 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
+					std::string requestedCameraName = bag.GetString( "name", "" );
+					if( RejectReservedCameraName( "thinlens_camera", requestedCameraName ) ) return false;
+					std::string name = AllocateCameraName( requestedCameraName );
 					// Photographic quartet — units (Phase 1.2):
 					//
 					//   sensor_size, focal_length, shift_x, shift_y
@@ -4622,7 +4660,9 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
+					std::string requestedCameraName = bag.GetString( "name", "" );
+					if( RejectReservedCameraName( "fisheye_camera", requestedCameraName ) ) return false;
+					std::string name = AllocateCameraName( requestedCameraName );
 					double exposure     = bag.GetDouble( "exposure",      0 );
 					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
 					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
@@ -4678,7 +4718,9 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
+					std::string requestedCameraName = bag.GetString( "name", "" );
+					if( RejectReservedCameraName( "orthographic_camera", requestedCameraName ) ) return false;
+					std::string name = AllocateCameraName( requestedCameraName );
 					double exposure   = bag.GetDouble( "exposure",      0 );
 					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
 					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
@@ -5188,6 +5230,22 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "gltf_import"; cd.category = ChunkCategory::Geometry;
+						// APPEND-class derive: Finalize -> Job::ImportGLTFScene walks the file's scene tree and
+						// APPENDS one independent set of geometry/material/object/light/camera entities per call
+						// (like timeline/keyframe's per-element appends, NOT a last-wins single-slot chunk) -- a
+						// scene legitimately carries MULTIPLE unnamed `gltf_import` chunks, one per asset, as long
+						// as each uses a distinct `name_prefix` (scenes/FeatureBased/Geometry/sponza_new_ivy.RISEscene
+						// carries 2+ with an in-file comment blessing the idiom).  This flag was DEFERRED in
+						// 436f604a pending a load-bearing fix: at the time, GLTFSceneImporter::ImportScene
+						// unconditionally `return true`d and silently swallowed every duplicate-name
+						// GenericManager::AddItem failure, so TWO unnamed imports sharing the SAME default
+						// name_prefix would pass the dry-run derive with the second import's entities silently
+						// masked.  That is now fixed: Job::ImportGLTFScene refuses a REPEATED name_prefix within
+						// the same derive up front (a per-Job `mGltfImportPrefixes` record), and ImportScene itself
+						// now propagates every entity-registration failure (material / geometry / object) as a
+						// hard `false` instead of discarding it -- prefix collisions (the common case) and stray
+						// entity-name collisions (the rare hand-authored case) both now fail the derive loudly.
+						cd.unnamedRepeatable = true;
 						cd.description = "Bulk-import of a glTF 2.0 (.gltf or .glb) scene.  Walks the "
 							"scene tree and registers per-primitive standard_objects, per-material "
 							"pbr_metallic_roughness materials (Schlick-from-F0 PBR with optional "
@@ -5213,7 +5271,7 @@ namespace RISE
 							"See docs/GLTF_IMPORT.md §7, §13, §15 for full status.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "file";               p.kind = ValueKind::Filename; p.description = "Source .gltf or .glb file"; }
-						{ auto& p = P(); p.name = "name_prefix";        p.kind = ValueKind::String;   p.description = "Prefix for created geometry / material / object / light / camera names"; p.defaultValueHint = "gltf"; }
+						{ auto& p = P(); p.name = "name_prefix";        p.kind = ValueKind::String;   p.description = "Prefix for created geometry / material / object / light / camera names.  MUST be unique across every `gltf_import` in the scene (including two chunks that both omit it and fall back to the same default) -- a repeated prefix is REFUSED at derive time (\"name_prefix '...' collides with an existing import\") rather than silently masking one import's entities."; p.defaultValueHint = "gltf"; }
 						{ auto& p = P(); p.name = "scene_index";        p.kind = ValueKind::UInt;     p.description = "Index into the file's scenes[] array.  Omit (or use UINT_MAX) to import the file's default scene (the `scene` field in the glTF JSON), which is what most authoring tools intend; explicit values force a particular array index."; p.defaultValueHint = "(default scene)"; }
 						{ auto& p = P(); p.name = "import_meshes";      p.kind = ValueKind::Bool;     p.description = "Create per-primitive standard_objects"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "import_materials";   p.kind = ValueKind::Bool;     p.description = "Create one PBR material per glTF material"; p.defaultValueHint = "TRUE"; }
@@ -9670,12 +9728,24 @@ namespace RISE
 						ChunkDescriptor cd;
 						cd.keyword = "keyframe"; cd.category = ChunkCategory::Animation;
 						cd.description = "Single keyframe for an element's parameter over time.";
+						// APPEND-class derive: Finalize -> Job::AddKeyframe inserts one independent keyframe
+						// into an element's timeline; a scene legitimately carries many unnamed `keyframe`
+						// chunks (no `name` param exists) -- so unnamed multiplicity is legal, not a singleton.
+						cd.unnamedRepeatable = true;
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name"; }
-						// NB: this legacy single-`keyframe` chunk hardwires the lookup to objects
-						// (see the AddKeyframe call above) -- it cannot target geometry/painter, so
-						// the hint deliberately stays {object,camera,light}.  Use `timeline` for those.
-						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light"}; p.description = "Element kind"; p.defaultValueHint = "object"; }
+						// Legacy chunk: `element` and `element_type` are declared below for
+						// scene-authoring familiarity, but Finalize (see the NOTE at the top of
+						// this struct's Finalize) never reads `element` and never propagates a
+						// user-supplied `element_type` into the AddKeyframe call -- both of
+						// AddKeyframe's targeting arguments are hardcoded to the literal string
+						// "object", so this chunk ALWAYS attempts to animate an object whose
+						// `name` is literally "object", regardless of what either field below is
+						// set to.  It CANNOT target a camera (or light/geometry/painter) --
+						// there is no reachable camera branch from this chunk.  Use `timeline`
+						// for real element/param targeting, including camera-by-name (see its
+						// own descriptor).
+						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Legacy field -- NOT read by Finalize; has no effect on which entity is animated (this chunk always targets an object literally named \"object\"). Use `timeline`'s `element` for real targeting."; }
+						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light"}; p.description = "Legacy field -- Finalize hardcodes the actual target type to \"object\" regardless of this value; the only observable effect of supplying it is a preserved legacy quirk that also forces `param` to \"object\". Use `timeline` for real element-type targeting (object/camera/light/geometry/painter)."; p.defaultValueHint = "object (fixed; not user-selectable in practice)"; }
 						{ auto& p = P(); p.name = "param";               p.kind = ValueKind::String; p.description = "Parameter name (e.g. position, orientation, scale)"; }
 						{ auto& p = P(); p.name = "value";               p.kind = ValueKind::String; p.description = "Value at this keyframe (whitespace-separated tokens)"; }
 						{ auto& p = P(); p.name = "time";                p.kind = ValueKind::Double; p.description = "Time (seconds) of the keyframe"; }
@@ -9728,9 +9798,20 @@ namespace RISE
 						ChunkDescriptor cd;
 						cd.keyword = "timeline"; cd.category = ChunkCategory::Animation;
 						cd.description = "Sequence of keyframes for one element/parameter.";
+						// APPEND-class derive: Finalize -> Job::AddKeyframeToAnimation appends keyframes for one
+						// element/param; a scene legitimately carries many unnamed `timeline` chunks (no `name`
+						// param exists), one per animated element/param -- so unnamed multiplicity is legal, not
+						// a singleton (e.g. scenes/FeatureBased/SDF/sdf_morph_torture.RISEscene carries ~14).
+						cd.unnamedRepeatable = true;
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name"; }
-						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light","geometry","painter"}; p.description = "Element kind (geometry/painter animate a named geometry's or painter's intrinsic params, e.g. an sdf_geometry's part fields)"; p.defaultValueHint = "object"; }
+						// The camera clause below is LOAD-BEARING agent guidance: for element_type
+						// camera, `element` names the TARGET camera; omit it to animate the active
+						// camera (the common single-, often unnamed-, camera case needs no rename).
+						// Naming a camera that does not exist is a LOUD derive failure, so the agent
+						// must reference a real camera `name` (or leave `element` off) rather than
+						// inventing one.
+						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name; for element_type camera this is the target camera's `name` (empty == the active camera; a name that matches no camera fails the derive)"; }
+						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light","geometry","painter"}; p.description = "Element kind (camera animates the `element`-named camera, or the ACTIVE camera when `element` is empty; geometry/painter animate a named geometry's or painter's intrinsic params, e.g. an sdf_geometry's part fields)"; p.defaultValueHint = "object"; }
 						{ auto& p = P(); p.name = "param";               p.kind = ValueKind::String; p.description = "Parameter name"; }
 						{ auto& p = P(); p.name = "animation";           p.kind = ValueKind::String; p.description = "Owning named animation (default = the implicit default animation)"; p.defaultValueHint = "(default)"; }
 						{ auto& p = P(); p.name = "value";               p.kind = ValueKind::String; p.repeatable = true; p.description = "Value at the corresponding `time` (emits one keyframe per appearance)"; }
