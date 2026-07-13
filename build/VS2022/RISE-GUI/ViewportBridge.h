@@ -469,7 +469,8 @@ public:
         Material   = 6,   ///< Materials
         Medium     = 7,   ///< Participating media
         Animation  = 8,   ///< Named animation paths (pick to activate; no editable properties)
-        SceneVariant = 9  ///< scene_variant overlays (pick to re-derive that variant active)
+        SceneVariant = 9, ///< scene_variant overlays (pick to re-derive that variant active)
+        Painter    = 10   ///< Painters (union of the IPainter + IScalarPainter managers)
     };
 
     PanelMode panelMode() const;

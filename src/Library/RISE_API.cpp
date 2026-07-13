@@ -7995,6 +7995,79 @@ namespace RISE
 	}
 
 	// -------------------------------------------------------------------
+	// Entity-creation slice.  AgentCommitResult carries more fields
+	// (rawCode / conflict / retriable / headVersion / chunkKeyword /
+	// chunkName) than the C surface flattens out here -- matching the
+	// existing scope of this ABI (the Agent chunk-CRUD verbs themselves
+	// have no C export at all yet); `applied` + `status` + `message`
+	// are the fields a caller needs to show a user-facing result.
+	// -------------------------------------------------------------------
+
+	unsigned int RISE_API_SceneEditController_EntityTemplateCount(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return 0;
+		return p->EntityTemplateCount( static_cast<SceneEditController::Category>( category ) );
+	}
+
+	bool RISE_API_SceneEditController_EntityTemplateLabel(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		const SceneEditController::Category cat = static_cast<SceneEditController::Category>( category );
+		if( idx >= p->EntityTemplateCount( cat ) ) return false;
+		CopyToBuf( p->EntityTemplateLabel( cat, idx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_InstantiateEntityTemplate(
+		SceneEditController* p, int category, unsigned int idx,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( !p ) return false;
+		String name;
+		const SceneEditController::AgentCommitResult r = p->InstantiateEntityTemplate(
+			static_cast<SceneEditController::Category>( category ), idx, &name );
+		if( outName && outNameLen > 0 )       CopyToBuf( name, outName, outNameLen );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
+		return r.applied;
+	}
+
+	bool RISE_API_SceneEditController_DuplicateEntity(
+		SceneEditController* p, int category, const char* name,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( !p ) return false;
+		String newName;
+		const SceneEditController::AgentCommitResult r = p->DuplicateEntity(
+			static_cast<SceneEditController::Category>( category ),
+			String( name ? name : "" ), &newName );
+		if( outName && outNameLen > 0 )       CopyToBuf( newName, outName, outNameLen );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
+		return r.applied;
+	}
+
+	bool RISE_API_SceneEditController_RemoveEntity(
+		SceneEditController* p, int category, const char* name,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( !p ) return false;
+		const SceneEditController::AgentCommitResult r = p->RemoveEntity(
+			static_cast<SceneEditController::Category>( category ), String( name ? name : "" ) );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
+		return r.applied;
+	}
+
+	// -------------------------------------------------------------------
 	// Phase 4b — per-category selection + per-category property accessors.
 	// Each is a thin wrapper around the matching SceneEditController
 	// method.  The buffer-handling pattern follows the rest of the

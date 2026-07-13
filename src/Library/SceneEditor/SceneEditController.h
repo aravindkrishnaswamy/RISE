@@ -223,7 +223,12 @@ namespace RISE
 			Animation  = 8,   ///< Named animation paths — picking one makes it the
 			                  ///< active animation (like picking a camera); no editable
 			                  ///< properties, selection just activates it.
-			SceneVariant = 9  ///< scene_variant overlays; picking one RE-DERIVES the scene with that variant active.
+			SceneVariant = 9, ///< scene_variant overlays; picking one RE-DERIVES the scene with that variant active.
+			Painter    = 10   ///< Painters section (union of the IPainter + IScalarPainter
+			                  ///< managers).  CurrentPanelMode returns PanelMode::None for
+			                  ///< this category this slice (no dedicated PanelMode value) —
+			                  ///< property rows are read via PropertyCountFor/PropertyNameFor
+			                  ///< (indexed directly by Category, not by the current panel).
 		};
 
 		//! Model-B F2 slice S1: render IDENTITY.  A monotonic id assigned to
@@ -1906,6 +1911,74 @@ namespace RISE
 		bool CloneActiveCamera( const String& proposedName,
 		                        char* outName, unsigned int outLen );
 
+		//! Entity-creation slice: number of "Add Entity" templates
+		//! registered for `cat` (see EntityTemplates.h).  0 for
+		//! categories with none (Camera/Rasterizer/Film/Animation/
+		//! SceneVariant/None).
+		unsigned int EntityTemplateCount( Category cat ) const;
+
+		//! Display label for the template at `idx` within `cat` (e.g.
+		//! "Sphere", "Omni Light"), or empty for an out-of-range idx.
+		String EntityTemplateLabel( Category cat, unsigned int idx ) const;
+
+		//! Instantiate the template at `idx` within `cat`: expands its
+		//! chunk-text sequence (substituting @NAME@ / @MATERIAL@ /
+		//! @TEXTURE@ as the template requires — see EntityTemplates.h)
+		//! and inserts each chunk in order via ApplyAgentInsertChunk,
+		//! roots first.  Object templates that need a material and find
+		//! none in the scene bootstrap a bundled default
+		//! uniformcolor_painter + lambertian_material first.  On
+		//! success `*outName` (if non-null) receives the deduped
+		//! instance name chosen for the new entity (base name suffixed
+		//! "_2", "_3", ... on collision, mirroring CloneActiveCamera's
+		//! UniqueCameraName suffix scheme).  The chosen name is picked so
+		//! its ENTIRE name set is free before any insert — the top-level
+		//! name (in its own category) AND every derived sub-chunk name a
+		//! multi-chunk template bakes in (e.g. an Object's `<name>_geo`
+		//! geometry, a GGX material's `<name>_rd`/`<name>_rs` painters),
+		//! checked doc-wide — so a leftover orphan sub-chunk can't make an
+		//! Add fail mid-sequence with a name the user never chose.
+		//!
+		//! Multi-chunk templates are SEQUENTIAL, independently-atomic
+		//! ApplyAgentInsertChunk calls, NOT one composite undo step —
+		//! BeginTransaction/EndTransaction and the agent-commit surface
+		//! are mutually exclusive by design (see ApplyAgentInsertChunk's
+		//! own mTxnOpen refusal), and SceneEditor's composite grouping
+		//! (BeginComposite/EndComposite) is never wired to the agent
+		//! entry points.  A multi-chunk Add therefore undoes as N
+		//! separate steps (one Cmd-Z per chunk, innermost/last-inserted
+		//! first) — an honest, documented limitation of this slice, not
+		//! a bug.
+		//!
+		//! On any chunk's insert failing partway through a sequence,
+		//! returns that chunk's AgentCommitResult verbatim (its
+		//! `message` names the failure) and does NOT roll back chunks
+		//! already inserted — same "no atomic multi-chunk rollback"
+		//! caveat as above.  Callers that want a byte-identical bailout
+		//! must Undo the partially-applied steps themselves.
+		AgentCommitResult InstantiateEntityTemplate( Category cat, unsigned int idx, String* outName );
+
+		//! Duplicate the named entity in `cat`: serializes its current
+		//! chunk out of the retained CST Document, substitutes a fresh
+		//! deduped name for its `name` parameter, and inserts the copy
+		//! via ApplyAgentInsertChunk.  On success `*outName` (if
+		//! non-null) receives the new name.  Refuses (with a non-empty
+		//! message) when `cat` has no chunk-name addressing scheme, the
+		//! entity isn't found, or the insert itself is rejected (e.g. a
+		//! dangling reference the copy would introduce).
+		AgentCommitResult DuplicateEntity( Category cat, const String& name, String* outName );
+
+		//! Remove the named entity in `cat` via ApplyAgentRemoveChunk,
+		//! narrowed by `cat`'s CST role-kind suffix (RoleKindSuffixForCategory)
+		//! so e.g. removing a Material named the same as an unrelated
+		//! Light doesn't clash.  On failure surfaces a non-empty refusal
+		//! message (ApplyAgentChunkCrud_'s English wrapper naming the
+		//! likely still-referenced / non-deriving cause, with Job's
+		//! diagnostic appended) — e.g. removing a material a
+		//! standard_object still references is rejected, not silently
+		//! skipped.
+		AgentCommitResult RemoveEntity( Category cat, const String& name );
+
 	protected:
 		//! Test override point.  Production override calls
 		//! mInteractiveRasterizer->RasterizeScene with the current
@@ -2195,7 +2268,7 @@ namespace RISE
 		// pick, used for the panel header / single-tuple callers.
 		// All writes happen on the UI thread; render thread doesn't
 		// touch these.
-		static constexpr int        kNumCategories = 10;  // None..SceneVariant
+		static constexpr int        kNumCategories = 11;  // None..Painter
 		String                      mSelectionByCategory[ kNumCategories ];
 		//! Per-category "is the accordion section expanded?" flag,
 		//! tracked SEPARATELY from `mSelectionByCategory` so a user

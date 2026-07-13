@@ -42,9 +42,12 @@
 #include "FilmIntrospection.h"
 #include "MaterialIntrospection.h"
 #include "MediaIntrospection.h"
+#include "PainterIntrospection.h"     // Entity-creation slice: Category::Painter property rows
+#include "EntityTemplates.h"          // Entity-creation slice: Add-Entity template registry
 #include "../Interfaces/IMaterialManager.h"
 #include "../Interfaces/IMedium.h"
 #include "../Interfaces/IPainterManager.h"
+#include "../Interfaces/IScalarPainterManager.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/IScenePriv.h"
 #include "../Interfaces/IObjectManager.h"
@@ -1899,6 +1902,19 @@ bool SelectionStillResolves( const IJobPriv& job,
 		const IMaterialManager* m = const_cast<IJobPriv&>( job ).GetMaterials();
 		return m && const_cast<IMaterialManager*>( m )->GetItem( name.c_str() ) != 0;
 	}
+	case Cat::Painter: {
+		// Entity-creation slice: check BOTH painter pipes (the union
+		// CategoryEntityName draws from) -- a name resolving in either
+		// manager means the selection still points at a live entity.
+		IJobPriv& jobRef = const_cast<IJobPriv&>( job );
+		if( IPainterManager* pm = jobRef.GetPainters() ) {
+			if( pm->GetItem( name.c_str() ) != 0 ) return true;
+		}
+		if( IScalarPainterManager* spm = jobRef.GetScalarPainters() ) {
+			if( spm->GetItem( name.c_str() ) != 0 ) return true;
+		}
+		return false;
+	}
 	case Cat::Rasterizer:
 	case Cat::Film:
 	case Cat::None:
@@ -2382,6 +2398,25 @@ public:
 	}
 };
 
+// Entity-creation slice: Category::Painter's entity list is the UNION of
+// the two painter pipes (IPainterManager colour painters +
+// IScalarPainterManager physical-scalar painters -- see CLAUDE.md's
+// IScalarPainter refactor note: material slots route by physical meaning,
+// not syntactic resemblance, so a scene legitimately has same-named-or-not
+// entries in both managers).  Sorted stably so index-by-index enumeration
+// (CategoryEntityCount then repeated CategoryEntityName(idx)) is
+// deterministic across calls even though neither manager's own
+// EnumerateItemNames documents a stable order.
+std::vector<String> CollectPainterUnionNames( IJobPriv& job )
+{
+	CollectNamesCallback cb;
+	if( IPainterManager* m = job.GetPainters() ) m->EnumerateItemNames( cb );
+	if( IScalarPainterManager* m = job.GetScalarPainters() ) m->EnumerateItemNames( cb );
+	std::stable_sort( cb.names.begin(), cb.names.end(),
+		[]( const String& a, const String& b ) { return std::string( a.c_str() ) < std::string( b.c_str() ); } );
+	return cb.names;
+}
+
 }  // namespace
 
 unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
@@ -2448,6 +2483,9 @@ unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
 		// silently no-op).  Otherwise: the declared variants + the synthetic "(base)" at index 0.
 		if( !mJob.HasRetainedCstDocument() || mJob.GetSceneVariantCount() == 0 ) return 0;
 		return mJob.GetSceneVariantCount() + 1u;
+	}
+	case Category::Painter: {
+		return static_cast<unsigned int>( CollectPainterUnionNames( mJob ).size() );
 	}
 	case Category::None:
 	default:
@@ -2523,6 +2561,11 @@ String SceneEditController::CategoryEntityName( Category cat, unsigned int idx )
 		if( !mJob.GetSceneVariantName( idx - 1, buf, sizeof(buf) ) ) return String();
 		return String( buf );
 	}
+	case Category::Painter: {
+		const std::vector<String> names = CollectPainterUnionNames( mJob );
+		if( idx >= names.size() ) return String();
+		return names[idx];
+	}
 	case Category::None:
 	default:
 		return String();
@@ -2574,6 +2617,7 @@ String SceneEditController::CategoryActiveName( Category cat ) const
 	case Category::Light:
 	case Category::Material:
 	case Category::Medium:
+	case Category::Painter:
 	case Category::None:
 	default:
 		return String();
@@ -5169,6 +5213,7 @@ bool RoleKindSuffixForCategory( SceneEditController::Category cat, std::string& 
 	case Category::Medium:       outSuffix = "medium";          return true;
 	case Category::Animation:    outSuffix = "animation";       return true;
 	case Category::SceneVariant: outSuffix = "scene_variant";   return true;
+	case Category::Painter:      outSuffix = "painter";         return true;   // matches every "*_painter" chunk keyword (endsWith), same convention as ClassifyCstEntityKind's "_material"/"_light"/"_medium" suffixes
 	case Category::Rasterizer:
 	case Category::Film:
 	case Category::None:
@@ -5661,6 +5706,14 @@ SceneEditController::PanelMode SceneEditController::CurrentPanelMode() const
 	case Category::SceneVariant:
 		// No editable properties -- selection re-derives the scene with that variant active.
 		return PanelMode::None;
+	case Category::Painter:
+		// Entity-creation slice: no dedicated PanelMode::Painter this
+		// slice (PropertyCountFor/PropertyNameFor/etc. read
+		// mPropertiesByCategory[Category::Painter] directly, indexed by
+		// Category rather than by the "current panel" mirror below --
+		// see buildRowsFor's Painter case and this method's own header
+		// doc on Category::Painter).
+		return PanelMode::None;
 	case Category::None:
 	default:
 		return PanelMode::None;
@@ -5804,6 +5857,14 @@ void SceneEditController::RefreshProperties()
 			out.push_back( row );
 			break;
 		}
+		case Category::Painter: {
+			// Entity-creation slice: rows are CST-chunk-sourced (there is
+			// no live per-parameter getter surface on IPainter/
+			// IScalarPainter) -- see PainterIntrospection.h's header doc.
+			if( selName.size() <= 1 ) break;
+			out = PainterIntrospection::Inspect( mJob.GetCstDocument(), selName );
+			break;
+		}
 		case Category::None:
 		default:
 			break;
@@ -5929,7 +5990,13 @@ inline const std::vector<RISE::CameraProperty>* PropsForCat(
 	const std::vector<RISE::CameraProperty>* arr, RISE::SceneEditController::Category cat )
 {
 	const int i = static_cast<int>( cat );
-	if( i < 0 || i >= 9 ) return 0;   // 9 == kNumCategories (None..Animation)
+	// Pre-existing bug fixed in passing: this bound was hardcoded to 9
+	// (stale even before this change -- SceneVariant=9 was already
+	// silently excluded from PropertyCountFor/PropertyNameFor/etc.).
+	// kNumCategories is private (this is a free function, not a
+	// member), so mirror its value here with an explicit comment
+	// rather than hardcoding a now-also-stale literal.
+	if( i < 0 || i >= 11 ) return 0;   // 11 == SceneEditController::kNumCategories (None..Painter)
 	return &arr[i];
 }
 }
@@ -6106,6 +6173,381 @@ bool SceneEditController::CloneActiveCamera(
 	lk.unlock();
 	mCV.notify_one();
 	return true;
+}
+
+namespace {
+
+// Generalizes UniqueCameraName (above) across every category: build the
+// existing-name set via the SAME CategoryEntityCount/CategoryEntityName
+// union every picker list already reads, then append a numeric suffix on
+// collision.  Not under mMutex itself -- callers that need the pick to be
+// race-free against a concurrent insert take the lock around the WHOLE
+// pick-then-insert sequence (InstantiateEntityTemplate / DuplicateEntity
+// call this, then immediately ApplyAgentInsertChunk, which does its own
+// cancel-and-park; a name collision from a true race is vanishingly
+// unlikely in an interactive single-user editor and would simply surface
+// as an ApplyAgentInsertChunk duplicate-name rejection, not corruption).
+String UniqueEntityName( const SceneEditController& ctrl, SceneEditController::Category cat, const String& proposed )
+{
+	if( proposed.size() <= 1 ) return String( "entity" );
+	std::vector<std::string> existing;
+	const unsigned int n = ctrl.CategoryEntityCount( cat );
+	existing.reserve( n );
+	for( unsigned int i = 0; i < n; ++i ) existing.emplace_back( ctrl.CategoryEntityName( cat, i ).c_str() );
+
+	auto taken = [&]( const std::string& nm ) {
+		return std::find( existing.begin(), existing.end(), nm ) != existing.end();
+	};
+	const std::string base( proposed.c_str() );
+	if( !taken( base ) ) return proposed;
+	char buf[256];
+	for( int i = 2; i < 1000; ++i ) {
+		std::snprintf( buf, sizeof(buf), "%s_%d", base.c_str(), i );
+		if( !taken( buf ) ) return String( buf );
+	}
+	std::snprintf( buf, sizeof(buf), "%s_%lld", base.c_str(), static_cast<long long>( std::time( 0 ) ) );
+	return String( buf );
+}
+
+// Collect every distinct entity name a template will create for a given
+// instance name: the top-level @NAME@ plus every @NAME@_<suffix> sub-chunk
+// name baked into the template text (e.g. an Object template's
+// `@NAME@_geo` geometry, a GGX material's `@NAME@_rd`/`@NAME@_rs`
+// painters).  Used to pick an instance name whose ENTIRE name set is free
+// BEFORE any insert, so a leftover orphan sub-chunk can't make a
+// multi-chunk Add fail mid-sequence with a confusing raw duplicate-name
+// message (a name the user never chose).
+std::vector<std::string> TemplateInstanceNames( const EntityTemplateDef& tpl, const std::string& instanceName )
+{
+	std::vector<std::string> names;
+	auto addUnique = [&]( const std::string& n ) {
+		if( std::find( names.begin(), names.end(), n ) == names.end() ) names.push_back( n );
+	};
+	if( tpl.hasNamedIdentity ) addUnique( instanceName );
+	const std::string token = "@NAME@";
+	for( const std::string& chunk : tpl.chunkTexts )
+	{
+		size_t pos = 0;
+		while( ( pos = chunk.find( token, pos ) ) != std::string::npos )
+		{
+			size_t e = pos + token.size();
+			// Capture a trailing `_<identifier>` suffix if present, so
+			// `@NAME@_geo` yields the suffix "_geo" and bare `@NAME@`
+			// yields "".  Identifier chars: [A-Za-z0-9_].
+			while( e < chunk.size() )
+			{
+				const char c = chunk[e];
+				const bool ident = ( c == '_' )
+				                || ( c >= 'a' && c <= 'z' )
+				                || ( c >= 'A' && c <= 'Z' )
+				                || ( c >= '0' && c <= '9' );
+				if( !ident ) break;
+				++e;
+			}
+			addUnique( instanceName + chunk.substr( pos + token.size(), e - ( pos + token.size() ) ) );
+			pos = e;
+		}
+	}
+	return names;
+}
+
+// True if ANY of `names` is already used by SOME chunk in `doc` (any
+// kind).  Deliberately kind-agnostic: the real collision rule is
+// per-(kind,name), so this over-refuses in the rare cross-kind name-clash
+// case (a candidate is skipped when an unrelated-kind chunk shares one of
+// its names) -- harmless, since we just advance to the next numeric
+// suffix and get a valid unique name, never a confusing refusal.
+bool AnyNameTakenDocWide( const RISE::Cst::Document& doc, const std::vector<std::string>& names )
+{
+	for( const std::string& nm : names )
+	{
+		int occ = 0;
+		RISE::Cst::DocFindByNameAnyRole( doc, nm, &occ, std::string(), false );
+		if( occ > 0 ) return true;
+	}
+	return false;
+}
+
+// In-place replace every occurrence of `token` with `value` in `text`.
+void ReplaceAllTokens( std::string& text, const std::string& token, const std::string& value )
+{
+	if( token.empty() ) return;
+	size_t pos = 0;
+	while( ( pos = text.find( token, pos ) ) != std::string::npos ) {
+		text.replace( pos, token.size(), value );
+		pos += value.size();
+	}
+}
+
+// Duplicate recipe (see SceneEditController::DuplicateEntity's doc): find
+// the line whose first token is exactly the chunk param name `name` and
+// replace the remainder of that line (its value) with `newName`.  Chunk
+// text here is Cst::SerializeNode output, not scene-authored bytes, so
+// this doesn't need to survive arbitrary user formatting -- just the
+// serializer's own -- but it tolerates leading whitespace / trailing CR
+// defensively.  Returns false if no `name` param line is found (the
+// caller then refuses the duplicate rather than silently inserting a
+// same-named clone).
+bool ReplaceFirstNameParamLine( std::string& chunkText, const std::string& newName )
+{
+	size_t pos = 0;
+	while( pos < chunkText.size() )
+	{
+		size_t lineEnd = chunkText.find( '\n', pos );
+		const size_t end = ( lineEnd == std::string::npos ) ? chunkText.size() : lineEnd;
+		size_t i = pos;
+		while( i < end && ( chunkText[i] == ' ' || chunkText[i] == '\t' ) ) ++i;
+		if( chunkText.compare( i, 4, "name" ) == 0
+		 && ( i + 4 == end || chunkText[i+4] == ' ' || chunkText[i+4] == '\t' ) )
+		{
+			size_t v = i + 4;
+			while( v < end && ( chunkText[v] == ' ' || chunkText[v] == '\t' ) ) ++v;
+			size_t ve = end;
+			while( ve > v && ( chunkText[ve-1] == '\r' || chunkText[ve-1] == ' ' || chunkText[ve-1] == '\t' ) ) --ve;
+			chunkText.replace( v, ve - v, newName );
+			return true;
+		}
+		if( lineEnd == std::string::npos ) break;
+		pos = lineEnd + 1;
+	}
+	return false;
+}
+
+}   // namespace
+
+unsigned int SceneEditController::EntityTemplateCount( Category cat ) const
+{
+	return EntityTemplates::Count( cat );
+}
+
+String SceneEditController::EntityTemplateLabel( Category cat, unsigned int idx ) const
+{
+	const EntityTemplateDef* t = EntityTemplates::At( cat, idx );
+	return t ? String( t->label.c_str() ) : String();
+}
+
+SceneEditController::AgentCommitResult SceneEditController::InstantiateEntityTemplate(
+	Category cat, unsigned int idx, String* outName )
+{
+	if( outName ) *outName = String();
+
+	const EntityTemplateDef* tpl = EntityTemplates::At( cat, idx );
+	if( !tpl )
+	{
+		AgentCommitResult r;
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.message = String( "unknown entity template index" );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
+
+	// Pick an instance name whose WHOLE name set (top-level + every
+	// derived sub-chunk name the template bakes in) is free before we
+	// insert anything, under mMutex so the doc read is coherent.  A
+	// !hasNamedIdentity template (hosek_wilkie sky) creates a single
+	// unnamed chunk -- no dedup, its fixed result name.
+	String instanceName;
+	if( !tpl->hasNamedIdentity )
+	{
+		instanceName = String( tpl->fixedResultName.c_str() );
+	}
+	else
+	{
+		std::lock_guard<std::mutex> nlk( mMutex );
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		// In-category taken-name set (top-level namespace), same source
+		// as UniqueEntityName; the doc-wide probe below covers the
+		// derived sub-chunk names UniqueEntityName can't see.
+		std::vector<std::string> inCat;
+		const unsigned int nc = CategoryEntityCount( cat );
+		inCat.reserve( nc );
+		for( unsigned int i = 0; i < nc; ++i ) inCat.emplace_back( CategoryEntityName( cat, i ).c_str() );
+		auto inCatTaken = [&]( const std::string& nm ) {
+			return std::find( inCat.begin(), inCat.end(), nm ) != inCat.end();
+		};
+		const std::string base = tpl->baseName.empty() ? std::string( "entity" ) : tpl->baseName;
+		auto candidateClear = [&]( const std::string& cand ) {
+			if( inCatTaken( cand ) ) return false;
+			if( doc && AnyNameTakenDocWide( *doc, TemplateInstanceNames( *tpl, cand ) ) ) return false;
+			return true;
+		};
+		std::string chosen = base;
+		if( !candidateClear( chosen ) )
+		{
+			char buf[256];
+			chosen.clear();
+			for( int i = 2; i < 1000; ++i )
+			{
+				std::snprintf( buf, sizeof(buf), "%s_%d", base.c_str(), i );
+				if( candidateClear( buf ) ) { chosen = buf; break; }
+			}
+			if( chosen.empty() )
+			{
+				std::snprintf( buf, sizeof(buf), "%s_%lld", base.c_str(), static_cast<long long>( std::time( 0 ) ) );
+				chosen = buf;
+			}
+		}
+		instanceName = String( chosen.c_str() );
+	}
+
+	// Resolve @MATERIAL@ for Object templates: reuse an existing
+	// material if the scene has one, else bootstrap a bundled default
+	// uniformcolor_painter + lambertian_material pair first (both
+	// individually undoable, same as every other inserted chunk).
+	std::string materialName;
+	if( tpl->needsMaterial )
+	{
+		// Reuse the first REAL material.  Job::InitializeContainers
+		// registers a `"none"` sentinel (the null material) in the
+		// manager, so "manager non-empty" does NOT mean "the scene has
+		// a usable material" -- binding a fresh object to `none` would
+		// silently shade black.  Skip the sentinel explicitly.
+		const unsigned int matCount = CategoryEntityCount( Category::Material );
+		for( unsigned int mi = 0; mi < matCount; ++mi )
+		{
+			const std::string cand( CategoryEntityName( Category::Material, mi ).c_str() );
+			if( !cand.empty() && cand != "none" )
+			{
+				materialName = cand;
+				break;
+			}
+		}
+		if( materialName.empty() )
+		{
+			// Dedup the bootstrap names too -- a scene with no materials
+			// can still already contain a painter named "default_gray"
+			// (same ChunkCategory::Painter namespace), which would turn
+			// the bootstrap insert into a duplicate-name refusal.
+			const std::string painterName(
+				UniqueEntityName( *this, Category::Painter, String( "default_gray" ) ).c_str() );
+			const std::string lambertianName(
+				UniqueEntityName( *this, Category::Material, String( "default_lambertian" ) ).c_str() );
+			const AgentCommitResult pr = ApplyAgentInsertChunk(
+				String( EntityTemplates::DefaultPainterChunkText( painterName ).c_str() ), nullptr );
+			if( !pr.applied ) return pr;
+			const AgentCommitResult mr = ApplyAgentInsertChunk(
+				String( EntityTemplates::DefaultLambertianChunkText( lambertianName, painterName ).c_str() ), nullptr );
+			if( !mr.applied ) return mr;
+			materialName = lambertianName;
+		}
+	}
+
+	std::string textureFile;
+	if( tpl->needsTexture )
+	{
+		textureFile = EntityTemplates::EnsureDefaultTextureFile();
+		if( textureFile.empty() )
+		{
+			AgentCommitResult r;
+			r.applied = false;
+			r.rawCode = 0;
+			r.status  = String( "rejected" );
+			r.message = String( "could not create the default placeholder texture file" );
+			std::lock_guard<std::mutex> hlk( mMutex );
+			r.headVersion = mJob.GetCstHeadVersion();
+			return r;
+		}
+	}
+
+	// Sequential, independently-atomic inserts -- see the header doc's
+	// undo-granularity caveat.
+	AgentCommitResult last;
+	for( const std::string& chunkTemplate : tpl->chunkTexts )
+	{
+		std::string text = chunkTemplate;
+		ReplaceAllTokens( text, "@NAME@", std::string( instanceName.c_str() ) );
+		if( tpl->needsMaterial ) ReplaceAllTokens( text, "@MATERIAL@", materialName );
+		if( tpl->needsTexture )  ReplaceAllTokens( text, "@TEXTURE@", textureFile );
+		last = ApplyAgentInsertChunk( String( text.c_str() ), nullptr );
+		if( !last.applied ) return last;
+	}
+
+	if( outName ) *outName = instanceName;
+	return last;
+}
+
+SceneEditController::AgentCommitResult SceneEditController::DuplicateEntity(
+	Category cat, const String& name, String* outName )
+{
+	if( outName ) *outName = String();
+	AgentCommitResult r;
+
+	std::string suffix; bool uniqueFallback = false;
+	if( !RoleKindSuffixForCategory( cat, suffix, uniqueFallback ) )
+	{
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.message = String( "category has no chunk-name addressing scheme to duplicate from" );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
+
+	std::string bytes;
+	{
+		std::lock_guard<std::mutex> hlk( mMutex );
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		if( !doc )
+		{
+			r.applied = false; r.rawCode = 0; r.status = String( "rejected" );
+			r.message = String( "no retained CST Document" );
+			r.headVersion = mJob.GetCstHeadVersion();
+			return r;
+		}
+		const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
+			*doc, name.c_str(), nullptr, suffix, uniqueFallback );
+		if( id == 0 )
+		{
+			r.applied = false; r.rawCode = 0; r.status = String( "rejected" );
+			r.message = String( "entity not found" );
+			r.headVersion = mJob.GetCstHeadVersion();
+			return r;
+		}
+		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
+		if( !chunk )
+		{
+			r.applied = false; r.rawCode = 0; r.status = String( "rejected" );
+			r.message = String( "entity chunk not resolvable" );
+			r.headVersion = mJob.GetCstHeadVersion();
+			return r;
+		}
+		bytes = RISE::Cst::SerializeNode( chunk );
+	}
+
+	const String newName = UniqueEntityName( *this, cat, name );
+	if( !ReplaceFirstNameParamLine( bytes, std::string( newName.c_str() ) ) )
+	{
+		r.applied = false; r.rawCode = 0; r.status = String( "rejected" );
+		r.message = String( "could not locate a `name` parameter to substitute in the duplicated chunk" );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
+
+	r = ApplyAgentInsertChunk( String( bytes.c_str() ), nullptr );
+	if( r.applied && outName ) *outName = newName;
+	return r;
+}
+
+SceneEditController::AgentCommitResult SceneEditController::RemoveEntity( Category cat, const String& name )
+{
+	std::string suffix; bool uniqueFallback = false;
+	if( !RoleKindSuffixForCategory( cat, suffix, uniqueFallback ) )
+	{
+		AgentCommitResult r;
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.message = String( "category has no chunk-name addressing scheme to remove from" );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
+	return ApplyAgentRemoveChunk( name, String( suffix.c_str() ), nullptr );
 }
 
 bool SceneEditController::SetPropertyForCategory( Category cat, const String& name, const String& valueStr )
@@ -6550,6 +6992,22 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		lk.unlock();
 		mCV.notify_one();
 		return ok;
+	}
+
+	case Category::Painter: {
+		// Entity-creation slice: painters have no per-material-style
+		// live setter surface (see PainterIntrospection.h's header
+		// doc), so route straight through the generic agent CST
+		// param-edit path -- the "RouteCstParamEdit_-class" path
+		// Material/Light/Medium use on CST scenes, generalized: it
+		// already cancel-and-parks, captures the prior value for
+		// undo/redo (PushAgentCstParamEdit), marks dirty, bumps light
+		// generation if needed, and kicks the re-render itself, so no
+		// separate park/SceneEdit/Apply dance is needed here.
+		if( mSelectionName.size() <= 1 ) return false;
+		const AgentCommitResult r = ApplyAgentParamEdit(
+			mSelectionName, String( "painter" ), name, valueStr, nullptr );
+		return r.applied;
 	}
 
 	case Category::None:

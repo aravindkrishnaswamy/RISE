@@ -728,6 +728,7 @@ ViewportBridge::Category ViewportBridge::selectionCategory() const
         case 7: return Category::Medium;
         case 8: return Category::Animation;
         case 9: return Category::SceneVariant;
+        case 10: return Category::Painter;
         default: return Category::None;
     }
 }

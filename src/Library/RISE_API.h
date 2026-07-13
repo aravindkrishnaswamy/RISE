@@ -3440,7 +3440,9 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditCategory_Medium     = 7,  ///< Participating media (Homogeneous editable;
 		                                   ///< Heterogeneous read-only)
 		SceneEditCategory_Animation  = 8,  ///< Named animations (Category::Animation)
-		SceneEditCategory_SceneVariant = 9 ///< scene_variant overlays (Category::SceneVariant)
+		SceneEditCategory_SceneVariant = 9,///< scene_variant overlays (Category::SceneVariant)
+		SceneEditCategory_Painter   = 10   ///< Painters (union of the IPainter + IScalarPainter
+		                                   ///< managers; Category::Painter)
 	};
 
 	//! Construct a SceneEditController over an existing job.
@@ -3980,6 +3982,54 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p,
 		const char* proposedName,
 		char* outName, unsigned int outLen );
+
+	//! Entity-creation slice: number of "Add Entity" templates
+	//! registered for `category` (0 for categories with none —
+	//! Camera/Rasterizer/Film/Animation/SceneVariant/None).
+	unsigned int RISE_API_SceneEditController_EntityTemplateCount(
+		SceneEditController* p, int category );
+
+	//! Display label for the template at `idx` within `category`
+	//! (e.g. "Sphere", "Omni Light").  Returns false (buf untouched
+	//! beyond a NUL) for a null controller or an out-of-range idx.
+	bool RISE_API_SceneEditController_EntityTemplateLabel(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen );
+
+	//! Instantiate the template at `idx` within `category` (see
+	//! SceneEditController::InstantiateEntityTemplate).  Returns the
+	//! AgentCommitResult's `applied` flag; `outName` (optional, may be
+	//! null) receives the deduped instance name on success, `outStatus`
+	//! / `outMessage` (optional, may be null) always receive the
+	//! result's status ("applied"/"rejected"/"diagnosed") and a
+	//! human-readable message, success or failure.  A multi-chunk
+	//! template undoes as several separate steps — see the C++ method's
+	//! header doc.
+	bool RISE_API_SceneEditController_InstantiateEntityTemplate(
+		SceneEditController* p, int category, unsigned int idx,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
+
+	//! Duplicate the named entity in `category` under a freshly-deduped
+	//! name (see SceneEditController::DuplicateEntity).  Returns
+	//! `applied`; `outName` / `outStatus` / `outMessage` as above
+	//! (each optional, may be null).
+	bool RISE_API_SceneEditController_DuplicateEntity(
+		SceneEditController* p, int category, const char* name,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
+
+	//! Remove the named entity in `category` (see
+	//! SceneEditController::RemoveEntity) — refused with a non-empty
+	//! `outMessage` if it is still referenced (e.g. a material a
+	//! standard_object still binds) or not found.  Returns `applied`;
+	//! `outStatus` / `outMessage` as above (each optional, may be null).
+	bool RISE_API_SceneEditController_RemoveEntity(
+		SceneEditController* p, int category, const char* name,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
 }
 
 #endif

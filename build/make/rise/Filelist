@@ -447,7 +447,9 @@ SRCLIBSCENEEDITOR =\
 	$(PATHLIBRARY)SceneEditor/ChunkDescriptorRegistry.cpp			\
 	$(PATHLIBRARY)SceneEditor/TransformSnapshot.cpp					\
 	$(PATHLIBRARY)SceneEditor/DirtyTracker.cpp						\
-	$(PATHLIBRARY)SceneEditor/SaveEngine.cpp
+	$(PATHLIBRARY)SceneEditor/SaveEngine.cpp						\
+	$(PATHLIBRARY)SceneEditor/PainterIntrospection.cpp				\
+	$(PATHLIBRARY)SceneEditor/EntityTemplates.cpp
 
 # Miscellaneous stuff
 SRCLIBMISC =\
