@@ -1,0 +1,823 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#   File:           enamel_depth_glints.RISEscene
+#   Description:    Combined showcase of the VITREOUS-ENAMEL DEPTH stack and the discrete-facet
+#                   GLINT MODIFIER (docs/ENAMEL_SPARKLE_BRDF.md), ANIMATED so the glints visibly
+#                   travel as the view or the light moves.
+#
+#                   Four enamel "cabochon" pucks on a dark glossy table.  Each puck is the same
+#                   physically-layered enamel stack as the enamel_watch dial: a bounded dielectric
+#                   slab (SDF heightfield disk, ior 1.55) whose interior carries a spectral absorbing
+#                   colorant medium, over a domed satin-silver substrate.  The dome makes the glass
+#                   THIN at the centre and THICK at the rim, so colour deepens toward the rim by
+#                   Beer absorption -- the fume depth effect.  Left to right:
+#                     1. control     -- plum (gold-ruby) fume, NO glints: pure depth gradient.
+#                     2. goldstone   -- dark AMBER (iron) fume, glint_modifier on a GOLD DOME
+#                                       beneath the glass (real goldstone = copper platelets in
+#                                       amber glass): discrete flakes sparkle from INSIDE the
+#                                       depth, tinted by the double-pass absorption.  The medium
+#                                       must be TRANSMISSIVE but DARK: a strong absorber
+#                                       (gold-ruby) crushes the sparkle to black, a light amber
+#                                       lets the dome glow clip white and swallow it.  See the
+#                                       glint-modifier comment for the TIR spread rule.
+#                     3. frost       -- plum fume, glint_modifier on the GLASS TOP surface:
+#                                       white Fresnel sparkle riding ABOVE the colour, unaffected
+#                                       by the medium.  Surface glints (3) vs in-depth glints (2).
+#                     4. starry      -- cobalt-blue fume over a FINER, DENSER glint field on the
+#                                       dome: the "starry night" goldstone-blue look.
+#
+#                   A localized key light is REQUIRED for the glints (a uniform environment cannot
+#                   produce specular flashes); the uniform white env (the enamel_watch light-tent
+#                   recipe) + a dim scrim keep the fume body readable.
+#
+#                   For a headless frame sequence (docs/skills/rise-animation-render.md): flip the
+#                   file_rasterizeroutput `multiple` to TRUE -> rendered/enamel_depth_glints0000.png ...
+#
+#                   ANIMATIONS (renderanimation; pick in the GUI dropdown or `> modify animation`):
+#                     GlintOrbit (ACTIVE) -- the camera rakes an ellipse (+-8 deg elevation,
+#                                +-15 deg azimuth, 90 deg out of phase, hermite, C1-seamless loop)
+#                                around the row; the facets flash on/off as the view direction
+#                                sweeps their mirror lobes.  Elevation is capped at +-8 so the
+#                                camera never climbs into the key's specular cone (the key sits
+#                                24 deg above the hero specular axis; see the key comment).
+#                     LightSweep -- the camera holds the hero pose while the KEY LIGHT slides
+#                                x = -20 -> +20 -> -20 above the row; the glint field marches
+#                                across each puck in turn as the light passes over it.
+#
+#   Render:         export RISE_MEDIA_PATH="$(pwd)/"
+#                   printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Materials/enamel_depth_glints.RISEscene
+#                   (animation: printf "renderanimation\nquit\n" | ...)
+#
+#   Author:         Aravind Krishnaswamy
+#   Birthdate:      July 11, 2026
+#############################################################################################################
+
+scene_options
+{
+	scene_unit		1.0
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+uniformcolor_painter
+{
+	name			pnt_env
+	color			1 1 1
+}
+
+# Spectral PT: the colorant media carry real absorption spectra; transparent
+# shadows let NEE light the domes + fume body THROUGH the dielectric slab with
+# Fresnel transmittance (shadow rays do not refract, so NEE cannot align a
+# facet's mirror lobe -- the discrete in-depth flashes arrive via BSDF
+# sampling; see the key-light comment for the angular-size requirement).
+pathtracing_spectral_rasterizer
+{
+	# 1024: the in-depth flecks are 1-2px peaks sitting on spectral chroma
+	# noise; OIDN discards them as fireflies unless the noise floor is well
+	# below the fleck structure (the enamel_watch 512-vs-128 lesson, one
+	# octave harsher here because of the medium noise).  512 is acceptable
+	# for animation frames if wall-time matters; the fleck fields thin out.
+	samples			1024
+	nmbegin			380
+	nmend			720
+	num_wavelengths		16
+	spectral_samples	1
+	oidn_denoise		true
+	oidn_prefilter		accurate
+	transparent_shadows	TRUE
+	# Uniform white light-tent env (the enamel_watch recipe): the satin silver
+	# domes need full-hemisphere illumination through the glass for the fume
+	# body to glow -- panel lights alone leave the pucks near-black.  A uniform
+	# env produces NO glints (that is the key panel's job).
+	radiance_map		pnt_env
+	radiance_scale		1.15
+	radiance_background	FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/enamel_depth_glints
+	multiple		FALSE
+	type			PNG
+	bpp			8
+	color_space		sRGB
+}
+
+film
+{
+	width			1000
+	height			420
+}
+
+##################################################
+# Camera -- hero pose is the animation midpoint; the GlintOrbit timelines
+# below drive elevation/azimuth during renderanimation.
+##################################################
+# ~34 deg elevation: face-on enough that the fume body reads through the
+# glass (a low grazing view is dominated by the Fresnel reflection of the
+# env and washes the dials out -- the enamel_watch crystal lesson).
+pinhole_camera
+{
+	name			cam
+	location		0 -38 26
+	lookat			0 0 0.6
+	up			0 0 1
+	fov			26.0
+}
+
+##################################################
+# Painters + measured conductor data
+##################################################
+uniformcolor_painter
+{
+	name			pnt_black
+	color			0 0 0
+}
+uniformcolor_painter
+{
+	name			pnt_white
+	color			1 1 1
+}
+uniformcolor_painter
+{
+	name			pnt_floor
+	color			0.02 0.02 0.025
+}
+
+scalar_painter
+{
+	name			Ag_n
+	file			colors/conductors/Ag.n
+}
+scalar_painter
+{
+	name			Ag_k
+	file			colors/conductors/Ag.k
+}
+scalar_painter
+{
+	name			Steel_n
+	file			colors/thinfilm/substrates/Steel.n
+}
+scalar_painter
+{
+	name			Steel_k
+	file			colors/thinfilm/substrates/Steel.k
+}
+scalar_painter
+{
+	name			Au_n
+	file			colors/conductors/Au.n
+}
+scalar_painter
+{
+	name			Au_k
+	file			colors/conductors/Au.k
+}
+
+##################################################
+# Colorant media (from the enamel_watch palette).  Absorption curves are
+# sigma_a(lambda) per scene unit; the puck glass runs 0.12 units thick at the
+# centre to 0.54 at the rim, so the double-pass optical depth sweeps
+# ~0.7 -> ~3.2 across each puck -- the visible fume gradient.
+##################################################
+
+# Gold-ruby PLUM (colloidal gold): kills blue/green, transmits red.
+piecewise_linear_function
+{
+	name			goldruby_abs
+	cp			400 56.0
+	cp			420 57.0
+	cp			440 57.0
+	cp			460 57.0
+	cp			480 56.0
+	cp			500 55.0
+	cp			515 56.0
+	cp			530 54.0
+	cp			550 47.0
+	cp			570 34.0
+	cp			590 21.0
+	cp			610 15.0
+	cp			630 9.0
+	cp			650 5.6
+	cp			680 3.7
+	cp			700 2.7
+	cp			720 2.4
+}
+homogeneous_medium
+{
+	name			goldruby
+	absorption		3.5 3.9 0.4
+	scattering		0.0 0.0 0.0
+	absorption_spectral	goldruby_abs
+	phase			isotropic
+}
+
+# Cobalt (Co2+) BLUE: broad green-orange-red absorption, blue window.
+piecewise_linear_function
+{
+	name			cobalt_abs
+	cp			400 5
+	cp			420 3.5
+	cp			440 2.5
+	cp			460 2.8
+	cp			480 5
+	cp			500 10
+	cp			515 16
+	cp			530 24
+	cp			550 26
+	cp			570 34
+	cp			590 44
+	cp			610 48
+	cp			630 52
+	cp			650 54
+	cp			680 54
+	cp			700 52
+	cp			720 50
+}
+homogeneous_medium
+{
+	name			cobalt_blue
+	absorption		3.0 2.8 0.5
+	scattering		0.0 0.0 0.0
+	absorption_spectral	cobalt_abs
+	phase			isotropic
+}
+
+# Iron (Fe3+) AMBER: absorbs blue, transmits yellow-orange-red.  The
+# goldstone puck uses this because real aventurine glass IS a transmissive
+# amber -- a strongly-absorbing colorant (gold-ruby) crushes the in-depth
+# sparkle to black and only surface glints would survive.
+# ~1.8x the watch's champagne curve: goldstone's body is a DARK red-brown
+# (a too-transmissive amber lets the gold dome's glow clip white, and the
+# discrete sparks cannot out-shine a clipped background).
+piecewise_linear_function
+{
+	name			iron_amber_abs
+	cp			400 97
+	cp			420 90
+	cp			440 79
+	cp			460 61
+	cp			480 43
+	cp			500 29
+	cp			515 22
+	cp			530 16
+	cp			550 13.5
+	cp			570 12.6
+	cp			590 12.2
+	cp			610 11.7
+	cp			630 11.7
+	cp			650 11.7
+	cp			680 11.7
+	cp			700 11.7
+	cp			720 11.7
+}
+homogeneous_medium
+{
+	name			iron_amber
+	absorption		0.36 1.26 5.4
+	scattering		0.0 0.0 0.0
+	absorption_spectral	iron_amber_abs
+	phase			isotropic
+}
+
+##################################################
+# Materials
+##################################################
+
+# Clear enamel glass (the fired slab); high scattering value == clear.
+dielectric_material
+{
+	name			enamel_glass
+	tau			1.0
+	ior			1.55
+	scattering		100000
+}
+
+# Measured-silver fume substrate.  GLOSSIER than the enamel_watch's satin
+# 0.14: a glint facet's flash brightness scales ~1/alpha^2, so the satin
+# ground buries the in-depth sparkle.  Under this scene's UNIFORM env the
+# body glow is alpha-independent (no localized source to focus), so the
+# fume gradient is unchanged and the facets flash ~8x brighter.
+ggx_material
+{
+	name			dome_silver
+	rd			pnt_black
+	rs			pnt_white
+	alphax			0.05
+	alphay			0.05
+	fresnel_mode		conductor
+	ior			Ag_n
+	extinction		Ag_k
+}
+
+# Measured-gold dome for the goldstone puck: real aventurine sparkles are
+# COPPER platelets -- the warm conductor makes its in-depth flashes read
+# distinctly gold against the amber body (and apart from frost's white).
+# alpha 0.02 (the glint_flakes base gloss) on the GLINTED domes: at 0.05 the
+# smooth dome reflection is itself a broad glow and the tight-spread facet
+# flashes disappear INSIDE it; at 0.02 the smooth part collapses to a small
+# core and the facets read as discrete sparks around it.
+ggx_material
+{
+	name			dome_gold
+	rd			pnt_black
+	rs			pnt_white
+	alphax			0.01
+	alphay			0.01
+	fresnel_mode		conductor
+	ior			Au_n
+	extinction		Au_k
+}
+
+ggx_material
+{
+	name			dome_silver_bright
+	rd			pnt_black
+	rs			pnt_white
+	alphax			0.01
+	alphay			0.01
+	fresnel_mode		conductor
+	ior			Ag_n
+	extinction		Ag_k
+}
+
+# Polished steel bezel ring around each puck (hides the slab/dome rim seam).
+ggx_material
+{
+	name			bezel_steel
+	rd			pnt_black
+	rs			pnt_white
+	alphax			0.05
+	alphay			0.05
+	fresnel_mode		conductor
+	ior			Steel_n
+	extinction		Steel_k
+}
+
+# Dark glossy "black glass" tabletop (schlick F0 0.05 like the enamel_watch
+# display surface): dark face-on, brighter Fresnel toward grazing, soft
+# reflections of the glinting pucks.  (A conductor gloss here reflects the
+# scrim at ~95% and washes the whole table bright.)
+uniformcolor_painter
+{
+	name			pnt_f0
+	color			0.05 0.05 0.05
+}
+ggx_material
+{
+	name			floormat
+	rd			pnt_floor
+	rs			pnt_f0
+	alphax			0.25
+	alphay			0.25
+	fresnel_mode		schlick_f0
+}
+
+##################################################
+# Puck geometry -- shared by all four pucks.
+# Enamel slab: closed SDF heightfield disk, top z = 1.2 (centre) -> 0.72 (rim).
+# Silver dome: steeper heightfield, top z = 1.08 (centre) -> 0.18 (rim), so
+# glass thickness t(rho) = 0.12 + 0.42*rho^2 -- thin centre, thick rim (fume).
+# Dome radius is 0.2 under the slab's so the side walls never coincide.
+##################################################
+expression_function2d
+{
+	name			puck_top
+	def			rho hypot(2*u-1,2*v-1)
+	expr			1-0.25*clamp(rho*rho,0,1)
+}
+
+# Glass thickness t(rho) = 0.08 + 0.15*rho^2 (the enamel_watch dial's range:
+# red-window OD_double ~0.9 centre -> ~2.6 rim; thicker kills even the red).
+expression_function2d
+{
+	name			puck_dome
+	def			rho hypot(2*u-1,2*v-1)
+	expr			0.9167-0.4167*clamp(rho*rho,0,1)
+}
+
+sdf_geometry
+{
+	name			enamelgeom
+	heightfield_function	puck_top
+	heightfield_radius	4.2
+	heightfield_scale	1.2
+}
+
+sdf_geometry
+{
+	name			domegeom
+	heightfield_function	puck_dome
+	heightfield_radius	4.0
+	heightfield_scale	1.2
+}
+
+# Bezel: a flat steel torus ring around the slab rim.
+sdf_geometry
+{
+	name			bezelgeom
+	part			torus union 0  0 0 0.5  90 0 0  1 1 1  4.3 0.42 0  0
+}
+
+##################################################
+# Glint modifiers (docs/ENAMEL_SPARKLE_BRDF.md).  One per object.
+##################################################
+
+# IN-DEPTH glint spreads are sized by the GLASS + KEY GEOMETRY, not by the
+# bare-surface recipe (glint_flakes' 5-12 deg): the flat ior-1.55 top imposes
+# a 40-deg TIR ceiling INSIDE the glass (facets tilted much past it reflect
+# the view ray into total internal reflection and the flash never exits), and
+# exit refraction AMPLIFIES angular deviation ~1.8-2.4x.  With the key ~24 deg
+# ABOVE the specular axis (see the key comment), a facet flashes by elevation-
+# tilting ~6 deg toward the camera -- steepening the internal path, so TIR-
+# safe -- and the ~4 deg spreads put that tilt in the meat of the Rayleigh
+# distribution.  Verified by bisect 2026-07-12: the same dome renders a dense
+# confetti field bare, and a smooth glow when spread is wide under glass.
+
+# Goldstone: copper-flake field on the GOLD dome under the amber glass.
+glint_modifier
+{
+	name			gm_aventurine
+	density			7.0
+	coverage		0.7
+	fill			0.85
+	spread			5.5
+	seed			11
+}
+
+# Frost: surface facets on the dielectric top -- white Fresnel flashes.
+glint_modifier
+{
+	name			gm_frost
+	density			7.0
+	coverage		0.5
+	fill			0.6
+	spread			11.0
+	seed			12
+}
+
+# Starry night: finer + denser field; same tight-spread rule (in depth).
+glint_modifier
+{
+	name			gm_starry
+	density			11.0
+	coverage		0.7
+	fill			0.8
+	spread			5.0
+	seed			13
+}
+
+##################################################
+# Lighting.
+#   glint_key -- SMALL bright panel up-and-behind the row, aimed so its mirror
+#                in the domes reaches the camera (localized source REQUIRED for
+#                glints).  This is the object the LightSweep animation moves.
+#   scrim     -- large dim overhead fill so the fume body reads; too dim and
+#                broad to produce glints of its own.
+##################################################
+# Key at elevation 58 deg, azimuth 0, distance ~62 -- deliberately ~24 deg
+# ABOVE the hero view's specular axis (34 deg), so its Fresnel mirror image in
+# the glass tops is NOT visible from the camera on ANY puck (an elevation
+# offset is uniform across the horizontal row; an azimuthal offset is per-puck
+# relative and always leaves one puck on-axis).  ABOVE, not below: a low
+# raking key is useless for in-depth glints -- light exiting toward a grazing
+# key approaches the 40-deg internal critical angle where Fresnel
+# transmittance collapses -- while a high key keeps the facet flash path
+# STEEP inside the glass (TIR-safe, strong transmission).  Facets flash by
+# elevation-tilting ~6 deg toward the camera; the in-depth spreads are sized
+# to put that in the meat of the Rayleigh distribution.
+# SIZE MATTERS too: shadow rays do not refract, so NEE cannot align a facet's
+# mirror lobe through the glass -- under-glass flashes arrive ONLY via BSDF
+# sampling, which needs the key's angular size (~7 deg) comparable to the
+# facet lobe so an aligned facet's reflected lobe actually lands on the panel.
+# A pin-point key reads as ONE spec, not a sparkle field.
+# A wide horizontal STRIP (a product-shoot strip softbox) rather than a
+# square panel: a single central key leaves the OUTER pucks ~25 deg off in
+# azimuth, pushing their in-depth facet tilts into the far Rayleigh tail --
+# the strip spans the row so every puck sees it at near-zero azimuth offset
+# and only the uniform ~7 deg elevation tilt is needed.  The x-extent does
+# not re-expose the reflection: the 26-deg ELEVATION offset is what hides it.
+lambertian_luminaire_material
+{
+	name			key_lum
+	exitance		pnt_white
+	scale			200.0
+	material		none
+}
+clippedplane_geometry
+{
+	name			key_geom
+	pta			-18 37.65 54.83
+	ptb			18 37.65 54.83
+	ptc			18 28.15 60.77
+	ptd			-18 28.15 60.77
+}
+standard_object
+{
+	name			glint_key
+	geometry		key_geom
+	material		key_lum
+}
+
+lambertian_luminaire_material
+{
+	name			scrim_lum
+	exitance		pnt_white
+	scale			1.5
+	material		none
+}
+# Rear edge at y=18 keeps the scrim clear of the puck->key light path
+# (the key sits high-behind at elevation 58 deg).
+clippedplane_geometry
+{
+	name			scrim_geom
+	pta			-60 18 45
+	ptb			60 18 45
+	ptc			60 -50 45
+	ptd			-60 -50 45
+}
+standard_object
+{
+	name			scrim
+	geometry		scrim_geom
+	material		scrim_lum
+}
+
+##################################################
+# Tabletop
+##################################################
+clippedplane_geometry
+{
+	name			floorgeom
+	pta			-80 -80 0
+	ptb			80 -80 0
+	ptc			80 80 0
+	ptd			-80 80 0
+}
+standard_object
+{
+	name			floor
+	geometry		floorgeom
+	material		floormat
+}
+
+##################################################
+# The four pucks, x = -16.5 / -5.5 / +5.5 / +16.5.  Enamel slab at z=0.05,
+# dome 0.02 lower (bottom faces must not be coplanar), bezel ring around each.
+##################################################
+
+# --- 1. control: plum fume, no glints (pure depth) ---
+standard_object
+{
+	name			p1_enamel
+	geometry		enamelgeom
+	material		enamel_glass
+	interior_medium		goldruby
+	position		-16.5 0 0.05
+}
+standard_object
+{
+	name			p1_dome
+	geometry		domegeom
+	material		dome_silver
+	position		-16.5 0 0.03
+}
+standard_object
+{
+	name			p1_bezel
+	geometry		bezelgeom
+	material		bezel_steel
+	position		-16.5 0 0.05
+}
+
+# --- 2. aventurine: plum fume, glints ON THE DOME (sparkle in depth) ---
+standard_object
+{
+	name			p2_enamel
+	geometry		enamelgeom
+	material		enamel_glass
+	interior_medium		iron_amber
+	position		-5.5 0 0.05
+}
+standard_object
+{
+	name			p2_dome
+	geometry		domegeom
+	material		dome_gold
+	position		-5.5 0 0.03
+	modifier		gm_aventurine
+}
+standard_object
+{
+	name			p2_bezel
+	geometry		bezelgeom
+	material		bezel_steel
+	position		-5.5 0 0.05
+}
+
+# --- 3. frost: plum fume, glints ON THE GLASS TOP (surface sparkle) ---
+standard_object
+{
+	name			p3_enamel
+	geometry		enamelgeom
+	material		enamel_glass
+	interior_medium		goldruby
+	position		5.5 0 0.05
+	modifier		gm_frost
+}
+standard_object
+{
+	name			p3_dome
+	geometry		domegeom
+	material		dome_silver
+	position		5.5 0 0.03
+}
+standard_object
+{
+	name			p3_bezel
+	geometry		bezelgeom
+	material		bezel_steel
+	position		5.5 0 0.05
+}
+
+# --- 4. starry: cobalt fume, fine dense glints on the dome ---
+standard_object
+{
+	name			p4_enamel
+	geometry		enamelgeom
+	material		enamel_glass
+	interior_medium		cobalt_blue
+	position		16.5 0 0.05
+}
+standard_object
+{
+	name			p4_dome
+	geometry		domegeom
+	material		dome_silver_bright
+	position		16.5 0 0.03
+	modifier		gm_starry
+}
+standard_object
+{
+	name			p4_bezel
+	geometry		bezelgeom
+	material		bezel_steel
+	position		16.5 0 0.05
+}
+
+##################################################
+# ANIMATIONS.  Timelines live after every element they reference (a timeline
+# resolves its element at parse time).
+##################################################
+
+animation
+{
+	name			GlintOrbit
+	active			TRUE
+	time_start		0.0
+	time_end		1.0
+	num_frames		48
+}
+
+animation
+{
+	name			LightSweep
+	time_start		0.0
+	time_end		1.0
+	num_frames		48
+}
+
+# --- GlintOrbit: camera ellipse, +-12 deg elevation / +-15 deg azimuth,
+#     90 deg out of phase -> the view rakes the whole row; C1-seamless loop. ---
+timeline
+{
+	animation	GlintOrbit
+	element_type	camera
+	element			cam
+	param			elevation
+	interpolator	hermite
+
+	time		0.000
+	value		0.0
+
+	time		0.125
+	value		5.657
+
+	time		0.250
+	value		8.0
+
+	time		0.375
+	value		5.657
+
+	time		0.500
+	value		0.0
+
+	time		0.625
+	value		-5.657
+
+	time		0.750
+	value		-8.0
+
+	time		0.875
+	value		-5.657
+
+	time		1.000
+	value		0.0
+}
+
+timeline
+{
+	animation	GlintOrbit
+	element_type	camera
+	element			cam
+	param			azimuth
+	interpolator	hermite
+
+	time		0.000
+	value		15.0
+
+	time		0.125
+	value		10.607
+
+	time		0.250
+	value		0.0
+
+	time		0.375
+	value		-10.607
+
+	time		0.500
+	value		-15.0
+
+	time		0.625
+	value		-10.607
+
+	time		0.750
+	value		0.0
+
+	time		0.875
+	value		10.607
+
+	time		1.000
+	value		15.0
+}
+
+# --- LightSweep: camera pinned at the hero pose; the KEY LIGHT slides
+#     x = -20 -> +20 -> -20 above the row (hermite ping-pong loop), so the
+#     glint fields flash puck by puck as the source passes over them. ---
+timeline
+{
+	animation	LightSweep
+	element_type	camera
+	element			cam
+	param			elevation
+	interpolator	linear
+
+	time		0.00
+	value		0.0
+
+	time		1.00
+	value		0.0
+}
+
+timeline
+{
+	animation	LightSweep
+	element_type	camera
+	element			cam
+	param			azimuth
+	interpolator	linear
+
+	time		0.00
+	value		0.0
+
+	time		1.00
+	value		0.0
+}
+
+timeline
+{
+	animation	LightSweep
+	element_type	object
+	element			glint_key
+	param			position
+	interpolator	hermite
+
+	time		0.00
+	value		-20 0 0
+
+	time		0.50
+	value		20 0 0
+
+	time		1.00
+	value		-20 0 0
+}
+
+
+
+
+
