@@ -217,6 +217,27 @@ private:
     /// resolve.
     void revealEntityInSceneText(int category, const QString& name);
 
+    // Entity creation + painter CRUD (entity-creation slice) -- mirrors
+    // macOS RenderViewModel.addEntity / duplicateSelectedOrNamed /
+    // removeEntity.  `category` uses the SAME raw-int convention as
+    // revealEntityInSceneText above (ViewportBridge::Category numbering)
+    // so this header stays free of the bridge's nested enum type; the
+    // Insert menu and the outliner's "+"/context-menu signals all adapt
+    // via a small lambda at their connect site.  All three are gated on
+    // canUseSceneTransport() (re-checked AFTER any confirm dialog, since
+    // a chat-driven render can start or finish while a modal is up) and
+    // surface the core's honest refusal message via QMessageBox on
+    // failure.  Success re-selects the affected entity (add/duplicate)
+    // so the properties panel follows it; the outliner's own refresh is
+    // NOT poked explicitly here -- the core bumps the controller's
+    // sceneEpoch on every landed chunk CRUD, and OutlinerWidget::refresh()
+    // already runs on every ViewportBridge::imageUpdated frame, so the
+    // epoch-gated re-pull picks up the change on its own (no per-platform
+    // refresh workaround needed, matching the design brief).
+    void addEntity(int category, unsigned int templateIndex);
+    void duplicateEntity(int category, const QString& name);
+    void removeEntity(int category, const QString& name);
+
     // UI refinement item 3: File > Theme handler.  No-op if `newMode`
     // is already active (also guards the redundant re-click of an
     // already-checked radio item in the File > Theme submenu).

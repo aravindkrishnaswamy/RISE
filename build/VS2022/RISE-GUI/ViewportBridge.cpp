@@ -771,6 +771,75 @@ bool ViewportBridge::getEntitySourceLocation(Category category, const QString& n
         outByteOffset, outLine);
 }
 
+// ---- Entity creation + painter CRUD (entity-creation slice) --------
+
+unsigned int ViewportBridge::entityTemplateCount(Category category) const
+{
+    if (!m_controller) return 0;
+    return RISE_API_SceneEditController_EntityTemplateCount(
+        m_controller, static_cast<int>(category));
+}
+
+QString ViewportBridge::entityTemplateLabel(Category category, unsigned int idx) const
+{
+    if (!m_controller) return QString();
+    char buf[128] = {0};
+    if (!RISE_API_SceneEditController_EntityTemplateLabel(
+            m_controller, static_cast<int>(category), idx, buf, sizeof(buf))) {
+        return QString();
+    }
+    return QString::fromUtf8(buf);
+}
+
+bool ViewportBridge::instantiateEntityTemplate(Category category, unsigned int idx,
+                                                QString* outName, QString* outMessage)
+{
+    if (!m_controller) return false;
+    char nameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[1024] = {0};
+    const bool applied = RISE_API_SceneEditController_InstantiateEntityTemplate(
+        m_controller, static_cast<int>(category), idx,
+        nameBuf, sizeof(nameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf));
+    if (outName && nameBuf[0] != '\0') *outName = QString::fromUtf8(nameBuf);
+    if (outMessage && messageBuf[0] != '\0') *outMessage = QString::fromUtf8(messageBuf);
+    return applied;
+}
+
+bool ViewportBridge::duplicateEntity(Category category, const QString& name,
+                                      QString* outName, QString* outMessage)
+{
+    if (!m_controller || name.isEmpty()) return false;
+    const QByteArray utf8 = name.toUtf8();
+    char nameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[1024] = {0};
+    const bool applied = RISE_API_SceneEditController_DuplicateEntity(
+        m_controller, static_cast<int>(category), utf8.constData(),
+        nameBuf, sizeof(nameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf));
+    if (outName && nameBuf[0] != '\0') *outName = QString::fromUtf8(nameBuf);
+    if (outMessage && messageBuf[0] != '\0') *outMessage = QString::fromUtf8(messageBuf);
+    return applied;
+}
+
+bool ViewportBridge::removeEntity(Category category, const QString& name, QString* outMessage)
+{
+    if (!m_controller || name.isEmpty()) return false;
+    const QByteArray utf8 = name.toUtf8();
+    char statusBuf[64] = {0};
+    char messageBuf[1024] = {0};
+    const bool applied = RISE_API_SceneEditController_RemoveEntity(
+        m_controller, static_cast<int>(category), utf8.constData(),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf));
+    if (outMessage && messageBuf[0] != '\0') *outMessage = QString::fromUtf8(messageBuf);
+    return applied;
+}
+
 QString ViewportBridge::addCameraFromActive(const QString& proposedName)
 {
     if (!m_controller) return QString();

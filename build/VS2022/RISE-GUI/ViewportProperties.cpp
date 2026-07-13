@@ -348,6 +348,7 @@ QString ViewportProperties::categoryTitle(Category cat)
     case Category::Medium:       return tr("Media");
     case Category::Animation:    return tr("Animation");
     case Category::SceneVariant: return tr("Variants");
+    case Category::Painter:      return tr("Painters");
     case Category::None:
     default:                     return tr("Scene");
     }
@@ -365,6 +366,7 @@ QString ViewportProperties::categoryGlyph(Category cat)
     case Category::Medium:       return QString::fromUtf8("\xE2\x89\x88");   // ≈
     case Category::Animation:    return QString::fromUtf8("\xE2\x96\xB6");   // ▶
     case Category::SceneVariant: return QString::fromUtf8("\xE2\xA7\x89");   // ⧉
+    case Category::Painter:      return QString::fromUtf8("\xE2\x96\xA7");   // ▧
     case Category::None:
     default:                     return QString::fromUtf8("\xE2\x80\xA2");   // •
     }

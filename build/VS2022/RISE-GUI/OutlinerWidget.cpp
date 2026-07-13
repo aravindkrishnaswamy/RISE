@@ -18,6 +18,8 @@
 #include <QPalette>
 #include <QMenu>
 #include <QAction>
+#include <QToolButton>
+#include <QFont>
 
 #include <functional>
 #include <utility>
@@ -134,7 +136,7 @@ void OutlinerWidget::refresh()
         m_entitiesByCategory.clear();
         static const Category cats[] = {
             Category::Rasterizer, Category::Camera, Category::Light, Category::Object,
-            Category::Material, Category::Medium, Category::Film,
+            Category::Material, Category::Painter, Category::Medium, Category::Film,
             Category::Animation, Category::SceneVariant,
         };
         for (Category c : cats) {
@@ -201,6 +203,12 @@ void OutlinerWidget::rebuild()
         { Category::Light,        "Lights",          "LGT", Theme::catLight },
         { Category::Object,       "Objects",         "OBJ", Theme::catObject },
         { Category::Material,     "Materials",       "MAT", Theme::catMaterial },
+        // Painters feed materials/media -- listed right after Materials,
+        // mirroring OutlinerView.swift's kOutlinerCategories.  Theme.h
+        // has no dedicated painter token (owned by a parallel
+        // workstream); catMaterial's lilac is the closest conceptual
+        // match and is the same fallback the Mac slice uses.
+        { Category::Painter,      "Painters",        "PNT", Theme::catMaterial },
         { Category::Medium,       "Media",           "MED", Theme::catMedia },
         { Category::Film,         "Output Settings", "FLM", Theme::catFilm },
         { Category::Animation,    "Animation",       "ANM", Theme::catAnimation },
@@ -243,6 +251,44 @@ void OutlinerWidget::rebuild()
         name->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textTertiary)));
         headerLayout->addWidget(name);
         headerLayout->addStretch(1);
+
+        // Entity-creation slice: per-category "Add Entity" affordance,
+        // mirrors OutlinerView.swift's "+" Menu.  Templates are queried
+        // live (cheap C-API round-trips) so the button disappears
+        // automatically for categories with none registered (Camera/
+        // Rasterizer/Film/Animation/SceneVariant), and is disabled
+        // (not hidden) while the scene isn't editable so its presence
+        // doesn't flicker during a render.
+        const unsigned int templateCount = m_bridge ? m_bridge->entityTemplateCount(def.category) : 0;
+        if (templateCount > 0) {
+            auto* addBtn = new QToolButton(headerRow);
+            addBtn->setText(QStringLiteral("+"));
+            addBtn->setFont(Theme::sans(11, QFont::DemiBold));
+            addBtn->setAutoRaise(true);
+            addBtn->setCursor(Qt::PointingHandCursor);
+            addBtn->setPopupMode(QToolButton::InstantPopup);
+            addBtn->setEnabled(m_sceneEditable);
+            addBtn->setFixedSize(16, 16);
+            addBtn->setStyleSheet(QStringLiteral(
+                "QToolButton { color: %1; border: none; padding: 0; }"
+                "QToolButton::menu-indicator { image: none; }"
+                "QToolButton:hover { color: %2; }"
+                "QToolButton:disabled { color: %3; }")
+                .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::textPrimary), Theme::hex(Theme::textDisabled)));
+            const QString singular = QString::fromUtf8(def.title).endsWith(QLatin1Char('s'))
+                ? QString::fromUtf8(def.title).chopped(1) : QString::fromUtf8(def.title);
+            addBtn->setToolTip(tr("Add %1").arg(singular));
+
+            auto* addMenu = new QMenu(addBtn);
+            for (unsigned int i = 0; i < templateCount; ++i) {
+                const QString label = m_bridge->entityTemplateLabel(def.category, i);
+                QAction* templateAction = addMenu->addAction(label);
+                connect(templateAction, &QAction::triggered, this,
+                        [this, cat = def.category, i]() { emit addEntityRequested(cat, i); });
+            }
+            addBtn->setMenu(addMenu);
+            headerLayout->addWidget(addBtn);
+        }
 
         auto* count = new QLabel(QString::number(children.size()), headerRow);
         count->setFont(Theme::mono(10));
@@ -296,15 +342,32 @@ void OutlinerWidget::rebuild()
                 const bool canReveal = m_sceneEditable
                     && def.category != Category::Rasterizer
                     && def.category != Category::Film;
+                // Entity-creation slice: Duplicate/Delete need the SAME
+                // chunk-name addressing "Reveal in scene file" needs (no
+                // Rasterizer/Film) plus the scene-editable gate -- kept as
+                // a separate flag (== canReveal today) rather than reused
+                // directly, mirroring OutlinerChildRow.swift's canReveal/
+                // canMutate split so a future divergence between the two
+                // gates doesn't require touching every call site.
+                const bool canMutate = canReveal;
                 childRow->setContextMenuPolicy(Qt::CustomContextMenu);
                 connect(childRow, &QWidget::customContextMenuRequested, this,
-                        [this, childRow, cat = def.category, childName, canReveal](const QPoint& pos) {
+                        [this, childRow, cat = def.category, childName, canReveal, canMutate](const QPoint& pos) {
                     QMenu menu(childRow);
                     QAction* revealAction = menu.addAction(tr("Reveal in scene file"));
                     revealAction->setEnabled(canReveal);
+                    menu.addSeparator();
+                    QAction* duplicateAction = menu.addAction(tr("Duplicate"));
+                    duplicateAction->setEnabled(canMutate);
+                    QAction* deleteAction = menu.addAction(tr("Delete"));
+                    deleteAction->setEnabled(canMutate);
                     QAction* triggered = menu.exec(childRow->mapToGlobal(pos));
                     if (triggered == revealAction) {
                         emit revealRequested(cat, childName);
+                    } else if (triggered == duplicateAction) {
+                        emit duplicateRequested(cat, childName);
+                    } else if (triggered == deleteAction) {
+                        emit deleteRequested(cat, childName);
                     }
                 });
 

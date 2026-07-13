@@ -24,6 +24,7 @@
 #include "Theme.h"
 
 #include <QAction>
+#include <QtCore/qalgorithms.h>   // qDeleteAll (Insert-menu submenu teardown)
 #include <QActionGroup>
 #include <QButtonGroup>
 #include <QToolButton>
@@ -406,6 +407,22 @@ QWidget* MainWindow::buildRightPanel()
                 revealEntityInSceneText(static_cast<int>(category), name);
             });
 
+    // Entity-creation slice: same "connect once, adapt the enum to a raw
+    // int" pattern as revealRequested above -- m_outlinerWidget is
+    // persistent, `this` is not recreated per scene load.
+    connect(m_outlinerWidget, &OutlinerWidget::addEntityRequested, this,
+            [this](ViewportBridge::Category category, unsigned int templateIndex) {
+                addEntity(static_cast<int>(category), templateIndex);
+            });
+    connect(m_outlinerWidget, &OutlinerWidget::duplicateRequested, this,
+            [this](ViewportBridge::Category category, const QString& name) {
+                duplicateEntity(static_cast<int>(category), name);
+            });
+    connect(m_outlinerWidget, &OutlinerWidget::deleteRequested, this,
+            [this](ViewportBridge::Category category, const QString& name) {
+                removeEntity(static_cast<int>(category), name);
+            });
+
     return panel;
 }
 
@@ -521,6 +538,54 @@ void MainWindow::createMenuBar()
     findAction->setShortcut(QKeySequence::Find);
 
     connect(editMenu, &QMenu::aboutToShow, this, &MainWindow::updateMenuActionStates);
+
+    // --- Insert menu ---
+    // Entity-creation slice: "Add Entity" templates, alongside the
+    // outliner's per-category "+" affordance and context menu (same
+    // addEntity() call). Mirrors macOS RISEApp.swift's CommandMenu
+    // "Insert" -- rebuilt on aboutToShow (template counts/labels are
+    // cheap, lock-free static lookups, safe to query during a render;
+    // only the per-item Add action is gated on canUseSceneTransport()).
+    // A category with no registered templates (Camera/Rasterizer/Film/
+    // Animation/SceneVariant, or every category before a scene is
+    // loaded) simply doesn't get a submenu.
+    auto* insertMenu = menuBar()->addMenu("&Insert");
+    connect(insertMenu, &QMenu::aboutToShow, this, [this, insertMenu]() {
+        // QMenu::clear() does NOT free submenus added via addMenu(): a
+        // submenu's own menuAction() is parented to the SUBMENU itself
+        // (see QMenuPrivate::init), not to `insertMenu`, so clear()'s
+        // "only delete actions this menu owns" rule silently skips it --
+        // every menu-open would otherwise leak one QMenu (+ its QActions)
+        // per populated category.  Delete the submenus explicitly first;
+        // their destructor removes the now-dangling action from
+        // insertMenu automatically, so the clear() below is just a
+        // defensive mop-up.
+        qDeleteAll(insertMenu->findChildren<QMenu*>(QString(), Qt::FindDirectChildrenOnly));
+        insertMenu->clear();
+        if (!m_viewportBridge) return;
+        struct InsertCategoryEntry { const char* title; ViewportBridge::Category category; };
+        static const InsertCategoryEntry kEntries[] = {
+            { "Object",   ViewportBridge::Category::Object },
+            { "Light",    ViewportBridge::Category::Light },
+            { "Material", ViewportBridge::Category::Material },
+            { "Painter",  ViewportBridge::Category::Painter },
+            { "Medium",   ViewportBridge::Category::Medium },
+        };
+        const bool canAdd = canUseSceneTransport();
+        for (const auto& entry : kEntries) {
+            const unsigned int count = m_viewportBridge->entityTemplateCount(entry.category);
+            if (count == 0) continue;
+            QMenu* sub = insertMenu->addMenu(tr(entry.title));
+            sub->setEnabled(canAdd);
+            const int catInt = static_cast<int>(entry.category);
+            for (unsigned int i = 0; i < count; ++i) {
+                const QString label = m_viewportBridge->entityTemplateLabel(entry.category, i);
+                QAction* templateAction = sub->addAction(label);
+                connect(templateAction, &QAction::triggered, this,
+                        [this, catInt, i]() { addEntity(catInt, i); });
+            }
+        }
+    });
 
     // --- View menu ---
     // L5b — adds the HDR Preview toggle.  Disabled by default; the
@@ -1053,6 +1118,82 @@ void MainWindow::revealEntityInSceneText(int category, const QString& name)
     // never misleading.
     if (m_sceneEditor && !m_sceneEditor->isDirty()) {
         m_sceneEditor->revealAt(offset);
+    }
+}
+
+// ============================================================
+// Entity creation + painter CRUD (entity-creation slice)
+// ============================================================
+//
+// All three mutating calls below take the controller's commit mutex
+// (same reason as every other scene-edit call) -- gated on
+// canUseSceneTransport() so a click during a production render (or an
+// outstanding chat-driven render) refuses cleanly instead of wedging
+// on the mutex.  Success re-selects the affected entity so the
+// properties panel jumps to it; the outliner's own list refresh rides
+// the next ViewportBridge::imageUpdated frame (epoch-gated), matching
+// the design brief's "no per-platform refresh workaround" note.
+// Failure surfaces the core's honest refusal message via QMessageBox,
+// mirroring macOS RenderViewModel's presentEntityEditAlert.
+
+void MainWindow::addEntity(int category, unsigned int templateIndex)
+{
+    if (!m_viewportBridge || !canUseSceneTransport()) return;
+    const auto cat = static_cast<ViewportBridge::Category>(category);
+    QString outName;
+    QString outMessage;
+    const bool applied = m_viewportBridge->instantiateEntityTemplate(cat, templateIndex, &outName, &outMessage);
+    if (applied) {
+        if (!outName.isEmpty()) m_viewportBridge->setSelection(cat, outName);
+    } else {
+        QMessageBox::warning(this, tr("Couldn't Add Entity"),
+            outMessage.isEmpty() ? tr("The edit was refused.") : outMessage);
+    }
+}
+
+void MainWindow::duplicateEntity(int category, const QString& name)
+{
+    if (!m_viewportBridge || !canUseSceneTransport()) return;
+    const auto cat = static_cast<ViewportBridge::Category>(category);
+    QString outName;
+    QString outMessage;
+    const bool applied = m_viewportBridge->duplicateEntity(cat, name, &outName, &outMessage);
+    if (applied) {
+        if (!outName.isEmpty()) m_viewportBridge->setSelection(cat, outName);
+    } else {
+        QMessageBox::warning(this, tr("Couldn't Duplicate \"%1\"").arg(name),
+            outMessage.isEmpty() ? tr("The edit was refused.") : outMessage);
+    }
+}
+
+void MainWindow::removeEntity(int category, const QString& name)
+{
+    if (!m_viewportBridge || !canUseSceneTransport()) return;
+    const auto cat = static_cast<ViewportBridge::Category>(category);
+
+    QMessageBox confirm(this);
+    confirm.setWindowTitle(tr("Delete \"%1\"?").arg(name));
+    confirm.setText(tr("This can be undone with Edit > Undo."));
+    confirm.setIcon(QMessageBox::Warning);
+    auto* deleteBtn = confirm.addButton(tr("Delete"), QMessageBox::AcceptRole);
+    confirm.addButton(QMessageBox::Cancel);
+    confirm.exec();
+    if (confirm.clickedButton() != deleteBtn) return;
+
+    // Re-check the edit gate AFTER the modal returns: the confirm
+    // dialog blocks the event loop's caller but not Qt's event
+    // processing (QMessageBox::exec spins its own loop), so a chat-
+    // driven agent render can begin or end while it's up -- the gate
+    // state checked at the top of this function may be stale by now.
+    // Calling into the commit mutex while a render owns it would wedge
+    // the UI, same hazard every other bridge call here guards against.
+    if (!canUseSceneTransport()) return;
+
+    QString outMessage;
+    const bool applied = m_viewportBridge->removeEntity(cat, name, &outMessage);
+    if (!applied) {
+        QMessageBox::warning(this, tr("Couldn't Delete \"%1\"").arg(name),
+            outMessage.isEmpty() ? tr("The edit was refused.") : outMessage);
     }
 }
 

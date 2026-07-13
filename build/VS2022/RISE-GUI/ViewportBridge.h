@@ -546,6 +546,50 @@ public:
     bool getEntitySourceLocation(Category category, const QString& name,
                                   quint64* outByteOffset, quint32* outLine) const;
 
+    // ---- Entity creation + painter CRUD (entity-creation slice) -----
+    // Mirrors RISE_API_SceneEditController_{EntityTemplateCount,
+    // EntityTemplateLabel,InstantiateEntityTemplate,DuplicateEntity,
+    // RemoveEntity} / the macOS RISEViewportBridge's identically-named
+    // section.  The three mutating calls (instantiate/duplicate/remove)
+    // take the controller's commit mutex -- same do-not-call-during-
+    // renders caveat as `serializedSceneText()` / `saveSceneTo()` (gate
+    // on `MainWindow::canUseSceneTransport()` before calling).
+
+    /// Number of "Add Entity" templates registered for `category` (0
+    /// for categories with none -- Camera/Rasterizer/Film/Animation/
+    /// SceneVariant/None).
+    unsigned int entityTemplateCount(Category category) const;
+
+    /// Display label for the template at `idx` within `category`
+    /// (e.g. "Sphere", "Omni Light").  Empty string for a null
+    /// controller or an out-of-range idx.
+    QString entityTemplateLabel(Category category, unsigned int idx) const;
+
+    /// Instantiate the template at `idx` within `category`.  Returns
+    /// the AgentCommitResult's `applied` flag; `outName` (optional,
+    /// may be null) receives the deduped instance name on success,
+    /// `outMessage` (optional, may be null) receives a human-readable
+    /// message on failure (left untouched on success).  A multi-chunk
+    /// template undoes as several separate steps -- see the C++
+    /// method's header doc.
+    bool instantiateEntityTemplate(Category category, unsigned int idx,
+                                    QString* outName = nullptr,
+                                    QString* outMessage = nullptr);
+
+    /// Duplicate the named entity in `category` under a freshly-
+    /// deduped name.  Returns `applied`; `outName` / `outMessage` as
+    /// above (each optional, may be null).
+    bool duplicateEntity(Category category, const QString& name,
+                          QString* outName = nullptr,
+                          QString* outMessage = nullptr);
+
+    /// Remove the named entity in `category` -- refused with a non-
+    /// empty `outMessage` if it is still referenced (e.g. a material a
+    /// standard_object still binds) or not found.  Returns `applied`;
+    /// `outMessage` as above (optional, may be null).
+    bool removeEntity(Category category, const QString& name,
+                       QString* outMessage = nullptr);
+
     /// Clone the currently-active camera under a new name and
     /// promote the clone to active.  `proposedName` is the user's
     /// choice; on duplicate the controller appends a numeric dedup

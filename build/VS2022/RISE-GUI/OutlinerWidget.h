@@ -53,7 +53,10 @@ public slots:
     /// isSceneEditableForAgents) -- gates each child row's context-menu
     /// item so ViewportBridge::getEntitySourceLocation() is never
     /// called while a production or chat-driven render owns the
-    /// controller's commit mutex.
+    /// controller's commit mutex.  Entity-creation slice: the SAME term
+    /// also gates each category header's "+" add-entity button and the
+    /// child row context menu's Duplicate/Delete items, since all three
+    /// mutating bridge calls take the same commit mutex.
     void setSceneEditable(bool editable);
 
 signals:
@@ -69,6 +72,24 @@ signals:
     /// revealEntityInSceneText(), the SAME slot the properties panel's
     /// ⌗ chip drives.
     void revealRequested(ViewportBridge::Category category, const QString& name);
+
+    /// Entity-creation slice: a category header's "+" menu picked a
+    /// template.  MainWindow owns the actual instantiate + select-new-
+    /// entity + failure-alert sequence (mirrors macOS RenderViewModel.
+    /// addEntity) -- this widget only reports the user's pick, the same
+    /// division of labor `revealRequested` already uses.
+    void addEntityRequested(ViewportBridge::Category category, unsigned int templateIndex);
+
+    /// A child row's context-menu "Duplicate" was clicked.  MainWindow
+    /// performs the duplicate + re-select (mirrors macOS
+    /// RenderViewModel.duplicateSelectedOrNamed).
+    void duplicateRequested(ViewportBridge::Category category, const QString& name);
+
+    /// A child row's context-menu "Delete" was clicked.  MainWindow owns
+    /// the confirm dialog + gate re-check + remove (mirrors macOS
+    /// RenderViewModel.removeEntity) -- this widget does NOT confirm
+    /// itself, so there is exactly one place that dialog can appear.
+    void deleteRequested(ViewportBridge::Category category, const QString& name);
 
 private:
     using Category = ViewportBridge::Category;
