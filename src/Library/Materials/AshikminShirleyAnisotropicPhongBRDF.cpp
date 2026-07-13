@@ -104,8 +104,25 @@ void AshikminShirleyAnisotropicPhongBRDF::ComputeDiffuseSpecularFactors(
 	const Scalar hn = Vector3Ops::Dot(h,n);
 	const Scalar hu = Vector3Ops::Dot(h,u);
 	const Scalar hv = Vector3Ops::Dot(h,v);
-	const T exponent = (( NU*hu*hu ) + ( NV*hv*hv )) / (1 - (hn*hn));
-	
+
+	// h -> n alignment (mirror-reflection direction, hn -> +-1, e.g. viewing
+	// straight down a near-normal-incidence specular highlight) drives
+	// 1-hn^2 -> 0.  NU*hu^2 + NV*hv^2 -> 0 at the same rate (hu, hv -> 0),
+	// so the un-guarded ratio is a 0/0 indeterminate that evaluates to NaN
+	// in floating point, poisoning `num = pow(hn, exponent)` and every
+	// downstream kray/pdf that consumes this BRDF value.  In the limit
+	// pow(hn~=1, anything) ~= 1, so the exact exponent value at hn=+-1
+	// doesn't matter -- 0 is the well-defined limit RISE already uses for
+	// the identical formula in AshikminShirleySpecularPdf
+	// (AshikminShirleyAnisotropicPhongSPF.cpp); mirror that guard here.
+	const Scalar sin_theta_h_sq = 1.0 - hn*hn;
+	T exponent;
+	if( sin_theta_h_sq > NEARZERO ) {
+		exponent = (( NU*hu*hu ) + ( NV*hv*hv )) / sin_theta_h_sq;
+	} else {
+		exponent = 0;
+	}
+
 	const T num = pow( hn, exponent );
 	const Scalar den = (hdotk) * r_max( ndotk1, ndotk2 );
 

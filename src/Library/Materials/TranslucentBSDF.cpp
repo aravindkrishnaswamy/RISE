@@ -45,8 +45,22 @@ static char GetReflectedSide( T& intensity, const Vector3& vLightIn, const RayIn
 	const Scalar nr = Vector3Ops::Dot(n,r);
 	const Scalar nv = Vector3Ops::Dot(n,v);
 
-	const Point3 incident = Point3Ops::mkPoint3(Point3( r.x, r.y, r.z ), ((fabs(nr)*-2.0)*n));
-	const Scalar sd = fabs( Vector3Ops::Dot( Vector3( incident.x, incident.y, incident.z ), v ) );
+	// Mirror-reflect r about n using the SIGNED cosine, matching
+	// IsotropicPhongBRDF::ComputeDiffuseSpecularFactors' two branches
+	// (:93 flips nr to positive when the viewer is in front; :116 leaves
+	// it as-is when the viewer is behind, since nr is already positive
+	// there).  The old `fabs(nr)*-2.0*n` construction plus an un-normalized
+	// dot gave |incident|^2 = 1+8nr^2 for nr<0 (a non-unit vector), so its
+	// dot with v could exceed 1 and pow(sd, exponent) could exceed 1 or go
+	// NaN for a tilted shading frame.  Normalize before the dot, exactly
+	// as IsotropicPhongBRDF does.
+	Scalar nrSigned = nr;
+	if( nrSigned <= 0 ) {
+		nrSigned = -nrSigned;
+	}
+
+	const Point3 incident = Point3Ops::mkPoint3(Point3( r.x, r.y, r.z ), ((nrSigned*-2.0)*n));
+	const Scalar sd = fabs( Vector3Ops::Dot( Vector3Ops::Normalize(Vector3( incident.x, incident.y, incident.z )), v ) );
 	intensity = pow( sd, exponent );
 
 	if( nr <= /*-NEARZERO*/ 0 )						// viewer front

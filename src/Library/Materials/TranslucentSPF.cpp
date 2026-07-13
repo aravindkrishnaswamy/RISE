@@ -328,7 +328,14 @@ void TranslucentSPF::ScatterNM(
 					TWO_PI * sampler.Get1D() );
 
 				trans.type = ScatteredRay::eRayTranslucent;
-				trans.krayNM *= scat;
+				// RGB twin (Scatter(), ~line 182) assigns
+				// `trans.kray = front.kray * scat;` -- trans.krayNM was never
+				// assigned before this point (ScatteredRay's ctor defaults
+				// krayNM to 0), so `*= scat` left this lobe at 0 (dead) in
+				// every spectral render.  Mirror the RGB twin: derive it from
+				// front.krayNM (the extinction-attenuated pass-through, set
+				// just above).
+				trans.krayNM = front.krayNM * scat;
 				trans.ray.Set( ri.ptIntersection, rv );
 				// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
 				{
