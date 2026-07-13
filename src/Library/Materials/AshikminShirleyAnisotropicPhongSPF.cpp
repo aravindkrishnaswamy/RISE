@@ -122,21 +122,46 @@ static bool GenerateSpecularRay(
 		// Rather than using -k1, we just the original ri.ray.Dir()
 		Vector3 k2 = Vector3Ops::Normalize( ri.ray.Dir()/*-k1*/ + 2.0 * hdotk * h );
 
-		// If the ray goes into the material, then lets not use it
-		if( Vector3Ops::Dot(k2, ri.onb.w()) < 0 ) {
+		// If the ray goes into the material, then lets not use it.
+		// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+		// to 60 deg off the true surface, so a k2 that validates against the
+		// (tilted) shading normal can still point below the geometric surface --
+		// the continuation ray then tunnels into the solid.  Oriented to the
+		// passed-in onb's w() (the normal this lobe was sampled around).
+		// Degenerate vGeomNormal (SquaredModulus guard, matches
+		// GlintModifier.cpp) falls back to the shading normal, making the gate
+		// a no-op.
+		// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : onb.w();
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+		// Reject against the frame this lobe was actually sampled around
+		// (the `onb` parameter, which is the caller's possibly-FlipW'd
+		// myonb) -- not the raw ri.onb.w(), which differs by sign on a
+		// back-face hit and silently dropped every legitimately-sampled
+		// back-face specular lobe.
+		if( Vector3Ops::Dot(k2, onb.w()) < 0 || Vector3Ops::Dot(k2, geomN) <= 0 ) {
 			return false;
 		}
 
-		// Compute the density of the perturbed ray
-		const Scalar hdotn = Vector3Ops::Dot( ri.onb.w(), h );
+		// Compute the density of the perturbed ray (against `onb`, the frame
+		// h was actually built in above -- NOT ri.onb.w(), which differs by
+		// sign on a back-face hit and would feed pow() a negative base).
+		const Scalar hdotn = Vector3Ops::Dot( onb.w(), h );
 		const Scalar factor1 = sqrt((NU+1.0)*(NV+1.0)) / TWO_PI;
 		const Scalar factor2 = pow( hdotn, (NU*cos_phi*cos_phi + NV*sin_phi*sin_phi));
 
 		const Scalar inv_actual_density = (4.0 * hdotk) / (factor1*factor2);
 
-		// Compute the density of what we actually want (from the BRDF)
+		// Compute the density of what we actually want (from the BRDF).
+		// Pass `onb` (the caller's possibly-FlipW'd myonb) explicitly -- NOT
+		// the raw ri.onb -- so ndotk2 = Dot(n,k2) agrees in sign with the k2
+		// this function validated above; the raw ri.onb.w() went negative on
+		// back-face hits and made the helper's ndotk2 early-out silently
+		// drop the density computation for every legitimately-sampled
+		// back-face specular ray.
 		Scalar brdf;
-		AshikminShirleyAnisotropicPhongBRDF::ComputeDiffuseSpecularFactors( diffuseFactor, brdf, k2, ri, NU, NV, Rs );
+		AshikminShirleyAnisotropicPhongBRDF::ComputeDiffuseSpecularFactors( diffuseFactor, brdf, k2, ri, onb.w(), onb.u(), onb.v(), NU, NV, Rs );
 
 		// The weighing factor is then the inverse of the actual density multiplied by the density
 		// we truly want.  This should be as close to 1 as possible, but it won't always be so
@@ -164,6 +189,15 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
+
+	// Geometric-horizon gate for the diffuse lobe below (the specular lobe
+	// is gated inside GenerateSpecularRay): a wo that validates against a
+	// GlintModifier-tilted shading normal can still point below the
+	// geometric surface.  Degenerate vGeomNormal falls back to the shading
+	// normal (gate is a no-op).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : myonb.w();
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 	const ScalarTriple NUt = pNu->GetValuesAt(ri);
 	const ScalarTriple NVt = pNv->GetValuesAt(ri);
@@ -224,7 +258,9 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 	const RISEPel oneMinusRs = RISEPel(1,1,1) - rho;
 	diffuse.kray = pRd->GetColor(ri) * oneMinusRs * (diffuseNorm * fromK1 * fromK2);
 
-	scattered.AddScatteredRay( diffuse );
+	if( Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0 ) {
+		scattered.AddScatteredRay( diffuse );
+	}
 }
 
 void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
@@ -239,6 +275,15 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
+
+	// Geometric-horizon gate for the diffuse lobe below (the specular lobe
+	// is gated inside GenerateSpecularRay): a wo that validates against a
+	// GlintModifier-tilted shading normal can still point below the
+	// geometric surface.  Degenerate vGeomNormal falls back to the shading
+	// normal (gate is a no-op).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : myonb.w();
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 	const Scalar NU = pNu->GetValueAtNM(ri,nm);
 	const Scalar NV = pNv->GetValueAtNM(ri,nm);
@@ -273,7 +318,9 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 		static const Scalar diffuseNorm = 28.0 / 23.0;
 
 		diffuse.krayNM = pRd->GetColorNM(ri,nm) * (1.0 - rho) * (diffuseNorm * fromK1 * fromK2);
-		scattered.AddScatteredRay( diffuse );
+		if( Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0 ) {
+			scattered.AddScatteredRay( diffuse );
+		}
 	}
 }
 
@@ -287,13 +334,32 @@ static Scalar AshikminShirleySpecularPdf(
 	const Scalar wDiff
 	)
 {
+	// Mirror Scatter()'s FlipW: orient the frame to face the incoming ray so
+	// this Pdf agrees with Scatter's actual sampling frame on backface hits
+	// (Scatter/GenerateSpecularRay sample both lobes relative to the
+	// flipped myonb, so a raw ri.onb.w()/u()/v() here returned 0 for
+	// directions Scatter legitimately emits).
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
-	const Vector3& n = ri.onb.w();
+	const Vector3 n = myonb.w();
 
 	const Scalar cos_theta_i = Vector3Ops::Dot( wi, n );
 	const Scalar cos_theta_o = Vector3Ops::Dot( wo, n );
 
 	if( cos_theta_i <= 0.0 || cos_theta_o <= 0.0 ) {
+		return 0.0;
+	}
+
+	// Geometric-horizon gate (MIS consistency with the sampler-side gates):
+	// a wo the sampler can no longer emit contributes zero density.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( wo, geomN ) <= 0 ) {
 		return 0.0;
 	}
 
@@ -313,8 +379,9 @@ static Scalar AshikminShirleySpecularPdf(
 		return pdf_diffuse;
 	}
 
-	const Scalar hu = Vector3Ops::Dot( h, ri.onb.u() );
-	const Scalar hv = Vector3Ops::Dot( h, ri.onb.v() );
+	// myonb, not ri.onb -- see the FlipW comment above.
+	const Scalar hu = Vector3Ops::Dot( h, myonb.u() );
+	const Scalar hv = Vector3Ops::Dot( h, myonb.v() );
 
 	// Exponent: (nu * (h.u)^2 + nv * (h.v)^2) / (1 - (h.n)^2)
 	const Scalar sin_theta_h_sq = 1.0 - hdotn * hdotn;
@@ -356,8 +423,16 @@ Scalar AshikminShirleyAnisotropicPhongSPF::Pdf(
 	// where specFactor = fresnel/max(cos_i,cos_o) and diffFactor depends on
 	// the direction.  Using the mirror direction gives constant weights that
 	// are much more representative than raw Rs/Rd, especially at grazing.
+	// Mirror Scatter()'s FlipW (see AshikminShirleySpecularPdf): this
+	// cos_i gate must agree with the frame Scatter actually samples in, or
+	// it returns 0 on every back-face hit even though Scatter legitimately
+	// emits there.
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
-	const Vector3& n = ri.onb.w();
+	const Vector3 n = myonb.w();
 	const Scalar cos_i = Vector3Ops::Dot( wi, n );
 
 	if( cos_i <= 0 ) {
@@ -390,8 +465,13 @@ Scalar AshikminShirleyAnisotropicPhongSPF::PdfNM(
 	const Scalar nv_val = pNv->GetValueAtNM(ri,nm);
 
 	// Representative weights at mirror direction (same as Pdf)
+	// Mirror Scatter()'s FlipW (same rationale as Pdf() above).
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
-	const Vector3& n = ri.onb.w();
+	const Vector3 n = myonb.w();
 	const Scalar cos_i = Vector3Ops::Dot( wi, n );
 
 	if( cos_i <= 0 ) {

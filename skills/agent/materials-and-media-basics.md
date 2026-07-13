@@ -1,6 +1,51 @@
 # Materials and Media Basics
 > hook: Read before adding or editing materials (diffuse, glass, metal, PBR), scalar parameters like IOR/roughness, or participating media.
 
+## EFFICIENT MATERIAL WORKFLOW — reuse painters, pick the cheap chunk kind
+
+For a plain "add/change this material" request (e.g. "give the sphere a
+shiny metallic look"), the whole edit is 4 tool calls: read_document ->
+read_schema (only if unsure of a param) -> insert_chunk -> propose_patch
+(bind).  Two rules keep it that short instead of ballooning past budget:
+
+- **Reuse the scene's existing colour painter** for the new material's
+  colour slot instead of inserting a new `uniformcolor_painter`.  A new
+  painter is an extra insert_chunk call AND an extra name to manage —
+  only add one when the request needs a genuinely different colour
+  than anything already in the scene.
+- **Default to `pbr_metallic_roughness_material`, not `ggx_material` /
+  `cooktorrance_material`, for ordinary metal/shiny asks.**  Verified
+  against the chunk parsers (`ChunkParserRegistry.cpp` /
+  `Job::AddPBRMetallicRoughnessMaterial` vs `Job::AddGGXMaterial` /
+  `Job::AddCookTorranceMaterial`): PBR-MR's `metallic` and `roughness`
+  accept EITHER a painter reference OR a bare inline scalar string
+  (`metallic 1.0`, `roughness 0.1` — no painter needed); only
+  `base_color` must be a real painter name (reuse one).  `ggx_material`
+  / `cooktorrance_material` are stricter: their `rd` and `rs`
+  (diffuse/specular reflectance) MUST each be an existing painter
+  name — there is NO inline-number fallback for `rd`/`rs` (a bare `rs
+  0.9 0.9 0.9` is rejected), even though their *other* params
+  (`alphax`/`alphay`/`ior`/`extinction`/`facets`) DO accept a single
+  inline scalar (`ior 2.5`).  That asymmetry is what burns tool-call
+  budget: reach for ggx/cooktorrance only when the task needs explicit
+  conductor Fresnel control; otherwise PBR-MR does the same job for
+  fewer calls because it needs only one painter reference, not two.
+
+Golden sequence, scene already has a `pnt_albedo` painter bound to the
+sphere's current material:
+
+```
+1. read_document                                 # find the object + its current painter name
+2. read_schema {keyword:"pbr_metallic_roughness_material"}   # skip if you already know the shape below
+3. insert_chunk  pbr_metallic_roughness_material {
+       name        mat_metallic
+       base_color  pnt_albedo   # REUSED, not a new painter
+       metallic    1.0          # inline scalar, no painter needed
+       roughness   0.1          # inline scalar, no painter needed
+   }
+4. propose_patch                                 # bind: object.material -> mat_metallic
+```
+
 ## Specular materials need something to reflect or refract
 
 A glass or metal object shows ONLY what arrives at it from the rest of

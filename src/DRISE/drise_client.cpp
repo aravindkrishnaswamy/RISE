@@ -148,6 +148,13 @@ bool DoWorkerJob_Image( IMemoryBuffer* pBuffer, IMemoryBuffer*& pCompletedTaskBu
 			return false;
 		}
 
+		// Detach the block-scoped StdOutProgress NOW -- it exists only for the parse above.
+		// Pre-fix, the slot kept pointing at this STACK object after the block closed, and the
+		// render below (outside the block) installed and drove the dangling pointer through the
+		// rasterizer's retained progress callback (SetTitle before the first block; per-block
+		// Progress from the second block on).
+		pJob->SetProgress( 0 );
+
 		strncpy( szLastFileName, szFileName, 1024 );
 
 		// Detach all existing render outputs
@@ -231,6 +238,13 @@ bool DoWorkerJob_Animation( IMemoryBuffer* pBuffer, IMemoryBuffer*& pCompletedTa
 			safe_release( pJob );
 			return false;
 		}
+
+		// Detach the block-scoped StdOutProgress NOW -- it exists only for the parse above.
+		// Pre-fix, the slot kept pointing at this STACK object after the block closed, and the
+		// render below (outside the block) installed and drove the dangling pointer through the
+		// rasterizer's retained progress callback (SetTitle before the first block; per-block
+		// Progress from the second block on).
+		pJob->SetProgress( 0 );
 
 		strncpy( szLastFileName, szFileName, 1024 );
 

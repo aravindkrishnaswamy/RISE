@@ -223,7 +223,12 @@ namespace RISE
 			Animation  = 8,   ///< Named animation paths — picking one makes it the
 			                  ///< active animation (like picking a camera); no editable
 			                  ///< properties, selection just activates it.
-			SceneVariant = 9  ///< scene_variant overlays; picking one RE-DERIVES the scene with that variant active.
+			SceneVariant = 9, ///< scene_variant overlays; picking one RE-DERIVES the scene with that variant active.
+			Painter    = 10   ///< Painters section (union of the IPainter + IScalarPainter
+			                  ///< managers).  CurrentPanelMode returns PanelMode::None for
+			                  ///< this category this slice (no dedicated PanelMode value) —
+			                  ///< property rows are read via PropertyCountFor/PropertyNameFor
+			                  ///< (indexed directly by Category, not by the current panel).
 		};
 
 		//! Model-B F2 slice S1: render IDENTITY.  A monotonic id assigned to
@@ -956,21 +961,31 @@ namespace RISE
 		//!     own cancel-by-return-false is honoured.  Callers pass their
 		//!     real progress sink here directly; there is no more guessing
 		//!     via GetProgress().
-		//!   - `prior = job.GetProgress()`, captured ONCE at entry to this
-		//!     function (before any install), is what gets RESTORED to the
-		//!     Job's progress slot on every exit.  This is deliberately NOT
-		//!     assumed to equal `guiProgress`: it is "whatever the Job's
-		//!     progress slot honestly held right before this render claimed
-		//!     it", which is the only thing a restore can correctly promise
-		//!     on EITHER platform.  On macOS this is the persistent
-		//!     BlockProgressCallback (equal to `guiProgress` there, since
-		//!     that IS what's installed).  On Windows this is typically
-		//!     nullptr (the slot startRender left it in after skipping the
-		//!     direct install), which is exactly what the Windows completion
-		//!     handler already re-asserts via its own `SetProgress(nullptr)`
-		//!     -- so the restore is a harmless no-op there, and the contract
-		//!     stays correct even if a future Windows change starts
-		//!     installing something on that slot.
+		//!   - `prior = job.GetProgress()`, captured INSIDE the submitted
+		//!     closure -- i.e. inside the coordinator slot, immediately
+		//!     before this render's install -- is what gets RESTORED to the
+		//!     Job's progress slot on every exit.  (Slot-ownership
+		//!     hardening, 2026-07-12: the capture used to happen ONCE at
+		//!     entry to this function, on the SUBMITTING thread, before the
+		//!     fairness wait -- which could observe a TRANSIENT occupant's
+		//!     callback (an agent render's coordProgress, installed from
+		//!     the coordinator worker) and then permanently re-install it
+		//!     on exit; a Job outliving its controller then carried a
+		//!     dangling pointer into freed controller storage.  Inside the
+		//!     slot the read is serialized against every other slot writer,
+		//!     so it observes the honest steady-state value.)  `prior` is
+		//!     deliberately NOT assumed to equal `guiProgress`: it is
+		//!     "whatever the Job's progress slot honestly held right before
+		//!     this render claimed it", which is the only thing a restore
+		//!     can correctly promise on EITHER platform.  On macOS this is
+		//!     the persistent BlockProgressCallback (equal to `guiProgress`
+		//!     there, since that IS what's installed).  On Windows this is
+		//!     typically nullptr (startRender skips the direct install when
+		//!     a controller is attached; the completion handler's own
+		//!     conditional clear then finds nothing of its adapter to
+		//!     remove) -- so the restore is a harmless no-op there, and the
+		//!     contract stays correct even if a future Windows change
+		//!     starts installing something on that slot.
 		//!
 		//! This controller's own mCancelProgress (AgentRenderProgress()) is
 		//! installed on the Job for the render's duration with `guiProgress`
@@ -1169,6 +1184,79 @@ namespace RISE
 		//! a full Stop(), since Start() only ever looks at mRunning.
 		void StopInteractive();
 
+		// Refinement pause + status (UI redesign, design brief A2) ------
+		// "The viewport is the renderer": explicit user-facing Pause /
+		// Resume of progressive refinement, plus an HONEST status
+		// readout.  There is no sample-accumulation "pass N of M" in the
+		// interactive loop — it refines by walking a 6-level resolution
+		// ladder and then runs a denoised polish pass (see mPreviewScale
+		// / mPolishState) — so the status surfaces exactly that.
+
+		//! Pause progressive refinement: joins the interactive render
+		//! thread via StopInteractive(), so the on-screen image survives
+		//! and CPU goes quiet.  Edits made while paused mutate the scene
+		//! normally and appear on Resume.  Idempotent.
+		void PauseRefinement();
+
+		//! Resume after PauseRefinement(): respawns the render loop with
+		//! a normal initial pass, after which the idle-refinement ladder
+		//! walks back to full quality.  No-op when not paused.  Note any
+		//! Start() — including the post-production-render restart the
+		//! platform shells perform — also clears the paused flag; after
+		//! that restart the viewport genuinely is live again, so paused
+		//! state would be a lie.
+		void ResumeRefinement();
+
+		bool IsRefinementPaused() const;
+
+		//! Interactive-refinement phase for status chrome.  Values race
+		//! benignly with the render thread — this is a poll-for-display
+		//! API, not a synchronization point.
+		enum class RefinementPhase : int
+		{
+			Idle      = 0,   //!< converged: full res, nothing in flight
+			Rendering = 1,   //!< full-resolution pass in flight
+			Refining  = 2,   //!< walking the resolution ladder (divisor > 1)
+			Polishing = 3,   //!< denoised polish pass queued / in flight
+			Paused    = 4,   //!< PauseRefinement() is in effect
+		};
+
+		//! @param outScaleDivisor  Receives the current preview-scale
+		//!        divisor (1..32, powers of two; 1 = full resolution).
+		RefinementPhase GetRefinementStatus( unsigned int& outScaleDivisor ) const;
+
+		// Interactive region-of-interest (UI redesign, design brief A4) -
+		// A user-drawn box (full-resolution film pixel coordinates,
+		// INCLUSIVE on all four edges) that restricts FULL-RES
+		// interactive passes to the box, so iteration inside it is
+		// dramatically cheaper.  Coarse preview-ladder passes
+		// (divisor > 1) still render the whole frame — otherwise pixels
+		// outside the box would go stale at mismatched scales during
+		// navigation.  The region applies ONLY to the interactive
+		// viewport; production renders are always full-frame and
+		// SubmitProductionRenderSync clears any active region first
+		// (the Blender-style "region box leaks into the final render"
+		// footgun is designed against — docs/gui/DESIGN_BRIEF.md A4).
+		// right/bottom are clamped to the film at use; a box whose
+		// left/top lies outside the film is ignored for that pass
+		// (full-frame render) while still reported by
+		// GetInteractiveRegion.  A degenerate box is refused at set
+		// time.  Thread-safe; both mutators kick a render pass.
+
+		void SetInteractiveRegion( unsigned int left, unsigned int top,
+		                           unsigned int right, unsigned int bottom );
+		void ClearInteractiveRegion();
+
+		//! TRUE (+ coords) when a region is active.
+		bool GetInteractiveRegion( unsigned int& left, unsigned int& top,
+		                           unsigned int& right, unsigned int& bottom ) const;
+
+		//! TRUE when the interactive rasterizer honors a render region —
+		//! see IRasterizer::HonorsRegion.  (The stock interactive
+		//! rasterizer always does; this exists so the region UI never
+		//! has to assume.)
+		bool InteractiveRasterizerHonorsRegion() const;
+
 		//! Set the running flag false, trip the cancel flag, signal the
 		//! condvar, and join the render thread -- AND permanently retire
 		//! the agent-render worker (mAgentRenderThread), refusing every
@@ -1247,6 +1335,14 @@ namespace RISE
 
 		void Undo();
 		void Redo();
+
+		//! Human-readable labels for the next Undo()/Redo() step
+		//! ("Translate", "Agent Edit", …) for the platform shells'
+		//! Edit-menu items — thin forwards of EditHistory::LabelForUndo/
+		//! Redo.  Empty when the corresponding stack is empty.  UI-thread
+		//! only (the same thread that performs edits / Undo / Redo).
+		String UndoLabel() const;
+		String RedoLabel() const;
 
 		//! Canonical scene time tracked by the editor's edit history.
 		//! Updated by every OnTimeScrub call AND by Undo / Redo of a
@@ -1475,14 +1571,16 @@ namespace RISE
 		//! → entity-name list` to detect scene reload (the GUI tears
 		//! down + recreates the bridge, which builds a new controller).
 		//!
-		//! NOT bumped on mid-session structural mutations (Add/Remove
-		//! camera/object/light, rasterizer-registry add) — Phase 2
-		//! doesn't surface those mutations through the GUI, and the
-		//! rasterizer list is the static-catalogue union which doesn't
-		//! change with registry adds.  Phase 3 will instrument the
-		//! relevant `IJob::Add*` paths to advance a Job-side counter
-		//! the controller can poll if/when those mutations become
-		//! reachable from the interactive UI.
+		//! ALSO bumped on mid-session structural mutations that change
+		//! the entity set: CloneActiveCamera, gizmo/transform commits,
+		//! transaction rollback, selection changes, and — since the
+		//! entity-creation slice — every landed agent chunk CRUD
+		//! (ApplyAgentChunkCrud_, i.e. InstantiateEntityTemplate /
+		//! DuplicateEntity / RemoveEntity and agent insert_chunk/
+		//! remove_chunk).  So a GUI outliner that caches `(epoch,
+		//! category) → entity-name list` and re-enumerates on an epoch
+		//! change picks up adds/removes/duplicates live, on either
+		//! platform, without a bespoke per-op refresh signal.
 		unsigned int SceneEpoch() const;
 
 		//! Stable full-resolution camera dimensions for pointer-event
@@ -1516,6 +1614,28 @@ namespace RISE
 		// CategoryActiveName and SetSelection surface lists + activates
 		// them, so no bespoke per-feature accessors are needed here.
 		// GetAnimationOptions above already follows the active animation.)
+
+		//! Toolkit slice 1 (read_viewport): copy the CURRENT live interactive
+		//! viewport pixels out of `mInteractiveFrameStore` -- the exact frame
+		//! the user is looking at right now -- WITHOUT triggering a render.
+		//! Fills `outPixels` (row-major, linear radiance, width*height) and
+		//! `outWidth`/`outHeight`; returns true iff a frame was available.
+		//!
+		//! Thread-safe and coherent: the pointer is snapshot-and-addref'd
+		//! under `mInteractiveFrameStoreMutex` (so a concurrent
+		//! `EnsureInteractiveFrameStore_` reallocation can't free it
+		//! mid-read), then the pixels are copied via
+		//! `AsBeautyRasterImage().DumpImage()` -- which acquires EVERY tile's
+		//! shared_lock up front, the SAME complete-coherent-snapshot mechanism
+		//! `ViewportFrameStore::SaveAs` uses -- so an in-flight interactive
+		//! render pass writing tiles cannot tear the copy.  Returns false
+		//! (leaving outputs empty/zero) when no interactive frame store exists
+		//! yet (no render has run) or it has zero dims.  Callable from any
+		//! thread (e.g. the agent RPC thread) concurrently with the render
+		//! thread.
+		bool CopyInteractiveFrame( std::vector<RISEColor>& outPixels,
+		                           unsigned int& outWidth,
+		                           unsigned int& outHeight ) const;
 
 		// Test hooks (Phase 2) ---------------------------------------
 		// These let tests bypass picking and observe internal counters.
@@ -1597,6 +1717,57 @@ namespace RISE
 		//! shells.  Cheap O(1) — just checks the SceneEditor's dirty
 		//! trackers.
 		bool HasUnsavedChanges() const { return mEditor.HasUnsavedChanges(); }
+
+		// Editor live-sync (UI refinement item 1) -----------------------
+		// The Scene-file editor mirrors the live CST: every committed
+		// mutation (GUI edit, agent edit, undo/redo) is visible as text
+		// without a manual sync step.
+
+		//! The retained CST Document's serialization — the exact bytes
+		//! RequestSave would write.  Empty when no document is retained.
+		//! Takes mMutex (a commit on another thread must not be observed
+		//! half-applied), so CALLERS MUST NOT POLL DURING A RENDER — the
+		//! render worker holds mMutex for the render's whole duration
+		//! and this would wedge the caller (the shells gate their poll
+		//! on the scene-editable predicate, same as the proposals poll).
+		String SerializedSceneText() const;
+
+		//! Cheap change detector for the editor's poll: the retained CST
+		//! head version (uuid fresh per load; revision bumps iff content
+		//! changed).  Same mMutex caveat as SerializedSceneText — the
+		//! 16-byte version must not be read torn.  Both 0 when no
+		//! document is retained.
+		void GetSceneTextVersion( std::uint64_t& outUuid,
+		                          std::uint64_t& outRevision ) const;
+
+		//! "Reveal in scene file" (the design comp's ⌗ affordance): resolve
+		//! ENTITY (cat, name) to WHERE it sits in SerializedSceneText() --
+		//! its top-level chunk's byte offset and 1-based line number.
+		//! Resolution mirrors the SAME DocFindByNameAnyRole call + role-
+		//! kind-suffix / unique-fallback convention CaptureAgentPriorParamValue_
+		//! and Job::ApplyCstParamEditImpl_ use for entity addressing (see the
+		//! RoleKindSuffixForCategory table at the .cpp definition) -- so a
+		//! resolvable name here is guaranteed to be the SAME chunk an agent
+		//! edit against (cat, name) would land on.  Categories with no CST
+		//! chunk-name addressing scheme (Rasterizer/Film -- their
+		//! CategoryEntityName/CategoryActiveName values are registry TYPE
+		//! names or a synthetic preset label, not a chunk `name` param) and
+		//! Category::None always return false.
+		//! Takes mMutex -- SAME caveat as SerializedSceneText: CALLERS MUST
+		//! NOT POLL DURING A RENDER (the render worker holds mMutex for the
+		//! render's whole duration; gate on the scene-editable predicate).
+		//! Returns false (outputs unchanged) when: no retained Document, the
+		//! name doesn't resolve (absent or ambiguous under DocFindByNameAnyRole),
+		//! or the resolved chunk is not (anymore) a top-level item.
+		//! COST: O(log N) to resolve the chunk's position (DocFindByNameAnyRole
+		//! is an O(N) name scan today -- see its own doc comment -- followed
+		//! by O(log N) DocIndexOfNodeId + DocByteOffsetOfItem), plus an O(doc
+		//! bytes) newline count over the serialized PREFIX to turn the byte
+		//! offset into a line number (SerializeCst has no partial/prefix-only
+		//! form).  Fine at click/selection cadence (this is not a per-frame
+		//! or per-keystroke path); not something to poll in a loop.
+		bool EntitySourceLocation( Category cat, const String& name,
+		                          std::uint64_t& outByteOffset, std::uint32_t& outLine ) const;
 
 		//! Phase 6.5 UI hook: install a listener that fires when
 		//! `HasUnsavedChanges()` flips (clean→dirty or dirty→clean).
@@ -1741,6 +1912,74 @@ namespace RISE
 		//! occurs.)
 		bool CloneActiveCamera( const String& proposedName,
 		                        char* outName, unsigned int outLen );
+
+		//! Entity-creation slice: number of "Add Entity" templates
+		//! registered for `cat` (see EntityTemplates.h).  0 for
+		//! categories with none (Camera/Rasterizer/Film/Animation/
+		//! SceneVariant/None).
+		unsigned int EntityTemplateCount( Category cat ) const;
+
+		//! Display label for the template at `idx` within `cat` (e.g.
+		//! "Sphere", "Omni Light"), or empty for an out-of-range idx.
+		String EntityTemplateLabel( Category cat, unsigned int idx ) const;
+
+		//! Instantiate the template at `idx` within `cat`: expands its
+		//! chunk-text sequence (substituting @NAME@ / @MATERIAL@ /
+		//! @TEXTURE@ as the template requires — see EntityTemplates.h)
+		//! and inserts each chunk in order via ApplyAgentInsertChunk,
+		//! roots first.  Object templates that need a material and find
+		//! none in the scene bootstrap a bundled default
+		//! uniformcolor_painter + lambertian_material first.  On
+		//! success `*outName` (if non-null) receives the deduped
+		//! instance name chosen for the new entity (base name suffixed
+		//! "_2", "_3", ... on collision, mirroring CloneActiveCamera's
+		//! UniqueCameraName suffix scheme).  The chosen name is picked so
+		//! its ENTIRE name set is free before any insert — the top-level
+		//! name (in its own category) AND every derived sub-chunk name a
+		//! multi-chunk template bakes in (e.g. an Object's `<name>_geo`
+		//! geometry, a GGX material's `<name>_rd`/`<name>_rs` painters),
+		//! checked doc-wide — so a leftover orphan sub-chunk can't make an
+		//! Add fail mid-sequence with a name the user never chose.
+		//!
+		//! Multi-chunk templates are SEQUENTIAL, independently-atomic
+		//! ApplyAgentInsertChunk calls, NOT one composite undo step —
+		//! BeginTransaction/EndTransaction and the agent-commit surface
+		//! are mutually exclusive by design (see ApplyAgentInsertChunk's
+		//! own mTxnOpen refusal), and SceneEditor's composite grouping
+		//! (BeginComposite/EndComposite) is never wired to the agent
+		//! entry points.  A multi-chunk Add therefore undoes as N
+		//! separate steps (one Cmd-Z per chunk, innermost/last-inserted
+		//! first) — an honest, documented limitation of this slice, not
+		//! a bug.
+		//!
+		//! On any chunk's insert failing partway through a sequence,
+		//! returns that chunk's AgentCommitResult verbatim (its
+		//! `message` names the failure) and does NOT roll back chunks
+		//! already inserted — same "no atomic multi-chunk rollback"
+		//! caveat as above.  Callers that want a byte-identical bailout
+		//! must Undo the partially-applied steps themselves.
+		AgentCommitResult InstantiateEntityTemplate( Category cat, unsigned int idx, String* outName );
+
+		//! Duplicate the named entity in `cat`: serializes its current
+		//! chunk out of the retained CST Document, substitutes a fresh
+		//! deduped name for its `name` parameter, and inserts the copy
+		//! via ApplyAgentInsertChunk.  On success `*outName` (if
+		//! non-null) receives the new name.  Refuses (with a non-empty
+		//! message) when `cat` has no chunk-name addressing scheme, the
+		//! entity isn't found, or the insert itself is rejected (e.g. a
+		//! dangling reference the copy would introduce).
+		AgentCommitResult DuplicateEntity( Category cat, const String& name, String* outName );
+
+		//! Remove the named entity in `cat` via ApplyAgentRemoveChunk,
+		//! narrowed by `cat`'s CST role-kind suffix (RoleKindSuffixForCategory)
+		//! so e.g. removing a Material named the same as an unrelated
+		//! Light doesn't clash.  On failure surfaces a non-empty refusal
+		//! message (ApplyAgentChunkCrud_'s English wrapper naming the
+		//! likely still-referenced / non-deriving cause, with Job's
+		//! diagnostic appended) — e.g. removing a material a
+		//! standard_object still references is rejected, not silently
+		//! skipped.
+		AgentCommitResult RemoveEntity( Category cat, const String& name );
 
 	protected:
 		//! Test override point.  Production override calls
@@ -2031,7 +2270,7 @@ namespace RISE
 		// pick, used for the panel header / single-tuple callers.
 		// All writes happen on the UI thread; render thread doesn't
 		// touch these.
-		static constexpr int        kNumCategories = 10;  // None..SceneVariant
+		static constexpr int        kNumCategories = 11;  // None..Painter
 		String                      mSelectionByCategory[ kNumCategories ];
 		//! Per-category "is the accordion section expanded?" flag,
 		//! tracked SEPARATELY from `mSelectionByCategory` so a user
@@ -2103,6 +2342,25 @@ namespace RISE
 		// only when scale changes shrink/grow the active dims.
 		// `Reference`-counted; we own one addref.
 		mutable RISE::Implementation::FrameStore* mInteractiveFrameStore;
+
+		// Toolkit slice 1 (read_viewport): a LEAF mutex guarding ONLY the
+		// `mInteractiveFrameStore` POINTER swap -- nothing else.  The store's
+		// pixel CONTENT is guarded independently by FrameStore's per-tile
+		// shared_mutex (which a reader acquires transitively via
+		// `DumpImage`); this mutex exists solely so the cross-thread reader
+		// `CopyInteractiveFrame` can snapshot-and-addref the pointer without
+		// racing `EnsureInteractiveFrameStore_`'s release-old/reassign in the
+		// dims-changed branch (which, pre-slice-1, ran with ZERO
+		// synchronization -- safe only while the render thread was the SOLE
+		// accessor).  LEAF: `EnsureInteractiveFrameStore_` runs entirely
+		// OUTSIDE `mMutex` (DoOneRenderPass is called by RenderLoop AFTER it
+		// releases mMutex), so this lock never nests with mMutex /
+		// mJobStatusMutex / mAsyncCacheMutex / mAgentRenderSlotMutex -- it is
+		// deliberately NOT part of the lock-order table.  Only the
+		// dims-changed reassignment takes it; the same-dims short-circuit
+		// reads the pointer on the render thread itself (sequenced after that
+		// thread's own prior write) and needs no lock.
+		mutable std::mutex mInteractiveFrameStoreMutex;
 
 		CancellableProgressCallback mCancelProgress;
 
@@ -2525,6 +2783,32 @@ namespace RISE
 		enum class PolishState : int { None = 0, FinalRegularRunning = 1, PolishQueued = 2 };
 		std::atomic<int>            mPolishState;
 		static constexpr unsigned int kPolishSampleCount = 4;
+
+		// Review-round-1 P1: Start()/StopInteractive() used to synchronize
+		// only via the mRunning CAS -- the mRenderThread OBJECT (spawn in
+		// Start, join in StopInteractive) had no lock.  With
+		// PauseRefinement/ResumeRefinement these become independently
+		// fireable user actions (any thread via the C API), and a Resume's
+		// Start() landing between a Pause's CAS and its join() would
+		// move-assign onto a still-joinable std::thread ->
+		// std::terminate().  mLifecycleMutex serializes the whole
+		// CAS+spawn / CAS+join sequences.  Never taken by the render
+		// thread itself, so holding it across the join cannot deadlock.
+		std::mutex                  mLifecycleMutex;
+
+		// User-facing refinement pause (PauseRefinement/ResumeRefinement).
+		// TRUE between Pause and Resume; cleared by any Start().  In-class
+		// init — the ctor predates this member and doesn't list it.
+		std::atomic<bool>           mRefinementPaused{ false };
+
+		// Interactive region-of-interest (SetInteractiveRegion).  The four
+		// INCLUSIVE full-res film coords are packed 16 bits each into one
+		// atomic (left<<48 | top<<32 | right<<16 | bottom) so the render
+		// thread reads a coherent tuple without a lock;
+		// mInteractiveRegionActive gates use.  Coords beyond 65535 are
+		// clamped at set time (no real film is that large).
+		std::atomic<bool>           mInteractiveRegionActive{ false };
+		std::atomic<std::uint64_t>  mInteractiveRegionPacked{ 0 };
 
 		// Properties-panel snapshot (rebuilt on RefreshProperties).
 		// `mProperties` is the PRIMARY-selection snapshot (kept for

@@ -7,9 +7,13 @@
 #include "ChatPanel.h"
 
 #include "ViewportBridge.h"
+#include "Theme.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDebug>
+#include <QFileInfo>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -20,15 +24,25 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPalette>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QScrollBar>
+#include <QSettings>
 #include <QSignalBlocker>
+#include <QStandardPaths>
 #include <QTextEdit>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QVector>
+
+#include <utility>
+
+#include <ctime>
 
 #include "Agent/AgentChatLoop.h"
+#include "Agent/ChatTrajectory.h"
 
 using RISE::Agent::AgentChatLoop;
 using RISE::Agent::AnthropicChatCodec;
@@ -50,16 +64,6 @@ namespace
     {
         const QByteArray utf8 = s.toUtf8();
         return std::string(utf8.constData(), static_cast<std::size_t>(utf8.size()));
-    }
-
-    QString roleLabel(RISE::Agent::ChatTranscriptEntry::Role role)
-    {
-        switch (role) {
-        case RISE::Agent::ChatTranscriptEntry::Role::User:        return "You";
-        case RISE::Agent::ChatTranscriptEntry::Role::Assistant:   return "Assistant";
-        case RISE::Agent::ChatTranscriptEntry::Role::ToolResults: return "Tools";
-        }
-        return "Chat";
     }
 
     // Build one JSON-RPC 2.0 request line (used for the driver-internal
@@ -126,6 +130,57 @@ namespace
     }
 }
 
+namespace {
+
+// Agent autonomy selector (2026-07 GUI composer chips): QSettings key,
+// shared between the constructor's read and setAutonomyLevel()'s
+// write.  Same key name as the Mac client's UserDefaults key
+// ("agentAutonomyLevel") -- not load-bearing (each platform's settings
+// store is separate), just a nice cross-platform naming consistency.
+const char* const kAutonomyLevelSettingsKey = "agentAutonomyLevel";
+
+// Small bordered pill button shared by the header's Retry/Reset and the
+// provider/model chips below -- mirrors the comp's hairline-bordered
+// affordances (composerFooter's model chip, errorAffordances' pill
+// buttons on the Mac side).
+QPushButton* makePillButton(const QString& text, QWidget* parent)
+{
+    auto* btn = new QPushButton(text, parent);
+    btn->setFont(Theme::sans(11));
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setFlat(true);
+    btn->setStyleSheet(QStringLiteral(
+        "QPushButton { color: %1; border: 1px solid %2; border-radius: 6px; padding: 3px 10px; background: transparent; }"
+        "QPushButton:disabled { color: %3; border-color: %4; }"
+        "QPushButton:hover:!disabled { border-color: %5; }")
+        .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderStrong),
+             Theme::hex(Theme::textDisabled), Theme::hex(Theme::borderLight),
+             Theme::hex(Theme::borderHover)));
+    return btn;
+}
+
+// Recursively empties `layout`, deleteLater()-ing every widget it
+// directly owned and destroying every nested QLayout it wrapped (e.g.
+// a right-align QHBoxLayout added via addLayout()).  takeAt() only
+// detaches the QLayoutItem -- it neither deletes the widget nor the
+// nested layout, so both must be handled explicitly here.
+void clearQLayoutRecursive(QLayout* layout)
+{
+    if (!layout) return;
+    QLayoutItem* item;
+    while ((item = layout->takeAt(0)) != nullptr) {
+        if (QWidget* w = item->widget()) {
+            w->deleteLater();
+        } else if (QLayout* child = item->layout()) {
+            clearQLayoutRecursive(child);
+            delete child;
+        }
+        delete item;
+    }
+}
+
+} // namespace
+
 ChatPanel::ChatPanel(QWidget* parent)
     : QWidget(parent)
     , m_loop(new AgentChatLoop())
@@ -136,31 +191,46 @@ ChatPanel::ChatPanel(QWidget* parent)
     // wait poll queued behind it) indefinitely.
     m_network->setTransferTimeout(300000);
 
+    setAutoFillBackground(true);
+    {
+        QPalette pal = palette();
+        pal.setColor(QPalette::Window, Theme::bgPanel);
+        setPalette(pal);
+    }
+
     auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(8, 6, 8, 8);
-    outer->setSpacing(6);
+    outer->setContentsMargins(14, 12, 14, 14);
+    outer->setSpacing(9);
 
     auto* header = new QHBoxLayout();
-    auto* title = new QLabel("Chat");
-    title->setStyleSheet("font-weight: bold; color: gray;");
-    header->addWidget(title);
     header->addStretch();
-    m_retryBtn = new QPushButton("Retry");
+    m_retryBtn = makePillButton(QStringLiteral("\xE2\x86\xBB Retry"), this);
     m_retryBtn->setToolTip("Retry the last request (after an HTTP/network error)");
     m_retryBtn->setEnabled(false);
     header->addWidget(m_retryBtn);
-    m_resetBtn = new QPushButton("Reset");
+    m_resetBtn = makePillButton(QStringLiteral("\xE2\x8C\xAB Reset"), this);
     m_resetBtn->setToolTip("Clear the conversation");
     header->addWidget(m_resetBtn);
     outer->addLayout(header);
 
     auto* providerRow = new QHBoxLayout();
+    providerRow->setSpacing(6);
     m_providerCombo = new QComboBox();
     m_providerCombo->addItem("OpenAI");
     m_providerCombo->addItem("Anthropic");
     m_providerCombo->addItem("Gemini");
+    m_providerCombo->addItem("Grok (xAI)");
+    m_providerCombo->addItem("Local (Ollama)");
+    m_providerCombo->setFont(Theme::mono(10));
+    m_providerCombo->setStyleSheet(QStringLiteral(
+        "QComboBox { color: %1; background: transparent; border: 1px solid %2; border-radius: 5px; padding: 3px 8px; }")
+        .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderLight)));
     m_modelEdit = new QLineEdit(defaultModelFor(Provider::OpenAI));
     m_modelEdit->setPlaceholderText("model");
+    m_modelEdit->setFont(Theme::mono(10));
+    m_modelEdit->setStyleSheet(QStringLiteral(
+        "QLineEdit { color: %1; background: transparent; border: 1px solid %2; border-radius: 5px; padding: 3px 8px; }")
+        .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderLight)));
     providerRow->addWidget(m_providerCombo);
     providerRow->addWidget(m_modelEdit, 1);
     outer->addLayout(providerRow);
@@ -168,30 +238,153 @@ ChatPanel::ChatPanel(QWidget* parent)
     m_apiKeyEdit = new QLineEdit();
     m_apiKeyEdit->setEchoMode(QLineEdit::Password);
     m_apiKeyEdit->setPlaceholderText("API key");
+    m_apiKeyEdit->setFont(Theme::mono(10));
+    m_apiKeyEdit->setStyleSheet(QStringLiteral(
+        "QLineEdit { color: %1; background: %2; border: 1px solid %3; border-radius: 6px; padding: 4px 8px; }")
+        .arg(Theme::hex(Theme::textSecondary), Theme::hex(Theme::bgWell), Theme::hex(Theme::borderLight)));
     m_apiKeyEdit->setText(envKeyFor(Provider::OpenAI));
     outer->addWidget(m_apiKeyEdit);
 
-    m_transcript = new QTextEdit();
-    m_transcript->setReadOnly(true);
-    m_transcript->setMinimumHeight(160);
-    m_transcript->setPlaceholderText("Describe a scene change, for example: make the orange objects red.");
-    outer->addWidget(m_transcript);
+    // Secure-MCP slice 5c (Windows parity, RISE UI redesign): pending/
+    // recently-resolved proposals column -- above the transcript,
+    // mirrors ChatPanel.swift's ProposalsPanel placement.
+    m_proposalsContainer = new QWidget(this);
+    m_proposalsLayout = new QVBoxLayout(m_proposalsContainer);
+    m_proposalsLayout->setContentsMargins(0, 0, 0, 0);
+    m_proposalsLayout->setSpacing(6);
+    m_proposalsContainer->setVisible(false);
+    outer->addWidget(m_proposalsContainer);
 
-    auto* inputRow = new QHBoxLayout();
+    m_proposalsPollTimer = new QTimer(this);
+    m_proposalsPollTimer->setInterval(1000);
+    connect(m_proposalsPollTimer, &QTimer::timeout, this, &ChatPanel::refreshProposals);
+
+    // Transcript -- scrollable column of per-entry widgets restyled to
+    // the comp (bubbles / plain narration / trace chips); see
+    // rebuildTranscriptWidgets().
+    m_transcriptContent = new QWidget();
+    m_transcriptLayout = new QVBoxLayout(m_transcriptContent);
+    m_transcriptLayout->setContentsMargins(2, 2, 2, 2);
+    m_transcriptLayout->setSpacing(15);
+
+    m_transcriptScroll = new QScrollArea();
+    m_transcriptScroll->setWidget(m_transcriptContent);
+    m_transcriptScroll->setWidgetResizable(true);
+    m_transcriptScroll->setFrameShape(QFrame::NoFrame);
+    m_transcriptScroll->setMinimumHeight(160);
+    m_transcriptScroll->setStyleSheet(QStringLiteral("QScrollArea { background-color: %1; }")
+        .arg(Theme::hex(Theme::bgPanel)));
+    {
+        QPalette pal = m_transcriptContent->palette();
+        pal.setColor(QPalette::Window, Theme::bgPanel);
+        m_transcriptContent->setAutoFillBackground(true);
+        m_transcriptContent->setPalette(pal);
+    }
+    outer->addWidget(m_transcriptScroll, 1);
+
+    // Composer -- input well + accent Send pill, per the comp.
+    auto* composerWell = new QWidget(this);
+    composerWell->setObjectName(QStringLiteral("chatComposerWell"));
+    composerWell->setStyleSheet(QStringLiteral(
+        "#chatComposerWell { background-color: %1; border: 1px solid %2; border-radius: %3px; }")
+        .arg(Theme::hex(Theme::bgWell), Theme::hex(Theme::borderLight))
+        .arg(Theme::radiusCard));
+    auto* inputRow = new QHBoxLayout(composerWell);
+    inputRow->setContentsMargins(12, 6, 6, 6);
+    inputRow->setSpacing(8);
+
     m_inputEdit = new QLineEdit();
-    m_inputEdit->setPlaceholderText("Ask for a scene change...");
-    m_sendBtn = new QPushButton("Send");
-    m_stopBtn = new QPushButton("Stop");
+    m_inputEdit->setPlaceholderText(QStringLiteral("Ask the agent \xE2\x80\x94 reads, edits, validates, renders\xE2\x80\xA6"));
+    m_inputEdit->setFont(Theme::sans(12));
+    m_inputEdit->setFrame(false);
+    m_inputEdit->setStyleSheet(QStringLiteral("QLineEdit { background: transparent; color: %1; border: none; }")
+        .arg(Theme::hex(Theme::textPrimary)));
     inputRow->addWidget(m_inputEdit, 1);
+
+    m_sendBtn = new QPushButton(QStringLiteral("Send"));
+    m_sendBtn->setFont(Theme::sans(11, QFont::DemiBold));
+    m_sendBtn->setCursor(Qt::PointingHandCursor);
+    m_sendBtn->setFlat(true);
+    m_sendBtn->setStyleSheet(QStringLiteral(
+        "QPushButton { color: %1; background-color: %2; border: none; border-radius: 7px; padding: 6px 12px; }"
+        "QPushButton:disabled { color: %3; background-color: %4; }")
+        .arg(Theme::hex(Theme::accentLight),
+             Theme::rgba(QColor(Theme::accent.red(), Theme::accent.green(), Theme::accent.blue(), static_cast<int>(0.16 * 255))),
+             Theme::hex(Theme::textDisabled), Theme::rgba(Theme::whiteAlpha(int(0.06 * 255)))));
     inputRow->addWidget(m_sendBtn);
+
+    m_stopBtn = new QPushButton(QStringLiteral("Stop"));
+    m_stopBtn->setFont(Theme::sans(11, QFont::DemiBold));
+    m_stopBtn->setCursor(Qt::PointingHandCursor);
+    m_stopBtn->setFlat(true);
+    m_stopBtn->setStyleSheet(QStringLiteral(
+        "QPushButton { color: %1; background: transparent; border: 1px solid %2; border-radius: 7px; padding: 6px 12px; }")
+        .arg(Theme::hex(Theme::error), Theme::hex(Theme::borderStrong)));
     inputRow->addWidget(m_stopBtn);
-    outer->addLayout(inputRow);
+
+    outer->addWidget(composerWell);
+
+    // ---- Agent autonomy selector (2026-07 GUI composer chips) ---------
+    // "Read" / "Propose" / "Apply" -- mirrors the design comp's L0/L1/L2
+    // chips (ChatPanel.swift's composerFooter autonomySelector).  Placed
+    // in its own row just below the composer, matching the Mac layout's
+    // "footer strip beneath the input" positioning.
+    auto* autonomyRow = new QHBoxLayout();
+    autonomyRow->setSpacing(10);
+    autonomyRow->addStretch(1);
+    m_autonomyReadBtn = makeAutonomyChip(tr("Read"), AutonomyLevel::Read,
+        tr("Read: agent can read the scene and render, never edit."));
+    m_autonomyProposeBtn = makeAutonomyChip(tr("Propose"), AutonomyLevel::Propose,
+        tr("Propose: edits are staged as proposals for your review."));
+    m_autonomyApplyBtn = makeAutonomyChip(tr("Apply"), AutonomyLevel::Apply,
+        tr("Apply: edits apply directly — still one undo step each."));
+    autonomyRow->addWidget(m_autonomyReadBtn);
+    autonomyRow->addWidget(m_autonomyProposeBtn);
+    autonomyRow->addWidget(m_autonomyApplyBtn);
+    outer->addLayout(autonomyRow);
+
+    // Restore the persisted choice (default Apply -- see AutonomyLevel's
+    // header doc for why Propose is NOT the default).  Reads the raw int
+    // and validates the range rather than trusting an out-of-range value
+    // from a hand-edited or corrupted settings file.
+    {
+        QSettings settings;
+        const int storedRaw = settings.value(QLatin1String(kAutonomyLevelSettingsKey),
+            static_cast<int>(AutonomyLevel::Apply)).toInt();
+        m_autonomyLevel = (storedRaw == static_cast<int>(AutonomyLevel::Read)
+                            || storedRaw == static_cast<int>(AutonomyLevel::Propose)
+                            || storedRaw == static_cast<int>(AutonomyLevel::Apply))
+            ? static_cast<AutonomyLevel>(storedRaw)
+            : AutonomyLevel::Apply;
+    }
+    updateAutonomyChipsStyle();
+
+    // Eval-harness E1: trajectory recording toggle (default ON).  The
+    // redaction pass in the core is unconditional; this only controls
+    // whether a per-session JSONL file is written under
+    // trajectoryDirectory() (see that method's doc for the resolved path).
+    {
+        QSettings settings;
+        m_recordTrajectories =
+            settings.value("agentChat/recordTrajectories", true).toBool();
+    }
+    m_recordTrajectoriesCheck = new QCheckBox("Record chat trajectories");
+    m_recordTrajectoriesCheck->setChecked(m_recordTrajectories);
+    m_recordTrajectoriesCheck->setToolTip(
+        "Write a per-session JSONL log under " + trajectoryDirectory() +
+        " (system prompt, each request/response, tool calls, tokens, timings).  "
+        "API-key-shaped content is always redacted regardless of this setting.  "
+        "Set RISE_TRAJECTORY_DIR to record elsewhere.");
+    outer->addWidget(m_recordTrajectoriesCheck);
 
     m_statusLabel = new QLabel();
-    m_statusLabel->setStyleSheet("color: gray;");
+    m_statusLabel->setFont(Theme::sans(11));
+    m_statusLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
     m_statusLabel->setWordWrap(true);
     outer->addWidget(m_statusLabel);
 
+    connect(m_recordTrajectoriesCheck, &QCheckBox::toggled,
+            this, &ChatPanel::recordTrajectoriesToggled);
     connect(m_providerCombo, static_cast<void(QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
             this, &ChatPanel::providerChanged);
     connect(m_modelEdit, &QLineEdit::editingFinished,
@@ -223,6 +416,57 @@ ChatPanel::~ChatPanel()
     }
 }
 
+// ============================================================
+// Agent autonomy selector (2026-07 GUI composer chips)
+// ============================================================
+
+QPushButton* ChatPanel::makeAutonomyChip(const QString& title, AutonomyLevel level, const QString& help)
+{
+    auto* btn = new QPushButton(title, this);
+    btn->setFont(Theme::mono(10));
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setFlat(true);
+    btn->setToolTip(help);
+    connect(btn, &QPushButton::clicked, this, [this, level]() { setAutonomyLevel(level); });
+    return btn;
+}
+
+void ChatPanel::updateAutonomyChipsStyle()
+{
+    auto style = [](QPushButton* btn, bool active) {
+        if (!btn) return;
+        btn->setStyleSheet(QStringLiteral(
+            "QPushButton { background: transparent; border: none; padding: 0; color: %1; font-weight: %2; }")
+            .arg(active ? Theme::hex(Theme::accentLight) : Theme::hex(Theme::textDim))
+            .arg(active ? QStringLiteral("600") : QStringLiteral("400")));
+    };
+    style(m_autonomyReadBtn,    m_autonomyLevel == AutonomyLevel::Read);
+    style(m_autonomyProposeBtn, m_autonomyLevel == AutonomyLevel::Propose);
+    style(m_autonomyApplyBtn,   m_autonomyLevel == AutonomyLevel::Apply);
+}
+
+// DEFAULT IS Apply, matching today's actual behaviour byte-for-byte:
+// the in-app chat's own tool calls have ALWAYS committed directly
+// (Owner authority + Commit autonomy) -- the existing "staged
+// proposal" path (ProposalCard / onProposalApplyClicked etc.) is fed
+// ONLY by proposals an EXTERNAL MCP client staged, never by this
+// in-app chat driver.  So Propose is a genuinely NEW behaviour for the
+// in-app chat, not a re-labeling of something already true by default
+// -- defaulting to it would silently change what happens when a user
+// who has never touched this control sends a message, which the
+// feature brief explicitly rules out.  See the header's AutonomyLevel
+// doc for the numeric-value mirror of ViewportBridge::AgentAutonomyLevel.
+void ChatPanel::setAutonomyLevel(AutonomyLevel level)
+{
+    m_autonomyLevel = level;
+    QSettings settings;
+    settings.setValue(QLatin1String(kAutonomyLevelSettingsKey), static_cast<int>(level));
+    if (m_bridge) {
+        m_bridge->setAgentAutonomyLevel(static_cast<ViewportBridge::AgentAutonomyLevel>(level));
+    }
+    updateAutonomyChipsStyle();
+}
+
 void ChatPanel::setViewportBridge(ViewportBridge* bridge)
 {
     if (!bridge) {
@@ -232,11 +476,33 @@ void ChatPanel::setViewportBridge(ViewportBridge* bridge)
         requestStop();
     }
     m_bridge = bridge;
-    m_sceneEditable = (bridge != nullptr);
+    m_sceneEditableExternal = (bridge != nullptr);
+    recomputeSceneEditable();
     if (m_bridge) {
+        // Agent autonomy selector: a fresh bridge's dispatchers default
+        // to Apply (see ViewportBridge.h's doc) until told otherwise --
+        // apply THIS panel's persisted choice immediately so a scene
+        // switch never silently resets a user's Read/Propose selection
+        // back to Apply.
+        m_bridge->setAgentAutonomyLevel(static_cast<ViewportBridge::AgentAutonomyLevel>(m_autonomyLevel));
         fetchSkillIndex();
+        // Secure-MCP slice 5c (Windows parity): a freshly-opened scene
+        // never inherits a stale proposals list from whatever was
+        // showing for the previous scene.
+        m_resolvedProposalObservedAt.clear();
+        refreshProposals();
+        m_proposalsPollTimer->start();
+        // Eval-harness E1: a freshly-bound scene starts a NEW trajectory
+        // file (skills are set above, so the session record captures the
+        // full system prompt on the first user message).
+        startTrajectory();
     } else {
+        m_proposalsPollTimer->stop();
+        m_resolvedProposalObservedAt.clear();
+        rebuildProposalsUI({});
         m_loop->Reset();
+        // Detach so no file lingers between scenes.
+        startTrajectory();
         refreshTranscript();
     }
     updateButtonStates();
@@ -244,11 +510,45 @@ void ChatPanel::setViewportBridge(ViewportBridge* bridge)
 
 void ChatPanel::setSceneEditable(bool editable)
 {
-    m_sceneEditable = editable && m_bridge != nullptr;
-    if (!m_sceneEditable && m_busy) {
+    // Only the EXTERNAL half of the gate lives here -- MainWindow calls
+    // this off production-render state, and requestStop()'s
+    // "cancel the turn because the scene just became unsafe" behavior
+    // must fire ONLY for that transition, never merely because our own
+    // outstanding chat-render job flipped (recomputeSceneEditable()
+    // handles that half without touching m_busy/requestStop -- see its
+    // doc).
+    m_sceneEditableExternal = editable && m_bridge != nullptr;
+    if (!m_sceneEditableExternal && m_busy) {
         requestStop();
     }
+    recomputeSceneEditable();
+}
+
+void ChatPanel::recomputeSceneEditable()
+{
+    // P1-2 fix: the effective gate is now the AND of two independent
+    // inputs -- mirrors Mac's canUseSceneTransport, which also ANDs the
+    // production-render gate with "no chat-driven render outstanding".
+    // Deliberately does NOT call requestStop() here even when this
+    // flips true->false: that happens when OUR OWN render tool call
+    // just went outstanding (see setOutstandingRenderJobId), and
+    // cancelling the turn that just started its own render would be
+    // self-defeating. setSceneEditable() above is the only path that
+    // may cancel the turn, and only for the external-gate transition.
+    m_sceneEditable = m_sceneEditableExternal && !isChatRenderOutstanding();
+    // Reflect the new gate on every live proposal card immediately --
+    // don't wait for the next 1s poll tick, matching the Mac card's live
+    // `applyRejectDisabled` binding.
+    updateProposalCardsEnabled();
     updateButtonStates();
+}
+
+void ChatPanel::setOutstandingRenderJobId(quint64 jobId)
+{
+    if (m_outstandingRenderJobId == jobId) return;
+    m_outstandingRenderJobId = jobId;
+    recomputeSceneEditable();
+    emit chatRenderOutstandingChanged();
 }
 
 void ChatPanel::requestStop()
@@ -273,6 +573,9 @@ void ChatPanel::resetConversation()
 {
     requestStop();
     m_loop->Reset();
+    // Eval-harness E1: Reset() closed the session ("reset" summary); start
+    // a fresh file for the post-reset conversation (or detach if off).
+    startTrajectory();
     clearErrorAffordances();
     refreshTranscript();
     updateButtonStates();
@@ -305,7 +608,7 @@ void ChatPanel::sendMessage()
     if (m_busy || !m_bridge || !m_sceneEditable) return;
     const QString text = m_inputEdit->text().trimmed();
     if (text.isEmpty()) return;
-    if (m_apiKeyEdit->text().trimmed().isEmpty()) {
+    if (providerRequiresApiKey(m_appliedProvider) && m_apiKeyEdit->text().trimmed().isEmpty()) {
         refreshTranscript("Enter an API key before sending.");
         return;
     }
@@ -374,8 +677,13 @@ void ChatPanel::networkFinished()
     }
 
     const long httpStatus = status == 0 ? 0 : status;
-    const ChatStepResult step =
-        m_loop->HandleResponse(httpStatus, std::string(body.constData(), static_cast<std::size_t>(body.size())));
+    const std::string bodyStd(body.constData(), static_cast<std::size_t>(body.size()));
+    // Eval-harness E1: record the LLM round (status/body/latency) BEFORE
+    // handling it (no-op when recording is off).  The loop strips auth
+    // headers from its cached request; the writer redacts every line.
+    const qint64 elapsedMs = m_httpTimer.isValid() ? m_httpTimer.elapsed() : 0;
+    m_loop->RecordHttpRound(httpStatus, bodyStd, static_cast<int64_t>(elapsedMs));
+    const ChatStepResult step = m_loop->HandleResponse(httpStatus, bodyStd);
     refreshTranscript(step.assistantDisplayText.empty() ? QString() : "Running tools...");
 
     if (step.kind == ChatStepResult::Kind::ProviderError) {
@@ -407,9 +715,37 @@ QString ChatPanel::defaultModelFor(Provider provider) const
     case Provider::Gemini:
         return QString::fromUtf8(GeminiChatCodec().DefaultModelId());
     case Provider::OpenAI:
-    default:
         return QString::fromUtf8(OpenAIChatCodec().DefaultModelId());
+    case Provider::XAI: {
+        // xAI rides the parameterized OpenAIChatCodec (no standalone
+        // XAIChatCodec type -- see AgentChatLoop.cpp's MakeCodec, which
+        // this mirrors for display purposes since there is no bridge
+        // accessor onto the loop's already-constructed codec config).
+        OpenAIChatCodec::Config cfg;
+        cfg.providerName   = "xai";
+        cfg.baseUrl        = "https://api.x.ai/v1/chat/completions";
+        cfg.defaultModelId = "grok-4.5";
+        cfg.requiresAuth   = true;
+        return QString::fromUtf8(OpenAIChatCodec(cfg).DefaultModelId());
     }
+    case Provider::Local: {
+        OpenAIChatCodec::Config cfg;
+        cfg.providerName   = "local";
+        cfg.baseUrl        = "http://127.0.0.1:11434/v1/chat/completions";
+        cfg.defaultModelId = "qwen3:32b";
+        cfg.requiresAuth   = false;
+        return QString::fromUtf8(OpenAIChatCodec(cfg).DefaultModelId());
+    }
+    }
+    // Every enum case is handled explicitly above -- reaching here means a
+    // new Provider value was added without a matching case (the switch is
+    // NOT exhaustive-checked by MSVC without a default, unlike Swift's
+    // enum, so this is the loud backstop).  Log and fall back to OpenAI
+    // rather than silently mis-defaulting.
+    qWarning("ChatPanel::defaultModelFor: unhandled Provider %d -- falling back to OpenAI",
+              static_cast<int>(provider));
+    Q_ASSERT(false && "ChatPanel::defaultModelFor: unhandled Provider");
+    return QString::fromUtf8(OpenAIChatCodec().DefaultModelId());
 }
 
 QString ChatPanel::envKeyFor(Provider provider) const
@@ -422,9 +758,31 @@ QString ChatPanel::envKeyFor(Provider provider) const
         return gemini.isEmpty() ? qEnvironmentVariable("GOOGLE_API_KEY") : gemini;
     }
     case Provider::OpenAI:
-    default:
         return qEnvironmentVariable("OPENAI_API_KEY");
+    case Provider::XAI:
+        return qEnvironmentVariable("XAI_API_KEY");
+    case Provider::Local:
+        // Keyless by design (OpenAIChatCodec::Config::requiresAuth=false
+        // for this provider) -- no env var to consult.  An empty return
+        // here is the correct/expected value, not a miss.
+        return QString();
     }
+    qWarning("ChatPanel::envKeyFor: unhandled Provider %d -- falling back to OpenAI",
+              static_cast<int>(provider));
+    Q_ASSERT(false && "ChatPanel::envKeyFor: unhandled Provider");
+    return qEnvironmentVariable("OPENAI_API_KEY");
+}
+
+bool ChatPanel::providerRequiresApiKey(Provider provider)
+{
+    return provider != Provider::Local;
+}
+
+QString ChatPanel::localResolvedEndpoint()
+{
+    const QString envUrl = qEnvironmentVariable("RISE_LOCAL_LLM_BASE_URL");
+    return envUrl.isEmpty() ? QStringLiteral("http://127.0.0.1:11434/v1/chat/completions")
+                             : envUrl;
 }
 
 void ChatPanel::applyProviderToLoop(bool resetModelToDefault)
@@ -452,13 +810,40 @@ void ChatPanel::applyProviderToLoop(bool resetModelToDefault)
     }
     m_apiKeyEdit->setText(newKey);
 
+    // No-key affordance for Provider::Local (keyless-by-design): there is
+    // no per-provider settings popover on this platform to swap in
+    // dedicated endpoint UI, so reuse the existing key field's placeholder
+    // to show where the chat is pointing plus a hint that a server has to
+    // actually be running -- the field itself stays enabled (a local
+    // server started with --api-key still accepts an optional key here).
+    m_apiKeyEdit->setPlaceholderText(
+        providerRequiresApiKey(newProvider)
+            ? QStringLiteral("API key")
+            : QStringLiteral("No key needed -- ") + localResolvedEndpoint() +
+                  QStringLiteral(" (requires a running local server, e.g. "
+                                 "`ollama serve`; override with RISE_LOCAL_LLM_BASE_URL)"));
+
     ChatProvider chatProvider = ChatProvider::OpenAI;
     if (newProvider == Provider::Anthropic) {
         chatProvider = ChatProvider::Anthropic;
     } else if (newProvider == Provider::Gemini) {
         chatProvider = ChatProvider::Gemini;
+    } else if (newProvider == Provider::XAI) {
+        chatProvider = ChatProvider::XAI;
+    } else if (newProvider == Provider::Local) {
+        chatProvider = ChatProvider::Local;
+    } else if (newProvider != Provider::OpenAI) {
+        // Same loud backstop as defaultModelFor/envKeyFor: a new Provider
+        // value reached here without a matching branch.  Falls back to
+        // the OpenAI default above rather than silently mis-routing.
+        qWarning("ChatPanel::applyProviderToLoop: unhandled Provider %d -- falling back to OpenAI",
+                  static_cast<int>(newProvider));
+        Q_ASSERT(false && "ChatPanel::applyProviderToLoop: unhandled Provider");
     }
     m_loop->SetProvider(chatProvider, toStdString(m_modelEdit->text().trimmed()));
+    // Eval-harness E1: SetProvider closed the old session ("provider_switch"
+    // summary to the old file); begin a new file for the new provider.
+    startTrajectory();
     refreshTranscript();
 
     m_appliedProvider = newProvider;
@@ -515,25 +900,101 @@ void ChatPanel::revertProviderModelWidgets()
 
 void ChatPanel::refreshTranscript(const QString& statusLine)
 {
-    QString text;
+    rebuildTranscriptWidgets();
+    m_statusLabel->setText(statusLine);
+}
+
+void ChatPanel::clearLayout(QVBoxLayout* layout)
+{
+    clearQLayoutRecursive(layout);
+}
+
+void ChatPanel::rebuildTranscriptWidgets()
+{
+    clearLayout(m_transcriptLayout);
+
+    using Role = RISE::Agent::ChatTranscriptEntry::Role;
+
+    if (m_loop->TranscriptSize() == 0) {
+        auto* placeholder = new QLabel(QStringLiteral(
+            "Describe a scene change \xE2\x80\x94 e.g. \xE2\x80\x9Cmake the orange objects red\xE2\x80\x9D."));
+        placeholder->setFont(Theme::sans(12));
+        placeholder->setWordWrap(true);
+        placeholder->setAlignment(Qt::AlignCenter);
+        placeholder->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+        m_transcriptLayout->addWidget(placeholder);
+    }
+
     for (std::size_t i = 0; i < m_loop->TranscriptSize(); ++i) {
         const auto& entry = m_loop->TranscriptAt(i);
-        QString body = toQString(entry.displayText).trimmed();
-        if (body.isEmpty()) {
-            body = entry.role == RISE::Agent::ChatTranscriptEntry::Role::ToolResults
-                ? "[tool results]"
-                : "[no text]";
+        const QString body = toQString(entry.displayText).trimmed();
+
+        if (entry.role == Role::User) {
+            // Right-aligned bubble -- Theme::bgBubbleUser, rounded
+            // 12/12/4/12 (approximated here with a uniform radius; Qt
+            // stylesheets don't support Swift's UnevenRoundedRectangle).
+            auto* bubble = new QLabel(body.isEmpty() ? tr("[no text]") : body);
+            bubble->setFont(Theme::sans(12));
+            bubble->setWordWrap(true);
+            bubble->setMaximumWidth(320);
+            bubble->setStyleSheet(QStringLiteral(
+                "QLabel { color: %1; background-color: %2; border-radius: 12px; padding: 10px 13px; }")
+                .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::bgBubbleUser)));
+            auto* row = new QHBoxLayout();
+            row->addStretch(1);
+            row->addWidget(bubble, 0, Qt::AlignRight);
+            m_transcriptLayout->addLayout(row);
+        } else if (entry.role == Role::Assistant) {
+            auto* lbl = new QLabel(body.isEmpty() ? tr("[no text]") : body);
+            lbl->setFont(Theme::sans(12));
+            lbl->setWordWrap(true);
+            lbl->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
+            m_transcriptLayout->addWidget(lbl);
+        } else {
+            // ToolResults -- a compact hairline-bordered trace chip.
+            // displayText is "[tool results: name1, name2]" (see
+            // AgentChatLoop.cpp); strip the wrapper for display.
+            QString label = body;
+            static const QString kPrefix = QStringLiteral("[tool results:");
+            if (label.startsWith(kPrefix) && label.endsWith(QLatin1Char(']'))) {
+                label = label.mid(kPrefix.length());
+                label.chop(1);
+                label = label.trimmed();
+            }
+            if (label.isEmpty()) label = tr("tool results");
+
+            auto* chip = new QWidget();
+            chip->setStyleSheet(QStringLiteral("border: 1px solid %1; border-radius: 7px;")
+                .arg(Theme::hex(Theme::borderHairline)));
+            auto* chipLayout = new QHBoxLayout(chip);
+            chipLayout->setContentsMargins(10, 6, 10, 6);
+            chipLayout->setSpacing(7);
+
+            auto* check = new QLabel(QStringLiteral("\xE2\x9C\x93"));
+            check->setFont(Theme::mono(10));
+            check->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::success)));
+            chipLayout->addWidget(check);
+
+            auto* text = new QLabel(label);
+            text->setFont(Theme::mono(10));
+            text->setWordWrap(true);
+            text->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textMuted)));
+            chipLayout->addWidget(text, 1);
+
+            m_transcriptLayout->addWidget(chip);
         }
-        text += roleLabel(entry.role) + ":\n" + body + "\n\n";
     }
-    if (!statusLine.isEmpty()) {
-        text += statusLine + "\n";
-    }
-    m_transcript->setPlainText(text.trimmed());
-    if (QScrollBar* bar = m_transcript->verticalScrollBar()) {
-        bar->setValue(bar->maximum());
-    }
-    m_statusLabel->setText(statusLine);
+
+    m_transcriptLayout->addStretch(1);
+
+    // Auto-scroll to bottom once the new widgets have been laid out.
+    QTimer::singleShot(0, this, [this]() {
+        if (m_transcriptScroll) {
+            if (QScrollBar* bar = m_transcriptScroll->verticalScrollBar()) {
+                bar->setValue(bar->maximum());
+            }
+        }
+    });
 }
 
 void ChatPanel::updateButtonStates()
@@ -580,6 +1041,8 @@ void ChatPanel::runNextStep()
             QByteArray(header.second.c_str(), static_cast<int>(header.second.size())));
     }
 
+    // Eval-harness E1: measure the round-trip latency for the llm record.
+    m_httpTimer.start();
     m_reply = m_network->post(
         netReq,
         QByteArray(req.body.c_str(), static_cast<int>(req.body.size())));
@@ -600,6 +1063,73 @@ void ChatPanel::fetchSkillIndex()
     const QString line =
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"read_skill\",\"params\":{}}";
     m_loop->SetSkillIndex(toStdString(renderSkillIndex(m_bridge->agentHandleLine(line))));
+}
+
+QString ChatPanel::trajectoryDirectory() const
+{
+    // Dev-workflow override: running the GUI straight out of the repo and
+    // wanting files under evals/runs/gui there.
+    const QString dirOverride = qEnvironmentVariable("RISE_TRAJECTORY_DIR");
+    if (!dirOverride.isEmpty()) return dirOverride;
+
+    // QDir::currentPath() is nondeterministic for a GUI app (whatever the
+    // shell/shortcut/Explorer launched it from happened to be) and can be
+    // unwritable outright under Program Files -- either way "evals/runs/gui"
+    // relative to it silently never got created and every trajectory line
+    // vanished into a sink that opened nothing (recording toggle said ON;
+    // nothing was written -- see MakeTrajectoryFileSink's loud-once-failure
+    // log, which is the ONLY place that ever surfaced this before the fix).
+    // AppDataLocation already folds in the organizationName/applicationName
+    // set on QCoreApplication in main.cpp ("RISE"/"RISE"), so this resolves
+    // to a deterministic, always-writable per-user directory.
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    return base + "/trajectories/gui";
+}
+
+void ChatPanel::startTrajectory()
+{
+    // Detach when recording is off or no scene is bound.
+    if (!m_recordTrajectories || !m_bridge) {
+        m_loop->SetTrajectorySink(std::function<void(const std::string&)>());
+        return;
+    }
+    const std::string dir = toStdString(trajectoryDirectory());
+
+    // Rotate BEFORE creating the new file (keep ~50 newest / ~200 MB).
+    RISE::Agent::PruneTrajectoryDir(dir, 50, 200LL * 1024 * 1024);
+
+    const std::string traceId = RISE::Agent::MakeTrajectoryTraceId();
+    char ts[32];
+    std::time_t nowT = std::time(nullptr);
+    std::tm tmv;
+#ifdef _WIN32
+    gmtime_s(&tmv, &nowT);
+#else
+    gmtime_r(&nowT, &tmv);
+#endif
+    std::strftime(ts, sizeof(ts), "%Y%m%dT%H%M%SZ", &tmv);
+    const std::string path =
+        dir + "/" + std::string(ts) + "-" + traceId.substr(0, 8) + ".jsonl";
+
+    RISE::Agent::ChatTrajectoryConfig cfg;
+    cfg.traceId = traceId;
+    cfg.scenePath = toStdString(m_scenePath);
+    cfg.sceneHeadVersion = -1;   // best-effort on the GUI; the headless runner populates it precisely
+    m_loop->SetTrajectorySink(RISE::Agent::MakeTrajectoryFileSink(path), cfg);
+}
+
+void ChatPanel::recordTrajectoriesToggled(bool on)
+{
+    if (on == m_recordTrajectories) return;
+    m_recordTrajectories = on;
+    QSettings settings;
+    settings.setValue("agentChat/recordTrajectories", on);
+    if (on) {
+        startTrajectory();
+    } else {
+        m_loop->FinishTrajectory("toggle_off");
+        m_loop->SetTrajectorySink(std::function<void(const std::string&)>());
+    }
 }
 
 QString ChatPanel::renderSkillIndex(const QString& rpcResponse) const
@@ -643,7 +1173,18 @@ void ChatPanel::clearErrorAffordances()
 void ChatPanel::handleProviderError(const RISE::Agent::ChatStepResult& step)
 {
     // P2-5: per-kind reactions honoring AgentChatLoop.h's documented
-    // ChatErrorKind contract (mirrors the Mac handleProviderError).
+    // ChatErrorKind contract.  Implements the SAME per-kind status text
+    // and Retry-availability as the Mac handleProviderError, but is NOT
+    // full parity with it: the Mac side also tracks consecutiveHttp400s
+    // across Http-kind errors and, at >= 2 in a row, offers a
+    // conversation-Reset affordance ("the conversation may carry
+    // content the provider no longer accepts") on the theory that
+    // repeated 400s indicate the transcript itself is poisoned and a
+    // verbatim Retry will just fail again.  This Windows port has no
+    // such counter or reset offer -- every Http error is treated
+    // identically regardless of how many preceded it in the same
+    // conversation.  Deliberately out of scope for this pass; port the
+    // counter separately if the poison-scoping UX is needed here too.
     m_retryAvailable = false;
     switch (step.errorKind) {
     case ChatErrorKind::Http:
@@ -714,7 +1255,13 @@ void ChatPanel::processNextToolCall()
 
         // Every other verb keeps the existing synchronous contract: fast
         // CST reads/edits with no render-duration cost to amortize.
-        const QString response = m_bridge->agentHandleLine(toQString(line));
+        // Agent autonomy selector: routes to whichever dispatcher
+        // matches the composer's CURRENT level (see ViewportBridge.h's
+        // agentHandleToolCall doc) -- Read refuses edit verbs, Propose
+        // stages them, Apply commits them directly (today's behaviour).
+        // `render` is excluded from this routing on purpose (handled in
+        // the `if` branch above via the level-independent agentHandleLine).
+        const QString response = m_bridge->agentHandleToolCall(toQString(line));
         m_loop->AddToolResult(call, toStdString(response));
         processNextToolCall();
         return;
@@ -792,7 +1339,7 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
         return;
     }
 
-    m_outstandingRenderJobId = static_cast<quint64>(result.value("renderJobId").toDouble());
+    setOutstandingRenderJobId(static_cast<quint64>(result.value("renderJobId").toDouble()));
 
     if (!m_renderPollTimer) {
         m_renderPollTimer = new QTimer(this);
@@ -836,7 +1383,7 @@ void ChatPanel::pollOutstandingRender()
         // poll forever and sit busy until a manual Stop.  Surface it
         // verbatim, matching the submit path's error branch.
         if (m_renderPollTimer) m_renderPollTimer->stop();
-        m_outstandingRenderJobId = 0;
+        setOutstandingRenderJobId(0);
         m_activeRenderPending = false;
         m_loop->AddToolResult(m_activeRenderCall, toStdString(waitResponse));
         processNextToolCall();
@@ -848,7 +1395,7 @@ void ChatPanel::pollOutstandingRender()
     }
 
     if (m_renderPollTimer) m_renderPollTimer->stop();
-    m_outstandingRenderJobId = 0;
+    setOutstandingRenderJobId(0);
     m_activeRenderPending = false;
 
     // waitResult's `result` sub-object (present iff this session cached
@@ -871,7 +1418,7 @@ void ChatPanel::cancelOutstandingRender()
     }
     if (m_outstandingRenderJobId == 0) return;
     const quint64 jobId = m_outstandingRenderJobId;
-    m_outstandingRenderJobId = 0;
+    setOutstandingRenderJobId(0);
     if (!m_bridge) return;
     // Fire-and-forget: render_cancel only trips the cancel flag and
     // returns immediately (it does not block for the render's duration --
@@ -903,4 +1450,158 @@ void ChatPanel::cancelActiveTurn(const QString& statusLine)
     }
     drainPendingToolCallsAsCancelled();
     finishBusy(statusLine);
+}
+
+// ============================================================
+// Secure-MCP slice 5c (Windows parity) -- proposals panel.
+//
+// Polls list_proposals over the SAME in-process agentHandleLine
+// transport the tool-call loop and the raw JSON-RPC debug panel use
+// (not any external hosted server -- Windows has no MCP-hosting UI in
+// this slice).  Mirrors ChatViewModel.refreshProposals /
+// resolveProposal / the ProposalsPanel linger behaviour.
+// ============================================================
+
+void ChatPanel::refreshProposals()
+{
+    // Field fix (2026-07-11, found on macOS first): a render --
+    // production, or this chat's own outstanding render job -- holds
+    // the controller's mMutex for its whole duration, and
+    // list_proposals serializes on that same mutex.  This poll runs
+    // synchronously on the GUI thread, so one tick during a render
+    // wedges the entire UI until the render finishes.  Skipping is
+    // lossless: StageProposal takes the same mutex, so the queue
+    // cannot change while we're gated -- the first allowed tick
+    // re-syncs.  m_sceneEditable already folds in BOTH the production
+    // render state and isChatRenderOutstanding.
+    if (!m_sceneEditable) return;
+    if (!m_bridge) {
+        m_resolvedProposalObservedAt.clear();
+        rebuildProposalsUI({});
+        return;
+    }
+
+    const QString line = QStringLiteral("{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"list_proposals\"}");
+    const QString response = m_bridge->agentHandleLine(line);
+    const QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
+    if (!doc.isObject()) {
+        rebuildProposalsUI({});
+        return;
+    }
+    const QJsonObject root = doc.object();
+    const QJsonObject result = root.value("result").toObject();
+    const QJsonArray proposals = result.value("proposals").toArray();
+
+    const QDateTime now = QDateTime::currentDateTime();
+    QVector<ProposalEntry> next;
+    QMap<quint64, QDateTime> nextObserved;
+    for (const QJsonValue& v : proposals) {
+        if (!v.isObject()) continue;
+        const QJsonObject p = v.toObject();
+        if (!p.contains(QLatin1String("id"))) continue;
+
+        ProposalEntry e;
+        e.id = static_cast<quint64>(p.value(QLatin1String("id")).toDouble());
+        e.kind = p.value(QLatin1String("kind")).toString();
+        e.status = p.value(QLatin1String("status")).toString();
+        e.sessionLabel = p.value(QLatin1String("sessionLabel")).toString();
+        e.target = p.value(QLatin1String("target")).toString();
+        e.entityKind = p.value(QLatin1String("entityKind")).toString();
+        e.param = p.value(QLatin1String("param")).toString();
+        e.value = p.value(QLatin1String("value")).toString();
+        e.chunkText = p.value(QLatin1String("chunkText")).toString();
+        e.truncated = p.value(QLatin1String("truncated")).toBool(false);
+
+        if (e.status != QLatin1String("pending")) {
+            // Carry forward (or start) the observed-resolved timestamp;
+            // drop it from the panel once it has lingered long enough --
+            // mirrors ChatViewModel's resolvedProposalLingerSeconds.
+            const QDateTime observedAt = m_resolvedProposalObservedAt.value(e.id, now);
+            if (observedAt.msecsTo(now) > static_cast<qint64>(kResolvedProposalLingerSeconds * 1000)) {
+                continue;
+            }
+            nextObserved.insert(e.id, observedAt);
+        }
+
+        next.append(e);
+    }
+
+    m_resolvedProposalObservedAt = nextObserved;
+    rebuildProposalsUI(next);
+}
+
+void ChatPanel::rebuildProposalsUI(const QVector<ProposalEntry>& proposals)
+{
+    clearLayout(m_proposalsLayout);
+    m_currentProposalCards.clear();
+
+    // The scene file the proposal targets -- read from the SAME
+    // loadedFilePath the TopBar uses for the window title, so this is
+    // never a fabricated label.
+    const QString sceneFileName = m_bridge
+        ? QFileInfo(m_bridge->loadedFilePath()).fileName()
+        : QString();
+
+    for (const ProposalEntry& p : proposals) {
+        auto* card = new ProposalCard(p, sceneFileName, m_proposalsContainer);
+        card->setActionsEnabled(m_sceneEditable);
+        connect(card, &ProposalCard::applyClicked, this, &ChatPanel::onProposalApplyClicked);
+        connect(card, &ProposalCard::rejectClicked, this, &ChatPanel::onProposalRejectClicked);
+        connect(card, &ProposalCard::undoClicked, this, &ChatPanel::onProposalUndoClicked);
+        m_proposalsLayout->addWidget(card);
+        m_currentProposalCards.append(card);
+
+        if (p.status == QLatin1String("pending")) {
+            auto* note = new QLabel(QStringLiteral(
+                "\xE2\x86\xBA joins the shared undo history \xE2\x80\x94 one step"));
+            note->setFont(Theme::mono(10));
+            note->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+            m_proposalsLayout->addWidget(note);
+        }
+    }
+
+    m_proposalsContainer->setVisible(!proposals.isEmpty());
+}
+
+void ChatPanel::updateProposalCardsEnabled()
+{
+    for (ProposalCard* card : std::as_const(m_currentProposalCards)) {
+        if (card) card->setActionsEnabled(m_sceneEditable);
+    }
+}
+
+void ChatPanel::onProposalApplyClicked(quint64 proposalId)
+{
+    // P1-2-equivalent gate: the SAME predicate that disables the card's
+    // Apply/Reject buttons (ProposalCard::setActionsEnabled) -- belt and
+    // suspenders against a click that raced a state change between paint
+    // and dispatch, matching ChatViewModel.resolveProposal's guard.
+    if (!m_bridge || !m_sceneEditable) return;
+    const QString line = QStringLiteral(
+        "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"resolve_proposal\","
+        "\"params\":{\"proposalId\":%1,\"approve\":true}}").arg(proposalId);
+    m_bridge->agentHandleLine(line);
+    refreshProposals();
+}
+
+void ChatPanel::onProposalRejectClicked(quint64 proposalId)
+{
+    if (!m_bridge || !m_sceneEditable) return;
+    const QString line = QStringLiteral(
+        "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"resolve_proposal\","
+        "\"params\":{\"proposalId\":%1,\"approve\":false}}").arg(proposalId);
+    m_bridge->agentHandleLine(line);
+    refreshProposals();
+}
+
+void ChatPanel::onProposalUndoClicked()
+{
+    // Joins the shared undo history -- the SAME ViewportBridge::undo()
+    // the toolbar's undo button and the Edit menu's Undo action drive.
+    // Round-2 P1: same belt-and-suspenders gate as Apply/Reject -- the
+    // card disables the button via setActionsEnabled, but a click
+    // racing a state flip must still refuse rather than drive undo
+    // underneath an in-flight render.
+    if (!m_bridge || !m_sceneEditable) return;
+    m_bridge->undo();
 }

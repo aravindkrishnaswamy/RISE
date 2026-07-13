@@ -7588,7 +7588,118 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_SceneEditController_PauseRefinement( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->PauseRefinement();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_ResumeRefinement( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->ResumeRefinement();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_IsRefinementPaused( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->IsRefinementPaused();
+	}
+
+	int RISE_API_SceneEditController_GetRefinementStatus(
+		SceneEditController* p, unsigned int* outScaleDivisor )
+	{
+		if( !p ) return -1;
+		unsigned int scaleDiv = 1;
+		const int phase = static_cast<int>( p->GetRefinementStatus( scaleDiv ) );
+		if( outScaleDivisor ) *outScaleDivisor = scaleDiv;
+		return phase;
+	}
+
+	bool RISE_API_SceneEditController_SetInteractiveRegion(
+		SceneEditController* p, unsigned int left, unsigned int top,
+		unsigned int right, unsigned int bottom )
+	{
+		if( !p ) return false;
+		p->SetInteractiveRegion( left, top, right, bottom );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_ClearInteractiveRegion( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->ClearInteractiveRegion();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_GetInteractiveRegion(
+		SceneEditController* p, unsigned int* left, unsigned int* top,
+		unsigned int* right, unsigned int* bottom )
+	{
+		if( !p ) return false;
+		unsigned int l = 0, t = 0, r = 0, b = 0;
+		if( !p->GetInteractiveRegion( l, t, r, b ) ) return false;
+		if( left )   *left   = l;
+		if( top )    *top    = t;
+		if( right )  *right  = r;
+		if( bottom ) *bottom = b;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_InteractiveRasterizerHonorsRegion(
+		SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->InteractiveRasterizerHonorsRegion();
+	}
+
 	// ---- Phase 6.5 scene-file save ----------------------------------
+
+	char* RISE_API_SceneEditController_SerializedSceneTextAlloc( SceneEditController* p )
+	{
+		if( !p ) return 0;
+		const String text = p->SerializedSceneText();
+		const char* src = text.c_str();
+		if( !src ) return 0;
+		const size_t len = strlen( src );
+		char* out = static_cast<char*>( malloc( len + 1 ) );
+		if( !out ) return 0;
+		memcpy( out, src, len + 1 );
+		return out;
+	}
+
+	void RISE_API_FreeString( char* s )
+	{
+		if( s ) free( s );
+	}
+
+	bool RISE_API_SceneEditController_GetSceneTextVersion(
+		SceneEditController* p,
+		unsigned long long* outUuid, unsigned long long* outRevision )
+	{
+		if( !p ) return false;
+		std::uint64_t uuid = 0, revision = 0;
+		p->GetSceneTextVersion( uuid, revision );
+		if( outUuid )     *outUuid     = uuid;
+		if( outRevision ) *outRevision = revision;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_GetEntitySourceLocation(
+		SceneEditController* p, int category, const char* name,
+		unsigned long long* outByteOffset, unsigned int* outLine )
+	{
+		if( !p || !name ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		std::uint64_t byteOffset = 0; std::uint32_t line = 0;
+		if( !p->EntitySourceLocation( cat, String( name ), byteOffset, line ) ) return false;
+		if( outByteOffset ) *outByteOffset = byteOffset;
+		if( outLine )       *outLine       = line;
+		return true;
+	}
 
 	bool RISE_API_SceneEditController_HasUnsavedChanges( SceneEditController* p )
 	{
@@ -7680,6 +7791,22 @@ namespace RISE
 	{
 		if( !p ) return false;
 		CopyToBuf( p->CurrentPanelHeader(), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_UndoLabel(
+		SceneEditController* p, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		CopyToBuf( p->UndoLabel(), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_RedoLabel(
+		SceneEditController* p, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		CopyToBuf( p->RedoLabel(), buf, bufLen );
 		return true;
 	}
 
@@ -7865,6 +7992,79 @@ namespace RISE
 		if( !p || !outName || outLen == 0 ) return false;
 		const String prop = String( proposedName ? proposedName : "" );
 		return p->CloneActiveCamera( prop, outName, outLen );
+	}
+
+	// -------------------------------------------------------------------
+	// Entity-creation slice.  AgentCommitResult carries more fields
+	// (rawCode / conflict / retriable / headVersion / chunkKeyword /
+	// chunkName) than the C surface flattens out here -- matching the
+	// existing scope of this ABI (the Agent chunk-CRUD verbs themselves
+	// have no C export at all yet); `applied` + `status` + `message`
+	// are the fields a caller needs to show a user-facing result.
+	// -------------------------------------------------------------------
+
+	unsigned int RISE_API_SceneEditController_EntityTemplateCount(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return 0;
+		return p->EntityTemplateCount( static_cast<SceneEditController::Category>( category ) );
+	}
+
+	bool RISE_API_SceneEditController_EntityTemplateLabel(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		const SceneEditController::Category cat = static_cast<SceneEditController::Category>( category );
+		if( idx >= p->EntityTemplateCount( cat ) ) return false;
+		CopyToBuf( p->EntityTemplateLabel( cat, idx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_InstantiateEntityTemplate(
+		SceneEditController* p, int category, unsigned int idx,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( !p ) return false;
+		String name;
+		const SceneEditController::AgentCommitResult r = p->InstantiateEntityTemplate(
+			static_cast<SceneEditController::Category>( category ), idx, &name );
+		if( outName && outNameLen > 0 )       CopyToBuf( name, outName, outNameLen );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
+		return r.applied;
+	}
+
+	bool RISE_API_SceneEditController_DuplicateEntity(
+		SceneEditController* p, int category, const char* name,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( !p ) return false;
+		String newName;
+		const SceneEditController::AgentCommitResult r = p->DuplicateEntity(
+			static_cast<SceneEditController::Category>( category ),
+			String( name ? name : "" ), &newName );
+		if( outName && outNameLen > 0 )       CopyToBuf( newName, outName, outNameLen );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
+		return r.applied;
+	}
+
+	bool RISE_API_SceneEditController_RemoveEntity(
+		SceneEditController* p, int category, const char* name,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( !p ) return false;
+		const SceneEditController::AgentCommitResult r = p->RemoveEntity(
+			static_cast<SceneEditController::Category>( category ), String( name ? name : "" ) );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
+		return r.applied;
 	}
 
 	// -------------------------------------------------------------------

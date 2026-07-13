@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <vector>
 
 #ifdef RISE_ENABLE_OIDN
@@ -127,6 +128,28 @@ OIDNDenoiser::~OIDNDenoiser()
 #endif
 }
 
+namespace
+{
+	// IEEE-754 narrowing overflow backstop — twin of EXRWriter's
+	// ClampMagnitudeForCast.  A finite double whose magnitude exceeds
+	// std::numeric_limits<float>::max() becomes +/-Inf on cast to float,
+	// which would feed Inf straight into the OIDN denoiser input buffer.
+	// Clamp the magnitude, sign preserved, before the cast; plain
+	// comparisons only (no isnan/isfinite branching, per the repo's
+	// -ffast-math convention) — NaN fails both comparisons and passes
+	// through unchanged.
+	double ClampMagnitudeForCast( const double v, const double limit )
+	{
+		if( v > limit ) {
+			return limit;
+		}
+		if( v < -limit ) {
+			return -limit;
+		}
+		return v;
+	}
+}
+
 void OIDNDenoiser::ImageToFloatBuffer(
 	const IRasterImage& img,
 	float* buf,
@@ -134,13 +157,14 @@ void OIDNDenoiser::ImageToFloatBuffer(
 	unsigned int h
 	)
 {
+	static const double kFloatMax = static_cast<double>( std::numeric_limits<float>::max() );
 	for( unsigned int y = 0; y < h; y++ ) {
 		for( unsigned int x = 0; x < w; x++ ) {
 			const RISEColor c = img.GetPEL( x, y );
 			const unsigned int idx = (y * w + x) * 3;
-			buf[idx + 0] = static_cast<float>( c.base.r );
-			buf[idx + 1] = static_cast<float>( c.base.g );
-			buf[idx + 2] = static_cast<float>( c.base.b );
+			buf[idx + 0] = static_cast<float>( ClampMagnitudeForCast( c.base.r, kFloatMax ) );
+			buf[idx + 1] = static_cast<float>( ClampMagnitudeForCast( c.base.g, kFloatMax ) );
+			buf[idx + 2] = static_cast<float>( ClampMagnitudeForCast( c.base.b, kFloatMax ) );
 		}
 	}
 }

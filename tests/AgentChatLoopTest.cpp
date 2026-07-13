@@ -405,17 +405,19 @@ static void TestOpenAIRequestShape()
 	std::printf( "T0: OpenAI/ChatGPT default request shape + key-leak check...\n" );
 	AgentChatLoop loop;
 	Check( loop.Provider() == ChatProvider::OpenAI, "default provider is ChatGPT/OpenAI" );
-	Check( loop.ModelId() == "gpt-5.5", "default OpenAI model id is gpt-5.5" );
+	Check( loop.ModelId() == "gpt-5.6-terra", "default OpenAI model id is gpt-5.6-terra" );
 
 	loop.AddUserMessage( "Make the sphere red" );
 	const ChatHttpRequest req = loop.BuildRequest( kApiKey );
 	Check( req.url == "https://api.openai.com/v1/chat/completions",
 	       "url is the OpenAI Chat Completions endpoint" );
 	CheckKeyOnlyInBearerHeader( req, "authorization", "T0" );
+	Check( req.timeoutSeconds == 300,
+	       "OpenAI (hosted) request carries the unchanged 300s transport timeout budget" );
 
 	JsonValue root = ParseBody( req.body );
 	Check( root.isObject(), "body parses as JSON" );
-	Check( root.get( "model" ).asString() == "gpt-5.5", "body carries the default model id" );
+	Check( root.get( "model" ).asString() == "gpt-5.6-terra", "body carries the default model id" );
 	Check( root.get( "max_completion_tokens" ).asNumber() == 16000.0,
 	       "body carries max_completion_tokens 16000" );
 	const JsonValue& messages = root.get( "messages" );
@@ -428,7 +430,7 @@ static void TestOpenAIRequestShape()
 	       "user text rides as a Chat Completions user message" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 9, "body carries exactly nine OpenAI tools" );
+	Check( tools.isArray() && tools.size() == 10, "body carries exactly ten OpenAI tools" );
 	bool sawReadDocument = false;
 	for( std::size_t i = 0; i < tools.size(); ++i ) {
 		const JsonValue& fn = tools.at( i ).get( "function" );
@@ -441,6 +443,161 @@ static void TestOpenAIRequestShape()
 		}
 	}
 	Check( sawReadDocument, "OpenAI tool list includes read_document" );
+}
+
+//----------------------------------------------------------------------
+// T0x: xAI (Grok) + local providers reuse the OpenAI codec with a
+//      different Config -- exact endpoint URL, default model, and the
+//      Authorization-header presence/absence rule.  Local carries the
+//      key-hygiene INVERSE of T0: keyless -> NO auth header at all.
+//----------------------------------------------------------------------
+static bool HasHeaderNamed( const ChatHttpRequest& req, const char* name )
+{
+	for( std::size_t i = 0; i < req.headers.size(); ++i )
+		if( req.headers[i].first == name ) return true;
+	return false;
+}
+
+static void TestXaiAndLocalRequestShape()
+{
+	std::printf( "T0x: xAI + local (OpenAI-compatible) request shapes...\n" );
+
+	// --- xAI (Grok): api.x.ai endpoint, grok-4.5 default, Bearer auth ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::XAI );
+		Check( loop.Provider() == ChatProvider::XAI, "provider is xAI" );
+		Check( loop.ModelId() == "grok-4.5", "default xAI model id is grok-4.5" );
+
+		loop.AddUserMessage( "Make the sphere red" );
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		Check( req.url == "https://api.x.ai/v1/chat/completions",
+		       "xAI url is the api.x.ai Chat Completions endpoint" );
+		CheckKeyOnlyInBearerHeader( req, "authorization", "T0x-xai" );
+		Check( req.timeoutSeconds == 300,
+		       "xAI (hosted) request carries the unchanged 300s transport timeout budget" );
+		JsonValue root = ParseBody( req.body );
+		Check( root.get( "model" ).asString() == "grok-4.5", "xAI body carries the grok-4.5 model id" );
+		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 10,
+		       "xAI body carries the same ten tools" );
+	}
+
+	// --- local (keyless): 127.0.0.1 default endpoint, qwen3:32b default,
+	//     NO Authorization header (assert its ABSENCE) ---
+	{
+		// Hermeticity: this block asserts the loopback DEFAULT, so a
+		// developer's exported RISE_LOCAL_LLM_BASE_URL (the smoke_local
+		// workflow) must not leak in.  Save + unset, restore after --
+		// same idiom as the override block below.
+		const char* const kEnv = "RISE_LOCAL_LLM_BASE_URL";
+		const char* saved = std::getenv( kEnv );
+		const std::string savedStr = saved ? std::string( saved ) : std::string();
+		const bool hadSaved = ( saved != nullptr );
+
+#if defined( _WIN32 )
+		_putenv_s( kEnv, "" );
+#else
+		unsetenv( kEnv );
+#endif
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Local );
+		Check( loop.Provider() == ChatProvider::Local, "provider is Local" );
+		Check( loop.ModelId() == "qwen3:32b", "default local model id is qwen3:32b" );
+
+		loop.AddUserMessage( "Make the sphere red" );
+		const ChatHttpRequest req = loop.BuildRequest( std::string() );   // NO key
+		Check( req.url == "http://127.0.0.1:11434/v1/chat/completions",
+		       "local url is the 127.0.0.1 loopback default (IP literal, not localhost)" );
+		Check( !HasHeaderNamed( req, "authorization" ),
+		       "keyless local request emits NO Authorization header (key-hygiene inverse)" );
+		Check( HasHeaderNamed( req, "content-type" ), "local request still carries content-type" );
+		Check( req.timeoutSeconds == 900,
+		       "local request carries the raised 900s transport timeout budget "
+		       "(cold model swap + long generation legitimately exceeds 300s, FIX 1)" );
+		JsonValue root = ParseBody( req.body );
+		Check( root.get( "model" ).asString() == "qwen3:32b", "local body carries the qwen3:32b model id" );
+
+		// Restore the environment for the rest of the process.
+#if defined( _WIN32 )
+		_putenv_s( kEnv, hadSaved ? savedStr.c_str() : "" );
+#else
+		if( hadSaved ) setenv( kEnv, savedStr.c_str(), 1 );
+		else unsetenv( kEnv );
+#endif
+	}
+
+	// --- local WITH a key (a --api-key local server) -> Bearer header IS
+	//     emitted, same as OpenAI/xAI ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Local );
+		loop.AddUserMessage( "Make the sphere red" );
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		Check( HasHeaderNamed( req, "authorization" ),
+		       "local WITH a key emits a Bearer Authorization header" );
+		CheckKeyOnlyInBearerHeader( req, "authorization", "T0x-local-keyed" );
+		Check( req.timeoutSeconds == 900,
+		       "local WITH a key still carries the raised 900s transport timeout budget" );
+	}
+
+	// --- RISE_LOCAL_LLM_BASE_URL override is read at codec construction
+	//     (SetProvider); set it, re-select, assert the override URL, restore ---
+	{
+		const char* const kEnv = "RISE_LOCAL_LLM_BASE_URL";
+		const char* saved = std::getenv( kEnv );
+		const std::string savedStr = saved ? std::string( saved ) : std::string();
+		const bool hadSaved = ( saved != nullptr );
+
+#if defined( _WIN32 )
+		_putenv_s( kEnv, "http://10.0.0.7:1234/v1/chat/completions" );
+#else
+		setenv( kEnv, "http://10.0.0.7:1234/v1/chat/completions", 1 );
+#endif
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Local );   // reads the env NOW
+		loop.AddUserMessage( "hi" );
+		const ChatHttpRequest req = loop.BuildRequest( std::string() );
+		Check( req.url == "http://10.0.0.7:1234/v1/chat/completions",
+		       "RISE_LOCAL_LLM_BASE_URL override is honored at provider selection" );
+
+		// Restore the environment for the rest of the process.
+#if defined( _WIN32 )
+		_putenv_s( kEnv, hadSaved ? savedStr.c_str() : "" );
+#else
+		if( hadSaved ) setenv( kEnv, savedStr.c_str(), 1 );
+		else unsetenv( kEnv );
+#endif
+	}
+}
+
+//----------------------------------------------------------------------
+// T0y: ParseUsage tolerates xAI's extra usage fields (cost_in_usd_ticks
+//      etc.) -- input/output/cached parse from the OpenAI-shaped subset.
+//----------------------------------------------------------------------
+static void TestXaiUsageParse()
+{
+	std::printf( "T0y: xAI usage parse (extra fields ignored)...\n" );
+	// An xAI-shaped 200 body: OpenAI choices + a usage block that carries the
+	// OpenAI fields AND xAI extras the parser must ignore, not choke on.
+	const std::string body =
+		"{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},"
+		"\"finish_reason\":\"stop\"}],"
+		"\"usage\":{\"prompt_tokens\":1234,\"completion_tokens\":567,"
+		"\"prompt_tokens_details\":{\"cached_tokens\":800,\"text_tokens\":434},"
+		"\"total_tokens\":1801,\"cost_in_usd_ticks\":42,\"num_sources_used\":3}}";
+	OpenAIChatCodec codec;   // ParseUsage is provider-neutral across the OpenAI-compatible set
+	const ChatUsage u = codec.ParseUsage( body );
+	Check( u.inputTokens == 1234, "xAI usage: prompt_tokens -> inputTokens (extras ignored)" );
+	Check( u.outputTokens == 567, "xAI usage: completion_tokens -> outputTokens" );
+	Check( u.cacheReadInputTokens == 800, "xAI usage: prompt_tokens_details.cached_tokens -> cacheRead" );
+
+	// Ollama's minimal usage (no prompt_tokens_details) -> cached stays the
+	// "absent" sentinel (-1), input/output parse from the two present fields.
+	const std::string minimal =
+		"{\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}";
+	const ChatUsage m = codec.ParseUsage( minimal );
+	Check( m.inputTokens == 10 && m.outputTokens == 5 && m.cacheReadInputTokens == -1,
+	       "minimal (Ollama-shaped) usage parses; cached stays absent (-1)" );
 }
 
 //----------------------------------------------------------------------
@@ -510,8 +667,10 @@ static void TestAnthropicRequestShape()
 			sawVersion = true;
 	Check( sawVersion, "anthropic-version: 2023-06-01 header present" );
 	CheckKeyOnlyInAuthHeader( req, "x-api-key", "T1" );
+	Check( req.timeoutSeconds == 300,
+	       "Anthropic (hosted) request carries the unchanged 300s transport timeout budget" );
 
-	// Body shape: model / max_tokens / system / all nine tools / the user turn.
+	// Body shape: model / max_tokens / system / all ten tools / the user turn.
 	JsonValue root = ParseBody( req.body );
 	Check( root.isObject(), "body parses as JSON" );
 	Check( root.get( "model" ).asString() == "claude-sonnet-5", "body carries the model id" );
@@ -524,11 +683,11 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 9, "body carries exactly nine tools" );
+	Check( tools.isArray() && tools.size() == 10, "body carries exactly ten tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
 	                           "propose_patch", "insert_chunk", "remove_chunk",
-	                           "render", "read_image" };
-	for( int t = 0; t < 9; ++t ) {
+	                           "render", "read_image", "query_object_at" };
+	for( int t = 0; t < 10; ++t ) {
 		bool found = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() == expected[t] ) {
@@ -941,7 +1100,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 9, "nine functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 10, "ten functionDeclarations" );
 		bool sawPatch = false, sawInsert = false, sawRemove = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {
@@ -3377,6 +3536,386 @@ static void TestNullShapeDefensiveAudit()
 	}
 }
 
+//----------------------------------------------------------------------
+// T32: user-reported live-Gemini failure -- a bare read_schema call used
+//      to kill the whole chat with HTTP 400.  Root cause: SchemaGenAll()
+//      (SchemaGen.cpp) iterated the scene grammar with no dedupe, so a
+//      legacy alias parser entry (mis_pathtracing_shaderop, which shares
+//      its Describe() with the canonical pathtracing_shaderop) emitted
+//      the same top-level keyword TWICE.  Our JsonValue tolerates
+//      duplicate object keys on the wire (Json.h: serialization re-emits
+//      every stored pair; only lookup is last-wins), but Gemini's
+//      functionResponse.response rides as a protobuf Struct, which
+//      HARD-REJECTS a repeated map key -- HTTP 400, whole turn dead.
+//
+//      SchemaGen.cpp now dedupes at the source.  This test proves the
+//      INDEPENDENT wire-side backstop in the Gemini codec
+//      (DedupeJsonKeysLastWins, AgentChatCodecs.cpp, applied right
+//      before functionResponse.response is set in PackToolResults):
+//      ANY tool result carrying duplicate JSON object keys -- from
+//      read_schema or any future tool -- must never reach the Gemini
+//      wire with those duplicates intact, at any nesting depth.
+//----------------------------------------------------------------------
+static void TestGeminiFunctionResponseDedupe()
+{
+	std::printf( "T32: gemini functionResponse dedupes duplicate JSON keys (read_schema HTTP-400 regression)...\n" );
+	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Gemini );
+	loop.AddUserMessage( "read the schema" );
+
+	// A no-id functionCall (the pre-3.x shape) is enough to get one
+	// pending call to answer; the tool name just needs to route through
+	// the plain "respObj = result" object branch in PackToolResults (i.e.
+	// NOT read_image, which takes the inlineData path).
+	const std::string fx = GeminiFixture(
+		"{\"parts\":[{\"functionCall\":{\"name\":\"read_document\",\"args\":{}}}],\"role\":\"model\"}",
+		"STOP" );
+	ChatStepResult st = loop.HandleResponse( 200, fx );
+	Check( st.kind == ChatStepResult::Kind::ToolCalls && st.toolCalls.size() == 1,
+	       "one functionCall -> one pending ToolCall" );
+	if( st.toolCalls.size() != 1 ) return;
+
+	// Hand-crafted JSON-RPC response line with a duplicated key at TWO
+	// nesting depths: top-level "a" (mirrors a repeated top-level chunk
+	// keyword) and, inside an array element nested two levels down, "c"
+	// (proves the recursive case -- an array-of-objects, not just a bare
+	// nested object).
+	const std::string dupResultLine =
+		"{\"result\":{\"a\":1,\"a\":2,\"nested\":{\"b\":[{\"c\":1,\"c\":2}]}}}";
+	loop.AddToolResult( st.toolCalls[0], dupResultLine );
+
+	const std::string reqBody = loop.BuildRequest( kApiKey ).body;
+
+	auto CountOccurrences = []( const std::string& hay, const std::string& needle ) {
+		int n = 0;
+		for( std::size_t pos = hay.find( needle ); pos != std::string::npos; pos = hay.find( needle, pos + 1 ) )
+			++n;
+		return n;
+	};
+	Check( CountOccurrences( reqBody, "\"a\":" ) == 1,
+	       "the serialized gemini request body carries \"a\": exactly once (deduped)" );
+	Check( reqBody.find( "\"a\":2" ) != std::string::npos,
+	       "the kept top-level \"a\" is the LAST duplicate's value (2), matching "
+	       "JsonValue::find()'s documented last-wins lookup semantics" );
+	Check( CountOccurrences( reqBody, "\"c\":" ) == 1,
+	       "the nested duplicate \"c\" (inside an array element two levels down) is deduped too" );
+	Check( reqBody.find( "\"c\":2" ) != std::string::npos,
+	       "the kept nested \"c\" is likewise the LAST duplicate's value (2)" );
+}
+
+//----------------------------------------------------------------------
+// T33: text-only-model multimodal-400 image-elide retry (FIX 1, from the
+//      first live local-model eval run).  A text-only backend (observed:
+//      Ollama's qwen3:32b via the OpenAI-compatible Local provider)
+//      answers the NEXT request after a read_image PNG rode into the
+//      conversation with HTTP 400 "Multimodal data provided, but model
+//      does not support multimodal requests" -- and pre-fix that killed
+//      the whole session with provider_error.  The loop now detects the
+//      NARROW 400 (status 400 + "multimodal" + "not support"), elides
+//      EVERY image from the transcript, and flags the step so the driver
+//      re-issues the SAME round once, image-free.  The elide-all state is
+//      sticky (later rounds stay image-free) and the retry is guarded
+//      once-per-session.  A NON-multimodal 400 does none of this.
+//----------------------------------------------------------------------
+static void TestMultimodalRetry()
+{
+	std::printf( "T33: text-only-model multimodal-400 image-elide retry (FIX 1)...\n" );
+
+	const std::string b64 = Base64Encode( std::vector<unsigned char>( 48, 0xC3 ) );
+	const std::string imgEnv =
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"png_base64\":\"" + b64 +
+		"\",\"byteLength\":48}}";
+	// Both required tokens present ("multimodal" + "not support").
+	const std::string mm400 =
+		"{\"error\":{\"message\":\"Multimodal data provided, but model does not "
+		"support multimodal requests\"}}";
+	const std::string callFxA = OpenAIFixture( "null",
+		"[{\"id\":\"call_img\",\"type\":\"function\",\"function\":"
+		"{\"name\":\"read_image\",\"arguments\":\"{}\"}}]", "tool_calls" );
+
+	// --- Happy path: image in transcript -> 400 -> elide + retry flag ->
+	//     image-free request -> success.  A trajectory sink is attached to
+	//     verify the retry rides as an honest sibling llm record. ---
+	{
+		std::vector<std::string> lines;
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Local );
+		ChatTrajectoryConfig cfg;
+		cfg.traceId = "trace-mm-33";
+		loop.SetTrajectorySink(
+			[&lines]( const std::string& l ) { lines.push_back( l ); }, cfg );
+
+		loop.AddUserMessage( "render it and show me" );
+
+		// Round 1: the model asks for read_image (attempt 1).
+		(void)loop.BuildRequest( kApiKey );
+		loop.RecordHttpRound( 200, callFxA, 5, 1, -1 );
+		ChatStepResult st1 = loop.HandleResponse( 200, callFxA );
+		Check( st1.kind == ChatStepResult::Kind::ToolCalls && st1.toolCalls.size() == 1,
+		       "T33: round 1 requests read_image" );
+		if( st1.toolCalls.size() == 1 ) {
+			loop.ToolCallToJsonRpcLine( st1.toolCalls[0], 1 );
+			loop.AddToolResult( st1.toolCalls[0], imgEnv );
+		}
+
+		// Round 2: the rebuilt request now carries the PNG; the text-only
+		// server 400-rejects it (attempt 1 of this round).
+		const ChatHttpRequest imgReq = loop.BuildRequest( kApiKey );
+		Check( CountOccurrences( imgReq.body, b64 ) == 1,
+		       "T33: the round-2 request carries the live PNG (pre-400)" );
+		loop.RecordHttpRound( 400, mm400, 3, 1, -1 );
+		ChatStepResult st2 = loop.HandleResponse( 400, mm400 );
+		Check( st2.kind == ChatStepResult::Kind::ProviderError,
+		       "T33: the multimodal 400 is a ProviderError" );
+		Check( st2.errorKind == ChatErrorKind::Http,
+		       "T33: errorKind stays Http (the retriable kind)" );
+		Check( st2.retryWithoutImages,
+		       "T33: the step flags a one-shot image-free retry" );
+		Check( loop.TranscriptSize() == 3,
+		       "T33: the 400 records nothing (user + assistant + tool-results only)" );
+
+		// The retry request is image-free (elided at detection).
+		const ChatHttpRequest retryReq = loop.BuildRequest( kApiKey );
+		Check( CountOccurrences( retryReq.body, b64 ) == 0,
+		       "T33: the retry request carries NO image bytes" );
+		Check( retryReq.body.find( "image elided" ) != std::string::npos,
+		       "T33: the elided image leaves the elision note behind" );
+		JsonValue rroot = ParseBody( retryReq.body );
+		const JsonValue& msgs = rroot.get( "messages" );
+		int imageParts = 0;
+		for( std::size_t i = 0; i < msgs.size(); ++i ) {
+			const JsonValue& c = msgs.at( i ).get( "content" );
+			if( c.isArray() )
+				for( std::size_t j = 0; j < c.size(); ++j )
+					if( c.at( j ).get( "type" ).asString() == "image_url" ) ++imageParts;
+		}
+		Check( imageParts == 0, "T33: the retry request has zero image_url parts" );
+
+		// The image-free retry succeeds (attempt 2, sibling of attempt 1).
+		const std::string okFx = OpenAIFixture( "\"Done -- rendered and verified.\"", "", "stop" );
+		loop.RecordHttpRound( 200, okFx, 7, 2, 1 );
+		ChatStepResult st3 = loop.HandleResponse( 200, okFx );
+		Check( st3.kind == ChatStepResult::Kind::FinalText,
+		       "T33: the image-free retry round succeeds" );
+
+		// Sibling attempt numbering in the trajectory.
+		int llmAttempt1 = 0, llmAttempt2RetryOf1 = 0;
+		for( std::size_t i = 0; i < lines.size(); ++i ) {
+			JsonValue rec = ParseBody( lines[i] );
+			if( rec.get( "run_type" ).asString() != "llm" ) continue;
+			const int at = static_cast<int>( rec.get( "attempt" ).asNumber() );
+			if( at == 1 ) ++llmAttempt1;
+			if( at == 2 && rec.get( "retry_of" ).asNumber() == 1.0 ) ++llmAttempt2RetryOf1;
+		}
+		Check( llmAttempt1 == 2, "T33: two attempt-1 llm records (round-1 call + the 400)" );
+		Check( llmAttempt2RetryOf1 == 1,
+		       "T33: the retry is one honest sibling llm record (attempt 2, retry_of 1)" );
+
+		// Sticky: a NEW image later in the session is still stripped.
+		loop.AddUserMessage( "now show me again" );
+		const std::string callFxB = OpenAIFixture( "null",
+			"[{\"id\":\"call_img2\",\"type\":\"function\",\"function\":"
+			"{\"name\":\"read_image\",\"arguments\":\"{}\"}}]", "tool_calls" );
+		ChatStepResult st4 = loop.HandleResponse( 200, callFxB );
+		if( st4.toolCalls.size() == 1 ) {
+			loop.ToolCallToJsonRpcLine( st4.toolCalls[0], 2 );
+			const std::string imgEnv2 =
+				"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"png_base64\":\"" + b64 +
+				"\",\"byteLength\":48}}";
+			loop.AddToolResult( st4.toolCalls[0], imgEnv2 );
+		}
+		const ChatHttpRequest laterReq = loop.BuildRequest( kApiKey );
+		Check( CountOccurrences( laterReq.body, b64 ) == 0,
+		       "T33: subsequent rounds stay image-free (sticky elide-all)" );
+	}
+
+	// --- A NON-multimodal 400 must NOT trigger the retry / elision. ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Local );
+		loop.AddUserMessage( "hi" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult st1 = loop.HandleResponse( 200, callFxA );
+		if( st1.toolCalls.size() == 1 ) {
+			loop.ToolCallToJsonRpcLine( st1.toolCalls[0], 1 );
+			loop.AddToolResult( st1.toolCalls[0], imgEnv );
+		}
+		(void)loop.BuildRequest( kApiKey );
+
+		const std::string plain400 =
+			"{\"error\":{\"message\":\"invalid request: unknown field foo\"}}";
+		ChatStepResult st2 = loop.HandleResponse( 400, plain400 );
+		Check( st2.kind == ChatStepResult::Kind::ProviderError &&
+		       st2.errorKind == ChatErrorKind::Http,
+		       "T33: a plain 400 is still an Http ProviderError" );
+		Check( !st2.retryWithoutImages,
+		       "T33: a NON-multimodal 400 does NOT flag an image-free retry" );
+		const ChatHttpRequest afterReq = loop.BuildRequest( kApiKey );
+		Check( CountOccurrences( afterReq.body, b64 ) == 1,
+		       "T33: a NON-multimodal 400 leaves the image UNTOUCHED" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T34: OpenAI reasoning-model tools-vs-effort 400 retry (provider-compat
+//      fix, from the first live gpt-5.6-terra eval run).  Every run died
+//      on round 1 with HTTP 400: "Function tools with reasoning_effort
+//      are not supported for gpt-5.6-terra in /v1/chat/completions. To
+//      use function tools, use /v1/responses or set reasoning_effort to
+//      'none'." (param "reasoning_effort").  NOTE this codec never sends
+//      a reasoning_effort field on its own (verified: neither BuildRequest
+//      nor any caller emits it pre-fix) -- the 400 comes from the MODEL's
+//      server-side default, not a client-sent value, so the fix is an
+//      ADD, not an omission: on detection the loop sets a sticky flag so
+//      the retry (and every later request this session) EXPLICITLY sends
+//      "reasoning_effort":"none".  Detection is NARROW (status 400 +
+//      "reasoning_effort" + "not support"), mirroring T33's multimodal
+//      detection exactly; the retry is guarded once-per-session/round the
+//      same way.  A different 400 does none of this, and the two sticky
+//      flags (image-elision, reasoning-effort-none) are independent.
+//----------------------------------------------------------------------
+static void TestReasoningEffortRetry()
+{
+	std::printf( "T34: OpenAI reasoning-model tools-vs-effort 400 retry...\n" );
+
+	// The exact observed provider error body (param "reasoning_effort",
+	// both required detection tokens present: "reasoning_effort" + "not
+	// support").
+	const std::string effort400 =
+		"{\"error\":{\"message\":\"Function tools with reasoning_effort are "
+		"not supported for gpt-5.6-terra in /v1/chat/completions. To use "
+		"function tools, use /v1/responses or set reasoning_effort to "
+		"'none'.\",\"type\":\"invalid_request_error\","
+		"\"param\":\"reasoning_effort\",\"code\":null}}";
+
+	// --- Happy path: round 1 -> 400 -> sticky flag + retry flag -> retry
+	//     request carries "reasoning_effort":"none" -> success.  A
+	//     trajectory sink verifies the retry rides as an honest sibling
+	//     llm record, exactly like T33. ---
+	{
+		std::vector<std::string> lines;
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::OpenAI );
+		ChatTrajectoryConfig cfg;
+		cfg.traceId = "trace-reff-34";
+		loop.SetTrajectorySink(
+			[&lines]( const std::string& l ) { lines.push_back( l ); }, cfg );
+
+		loop.AddUserMessage( "remove the sphere" );
+
+		// Round 1, attempt 1: no reasoning_effort key at all pre-fix.
+		const ChatHttpRequest req1 = loop.BuildRequest( kApiKey );
+		JsonValue root1 = ParseBody( req1.body );
+		Check( root1.find( "reasoning_effort" ) == nullptr,
+		       "T34: the FIRST request carries no reasoning_effort key "
+		       "(this codec never sends one on its own)" );
+
+		loop.RecordHttpRound( 400, effort400, 4, 1, -1 );
+		ChatStepResult st1 = loop.HandleResponse( 400, effort400 );
+		Check( st1.kind == ChatStepResult::Kind::ProviderError,
+		       "T34: the reasoning_effort 400 is a ProviderError" );
+		Check( st1.errorKind == ChatErrorKind::Http,
+		       "T34: errorKind stays Http (the retriable kind)" );
+		Check( st1.retryReasoningEffortNone,
+		       "T34: the step flags a one-shot reasoning_effort:none retry" );
+		Check( !st1.retryWithoutImages,
+		       "T34: the reasoning_effort 400 does NOT also flag an "
+		       "image-free retry (independent flags)" );
+
+		// The retry request explicitly carries reasoning_effort:"none".
+		const ChatHttpRequest retryReq = loop.BuildRequest( kApiKey );
+		JsonValue rroot = ParseBody( retryReq.body );
+		const JsonValue* re = rroot.find( "reasoning_effort" );
+		Check( re != nullptr && re->isString() && re->asString() == "none",
+		       "T34: the retry request explicitly sets reasoning_effort:\"none\"" );
+
+		// The retry succeeds (attempt 2, sibling of attempt 1).
+		const std::string okFx = OpenAIFixture(
+			"\"Done -- the sphere is removed.\"", "", "stop" );
+		loop.RecordHttpRound( 200, okFx, 6, 2, 1 );
+		ChatStepResult st2 = loop.HandleResponse( 200, okFx );
+		Check( st2.kind == ChatStepResult::Kind::FinalText,
+		       "T34: the reasoning_effort:none retry round succeeds" );
+
+		// Sibling attempt numbering in the trajectory (same shape as T33).
+		int llmAttempt1 = 0, llmAttempt2RetryOf1 = 0;
+		for( std::size_t i = 0; i < lines.size(); ++i ) {
+			JsonValue rec = ParseBody( lines[i] );
+			if( rec.get( "run_type" ).asString() != "llm" ) continue;
+			const int at = static_cast<int>( rec.get( "attempt" ).asNumber() );
+			if( at == 1 ) ++llmAttempt1;
+			if( at == 2 && rec.get( "retry_of" ).asNumber() == 1.0 ) ++llmAttempt2RetryOf1;
+		}
+		Check( llmAttempt1 == 1, "T34: one attempt-1 llm record (the 400)" );
+		Check( llmAttempt2RetryOf1 == 1,
+		       "T34: the retry is one honest sibling llm record (attempt 2, retry_of 1)" );
+
+		// Sticky: a LATER round in the same session still carries the
+		// override, with no re-detection needed.
+		loop.AddUserMessage( "now add a cube" );
+		const ChatHttpRequest laterReq = loop.BuildRequest( kApiKey );
+		JsonValue lroot = ParseBody( laterReq.body );
+		const JsonValue* lre = lroot.find( "reasoning_effort" );
+		Check( lre != nullptr && lre->isString() && lre->asString() == "none",
+		       "T34: subsequent rounds stay reasoning_effort:none (sticky)" );
+	}
+
+	// --- A NON-reasoning_effort 400 must NOT trigger the retry / override. ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::OpenAI );
+		loop.AddUserMessage( "hi" );
+		(void)loop.BuildRequest( kApiKey );
+
+		const std::string plain400 =
+			"{\"error\":{\"message\":\"invalid request: unknown field foo\"}}";
+		ChatStepResult st = loop.HandleResponse( 400, plain400 );
+		Check( st.kind == ChatStepResult::Kind::ProviderError &&
+		       st.errorKind == ChatErrorKind::Http,
+		       "T34: a plain 400 is still an Http ProviderError" );
+		Check( !st.retryReasoningEffortNone,
+		       "T34: a NON-reasoning_effort 400 does NOT flag a retry" );
+
+		const ChatHttpRequest afterReq = loop.BuildRequest( kApiKey );
+		JsonValue aroot = ParseBody( afterReq.body );
+		Check( aroot.find( "reasoning_effort" ) == nullptr,
+		       "T34: a NON-reasoning_effort 400 leaves the request UNCHANGED "
+		       "(still no reasoning_effort key)" );
+	}
+
+	// --- Coexistence: the image-elision and reasoning_effort-none sticky
+	//     flags are independent -- tripping one does not trip or block
+	//     the other later in the SAME session. ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::OpenAI );
+		loop.AddUserMessage( "remove the sphere" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult st1 = loop.HandleResponse( 400, effort400 );
+		Check( st1.retryReasoningEffortNone && !st1.retryWithoutImages,
+		       "T34: the reasoning_effort 400 trips ONLY its own flag" );
+
+		// A later multimodal 400 in the SAME session still fires
+		// independently, and the earlier override survives untouched.
+		const std::string mm400 =
+			"{\"error\":{\"message\":\"Multimodal data provided, but model "
+			"does not support multimodal requests\"}}";
+		loop.AddUserMessage( "show me a picture" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult st2 = loop.HandleResponse( 400, mm400 );
+		Check( st2.retryWithoutImages,
+		       "T34: a later multimodal 400 still trips its OWN flag "
+		       "after reasoning_effort was already stuck" );
+
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		JsonValue root = ParseBody( req.body );
+		const JsonValue* re = root.find( "reasoning_effort" );
+		Check( re != nullptr && re->isString() && re->asString() == "none",
+		       "T34: reasoning_effort:none survives a later, independent "
+		       "multimodal-400 retry" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
@@ -3391,6 +3930,8 @@ int main()
 	AgentRpcDispatcher rpc( std::move( session ) );
 
 	TestOpenAIRequestShape();
+	TestXaiAndLocalRequestShape();
+	TestXaiUsageParse();
 	TestOpenAIToolLoop();
 	TestAnthropicRequestShape();
 	TestAnthropicToolLoop( rpc );
@@ -3424,6 +3965,9 @@ int main()
 	TestAnthropicMalformedInput();
 	TestGeminiMalformedArgs();
 	TestNullShapeDefensiveAudit();
+	TestGeminiFunctionResponseDedupe();
+	TestMultimodalRetry();
+	TestReasoningEffortRetry();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

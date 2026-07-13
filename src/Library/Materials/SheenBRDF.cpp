@@ -71,6 +71,22 @@ RISEPel SheenBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometri
 		return RISEPel( 0, 0, 0 );
 	}
 
+	// Geometric-horizon gate: a GlintModifier-tilted shading normal can
+	// validate light/view directions that are still below the true geometric
+	// surface.  This is a DEFENSIVE check, not a sampler-consistency one --
+	// NEE's light direction isn't sampler-drawn, but a valid exterior hit
+	// already satisfies it, and rejecting here guards against the same tilt
+	// pathology the sampler-side gate targets.  Degenerate vGeomNormal falls
+	// back to the shading normal (gate is a no-op).
+	// (v is tautologically inside the gate: v = -ri.ray.Dir() and geomN is
+	// ray-anchored, so Dot(v,geomN) > 0 always holds -- see LambertianBRDF.cpp:57-60.)
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( l, geomN ) <= 0 || Vector3Ops::Dot( v, geomN ) <= 0 ) {
+		return RISEPel( 0, 0, 0 );
+	}
+
 	const Vector3 h = Vector3Ops::Normalize( l + v );
 	const Scalar nDotH = r_max( Scalar(0), Vector3Ops::Dot( n, h ) );
 
@@ -92,6 +108,15 @@ Scalar SheenBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometr
 	const Scalar nDotL = Vector3Ops::Dot( n, l );
 	const Scalar nDotV = Vector3Ops::Dot( n, v );
 	if( nDotL <= NEARZERO || nDotV <= NEARZERO ) {
+		return 0;
+	}
+
+	// Geometric-horizon gate (mirrors value()'s gate).
+	// v is tautologically inside the gate here too (see value()'s note above).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( l, geomN ) <= 0 || Vector3Ops::Dot( v, geomN ) <= 0 ) {
 		return 0;
 	}
 

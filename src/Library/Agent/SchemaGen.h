@@ -41,6 +41,21 @@ namespace RISE
 		//! chunk keyword, each value the same per-chunk schema
 		//! SchemaGenForChunk emits.
 		std::string SchemaGenAll();
+
+		//! CHEAP LISTING mode (the discovery-cost fix): the keyword list
+		//! (each with its one-line description) of every chunk whose
+		//! ChunkCategory serializes to `category` (the lowercase category
+		//! names EmitChunk stamps -- "material", "geometry", "painter",
+		//! "light", "rasterizer", ...).  Returns a small object:
+		//!   {"category":"material","chunks":[{"keyword":"...","description":"..."},...]}
+		//! -- NOT the full per-parameter dump SchemaGenAll emits, so an
+		//! agent can DISCOVER which chunk kinds live under a category
+		//! without paying the ~300KB whole-grammar cost, then follow up
+		//! with SchemaGenForChunk on the one it wants.  Entries are deduped
+		//! by keyword and in registration order.  An unrecognized (or empty)
+		//! `category` yields an empty `chunks` array plus an `"error"` key
+		//! naming the bad category (never throws, never empty).
+		std::string SchemaGenCategory( const std::string& category );
 	}
 }
 

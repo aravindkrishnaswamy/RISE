@@ -30,6 +30,7 @@
 #ifndef RISE_AGENT_AGENTSESSION_
 #define RISE_AGENT_AGENTSESSION_
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -248,6 +249,46 @@ namespace RISE
 			std::string fov;         //!< degrees, plain number
 		};
 
+		//! Toolkit slice 2: `render`'s optional quality selector.  `Production`
+		//! (the default) is today's EXACT behaviour -- the head's active
+		//! (production) rasterizer, byte-for-byte unchanged.  `Draft`
+		//! renders through a wholly SEPARATE, EPHEMERAL preview pipeline
+		//! (CreateInteractiveMaterialPreviewPipeline -- the SAME studio-
+		//! preview shading the GUI's live interactive editor uses) that
+		//! NEVER references the production rasterizer, its FrameStore, or
+		//! its outputs -- see AgentRenderParams::quality's doc and
+		//! AgentRenderResult::renderMode's doc for the full honesty
+		//! contract (a draft render is geometry/composition/camera-
+		//! accurate but IGNORES the scene's authored materials and
+		//! lighting; never judge those from a draft).
+		enum class AgentRenderQuality
+		{
+			Production,   //!< today's exact behaviour -- the head's active rasterizer (default)
+			Draft         //!< a cheap, ephemeral studio-preview render -- see the class doc above
+		};
+
+		//! Toolkit slice 3a: `render`'s optional SEGMENTATION selector,
+		//! orthogonal to `quality`.  `Beauty` (the default) is today's EXACT
+		//! behaviour -- radiance (production) or studio-preview (draft)
+		//! shading.  `ObjectMap` renders through a wholly SEPARATE,
+		//! EPHEMERAL identity pipeline (CreateInteractiveObjectMapPipeline)
+		//! that paints each hit object a FLAT, high-contrast identity colour
+		//! (no lighting, no materials) and returns a per-object colour
+		//! `legend` (see AgentRenderResult::legend).  It answers "which
+		//! object is at which pixel" for spatial reasoning; it says NOTHING
+		//! about appearance.  An objectmap render has exactly ONE fidelity:
+		//! `quality` is IGNORED under ObjectMap (and any `samples` override
+		//! is ignored too -- the exact per-pixel identity requires the
+		//! single-ray path; see AgentRenderResult::renderMode's doc for the
+		//! honesty contract, and read the returned PNG at NATIVE size --
+		//! read_image's maxEdge box-downscale BLENDS identity colours and
+		//! corrupts legend matching).
+		enum class AgentRenderTarget
+		{
+			Beauty,     //!< radiance / studio-preview shading (default)
+			ObjectMap   //!< flat per-object identity segmentation + legend
+		};
+
 		//! Preview-render params (all optional; every field at its default
 		//! reproduces EXACTLY today's Render(-1) behaviour -- wire-additive).
 		//! `width`/`height` are a TRANSIENT film-dims override (both must be
@@ -293,6 +334,64 @@ namespace RISE
 			int                  samples = -1;  //!< -1 = no override; else the requested SPP (see EffectiveRenderConfig doc above)
 			AgentCameraOverride  camera;
 			bool                 pinned = false;  //!< false = preview (today's semantics); true = pinned (never silently superseded -- see doc above)
+			//! Toolkit slice 2: Production (default) = today's exact
+			//! behaviour, strictly additive.  Draft routes this ONE render
+			//! through the ephemeral studio-preview pipeline instead of the
+			//! production rasterizer -- see AgentRenderQuality's doc.  A
+			//! draft render's requested `samples` (above) is CAPPED at 4
+			//! regardless of the value requested (see AgentRenderResult::
+			//! renderMode's doc for the honesty contract this enforces);
+			//! absent a request, the preview pipeline's own 1-SPP default
+			//! is used.  Composes with `width`/`height`/`camera`/`pinned`
+			//! exactly as the production path does (all four are Job/Scene-
+			//! level state, not rasterizer-specific).
+			AgentRenderQuality   quality = AgentRenderQuality::Production;
+			//! Toolkit slice 3a: Beauty (default) = today's exact
+			//! behaviour, strictly additive.  ObjectMap routes this ONE
+			//! render through the ephemeral identity pipeline (see
+			//! AgentRenderTarget's doc) and populates
+			//! AgentRenderResult::legend.  Composes with
+			//! width/height/camera exactly as Beauty does (all Job/Scene-
+			//! level state); `quality` and `samples` are IGNORED under
+			//! ObjectMap (honestly noted in the result message).
+			AgentRenderTarget    renderTarget = AgentRenderTarget::Beauty;
+		};
+
+		//! Toolkit slice 3b: the OPTIONAL ephemeral camera/dims overrides
+		//! for query_object_at -- the SAME composition rule render's
+		//! width/height/camera use (see AgentRenderParams's doc above): 0/0
+		//! (the default) means "no dims override, use the Document's
+		//! authored Film dims"; a default-constructed `camera` means "no
+		//! camera override, use the active camera's current pose".
+		//! Deliberately a narrower struct than AgentRenderParams --
+		//! `samples`/`quality`/`pinned`/`renderTarget` have no meaning for a
+		//! point query (it always runs the objectmap identity pipeline
+		//! internally; see AgentSession::QueryObjectAt's doc for why).
+		//! NAMESPACE-SCOPE (not nested in AgentSession, unlike
+		//! AgentQueryObjectResult below) so it can default-construct as
+		//! QueryObjectAt's own default argument value from within
+		//! AgentSession's class body (a nested type's default member
+		//! initializers are not yet complete at that point).
+		struct AgentQueryObjectParams
+		{
+			unsigned int        width = 0;    //!< 0 = no override
+			unsigned int        height = 0;   //!< 0 = no override
+			AgentCameraOverride camera;
+		};
+
+		//! Toolkit slice 3a: one entry of an objectmap render's colour
+		//! LEGEND -- the mapping a caller uses to decode the segmentation
+		//! PNG.  `name` is the object's manager name (its scene-file chunk
+		//! `name`, or the `<gen>[i,j]` synthesized name for an
+		//! instance_array element); `colorHex` is the EXACT "#RRGGBB" 8-bit
+		//! sRGB byte triple that object's pixels carry in the PNG (byte-for-
+		//! byte -- match on these bytes, at NATIVE image size); `pixelCount`
+		//! is how many pixels that object covers in this render.
+		struct LegendEntry
+		{
+			std::string   name;
+			std::string   colorHex;     //!< "#RRGGBB", the exact PNG bytes
+			std::uint32_t pixelCount = 0;
 		};
 
 		//! The structured result of Render: the rendered head as PNG bytes
@@ -386,6 +485,37 @@ namespace RISE
 			//! never guessed).
 			bool                       samplesOverridden = false;
 			int                        effectiveSamples = 0;
+			//! Toolkit slice 2 ADDITIVE wire field: "production" (default)
+			//! or "draft" -- which pipeline THIS render actually ran
+			//! through (see AgentRenderParams::quality's doc).  Set
+			//! unconditionally alongside `integrator` above (both are
+			//! filled as soon as this call passes the initial no-head /
+			//! no-active-rasterizer guards, and persist across every later
+			//! return path).  DELIBERATELY DISTINCT from `integrator`:
+			//! `integrator` always names the HEAD's active (production)
+			//! rasterizer, independent of what this call rendered with --
+			//! a draft render still reports the production integrator's
+			//! name here, NOT "draft" or the preview pipeline's identity.
+			//! Use `renderMode` to tell which shading actually produced
+			//! THIS image: "draft" means the pixels came from a fixed
+			//! studio-preview shader that IGNORES the scene's authored
+			//! materials and lighting entirely (geometry, composition, and
+			//! camera framing are representative; materials, lighting,
+			//! exposure, and colour are NOT) -- never judge those from a
+			//! draft image; render at quality:"production" (the default)
+			//! or use ReadViewport for what the user actually sees.
+			//! Toolkit slice 3a adds a THIRD value "objectmap" (set when
+			//! params.renderTarget == ObjectMap) -- a flat per-object
+			//! identity segmentation, distinct from both beauty modes; the
+			//! `legend` below is populated only for this mode.
+			std::string                renderMode;
+			//! Toolkit slice 3a: the object-colour legend of an OBJECTMAP
+			//! render -- one LegendEntry per registered scene object,
+			//! plus a trailing "<unmapped>" entry IFF any hit pixel
+			//! resolved to no registered object.  EMPTY for every beauty
+			//! (production/draft) render.  Entries are in deterministic
+			//! (sorted-object-name) order.  See LegendEntry's doc.
+			std::vector<LegendEntry>   legend;
 		};
 
 		//! Facet 5 slice S1: one entry of the skills INDEX -- `name` is the
@@ -850,6 +980,20 @@ namespace RISE
 			//! failure is restored first.  This never reports
 			//! `cameraOverridden=true` on a partial or no-op override.
 			//!
+			//! Toolkit slice 2: `params.quality == AgentRenderQuality::Draft`
+			//! routes the render through a wholly SEPARATE, EPHEMERAL
+			//! studio-preview pipeline instead of the production
+			//! rasterizer -- see AgentRenderQuality's doc for the honesty
+			//! contract and AgentSession.cpp's RenderCore_ for the
+			//! isolation mechanism (never touches the production
+			//! rasterizer, its FrameStore, or its outputs).  The film-dims
+			//! and camera-pose overrides above still apply identically in
+			//! either mode (both are Job/Scene-level state, not
+			//! rasterizer-specific); the single-agent-render-slot /
+			//! cancel-and-park machinery below also applies identically --
+			//! a draft render is just as genuinely cancellable as a
+			//! production one.
+			//!
 			//! LIVE mode (a controller is attached): the mutate-render-restore
 			//! window for BOTH overrides runs under
 			//! SceneEditController::RunPreviewRenderParked -- the render
@@ -1036,6 +1180,138 @@ namespace RISE
 			                                      unsigned int& outWidth,
 			                                      unsigned int& outHeight ) const;
 
+			//! Toolkit slice 1 (read_viewport): fetch the CURRENT live
+			//! interactive GUI viewport's pixels as PNG bytes -- the exact
+			//! frame the user is looking at right now.  This is DISTINCT from
+			//! ReadImage(): ReadImage returns the AGENT's own last headless
+			//! render; ReadViewport returns the USER's live viewport (the
+			//! attached SceneEditController's `mInteractiveFrameStore`).  It
+			//! NEVER triggers a render -- it copies whatever the interactive
+			//! render loop has most recently produced (the cheapest possible
+			//! "observe").
+			//!
+			//! `outAvailable` is the structured outcome; `outReason` is one of
+			//!   ""              (available == true)
+			//!   "no_controller" (no live SceneEditController attached -- a
+			//!                    headless session has no viewport at all)
+			//!   "no_frame_yet"  (a controller is attached but the interactive
+			//!                    render loop has not produced a frame yet).
+			//! An unavailable result is a STRUCTURED, NON-error outcome (the
+			//! returned byte vector is empty, outW/outH are 0).
+			//!
+			//! `maxEdge` (0 = native size, else clamped [16,1024] by the
+			//! caller) downscales the copied frame exactly as ReadImage's
+			//! maxEdge does (box filter, linear space, aspect-preserving,
+			//! never upscales) -- reusing InMemoryRasterizerOutput's encode
+			//! path on an already-coherent snapshot, no re-render.
+			//! outW/outH report the dims of the returned PNG.
+			//!
+			//! Single-threaded-caller like the rest of this class's non-Render
+			//! surface: the coherent, cross-thread-safe copy of the live store
+			//! is done INSIDE SceneEditController::CopyInteractiveFrame (which
+			//! locks against the render thread) -- no AgentSession-side lock is
+			//! taken here (mController is read on the session's own call
+			//! stack).
+			std::vector<unsigned char> ReadViewport( unsigned int maxEdge,
+			                                         unsigned int& outWidth,
+			                                         unsigned int& outHeight,
+			                                         bool& outAvailable,
+			                                         std::string& outReason ) const;
+
+			//! Toolkit slice 3b: the structured result of query_object_at.
+			//! `hit`/`name`/`kind`/`pixelX`/`pixelY`/`width`/`height`/`message`
+			//! are the wire-visible fields (AgentRpc.cpp's query_object_at
+			//! dispatch mirrors them 1:1); `outOfRange` is an INTERNAL-ONLY
+			//! signal (never serialized) the RPC layer checks to decide
+			//! between a structured success and a -32602 kInvalidParams error
+			//! -- see QueryObjectAt's doc for the full out-of-range contract.
+			struct AgentQueryObjectResult
+			{
+				//! True iff (x,y) fell OUTSIDE the EFFECTIVE film dims (the
+				//! override dims when both width+height were supplied, else
+				//! the Document's authored Film dims). AgentRpc.cpp maps this
+				//! to a JSON-RPC -32602 error rather than a structured result
+				//! -- every other field is left at its default in this case
+				//! except `width`/`height` (the effective dims that WOULD have
+				//! applied) and `message` (why).
+				bool         outOfRange = false;
+				//! True iff the probe pixel resolved to a registered, world-
+				//! visible object (the SAME identity registry a mode:
+				//! "objectmap" render's legend is built from). False is a
+				//! STRUCTURED result, NOT a failure -- it means the pixel
+				//! decoded to the reserved background colour (the ray missed
+				//! every object), exactly like an objectmap render's
+				//! background pixels.
+				bool         hit = false;
+				//! The LEGEND name of the hit object (see LegendEntry::name's
+				//! doc -- same instance-array `grid[i,j]`-is-not-a-CST-chunk
+				//! caveat applies identically here) -- "" when !hit.
+				std::string  name;
+				//! OPTIONALLY the hit object's manager "kind" -- ALWAYS "" as
+				//! of this slice: neither IObject nor IObjectPriv exposes a
+				//! cheap kind/type-name accessor (the scene-file chunk
+				//! keyword lives on the CST Document, and resolving a
+				//! possibly generator-synthesized legend name -- e.g.
+				//! "grid[0,1]" -- back to a real chunk would need a
+				//! Document scan per query, defeating the point of a CHEAP
+				//! point-query). Wired for a future cheap accessor; honestly
+				//! empty until one exists rather than paying that cost or
+				//! guessing.
+				std::string  kind;
+				unsigned int pixelX = 0;
+				unsigned int pixelY = 0;
+				//! The EFFECTIVE film dims this query actually ran against
+				//! (the override dims when supplied, else the Document's
+				//! authored Film dims) -- always populated, even on
+				//! `outOfRange` (reporting what the caller SHOULD target).
+				unsigned int width = 0;
+				unsigned int height = 0;
+				std::string  message;
+			};
+
+			//! Toolkit slice 3b: query_object_at -- the cheap single-pixel
+			//! companion to render's mode:"objectmap" (see
+			//! AgentRenderTarget::ObjectMap's doc): "which WORLD-VISIBLE
+			//! object is under pixel (x,y)?"
+			//!
+			//! IMPLEMENTATION CHOICE: this reuses the objectmap ephemeral
+			//! pipeline WHOLESALE rather than a bespoke single-ray probe --
+			//! it runs one full mode:"objectmap" Render() at the effective
+			//! dims (composing width/height/camera EXACTLY as render's own
+			//! overrides do, via the SAME AgentRenderParams path) and then
+			//! reads ONE pixel back from the cached sink, matched against
+			//! that render's legend by EXACT colorHex byte (the same byte-
+			//! unique-by-construction contract the palette guarantees).  This
+			//! costs one identity render (measured ~20ms at 256x256) rather
+			//! than a second, bespoke GetCamera()->GenerateRay + caster code
+			//! path -- shared machinery, shared invariants (exactness,
+			//! byte-uniqueness, emissive visibility, isolation from the
+			//! production FrameStore), zero new rendering code.  See
+			//! AgentSession.cpp for the pixel-decode + legend-match mechanics.
+			//!
+			//! `x`/`y` are pixel coordinates in the EFFECTIVE film dims (the
+			//! override dims when `params.width`/`params.height` are both
+			//! set, else the Document's authored Film dims) -- resolved and
+			//! range-checked BEFORE the render runs (a cheap, read-only Film
+			//! query), so an out-of-range request never pays for the
+			//! ephemeral render; `result.outOfRange` is set and NO render
+			//! happens (AgentRpc.cpp maps this to -32602 kInvalidParams).
+			//! `result.hit=false` (a STRUCTURED result, never a failure) means
+			//! the probe ray missed every object (the reserved background
+			//! colour) -- `result.outOfRange` stays false in that case.
+			//!
+			//! Document byte-identity: like every Render call, this NEVER
+			//! mutates the retained CST Document (ReadDocument() is byte-
+			//! identical before and after, camera/film overrides are
+			//! captured-applied-restored exactly as render's own do).
+			//!
+			//! Works on a head with NO active production rasterizer (mirrors
+			//! the quality:"draft" / mode:"objectmap" gate -- the underlying
+			//! render this reuses never dereferences the production
+			//! rasterizer at all).
+			AgentQueryObjectResult QueryObjectAt( int x, int y,
+			                                       const AgentQueryObjectParams& params = AgentQueryObjectParams() );
+
 			//! Round-2 P1-1 test hook: override DrainAsyncRender_'s per-chunk
 			//! wait duration for THIS session instance (default 0 = "use
 			//! whatever chunkMs the caller/default passes").  Exists so a
@@ -1081,6 +1357,26 @@ namespace RISE
 			//! before the Render() call that will observe it, never
 			//! concurrently.
 			void ForTest_SetThrowBeforeRasterize( bool on ) { mThrowBeforeRasterizeForTest = on; }
+
+			//! Toolkit slice 3a fix-round P2-1 test hook: exercise the objectmap
+			//! identity-palette generator standalone (it is otherwise a file-
+			//! static in AgentSession.cpp).  Fills `outBytes` with `count`
+			//! byte triples and `outMinDistanceUsed` with the smallest L1
+			//! separation the generator had to relax to (== 24 when it never
+			//! degraded).  Static (references no member state) so a unit test
+			//! can request a large count and assert byte-uniqueness + roundtrip
+			//! + degrade-flag WITHOUT rendering a 2000-object scene.
+			//! `forTestGoldenTries` (default = the production 4096) starves
+			//! the golden walk when 0, so every id past the base list takes
+			//! the EXHAUSTIVE last-resort scan -- the branch the closing-
+			//! review P1 lived in (the scan starts at rgb=0, which IS the
+			//! reserved background byte; the reserved set must be interned
+			//! in takenKeys up front or that id paints as background).
+			static void ForTest_BuildObjectMapPaletteBytes(
+				std::size_t count,
+				std::vector<std::array<unsigned char, 3> >& outBytes,
+				unsigned int& outMinDistanceUsed,
+				unsigned int forTestGoldenTries = 4096 );
 
 		private:
 			AgentSession( IJobPriv* job, bool owns, AgentAuthority authority );

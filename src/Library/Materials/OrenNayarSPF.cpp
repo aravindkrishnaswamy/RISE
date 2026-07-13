@@ -68,13 +68,30 @@ void OrenNayarSPF::Scatter(
 		myonb.FlipW();				
 	}
 
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a sampled direction that validates
+	// against the (tilted) shading normal can still point below the
+	// geometric surface -- the continuation ray then tunnels into the solid
+	// (a zero-weight ray would still be traced).  Oriented to myonb.w()
+	// (the normal the lobe is sampled around).  Degenerate vGeomNormal
+	// (SquaredModulus guard, matches GlintModifier.cpp) falls back to the
+	// shading normal, making the gate a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : myonb.w();
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
 	diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( myonb, ptrand ) );
 
-	// Compute the weight
+	// Compute the weight.  Uses myonb.w() (the frame the lobe was actually
+	// sampled around, post-FlipW) -- NOT the raw ri.onb.w(), which differs
+	// by sign on a back-face hit and fed ComputeFactor's geomN gate the
+	// wrong-oriented normal, silently zeroing the back-face NM twin's
+	// symmetric case (ScatterNM below already used myonb.w() correctly).
 	RISEPel L1, L2;
 	const ScalarTriple r = pRoughness->GetValuesAt(ri);
 	const RISEPel roughness( r.v[0], r.v[1], r.v[2] );
-	OrenNayarBRDF::ComputeFactor<RISEPel>( L1, L2, diffuse.ray.Dir(), ri, ri.onb.w(), roughness );
+	OrenNayarBRDF::ComputeFactor<RISEPel>( L1, L2, diffuse.ray.Dir(), ri, myonb.w(), roughness );
 
 	const RISEPel rho = pReflectance->GetColor(ri);
 	diffuse.kray = L1*rho + (L2*rho*rho);
@@ -83,7 +100,9 @@ void OrenNayarSPF::Scatter(
 	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;
 	diffuse.isDelta = false;
 
-	scattered.AddScatteredRay( diffuse );
+	if( Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0 ) {
+		scattered.AddScatteredRay( diffuse );
+	}
 }
 
 void OrenNayarSPF::ScatterNM( 
@@ -106,6 +125,19 @@ void OrenNayarSPF::ScatterNM(
 		myonb.FlipW();				
 	}
 
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a sampled direction that validates
+	// against the (tilted) shading normal can still point below the
+	// geometric surface -- the continuation ray then tunnels into the solid
+	// (a zero-weight ray would still be traced).  Oriented to myonb.w()
+	// (the normal the lobe is sampled around).  Degenerate vGeomNormal
+	// (SquaredModulus guard, matches GlintModifier.cpp) falls back to the
+	// shading normal, making the gate a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : myonb.w();
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
 	diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( myonb, ptrand ) );
 	
 	// Compute the weight
@@ -119,7 +151,9 @@ void OrenNayarSPF::ScatterNM(
 	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;
 	diffuse.isDelta = false;
 
-	scattered.AddScatteredRay( diffuse );
+	if( Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0 ) {
+		scattered.AddScatteredRay( diffuse );
+	}
 }
 
 Scalar OrenNayarSPF::Pdf(
@@ -134,7 +168,15 @@ Scalar OrenNayarSPF::Pdf(
 	const Scalar cosTheta = bFrontFace ?
 		Vector3Ops::Dot( wo, ri.onb.w() ) :
 		-Vector3Ops::Dot( wo, ri.onb.w() );
-	return (cosTheta > 0) ? cosTheta * INV_PI : 0;
+
+	// Geometric-horizon gate (MIS consistency with Scatter's sampler-side
+	// gate): a wo the sampler can no longer emit contributes zero density.
+	const Vector3 nEff = bFrontFace ? ri.onb.w() : -ri.onb.w();
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : nEff;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
+	return (cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0) ? cosTheta * INV_PI : 0;
 }
 
 Scalar OrenNayarSPF::PdfNM(

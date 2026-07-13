@@ -50,6 +50,23 @@ void InMemoryRasterizerOutput::OutputImage( const IRasterImage& pImage, const Re
 	mHasImage = true;
 }
 
+void InMemoryRasterizerOutput::AdoptCoherentSnapshot(
+	std::vector<RISEColor>&& pixels, unsigned int width, unsigned int height )
+{
+	// The caller already did the coherent, tile-locked copy -- adopt the
+	// buffer wholesale (no per-pixel GetPEL loop, no re-read).  Move so the
+	// caller's buffer is emptied, not copied.
+	mPixels = std::move( pixels );
+	mWidth  = width;
+	mHeight = height;
+	// Defensive: guarantee mPixels holds exactly width*height (the encode
+	// paths index by y*mWidth+x).  When the caller honoured the contract
+	// this is a no-op; a short buffer pads with default-black rather than
+	// letting ToPng index past the end.
+	mPixels.resize( static_cast<std::size_t>( mWidth ) * mHeight );
+	mHasImage = true;
+}
+
 void InMemoryRasterizerOutput::MeanChannels( double& r, double& g, double& b ) const
 {
 	r = g = b = 0.0;
@@ -66,6 +83,13 @@ void InMemoryRasterizerOutput::MeanChannels( double& r, double& g, double& b ) c
 	r = sr / n;
 	g = sg / n;
 	b = sb / n;
+}
+
+bool InMemoryRasterizerOutput::GetPixelColor( unsigned int x, unsigned int y, RISEColor& out ) const
+{
+	if( !mHasImage || x >= mWidth || y >= mHeight ) return false;
+	out = mPixels[ static_cast<std::size_t>( y ) * mWidth + x ];
+	return true;
 }
 
 namespace

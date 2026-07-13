@@ -43,6 +43,8 @@
   <PropertyGroup>
     <QtMocExe>$(SolutionDir)vcpkg_installed\$(VcpkgTriplet)\$(VcpkgTriplet)\tools\Qt6\bin\moc.exe</QtMocExe>
     <QtMocOutDir>$(IntDir)moc\</QtMocOutDir>
+    <QtRccExe>$(SolutionDir)vcpkg_installed\$(VcpkgTriplet)\$(VcpkgTriplet)\tools\Qt6\bin\rcc.exe</QtRccExe>
+    <QtRccOutDir>$(IntDir)rcc\</QtRccOutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <OutDir>$(SolutionDir)..\..\dbin\</OutDir>
@@ -68,7 +70,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
-      <AdditionalDependencies>RISE.lib;Qt6Networkd.lib;OpenEXR-3_4_d.lib;OpenEXRCore-3_4_d.lib;OpenEXRUtil-3_4_d.lib;IlmThread-3_4_d.lib;Iex-3_4_d.lib;Imath-3_2_d.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;ws2_32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>RISE.lib;Qt6Networkd.lib;OpenEXR-3_4_d.lib;OpenEXRCore-3_4_d.lib;OpenEXRUtil-3_4_d.lib;IlmThread-3_4_d.lib;Iex-3_4_d.lib;Imath-3_2_d.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;ws2_32.lib;bcrypt.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)..\..\dbin\;$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\debug\lib\;$(SolutionDir)..\..\extlib\oidn\install\lib\;C:\Dev\openpgl-install\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -88,19 +90,22 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
-      <AdditionalDependencies>RISE.lib;Qt6Network.lib;OpenEXR-3_4.lib;OpenEXRCore-3_4.lib;OpenEXRUtil-3_4.lib;IlmThread-3_4.lib;Iex-3_4.lib;Imath-3_2.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;ws2_32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>RISE.lib;Qt6Network.lib;OpenEXR-3_4.lib;OpenEXRCore-3_4.lib;OpenEXRUtil-3_4.lib;IlmThread-3_4.lib;Iex-3_4.lib;Imath-3_2.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;ws2_32.lib;bcrypt.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\lib\;$(SolutionDir)..\..\extlib\oidn\install\lib\;C:\Dev\openpgl-install\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <!-- Application source files -->
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="Theme.cpp" />
     <ClCompile Include="MainWindow.cpp" />
+    <ClCompile Include="TopBar.cpp" />
     <ClCompile Include="RenderEngine.cpp" />
     <ClCompile Include="RenderWidget.cpp" />
     <ClCompile Include="HDRRenderWidget.cpp" />
-    <ClCompile Include="ControlsWidget.cpp" />
     <ClCompile Include="ChatPanel.cpp" />
+    <ClCompile Include="ProposalCard.cpp" />
+    <ClCompile Include="OutlinerWidget.cpp" />
     <ClCompile Include="LogWidget.cpp" />
     <ClCompile Include="SceneEditor.cpp" />
     <ClCompile Include="SceneTextEdit.cpp" />
@@ -115,11 +120,13 @@
   <!-- MOC-generated source files (compiled like regular .cpp) -->
   <ItemGroup>
     <ClCompile Include="$(QtMocOutDir)moc_MainWindow.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_TopBar.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_RenderEngine.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_RenderWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_HDRRenderWidget.cpp" />
-    <ClCompile Include="$(QtMocOutDir)moc_ControlsWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_ChatPanel.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_ProposalCard.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_OutlinerWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_LogWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_SceneEditor.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_SceneTextEdit.cpp" />
@@ -133,6 +140,12 @@
   <!-- Headers with Q_OBJECT — CustomBuild runs moc.exe on each -->
   <ItemGroup>
     <CustomBuild Include="MainWindow.h">
+      <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
+      <Message>MOC %(Filename).h</Message>
+      <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="TopBar.h">
       <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
       <Message>MOC %(Filename).h</Message>
       <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
@@ -156,13 +169,19 @@
       <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
       <AdditionalInputs>%(FullPath)</AdditionalInputs>
     </CustomBuild>
-    <CustomBuild Include="ControlsWidget.h">
+    <CustomBuild Include="ChatPanel.h">
       <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
       <Message>MOC %(Filename).h</Message>
       <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
       <AdditionalInputs>%(FullPath)</AdditionalInputs>
     </CustomBuild>
-    <CustomBuild Include="ChatPanel.h">
+    <CustomBuild Include="ProposalCard.h">
+      <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
+      <Message>MOC %(Filename).h</Message>
+      <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="OutlinerWidget.h">
       <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
       <Message>MOC %(Filename).h</Message>
       <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
@@ -224,10 +243,22 @@
     </CustomBuild>
     <!-- Header without Q_OBJECT — no MOC needed -->
     <ClInclude Include="VideoEncoder.h" />
+    <ClInclude Include="Theme.h" />
   </ItemGroup>
-  <!-- Create the MOC output directory before building -->
+  <!-- Qt resources (bundled IBM Plex fonts) — rcc generates a self-registering
+       .cpp compiled into the exe -->
+  <ItemGroup>
+    <CustomBuild Include="resources.qrc">
+      <Command>"$(QtRccExe)" -name resources "%(FullPath)" -o "$(QtRccOutDir)qrc_%(Filename).cpp"</Command>
+      <Message>RCC %(Filename).qrc</Message>
+      <Outputs>$(QtRccOutDir)qrc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <ClCompile Include="$(QtRccOutDir)qrc_resources.cpp" />
+  </ItemGroup>
+  <!-- Create the MOC/RCC output directories before building -->
   <Target Name="CreateMocDir" BeforeTargets="CustomBuild">
-    <MakeDir Directories="$(QtMocOutDir)" />
+    <MakeDir Directories="$(QtMocOutDir);$(QtRccOutDir)" />
   </Target>
   <ItemGroup>
     <ProjectReference Include="..\Library\Library.vcxproj">

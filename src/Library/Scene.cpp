@@ -267,6 +267,17 @@ bool Scene::AddCamera( const char* szName, ICamera* pCamera_ )
 	if( !pCameraManager || !szName || !*szName || !pCamera_ ) {
 		return false;
 	}
+	// `none` is the scene language's universal unbind sentinel, and
+	// Job::AddKeyframeToAnimation's camera branch specifically treats
+	// element=="none" as "target the ACTIVE camera" (never a named lookup).
+	// A camera actually named "none" could therefore never be targeted by
+	// name -- refuse it here too, as the single chokepoint every camera
+	// registration path (chunk parser, GUI, importer, direct RISE_API call)
+	// funnels through, defense-in-depth alongside the chunk-parser-level
+	// refusal in ChunkParserRegistry.cpp's RejectReservedCameraName.
+	if( strcmp( szName, "none" ) == 0 ) {
+		return false;
+	}
 	if( !pCameraManager->AddItem( pCamera_, szName ) ) {
 		return false;
 	}

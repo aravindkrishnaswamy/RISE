@@ -42,9 +42,12 @@
 #include "FilmIntrospection.h"
 #include "MaterialIntrospection.h"
 #include "MediaIntrospection.h"
+#include "PainterIntrospection.h"     // Entity-creation slice: Category::Painter property rows
+#include "EntityTemplates.h"          // Entity-creation slice: Add-Entity template registry
 #include "../Interfaces/IMaterialManager.h"
 #include "../Interfaces/IMedium.h"
 #include "../Interfaces/IPainterManager.h"
+#include "../Interfaces/IScalarPainterManager.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/IScenePriv.h"
 #include "../Interfaces/IObjectManager.h"
@@ -63,6 +66,7 @@
 #include "../Intersection/RayIntersection.h"
 #include "../Rendering/InteractivePelRasterizer.h"
 #include "../Rendering/FrameStore.h"  // L6e-3 — per-pass interactive FrameStore
+#include "../Interfaces/IRasterImageWriter.h"  // Toolkit slice 1 — BufferRasterImageWriter adapter for CopyInteractiveFrame
 #include "../Rendering/Rasterizer.h"  // L6e-3 — Implementation::Rasterizer for SetFrameStore
 #include "../Scene.h"                 // concrete Scene (transitive scene-state includes); transactional rollback no longer uses CreateSnapshot/RestoreFromSnapshot
 #include "../Utilities/RandomNumbers.h"
@@ -568,6 +572,18 @@ inline void BuildGizmoHandles_(
 SceneEditController::~SceneEditController()
 {
 	Stop();
+	// NOTE (2026-07-12): deliberately NOT scrubbing the Job's progress slot here (e.g. via
+	// mJob.ClearProgressIfCurrent( &mCancelProgress )) -- this dtor CANNOT touch mJob: several
+	// owners (the test suites' `controller.Stop(); pJob->release();` pattern, with the stack
+	// controller destroyed after the release) legitimately destroy the Job first, so a scrub here
+	// is a use-after-free on mJob itself (SIGSEGV, caught by AgentRenderAsyncTest when it was
+	// tried).  The original motivation -- a stale &mCancelProgress left installed by
+	// RunProductionRenderComposed's outside-the-slot prior-capture -- was CLOSED the same day by
+	// the capture-inside-the-slot redesign (the composed closure now ExchangeProgress-captures its
+	// restore value inside the coordinator turn); the only residual way a stale &mCancelProgress
+	// survives in the slot is an exception escaping a restore itself (logged loudly in both
+	// restore guards: RunProductionRenderComposed's ProgressRestoreGuard here and
+	// AgentSession::RenderCore_'s in AgentSession.cpp).
 	if( mInteractiveRasterizer )
 	{
 		mInteractiveRasterizer->release();
@@ -590,11 +606,21 @@ SceneEditController::~SceneEditController()
 
 void SceneEditController::Start( bool suppressInitialRender )
 {
+	// Review-round-1 P1: serialize against StopInteractive()'s join so a
+	// concurrent Resume/Start can never move-assign onto a still-joinable
+	// mRenderThread (std::terminate) -- see mLifecycleMutex's doc.
+	std::lock_guard<std::mutex> lifecycleLk( mLifecycleMutex );
+
 	bool expected = false;
 	if( !mRunning.compare_exchange_strong( expected, true ) )
 	{
 		return;  // already running
 	}
+
+	// Any Start un-pauses — see PauseRefinement()'s declaration doc.  A
+	// paused viewport that is being (re)started is genuinely live again,
+	// and a stale paused flag would make GetRefinementStatus lie.
+	mRefinementPaused.store( false, std::memory_order_release );
 
 	// Record the one-shot "skip the initial render" request before the
 	// render thread is spawned, so RenderLoop observes it on entry.
@@ -633,6 +659,9 @@ void SceneEditController::Start( bool suppressInitialRender )
 
 void SceneEditController::StopInteractive()
 {
+	// Review-round-1 P1: see Start() / mLifecycleMutex's doc.
+	std::lock_guard<std::mutex> lifecycleLk( mLifecycleMutex );
+
 	bool expected = true;
 	if( !mRunning.compare_exchange_strong( expected, false ) )
 	{
@@ -655,6 +684,126 @@ void SceneEditController::StopInteractive()
 	{
 		mRenderThread.join();
 	}
+}
+
+void SceneEditController::PauseRefinement()
+{
+	// Set the flag FIRST so a status poll during the join below already
+	// reads Paused; harmless when StopInteractive turns out to be a
+	// no-op (not running) — Resume/Start will clear it.
+	mRefinementPaused.store( true, std::memory_order_release );
+	StopInteractive();
+}
+
+void SceneEditController::ResumeRefinement()
+{
+	if( !mRefinementPaused.load( std::memory_order_acquire ) )
+	{
+		return;  // wasn't paused
+	}
+	// Start() clears the flag itself (any Start un-pauses) and is
+	// idempotent, so no exchange dance is needed here.  A normal
+	// (un-suppressed) start repaints promptly; the idle-refinement
+	// ladder then walks back to full quality.
+	Start( false );
+}
+
+bool SceneEditController::IsRefinementPaused() const
+{
+	return mRefinementPaused.load( std::memory_order_acquire );
+}
+
+SceneEditController::RefinementPhase
+SceneEditController::GetRefinementStatus( unsigned int& outScaleDivisor ) const
+{
+	outScaleDivisor = mPreviewScale.load( std::memory_order_acquire );
+	if( mRefinementPaused.load( std::memory_order_acquire ) )
+	{
+		return RefinementPhase::Paused;
+	}
+	const PolishState polish =
+		static_cast<PolishState>( mPolishState.load( std::memory_order_acquire ) );
+	const bool rendering = mRendering.load( std::memory_order_acquire );
+	if( rendering )
+	{
+		if( polish == PolishState::PolishQueued )
+		{
+			return RefinementPhase::Polishing;
+		}
+		return outScaleDivisor > kPreviewScaleMin ? RefinementPhase::Refining
+		                                          : RefinementPhase::Rendering;
+	}
+	if( outScaleDivisor > kPreviewScaleMin )
+	{
+		return RefinementPhase::Refining;   // ladder still walking down
+	}
+	if( polish != PolishState::None )
+	{
+		return RefinementPhase::Polishing;  // polish queued, pass not yet started
+	}
+	return RefinementPhase::Idle;
+}
+
+void SceneEditController::SetInteractiveRegion( unsigned int left, unsigned int top,
+                                                unsigned int right, unsigned int bottom )
+{
+	// Refuse a degenerate box rather than silently swapping — the
+	// bridges send normalized coords.
+	if( right < left || bottom < top )
+	{
+		return;
+	}
+	const std::uint64_t kMax16 = 0xffffu;
+	const std::uint64_t l = left   < kMax16 ? left   : kMax16;
+	const std::uint64_t t = top    < kMax16 ? top    : kMax16;
+	const std::uint64_t r = right  < kMax16 ? right  : kMax16;
+	const std::uint64_t b = bottom < kMax16 ? bottom : kMax16;
+	mInteractiveRegionPacked.store( ( l << 48 ) | ( t << 32 ) | ( r << 16 ) | b,
+	                                std::memory_order_release );
+	mInteractiveRegionActive.store( true, std::memory_order_release );
+	// Start refining inside the box right away.
+	KickRender();
+}
+
+void SceneEditController::ClearInteractiveRegion()
+{
+	if( !mInteractiveRegionActive.exchange( false, std::memory_order_acq_rel ) )
+	{
+		return;
+	}
+	// Repaint full-frame so pixels outside the (former) box catch up
+	// with any edits that landed while the region restricted passes.
+	KickRender();
+}
+
+bool SceneEditController::GetInteractiveRegion( unsigned int& left, unsigned int& top,
+                                                unsigned int& right, unsigned int& bottom ) const
+{
+	if( !mInteractiveRegionActive.load( std::memory_order_acquire ) )
+	{
+		return false;
+	}
+	const std::uint64_t packed = mInteractiveRegionPacked.load( std::memory_order_acquire );
+	left   = static_cast<unsigned int>( ( packed >> 48 ) & 0xffffu );
+	top    = static_cast<unsigned int>( ( packed >> 32 ) & 0xffffu );
+	right  = static_cast<unsigned int>( ( packed >> 16 ) & 0xffffu );
+	bottom = static_cast<unsigned int>(   packed         & 0xffffu );
+	return true;
+}
+
+bool SceneEditController::InteractiveRasterizerHonorsRegion() const
+{
+	return mInteractiveRasterizer ? mInteractiveRasterizer->HonorsRegion() : false;
+}
+
+String SceneEditController::UndoLabel() const
+{
+	return String( mEditor.History().LabelForUndo() );
+}
+
+String SceneEditController::RedoLabel() const
+{
+	return String( mEditor.History().LabelForRedo() );
 }
 
 void SceneEditController::Stop()
@@ -1753,6 +1902,19 @@ bool SelectionStillResolves( const IJobPriv& job,
 		const IMaterialManager* m = const_cast<IJobPriv&>( job ).GetMaterials();
 		return m && const_cast<IMaterialManager*>( m )->GetItem( name.c_str() ) != 0;
 	}
+	case Cat::Painter: {
+		// Entity-creation slice: check BOTH painter pipes (the union
+		// CategoryEntityName draws from) -- a name resolving in either
+		// manager means the selection still points at a live entity.
+		IJobPriv& jobRef = const_cast<IJobPriv&>( job );
+		if( IPainterManager* pm = jobRef.GetPainters() ) {
+			if( pm->GetItem( name.c_str() ) != 0 ) return true;
+		}
+		if( IScalarPainterManager* spm = jobRef.GetScalarPainters() ) {
+			if( spm->GetItem( name.c_str() ) != 0 ) return true;
+		}
+		return false;
+	}
 	case Cat::Rasterizer:
 	case Cat::Film:
 	case Cat::None:
@@ -1895,6 +2057,15 @@ Scalar SceneEditController::LastSceneTime() const
 
 bool SceneEditController::RequestProductionRender()
 {
+	// Design brief A4 (review-round-1 P1): a region NEVER leaks into or
+	// past a production render.  This is the SECOND live production
+	// entry point (the Mac shell's -requestProductionRender lands here;
+	// the composed path goes through SubmitProductionRenderSync, which
+	// clears too) — both must uphold the invariant or the post-render
+	// interactive restart refines only a stale box.  Kick-free store:
+	// the interactive loop is being stopped right below anyway.
+	mInteractiveRegionActive.store( false, std::memory_order_release );
+
 	const bool wasRunning = IsRunning();
 	if( wasRunning )
 	{
@@ -1907,7 +2078,10 @@ bool SceneEditController::RequestProductionRender()
 		// Without a production rasterizer there's nothing to do; the
 		// caller should ensure one is configured by the time they
 		// click "Render".  We restart interactive and report failure.
-		if( wasRunning ) Start();
+		// Round-2 P2: don't silently un-pause — a Pause that raced this
+		// production render would otherwise be clobbered by the restart
+		// (Start() clears mRefinementPaused).  Mirrors ResumeRefinement.
+		if( wasRunning && !IsRefinementPaused() ) Start();
 		return false;
 	}
 
@@ -1943,7 +2117,8 @@ bool SceneEditController::RequestProductionRender()
 		ok = true;
 	}
 
-	if( wasRunning ) Start();
+	// Round-2 P2: same paused-guard as the early-exit restart above.
+	if( wasRunning && !IsRefinementPaused() ) Start();
 	return ok;
 }
 
@@ -2223,6 +2398,25 @@ public:
 	}
 };
 
+// Entity-creation slice: Category::Painter's entity list is the UNION of
+// the two painter pipes (IPainterManager colour painters +
+// IScalarPainterManager physical-scalar painters -- see CLAUDE.md's
+// IScalarPainter refactor note: material slots route by physical meaning,
+// not syntactic resemblance, so a scene legitimately has same-named-or-not
+// entries in both managers).  Sorted stably so index-by-index enumeration
+// (CategoryEntityCount then repeated CategoryEntityName(idx)) is
+// deterministic across calls even though neither manager's own
+// EnumerateItemNames documents a stable order.
+std::vector<String> CollectPainterUnionNames( IJobPriv& job )
+{
+	CollectNamesCallback cb;
+	if( IPainterManager* m = job.GetPainters() ) m->EnumerateItemNames( cb );
+	if( IScalarPainterManager* m = job.GetScalarPainters() ) m->EnumerateItemNames( cb );
+	std::stable_sort( cb.names.begin(), cb.names.end(),
+		[]( const String& a, const String& b ) { return std::string( a.c_str() ) < std::string( b.c_str() ); } );
+	return cb.names;
+}
+
 }  // namespace
 
 unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
@@ -2289,6 +2483,9 @@ unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
 		// silently no-op).  Otherwise: the declared variants + the synthetic "(base)" at index 0.
 		if( !mJob.HasRetainedCstDocument() || mJob.GetSceneVariantCount() == 0 ) return 0;
 		return mJob.GetSceneVariantCount() + 1u;
+	}
+	case Category::Painter: {
+		return static_cast<unsigned int>( CollectPainterUnionNames( mJob ).size() );
 	}
 	case Category::None:
 	default:
@@ -2364,6 +2561,11 @@ String SceneEditController::CategoryEntityName( Category cat, unsigned int idx )
 		if( !mJob.GetSceneVariantName( idx - 1, buf, sizeof(buf) ) ) return String();
 		return String( buf );
 	}
+	case Category::Painter: {
+		const std::vector<String> names = CollectPainterUnionNames( mJob );
+		if( idx >= names.size() ) return String();
+		return names[idx];
+	}
 	case Category::None:
 	default:
 		return String();
@@ -2415,6 +2617,7 @@ String SceneEditController::CategoryActiveName( Category cat ) const
 	case Category::Light:
 	case Category::Material:
 	case Category::Medium:
+	case Category::Painter:
 	case Category::None:
 	default:
 		return String();
@@ -4230,6 +4433,19 @@ bool SceneEditController::SubmitProductionRenderSync(
 	RenderJobId*          outJobId,
 	unsigned int          queueTimeoutMs )
 {
+	// Design brief A4: a region NEVER leaks into a production render.
+	// The production path renders full-frame regardless (it does not
+	// read mInteractiveRegion*), but clearing here also stops the
+	// post-render interactive restart from refining only a stale box
+	// over the finished production image — and keeps the UI badge
+	// state honest (the bridges re-query GetInteractiveRegion).
+	// Review-round-1 P2: clear WITHOUT the KickRender() the public
+	// ClearInteractiveRegion() performs — the shells stop the
+	// interactive loop before submitting production work, and waking
+	// it here would invite exactly the two-rasterizers-one-scene race
+	// that convention prevents.  No repaint is needed either: the
+	// production result replaces the framebuffer wholesale.
+	mInteractiveRegionActive.store( false, std::memory_order_release );
 	return SubmitAgentRenderSync( std::move( fn ), clientLabel, outJobId, queueTimeoutMs,
 		/*pinned=*/false, RenderClass::Production );
 }
@@ -4250,13 +4466,6 @@ bool SceneEditController::RunProductionRenderComposed(
 	{
 		return doRasterize();
 	}
-
-	// Fix-round 2 (Windows cancel regression): capture the RESTORE value
-	// ONCE, here, at entry -- honest for both platforms.  This is "whatever
-	// the Job's progress slot held right before this render claimed it",
-	// not an assumption about what the platform's callback is.  See the
-	// declaration's header doc for the full prior-vs-inner contract.
-	IProgressCallback* const priorProgress = job.GetProgress();
 
 	// RAII restore of the Job's progress-callback slot -- matches the house
 	// shape used throughout this file / AgentSession.cpp (Arm/Disarm,
@@ -4332,19 +4541,44 @@ bool SceneEditController::RunProductionRenderComposed(
 	SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
 	const bool submitted = controller->SubmitProductionRenderSync(
 		[&]() {
+			// Slot-ownership hardening (2026-07-12): capture the RESTORE
+			// value HERE, inside the coordinator slot, NOT at function entry
+			// on the submitting thread.  The entry-time read ran BEFORE the
+			// fairness wait, so it could observe a TRANSIENT occupant -- an
+			// agent render's coordProgress installed from the coordinator
+			// worker -- and the restore below would then re-install that
+			// occupant's callback permanently: it stays in the slot after
+			// the render (each later composed render faithfully re-captures
+			// and re-restores it), and a Job outliving its controller then
+			// carries a dangling pointer into freed controller storage --
+			// the next Rasterize would install and drive freed memory.
+			// Inside the slot the read is race-free: every other slot
+			// writer (agent install/restore, another composed render) runs
+			// serialized in this same critical section, and GUI-thread
+			// clears are conditional (ClearProgressIfCurrent on their OWN
+			// adapter).  See the declaration's header doc for the full
+			// prior-vs-inner contract.
 			CancellableProgressCallback* coordProgress = static_cast<CancellableProgressCallback*>(
 				controller->AgentRenderProgress() );
 			// Fix-round 2: compose in the CALLER-SUPPLIED gui progress sink,
 			// not job.GetProgress() -- see the declaration's header doc for
-			// why those two are not interchangeable on Windows.
+			// why those two are not interchangeable on Windows.  SetInner
+			// runs BEFORE the exchange below so coordProgress is fully wired
+			// by the time it becomes live in the slot.
 			coordProgress->SetInner( guiProgress );
+
+			// Review round-2 P1 (same one-atomic-exchange rule as
+			// AgentSession's install site -- see the comment there): the
+			// prior capture and the coordProgress install are ONE
+			// ExchangeProgress call, so a platform adapter's conditional
+			// clear can never "succeed" against a pointer this render has
+			// already captured as its restore value.
+			IProgressCallback* const priorProgress = job.ExchangeProgress( coordProgress );
 
 			ProgressRestoreGuard progressGuard( job, priorProgress );
 			progressGuard.Arm();
 			InnerResetGuard innerGuard( *coordProgress );
 			innerGuard.Arm();
-
-			job.SetProgress( coordProgress );
 
 			result = doRasterize();
 
@@ -4800,6 +5034,13 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 				a.c_str(), code );
 		}
 
+		// A chunk was added/removed -- the entity set changed, so bump the
+		// scene epoch that live GUI outliners cache against to re-enumerate.
+		// Covers GUI entity creation (Instantiate/Duplicate/RemoveEntity)
+		// AND agent-driven insert_chunk/remove_chunk uniformly, since both
+		// route through here.
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();
 		mCV.notify_one();
@@ -4858,10 +5099,18 @@ void SceneEditController::KickRender()
 SaveResult SceneEditController::RequestSave( const std::string& filePath )
 {
 	// ---- Step 1: park render thread + mark save in flight -----------
+	// Editor live-sync follow-up: remember whether we CANCELLED an
+	// in-flight pass to get here — that pass's frame is left partially
+	// updated, and with debounced auto-save (UI refinement item 1)
+	// this now happens routinely, not just on a manual Save click.
+	// Step 3 re-kicks a render when it does, so a save never strands a
+	// half-painted viewport.
+	bool interruptedPass = false;
 	{
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( mRendering.load() ) {
 			mCancelProgress.RequestCancel();
+			interruptedPass = true;
 		}
 		mCV.wait( lk, [&]{ return !mRendering.load(); } );
 		mSaving.store( true );
@@ -4904,10 +5153,117 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 		} else {
 			mLastSaveError = result.errorMessage;
 		}
+		if( interruptedPass ) {
+			// Repaint the pass this save cancelled (KickRender's shape:
+			// flag + notify under the SAME mutex the waiter blocks on).
+			mEditPending.store( true, std::memory_order_release );
+		}
 		mCV.notify_one();
 	}
 
 	return result;
+}
+
+String SceneEditController::SerializedSceneText() const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( !mJob.HasRetainedCstDocument() ) return String();
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return String();
+	const std::string bytes = RISE::Cst::SerializeCst( *doc );
+	return String( bytes.c_str() );
+}
+
+void SceneEditController::GetSceneTextVersion( std::uint64_t& outUuid,
+                                               std::uint64_t& outRevision ) const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	const RISE::Cst::CstHeadVersion v = mJob.GetCstHeadVersion();
+	outUuid     = v.uuid;
+	outRevision = v.revision;
+}
+
+namespace {
+
+// "Reveal in scene file": the CST role-kind-suffix + unique-fallback DocFindByNameAnyRole
+// needs to resolve a Category's entity name to its chunk, mirroring the SAME table
+// SceneEditor::ClassifyCstEntityKind walks in REVERSE (CST role string -> EntityCategory) --
+// see that function's suffix list (endsWith "_camera"/"_light"/"_material"/"_medium", or the
+// bare "camera"/"material" role). Object's role is exactly "standard_object" (no suffix
+// family), so its "suffix" is the whole role name -- DocFindByNameAnyRole's `role ==
+// roleKindSuffix` arm matches it directly.
+//
+// Animation/SceneVariant are ALWAYS-NAMED top-level chunks (role "animation" /
+// "scene_variant" exactly) with no cross-category collision risk, so no unique-fallback
+// is needed for them either.
+//
+// Rasterizer and Film are declared NOT addressable here, on purpose: CategoryEntityName /
+// CategoryActiveName for Rasterizer return REGISTRY TYPE names (the picker list of
+// available rasterizer kinds), not a chunk's `name` param -- a rasterizer chunk in the
+// scene is normally unnamed and singleton (the "_rasterizer"-suffixed active integrator).
+// Film's CategoryActiveName returns a synthetic PRESET LABEL ("1080p" etc.), not a name
+// either. Resolving either against DocFindByNameAnyRole's `bareName` parameter would be
+// searching for the wrong string. A future extension COULD special-case Rasterizer/Film
+// through the SAME unique-fallback path SceneEditController::Category::Camera already
+// uses for an unnamed sole camera (both chunks are typically singleton `role ==
+// roleKindSuffix` chunks) -- deferred; not wired today, so EntitySourceLocation refuses
+// them cleanly (returns false) rather than guessing.
+bool RoleKindSuffixForCategory( SceneEditController::Category cat, std::string& outSuffix, bool& outUniqueFallback )
+{
+	using Category = SceneEditController::Category;
+	outUniqueFallback = false;
+	switch( cat ) {
+	case Category::Camera:       outSuffix = "camera";         outUniqueFallback = true; return true;   // same unnamed-active-camera fallback as CaptureAgentPriorParamValue_
+	case Category::Object:       outSuffix = "standard_object"; return true;
+	case Category::Light:        outSuffix = "light";           return true;
+	case Category::Material:     outSuffix = "material";        return true;
+	case Category::Medium:       outSuffix = "medium";          return true;
+	case Category::Animation:    outSuffix = "animation";       return true;
+	case Category::SceneVariant: outSuffix = "scene_variant";   return true;
+	case Category::Painter:      outSuffix = "painter";         return true;   // matches every "*_painter" chunk keyword (endsWith), same convention as ClassifyCstEntityKind's "_material"/"_light"/"_medium" suffixes
+	case Category::Rasterizer:
+	case Category::Film:
+	case Category::None:
+	default: return false;   // no chunk-name addressing scheme for this category -- see comment above
+	}
+}
+
+}  // namespace
+
+bool SceneEditController::EntitySourceLocation( Category cat, const String& name,
+                                                 std::uint64_t& outByteOffset, std::uint32_t& outLine ) const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( !mJob.HasRetainedCstDocument() ) return false;
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return false;
+
+	std::string suffix; bool uniqueFallback = false;
+	if( !RoleKindSuffixForCategory( cat, suffix, uniqueFallback ) ) return false;
+	if( name.size() <= 1 && !uniqueFallback ) return false;   // an empty name only resolves via the unique-fallback (unnamed sole entity of its kind)
+
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *doc, name.c_str(), nullptr, suffix, uniqueFallback );
+	if( id == 0 ) return false;   // absent, or ambiguous -- refuse rather than guess (same contract as DocFindByNameAnyRole itself)
+
+	RISE::Cst::NodeRef item;
+	const int idx = RISE::Cst::DocIndexOfNodeId( *doc, id, &item );
+	if( idx < 0 ) return false;   // resolved id is not (any longer) a top-level item
+
+	const size_t off = RISE::Cst::DocByteOffsetOfItem( *doc, idx );
+	if( off == static_cast<size_t>( -1 ) ) return false;
+
+	// Line number: 1-based count of '\n' bytes in the serialized PREFIX before `off`.
+	// SerializeCst has no partial/prefix-only form, so this walks the WHOLE doc's bytes
+	// (O(doc bytes)) -- documented above as fine at click/selection cadence, not a
+	// per-frame path.
+	const std::string full = RISE::Cst::SerializeCst( *doc );
+	if( off > full.size() ) return false;   // defensive: should be unreachable given DocByteOffsetOfItem's own bound
+	unsigned int line = 1;
+	for( size_t i = 0; i < off; ++i ) if( full[i] == '\n' ) ++line;
+
+	outByteOffset = static_cast<std::uint64_t>( off );
+	outLine       = line;
+	return true;
 }
 
 std::string SceneEditController::LastSaveError() const
@@ -5034,9 +5390,23 @@ void SceneEditController::RenderLoop()
 			const long long sinceEdit = now - mLastEditTimeMs.load( std::memory_order_acquire );
 			if( sinceEdit < kRefineIdleMs ) continue;
 
-			const unsigned int s = mPreviewScale.load( std::memory_order_acquire );
+			unsigned int s = mPreviewScale.load( std::memory_order_acquire );
 			if( s <= kPreviewScaleMin ) continue;
-			mPreviewScale.store( s / 2, std::memory_order_release );
+			// Review-round-1 P2: CAS, not a blind store.  A gesture-end
+			// reset (OnPointerUp / OnTimeScrubEnd / EndPropertyScrub all
+			// store kPreviewScaleMin from the UI thread) landing between
+			// the load above and a blind store(s/2) would be silently
+			// overwritten -- leaving the scale resting above min with no
+			// future wake to walk it down (the refine-mode predicate
+			// needs an active gesture), i.e. a stuck-coarse preview and
+			// a status readout stuck on "Refining".  On CAS failure the
+			// reset (or a new gesture's motion bump) won; just loop.
+			if( !mPreviewScale.compare_exchange_strong(
+					s, s / 2,
+					std::memory_order_acq_rel, std::memory_order_acquire ) )
+			{
+				continue;
+			}
 			mInRefinementPass = true;
 			// P2 (accepted, not fixed): if the mint-site re-check further
 			// below bounces this same iteration (mAgentRenderBlocksInteractive
@@ -5343,6 +5713,14 @@ SceneEditController::PanelMode SceneEditController::CurrentPanelMode() const
 	case Category::SceneVariant:
 		// No editable properties -- selection re-derives the scene with that variant active.
 		return PanelMode::None;
+	case Category::Painter:
+		// Entity-creation slice: no dedicated PanelMode::Painter this
+		// slice (PropertyCountFor/PropertyNameFor/etc. read
+		// mPropertiesByCategory[Category::Painter] directly, indexed by
+		// Category rather than by the "current panel" mirror below --
+		// see buildRowsFor's Painter case and this method's own header
+		// doc on Category::Painter).
+		return PanelMode::None;
 	case Category::None:
 	default:
 		return PanelMode::None;
@@ -5486,6 +5864,14 @@ void SceneEditController::RefreshProperties()
 			out.push_back( row );
 			break;
 		}
+		case Category::Painter: {
+			// Entity-creation slice: rows are CST-chunk-sourced (there is
+			// no live per-parameter getter surface on IPainter/
+			// IScalarPainter) -- see PainterIntrospection.h's header doc.
+			if( selName.size() <= 1 ) break;
+			out = PainterIntrospection::Inspect( mJob.GetCstDocument(), selName );
+			break;
+		}
 		case Category::None:
 		default:
 			break;
@@ -5611,7 +5997,13 @@ inline const std::vector<RISE::CameraProperty>* PropsForCat(
 	const std::vector<RISE::CameraProperty>* arr, RISE::SceneEditController::Category cat )
 {
 	const int i = static_cast<int>( cat );
-	if( i < 0 || i >= 9 ) return 0;   // 9 == kNumCategories (None..Animation)
+	// Pre-existing bug fixed in passing: this bound was hardcoded to 9
+	// (stale even before this change -- SceneVariant=9 was already
+	// silently excluded from PropertyCountFor/PropertyNameFor/etc.).
+	// kNumCategories is private (this is a free function, not a
+	// member), so mirror its value here with an explicit comment
+	// rather than hardcoding a now-also-stale literal.
+	if( i < 0 || i >= 11 ) return 0;   // 11 == SceneEditController::kNumCategories (None..Painter)
 	return &arr[i];
 }
 }
@@ -5788,6 +6180,381 @@ bool SceneEditController::CloneActiveCamera(
 	lk.unlock();
 	mCV.notify_one();
 	return true;
+}
+
+namespace {
+
+// Generalizes UniqueCameraName (above) across every category: build the
+// existing-name set via the SAME CategoryEntityCount/CategoryEntityName
+// union every picker list already reads, then append a numeric suffix on
+// collision.  Not under mMutex itself -- callers that need the pick to be
+// race-free against a concurrent insert take the lock around the WHOLE
+// pick-then-insert sequence (InstantiateEntityTemplate / DuplicateEntity
+// call this, then immediately ApplyAgentInsertChunk, which does its own
+// cancel-and-park; a name collision from a true race is vanishingly
+// unlikely in an interactive single-user editor and would simply surface
+// as an ApplyAgentInsertChunk duplicate-name rejection, not corruption).
+String UniqueEntityName( const SceneEditController& ctrl, SceneEditController::Category cat, const String& proposed )
+{
+	if( proposed.size() <= 1 ) return String( "entity" );
+	std::vector<std::string> existing;
+	const unsigned int n = ctrl.CategoryEntityCount( cat );
+	existing.reserve( n );
+	for( unsigned int i = 0; i < n; ++i ) existing.emplace_back( ctrl.CategoryEntityName( cat, i ).c_str() );
+
+	auto taken = [&]( const std::string& nm ) {
+		return std::find( existing.begin(), existing.end(), nm ) != existing.end();
+	};
+	const std::string base( proposed.c_str() );
+	if( !taken( base ) ) return proposed;
+	char buf[256];
+	for( int i = 2; i < 1000; ++i ) {
+		std::snprintf( buf, sizeof(buf), "%s_%d", base.c_str(), i );
+		if( !taken( buf ) ) return String( buf );
+	}
+	std::snprintf( buf, sizeof(buf), "%s_%lld", base.c_str(), static_cast<long long>( std::time( 0 ) ) );
+	return String( buf );
+}
+
+// Collect every distinct entity name a template will create for a given
+// instance name: the top-level @NAME@ plus every @NAME@_<suffix> sub-chunk
+// name baked into the template text (e.g. an Object template's
+// `@NAME@_geo` geometry, a GGX material's `@NAME@_rd`/`@NAME@_rs`
+// painters).  Used to pick an instance name whose ENTIRE name set is free
+// BEFORE any insert, so a leftover orphan sub-chunk can't make a
+// multi-chunk Add fail mid-sequence with a confusing raw duplicate-name
+// message (a name the user never chose).
+std::vector<std::string> TemplateInstanceNames( const EntityTemplateDef& tpl, const std::string& instanceName )
+{
+	std::vector<std::string> names;
+	auto addUnique = [&]( const std::string& n ) {
+		if( std::find( names.begin(), names.end(), n ) == names.end() ) names.push_back( n );
+	};
+	if( tpl.hasNamedIdentity ) addUnique( instanceName );
+	const std::string token = "@NAME@";
+	for( const std::string& chunk : tpl.chunkTexts )
+	{
+		size_t pos = 0;
+		while( ( pos = chunk.find( token, pos ) ) != std::string::npos )
+		{
+			size_t e = pos + token.size();
+			// Capture a trailing `_<identifier>` suffix if present, so
+			// `@NAME@_geo` yields the suffix "_geo" and bare `@NAME@`
+			// yields "".  Identifier chars: [A-Za-z0-9_].
+			while( e < chunk.size() )
+			{
+				const char c = chunk[e];
+				const bool ident = ( c == '_' )
+				                || ( c >= 'a' && c <= 'z' )
+				                || ( c >= 'A' && c <= 'Z' )
+				                || ( c >= '0' && c <= '9' );
+				if( !ident ) break;
+				++e;
+			}
+			addUnique( instanceName + chunk.substr( pos + token.size(), e - ( pos + token.size() ) ) );
+			pos = e;
+		}
+	}
+	return names;
+}
+
+// True if ANY of `names` is already used by SOME chunk in `doc` (any
+// kind).  Deliberately kind-agnostic: the real collision rule is
+// per-(kind,name), so this over-refuses in the rare cross-kind name-clash
+// case (a candidate is skipped when an unrelated-kind chunk shares one of
+// its names) -- harmless, since we just advance to the next numeric
+// suffix and get a valid unique name, never a confusing refusal.
+bool AnyNameTakenDocWide( const RISE::Cst::Document& doc, const std::vector<std::string>& names )
+{
+	for( const std::string& nm : names )
+	{
+		int occ = 0;
+		RISE::Cst::DocFindByNameAnyRole( doc, nm, &occ, std::string(), false );
+		if( occ > 0 ) return true;
+	}
+	return false;
+}
+
+// In-place replace every occurrence of `token` with `value` in `text`.
+void ReplaceAllTokens( std::string& text, const std::string& token, const std::string& value )
+{
+	if( token.empty() ) return;
+	size_t pos = 0;
+	while( ( pos = text.find( token, pos ) ) != std::string::npos ) {
+		text.replace( pos, token.size(), value );
+		pos += value.size();
+	}
+}
+
+// Duplicate recipe (see SceneEditController::DuplicateEntity's doc): find
+// the line whose first token is exactly the chunk param name `name` and
+// replace the remainder of that line (its value) with `newName`.  Chunk
+// text here is Cst::SerializeNode output, not scene-authored bytes, so
+// this doesn't need to survive arbitrary user formatting -- just the
+// serializer's own -- but it tolerates leading whitespace / trailing CR
+// defensively.  Returns false if no `name` param line is found (the
+// caller then refuses the duplicate rather than silently inserting a
+// same-named clone).
+bool ReplaceFirstNameParamLine( std::string& chunkText, const std::string& newName )
+{
+	size_t pos = 0;
+	while( pos < chunkText.size() )
+	{
+		size_t lineEnd = chunkText.find( '\n', pos );
+		const size_t end = ( lineEnd == std::string::npos ) ? chunkText.size() : lineEnd;
+		size_t i = pos;
+		while( i < end && ( chunkText[i] == ' ' || chunkText[i] == '\t' ) ) ++i;
+		if( chunkText.compare( i, 4, "name" ) == 0
+		 && ( i + 4 == end || chunkText[i+4] == ' ' || chunkText[i+4] == '\t' ) )
+		{
+			size_t v = i + 4;
+			while( v < end && ( chunkText[v] == ' ' || chunkText[v] == '\t' ) ) ++v;
+			size_t ve = end;
+			while( ve > v && ( chunkText[ve-1] == '\r' || chunkText[ve-1] == ' ' || chunkText[ve-1] == '\t' ) ) --ve;
+			chunkText.replace( v, ve - v, newName );
+			return true;
+		}
+		if( lineEnd == std::string::npos ) break;
+		pos = lineEnd + 1;
+	}
+	return false;
+}
+
+}   // namespace
+
+unsigned int SceneEditController::EntityTemplateCount( Category cat ) const
+{
+	return EntityTemplates::Count( cat );
+}
+
+String SceneEditController::EntityTemplateLabel( Category cat, unsigned int idx ) const
+{
+	const EntityTemplateDef* t = EntityTemplates::At( cat, idx );
+	return t ? String( t->label.c_str() ) : String();
+}
+
+SceneEditController::AgentCommitResult SceneEditController::InstantiateEntityTemplate(
+	Category cat, unsigned int idx, String* outName )
+{
+	if( outName ) *outName = String();
+
+	const EntityTemplateDef* tpl = EntityTemplates::At( cat, idx );
+	if( !tpl )
+	{
+		AgentCommitResult r;
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.message = String( "unknown entity template index" );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
+
+	// Pick an instance name whose WHOLE name set (top-level + every
+	// derived sub-chunk name the template bakes in) is free before we
+	// insert anything, under mMutex so the doc read is coherent.  A
+	// !hasNamedIdentity template (hosek_wilkie sky) creates a single
+	// unnamed chunk -- no dedup, its fixed result name.
+	String instanceName;
+	if( !tpl->hasNamedIdentity )
+	{
+		instanceName = String( tpl->fixedResultName.c_str() );
+	}
+	else
+	{
+		std::lock_guard<std::mutex> nlk( mMutex );
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		// In-category taken-name set (top-level namespace), same source
+		// as UniqueEntityName; the doc-wide probe below covers the
+		// derived sub-chunk names UniqueEntityName can't see.
+		std::vector<std::string> inCat;
+		const unsigned int nc = CategoryEntityCount( cat );
+		inCat.reserve( nc );
+		for( unsigned int i = 0; i < nc; ++i ) inCat.emplace_back( CategoryEntityName( cat, i ).c_str() );
+		auto inCatTaken = [&]( const std::string& nm ) {
+			return std::find( inCat.begin(), inCat.end(), nm ) != inCat.end();
+		};
+		const std::string base = tpl->baseName.empty() ? std::string( "entity" ) : tpl->baseName;
+		auto candidateClear = [&]( const std::string& cand ) {
+			if( inCatTaken( cand ) ) return false;
+			if( doc && AnyNameTakenDocWide( *doc, TemplateInstanceNames( *tpl, cand ) ) ) return false;
+			return true;
+		};
+		std::string chosen = base;
+		if( !candidateClear( chosen ) )
+		{
+			char buf[256];
+			chosen.clear();
+			for( int i = 2; i < 1000; ++i )
+			{
+				std::snprintf( buf, sizeof(buf), "%s_%d", base.c_str(), i );
+				if( candidateClear( buf ) ) { chosen = buf; break; }
+			}
+			if( chosen.empty() )
+			{
+				std::snprintf( buf, sizeof(buf), "%s_%lld", base.c_str(), static_cast<long long>( std::time( 0 ) ) );
+				chosen = buf;
+			}
+		}
+		instanceName = String( chosen.c_str() );
+	}
+
+	// Resolve @MATERIAL@ for Object templates: reuse an existing
+	// material if the scene has one, else bootstrap a bundled default
+	// uniformcolor_painter + lambertian_material pair first (both
+	// individually undoable, same as every other inserted chunk).
+	std::string materialName;
+	if( tpl->needsMaterial )
+	{
+		// Reuse the first REAL material.  Job::InitializeContainers
+		// registers a `"none"` sentinel (the null material) in the
+		// manager, so "manager non-empty" does NOT mean "the scene has
+		// a usable material" -- binding a fresh object to `none` would
+		// silently shade black.  Skip the sentinel explicitly.
+		const unsigned int matCount = CategoryEntityCount( Category::Material );
+		for( unsigned int mi = 0; mi < matCount; ++mi )
+		{
+			const std::string cand( CategoryEntityName( Category::Material, mi ).c_str() );
+			if( !cand.empty() && cand != "none" )
+			{
+				materialName = cand;
+				break;
+			}
+		}
+		if( materialName.empty() )
+		{
+			// Dedup the bootstrap names too -- a scene with no materials
+			// can still already contain a painter named "default_gray"
+			// (same ChunkCategory::Painter namespace), which would turn
+			// the bootstrap insert into a duplicate-name refusal.
+			const std::string painterName(
+				UniqueEntityName( *this, Category::Painter, String( "default_gray" ) ).c_str() );
+			const std::string lambertianName(
+				UniqueEntityName( *this, Category::Material, String( "default_lambertian" ) ).c_str() );
+			const AgentCommitResult pr = ApplyAgentInsertChunk(
+				String( EntityTemplates::DefaultPainterChunkText( painterName ).c_str() ), nullptr );
+			if( !pr.applied ) return pr;
+			const AgentCommitResult mr = ApplyAgentInsertChunk(
+				String( EntityTemplates::DefaultLambertianChunkText( lambertianName, painterName ).c_str() ), nullptr );
+			if( !mr.applied ) return mr;
+			materialName = lambertianName;
+		}
+	}
+
+	std::string textureFile;
+	if( tpl->needsTexture )
+	{
+		textureFile = EntityTemplates::EnsureDefaultTextureFile();
+		if( textureFile.empty() )
+		{
+			AgentCommitResult r;
+			r.applied = false;
+			r.rawCode = 0;
+			r.status  = String( "rejected" );
+			r.message = String( "could not create the default placeholder texture file" );
+			std::lock_guard<std::mutex> hlk( mMutex );
+			r.headVersion = mJob.GetCstHeadVersion();
+			return r;
+		}
+	}
+
+	// Sequential, independently-atomic inserts -- see the header doc's
+	// undo-granularity caveat.
+	AgentCommitResult last;
+	for( const std::string& chunkTemplate : tpl->chunkTexts )
+	{
+		std::string text = chunkTemplate;
+		ReplaceAllTokens( text, "@NAME@", std::string( instanceName.c_str() ) );
+		if( tpl->needsMaterial ) ReplaceAllTokens( text, "@MATERIAL@", materialName );
+		if( tpl->needsTexture )  ReplaceAllTokens( text, "@TEXTURE@", textureFile );
+		last = ApplyAgentInsertChunk( String( text.c_str() ), nullptr );
+		if( !last.applied ) return last;
+	}
+
+	if( outName ) *outName = instanceName;
+	return last;
+}
+
+SceneEditController::AgentCommitResult SceneEditController::DuplicateEntity(
+	Category cat, const String& name, String* outName )
+{
+	if( outName ) *outName = String();
+	AgentCommitResult r;
+
+	std::string suffix; bool uniqueFallback = false;
+	if( !RoleKindSuffixForCategory( cat, suffix, uniqueFallback ) )
+	{
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.message = String( "category has no chunk-name addressing scheme to duplicate from" );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
+
+	std::string bytes;
+	{
+		std::lock_guard<std::mutex> hlk( mMutex );
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		if( !doc )
+		{
+			r.applied = false; r.rawCode = 0; r.status = String( "rejected" );
+			r.message = String( "no retained CST Document" );
+			r.headVersion = mJob.GetCstHeadVersion();
+			return r;
+		}
+		const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
+			*doc, name.c_str(), nullptr, suffix, uniqueFallback );
+		if( id == 0 )
+		{
+			r.applied = false; r.rawCode = 0; r.status = String( "rejected" );
+			r.message = String( "entity not found" );
+			r.headVersion = mJob.GetCstHeadVersion();
+			return r;
+		}
+		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
+		if( !chunk )
+		{
+			r.applied = false; r.rawCode = 0; r.status = String( "rejected" );
+			r.message = String( "entity chunk not resolvable" );
+			r.headVersion = mJob.GetCstHeadVersion();
+			return r;
+		}
+		bytes = RISE::Cst::SerializeNode( chunk );
+	}
+
+	const String newName = UniqueEntityName( *this, cat, name );
+	if( !ReplaceFirstNameParamLine( bytes, std::string( newName.c_str() ) ) )
+	{
+		r.applied = false; r.rawCode = 0; r.status = String( "rejected" );
+		r.message = String( "could not locate a `name` parameter to substitute in the duplicated chunk" );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
+
+	r = ApplyAgentInsertChunk( String( bytes.c_str() ), nullptr );
+	if( r.applied && outName ) *outName = newName;
+	return r;
+}
+
+SceneEditController::AgentCommitResult SceneEditController::RemoveEntity( Category cat, const String& name )
+{
+	std::string suffix; bool uniqueFallback = false;
+	if( !RoleKindSuffixForCategory( cat, suffix, uniqueFallback ) )
+	{
+		AgentCommitResult r;
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.message = String( "category has no chunk-name addressing scheme to remove from" );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
+	return ApplyAgentRemoveChunk( name, String( suffix.c_str() ), nullptr );
 }
 
 bool SceneEditController::SetPropertyForCategory( Category cat, const String& name, const String& valueStr )
@@ -6234,6 +7001,22 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		return ok;
 	}
 
+	case Category::Painter: {
+		// Entity-creation slice: painters have no per-material-style
+		// live setter surface (see PainterIntrospection.h's header
+		// doc), so route straight through the generic agent CST
+		// param-edit path -- the "RouteCstParamEdit_-class" path
+		// Material/Light/Medium use on CST scenes, generalized: it
+		// already cancel-and-parks, captures the prior value for
+		// undo/redo (PushAgentCstParamEdit), marks dirty, bumps light
+		// generation if needed, and kicks the re-render itself, so no
+		// separate park/SceneEdit/Apply dance is needed here.
+		if( mSelectionName.size() <= 1 ) return false;
+		const AgentCommitResult r = ApplyAgentParamEdit(
+			mSelectionName, String( "painter" ), name, valueStr, nullptr );
+		return r.applied;
+	}
+
 	case Category::None:
 	default:
 		return false;
@@ -6266,6 +7049,16 @@ void SceneEditController::EnsureInteractiveFrameStore_( unsigned int width, unsi
 	if( width == 0 || height == 0 ) return;
 
 	// Same-dim short-circuit: reuse the existing FrameStore.
+	//
+	// Toolkit slice 1 (read_viewport) note: this branch does NOT take
+	// mInteractiveFrameStoreMutex.  It only READS the mInteractiveFrameStore
+	// pointer (and its immutable Width()/Height()) on the render thread
+	// itself, sequenced after that same thread's own prior write -- it never
+	// reassigns the pointer.  A concurrent CopyInteractiveFrame reader also
+	// only reads-and-addrefs the pointer under the mutex; two concurrent
+	// pointer READS are not a data race, so no lock is needed here.  Only the
+	// dims-changed branch below (which release-frees and reassigns the
+	// pointer) races the reader and therefore takes the mutex.
 	if( mInteractiveFrameStore &&
 	    mInteractiveFrameStore->Width()  == width &&
 	    mInteractiveFrameStore->Height() == height )
@@ -6295,12 +7088,8 @@ void SceneEditController::EnsureInteractiveFrameStore_( unsigned int width, unsi
 		return;
 	}
 
-	// Dim changed — release old, allocate new.
-	if( mInteractiveFrameStore ) {
-		mInteractiveFrameStore->release();
-		mInteractiveFrameStore = 0;
-	}
-
+	// Dim changed — allocate the new store FIRST (outside the leaf lock),
+	// then swap the pointer under mInteractiveFrameStoreMutex below.
 	FrameStoreOutput::FrameStoreSpec spec;
 	spec.width    = width;
 	spec.height   = height;
@@ -6337,14 +7126,112 @@ void SceneEditController::EnsureInteractiveFrameStore_( unsigned int width, unsi
 	// mutex / observer-dispatch overhead better at full image
 	// resolutions.  The asymmetry is intentional.
 	spec.tileEdge = 8;
-	mInteractiveFrameStore = new Implementation::FrameStore( spec );
+	Implementation::FrameStore* fresh = new Implementation::FrameStore( spec );
 	// new returns refcount 1; that's our owned reference.
 
+	// Toolkit slice 1 (read_viewport): leaf-lock the pointer swap ONLY.
+	// mInteractiveFrameStore is read cross-thread by CopyInteractiveFrame,
+	// so the release-old / reassign sequence is a genuine data race without
+	// this lock.  A reader that addref'd the OLD store before we release it
+	// here keeps its own reference alive (refcount stays >= 1), so its
+	// in-flight DumpImage sees a stable snapshot; new render passes write to
+	// `fresh`.  The lock guards ONLY the pointer; the store CONTENT is
+	// guarded by FrameStore's own per-tile shared_mutex.  See the member's
+	// leaf-lock note in the header.
+	{
+		std::lock_guard<std::mutex> lk( mInteractiveFrameStoreMutex );
+		if( mInteractiveFrameStore ) {
+			mInteractiveFrameStore->release();
+		}
+		mInteractiveFrameStore = fresh;
+	}
+
+	// SetFrameStore reads mInteractiveFrameStore on the render thread,
+	// sequenced after the reassign above -- same no-lock-needed reasoning as
+	// the same-dims short-circuit.
 	Implementation::Rasterizer* r =
 		dynamic_cast<Implementation::Rasterizer*>( mInteractiveRasterizer );
 	if( r ) {
 		r->SetFrameStore( mInteractiveFrameStore );
 	}
+}
+
+// Toolkit slice 1 (read_viewport): file-local IRasterImageWriter adapter
+// that captures DumpImage's WriteColor stream into a caller-supplied
+// std::vector<RISEColor> (row-major).  Stack-allocated by
+// CopyInteractiveFrame; the IReference addref/release/refcount are no-ops
+// because DumpImage never manages the writer's lifetime and the object
+// outlives the single synchronous DumpImage call by construction.
+namespace {
+	class BufferRasterImageWriter : public IRasterImageWriter
+	{
+	public:
+		BufferRasterImageWriter( std::vector<RISEColor>& out,
+		                         unsigned int& outW, unsigned int& outH )
+			: mOut( out ), mW( outW ), mH( outH ) {}
+
+		void BeginWrite( const unsigned int width, const unsigned int height ) override
+		{
+			mW = width;
+			mH = height;
+			mOut.assign( static_cast<std::size_t>( width ) * height, RISEColor() );
+		}
+		void WriteColor( const RISEColor& c, const unsigned int x, const unsigned int y ) override
+		{
+			mOut[ static_cast<std::size_t>( y ) * mW + x ] = c;
+		}
+		void EndWrite() override {}
+
+		// IReference: stack-owned, lifetime not managed by DumpImage.
+		void         addref()   const override {}
+		bool         release()  const override { return false; }
+		unsigned int refcount() const override { return 1; }
+
+	private:
+		std::vector<RISEColor>& mOut;
+		unsigned int&           mW;
+		unsigned int&           mH;
+	};
+}
+
+bool SceneEditController::CopyInteractiveFrame(
+	std::vector<RISEColor>& outPixels,
+	unsigned int& outWidth,
+	unsigned int& outHeight ) const
+{
+	outPixels.clear();
+	outWidth  = 0;
+	outHeight = 0;
+
+	// Snapshot + addref the interactive store pointer under the leaf mutex
+	// (mirrors ViewportFrameStore::SnapshotFrameStore) so a concurrent
+	// EnsureInteractiveFrameStore_ reassignment can't free it under us.
+	Implementation::FrameStore* snap = nullptr;
+	{
+		std::lock_guard<std::mutex> lk( mInteractiveFrameStoreMutex );
+		if( mInteractiveFrameStore ) {
+			mInteractiveFrameStore->addref();
+			snap = mInteractiveFrameStore;
+		}
+	}
+	if( !snap ) return false;   // no interactive frame yet (no render has run)
+
+	const unsigned int w = static_cast<unsigned int>( snap->Width() );
+	const unsigned int h = static_cast<unsigned int>( snap->Height() );
+	if( w == 0 || h == 0 ) {
+		snap->release();
+		return false;
+	}
+
+	// Coherent copy: DumpImage acquires EVERY tile's shared_lock up front,
+	// so an in-flight interactive render pass writing tiles cannot tear the
+	// result.  This is the SAME mechanism ViewportFrameStore::SaveAs uses --
+	// never a raw GetPEL loop (unlocked = torn/racy).
+	BufferRasterImageWriter writer( outPixels, outWidth, outHeight );
+	snap->AsBeautyRasterImage().DumpImage( &writer );
+
+	snap->release();
+	return outWidth != 0 && outHeight != 0 && !outPixels.empty();
 }
 
 void SceneEditController::DoOneRenderPass()
@@ -6495,8 +7382,39 @@ void SceneEditController::DoOneRenderPass()
 		EnsureInteractiveFrameStore_( passW, passH );
 	}
 
+	// ----- Interactive region-of-interest (design brief A4) -----------
+	// Applied only at full resolution: coarse ladder passes render the
+	// whole frame so pixels outside the box never go stale at a
+	// mismatched scale, while the persistent frame store keeps the last
+	// full-res content outside the box as passes refine inside it.
+	// Coords are INCLUSIVE (Rect convention) and clamped to the film.
+	Rect regionRect( 0, 0, 0, 0 );
+	const Rect* pRegion = 0;
+	if( scale == 1 && mInteractiveRegionActive.load( std::memory_order_acquire ) )
+	{
+		unsigned int rl = 0, rt = 0, rr = 0, rb = 0;
+		if( GetInteractiveRegion( rl, rt, rr, rb ) )
+		{
+			// Review-round-1 P2: read the film dims FRESH here (render
+			// thread; at scale==1 no swap has run this pass) instead of
+			// the mFullResW/H cache, so a rect can never be validated
+			// against stale dims and re-expose BoundsFromRect's
+			// width-2 underflow on a shrunken film.
+			const IFilm* regionFilm = scene->GetFilm();
+			const unsigned int w = regionFilm ? regionFilm->GetWidth()  : 0;
+			const unsigned int h = regionFilm ? regionFilm->GetHeight() : 0;
+			if( w > 0 && h > 0 && rl < w && rt < h )
+			{
+				regionRect = Rect( rt, rl,
+				                   rb < h ? rb : h - 1,
+				                   rr < w ? rr : w - 1 );
+				pRegion = &regionRect;
+			}
+		}
+	}
+
 	const auto t0 = std::chrono::steady_clock::now();
-	mInteractiveRasterizer->RasterizeScene( *scene, /*pRect*/0, /*seq*/0 );
+	mInteractiveRasterizer->RasterizeScene( *scene, pRegion, /*seq*/0 );
 	const auto elapsed = std::chrono::steady_clock::now() - t0;
 	// restoreGuard's destructor runs at the end of this scope and
 	// restores rest dims whether we exited normally, via cancellation,

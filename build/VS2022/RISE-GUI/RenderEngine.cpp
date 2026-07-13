@@ -50,6 +50,9 @@
 #include <atomic>
 #include <cstdlib>
 #include <algorithm>
+#include <chrono>
+#include <mutex>
+#include <thread>
 
 using namespace RISE;
 using namespace RISE::FrameStoreOutput;
@@ -62,9 +65,56 @@ public:
     RenderEngine* engine;
     std::string currentTitle;
 
+    // Production pause (UI refinement item 4).  Mirrors macOS
+    // RISEBridge.mm's BlockProgressCallback pause gate: when `paused`
+    // is set, the render worker that calls Progress()/IsCancelled()
+    // parks HERE at its next call -- PixelBasedRasterizerHelper calls
+    // Progress() at high frequency (per tile/pixel-batch; see its
+    // callers in PixelBasedRasterizerHelper.cpp), so parking inside
+    // Progress() is enough to make a pause visibly quiet the CPU
+    // without needing every call site to also poll IsCancelled().
+    // `pauseMutex` serializes the polling loop so N parked workers
+    // don't all spin; the fast not-paused path is a single relaxed
+    // atomic load and never touches the mutex.
+    //
+    // KNOWN GAP vs macOS (documented, not silently papered over): when
+    // a SceneEditController is attached, the Job's installed progress
+    // object is the controller's CancellableProgressCallback
+    // (`coordProgress`, see RunProductionRenderThroughController
+    // above), which composes THIS adapter as its `inner` and forwards
+    // every Progress() call to it (CancellableProgressCallback::Progress)
+    // -- so the parking loop below still engages and pause AND
+    // cancel-while-paused both work correctly through that path.
+    // However CancellableProgressCallback::IsCancelled() does NOT
+    // forward to `inner`'s IsCancelled() (it only reports its own
+    // cancel flag) -- src/Library/SceneEditor/CancellableProgressCallback.cpp
+    // is out of scope for this GUI-only change -- so
+    // PixelBasedRasterizerHelper's periodic query-only 100ms mid-block
+    // IsCancelled() flush (a check that does NOT itself call Progress())
+    // will not immediately park a worker that happens to hit ONLY that
+    // check during a pause window; that worker parks on its next
+    // Progress() call instead, which workers call far more often in
+    // practice.  Not expected to be user-visible, but it's an honest
+    // architectural difference from macOS's flat BlockProgressCallback,
+    // which IS the object installed directly on the Job in every case.
+    std::atomic<bool>  paused{false};
+    mutable std::mutex pauseMutex;
+
     ProgressCallbackAdapter(RenderEngine* e) : engine(e) {}
 
+    //! Returns false when the render was cancelled while paused.
+    bool PauseGateContinue() const {
+        if (!paused.load(std::memory_order_acquire)) return true;   // fast path
+        std::lock_guard<std::mutex> lk(pauseMutex);   // one poller; others park here
+        while (paused.load(std::memory_order_acquire)) {
+            if (engine->m_cancelFlag.load()) return false;   // cancelled while paused
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        return !engine->m_cancelFlag.load();
+    }
+
     bool Progress(const double progress, const double total) override {
+        if (!PauseGateContinue()) return false;
         if (engine) {
             engine->onProgress(progress, total, currentTitle);
         }
@@ -73,6 +123,13 @@ public:
 
     void SetTitle(const char* title) override {
         currentTitle = title ? title : "";
+    }
+
+    //! Base default is false (cancellation normally flows via Progress's
+    //! return value); this override adds ONLY the pause gate -- when
+    //! not paused the behavior is byte-identical to the base.
+    bool IsCancelled() const override {
+        return !PauseGateContinue();
     }
 };
 
@@ -135,10 +192,11 @@ public:
 // ProgressCallbackAdapter::Progress was never invoked, and the Windows
 // Cancel button + progress/ETA UI went dead for every coordinator-routed
 // production render -- the regression this fix-round closes.
-// RunProductionRenderComposed itself still separately captures
-// job->GetProgress() at entry as the value it RESTORES to the Job's
-// progress slot on exit (typically nullptr here, matching this file's own
-// `SetProgress(nullptr)` at each render's completion) -- see that
+// RunProductionRenderComposed itself still separately captures the Job's
+// progress slot (via ExchangeProgress, inside its coordinator turn) as
+// the value it RESTORES on exit (typically nullptr here, matching this
+// file's own ClearProgressIfCurrent detach at each render's completion)
+// -- see that
 // method's header doc for why "restore" and "inner" are deliberately two
 // different values.
 static bool RunProductionRenderThroughController(
@@ -198,11 +256,25 @@ RenderEngine::RenderEngine(QObject* parent)
     m_elapsedTimer = new QTimer(this);
     m_elapsedTimer->setInterval(500);
     connect(m_elapsedTimer, &QTimer::timeout, this, [this]() {
-        emit elapsedTimeUpdated(m_renderClock.elapsed() / 1000.0);
+        // Item 4: elapsed = wall time minus time spent paused, so the
+        // readout reflects actual render work and freezes visibly
+        // while paused.  Mirrors macOS RenderViewModel's displayTimer
+        // tick (productionPausedAccum + productionPauseBegan).
+        const bool isPaused = isProductionRenderPaused();
+        qint64 pausedNowMs = 0;
+        if (isPaused && m_productionPauseBeganMs >= 0) {
+            pausedNowMs = m_renderClock.elapsed() - m_productionPauseBeganMs;
+        }
+        const qint64 elapsedMs = m_renderClock.elapsed() - m_productionPausedAccumMs - pausedNowMs;
+        emit elapsedTimeUpdated(std::max<qint64>(0, elapsedMs) / 1000.0);
 
+        // Item 4: don't surface an ETA while paused -- wall time is
+        // frozen from the user's perspective and the estimate isn't
+        // being fed (see onProgress), so a stale number would mislead.
+        // Re-appears once the estimator re-converges after resume.
         double remaining = 0.0;
         bool hasEstimate = false;
-        {
+        if (!isPaused) {
             std::lock_guard<std::mutex> lock(m_etaMutex);
             hasEstimate = m_eta.RemainingSeconds(remaining);
         }
@@ -312,6 +384,93 @@ void RenderEngine::waitForWorkerToFinish()
     // because RenderEngine only receives events it posted to
     // itself (no incoming user events from other QObjects).
     QCoreApplication::removePostedEvents(this);
+
+    // If the drain above just discarded an in-flight render's queued
+    // completion lambda, that lambda's cleanup never runs -- recover
+    // the RENDER-SIDE portion here (adapter delete + published-pointer
+    // clear, Job progress-slot detach, timer stops, pause-bookkeeping
+    // reset) so every waitForWorkerToFinish caller (the dtor, plus
+    // loadScene/clearScene and MainWindow's scene transitions via
+    // cancelAndJoinInFlightWork) gets it structurally.  NOT recovered here,
+    // deliberately: m_productionVFSAttachedToRasterizer -- see the
+    // reclaim body for why it CANNOT be reset uniformly; a future
+    // caller of this method that doesn't Free-and-clear the VFS
+    // attachment the way loadScene/clearScene do must handle that
+    // flag itself.
+    reclaimDiscardedRenderCompletion();
+}
+
+void RenderEngine::reclaimDiscardedRenderCompletion()
+{
+    // See the header doc for the full contract.  m_activeProgressCallback
+    // is non-null exactly when a render's completion lambda has NOT yet
+    // run (startRender/startAnimationRender publish it before spawning
+    // the worker; only the completion lambda -- or this method -- clears
+    // it).  Our caller has already joined the worker thread and drained
+    // the posted-event queue, so a non-null pointer here means the
+    // completion lambda was discarded unrun and can never fire: this
+    // method is the only remaining owner of the cleanup, and there is no
+    // double-delete window.
+    if (ProgressCallbackAdapter* orphan = m_activeProgressCallback) {
+        // Mirror the completion lambda's engine-state cleanup, minus
+        // three deliberate skips:
+        //   * setState -- every caller immediately establishes its own
+        //     state (Loading, Idle, or destruction), so no transient
+        //     Cancelled/Completed transition belongs here.
+        //   * the final pollProductionVFS() flush -- the render is
+        //     being abandoned for a scene swap / teardown; flushing its
+        //     last tiles would just post fresh queued events AFTER the
+        //     drain our caller performed (worst on the dtor path).
+        //   * m_productionVFSAttachedToRasterizer -- it CANNOT be reset
+        //     uniformly: after a discarded STILL render the rasterizer
+        //     genuinely still holds the VFS reference (flag true is the
+        //     truth; clearing it would double-Attach on the next
+        //     ensureProductionVFSAttachedToRasterizer -> duplicate
+        //     observer fires), while after a discarded ANIMATION render
+        //     the worker already ran FreeRasterizerOutputs.  The flag
+        //     stays owned by the Free-and-clear blocks in loadScene /
+        //     clearScene / startAnimationRender, which every current
+        //     caller reaches right after this method.
+        // Timers first: without the lambda they'd tick forever after
+        // the render's worker is gone.
+        m_elapsedTimer->stop();
+        m_progressivePollTimer->stop();
+        // Detach the Job's progress slot BEFORE deleting the adapter.
+        // In the no-controller case startRender installed `orphan`
+        // directly, so the slot still points at it; leaving it would
+        // hand the next coordinator-routed render a dangling "prior" to
+        // capture-and-restore (RunProductionRenderComposed exchange-
+        // captures the slot inside its coordinator turn; a stale orphan
+        // is a steady-state occupant, so it would still be captured), and
+        // after the delete below it would
+        // be a use-after-free waiting for the next Rasterize().
+        // Conditional (CAS) clear, not SetProgress(nullptr), for the
+        // same reason as the completion lambdas (see startRender's):
+        // an agent render claiming the coordinator right after our
+        // cancelled render released it may already have installed its
+        // own callback from the worker thread -- the CAS refuses
+        // instead of stomping it.  In the controller-routed case the
+        // slot never held `orphan` (RunProductionRenderComposed
+        // restored its prior on the worker thread), so the CAS is a
+        // clean refusal there too.
+        if (m_job) {
+            m_job->ClearProgressIfCurrent(orphan);
+        }
+        // Clear the published pointer before the delete so a
+        // setProductionRenderPaused/isProductionRenderPaused call can't
+        // observe a freed adapter (same ordering rule as the completion
+        // lambda; all on the UI thread, so no race -- just discipline).
+        m_activeProgressCallback = nullptr;
+        delete orphan;
+    }
+    // Always reset the pause bookkeeping, even when no adapter was
+    // orphaned: the ms accumulators are tracked independent of the
+    // adapter (see setProductionRenderPaused), so a scene transition
+    // must not leak a prior render's paused-time into the next one.
+    // This subsumes the explicit resetProductionPauseState() calls
+    // loadScene/clearScene used to make right after
+    // waitForWorkerToFinish().
+    resetProductionPauseState();
 }
 
 void RenderEngine::trackWorkerThread(QThread* thread)
@@ -412,18 +571,33 @@ void RenderEngine::setupMediaPaths(const QString& sceneFilePath)
     }
 }
 
+void RenderEngine::cancelAndJoinInFlightWork()
+{
+    // L4 round-4 P1-A + round-5 P1-B — wait for any in-flight worker
+    // (load OR render) to finish before the caller proceeds to swap or
+    // wipe scene state.  Otherwise the previous worker's m_job deref or
+    // post-completion lambda + VFS tile callbacks could race whatever
+    // the caller does next (rasterizer construction, ClearAll, viewport
+    // bridge teardown).
+    m_cancelFlag = true;
+    // waitForWorkerToFinish()'s removePostedEvents() discards any QUEUED
+    // completion lambda from an in-flight render this call just
+    // cancelled ("Open Scene" while a render, possibly paused,
+    // was still going); its trailing reclaimDiscardedRenderCompletion()
+    // recovers the render-side cleanup that lambda would have done
+    // (adapter delete, Job progress-slot detach, timer stops,
+    // pause-bookkeeping reset) -- see that method's doc.  The one piece
+    // it deliberately does NOT recover, the VFS-attachment flag, is
+    // handled by loadScene/clearScene's Free-and-clear blocks.
+    waitForWorkerToFinish();
+    m_cancelFlag = false;
+}
+
 void RenderEngine::loadScene(const QString& filePath)
 {
     if (!m_job) return;
 
-    // L4 round-4 P1-A + round-5 P1-B — wait for any in-flight worker
-    // (load OR render) to finish before swapping scenes.  Otherwise
-    // the previous worker's m_job deref or post-completion lambda +
-    // VFS tile callbacks could race the new scene's rasterizer
-    // construction.
-    m_cancelFlag = true;
-    waitForWorkerToFinish();
-    m_cancelFlag = false;
+    cancelAndJoinInFlightWork();
 
     setState(Loading);
     m_loadedFilePath = filePath;
@@ -500,6 +674,11 @@ void RenderEngine::startRender()
     if (!m_viewportController) {
         m_job->SetProgress(progressCb);
     }
+    // Item 4: publish the fresh (unpaused) adapter so
+    // setProductionRenderPaused/isProductionRenderPaused can reach it,
+    // and reset this render's pause-time bookkeeping.
+    m_activeProgressCallback = progressCb;
+    resetProductionPauseState();
 
     // Install ViewportFrameStore as the rasterizer's IRasterizerOutput.
     // The engine owns the initial reference; Attach() addrefs the
@@ -522,10 +701,13 @@ void RenderEngine::startRender()
 
     // L4 round-6 P1 — QPointer guard for the queued completion
     // lambda; see ~RenderEngine() and loadScene's matching guard.
-    // If we early-return because the engine is gone, the
-    // ProgressCallbackAdapter still leaks (allocated above with
-    // `new`) — that's acceptable: the rasterizer is on its way down
-    // and the leak is bounded to one Render() invocation.
+    // Adapter ownership on the abnormal exits: if the queued lambda
+    // is DISCARDED by waitForWorkerToFinish's removePostedEvents
+    // (scene transition / destruction while this render is in
+    // flight), reclaimDiscardedRenderCompletion deletes the adapter;
+    // if the lambda runs after the guard cleared (can't happen today
+    // -- the dtor drains the queue -- but kept as defense in depth),
+    // the `delete progressCb` in its !guard branch does.
     QPointer<RenderEngine> guard(this);
     QThread* thread = QThread::create([this, progressCb, guard]() {
         IJobPriv* job = m_job;
@@ -541,8 +723,35 @@ void RenderEngine::startRender()
             // the last 30 Hz tick and the OnFrameComplete fire.
             guard->m_progressivePollTimer->stop();
             guard->pollProductionVFS();
-            guard->m_job->SetProgress(nullptr);
+            // Conditional (CAS) clear, NOT SetProgress(nullptr): an agent
+            // render queued behind this one on the coordinator may have
+            // just installed ITS callback from the coordinator worker
+            // thread; an unconditional null here would stomp it (silently
+            // degrading that render's progress/cancel wiring).  The CAS
+            // clears only if the slot still holds OUR adapter -- true in
+            // the no-controller case (startRender installed it directly),
+            // a clean refusal otherwise (controller-routed renders never
+            // put progressCb in the slot; RunProductionRenderComposed
+            // already restored its prior on the worker thread).
+            guard->m_job->ClearProgressIfCurrent(progressCb);
+            // Item 4: the adapter this pointer refers to is about to be
+            // deleted -- clear it FIRST so a setProductionRenderPaused/
+            // isProductionRenderPaused call landing right now (still on
+            // this same Qt main thread, so no race) can't dereference a
+            // freed adapter.
+            guard->m_activeProgressCallback = nullptr;
             delete progressCb;
+            // Review P2 (mirrors macOS RenderViewModel's completion-
+            // handler fix): clear pause bookkeeping on EVERY exit path
+            // (normal completion, cancel, error) -- not just at the next
+            // startRender/startAnimationRender.  Readers already
+            // re-derive "is paused" off m_activeProgressCallback==nullptr
+            // first today (see isProductionRenderPaused), which happens
+            // to make m_productionPausedAccumMs/m_productionPauseBeganMs
+            // inert until the next render starts -- but that's a
+            // duplicated invariant, not a guarantee, so reset explicitly
+            // here too.
+            guard->resetProductionPauseState();
 
             if (guard->m_cancelFlag) {
                 guard->setState(Cancelled);
@@ -586,6 +795,10 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
     if (!m_viewportController) {
         m_job->SetProgress(progressCb);
     }
+    // Item 4: same publish + reset as startRender -- see that method's
+    // comment.
+    m_activeProgressCallback = progressCb;
+    resetProductionPauseState();
 
     // (Re-)attach VFS to the rasterizer for this render pass.
     ensureProductionVFSAttachedToRasterizer();
@@ -669,12 +882,20 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
             // the last 30 Hz tick and the OnFrameComplete fire.
             guard->m_progressivePollTimer->stop();
             guard->pollProductionVFS();
-            guard->m_job->SetProgress(nullptr);
+            // CAS clear -- see startRender's completion lambda for why
+            // this must not be an unconditional SetProgress(nullptr).
+            guard->m_job->ClearProgressIfCurrent(progressCb);
+            // Item 4: see startRender's completion lambda for why this
+            // clear happens BEFORE the delete.
+            guard->m_activeProgressCallback = nullptr;
             delete progressCb;
             guard->m_productionVFSAttachedToRasterizer = false;
             // Set before setState(Completed) — onStateChanged reads it
             // synchronously when the Completed transition fires.
             guard->m_lastAnimationSummary = animationSummary;
+            // Review P2: see startRender's completion lambda for why this
+            // reset belongs here too, not just at the next start/cancel.
+            guard->resetProductionPauseState();
 
             if (guard->m_cancelFlag) {
                 guard->setState(Cancelled);
@@ -694,8 +915,52 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
 void RenderEngine::cancelRender()
 {
     if (m_state == Rendering) {
-        setState(Cancelling);
         m_cancelFlag = true;
+        // Item 4: cancel-while-paused -- unpark the workers so the
+        // cancel lands promptly (the pause gate also self-detects
+        // cancellation via m_cancelFlag on its next 100ms poll tick,
+        // but resuming here is snappier and keeps the pause UI state
+        // honest during the cancelling window).  Mirrors macOS
+        // RenderViewModel.cancelRender.
+        if (isProductionRenderPaused()) {
+            setProductionRenderPaused(false);
+        }
+        setState(Cancelling);
+    }
+}
+
+// ---- Production render pause (UI refinement item 4) -----------------
+
+void RenderEngine::setProductionRenderPaused(bool paused)
+{
+    if (m_activeProgressCallback) {
+        m_activeProgressCallback->paused.store(paused, std::memory_order_release);
+    }
+    // Elapsed-time pause accounting -- see the header doc for
+    // m_productionPausedAccumMs/m_productionPauseBeganMs.  Tracked
+    // independent of whether an adapter happens to be attached so the
+    // readout stays honest even in edge cases.
+    if (paused) {
+        m_productionPauseBeganMs = m_renderClock.isValid() ? m_renderClock.elapsed() : 0;
+    } else if (m_productionPauseBeganMs >= 0) {
+        const qint64 now = m_renderClock.isValid() ? m_renderClock.elapsed() : m_productionPauseBeganMs;
+        m_productionPausedAccumMs += (now - m_productionPauseBeganMs);
+        m_productionPauseBeganMs = -1;
+    }
+}
+
+bool RenderEngine::isProductionRenderPaused() const
+{
+    return m_activeProgressCallback
+        && m_activeProgressCallback->paused.load(std::memory_order_acquire);
+}
+
+void RenderEngine::resetProductionPauseState()
+{
+    m_productionPausedAccumMs = 0;
+    m_productionPauseBeganMs = -1;
+    if (m_activeProgressCallback) {
+        m_activeProgressCallback->paused.store(false, std::memory_order_release);
     }
 }
 
@@ -715,11 +980,10 @@ void RenderEngine::setSceneTime(double t)
 
 void RenderEngine::clearScene()
 {
-    // L4 round-4 P1-A + round-5 P1-B — wait for any in-flight
-    // worker (load OR render) before wiping scene state.
-    m_cancelFlag = true;
-    waitForWorkerToFinish();
-    m_cancelFlag = false;
+    // Cancel + join any in-flight worker (load OR render) before wiping
+    // scene state -- see cancelAndJoinInFlightWork's doc for the
+    // discarded-completion reclaim this also performs.
+    cancelAndJoinInFlightWork();
 
     if (m_job) {
         // ClearAll wipes the rasterizer; we drop the rasterizer's
@@ -759,8 +1023,17 @@ void RenderEngine::onProgress(double progress, double total, const std::string& 
     double fraction = (total > 0) ? progress / total : 0.0;
     QString qtTitle = QString::fromUtf8(title.c_str());
 
-    // Feed the ETA estimator on the worker thread; the UI thread reads it
-    // on the next elapsed-timer tick.
+    // Item 4: the ETA estimator is NOT fed while paused -- structurally
+    // guaranteed rather than an extra flag check here: this method is
+    // only ever called from ProgressCallbackAdapter::Progress() AFTER
+    // its PauseGateContinue() pause loop has returned (i.e. not
+    // currently paused at that instant), so onProgress simply never
+    // runs during a paused span.  (macOS's RenderViewModel adds a
+    // second, redundant `!pausedRef.value` guard around its own
+    // etaUpdateProgress call for extra safety against a race between
+    // its Swift-side pause flag and the C++-side one; Windows has only
+    // one pause flag -- the adapter's own `paused` -- so there is no
+    // analogous second flag to race against.)
     {
         std::lock_guard<std::mutex> lock(m_etaMutex);
         m_eta.Update(progress, total);

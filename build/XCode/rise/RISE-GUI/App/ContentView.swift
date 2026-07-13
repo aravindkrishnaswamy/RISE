@@ -44,522 +44,579 @@ struct FlowLayout: Layout {
 
 struct ContentView: View {
     @EnvironmentObject var viewModel: RenderViewModel
-    @State private var editorWidth: CGFloat = sceneEditorPanelWidth
-    @GestureState private var dragStartWidth: CGFloat? = nil
-    @State private var suppressEditorAdjust = false
 
     /// Bumped on every frame update so the right-side properties panel
     /// re-snapshots from the live camera (which may have just been
     /// mutated by a drag).
     @State private var propertyRefresh: Int = 0
 
+    /// Left panel width — user-resizable via the drag handle between the
+    /// panel and the center column, persisted across launches.  Wider
+    /// default than the comp's 404 so the scene file is actually
+    /// readable (user refinement).
+    @AppStorage("leftPanelWidth") private var leftPanelWidth: Double = 520
+    @GestureState private var leftPanelDragStart: Double? = nil
+    private static let leftPanelMinWidth: Double = 360
+    // Review P2: 700 max (not 900) — at the 1320pt minimum window the
+    // fixed 344pt right panel + a 900pt left panel would leave the
+    // center viewport ~71pt.  700 keeps the center >= ~270pt worst-case.
+    private static let leftPanelMaxWidth: Double = 700
+
+    /// Theme mode re-render hook (light/dark switching — see
+    /// ThemeMode.swift). Mirrors the SAME `"themeMode"` UserDefaults
+    /// key that `ThemeState.setMode(_:)` writes, so a theme toggle
+    /// anywhere in the app (the File-menu toggle calls
+    /// `ThemeState.setMode(_:)` directly, not through this view model)
+    /// is observed here via `@AppStorage` and forces the `.id()` below
+    /// to rebuild the whole tree — the only way to get every
+    /// already-evaluated `Theme.*` token in the view hierarchy to
+    /// re-read `ThemeState.mode`, since Theme.swift's tokens are plain
+    /// computed properties, not something SwiftUI can subscribe to on
+    /// its own. This is a rare user action, so the rebuild cost is
+    /// acceptable.
+    @AppStorage(ThemeState.userDefaultsKey) private var themeModeRaw: String = ThemeMode.dark.rawValue
+
+    // MARK: - UI redesign center-column slice: viewport toolbar state
+    //
+    // Moved up from ViewportView (which used to own `selectedTool` as
+    // private @State) because the tool-category buttons now live in
+    // this view's own toolbar row, above the viewport rather than
+    // floating over it.  `regionArmed` / `showEVPopover` are new
+    // design-brief-A4 / EV-cluster state with no pre-redesign
+    // equivalent.
+
+    /// The active viewport tool.  Bound into both `ViewportToolbar`
+    /// (button state) and `ViewportView` (cursor + gizmo + pointer
+    /// routing all still live there).
+    @State private var selectedTool: ViewportTool = .select
+    /// True while the REGION chip is armed (see design brief A4) —
+    /// the next mouse-drag in the viewport draws a region box.
+    @State private var regionArmed: Bool = false
+    /// Popover-shown state for the toolbar's EV chip.
+    @State private var showEVPopover: Bool = false
+
     var body: some View {
-        HStack(spacing: 0) {
-            // Editor sidebar (slides in from left)
-            if viewModel.isEditorVisible {
-                SceneEditorPanel()
-                    .frame(width: editorWidth)
-                    .transition(.move(edge: .leading))
-
-                // Draggable resize handle
-                Rectangle()
-                    .fill(Color(nsColor: .separatorColor))
-                    .frame(width: 5)
-                    .contentShape(Rectangle())
-                    .onHover { hovering in
-                        if hovering {
-                            NSCursor.resizeLeftRight.push()
-                        } else {
-                            NSCursor.pop()
-                        }
-                    }
-                    .gesture(
-                        DragGesture(minimumDistance: 1)
-                            .updating($dragStartWidth) { _, startWidth, _ in
-                                if startWidth == nil {
-                                    startWidth = editorWidth
-                                }
-                            }
-                            .onChanged { value in
-                                let start = dragStartWidth ?? editorWidth
-                                let newWidth = start + value.translation.width
-                                editorWidth = max(200, min(newWidth, 1200))
-                            }
-                    )
-            }
-
-            // Main content
-            VStack(spacing: 0) {
-                // Top area: viewport (toolbar + canvas + timeline +
-                // properties panel) when a scene is loaded.  Until then,
-                // the passive RenderImageView shows the no-scene
-                // placeholder.  There's no separate "interact mode" —
-                // viewport is always on once a scene exists; clicking
-                // Render stops the viewport, runs the production
-                // rasterizer, then restarts the viewport.
-                if let vb = viewModel.viewportBridge {
-                    let interacting = (viewModel.renderState != .rendering
-                                       && viewModel.renderState != .cancelling
-                                       && viewModel.renderState != .loading)
-                    let edrActive = viewModel.edrAvailable && viewModel.edrEnabled
-                    HStack(spacing: 0) {
-                        // L5a round-3 — pass the EDR renderer
-                        // straight into ViewportView.  The viewport's
-                        // ViewportNSView hosts a CAMetalLayer
-                        // sublayer at the aspect-fit drawRect when
-                        // EDR is on, leaving the toolbar / scrubber /
-                        // properties panel SwiftUI overlays + the
-                        // pointer-event NSResponder chain fully
-                        // functional.  Interactive editing now works
-                        // in EDR mode (round-3 fix for the "EDR
-                        // hides the toolbar / blocks pointer events"
-                        // round-2 regression).
-                        ViewportView(
-                            bridge: vb,
-                            image: $viewModel.renderedImage,
-                            timelineVisible: viewModel.hasAnimation,
-                            sceneTime: $viewModel.sceneTime,
-                            // Pull the timeline range from the scene's
-                            // animation_options chunk via the bridge.
-                            // Falls back to 5.0 only if the scene
-                            // declares no animation options at all
-                            // (animationTimeEnd == 0), so we avoid a
-                            // 0-length slider that would clamp every
-                            // scrub to t=0.
-                            timelineMax: vb.animationTimeEnd > 0 ? vb.animationTimeEnd : 5.0,
-                            interactionEnabled: interacting,
-                            isProductionRendering: (viewModel.renderState == .rendering),
-                            onSelectionMayHaveChanged: { propertyRefresh += 1 },
-                            isPreviewPlaying: viewModel.isPreviewPlaying,
-                            onPlayToggle: { viewModel.togglePreviewPlay() },
-                            onUserScrubBegan: { viewModel.stopPreviewPlay() },
-                            productionEDRRenderer:  viewModel.productionEDRRenderer,
-                            interactiveEDRRenderer: viewModel.interactiveEDRRenderer,
-                            edrEnabled: edrActive
-                        )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                        // Right panel — visibility / contents are
-                        // controlled by the bridge's panelMode.  None →
-                        // empty placeholder; Camera → camera property
-                        // table; Object → name + position read-out.  The
-                        // panel itself reads bridge.panelMode each refresh.
-                        Divider()
-
-                        PropertiesPanel(
-                            bridge: vb,
-                            refreshTrigger: $propertyRefresh
-                        )
-                        .frame(width: 280)
-                        .disabled(!interacting)
-                    }
-                    .onChange(of: viewModel.renderedImage) { _, _ in
-                        // Each rendered frame implies the camera may
-                        // have moved; bump the refresh counter so the
-                        // panel re-snapshots.  The panel itself
-                        // protects against overwriting an in-flight
-                        // text edit (focused field is left alone).
-                        propertyRefresh &+= 1
-                    }
-                } else {
-                    RenderImageView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-
-                Divider()
-
-                // Bottom area: controls (left) + log output (right)
-                HStack(spacing: 0) {
-                    // Bottom-left: Controls panel
-                    controlsPanel
-                        .frame(width: 260)
-
-                    Divider()
-
-                    // Bottom-right: Log output
-                    LogOutputView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                .frame(height: 280)
-
-                Divider()
-
-                // Status bar
-                statusBar
-            }
+        VStack(spacing: 0) {
+            TopBar()
+            mainArea
         }
         .navigationTitle(windowTitle)
         .navigationSubtitle("RISE \(viewModel.versionString)")
-        .frame(minWidth: 600, minHeight: 500)
-        .onChange(of: viewModel.sceneSize) { _, newSize in
-            guard let size = newSize else { return }
-            resizeWindowToFitScene(size)
-        }
-        .onChange(of: viewModel.isEditorVisible) { _, isVisible in
-            adjustWindowForEditor(visible: isVisible)
+        .frame(minWidth: 1320, minHeight: 760)
+        // Theme mode re-render hook — see `themeModeRaw` doc above.
+        .id(themeModeRaw)
+    }
+
+    // MARK: - Main workspace (left panel / center / right panel)
+
+    private var mainArea: some View {
+        HStack(spacing: 0) {
+            if viewModel.viewportBridge != nil && viewModel.showLeftPanel {
+                leftPanel
+                leftPanelResizeHandle
+            }
+
+            centerColumn
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if let vb = viewModel.viewportBridge {
+                rightPanel(vb)
+            }
         }
     }
 
-    // MARK: - Controls Panel
+    /// True while the interactive viewport accepts pointer / drag input
+    /// — false during a production render (both the viewport's own
+    /// gesture handling and the properties panel disable themselves on
+    /// this so they can't race the production rasterizer's workers).
+    private var interacting: Bool {
+        viewModel.renderState != .rendering
+            && viewModel.renderState != .cancelling
+            && viewModel.renderState != .loading
+    }
 
-    private var controlsPanel: some View {
+    // MARK: - Left panel (Agent / Scene file tabs)
+
+    private var leftPanel: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Controls")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.secondary)
-                Spacer()
+            leftPanelTabStrip
+            switch viewModel.leftTab {
+            case .agent:
+                agentTabBody
+            case .sceneFile:
+                SceneEditorPanel()
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color(nsColor: .windowBackgroundColor))
+        }
+        .frame(width: CGFloat(leftPanelWidth))
+        .background(Theme.bgPanel)
+        .overlay(alignment: .trailing) {
+            Rectangle().fill(Theme.borderHairline).frame(width: 1)
+        }
+    }
 
-            Divider()
-
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 10) {
-                // Scene actions
-                FlowLayout(spacing: 8) {
-                    Button {
-                        viewModel.openScene()
-                    } label: {
-                        Label("Open Scene", systemImage: "doc.badge.plus")
+    /// 5pt drag strip between the left panel and the center column —
+    /// same interaction the pre-redesign editor sidebar had.  Cursor
+    /// flips to resize on hover; width clamps to [360, 900].
+    private var leftPanelResizeHandle: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(width: 5)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering { NSCursor.resizeLeftRight.push() }
+                else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .updating($leftPanelDragStart) { _, start, _ in
+                        if start == nil { start = leftPanelWidth }
                     }
-                    .disabled(viewModel.renderState == .rendering
-                              || viewModel.renderState == .cancelling
-                              || viewModel.renderState == .loading)
-                    .help("Open a .RISEscene file")
-
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            viewModel.editSceneFile()
-                        }
-                    } label: {
-                        Label("Edit", systemImage: "pencil")
+                    .onChanged { value in
+                        let start = leftPanelDragStart ?? leftPanelWidth
+                        leftPanelWidth = min(Self.leftPanelMaxWidth,
+                                             max(Self.leftPanelMinWidth,
+                                                 start + Double(value.translation.width)))
                     }
-                    .disabled(viewModel.loadedFilePath == nil)
-                    .help(viewModel.isEditorVisible ? "Close the scene editor" : "Edit the scene file")
+            )
+    }
 
-                    Button {
-                        viewModel.clearScene()
-                    } label: {
-                        Label("Clear", systemImage: "trash")
-                    }
-                    .disabled(viewModel.renderState == .rendering
-                              || viewModel.renderState == .cancelling
-                              || viewModel.renderState == .idle)
-                    .help("Clear the current scene")
+    private var leftPanelTabStrip: some View {
+        HStack(spacing: 2) {
+            leftPanelTabButton(title: "Agent", isActive: viewModel.leftTab == .agent, showDot: true) {
+                viewModel.leftTab = .agent
+            }
+            leftPanelTabButton(title: "Scene file", isActive: viewModel.leftTab == .sceneFile, showDot: false) {
+                viewModel.leftTab = .sceneFile
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 42)
+        .background(Theme.bgPanel)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.borderHairline).frame(height: 1)
+        }
+    }
 
-                    // Facet 5 slice 1c-1: toggle the live Agent (JSON-RPC)
-                    // panel — the minimal "agent + user co-edit" affordance.
-                    // Superseded by Chat for everyday use; only shown when
-                    // the Developer toggle (Chat settings popover) is on.
-                    if viewModel.showAgentDebugPanel {
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                viewModel.toggleAgentPanel()
-                            }
-                        } label: {
-                            Label("Agent", systemImage: "wand.and.stars")
-                        }
-                        .disabled(viewModel.viewportBridge == nil)
-                        .help(viewModel.isAgentPanelVisible
-                              ? "Hide the Agent (JSON-RPC) panel"
-                              : "Show the Agent (JSON-RPC) panel")
+    private func leftPanelTabButton(title: String, isActive: Bool, showDot: Bool,
+                                     action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    if showDot {
+                        Circle().fill(Theme.accent).frame(width: 6, height: 6)
                     }
-
-                    // Facet 5 slice B2: toggle the LLM Chat panel — the
-                    // natural-language sibling of the JSON-RPC debug panel.
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            viewModel.toggleChatPanel()
-                        }
-                    } label: {
-                        Label("Chat", systemImage: "bubble.left.and.bubble.right")
-                    }
-                    .disabled(viewModel.viewportBridge == nil)
-                    .help(viewModel.isChatPanelVisible
-                          ? "Hide the Chat panel"
-                          : "Show the Chat panel (an LLM edits the scene for you)")
+                    Text(title)
+                        .font(isActive ? Theme.sans(12, .semibold) : Theme.mono(11.5))
+                        .foregroundColor(isActive ? Theme.textPrimary : Theme.textFaint)
                 }
+                .padding(.horizontal, 15)
+                .frame(height: 40)
+                Rectangle()
+                    .fill(isActive ? AnyShapeStyle(Theme.spectralGradient) : AnyShapeStyle(Color.clear))
+                    .frame(height: 2)
+            }
+        }
+        .buttonStyle(.plain)
+    }
 
-                // Facet 5 slice 1c-1: the inline Agent (JSON-RPC) panel.
-                // Gated on the Developer toggle in addition to its own
-                // visibility flag — see `showAgentDebugPanel`.
-                if viewModel.showAgentDebugPanel && viewModel.isAgentPanelVisible {
+    /// The Agent tab: the LLM Chat panel, plus (behind the Developer
+    /// toggle) the raw JSON-RPC Agent debug panel below it.  Wrapped in
+    /// a ScrollView so the fixed-height chat transcript + debug panel
+    /// don't overflow a short window — mirrors the pre-redesign
+    /// controlsPanel's layout of the same two panels.
+    private var agentTabBody: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 10) {
+                ChatPanel(chat: viewModel.chat)
+
+                if viewModel.showAgentDebugPanel {
                     Divider()
                     AgentPanel()
                 }
-
-                // Facet 5 slice B2: the inline LLM Chat panel.
-                if viewModel.isChatPanelVisible {
-                    Divider()
-                    ChatPanel(chat: viewModel.chat)
-                }
-
-                Divider()
-
-                // (The active animation is picked in the right-side panel's
-                // "Animation" accordion category — consistent with how every
-                // other scene entity is selected.  The Play button by the
-                // timeline loops whichever animation is active.)
-
-                // Render actions
-                FlowLayout(spacing: 8) {
-                    Button {
-                        viewModel.startRender()
-                    } label: {
-                        Label("Render", systemImage: "play.fill")
-                    }
-                    .disabled(!canRender)
-                    .help("Start rendering the loaded scene")
-
-                    Button {
-                        viewModel.startAnimationRender()
-                    } label: {
-                        Label("Render Animation", systemImage: "film")
-                    }
-                    .disabled(!canRender || !viewModel.hasAnimation)
-                    .help("Render all animation frames")
-
-                    Button {
-                        viewModel.cancelRender()
-                    } label: {
-                        Label("Cancel", systemImage: "stop.fill")
-                    }
-                    .disabled(viewModel.renderState != .rendering)
-                    .help("Cancel the current render")
-                }
-
-                // Cancelling indicator
-                if viewModel.renderState == .cancelling {
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Cancelling — waiting for active block to finish…")
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                    }
-                }
-
-                // L5a — EDR Preview toggle moved to the View menu in
-                // RISEApp.swift (matches the Windows port's "View > HDR
-                // Preview" menu item).  Driven by the same
-                // `viewModel.edrEnabled` published property; the menu
-                // item disables itself when `edrAvailable` is false.
-
-                // L5e — Exposure slider.  Lives in the Controls panel
-                // (under the Render buttons) so it's visually distinct
-                // from the animation-time slider that appears in the
-                // viewport pane.  Title bar makes the function obvious
-                // at a glance: "Exposure  +0.0 EV".  Double-click on
-                // the slider track resets to 0 — a TapGesture-with-
-                // count-2 layered behind the Slider, sized to its
-                // bounds.  The Slider consumes single-clicks for its
-                // own drag; double-clicks fall through to the gesture
-                // because SwiftUI's gesture-priority resolution gives
-                // higher-count taps precedence.  No "Reset" button —
-                // the gesture is the only affordance, matching DCC
-                // norms (Houdini, Maya).
-                // L5e round-2 — `!viewModel.edrEnabled` gate added.
-                // In HDR / EDR display mode the OS compositor owns
-                // the dynamic-range mapping, and applying our own
-                // exposure on top double-maps the radiance signal —
-                // visually jarring on HDR-capable monitors.  Same
-                // disable rule the View > Tone Curve menu uses.
-                Divider()
-                ExposureSliderRow(
-                    ev: $viewModel.viewExposureEV,
-                    enabled: viewModel.renderState != .idle
-                          && !viewModel.edrEnabled
-                )
-
-                // Progress
-                if viewModel.renderState == .rendering || viewModel.renderState == .cancelling {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ProgressView(value: viewModel.progress)
-                            .progressViewStyle(.linear)
-
-                        HStack {
-                            Text(String(format: "%.1f%%", viewModel.progress * 100))
-                                .font(.caption)
-                                .monospacedDigit()
-
-                            if !viewModel.progressTitle.isEmpty {
-                                Text(viewModel.progressTitle)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(1)
-                            }
-
-                            Spacer()
-
-                            Text("Elapsed: \(viewModel.formattedElapsedTime)")
-                                .font(.caption)
-                                .monospacedDigit()
-                                .foregroundColor(.secondary)
-                        }
-
-                        HStack {
-                            Spacer()
-                            if let remaining = viewModel.formattedRemainingTime {
-                                Text("Remaining: ~\(remaining)")
-                                    .font(.caption)
-                                    .monospacedDigit()
-                                    .foregroundColor(.secondary)
-                            } else {
-                                Text("Remaining: estimating\u{2026}")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                    }
-                }
-
-                }
-                .padding(10)
             }
+            .padding(10)
         }
-        .clipped()
     }
 
-    // MARK: - Status Bar
+    // MARK: - Center column (viewport / log drawer)
 
-    private var statusBar: some View {
-        HStack(spacing: 12) {
-            Text(statusText)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .help(viewModel.resolveReason ?? "")
+    private var centerColumn: some View {
+        VStack(spacing: 0) {
+            if let vb = viewModel.viewportBridge {
+                viewportToolbarRow(vb)
 
-            Spacer()
-
-            if viewModel.renderState == .completed {
-                Text(viewModel.formattedElapsedTime)
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundColor(.secondary)
+                let edrActive = viewModel.edrAvailable && viewModel.edrEnabled
+                ViewportView(
+                    bridge: vb,
+                    image: $viewModel.renderedImage,
+                    timelineVisible: viewModel.hasAnimation,
+                    sceneTime: $viewModel.sceneTime,
+                    // Pull the timeline range from the scene's
+                    // animation_options chunk via the bridge.  Falls
+                    // back to 5.0 only if the scene declares no
+                    // animation options at all (animationTimeEnd == 0),
+                    // so we avoid a 0-length slider that would clamp
+                    // every scrub to t=0.
+                    timelineMax: vb.animationTimeEnd > 0 ? vb.animationTimeEnd : 5.0,
+                    interactionEnabled: interacting,
+                    isProductionRendering: (viewModel.renderState == .rendering),
+                    onSelectionMayHaveChanged: { propertyRefresh += 1 },
+                    isPreviewPlaying: viewModel.isPreviewPlaying,
+                    onPlayToggle: { viewModel.togglePreviewPlay() },
+                    onUserScrubBegan: { viewModel.stopPreviewPlay() },
+                    productionEDRRenderer: viewModel.productionEDRRenderer,
+                    interactiveEDRRenderer: viewModel.interactiveEDRRenderer,
+                    edrEnabled: edrActive,
+                    selectedTool: $selectedTool,
+                    regionArmed: $regionArmed,
+                    refreshTrigger: $propertyRefresh
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onChange(of: viewModel.renderedImage) { _, _ in
+                    // Each rendered frame implies the camera may have
+                    // moved; bump the refresh counter so the right
+                    // panel re-snapshots.  The panel itself protects
+                    // against overwriting an in-flight text edit
+                    // (focused field is left alone).
+                    propertyRefresh &+= 1
+                }
+            } else {
+                RenderImageView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+
+            if viewModel.showLogDrawer {
+                logDrawer
+            } else {
+                collapsedLogStrip
+            }
+        }
+        .background(Theme.bgCenter)
+    }
+
+    // MARK: - Viewport toolbar row (design comp: ~239-264)
+
+    /// A 52pt row above the viewport: tool group (every tool an
+    /// individual labeled button — see ViewportToolbar.swift's file
+    /// header for the discoverability redesign), active-camera chip,
+    /// region-of-interest toggle, then (right-aligned) the EV readout
+    /// + EDR chip.  Replaces the pre-redesign floating toolbar that
+    /// used to overlay the rendered image itself.  Row grew from the
+    /// original 40pt to fit the toolbar's now-labeled ~44pt-tall
+    /// buttons; the other chips are unchanged in height and simply
+    /// re-center within the taller row (HStack's default `.center`
+    /// alignment).
+    private func viewportToolbarRow(_ vb: RISEViewportBridge) -> some View {
+        HStack(spacing: 10) {
+            ViewportToolbar(selectedTool: $selectedTool)
+                .disabled(!interacting)
+                .opacity(interacting ? 1.0 : 0.5)
+
+            Rectangle().fill(Theme.borderLight).frame(width: 1, height: 18)
+
+            cameraChip(vb)
+
+            regionChip(vb)
+
+            Spacer(minLength: 0)
+
+            evChip
+            edrChip
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(height: 52)
+        .background(Theme.bgCenter)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.borderHairline).frame(height: 1)
+        }
     }
 
-    // MARK: - Window Sizing
-
-    /// Resizes the key window so the content area fits the scene plus the bottom panels.
-    private func resizeWindowToFitScene(_ sceneSize: CGSize) {
-        guard let window = NSApplication.shared.keyWindow else { return }
-        guard let screen = window.screen else { return }
-        guard sceneSize.width > 0 && sceneSize.height > 0 else { return }
-
-        let chromeHeight = window.frame.height - window.contentLayoutRect.height
-        let bottomPanelHeight: CGFloat = 280
-        let statusBarHeight: CGFloat = 30
-        let fixedHeight = bottomPanelHeight + statusBarHeight
-
-        let editorPanelTotal: CGFloat = viewModel.isEditorVisible ? editorWidth + 5 : 0
-        let maxWidth = screen.visibleFrame.width
-        let maxHeight = screen.visibleFrame.height
-
-        // Start with 1:1 pixel mapping for the scene
-        var renderWidth = sceneSize.width
-        var renderHeight = sceneSize.height
-
-        // If the frame would exceed screen bounds, scale down the render area
-        // while preserving the scene's aspect ratio.
-        let maxRenderHeight = maxHeight - chromeHeight - fixedHeight
-        let maxRenderWidth = maxWidth - editorPanelTotal
-        let scale = min(1.0, maxRenderWidth / renderWidth, maxRenderHeight / renderHeight)
-        renderWidth = ceil(renderWidth * scale)
-        renderHeight = ceil(renderHeight * scale)
-
-        let frameWidth = renderWidth + editorPanelTotal
-        let frameHeight = renderHeight + fixedHeight + chromeHeight
-
-        let originX = screen.visibleFrame.midX - frameWidth / 2
-        let originY = screen.visibleFrame.midY - frameHeight / 2
-        let newFrame = NSRect(x: originX, y: originY, width: frameWidth, height: frameHeight)
-
-        // If the editor panel is already included in this resize, suppress
-        // the adjustWindowForEditor that may fire in the same update cycle.
-        if editorPanelTotal > 0 {
-            suppressEditorAdjust = true
+    /// "◉ <activeCameraName> 50mm · f/4.0" — non-interactive (switching
+    /// cameras stays the outliner's job).  The lens summary is appended
+    /// ONLY when real per-parameter data is available for the ACTIVE
+    /// camera (see `cameraLensSummary` below) — no fabricated units, no
+    /// guessed defaults.  Refreshes on the same trigger every sibling
+    /// chip/panel in this row uses (`propertyRefresh`, bumped on
+    /// selection change / property edits — see the view-body callers),
+    /// not per-frame; reads the bridge unconditionally, same as the
+    /// pre-existing name-only read did (no extra scene-editable gate —
+    /// this is a read-only display, not an interactive affordance, matching
+    /// `regionChip`'s own pattern of gating INTERACTION, not the read).
+    private func cameraChip(_ vb: RISEViewportBridge) -> some View {
+        let name = vb.activeName(for: .camera)
+        let lens = cameraLensSummary(vb, activeCameraName: name)
+        return HStack(spacing: 6) {
+            Text("◉").foregroundColor(Theme.accentSoft)
+            Text(name.isEmpty ? "—" : name)
+            if let lens {
+                Text(lens).foregroundColor(Theme.textDim)
+            }
         }
-
-        window.setFrame(newFrame, display: true, animate: true)
+        .font(Theme.mono(11.5))
+        .foregroundColor(Theme.textPrimary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Theme.bgPanel, in: RoundedRectangle(cornerRadius: Theme.radiusMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusMedium)
+                .stroke(Theme.borderHairline, lineWidth: 1)
+        )
+        .help("Active camera — switch in the outliner")
     }
 
-    /// Grows or shrinks the window to accommodate the editor sidebar,
-    /// keeping the right edge anchored so the render area stays in place.
-    private func adjustWindowForEditor(visible: Bool) {
-        if suppressEditorAdjust {
-            suppressEditorAdjust = false
-            return
-        }
-        guard let window = NSApplication.shared.keyWindow else { return }
-        guard let screen = window.screen else { return }
+    /// Lens summary for the active camera, e.g. "50mm · f/4.0" (ThinLens)
+    /// or "62° FOV · f/8" (Pinhole — no focal_length parameter exists on
+    /// that camera type, so this honestly shows FOV instead of fabricating
+    /// a focal length). Returns nil (name-only fallback) when there is
+    /// nothing honest to show.
+    ///
+    /// DATA SOURCE CAVEAT: reads `propertySnapshot(for: .camera)`, which is
+    /// keyed to the Properties panel's OWN camera-category SELECTION
+    /// (`SceneEditController::mSelectionByCategory[Camera]`), not directly
+    /// to the scene's active camera. Those two are the SAME thing for any
+    /// camera the user has actually clicked in the outliner/panel —
+    /// `SetSelection(Camera, name)` is what calls `IScene::SetActiveCamera`
+    /// in the first place — but immediately after scene load, before any
+    /// camera selection, the panel's selection can be empty while a camera
+    /// is nonetheless active by scene default. This function ONLY trusts
+    /// the snapshot when the panel's current selection name already
+    /// echoes `activeCameraName`; otherwise it returns nil rather than
+    /// either showing stale/wrong data or forcing `SetSelection` as a side
+    /// effect of a toolbar read (that call is a real scene mutation with
+    /// its own cancel-and-park serialization — not something a read-only
+    /// chip should trigger).
+    private func cameraLensSummary(_ vb: RISEViewportBridge, activeCameraName: String) -> String? {
+        guard !activeCameraName.isEmpty,
+              vb.selectionCategory == .camera,
+              vb.selectionName == activeCameraName
+        else { return nil }
 
-        let delta = editorWidth + 5 // panel + resize handle
-        var frame = window.frame
-
-        if visible {
-            frame.size.width += delta
-            frame.origin.x -= delta
-        } else {
-            frame.size.width -= delta
-            frame.origin.x += delta
+        var focalLengthMm: String?
+        var fovDegrees: String?
+        var fstop: String?
+        for row in vb.propertySnapshot(for: .camera) {
+            switch row.name {
+            case "focal_length": focalLengthMm = row.value
+            case "fov":          fovDegrees = row.value
+            case "fstop":        fstop = row.value
+            default: break
+            }
         }
 
-        // Clamp to screen bounds
-        let visibleFrame = screen.visibleFrame
-        if frame.origin.x < visibleFrame.minX {
-            frame.origin.x = visibleFrame.minX
+        var parts: [String] = []
+        if let focalLengthMm {
+            parts.append("\(focalLengthMm)mm")
+        } else if let fovDegrees {
+            parts.append("\(fovDegrees)° FOV")
         }
-        if frame.maxX > visibleFrame.maxX {
-            frame.size.width = visibleFrame.maxX - frame.origin.x
+        if let fstop {
+            parts.append("f/\(fstop)")
         }
-        frame.size.width = max(frame.size.width, 900)
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 
-        window.setFrame(frame, display: true, animate: true)
+    /// Design brief A4 region-of-interest toggle.  Three visual
+    /// states: dimmed "REGION" (off), accent "REGION · armed" (next
+    /// drag draws a box), warn "REGION ×" (a region is active —
+    /// click clears it).  Disabled + explained via `.help` when the
+    /// active interactive rasterizer doesn't honor regions at all.
+    private func regionChip(_ vb: RISEViewportBridge) -> some View {
+        let honored = vb.interactiveRasterizerHonorsRegion()
+        // Also gated on `interacting` — arming (or clearing) a region
+        // while a production render owns the viewport can't lead
+        // anywhere (pointer events are dropped by ViewportView's own
+        // `interactionEnabled` guard while a render is in flight),
+        // and would otherwise leave a "REGION · armed" chip stuck
+        // with no drag ever able to consume it.
+        let usable = honored && interacting
+        let active = viewModel.activeRegion != nil
+        let text = active ? "REGION ×" : (regionArmed ? "REGION · armed" : "REGION")
+        let color: Color = active ? Theme.warn : (regionArmed ? Theme.accent : Theme.textFaint)
+        return Text(text)
+            .font(Theme.mono(10))
+            .foregroundColor(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(color.opacity(0.4), lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+            .opacity(usable ? 1.0 : 0.4)
+            .onTapGesture {
+                guard usable else { return }
+                if active {
+                    vb.clearInteractiveRegion()
+                    viewModel.activeRegion = nil
+                    regionArmed = false
+                } else {
+                    regionArmed.toggle()
+                }
+            }
+            .help(!honored
+                  ? "The active integrator ignores regions"
+                  : (interacting
+                     ? "Toggle region refinement — drag in the viewport to draw a box"
+                     : "Unavailable while a render is in flight"))
+    }
+
+    /// Compact "EV +0.3" readout; click pops a popover with the full
+    /// exposure slider (moved here from the log-drawer header, which
+    /// only parked it there temporarily — see the log drawer's
+    /// history in git blame for L5e).
+    private var evChip: some View {
+        Button {
+            showEVPopover = true
+        } label: {
+            Text(formattedEV)
+                .font(Theme.mono(10))
+                .foregroundColor(Theme.textFaint)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showEVPopover, arrowEdge: .bottom) {
+            ExposureSliderRow(
+                ev: $viewModel.viewExposureEV,
+                enabled: viewModel.renderState != .idle && !viewModel.edrEnabled
+            )
+            .frame(width: 220)
+            .padding(12)
+        }
+        .help("Display exposure — click for the full slider")
+    }
+
+    private var formattedEV: String {
+        let v = viewModel.viewExposureEV
+        let sign = v > 0 ? "+" : ""
+        return String(format: "EV \(sign)%.1f", v)
+    }
+
+    /// EDR Preview toggle chip, mirrored from the View menu's "EDR
+    /// Preview" item (RISEApp.swift) — same `edrEnabled` /
+    /// `edrAvailable` state, just reachable without opening a menu.
+    private var edrChip: some View {
+        Button {
+            viewModel.edrEnabled.toggle()
+        } label: {
+            Text("EDR")
+                .font(Theme.mono(10))
+                .foregroundColor(viewModel.edrEnabled ? Theme.accent : Theme.textFaint)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(viewModel.edrEnabled ? Theme.accent.opacity(0.5) : Theme.borderLight, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!viewModel.edrAvailable)
+        .opacity(viewModel.edrAvailable ? 1.0 : 0.4)
+        .help(viewModel.edrAvailable ? "Toggle EDR Preview" : "This display has no EDR headroom")
+    }
+
+    // MARK: - Log drawer
+    //
+    // LogOutputView owns the full drawer content (header: title,
+    // severity pills, WARN/ERR counts, filter field, follow toggle,
+    // clear, collapse chevron; body: the filtered row list) — this
+    // view only supplies the outer frame/border/corner-radius and the
+    // collapse callback.  The exposure control that used to be parked
+    // in this header (L5e) moved to the viewport toolbar's EV chip.
+
+    private var logDrawer: some View {
+        LogOutputView(onCollapse: {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                viewModel.showLogDrawer = false
+            }
+        })
+        .frame(height: 150)
+        .background(Theme.bgWell)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.borderLight, lineWidth: 1))
+        .padding(.horizontal, 10)
+        .padding(.bottom, 8)
+    }
+
+    /// Collapsed strip shown in place of the log drawer — a single
+    /// 28 pt row with the most recent log line + a WARN count chip,
+    /// tap to expand.
+    private var collapsedLogStrip: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                viewModel.showLogDrawer = true
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Text("Log")
+                    .font(Theme.sans(11, .semibold))
+                    .foregroundColor(Theme.textPrimary)
+                if let last = viewModel.logMessages.last {
+                    Text(Self.collapsedLogTimeFormatter.string(from: last.timestamp))
+                        .font(Theme.mono(10))
+                        .foregroundColor(Theme.textGhost)
+                    Text(last.text)
+                        .font(Theme.mono(10.5))
+                        .foregroundColor(Theme.textMuted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                Spacer(minLength: 0)
+                if collapsedWarnCount > 0 {
+                    Text("WARN \(collapsedWarnCount)")
+                        .font(Theme.mono(9))
+                        .foregroundColor(Theme.warn)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Theme.warn.opacity(0.35), lineWidth: 1)
+                        )
+                }
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textDim)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(Theme.bgWell)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.borderLight, lineWidth: 1))
+        .padding(.horizontal, 10)
+        .padding(.bottom, 8)
+        .help("Expand log (⌥L)")
+    }
+
+    private var collapsedWarnCount: Int {
+        viewModel.logMessages.filter { $0.level == .warning }.count
+    }
+
+    private static let collapsedLogTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
+    // MARK: - Right panel
+
+    private func rightPanel(_ vb: RISEViewportBridge) -> some View {
+        VStack(spacing: 0) {
+            OutlinerView(bridge: vb, refreshTrigger: $propertyRefresh)
+            PropertiesPanel(bridge: vb, refreshTrigger: $propertyRefresh)
+        }
+        .frame(width: 344)
+        .disabled(!interacting)
+        .background(Theme.bgPanel)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(Theme.borderHairline).frame(width: 1)
+        }
     }
 
     // MARK: - Computed Properties
-
-    private var canRender: Bool {
-        switch viewModel.renderState {
-        case .sceneLoaded, .completed, .cancelled:
-            return true
-        default:
-            return false
-        }
-    }
-
-    private var statusText: String {
-        switch viewModel.renderState {
-        case .idle:
-            return "Ready"
-        case .loading:
-            return "Loading scene..."
-        case .sceneLoaded:
-            return "Scene loaded. Press Render to begin."
-        case .rendering:
-            return "Rendering..."
-        case .cancelling:
-            return "Cancelling — waiting for active block to finish…"
-        case .completed:
-            if let integ = viewModel.resolvedIntegrator {
-                return "Render complete · Auto → \(integ.uppercased())"
-            }
-            return "Render complete"
-        case .cancelled:
-            return "Render cancelled"
-        case .error(let msg):
-            return "Error: \(msg)"
-        }
-    }
 
     private var windowTitle: String {
         if let path = viewModel.loadedFilePath {
@@ -583,18 +640,10 @@ private struct ExposureSliderRow: View {
     let enabled: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Image(systemName: "sun.max")
-                    .imageScale(.small)
-                Text("Exposure")
-                    .font(.caption)
-                Spacer()
-                Text(formatEV(ev))
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundColor(.secondary)
-            }
+        HStack(spacing: 6) {
+            Image(systemName: "sun.max")
+                .imageScale(.small)
+                .foregroundColor(Theme.textDim)
             Slider(value: $ev, in: -6.0...6.0)
                 .controlSize(.small)
                 .background(
@@ -611,6 +660,10 @@ private struct ExposureSliderRow: View {
                             }
                         )
                 )
+            Text(formatEV(ev))
+                .font(Theme.mono(9.5))
+                .foregroundColor(Theme.textDim)
+                .frame(width: 44, alignment: .trailing)
         }
         .disabled(!enabled)
         .help("Display exposure in EV stops.  Double-click the slider to reset to 0.")

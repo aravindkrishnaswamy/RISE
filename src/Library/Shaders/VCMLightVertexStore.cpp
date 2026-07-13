@@ -346,7 +346,40 @@ namespace
 		std::mutex					mut;
 		std::condition_variable		cv;
 		std::atomic<unsigned int>	outstanding;
-		explicit KDTreeLatchState( unsigned int n ) : outstanding( n ) {}
+		// Set true by any task whose subtree build threw (e.g. a
+		// std::bad_alloc out of the recursive pool.Submit under memory
+		// pressure), OR when a Submit itself failed to enqueue.  The
+		// driver reads it AFTER the latch drains and, if set, rebuilds
+		// the whole tree serially rather than marking a PARTIAL tree
+		// built.  Stored release / loaded acquire so the driver's
+		// post-barrier read sees every task's write (paired with the
+		// acq_rel fetch_sub release sequence on `outstanding`).
+		std::atomic<bool>			failed;
+		explicit KDTreeLatchState( unsigned int n ) : outstanding( n ), failed( false ) {}
+	};
+
+	// RAII: drains ONE unit from the kd-tree build latch on EVERY exit
+	// from a submitted task -- normal return OR an exception unwinding out
+	// of the task body -- and signals the driver when the count reaches
+	// zero.  This is load-bearing for exception safety: a throw out of
+	// BalanceSegmentParallel would otherwise skip the decrement, so
+	// `outstanding` would never reach 0 and BuildKDTreeParallel's cv.wait
+	// would hang forever.  (Before ThreadPool::WorkerLoop swallowed task
+	// exceptions such a throw std::terminate'd the process; now that the
+	// pool keeps running, draining the latch here is what turns "crash"
+	// into "clean, complete build" instead of "hang".)
+	struct KDTreeLatchDrainGuard
+	{
+		const std::shared_ptr<KDTreeLatchState>& sync;
+		~KDTreeLatchDrainGuard()
+		{
+			if( sync->outstanding.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
+				{
+					std::lock_guard<std::mutex> lk( sync->mut );
+				}
+				sync->cv.notify_all();
+			}
+		}
 	};
 
 	// Copy of BalanceSegment but queues sub-ranges into the pool
@@ -402,16 +435,34 @@ namespace
 		// `sync` is captured by value into the lambda so the latch
 		// state lives until every spawned task has destructed.
 		sync->outstanding.fetch_add( 1, std::memory_order_relaxed );
-		pool.Submit( [&verts, leftBox, from, median, cutoff, &pool, sync] {
-			BalanceSegmentParallel( verts, leftBox, from, median - 1, cutoff,
-				pool, sync );
-			if( sync->outstanding.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
-				{
-					std::lock_guard<std::mutex> lk( sync->mut );
+		try {
+			pool.Submit( [&verts, leftBox, from, median, cutoff, &pool, sync] {
+				// Drain this task's latch unit on EVERY exit (see
+				// KDTreeLatchDrainGuard); catch the body's exception so it
+				// does not propagate to the (now exception-swallowing) pool
+				// worker with the failure unrecorded -- record it instead so
+				// the driver falls back to a serial rebuild.
+				KDTreeLatchDrainGuard drain{ sync };
+				try {
+					BalanceSegmentParallel( verts, leftBox, from, median - 1, cutoff,
+						pool, sync );
 				}
-				sync->cv.notify_all();
-			}
-		} );
+				catch( ... ) {
+					sync->failed.store( true, std::memory_order_release );
+				}
+			} );
+		}
+		catch( ... ) {
+			// Submit itself failed to enqueue (e.g. bad_alloc building the
+			// std::function / growing the queue): no task exists to drain
+			// the unit we just added, so roll it back to keep the latch
+			// able to reach zero, and record the failure for the serial
+			// rebuild.  No notify needed -- THIS task still holds its own
+			// outstanding unit (drained by its caller's guard), so the
+			// count cannot be at zero here.
+			sync->failed.store( true, std::memory_order_release );
+			sync->outstanding.fetch_sub( 1, std::memory_order_acq_rel );
+		}
 
 		// Right subtree on the current task.
 		BalanceSegmentParallel( verts, rightBox, median + 1, to, cutoff,
@@ -456,21 +507,48 @@ void LightVertexStore::BuildKDTreeParallel()
 	// of its own lambda.  Whoever drives the counter to 0 signals.
 	auto sync = std::make_shared<KDTreeLatchState>( 1 );
 
-	pool.Submit( [this, bbox, N, cutoff, &pool, sync] {
-		BalanceSegmentParallel( mVertices, bbox, 0, static_cast<int>( N ) - 1, cutoff,
-			pool, sync );
-		if( sync->outstanding.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
-			{
-				std::lock_guard<std::mutex> lk( sync->mut );
+	bool rootSubmitted = false;
+	try {
+		pool.Submit( [this, bbox, N, cutoff, &pool, sync] {
+			// Same exception-safe shape as the recursive Submit above:
+			// drain-on-every-exit + record-failure-instead-of-escape.
+			KDTreeLatchDrainGuard drain{ sync };
+			try {
+				BalanceSegmentParallel( mVertices, bbox, 0, static_cast<int>( N ) - 1, cutoff,
+					pool, sync );
 			}
-			sync->cv.notify_all();
-		}
-	} );
+			catch( ... ) {
+				sync->failed.store( true, std::memory_order_release );
+			}
+		} );
+		rootSubmitted = true;
+	}
+	catch( ... ) {
+		// Could not even enqueue the root task.  Bring the initial
+		// outstanding unit to zero (nothing will drain it) and fall
+		// through to the serial rebuild below.
+		sync->failed.store( true, std::memory_order_release );
+		sync->outstanding.fetch_sub( 1, std::memory_order_acq_rel );
+	}
 
-	std::unique_lock<std::mutex> lk( sync->mut );
-	sync->cv.wait( lk, [&sync] {
-		return sync->outstanding.load( std::memory_order_acquire ) == 0;
-	} );
+	if( rootSubmitted ) {
+		std::unique_lock<std::mutex> lk( sync->mut );
+		sync->cv.wait( lk, [&sync] {
+			return sync->outstanding.load( std::memory_order_acquire ) == 0;
+		} );
+	}
+
+	// If ANY subtree task threw (or a Submit failed to enqueue), the
+	// parallel build may have left the tree PARTIAL / inconsistent.
+	// Rebuild it deterministically on this thread -- BalanceSegment
+	// re-partitions mVertices from scratch (median / nth_element does
+	// not require ordered input), so it fully corrects any partial
+	// state -- rather than marking a corrupt tree built.  No pool, no
+	// per-node task allocation, so it does not re-trip the
+	// memory-pressure path that failed the parallel build.
+	if( sync->failed.load( std::memory_order_acquire ) ) {
+		BalanceSegment( mVertices, bbox, 0, static_cast<int>( N ) - 1 );
+	}
 
 	mBuilt = true;
 }

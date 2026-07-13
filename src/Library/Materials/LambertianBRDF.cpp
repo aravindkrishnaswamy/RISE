@@ -49,14 +49,28 @@ static bool ShouldReflect( const Vector3& vLightIn, const RayIntersectionGeometr
 	const Scalar nr = Vector3Ops::Dot(n,r);
 	const Scalar nv = Vector3Ops::Dot(n,v);
 
-	if( (nr <= -NEARZERO) &&		// viewer is in front	
+	// Geometric-horizon gate: a GlintModifier-tilted shading normal can
+	// validate light/view directions that are still below the true geometric
+	// surface.  Anchored directly to the incoming ray (ri.ray.Dir()), NOT to
+	// n or either branch's effective normal below -- a tilted n picks the
+	// wrong side of geomNRaw exactly in the disagreement band this gate
+	// exists to catch (rayDir*Ns>0 while rayDir*Ng<0).  Ray-anchoring is
+	// branch-independent: r = -ri.ray.Dir(), so "Dot(r,geomN) > 0" (checked
+	// by both branches below) is precisely "Dot(geomN, ri.ray.Dir()) < 0",
+	// which is how geomN is oriented here -- the gate is a no-op by
+	// construction whenever vGeomNormal is degenerate (falls back to n).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
+	if( (nr <= -NEARZERO) &&		// viewer is in front
 		(nv <= -NEARZERO) ) {		// light is in front
-		return true;
+		return Vector3Ops::Dot( v, geomN ) > 0 && Vector3Ops::Dot( r, geomN ) > 0;
 	} else if( (nr >= NEARZERO) &&	// viewer is behind
 				(nv >= NEARZERO) ) {	// light is behind
-		return true;
+		return Vector3Ops::Dot( v, geomN ) > 0 && Vector3Ops::Dot( r, geomN ) > 0;
 	}
-   
+
 	return false;
 }
 

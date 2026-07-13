@@ -243,6 +243,66 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 - (void)undo;
 - (void)redo;
 
+/// Human-readable label of the next undo/redo step ("Translate",
+/// "Agent Edit", ...) for the Edit-menu items.  Empty string when the
+/// corresponding stack is empty.
+- (NSString *)undoActionLabel;
+- (NSString *)redoActionLabel;
+
+#pragma mark - Editor live-sync (UI refinement item 1)
+
+/// The retained CST Document's serialization — the exact bytes a save
+/// would write.  Empty string when no document is retained.  Takes the
+/// controller's commit mutex: DO NOT call while a render owns the scene
+/// (gate on the scene-editable predicate, like the proposals poll).
+- (NSString *)serializedSceneText;
+
+/// Retained CST head version — uuid is fresh per load, revision bumps
+/// iff the document content changed.  Returns NO (and zeros) with no
+/// controller.  Same do-not-call-during-renders caveat as above.
+- (BOOL)getSceneTextVersionUuid:(unsigned long long *)outUuid
+                       revision:(unsigned long long *)outRevision;
+
+#pragma mark - Refinement pause + status (UI redesign, design brief A2)
+
+/// Pause progressive refinement: the interactive render thread is
+/// joined, the on-screen image survives, CPU goes quiet.  Edits made
+/// while paused mutate the scene normally and appear on resume.
+- (void)pauseRefinement;
+/// Resume after pauseRefinement.  No-op when not paused.  Note any
+/// (re)start of the interactive loop — e.g. the post-production-render
+/// restart — also clears the paused state.
+- (void)resumeRefinement;
+- (BOOL)isRefinementPaused;
+
+/// Honest interactive-refinement readout: phase is
+/// 0 Idle / 1 Rendering / 2 Refining / 3 Polishing / 4 Paused
+/// (-1 when no controller).  scaleDivisor (when non-NULL) receives the
+/// preview-resolution divisor, 1..32 powers of two, 1 = full res.
+/// There is NO "pass N of M" in the interactive loop — it refines by a
+/// 6-level resolution ladder + a denoised polish pass; this reports
+/// exactly that.
+- (int)refinementPhaseWithScaleDivisor:(unsigned int *)scaleDivisor;
+
+#pragma mark - Interactive region-of-interest (UI redesign, design brief A4)
+
+/// Restrict full-resolution interactive passes to an INCLUSIVE box in
+/// full-res film pixel coordinates.  Coarse ladder passes still render
+/// full-frame; the region auto-clears before any production render.
+- (void)setInteractiveRegionLeft:(unsigned int)left
+                             top:(unsigned int)top
+                           right:(unsigned int)right
+                          bottom:(unsigned int)bottom;
+- (void)clearInteractiveRegion;
+/// TRUE (+ coords) when a region is active.
+- (BOOL)getInteractiveRegionLeft:(unsigned int *)left
+                             top:(unsigned int *)top
+                           right:(unsigned int *)right
+                          bottom:(unsigned int *)bottom;
+/// TRUE when the interactive rasterizer honors regions (honesty query;
+/// the stock interactive rasterizer always does).
+- (BOOL)interactiveRasterizerHonorsRegion;
+
 #pragma mark - Scene-file save (Phase 6.5)
 //
 // Persist transform edits + retained overrides back to a `.RISEscene`
@@ -345,6 +405,7 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
     RISEViewportCategoryMedium     = 7,   ///< Participating media
     RISEViewportCategoryAnimation  = 8,   ///< Named animation paths (pick to activate)
     RISEViewportCategorySceneVariant = 9, ///< scene_variant overlays (pick to re-derive that variant active)
+    RISEViewportCategoryPainter    = 10,  ///< Painters (union of the IPainter + IScalarPainter managers)
 };
 
 /// Current panel mode — lets the SwiftUI parent decide whether to
@@ -444,6 +505,73 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// (epoch, category) → list and re-pull when this advances.
 @property (nonatomic, readonly) NSUInteger sceneEpoch;
 
+/// "Reveal in scene file" (design comp ⌗ affordance): resolve entity
+/// (category, name) to its byte offset + 1-based line number inside
+/// -serializedSceneText.  Returns NO (outputs left untouched) on a null
+/// controller, no retained CST document, an unresolvable/ambiguous name,
+/// or a category with no chunk-name addressing scheme (Rasterizer/Film/
+/// None — see SceneEditController::EntitySourceLocation's doc comment).
+/// Same do-not-call-during-renders caveat as -serializedSceneText /
+/// -getSceneTextVersionUuid:.
+- (BOOL)getEntitySourceLocationForCategory:(RISEViewportCategory)category
+                                       name:(NSString *)name
+                                 byteOffset:(unsigned long long *)outOffset
+                                       line:(unsigned int *)outLine
+    NS_SWIFT_NAME(getEntitySourceLocation(for:name:byteOffset:line:));
+
+#pragma mark - Entity creation + painter CRUD (entity-creation slice)
+//
+// Mirrors RISE_API_SceneEditController_{EntityTemplateCount,
+// EntityTemplateLabel,InstantiateEntityTemplate,DuplicateEntity,
+// RemoveEntity}.  The three mutating calls (instantiate/duplicate/
+// remove) take the controller's commit mutex -- same do-not-call-
+// during-renders caveat as -serializedSceneText / -saveSceneTo:
+// errorMessage: (gate on the scene-editable predicate before calling).
+
+/// Number of "Add Entity" templates registered for `category` (0 for
+/// categories with none -- Camera/Rasterizer/Film/Animation/
+/// SceneVariant/None).
+- (NSUInteger)entityTemplateCountForCategory:(RISEViewportCategory)category
+    NS_SWIFT_NAME(entityTemplateCount(for:));
+
+/// Display label for the template at `idx` within `category` (e.g.
+/// "Sphere", "Omni Light").  Empty string for a null controller or an
+/// out-of-range idx.
+- (NSString *)entityTemplateLabelForCategory:(RISEViewportCategory)category
+                                        index:(NSUInteger)idx
+    NS_SWIFT_NAME(entityTemplateLabel(for:index:));
+
+/// Instantiate the template at `idx` within `category`.  Returns the
+/// AgentCommitResult's `applied` flag; `outName` (optional, may be
+/// NULL) receives the deduped instance name on success (nil on
+/// failure), `outMessage` (optional, may be NULL) receives a human-
+/// readable message on failure (nil on success with nothing to say).
+/// A multi-chunk template undoes as several separate steps -- see the
+/// C++ method's header doc.
+- (BOOL)instantiateEntityTemplateForCategory:(RISEViewportCategory)category
+                                        index:(NSUInteger)idx
+                                      outName:(NSString * _Nullable * _Nullable)outName
+                                   outMessage:(NSString * _Nullable * _Nullable)outMessage
+    NS_SWIFT_NAME(instantiateEntityTemplate(for:index:outName:outMessage:));
+
+/// Duplicate the named entity in `category` under a freshly-deduped
+/// name.  Returns `applied`; `outName` / `outMessage` as above (each
+/// optional, may be NULL).
+- (BOOL)duplicateEntityForCategory:(RISEViewportCategory)category
+                               name:(NSString *)name
+                            outName:(NSString * _Nullable * _Nullable)outName
+                         outMessage:(NSString * _Nullable * _Nullable)outMessage
+    NS_SWIFT_NAME(duplicateEntity(for:name:outName:outMessage:));
+
+/// Remove the named entity in `category` -- refused with a non-nil
+/// `outMessage` if it is still referenced (e.g. a material a
+/// standard_object still binds) or not found.  Returns `applied`;
+/// `outMessage` as above (optional, may be NULL).
+- (BOOL)removeEntityForCategory:(RISEViewportCategory)category
+                            name:(NSString *)name
+                      outMessage:(NSString * _Nullable * _Nullable)outMessage
+    NS_SWIFT_NAME(removeEntity(for:name:outMessage:));
+
 #pragma mark - Multi-camera
 
 /// Clone the currently-active camera under a new name and switch
@@ -485,8 +613,91 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// Never returns nil: if the dispatcher is unavailable (init failed / the
 /// bridge was shut down), a well-formed JSON-RPC -32603 error string is
 /// returned so the Swift caller always parses a valid response.
+///
+/// Agent-autonomy-selector note (2026-07): this entry point ALWAYS runs at
+/// Owner authority + Commit autonomy, regardless of `agentAutonomyLevel`
+/// below.  It is the "administrative" path — `list_proposals`,
+/// `resolve_proposal`, and the one-time `read_skill` index fetch all go
+/// through it — and MUST stay that way: `resolve_proposal` is refused
+/// outright under Propose/Read autonomy (see AgentRpc.h), so if this method
+/// tracked the composer's level, setting the composer to Read/Propose would
+/// silently disable the Owner's own "Approve"/"Reject" buttons on already-
+/// staged proposals, which has nothing to do with what the CHAT AGENT is
+/// permitted to do.  The chat driver's own tool calls go through
+/// `-agentHandleToolCall:` instead — see that method's doc.
 - (NSString *)agentHandleLine:(NSString *)jsonRpcRequest
     NS_SWIFT_NAME(agentHandleLine(_:));
+
+#pragma mark - Agent autonomy selector (2026-07 GUI composer chips)
+
+/// Mirrors RISE::Agent::AgentAutonomy (AgentRpc.h) plus the routing choice
+/// RISEViewportBridge itself makes for `Propose` (see `agentAutonomyLevel`
+/// below) — NOT a 1:1 re-export, since the C++ enum alone cannot express
+/// "and which AgentSession authority backs it."
+typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
+    RISEAgentAutonomyRead    = 0,   ///< read-safe verbs only; render allowed; every edit verb refused (kAutonomyRefused).
+    RISEAgentAutonomyPropose = 1,   ///< edit verbs STAGE a proposal (External authority) instead of committing; the Owner reviews via the existing proposals panel (list_proposals/resolve_proposal, both still through `agentHandleLine:`).
+    RISEAgentAutonomyApply   = 2,   ///< today's unrestricted behaviour: edit verbs commit directly (Owner authority, Commit autonomy). The default.
+};
+
+/// The chat composer's current autonomy level for its OWN tool calls (the
+/// LLM-issued `propose_patch`/`insert_chunk`/`remove_chunk`/etc. driven by
+/// `-agentHandleToolCall:`, NOT the administrative calls `-agentHandleLine:`
+/// makes on its own — see that method's note).  Defaults to
+/// `RISEAgentAutonomyApply` at bridge-attach time, matching every
+/// pre-existing construction site's behaviour byte-for-byte until the
+/// Swift composer explicitly sets a persisted choice (see ChatViewModel's
+/// UserDefaults-backed `agentAutonomyLevel` — this property does NOT read
+/// UserDefaults itself; the Swift layer applies the persisted value on
+/// attach).  Setting an out-of-range value is a no-op (keeps the previous
+/// level) rather than undefined behaviour.
+@property (nonatomic) RISEAgentAutonomyLevel agentAutonomyLevel;
+
+/// Hand one JSON-RPC 2.0 request line to whichever internal dispatcher
+/// matches `agentAutonomyLevel` right now, and return the response line.
+/// This is the entry point the chat driver's OWN tool-call execution uses
+/// (ChatViewModel's `driveTurn`, for every non-`render` tool call) — the
+/// verb-by-verb behaviour per level:
+///   * Read    -> the 10-verb read-safe allowlist (IsReadSafeVerb in
+///                AgentRpc.cpp) dispatches; `propose_patch`/`insert_chunk`/
+///                `remove_chunk` (and any other verb) are REFUSED
+///                (kAutonomyRefused, -32011) — this is Owner authority
+///                under Read autonomy, so even the refusal path never
+///                reaches ProposePatch/InsertChunk/RemoveChunk.
+///   * Propose -> the read-safe allowlist dispatches AS BEFORE, but this
+///                level runs over a SEPARATE, External-authority
+///                AgentSession sharing the SAME live SceneEditController
+///                `-agentHandleLine:`'s Owner session is attached to — so
+///                `propose_patch`/`insert_chunk`/`remove_chunk` STAGE a
+///                real proposal onto that controller's ONE queue (the
+///                exact queue the existing proposals panel already reads
+///                via `-agentHandleLine:`'s `list_proposals`/
+///                `resolve_proposal`), rather than committing.
+///                `resolve_proposal` itself is refused at THIS level (by
+///                design — see AgentRpc.h's IsProposeSafeVerb doc); the
+///                chat driver never calls it, only the Owner-authority
+///                proposals-panel code path does, via `-agentHandleLine:`.
+///   * Apply   -> byte-for-byte today's behaviour: routes to the SAME
+///                Owner-authority, Commit-autonomy posture `-agentHandleLine:`
+///                uses (a separate dispatcher INSTANCE over a separate
+///                AgentSession, but identical authority+autonomy, so
+///                observably indistinguishable).
+///
+/// A `render` tool call is deliberately NOT routed through this level
+/// selector — `executeRenderToolCallAsync`'s submit/poll/cancel sequence
+/// spans multiple `agentHandleLine`-shaped calls against ONE session's
+/// per-job result cache (`AgentSession::mLastAsyncRenderResult`), and the
+/// user can change `agentAutonomyLevel` mid-poll; routing those calls
+/// through whichever dispatcher happens to be current at each poll tick
+/// would risk polling a DIFFERENT session than the one that submitted the
+/// job, missing its cached result.  `render` is read-safe at every level
+/// anyway (see AgentRpc.h — it never mutates the CST document), so there is
+/// no HONESTY cost to always running it over the stable Owner/Commit
+/// session `-agentHandleLine:` already uses.
+///
+/// Same nil-safety contract as `-agentHandleLine:`: never returns nil.
+- (NSString *)agentHandleToolCall:(NSString *)jsonRpcRequest
+    NS_SWIFT_NAME(agentHandleToolCall(_:));
 
 #pragma mark - Secure-MCP slice 5c: GUI-hosted external MCP endpoint
 

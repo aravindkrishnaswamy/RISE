@@ -8,6 +8,10 @@
 
 /* Begin PBXBuildFile section */
 		2461E0C4D33B4FADA8B22624 /* BezierClipping.h in Sources */ = {isa = PBXBuildFile; fileRef = 876B3710A0D34ED183373077 /* BezierClipping.h */; };
+		5C57B001000000000000C0DE /* Cst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E011000000000000C0DE /* Cst.cpp */; };
+		5C57B002000000000000C0DE /* Cst.h in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E012000000000000C0DE /* Cst.h */; };
+		5C57B003000000000000C0DE /* Cst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E011000000000000C0DE /* Cst.cpp */; };
+		5C57B004000000000000C0DE /* Cst.h in Headers */ = {isa = PBXBuildFile; fileRef = 5C57E012000000000000C0DE /* Cst.h */; };
 		5DF0B001000000000000C0DE /* SDFGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E011000000000000C0DE /* SDFGeometry.cpp */; };
 		5DF0B002000000000000C0DE /* SDFGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E012000000000000C0DE /* SDFGeometry.h */; };
 		5DF0B003000000000000C0DE /* SDFGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E011000000000000C0DE /* SDFGeometry.cpp */; };
@@ -67,6 +71,48 @@
 		6DFD32F80A0FBBAA00E99FBE /* EXRWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DFD32F40A0FBBAA00E99FBE /* EXRWriter.cpp */; };
 		6DFD32F90A0FBBAA00E99FBE /* EXRWriter.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DFD32F50A0FBBAA00E99FBE /* EXRWriter.h */; };
 		7B74685035C14A7ABB6F0BCE /* ThinFilm.h in Headers */ = {isa = PBXBuildFile; fileRef = 9888E7381E6C448B879A54D9 /* ThinFilm.h */; };
+		A6E7B001000000000000C0DE /* AgentSession.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E001000000000000C0DE /* AgentSession.cpp */; };
+		A6E7B002000000000000C0DE /* AgentSession.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E001000000000000C0DE /* AgentSession.cpp */; };
+		A6E7B003000000000000C0DE /* SchemaGen.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E002000000000000C0DE /* SchemaGen.cpp */; };
+		A6E7B004000000000000C0DE /* SchemaGen.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E002000000000000C0DE /* SchemaGen.cpp */; };
+		A6E7B011000000000000C0DE /* AgentDiagnostic.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E011000000000000C0DE /* AgentDiagnostic.h */; };
+		A6E7B012000000000000C0DE /* AgentDiagnostic.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E011000000000000C0DE /* AgentDiagnostic.h */; };
+		A6E7B013000000000000C0DE /* AgentSession.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E012000000000000C0DE /* AgentSession.h */; };
+		A6E7B014000000000000C0DE /* AgentSession.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E012000000000000C0DE /* AgentSession.h */; };
+		A6E7B015000000000000C0DE /* SchemaGen.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E013000000000000C0DE /* SchemaGen.h */; };
+		A6E7B016000000000000C0DE /* SchemaGen.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E013000000000000C0DE /* SchemaGen.h */; };
+		A6E7B021000000000000C0DE /* InMemoryRasterizerOutput.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */; };
+		A6E7B022000000000000C0DE /* InMemoryRasterizerOutput.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */; };
+		A6E7B023000000000000C0DE /* InMemoryRasterizerOutput.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E022000000000000C0DE /* InMemoryRasterizerOutput.h */; };
+		A6E7B024000000000000C0DE /* InMemoryRasterizerOutput.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E022000000000000C0DE /* InMemoryRasterizerOutput.h */; };
+		A6E7B031000000000000C0DE /* AgentRpc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E031000000000000C0DE /* AgentRpc.cpp */; };
+		A6E7B032000000000000C0DE /* AgentRpc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E031000000000000C0DE /* AgentRpc.cpp */; };
+		A6E7B033000000000000C0DE /* AgentRpc.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E032000000000000C0DE /* AgentRpc.h */; };
+		A6E7B034000000000000C0DE /* AgentRpc.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E032000000000000C0DE /* AgentRpc.h */; };
+		A6E7B041000000000000C0DE /* Base64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E041000000000000C0DE /* Base64.cpp */; };
+		A6E7B042000000000000C0DE /* Base64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E041000000000000C0DE /* Base64.cpp */; };
+		A6E7B043000000000000C0DE /* Base64.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E042000000000000C0DE /* Base64.h */; };
+		A6E7B044000000000000C0DE /* Base64.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E042000000000000C0DE /* Base64.h */; };
+		A6E7B051000000000000C0DE /* Json.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E051000000000000C0DE /* Json.cpp */; };
+		A6E7B052000000000000C0DE /* Json.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E051000000000000C0DE /* Json.cpp */; };
+		A6E7B053000000000000C0DE /* Json.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E052000000000000C0DE /* Json.h */; };
+		A6E7B054000000000000C0DE /* Json.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E052000000000000C0DE /* Json.h */; };
+		A6E7B061000000000000C0DE /* AgentChatCodecs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E061000000000000C0DE /* AgentChatCodecs.cpp */; };
+		A6E7B062000000000000C0DE /* AgentChatCodecs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E061000000000000C0DE /* AgentChatCodecs.cpp */; };
+		A6E7B063000000000000C0DE /* AgentChatCodecs.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E062000000000000C0DE /* AgentChatCodecs.h */; };
+		A6E7B064000000000000C0DE /* AgentChatCodecs.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E062000000000000C0DE /* AgentChatCodecs.h */; };
+		A6E7B071000000000000C0DE /* AgentChatLoop.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E071000000000000C0DE /* AgentChatLoop.cpp */; };
+		A6E7B072000000000000C0DE /* AgentChatLoop.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E071000000000000C0DE /* AgentChatLoop.cpp */; };
+		A6E7B073000000000000C0DE /* AgentChatLoop.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E072000000000000C0DE /* AgentChatLoop.h */; };
+		A6E7B074000000000000C0DE /* AgentChatLoop.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E072000000000000C0DE /* AgentChatLoop.h */; };
+		A6E7B081000000000000C0DE /* AgentMcpAdapter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */; };
+		A6E7B082000000000000C0DE /* AgentMcpAdapter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */; };
+		A6E7B083000000000000C0DE /* AgentMcpAdapter.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E082000000000000C0DE /* AgentMcpAdapter.h */; };
+		A6E7B084000000000000C0DE /* AgentMcpAdapter.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E082000000000000C0DE /* AgentMcpAdapter.h */; };
+		A6E7B091000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */; };
+		A6E7B092000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */; };
+		A6E7B093000000000000C0DE /* AgentLoopbackHttpServer.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */; };
+		A6E7B094000000000000C0DE /* AgentLoopbackHttpServer.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */; };
 		AA0000030000000000000003 /* AutoRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000010000000000000001 /* AutoRasterizer.h */; };
 		AA0000040000000000000004 /* AutoRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA0000020000000000000002 /* AutoRasterizer.cpp */; };
 		AA0000050000000000000005 /* AutoRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA0000020000000000000002 /* AutoRasterizer.cpp */; };
@@ -219,6 +265,20 @@
 		A6E7B072000000000000C0DE /* AgentChatLoop.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E071000000000000C0DE /* AgentChatLoop.cpp */; };
 		A6E7B073000000000000C0DE /* AgentChatLoop.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E072000000000000C0DE /* AgentChatLoop.h */; };
 		A6E7B074000000000000C0DE /* AgentChatLoop.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E072000000000000C0DE /* AgentChatLoop.h */; };
+		A6E7B0C1000000000000C0DE /* ChatTrajectory.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0C1000000000000C0DE /* ChatTrajectory.cpp */; };
+		A6E7B0C2000000000000C0DE /* ChatTrajectory.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0C1000000000000C0DE /* ChatTrajectory.cpp */; };
+		A6E7B0C3000000000000C0DE /* ChatTrajectory.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E0C2000000000000C0DE /* ChatTrajectory.h */; };
+		A6E7B0C4000000000000C0DE /* ChatTrajectory.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0C2000000000000C0DE /* ChatTrajectory.h */; };
+		A6E7B0D1000000000000C0DE /* AgentEvalRunner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0D1000000000000C0DE /* AgentEvalRunner.cpp */; };
+		A6E7B0D2000000000000C0DE /* AgentEvalRunner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0D1000000000000C0DE /* AgentEvalRunner.cpp */; };
+		A6E7B0D3000000000000C0DE /* AgentEvalRunner.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E0D2000000000000C0DE /* AgentEvalRunner.h */; };
+		A6E7B0D4000000000000C0DE /* AgentEvalRunner.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0D2000000000000C0DE /* AgentEvalRunner.h */; };
+		A6E7B0E1000000000000C0DE /* ChatHttpTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E0E1000000000000C0DE /* ChatHttpTransport.h */; };
+		A6E7B0E2000000000000C0DE /* ChatHttpTransport.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0E1000000000000C0DE /* ChatHttpTransport.h */; };
+		A6E7B0E3000000000000C0DE /* TlsTransportMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0E2000000000000C0DE /* TlsTransportMac.mm */; };
+		A6E7B0E4000000000000C0DE /* TlsTransportMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0E2000000000000C0DE /* TlsTransportMac.mm */; };
+		A6E7B0F1000000000000C0DE /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A6E7E0F0000000000000C0DE /* Foundation.framework */; };
+		A6E7B0F2000000000000C0DE /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A6E7E0F0000000000000C0DE /* Foundation.framework */; };
 		A6E7B031000000000000C0DE /* AgentRpc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E031000000000000C0DE /* AgentRpc.cpp */; };
 		A6E7B032000000000000C0DE /* AgentRpc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E031000000000000C0DE /* AgentRpc.cpp */; };
 		A6E7B033000000000000C0DE /* AgentRpc.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E032000000000000C0DE /* AgentRpc.h */; };
@@ -434,8 +494,6 @@
 		F24B72F32F52A632008304C4 /* PhongEmitter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0900069C42900069C9E5 /* PhongEmitter.cpp */; };
 		F24B72F42F52A632008304C4 /* PhongEmitter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0901069C42900069C9E5 /* PhongEmitter.h */; };
 		F24B72F52F52A632008304C4 /* PhongLuminaireMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0902069C42900069C9E5 /* PhongLuminaireMaterial.h */; };
-		F24B72F62F52A632008304C4 /* PolishedBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0903069C42900069C9E5 /* PolishedBRDF.cpp */; };
-		F24B72F72F52A632008304C4 /* PolishedBRDF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0904069C42900069C9E5 /* PolishedBRDF.h */; };
 		F24B72F82F52A632008304C4 /* PolishedMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0905069C42900069C9E5 /* PolishedMaterial.h */; };
 		F24B72F92F52A632008304C4 /* PolishedSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0906069C42900069C9E5 /* PolishedSPF.cpp */; };
 		F24B72FA2F52A632008304C4 /* PolishedSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0907069C42900069C9E5 /* PolishedSPF.h */; };
@@ -460,8 +518,6 @@
 		F24B730D2F52A632008304C4 /* WardIsotropicGaussianSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F091C069C42900069C9E5 /* WardIsotropicGaussianSPF.h */; };
 		F24B730E2F52A632008304C4 /* BumpMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F091E069C42900069C9E5 /* BumpMap.cpp */; };
 		F24B730F2F52A632008304C4 /* BumpMap.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F091F069C42900069C9E5 /* BumpMap.h */; };
-		F2617A0D2F9A000100610005 /* GlintModifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610001 /* GlintModifier.cpp */; };
-		F2617A0D2F9A000100610006 /* GlintModifier.h in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610002 /* GlintModifier.h */; };
 		F24B73102F52A632008304C4 /* InterpolatedNoise.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0921069C42900069C9E5 /* InterpolatedNoise.cpp */; };
 		F24B73112F52A632008304C4 /* InterpolatedNoise.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0922069C42900069C9E5 /* InterpolatedNoise.h */; };
 		F24B73122F52A632008304C4 /* Noise.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0923069C42900069C9E5 /* Noise.h */; };
@@ -474,9 +530,7 @@
 		F24B73192F52A632008304C4 /* CSGObject.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F092B069C42900069C9E5 /* CSGObject.cpp */; };
 		F24B731A2F52A632008304C4 /* CSGObject.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F092C069C42900069C9E5 /* CSGObject.h */; };
 		F24B731B2F52A632008304C4 /* Object.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F092D069C42900069C9E5 /* Object.cpp */; };
-		FEEDC10E0000000000000002 /* SnapshotLeafClone.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */; };
 		F24B731C2F52A632008304C4 /* Object.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F092E069C42900069C9E5 /* Object.h */; };
-		FEEDC10E0000000000000005 /* SnapshotLeafClone.h in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000004 /* SnapshotLeafClone.h */; };
 		F24B731D2F52A632008304C4 /* Octree.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F092F069C42900069C9E5 /* Octree.h */; };
 		F24B731E2F52A632008304C4 /* OctreeNode.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0930069C42900069C9E5 /* OctreeNode.h */; };
 		F24B731F2F52A632008304C4 /* Options.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0931069C42900069C9E5 /* Options.cpp */; };
@@ -854,6 +908,10 @@
 		F24C549C2F893D75009AF16D /* MLTSpectralRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */; };
 		F24C549D2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */; };
 		F24D00012F7CAB67009AF16D /* IORStackSeeding.h in Headers */ = {isa = PBXBuildFile; fileRef = F24D00002F7CAB67009AF16D /* IORStackSeeding.h */; };
+		F2617A0D2F9A000100610003 /* GlintModifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610001 /* GlintModifier.cpp */; };
+		F2617A0D2F9A000100610004 /* GlintModifier.h in Headers */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610002 /* GlintModifier.h */; };
+		F2617A0D2F9A000100610005 /* GlintModifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610001 /* GlintModifier.cpp */; };
+		F2617A0D2F9A000100610006 /* GlintModifier.h in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610002 /* GlintModifier.h */; };
 		F26E7A022F9244920009D9AE /* RenderETAEstimator.h in Headers */ = {isa = PBXBuildFile; fileRef = F26E7A002F9244920009D9AE /* RenderETAEstimator.h */; };
 		F26E7A032F9244920009D9AE /* RenderETAEstimator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */; };
 		F26E7A042F9244920009D9AE /* RenderETAEstimator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */; };
@@ -1138,8 +1196,6 @@
 		F27F0B68069C42910069C9E5 /* PhongEmitter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0900069C42900069C9E5 /* PhongEmitter.cpp */; };
 		F27F0B69069C42910069C9E5 /* PhongEmitter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0901069C42900069C9E5 /* PhongEmitter.h */; };
 		F27F0B6A069C42910069C9E5 /* PhongLuminaireMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0902069C42900069C9E5 /* PhongLuminaireMaterial.h */; };
-		F27F0B6B069C42910069C9E5 /* PolishedBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0903069C42900069C9E5 /* PolishedBRDF.cpp */; };
-		F27F0B6C069C42910069C9E5 /* PolishedBRDF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0904069C42900069C9E5 /* PolishedBRDF.h */; };
 		F27F0B6D069C42910069C9E5 /* PolishedMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0905069C42900069C9E5 /* PolishedMaterial.h */; };
 		F27F0B6E069C42910069C9E5 /* PolishedSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0906069C42900069C9E5 /* PolishedSPF.cpp */; };
 		F27F0B6F069C42910069C9E5 /* PolishedSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0907069C42900069C9E5 /* PolishedSPF.h */; };
@@ -1164,8 +1220,6 @@
 		F27F0B84069C42910069C9E5 /* WardIsotropicGaussianSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F091C069C42900069C9E5 /* WardIsotropicGaussianSPF.h */; };
 		F27F0B85069C42910069C9E5 /* BumpMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F091E069C42900069C9E5 /* BumpMap.cpp */; };
 		F27F0B86069C42910069C9E5 /* BumpMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F091F069C42900069C9E5 /* BumpMap.h */; };
-		F2617A0D2F9A000100610003 /* GlintModifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610001 /* GlintModifier.cpp */; };
-		F2617A0D2F9A000100610004 /* GlintModifier.h in Headers */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610002 /* GlintModifier.h */; };
 		F27F0B87069C42910069C9E5 /* InterpolatedNoise.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0921069C42900069C9E5 /* InterpolatedNoise.cpp */; };
 		F27F0B88069C42910069C9E5 /* InterpolatedNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0922069C42900069C9E5 /* InterpolatedNoise.h */; };
 		F27F0B89069C42910069C9E5 /* Noise.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0923069C42900069C9E5 /* Noise.h */; };
@@ -1178,9 +1232,7 @@
 		F27F0B90069C42910069C9E5 /* CSGObject.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F092B069C42900069C9E5 /* CSGObject.cpp */; };
 		F27F0B91069C42910069C9E5 /* CSGObject.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F092C069C42900069C9E5 /* CSGObject.h */; };
 		F27F0B92069C42910069C9E5 /* Object.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F092D069C42900069C9E5 /* Object.cpp */; };
-		FEEDC10E0000000000000003 /* SnapshotLeafClone.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */; };
 		F27F0B93069C42910069C9E5 /* Object.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F092E069C42900069C9E5 /* Object.h */; };
-		FEEDC10E0000000000000006 /* SnapshotLeafClone.h in Headers */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000004 /* SnapshotLeafClone.h */; };
 		F27F0B94069C42910069C9E5 /* Octree.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F092F069C42900069C9E5 /* Octree.h */; };
 		F27F0B95069C42910069C9E5 /* OctreeNode.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0930069C42900069C9E5 /* OctreeNode.h */; };
 		F27F0B96069C42910069C9E5 /* Options.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0931069C42900069C9E5 /* Options.cpp */; };
@@ -1850,8 +1902,6 @@
 		FCA01000000000000000A002 /* ICameraManager.h in Headers */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A003 /* ICameraManager.h */; };
 		FCA01000000000000000A004 /* CameraManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A006 /* CameraManager.h */; };
 		FCA01000000000000000A005 /* CameraManager.h in Headers */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A006 /* CameraManager.h */; };
-		FECC0006000000000000F603 /* FileIdentity.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0006000000000000F601 /* FileIdentity.h */; };
-		FECC0006000000000000F605 /* FileIdentity.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0006000000000000F601 /* FileIdentity.h */; };
 		FECC0002000000000000F203 /* TransformSnapshot.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F201 /* TransformSnapshot.h */; };
 		FECC0002000000000000F204 /* TransformSnapshot.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F202 /* TransformSnapshot.cpp */; };
 		FECC0002000000000000F205 /* TransformSnapshot.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F201 /* TransformSnapshot.h */; };
@@ -1864,6 +1914,20 @@
 		FECC0005000000000000F504 /* SaveEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0005000000000000F502 /* SaveEngine.cpp */; };
 		FECC0005000000000000F505 /* SaveEngine.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0005000000000000F501 /* SaveEngine.h */; };
 		FECC0005000000000000F506 /* SaveEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0005000000000000F502 /* SaveEngine.cpp */; };
+		FECC0006000000000000F603 /* FileIdentity.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0006000000000000F601 /* FileIdentity.h */; };
+		FECC0006000000000000F605 /* FileIdentity.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0006000000000000F601 /* FileIdentity.h */; };
+		FECC0007000000000000F703 /* PainterIntrospection.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000F701 /* PainterIntrospection.h */; };
+		FECC0007000000000000F704 /* PainterIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000F702 /* PainterIntrospection.cpp */; };
+		FECC0007000000000000F705 /* PainterIntrospection.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000F701 /* PainterIntrospection.h */; };
+		FECC0007000000000000F706 /* PainterIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000F702 /* PainterIntrospection.cpp */; };
+		FECC0008000000000000F803 /* EntityTemplates.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F801 /* EntityTemplates.h */; };
+		FECC0008000000000000F804 /* EntityTemplates.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F802 /* EntityTemplates.cpp */; };
+		FECC0008000000000000F805 /* EntityTemplates.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F801 /* EntityTemplates.h */; };
+		FECC0008000000000000F806 /* EntityTemplates.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F802 /* EntityTemplates.cpp */; };
+		FEEDC10E0000000000000002 /* SnapshotLeafClone.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */; };
+		FEEDC10E0000000000000003 /* SnapshotLeafClone.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */; };
+		FEEDC10E0000000000000005 /* SnapshotLeafClone.h in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000004 /* SnapshotLeafClone.h */; };
+		FEEDC10E0000000000000006 /* SnapshotLeafClone.h in Headers */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000004 /* SnapshotLeafClone.h */; };
 		FF11FFFF000000000000F1A2 /* IFilm.h in Sources */ = {isa = PBXBuildFile; fileRef = FF11FFFF000000000000F1A1 /* IFilm.h */; };
 		FF11FFFF000000000000F1A3 /* IFilm.h in Headers */ = {isa = PBXBuildFile; fileRef = FF11FFFF000000000000F1A1 /* IFilm.h */; };
 		FF11FFFF000000000000F1A5 /* Film.h in Headers */ = {isa = PBXBuildFile; fileRef = FF11FFFF000000000000F1A4 /* Film.h */; };
@@ -1884,6 +1948,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		5C57E011000000000000C0DE /* Cst.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Cst.cpp; sourceTree = "<group>"; };
+		5C57E012000000000000C0DE /* Cst.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Cst.h; sourceTree = "<group>"; };
 		5DF0E011000000000000C0DE /* SDFGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SDFGeometry.cpp; sourceTree = "<group>"; };
 		5DF0E012000000000000C0DE /* SDFGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SDFGeometry.h; sourceTree = "<group>"; };
 		6A10E004000000000000C0DE /* ProceduralDescriptors.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ProceduralDescriptors.h; sourceTree = "<group>"; };
@@ -1938,6 +2004,27 @@
 		876B3710A0D34ED183373077 /* BezierClipping.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BezierClipping.h; sourceTree = "<group>"; };
 		8DD76F6C0486A84900D96B5E /* rise */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = rise; sourceTree = BUILT_PRODUCTS_DIR; };
 		9888E7381E6C448B879A54D9 /* ThinFilm.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ThinFilm.h; sourceTree = "<group>"; };
+		A6E7E001000000000000C0DE /* AgentSession.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentSession.cpp; sourceTree = "<group>"; };
+		A6E7E002000000000000C0DE /* SchemaGen.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SchemaGen.cpp; sourceTree = "<group>"; };
+		A6E7E011000000000000C0DE /* AgentDiagnostic.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentDiagnostic.h; sourceTree = "<group>"; };
+		A6E7E012000000000000C0DE /* AgentSession.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentSession.h; sourceTree = "<group>"; };
+		A6E7E013000000000000C0DE /* SchemaGen.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SchemaGen.h; sourceTree = "<group>"; };
+		A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = InMemoryRasterizerOutput.cpp; sourceTree = "<group>"; };
+		A6E7E022000000000000C0DE /* InMemoryRasterizerOutput.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = InMemoryRasterizerOutput.h; sourceTree = "<group>"; };
+		A6E7E031000000000000C0DE /* AgentRpc.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentRpc.cpp; sourceTree = "<group>"; };
+		A6E7E032000000000000C0DE /* AgentRpc.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentRpc.h; sourceTree = "<group>"; };
+		A6E7E041000000000000C0DE /* Base64.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Base64.cpp; sourceTree = "<group>"; };
+		A6E7E042000000000000C0DE /* Base64.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Base64.h; sourceTree = "<group>"; };
+		A6E7E051000000000000C0DE /* Json.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Json.cpp; sourceTree = "<group>"; };
+		A6E7E052000000000000C0DE /* Json.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Json.h; sourceTree = "<group>"; };
+		A6E7E061000000000000C0DE /* AgentChatCodecs.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentChatCodecs.cpp; sourceTree = "<group>"; };
+		A6E7E062000000000000C0DE /* AgentChatCodecs.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentChatCodecs.h; sourceTree = "<group>"; };
+		A6E7E071000000000000C0DE /* AgentChatLoop.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentChatLoop.cpp; sourceTree = "<group>"; };
+		A6E7E072000000000000C0DE /* AgentChatLoop.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentChatLoop.h; sourceTree = "<group>"; };
+		A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentMcpAdapter.cpp; sourceTree = "<group>"; };
+		A6E7E082000000000000C0DE /* AgentMcpAdapter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentMcpAdapter.h; sourceTree = "<group>"; };
+		A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentLoopbackHttpServer.cpp; sourceTree = "<group>"; };
+		A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentLoopbackHttpServer.h; sourceTree = "<group>"; };
 		AA0000010000000000000001 /* AutoRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AutoRasterizer.h; sourceTree = "<group>"; };
 		AA0000020000000000000002 /* AutoRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = AutoRasterizer.cpp; sourceTree = "<group>"; };
 		AAB7C04202604280000000A3 /* VertexColorPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = VertexColorPainter.h; sourceTree = "<group>"; };
@@ -2001,6 +2088,8 @@
 		F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MLTSpectralRasterizer.h; sourceTree = "<group>"; };
 		F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MLTSpectralRasterizer.cpp; sourceTree = "<group>"; };
 		F24D00002F7CAB67009AF16D /* IORStackSeeding.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IORStackSeeding.h; sourceTree = "<group>"; };
+		F2617A0D2F9A000100610001 /* GlintModifier.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GlintModifier.cpp; sourceTree = "<group>"; };
+		F2617A0D2F9A000100610002 /* GlintModifier.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GlintModifier.h; sourceTree = "<group>"; };
 		F26E7A002F9244920009D9AE /* RenderETAEstimator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RenderETAEstimator.h; sourceTree = "<group>"; };
 		F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = RenderETAEstimator.cpp; sourceTree = "<group>"; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
@@ -2109,6 +2198,13 @@
 		A6E7E062000000000000C0DE /* AgentChatCodecs.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentChatCodecs.h; sourceTree = "<group>"; };
 		A6E7E071000000000000C0DE /* AgentChatLoop.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentChatLoop.cpp; sourceTree = "<group>"; };
 		A6E7E072000000000000C0DE /* AgentChatLoop.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentChatLoop.h; sourceTree = "<group>"; };
+		A6E7E0C1000000000000C0DE /* ChatTrajectory.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ChatTrajectory.cpp; sourceTree = "<group>"; };
+		A6E7E0C2000000000000C0DE /* ChatTrajectory.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChatTrajectory.h; sourceTree = "<group>"; };
+		A6E7E0D1000000000000C0DE /* AgentEvalRunner.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentEvalRunner.cpp; sourceTree = "<group>"; };
+		A6E7E0D2000000000000C0DE /* AgentEvalRunner.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentEvalRunner.h; sourceTree = "<group>"; };
+		A6E7E0E1000000000000C0DE /* ChatHttpTransport.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChatHttpTransport.h; sourceTree = "<group>"; };
+		A6E7E0E2000000000000C0DE /* TlsTransportMac.mm */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.objcpp; path = TlsTransportMac.mm; sourceTree = "<group>"; };
+		A6E7E0F0000000000000C0DE /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
 		A6E7E031000000000000C0DE /* AgentRpc.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentRpc.cpp; sourceTree = "<group>"; };
 		A6E7E032000000000000C0DE /* AgentRpc.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentRpc.h; sourceTree = "<group>"; };
 		A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentMcpAdapter.cpp; sourceTree = "<group>"; };
@@ -2309,8 +2405,6 @@
 		F27F0900069C42900069C9E5 /* PhongEmitter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PhongEmitter.cpp; sourceTree = "<group>"; };
 		F27F0901069C42900069C9E5 /* PhongEmitter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PhongEmitter.h; sourceTree = "<group>"; };
 		F27F0902069C42900069C9E5 /* PhongLuminaireMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PhongLuminaireMaterial.h; sourceTree = "<group>"; };
-		F27F0903069C42900069C9E5 /* PolishedBRDF.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PolishedBRDF.cpp; sourceTree = "<group>"; };
-		F27F0904069C42900069C9E5 /* PolishedBRDF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PolishedBRDF.h; sourceTree = "<group>"; };
 		F27F0905069C42900069C9E5 /* PolishedMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PolishedMaterial.h; sourceTree = "<group>"; };
 		F27F0906069C42900069C9E5 /* PolishedSPF.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PolishedSPF.cpp; sourceTree = "<group>"; };
 		F27F0907069C42900069C9E5 /* PolishedSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PolishedSPF.h; sourceTree = "<group>"; };
@@ -2335,8 +2429,6 @@
 		F27F091C069C42900069C9E5 /* WardIsotropicGaussianSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = WardIsotropicGaussianSPF.h; sourceTree = "<group>"; };
 		F27F091E069C42900069C9E5 /* BumpMap.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = BumpMap.cpp; sourceTree = "<group>"; };
 		F27F091F069C42900069C9E5 /* BumpMap.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BumpMap.h; sourceTree = "<group>"; };
-		F2617A0D2F9A000100610001 /* GlintModifier.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GlintModifier.cpp; sourceTree = "<group>"; };
-		F2617A0D2F9A000100610002 /* GlintModifier.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GlintModifier.h; sourceTree = "<group>"; };
 		F27F0921069C42900069C9E5 /* InterpolatedNoise.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = InterpolatedNoise.cpp; sourceTree = "<group>"; };
 		F27F0922069C42900069C9E5 /* InterpolatedNoise.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = InterpolatedNoise.h; sourceTree = "<group>"; };
 		F27F0923069C42900069C9E5 /* Noise.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Noise.h; sourceTree = "<group>"; };
@@ -2349,9 +2441,7 @@
 		F27F092B069C42900069C9E5 /* CSGObject.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CSGObject.cpp; sourceTree = "<group>"; };
 		F27F092C069C42900069C9E5 /* CSGObject.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CSGObject.h; sourceTree = "<group>"; };
 		F27F092D069C42900069C9E5 /* Object.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Object.cpp; sourceTree = "<group>"; };
-		FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SnapshotLeafClone.cpp; sourceTree = "<group>"; };
 		F27F092E069C42900069C9E5 /* Object.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Object.h; sourceTree = "<group>"; };
-		FEEDC10E0000000000000004 /* SnapshotLeafClone.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SnapshotLeafClone.h; sourceTree = "<group>"; };
 		F27F092F069C42900069C9E5 /* Octree.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Octree.h; sourceTree = "<group>"; };
 		F27F0930069C42900069C9E5 /* OctreeNode.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = OctreeNode.h; sourceTree = "<group>"; };
 		F27F0931069C42900069C9E5 /* Options.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Options.cpp; sourceTree = "<group>"; };
@@ -2870,13 +2960,19 @@
 		FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterToScalarAdapter.h; sourceTree = "<group>"; };
 		FCA01000000000000000A003 /* ICameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICameraManager.h; sourceTree = "<group>"; };
 		FCA01000000000000000A006 /* CameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CameraManager.h; sourceTree = "<group>"; };
-		FECC0006000000000000F601 /* FileIdentity.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FileIdentity.h; sourceTree = "<group>"; };
 		FECC0002000000000000F201 /* TransformSnapshot.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TransformSnapshot.h; sourceTree = "<group>"; };
 		FECC0002000000000000F202 /* TransformSnapshot.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TransformSnapshot.cpp; sourceTree = "<group>"; };
 		FECC0004000000000000F401 /* DirtyTracker.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DirtyTracker.h; sourceTree = "<group>"; };
 		FECC0004000000000000F402 /* DirtyTracker.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DirtyTracker.cpp; sourceTree = "<group>"; };
 		FECC0005000000000000F501 /* SaveEngine.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SaveEngine.h; sourceTree = "<group>"; };
 		FECC0005000000000000F502 /* SaveEngine.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SaveEngine.cpp; sourceTree = "<group>"; };
+		FECC0006000000000000F601 /* FileIdentity.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FileIdentity.h; sourceTree = "<group>"; };
+		FECC0007000000000000F701 /* PainterIntrospection.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterIntrospection.h; sourceTree = "<group>"; };
+		FECC0007000000000000F702 /* PainterIntrospection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PainterIntrospection.cpp; sourceTree = "<group>"; };
+		FECC0008000000000000F801 /* EntityTemplates.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = EntityTemplates.h; sourceTree = "<group>"; };
+		FECC0008000000000000F802 /* EntityTemplates.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = EntityTemplates.cpp; sourceTree = "<group>"; };
+		FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SnapshotLeafClone.cpp; sourceTree = "<group>"; };
+		FEEDC10E0000000000000004 /* SnapshotLeafClone.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SnapshotLeafClone.h; sourceTree = "<group>"; };
 		FF11FFFF000000000000F1A1 /* IFilm.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IFilm.h; sourceTree = "<group>"; };
 		FF11FFFF000000000000F1A4 /* Film.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Film.h; sourceTree = "<group>"; };
 		FF11FFFF000000000000F1A6 /* Film.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Film.cpp; sourceTree = "<group>"; };
@@ -2891,6 +2987,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A6E7B0F1000000000000C0DE /* Foundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2901,6 +2998,7 @@
 				F24C3E082F54FB65005DA46B /* CoreVideo.framework in Frameworks */,
 				F24C3E062F54FB5E005DA46B /* CoreMedia.framework in Frameworks */,
 				F24C3E042F54FB57005DA46B /* AVFoundation.framework in Frameworks */,
+				A6E7B0F2000000000000C0DE /* Foundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2945,6 +3043,15 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		5C570000000000000000C0DE /* Cst */ = {
+			isa = PBXGroup;
+			children = (
+				5C57E011000000000000C0DE /* Cst.cpp */,
+				5C57E012000000000000C0DE /* Cst.h */,
+			);
+			path = Cst;
+			sourceTree = "<group>";
+		};
 		6DBFAA4A09C4D2A20048A09D /* SSS */ = {
 			isa = PBXGroup;
 			children = (
@@ -2958,6 +3065,34 @@
 				6DBFAA5009C4D2A20048A09D /* SubSurfaceScatteringShaderOp.h */,
 			);
 			path = SSS;
+			sourceTree = "<group>";
+		};
+		A6E70000000000000000C0DE /* Agent */ = {
+			isa = PBXGroup;
+			children = (
+				A6E7E001000000000000C0DE /* AgentSession.cpp */,
+				A6E7E012000000000000C0DE /* AgentSession.h */,
+				A6E7E011000000000000C0DE /* AgentDiagnostic.h */,
+				A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */,
+				A6E7E022000000000000C0DE /* InMemoryRasterizerOutput.h */,
+				A6E7E061000000000000C0DE /* AgentChatCodecs.cpp */,
+				A6E7E062000000000000C0DE /* AgentChatCodecs.h */,
+				A6E7E071000000000000C0DE /* AgentChatLoop.cpp */,
+				A6E7E072000000000000C0DE /* AgentChatLoop.h */,
+				A6E7E031000000000000C0DE /* AgentRpc.cpp */,
+				A6E7E032000000000000C0DE /* AgentRpc.h */,
+				A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */,
+				A6E7E082000000000000C0DE /* AgentMcpAdapter.h */,
+				A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */,
+				A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */,
+				A6E7E041000000000000C0DE /* Base64.cpp */,
+				A6E7E042000000000000C0DE /* Base64.h */,
+				A6E7E051000000000000C0DE /* Json.cpp */,
+				A6E7E052000000000000C0DE /* Json.h */,
+				A6E7E002000000000000C0DE /* SchemaGen.cpp */,
+				A6E7E013000000000000C0DE /* SchemaGen.h */,
+			);
+			path = Agent;
 			sourceTree = "<group>";
 		};
 		ACE1000000000000000000A1 /* Acceleration */ = {
@@ -2975,6 +3110,7 @@
 				F24C3E072F54FB64005DA46B /* CoreVideo.framework */,
 				F24C3E052F54FB5E005DA46B /* CoreMedia.framework */,
 				F24C3E032F54FB56005DA46B /* AVFoundation.framework */,
+				A6E7E0F0000000000000C0DE /* Foundation.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -3134,6 +3270,12 @@
 				A6E7E062000000000000C0DE /* AgentChatCodecs.h */,
 				A6E7E071000000000000C0DE /* AgentChatLoop.cpp */,
 				A6E7E072000000000000C0DE /* AgentChatLoop.h */,
+				A6E7E0C1000000000000C0DE /* ChatTrajectory.cpp */,
+				A6E7E0C2000000000000C0DE /* ChatTrajectory.h */,
+				A6E7E0D1000000000000C0DE /* AgentEvalRunner.cpp */,
+				A6E7E0D2000000000000C0DE /* AgentEvalRunner.h */,
+				A6E7E0E1000000000000C0DE /* ChatHttpTransport.h */,
+				A6E7E0E2000000000000C0DE /* TlsTransportMac.mm */,
 				A6E7E031000000000000C0DE /* AgentRpc.cpp */,
 				A6E7E032000000000000C0DE /* AgentRpc.h */,
 				A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */,
@@ -3459,8 +3601,6 @@
 				F27F0900069C42900069C9E5 /* PhongEmitter.cpp */,
 				F27F0901069C42900069C9E5 /* PhongEmitter.h */,
 				F27F0902069C42900069C9E5 /* PhongLuminaireMaterial.h */,
-				F27F0903069C42900069C9E5 /* PolishedBRDF.cpp */,
-				F27F0904069C42900069C9E5 /* PolishedBRDF.h */,
 				F27F0905069C42900069C9E5 /* PolishedMaterial.h */,
 				F27F0906069C42900069C9E5 /* PolishedSPF.cpp */,
 				F27F0907069C42900069C9E5 /* PolishedSPF.h */,
@@ -4243,6 +4383,10 @@
 				F2EE006100000000000000A1 /* MaterialIntrospection.cpp */,
 				F2EE006200000000000000A1 /* MediaIntrospection.h */,
 				F2EE006300000000000000A1 /* MediaIntrospection.cpp */,
+				FECC0007000000000000F701 /* PainterIntrospection.h */,
+				FECC0007000000000000F702 /* PainterIntrospection.cpp */,
+				FECC0008000000000000F801 /* EntityTemplates.h */,
+				FECC0008000000000000F802 /* EntityTemplates.cpp */,
 			);
 			path = SceneEditor;
 			sourceTree = "<group>";
@@ -4320,6 +4464,9 @@
 				A6E7B093000000000000C0DE /* AgentLoopbackHttpServer.h in Headers */,
 				A6E7B063000000000000C0DE /* AgentChatCodecs.h in Headers */,
 				A6E7B073000000000000C0DE /* AgentChatLoop.h in Headers */,
+				A6E7B0C3000000000000C0DE /* ChatTrajectory.h in Headers */,
+				A6E7B0D3000000000000C0DE /* AgentEvalRunner.h in Headers */,
+				A6E7B0E1000000000000C0DE /* ChatHttpTransport.h in Headers */,
 				A6E7B043000000000000C0DE /* Base64.h in Headers */,
 				A6E7B053000000000000C0DE /* Json.h in Headers */,
 				A6E7B015000000000000C0DE /* SchemaGen.h in Headers */,
@@ -4531,7 +4678,6 @@
 				F28639552F9244920009D9AE /* ThreadPool.h in Headers */,
 				F2863A022F9244920009D9AE /* CPUTopology.h in Headers */,
 				F26E7A022F9244920009D9AE /* RenderETAEstimator.h in Headers */,
-				F27F0B6C069C42910069C9E5 /* PolishedBRDF.h in Headers */,
 				F27F0B6D069C42910069C9E5 /* PolishedMaterial.h in Headers */,
 				F27F0B6F069C42910069C9E5 /* PolishedSPF.h in Headers */,
 				F27F0B72069C42910069C9E5 /* SchlickBRDF.h in Headers */,
@@ -4622,6 +4768,8 @@
 				F2EE002200000000000000C1 /* FilmIntrospection.h in Headers */,
 				F2EE006000000000000000C1 /* MaterialIntrospection.h in Headers */,
 				F2EE006200000000000000C1 /* MediaIntrospection.h in Headers */,
+				FECC0007000000000000F705 /* PainterIntrospection.h in Headers */,
+				FECC0008000000000000F805 /* EntityTemplates.h in Headers */,
 				F2EE003000000000000000C1 /* DisplayTransform.h in Headers */,
 				F2EE003100000000000000C1 /* DisplayTransformWriter.h in Headers */,
 				F2EE003300000000000000C1 /* EXRCompression.h in Headers */,
@@ -5038,6 +5186,9 @@
 				A6E7B091000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */,
 				A6E7B061000000000000C0DE /* AgentChatCodecs.cpp in Sources */,
 				A6E7B071000000000000C0DE /* AgentChatLoop.cpp in Sources */,
+				A6E7B0C1000000000000C0DE /* ChatTrajectory.cpp in Sources */,
+				A6E7B0D1000000000000C0DE /* AgentEvalRunner.cpp in Sources */,
+				A6E7B0E3000000000000C0DE /* TlsTransportMac.mm in Sources */,
 				A6E7B041000000000000C0DE /* Base64.cpp in Sources */,
 				A6E7B051000000000000C0DE /* Json.cpp in Sources */,
 				A6E7B003000000000000C0DE /* SchemaGen.cpp in Sources */,
@@ -5109,7 +5260,6 @@
 				F27F0B63069C42910069C9E5 /* PerfectReflectorSPF.cpp in Sources */,
 				F27F0B66069C42910069C9E5 /* PerfectRefractorSPF.cpp in Sources */,
 				F27F0B68069C42910069C9E5 /* PhongEmitter.cpp in Sources */,
-				F27F0B6B069C42910069C9E5 /* PolishedBRDF.cpp in Sources */,
 				F27F0B6E069C42910069C9E5 /* PolishedSPF.cpp in Sources */,
 				F27F0B70069C42910069C9E5 /* ScatteredRayContainer.cpp in Sources */,
 				F27F0B71069C42910069C9E5 /* SchlickBRDF.cpp in Sources */,
@@ -5178,6 +5328,8 @@
 				F2EE002300000000000000C1 /* FilmIntrospection.cpp in Sources */,
 				F2EE006100000000000000C1 /* MaterialIntrospection.cpp in Sources */,
 				F2EE006300000000000000C1 /* MediaIntrospection.cpp in Sources */,
+				FECC0007000000000000F706 /* PainterIntrospection.cpp in Sources */,
+				FECC0008000000000000F806 /* EntityTemplates.cpp in Sources */,
 				F2EE003200000000000000C1 /* DisplayTransformWriter.cpp in Sources */,
 				F2EE001100000000000000C1 /* InteractivePelRasterizer.cpp in Sources */,
 				F2C5D5C92F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp in Sources */,
@@ -5446,6 +5598,9 @@
 				A6E7B092000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */,
 				A6E7B062000000000000C0DE /* AgentChatCodecs.cpp in Sources */,
 				A6E7B072000000000000C0DE /* AgentChatLoop.cpp in Sources */,
+				A6E7B0C2000000000000C0DE /* ChatTrajectory.cpp in Sources */,
+				A6E7B0D2000000000000C0DE /* AgentEvalRunner.cpp in Sources */,
+				A6E7B0E4000000000000C0DE /* TlsTransportMac.mm in Sources */,
 				A6E7B042000000000000C0DE /* Base64.cpp in Sources */,
 				A6E7B052000000000000C0DE /* Json.cpp in Sources */,
 				A6E7B004000000000000C0DE /* SchemaGen.cpp in Sources */,
@@ -5457,6 +5612,9 @@
 				A6E7B094000000000000C0DE /* AgentLoopbackHttpServer.h in Sources */,
 				A6E7B064000000000000C0DE /* AgentChatCodecs.h in Sources */,
 				A6E7B074000000000000C0DE /* AgentChatLoop.h in Sources */,
+				A6E7B0C4000000000000C0DE /* ChatTrajectory.h in Sources */,
+				A6E7B0D4000000000000C0DE /* AgentEvalRunner.h in Sources */,
+				A6E7B0E2000000000000C0DE /* ChatHttpTransport.h in Sources */,
 				A6E7B044000000000000C0DE /* Base64.h in Sources */,
 				A6E7B054000000000000C0DE /* Json.h in Sources */,
 				A6E7B016000000000000C0DE /* SchemaGen.h in Sources */,
@@ -5694,8 +5852,6 @@
 				F24B72F32F52A632008304C4 /* PhongEmitter.cpp in Sources */,
 				F24B72F42F52A632008304C4 /* PhongEmitter.h in Sources */,
 				F24B72F52F52A632008304C4 /* PhongLuminaireMaterial.h in Sources */,
-				F24B72F62F52A632008304C4 /* PolishedBRDF.cpp in Sources */,
-				F24B72F72F52A632008304C4 /* PolishedBRDF.h in Sources */,
 				F24B72F82F52A632008304C4 /* PolishedMaterial.h in Sources */,
 				F24B72F92F52A632008304C4 /* PolishedSPF.cpp in Sources */,
 				F24B72FA2F52A632008304C4 /* PolishedSPF.h in Sources */,
@@ -5849,6 +6005,10 @@
 				F2EE006100000000000000B1 /* MaterialIntrospection.cpp in Sources */,
 				F2EE006200000000000000B1 /* MediaIntrospection.h in Sources */,
 				F2EE006300000000000000B1 /* MediaIntrospection.cpp in Sources */,
+				FECC0007000000000000F703 /* PainterIntrospection.h in Sources */,
+				FECC0007000000000000F704 /* PainterIntrospection.cpp in Sources */,
+				FECC0008000000000000F803 /* EntityTemplates.h in Sources */,
+				FECC0008000000000000F804 /* EntityTemplates.cpp in Sources */,
 				F2EE003000000000000000B1 /* DisplayTransform.h in Sources */,
 				F2EE003100000000000000B1 /* DisplayTransformWriter.h in Sources */,
 				F2EE003200000000000000B1 /* DisplayTransformWriter.cpp in Sources */,
@@ -6241,17 +6401,13 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = (
-					/opt/homebrew/include,
-				);
+				HEADER_SEARCH_PATHS = /opt/homebrew/include;
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					/opt/homebrew/lib,
 				);
-				LIBRARY_SEARCH_PATHS = (
-					/opt/homebrew/lib,
-				);
+				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				OPTIMIZATION_CFLAGS = "-O0";
 				OTHER_CPLUSPLUSFLAGS = (
 					"-DNO_PNG_SUPPORT",
@@ -6298,17 +6454,13 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = (
-					/opt/homebrew/include,
-				);
+				HEADER_SEARCH_PATHS = /opt/homebrew/include;
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					/opt/homebrew/lib,
 				);
-				LIBRARY_SEARCH_PATHS = (
-					/opt/homebrew/lib,
-				);
+				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-DNO_PNG_SUPPORT",
@@ -6354,17 +6506,13 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = (
-					/opt/homebrew/include,
-				);
+				HEADER_SEARCH_PATHS = /opt/homebrew/include;
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					/opt/homebrew/lib,
 				);
-				LIBRARY_SEARCH_PATHS = (
-					/opt/homebrew/lib,
-				);
+				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-DNO_PNG_SUPPORT",
@@ -6533,17 +6681,13 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = (
-					/opt/homebrew/include,
-				);
+				HEADER_SEARCH_PATHS = /opt/homebrew/include;
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					/opt/homebrew/lib,
 				);
-				LIBRARY_SEARCH_PATHS = (
-					/opt/homebrew/lib,
-				);
+				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LLVM_LTO = YES;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-ffast-math",
@@ -6684,9 +6828,7 @@
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
 				);
-				LIBRARY_SEARCH_PATHS = (
-					/opt/homebrew/lib,
-				);
+				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
 				MARKETING_VERSION = 1.0;
@@ -6800,9 +6942,7 @@
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
 				);
-				LIBRARY_SEARCH_PATHS = (
-					/opt/homebrew/lib,
-				);
+				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LLVM_LTO = YES_THIN;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
@@ -6916,9 +7056,7 @@
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
 				);
-				LIBRARY_SEARCH_PATHS = (
-					/opt/homebrew/lib,
-				);
+				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LLVM_LTO = YES_THIN;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
@@ -7032,9 +7170,7 @@
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
 				);
-				LIBRARY_SEARCH_PATHS = (
-					/opt/homebrew/lib,
-				);
+				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LLVM_LTO = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;

@@ -24,11 +24,13 @@
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentDiagnostic.h"
 #include "../src/Library/Agent/SchemaGen.h"
+#include "../src/Library/Agent/Json.h"
 #include "../src/Library/Cst/Cst.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -159,6 +161,100 @@ int main()
 		const std::string all = session->ReadSchema();
 		Check( all.find( "sphere_geometry" ) != std::string::npos,
 		       "ReadSchema() (whole grammar) enumerates chunk keywords" );
+	}
+	// RED-PROVEN bug (user-reported live-Gemini failure): SchemaGenAll()
+	// used to iterate SceneGrammar::AllChunks() with NO dedupe.  A legacy
+	// alias parser entry (e.g. `mis_pathtracing_shaderop`, registered in
+	// ChunkParserRegistry.cpp's CreateAllChunkParsers with the SAME parser
+	// class as `pathtracing_shaderop`) reports its Describe().keyword as
+	// the CANONICAL keyword, so the whole-grammar dump emitted
+	// "pathtracing_shaderop" TWICE.  Gemini's functionResponse.response
+	// rides as a protobuf Struct, which hard-rejects duplicate map keys
+	// -- so a bare `read_schema` call killed the whole live-Gemini chat
+	// with an HTTP 400.  This must never regress: every top-level chunk
+	// keyword appears in ReadSchema()'s output EXACTLY ONCE.
+	{
+		const std::string all = session->ReadSchema();
+
+		// (a) Targeted raw-count check on the specific keyword the alias
+		// affects.  A raw substring count is the right assertion here --
+		// unlike JsonValue::find() (last-wins on lookup), the underlying
+		// bug is that SERIALIZATION re-emits every stored pair, so a
+		// naive "parse then look up" check would not have caught this.
+		auto CountOccurrences = []( const std::string& hay, const std::string& needle ) {
+			int n = 0;
+			for( std::size_t pos = hay.find( needle ); pos != std::string::npos; pos = hay.find( needle, pos + 1 ) )
+				++n;
+			return n;
+		};
+		Check( CountOccurrences( all, "\"pathtracing_shaderop\":" ) == 1,
+		       "ReadSchema() emits \"pathtracing_shaderop\" exactly once "
+		       "(pre-fix this was 2, from the mis_pathtracing_shaderop alias)" );
+
+		// (b) General invariant, not hardcoded to any one keyword: parse
+		// the whole-grammar dump and confirm the top-level object's raw
+		// member count (which PRESERVES duplicates -- see Json.h) equals
+		// the number of DISTINCT keys.  This catches any future alias
+		// that reintroduces the same class of bug under a different
+		// keyword.
+		JsonValue root;
+		std::string perr;
+		Check( JsonParse( all, root, perr ) && root.isObject(),
+		       "ReadSchema() (whole grammar) parses as a JSON object" );
+		if( root.isObject() ) {
+			const std::vector<std::pair<std::string, JsonValue>>& mem = root.members();
+			std::set<std::string> distinctKeys;
+			for( const auto& kv : mem ) distinctKeys.insert( kv.first );
+			Check( mem.size() == distinctKeys.size(),
+			       "ReadSchema() (whole grammar) has no duplicate top-level keyword keys" );
+		}
+	}
+
+	// Discovery-cost fix: SchemaGenCategory("<name>") is the CHEAP listing
+	// mode -- just {keyword, description} per chunk in the category, NOT the
+	// full per-parameter dump.  Proven on "material": it lists the material
+	// kinds, is a valid {category, chunks[]} object, and is DRAMATICALLY
+	// smaller than the whole-grammar dump (no "properties" parameter trees).
+	{
+		std::printf( "[read_schema] SchemaGenCategory cheap listing mode\n" );
+		const std::string mats = RISE::Agent::SchemaGenCategory( "material" );
+
+		JsonValue root;
+		std::string perr;
+		Check( JsonParse( mats, root, perr ) && root.isObject(),
+		       "SchemaGenCategory(material) parses as a JSON object" );
+		Check( root.isObject() && root.get( "category" ).asString() == "material",
+		       "SchemaGenCategory(material) echoes the category" );
+		Check( root.isObject() && root.get( "chunks" ).isArray() && root.get( "chunks" ).size() > 0,
+		       "SchemaGenCategory(material) lists a non-empty chunks array" );
+		Check( mats.find( "lambertian_material" ) != std::string::npos &&
+		       mats.find( "pbr_metallic_roughness_material" ) != std::string::npos,
+		       "SchemaGenCategory(material) enumerates the material keywords" );
+		// The listing must NOT include the per-parameter schema (that is the
+		// expensive dump it exists to AVOID) -- the whole-grammar/per-chunk
+		// dumps emit a "properties" parameter tree; the cheap listing never
+		// does (a word like "reflectance" may still appear inside a chunk's
+		// one-line DESCRIPTION, so "properties" is the right marker).
+		Check( mats.find( "\"properties\"" ) == std::string::npos,
+		       "SchemaGenCategory(material) omits per-parameter schemas (cheap listing)" );
+		// A one-line description rides each entry.
+		Check( mats.find( "\"description\"" ) != std::string::npos,
+		       "SchemaGenCategory(material) carries one-line descriptions" );
+		// It is far smaller than the whole grammar.
+		Check( mats.size() * 4 < session->ReadSchema().size(),
+		       "SchemaGenCategory(material) is much smaller than the whole-grammar dump" );
+
+		// A geometry category also resolves (not hardcoded to material).
+		const std::string geo = RISE::Agent::SchemaGenCategory( "geometry" );
+		Check( geo.find( "sphere_geometry" ) != std::string::npos,
+		       "SchemaGenCategory(geometry) lists sphere_geometry" );
+
+		// An unknown/empty category fails LOUDLY with an "error" key + empty list.
+		const std::string bad = RISE::Agent::SchemaGenCategory( "not_a_category" );
+		Check( bad.find( "\"error\"" ) != std::string::npos,
+		       "SchemaGenCategory(unknown) carries an error key" );
+		Check( bad.find( "\"chunks\":[]" ) != std::string::npos,
+		       "SchemaGenCategory(unknown) has an empty chunks array" );
 	}
 
 	//----------------------------------------------------------------------

@@ -84,6 +84,20 @@ void SheenSPF::Scatter(
 		return;
 	}
 
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a wo that validates against the
+	// (tilted) shading normal can still point below the geometric surface --
+	// the continuation ray then tunnels into the solid.  Degenerate
+	// vGeomNormal (SquaredModulus guard, matches GlintModifier.cpp) falls
+	// back to the shading normal, making the gate a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( wo, geomN ) <= 0 ) {
+		return;
+	}
+
 	const Vector3 h = Vector3Ops::Normalize( wo + v );
 	const Scalar nDotH = r_max( Scalar(0), Vector3Ops::Dot( n, h ) );
 
@@ -128,6 +142,12 @@ void SheenSPF::ScatterNM(
 	const Scalar nDotV = Vector3Ops::Dot( v, n );
 	if( nDotV <= NEARZERO ) return;
 
+	// Geometric-horizon gate (mirrors Scatter()'s gate).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( wo, geomN ) <= 0 ) return;
+
 	const Vector3 h = Vector3Ops::Normalize( wo + v );
 	const Scalar nDotH = r_max( Scalar(0), Vector3Ops::Dot( n, h ) );
 
@@ -154,7 +174,15 @@ Scalar SheenSPF::Pdf(
 	const Scalar cosTheta = bFrontFace
 		? Vector3Ops::Dot( wo, ri.onb.w() )
 		: -Vector3Ops::Dot( wo, ri.onb.w() );
-	return (cosTheta > 0) ? cosTheta * INV_PI : 0;
+
+	// Geometric-horizon gate (MIS consistency with Scatter's sampler-side
+	// gate): a wo the sampler can no longer emit contributes zero density.
+	const Vector3 nEff = bFrontFace ? ri.onb.w() : -ri.onb.w();
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : nEff;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
+	return (cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0) ? cosTheta * INV_PI : 0;
 }
 
 Scalar SheenSPF::PdfNM(

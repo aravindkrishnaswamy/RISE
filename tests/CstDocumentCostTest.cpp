@@ -144,6 +144,43 @@ int main()
 		Check( ti >= 0 && it && it->kind == Cst::NodeKind::Trivia, "an inter-chunk trivia offset resolves to a Trivia item (not a chunk)" );
 	}
 
+	// --- DocByteOffsetOfItem: the exact reverse of DocItemAtByteOffset ---
+	std::printf( "[reverse] DocByteOffsetOfItem is the exact reverse of DocItemAtByteOffset\n" );
+	{
+		const std::string scene = SceneN( 8 );
+		Cst::Document doc = Cst::ParseToCst( scene );
+		const int items = Cst::DocItemCount( doc );
+
+		// offset of item i == sum of serialized widths of items 0..i-1 (verified against SerializeCst)
+		size_t running = 0;
+		for( int i = 0; i < items; ++i ) {
+			Cst::NodeRef it = Cst::DocResolveNodeId( doc, Cst::DocNodeIdAt( doc, i ) );
+			char m[128];
+			std::snprintf( m, sizeof(m), "item %d: DocByteOffsetOfItem == running sum of prior items' serialized widths", i );
+			Check( Cst::DocByteOffsetOfItem( doc, i ) == running, m );
+			running += Cst::SerializeNode( it ).size();
+		}
+		Check( running == Cst::DocByteWidth(doc), "sum of ALL item widths == DocByteWidth (accounts for the whole document)" );
+
+		// round-trip with DocItemAtByteOffset: the start it already resolved matches the reverse lookup
+		for( int N : Ns ) {
+			const std::string s = SceneN( N );
+			Cst::Document d = Cst::ParseToCst( s );
+			const std::string needle = "name s" + std::to_string( N/2 );
+			size_t off = s.find( needle );
+			Cst::NodeRef item; size_t start = 0; int fv = 0;
+			int idx = Cst::DocItemAtByteOffset( d, off, &item, &start, &fv );
+			char m[128];
+			std::snprintf( m, sizeof(m), "N=%d: DocByteOffsetOfItem(idx) == the start DocItemAtByteOffset already found", N );
+			Check( idx >= 0 && Cst::DocByteOffsetOfItem( d, idx ) == start, m );
+		}
+
+		// out-of-range index -> the documented (size_t)-1 sentinel
+		Check( Cst::DocByteOffsetOfItem( doc, -1 )      == (size_t)-1, "negative index -> sentinel (size_t)-1" );
+		Check( Cst::DocByteOffsetOfItem( doc, items )   == (size_t)-1, "index == items (one past end) -> sentinel" );
+		Check( Cst::DocByteOffsetOfItem( doc, items+5 ) == (size_t)-1, "index well past end -> sentinel" );
+	}
+
 	// --- insert / erase: functional + aggregate-correct + round-trip ---
 	std::printf( "[struct] insert / erase keep the sequence + aggregates correct\n" );
 	{

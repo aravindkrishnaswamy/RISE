@@ -26,7 +26,10 @@ include Filelist
 #
 
 # Make the object list for the library itself
-OBJLIB = $(SRCLIB:.cpp=.o)
+# Eval-harness E4: the library source list may contain an ObjC++ .mm (the
+# macOS platform-TLS leg, OS-gated in Filelist).  Map BOTH .cpp and .mm to
+# .o so the .mm's object lands in the library + gets a tracked .d.
+OBJLIB = $(patsubst %.mm,%.o,$(SRCLIB:.cpp=.o))
 
 # Make the object list for DRISE
 OBJDRISE = $(SRCDRISE:.cpp=.o)
@@ -224,6 +227,18 @@ test : tests
 .cpp.o:
 	@echo Compiling: $<
 	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+# Eval-harness E4: ObjC++ (.mm) compile rule for the macOS platform-TLS leg
+# (TlsTransportMac.mm -- NSURLSession).  Additive: does NOT touch the .cpp.o
+# rule or the -MMD/-MP .d machinery above (both are extension-generic).  Only
+# reached on macOS, where Filelist gates the single .mm into SRCLIB; the Linux
+# build never has a .mm in SRCLIB, so this rule is simply never invoked there.
+# -x objective-c++ selects the ObjC++ front end; -fobjc-arc lets ARC own the
+# Foundation object lifetimes (Foundation itself is linked via Config.OSX's
+# LDLIBS -framework Foundation).
+%.o : %.mm
+	@echo "Compiling (ObjC++): $<"
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -x objective-c++ -fobjc-arc -c $< -o $@
 
 # automatically generate source file dependencies
 

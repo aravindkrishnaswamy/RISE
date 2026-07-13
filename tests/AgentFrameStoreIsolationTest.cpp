@@ -542,6 +542,200 @@ static void RunThrowNoOverrideTest()
 	std::remove( scenePath.c_str() );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Toolkit slice 2 (quality:"draft"): a draft render constructs its OWN
+// ephemeral InteractiveMaterialPreviewPipeline and must NEVER reference
+// the PRODUCTION rasterizer, its FrameStore, or its `outs` sink list --
+// a STRONGER claim than the override-restore proofs above (which show
+// identity is RESTORED after being touched).  This proves the
+// production rasterizer is never touched AT ALL during a draft render:
+// its FrameStore Generation() doesn't advance, a probe observer on that
+// FrameStore sees zero callbacks, its FrameStore pointer identity never
+// even changes (nothing to "restore" because nothing was swapped), and
+// -- the strongest of the four -- its own `outs` sink-list ENTRY COUNT
+// is unchanged (the production path calls mJob->RemoveRasterizerOutputs()
+// + rast->AddRasterizerOutput(sink) on THIS SAME rasterizer; the draft
+// path attaches its sink to the wholly separate ephemeral instance
+// instead, so `rast`'s own outs list is never touched).
+//////////////////////////////////////////////////////////////////////
+
+// Counts IRasterizerOutput entries via IRasterizer::EnumerateRasterizerOutputs
+// -- the only public way to observe a rasterizer's own `outs` list size
+// without a friend/internal accessor.
+struct CountingOutputsEnumCallback : public IEnumCallback<IRasterizerOutput>
+{
+	int count = 0;
+	bool operator()( const IRasterizerOutput& ) override { ++count; return true; }
+};
+
+static void RunDraftIsolationTest()
+{
+	std::printf( "=== AgentFrameStoreIsolationTest: Toolkit slice 2 draft-quality isolation ===\n" );
+
+	const std::string scenePath = WriteTemp(
+		"agent_framestore_isolation_draft.RISEscene", BuildScene( kPtRasterizer ) );
+	Check( !scenePath.empty(), "draft-isolation: scratch scene file written" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "draft-isolation: scene loads via the CST path" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "draft-isolation: AgentSession::WrapJob wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); return; }
+
+	IRasterizer* rast = pJob->GetRasterizer();
+	Check( rast != nullptr, "draft-isolation: Job has an active (production) rasterizer" );
+	if( !rast ) { pJob->release(); return; }
+
+	Implementation::Rasterizer* concreteRast = dynamic_cast<Implementation::Rasterizer*>( rast );
+	Check( concreteRast != nullptr, "draft-isolation: active rasterizer is an Implementation::Rasterizer" );
+	if( !concreteRast ) { pJob->release(); return; }
+
+	Implementation::FrameStore* displayStore = concreteRast->GetFrameStore();
+	Check( displayStore != nullptr, "draft-isolation: production rasterizer has a canonical FrameStore before any render" );
+	if( !displayStore ) { pJob->release(); return; }
+
+	const uint64_t genBefore = displayStore->Generation();
+
+	ProbeObserver probe;
+	displayStore->AddObserver( &probe );
+
+	CountingOutputsEnumCallback outsBefore;
+	rast->EnumerateRasterizerOutputs( outsBefore );
+
+	AgentRenderParams params;
+	params.quality = AgentRenderQuality::Draft;
+	AgentRenderResult res = session->Render( params );
+
+	displayStore->RemoveObserver( &probe );
+
+	Check( res.ok, "draft-isolation: the draft render succeeds" );
+	Check( res.renderMode == "draft", "draft-isolation: the result reports renderMode==\"draft\"" );
+	Check( !res.png.empty(), "draft-isolation: PNG bytes are non-empty" );
+
+	Check( displayStore->Generation() == genBefore,
+		"draft-isolation MONEY ASSERTION: the PRODUCTION rasterizer's canonical FrameStore Generation() did NOT advance -- "
+		"never referenced by the draft render at all" );
+	Check( probe.tileCompleteCount == 0,
+		"draft-isolation MONEY ASSERTION: probe observer on the production FrameStore saw ZERO OnTileComplete callbacks" );
+	Check( probe.frameCompleteCount == 0,
+		"draft-isolation MONEY ASSERTION: probe observer on the production FrameStore saw ZERO OnFrameComplete callbacks" );
+	Check( concreteRast->GetFrameStore() == displayStore,
+		"draft-isolation MONEY ASSERTION: the production rasterizer's FrameStore IDENTITY is untouched "
+		"(still the SAME pointer -- nothing was ever swapped away and back)" );
+
+	CountingOutputsEnumCallback outsAfter;
+	rast->EnumerateRasterizerOutputs( outsAfter );
+	Check( outsAfter.count == outsBefore.count,
+		"draft-isolation MONEY ASSERTION (strongest): the production rasterizer's OWN `outs` sink-list entry count is "
+		"UNCHANGED -- a draft render attaches its sink to a wholly SEPARATE ephemeral rasterizer instance, never "
+		"calling mJob->RemoveRasterizerOutputs() / rast->AddRasterizerOutput() on THIS rasterizer at all" );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== draft-quality isolation: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Round-2 P2-B: draft-quality THROW-PATH regression lock.
+//
+// doDraftRenderWork wires the SAME ForTest_SetThrowBeforeRasterize seam
+// the production path's RunThrowDuringOverrideTest/RunThrowNoOverrideTest
+// already exercise (AgentSession.cpp ~2208-2213, right before the
+// ephemeral pipeline's RasterizeScene() call) -- but until now no test
+// exercised the DRAFT copy of that seam. This proves the ephemeral
+// pipeline's own exception-safety: a forced throw immediately before
+// ephemeralRast->RasterizeScene() must not escape RenderCore_ as a raw
+// C++ exception, must not crash the process, must name the seam in the
+// failure message, must leave the session USABLE afterward (a clean
+// follow-up draft render succeeds -- proving EphemeralPipelineGuard's
+// three-owned-pointer release actually ran on the throwing exit, not
+// just the ordinary one), and -- since doDraftRenderWork never
+// references `rast` at all (see its own doc) -- must leave the
+// PRODUCTION rasterizer's FrameStore identity/Generation completely
+// untouched throughout, exactly like RunDraftIsolationTest's clean-render
+// probe above but now under the throw seam.
+//////////////////////////////////////////////////////////////////////
+static void RunDraftThrowTest()
+{
+	std::printf( "=== AgentFrameStoreIsolationTest: Round-2 P2-B draft-quality throw-path ===\n" );
+
+	const std::string scenePath = WriteTemp(
+		"agent_framestore_isolation_draft_throw.RISEscene", BuildScene( kPtRasterizer ) );
+	Check( !scenePath.empty(), "draft-throw: scratch scene file written" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "draft-throw: scene loads via the CST path" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "draft-throw: AgentSession::WrapJob wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); return; }
+
+	IRasterizer* rast = pJob->GetRasterizer();
+	Implementation::Rasterizer* concreteRast = rast ? dynamic_cast<Implementation::Rasterizer*>( rast ) : nullptr;
+	Check( concreteRast != nullptr, "draft-throw: active (production) rasterizer is an Implementation::Rasterizer" );
+	if( !concreteRast ) { pJob->release(); return; }
+
+	Implementation::FrameStore* displayStore = concreteRast->GetFrameStore();
+	Check( displayStore != nullptr, "draft-throw: production rasterizer has a canonical FrameStore before any render" );
+	if( !displayStore ) { pJob->release(); return; }
+
+	const uint64_t genBefore = displayStore->Generation();
+
+	session->ForTest_SetThrowBeforeRasterize( true );
+
+	AgentRenderParams params;
+	params.quality = AgentRenderQuality::Draft;
+	params.width   = 32;   // film-dims override too, per the fix-round request ("for good measure")
+	params.height  = 32;
+
+	AgentRenderResult res;
+	bool escaped = false;
+	std::string escapedWhat;
+	try {
+		res = session->Render( params );
+	}
+	catch( const std::exception& e ) { escaped = true; escapedWhat = e.what(); }
+	catch( ... )                     { escaped = true; escapedWhat = "unknown exception"; }
+
+	Check( !escaped, "draft-throw: the forced throw did NOT escape RenderCore_ as a raw C++ exception" );
+	if( escaped ) {
+		std::printf( "  (raw exception escaped: %s)\n", escapedWhat.c_str() );
+	}
+	Check( !res.ok, "draft-throw: render reports ok=false (the seam's throw actually fired)" );
+	Check( res.renderMode == "draft", "draft-throw: the failed result still reports renderMode==\"draft\"" );
+	Check( res.message.find( "ForTest_ThrowBeforeRasterize" ) != std::string::npos,
+		"draft-throw: failure message names the forced test-seam throw" );
+	Check( res.message.find( "draft path" ) != std::string::npos,
+		"draft-throw: failure message names the DRAFT-path throw site specifically (not the production one)" );
+
+	// (b) NO CRASH: reaching this line at all IS the assertion.
+	Check( true, "draft-throw: process did NOT crash" );
+
+	// The production rasterizer was NEVER touched by the draft throw --
+	// same probes RunDraftIsolationTest uses for a clean draft render.
+	Check( concreteRast->GetFrameStore() == displayStore,
+		"draft-throw: production rasterizer's FrameStore identity is untouched (draft path never references `rast`)" );
+	Check( displayStore->Generation() == genBefore,
+		"draft-throw: production rasterizer's canonical FrameStore Generation() did NOT advance" );
+
+	// RED-PROVE usable-after: disarm the seam and confirm a clean
+	// follow-up DRAFT render succeeds -- no leak of the ephemeral
+	// pipeline wedges the session.
+	session->ForTest_SetThrowBeforeRasterize( false );
+	AgentRenderParams cleanParams;
+	cleanParams.quality = AgentRenderQuality::Draft;
+	const AgentRenderResult clean = session->Render( cleanParams );
+	Check( clean.ok, "draft-throw: a follow-up clean draft render succeeds after the throw (session still usable)" );
+	Check( clean.renderMode == "draft", "draft-throw: follow-up render reports renderMode==\"draft\"" );
+
+	std::printf( "=== Round-2 P2-B draft-quality throw-path: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentFrameStoreIsolationTest ===\n" );
@@ -569,6 +763,8 @@ int main()
 
 	RunThrowDuringOverrideTest();
 	RunThrowNoOverrideTest();
+	RunDraftIsolationTest();
+	RunDraftThrowTest();
 
 	std::printf( "=== AgentFrameStoreIsolationTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

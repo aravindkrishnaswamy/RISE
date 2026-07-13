@@ -63,8 +63,8 @@ Built binaries land in `bin/tests/` (Release) or `dbin/tests/` (Debug).
   `CameraUnitConversionTest.cpp` (mm ↔ scene-unit conversion, sensor presets), `MultipleCamerasTest.cpp` (named-camera registration, default-camera selection)
 - Mesh and loader importers (4):
   `GLTFLoaderTest.cpp` (Khronos-asset round-trip + tangent storage), `PLYLoaderExtraPropertiesTest.cpp` (vertex colour, custom property pass-through), `RAW2VertexColorTest.cpp` (per-vertex colour in legacy RAW2 mesh), `VertexColorRoundtripTest.cpp` (vertex-colour painter round-trip across mesh formats)
-- Scene editor / interactive viewport (5):
-  `SceneEditorBasicsTest.cpp` (SceneEditor + EditHistory invariants), `SceneEditorCameraAnglesTest.cpp` (orbit/roll on `target_orientation` + `orientation.z`, gimbal-lock clamp), `SceneEditorCancelRestartTest.cpp` (cancellable progress callback, kick-render flow), `SceneEditorMemoryStressTest.cpp` (long-running edit-loop allocation footprint), `SceneEditorSuggestionsTest.cpp` (descriptor-driven property completion)
+- Scene editor / interactive viewport (6):
+  `SceneEditorBasicsTest.cpp` (SceneEditor + EditHistory invariants), `SceneEditorCameraAnglesTest.cpp` (orbit/roll on `target_orientation` + `orientation.z`, gimbal-lock clamp), `SceneEditorCancelRestartTest.cpp` (cancellable progress callback, kick-render flow), `SceneEditorMemoryStressTest.cpp` (long-running edit-loop allocation footprint), `SceneEditorSuggestionsTest.cpp` (descriptor-driven property completion), `EntityTemplatesTest.cpp` (Add-Entity template validity gate, duplicate/remove entity round-trip, Category::Painter enumeration + CST-routed painter edit)
 - Image comparison, diagnostics, and instrumentation (2):
   `RasterSanityScanTest.cpp` (silent-negative-pixel detector at output time), `RenderETAEstimatorTest.cpp`
   (CLI diagnostic utilities like `ImageDiffTest`, `FindFireflyTest`,

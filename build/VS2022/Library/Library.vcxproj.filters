@@ -549,6 +549,9 @@
     <ClCompile Include="..\..\..\src\Library\Agent\AgentChatLoop.cpp">
       <Filter>Agent</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\AgentEvalRunner.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Agent\AgentLoopbackHttpServer.cpp">
       <Filter>Agent</Filter>
     </ClCompile>
@@ -564,6 +567,9 @@
     <ClCompile Include="..\..\..\src\Library\Agent\Base64.cpp">
       <Filter>Agent</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\ChatTrajectory.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Agent\InMemoryRasterizerOutput.cpp">
       <Filter>Agent</Filter>
     </ClCompile>
@@ -571,6 +577,9 @@
       <Filter>Agent</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Agent\SchemaGen.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\TlsTransportWin.cpp">
       <Filter>Agent</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Cst\Cst.cpp">
@@ -702,9 +711,6 @@
     <ClCompile Include="..\..\..\src\Library\Materials\LambertianSPF.cpp">
       <Filter>Materials\Lambertian</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Materials\PolishedBRDF.cpp">
-      <Filter>Materials\Polished</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\PolishedSPF.cpp">
       <Filter>Materials\Polished</Filter>
     </ClCompile>
@@ -814,6 +820,12 @@
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\SceneEditor\SaveEngine.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\PainterIntrospection.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\EntityTemplates.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.cpp">
@@ -1749,6 +1761,9 @@
     <ClInclude Include="..\..\..\src\Library\Agent\AgentChatLoop.h">
       <Filter>Agent</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\AgentEvalRunner.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Agent\AgentLoopbackHttpServer.h">
       <Filter>Agent</Filter>
     </ClInclude>
@@ -1762,6 +1777,12 @@
       <Filter>Agent</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Agent\Base64.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\ChatHttpTransport.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\ChatTrajectory.h">
       <Filter>Agent</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Agent\InMemoryRasterizerOutput.h">
@@ -1929,9 +1950,6 @@
     <ClInclude Include="..\..\..\src\Library\Materials\LambertianSPF.h">
       <Filter>Materials\Lambertian</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Materials\PolishedBRDF.h">
-      <Filter>Materials\Polished</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\PolishedMaterial.h">
       <Filter>Materials\Polished</Filter>
     </ClInclude>
@@ -2068,6 +2086,12 @@
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditor\SaveEngine.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\PainterIntrospection.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\EntityTemplates.h">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.h">

@@ -74,6 +74,19 @@ void CookTorranceSPF::Scatter(
 
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
+
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a wo that validates against the
+	// (tilted) shading normal can still point below the geometric surface --
+	// the continuation ray then tunnels into the solid.  Orient the
+	// geometric normal to the shading-normal side once here and gate every
+	// lobe's sample against it below.  Degenerate vGeomNormal (SquaredModulus
+	// guard, matches GlintModifier.cpp) falls back to the shading normal,
+	// making the gate a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	Scalar alpha = pMasking->GetValuesAt(ri).v[0];
 
 	// Glossy filtering: increase effective roughness
@@ -85,8 +98,19 @@ void CookTorranceSPF::Scatter(
 	const Scalar wd = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
 	const Scalar ws = ColorMath::MaxValue( pSpecular->GetColor(ri) );
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alpha );
-	const Scalar wms = ws * (1.0 - Eavg);
+	// H6: direction-aware MS selection weight -- the true MS albedo for
+	// THIS incident direction is F_ms*(1-Ess(cosWi)), not the
+	// hemisphere-averaged F_ms*(1-Eavg); using the averaged form let a
+	// grazing cosWi on a smooth surface produce a huge, rare kray (see
+	// docs/... H6).  Eavg itself is still used unchanged below in the
+	// MS lobe's BRDF-value term.
+	const Scalar cosWi = Vector3Ops::Dot( wi, n );
+	const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );
+	const Scalar wms = ws * (1.0 - Ess_i);
 	const Scalar total = wd + ws + wms;
+	// Exact MS-lobe outgoing-direction normalization, shared by every
+	// mixPdf site below and by the MS lobe's own sampler/kray.
+	const Scalar msZ = MicrofacetEnergyLUT::MSLobeZ( alpha );
 
 	const Scalar pDiffuseSelect = (total > 1e-10) ? wd / total : 1.0;
 	const Scalar pSpecSelect    = (total > 1e-10) ? ws / total : 0.0;
@@ -102,11 +126,12 @@ void CookTorranceSPF::Scatter(
 		const Vector3 wo = GeometricUtilities::CreateDiffuseVector( myonb, ptrand );
 		const Scalar cosTheta = Vector3Ops::Dot( wo, n );
 
-		if( cosTheta > 0 )
+		if( cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0 )
 		{
 			const Scalar diffPdf = cosTheta * INV_PI;
 			const Scalar specPdf = (alpha >= 1e-6) ? MicrofacetUtils::VNDF_Pdf( wi, wo, n, alpha ) : 0;
-			const Scalar mixPdf = (total > 1e-10) ? ((wd + wms) * diffPdf + ws * specPdf) / total : diffPdf;
+			const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alpha, msZ );
+			const Scalar mixPdf = (total > 1e-10) ? (wd * diffPdf + wms * msPdfHere + ws * specPdf) / total : diffPdf;
 
 			ScatteredRay diffuse;
 			diffuse.type = ScatteredRay::eRayDiffuse;
@@ -132,14 +157,15 @@ void CookTorranceSPF::Scatter(
 				const Vector3 wo = Vector3Ops::Normalize( m * (2.0 * wiDotM) - wi );
 				const Scalar cosTheta = Vector3Ops::Dot( wo, n );
 
-				if( cosTheta > 0 )
+				if( cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0 )
 				{
 					const Scalar vndfPdf = MicrofacetUtils::VNDF_Pdf( wi, wo, n, alpha );
 
 					if( vndfPdf > 1e-10 )
 					{
 						const Scalar diffPdf = cosTheta * INV_PI;
-						const Scalar mixPdf = (total > 1e-10) ? ((wd + wms) * diffPdf + ws * vndfPdf) / total : vndfPdf;
+						const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alpha, msZ );
+						const Scalar mixPdf = (total > 1e-10) ? (wd * diffPdf + wms * msPdfHere + ws * vndfPdf) / total : vndfPdf;
 
 						const ScalarTriple iorT = pIOR->GetValuesAt(ri);
 						const ScalarTriple extT = pExtinction->GetValuesAt(ri);
@@ -173,23 +199,29 @@ void CookTorranceSPF::Scatter(
 	}
 	else
 	{
-		// --- Multiscatter lobe: cosine hemisphere sampling ---
+		// --- Multiscatter lobe: importance-sample wo ~ (1-Ess(cosWo))*cosWo ---
+		// (H6: replaces cosine-hemisphere sampling; see MicrofacetEnergyLUT.h
+		// header comment above MSLobeZ/SampleMSCosTheta/MSPdf.)
 		const Scalar pMSSelect = 1.0 - pDiffuseSelect - pSpecSelect;
 		if( pMSSelect > 1e-10 && (1.0 - Eavg) > 1e-10 )
 		{
-			const Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
-			const Vector3 wo = GeometricUtilities::CreateDiffuseVector( myonb, ptrand );
-			const Scalar cosTheta = Vector3Ops::Dot( wo, n );
+			const Scalar u1ms = sampler.Get1D();
+			const Scalar u2ms = sampler.Get1D();
+			const Scalar cosTheta = MicrofacetEnergyLUT::SampleMSCosTheta( alpha, u1ms );
+			const Scalar sinTheta = sqrt( r_max( Scalar(0), Scalar(1.0) - cosTheta * cosTheta ) );
+			const Scalar phiMs = TWO_PI * u2ms;
+			const Vector3 wo = myonb.Transform( Vector3( sinTheta * cos(phiMs), sinTheta * sin(phiMs), cosTheta ) );
 
-			if( cosTheta > 0 )
+			if( cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0 )
 			{
 				const Scalar diffPdf = cosTheta * INV_PI;
 				const Scalar specPdf = (alpha >= 1e-6) ? MicrofacetUtils::VNDF_Pdf( wi, wo, n, alpha ) : 0;
-				const Scalar mixPdf = (total > 1e-10) ? ((wd + wms) * diffPdf + ws * specPdf) / total : diffPdf;
+				const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alpha, msZ );
+				const Scalar mixPdf = (total > 1e-10) ? (wd * diffPdf + wms * msPdfHere + ws * specPdf) / total : diffPdf;
 
-				const Scalar cosWi = Vector3Ops::Dot( wi, n );
 				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( cosTheta, alpha );
-				const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );
+				// Ess_i, cosWi computed once at the top of Scatter() (shared
+				// with the direction-aware wms selection weight).
 
 				const ScalarTriple iorT = pIOR->GetValuesAt(ri);
 				const ScalarTriple extT = pExtinction->GetValuesAt(ri);
@@ -202,12 +234,13 @@ void CookTorranceSPF::Scatter(
 				const RISEPel specColor = pSpecular->GetColor(ri);
 				const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( specColor * F_avg, Eavg );
 
-				// kray = BRDF_ms * cos / pdf_cosine / pMSSelect
-				// BRDF_ms = F_ms * (1-Ess_o) * (1-Ess_i) / (PI * (1-Eavg))
-				// pdf_cosine = cos / PI
-				// kray = F_ms * (1-Ess_o) * (1-Ess_i) / (1-Eavg) / pMSSelect
-				const RISEPel kray = F_ms *
-					((1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect));
+				// H6: honest f*cos/pdf estimator (was the hard-coded
+				// (1-Ess_o)(1-Ess_i)/((1-Eavg)*pMSSelect) constant that
+				// assumed (1-Ess)==(1-Eavg) and blew up at grazing cosWi).
+				// f_ms (the BRDF value) is UNCHANGED: F_ms*(1-Ess_o)*(1-Ess_i)/(PI*(1-Eavg)).
+				const RISEPel f_ms = F_ms * ((1.0 - Ess_o) * (1.0 - Ess_i) * INV_PI / (1.0 - Eavg));
+				const RISEPel kray = (msPdfHere > 1e-14) ?
+					f_ms * (cosTheta / (msPdfHere * pMSSelect)) : RISEPel(0,0,0);
 
 				if( ColorMath::MaxValue( kray ) > 0 )
 				{
@@ -240,6 +273,19 @@ void CookTorranceSPF::ScatterNM(
 
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
+
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a wo that validates against the
+	// (tilted) shading normal can still point below the geometric surface --
+	// the continuation ray then tunnels into the solid.  Orient the
+	// geometric normal to the shading-normal side once here and gate every
+	// lobe's sample against it below.  Degenerate vGeomNormal (SquaredModulus
+	// guard, matches GlintModifier.cpp) falls back to the shading normal,
+	// making the gate a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	Scalar alpha = pMasking->GetValueAtNM(ri,nm);
 
 	// Glossy filtering: increase effective roughness
@@ -251,8 +297,12 @@ void CookTorranceSPF::ScatterNM(
 	const Scalar wd = pDiffuse->GetColorNM(ri,nm);
 	const Scalar ws = pSpecular->GetColorNM(ri,nm);
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alpha );
-	const Scalar wms = ws * (1.0 - Eavg);
+	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
+	const Scalar cosWi = Vector3Ops::Dot( wi, n );
+	const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );
+	const Scalar wms = ws * (1.0 - Ess_i);
 	const Scalar total = wd + ws + wms;
+	const Scalar msZ = MicrofacetEnergyLUT::MSLobeZ( alpha );
 
 	const Scalar pDiffuseSelect = (total > 1e-10) ? wd / total : 1.0;
 	const Scalar pSpecSelect    = (total > 1e-10) ? ws / total : 0.0;
@@ -266,11 +316,12 @@ void CookTorranceSPF::ScatterNM(
 		const Vector3 wo = GeometricUtilities::CreateDiffuseVector( myonb, ptrand );
 		const Scalar cosTheta = Vector3Ops::Dot( wo, n );
 
-		if( cosTheta > 0 )
+		if( cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0 )
 		{
 			const Scalar diffPdf = cosTheta * INV_PI;
 			const Scalar specPdf = (alpha >= 1e-6) ? MicrofacetUtils::VNDF_Pdf( wi, wo, n, alpha ) : 0;
-			const Scalar mixPdf = (total > 1e-10) ? ((wd + wms) * diffPdf + ws * specPdf) / total : diffPdf;
+			const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alpha, msZ );
+			const Scalar mixPdf = (total > 1e-10) ? (wd * diffPdf + wms * msPdfHere + ws * specPdf) / total : diffPdf;
 
 			ScatteredRay diffuse;
 			diffuse.type = ScatteredRay::eRayDiffuse;
@@ -296,14 +347,15 @@ void CookTorranceSPF::ScatterNM(
 				const Vector3 wo = Vector3Ops::Normalize( m * (2.0 * wiDotM) - wi );
 				const Scalar cosTheta = Vector3Ops::Dot( wo, n );
 
-				if( cosTheta > 0 )
+				if( cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0 )
 				{
 					const Scalar vndfPdf = MicrofacetUtils::VNDF_Pdf( wi, wo, n, alpha );
 
 					if( vndfPdf > 1e-10 )
 					{
 						const Scalar diffPdf = cosTheta * INV_PI;
-						const Scalar mixPdf = (total > 1e-10) ? ((wd + wms) * diffPdf + ws * vndfPdf) / total : vndfPdf;
+						const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alpha, msZ );
+						const Scalar mixPdf = (total > 1e-10) ? (wd * diffPdf + wms * msPdfHere + ws * vndfPdf) / total : vndfPdf;
 
 						const Scalar fresnel = Optics::CalculateConductorReflectance(
 							ri.ray.Dir(), n, 1.0,
@@ -329,23 +381,26 @@ void CookTorranceSPF::ScatterNM(
 	}
 	else
 	{
-		// --- Multiscatter lobe ---
+		// --- Multiscatter lobe: importance-sample wo ~ (1-Ess(cosWo))*cosWo ---
 		const Scalar pMSSelect = 1.0 - pDiffuseSelect - pSpecSelect;
 		if( pMSSelect > 1e-10 && (1.0 - Eavg) > 1e-10 )
 		{
-			const Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
-			const Vector3 wo = GeometricUtilities::CreateDiffuseVector( myonb, ptrand );
-			const Scalar cosTheta = Vector3Ops::Dot( wo, n );
+			const Scalar u1ms = sampler.Get1D();
+			const Scalar u2ms = sampler.Get1D();
+			const Scalar cosTheta = MicrofacetEnergyLUT::SampleMSCosTheta( alpha, u1ms );
+			const Scalar sinTheta = sqrt( r_max( Scalar(0), Scalar(1.0) - cosTheta * cosTheta ) );
+			const Scalar phiMs = TWO_PI * u2ms;
+			const Vector3 wo = myonb.Transform( Vector3( sinTheta * cos(phiMs), sinTheta * sin(phiMs), cosTheta ) );
 
-			if( cosTheta > 0 )
+			if( cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0 )
 			{
 				const Scalar diffPdf = cosTheta * INV_PI;
 				const Scalar specPdf = (alpha >= 1e-6) ? MicrofacetUtils::VNDF_Pdf( wi, wo, n, alpha ) : 0;
-				const Scalar mixPdf = (total > 1e-10) ? ((wd + wms) * diffPdf + ws * specPdf) / total : diffPdf;
+				const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alpha, msZ );
+				const Scalar mixPdf = (total > 1e-10) ? (wd * diffPdf + wms * msPdfHere + ws * specPdf) / total : diffPdf;
 
-				const Scalar cosWi = Vector3Ops::Dot( wi, n );
 				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( cosTheta, alpha );
-				const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );
+				// Ess_i, cosWi computed once at the top of ScatterNM().
 
 				const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
 				const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
@@ -355,8 +410,10 @@ void CookTorranceSPF::ScatterNM(
 				const Scalar specColor = pSpecular->GetColorNM(ri,nm);
 				const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
 
-				const Scalar krayNM = F_ms *
-					(1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect);
+				// H6: honest f*cos/pdf estimator (see Scatter()'s twin comment).
+				const Scalar f_ms = F_ms * (1.0 - Ess_o) * (1.0 - Ess_i) * INV_PI / (1.0 - Eavg);
+				const Scalar krayNM = (msPdfHere > 1e-14) ?
+					f_ms * cosTheta / (msPdfHere * pMSSelect) : 0;
 
 				if( krayNM > 0 )
 				{
@@ -389,6 +446,13 @@ Scalar CookTorranceSPF::Pdf(
 	const Scalar cosTheta = Vector3Ops::Dot( woNorm, n );
 	if( cosTheta <= 0 ) return 0;
 
+	// Geometric-horizon gate (MIS consistency with Scatter's sampler-side
+	// gate): a wo the sampler can no longer emit contributes zero density.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( woNorm, geomN ) <= 0 ) return 0;
+
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
 	Scalar alpha = pMasking->GetValuesAt(ri).v[0];
 	if( ri.glossyFilterWidth > 0 ) {
@@ -398,16 +462,19 @@ Scalar CookTorranceSPF::Pdf(
 	// 3-lobe mixture PDF weighted by painter albedos
 	const Scalar wd = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
 	const Scalar ws = ColorMath::MaxValue( pSpecular->GetColor(ri) );
-	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alpha );
-	const Scalar wms = ws * (1.0 - Eavg);
+	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
+	const Scalar cosWi = Vector3Ops::Dot( wi, n );
+	const Scalar wms = ws * (1.0 - MicrofacetEnergyLUT::LookupEss( cosWi, alpha ));
 	const Scalar total = wd + ws + wms;
 	if( total < 1e-10 ) return cosTheta * INV_PI;
 
 	const Scalar diffPdf = cosTheta * INV_PI;
 	const Scalar specPdf = (alpha >= 1e-6) ? MicrofacetUtils::VNDF_Pdf( wi, woNorm, n, alpha ) : 0;
+	const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alpha, MicrofacetEnergyLUT::MSLobeZ( alpha ) );
 
-	// Diffuse and multiscatter lobes both use cosine hemisphere sampling
-	return ((wd + wms) * diffPdf + ws * specPdf) / total;
+	// Diffuse, specular, and multiscatter lobes each importance-sample their
+	// own outgoing-direction density (H6); this is the 3-term mixture pdf.
+	return (wd * diffPdf + wms * msPdfHere + ws * specPdf) / total;
 }
 
 Scalar CookTorranceSPF::PdfNM(

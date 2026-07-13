@@ -50,6 +50,8 @@ typedef NS_ENUM(NSInteger, RISEAgentChatProvider) {
     RISEAgentChatProviderAnthropic = 0,
     RISEAgentChatProviderGemini    = 1,
     RISEAgentChatProviderOpenAI    = 2,
+    RISEAgentChatProviderXAI       = 3,
+    RISEAgentChatProviderLocal     = 4,
 };
 
 /// Mirrors RISE::Agent::ChatStepResult::Kind.
@@ -232,6 +234,32 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
 - (void)addToolResult:(RISEAgentChatToolCall *)call
   jsonRpcResponseLine:(NSString *)line
     NS_SWIFT_NAME(addToolResult(_:jsonRpcResponseLine:));
+
+/// Eval-harness E1: begin recording this chat session's trajectory to a
+/// per-session JSONL file under `directory` (created as needed), rotating
+/// old files first (keeps ~50 newest / ~200 MB).  `scenePath`/`headVersion`
+/// are captured in the session record ("" / -1 when unknown).  Pass
+/// enabled:NO to DETACH recording entirely.  Redaction of api-key-shaped
+/// content is UNCONDITIONAL in the core regardless of this toggle.
+- (void)startTrajectoryInDirectory:(NSString *)directory
+                         scenePath:(NSString *)scenePath
+                       headVersion:(long long)headVersion
+                           enabled:(BOOL)enabled
+    NS_SWIFT_NAME(startTrajectory(directory:scenePath:headVersion:enabled:));
+
+/// Record one LLM HTTP round (driver-measured status/body/latency) into
+/// the `llm` trajectory record -- call just BEFORE handleResponse.  No-op
+/// when recording is not active.  Uses the request most recently built by
+/// buildRequest (auth headers already stripped from the cached copy).
+- (void)recordHttpRoundWithStatus:(NSInteger)httpStatus
+                             body:(NSString *)rawBody
+                        elapsedMs:(int64_t)elapsedMs
+    NS_SWIFT_NAME(recordHttpRound(status:body:elapsedMs:));
+
+/// Emit the terminal `summary` record with `status` and detach the
+/// session (a fresh session begins on the next recorded action).
+- (void)finishTrajectoryWithStatus:(NSString *)status
+    NS_SWIFT_NAME(finishTrajectory(status:));
 
 /// Pending tool calls awaiting addToolResult (0 when idle).
 @property (nonatomic, readonly) NSUInteger pendingToolCallsCount;

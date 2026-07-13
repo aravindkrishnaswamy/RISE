@@ -1,0 +1,12 @@
+{
+  "//": "Eval-harness E4 live-runner smoke config: ONE scenario x ONE provider x ONE repeat.",
+  "//local": "The 'local' provider needs NO keyEnvVar (keyless local server -> no Authorization header). Point RISE at a non-default endpoint with RISE_LOCAL_LLM_BASE_URL; the default is http://127.0.0.1:11434/v1/chat/completions (Ollama).",
+  "//model": "Default local model is qwen3:32b (a newer alternative tag is qwen3.6:27b). Pull it first, e.g.  ollama pull qwen3:32b",
+  "//run": "ollama serve   then:   ./bin/rise --agent-eval evals/runconfigs/smoke_local.json",
+  "scenarios": [ "evals/scenarios/param_edit.json" ],
+  "providers": [
+    { "provider": "local", "model": "qwen3:32b" }
+  ],
+  "repeats": 1,
+  "runDir": "evals/runs/smoke_local"
+}

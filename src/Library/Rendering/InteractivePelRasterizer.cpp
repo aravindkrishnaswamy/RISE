@@ -417,17 +417,111 @@ class InteractiveMaterialPreviewRayCaster :
 	public RayCaster
 {
 public:
-	InteractiveMaterialPreviewRayCaster( const IShader& shader )
+	//! `showLuminaires` defaults FALSE so the material-preview / draft
+	//! factory behaviour is byte-identical to before (a directly-visible
+	//! emitter is suppressed to background, matching the studio-preview
+	//! look).  The objectmap factory passes TRUE: an emissive object is a
+	//! real, selectable, world-visible object that MUST appear in the
+	//! identity segmentation (otherwise RayCaster forces bHit=false for
+	//! eRayView rays hitting an emitter -- BEFORE the ObjectIdShader runs --
+	//! and the object silently renders as background with a permanent
+	//! pixelCount:0 legend entry).
+	explicit InteractiveMaterialPreviewRayCaster( const IShader& shader,
+	                                              const bool showLuminaires = false )
 	: RayCaster( /*seeRadianceMap*/false,
 				 /*maxR*/1,
 				 shader,
-				 /*showLuminaires*/false )
+				 /*showLuminaires*/showLuminaires )
 	{}
 
 protected:
 	const IShader& SelectShader( const RayIntersection& /*ri*/ ) const override
 	{
 		return pDefaultShader;
+	}
+};
+
+//! Toolkit slice 3a (objectmap): emits each hit object's flat identity
+//! colour -- the LINEAR pre-image chosen so the sRGB encode truncates to
+//! the object's reserved palette byte -- instead of shaded radiance.
+//! Bumps the object's per-id atomic pixel tally exactly once per shaded
+//! primary-ray hit (the single-ray, no-kernel IntegratePixel branch calls
+//! Shade at most once per pixel; the tally is atomic because the block
+//! workers run Shade concurrently).  A hit whose pObject is null or absent
+//! from the registry decodes to the reserved UNKNOWN colour and tallies
+//! into the last `counts` slot.  Borrows the palette (does NOT own it);
+//! the caller (AgentSession) guarantees it outlives the render.
+class ObjectIdShader :
+	public IShader,
+	public Reference
+{
+public:
+	explicit ObjectIdShader( const ObjectMapPalette& palette )
+	: mPalette( &palette )
+	{}
+
+	void Shade( const RuntimeContext& rc,
+				const RayIntersection& ri,
+				const IRayCaster& caster,
+				const IRayCaster::RAY_STATE& rs,
+				RISEPel& c,
+				const IORStack& ior_stack ) const override
+	{
+		(void)rc;
+		(void)caster;
+		(void)rs;
+		(void)ior_stack;
+		c = LookupAndTally( ri, /*tally*/true );
+	}
+
+	Scalar ShadeNM( const RuntimeContext& rc,
+					const RayIntersection& ri,
+					const IRayCaster& caster,
+					const IRayCaster::RAY_STATE& rs,
+					const Scalar nm,
+					const IORStack& ior_stack ) const override
+	{
+		(void)rc;
+		(void)caster;
+		(void)rs;
+		(void)nm;
+		(void)ior_stack;
+		// The objectmap pipeline is strictly Pel (InteractivePelRasterizer
+		// -> Shade), so ShadeNM never fires in practice.  Kept honest as a
+		// pure read with NO tally, so a stray spectral caster could never
+		// double-count against the Pel path's tally.
+		const RISEPel c = LookupAndTally( ri, /*tally*/false );
+		return ( c[0] + c[1] + c[2] ) / 3.0;
+	}
+
+	void ResetRuntimeData() const override {}
+
+protected:
+	~ObjectIdShader() override {}
+
+private:
+	const ObjectMapPalette* mPalette;
+
+	RISEPel LookupAndTally( const RayIntersection& ri, const bool tally ) const
+	{
+		const IObject* obj = ri.pObject;
+		if( obj ) {
+			std::unordered_map<const IObject*, std::uint32_t>::const_iterator it =
+				mPalette->registry.find( obj );
+			if( it != mPalette->registry.end() ) {
+				const std::uint32_t id = it->second;
+				if( tally ) {
+					mPalette->counts[id].fetch_add( 1u, std::memory_order_relaxed );
+				}
+				return mPalette->linearColors[id];
+			}
+		}
+		// Unknown: null pObject, or an object not in the registry.  Its
+		// tally lives in the last slot (index == names.size()).
+		if( tally ) {
+			mPalette->counts[mPalette->linearColors.size()].fetch_add( 1u, std::memory_order_relaxed );
+		}
+		return mPalette->unknownLinear;
 	}
 };
 
@@ -484,6 +578,46 @@ bool RISE::Implementation::CreateInteractiveMaterialPreviewPipeline(
 	*ppRasterizer = interactive;
 	*ppPreviewCaster = pCaster;
 	*ppPolishCaster = pPolishCaster;
+	return true;
+}
+
+bool RISE::Implementation::CreateInteractiveObjectMapPipeline(
+	IRasterizer** ppRasterizer,
+	IRayCaster** ppCaster,
+	const ObjectMapPalette& palette )
+{
+	if( ppRasterizer ) {
+		*ppRasterizer = 0;
+	}
+	if( ppCaster ) {
+		*ppCaster = 0;
+	}
+	if( !ppRasterizer || !ppCaster ) {
+		return false;
+	}
+
+	IShader* pShader = new ObjectIdShader( palette );
+	// showLuminaires=true: emissive objects are world-visible, selectable
+	// objects that MUST segment into the objectmap.  With the material-
+	// preview default (false) RayCaster forces bHit=false for a primary ray
+	// hitting an emitter BEFORE the ObjectIdShader runs, so the emissive
+	// object would vanish into background and its legend entry would be a
+	// permanent unexplained pixelCount:0.
+	IRayCaster* pCaster = new InteractiveMaterialPreviewRayCaster( *pShader, /*showLuminaires*/true );
+	pShader->release();
+
+	// Default preview config, progressive OFF -- a single exact pass.  We
+	// deliberately install NO polish caster and NO sampling kernel: the
+	// freshly constructed instance has pSampling == null, so every pixel
+	// takes IntegratePixel's single-ray (no jitter, no filter) branch --
+	// the EXACTNESS INVARIANT documented at the factory in the header.
+	InteractivePelRasterizer::Config cfg;
+	cfg.progressiveOnIdle = false;
+
+	InteractivePelRasterizer* interactive = new InteractivePelRasterizer( pCaster, cfg );
+
+	*ppRasterizer = interactive;
+	*ppCaster = pCaster;
 	return true;
 }
 

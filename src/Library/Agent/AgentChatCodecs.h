@@ -104,7 +104,7 @@
 //        silently dropping it, since core-layer gating is optional by
 //        design (documented in the skill / CLAUDE.md deviation notes).
 //
-//    The nine tool definitions (mapping 1:1 to the AgentRpc verbs) are
+//    The ten tool definitions (mapping 1:1 to the AgentRpc verbs) are
 //    defined ONCE, provider-neutrally, in AgentChatCodecs.cpp; each
 //    codec maps them into its native tool declaration shape.  Their
 //    parameter names/shapes mirror AgentRpc.cpp exactly.
@@ -149,7 +149,36 @@ namespace RISE
 			std::string url;      //!< absolute https URL (POST)
 			std::vector<std::pair<std::string, std::string>> headers;   //!< header name/value pairs (includes content-type + the auth header)
 			std::string body;     //!< the JSON request body
+
+			//! The per-request wall-clock budget, in seconds, that BOTH
+			//! platform transports (TlsTransportMac.mm's setTimeoutInterval
+			//! + session timeoutIntervalForRequest; TlsTransportWin.cpp's
+			//! WinHttpSetTimeouts send/receive phases) honor for THIS
+			//! request.  Default 300s matches the GUI drivers' hosted-
+			//! provider budget.  A codec that talks to a local inference
+			//! server (cold model swap loading 17-43GB + long 70B
+			//! generations legitimately exceeds 300s) raises this per
+			//! request via its own Config rather than the transports
+			//! guessing -- see OpenAIChatCodec::Config::requestTimeoutSeconds
+			//! and its LOCAL-provider instantiation in AgentChatLoop.cpp's
+			//! MakeCodec.
+			long timeoutSeconds = 300;
 		};
+
+			//! Token-usage counts parsed from ONE provider response body
+			//! (Eval-harness E1 -- fed into the trajectory `llm` record's
+			//! OTel `gen_ai.usage.*` fields).  Each field is -1 when the
+			//! provider omitted it (absent-tolerant, null-safe): Anthropic
+			//! `usage.{input_tokens,output_tokens,cache_read_input_tokens}`,
+			//! Gemini `usageMetadata.{promptTokenCount,candidatesTokenCount,
+			//! cachedContentTokenCount}`, OpenAI `usage.{prompt_tokens,
+			//! completion_tokens,prompt_tokens_details.cached_tokens}`.
+			struct ChatUsage
+			{
+				long long inputTokens          = -1;   //!< prompt / input tokens (-1 = absent)
+				long long outputTokens         = -1;   //!< completion / output tokens (-1 = absent)
+				long long cacheReadInputTokens = -1;   //!< cache-read input tokens (-1 = absent)
+			};
 
 		//! One tool call the model requested.  `id` is the provider's
 		//! tool-call id (Anthropic `tool_use.id`; Gemini
@@ -209,6 +238,41 @@ namespace RISE
 			//! show the model's narration while tools run.  Empty on
 			//! ProviderError.
 			std::string               assistantDisplayText;
+
+			//! TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY (set ONLY on a
+			//! ProviderError whose errorKind is Http): true when the loop
+			//! detected a text-only model rejecting image content
+			//! (HTTP 400 "...multimodal... not support...") and has ALREADY
+			//! elided every image from the transcript in response.  The
+			//! DRIVER should re-issue the SAME round once (rebuild via
+			//! BuildRequest -- now image-free -- fetch, and RecordHttpRound
+			//! with attempt=2/retryOf=1 so the retry is an honest sibling
+			//! llm record) instead of terminating.  Enforced once-per-round
+			//! by the loop's sticky elide-all state: a second multimodal 400
+			//! in the same session leaves this false (the normal
+			//! provider_error path proceeds unchanged).  Always false for
+			//! ToolCalls / FinalText and for every other error kind.
+			bool                      retryWithoutImages = false;
+
+			//! REASONING-MODEL TOOLS-VS-EFFORT 400 RECOVERY (set ONLY on a
+			//! ProviderError whose errorKind is Http): true when the loop
+			//! detected an OpenAI-family reasoning model rejecting a
+			//! function-tools request over /v1/chat/completions (HTTP 400
+			//! "...reasoning_effort... not support...") and has ALREADY set
+			//! its sticky state so every later BuildRequest (including the
+			//! retry) explicitly sends `"reasoning_effort":"none"`.  This is
+			//! NOT an omission -- this codebase never sends a
+			//! reasoning_effort field on its own, so the 400 comes from the
+			//! model's server-side default; the codec must actively ADD the
+			//! override.  The DRIVER should re-issue the SAME round once
+			//! (rebuild via BuildRequest, fetch, and RecordHttpRound with
+			//! attempt=2/retryOf=1 so the retry is an honest sibling llm
+			//! record) instead of terminating.  Enforced once-per-round by
+			//! the loop's sticky state: a second such 400 in the same
+			//! session leaves this false (the normal provider_error path
+			//! proceeds unchanged).  Always false for ToolCalls / FinalText
+			//! and for every other error kind.
+			bool                      retryReasoningEffortNone = false;
 		};
 
 		//! ParseResponse's full product: the step outcome PLUS the raw
@@ -310,17 +374,32 @@ namespace RISE
 			//! retained, not placed in the body/url, and never logged.
 			//! `rawEntries` are the transcript entries in order (each a
 			//! provider-native message JSON produced by this codec).
+			//! `forceReasoningEffortNone` (REASONING-MODEL TOOLS-VS-EFFORT
+			//! 400 RECOVERY, see ChatStepResult::retryReasoningEffortNone):
+			//! when true, EXPLICITLY add `"reasoning_effort":"none"` to the
+			//! request body.  Only OpenAIChatCodec acts on it -- Anthropic
+			//! and Gemini accept and ignore the parameter, since neither
+			//! provider has this field.  Defaults false so every pre-
+			//! existing call site is unaffected.
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
 				const std::string& systemPrompt,
-				const std::vector<std::string>& rawEntries ) const = 0;
+				const std::vector<std::string>& rawEntries,
+				bool forceReasoningEffortNone = false ) const = 0;
 
 			//! Parse one raw HTTP response.  `httpStatus` is the status
 			//! code the caller observed (non-200 -> ProviderError carrying
 			//! the provider's error.message when parseable).  NEVER throws.
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const = 0;
+
+			//! Parse the token-usage block from ONE raw response body into a
+			//! ChatUsage (Eval-harness E1).  Absent-tolerant and null-safe:
+			//! every field defaults to -1 and stays -1 when the provider
+			//! omits it or the body does not parse.  NEVER throws.  Pure
+			//! (like every codec method) -- the raw body is the sole input.
+			virtual ChatUsage ParseUsage( const std::string& rawBody ) const = 0;
 		};
 
 		//! Anthropic Messages API codec (see file header).
@@ -341,9 +420,11 @@ namespace RISE
 				const std::string& modelId,
 				const std::string& apiKey,
 				const std::string& systemPrompt,
-				const std::vector<std::string>& rawEntries ) const;
+				const std::vector<std::string>& rawEntries,
+				bool forceReasoningEffortNone = false ) const;
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
+			virtual ChatUsage ParseUsage( const std::string& rawBody ) const;
 		};
 
 		//! Google Gemini v1beta REST codec (see file header).  The
@@ -369,18 +450,65 @@ namespace RISE
 				const std::string& modelId,
 				const std::string& apiKey,
 				const std::string& systemPrompt,
-				const std::vector<std::string>& rawEntries ) const;
+				const std::vector<std::string>& rawEntries,
+				bool forceReasoningEffortNone = false ) const;
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
+			virtual ChatUsage ParseUsage( const std::string& rawBody ) const;
 		};
 
 		//! OpenAI Chat Completions codec (see file header).  The GUI
 		//! labels this provider "ChatGPT"; the wire endpoint is OpenAI's
 		//! chat/completions API because its messages/tool_calls transcript
 		//! shape matches this loop's provider-native raw-entry model.
+		//!
+		//! PARAMETERIZED (2026-07): the SAME wire codec drives every
+		//! OpenAI-Chat-Completions-compatible provider -- OpenAI itself,
+		//! xAI (Grok), and a local/Ollama-style server -- because the
+		//! request/response shape (messages, tools, tool_calls,
+		//! finish_reason, usage) is identical across them; only the
+		//! endpoint URL, provider label, default model id, and whether an
+		//! Authorization header is emitted differ.  Those four knobs are
+		//! captured in `Config`; the default constructor reproduces the
+		//! OpenAI wire behaviour byte-for-byte.  Do NOT copy-paste this
+		//! codec for a new compatible provider -- add a Config instead.
 		class OpenAIChatCodec : public IChatProviderCodec
 		{
 		public:
+			//! Wire config distinguishing one OpenAI-compatible provider
+			//! from another.  `requiresAuth` true -> ALWAYS emit the
+			//! `Authorization: Bearer <key>` header (OpenAI, xAI).  false
+			//! -> emit it ONLY when the api key is non-empty (a local
+			//! server: no key -> no header at all, matching Ollama, which
+			//! rejects nothing but also expects none; an explicit
+			//! --api-key local server still gets a Bearer header).
+			struct Config
+			{
+				std::string providerName;    //!< "openai" / "xai" / "local" -- the ProviderName() label
+				std::string baseUrl;         //!< full chat/completions endpoint URL
+				std::string defaultModelId;  //!< model id when the caller leaves it empty
+				bool        requiresAuth = true;  //!< see the struct doc above; defaults fail-closed (require auth) so a default-constructed Config never reads indeterminate
+
+				//! Rides straight through to BuildRequest's ChatHttpRequest.
+				//! timeoutSeconds -- the per-request budget the platform
+				//! transports honor.  Default 300s matches every hosted
+				//! provider (OpenAI, xAI).  MakeCodec's LOCAL provider
+				//! instantiation (AgentChatLoop.cpp) raises this to 900s: a
+				//! cold local-model swap (17-43GB load) plus a long 70B
+				//! generation legitimately exceeds the hosted-provider
+				//! budget and was observed timing out at 300s.
+				long        requestTimeoutSeconds = 300;
+			};
+
+			//! Default: the OpenAI provider (byte-identical wire behaviour
+			//! to the pre-parameterization codec).
+			OpenAIChatCodec();
+
+			//! Parameterized: any OpenAI-compatible provider.  The caller
+			//! (MakeCodec) resolves any env-derived base URL BEFORE
+			//! constructing, so the codec itself reads no environment.
+			explicit OpenAIChatCodec( const Config& config );
+
 			virtual const char* ProviderName() const;
 			virtual const char* DefaultModelId() const;
 			virtual std::string MakeUserEntry(
@@ -395,9 +523,14 @@ namespace RISE
 				const std::string& modelId,
 				const std::string& apiKey,
 				const std::string& systemPrompt,
-				const std::vector<std::string>& rawEntries ) const;
+				const std::vector<std::string>& rawEntries,
+				bool forceReasoningEffortNone = false ) const;
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
+			virtual ChatUsage ParseUsage( const std::string& rawBody ) const;
+
+		private:
+			Config mConfig;
 		};
 
 		//! True iff packing (call, raw JSON-RPC envelope line) would carry
@@ -425,6 +558,16 @@ namespace RISE
 		//! entry.  Returns 0 for a non-user entry, or one that does not
 		//! parse.
 		int ChatUserEntryLiveImageCount( const std::string& userEntryJson );
+
+		//! A stable, provider-neutral fingerprint SOURCE string for the ten
+		//! tool definitions (Eval-harness E1): the concatenation of every
+		//! neutral tool's name + description + parameter-schema, in order.
+		//! The trajectory `session` record hashes this so a tool-definition
+		//! change is visible as a changed tool_defs hash across replays.
+		//! Provider-neutral by construction -- it reads the ONE kToolDefs
+		//! table every codec maps from, so the fingerprint never depends on
+		//! which provider is selected.
+		std::string ChatToolDefsFingerprint();
 	}
 }
 

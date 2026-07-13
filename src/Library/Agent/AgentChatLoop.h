@@ -5,7 +5,7 @@
 //    slice B1).
 //
 //    OWNS conversation state and translates between LLM provider wire
-//    formats (via AgentChatCodecs) and the nine JSON-RPC verbs the
+//    formats (via AgentChatCodecs) and the ten JSON-RPC verbs the
 //    AgentRpcDispatcher speaks -- but performs NO I/O.  The caller (the
 //    Swift GUI in slice B2; C++ tests today) drives the loop:
 //
@@ -125,23 +125,30 @@
 #define RISE_AGENT_AGENTCHATLOOP_
 
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "AgentChatCodecs.h"
+#include "ChatTrajectory.h"
 
 namespace RISE
 {
 	namespace Agent
 	{
-		//! The selectable providers (each backed by a codec).
+		//! The selectable providers (each backed by a codec).  XAI and
+		//! Local both reuse the OpenAIChatCodec (OpenAI-Chat-Completions-
+		//! compatible wire shape) with a different Config -- see MakeCodec.
 		enum class ChatProvider
 		{
 			Anthropic,
 			Gemini,
-			OpenAI
+			OpenAI,
+			XAI,
+			Local
 		};
 
 		//! One transcript entry as the GUI sees it.  `rawJson` is the
@@ -261,7 +268,14 @@ namespace RISE
 			//! flows back to the model as an error tool result; verbs whose
 			//! params are all optional simply execute with their defaults --
 			//! self-correcting either way, never throwing).
-			std::string ToolCallToJsonRpcLine( const ChatToolCall& call, int rpcId ) const;
+			//! NOTE (Eval-harness E1): NON-const.  When a trajectory sink is
+			//! attached this STAMPS the tool call's dispatch start time and
+			//! the JSON-RPC line, keyed by call id, so AddToolResult can
+			//! complete the `tool` trajectory record with a measured latency.
+			//! With no sink attached it is a pure translation (the stamp is
+			//! skipped) -- behaviour is byte-identical to the pre-E1 const
+			//! version.
+			std::string ToolCallToJsonRpcLine( const ChatToolCall& call, int rpcId );
 
 			//! Record the raw JSON-RPC response ENVELOPE line for one of
 			//! the pending calls.  Results are buffered and packed into
@@ -304,6 +318,70 @@ namespace RISE
 			//! model selection: it survives Reset() and SetProvider().
 			void SetSkillIndex( const std::string& indexText );
 
+			//==========================================================
+			// Eval-harness E1: trajectory recording.
+			//==========================================================
+
+			//! Attach (or replace) a trajectory sink: every subsequent user
+			//! message, LLM round, tool call, and image-elision rewrite is
+			//! recorded as a JSONL line handed to `sink`.  `config` supplies
+			//! the trace id (empty => generated), an optional epoch-ms clock
+			//! (empty => a real clock at the IO edge), and the scene
+			//! path/head version captured in the session record.  The
+			//! session record is emitted lazily on the first recorded action
+			//! (so it always leads, and captures the skill index set by
+			//! then).  Passing an EMPTY sink detaches recording.  With no
+			//! sink attached EVERY hook below is a cheap no-op -- the loop's
+			//! non-recording behaviour is byte-identical to the pre-E1 core.
+			//! Replacing an active session emits its summary ("replaced")
+			//! first.
+			void SetTrajectorySink( std::function<void(const std::string&)> sink,
+			                        const ChatTrajectoryConfig& config = ChatTrajectoryConfig() );
+
+			//! Record one LLM HTTP round into the `llm` trajectory record.
+			//! Called by the DRIVER just before HandleResponse (the driver
+			//! owns the HTTP round-trip, so it alone knows the status/body/
+			//! latency).  The response body is stored VERBATIM (the replay
+			//! payload); usage/finish-reasons/error are derived from it via
+			//! the codec.  AUTH HEADERS ARE STRIPPED from `request` by name
+			//! before the record is built (belt); the writer's regex pass is
+			//! the suspenders.  `attempt`/`retryOf` capture driver-initiated
+			//! retries (retryOf < 0 for a first attempt).  No-op when no sink
+			//! is attached.
+			void RecordHttpRound( const ChatHttpRequest& request, long httpStatus,
+			                      const std::string& rawBody, int64_t elapsedMs,
+			                      int attempt = 1, int retryOf = -1 );
+
+			//! Convenience overload using the request most recently returned
+			//! by BuildRequest (what the driver actually sent) -- so a GUI
+			//! driver need not marshal the request back into C++.  No-op when
+			//! no sink is attached or no request has been built yet.
+			void RecordHttpRound( long httpStatus, const std::string& rawBody,
+			                      int64_t elapsedMs, int attempt = 1, int retryOf = -1 );
+
+			//! Emit the terminal `summary` record with `status` and detach the
+			//! current session (a fresh trace id / new session begins on the
+			//! next recorded action).  No-op when no session is active.  Use
+			//! this at chat end / app close for a clean summary line; a Reset
+			//! or SetProvider also closes the session automatically.
+			void FinishTrajectory( const std::string& status );
+
+			//! True while a trajectory sink is attached.
+			bool TrajectoryActive() const { return mRecorder != nullptr; }
+
+			//! Eval-harness (scenario interventions): emit a `history_edit`
+			//! trajectory record for a NON-LLM, NON-tool, history-visible
+			//! event that mutated the shared head BETWEEN the model's turns
+			//! WITHOUT consuming a turn -- e.g. the eval runner's simulated
+			//! co-editor applying a param edit while the agent is mid-task.
+			//! `reason` is a short machine tag (e.g. "scenario_intervention");
+			//! `beforeBytes`/`afterBytes` record the affected document's byte
+			//! size before/after the edit; `entryIndex` is advisory (-1 = not
+			//! tied to a transcript entry, the intervention case).  No-op when
+			//! no trajectory sink is attached.
+			void RecordHistoryEdit( const std::string& reason, long long beforeBytes = 0,
+			                        long long afterBytes = 0, int entryIndex = -1 );
+
 		private:
 			AgentChatLoop( const AgentChatLoop& );             // deleted
 			AgentChatLoop& operator=( const AgentChatLoop& );  // deleted
@@ -314,6 +392,43 @@ namespace RISE
 			//! wire never carries an unanswered tool call).  No-op when
 			//! there is no pending turn.
 			void FlushPendingToolResults();
+
+			//! Compose the full system prompt (base + skills section when a
+			//! skill index is set) -- shared by BuildRequest and the session
+			//! record so the recorded prompt matches the sent prompt.
+			std::string ComposeSystemPrompt() const;
+
+			//! TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: strip EVERY live
+			//! image from the WHOLE transcript in one sweep -- both packed
+			//! read_image tool-result images (via the codec's
+			//! RewriteElidedImages) and live user reference-image
+			//! attachments (via RewriteElidedUserImages), recording a
+			//! history_edit for each rewritten entry.  Idempotent (a second
+			//! sweep finds nothing live and is a no-op).  Invoked when a
+			//! text-only model 400-rejects multimodal content, and again at
+			//! the top of every later BuildRequest while mElideAllImages is
+			//! set, so once a model proves text-only the conversation never
+			//! re-sends an image.
+			void ElideAllLiveImages();
+
+			//! Emit the `session` record exactly once, on the first recorded
+			//! action, so it always leads the trajectory.  No-op with no sink.
+			void EnsureSessionRecordEmitted();
+
+			//! Emit the terminal `summary` (when a session is active) and roll
+			//! the recorder to a fresh trace id on the same sink, so the next
+			//! action starts a new session.  Shared by Reset / SetProvider /
+			//! FinishTrajectory.
+			void CloseTrajectorySession( const std::string& status );
+
+			//! One in-flight tool dispatch: the JSON-RPC line + start time
+			//! stamped by ToolCallToJsonRpcLine, completed at AddToolResult.
+			struct ToolLinePending
+			{
+				std::string id;
+				std::string line;
+				int64_t     startMs;
+			};
 
 			std::unique_ptr<IChatProviderCodec> mCodec;
 			ChatProvider                        mProvider;
@@ -332,6 +447,47 @@ namespace RISE
 			std::vector<std::pair<ChatToolCall, std::string>>  mPendingResults;
 
 			int mToolRounds;   //!< tool rounds in the current conversation-turn
+
+			//! TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: sticky once a
+			//! text-only model 400-rejects multimodal content.  While set,
+			//! every BuildRequest strips images from the transcript, so the
+			//! session never re-sends an image to a model that proved it has
+			//! no vision.  Doubles as the once-per-round retry guard (a
+			//! second multimodal 400 finds it already true and does NOT
+			//! retry again).  Cleared by Reset() (a new session may target a
+			//! different, image-capable model).
+
+			//! Eval-harness E1 trajectory state (all inert when mRecorder is
+			//! null -- the non-recording path is byte-identical to pre-E1).
+			std::unique_ptr<ChatTrajectoryRecorder> mRecorder;
+			bool                                     mSessionEmitted;
+			std::function<void(const std::string&)>  mTrajectorySink;
+			ChatTrajectoryConfig                     mTrajectoryConfig;
+			std::function<int64_t()>                 mTrajectoryClock;
+			ChatHttpRequest                          mLastRequest;
+			std::vector<ToolLinePending>             mToolLineStash;
+
+			//! See the "TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY" note above
+			//! mToolRounds.
+			bool                                     mElideAllImages;
+
+			//! REASONING-MODEL TOOLS-VS-EFFORT 400 RECOVERY: sticky once an
+			//! OpenAI-family reasoning model (observed: gpt-5.6-terra) 400-
+			//! rejects a function-tools request over /v1/chat/completions
+			//! because its server-side default reasoning_effort is
+			//! incompatible with tool calling on that endpoint ("Function
+			//! tools with reasoning_effort are not supported for <model> in
+			//! /v1/chat/completions. To use function tools, use
+			//! /v1/responses or set reasoning_effort to 'none'.").  This
+			//! codebase never SENDS a reasoning_effort field itself (the
+			//! model's default applies server-side), so the fix is NOT an
+			//! omission -- there is nothing to strip.  Instead, while set,
+			//! every BuildRequest asks the codec to EXPLICITLY add
+			//! `"reasoning_effort":"none"` to the request body, which is the
+			//! documented remedy for staying on /v1/chat/completions.
+			//! Doubles as the once-per-round retry guard, mirroring
+			//! mElideAllImages exactly.  Cleared by Reset().
+			bool                                     mForceReasoningEffortNone;
 		};
 	}
 }

@@ -100,16 +100,16 @@ static void SetEnvVar( const char* name, const char* value )
 }
 
 // The seed skills (sorted byte-wise -- the index order contract).
-// Grew from four to six with the object-modeling-recipes +
-// modeling-from-image-captures pair (both auto-discovered by
-// ListSkillNames -- production never hardcodes this list; only the
-// test's own assertions do).
+// Grew from six to seven with the observe-modes toolkit-slice-4 skill
+// (auto-discovered by ListSkillNames -- production never hardcodes
+// this list; only the test's own assertions do).
 static const char* const kSeedSkills[] = {
 	"lighting-recipes",
 	"materials-and-media-basics",
 	"modeling-from-image-captures",
 	"modeling-workflow-and-geometry",
 	"object-modeling-recipes",
+	"observe-modes",
 	"scene-skeleton-and-conventions",
 };
 static const std::size_t kSeedSkillCount = sizeof( kSeedSkills ) / sizeof( kSeedSkills[0] );
@@ -429,13 +429,14 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	std::printf( "  render contract: %.1f seconds over %d snippets\n",
 	             renderSeconds, static_cast<int>( totalSnippets ) );
 
-	// A rot guard for the extraction itself: the six seed skills ship
-	// THIRTEEN snippets total (lighting-recipes 3, materials-and-media-
+	// A rot guard for the extraction itself: the seven seed skills ship
+	// FOURTEEN snippets total (lighting-recipes 3, materials-and-media-
 	// basics 3, modeling-from-image-captures 1, modeling-workflow-and-
-	// geometry 2, object-modeling-recipes 3, scene-skeleton-and-
-	// conventions 1) -- if the fence tag or extraction regresses, this
-	// trips before a snippet silently escapes checking.
-	Check( totalSnippets == 13, "the seed skills carry the expected 13 ```rise snippets in total (got " +
+	// geometry 2, object-modeling-recipes 3, observe-modes 1,
+	// scene-skeleton-and-conventions 1) -- if the fence tag or
+	// extraction regresses, this trips before a snippet silently
+	// escapes checking.
+	Check( totalSnippets == 14, "the seed skills carry the expected 14 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 
@@ -460,6 +461,170 @@ static void TestFenceEscapes( AgentRpcDispatcher& rpc )
 }
 
 //----------------------------------------------------------------------
+// S6: observe-modes (Toolkit slice 4) -- factual spot-checks tying the
+// skill's claims to the actual verb constants/behaviour, PLUS the
+// be-the-agent check: drive each decision-table row through a LIVE
+// dispatcher (a real loaded session, not the stateless null-session
+// `rpc` used above) and confirm the claimed result shape actually
+// holds -- "derive-checked is NOT render-checked" (the S1 lesson)
+// extends here to "documented is not DRIVEN".
+//----------------------------------------------------------------------
+static void TestObserveModesTeaching( AgentRpcDispatcher& statelessRpc )
+{
+	std::printf( "S6: observe-modes -- factual spot-checks + be-the-agent verification per decision-table row...\n" );
+
+	// Spot-checks: tie the skill's stated numbers/strings to the actual
+	// constants/behaviour baked into AgentSession.cpp (kDraftMaxSamples,
+	// the read_viewport reason strings, the width/height clamp range) --
+	// the constant itself is private/unexported, so this is a literal
+	// cross-reference rather than a shared-symbol comparison.
+	const JsonValue fenv = ParseLine( statelessRpc.HandleLine( SkillRequest( 7, "observe-modes" ) ) );
+	const std::string md = fenv.get( "result" ).get( "markdown" ).asString();
+	Check( !md.empty(), "observe-modes: markdown fetched" );
+	Check( md.find( "capped at 4" ) != std::string::npos,
+	       "observe-modes states the draft samples cap as 4 (matches AgentSession.cpp's kDraftMaxSamples)" );
+	Check( md.find( "no_controller" ) != std::string::npos && md.find( "no_frame_yet" ) != std::string::npos,
+	       "observe-modes names both read_viewport unavailability reasons verbatim" );
+	Check( md.find( "[16,512]" ) != std::string::npos,
+	       "observe-modes states the width/height clamp range verbatim" );
+
+	// A small two-object scene (sphere left, box right) for the
+	// be-the-agent renders below.
+	static const char* const kScene =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+		"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 2 6\n\tlookat 0 0.5 0\n\tup 0 1 0\n\tfov 45.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_floor\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_sphere\n\tcolor 0.8 0.2 0.2\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_box\n\tcolor 0.2 0.3 0.8\n}\n\n"
+		"lambertian_material\n{\n\tname mat_floor\n\treflectance pnt_floor\n}\n\n"
+		"lambertian_material\n{\n\tname mat_sphere\n\treflectance pnt_sphere\n}\n\n"
+		"lambertian_material\n{\n\tname mat_box\n\treflectance pnt_box\n}\n\n"
+		"clippedplane_geometry\n{\n\tname floor\n\tpta -4 0 -4\n\tptb 4 0 -4\n\tptc 4 0 4\n\tptd -4 0 4\n}\n\n"
+		"standard_object\n{\n\tname obj_floor\n\tgeometry floor\n\tmaterial mat_floor\n}\n\n"
+		"sphere_geometry\n{\n\tname sph\n\tradius 0.6\n}\n\n"
+		"standard_object\n{\n\tname obj_sphere\n\tgeometry sph\n\tmaterial mat_sphere\n\tposition -1.1 0.6 0\n}\n\n"
+		"box_geometry\n{\n\tname box\n\twidth 1.0\n\theight 1.0\n\tdepth 1.0\n}\n\n"
+		"standard_object\n{\n\tname obj_box\n\tgeometry box\n\tmaterial mat_box\n\tposition 1.1 0.5 0\n}\n\n"
+		"directional_light\n{\n\tname key\n\tpower 3.0\n\tcolor 1 1 1\n\tdirection 0.3 0.6 0.7\n}\n";
+
+	const std::string scenePath = TempDir() + "rise_agent_observe_modes_test.RISEscene";
+	{
+		std::ofstream f( scenePath.c_str(), std::ios::binary );
+		f << kScene;
+	}
+
+	// Row 1: "what is the user seeing right now" -- read_viewport on a
+	// headless (LoadFromFile, no controller) session -> available:false,
+	// reason "no_controller", exactly as the skill's row 1 states.
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+		Check( session != nullptr, "row1: headless session loads" );
+		if( session ) {
+			AgentRpcDispatcher rpc( std::move( session ) );
+			const JsonValue env = ParseLine( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"read_viewport\",\"params\":{}}" ) );
+			Check( !env.find( "error" ), "row1: read_viewport is not an error on a headless session" );
+			const JsonValue& res = env.get( "result" );
+			Check( res.get( "available" ).asBool( true ) == false,
+			       "row1: MONEY ASSERTION -- headless read_viewport reports available:false" );
+			Check( res.get( "reason" ).asString() == "no_controller",
+			       "row1: MONEY ASSERTION -- reason is 'no_controller' exactly as the skill states" );
+		}
+	}
+
+	// Row 2: "roughly where I want it" -- render{quality:"draft",
+	// width, height} -> renderMode "draft", previewWidth/Height echo
+	// the request, and an over-requested samples count is honestly
+	// capped rather than silently honored.
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+		Check( session != nullptr, "row2: session loads" );
+		if( session ) {
+			AgentRpcDispatcher rpc( std::move( session ) );
+			const JsonValue env = ParseLine( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"render\","
+				"\"params\":{\"quality\":\"draft\",\"width\":48,\"height\":48,\"samples\":64}}" ) );
+			Check( !env.find( "error" ), "row2: draft render is not an error" );
+			const JsonValue& res = env.get( "result" );
+			Check( res.get( "ok" ).asBool( false ), "row2: draft render ok" );
+			Check( res.get( "renderMode" ).asString() == "draft",
+			       "row2: MONEY ASSERTION -- renderMode reads 'draft'" );
+			Check( res.get( "previewWidth" ).asNumber( 0 ) == 48 && res.get( "previewHeight" ).asNumber( 0 ) == 48,
+			       "row2: previewWidth/Height echo the requested 48x48" );
+			Check( res.get( "effectiveSamples" ).asNumber( -1 ) == 4,
+			       "row2: MONEY ASSERTION -- a samples:64 request under draft is honestly capped to 4" );
+		}
+	}
+
+	// Row 3: "which object is where" -- render{mode:"objectmap"}
+	// carries a legend naming both placed objects; query_object_at on
+	// the sphere's (camera-left) side never resolves to the box.
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+		Check( session != nullptr, "row3: session loads" );
+		if( session ) {
+			AgentRpcDispatcher rpc( std::move( session ) );
+			const JsonValue env = ParseLine( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"render\",\"params\":{\"mode\":\"objectmap\"}}" ) );
+			Check( !env.find( "error" ), "row3: objectmap render is not an error" );
+			const JsonValue& res = env.get( "result" );
+			Check( res.get( "renderMode" ).asString() == "objectmap",
+			       "row3: MONEY ASSERTION -- renderMode reads 'objectmap'" );
+			const JsonValue& legend = res.get( "legend" );
+			Check( legend.isArray() && legend.size() >= 2, "row3: legend carries at least the two placed objects" );
+			bool sawSphere = false, sawBox = false;
+			for( std::size_t i = 0; i < legend.size(); ++i ) {
+				const std::string n = legend.at( i ).get( "name" ).asString();
+				if( n == "obj_sphere" ) sawSphere = true;
+				if( n == "obj_box" )    sawBox    = true;
+			}
+			Check( sawSphere && sawBox, "row3: MONEY ASSERTION -- legend names both obj_sphere and obj_box" );
+
+			// The sphere sits at world x=-1.1 (camera-left in this
+			// lookat-at-origin setup); a pixel on the left edge of the
+			// 64-wide frame must never resolve to the right-half box.
+			const JsonValue qenv = ParseLine( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"query_object_at\",\"params\":{\"x\":8,\"y\":40}}" ) );
+			Check( !qenv.find( "error" ), "row3: query_object_at is not an error" );
+			const JsonValue& qres = qenv.get( "result" );
+			if( qres.get( "hit" ).asBool( false ) ) {
+				Check( qres.get( "name" ).asString() != "obj_box",
+				       "row3: MONEY ASSERTION -- a left-edge pixel never resolves to the right-half box" );
+			}
+		}
+	}
+
+	// Row 4: "does it actually look right" -- a production render (no
+	// `quality`) reports renderMode "production" and a non-black,
+	// non-washout image (materials/lighting are actually evaluated,
+	// unlike draft).
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+		Check( session != nullptr, "row4: session loads" );
+		if( session ) {
+			AgentRpcDispatcher rpc( std::move( session ) );
+			const JsonValue env = ParseLine( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"render\",\"params\":{}}" ) );
+			Check( !env.find( "error" ), "row4: production render is not an error" );
+			const JsonValue& res = env.get( "result" );
+			Check( res.get( "ok" ).asBool( false ), "row4: production render ok" );
+			Check( res.get( "renderMode" ).asString() == "production",
+			       "row4: MONEY ASSERTION -- renderMode reads 'production' with no quality override" );
+			const double luma = 0.2126 * res.get( "meanR" ).asNumber( 0 ) +
+			                     0.7152 * res.get( "meanG" ).asNumber( 0 ) +
+			                     0.0722 * res.get( "meanB" ).asNumber( 0 );
+			Check( luma > 0.02 && luma < 0.98,
+			       "row4: production render shows something (mean luma " + std::to_string( luma ) + " in-range)" );
+		}
+	}
+
+	std::remove( scenePath.c_str() );
+}
+
+//----------------------------------------------------------------------
 // S4: chat-loop tool table + SetSkillIndex.
 //----------------------------------------------------------------------
 static JsonValue ParseBody( const std::string& body )
@@ -472,16 +637,17 @@ static JsonValue ParseBody( const std::string& body )
 
 static void TestChatLoopWiring()
 {
-	std::printf( "S4: chat-loop tool table (nine tools) + SetSkillIndex...\n" );
+	std::printf( "S4: chat-loop tool table (ten tools) + SetSkillIndex...\n" );
 
-	// Anthropic: nine tools (S2 added insert_chunk/remove_chunk), read_skill present with a schema.
+	// Anthropic: ten tools (S2 added insert_chunk/remove_chunk; toolkit
+	// slice 3b added query_object_at), read_skill present with a schema.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 9, "anthropic body carries nine tools" );
+		Check( tools.isArray() && tools.size() == 10, "anthropic body carries ten tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() != "read_skill" ) continue;
@@ -494,28 +660,28 @@ static void TestChatLoopWiring()
 		Check( saw, "anthropic tool list includes read_skill" );
 	}
 
-	// Gemini: nine functionDeclarations, read_skill present.
+	// Gemini: ten functionDeclarations, read_skill present.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Gemini );
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 9, "gemini body carries nine functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 10, "gemini body carries ten functionDeclarations" );
 		bool saw = false;
 		for( std::size_t i = 0; i < decls.size(); ++i )
 			if( decls.at( i ).get( "name" ).asString() == "read_skill" ) saw = true;
 		Check( saw, "gemini functionDeclarations include read_skill" );
 	}
 
-	// OpenAI/ChatGPT: nine function tools, read_skill present.
+	// OpenAI/ChatGPT: ten function tools, read_skill present.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::OpenAI );
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 9, "openai body carries nine tools" );
+		Check( tools.isArray() && tools.size() == 10, "openai body carries ten tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const JsonValue& fn = tools.at( i ).get( "function" );
@@ -638,6 +804,7 @@ int main()
 	TestVerbRejections( rpc );
 	TestSnippetContract( rpc );
 	TestFenceEscapes( rpc );
+	TestObserveModesTeaching( rpc );
 	TestChatLoopWiring();
 	TestToolRound( rpc );
 

@@ -152,12 +152,28 @@ void WardAnisotropicEllipticalGaussianSPF::Scatter(
 		myonb.FlipW();
 	}
 
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a direction that validates against
+	// the (tilted) shading normal can still point below the geometric
+	// surface -- the continuation ray then tunnels into the solid.  Oriented
+	// to myonb.w() (the normal the lobes are sampled around).  Degenerate
+	// vGeomNormal (SquaredModulus guard, matches GlintModifier.cpp) falls
+	// back to the shading normal, making the gate a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : myonb.w();
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
 	ScatteredRay d, s;
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
 
-	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 ) {
+	// Accept-check tests myonb.w() (the frame lobes are actually sampled
+	// around, post-FlipW) rather than the raw ri.onb.w() -- on a back-face
+	// hit the two differ by sign, and testing the unflipped normal here
+	// silently dropped every legitimately-sampled back-face lobe.
+	if( Vector3Ops::Dot( d.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
 		d.kray = pDiffuse->GetColor(ri);
-		const Scalar cos_theta = Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() );
+		const Scalar cos_theta = Vector3Ops::Dot( d.ray.Dir(), myonb.w() );
 		d.pdf = cos_theta * INV_PI;
 		scattered.AddScatteredRay( d );
 	}
@@ -169,7 +185,8 @@ void WardAnisotropicEllipticalGaussianSPF::Scatter(
 	{
 		GenerateSpecularRay( s, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), axt.v[0], ayt.v[0] );
 
-		if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
+		// Accept-check uses myonb.w() -- see the diffuse-lobe comment above.
+		if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
 			s.kray = pSpecular->GetColor(ri);
 			scattered.AddScatteredRay( s );
 		}
@@ -181,7 +198,8 @@ void WardAnisotropicEllipticalGaussianSPF::Scatter(
 		for( int i=0; i<3; i++ ) {
 			GenerateSpecularRay( s, myonb, ri, ptrand, axt.v[i], ayt.v[i] );
 
-			if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
+			// Accept-check uses myonb.w() -- see the diffuse-lobe comment above.
+			if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
 				s.kray = 0;
 				s.kray[i] = spec[i];
 				scattered.AddScatteredRay( s );
@@ -204,17 +222,32 @@ void WardAnisotropicEllipticalGaussianSPF::ScatterNM(
 		myonb.FlipW();
 	}
 
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a direction that validates against
+	// the (tilted) shading normal can still point below the geometric
+	// surface -- the continuation ray then tunnels into the solid.  Oriented
+	// to myonb.w() (the normal the lobes are sampled around).  Degenerate
+	// vGeomNormal (SquaredModulus guard, matches GlintModifier.cpp) falls
+	// back to the shading normal, making the gate a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : myonb.w();
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
 	ScatteredRay d, s;
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
 	GenerateSpecularRay( s, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), pAlphaX->GetValueAtNM(ri,nm), pAlphaY->GetValueAtNM(ri,nm) );
 
-	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 ) {
+	// Accept-checks use myonb.w() -- see Scatter()'s comment: it is the
+	// frame lobes are actually sampled around (post-FlipW), not the raw
+	// ri.onb.w() which differs by sign on a back-face hit.
+	if( Vector3Ops::Dot( d.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
 		d.krayNM = pDiffuse->GetColorNM(ri,nm);
-		const Scalar cos_theta = Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() );
+		const Scalar cos_theta = Vector3Ops::Dot( d.ray.Dir(), myonb.w() );
 		d.pdf = cos_theta * INV_PI;
 		scattered.AddScatteredRay( d );
 	}
-	if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
+	if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
 		s.krayNM = pSpecular->GetColorNM(ri,nm);
 		scattered.AddScatteredRay( s );
 	}
@@ -230,13 +263,32 @@ static Scalar WardAnisotropicPdf(
 	const Scalar wSpec
 	)
 {
+	// Mirror Scatter()'s FlipW: orient the frame to face the incoming ray so
+	// this Pdf agrees with Scatter's actual sampling frame on backface hits
+	// (Scatter samples both lobes relative to the flipped myonb, so a raw
+	// ri.onb.w()/onb.u()/onb.v() here returned 0 for directions Scatter
+	// legitimately emits).
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
-	const Vector3& n = ri.onb.w();
+	const Vector3& n = myonb.w();
 
 	const Scalar cos_theta_i = Vector3Ops::Dot( wi, n );
 	const Scalar cos_theta_o = Vector3Ops::Dot( wo, n );
 
 	if( cos_theta_i <= 0.0 || cos_theta_o <= 0.0 ) {
+		return 0.0;
+	}
+
+	// Geometric-horizon gate (MIS consistency with the sampler-side gates):
+	// a wo the sampler can no longer emit contributes zero density.
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( wo, geomN ) <= 0 ) {
 		return 0.0;
 	}
 
@@ -252,8 +304,9 @@ static Scalar WardAnisotropicPdf(
 	}
 
 	// Project h onto the tangent plane to get the anisotropic components
-	const Scalar h_dot_u = Vector3Ops::Dot( h, ri.onb.u() );
-	const Scalar h_dot_v = Vector3Ops::Dot( h, ri.onb.v() );
+	// (myonb, not ri.onb -- see the FlipW comment above).
+	const Scalar h_dot_u = Vector3Ops::Dot( h, myonb.u() );
+	const Scalar h_dot_v = Vector3Ops::Dot( h, myonb.v() );
 
 	const Scalar exponent = -((h_dot_u * h_dot_u) / (ax * ax) + (h_dot_v * h_dot_v) / (ay * ay)) / (cos_theta_h * cos_theta_h);
 

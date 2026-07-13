@@ -18,6 +18,11 @@ let sceneEditorPanelWidth: CGFloat = {
 /// A monospaced text editor backed by NSTextView for editing RISE scene files.
 struct SceneTextEditor: NSViewRepresentable {
     @Binding var text: String
+    /// "Reveal in scene file" (design comp ⌗ affordance): when non-nil and
+    /// its `generation` hasn't been applied yet, `updateNSView` scrolls to
+    /// `byteOffset`, selects the containing line, and briefly flashes it.
+    /// See `RenderViewModel.revealEntityInSceneText`.
+    var revealRequest: RenderViewModel.EditorRevealRequest? = nil
 
     func makeNSView(context: Context) -> NSScrollView {
         // Build an NSScrollView around our custom SceneSuggestionTextView
@@ -54,17 +59,42 @@ struct SceneTextEditor: NSViewRepresentable {
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isRichText = true
 
-        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        textView.font = font
-        textView.typingAttributes = [
-            .font: font,
-            .foregroundColor: NSColor.labelColor,
-        ]
-
-        // Install the syntax highlighter as the text storage delegate.
+        // RISE UI redesign (left panel, "SCENE FILE TAB"): a fixed
+        // editor surface + IBM Plex Mono, matching RISESceneTheme's
+        // fixed syntax palette (both commit to the same fixed backdrop
+        // — keyed off RISE's own `ThemeState.mode`, not the OS
+        // light/dark appearance — rather than following adaptive
+        // system colors; see RISESceneTheme's doc for why). Install
+        // the syntax highlighter first so its `theme` (chosen from the
+        // current `ThemeState.mode`) can drive the surrounding chrome
+        // colors below too, keeping a single source of truth.
         let highlighter = RISESceneSyntaxHighlighter()
         textView.textStorage?.delegate = highlighter
         context.coordinator.highlighter = highlighter
+        let theme = highlighter.theme
+
+        let font = Theme.monoNSFont(12)
+        textView.font = font
+        let textColor = theme.defaultText
+        textView.typingAttributes = [
+            .font: font,
+            .foregroundColor: textColor,
+        ]
+        textView.backgroundColor = theme.editorBackground
+        textView.drawsBackground = true
+        textView.insertionPointColor = theme.caret
+        textView.selectedTextAttributes = [
+            .backgroundColor: theme.selectionBackground,
+            .foregroundColor: textColor,
+        ]
+        // Comfortable line spacing for the fixed-line-height scene text
+        // (matches the redesign's mono-line-height ~1.75 rhythm).
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = 3
+        textView.defaultParagraphStyle = paragraphStyle
+        textView.typingAttributes[.paragraphStyle] = paragraphStyle
+        scrollView.backgroundColor = theme.editorBackground
+        scrollView.drawsBackground = true
 
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.isHorizontallyResizable = true
@@ -92,11 +122,74 @@ struct SceneTextEditor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
-        guard let textView = context.coordinator.textView,
-              textView.string != text else { return }
-        let selectedRanges = textView.selectedRanges
-        textView.string = text
-        textView.selectedRanges = selectedRanges
+        guard let textView = context.coordinator.textView else { return }
+        if textView.string != text {
+            let selectedRanges = textView.selectedRanges
+            textView.string = text
+            textView.selectedRanges = selectedRanges
+        }
+        // "Reveal in scene file": apply a NEW reveal generation once, even
+        // when `text` itself didn't change this pass (e.g. a repeat click
+        // on the same entity, or a click that landed right after an
+        // unrelated text edit already handled above).
+        if let request = revealRequest, request.generation != context.coordinator.lastAppliedRevealGeneration {
+            context.coordinator.lastAppliedRevealGeneration = request.generation
+            // Review P1: on a fresh mount (switching to the Scene tab
+            // recreates this view) makeNSView's DEFERRED population
+            // (`textView.string = self.text` on the next run-loop turn)
+            // would run AFTER a synchronous reveal and reset scroll +
+            // selection — the reveal flashed for one frame, then the
+            // editor snapped to the top.  Enqueue the reveal on the same
+            // main queue: FIFO ordering puts it strictly after the
+            // population closure on a fresh mount, and on the
+            // steady-state path (view already mounted) the deferral is
+            // harmless.
+            let text = self.text
+            let byteOffset = request.byteOffset
+            let flash = context.coordinator.highlighter?.theme.caret
+            DispatchQueue.main.async { [weak textView] in
+                guard let textView else { return }
+                Self.reveal(in: textView, text: text, byteOffset: byteOffset,
+                            flashColor: flash)
+            }
+        }
+    }
+
+    /// Scrolls `textView` to the line containing UTF-8 byte offset
+    /// `byteOffset`, selects the full line, and briefly flashes it.
+    ///
+    /// ASSUMPTION (documented per the design brief): `text` — the
+    /// editor buffer — is byte-identical to the CST serialization
+    /// `byteOffset` was resolved against, i.e. the editor is live-synced
+    /// and the user has not since typed into the buffer.  If `text` is
+    /// user-dirty and SHORTER than `byteOffset` (edits removed content
+    /// before the target), this bails out silently rather than crashing
+    /// or landing on the wrong line — a stale reveal is a no-op, not a
+    /// misleading one.
+    private static func reveal(in textView: NSTextView, text: String, byteOffset: UInt64, flashColor: NSColor?) {
+        let utf8 = text.utf8
+        guard byteOffset < UInt64(utf8.count) else { return }
+        guard let byteIndex = utf8.index(utf8.startIndex, offsetBy: Int(byteOffset), limitedBy: utf8.endIndex),
+              let stringIndex = byteIndex.samePosition(in: text) else { return }
+
+        let lineRange = text.lineRange(for: stringIndex..<stringIndex)
+        let nsRange = NSRange(lineRange, in: text)
+
+        textView.scrollRangeToVisible(nsRange)
+        textView.setSelectedRange(nsRange)
+        // Harmless no-op if textView is already first responder.
+        textView.window?.makeFirstResponder(textView)
+
+        // Brief flash: a temporary background attribute over the line,
+        // reverted after a short delay.  Purely cosmetic — never mutates
+        // `textStorage`'s permanent attributes or the underlying string,
+        // so it can't desync from `text`/`textDidChange`.
+        guard let color = flashColor, let layoutManager = textView.layoutManager else { return }
+        layoutManager.addTemporaryAttribute(.backgroundColor, value: color.withAlphaComponent(0.35), forCharacterRange: nsRange)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak textView] in
+            guard let textView, let layoutManager = textView.layoutManager else { return }
+            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: nsRange)
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -109,6 +202,10 @@ struct SceneTextEditor: NSViewRepresentable {
         weak var suggestionTextView: SceneSuggestionTextView?
         /// Strong reference to keep the syntax highlighter alive.
         var highlighter: RISESceneSyntaxHighlighter?
+        /// "Reveal in scene file": the last `EditorRevealRequest.generation`
+        /// already applied, so `updateNSView` re-scrolls/flashes only on a
+        /// NEW request (0 never matches a real generation, which starts at 1).
+        var lastAppliedRevealGeneration = 0
         /// Debounce timer for the automatic complete(_:) trigger.
         private var completionDebounceItem: DispatchWorkItem?
         /// When true, the next textDidChange is the result of our own
@@ -125,10 +222,14 @@ struct SceneTextEditor: NSViewRepresentable {
 
             // Reset typing attributes so new keystrokes use default styling
             // rather than inheriting the color of the character at the cursor.
-            let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+            // Matches makeNSView's fixed-theme setup above.
+            let font = Theme.monoNSFont(12)
+            let paragraphStyle = NSMutableParagraphStyle()
+            paragraphStyle.lineSpacing = 3
             textView.typingAttributes = [
                 .font: font,
-                .foregroundColor: NSColor.labelColor,
+                .foregroundColor: highlighter?.theme.defaultText ?? NSColor(hex: 0xe6e7e9),
+                .paragraphStyle: paragraphStyle,
             ]
 
             if suppressAutoCompletion {
@@ -218,80 +319,202 @@ struct SceneTextEditor: NSViewRepresentable {
     }
 }
 
-/// Inline scene file editor panel that slides in from the left.
+/// Inline scene file editor panel — the left panel's "Scene file" tab.
+///
+/// RESTYLE NOTE (RISE UI redesign): header/toolbar/status-bar chrome
+/// restyled to the comp's "SCENE FILE TAB" using Theme.swift tokens.
+/// Every dirty-tracking / save / save&reload / revert / autocomplete /
+/// suggestion behavior below is unchanged from the pre-restyle version.
+///
+/// The pre-redesign header's "Close" button (which toggled
+/// `viewModel.isEditorVisible`) is dropped here: that flag predates the
+/// tab-based left panel (ContentView's `leftPanel` now switches on
+/// `leftTab`, gated only by `showLeftPanel`) and no longer has any
+/// visible effect — keeping a button that does nothing would be a fake
+/// affordance.  The design comp likewise has no close control on this
+/// tab (the Agent/Scene-file tab strip is the switch).
 struct SceneEditorPanel: View {
     @EnvironmentObject var viewModel: RenderViewModel
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                Text("Scene Editor")
-                    .font(.headline)
+            header
+            Rectangle().fill(Theme.borderHairline).frame(height: 1)
+            toolbar
+            Rectangle().fill(Theme.borderHairline).frame(height: 1)
 
-                if viewModel.isEditorDirty {
-                    Text("Modified")
-                        .font(.caption)
-                        .foregroundColor(.orange)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
-                }
-
-                Spacer()
-
-                Button {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        viewModel.isEditorVisible = false
-                    }
-                } label: {
-                    Label("Close", systemImage: "sidebar.left")
-                }
-                .help("Close editor")
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color(nsColor: .windowBackgroundColor))
-
-            Divider()
-
-            // Toolbar
-            HStack(spacing: 8) {
-                Button {
-                    viewModel.revertEditorFile()
-                } label: {
-                    Label("Revert", systemImage: "arrow.uturn.backward")
-                }
-                .disabled(!viewModel.isEditorDirty)
-                .help("Revert all changes to the last saved version")
-
-                Button {
-                    viewModel.saveEditorFile()
-                } label: {
-                    Label("Save", systemImage: "square.and.arrow.down")
-                }
-                .disabled(!viewModel.isEditorDirty)
-                .keyboardShortcut("s", modifiers: .command)
-                .help("Save changes to disk")
-
-                Button {
-                    viewModel.saveAndReloadScene()
-                } label: {
-                    Label("Save & Reload", systemImage: "arrow.clockwise")
-                }
-                .disabled(viewModel.renderState == .cancelling || viewModel.renderState == .loading)
-                .help("Save to disk, clear the loaded scene, and reload from disk")
-
-                Spacer()
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color(nsColor: .windowBackgroundColor))
-
-            Divider()
-
-            SceneTextEditor(text: $viewModel.editorText)
+            SceneTextEditor(text: $viewModel.editorText, revealRequest: viewModel.editorRevealRequest)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            statusBar
         }
+        .background(Theme.bgPanel)
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text("Scene file")
+                .font(Theme.sans(11, .semibold))
+                .foregroundColor(Theme.textPrimary)
+
+            if viewModel.isEditorDirty {
+                HStack(spacing: 5) {
+                    Circle().fill(Theme.dirty).frame(width: 6, height: 6)
+                    Text("edited")
+                        .font(Theme.sans(10))
+                        .foregroundColor(Theme.dirty)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 34)
+        .background(Theme.bgHeader)
+    }
+
+    // MARK: - Toolbar
+
+    private var toolbar: some View {
+        HStack(spacing: 8) {
+            editorPill("Revert", disabled: !viewModel.isEditorDirty,
+                       help: "Discard buffer edits and reload the current live scene "
+                           + "(not just the last-saved-to-disk version)") {
+                viewModel.revertEditorFile()
+            }
+
+            // P1-3 fix: no keyboard shortcut here.  ⌘S was bound both
+            // here AND on File > "Save Rendered Image…" (RISEApp.swift);
+            // the responder chain resolves this pill's shortcut FIRST,
+            // so ⌘S silently overwrote the loaded .RISEscene with the
+            // raw editor buffer instead of saving the rendered image the
+            // menu item's label promises.  The pill stays clickable —
+            // only the keyboard binding is gone.
+            editorPill("Save", disabled: !viewModel.isEditorDirty,
+                       help: "Save changes to disk") {
+                viewModel.saveEditorFile()
+            }
+
+            editorPill("Save & Reload",
+                       disabled: viewModel.renderState == .cancelling
+                                 || viewModel.renderState == .loading,
+                       help: "Save to disk, clear the loaded scene, and reload from disk") {
+                viewModel.saveAndReloadScene()
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Theme.bgHeader)
+    }
+
+    /// A compact bordered pill button matching the comp's toolbar
+    /// affordances (Revert / Save / Save & Reload): hairline border by
+    /// default, brightening on hover.  The keyboard shortcut, when
+    /// given, is applied directly to the underlying `Button` (inside
+    /// `EditorPillButton`) rather than to this wrapper view — matching
+    /// the pre-restyle code's pattern, since `.keyboardShortcut` needs
+    /// to sit on the actual control to bind reliably.
+    private func editorPill(_ title: String, disabled: Bool, help: String,
+                             shortcutKey: KeyEquivalent? = nil,
+                             shortcutModifiers: EventModifiers = .command,
+                             action: @escaping () -> Void) -> some View {
+        EditorPillButton(title: title, disabled: disabled,
+                          shortcutKey: shortcutKey, shortcutModifiers: shortcutModifiers,
+                          action: action)
+            .help(help)
+    }
+
+    // MARK: - Status bar
+
+    /// Honest client-side stats only — no "parsed · 0 errors" claim,
+    /// since there is no live parse surface wired to this editor yet
+    /// (see the slice brief).  Save state mirrors the dirty badge in
+    /// the header so it reads correctly even when the header scrolls
+    /// out of view on a very short window.
+    ///
+    /// CST <-> scene-file live sync (item 1): `editorBehindLiveScene`
+    /// only ever goes true alongside `isEditorDirty` (the poll can't set
+    /// it while the buffer is clean — see `pollRefinementState`), so the
+    /// amber warning appears BESIDE "unsaved edits" rather than
+    /// replacing it — both facts are true at once: the buffer has
+    /// unsaved text AND the live scene has since moved on elsewhere
+    /// (agent edit, GUI edit, ...).
+    private var statusBar: some View {
+        HStack(spacing: 12) {
+            if viewModel.isEditorDirty {
+                Text("● unsaved edits")
+                    .foregroundColor(Theme.dirty)
+            } else {
+                Text("✓ saved")
+                    .foregroundColor(Theme.success)
+            }
+            if viewModel.editorBehindLiveScene {
+                Text("⚠ scene changed elsewhere — buffer is stale")
+                    .foregroundColor(Theme.warn)
+            }
+            Spacer(minLength: 0)
+            Text(bufferStats)
+                .foregroundColor(Theme.textDim)
+        }
+        .font(Theme.mono(10.5))
+        .padding(.horizontal, 12)
+        .frame(height: 32)
+        .background(Theme.bgHeader)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Theme.borderHairline).frame(height: 1)
+        }
+    }
+
+    private var bufferStats: String {
+        let text = viewModel.editorText
+        let chars = text.count
+        // Line count = newline count + 1 for the trailing (possibly
+        // empty) line, matching how editors conventionally report it;
+        // an empty buffer reads as 0 lines / 0 chars rather than 1.
+        let lines = text.isEmpty ? 0 : text.reduce(1) { $0 + ($1 == "\n" ? 1 : 0) }
+        return "\(chars) chars · \(lines) lines"
+    }
+}
+
+/// Hover-brightening bordered pill button shared by the scene-editor
+/// toolbar.  SwiftUI has no built-in hover-state border, so this tracks
+/// it with a plain `@State` + `.onHover`.
+private struct EditorPillButton: View {
+    let title: String
+    let disabled: Bool
+    var shortcutKey: KeyEquivalent? = nil
+    var shortcutModifiers: EventModifiers = .command
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Group {
+            if let shortcutKey {
+                button.keyboardShortcut(shortcutKey, modifiers: shortcutModifiers)
+            } else {
+                button
+            }
+        }
+    }
+
+    private var button: some View {
+        Button(action: action) {
+            Text(title)
+                .font(Theme.sans(11))
+                .padding(.horizontal, 11)
+                .padding(.vertical, 5)
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(disabled ? Theme.textDisabled : Theme.textTertiary)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusMedium)
+                .stroke(isHovered && !disabled ? Theme.borderHover : Theme.borderStrong, lineWidth: 1)
+        )
+        .disabled(disabled)
+        .onHover { isHovered = $0 }
     }
 }

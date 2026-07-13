@@ -52,23 +52,39 @@ void SchlickBRDF::SetRoughness( const IScalarPainter& v ){ v.addref(); safe_rele
 void SchlickBRDF::SetIsotropy( const IScalarPainter& v ) { v.addref(); safe_release( pIsotropy );  pIsotropy  = &v; }
 
 template< class T >
-static T ComputeFactor( 
-	T& fresnel, 
-	const Vector3& vLightIn, 
-	const RayIntersectionGeometric& ri, 
+static T ComputeFactor(
+	T& fresnel,
+	const Vector3& vLightIn,
+	const RayIntersectionGeometric& ri,
+	const Vector3& n,
+	const Vector3& v_tangent,
 	const T& r,
-	const T& p 
+	const T& p
 	)
 {
 	const Vector3 l = Vector3Ops::Normalize(vLightIn); // light vector
 	const Vector3 v = Vector3Ops::Normalize(-ri.ray.Dir()); // outgoing ray vector
 
-	const Vector3 n = ri.onb.w();
-
 	const Scalar nv = Vector3Ops::Dot(n,v);
 	const Scalar nl = Vector3Ops::Dot(n,l);
 
 	if( (nv >= NEARZERO) &&	(nl >= NEARZERO) ) {
+		// Geometric-horizon gate: a GlintModifier-tilted shading normal can
+		// validate light/view directions that are still below the true
+		// geometric surface.  This is a DEFENSIVE check (a valid exterior hit
+		// already satisfies it) rather than a literal sampler-consistency one
+		// -- NEE's light direction isn't sampler-drawn -- but it guards
+		// against the same tilt pathology.  Degenerate vGeomNormal falls
+		// back to the shading normal (gate is a no-op).
+		// (v is tautologically inside the gate: v = -ri.ray.Dir() and geomN is
+		// ray-anchored, so Dot(v,geomN) > 0 always holds -- see LambertianBRDF.cpp:57-60.)
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : n;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+		if( Vector3Ops::Dot( l, geomN ) <= 0 || Vector3Ops::Dot( v, geomN ) <= 0 ) {
+			return 0.0;
+		}
+
 		const Vector3 h = Vector3Ops::Normalize(l+v);
 		const Scalar t = Vector3Ops::Dot(n,h);
 
@@ -76,7 +92,7 @@ static T ComputeFactor(
 
 		fresnel = pow<T>(1-hl,5);
 
-		const Scalar w = Vector3Ops::Dot(ri.onb.v(),Vector3Ops::Normalize(h-(t*n)));
+		const Scalar w = Vector3Ops::Dot(v_tangent,Vector3Ops::Normalize(h-(t*n)));
 
 		const Scalar sqr_t = t*t;
 		const T zdem = (r*sqr_t + 1.0) - sqr_t;
@@ -99,7 +115,14 @@ RISEPel SchlickBRDF::value( const Vector3& vLightIn, const RayIntersectionGeomet
 	const ScalarTriple it = pIsotropy->GetValuesAt(ri);
 	const RISEPel rPel( rt.v[0], rt.v[1], rt.v[2] );
 	const RISEPel iPel( it.v[0], it.v[1], it.v[2] );
-	const RISEPel factor = ComputeFactor<RISEPel>( fresnel, vLightIn, ri, rPel, iPel );
+
+	// Flip to the ray-facing frame, mirroring SchlickSPF's FlipW (same
+	// condition), so value() agrees with Scatter()/Pdf() on back-face hits.
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	const RISEPel factor = ComputeFactor<RISEPel>( fresnel, vLightIn, ri, myonb.w(), myonb.v(), rPel, iPel );
 	if( ColorMath::MaxValue(factor) > 0 ) {
 		const RISEPel rho = pSpecular->GetColor(ri);
 		return (pDiffuse->GetColor(ri)*INV_PI) + ((rho + (RISEPel(1.0,1.0,1.0)-rho)*fresnel) * factor);
@@ -111,7 +134,13 @@ RISEPel SchlickBRDF::value( const Vector3& vLightIn, const RayIntersectionGeomet
 Scalar SchlickBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	Scalar fresnel=0;
-	const Scalar factor = ComputeFactor<Scalar>( fresnel, vLightIn, ri, pRoughness->GetValueAtNM(ri,nm), pIsotropy->GetValueAtNM(ri,nm) );
+
+	// Same ray-facing flip as value() above.
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	const Scalar factor = ComputeFactor<Scalar>( fresnel, vLightIn, ri, myonb.w(), myonb.v(), pRoughness->GetValueAtNM(ri,nm), pIsotropy->GetValueAtNM(ri,nm) );
 	if( factor > 0 ) {
 		const Scalar rho = pSpecular->GetColorNM(ri,nm);
 		return (pDiffuse->GetColorNM(ri,nm)*INV_PI) + (rho + (1.0-rho)*fresnel) * factor;

@@ -161,6 +161,22 @@ Costs owned honestly (not hidden):
   and a geometric-side guard (`vGeomNormal`-based rejection to the
   unperturbed normal).  Same accepted physics as the in-tree
   BumpMap/NormalMap; the delta-dielectric hero path has no such issue.
+  **2026-07-12 correction — the modifier-side guard was NOT sufficient.**
+  `GLINT_MIN_GEOM_COS` only keeps the shading normal on the outward side;
+  it does nothing about *sampled directions* below the geometric horizon,
+  and every BSDF except Polished validated directions against the shading
+  normal alone.  Sampled reflections tunneled into the solid object,
+  convex shells trapped the chains (`FlipW` shades interior hits as
+  front-facing), and any per-bounce weight > 1 (the diffuse lobe's
+  `rd/pDiffuseSelect`) compounded into non-converging fireflies.  The
+  real mitigation is the **geometric-horizon gate in the BSDF layer** —
+  Scatter/value/Pdf consistently define f = 0 below the oriented
+  geometric normal, with a mandatory-lobe exception (TIR and perfect
+  mirrors re-derive the reflection about the geometric normal instead of
+  dropping — no companion channel exists to carry that energy).  Landed
+  library-wide (GGX first, then the 22-file sweep + review fixes);
+  rejected samples are an unbiased, Veach-convention energy loss confined
+  to the tilt-vs-horizon sliver.
 - **One modifier per object** (`Object::AssignModifier` REPLACES).  The
   enamel glaze and silver objects carry no modifier today; a compound
   modifier is the named upgrade path if a scene ever needs bump+glint.

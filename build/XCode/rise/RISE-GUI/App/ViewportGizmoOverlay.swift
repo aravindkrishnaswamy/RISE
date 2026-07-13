@@ -21,6 +21,47 @@
 import SwiftUI
 import AppKit
 
+/// Shared aspect-fit letterbox math for widget-space overlays drawn on
+/// top of the viewport's rendered image.  Both `ViewportGizmoOverlay`
+/// (gizmo handle placement, below) and `ViewportView`'s
+/// region-of-interest overlay (design brief A4) need to map
+/// full-resolution film-pixel coordinates into SwiftUI widget points
+/// using the SAME formula `ViewportNSView.currentImageDrawRect()`
+/// uses to lay out the rendered image itself — an overlay computed
+/// from a second, independently-derived formula could drift from the
+/// actual image by a pixel or two at odd aspect ratios / window
+/// sizes.  This is that one shared formula.
+enum ViewportLetterbox {
+    struct Fit {
+        let scale: CGFloat
+        let originX: CGFloat
+        let originY: CGFloat
+    }
+
+    /// Returns nil when `surface` or `size` is degenerate (zero width
+    /// or height) — callers should skip drawing in that case, same as
+    /// `ViewportNSView.currentImageDrawRect()` returning nil.
+    static func fit(surface: CGSize, in size: CGSize) -> Fit? {
+        guard surface.width > 0, surface.height > 0,
+              size.width > 0, size.height > 0 else { return nil }
+        let scaleX = size.width  / surface.width
+        let scaleY = size.height / surface.height
+        let scale  = min(scaleX, scaleY)
+        let dispW  = surface.width  * scale
+        let dispH  = surface.height * scale
+        return Fit(scale: scale,
+                   originX: (size.width  - dispW) * 0.5,
+                   originY: (size.height - dispH) * 0.5)
+    }
+
+    /// Maps a point in full-resolution film-pixel space to widget
+    /// point space using a previously-computed `Fit`.
+    static func toWidget(_ p: CGPoint, fit: Fit) -> CGPoint {
+        CGPoint(x: fit.originX + p.x * fit.scale,
+               y: fit.originY + p.y * fit.scale)
+    }
+}
+
 struct ViewportGizmoOverlay: View {
     let bridge: RISEViewportBridge
     /// Re-render trigger — the parent bumps this each preview frame
@@ -38,25 +79,18 @@ struct ViewportGizmoOverlay: View {
         GeometryReader { geom in
             let surface = surfaceDimensionsProvider()
             Canvas { ctx, size in
-                guard surface.width > 0, surface.height > 0 else { return }
                 // Aspect-fit the image-pixel space inside the widget,
-                // matching ViewportCanvas's letter-box behaviour.
-                let scaleX = size.width  / surface.width
-                let scaleY = size.height / surface.height
-                let scale  = min(scaleX, scaleY)
-                let dispW  = surface.width  * scale
-                let dispH  = surface.height * scale
-                let ox     = (size.width  - dispW) * 0.5
-                let oy     = (size.height - dispH) * 0.5
+                // matching ViewportCanvas's letter-box behaviour —
+                // shared with the region-of-interest overlay via
+                // `ViewportLetterbox` (see its doc above).
+                guard let fit = ViewportLetterbox.fit(surface: surface, in: size) else { return }
 
                 // Bridge already returns widget-Y-DOWN positions (the
                 // controller flips around image height inside
                 // `ProjectWorldToScreen_`); just apply the letter-box
                 // scale and offset.
                 func toWidget(_ px: CGFloat, _ py: CGFloat) -> CGPoint {
-                    let wx = ox + px * scale
-                    let wy = oy + py * scale
-                    return CGPoint(x: wx, y: wy)
+                    ViewportLetterbox.toWidget(CGPoint(x: px, y: py), fit: fit)
                 }
 
                 let activeKind: RISEViewportGizmoKind? =
@@ -69,7 +103,7 @@ struct ViewportGizmoOverlay: View {
                         && activeKind == h.kind
                         && activeAxis == h.axis
                     drawHandle(ctx: ctx, handle: h, center: p,
-                               scale: scale, isActive: isActive)
+                               scale: fit.scale, isActive: isActive)
                 }
             }
             .allowsHitTesting(false)

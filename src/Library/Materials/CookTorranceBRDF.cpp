@@ -88,10 +88,33 @@ T CookTorranceBRDF::ComputeFactor( const Vector3& vLightIn, const RayIntersectio
 
 RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
-	const Vector3 n = ri.onb.w();
+	// Flip to the ray-facing frame, mirroring CookTorranceSPF::Scatter's
+	// FlipW (same condition), so value() agrees with Scatter()/Pdf() on
+	// back-face hits.
+	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
 	const ScalarTriple alphaT = pMasking->GetValuesAt(ri);
 	const RISEPel alphaColor( alphaT.v[0], alphaT.v[1], alphaT.v[2] );
 	const Scalar scalarAlpha = alphaT.v[0];
+
+	const Vector3 vDirCheck = Vector3Ops::Normalize( vLightIn );
+	const Vector3 rDirCheck = Vector3Ops::Normalize( -ri.ray.Dir() );
+
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so light/view directions that validate
+	// against the (tilted) shading normal can still be below the geometric
+	// surface.  This is a DEFENSIVE check (a valid exterior hit already
+	// satisfies it) rather than a sampler-consistency one -- NEE's light
+	// direction isn't sampler-drawn -- but it guards against the same tilt
+	// pathology.
+	// (rDirCheck is tautologically inside this gate: rDirCheck = -ri.ray.Dir()
+	// and geomN is anchored to ri.ray.Dir(), so Dot(rDirCheck,geomN) > 0 always
+	// holds -- only vDirCheck, the light half, can actually reject.)
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( vDirCheck, geomN ) <= 0 || Vector3Ops::Dot( rDirCheck, geomN ) <= 0 ) {
+		return RISEPel(0,0,0);
+	}
 
 	const RISEPel factor = ComputeFactor<RISEPel>( vLightIn, ri, n, alphaColor );
 
@@ -134,11 +157,24 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 
 Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
-	const Vector3 n = ri.onb.w();
+	// Same ray-facing flip as value() above.
+	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
 	const Scalar alpha = pMasking->GetValueAtNM(ri,nm);
 	const Scalar specColor = pSpecular->GetColorNM(ri,nm);
 	const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
 	const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
+
+	const Vector3 vDirCheck = Vector3Ops::Normalize( vLightIn );
+	const Vector3 rDirCheck = Vector3Ops::Normalize( -ri.ray.Dir() );
+
+	// Geometric-horizon gate (mirrors value()'s gate above).
+	// rDirCheck is tautologically inside the gate here too (see value()'s note).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( vDirCheck, geomN ) <= 0 || Vector3Ops::Dot( rDirCheck, geomN ) <= 0 ) {
+		return 0;
+	}
 
 	Scalar specular = 0;
 

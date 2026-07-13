@@ -209,7 +209,7 @@ namespace RISE
 				"Commit (the posture the document owner's own session runs at) -- an external/"
 				"proposing session can list and poll proposals but never approve or reject one] ";
 
-			//! Build the `tools/list` result: the 14 existing AgentRpc verbs,
+			//! Build the `tools/list` result: the 16 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
 			//! comments for the gotchas an external MCP client needs (paired
@@ -367,20 +367,31 @@ namespace RISE
 					props.set( "height", NumberProp( "OPTIONAL transient film-height override in pixels, CLAMPED to [16,512]. Must be paired with `width`." ) );
 					props.set( "camera", CameraOverrideSchema() );
 					props.set( "pinned", BoolProp( "OPTIONAL, default false. When true, this render cannot be silently superseded by a later render submission while it is in flight (it still responds to an explicit cancel or teardown) -- meaningful only against a live in-app GUI session's controller; has no effect in headless `rise --agent-stdio`." ) );
+					props.set( "quality", StringProp( "OPTIONAL, \"draft\" or \"production\" (default \"production\" -- today's exact behaviour). \"draft\" renders through a wholly SEPARATE, cheap studio-preview pipeline (the SAME fixed preview shader the GUI's live interactive editor uses) that IGNORES the scene's authored materials and lighting entirely -- geometry, composition, and camera framing are representative; materials, lighting, exposure, and colour are NOT. NEVER judge materials/lighting/exposure/colour from a draft image -- use quality:\"production\" (or read_viewport) for that. A draft render CAPS samples at 4 regardless of the requested `samples` value. Check the result's `renderMode` field (\"production\"/\"draft\") to see which pipeline actually ran -- `integrator` always names the head's active PRODUCTION rasterizer regardless of `quality`, so it is NOT the field to check for this." ) );
+					props.set( "mode", StringProp( "OPTIONAL, \"beauty\" (default) or \"objectmap\". \"objectmap\" renders a flat per-object IDENTITY segmentation -- each scene object painted a distinct high-contrast colour, no lighting/materials -- and adds a `legend` array of {name,colorHex,pixelCount} to the result. Use it to reason about WHICH object is at WHICH pixel and how much of the frame each covers (occlusion, placement, framing). IMPORTANT: read the objectmap image at NATIVE size -- do NOT pass read_image's maxEdge, since box-downscaling blends the identity colours and corrupts colorHex matching. `quality` and `samples` are IGNORED under objectmap (it has exactly one fidelity: 1 sample/pixel for exact per-pixel identity). Check renderMode==\"objectmap\" in the result to confirm. Orthogonal to `quality`: objectmap is about geometry identity, draft is about cheap shading. INSTANCE NAMES: a generator-synthesized legend name (e.g. \"grid[0,1]\" from an instance_array) identifies the instance in the map but is NOT a CST chunk -- to EDIT it, target the GENERATOR chunk (strip the \"[i,j]\" suffix, e.g. \"grid\"), since propose_patch/remove_chunk on the instance name will fail." ) );
 					tools.push_back( MakeTool( "render",
 						"Render the current scene head SYNCHRONOUSLY and return {ok,width,height,"
 						"meanR,meanG,meanB,integrator,previewWidth,previewHeight,cameraOverridden,"
-						"message,renderJobId,samplesOverridden,effectiveSamples}. Does NOT return "
-						"image bytes -- call read_image afterward for the rendered PNG. `integrator` "
-						"is the active rasterizer's scene-file chunk keyword (e.g. "
+						"message,renderJobId,samplesOverridden,effectiveSamples,renderMode} (plus a "
+						"per-object `legend` when mode:\"objectmap\"). Does NOT "
+						"return image bytes -- call read_image afterward for the rendered PNG. "
+						"`integrator` is the active rasterizer's scene-file chunk keyword (e.g. "
 						"\"pathtracing_pel_rasterizer\"), empty when none is active -- useful to "
-						"confirm which integrator an insert_chunk activated. `meanR/meanG/meanB` are "
+						"confirm which integrator an insert_chunk activated; it does NOT change with "
+						"`quality` (see `quality`'s own description for the field to use instead). "
+						"`meanR/meanG/meanB` are "
 						"linear per-channel means: a stable, order-independent signature for "
 						"comparing two renders (RISE's sampler is not deterministic across runs, so "
 						"raw pixels differ run-to-run by MC noise even on an unchanged scene). "
 						"`renderJobId` is a monotonically increasing id from one of two DISJOINT-BY-"
 						"PARITY id spaces (coordinator-tracked ids are always EVEN, session-local "
 						"ids are always ODD) usable with render_status/render_wait/render_cancel. "
+						"TOKEN/TIME ECONOMY: for a quick orientation check (is the geometry/camera "
+						"roughly right?) prefer quality:\"draft\" over a small width/height -- it is "
+						"the cheapest possible render (capped at 4 samples, fixed studio shading, no "
+						"scene lighting to evaluate) but its pixels tell you NOTHING about materials, "
+						"lighting, exposure, or colour; reserve quality:\"production\" (the default) "
+						"for any check of those. "
 						"NOTE: this adapter's headless `rise --agent-stdio --mcp` process has no "
 						"live in-app controller, so the async submission mode that the underlying "
 						"RPC surface supports (`{\"async\":true}`) is NOT exposed as an option here "
@@ -454,8 +465,60 @@ namespace RISE
 						"verb returns, for a client that wants the raw base64/dims rather than the "
 						"image block). Call `render` at least once first -- before any render this "
 						"returns an image for whatever is cached (empty/default if nothing has "
-						"rendered yet).",
+						"rendered yet). IF THE LAST RENDER WAS mode:\"objectmap\": read at NATIVE "
+						"size -- OMIT maxEdge. Downscaling box-blends the flat identity colours, "
+						"corrupting the exact-byte legend match (maxEdge is for beauty/draft only).",
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
+				}
+
+				// read_viewport (Toolkit slice 1)
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "maxEdge", NumberProp( "OPTIONAL long-edge bound in pixels, CLAMPED to [16,1024]. Downscales the copied viewport frame (box filter, aspect-preserving, NEVER upscales) before encoding -- no re-render. Omit for the native viewport resolution." ) );
+					tools.push_back( MakeTool( "read_viewport",
+						"Read the user's LIVE interactive viewport -- the exact frame they are "
+						"looking at RIGHT NOW in the GUI. This is DIFFERENT from read_image: "
+						"read_image returns YOUR last headless render; read_viewport returns the "
+						"USER's live viewport as it currently stands. It NEVER triggers a render "
+						"(it just copies the most recent interactive frame), so it is the cheapest "
+						"way to observe what the user sees. Returns an MCP image content block "
+						"(inline PNG) PLUS a text block with {available,reason,png_base64,byteLength,"
+						"width,height}. When `available` is false there is no image: `reason` is "
+						"\"no_controller\" (this session has no live GUI viewport -- e.g. a headless "
+						"run) or \"no_frame_yet\" (the viewport exists but has not rendered a frame "
+						"yet). available:false is a normal result, not an error -- do not retry "
+						"blindly; a headless session will never have a viewport.",
+						ObjectProp( "", props, std::vector<std::string>() ) ) );
+				}
+
+				// query_object_at (Toolkit slice 3b)
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "x", NumberProp( "REQUIRED integer pixel X coordinate, in the EFFECTIVE film dims (the width/height override below when both are given, else the scene's authored dims)." ) );
+					props.set( "y", NumberProp( "REQUIRED integer pixel Y coordinate, same effective-dims rule as `x`." ) );
+					props.set( "width",  NumberProp( "OPTIONAL transient film-width override in pixels, CLAMPED to [16,512]. Must be paired with `height`. Composes exactly like render's own width/height override -- NEVER mutates the scene document." ) );
+					props.set( "height", NumberProp( "OPTIONAL transient film-height override in pixels, CLAMPED to [16,512]. Must be paired with `width`." ) );
+					props.set( "camera", CameraOverrideSchema() );
+					std::vector<std::string> required; required.push_back( "x" ); required.push_back( "y" );
+					tools.push_back( MakeTool( "query_object_at",
+						"Identify WHICH single object is at one pixel (x,y) -- the cheap, "
+						"single-answer alternative to render mode:\"objectmap\" when you just "
+						"need to name or locate ONE object (e.g. before moving/editing it) rather "
+						"than see the whole segmentation. Returns "
+						"{hit,name,kind,pixelX,pixelY,width,height,message}: hit is false (a "
+						"NORMAL result, not an error) when the pixel is empty background -- name "
+						"is \"\" in that case. `width`/`height`/`camera` compose EXACTLY like "
+						"render's own overrides (ephemeral, captured and restored, never touch "
+						"the document) -- use `camera` to aim at an object, then query its known "
+						"screen position. An out-of-range x/y for the EFFECTIVE dims is a clean "
+						"error, not a silent hit:false. `name` is the SAME legend name a "
+						"mode:\"objectmap\" render would report for that pixel (the same "
+						"instance-array `grid[i,j]`-is-not-a-CST-chunk caveat applies -- target "
+						"the GENERATOR chunk to edit it, not the instance name). Works even on a "
+						"scene with no active production rasterizer (it runs its own cheap "
+						"identity render internally, costing about one small render, NOT a full "
+						"beauty render).",
+						ObjectProp( "", props, required ) ) );
 				}
 
 				// list_proposals (Secure-MCP slice 5b)
@@ -540,7 +603,7 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 14 tool names this adapter recognizes --
+			//! The list of the 16 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
@@ -548,7 +611,7 @@ namespace RISE
 					"read_document", "read_schema", "read_skill", "validate",
 					"propose_patch", "insert_chunk", "remove_chunk",
 					"render", "render_status", "render_wait", "render_cancel",
-					"read_image",
+					"read_image", "read_viewport", "query_object_at",
 					"list_proposals", "resolve_proposal"
 				};
 				for( const char* n : kNames ) if( name == n ) return true;
@@ -694,7 +757,7 @@ namespace RISE
 				}
 
 				//----------------------------------------------------------
-				// tools/list -> the 14 verbs as MCP tools.
+				// tools/list -> the 16 verbs as MCP tools.
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
 					JsonValue result = JsonValue::MakeObject();
@@ -760,13 +823,17 @@ namespace RISE
 
 					const JsonValue& innerResult = innerEnv.get( "result" );
 
-					// read_image gets special treatment: surface the PNG as
-					// a real MCP image content block (so a vision-capable
-					// client sees the frame inline) ALONGSIDE a text block
-					// with the metadata fields -- a real win over a bare
-					// base64 string the client would otherwise have to know
-					// to decode and reinterpret itself.
-					if( toolName == "read_image" ) {
+					// read_image / read_viewport get special treatment:
+					// surface the PNG as a real MCP image content block (so a
+					// vision-capable client sees the frame inline) ALONGSIDE a
+					// text block with the metadata fields -- a real win over a
+					// bare base64 string the client would otherwise have to
+					// know to decode and reinterpret itself.  read_viewport's
+					// result carries the SAME png_base64 field when
+					// available:true; when available:false the field is "" and
+					// the image block is simply skipped (the text block still
+					// carries {available,reason,...} so the client learns why).
+					if( toolName == "read_image" || toolName == "read_viewport" ) {
 						JsonValue content = JsonValue::MakeArray();
 						const std::string b64 = innerResult.get( "png_base64" ).asString();
 						if( !b64.empty() ) {

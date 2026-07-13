@@ -3437,8 +3437,12 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditCategory_Light      = 4,
 		SceneEditCategory_Film       = 5,  ///< Output Settings (single Film per scene)
 		SceneEditCategory_Material   = 6,  ///< Materials (editable for non-composed types)
-		SceneEditCategory_Medium     = 7   ///< Participating media (Homogeneous editable;
+		SceneEditCategory_Medium     = 7,  ///< Participating media (Homogeneous editable;
 		                                   ///< Heterogeneous read-only)
+		SceneEditCategory_Animation  = 8,  ///< Named animations (Category::Animation)
+		SceneEditCategory_SceneVariant = 9,///< scene_variant overlays (Category::SceneVariant)
+		SceneEditCategory_Painter   = 10   ///< Painters (union of the IPainter + IScalarPainter
+		                                   ///< managers; Category::Painter)
 	};
 
 	//! Construct a SceneEditController over an existing job.
@@ -3616,12 +3620,78 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_Undo( SceneEditController* p );
 	bool RISE_API_SceneEditController_Redo( SceneEditController* p );
 
+	//! Human-readable label of the next Undo/Redo step ("Translate",
+	//! "Agent Edit", ...) for the shells' Edit-menu items.  Empty string
+	//! when the corresponding stack is empty.
+	bool RISE_API_SceneEditController_UndoLabel(
+		SceneEditController* p, char* buf, unsigned int bufLen );
+	bool RISE_API_SceneEditController_RedoLabel(
+		SceneEditController* p, char* buf, unsigned int bufLen );
+
+	// ---- Refinement pause + status (UI redesign, design brief A2) ----
+	// See SceneEditController::PauseRefinement / GetRefinementStatus.
+
+	bool RISE_API_SceneEditController_PauseRefinement( SceneEditController* p );
+	bool RISE_API_SceneEditController_ResumeRefinement( SceneEditController* p );
+	bool RISE_API_SceneEditController_IsRefinementPaused( SceneEditController* p );
+
+	//! Returns the RefinementPhase as int (0 Idle, 1 Rendering,
+	//! 2 Refining, 3 Polishing, 4 Paused); -1 on null controller.
+	//! *outScaleDivisor receives the preview-scale divisor (1..32,
+	//! 1 = full resolution) when non-null.
+	int RISE_API_SceneEditController_GetRefinementStatus(
+		SceneEditController* p, unsigned int* outScaleDivisor );
+
+	// ---- Interactive region-of-interest (UI redesign, A4) ------------
+	// Full-resolution film pixel coords, INCLUSIVE.  See
+	// SceneEditController::SetInteractiveRegion for semantics (full-res
+	// passes only; cleared automatically before production renders).
+
+	bool RISE_API_SceneEditController_SetInteractiveRegion(
+		SceneEditController* p, unsigned int left, unsigned int top,
+		unsigned int right, unsigned int bottom );
+	bool RISE_API_SceneEditController_ClearInteractiveRegion( SceneEditController* p );
+	bool RISE_API_SceneEditController_GetInteractiveRegion(
+		SceneEditController* p, unsigned int* left, unsigned int* top,
+		unsigned int* right, unsigned int* bottom );
+	bool RISE_API_SceneEditController_InteractiveRasterizerHonorsRegion(
+		SceneEditController* p );
+
 	// ---- Phase 6.5 scene-file save ----------------------------------
 	// Round-trip-save bindings.  See docs/ROUND_TRIP_SAVE_PLAN.md §9.9
 	// + SceneEditController.h "Phase 6.5".
 
 	//! Drives the GUI's "Save Scene" button enable state.
 	bool RISE_API_SceneEditController_HasUnsavedChanges( SceneEditController* p );
+
+	// ---- Editor live-sync (UI refinement item 1) ---------------------
+	// See SceneEditController::SerializedSceneText — callers must NOT
+	// poll while a render owns the scene (both take the controller's
+	// commit mutex).
+
+	//! Malloc'd NUL-terminated copy of the serialized scene text, or
+	//! NULL when no document is retained.  Free with RISE_API_FreeString.
+	char* RISE_API_SceneEditController_SerializedSceneTextAlloc( SceneEditController* p );
+	//! Frees a string returned by *_SerializedSceneTextAlloc.  NULL-safe.
+	void RISE_API_FreeString( char* s );
+	//! Retained CST head version (uuid, revision); both 0 when none.
+	bool RISE_API_SceneEditController_GetSceneTextVersion(
+		SceneEditController* p,
+		unsigned long long* outUuid, unsigned long long* outRevision );
+
+	//! "Reveal in scene file": resolve entity (category, name) to its byte
+	//! offset + 1-based line number inside SerializedSceneTextAlloc's text.
+	//! `category` uses the SAME SceneEditCategory_* numbering as PanelMode
+	//! (see RISE_API_SceneEditController_PanelMode below). Returns false
+	//! (outputs unchanged) on a null controller/name, no retained CST
+	//! document, an unresolvable/ambiguous name, or a category with no
+	//! chunk-name addressing scheme (Rasterizer/Film/None — see
+	//! SceneEditController::EntitySourceLocation's doc comment). Same
+	//! mMutex caveat as the rest of this section: callers must NOT poll
+	//! while a render owns the scene.
+	bool RISE_API_SceneEditController_GetEntitySourceLocation(
+		SceneEditController* p, int category, const char* name,
+		unsigned long long* outByteOffset, unsigned int* outLine );
 
 	//! Save the in-memory edits to `filePath`.  Returns the engine's
 	//! SaveResult.status numerically (0=Saved, 1=NoOp, 2=Refused,
@@ -3912,6 +3982,54 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p,
 		const char* proposedName,
 		char* outName, unsigned int outLen );
+
+	//! Entity-creation slice: number of "Add Entity" templates
+	//! registered for `category` (0 for categories with none —
+	//! Camera/Rasterizer/Film/Animation/SceneVariant/None).
+	unsigned int RISE_API_SceneEditController_EntityTemplateCount(
+		SceneEditController* p, int category );
+
+	//! Display label for the template at `idx` within `category`
+	//! (e.g. "Sphere", "Omni Light").  Returns false (buf untouched
+	//! beyond a NUL) for a null controller or an out-of-range idx.
+	bool RISE_API_SceneEditController_EntityTemplateLabel(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen );
+
+	//! Instantiate the template at `idx` within `category` (see
+	//! SceneEditController::InstantiateEntityTemplate).  Returns the
+	//! AgentCommitResult's `applied` flag; `outName` (optional, may be
+	//! null) receives the deduped instance name on success, `outStatus`
+	//! / `outMessage` (optional, may be null) always receive the
+	//! result's status ("applied"/"rejected"/"diagnosed") and a
+	//! human-readable message, success or failure.  A multi-chunk
+	//! template undoes as several separate steps — see the C++ method's
+	//! header doc.
+	bool RISE_API_SceneEditController_InstantiateEntityTemplate(
+		SceneEditController* p, int category, unsigned int idx,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
+
+	//! Duplicate the named entity in `category` under a freshly-deduped
+	//! name (see SceneEditController::DuplicateEntity).  Returns
+	//! `applied`; `outName` / `outStatus` / `outMessage` as above
+	//! (each optional, may be null).
+	bool RISE_API_SceneEditController_DuplicateEntity(
+		SceneEditController* p, int category, const char* name,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
+
+	//! Remove the named entity in `category` (see
+	//! SceneEditController::RemoveEntity) — refused with a non-empty
+	//! `outMessage` if it is still referenced (e.g. a material a
+	//! standard_object still binds) or not found.  Returns `applied`;
+	//! `outStatus` / `outMessage` as above (each optional, may be null).
+	bool RISE_API_SceneEditController_RemoveEntity(
+		SceneEditController* p, int category, const char* name,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
 }
 
 #endif

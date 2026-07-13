@@ -65,6 +65,7 @@
 #include "GLTFSceneImporter.h"
 #include "../Interfaces/ILog.h"
 #include "../Interfaces/ITriangleMeshGeometry.h"
+#include "../Managers/GenericManager.h"  // g_cstFinalizeDiagSink -- specific-reason channel for a Finalize failure
 #include "../RISE_API.h"
 #include "../Polygon.h"
 #include "../Utilities/Color/Color.h"
@@ -1939,9 +1940,21 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 	}
 
 	// Materials -- create up front (de-duplicates across primitives).
+	//
+	// Belt-and-suspenders entity-collision guard (see the Walker's `anyRegistrationFailure`
+	// doc below): CreateMaterial already returns false + logs the specific material name on
+	// its own registration failure (AddPBRMetallicRoughnessMaterial / AddLambertianLuminaireMaterial
+	// / AddDielectricMaterial), but ImportScene used to discard that return -- a colliding
+	// material silently vanished instead of failing the import.  The name_prefix pre-check in
+	// Job::ImportGLTFScene is the primary defence (catches the common repeated-default-prefix
+	// case before ANY entity is touched); this catches the narrower case of a hand-authored
+	// entity that happens to collide with a generated material name.
+	bool anyRegistrationFailure = false;
 	if( opts.importMaterials ) {
 		for( size_t mi = 0; mi < data->materials_count; ++mi ) {
-			CreateMaterial( job, prefix, data, szFilename, mi, &mRegisteredTextures, opts.lowmemTextures, opts.respectBakedOcclusion, opts.emissiveIntensityScale, opts.emissiveTint );
+			if( !CreateMaterial( job, prefix, data, szFilename, mi, &mRegisteredTextures, opts.lowmemTextures, opts.respectBakedOcclusion, opts.emissiveIntensityScale, opts.emissiveTint ) ) {
+				anyRegistrationFailure = true;
+			}
 		}
 	}
 
@@ -1991,6 +2004,7 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 		std::string&             firstCameraName;	// in/out: first successful camera registration captures its name here so ImportScene can SetActiveCamera to it post-walk (so authoring intent — first camera = primary — beats RISE's last-added-wins auto-promote)
 		GLTFSceneImporter&       importer;	// for ImportPrimitive — bypasses the public IJob entry point so the cgltf parse is not redone per primitive
 		std::set<std::string>&   registeredGeoms;	// memoizes which (meshIdx,primIdx) geometries we've already built so multi-node instancing of a shared mesh registers ONCE and AddObjectMatrix runs N times
+		bool&                    anyRegistrationFailure;	// out: set TRUE on a genuine entity-NAME COLLISION (geometry or object registration) so ImportScene fails the whole import loudly instead of silently masking it (see ImportScene's material-loop doc for the belt-and-suspenders rationale). NOT set for a merely malformed/unsupported primitive (BuildGeometryFromPrimitive's existing tolerant warn-and-skip behaviour is unchanged).
 
 		void Walk( const cgltf_node* node, const cgltf_float parentWorld[16] )
 		{
@@ -2061,14 +2075,22 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 					if( registeredGeoms.find( geom ) != registeredGeoms.end() ) {
 						gOK = true;	// already-built shared-mesh instance
 					} else {
+						bool regFailed = false;
 						gOK = importer.ImportPrimitive(
 							job, geom.c_str(),
 							(unsigned int)meshIdx, (unsigned int)pi,
 							doubleSided,
 							/*face_normals*/ false,
-							/*flip_v*/ false );
+							/*flip_v*/ false,
+							&regFailed );
 						if( gOK ) {
 							registeredGeoms.insert( geom );
+						} else if( regFailed ) {
+							// A genuine entity-name collision (GenericManager::AddItem already
+							// logged `geom` by name) -- NOT a malformed/unsupported primitive.
+							// Fail the whole import loudly rather than silently dropping this
+							// (and every downstream instance of) the geometry.
+							anyRegistrationFailure = true;
 						}
 					}
 					if( !gOK ) {
@@ -2095,13 +2117,23 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 
 					RadianceMapConfig rmc;
 					const std::string objName = ObjectName( prefix, nodeIdx, pi );
-					job.AddObjectMatrix(
+					if( !job.AddObjectMatrix(
 						objName.c_str(), geom.c_str(),
 						matName == "none" ? NULL : matName.c_str(),
 						modName == "none" ? NULL : modName.c_str(),
 						shaderName == "none" ? NULL : shaderName.c_str(),
 						rmc, matD,
-						/*casts*/ true, /*receives*/ true );
+						/*casts*/ true, /*receives*/ true ) ) {
+						// AddObjectMatrix already logged the specific reason (a name
+						// collision on `objName`'s own GenericManager::AddItem, or an
+						// unresolved geom/material/modifier/shader/painter reference --
+						// the latter typically a knock-on of an earlier CreateMaterial
+						// registration failure this same import already flagged above).
+						// Either way, fail the import loudly instead of silently leaving
+						// this instance unplaced.
+						anyRegistrationFailure = true;
+						continue;
+					}
 
 					// KHR_materials_volume: the material's interior is a
 					// homogeneous medium (registered up-front in
@@ -2307,7 +2339,7 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 
 	cgltf_float identity[16]; Mat4Identity( identity );
 	std::set<std::string> registeredGeoms;	// see Walker struct + the dedup site for rationale
-	Walker w = { job, prefix, data, szFilename, opts, firstCameraName, *this, registeredGeoms };
+	Walker w = { job, prefix, data, szFilename, opts, firstCameraName, *this, registeredGeoms, anyRegistrationFailure };
 	for( size_t r = 0; r < scene->nodes_count; ++r ) {
 		w.Walk( scene->nodes[r], identity );
 	}
@@ -2333,6 +2365,26 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 
 	// cgltfData is freed in the destructor — same lifecycle as a single
 	// scene walk, owned for the lifetime of the importer object.
+	//
+	// Belt-and-suspenders entity-collision guard: fail loudly instead of the pre-fix
+	// unconditional `return true`, which let every AddItem-collision above (material,
+	// geometry, or object) silently vanish while the import reported success.  Every
+	// specific failure was already logged (by name) at its own site; this just makes
+	// the aggregate outcome match reality.  The name_prefix pre-check in
+	// Job::ImportGLTFScene is the primary defence and fires BEFORE any entity is
+	// touched -- this only remains reachable for a hand-authored entity that happens
+	// to collide with a generated name under a prefix that was otherwise fresh.
+	if( anyRegistrationFailure ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter:: one or more entities failed to register while importing `%s` "
+			"(name_prefix `%s`) -- see the errors above for the specific colliding name(s)",
+			szFilename.c_str(), prefix.c_str() );
+		if( RISE::g_cstFinalizeDiagSink && RISE::g_cstFinalizeDiagSink->empty() ) {
+			*RISE::g_cstFinalizeDiagSink =
+				"one or more entities failed to register (name collision) -- see log for the specific name(s)";
+		}
+		return false;
+	}
 	return true;
 }
 
@@ -2343,8 +2395,10 @@ bool GLTFSceneImporter::ImportPrimitive(
 	unsigned int primIdx,
 	bool         doubleSided,
 	bool         faceNormals,
-	bool         flipV )
+	bool         flipV,
+	bool*        outRegistrationFailed )
 {
+	if( outRegistrationFailed ) *outRegistrationFailed = false;
 	if( !cgltfData ) {
 		return false;
 	}
@@ -2369,6 +2423,13 @@ bool GLTFSceneImporter::ImportPrimitive(
 	bool ok = BuildGeometryFromPrimitive( pGeometry, meshIdx, primIdx, flipV );
 	if( ok ) {
 		ok = job.AddPrebuiltTriangleMeshGeometry( geomName, pGeometry );
+		if( !ok && outRegistrationFailed ) {
+			// Build succeeded -- the ONLY way AddPrebuiltTriangleMeshGeometry
+			// can then fail is GenericManager::AddItem's duplicate-name refusal
+			// (it already logged `geomName` by name), i.e. a genuine entity
+			// collision rather than a malformed/unsupported primitive.
+			*outRegistrationFailed = true;
+		}
 	}
 	safe_release( pGeometry );
 	return ok;

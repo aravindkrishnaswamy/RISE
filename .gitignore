@@ -112,6 +112,13 @@ __pycache__/
 # precedent left them untracked too).
 tests/baselines_refactor/
 
+# Eval-harness (E1) chat trajectories: per-session JSONL logs the GUI
+# writes to evals/runs/gui/ (and future headless runs under evals/runs/).
+# They capture live scene content and are regenerated per session --
+# never committed (mirrors the baselines_refactor regenerate-per-session
+# precedent above).
+evals/runs/
+
 # Retired-baker reference outputs (the scene is fully procedural since 2026-06;
 # the Python bakers remain as golden references -- their outputs stay untracked)
 /scenes/FeatureBased/GuillocheWatch/dial*.raw2

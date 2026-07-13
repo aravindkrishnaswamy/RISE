@@ -27,6 +27,32 @@ Handy probe edit (visible + undoable): *"make the orange things red"* in chat, o
 - [ ] Mid-conversation key save for the active provider → Retry recovers the
       turn (in-process key cache reseeds).
 
+## A2. Chat providers — xAI + local/Ollama (Providers S1-S3, `2fbf0f86` + this slice)
+
+- [ ] Settings popover: pick Grok (xAI) → the normal key-entry UI appears
+      (SecureField + Save/Clear Key); paste an `XAI_API_KEY`-valid key, Save,
+      Apply → a real edit request round-trips (tool calls execute, viewport
+      updates live).
+- [ ] Settings popover: pick Local (Ollama) → the key-entry UI is REPLACED by
+      an endpoint block: no SecureField/Save/Clear Key, just the resolved
+      endpoint (`http://127.0.0.1:11434/v1/chat/completions` by default) and
+      a hint that a local server must be running (e.g. `ollama serve`).
+- [ ] Local, with `ollama` NOT running: send a message → the turn ends in a
+      clean transport/network error in the transcript (Retry offered), NOT a
+      hang or a crash.
+- [ ] Local, with `ollama serve` running and `qwen3:32b` pulled: send a
+      message → a real edit request round-trips end-to-end.
+- [ ] Local with `RISE_LOCAL_LLM_BASE_URL` set before launch (e.g. to an
+      LM Studio / llama-server endpoint) → the settings popover's endpoint
+      line reflects the override, and requests actually go there (verify via
+      the target server's own request log, or by pointing it at a bogus port
+      and confirming the transport error above).
+- [ ] Windows leg (compile-blind; verify by inspection during the next MSVC
+      pass): provider combo lists "Grok (xAI)" and "Local (Ollama)" after
+      "Gemini"; picking Local swaps the API-key field's placeholder to the
+      resolved-endpoint hint and sending with an empty key field no longer
+      blocks on "Enter an API key before sending."
+
 ## B. F2/S2b — non-blocking chat renders (the five owed scenarios)
 
 - [ ] Ask the chat to render: UI stays responsive for the whole render (type,

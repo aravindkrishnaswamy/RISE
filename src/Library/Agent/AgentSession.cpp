@@ -51,9 +51,14 @@
 #include "../Interfaces/IFilm.h"
 #include "../Interfaces/ICamera.h"
 #include "../Interfaces/ICameraManager.h"
+#include "../Interfaces/IObjectManager.h"   // Toolkit slice 3a (objectmap): enumerate scene objects for the identity registry
+#include "../Interfaces/IObject.h"          // Toolkit slice 3a (objectmap): const IObject* registry key
+#include "../Interfaces/IEnumCallback.h"    // Toolkit slice 3a (objectmap): EnumerateItemNames collector
+#include "../Utilities/Color/ColorUtils.h"  // Toolkit slice 3a (objectmap): SRGBTransferFunctionInverse for the linear pre-image
 #include "../Interfaces/ILog.h"   // P1-A: RenderOverrideRestoreGuard's defensive log-and-swallow
 #include "../Rendering/FrameStore.h"   // offscreen isolation: FrameStoreIsolationGuard's private throwaway FrameStore
 #include "../Rendering/Rasterizer.h"   // offscreen isolation: concrete GetFrameStore/SetFrameStore/AcceptsFrameStorePush (not on IRasterizer)
+#include "../Rendering/InteractivePelRasterizer.h"   // Toolkit slice 2 (quality:"draft"): CreateInteractiveMaterialPreviewPipeline
 #include "../RISE_API.h"
 #include "../SceneEditor/SceneEditController.h"   // Facet 5 slice 1b: LIVE-mode routing through the render-safe edit path
 #include "../SceneEditor/CameraIntrospection.h"   // preview-render: ephemeral camera-pose override
@@ -71,6 +76,7 @@
 #include <stdexcept>  // Fix-round (offscreen isolation): ForTest_ThrowBeforeRasterize's std::runtime_error
 #include <fstream>  // Facet 5 slice S1: read-only skill-file reads
 #include <iterator> // Facet 5 slice S1: istreambuf_iterator for whole-file reads
+#include <unordered_set>  // Toolkit slice 3a fix-round P2-1: objectmap palette byte-uniqueness set
 
 // Facet 5 slice S1: directory enumeration for the skills index (the one
 // place the Library scans a directory; read-only).
@@ -1657,8 +1663,10 @@ namespace RISE
 			//! cancel hook that could confuse whatever installs (or fails to
 			//! install) a progress callback on this Job for the NEXT render.
 			//! Arm() once installed; the destructor restores (to whatever
-			//! value was live before the install -- always nullptr on this
-			//! call path, see doRenderWork's own comment) on every exit,
+			//! value was live before the install -- captured in-slot at the
+			//! install site since the 2026-07-12 hardening: the platform's
+			//! persistent callback on a live-GUI Job, nullptr headless --
+			//! see doRenderWork's own comment) on every exit,
 			//! ordinary or exceptional; the ordinary-path tail below calls
 			//! Disarm() after its own explicit restore so the destructor is
 			//! a no-op there (avoids a harmless but redundant double
@@ -1837,14 +1845,376 @@ namespace RISE
 				Implementation::FrameStore* mCaptured;
 				bool                        mArmed;
 			};
+
+			// ---- Toolkit slice 3a (objectmap): palette + registry construction ----
+			//
+			// The exact colour contract (see ObjectMapPalette's header doc):
+			// the shader emits a LINEAR pre-image L per channel so the final
+			// encode -- (unsigned char)(SRGBTransferFunction(clamp01(L))*255)
+			// (PNGWriter::WriteColor -> Integerize<sRGBPel>, a TRUNCATING
+			// cast) -- lands on EXACTLY the reserved byte.  Targeting the
+			// half-LSB center (B+0.5)/255 gives a half-LSB margin on both
+			// sides, so the truncation is robust.
+
+			inline Scalar ObjectMapLinearFromByte( unsigned char b )
+			{
+				return ColorUtils::SRGBTransferFunctionInverse(
+					( static_cast<Scalar>( b ) + 0.5 ) / 255.0 );
+			}
+
+			inline RISEPel ObjectMapLinearFromBytes( const std::array<unsigned char, 3>& b )
+			{
+				return RISEPel( ObjectMapLinearFromByte( b[0] ),
+				                ObjectMapLinearFromByte( b[1] ),
+				                ObjectMapLinearFromByte( b[2] ) );
+			}
+
+			//! Does byte `b`'s half-LSB-centered linear pre-image re-encode
+			//! (forward sRGB + truncating *255) back to EXACTLY `b`?  This is
+			//! the quantizer contract, evaluated with the SAME arithmetic the
+			//! encode path uses.  Under -ffast-math the sole non-roundtrippable
+			//! value is 255: its target (255.5/255) exceeds 1.0 so the
+			//! pre-image clamps to 1.0, and SRGBTransferFunction(1.0)*255 can
+			//! land a hair below 255.0 and truncate to 254 -- there is no
+			//! half-LSB headroom above white.  The palette generator rejects
+			//! such bytes so the identity colours are exact BY CONSTRUCTION.
+			inline bool ObjectMapByteRoundtrips( unsigned char b )
+			{
+				const Scalar L  = ObjectMapLinearFromByte( b );
+				const Scalar Lc = L < 0 ? 0 : ( L > 1 ? 1 : L );
+				Scalar enc = ColorUtils::SRGBTransferFunction( Lc );
+				if( enc > 1.0 ) enc = 1.0;
+				const unsigned char back = static_cast<unsigned char>( enc * 255.0 );   // TRUNCATING, matching Integerize<sRGBPel>
+				return back == b;
+			}
+
+			inline bool ObjectMapBytesRoundtrip( const std::array<unsigned char, 3>& c )
+			{
+				return ObjectMapByteRoundtrips( c[0] )
+				    && ObjectMapByteRoundtrips( c[1] )
+				    && ObjectMapByteRoundtrips( c[2] );
+			}
+
+			std::string ObjectMapColorHex( const std::array<unsigned char, 3>& b )
+			{
+				char buf[8];
+				std::snprintf( buf, sizeof( buf ), "#%02X%02X%02X",
+				               static_cast<unsigned>( b[0] ),
+				               static_cast<unsigned>( b[1] ),
+				               static_cast<unsigned>( b[2] ) );
+				return std::string( buf );
+			}
+
+			unsigned int ObjectMapL1( const std::array<unsigned char, 3>& a,
+			                          const std::array<unsigned char, 3>& b )
+			{
+				const int dr = static_cast<int>( a[0] ) - static_cast<int>( b[0] );
+				const int dg = static_cast<int>( a[1] ) - static_cast<int>( b[1] );
+				const int db = static_cast<int>( a[2] ) - static_cast<int>( b[2] );
+				return static_cast<unsigned int>(
+					( dr < 0 ? -dr : dr ) + ( dg < 0 ? -dg : dg ) + ( db < 0 ? -db : db ) );
+			}
+
+			//! HSV (h in [0,1), s/v in [0,1]) -> 8-bit sRGB byte triple, for
+			//! the golden-ratio hue walk that extends the base palette beyond
+			//! its hand-picked entries.  Rounds to nearest byte.
+			std::array<unsigned char, 3> ObjectMapHsvToBytes( double h, double s, double v )
+			{
+				h -= std::floor( h );
+				const double hp = h * 6.0;
+				const int    i  = static_cast<int>( std::floor( hp ) ) % 6;
+				const double f  = hp - std::floor( hp );
+				const double p  = v * ( 1.0 - s );
+				const double q  = v * ( 1.0 - s * f );
+				const double t  = v * ( 1.0 - s * ( 1.0 - f ) );
+				double r = 0, g = 0, b = 0;
+				switch( i ) {
+					case 0: r = v; g = t; b = p; break;
+					case 1: r = q; g = v; b = p; break;
+					case 2: r = p; g = v; b = t; break;
+					case 3: r = p; g = q; b = v; break;
+					case 4: r = t; g = p; b = v; break;
+					default: r = v; g = p; b = q; break;
+				}
+				auto toByte = []( double x ) -> unsigned char {
+					int iv = static_cast<int>( x * 255.0 + 0.5 );
+					if( iv < 0 ) iv = 0;
+					if( iv > 255 ) iv = 255;
+					return static_cast<unsigned char>( iv );
+				};
+				std::array<unsigned char, 3> out = { { toByte( r ), toByte( g ), toByte( b ) } };
+				return out;
+			}
+
+			//! Assign `count` well-separated 8-bit sRGB byte triples, each at
+			//! least L1 kMinL1 from every prior assignment AND from every
+			//! `reserved` colour (background + UNKNOWN).  A fixed high-contrast
+			//! base list covers the common small-count case; a deterministic
+			//! golden-ratio hue walk (alternating value/saturation) extends it.
+			//!
+			//! TWO NON-NEGOTIABLE INVARIANTS, held for EVERY emitted colour even
+			//! when the palette is exhausted at large counts:
+			//!   * BYTE-UNIQUENESS -- no two ids ever share a triple (legend
+			//!     matching is by exact byte, so a dup would make two objects
+			//!     indistinguishable in the map).  Achievable to ~16.7M colours.
+			//!   * ROUNDTRIP -- the half-LSB-centered linear pre-image re-encodes
+			//!     to the exact byte (the quantizer contract).
+			//! Only the MIN-L1 SEPARATION degrades under pressure: the walk
+			//! retries the whole palette at 24 -> 12 -> 6 -> 1, keeping the two
+			//! invariants above at every relaxation.  `outMinDistanceUsed` (when
+			//! non-null) reports the smallest separation that was actually
+			//! needed (== kDefaultMinL1 when the palette never degraded), so the
+			//! caller can append an honest "closer than default" note.
+			const unsigned int kDefaultMinL1 = 24;
+
+			std::vector<std::array<unsigned char, 3> > BuildObjectMapPaletteBytes(
+				std::size_t count, const std::vector<std::array<unsigned char, 3> >& reserved,
+				unsigned int* outMinDistanceUsed = nullptr,
+				unsigned int goldenTries = 4096 /* test seam: 0 forces the exhaustive branch */ )
+			{
+				// 24 hand-picked, mutually well-separated triples (Trubetskoy-
+				// style distinct-colour set), excluding (0,0,0) background and
+				// (255,0,255) UNKNOWN.
+				static const std::array<unsigned char, 3> kBase[] = {
+					{ { 230,  25,  75 } }, { {  60, 180,  75 } }, { { 255, 225,  25 } }, { {   0, 130, 200 } },
+					{ { 245, 130,  48 } }, { { 145,  30, 180 } }, { {  70, 240, 240 } }, { { 240,  50, 230 } },
+					{ { 210, 245,  60 } }, { { 250, 190, 190 } }, { {   0, 128, 128 } }, { { 230, 190, 255 } },
+					{ { 170, 110,  40 } }, { { 255, 250, 200 } }, { { 128,   0,   0 } }, { { 170, 255, 195 } },
+					{ { 128, 128,   0 } }, { { 255, 215, 180 } }, { {   0,   0, 128 } }, { { 128, 128, 128 } },
+					{ { 255, 255, 255 } }, { { 100, 100, 255 } }, { { 255, 100, 100 } }, { { 100, 255, 100 } }
+				};
+				const std::size_t  kBaseCount = sizeof( kBase ) / sizeof( kBase[0] );
+
+				// A packed-byte set of every triple already accepted, so
+				// byte-uniqueness is enforced in O(1) regardless of the L1
+				// relaxation level (the L1 walk can, at min-L1==1, still hand
+				// back a same-byte candidate -- the set is what forbids it).
+				std::unordered_set<std::uint32_t> takenKeys;
+				auto keyOf = []( const std::array<unsigned char, 3>& c ) -> std::uint32_t {
+					return ( static_cast<std::uint32_t>( c[0] ) << 16 )
+					     | ( static_cast<std::uint32_t>( c[1] ) <<  8 )
+					     |   static_cast<std::uint32_t>( c[2] );
+				};
+
+				// The RESERVED colours (background, UNKNOWN) are interned up
+				// front so NO acceptance path can ever hand an object the
+				// literal background/unknown bytes.  This matters ONLY for the
+				// exhaustive last-resort scan below, which deliberately skips
+				// farEnough (the golden ladder's reserved check): that scan
+				// starts at rgb=0 == the reserved background, which round-trips
+				// and was never in the set -- pre-fix, the FIRST id to reach
+				// the exhaustive path was deterministically painted as
+				// background (closing-review P1).
+				for( std::size_t r = 0; r < reserved.size(); ++r ) {
+					takenKeys.insert( keyOf( reserved[r] ) );
+				}
+
+				std::vector<std::array<unsigned char, 3> > out;
+				out.reserve( count );
+
+				auto farEnough = [&]( const std::array<unsigned char, 3>& c, unsigned int minL1 ) -> bool {
+					for( std::size_t r = 0; r < reserved.size(); ++r )
+						if( ObjectMapL1( c, reserved[r] ) < minL1 ) return false;
+					for( std::size_t a = 0; a < out.size(); ++a )
+						if( ObjectMapL1( c, out[a] ) < minL1 ) return false;
+					return true;
+				};
+
+				const double kGolden  = 0.6180339887498949;
+				const double sats[2]  = { 0.90, 0.62 };
+				const double vals[3]  = { 0.98, 0.72, 0.86 };
+
+				// ≤~200-object FAST PATH (allocation-identical to the pre-fix
+				// code at the target scale): try base list, then the 4096-try
+				// golden walk, at the DEFAULT separation.  A placed colour is
+				// interned in `takenKeys`.  If EVERY colour places here (the
+				// common case), we never touch the degrade machinery.
+				unsigned int minDistanceUsed = kDefaultMinL1;
+
+				auto tryPlaceAt = [&]( std::size_t i, unsigned int minL1,
+				                       std::array<unsigned char, 3>& c ) -> bool {
+					// Base entry (only at the default separation -- once we are
+					// relaxing, the base list is already exhausted by definition).
+					if( minL1 == kDefaultMinL1 && i < kBaseCount
+					    && takenKeys.find( keyOf( kBase[i] ) ) == takenKeys.end()
+					    && farEnough( kBase[i], minL1 ) && ObjectMapBytesRoundtrip( kBase[i] ) ) {
+						c = kBase[i];
+						return true;
+					}
+					for( unsigned int tries = 0; tries < goldenTries; ++tries ) {
+						const double h = std::fmod( 0.11 + static_cast<double>( i + tries ) * kGolden, 1.0 );
+						const double s = sats[ ( i + tries ) % 2 ];
+						const double v = vals[ ( i + tries ) % 3 ];
+						const std::array<unsigned char, 3> cand = ObjectMapHsvToBytes( h, s, v );
+						if( takenKeys.find( keyOf( cand ) ) == takenKeys.end()
+						    && farEnough( cand, minL1 ) && ObjectMapBytesRoundtrip( cand ) ) {
+							c = cand;
+							return true;
+						}
+					}
+					return false;
+				};
+
+				for( std::size_t i = 0; i < count; ++i ) {
+					std::array<unsigned char, 3> c = { { 0, 0, 0 } };
+					bool placed = tryPlaceAt( i, kDefaultMinL1, c );
+
+					// DEGRADE: relax ONLY the separation, keeping uniqueness +
+					// roundtrip.  We retry the golden walk for THIS id at each
+					// smaller threshold; if even min-L1==1 can't place, fall to
+					// an exhaustive scan of the whole cube for the first unused,
+					// round-trippable byte (guaranteed to exist below ~16.7M ids).
+					if( !placed ) {
+						static const unsigned int kRelaxSteps[] = { 12, 6, 1 };
+						for( std::size_t s = 0; s < sizeof( kRelaxSteps ) / sizeof( kRelaxSteps[0] ) && !placed; ++s ) {
+							if( tryPlaceAt( i, kRelaxSteps[s], c ) ) {
+								placed = true;
+								if( kRelaxSteps[s] < minDistanceUsed ) minDistanceUsed = kRelaxSteps[s];
+							}
+						}
+					}
+					if( !placed ) {
+						// Exhaustive last resort: the first byte triple not yet
+						// taken that round-trips.  Guarantees uniqueness even
+						// past the point where ANY positive separation is
+						// achievable (this is where `takenKeys` is the SOLE
+						// uniqueness authority -- the golden ladder above relies
+						// on farEnough for it; this scan does not).  minDistanceUsed
+						// collapses to 1 (colours are byte-unique but may be
+						// visually adjacent).
+						for( unsigned int rgb = 0; rgb < 0x1000000u && !placed; ++rgb ) {
+							std::array<unsigned char, 3> cand = { {
+								static_cast<unsigned char>( ( rgb >> 16 ) & 0xFF ),
+								static_cast<unsigned char>( ( rgb >>  8 ) & 0xFF ),
+								static_cast<unsigned char>(   rgb         & 0xFF ) } };
+							if( takenKeys.find( keyOf( cand ) ) == takenKeys.end()
+							    && ObjectMapBytesRoundtrip( cand ) ) {
+								c = cand;
+								placed = true;
+								minDistanceUsed = 1;
+							}
+						}
+					}
+
+					takenKeys.insert( keyOf( c ) );
+					out.push_back( c );
+				}
+
+				if( outMinDistanceUsed ) *outMinDistanceUsed = minDistanceUsed;
+				return out;
+			}
+
+			//! Build the full ObjectMapPalette from the scene's ObjectManager:
+			//! enumerate object names in deterministic (sorted, per
+			//! GenericManager's std::map) order, assign each a separated
+			//! identity colour + its linear pre-image, map the manager's stored
+			//! IObjectPriv* (== RayIntersection::pObject) to its id, and size
+			//! the zero-initialized atomic tally (one per id + 1 for UNKNOWN).
+			void BuildObjectMapPalette( IObjectManager* objMgr,
+			                            RISE::Implementation::ObjectMapPalette& out )
+			{
+				struct NameCollector : public IEnumCallback<const char*>
+				{
+					std::vector<std::string> names;
+					bool operator()( const char* const& n ) override
+					{
+						if( n ) names.push_back( std::string( n ) );
+						return true;
+					}
+				} collector;
+				if( objMgr ) objMgr->EnumerateItemNames( collector );
+
+				// Legend semantics: ONE entry per WORLD-VISIBLE object -- the
+				// objects a ray can actually land on and the agent can select.
+				// A composite's operands (a CSGObject's children are
+				// SetWorldVisible(false) by AssignObjects, and re-report the
+				// composite root as ri.pObject) are ObjectManager items but are
+				// NOT independently hit, so they must not appear in the legend.
+				// Filtering here keeps the palette, registry, id-space, and
+				// per-id atomic tally all consistent over the visible set only.
+				// P3-b: resolve each object POINTER once here and carry it
+				// forward in `objs` (parallel to `names`), so the registry loop
+				// below reuses it instead of a second GetItem per object.
+				std::vector<std::string> names;
+				std::vector<IObjectPriv*> objs;
+				names.reserve( collector.names.size() );
+				objs.reserve( collector.names.size() );
+				for( std::size_t i = 0; i < collector.names.size(); ++i ) {
+					IObjectPriv* obj = objMgr ? objMgr->GetItem( collector.names[i].c_str() ) : 0;
+					if( obj && static_cast<const IObject*>( obj )->IsWorldVisible() ) {
+						names.push_back( collector.names[i] );
+						objs.push_back( obj );
+					}
+				}
+				const std::size_t count = names.size();
+
+				const std::array<unsigned char, 3> background = { { 0, 0, 0 } };
+				const std::array<unsigned char, 3> unknown    = { { 255, 0, 255 } };   // magenta
+
+				std::vector<std::array<unsigned char, 3> > reserved;
+				reserved.push_back( background );
+				reserved.push_back( unknown );
+				unsigned int minDistanceUsed = 24;
+				const std::vector<std::array<unsigned char, 3> > assigned =
+					BuildObjectMapPaletteBytes( count, reserved, &minDistanceUsed );
+
+				out.names = names;
+				out.bytes = assigned;
+				out.minColorDistance = minDistanceUsed;
+				out.linearColors.resize( count );
+				out.registry.clear();
+				out.registry.reserve( count );
+				for( std::size_t id = 0; id < count; ++id ) {
+					out.linearColors[id] = ObjectMapLinearFromBytes( assigned[id] );
+					if( objs[id] ) {
+						out.registry[ static_cast<const IObject*>( objs[id] ) ] = static_cast<std::uint32_t>( id );
+					}
+				}
+				out.unknownBytes  = unknown;
+				out.unknownLinear = ObjectMapLinearFromBytes( unknown );
+
+				// vector<atomic> is movable but not copyable; move-assign a
+				// freshly sized one, then zero each slot explicitly (pre-C++20
+				// the atomic default ctor leaves the value uninitialized).
+				out.counts = std::vector<std::atomic<std::uint32_t> >( count + 1 );
+				for( std::size_t i = 0; i < out.counts.size(); ++i ) {
+					out.counts[i].store( 0u, std::memory_order_relaxed );
+				}
+			}
+		}
+
+		void AgentSession::ForTest_BuildObjectMapPaletteBytes(
+			std::size_t count,
+			std::vector<std::array<unsigned char, 3> >& outBytes,
+			unsigned int& outMinDistanceUsed,
+			unsigned int forTestGoldenTries )
+		{
+			// Same reserved set the production BuildObjectMapPalette uses
+			// (background + UNKNOWN) so the test measures the identical
+			// generator behaviour.
+			const std::array<unsigned char, 3> background = { { 0, 0, 0 } };
+			const std::array<unsigned char, 3> unknown    = { { 255, 0, 255 } };
+			std::vector<std::array<unsigned char, 3> > reserved;
+			reserved.push_back( background );
+			reserved.push_back( unknown );
+			outMinDistanceUsed = 24;
+			outBytes = BuildObjectMapPaletteBytes( count, reserved, &outMinDistanceUsed,
+			                                       forTestGoldenTries );
 		}
 
 		AgentRenderResult AgentSession::Render( int samplesOverride )
 		{
 			// Legacy entry point: build an all-absent AgentRenderParams so
 			// this is BYTE-COMPATIBLE with the pre-preview-render behaviour
-			// (samplesOverride is folded in -- still advisory/ignored, same
-			// as before; see RenderCore_'s doc for why).
+			// apart from `samplesOverride`, which forwards into
+			// params.samples below and is honoured IDENTICALLY to a direct
+			// Render(AgentRenderParams) call -- Model-B F2 slice S3 gave
+			// this a real, non-mutating effect (IRasterizer::
+			// SetSampleCountOverride) for the pixel-based rasterizer family
+			// (PT, spectral PT, BDPT, VCM); on an unsupported rasterizer
+			// (MLT, photon-map-only, ...) it is honestly reported as NOT
+			// applied via res.samplesOverridden/res.message, never silently
+			// ignored.  See RenderCore_'s doc for the full mechanism.
 			AgentRenderParams params;
 			params.samples = samplesOverride;
 			return RenderCore_( params );
@@ -1899,26 +2269,63 @@ namespace RISE
 			// camera-pose overrides below -- never a CST edit).
 			const bool wantSamplesOverride = ( params.samples >= 1 );
 
-			// Fetch and null-check the live rasterizer BEFORE any mutation:
-			// RemoveRasterizerOutputs() unconditionally dereferences
-			// pRasterizer (Job::RemoveRasterizerOutputs has no null guard), so
-			// a head with no active rasterizer (or a re-derive that left it
-			// null) would crash if we removed outputs first.
-			IRasterizer* rast = mJob->GetRasterizer();
-			if( !rast ) {
-				res.ok = false;
-				res.message = "no active rasterizer";
-				return res;
-			}
+			// Round-2 P2-A fix: compute isDraft/res.renderMode FIRST, before
+			// fetching/gating the live rasterizer below -- doDraftRenderWork
+			// (see its own doc) never dereferences the PRODUCTION rasterizer,
+			// its FrameStore, or mJob->RemoveRasterizerOutputs() at all, so a
+			// scene with NO active rasterizer chunk must still be able to
+			// run a draft render.  Pre-fix, the `!rast` bail-out below ran
+			// UNCONDITIONALLY before this was even computed, so a
+			// rasterizer-less head could never reach quality:"draft" though
+			// the draft path never needed `rast` in the first place.
+			// `res.integrator` is DELIBERATELY left as the head's active
+			// (production) rasterizer's name in EITHER mode -- see
+			// AgentRenderResult::renderMode's doc for why the two fields
+			// answer different questions.
+			const bool isDraft = ( params.quality == AgentRenderQuality::Draft );
+			// Toolkit slice 3a: objectmap is a THIRD, orthogonal render
+			// target (a flat per-object identity segmentation).  It routes
+			// through its OWN ephemeral pipeline (like draft, never the
+			// production rasterizer) and has exactly one fidelity -- so it
+			// takes priority over the beauty renderMode string, and `quality`
+			// / `samples` are honestly ignored under it (noted below).
+			const bool isObjectMap = ( params.renderTarget == AgentRenderTarget::ObjectMap );
+			res.renderMode = isObjectMap ? "objectmap" : ( isDraft ? "draft" : "production" );
 
 			// Round-3 additive wire field: report the ACTIVE rasterizer's
 			// registered type name (= its scene-file chunk keyword, e.g.
 			// "bdpt_pel_rasterizer") so the agent can observe which
-			// integrator a rasterizer insert_chunk activated.  Filled on
-			// BOTH the success and the render-failure paths below -- the
-			// active integrator is a property of the head, not of whether
-			// this particular render produced an image.
+			// integrator a rasterizer insert_chunk activated.  Job::
+			// GetActiveRasterizerName() is a plain member-string accessor
+			// that defaults to "" (Job.h) -- null-safe with no active
+			// rasterizer at all, so this is safe to read regardless of
+			// isDraft/rast below.  Filled on BOTH the success and the
+			// render-failure paths below -- the active integrator is a
+			// property of the head, not of whether this particular render
+			// produced an image.
 			res.integrator = mJob->GetActiveRasterizerName();
+
+			// Fetch the live rasterizer.  Round-2 P2-A: the "!rast" bail-out
+			// now applies ONLY to the PRODUCTION branch -- gating it on
+			// `!isDraft` lets a rasterizer-less head still run a draft
+			// render.  `rast` is allowed to be null from here on: every
+			// site downstream that dereferences it either (a) lives inside
+			// doRenderWork's production body, which early-returns via
+			// doDraftRenderWork() BEFORE reaching any of them whenever
+			// isDraft is true -- and this same gate guarantees rast is
+			// non-null whenever isDraft is false -- or (b) is made
+			// null-tolerant explicitly (origSamples just below).
+			IRasterizer* rast = mJob->GetRasterizer();
+			// Round-2 P2-A / Toolkit slice 3a: the "!rast" bail-out applies
+			// ONLY to the production BEAUTY branch -- both the draft and the
+			// objectmap paths run through their own ephemeral pipelines and
+			// never dereference the production rasterizer, so a rasterizer-
+			// less head must still be able to run either.
+			if( !isDraft && !isObjectMap && !rast ) {
+				res.ok = false;
+				res.message = "no active rasterizer";
+				return res;
+			}
 
 			const bool wantFilmOverride =
 				( params.width > 0 && params.height > 0 );
@@ -1948,9 +2355,32 @@ namespace RISE
 			// actually returns true for THIS render, so a caller reading
 			// res.samplesOverridden gets an honest answer even when
 			// `wantSamplesOverride` was requested against an unsupported
-			// rasterizer.
-			const int origSamples = rast->GetSampleCountOverride();
+			// rasterizer.  Round-2 P2-A: `rast` may now be null here (a
+			// rasterizer-less head running a draft render) -- guard the
+			// dereference; -1 is the SAME "no override support" sentinel
+			// this already used for an opted-out rasterizer, and this value
+			// is only ever consulted from the PRODUCTION branch below, which
+			// cannot run when rast is null (the gate above refuses
+			// production in that case).
+			const int origSamples = rast ? rast->GetSampleCountOverride() : -1;
 			bool overrodeSamples = false;
+			// Toolkit slice 2 (quality:"draft"): the draft path's OWN
+			// sample-cap outcome, tracked separately from
+			// overrodeSamples/origSamples above -- those describe the
+			// PRODUCTION rasterizer `rast`, which a draft render never
+			// touches at all.  `draftEffectiveSamples` is 0 until
+			// doDraftRenderWork actually runs; kDraftMaxSamples is the
+			// hard cap (see AgentRenderParams::quality's doc).
+			static constexpr int kDraftMaxSamples = 4;
+			bool draftSamplesApplied   = false;
+			bool draftSamplesCapped    = false;
+			int  draftEffectiveSamples = 0;
+			// Toolkit slice 3a (objectmap): the per-render identity palette +
+			// registry + atomic pixel tally, built INSIDE doObjectMapRenderWork
+			// (on the render thread, before RasterizeScene) and read AFTER the
+			// render to assemble res.legend.  Lives in this scope so it
+			// outlives the render lambda.  Empty/unused in every beauty render.
+			Implementation::ObjectMapPalette objectMapPalette;
 			bool renderRan = false;
 			bool rendered = false;
 			// Fix-round-1 P2-C: true iff CancelAgentRender_ / Stop() tripped
@@ -1990,8 +2420,356 @@ namespace RISE
 			bool cameraOverrideFailed = false;
 			std::string cameraOverrideFailedField;
 
+			// Toolkit slice 2 (quality:"draft") shared helpers ------------------
+			//
+			// Film-dims / camera-pose override capture+apply is IDENTICAL in
+			// EITHER render mode -- it mutates the Job's Film / the active
+			// camera's properties, never the rasterizer -- so it is factored
+			// out here (verbatim, unchanged logic) and called from BOTH
+			// doRenderWork's production branch (at the SAME relative position
+			// the inline code used to occupy) and doDraftRenderWork below.
+			// Neither helper touches a restore guard itself -- each branch
+			// constructs and arms its OWN RenderOverrideRestoreGuard (the
+			// production branch's construction order relative to fsGuard is
+			// LOAD-BEARING, see fsGuard's doc below; the draft branch has no
+			// fsGuard at all, so its instance has no such constraint) -- these
+			// lambdas only do the capture/apply WORK.
+			auto applyFilmOverride = [&]()
+			{
+				const IScenePriv* scenePriv = mJob->GetScene();
+				const IFilm* curFilm = scenePriv ? scenePriv->GetFilm() : nullptr;
+				if( curFilm ) {
+					origFilmW   = curFilm->GetWidth();
+					origFilmH   = curFilm->GetHeight();
+					origFilmPAR = curFilm->GetPixelAR();
+				}
+				if( wantFilmOverride && curFilm ) {
+					if( mJob->SetFilm( params.width, params.height, origFilmPAR ) ) {
+						overrodeFilm = true;
+					}
+				}
+			};
+
+			auto applyCameraOverride = [&]()
+			{
+				if( !wantCameraOverride ) return;
+				ICameraManager* cams = mJob->GetCameras();
+				const std::string activeName = mJob->GetActiveCameraName();
+				activeCam = ( cams && !activeName.empty() )
+					? cams->GetItem( activeName.c_str() ) : nullptr;
+				if( !activeCam ) return;
+				// captureAndSet returns true iff the field was requested AND
+				// applied cleanly; false on a rejected SetProperty (the field
+				// is captured but NOT pushed onto capturedCam in that case,
+				// since nothing was actually changed -- there is nothing to
+				// restore for it, and restoring it would be a harmless but
+				// misleading no-op given it was never applied).
+				auto captureAndSet = [&]( bool has, const char* name, const std::string& newVal ) -> bool
+				{
+					if( !has ) return true;   // not requested -- vacuously fine
+					const String priorValue = CameraIntrospection::GetPropertyValue( *activeCam, String( name ) );
+					const bool applied = CameraIntrospection::SetProperty( *activeCam, String( name ), String( newVal.c_str() ) );
+					if( !applied ) {
+						cameraOverrideFailed = true;
+						cameraOverrideFailedField = name;
+						return false;
+					}
+					CapturedCameraField f;
+					f.name  = name;
+					f.value = priorValue.c_str();
+					capturedCam.push_back( f );
+					return true;
+				};
+				// Apply in the SAME order as before; stop at the first
+				// failure (fail-loud -- no point applying further fields
+				// once one has already failed) but keep going through
+				// captureAndSet's own bookkeeping so every field ALREADY
+				// applied before the failure is captured and will be
+				// restored by the guard.
+				captureAndSet( params.camera.hasLocation, "location", params.camera.location )
+					&& captureAndSet( params.camera.hasLookAt, "lookat", params.camera.lookAt )
+					&& captureAndSet( params.camera.hasUp,     "up",     params.camera.up )
+					&& captureAndSet( params.camera.hasFov,    "fov",    params.camera.fov );
+				overrodeCamera = !capturedCam.empty();
+			};
+
+			// The ORDINARY-path restore (camera fields, then film dims) --
+			// the guard exists for the ABNORMAL (exception) path; each branch
+			// calls this explicitly then Disarm()s its OWN restoreGuard so
+			// the destructor's restore is a no-op on the ordinary path
+			// (avoids a harmless but redundant double SetProperty/SetFilm
+			// call).
+			auto restoreFilmAndCameraOverridesOrdinary = [&]()
+			{
+				for( std::size_t i = capturedCam.size(); i-- > 0; ) {
+					CameraIntrospection::SetProperty( *activeCam,
+						String( capturedCam[i].name.c_str() ),
+						String( capturedCam[i].value.c_str() ) );
+				}
+				if( overrodeFilm ) {
+					mJob->SetFilm( origFilmW, origFilmH, origFilmPAR );
+				}
+			};
+
+			// Toolkit slice 2 (quality:"draft"): the EPHEMERAL preview-
+			// pipeline render body.  Never references `rast` (the production
+			// rasterizer), its FrameStore, or mJob->RemoveRasterizerOutputs()
+			// -- a fresh, throwaway InteractivePelRasterizer pipeline (studio-
+			// preview shading only -- see CreateInteractiveMaterialPreviewPipeline
+			// and AgentRenderQuality's doc) is constructed, used for exactly
+			// this one render, and released before this lambda returns.
+			auto doDraftRenderWork = [&]()
+			{
+				IRasterizer* ephemeralRast = nullptr;
+				IRayCaster*  previewCaster = nullptr;
+				IRayCaster*  polishCaster  = nullptr;
+				if( !Implementation::CreateInteractiveMaterialPreviewPipeline(
+						&ephemeralRast, &previewCaster, &polishCaster ) )
+				{
+					return;   // rendered/renderRan stay false -- the shared tail reports "render failed"
+				}
+				// RAII release of the three factory refs (each an owning
+				// reference the caller must release exactly once -- the SAME
+				// contract RISEViewportBridge.mm's tryBuildLivePreviewForJob
+				// / releaseLivePreview follow) -- runs on every exit,
+				// including an exception unwinding out of RasterizeScene()
+				// below (OIDN is a documented real throw site for the
+				// production path; the interactive preview pipeline never
+				// denoises, but this stays exception-safe on general
+				// principle).  No production state is touched by this
+				// branch, so there is nothing else to restore.
+				//
+				// Round-2 P3 (documented limitation, deliberate): there is
+				// NO test coverage proving these three owned pointers are
+				// actually released on every exit path (vs. e.g. a future
+				// edit that reorders `pipelineGuard`'s construction past a
+				// throwing call, silently reintroducing a leak).  A leak of
+				// three small ray-caster/rasterizer objects per draft render
+				// is RSS-undetectable at this size against normal process
+				// noise, so a black-box "did memory grow" test would not
+				// reliably catch a regression here -- this comment is the
+				// tracked acknowledgment of that gap rather than a claim
+				// it's covered.
+				struct EphemeralPipelineGuard
+				{
+					IRasterizer*& r; IRayCaster*& p; IRayCaster*& q;
+					~EphemeralPipelineGuard() { safe_release( r ); safe_release( p ); safe_release( q ); }
+				} pipelineGuard{ ephemeralRast, previewCaster, polishCaster };
+
+				// Film-dims / camera-pose overrides are SHARED with the
+				// production path (see the helpers above) -- they mutate
+				// Job/Scene state the ephemeral pipeline's RasterizeScene
+				// call reads through `*scenePriv` below, so they compose for
+				// free.  This instance's RenderOverrideRestoreGuard has none
+				// of the fsGuard-ordering constraints the production branch
+				// documents (there is no FrameStore identity to protect
+				// here), so it is simply constructed+armed up front.
+				RenderOverrideRestoreGuard restoreGuard( *mJob,
+					overrodeFilm, origFilmW, origFilmH, origFilmPAR,
+					activeCam, capturedCam );
+				restoreGuard.Arm();
+
+				// Attach the agent's sink DIRECTLY to the ephemeral instance
+				// -- deliberately do NOT call mJob->RemoveRasterizerOutputs()
+				// (that would perturb the PRODUCTION rasterizer's outs for
+				// no reason; this fresh instance starts with an empty outs
+				// list of its own).
+				sink = new InMemoryRasterizerOutput();
+				ephemeralRast->AddRasterizerOutput( sink );
+
+				applyFilmOverride();
+				applyCameraOverride();
+
+				if( cameraOverrideFailed ) {
+					// FAIL LOUD, same contract as the production branch:
+					// restoreGuard (still armed) restores whatever WAS
+					// applied before the failure; skip the render entirely.
+					return;
+				}
+
+				// Samples: CAP at kDraftMaxSamples regardless of what was
+				// requested -- see AgentRenderParams::quality's doc for the
+				// honesty contract this enforces (a draft render must stay
+				// cheap even if a caller asks for a high sample count).
+				// Absent an explicit request, the pipeline's own Config
+				// default (1 SPP -- InteractivePelRasterizer::Config::
+				// liveSamplesPerPass, already the state of a freshly
+				// constructed instance with no sampling kernel installed) is
+				// left untouched: no SetSampleCountOverride call at all in
+				// that case.
+				if( wantSamplesOverride ) {
+					draftEffectiveSamples = ( params.samples > kDraftMaxSamples ) ? kDraftMaxSamples : params.samples;
+					draftSamplesCapped    = ( params.samples > kDraftMaxSamples );
+					draftSamplesApplied   = ephemeralRast->SetSampleCountOverride( draftEffectiveSamples );
+					if( !draftSamplesApplied ) {
+						draftEffectiveSamples = 0;   // honest: the request had no effect
+					}
+				} else {
+					draftEffectiveSamples = 1;   // the pipeline's own uncustomized default
+				}
+
+				// Cancel wiring: mJob->SetProgress (the production path's
+				// mechanism, driven through Job::Rasterize) never reaches an
+				// object mJob does not own.  Install the SAME controller-
+				// owned mCancelProgress the production path would
+				// (AgentRenderProgress()) DIRECTLY on this ephemeral
+				// instance instead, so CancelAgentRender_() / Stop() can
+				// still abort an in-flight draft render.  No restore needed
+				// afterward: this object (and whatever progress callback it
+				// holds) is destroyed by `pipelineGuard` at the end of this
+				// lambda.
+				if( mController ) {
+					ephemeralRast->SetProgressCallback( mController->AgentRenderProgress() );
+				}
+
+				// Test-only seam (shared with the production path) -- see
+				// AgentSession.h's ForTest_SetThrowBeforeRasterize doc.
+				if( mThrowBeforeRasterizeForTest ) {
+					throw std::runtime_error(
+						"AgentSession::ForTest_ThrowBeforeRasterize: test-only forced throw immediately before RasterizeScene() (draft path)" );
+				}
+
+				const IScenePriv* scenePriv = mJob->GetScene();
+				if( scenePriv ) {
+					// Dims and camera come from the Scene's Film / active
+					// camera -- RasterizeScene reads both off `*scenePriv`
+					// directly, so the film-dims (SetFilm) and camera-pose
+					// overrides applied above compose for free; nothing
+					// draft-specific to do here for either.
+					IRasterizeSequence* pSeq = nullptr;
+					if( mController ) {
+						// Mirror Job::Rasterize's own fallback for "a
+						// progress callback is installed" (Job.cpp's
+						// RasterizeSequenceFromOptions, a private file-
+						// static -- not reachable from here): a Morton
+						// tile-32 sequence, the same default
+						// RasterizeSequenceFromOptions produces absent a
+						// non-default options-file override.
+						RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
+					}
+					ephemeralRast->RasterizeScene( *scenePriv, 0, pSeq );
+					safe_release( pSeq );
+
+					if( mController ) {
+						wasCancelled = mController->IsCancelRequested();
+					}
+					renderRan = true;
+					rendered  = true;
+				}
+
+				restoreFilmAndCameraOverridesOrdinary();
+				restoreGuard.Disarm();
+			};
+
+			// Toolkit slice 3a (objectmap): the EPHEMERAL identity render
+			// body.  Structurally a sibling of doDraftRenderWork -- a fresh
+			// throwaway pipeline, the agent's own sink, shared film/camera
+			// overrides, controller-owned cancel wiring -- but its shader
+			// emits each hit object's flat identity colour (from the palette
+			// built here, on the render thread, before RasterizeScene) and it
+			// NEVER installs a sampling kernel or a samples override (the
+			// EXACTNESS INVARIANT: every pixel must take IntegratePixel's
+			// single-ray branch so its identity byte is un-blended).  Never
+			// references the production rasterizer, its FrameStore, or
+			// mJob->RemoveRasterizerOutputs().
+			auto doObjectMapRenderWork = [&]()
+			{
+				// Build the identity registry + palette FIRST (read-only over
+				// the live ObjectManager; on this render thread, before any
+				// RasterizeScene).  `objectMapPalette` lives in RenderCore_'s
+				// scope so it outlives this lambda for the legend assembly.
+				BuildObjectMapPalette( mJob->GetObjects(), objectMapPalette );
+
+				IRasterizer* ephemeralRast = nullptr;
+				IRayCaster*  objCaster     = nullptr;
+				if( !Implementation::CreateInteractiveObjectMapPipeline(
+						&ephemeralRast, &objCaster, objectMapPalette ) )
+				{
+					return;   // rendered/renderRan stay false -- shared tail reports "render failed"
+				}
+				// RAII release of the two factory refs (each an owning
+				// reference the caller must release exactly once) -- runs on
+				// every exit, including an exception unwinding out of
+				// RasterizeScene() below.  No production state is touched.
+				struct EphemeralPipelineGuard
+				{
+					IRasterizer*& r; IRayCaster*& p;
+					~EphemeralPipelineGuard() { safe_release( r ); safe_release( p ); }
+				} pipelineGuard{ ephemeralRast, objCaster };
+
+				// Film-dims / camera-pose overrides compose exactly as in the
+				// draft path (Job/Scene state the ephemeral pipeline reads
+				// through *scenePriv).  No FrameStore-identity constraint here.
+				RenderOverrideRestoreGuard restoreGuard( *mJob,
+					overrodeFilm, origFilmW, origFilmH, origFilmPAR,
+					activeCam, capturedCam );
+				restoreGuard.Arm();
+
+				sink = new InMemoryRasterizerOutput();
+				ephemeralRast->AddRasterizerOutput( sink );
+
+				applyFilmOverride();
+				applyCameraOverride();
+
+				if( cameraOverrideFailed ) {
+					// FAIL LOUD, same contract as the other branches.
+					return;
+				}
+
+				// EXACTNESS INVARIANT: deliberately NO SetSampleCountOverride
+				// and NO sampling kernel -- a freshly constructed
+				// InteractivePelRasterizer has pSampling == null, so every
+				// pixel takes the single-ray (no jitter, no filter) branch,
+				// the only path that yields an exact per-pixel identity byte.
+				// `params.samples` is intentionally ignored (honestly noted in
+				// the result message in RenderCore_'s tail).
+
+				if( mController ) {
+					ephemeralRast->SetProgressCallback( mController->AgentRenderProgress() );
+				}
+
+				// Test-only seam (shared contract with the other branches).
+				if( mThrowBeforeRasterizeForTest ) {
+					throw std::runtime_error(
+						"AgentSession::ForTest_ThrowBeforeRasterize: test-only forced throw immediately before RasterizeScene() (objectmap path)" );
+				}
+
+				const IScenePriv* scenePriv = mJob->GetScene();
+				if( scenePriv ) {
+					IRasterizeSequence* pSeq = nullptr;
+					if( mController ) {
+						RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
+					}
+					ephemeralRast->RasterizeScene( *scenePriv, 0, pSeq );
+					safe_release( pSeq );
+
+					if( mController ) {
+						wasCancelled = mController->IsCancelRequested();
+					}
+					renderRan = true;
+					rendered  = true;
+				}
+
+				restoreFilmAndCameraOverridesOrdinary();
+				restoreGuard.Disarm();
+			};
+
 			auto doRenderWork = [&]()
 			{
+				if( isObjectMap ) {
+					doObjectMapRenderWork();
+					return;
+				}
+				if( isDraft ) {
+					doDraftRenderWork();
+					return;
+				}
+
+				// ---- PRODUCTION render body (unchanged apart from the
+				// film/camera capture-apply-restore steps now factored into
+				// the shared helpers above -- guard construction ORDER
+				// relative to fsGuard is unchanged) ----
+				//
 				// Offscreen isolation: capture the DISPLAY FrameStore's
 				// identity BEFORE any mutation, and addref our own copy of
 				// the pointer (FrameStoreIsolationGuard's destructor -- or
@@ -2105,19 +2883,10 @@ namespace RISE
 				// its no-override sizing fallback) even when THIS render
 				// does request an override, since `renderW`/`renderH` below
 				// fall back to `origFilmW`/`origFilmH` whenever
-				// `wantFilmOverride` is false.
-				const IScenePriv* scenePriv = mJob->GetScene();
-				const IFilm* curFilm = scenePriv ? scenePriv->GetFilm() : nullptr;
-				if( curFilm ) {
-					origFilmW   = curFilm->GetWidth();
-					origFilmH   = curFilm->GetHeight();
-					origFilmPAR = curFilm->GetPixelAR();
-				}
-				if( wantFilmOverride && curFilm ) {
-					if( mJob->SetFilm( params.width, params.height, origFilmPAR ) ) {
-						overrodeFilm = true;
-					}
-				}
+				// `wantFilmOverride` is false.  (Toolkit slice 2: this is
+				// `applyFilmOverride()`, the SAME shared helper doDraftRenderWork
+				// calls -- factored out above so the logic is not duplicated.)
+				applyFilmOverride();
 
 				// Offscreen isolation: install a PRIVATE throwaway FrameStore,
 				// UNCONDITIONALLY, sized to the EFFECTIVE render dims for
@@ -2186,52 +2955,11 @@ namespace RISE
 				// apply the overrides.  P1-B: SetProperty's bool return is
 				// now CHECKED -- a parse failure (malformed vector shape,
 				// non-finite number, ...) must not silently no-op while
-				// `overrodeCamera` reports true.
-				if( wantCameraOverride ) {
-					ICameraManager* cams = mJob->GetCameras();
-					const std::string activeName = mJob->GetActiveCameraName();
-					activeCam = ( cams && !activeName.empty() )
-						? cams->GetItem( activeName.c_str() ) : nullptr;
-					if( activeCam ) {
-						// captureAndSet returns true iff the field was
-						// requested AND applied cleanly; false on a rejected
-						// SetProperty (the field is captured but NOT pushed
-						// onto capturedCam in that case, since nothing was
-						// actually changed -- there is nothing to restore
-						// for it, and restoring it would be a harmless but
-						// misleading no-op given it was never applied).
-						auto captureAndSet = [&]( bool has, const char* name, const std::string& newVal ) -> bool
-						{
-							if( !has ) return true;   // not requested -- vacuously fine
-							const String priorValue = CameraIntrospection::GetPropertyValue( *activeCam, String( name ) );
-							const bool applied = CameraIntrospection::SetProperty( *activeCam, String( name ), String( newVal.c_str() ) );
-							if( !applied ) {
-								cameraOverrideFailed = true;
-								cameraOverrideFailedField = name;
-								return false;
-							}
-							CapturedCameraField f;
-							f.name  = name;
-							f.value = priorValue.c_str();
-							capturedCam.push_back( f );
-							return true;
-						};
-						// Apply in the SAME order as before; stop at the
-						// first failure (fail-loud -- no point applying
-						// further fields once one has already failed) but
-						// keep going through captureAndSet's own bookkeeping
-						// so every field ALREADY applied before the failure
-						// is captured and will be restored by the guard.
-						captureAndSet( params.camera.hasLocation, "location", params.camera.location )
-							&& captureAndSet( params.camera.hasLookAt, "lookat", params.camera.lookAt )
-							&& captureAndSet( params.camera.hasUp,     "up",     params.camera.up )
-							&& captureAndSet( params.camera.hasFov,    "fov",    params.camera.fov );
-						overrodeCamera = !capturedCam.empty();
-					}
-					// else: no active camera resolved at all -- nothing to
-					// override; not itself a failure (matches pre-P1-B
-					// behaviour: overrodeCamera stays false).
-				}
+				// `overrodeCamera` reports true.  (Toolkit slice 2: this is
+				// `applyCameraOverride()`, the SAME shared helper
+				// doDraftRenderWork calls -- factored out above so the logic
+				// is not duplicated.)
+				applyCameraOverride();
 
 				if( cameraOverrideFailed ) {
 					// FAIL LOUD: do not render un-overridden and do not
@@ -2258,10 +2986,11 @@ namespace RISE
 				// (PixelBasedRasterizerHelper.cpp) polls IsCancelled()/Progress()
 				// between blocks -- the SAME mechanism the interactive preview
 				// rasterizer already relies on for cancel-and-park.  Restored to
-				// null afterward: nothing else in this call path ever installs a
-				// progress callback on this Job (headless agent renders have
-				// never set one), so null is the correct "back to how it was"
-				// value, not just a convenient default.
+				// the in-slot-captured prior afterward (see the capture below):
+				// on a live-GUI Job that is the platform's persistent progress
+				// callback; on a headless Job it is nullptr.  (The previous
+				// "restored to null -- nothing else ever installs on this Job"
+				// rationale was stale in the live-GUI configuration.)
 				//
 				// Round-2 P2-A: arm an RAII guard BEFORE the install so the
 				// restore runs on EVERY exit -- including an exception
@@ -2274,11 +3003,30 @@ namespace RISE
 				// controller-less caller, say) does with this Job's progress
 				// state.  The ordinary-path restore further down Disarm()s
 				// the guard so its destructor is a no-op there (avoids a
-				// harmless but redundant double SetProgress(nullptr) call).
-				ProgressRestoreGuard progressGuard( *mJob, /*priorValue=*/nullptr );
+				// harmless but redundant double restore).
+				// Slot-ownership hardening (2026-07-12): the restore value is no
+				// longer a hardcoded nullptr -- capture whatever the slot honestly
+				// holds HERE, inside the coordinator's cancel-and-park critical
+				// section (every controller-attached shape of this render runs
+				// in-slot -- see the S2a routing note below doRenderWork), so the
+				// read can't race another slot writer.  On a live-GUI Job this is
+				// the mac bridge's PERSISTENT BlockProgressCallback: the old
+				// restore-to-null WIPED it from the slot after every agent render
+				// (the GUI's progress hook silently went dead until the next
+				// setProgressBlock: at the next render start).  Headless agent
+				// renders read nullptr here, so their behaviour is unchanged.
+				// Review round-2 P1: the capture and the install are ONE atomic
+				// exchange, not a GetProgress() read followed by SetProgress().
+				// Split in two, a platform adapter's conditional clear could
+				// "succeed" (the slot still held its old callback) and delete
+				// an object THIS path had already captured as its restore
+				// value -- the exchange makes a successful adapter-side clear
+				// genuinely mean "no render holds that pointer as prior".
+				IProgressCallback* const priorProgress =
+					mController ? mJob->ExchangeProgress( mController->AgentRenderProgress() ) : nullptr;
+				ProgressRestoreGuard progressGuard( *mJob, priorProgress );
 				if( mController ) {
 					progressGuard.Arm();
-					mJob->SetProgress( mController->AgentRenderProgress() );
 				}
 
 				// Test-only seam (P1-A regression lock): force a throw
@@ -2302,7 +3050,7 @@ namespace RISE
 					// consuming read, but keep the order symmetric with the
 					// install-then-run-then-uninstall shape above.
 					wasCancelled = mController->IsCancelRequested();
-					mJob->SetProgress( nullptr );
+					mJob->SetProgress( priorProgress );
 					progressGuard.Disarm();
 				}
 				renderRan = true;
@@ -2314,15 +3062,10 @@ namespace RISE
 				// restoration test AgentSession callers rely on).  This is the
 				// ORDINARY-path restore; the guard exists for the ABNORMAL
 				// (exception) path, so Disarm() it here to skip the
-				// redundant destructor-time restore.
-				for( std::size_t i = capturedCam.size(); i-- > 0; ) {
-					CameraIntrospection::SetProperty( *activeCam,
-						String( capturedCam[i].name.c_str() ),
-						String( capturedCam[i].value.c_str() ) );
-				}
-				if( overrodeFilm ) {
-					mJob->SetFilm( origFilmW, origFilmH, origFilmPAR );
-				}
+				// redundant destructor-time restore.  (Toolkit slice 2: this
+				// is `restoreFilmAndCameraOverridesOrdinary()`, the SAME
+				// shared helper doDraftRenderWork calls.)
+				restoreFilmAndCameraOverridesOrdinary();
 				restoreGuard.Disarm();
 
 				// Offscreen isolation: explicit ordinary-path restore of the
@@ -2616,24 +3359,91 @@ namespace RISE
 			res.previewHeight    = res.height;
 			res.cameraOverridden = overrodeCamera;
 
-			// Model-B F2 slice S3: report the sample-count override
-			// outcome.  `overrodeSamples` is only true when
-			// SetSampleCountOverride actually accepted THIS render's
-			// request (see doRenderWork above); `effectiveSamples` is the
-			// requested count on that path, else whatever
-			// GetSampleCountOverride() reads back (the rasterizer's own
-			// current/restored count, when that query is supported) --
-			// never guessed.  A requested-but-unsupported override gets a
-			// clear, additive note appended to `message` rather than
-			// silently overwriting the "ok" success message.
-			res.samplesOverridden = overrodeSamples;
-			if( overrodeSamples ) {
-				res.effectiveSamples = params.samples;
-			} else {
-				const int readBack = rast->GetSampleCountOverride();
-				res.effectiveSamples = ( readBack >= 1 ) ? readBack : 0;
+			// Model-B F2 slice S3 (production) / Toolkit slice 2 (draft):
+			// report the sample-count outcome.  DRAFT and PRODUCTION are
+			// tracked through COMPLETELY INDEPENDENT bookkeeping --
+			// production's `overrodeSamples`+`rast` (the production
+			// rasterizer) vs draft's `draftSamplesApplied`+
+			// `draftEffectiveSamples` (the now-destroyed ephemeral
+			// pipeline, captured DURING doDraftRenderWork since there is
+			// nothing left to query afterward) -- so this branches on
+			// `isDraft` rather than sharing one code path.  See
+			// AgentRenderParams::quality's doc for the draft sample-cap
+			// honesty contract.
+			if( isObjectMap ) {
+				// Toolkit slice 3a: an objectmap render has exactly ONE
+				// fidelity -- a single ray per pixel (the EXACTNESS
+				// INVARIANT).  `samples` and `quality` are both honestly
+				// ignored here (note: this branch is reached BEFORE the
+				// production `else` that dereferences `rast`, so a
+				// rasterizer-less head is safe).
+				res.samplesOverridden = false;
+				res.effectiveSamples  = 1;
 				if( wantSamplesOverride && res.ok ) {
-					res.message += " (samples override not supported by the active rasterizer -- rendered at the scene-authored count)";
+					res.message += " (objectmap ignores the samples override -- an identity render is exactly 1 spp for per-pixel exactness)";
+				}
+				if( params.quality == AgentRenderQuality::Draft && res.ok ) {
+					res.message += " (objectmap ignores quality -- it has a single fidelity)";
+				}
+				// P2-1: at large object counts the palette exhausts its default
+				// separation and degrades ONLY the min-L1 distance (colours stay
+				// byte-UNIQUE and round-trippable).  Tell the agent honestly so
+				// it matches legend entries by exact byte, not by eye.
+				if( res.ok && objectMapPalette.minColorDistance < 24 ) {
+					char note[192];
+					std::snprintf( note, sizeof( note ),
+						" (legend colours are byte-unique but closer than the default separation "
+						"-- %zu objects exhausted the palette; match by exact colorHex byte, not by eye)",
+						objectMapPalette.names.size() );
+					res.message += note;
+				}
+
+				// Assemble the legend from the palette + the atomic tally
+				// (single-threaded now the render is done).  One entry per
+				// registered object in deterministic (sorted-name) id order,
+				// plus a trailing "<unmapped>" entry IFF any hit pixel
+				// resolved to no registered object.
+				res.legend.clear();
+				res.legend.reserve( objectMapPalette.names.size() + 1 );
+				for( std::size_t id = 0; id < objectMapPalette.names.size(); ++id ) {
+					LegendEntry e;
+					e.name       = objectMapPalette.names[id];
+					e.colorHex   = ObjectMapColorHex( objectMapPalette.bytes[id] );
+					e.pixelCount = objectMapPalette.counts[id].load( std::memory_order_relaxed );
+					res.legend.push_back( e );
+				}
+				const std::uint32_t unknownCount = objectMapPalette.counts.empty()
+					? 0u
+					: objectMapPalette.counts[ objectMapPalette.names.size() ].load( std::memory_order_relaxed );
+				if( unknownCount > 0 ) {
+					LegendEntry e;
+					e.name       = "<unmapped>";
+					e.colorHex   = ObjectMapColorHex( objectMapPalette.unknownBytes );
+					e.pixelCount = unknownCount;
+					res.legend.push_back( e );
+				}
+			} else if( isDraft ) {
+				res.samplesOverridden = draftSamplesApplied;
+				res.effectiveSamples  = draftEffectiveSamples;
+				if( draftSamplesCapped && res.ok ) {
+					char capNote[160];
+					std::snprintf( capNote, sizeof( capNote ),
+						" (draft quality caps samples at %d -- requested %d, rendered at %d)",
+						kDraftMaxSamples, params.samples, draftEffectiveSamples );
+					res.message += capNote;
+				} else if( wantSamplesOverride && !draftSamplesApplied && res.ok ) {
+					res.message += " (samples override not supported by the draft preview pipeline -- rendered at its default 1 spp)";
+				}
+			} else {
+				res.samplesOverridden = overrodeSamples;
+				if( overrodeSamples ) {
+					res.effectiveSamples = params.samples;
+				} else {
+					const int readBack = rast->GetSampleCountOverride();
+					res.effectiveSamples = ( readBack >= 1 ) ? readBack : 0;
+					if( wantSamplesOverride && res.ok ) {
+						res.message += " (samples override not supported by the active rasterizer -- rendered at the scene-authored count)";
+					}
 				}
 			}
 
@@ -2660,6 +3470,143 @@ namespace RISE
 			}
 
 			safe_release( sink );
+			return res;
+		}
+
+		// Toolkit slice 3b: query_object_at -------------------------------------
+
+		AgentSession::AgentQueryObjectResult AgentSession::QueryObjectAt(
+			int x, int y, const AgentQueryObjectParams& params )
+		{
+			AgentQueryObjectResult res;
+
+			if( !mJob ) {
+				res.message = "no head loaded";
+				return res;
+			}
+
+			// Effective dims: the SAME width/height-override composition
+			// render's own overrides use (AgentRenderParams::width/height's
+			// doc) -- both supplied means "use these transient dims",
+			// otherwise the Document's authored Film dims.  A CHEAP,
+			// read-only Film query -- NO render -- so an out-of-range (x,y)
+			// is rejected BEFORE paying for the ephemeral identity render
+			// below (see QueryObjectAt's header doc).
+			unsigned int effW = params.width;
+			unsigned int effH = params.height;
+			if( effW == 0 || effH == 0 ) {
+				const IScenePriv* scenePriv = mJob->GetScene();
+				const IFilm* curFilm = scenePriv ? scenePriv->GetFilm() : nullptr;
+				effW = curFilm ? curFilm->GetWidth()  : 0;
+				effH = curFilm ? curFilm->GetHeight() : 0;
+			}
+			res.width  = effW;
+			res.height = effH;
+
+			if( effW == 0 || effH == 0 ||
+			    x < 0 || y < 0 ||
+			    static_cast<unsigned int>( x ) >= effW ||
+			    static_cast<unsigned int>( y ) >= effH )
+			{
+				res.outOfRange = true;
+				res.message = "x/y out of range for the effective film dims";
+				return res;
+			}
+			res.pixelX = static_cast<unsigned int>( x );
+			res.pixelY = static_cast<unsigned int>( y );
+
+			// IMPLEMENTATION CHOICE (a): reuse render's mode:"objectmap"
+			// machinery WHOLESALE -- one full ephemeral identity render at
+			// the effective dims, sharing every invariant that pipeline
+			// already proves (exactness, byte-uniqueness, emissive
+			// visibility, production-FrameStore isolation) -- rather than a
+			// bespoke second GetCamera()->GenerateRay + caster code path.
+			// See QueryObjectAt's header doc for the full rationale.
+			AgentRenderParams rparams;
+			rparams.renderTarget = AgentRenderTarget::ObjectMap;
+			rparams.width  = params.width;
+			rparams.height = params.height;
+			rparams.camera = params.camera;
+
+			const AgentRenderResult rr = Render( rparams );
+
+			if( !rr.ok ) {
+				res.message = rr.message.empty()
+					? "query_object_at's identity render failed"
+					: rr.message;
+				if( rr.width )  res.width  = rr.width;
+				if( rr.height ) res.height = rr.height;
+				return res;
+			}
+			res.width  = rr.width;
+			res.height = rr.height;
+
+			// Defensive: the render's OWN effective dims should match the
+			// pre-render computation above (identical composition rule) --
+			// never read out of bounds on a mismatch.  Unreachable in
+			// practice (both derive the same width/height/camera
+			// composition), kept for robustness.
+			if( res.pixelX >= res.width || res.pixelY >= res.height ) {
+				res.outOfRange = true;
+				res.message = "x/y out of range for the effective film dims";
+				return res;
+			}
+
+			RISEColor pixel;
+			bool gotPixel = false;
+			{
+				// Guarded by mAsyncCacheMutex like every other mLastSink
+				// access (ReadImage/ReadImage(maxEdge)) -- the Render() call
+				// just above already populated it synchronously on THIS
+				// thread, so this is uncontended in practice; the lock costs
+				// nothing and keeps the access pattern uniform.
+				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				if( mLastSink ) gotPixel = mLastSink->GetPixelColor( res.pixelX, res.pixelY, pixel );
+			}
+			if( !gotPixel ) {
+				res.message = "could not read the rendered pixel";
+				return res;
+			}
+
+			// Decode EXACTLY the way ToPng()/PNGWriter's eColorSpace_sRGB
+			// path does (RISEColor::Integerize<sRGBPel,unsigned char>(255.0)
+			// -- see PNGWriter::WriteColor) so this byte is GUARANTEED
+			// identical to what the objectmap PNG's corresponding pixel
+			// carries -- the exact-byte legend match below rides the same
+			// quantizer contract the palette generator guarantees.
+			const RGBA_T<unsigned char> enc = pixel.Integerize<sRGBPel, unsigned char>( 255.0 );
+			char hexBuf[8];
+			std::snprintf( hexBuf, sizeof( hexBuf ), "#%02X%02X%02X",
+				static_cast<unsigned>( enc.r ), static_cast<unsigned>( enc.g ), static_cast<unsigned>( enc.b ) );
+			const std::string pixelHex( hexBuf );
+
+			if( pixelHex == "#000000" ) {
+				// The reserved background byte -- a genuine miss.  STRUCTURED
+				// result, not a failure (see AgentQueryObjectResult::hit's doc).
+				res.hit = false;
+				res.message = "no object at this pixel";
+				return res;
+			}
+
+			for( const LegendEntry& e : rr.legend ) {
+				if( e.name == "<unmapped>" ) continue;
+				if( e.colorHex == pixelHex ) {
+					res.hit  = true;
+					res.name = e.name;
+					res.message = "ok";
+					return res;
+				}
+			}
+
+			// Either the pixel decoded to the reserved UNKNOWN colour (a hit
+			// on an object the identity registry could not map -- see
+			// ObjectIdShader::LookupAndTally's unknown branch) or no legend
+			// entry matched at all (unreachable given the palette's byte-
+			// uniqueness contract).  The ray DID hit something -- report a
+			// hit with an honest caveat rather than silently claiming a miss.
+			res.hit  = true;
+			res.name = "";
+			res.message = "hit an unregistered/unmapped object -- no legend name available for this pixel";
 			return res;
 		}
 
@@ -2926,6 +3873,54 @@ namespace RISE
 			}
 			if( !mLastSink ) return std::vector<unsigned char>();   // nothing rendered yet
 			return mLastSink->ToPngDownscaled( maxEdge, outWidth, outHeight );
+		}
+
+		std::vector<unsigned char> AgentSession::ReadViewport(
+			unsigned int maxEdge, unsigned int& outWidth, unsigned int& outHeight,
+			bool& outAvailable, std::string& outReason ) const
+		{
+			outWidth  = 0;
+			outHeight = 0;
+			outAvailable = false;
+			outReason.clear();
+
+			// No live controller -> no viewport at all (headless session).
+			// This is a STRUCTURED unavailable, NOT an error.
+			if( !mController ) {
+				outReason = "no_controller";
+				return std::vector<unsigned char>();
+			}
+
+			// Copy the live interactive frame out of the controller.  This
+			// call does the cross-thread-safe, tile-locked COHERENT copy
+			// against the render thread (see CopyInteractiveFrame); false
+			// means the interactive render loop has not produced a frame yet.
+			std::vector<RISEColor> pixels;
+			unsigned int w = 0, h = 0;
+			if( !mController->CopyInteractiveFrame( pixels, w, h ) ) {
+				outReason = "no_frame_yet";
+				return std::vector<unsigned char>();
+			}
+
+			// Encode via InMemoryRasterizerOutput WITHOUT re-rendering: adopt
+			// the already-coherent buffer and reuse the exact ToPng /
+			// ToPngDownscaled path read_image uses (box filter, linear space,
+			// aspect-preserving downscale).  Scoped: released before return.
+			InMemoryRasterizerOutput* sink = new InMemoryRasterizerOutput();
+			sink->AdoptCoherentSnapshot( std::move( pixels ), w, h );
+
+			std::vector<unsigned char> png;
+			if( maxEdge > 0 ) {
+				png = sink->ToPngDownscaled( maxEdge, outWidth, outHeight );
+			} else {
+				png = sink->ToPng();
+				outWidth  = sink->Width();
+				outHeight = sink->Height();
+			}
+			safe_release( sink );
+
+			outAvailable = true;
+			return png;
 		}
 	}
 }

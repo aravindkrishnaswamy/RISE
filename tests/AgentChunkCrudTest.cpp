@@ -48,6 +48,11 @@
 //        thinlens replacement renders.  (G3 additionally asserts the
 //        render result's `integrator` field tracks a rasterizer insert;
 //        H2 asserts the reserved-name `none` refusal message.)
+//    G9  gltf_import hardening: distinct-name_prefix multi-import still
+//        applies (sponza_new_ivy idiom); a REPEATED prefix is refused at
+//        derive time with a diagnostic naming it; a non-prefix entity-name
+//        collision (hand-authored chunk vs. a generated name) is also
+//        refused; read_schema advertises unnamedRepeatable:true.
 //
 //  Self-contained: no RISE_MEDIA_PATH, inline native-v7 scenes, OIDN off.
 //
@@ -66,6 +71,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <cmath>
 
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
@@ -73,6 +79,9 @@
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Interfaces/ILightManager.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Interfaces/ICameraManager.h"
+#include "../src/Library/Interfaces/IAnimator.h"
+#include "../src/Library/SceneEditor/CameraIntrospection.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
@@ -106,6 +115,24 @@ static const char* const kScene =
 	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
 	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
 	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+//----------------------------------------------------------------------
+// A derivable two-NAMED-camera fixture: camB is authored LAST, so
+// "last-added wins" makes camB the ACTIVE camera and camA a non-active
+// named camera -- the setup that distinguishes named camera-timeline
+// targeting from the active-camera fallback.
+//----------------------------------------------------------------------
+static const char* const kTwoCamScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tname camA\n\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"pinhole_camera\n{\n\tname camB\n\tlocation 0 0 9\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n";
 
 static std::string TempPath( const char* name )
 {
@@ -920,6 +947,26 @@ static void TestLiveDispatcherChunkCrud()
 		Check( badResp.find( "-32602" ) != std::string::npos,
 		       "insert_chunk without chunkText -> -32602 invalid params" );
 
+		// Eval-harness hardening (local-model shootout, 2026-07-12): the
+		// observed llama3.3 mistake was sending the chunk body under the
+		// wrong key ('chunk' instead of 'chunkText') and then repeating the
+		// SAME wrong key on retry after seeing "'chunkText' (string) is
+		// required" -- the message named what was MISSING but not what was
+		// actually SENT. AgentRpc.cpp's insert_chunk handler now also names
+		// the offending key(s) so a model reading its own tool error has
+		// something to diff against and can self-correct in one round.
+		const std::string wrongKeyResp = disp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"insert_chunk\",\"params\":"
+			"{\"chunk\":\"omni_light { name wrongkey }\"}}" );
+		Check( wrongKeyResp.find( "-32602" ) != std::string::npos,
+		       "insert_chunk with wrong key 'chunk' -> -32602 invalid params" );
+		Check( wrongKeyResp.find( "'chunkText'" ) != std::string::npos,
+		       "insert_chunk wrong-key error still names the required field" );
+		Check( wrongKeyResp.find( "'chunk'" ) != std::string::npos,
+		       "insert_chunk wrong-key error names the offending key actually sent" );
+		Check( pJob->GetLights() == nullptr || pJob->GetLights()->GetItem( "wrongkey" ) == nullptr,
+		       "the wrong-key insert never reached the live managers" );
+
 		c.Stop();
 	}
 	pJob->release();
@@ -1289,6 +1336,547 @@ static void TestCameraSwapRecipe()
 	std::remove( tmp.c_str() );
 }
 
+//----------------------------------------------------------------------
+// G6: APPEND-class unnamed chunks (descriptor `unnamedRepeatable`).
+//
+// A `timeline` chunk carries no `name` param and derives by APPENDING an
+// independent effect (Job::AddKeyframeToAnimation), so a scene legitimately
+// carries MANY unnamed timelines (sdf_morph_torture has ~14).  Regression for
+// the false-rejection bug root-caused from a live gemini-3.5-flash trajectory:
+// the pre-fix unnamed-singleton rule refused ANY second unnamed chunk of a
+// keyword, wrongly rejecting a schema-conformant second timeline.
+//
+// RED-PROVE (pre-fix): before the descriptor `unnamedRepeatable` gate, the
+// UNNAMED branch of Job::ApplyCstInsertChunk ran an UNCONDITIONAL top-level
+// scan and returned -2 ("an unnamed `timeline` chunk already exists ...") for
+// the SECOND insert below -- so `r2.applied` was FALSE and this test failed on
+// the "second unnamed timeline applied" Check.  With `timeline.unnamedRepeatable
+// = true` the scan is skipped and the insert derives.
+//----------------------------------------------------------------------
+static void TestUnnamedRepeatableTimeline()
+{
+	std::printf( "G6: unnamedRepeatable -- a SECOND unnamed timeline is accepted (append-class), not a singleton...\n" );
+	const std::string tmp = TempPath( "agentcrud_g6.RISEscene" );
+
+	// --- Scenario A: two unnamed timelines coexist; ambiguous kind-only removal refuses. ---
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G6 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+
+		// Two schema-conformant, DERIVABLE unnamed timelines (object position animation of the two
+		// existing objects).  Both are unnamed (no `name` param on `timeline`).
+		Agent::AgentChunkResult r1 = sess->InsertChunk(
+			"timeline\n{\n\telement_type object\n\telement obj_sph\n\tparam position\n"
+			"\ttime 0\n\tvalue 0 0 0\n\ttime 1\n\tvalue 1 0 0\n}" );
+		Check( r1.applied && r1.status == "applied", "first unnamed timeline applied" );
+		Check( r1.kind == "timeline", "first timeline insert echoes the keyword" );
+
+		Agent::AgentChunkResult r2 = sess->InsertChunk(
+			"timeline\n{\n\telement_type object\n\telement obj_emit\n\tparam position\n"
+			"\ttime 0\n\tvalue 0 0 0\n\ttime 1\n\tvalue 0 1 0\n}" );
+		Check( r2.applied && r2.status == "applied",
+		       "SECOND unnamed timeline applied (the false-rejection bug is fixed)" );
+		Check( r2.rawCode == 2, "the second timeline insert is a full re-derive (rawCode 2)" );
+		Check( r2.headVersion.revision > v0.revision, "the second insert advanced the head revision" );
+
+		// BOTH timelines are present in the head, and it round-trips + still derives.
+		const std::string doc = sess->ReadDocument();
+		{
+			size_t first = doc.find( "timeline" );
+			size_t second = ( first == std::string::npos ) ? std::string::npos : doc.find( "timeline", first + 1 );
+			Check( first != std::string::npos && second != std::string::npos,
+			       "ReadDocument carries BOTH unnamed timeline chunks" );
+			RISE::Cst::Document rt = RISE::Cst::ParseToCst( doc );
+			Check( RISE::Cst::SerializeCst( rt ) == doc,
+			       "the two-timeline head round-trips through the CST parser byte-identically" );
+		}
+		// applied==true above already proves the dry-run derive passed; the render confirms end-to-end.
+		Agent::AgentRenderResult rr = sess->Render();
+		Check( rr.ok && rr.meanR + rr.meanG + rr.meanB > 0.0,
+		       "the scene with two appended timelines derives and renders non-black" );
+
+		// remove_chunk by kind alone is now AMBIGUOUS (2 unnamed timelines) -> honest refusal, head intact.
+		const std::string headBeforeRm = sess->ReadDocument();
+		Agent::AgentChunkResult rmAmb = sess->RemoveChunk( "timeline", "timeline" );
+		Check( !rmAmb.applied && rmAmb.status == "rejected",
+		       "kind-only removal of one of two unnamed timelines is REFUSED" );
+		Check( rmAmb.message.find( "ambiguous" ) != std::string::npos,
+		       "the refusal message names the ambiguity" );
+		Check( sess->ReadDocument() == headBeforeRm,
+		       "the ambiguity refusal left the head byte-identical" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// --- Scenario B: exactly ONE unnamed timeline removes fine (positional fallback). ---
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G6 scenario-B fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Check( sess->InsertChunk(
+			"timeline\n{\n\telement_type object\n\telement obj_sph\n\tparam position\n"
+			"\ttime 0\n\tvalue 0 0 0\n\ttime 1\n\tvalue 1 0 0\n}" ).applied,
+			"scenario-B: the sole unnamed timeline inserts" );
+
+		Agent::AgentChunkResult rmOne = sess->RemoveChunk( "timeline", "timeline" );
+		Check( rmOne.applied && rmOne.status == "applied",
+		       "the SOLE unnamed timeline removes cleanly (positional unique-in-kind fallback)" );
+		Check( rmOne.kind == "timeline", "the sole-timeline remove echoes the keyword" );
+		Check( sess->ReadDocument().find( "timeline" ) == std::string::npos,
+		       "the timeline chunk is gone from the head" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// --- Scenario C: schema exposes the flag for timeline but NOT for a singleton kind. ---
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G6 scenario-C fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const std::string tlSchema = sess->ReadSchema( "timeline" );
+		Check( tlSchema.find( "\"unnamedRepeatable\":true" ) != std::string::npos,
+		       "read_schema(timeline) advertises unnamedRepeatable:true" );
+		const std::string filmSchema = sess->ReadSchema( "film" );
+		Check( filmSchema.find( "unnamedRepeatable" ) == std::string::npos,
+		       "read_schema(film) carries NO unnamedRepeatable key (singleton, unbloated)" );
+
+		// The singleton rule is UNCHANGED for non-repeatable kinds: a second unnamed film still refuses.
+		Agent::AgentChunkResult rFilm = sess->InsertChunk( "film\n{\n\twidth 32\n\theight 32\n}" );
+		Check( !rFilm.applied && rFilm.status == "rejected",
+		       "a second unnamed film is STILL rejected (singleton rule intact)" );
+		Check( rFilm.message.find( "already exists" ) != std::string::npos,
+		       "the film-singleton refusal keeps its existing message" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//----------------------------------------------------------------------
+// G7: remove_chunk ambiguity guard must fire ONLY on the KEYWORD-interpretation path.
+//
+// Regression for the coincidence bug: the guard used to resolve
+// `DescriptorForKeyword((kind && kind[0]) ? kind : target)` -- with `kind`
+// omitted (the normal remove-by-name path), a chunk of ANY OTHER kind that
+// happens to be NAMED the same as a repeatable keyword (e.g. an omni_light
+// literally named "timeline") could never be removed by bare name while 2+
+// unnamed timelines coexist: the code resolved `target` as the KEYWORD
+// "timeline" and refused as ambiguous, even though DocFindByNameAnyRole
+// would have uniquely resolved the NAME "timeline" to the light.
+//
+// Fixed by trying plain name resolution FIRST when `kind` is omitted; only
+// when that finds NOTHING does `target` fall through to keyword
+// interpretation and the ambiguity guard.
+//----------------------------------------------------------------------
+static void TestRemoveChunkNameKeywordCoincidence()
+{
+	std::printf( "G7: remove_chunk name/keyword coincidence -- a chunk NAMED \"timeline\" resolves by NAME, not keyword...\n" );
+	const std::string tmp = TempPath( "agentcrud_g7.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "G7 fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	// Two unnamed timelines (so the repeatable-keyword ambiguity guard is IN PLAY for kind-only removal)...
+	Check( sess->InsertChunk(
+		"timeline\n{\n\telement_type object\n\telement obj_sph\n\tparam position\n"
+		"\ttime 0\n\tvalue 0 0 0\n\ttime 1\n\tvalue 1 0 0\n}" ).applied,
+		"G7: first unnamed timeline inserts" );
+	Check( sess->InsertChunk(
+		"timeline\n{\n\telement_type object\n\telement obj_emit\n\tparam position\n"
+		"\ttime 0\n\tvalue 0 0 0\n\ttime 1\n\tvalue 0 1 0\n}" ).applied,
+		"G7: second unnamed timeline inserts" );
+
+	// ...plus an omni_light literally NAMED "timeline" (a coincidental name/keyword clash).
+	Agent::AgentChunkResult rLight = sess->InsertChunk(
+		"omni_light\n{\n\tname timeline\n\tposition 2 2 2\n\tcolor 1 1 1\n\tpower 5.0\n}" );
+	Check( rLight.applied && rLight.status == "applied", "G7: the light named `timeline` inserts" );
+
+	const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
+	const std::string docBefore = sess->ReadDocument();
+	Check( docBefore.find( "omni_light" ) != std::string::npos, "G7 precondition: the light is present before removal" );
+
+	// remove_chunk(target="timeline", NO kind) must resolve the NAME first and remove THE LIGHT --
+	// not refuse as an ambiguous keyword address, even though "timeline" also names a repeatable kind
+	// with 2 unnamed instances.
+	Agent::AgentChunkResult rmByName = sess->RemoveChunk( "timeline" );
+	Check( rmByName.applied && rmByName.status == "applied",
+	       "remove_chunk(target=\"timeline\", no kind) REMOVES THE LIGHT (name wins over keyword coincidence)" );
+	Check( rmByName.kind == "omni_light", "the removal echoes the LIGHT's keyword, not `timeline`" );
+	Check( rmByName.headVersion.revision > vBefore.revision, "the removal advanced the head revision" );
+
+	const std::string docAfter = sess->ReadDocument();
+	Check( docAfter.find( "omni_light" ) == std::string::npos, "the light is gone from the head" );
+	{
+		size_t first = docAfter.find( "timeline" );
+		size_t second = ( first == std::string::npos ) ? std::string::npos : docAfter.find( "timeline", first + 1 );
+		Check( first != std::string::npos && second != std::string::npos,
+		       "BOTH unnamed timelines are still intact after removing the coincidentally-named light" );
+	}
+
+	// With `kind="timeline"` explicitly provided, the keyword-interpretation path IS in play and the
+	// ambiguity guard still fires exactly as before (2 unnamed timelines -> refuse).
+	Agent::AgentChunkResult rmByKeyword = sess->RemoveChunk( "timeline", "timeline" );
+	Check( !rmByKeyword.applied && rmByKeyword.status == "rejected",
+	       "remove_chunk(target=\"timeline\", kind=\"timeline\") is STILL refused as ambiguous (2 unnamed instances)" );
+	Check( rmByKeyword.message.find( "ambiguous" ) != std::string::npos,
+	       "the refusal message names the ambiguity" );
+	Check( sess->ReadDocument() == docAfter,
+	       "the ambiguity refusal left the head byte-identical (unaffected by the earlier name-resolved removal)" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
+// G8: element_type camera resolves `element` as the TARGET camera's name.
+//   (a) two named cameras -> a timeline element=<non-active camera> animates
+//       THAT camera, proven by evaluating the keyframe at t=1;
+//   (b) a name that matches no camera is a LOUD derive rejection (NOT a
+//       silent active-camera fallback), head unchanged, and the rejection
+//       MESSAGE (not just the log) names the missing camera;
+//   (c) an empty element with a single unnamed camera falls back to the
+//       ACTIVE camera and applies (the eval-fixture's own golden path);
+//   (d) (TestReservedCameraNameNoneAtDerive, below) a HAND-AUTHORED scene
+//       naming a camera `none` -- which never goes through the AGENT-insert
+//       gate (Job::ApplyCstInsertChunk's own "reserved name" early check) --
+//       is still refused, at the chunk-parser/derive layer, because a
+//       camera literally named "none" would collide with the unbind
+//       sentinel (a) above and (c) above both rely on to distinguish
+//       named-target vs active-camera-fallback.
+//----------------------------------------------------------------------
+static Point3 ReadCamLocation( ICamera* cam )
+{
+	double x = 0, y = 0, z = 0;
+	if( cam ) {
+		const String v = CameraIntrospection::GetPropertyValue( *cam, String( "location" ) );
+		std::sscanf( v.c_str(), "%lf %lf %lf", &x, &y, &z );
+	}
+	return Point3( x, y, z );
+}
+
+static void TestCameraTimelineNamedTargeting()
+{
+	std::printf( "G8: element_type camera -- named targeting / loud miss / active fallback...\n" );
+	const std::string tmp = TempPath( "agentcrud_g7.RISEscene" );
+
+	// --- (a) named NON-active camera is the one animated. ---
+	{
+		Job* pJob = LoadScene( kTwoCamScene, tmp );
+		Check( pJob != nullptr, "(a) two-named-camera fixture loads" );
+		if( !pJob ) return;
+		Check( pJob->GetActiveCameraName() == "camB",
+		       "(a) camB (authored last) is the active camera; camA is non-active" );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentChunkResult rA = sess->InsertChunk(
+			"timeline\n{\n\telement_type camera\n\telement camA\n\tparam location\n"
+			"\ttime 0\n\tvalue 0 0 5\n\ttime 1\n\tvalue 7 0 5\n}" );
+		Check( rA.applied && rA.status == "applied",
+		       "(a) timeline targeting the NAMED non-active camera camA applies + derives" );
+
+		IAnimator* anim = pJob->GetScene() ? pJob->GetScene()->GetAnimator() : nullptr;
+		Check( anim != nullptr, "(a) the derived scene exposes an animator" );
+		if( anim ) anim->EvaluateAtTime( 1.0 );
+
+		ICameraManager* cams = pJob->GetCameras();
+		ICamera* camA = cams ? cams->GetItem( "camA" ) : nullptr;
+		ICamera* camB = cams ? cams->GetItem( "camB" ) : nullptr;
+		Check( camA && camB, "(a) both named cameras resolve in the derived scene" );
+		const Point3 aLoc = ReadCamLocation( camA );
+		const Point3 bLoc = ReadCamLocation( camB );
+		Check( std::fabs( aLoc.x - 7.0 ) < 1e-6,
+		       "(a) camA (the NAMED target) moved to the keyframed x=7 at t=1" );
+		Check( std::fabs( bLoc.x - 0.0 ) < 1e-6 && std::fabs( bLoc.z - 9.0 ) < 1e-6,
+		       "(a) camB (the ACTIVE camera) was NOT animated -- still at authored 0 0 9" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// --- (b) a name that matches no camera is a LOUD derive rejection. ---
+	{
+		Job* pJob = LoadScene( kTwoCamScene, tmp );
+		Check( pJob != nullptr, "(b) fixture reloads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const std::string headBefore = sess->ReadDocument();
+		const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
+
+		Agent::AgentChunkResult rMiss = sess->InsertChunk(
+			"timeline\n{\n\telement_type camera\n\telement no_such_cam\n\tparam location\n"
+			"\ttime 0\n\tvalue 0 0 5\n\ttime 1\n\tvalue 7 0 5\n}" );
+		Check( !rMiss.applied && rMiss.status == "rejected",
+		       "(b) naming a non-existent camera is REJECTED (no silent active-camera fallback)" );
+		Check( rMiss.message.find( "would not derive" ) != std::string::npos,
+		       "(b) the rejection is the derive-gate class" );
+		Check( rMiss.message.find( "no_such_cam" ) != std::string::npos,
+		       "(b) the missing camera's name is named IN THE RESPONSE MESSAGE (via g_cstFinalizeDiagSink -- "
+		       "not just the log), so the agent can see the specific reason without reading the server log" );
+		Check( sess->ReadDocument() == headBefore,
+		       "(b) the rejected insert left the head byte-identical" );
+		Check( sess->HeadVersion() == vBefore,
+		       "(b) the rejected insert did not advance the revision" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// --- (c) empty element + single unnamed camera -> active-camera fallback. ---
+	{
+		Job* pJob = LoadScene( kScene, tmp );   // kScene has ONE unnamed camera
+		Check( pJob != nullptr, "(c) single-unnamed-camera fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentChunkResult rC = sess->InsertChunk(
+			"timeline\n{\n\telement_type camera\n\tparam location\n"
+			"\ttime 0\n\tvalue 0 0 3.5\n\ttime 1\n\tvalue 2 0 3.5\n}" );
+		Check( rC.applied && rC.status == "applied",
+		       "(c) a camera timeline with NO element falls back to the active camera + derives" );
+
+		IAnimator* anim = pJob->GetScene() ? pJob->GetScene()->GetAnimator() : nullptr;
+		if( anim ) anim->EvaluateAtTime( 1.0 );
+		ICameraManager* cams = pJob->GetCameras();
+		ICamera* active = cams ? cams->GetItem( pJob->GetActiveCameraName().c_str() ) : nullptr;
+		Check( active != nullptr, "(c) the active (unnamed -> auto-named) camera resolves" );
+		const Point3 loc = ReadCamLocation( active );
+		Check( std::fabs( loc.x - 2.0 ) < 1e-6,
+		       "(c) the fallback animated the active camera to x=2 at t=1" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//----------------------------------------------------------------------
+// G8(d): a camera explicitly named `none` collides with the scene
+// language's universal unbind sentinel -- Job::AddKeyframeToAnimation's
+// camera branch (exercised by (a)/(b)/(c) above) treats element=="none"
+// as "target the ACTIVE camera", never a named lookup, so a camera
+// actually named "none" could never be targeted by name.
+//
+// Job::ApplyCstInsertChunk already refuses `name none` for AGENT-driven
+// inserts (the "reserved name" early check, red-proved at line ~376
+// above via `sphere_geometry { name none }`), but that gate sits ABOVE
+// the parser and never runs for a scene parsed/derived directly -- e.g.
+// a hand-authored .RISEscene file loaded via LoadAsciiSceneViaCst. This
+// test goes DIRECTLY through RISE::Cst::ParseToCst + DeriveToJob (NOT
+// AgentSession::InsertChunk) specifically so it bypasses that early
+// gate and actually exercises the derive-layer refusal (Chunk-
+// ParserRegistry.cpp's RejectReservedCameraName, called from every
+// camera chunk's Finalize before AllocateCameraName) -- going through
+// InsertChunk here would silently test the WRONG gate.
+//----------------------------------------------------------------------
+static void TestReservedCameraNameNoneAtDerive()
+{
+	std::printf( "G8(d): a hand-authored `thinlens_camera { name none }` is refused at derive...\n" );
+
+	const std::string text =
+		"RISE ASCII SCENE 7\n"
+		"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+		"thinlens_camera\n{\n\tname none\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n"
+		"\tfocus_distance 3.5\n}\n";
+
+	RISE::Cst::Document doc = RISE::Cst::ParseToCst( text );
+	Job* j = new Job();
+	std::vector<std::string> diags;
+	RISE::Cst::DeriveToJob( doc, *j, &diags );
+
+	Check( !diags.empty(), "deriving a scene with `thinlens_camera { name none }` emits a diagnostic" );
+	if( !diags.empty() ) {
+		Check( diags[0].find( "thinlens_camera" ) != std::string::npos,
+		       "the diagnostic names the offending chunk `thinlens_camera`" );
+		Check( diags[0].find( "reserved name" ) != std::string::npos,
+		       "the diagnostic uses the same \"reserved name\" wording as the agent-insert gate "
+		       "(Job::ApplyCstInsertChunk)" );
+		Check( diags[0].find( "none" ) != std::string::npos,
+		       "the diagnostic names the reserved sentinel `none`" );
+	}
+	// The camera must never have been registered under the reserved name -- neither via the
+	// chunk-parser-level refusal above, nor (defense-in-depth) had it slipped past that, via
+	// Scene::AddCamera's own independent `none` refusal.
+	ICameraManager* cams = j->GetCameras();
+	Check( !cams || !cams->GetItem( "none" ), "no camera is ever registered under the reserved name `none`" );
+
+	j->release();
+}
+
+//----------------------------------------------------------------------
+// G9: gltf_import hardening -- entity-name collisions fail loudly (2026-07-11),
+// THEN gltf_import is flagged unnamedRepeatable (same append-class idiom as
+// timeline/keyframe -- see G6).
+//
+// Background: GLTFSceneImporter::ImportScene used to unconditionally `return true`
+// and silently swallow every duplicate-name GenericManager::AddItem failure, so TWO
+// unnamed `gltf_import` chunks sharing the SAME (defaulted) name_prefix passed the
+// dry-run derive with the second import's ~10+ entities (gltf.pnt.*, gltf.mat.0,
+// gltf.geom.m0.p0, __pbrmr_* ...) silently masked.  This blocked flagging gltf_import
+// as unnamedRepeatable (deferred in 436f604a pending exactly this fix).  Fixed via
+// two layers: (1) Job::ImportGLTFScene refuses a REPEATED name_prefix within the same
+// derive up front (a per-Job `mGltfImportPrefixes` record, reset each derive) with a
+// diagnostic naming the prefix; (2) GLTFSceneImporter::ImportScene itself now
+// propagates any entity-registration failure (material / geometry / object) as a hard
+// `false` instead of discarding it -- belt-and-suspenders for a NON-prefix collision
+// (a hand-authored entity that happens to collide with a generated name).  Distinct
+// prefixes remain fully supported -- the multi-import idiom
+// scenes/FeatureBased/Geometry/sponza_new_ivy.RISEscene relies on (2+ imports, an
+// in-file comment blessing it).
+//
+// RED-PROVE (pre-fix): Scenario B's second-same-prefix-insert rejection is the
+// load-bearing regression -- pre-fix, ImportScene's unconditional `return true` meant
+// that insert passed the dry-run derive cleanly (r2.applied would be TRUE, not the
+// FALSE asserted below).  Scenario D's hand-authored-collision rejection is likewise
+// pre-fix-failing: ImportScene discarded CreateMaterial/AddPrebuiltTriangleMeshGeometry/
+// AddObjectMatrix's bool returns, so a colliding geometry name silently dropped that
+// one primitive instead of failing the import.  Both were verified by temporarily
+// reverting the Job::ImportGLTFScene prefix guard and the ImportScene
+// `anyRegistrationFailure` propagation (restoring the old unconditional `return true`)
+// -- both rejections flipped to false-positive "applied" passes, confirming the
+// Checks below actually exercise the new code.  Scenario A and C are NOT expected to
+// fail pre-fix (A predates this change entirely -- distinct prefixes always worked;
+// C is the flag flip itself, gated on this whole fix landing).
+//----------------------------------------------------------------------
+static void TestGltfImportPrefixCollision()
+{
+	std::printf( "G9: gltf_import hardening -- prefix + entity collisions fail loudly...\n" );
+	const std::string tmp = TempPath( "agentcrud_g9.RISEscene" );
+	const std::string kBoxAsset = "scenes/Tests/Geometry/assets/Box.glb";
+
+	// --- Scenario A: two DISTINCT prefixes -- both apply (the supported multi-import idiom). ---
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G9(A) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+
+		Agent::AgentChunkResult rA = sess->InsertChunk(
+			"gltf_import\n{\n\tfile " + kBoxAsset + "\n\tname_prefix boxA\n"
+			"\timport_lights FALSE\n\timport_cameras FALSE\n}" );
+		Check( rA.applied && rA.status == "applied", "G9(A) first gltf_import (prefix boxA) applies" );
+		const RISE::Cst::CstHeadVersion v1 = sess->HeadVersion();
+		Check( v1.revision > v0.revision, "G9(A) first import advanced the head revision" );
+
+		Agent::AgentChunkResult rB = sess->InsertChunk(
+			"gltf_import\n{\n\tfile " + kBoxAsset + "\n\tname_prefix boxB\n"
+			"\timport_lights FALSE\n\timport_cameras FALSE\n}" );
+		Check( rB.applied && rB.status == "applied",
+		       "G9(A) SECOND gltf_import (DISTINCT prefix boxB) also applies" );
+		const RISE::Cst::CstHeadVersion v2 = sess->HeadVersion();
+		Check( v2.revision > v1.revision, "G9(A) second import advanced the head revision AGAIN (head advances twice)" );
+
+		Check( pJob->GetGeometries() && pJob->GetGeometries()->GetItem( "boxA.geom.m0.p0" ) != nullptr,
+		       "G9(A) boxA's geometry is present" );
+		Check( pJob->GetGeometries() && pJob->GetGeometries()->GetItem( "boxB.geom.m0.p0" ) != nullptr,
+		       "G9(A) boxB's geometry is present (BOTH imports' entities survive)" );
+
+		// applied==true above already proves the dry-run derive passed; the render confirms end-to-end
+		// (matches the discipline G6 uses for its own two-unnamed-chunk scenario).
+		Agent::AgentRenderResult rr = sess->Render();
+		Check( rr.ok, "G9(A) the scene with two distinct-prefix gltf_import chunks renders" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// --- Scenario B: SAME (defaulted) prefix -- the second insert is REJECTED at derive. ---
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G9(B) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const std::string chunkText =
+			"gltf_import\n{\n\tfile " + kBoxAsset + "\n\timport_lights FALSE\n\timport_cameras FALSE\n}";
+		Agent::AgentChunkResult r1 = sess->InsertChunk( chunkText );
+		Check( r1.applied && r1.status == "applied", "G9(B) first unnamed gltf_import (default prefix `gltf`) applies" );
+		const std::string headAfterFirst = sess->ReadDocument();
+		const RISE::Cst::CstHeadVersion vAfterFirst = sess->HeadVersion();
+
+		// Second insert, SAME default prefix ("gltf") -- must be REJECTED, not silently masked.
+		Agent::AgentChunkResult r2 = sess->InsertChunk( chunkText );
+		Check( !r2.applied && r2.status == "rejected",
+		       "G9(B) SECOND same-prefix gltf_import is REJECTED (red-prove: this FAILS pre-fix)" );
+		Check( r2.message.find( "gltf" ) != std::string::npos && r2.message.find( "collides" ) != std::string::npos,
+		       "G9(B) the rejection message names the colliding prefix and says 'collides'" );
+		Check( sess->ReadDocument() == headAfterFirst,
+		       "G9(B) the rejected second import left the head byte-identical" );
+		Check( sess->HeadVersion() == vAfterFirst,
+		       "G9(B) the rejected second import did not advance the head revision" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// --- Scenario C: read_schema advertises unnamedRepeatable for gltf_import (matches G6/timeline). ---
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G9(C) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		const std::string gltfSchema = sess->ReadSchema( "gltf_import" );
+		Check( gltfSchema.find( "\"unnamedRepeatable\":true" ) != std::string::npos,
+		       "G9(C) read_schema(gltf_import) advertises unnamedRepeatable:true" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// --- Scenario D: BELT-AND-SUSPENDERS -- a hand-authored entity collides with a
+	// gltf_import-GENERATED name.  This is the FIRST (and only) gltf_import in the
+	// derive, so the name_prefix guard (Scenario B's mechanism) does NOT fire -- the
+	// collision is caught by ImportScene's own AddItem-failure propagation instead. ---
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "G9(D) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		// Box.glb's sole primitive derives the geometry name "gltf.geom.m0.p0" under
+		// the default (unspecified) name_prefix "gltf" -- hand-author a geometry
+		// chunk under exactly that name BEFORE the import.
+		Agent::AgentChunkResult rPre = sess->InsertChunk(
+			"sphere_geometry\n{\n\tname gltf.geom.m0.p0\n\tradius 0.1\n}" );
+		Check( rPre.applied && rPre.status == "applied", "G9(D) the colliding hand-authored geometry inserts" );
+		const std::string headAfterPre = sess->ReadDocument();
+
+		Agent::AgentChunkResult r = sess->InsertChunk(
+			"gltf_import\n{\n\tfile " + kBoxAsset + "\n\timport_lights FALSE\n\timport_cameras FALSE\n}" );
+		Check( !r.applied && r.status == "rejected",
+		       "G9(D) the gltf_import is REJECTED -- entity-name collision, not a prefix collision "
+		       "(red-prove: this FAILS pre-fix)" );
+		Check( sess->ReadDocument() == headAfterPre,
+		       "G9(D) the rejected import left the head byte-identical (the pre-authored geometry survives alone)" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk) ===\n" );
@@ -1307,6 +1895,11 @@ int main()
 	TestRasterizerInsertActivation();
 	TestVariantOverlayAndAmbiguityMessages();
 	TestCameraSwapRecipe();
+	TestUnnamedRepeatableTimeline();
+	TestRemoveChunkNameKeywordCoincidence();
+	TestCameraTimelineNamedTargeting();
+	TestReservedCameraNameNoneAtDerive();
+	TestGltfImportPrefixCollision();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

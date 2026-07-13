@@ -66,6 +66,24 @@ namespace RISE
 			//! sink; matches FileRasterizerOutput ignoring intermediates).
 			void OutputIntermediateImage( const IRasterImage& pImage, const Rect* pRegion ) override;
 
+			//! Toolkit slice 1 (read_viewport): adopt an ALREADY-COHERENT
+			//! pixel buffer produced OUT-OF-BAND (the caller performed a
+			//! tile-locked, complete-snapshot copy of the live interactive
+			//! FrameStore via `SceneEditController::CopyInteractiveFrame`).
+			//! This BYPASSES the `OutputImage` / `GetPEL` capture path
+			//! entirely -- the caller already owns a row-major linear buffer,
+			//! so there is nothing to re-read.  Post-state is IDENTICAL to a
+			//! completed `OutputImage` (mPixels row-major linear, mWidth/
+			//! mHeight set, mHasImage true), so the existing `ToPng()` /
+			//! `ToPngDownscaled()` encode paths work unchanged with ZERO
+			//! duplication of the box-filter / PNG-encode logic.  Moves the
+			//! buffer in (no copy).  `pixels.size()` is expected to be
+			//! `width*height`; a mismatch is defensively resized (padding with
+			//! default-black) so the encode paths never index out of bounds.
+			void AdoptCoherentSnapshot( std::vector<RISEColor>&& pixels,
+			                            unsigned int width,
+			                            unsigned int height );
+
 			//! True once a full frame has been captured (OutputImage fired).
 			bool HasImage() const { return mHasImage; }
 
@@ -80,6 +98,16 @@ namespace RISE
 			//! and shift measurably under a visible edit.  Computed in linear
 			//! space (before ToPng's sRGB Integerize) to avoid quantization.
 			void MeanChannels( double& r, double& g, double& b ) const;
+
+			//! Toolkit slice 3b (query_object_at): the captured pixel's LINEAR
+			//! RISEColor at (x,y) -- the SAME per-pixel value ToPng()'s encode
+			//! loop reads (row-major, pre-sRGB-Integerize; identical storage
+			//! MeanChannels()/ToPng() already read). Returns false (leaving
+			//! `out` unmodified) when no frame has been captured yet or (x,y)
+			//! is outside [0,Width())x[0,Height()) -- no clamping, no
+			//! wraparound. Const: reading a pixel does not mutate the
+			//! captured buffer.
+			bool GetPixelColor( unsigned int x, unsigned int y, RISEColor& out ) const;
 
 			//! Serialize the captured frame to 8-bit sRGB PNG bytes, reusing
 			//! the tree's `PNGWriter` (sRGB Integerize + libpng) targeting a

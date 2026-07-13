@@ -366,6 +366,32 @@ private:
     // never references a dead controller / job.
     RISE::Agent::AgentRpcDispatcher* _agentDispatcher;
 
+    // Agent autonomy selector (2026-07 GUI composer chips): TWO more
+    // in-process dispatchers, sibling to `_agentDispatcher` above, that
+    // exist for the WHOLE bridge lifetime (not opt-in like the hosted
+    // server below) so `-agentHandleToolCall:` never has to construct one
+    // mid-turn. `_agentToolDispatcherOwner` borrows an Owner-authority
+    // AgentSession (its own instance, separate from `_agentDispatcher`'s —
+    // see the .h's routing doc for why they must NOT be the same instance:
+    // `_agentDispatcher` must stay permanently Commit-capable for
+    // `resolve_proposal`, so ONLY this separate instance's autonomy is
+    // ever toggled between Read/Commit via AgentRpcDispatcher::SetAutonomy
+    // as `agentAutonomyLevel` changes). `_agentToolDispatcherPropose`
+    // borrows a SEPARATE External-authority AgentSession, fixed at Propose
+    // autonomy for its whole life (mirrors -startAgentHostedServerWithLabel:'s
+    // External+Propose construction, minus the HTTP server — see that
+    // method's doc for the authority/autonomy pairing rationale). Both
+    // AttachController'd to the SAME `_controller` as `_agentDispatcher`'s
+    // session, so a staged proposal lands on the SAME queue
+    // list_proposals/resolve_proposal already read. Torn down alongside
+    // `_agentDispatcher` in -shutdown (same BORROWS-the-controller lifetime
+    // rule). All three dispatchers are called only from the main/UI thread
+    // (matching AgentRpcDispatcher's single-caller contract), so there is
+    // no cross-instance locking concern despite three coexisting instances.
+    RISE::Agent::AgentRpcDispatcher* _agentToolDispatcherOwner;
+    RISE::Agent::AgentRpcDispatcher* _agentToolDispatcherPropose;
+    RISEAgentAutonomyLevel           _agentAutonomyLevel;
+
     // Secure-MCP slice 5c: the GUI-hosted EXTERNAL loopback MCP server --
     // a SEPARATE AgentSession (External authority) + AgentMcpAdapter +
     // AgentLoopbackHttpServer from `_agentDispatcher` above (which is the
@@ -401,6 +427,9 @@ private:
     _previewSink = nullptr;
     _agentHttpServerRunning = NO;
     _agentDispatcher = nullptr;
+    _agentToolDispatcherOwner = nullptr;
+    _agentToolDispatcherPropose = nullptr;
+    _agentAutonomyLevel = RISEAgentAutonomyApply;
 
     void* jobOpaque = [host opaqueJobHandle];
     if (!jobOpaque) {
@@ -452,6 +481,41 @@ private:
         }
         _agentDispatcher =
             new RISE::Agent::AgentRpcDispatcher(std::move(session));
+    }
+
+    // Agent autonomy selector (2026-07): stand up the two sibling tool-call
+    // dispatchers alongside `_agentDispatcher` above -- see the ivar
+    // block's doc for why these are separate instances rather than one
+    // dispatcher whose autonomy gets mutated in place. Both borrow the SAME
+    // `_controller` `_agentDispatcher`'s own session is attached to.
+    {
+        std::unique_ptr<RISE::Agent::AgentSession> ownerSession =
+            RISE::Agent::AgentSession::WrapJob(pJob);
+        if (ownerSession) {
+            ownerSession->AttachController(_controller);
+        }
+        // Starts at Commit -- matches `_agentAutonomyLevel`'s
+        // RISEAgentAutonomyApply default above, so this dispatcher's
+        // observable behaviour is identical to `_agentDispatcher`'s until
+        // the Swift composer explicitly picks a different level.
+        _agentToolDispatcherOwner = new RISE::Agent::AgentRpcDispatcher(
+            std::move(ownerSession), RISE::Agent::AgentAutonomy::Commit);
+
+        std::unique_ptr<RISE::Agent::AgentSession> proposeSession =
+            RISE::Agent::AgentSession::WrapJob(pJob, RISE::Agent::AgentAuthority::External);
+        if (proposeSession) {
+            proposeSession->AttachController(_controller);
+            // Diagnostic only (SceneEditController::AgentProposal::sessionLabel) --
+            // distinguishes an in-app "Propose" chip proposal from an
+            // external-MCP-client one in the proposals panel.
+            proposeSession->SetSessionLabel("in-app-propose");
+        }
+        // Fixed for this dispatcher's whole life -- Propose autonomy is the
+        // posture that PAIRS with External authority (AgentRpc.h's file
+        // header); there is no level under which this instance should ever
+        // run as anything else.
+        _agentToolDispatcherPropose = new RISE::Agent::AgentRpcDispatcher(
+            std::move(proposeSession), RISE::Agent::AgentAutonomy::Propose);
     }
 
     return self;
@@ -571,6 +635,21 @@ private:
     }
     delete _agentDispatcher;
     _agentDispatcher = nullptr;
+
+    // Agent autonomy selector (2026-07): same detach-then-delete discipline
+    // for the two sibling tool-call dispatchers -- they borrow the SAME
+    // `_controller` and must not outlive it either.
+    if (_agentToolDispatcherOwner && _agentToolDispatcherOwner->Session()) {
+        _agentToolDispatcherOwner->Session()->AttachController(nullptr);
+    }
+    delete _agentToolDispatcherOwner;
+    _agentToolDispatcherOwner = nullptr;
+
+    if (_agentToolDispatcherPropose && _agentToolDispatcherPropose->Session()) {
+        _agentToolDispatcherPropose->Session()->AttachController(nullptr);
+    }
+    delete _agentToolDispatcherPropose;
+    _agentToolDispatcherPropose = nullptr;
 
     if (_controller) {
         // Detach the dirty-changed listener BEFORE destroying the
@@ -805,6 +884,94 @@ private:
     RISE_API_SceneEditController_Redo(_controller);
 }
 
+- (NSString *)undoActionLabel {
+    if (!_controller) return @"";
+    char buf[256] = {0};
+    if (!RISE_API_SceneEditController_UndoLabel(_controller, buf, sizeof(buf))) return @"";
+    return [NSString stringWithUTF8String:buf] ?: @"";
+}
+
+- (NSString *)redoActionLabel {
+    if (!_controller) return @"";
+    char buf[256] = {0};
+    if (!RISE_API_SceneEditController_RedoLabel(_controller, buf, sizeof(buf))) return @"";
+    return [NSString stringWithUTF8String:buf] ?: @"";
+}
+
+#pragma mark - Editor live-sync (UI refinement item 1)
+
+- (NSString *)serializedSceneText {
+    if (!_controller) return @"";
+    char* text = RISE_API_SceneEditController_SerializedSceneTextAlloc(_controller);
+    if (!text) return @"";
+    NSString* out = [NSString stringWithUTF8String:text] ?: @"";
+    RISE_API_FreeString(text);
+    return out;
+}
+
+- (BOOL)getSceneTextVersionUuid:(unsigned long long *)outUuid
+                       revision:(unsigned long long *)outRevision {
+    if (outUuid)     *outUuid = 0;
+    if (outRevision) *outRevision = 0;
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_GetSceneTextVersion(
+               _controller, outUuid, outRevision) ? YES : NO;
+}
+
+#pragma mark - Refinement pause + status (UI redesign, design brief A2)
+
+- (void)pauseRefinement {
+    if (!_controller) return;
+    RISE_API_SceneEditController_PauseRefinement(_controller);
+}
+
+- (void)resumeRefinement {
+    if (!_controller) return;
+    RISE_API_SceneEditController_ResumeRefinement(_controller);
+}
+
+- (BOOL)isRefinementPaused {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_IsRefinementPaused(_controller) ? YES : NO;
+}
+
+- (int)refinementPhaseWithScaleDivisor:(unsigned int *)scaleDivisor {
+    if (!_controller) {
+        if (scaleDivisor) *scaleDivisor = 1;
+        return -1;
+    }
+    return RISE_API_SceneEditController_GetRefinementStatus(_controller, scaleDivisor);
+}
+
+#pragma mark - Interactive region-of-interest (UI redesign, design brief A4)
+
+- (void)setInteractiveRegionLeft:(unsigned int)left
+                             top:(unsigned int)top
+                           right:(unsigned int)right
+                          bottom:(unsigned int)bottom {
+    if (!_controller) return;
+    RISE_API_SceneEditController_SetInteractiveRegion(_controller, left, top, right, bottom);
+}
+
+- (void)clearInteractiveRegion {
+    if (!_controller) return;
+    RISE_API_SceneEditController_ClearInteractiveRegion(_controller);
+}
+
+- (BOOL)getInteractiveRegionLeft:(unsigned int *)left
+                             top:(unsigned int *)top
+                           right:(unsigned int *)right
+                          bottom:(unsigned int *)bottom {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_GetInteractiveRegion(
+               _controller, left, top, right, bottom) ? YES : NO;
+}
+
+- (BOOL)interactiveRasterizerHonorsRegion {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_InteractiveRasterizerHonorsRegion(_controller) ? YES : NO;
+}
+
 #pragma mark - Scene-file save (Phase 6.5)
 
 - (BOOL)hasUnsavedSceneChanges {
@@ -960,6 +1127,7 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         case 7: return RISEViewportCategoryMedium;
         case 8: return RISEViewportCategoryAnimation;
         case 9: return RISEViewportCategorySceneVariant;
+        case 10: return RISEViewportCategoryPainter;
         default: return RISEViewportCategoryNone;
     }
 }
@@ -986,6 +1154,115 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 - (NSUInteger)sceneEpoch {
     if (!_controller) return 0;
     return static_cast<NSUInteger>( RISE_API_SceneEditController_SceneEpoch(_controller) );
+}
+
+- (BOOL)getEntitySourceLocationForCategory:(RISEViewportCategory)category
+                                       name:(NSString *)name
+                                 byteOffset:(unsigned long long *)outOffset
+                                       line:(unsigned int *)outLine {
+    if (outOffset) *outOffset = 0;
+    if (outLine)   *outLine   = 0;
+    if (!_controller || !name) return NO;
+    const int cat = (int)category;
+    return RISE_API_SceneEditController_GetEntitySourceLocation(
+               _controller, cat, name.UTF8String, outOffset, outLine) ? YES : NO;
+}
+
+#pragma mark - Entity creation + painter CRUD (entity-creation slice)
+
+- (NSUInteger)entityTemplateCountForCategory:(RISEViewportCategory)category {
+    if (!_controller) return 0;
+    return static_cast<NSUInteger>(
+        RISE_API_SceneEditController_EntityTemplateCount(_controller, (int)category) );
+}
+
+- (NSString *)entityTemplateLabelForCategory:(RISEViewportCategory)category
+                                        index:(NSUInteger)idx {
+    if (!_controller) return @"";
+    char buf[128] = {0};
+    if (!RISE_API_SceneEditController_EntityTemplateLabel(
+            _controller, (int)category, (unsigned int)idx, buf, sizeof(buf))) {
+        return @"";
+    }
+    NSString *s = [NSString stringWithUTF8String:buf];
+    return s ?: @"";
+}
+
+- (BOOL)instantiateEntityTemplateForCategory:(RISEViewportCategory)category
+                                        index:(NSUInteger)idx
+                                      outName:(NSString **)outName
+                                   outMessage:(NSString **)outMessage {
+    if (outName)    *outName    = nil;
+    if (outMessage) *outMessage = nil;
+    if (!_controller) return NO;
+    char nameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[1024] = {0};
+    const BOOL applied = RISE_API_SceneEditController_InstantiateEntityTemplate(
+        _controller, (int)category, (unsigned int)idx,
+        nameBuf, sizeof(nameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf)) ? YES : NO;
+    if (outName && nameBuf[0] != '\0') {
+        *outName = [NSString stringWithUTF8String:nameBuf];
+    }
+    if (outMessage && messageBuf[0] != '\0') {
+        *outMessage = [NSString stringWithUTF8String:messageBuf];
+    }
+    if (applied) {
+        // Structural mutation: bump epoch-driven refresh paths so the
+        // outliner re-enumerates and the properties panel reflects the
+        // new entity once the caller selects it.
+        [self refreshProperties];
+    }
+    return applied;
+}
+
+- (BOOL)duplicateEntityForCategory:(RISEViewportCategory)category
+                               name:(NSString *)name
+                            outName:(NSString **)outName
+                         outMessage:(NSString **)outMessage {
+    if (outName)    *outName    = nil;
+    if (outMessage) *outMessage = nil;
+    if (!_controller || !name) return NO;
+    char nameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[1024] = {0};
+    const BOOL applied = RISE_API_SceneEditController_DuplicateEntity(
+        _controller, (int)category, [name UTF8String],
+        nameBuf, sizeof(nameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf)) ? YES : NO;
+    if (outName && nameBuf[0] != '\0') {
+        *outName = [NSString stringWithUTF8String:nameBuf];
+    }
+    if (outMessage && messageBuf[0] != '\0') {
+        *outMessage = [NSString stringWithUTF8String:messageBuf];
+    }
+    if (applied) {
+        [self refreshProperties];
+    }
+    return applied;
+}
+
+- (BOOL)removeEntityForCategory:(RISEViewportCategory)category
+                            name:(NSString *)name
+                      outMessage:(NSString **)outMessage {
+    if (outMessage) *outMessage = nil;
+    if (!_controller || !name) return NO;
+    char statusBuf[64] = {0};
+    char messageBuf[1024] = {0};
+    const BOOL applied = RISE_API_SceneEditController_RemoveEntity(
+        _controller, (int)category, [name UTF8String],
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf)) ? YES : NO;
+    if (outMessage && messageBuf[0] != '\0') {
+        *outMessage = [NSString stringWithUTF8String:messageBuf];
+    }
+    if (applied) {
+        [self refreshProperties];
+    }
+    return applied;
 }
 
 - (nullable NSString *)addCameraFromActive:(NSString *)proposedName {
@@ -1193,6 +1470,46 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     // GUI SetProperty drives the controller's cancel-and-park from main.
     const std::string response =
         _agentDispatcher->HandleLine(std::string(utf8 ? utf8 : ""));
+    NSString* out = [NSString stringWithUTF8String:response.c_str()];
+    return out ?: kNoDispatcher;
+}
+
+#pragma mark - Agent autonomy selector (2026-07 GUI composer chips)
+
+- (RISEAgentAutonomyLevel)agentAutonomyLevel {
+    return _agentAutonomyLevel;
+}
+
+- (void)setAgentAutonomyLevel:(RISEAgentAutonomyLevel)level {
+    if (level != RISEAgentAutonomyRead && level != RISEAgentAutonomyPropose
+        && level != RISEAgentAutonomyApply) {
+        return;  // out-of-range: no-op, keep the previous level (see the .h doc)
+    }
+    _agentAutonomyLevel = level;
+    // Only the OWNER tool dispatcher's autonomy ever changes at runtime —
+    // `_agentToolDispatcherPropose` stays fixed at Propose for its whole
+    // life (see the ivar block's doc), and `_agentDispatcher` (the
+    // administrative path) is never touched here at all.
+    if (_agentToolDispatcherOwner) {
+        _agentToolDispatcherOwner->SetAutonomy(
+            level == RISEAgentAutonomyRead ? RISE::Agent::AgentAutonomy::Read
+                                            : RISE::Agent::AgentAutonomy::Commit);
+    }
+}
+
+- (NSString *)agentHandleToolCall:(NSString *)jsonRpcRequest {
+    static NSString* const kNoDispatcher =
+        @"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":"
+        @"{\"code\":-32603,\"message\":\"internal error: agent dispatcher unavailable\"}}";
+
+    RISE::Agent::AgentRpcDispatcher* dispatcher =
+        (_agentAutonomyLevel == RISEAgentAutonomyPropose) ? _agentToolDispatcherPropose
+                                                            : _agentToolDispatcherOwner;
+    if (!dispatcher) {
+        return kNoDispatcher;
+    }
+    const char* utf8 = jsonRpcRequest ? [jsonRpcRequest UTF8String] : "";
+    const std::string response = dispatcher->HandleLine(std::string(utf8 ? utf8 : ""));
     NSString* out = [NSString stringWithUTF8String:response.c_str()];
     return out ?: kNoDispatcher;
 }
