@@ -76,6 +76,8 @@ static T ComputeFactor(
 		// -- NEE's light direction isn't sampler-drawn -- but it guards
 		// against the same tilt pathology.  Degenerate vGeomNormal falls
 		// back to the shading normal (gate is a no-op).
+		// (v is tautologically inside the gate: v = -ri.ray.Dir() and geomN is
+		// ray-anchored, so Dot(v,geomN) > 0 always holds -- see LambertianBRDF.cpp:57-60.)
 		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 			? ri.vGeomNormal : n;
 		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;

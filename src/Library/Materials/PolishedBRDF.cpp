@@ -57,6 +57,27 @@ RISEPel PolishedBRDF::value( const Vector3& vLightIn, const RayIntersectionGeome
 	// against future code that consumes `n` directly.
 	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, -vLightIn ) < NEARZERO;
 	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
+
+	// Geometric-horizon gate (ray-anchored; see GGXBRDF::value /
+	// LambertianBRDF::ShouldReflect): a GlintModifier-tilted shading
+	// normal can validate a light direction that is still below the
+	// true geometric surface -- this file had NO horizon check at all
+	// before this gate.  geomN is anchored to ri.ray.Dir(), so a tilt
+	// cannot flip its orientation; the view-direction half is
+	// tautologically satisfied (r = -ri.ray.Dir(), so Dot(r,geomN) > 0
+	// always by construction) -- only vLightIn can actually reject.
+	// Degenerate vGeomNormal falls back to n (gate is a no-op).
+	{
+		const Vector3 v = Vector3Ops::Normalize( vLightIn );
+		const Vector3 r = Vector3Ops::Normalize( -ri.ray.Dir() );
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : n;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+		if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
+			return RISEPel(0,0,0);
+		}
+	}
+
 	const RISEPel ior = Nt.GetColor(ri);
 	if( ior[0] == ior[1] && ior[1] == ior[2] ) {
 		Scalar		Rs = ComputeRs( -vLightIn, n, ior[0] );
@@ -84,6 +105,19 @@ Scalar PolishedBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeom
 	// against future code that consumes `n` directly.
 	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, -vLightIn ) < NEARZERO;
 	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
+
+	// Geometric-horizon gate (mirrors value()'s gate above).
+	{
+		const Vector3 v = Vector3Ops::Normalize( vLightIn );
+		const Vector3 r = Vector3Ops::Normalize( -ri.ray.Dir() );
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : n;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+		if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
+			return 0;
+		}
+	}
+
 	Scalar		Rs = ComputeRs( -vLightIn, n, Nt.GetColorNM(ri,nm) );
 	return pReflectance.GetColorNM(ri,nm) * INV_PI * (1.0 - Rs);
 }

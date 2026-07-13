@@ -167,6 +167,19 @@ void PolishedSPF::Scatter(
 	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
 	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
+	// Geometric-horizon gate (ray-anchored; see GGXSPF::Scatter /
+	// PerfectReflectorSPF::Scatter): the coat lobe's direction is built
+	// around the SHADING normal `n` (and can be further perturbed by
+	// GenerateScatteredRayFromPolish's Phong/HG cone), which a tilting
+	// modifier can swing far enough that the reflection tunnels through
+	// the true geometric surface -- this file had no such gate before.
+	// geomN is anchored to ri.ray.Dir(), so its orientation cannot be
+	// fooled by the same tilt.  Degenerate vGeomNormal falls back to n
+	// (gate is a no-op).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
 	// Dispersion is detected via the painter's own static-property
 	// report; tau's per-channel variation alone doesn't trigger
 	// dispersion because tau is multiplicative attenuation rather
@@ -177,7 +190,23 @@ void PolishedSPF::Scatter(
 		Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(sampler.Get1D(),sampler.Get1D()), scattering.v[0], ior.v[0], ior_stack );
 		dielectric.kray = RISEPel( tauVals.v[0], tauVals.v[1], tauVals.v[2] ) * Rs;
 
-		if( Vector3Ops::Dot( dielectric.ray.Dir(), ri.onb.w() ) > 0.0 ) {
+		if( Vector3Ops::Dot( dielectric.ray.Dir(), geomN ) <= 0 )
+		{
+			if( dielectric.isDelta ) {
+				// Mandatory lobe (perfect-mirror coat) -- re-derive about the
+				// TRUE geometric normal exactly like PerfectReflectorSPF,
+				// which unconditionally satisfies the gate: for a ray
+				// arriving against geomN, dot(reflect(d,geomN),geomN) =
+				// -dot(d,geomN) > 0 holds unconditionally (up to the
+				// measure-zero exact-tangent boundary) since geomN is
+				// ray-anchored.
+				dielectric.ray.SetDir( Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
+				scattered.AddScatteredRay( dielectric );
+			}
+			// else: glossy coat lobe has a genuine sampling distribution
+			// (like GGXSPF's specular lobe) -- plain rejection, no fallback.
+		}
+		else if( Vector3Ops::Dot( dielectric.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 			scattered.AddScatteredRay( dielectric );
 		}
 	}
@@ -189,7 +218,15 @@ void PolishedSPF::Scatter(
 			dielectric.kray = 0;
 			dielectric.kray[i] = tauVals.v[i] * Rs[i];
 
-			if( Vector3Ops::Dot( dielectric.ray.Dir(), ri.onb.w() ) > 0.0 ) {
+			if( Vector3Ops::Dot( dielectric.ray.Dir(), geomN ) <= 0 )
+			{
+				if( dielectric.isDelta ) {
+					// Mandatory lobe -- see the non-dispersive branch above.
+					dielectric.ray.SetDir( Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
+					scattered.AddScatteredRay( dielectric );
+				}
+			}
+			else if( Vector3Ops::Dot( dielectric.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 				scattered.AddScatteredRay( dielectric );
 			}
 		}
@@ -211,7 +248,10 @@ void PolishedSPF::Scatter(
 		const Scalar cos_theta = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
 		diffuse.pdf = r_max( 0.0, cos_theta ) * INV_PI;
 
-		if( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) > 0.0 ) {
+		// Diffuse is a non-delta lobe (like GGXSPF's diffuse lobe) --
+		// plain rejection against BOTH the shading hemisphere and the
+		// ray-anchored geometric horizon.
+		if( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) > 0.0 && Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0.0 ) {
 			scattered.AddScatteredRay( diffuse );
 		}
 	}
@@ -242,11 +282,23 @@ void PolishedSPF::ScatterNM(
 	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
 	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
+	// Geometric-horizon gate (mirrors Scatter()'s gate above).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
 	Scalar Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(sampler.Get1D(),sampler.Get1D()), pScat->GetValueAtNM(ri,nm), pNt->GetValueAtNM(ri,nm), ior_stack );
 	dielectric.krayNM = pTau->GetValueAtNM(ri,nm) * Rs;
 
-
-	if( Vector3Ops::Dot( dielectric.ray.Dir(), ri.onb.w() ) > 0.0 ) {
+	if( Vector3Ops::Dot( dielectric.ray.Dir(), geomN ) <= 0 )
+	{
+		if( dielectric.isDelta ) {
+			// Mandatory lobe -- see Scatter() for the rationale.
+			dielectric.ray.SetDir( Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
+			scattered.AddScatteredRay( dielectric );
+		}
+	}
+	else if( Vector3Ops::Dot( dielectric.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		scattered.AddScatteredRay( dielectric );
 	}
 
@@ -265,7 +317,7 @@ void PolishedSPF::ScatterNM(
 		const Scalar cos_theta = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
 		diffuse.pdf = r_max( 0.0, cos_theta ) * INV_PI;
 
-		if( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) > 0.0 ) {
+		if( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) > 0.0 && Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0.0 ) {
 			scattered.AddScatteredRay( diffuse );
 		}
 	}
@@ -330,6 +382,23 @@ static Scalar PolishedPdf(
 
 	if( cos_theta_o <= 0.0 ) {
 		return 0.0;
+	}
+
+	// Geometric-horizon gate (ray-anchored; MIS consistency with
+	// Scatter's sampler-side gate -- see GGXSPF::Pdf).  A wo the sampler
+	// can no longer emit (it would tunnel through the true geometric
+	// surface under a tilted shading normal) must contribute zero
+	// density.  Independently named (gateBackface/gateShadeN) to avoid
+	// shadowing the specular-lobe bBackface/vn computed further below.
+	{
+		const bool gateBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
+		const Vector3 gateShadeN = gateBackface ? -ri.vNormal : ri.vNormal;
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : gateShadeN;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+		if( Vector3Ops::Dot( wo, geomN ) <= 0 ) {
+			return 0.0;
+		}
 	}
 
 	// Diffuse PDF: cosine-weighted hemisphere

@@ -95,6 +95,10 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	// (Dot(rayDir,Ng)<0) so nEff=+onb.w() agrees; leaving, the ray travels
 	// outward (Dot(rayDir,Ng)>0) so nEff=-onb.w() again agrees.  Left as-is
 	// to avoid perturbing well-tested crossing logic for a no-op change.
+	// CAVEAT: the equivalence assumes the IOR stack accurately reflects the
+	// ray's physical containment (bEntering is only as good as the stack).
+	// See IORStackSeeding.h for the class of bug where it doesn't -- a
+	// subpath origin sealed inside nested dielectrics with an unseeded stack.
 	const Vector3 nEff = bEntering ? ri.onb.w() : -ri.onb.w();
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : nEff;
@@ -128,7 +132,8 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 					// satisfy the gate (no re-check needed): for a ray arriving
 					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 --
 					// holds unconditionally: geomN's orientation (nEff) is provably
-					// ray-anchored (see the NOTE above), so dot(d,geomN) < 0 always.
+					// ray-anchored (see the NOTE above), so dot(d,geomN) < 0 always
+					// (up to the measure-zero exact-tangent boundary).
 					fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 				} else {
 					bDropFresnel = true;
@@ -166,7 +171,8 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 					// satisfy the gate (no re-check needed): for a ray arriving
 					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 --
 					// holds unconditionally: geomN's orientation (nEff) is provably
-					// ray-anchored (see the NOTE above), so dot(d,geomN) < 0 always.
+					// ray-anchored (see the NOTE above), so dot(d,geomN) < 0 always
+					// (up to the measure-zero exact-tangent boundary).
 					fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 				} else {
 					bDropFresnel = true;
@@ -263,6 +269,10 @@ void PerfectRefractorSPF::ScatterNM(
 	// (Dot(rayDir,Ng)<0) so nEff=+onb.w() agrees; leaving, the ray travels
 	// outward (Dot(rayDir,Ng)>0) so nEff=-onb.w() again agrees.  Left as-is
 	// to avoid perturbing well-tested crossing logic for a no-op change.
+	// CAVEAT: the equivalence assumes the IOR stack accurately reflects the
+	// ray's physical containment (bEntering is only as good as the stack).
+	// See IORStackSeeding.h for the class of bug where it doesn't -- a
+	// subpath origin sealed inside nested dielectrics with an unseeded stack.
 	const Vector3 nEff = bEntering ? ri.onb.w() : -ri.onb.w();
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : nEff;
@@ -296,7 +306,8 @@ void PerfectRefractorSPF::ScatterNM(
 					// satisfy the gate (no re-check needed): for a ray arriving
 					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 --
 					// holds unconditionally: geomN's orientation (nEff) is provably
-					// ray-anchored (see the NOTE above), so dot(d,geomN) < 0 always.
+					// ray-anchored (see the NOTE above), so dot(d,geomN) < 0 always
+					// (up to the measure-zero exact-tangent boundary).
 					fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 				} else {
 					bDropFresnel = true;
@@ -335,7 +346,8 @@ void PerfectRefractorSPF::ScatterNM(
 					// satisfy the gate (no re-check needed): for a ray arriving
 					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 --
 					// holds unconditionally: geomN's orientation (nEff) is provably
-					// ray-anchored (see the NOTE above), so dot(d,geomN) < 0 always.
+					// ray-anchored (see the NOTE above), so dot(d,geomN) < 0 always
+					// (up to the measure-zero exact-tangent boundary).
 					fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 				} else {
 					bDropFresnel = true;

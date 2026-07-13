@@ -106,6 +106,9 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 	// satisfies it) rather than a sampler-consistency one -- NEE's light
 	// direction isn't sampler-drawn -- but it guards against the same tilt
 	// pathology.
+	// (rDirCheck is tautologically inside this gate: rDirCheck = -ri.ray.Dir()
+	// and geomN is anchored to ri.ray.Dir(), so Dot(rDirCheck,geomN) > 0 always
+	// holds -- only vDirCheck, the light half, can actually reject.)
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
@@ -165,6 +168,7 @@ Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersection
 	const Vector3 rDirCheck = Vector3Ops::Normalize( -ri.ray.Dir() );
 
 	// Geometric-horizon gate (mirrors value()'s gate above).
+	// rDirCheck is tautologically inside the gate here too (see value()'s note).
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;

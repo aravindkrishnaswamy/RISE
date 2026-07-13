@@ -81,6 +81,8 @@ static void ComputeDiffuseSpecularFactors(
 		// (ri.ray.Dir()), NOT to n or -n -- see LambertianBRDF::ShouldReflect
 		// for the branch-independence argument (r = -ri.ray.Dir(), so
 		// "Dot(r,geomN) > 0" below is exactly "Dot(geomN,ri.ray.Dir()) < 0").
+		// -- i.e. that condition holds TAUTOLOGICALLY for any r = -ri.ray.Dir(),
+		// leaving only "Dot(v,geomN) > 0" (the light half) as a real constraint.
 		// Degenerate vGeomNormal falls back to the raw n (gate is a no-op).
 		{
 			const Vector3 nEff = -n;

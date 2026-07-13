@@ -165,6 +165,10 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	// nEff=-onb.w() again matches.  Left as stack-anchored rather than
 	// rewritten to Dot(geomNRaw, ri.ray.Dir()) to avoid perturbing
 	// well-tested crossing logic for a change that is a no-op here.
+	// CAVEAT: the equivalence assumes the IOR stack accurately reflects the
+	// ray's physical containment (bFromInside is only as good as the stack).
+	// See IORStackSeeding.h for the class of bug where it doesn't -- a
+	// subpath origin sealed inside nested dielectrics with an unseeded stack.
 	const Vector3 nEff = bFromInside ? -ri.onb.w() : ri.onb.w();
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : nEff;
@@ -236,7 +240,8 @@ Scalar DielectricSPF::GenerateScatteredRay(
 			// re-check needed): for a ray arriving against geomN,
 			// dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 -- holds
 			// unconditionally here since geomN's orientation (nEff, see the
-			// NOTE above) is provably ray-anchored, so dot(d,geomN) < 0 always.
+			// NOTE above) is provably ray-anchored, so dot(d,geomN) < 0 always
+			// (up to the measure-zero exact-tangent boundary).
 			fresnel.ray.SetDir( Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 		} else {
 			bFresnel = false;

@@ -158,6 +158,9 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 	// a DEFENSIVE check (a valid exterior hit already satisfies it), not a
 	// literal sampler-consistency one -- NEE's light direction isn't
 	// sampler-drawn -- but it guards against the same tilt pathology.
+	// (r is tautologically inside this gate: r = -ri.ray.Dir() and geomN is
+	// anchored to ri.ray.Dir(), so Dot(r,geomN) > 0 always holds -- only v,
+	// the light half, can actually reject.  See LambertianBRDF.cpp:57-60.)
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
@@ -354,6 +357,7 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 
 	// Geometric-horizon gate (mirrors GGXSPF::ScatterNM's sampler-side
 	// gate); see GGXBRDF::value for rationale.
+	// r is tautologically inside the gate here too (see value()'s note).
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;

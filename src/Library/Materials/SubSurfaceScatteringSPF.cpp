@@ -140,7 +140,8 @@ void SubSurfaceScatteringSPF::Scatter(
 			// normal instead of the VNDF-sampled wo -- guaranteed to satisfy
 			// the gate (no re-check needed): for a ray arriving against geomN,
 			// dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 -- holds
-			// unconditionally: geomN is ray-anchored, so dot(d,geomN) < 0 always.
+			// unconditionally: geomN is ray-anchored, so dot(d,geomN) < 0 always
+			// (up to the measure-zero exact-tangent boundary).
 			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 				? ri.vGeomNormal : ri.onb.w();
 			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
@@ -201,7 +202,8 @@ void SubSurfaceScatteringSPF::Scatter(
 			// the shading normal -- guaranteed to satisfy the gate (no
 			// re-check needed): for a ray arriving against geomN,
 			// dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 -- holds
-			// unconditionally: geomN is ray-anchored, so dot(d,geomN) < 0 always.
+			// unconditionally: geomN is ray-anchored, so dot(d,geomN) < 0 always
+			// (up to the measure-zero exact-tangent boundary).
 			// The reflect formula is sign-invariant in its normal argument, so
 			// the reflection physically lands on the incoming ray's side.
 			const Vector3 nRef = ri.onb.w();
@@ -269,7 +271,7 @@ void SubSurfaceScatteringSPF::Scatter(
 		// satisfy the gate (no re-check needed): for a ray arriving against
 		// geomNBack, dot(reflect(d,geomNBack), geomNBack) = -dot(d,geomNBack) > 0 --
 		// holds unconditionally: geomNBack is ray-anchored, so dot(d,geomNBack) < 0
-		// always.
+		// always (up to the measure-zero exact-tangent boundary).
 		const Vector3 nRefBack = -ri.onb.w();
 		const Vector3& geomNRawBack = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 			? ri.vGeomNormal : nRefBack;
