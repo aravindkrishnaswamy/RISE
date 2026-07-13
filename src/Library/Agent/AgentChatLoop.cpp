@@ -177,6 +177,42 @@ namespace RISE
 					// produced NSURLErrorDomain -1001 ("The request timed
 					// out.") transport failures in the local-model shootout.
 					cfg.requestTimeoutSeconds = 900;
+					// EVAL SIGNAL, deliberately NOT worked around (local-model
+					// shootout, 2026-07-12): llama3.3:70b-instruct-q4_K_M via
+					// Ollama's OpenAI endpoint frequently answers a tool result
+					// (most often right after propose_patch's status=conflict)
+					// with finish_reason "stop" and NO tool_calls entry at all
+					// -- instead it writes the intended call as pseudo-JSON
+					// text in `content`, e.g. `{"name": "read_document",
+					// "parameters": {}}`.  That is syntactically valid JSON, so
+					// OpenAIChatCodec::ParseResponse's blank-content check does
+					// NOT fire; it is accepted as an honest FinalText turn (see
+					// ParseResponse's "stop" branch) and the tool is never
+					// actually invoked.  10 of 12 llama3.3 shootout runs across
+					// conflict_retry/material_add_and_bind/remove_object/
+					// reserved_name_recovery ended this way (evals/runs/
+					// local_shootout/*llama3.3*).  A SEPARATE, rarer failure in
+					// the same runs: llama3.3 sent insert_chunk's body under
+					// the key 'chunk' instead of the schema-required
+					// 'chunkText' (kToolDefs in AgentChatCodecs.cpp already
+					// spells out "chunkText must be EXACTLY ONE `keyword {
+					// ... }` block" in the tool description AND declares it
+					// `required` in the JSON schema -- the model ignored both).
+					// Neither is a codec/protocol bug: no OTHER provider in the
+					// shootout (gemini-3.5-flash, qwen3:32b, qwen3.6:27b,
+					// qwen3-coder:30b) exhibits either pattern.  This is a
+					// MODEL-capability signal the eval is measuring -- do NOT
+					// add tolerant handling here (sniffing `content` for an
+					// inline pseudo-tool-call, or aliasing 'chunk' ->
+					// 'chunkText' in AgentRpc.cpp's insert_chunk handler) to
+					// paper over it; that would silently raise llama3.3's
+					// score by doing the self-correction FOR it.  The one
+					// legitimate hardening move already landed instead:
+					// AgentRpc.cpp's insert_chunk missing-'chunkText' error
+					// now also NAMES whatever key WAS present (e.g. "got
+					// 'chunk' instead"), so a model that reads its own tool
+					// error has enough to self-correct in one round -- see
+					// DescribeOtherParamKeys's doc in AgentRpc.cpp.
 					return std::unique_ptr<IChatProviderCodec>( new OpenAIChatCodec( cfg ) );
 				}
 				return std::unique_ptr<IChatProviderCodec>( new AnthropicChatCodec() );

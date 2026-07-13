@@ -947,6 +947,26 @@ static void TestLiveDispatcherChunkCrud()
 		Check( badResp.find( "-32602" ) != std::string::npos,
 		       "insert_chunk without chunkText -> -32602 invalid params" );
 
+		// Eval-harness hardening (local-model shootout, 2026-07-12): the
+		// observed llama3.3 mistake was sending the chunk body under the
+		// wrong key ('chunk' instead of 'chunkText') and then repeating the
+		// SAME wrong key on retry after seeing "'chunkText' (string) is
+		// required" -- the message named what was MISSING but not what was
+		// actually SENT. AgentRpc.cpp's insert_chunk handler now also names
+		// the offending key(s) so a model reading its own tool error has
+		// something to diff against and can self-correct in one round.
+		const std::string wrongKeyResp = disp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"insert_chunk\",\"params\":"
+			"{\"chunk\":\"omni_light { name wrongkey }\"}}" );
+		Check( wrongKeyResp.find( "-32602" ) != std::string::npos,
+		       "insert_chunk with wrong key 'chunk' -> -32602 invalid params" );
+		Check( wrongKeyResp.find( "'chunkText'" ) != std::string::npos,
+		       "insert_chunk wrong-key error still names the required field" );
+		Check( wrongKeyResp.find( "'chunk'" ) != std::string::npos,
+		       "insert_chunk wrong-key error names the offending key actually sent" );
+		Check( pJob->GetLights() == nullptr || pJob->GetLights()->GetItem( "wrongkey" ) == nullptr,
+		       "the wrong-key insert never reached the live managers" );
+
 		c.Stop();
 	}
 	pJob->release();

@@ -318,6 +318,42 @@ namespace RISE
 				return 1;
 			}
 
+			//! Eval-harness hardening (local-model shootout, 2026-07-12): a
+			//! REQUIRED-param error that only names the field it wanted gives
+			//! a model that mis-named the parameter nothing to work from but
+			//! a guess.  Observed root cause: llama3.3:70b sent insert_chunk's
+			//! chunk body under the key 'chunk' instead of 'chunkText' and,
+			//! after receiving "'chunkText' (string) is required" verbatim,
+			//! retried with the SAME wrong key rather than the one the error
+			//! named -- the message told it what was MISSING but not what it
+			//! had actually SENT, so there was nothing to diff against.
+			//! DescribeOtherParamKeys enumerates the top-level keys the
+			//! params object actually carries, excluding the ones the caller
+			//! says are legitimately expected, so the -32602 message can show
+			//! them side by side with the required name.  This only NAMES the
+			//! offending keys -- it never guesses which one was "meant" and
+			//! the dispatcher never accepts a wrongly-named key in its place;
+			//! see AgentChatLoop.cpp's MakeCodec (ChatProvider::Local) for
+			//! why tolerant key-aliasing is out of scope here (it would mask
+			//! a real model-capability signal the eval measures).
+			std::string DescribeOtherParamKeys( const JsonValue& params,
+			                                     const std::vector<std::string>& expectedKeys )
+			{
+				if( !params.isObject() ) return std::string();
+				std::string extra;
+				for( std::size_t i = 0; i < params.members().size(); ++i ) {
+					const std::string& key = params.members()[i].first;
+					bool known = false;
+					for( std::size_t k = 0; k < expectedKeys.size(); ++k ) {
+						if( key == expectedKeys[k] ) { known = true; break; }
+					}
+					if( known ) continue;
+					if( !extra.empty() ) extra += ", ";
+					extra += "'" + key + "'";
+				}
+				return extra;
+			}
+
 			//! Secure-MCP slice 6: the per-proposal echo cap list_proposals
 			//! enforces on the `value` and `chunkText` fields -- see the
 			//! call site's doc for the full rationale (bounds an unbounded-
@@ -964,8 +1000,16 @@ namespace RISE
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
 					const JsonValue* chunkText = params.find( "chunkText" );
 					if( !chunkText || !chunkText->isString() ) {
-						return MakeError( idValue, kInvalidParams,
-							"Invalid params: 'chunkText' (string) is required" );
+						std::string msg = "Invalid params: 'chunkText' (string) is required";
+						// See DescribeOtherParamKeys's doc: name whatever the
+						// caller sent INSTEAD so a wrong-key mistake (e.g.
+						// 'chunk') is visible in the SAME error round-trip,
+						// not just what was missing.
+						const std::string other = DescribeOtherParamKeys(
+							params, { "chunkText", "baseHeadVersion" } );
+						if( !other.empty() )
+							msg += " (got " + other + " instead -- rename to 'chunkText')";
+						return MakeError( idValue, kInvalidParams, msg );
 					}
 					RISE::Cst::CstHeadVersion base;
 					std::string bErr;
