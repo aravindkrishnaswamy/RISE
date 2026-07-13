@@ -50,12 +50,7 @@
     {
       "kind": "trajectory",
       "maxToolCalls": 5,
-      "noMechanicalLoop": true,
-      "requiredToolInOrder": [
-        "read_document",
-        "insert_chunk",
-        "insert_chunk"
-      ]
+      "noMechanicalLoop": true
     }
   ]
 }
