@@ -47,6 +47,12 @@ private let kOutlinerCategories: [OutlinerCategoryDef] = [
     OutlinerCategoryDef(title: "Lights",          category: .light,       tag: "LGT", tagColor: Theme.catLight),
     OutlinerCategoryDef(title: "Objects",         category: .object,      tag: "OBJ", tagColor: Theme.catObject),
     OutlinerCategoryDef(title: "Materials",       category: .material,    tag: "MAT", tagColor: Theme.catMaterial),
+    // Painters feed materials/media -- listed right after Materials.
+    // Theme.swift is owned by a parallel workstream (see the note
+    // above) and has no dedicated painter token; catMaterial's
+    // lilac is the closest conceptual match and is explicitly the
+    // first-choice fallback for this slice.
+    OutlinerCategoryDef(title: "Painters",        category: .painter,     tag: "PNT", tagColor: Theme.catMaterial),
     OutlinerCategoryDef(title: "Media",           category: .medium,      tag: "MED", tagColor: Theme.catMedia),
     OutlinerCategoryDef(title: "Output Settings", category: .film,        tag: "FLM", tagColor: Theme.catFilm),
     OutlinerCategoryDef(title: "Animation",       category: .animation,   tag: "ANM", tagColor: Theme.catAnimation),
@@ -80,20 +86,25 @@ struct OutlinerView: View {
                         categoryRow(cat)
                         if expandedByCategory[cat.category.rawValue] == true {
                             let children = entitiesByCategory[cat.category.rawValue] ?? []
+                            // Rasterizer/Film rows have no chunk address
+                            // (registry/preset names, not chunk names) —
+                            // the SAME guard that gates "Reveal in scene
+                            // file" also gates Duplicate/Delete, since
+                            // both routes need chunk-name addressing.
+                            let canMutate = viewModel.isSceneEditableForAgents
+                                && cat.category != .rasterizer
+                                && cat.category != .film
                             ForEach(children, id: \.self) { child in
                                 OutlinerChildRow(
                                     name: child,
                                     isSelected: selectionCategory == cat.category && selectionName == child,
                                     isActive: isActiveEntity(cat: cat, name: child),
-                                    // Review P3: Rasterizer/Film rows have no
-                                    // chunk address (registry/preset names, not
-                                    // chunk names) — a silent no-op menu item is
-                                    // worse than a disabled one.
-                                    canReveal: viewModel.isSceneEditableForAgents
-                                        && cat.category != .rasterizer
-                                        && cat.category != .film,
+                                    canReveal: canMutate,
+                                    canMutate: canMutate,
                                     onSelect: { selectChild(cat: cat, name: child) },
-                                    onReveal: { viewModel.revealEntityInSceneText(category: cat.category, name: child) }
+                                    onReveal: { viewModel.revealEntityInSceneText(category: cat.category, name: child) },
+                                    onDuplicate: { viewModel.duplicateSelectedOrNamed(category: cat.category, name: child) },
+                                    onDelete: { viewModel.removeEntity(category: cat.category, name: child) }
                                 )
                             }
                         }
@@ -109,6 +120,15 @@ struct OutlinerView: View {
         }
         .onAppear { reload() }
         .onChange(of: refreshTrigger) { _, _ in reload() }
+        // Entity-creation slice: `viewModel.entityListEpoch` bumps the
+        // instant a GUI-initiated Add/Duplicate/Delete commits, giving
+        // an IMMEDIATE, deterministic outliner refresh (force: true
+        // bypasses the epoch-cache short-circuit below).  The core ALSO
+        // bumps the bridge's own `sceneEpoch` on every landed chunk CRUD
+        // now (ApplyAgentChunkCrud_), so a non-forced `reload()` catches
+        // structural changes too — importantly including AGENT-driven
+        // adds/removes, which never touch `entityListEpoch`.
+        .onChange(of: viewModel.entityListEpoch) { _, _ in reload(force: true) }
     }
 
     private var header: some View {
@@ -133,6 +153,12 @@ struct OutlinerView: View {
     private func categoryRow(_ cat: OutlinerCategoryDef) -> some View {
         let expanded = expandedByCategory[cat.category.rawValue] ?? false
         let count = entitiesByCategory[cat.category.rawValue]?.count ?? 0
+        // Entity-creation slice: templates are queried live (cheap —
+        // the bridge call is a couple of small C-API round-trips) so
+        // the "+" affordance disappears automatically for categories
+        // with none (Camera/Rasterizer/Film/Animation/SceneVariant).
+        let templates = viewModel.entityTemplates(for: cat.category)
+        let canAdd = !templates.isEmpty && viewModel.isSceneEditableForAgents
         return HStack(spacing: 7) {
             Text(expanded && count > 0 ? "▾" : "▸")
                 .font(.system(size: 8))
@@ -147,6 +173,22 @@ struct OutlinerView: View {
                 .foregroundColor(Theme.textTertiary)
                 .lineLimit(1)
             Spacer(minLength: 4)
+            if canAdd {
+                Menu {
+                    ForEach(templates, id: \.index) { t in
+                        Button(t.label) {
+                            viewModel.addEntity(category: cat.category, templateIndex: t.index)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "plus.circle")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(Theme.textDim)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Add \(cat.title.hasSuffix("s") ? String(cat.title.dropLast()) : cat.title)")
+            }
             Text("\(count)")
                 .font(Theme.mono(10))
                 .foregroundColor(Theme.textDisabled)
@@ -185,7 +227,13 @@ struct OutlinerView: View {
         refreshTrigger &+= 1
     }
 
-    private func reload() {
+    /// `force: true` bypasses the epoch-cache short-circuit below —
+    /// used by the `entityListEpoch` observer for an immediate refresh
+    /// the instant a GUI CRUD commits, without waiting for the next
+    /// epoch-driven `reload()`.  (The core now bumps `bridge.sceneEpoch`
+    /// on chunk CRUD too, so the non-forced path also catches structural
+    /// changes — including agent-driven ones.)
+    private func reload(force: Bool = false) {
         selectionCategory = bridge.selectionCategory
         selectionName = bridge.selectionName
 
@@ -202,7 +250,7 @@ struct OutlinerView: View {
         // actually changed (add/remove) — cheap epoch check mirrors
         // the pre-redesign accordion's caching.
         let epoch = UInt(bridge.sceneEpoch)
-        if epoch != lastEpoch {
+        if force || epoch != lastEpoch {
             lastEpoch = epoch
             var fresh: [Int: [String]] = [:]
             for cat in kOutlinerCategories {
@@ -227,8 +275,17 @@ private struct OutlinerChildRow: View {
     /// pre-checked here — an unresolvable target just no-ops, same as
     /// the properties-panel chip when hidden mid-render.
     let canReveal: Bool
+    /// Entity-creation slice: gates "Duplicate"/"Delete" the same way
+    /// `canReveal` gates "Reveal in scene file" — both need chunk-name
+    /// addressing (no Rasterizer/Film) and `isSceneEditableForAgents`.
+    /// Kept as a separate field (rather than reusing `canReveal`
+    /// directly in the menu) so a future divergence between the two
+    /// gates doesn't require touching every call site.
+    let canMutate: Bool
     let onSelect: () -> Void
     let onReveal: () -> Void
+    let onDuplicate: () -> Void
+    let onDelete: () -> Void
 
     @State private var hovering = false
 
@@ -259,6 +316,11 @@ private struct OutlinerChildRow: View {
         .contextMenu {
             Button("Reveal in scene file", action: onReveal)
                 .disabled(!canReveal)
+            Divider()
+            Button("Duplicate", action: onDuplicate)
+                .disabled(!canMutate)
+            Button("Delete", action: onDelete)
+                .disabled(!canMutate)
         }
     }
 }

@@ -1571,14 +1571,16 @@ namespace RISE
 		//! → entity-name list` to detect scene reload (the GUI tears
 		//! down + recreates the bridge, which builds a new controller).
 		//!
-		//! NOT bumped on mid-session structural mutations (Add/Remove
-		//! camera/object/light, rasterizer-registry add) — Phase 2
-		//! doesn't surface those mutations through the GUI, and the
-		//! rasterizer list is the static-catalogue union which doesn't
-		//! change with registry adds.  Phase 3 will instrument the
-		//! relevant `IJob::Add*` paths to advance a Job-side counter
-		//! the controller can poll if/when those mutations become
-		//! reachable from the interactive UI.
+		//! ALSO bumped on mid-session structural mutations that change
+		//! the entity set: CloneActiveCamera, gizmo/transform commits,
+		//! transaction rollback, selection changes, and — since the
+		//! entity-creation slice — every landed agent chunk CRUD
+		//! (ApplyAgentChunkCrud_, i.e. InstantiateEntityTemplate /
+		//! DuplicateEntity / RemoveEntity and agent insert_chunk/
+		//! remove_chunk).  So a GUI outliner that caches `(epoch,
+		//! category) → entity-name list` and re-enumerates on an epoch
+		//! change picks up adds/removes/duplicates live, on either
+		//! platform, without a bespoke per-op refresh signal.
 		unsigned int SceneEpoch() const;
 
 		//! Stable full-resolution camera dimensions for pointer-event

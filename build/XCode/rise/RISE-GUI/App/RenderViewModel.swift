@@ -448,6 +448,18 @@ final class RenderViewModel: ObservableObject {
     @Published var undoLabel: String = ""
     @Published var redoLabel: String = ""
 
+    /// Entity-creation slice: bumped after a successful `addEntity` /
+    /// `duplicateSelectedOrNamed` / `removeEntity`.  `OutlinerView`
+    /// observes it via `@EnvironmentObject` and force-repulls its
+    /// category entity lists, giving an IMMEDIATE, deterministic refresh
+    /// the moment a GUI CRUD commits (rather than waiting for the next
+    /// epoch-driven reload).  The core additionally bumps the
+    /// controller's `sceneEpoch` on every landed chunk CRUD now
+    /// (ApplyAgentChunkCrud_), which is the mechanism that also refreshes
+    /// the outliner for AGENT-driven adds/removes — those never touch
+    /// this counter.
+    @Published var entityListEpoch: Int = 0
+
     /// View menu toggles (design brief workspace chrome).  Both default
     /// on; persistence isn't required for slice 1.
     @Published var showLeftPanel: Bool = true
@@ -1759,6 +1771,117 @@ final class RenderViewModel: ObservableObject {
         guard !isEditorDirty else { return }
         editorRevealRequest = EditorRevealRequest(byteOffset: offset, generation: nextEditorRevealGeneration)
         nextEditorRevealGeneration += 1
+    }
+
+    // MARK: - Entity creation + painter CRUD (entity-creation slice)
+    //
+    // All three mutating calls below take the controller's commit mutex
+    // (same reason as every other scene-edit call) -- gated on
+    // `isSceneEditableForAgents` so a click during a production render
+    // refuses cleanly instead of wedging on the mutex.  Success bumps
+    // `entityListEpoch` (see its doc) and re-selects the affected
+    // entity so the properties panel and outliner both land on it;
+    // failure surfaces the core's honest refusal message via NSAlert.
+
+    /// Templates registered for `category` (empty for categories with
+    /// none). `index` is the template's position, stable for the
+    /// lifetime of the call -- pass straight through to `addEntity`.
+    func entityTemplates(for category: RISEViewportCategory) -> [(index: Int, label: String)] {
+        guard let vb = viewportBridge else { return [] }
+        let count = vb.entityTemplateCount(for: category)
+        guard count > 0 else { return [] }
+        return (0..<count).map { i in
+            (index: Int(i), label: vb.entityTemplateLabel(for: category, index: i))
+        }
+    }
+
+    /// Instantiate template `templateIndex` within `category`.  On
+    /// success, selects the new entity (so the properties panel jumps
+    /// to it) and bumps `entityListEpoch` (so the outliner re-pulls
+    /// that category's list).  On failure, shows the core's refusal
+    /// message.
+    func addEntity(category: RISEViewportCategory, templateIndex: Int) {
+        guard let vb = viewportBridge, isSceneEditableForAgents else { return }
+        var outName: NSString? = nil
+        var outMessage: NSString? = nil
+        let applied = vb.instantiateEntityTemplate(
+            for: category, index: UInt(templateIndex),
+            outName: &outName, outMessage: &outMessage)
+        if applied {
+            entityListEpoch &+= 1
+            if let name = outName as String? {
+                _ = vb.setSelection(category, name: name)
+            }
+        } else {
+            presentEntityEditAlert(
+                title: "Couldn't add entity",
+                message: (outMessage as String?) ?? "The edit was refused.")
+        }
+    }
+
+    /// Duplicate the named entity in `category`.  Same success/failure
+    /// pattern as `addEntity`.
+    func duplicateSelectedOrNamed(category: RISEViewportCategory, name: String) {
+        guard let vb = viewportBridge, isSceneEditableForAgents else { return }
+        var outName: NSString? = nil
+        var outMessage: NSString? = nil
+        let applied = vb.duplicateEntity(
+            for: category, name: name,
+            outName: &outName, outMessage: &outMessage)
+        if applied {
+            entityListEpoch &+= 1
+            if let dupName = outName as String? {
+                _ = vb.setSelection(category, name: dupName)
+            }
+        } else {
+            presentEntityEditAlert(
+                title: "Couldn't duplicate \"\(name)\"",
+                message: (outMessage as String?) ?? "The edit was refused.")
+        }
+    }
+
+    /// Remove the named entity in `category`.  Confirms via NSAlert
+    /// first (irreversible from the user's point of view within a
+    /// session -- there IS an Undo, but the confirm is still the
+    /// honest "are you sure" gesture for a destructive action); the
+    /// core's still-referenced refusal (e.g. a material a
+    /// standard_object still binds) surfaces as a follow-up alert so
+    /// the user understands WHY it didn't go through.
+    func removeEntity(category: RISEViewportCategory, name: String) {
+        guard let vb = viewportBridge, isSceneEditableForAgents else { return }
+        let confirm = NSAlert()
+        confirm.messageText = "Delete \"\(name)\"?"
+        confirm.informativeText = "This can be undone with Edit > Undo."
+        confirm.alertStyle = .warning
+        confirm.addButton(withTitle: "Delete")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        // Re-check the edit gate AFTER the modal returns: the confirm
+        // dialog blocks the main thread, but a chat-driven agent render
+        // (folded into isSceneEditableForAgents via isChatRenderOutstanding)
+        // can begin or end while it's up, so the gate state at the top of
+        // this function may be stale by now.  Calling into the commit
+        // mutex while a render owns it would wedge the UI.
+        guard isSceneEditableForAgents else { return }
+
+        var outMessage: NSString? = nil
+        let applied = vb.removeEntity(for: category, name: name, outMessage: &outMessage)
+        if applied {
+            entityListEpoch &+= 1
+        } else {
+            presentEntityEditAlert(
+                title: "Couldn't delete \"\(name)\"",
+                message: (outMessage as String?) ?? "The edit was refused.")
+        }
+    }
+
+    private func presentEntityEditAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 
     func saveAndReloadScene() {

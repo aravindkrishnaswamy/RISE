@@ -1168,6 +1168,103 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
                _controller, cat, name.UTF8String, outOffset, outLine) ? YES : NO;
 }
 
+#pragma mark - Entity creation + painter CRUD (entity-creation slice)
+
+- (NSUInteger)entityTemplateCountForCategory:(RISEViewportCategory)category {
+    if (!_controller) return 0;
+    return static_cast<NSUInteger>(
+        RISE_API_SceneEditController_EntityTemplateCount(_controller, (int)category) );
+}
+
+- (NSString *)entityTemplateLabelForCategory:(RISEViewportCategory)category
+                                        index:(NSUInteger)idx {
+    if (!_controller) return @"";
+    char buf[128] = {0};
+    if (!RISE_API_SceneEditController_EntityTemplateLabel(
+            _controller, (int)category, (unsigned int)idx, buf, sizeof(buf))) {
+        return @"";
+    }
+    NSString *s = [NSString stringWithUTF8String:buf];
+    return s ?: @"";
+}
+
+- (BOOL)instantiateEntityTemplateForCategory:(RISEViewportCategory)category
+                                        index:(NSUInteger)idx
+                                      outName:(NSString **)outName
+                                   outMessage:(NSString **)outMessage {
+    if (outName)    *outName    = nil;
+    if (outMessage) *outMessage = nil;
+    if (!_controller) return NO;
+    char nameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[1024] = {0};
+    const BOOL applied = RISE_API_SceneEditController_InstantiateEntityTemplate(
+        _controller, (int)category, (unsigned int)idx,
+        nameBuf, sizeof(nameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf)) ? YES : NO;
+    if (outName && nameBuf[0] != '\0') {
+        *outName = [NSString stringWithUTF8String:nameBuf];
+    }
+    if (outMessage && messageBuf[0] != '\0') {
+        *outMessage = [NSString stringWithUTF8String:messageBuf];
+    }
+    if (applied) {
+        // Structural mutation: bump epoch-driven refresh paths so the
+        // outliner re-enumerates and the properties panel reflects the
+        // new entity once the caller selects it.
+        [self refreshProperties];
+    }
+    return applied;
+}
+
+- (BOOL)duplicateEntityForCategory:(RISEViewportCategory)category
+                               name:(NSString *)name
+                            outName:(NSString **)outName
+                         outMessage:(NSString **)outMessage {
+    if (outName)    *outName    = nil;
+    if (outMessage) *outMessage = nil;
+    if (!_controller || !name) return NO;
+    char nameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[1024] = {0};
+    const BOOL applied = RISE_API_SceneEditController_DuplicateEntity(
+        _controller, (int)category, [name UTF8String],
+        nameBuf, sizeof(nameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf)) ? YES : NO;
+    if (outName && nameBuf[0] != '\0') {
+        *outName = [NSString stringWithUTF8String:nameBuf];
+    }
+    if (outMessage && messageBuf[0] != '\0') {
+        *outMessage = [NSString stringWithUTF8String:messageBuf];
+    }
+    if (applied) {
+        [self refreshProperties];
+    }
+    return applied;
+}
+
+- (BOOL)removeEntityForCategory:(RISEViewportCategory)category
+                            name:(NSString *)name
+                      outMessage:(NSString **)outMessage {
+    if (outMessage) *outMessage = nil;
+    if (!_controller || !name) return NO;
+    char statusBuf[64] = {0};
+    char messageBuf[1024] = {0};
+    const BOOL applied = RISE_API_SceneEditController_RemoveEntity(
+        _controller, (int)category, [name UTF8String],
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf)) ? YES : NO;
+    if (outMessage && messageBuf[0] != '\0') {
+        *outMessage = [NSString stringWithUTF8String:messageBuf];
+    }
+    if (applied) {
+        [self refreshProperties];
+    }
+    return applied;
+}
+
 - (nullable NSString *)addCameraFromActive:(NSString *)proposedName {
     if (!_controller) return nil;
     const char* utf8 = proposedName ? [proposedName UTF8String] : "";

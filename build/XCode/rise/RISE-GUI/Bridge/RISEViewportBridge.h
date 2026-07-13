@@ -519,6 +519,59 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
                                        line:(unsigned int *)outLine
     NS_SWIFT_NAME(getEntitySourceLocation(for:name:byteOffset:line:));
 
+#pragma mark - Entity creation + painter CRUD (entity-creation slice)
+//
+// Mirrors RISE_API_SceneEditController_{EntityTemplateCount,
+// EntityTemplateLabel,InstantiateEntityTemplate,DuplicateEntity,
+// RemoveEntity}.  The three mutating calls (instantiate/duplicate/
+// remove) take the controller's commit mutex -- same do-not-call-
+// during-renders caveat as -serializedSceneText / -saveSceneTo:
+// errorMessage: (gate on the scene-editable predicate before calling).
+
+/// Number of "Add Entity" templates registered for `category` (0 for
+/// categories with none -- Camera/Rasterizer/Film/Animation/
+/// SceneVariant/None).
+- (NSUInteger)entityTemplateCountForCategory:(RISEViewportCategory)category
+    NS_SWIFT_NAME(entityTemplateCount(for:));
+
+/// Display label for the template at `idx` within `category` (e.g.
+/// "Sphere", "Omni Light").  Empty string for a null controller or an
+/// out-of-range idx.
+- (NSString *)entityTemplateLabelForCategory:(RISEViewportCategory)category
+                                        index:(NSUInteger)idx
+    NS_SWIFT_NAME(entityTemplateLabel(for:index:));
+
+/// Instantiate the template at `idx` within `category`.  Returns the
+/// AgentCommitResult's `applied` flag; `outName` (optional, may be
+/// NULL) receives the deduped instance name on success (nil on
+/// failure), `outMessage` (optional, may be NULL) receives a human-
+/// readable message on failure (nil on success with nothing to say).
+/// A multi-chunk template undoes as several separate steps -- see the
+/// C++ method's header doc.
+- (BOOL)instantiateEntityTemplateForCategory:(RISEViewportCategory)category
+                                        index:(NSUInteger)idx
+                                      outName:(NSString * _Nullable * _Nullable)outName
+                                   outMessage:(NSString * _Nullable * _Nullable)outMessage
+    NS_SWIFT_NAME(instantiateEntityTemplate(for:index:outName:outMessage:));
+
+/// Duplicate the named entity in `category` under a freshly-deduped
+/// name.  Returns `applied`; `outName` / `outMessage` as above (each
+/// optional, may be NULL).
+- (BOOL)duplicateEntityForCategory:(RISEViewportCategory)category
+                               name:(NSString *)name
+                            outName:(NSString * _Nullable * _Nullable)outName
+                         outMessage:(NSString * _Nullable * _Nullable)outMessage
+    NS_SWIFT_NAME(duplicateEntity(for:name:outName:outMessage:));
+
+/// Remove the named entity in `category` -- refused with a non-nil
+/// `outMessage` if it is still referenced (e.g. a material a
+/// standard_object still binds) or not found.  Returns `applied`;
+/// `outMessage` as above (optional, may be NULL).
+- (BOOL)removeEntityForCategory:(RISEViewportCategory)category
+                            name:(NSString *)name
+                      outMessage:(NSString * _Nullable * _Nullable)outMessage
+    NS_SWIFT_NAME(removeEntity(for:name:outMessage:));
+
 #pragma mark - Multi-camera
 
 /// Clone the currently-active camera under a new name and switch

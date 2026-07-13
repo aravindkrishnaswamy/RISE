@@ -35,6 +35,29 @@ struct RISEApp: App {
         viewModel.isProductionRenderPaused ? "Resume Render" : "Pause Render"
     }
 
+    /// One Insert-menu submenu for `category`, or nothing at all when
+    /// the category has no registered templates (Camera/Rasterizer/
+    /// Film/Animation/SceneVariant always; every category before a
+    /// scene is loaded).  `CommandMenu`'s content closure is a plain
+    /// `@ViewBuilder` (Button/Menu/Toggle/Divider are Views, adapted to
+    /// menu items by the Commands machinery) — NOT `@CommandsBuilder`,
+    /// which is only the type `.commands { }`'s own top-level closure
+    /// uses to compose CommandGroup/CommandMenu themselves.
+    @ViewBuilder
+    private func insertCategoryMenu(title: String, category: RISEViewportCategory) -> some View {
+        let templates = viewModel.entityTemplates(for: category)
+        if !templates.isEmpty {
+            Menu(title) {
+                ForEach(templates, id: \.index) { t in
+                    Button(t.label) {
+                        viewModel.addEntity(category: category, templateIndex: t.index)
+                    }
+                }
+            }
+            .disabled(!viewModel.canUseSceneTransport)
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -234,6 +257,27 @@ struct RISEApp: App {
                 }
                 .keyboardShortcut(".", modifiers: .command)
                 .disabled(viewModel.renderState != .rendering)
+            }
+
+            // Entity-creation slice: "Add Entity" templates, surfaced as
+            // an Insert menu alongside the outliner's per-category "+"
+            // affordance and context menu (same `RenderViewModel.addEntity`
+            // call). Only categories with at least one registered template
+            // get a submenu (`entityTemplates(for:)` returns `[]` for
+            // Camera/Rasterizer/Film/Animation/SceneVariant, and for every
+            // category before a scene is loaded) — each submenu is
+            // individually disabled with the SAME `canUseSceneTransport`
+            // gate the Render menu's transport items use per-item (folds
+            // in both "no scene loaded" via `viewportBridge == nil` and
+            // "a render/agent edit currently owns the scene"). `CommandMenu`
+            // itself has no `.disabled` — mirroring the Render menu means
+            // per-item disabling, not a single top-level toggle.
+            CommandMenu("Insert") {
+                insertCategoryMenu(title: "Object", category: .object)
+                insertCategoryMenu(title: "Light", category: .light)
+                insertCategoryMenu(title: "Material", category: .material)
+                insertCategoryMenu(title: "Painter", category: .painter)
+                insertCategoryMenu(title: "Medium", category: .medium)
             }
 
             // L5a round-9 — EDR Preview menu item, parity with the

@@ -93,15 +93,17 @@ private func categoryTitle(_ cat: RISEViewportCategory) -> String {
     case .medium:       return "Media"
     case .animation:    return "Animation"
     case .sceneVariant: return "Variants"
+    case .painter:      return "Painters"
     case .none:         return "Scene"
     default:            return "Scene"
     }
 }
 
 /// Plain-text glyph for the entity-header icon chip.  Design brief A6
-/// specifies these for the eight core categories; scene_variant isn't
-/// in the brief (it's a newer category than the design comp) so it
-/// gets a reasonable same-family glyph rather than being left blank.
+/// specifies these for the eight core categories; scene_variant and
+/// painter aren't in the brief (both newer categories than the design
+/// comp) so they get a reasonable same-family glyph rather than being
+/// left blank.
 private func categoryGlyph(_ cat: RISEViewportCategory) -> String {
     switch cat {
     case .camera:       return "◉"
@@ -113,6 +115,7 @@ private func categoryGlyph(_ cat: RISEViewportCategory) -> String {
     case .medium:       return "≈"
     case .animation:    return "▶"
     case .sceneVariant: return "⧉"
+    case .painter:      return "▧"
     case .none:         return "•"
     default:            return "•"
     }

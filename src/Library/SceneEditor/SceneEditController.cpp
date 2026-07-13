@@ -5034,6 +5034,13 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 				a.c_str(), code );
 		}
 
+		// A chunk was added/removed -- the entity set changed, so bump the
+		// scene epoch that live GUI outliners cache against to re-enumerate.
+		// Covers GUI entity creation (Instantiate/Duplicate/RemoveEntity)
+		// AND agent-driven insert_chunk/remove_chunk uniformly, since both
+		// route through here.
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();
 		mCV.notify_one();
