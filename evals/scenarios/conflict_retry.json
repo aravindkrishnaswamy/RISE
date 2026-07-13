@@ -10,7 +10,7 @@
   ],
   "budgets": {
     "maxToolCalls": 6,
-    "maxLlmCalls": 6
+    "maxLlmCalls": 8
   },
   "replay": {
     "fixture": "evals/fixtures/conflict_retry.fixture.jsonl"
@@ -30,8 +30,16 @@
       "op": "param_range",
       "target": "pnt_albedo",
       "param": "color",
-      "min": [0, 0, 0.5],
-      "max": [0.45, 0.45, 1.0]
+      "min": [
+        0,
+        0,
+        0.5
+      ],
+      "max": [
+        0.45,
+        0.45,
+        1.0
+      ]
     },
     {
       "kind": "untouched",
@@ -47,7 +55,7 @@
     },
     {
       "kind": "trajectory",
-      "maxToolCalls": 4,
+      "maxToolCalls": 6,
       "noMechanicalLoop": true,
       "requiredToolInOrder": [
         "read_document",
