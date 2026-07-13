@@ -121,9 +121,10 @@ void WardIsotropicGaussianSPF::Scatter(
 	// to myonb.w() (the normal the lobes are sampled around).  Degenerate
 	// vGeomNormal (SquaredModulus guard, matches GlintModifier.cpp) falls
 	// back to the shading normal, making the gate a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : myonb.w();
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, myonb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 	ScatteredRay d, s;
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
@@ -191,9 +192,10 @@ void WardIsotropicGaussianSPF::ScatterNM(
 	// to myonb.w() (the normal the lobes are sampled around).  Degenerate
 	// vGeomNormal (SquaredModulus guard, matches GlintModifier.cpp) falls
 	// back to the shading normal, making the gate a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : myonb.w();
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, myonb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 	ScatteredRay d, s;
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
@@ -246,7 +248,7 @@ static Scalar WardIsotropicPdf(
 	// a wo the sampler can no longer emit contributes zero density.
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	if( Vector3Ops::Dot( wo, geomN ) <= 0 ) {
 		return 0.0;
 	}

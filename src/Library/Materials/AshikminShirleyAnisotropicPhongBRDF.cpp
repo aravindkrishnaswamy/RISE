@@ -80,7 +80,7 @@ void AshikminShirleyAnisotropicPhongBRDF::ComputeDiffuseSpecularFactors(
 	// back to the shading normal (gate is a no-op).
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	if( Vector3Ops::Dot( k1, geomN ) <= 0 || Vector3Ops::Dot( k2, geomN ) <= 0 ) {
 		return;
 	}
@@ -123,7 +123,26 @@ void AshikminShirleyAnisotropicPhongBRDF::ComputeDiffuseSpecularFactors(
 		exponent = 0;
 	}
 
-	const T num = pow( hn, exponent );
+	// hn < 0 means the half-vector lies in the back hemisphere relative to
+	// the (possibly GlintModifier-tilted) shading normal `n` -- reachable
+	// now that the geomN gate above is ray-anchored (decoupled from n)
+	// rather than n-anchored: k1 and k2 can each individually satisfy the
+	// TRUE geometric-horizon gate while their vector sum still drags h to
+	// the back side of a heavily tilted n.  pow(hn, exponent) is
+	// mathematically undefined for a negative base with the general
+	// non-integer exponent computed above; under -ffast-math this is NOT
+	// guaranteed to produce a clean NaN (see docs/skills -- ffast-math has
+	// no reliable infinity/NaN sentinel; reject invalid inputs at the value
+	// layer, don't rely on isnan/isinf downstream).  The Ashikmin-Shirley
+	// half-vector lobe is only defined for hn (== cos(theta_h)) in [0,1];
+	// hn <= 0 has no valid reflection through this half-vector, so the
+	// specular contribution is 0 -- mirrors the sin_theta_h_sq guard above.
+	T num;
+	if( hn > 0 ) {
+		num = pow( hn, exponent );
+	} else {
+		num = 0;
+	}
 	const Scalar den = (hdotk) * r_max( ndotk1, ndotk2 );
 
 	specular = rhoSconst*(num/den)*fresnel;

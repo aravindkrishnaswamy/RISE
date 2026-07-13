@@ -80,7 +80,7 @@ RISEPel SheenBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometri
 	// back to the shading normal (gate is a no-op).
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	if( Vector3Ops::Dot( l, geomN ) <= 0 || Vector3Ops::Dot( v, geomN ) <= 0 ) {
 		return RISEPel( 0, 0, 0 );
 	}
@@ -112,7 +112,7 @@ Scalar SheenBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometr
 	// Geometric-horizon gate (mirrors value()'s gate).
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	if( Vector3Ops::Dot( l, geomN ) <= 0 || Vector3Ops::Dot( v, geomN ) <= 0 ) {
 		return 0;
 	}

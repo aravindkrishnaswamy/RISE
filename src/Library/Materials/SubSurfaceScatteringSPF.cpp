@@ -126,8 +126,11 @@ void SubSurfaceScatteringSPF::Scatter(
 			// Orient the geometric normal to the front-face side (ri.onb.w(),
 			// the normal this reflection was sampled around).  Degenerate
 			// vGeomNormal (SquaredModulus guard, matches GlintModifier.cpp)
-			// falls back to the shading normal, making the gate a no-op.  Drop
-			// (no sibling lobe; BSSRDF entry is handled by the integrator) --
+			// falls back to the shading normal, making the gate a no-op (the
+			// orientation itself is anchored to ri.ray.Dir(), not to the
+			// shading normal, so a glint tilt cannot flip the gate to the
+			// wrong side).  Drop (no sibling lobe; BSSRDF entry is handled
+			// by the integrator) --
 			// UNLESS the reflection is MANDATORY (R >= 1.0, i.e. TIR at the
 			// entry boundary, reachable when the SSS medium's ambient IOR
 			// exceeds its own): there is no refraction channel here at all
@@ -136,10 +139,11 @@ void SubSurfaceScatteringSPF::Scatter(
 			// Fall back to a single delta reflection about the TRUE geometric
 			// normal instead of the VNDF-sampled wo -- guaranteed to satisfy
 			// the gate (no re-check needed): for a ray arriving against geomN,
-			// dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0.
+			// dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 -- holds
+			// unconditionally: geomN is ray-anchored, so dot(d,geomN) < 0 always.
 			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 				? ri.vGeomNormal : ri.onb.w();
-			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.onb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 			if( Vector3Ops::Dot( wo, geomN ) <= 0 ) {
 				if( R >= 1.0 ) {
 					ScatteredRay reflectedRay;
@@ -196,14 +200,14 @@ void SubSurfaceScatteringSPF::Scatter(
 			// reflection direction about the TRUE geometric normal instead of
 			// the shading normal -- guaranteed to satisfy the gate (no
 			// re-check needed): for a ray arriving against geomN,
-			// dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0.  Oriented to
-			// the ray-facing side (+ri.onb.w() for this front-face hit): the
-			// reflect formula is sign-invariant in its normal argument, so
+			// dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 -- holds
+			// unconditionally: geomN is ray-anchored, so dot(d,geomN) < 0 always.
+			// The reflect formula is sign-invariant in its normal argument, so
 			// the reflection physically lands on the incoming ray's side.
 			const Vector3 nRef = ri.onb.w();
 			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 				? ri.vGeomNormal : nRef;
-			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nRef ) >= 0 ) ? geomNRaw : -geomNRaw;
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 			bool bEmit = Vector3Ops::Dot( rvDir, geomN ) > 0;
 			if( !bEmit && R >= 1.0 ) {
@@ -263,11 +267,13 @@ void SubSurfaceScatteringSPF::Scatter(
 		// energy loss.  Re-derive the reflection direction about the TRUE
 		// geometric normal instead of the shading normal -- guaranteed to
 		// satisfy the gate (no re-check needed): for a ray arriving against
-		// geomNBack, dot(reflect(d,geomNBack), geomNBack) = -dot(d,geomNBack) > 0.
+		// geomNBack, dot(reflect(d,geomNBack), geomNBack) = -dot(d,geomNBack) > 0 --
+		// holds unconditionally: geomNBack is ray-anchored, so dot(d,geomNBack) < 0
+		// always.
 		const Vector3 nRefBack = -ri.onb.w();
 		const Vector3& geomNRawBack = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 			? ri.vGeomNormal : nRefBack;
-		const Vector3 geomNBack = ( Vector3Ops::Dot( geomNRawBack, nRefBack ) >= 0 ) ? geomNRawBack : -geomNRawBack;
+		const Vector3 geomNBack = ( Vector3Ops::Dot( geomNRawBack, ri.ray.Dir() ) < 0 ) ? geomNRawBack : -geomNRawBack;
 
 		bool bEmitBack = Vector3Ops::Dot( rvDirBack, geomNBack ) > 0;
 		if( !bEmitBack && R >= 1.0 ) {
@@ -363,7 +369,7 @@ void SubSurfaceScatteringSPF::ScatterNM(
 			// the reflection is the only channel (entry-side TIR).
 			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 				? ri.vGeomNormal : ri.onb.w();
-			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.onb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 			if( Vector3Ops::Dot( wo, geomN ) <= 0 ) {
 				if( R >= 1.0 ) {
 					ScatteredRay reflectedRay;
@@ -409,11 +415,13 @@ void SubSurfaceScatteringSPF::ScatterNM(
 			// gate) -- including the R >= 1.0 mandatory-lobe fallback: no drop
 			// when the reflection is the only channel (entry-side TIR); the
 			// direction is re-derived about the TRUE geometric normal, which
-			// is guaranteed to satisfy the gate (no re-check needed).
+			// is guaranteed to satisfy the gate (no re-check needed): geomN is
+			// ray-anchored, so the reflected direction always lands on the
+			// incoming ray's side.
 			const Vector3 nRef = ri.onb.w();
 			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 				? ri.vGeomNormal : nRef;
-			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nRef ) >= 0 ) ? geomNRaw : -geomNRaw;
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 			bool bEmit = Vector3Ops::Dot( rvDir, geomN ) > 0;
 			if( !bEmit && R >= 1.0 ) {
@@ -461,11 +469,13 @@ void SubSurfaceScatteringSPF::ScatterNM(
 		// exit-refraction lobe below is gated on `R < 1.0`, so there is no
 		// companion channel and dropping would be total energy loss); in that
 		// case re-derive the reflection about the TRUE geometric normal, which
-		// is guaranteed to satisfy the gate (no re-check needed).
+		// is guaranteed to satisfy the gate (no re-check needed): geomNBack is
+		// ray-anchored, so the reflected direction always lands on the
+		// incoming ray's side.
 		const Vector3 nRefBack = -ri.onb.w();
 		const Vector3& geomNRawBack = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 			? ri.vGeomNormal : nRefBack;
-		const Vector3 geomNBack = ( Vector3Ops::Dot( geomNRawBack, nRefBack ) >= 0 ) ? geomNRawBack : -geomNRawBack;
+		const Vector3 geomNBack = ( Vector3Ops::Dot( geomNRawBack, ri.ray.Dir() ) < 0 ) ? geomNRawBack : -geomNRawBack;
 
 		bool bEmitBack = Vector3Ops::Dot( rvDirBack, geomNBack ) > 0;
 		if( !bEmitBack && R >= 1.0 ) {
@@ -532,7 +542,7 @@ Scalar SubSurfaceScatteringSPF::Pdf(
 			// contributes zero density.
 			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 				? ri.vGeomNormal : n;
-			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 			if( Vector3Ops::Dot( woNorm, n ) > 0 && Vector3Ops::Dot( wi, n ) > 0 && Vector3Ops::Dot( woNorm, geomN ) > 0 ) {
 				return MicrofacetUtils::VNDF_Pdf( wi, woNorm, n, alpha );

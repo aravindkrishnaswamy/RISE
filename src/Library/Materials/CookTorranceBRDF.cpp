@@ -108,7 +108,7 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 	// pathology.
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	if( Vector3Ops::Dot( vDirCheck, geomN ) <= 0 || Vector3Ops::Dot( rDirCheck, geomN ) <= 0 ) {
 		return RISEPel(0,0,0);
 	}
@@ -167,7 +167,7 @@ Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersection
 	// Geometric-horizon gate (mirrors value()'s gate above).
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	if( Vector3Ops::Dot( vDirCheck, geomN ) <= 0 || Vector3Ops::Dot( rDirCheck, geomN ) <= 0 ) {
 		return 0;
 	}

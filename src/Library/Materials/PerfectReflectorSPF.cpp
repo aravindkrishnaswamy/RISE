@@ -62,9 +62,10 @@ void PerfectReflectorSPF::Scatter(
 	// solid.  Degenerate vGeomNormal (SquaredModulus guard, matches
 	// GlintModifier.cpp) falls back to the shading normal, making the gate
 	// a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 	ScatteredRay specular;
 	specular.type = ScatteredRay::eRayReflection;
@@ -81,7 +82,9 @@ void PerfectReflectorSPF::Scatter(
 		// black hole).  Re-derive the reflection direction about the TRUE
 		// geometric normal instead of the shading normal.  This is guaranteed
 		// to satisfy the gate (no re-check needed): for a ray arriving against
-		// geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0.
+		// geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 -- holds
+		// unconditionally: geomN is ray-anchored (Dot(geomNRaw, ri.ray.Dir())
+		// picks the side), so dot(d,geomN) < 0 always by construction.
 		specular.ray.SetDir( Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 	}
 
@@ -107,7 +110,7 @@ void PerfectReflectorSPF::ScatterNM(
 	// Geometric-horizon gate (mirrors Scatter()).
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 	ScatteredRay specular;
 	specular.type = ScatteredRay::eRayReflection;

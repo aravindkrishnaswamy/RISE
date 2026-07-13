@@ -131,9 +131,10 @@ static bool GenerateSpecularRay(
 		// Degenerate vGeomNormal (SquaredModulus guard, matches
 		// GlintModifier.cpp) falls back to the shading normal, making the gate
 		// a no-op.
+		// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
 		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 			? ri.vGeomNormal : onb.w();
-		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, onb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 		// Reject against the frame this lobe was actually sampled around
 		// (the `onb` parameter, which is the caller's possibly-FlipW'd
 		// myonb) -- not the raw ri.onb.w(), which differs by sign on a
@@ -196,7 +197,7 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 	// normal (gate is a no-op).
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : myonb.w();
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, myonb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 	const ScalarTriple NUt = pNu->GetValuesAt(ri);
 	const ScalarTriple NVt = pNv->GetValuesAt(ri);
@@ -282,7 +283,7 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 	// normal (gate is a no-op).
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : myonb.w();
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, myonb.w() ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 	const Scalar NU = pNu->GetValueAtNM(ri,nm);
 	const Scalar NV = pNv->GetValueAtNM(ri,nm);
@@ -357,7 +358,7 @@ static Scalar AshikminShirleySpecularPdf(
 	// a wo the sampler can no longer emit contributes zero density.
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	if( Vector3Ops::Dot( wo, geomN ) <= 0 ) {
 		return 0.0;
 	}

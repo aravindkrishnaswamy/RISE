@@ -87,6 +87,14 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	// the two branches below).  Degenerate vGeomNormal (SquaredModulus guard,
 	// matches GlintModifier.cpp) falls back to the shading normal, making the
 	// gate a no-op.  Drop (not redistribute) the Fresnel lobe on failure.
+	//
+	// NOTE (ray-anchor sweep): nEff is stack-anchored via bEntering (ground
+	// truth, independent of any glint tilt), not re-derived from a per-hit
+	// Dot(rayDir, tiltable shading normal) test -- provably equivalent to a
+	// direct ray-anchor: entering, the ray opposes the true outward normal
+	// (Dot(rayDir,Ng)<0) so nEff=+onb.w() agrees; leaving, the ray travels
+	// outward (Dot(rayDir,Ng)>0) so nEff=-onb.w() again agrees.  Left as-is
+	// to avoid perturbing well-tested crossing logic for a no-op change.
 	const Vector3 nEff = bEntering ? ri.onb.w() : -ri.onb.w();
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : nEff;
@@ -118,7 +126,9 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 					// re-derive the reflection direction about the TRUE geometric
 					// normal instead of the shading normal.  This is guaranteed to
 					// satisfy the gate (no re-check needed): for a ray arriving
-					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0.
+					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 --
+					// holds unconditionally: geomN's orientation (nEff) is provably
+					// ray-anchored (see the NOTE above), so dot(d,geomN) < 0 always.
 					fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 				} else {
 					bDropFresnel = true;
@@ -154,7 +164,9 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 					// re-derive the reflection direction about the TRUE geometric
 					// normal instead of the shading normal.  This is guaranteed to
 					// satisfy the gate (no re-check needed): for a ray arriving
-					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0.
+					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 --
+					// holds unconditionally: geomN's orientation (nEff) is provably
+					// ray-anchored (see the NOTE above), so dot(d,geomN) < 0 always.
 					fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 				} else {
 					bDropFresnel = true;
@@ -243,6 +255,14 @@ void PerfectRefractorSPF::ScatterNM(
 	// the two branches below).  Degenerate vGeomNormal (SquaredModulus guard,
 	// matches GlintModifier.cpp) falls back to the shading normal, making the
 	// gate a no-op.  Drop (not redistribute) the Fresnel lobe on failure.
+	//
+	// NOTE (ray-anchor sweep): nEff is stack-anchored via bEntering (ground
+	// truth, independent of any glint tilt), not re-derived from a per-hit
+	// Dot(rayDir, tiltable shading normal) test -- provably equivalent to a
+	// direct ray-anchor: entering, the ray opposes the true outward normal
+	// (Dot(rayDir,Ng)<0) so nEff=+onb.w() agrees; leaving, the ray travels
+	// outward (Dot(rayDir,Ng)>0) so nEff=-onb.w() again agrees.  Left as-is
+	// to avoid perturbing well-tested crossing logic for a no-op change.
 	const Vector3 nEff = bEntering ? ri.onb.w() : -ri.onb.w();
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : nEff;
@@ -274,7 +294,9 @@ void PerfectRefractorSPF::ScatterNM(
 					// re-derive the reflection direction about the TRUE geometric
 					// normal instead of the shading normal.  This is guaranteed to
 					// satisfy the gate (no re-check needed): for a ray arriving
-					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0.
+					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 --
+					// holds unconditionally: geomN's orientation (nEff) is provably
+					// ray-anchored (see the NOTE above), so dot(d,geomN) < 0 always.
 					fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 				} else {
 					bDropFresnel = true;
@@ -311,7 +333,9 @@ void PerfectRefractorSPF::ScatterNM(
 					// re-derive the reflection direction about the TRUE geometric
 					// normal instead of the shading normal.  This is guaranteed to
 					// satisfy the gate (no re-check needed): for a ray arriving
-					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0.
+					// against geomN, dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 --
+					// holds unconditionally: geomN's orientation (nEff) is provably
+					// ray-anchored (see the NOTE above), so dot(d,geomN) < 0 always.
 					fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 				} else {
 					bDropFresnel = true;

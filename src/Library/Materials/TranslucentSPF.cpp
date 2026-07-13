@@ -77,9 +77,10 @@ void TranslucentSPF::Scatter(
 	// stay exempt.  Degenerate vGeomNormal (SquaredModulus guard, matches
 	// GlintModifier.cpp) falls back to the shading normal, making the gate
 	// a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	OrthonormalBasis3D	myonb = ri.onb;
 
 	const Vector3	r = ri.ray.Dir();
@@ -257,7 +258,7 @@ void TranslucentSPF::ScatterNM(
 	// Geometric-horizon gate (mirrors Scatter()'s front-lobe gate).
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	OrthonormalBasis3D	myonb = ri.onb;
 
 	const Vector3	r = ri.ray.Dir();
@@ -399,7 +400,7 @@ Scalar TranslucentSPF::Pdf(
 		const Vector3& n = ri.onb.w();
 		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 			? ri.vGeomNormal : n;
-		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 		if( Vector3Ops::Dot( wo, geomN ) <= 0 ) return 0;
 	}
 

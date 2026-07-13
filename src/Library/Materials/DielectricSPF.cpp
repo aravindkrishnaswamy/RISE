@@ -152,6 +152,19 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	// Degenerate
 	// vGeomNormal (SquaredModulus guard, matches GlintModifier.cpp) falls back
 	// to the shading normal, making the gate a no-op.
+	//
+	// NOTE (ray-anchor sweep): unlike the myonb.FlipW()-derived anchors
+	// elsewhere (GGXSPF et al.), nEff here is NOT re-derived from a per-hit
+	// Dot(rayDir, tiltable shading normal) test -- bFromInside is ground
+	// truth from the IOR stack (which side of the interface the walk is
+	// physically on), independent of any glint tilt.  This is provably
+	// equivalent to the ray-anchor rule used elsewhere: for the entering
+	// case the ray opposes the true outward normal (Dot(rayDir,Ng)<0) so
+	// nEff=+onb.w() picks the same side as a direct ray-anchor would; for
+	// the leaving case the ray travels outward (Dot(rayDir,Ng)>0) so
+	// nEff=-onb.w() again matches.  Left as stack-anchored rather than
+	// rewritten to Dot(geomNRaw, ri.ray.Dir()) to avoid perturbing
+	// well-tested crossing logic for a change that is a no-op here.
 	const Vector3 nEff = bFromInside ? -ri.onb.w() : ri.onb.w();
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : nEff;
@@ -221,7 +234,9 @@ Scalar DielectricSPF::GenerateScatteredRay(
 			// reflection direction about the TRUE geometric normal instead of
 			// the shading normal.  This is guaranteed to satisfy the gate (no
 			// re-check needed): for a ray arriving against geomN,
-			// dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0.
+			// dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 -- holds
+			// unconditionally here since geomN's orientation (nEff, see the
+			// NOTE above) is provably ray-anchored, so dot(d,geomN) < 0 always.
 			fresnel.ray.SetDir( Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 		} else {
 			bFresnel = false;

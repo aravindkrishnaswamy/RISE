@@ -77,14 +77,16 @@ static void ComputeDiffuseSpecularFactors(
 	{
 		// Geometric-horizon gate: a GlintModifier-tilted shading normal can
 		// validate light/view directions that are still below the true
-		// geometric surface.  Oriented to this branch's effective normal
-		// (-n: both cosines are negative against the raw n here).  Degenerate
-		// vGeomNormal falls back to the shading normal (gate is a no-op).
+		// geometric surface.  Anchored directly to the incoming ray
+		// (ri.ray.Dir()), NOT to n or -n -- see LambertianBRDF::ShouldReflect
+		// for the branch-independence argument (r = -ri.ray.Dir(), so
+		// "Dot(r,geomN) > 0" below is exactly "Dot(geomN,ri.ray.Dir()) < 0").
+		// Degenerate vGeomNormal falls back to the raw n (gate is a no-op).
 		{
 			const Vector3 nEff = -n;
 			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 				? ri.vGeomNormal : nEff;
-			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nEff ) >= 0 ) ? geomNRaw : -geomNRaw;
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 			if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
 				return;
 			}
@@ -107,7 +109,7 @@ static void ComputeDiffuseSpecularFactors(
 		{
 			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 				? ri.vGeomNormal : n;
-			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 			if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
 				return;
 			}

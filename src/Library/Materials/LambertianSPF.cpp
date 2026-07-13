@@ -75,11 +75,12 @@ void LambertianSPF::Scatter(
 	// around above.  Degenerate vGeomNormal (SquaredModulus guard, matches
 	// GlintModifier.cpp) falls back to the shading normal, making the gate
 	// a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
 	const Vector3 nEff = ( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO )
 		? -ri.onb.w() : ri.onb.w();
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : nEff;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nEff ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 	if( Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0 ) {
 		scattered.AddScatteredRay( diffuse );
@@ -123,11 +124,12 @@ void LambertianSPF::ScatterNM(
 	// around above.  Degenerate vGeomNormal (SquaredModulus guard, matches
 	// GlintModifier.cpp) falls back to the shading normal, making the gate
 	// a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
 	const Vector3 nEff = ( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO )
 		? -ri.onb.w() : ri.onb.w();
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : nEff;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nEff ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 	if( Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0 ) {
 		scattered.AddScatteredRay( diffuse );
@@ -152,7 +154,7 @@ Scalar LambertianSPF::Pdf(
 	const Vector3 nEff = bFrontFace ? ri.onb.w() : -ri.onb.w();
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : nEff;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nEff ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 	return (cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0) ? cosTheta * INV_PI : 0;
 }

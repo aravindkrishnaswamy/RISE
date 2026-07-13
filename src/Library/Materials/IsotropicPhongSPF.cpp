@@ -119,9 +119,10 @@ void IsotropicPhongSPF::Scatter(
 	// below-horizon lobes.  Degenerate vGeomNormal (SquaredModulus guard,
 	// matches GlintModifier.cpp) falls back to the shading normal, making
 	// the gate a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 	const ScalarTriple Nt = pExponent->GetValuesAt(ri);
 	const Scalar N[3] = { Nt.v[0], Nt.v[1], Nt.v[2] };
@@ -214,9 +215,10 @@ void IsotropicPhongSPF::ScatterNM(
 	// below-horizon lobes.  Degenerate vGeomNormal (SquaredModulus guard,
 	// matches GlintModifier.cpp) falls back to the shading normal, making
 	// the gate a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
 	ScatteredRay diffuse, specular;
 	const Scalar N = pExponent->GetValueAtNM(ri,nm);
@@ -274,7 +276,7 @@ Scalar IsotropicPhongSPF::Pdf(
 	// gate): a wo the sampler can no longer emit contributes zero density.
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	if( Vector3Ops::Dot( woNorm, geomN ) <= 0 ) {
 		return 0;
 	}
@@ -324,7 +326,7 @@ Scalar IsotropicPhongSPF::PdfNM(
 	// gate): a wo the sampler can no longer emit contributes zero density.
 	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
 		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, n ) >= 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 	if( Vector3Ops::Dot( woNorm, geomN ) <= 0 ) {
 		return 0;
 	}
