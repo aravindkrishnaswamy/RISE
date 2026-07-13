@@ -239,7 +239,6 @@
     <ClCompile Include="..\..\..\src\Library\Materials\PerfectReflectorSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\PerfectRefractorSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\PhongEmitter.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Materials\PolishedBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\PolishedSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\ScatteredRayContainer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\SchlickBRDF.cpp" />
@@ -730,7 +729,6 @@
     <ClInclude Include="..\..\..\src\Library\Materials\PerfectRefractorSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\PhongEmitter.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\PhongLuminaireMaterial.h" />
-    <ClInclude Include="..\..\..\src\Library\Materials\PolishedBRDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\PolishedMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\PolishedSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickBRDF.h" />
