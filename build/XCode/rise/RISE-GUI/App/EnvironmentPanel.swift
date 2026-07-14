@@ -163,16 +163,16 @@ struct EnvironmentPanel: View {
 
             // Intensity
             fieldLabel("Intensity")
-            numericField(text: $scaleText, field: .scale, enabled: canEdit) { v in
+            numericField(text: $scaleText, field: .scale, modelValue: e.scale, enabled: canEdit) { v in
                 finishEdit(ok: bridge.setEnvironmentScale(v), failureMessage: nil)
             }
 
             // Rotation (degrees)
             fieldLabel("Rotation (°)")
             HStack(spacing: 6) {
-                axisField(text: $orientXText, field: .ox, axis: "X")
-                axisField(text: $orientYText, field: .oy, axis: "Y")
-                axisField(text: $orientZText, field: .oz, axis: "Z")
+                axisField(text: $orientXText, field: .ox, axis: "X", modelValue: e.orientX)
+                axisField(text: $orientYText, field: .oy, axis: "Y", modelValue: e.orientY)
+                axisField(text: $orientZText, field: .oz, axis: "Z", modelValue: e.orientZ)
             }
 
             // Background toggle
@@ -226,8 +226,8 @@ struct EnvironmentPanel: View {
         )
     }
 
-    private func numericField(text: Binding<String>, field: Field, enabled: Bool,
-                              commit: @escaping (Double) -> Void) -> some View {
+    private func numericField(text: Binding<String>, field: Field, modelValue: Double,
+                              enabled: Bool, commit: @escaping (Double) -> Void) -> some View {
         TextField("", text: text)
             .textFieldStyle(.plain)
             .font(Theme.mono(11.5))
@@ -238,29 +238,42 @@ struct EnvironmentPanel: View {
             .padding(.vertical, 5)
             .background(RoundedRectangle(cornerRadius: 5).fill(Theme.bgWell))
             .overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.borderHairline, lineWidth: 1))
-            .onSubmit { commitNumeric(text.wrappedValue, commit) }
-            .onChange(of: focusedField) { _, now in
-                // Commit on blur (focus left this field).
-                if now != field, let v = Double(text.wrappedValue) { commit(v) }
+            .onSubmit { commitOrRevert(text: text, modelValue: modelValue, commit: commit) }
+            .onChange(of: focusedField) { old, now in
+                // Commit ONLY when focus leaves THIS field (old == field) — a
+                // shared @FocusState would otherwise fire every field's handler
+                // on any focus change, spamming no-op live edits.
+                guard old == field, now != field else { return }
+                commitOrRevert(text: text, modelValue: modelValue, commit: commit)
             }
     }
 
-    private func axisField(text: Binding<String>, field: Field, axis: String) -> some View {
+    private func axisField(text: Binding<String>, field: Field, axis: String, modelValue: Double) -> some View {
         HStack(spacing: 3) {
             Text(axis)
                 .font(Theme.mono(9))
                 .foregroundColor(Theme.textDisabled)
-            numericField(text: text, field: field, enabled: canEdit) { _ in
+            numericField(text: text, field: field, modelValue: modelValue, enabled: canEdit) { _ in
                 commitRotation()
             }
         }
     }
 
-    private func commitNumeric(_ s: String, _ commit: @escaping (Double) -> Void) {
-        if let v = Double(s) { commit(v) }
+    /// Commit the field's text if editing is allowed AND it parses; otherwise
+    /// REVERT the buffer to the model value so garbage / a stale edit while a
+    /// render is in flight never diverges from (or lands on) the scene.
+    private func commitOrRevert(text: Binding<String>, modelValue: Double,
+                                commit: (Double) -> Void) {
+        guard canEdit, let v = Double(text.wrappedValue) else {
+            text.wrappedValue = trimNumber(modelValue)
+            return
+        }
+        commit(v)
     }
 
     /// Rotation commits all three axes together (radiance_orient is one vec3).
+    /// Only reached from commitOrRevert, i.e. when canEdit and the edited axis
+    /// parsed; the other two fall back to their reverted buffer / the model.
     private func commitRotation() {
         let x = Double(orientXText) ?? env?.orientX ?? 0
         let y = Double(orientYText) ?? env?.orientY ?? 0
@@ -312,7 +325,11 @@ struct EnvironmentPanel: View {
     private var focusedFieldIsActive: Bool { focusedField != nil }
 
     private func finishEdit(ok: Bool, failureMessage: String?) {
-        if !ok, let msg = failureMessage, !msg.isEmpty {
+        // Present a message whenever one is provided — an AddEnvironment can
+        // land the live bind (ok == true) yet return a "partial" message when
+        // it couldn't be recorded in the scene file; swallowing that on the
+        // `ok` path would leave the user unaware a save will drop the binding.
+        if let msg = failureMessage, !msg.isEmpty {
             viewModel.presentEnvironmentNotice(msg)
         }
         reload()
@@ -338,8 +355,11 @@ struct EnvironmentPanel: View {
     }
 
     private func trimNumber(_ v: Double) -> String {
-        // Whole numbers show without a trailing ".0"; others keep up to 4 dp.
-        if v == v.rounded() { return String(Int(v)) }
+        // Whole numbers show without a trailing ".0"; others via %g.  Guard
+        // non-finite / out-of-Int64-range values first — `Int(Double)` traps on
+        // ±inf or |v| > Int64.max (a scene could carry a huge/degenerate value).
+        guard v.isFinite else { return "0" }
+        if v == v.rounded() && abs(v) < 1e15 { return String(Int(v)) }
         return String(format: "%g", v)
     }
 }
