@@ -1981,6 +1981,58 @@ namespace RISE
 		//! skipped.
 		AgentCommitResult RemoveEntity( Category cat, const String& name );
 
+		//! -------- Environment / IBL section (GUI Environment panel) --------
+		//!
+		//! The image-based-lighting environment is a scene-level singleton
+		//! (NOT an ILight): an `hdr_painter`/`exr_painter` supplies the image
+		//! and four `radiance_*` params on the ACTIVE rasterizer chunk bind it
+		//! as the global radiance map.  These accessors surface + edit that
+		//! singleton without the GUI needing to know the two-chunk shape.  See
+		//! docs/gui/ENVIRONMENT_SECTION.md.
+		struct EnvironmentInfo
+		{
+			bool   hasEnvironment = false;  //!< a radiance_map painter is bound (name != "none")
+			bool   proceduralSky  = false;  //!< a procedural sky / non-painter map is installed (read-only in v1)
+			String painterName;             //!< bound painter name ("" if none)
+			String file;                    //!< resolved HDRI file path ("" if unresolved / procedural)
+			double scale = 1.0;             //!< intensity multiplier
+			double orientDeg[3] = { 0.0, 0.0, 0.0 };  //!< Euler rotation in DEGREES (converted from stored radians)
+			bool   background = true;       //!< map visible behind geometry (primary-ray visibility)
+			bool   editable = false;        //!< false when the active rasterizer takes no radiance map (MLT) or none exists
+		};
+
+		//! Read the current environment binding from the active rasterizer's
+		//! live snapshot (+ resolve the bound painter's `file` from the CST).
+		//! Returns false only when there is no scene / no active rasterizer;
+		//! otherwise fills `out` (with hasEnvironment=false when unbound).
+		bool GetEnvironment( EnvironmentInfo& out ) const;
+
+		//! Set the environment intensity / background-visibility / rotation.
+		//! Each applies BOTH a live rasterizer rebuild (viewport re-renders)
+		//! and a CST mirror (Job::ApplyCstEnvironmentEdit) so it persists on
+		//! save.  Return false when there is no editable bound environment.
+		bool SetEnvironmentScale( double scale );
+		bool SetEnvironmentBackground( bool background );
+		bool SetEnvironmentOrient( double xDeg, double yDeg, double zDeg );
+
+		//! Swap the HDRI file of the currently-bound environment painter.
+		//! Routes through the Painter CST-param path (a full re-derive that
+		//! reloads the texture) so it persists.  `absPath` should be an
+		//! existing file (the GUI file picker is the guard).  Returns false
+		//! when no environment is bound.
+		bool SetEnvironmentFile( const String& absPath );
+
+		//! Create an environment from an HDRI file when none exists: inserts a
+		//! `hdr_painter`/`exr_painter` chunk (kind chosen from the extension)
+		//! and binds it via radiance_map on the active rasterizer.  On success
+		//! `*outPainterName` (if non-null) receives the new painter name.
+		AgentCommitResult AddEnvironment( const String& hdriPath, String* outPainterName );
+
+		//! Remove the environment: unbinds radiance_map on the active
+		//! rasterizer (live + CST) so no global radiance map is installed.
+		//! The painter chunk is left in the Document (harmless, reusable).
+		bool RemoveEnvironment();
+
 	protected:
 		//! Test override point.  Production override calls
 		//! mInteractiveRasterizer->RasterizeScene with the current
@@ -2169,6 +2221,17 @@ namespace RISE
 			const String& a,
 			const String& b,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
+		//! Shared core for the environment radiance-param setters (scale /
+		//! background / orient / radiance_map bind+unbind): under the
+		//! cancel-and-park critical section, apply the edit LIVE to the active
+		//! rasterizer (SetRasterizerParameter -> rebuild) then MIRROR it into
+		//! the retained CST (Job::ApplyCstEnvironmentEdit) so it survives a
+		//! save.  Refuses (false) inside an open transaction (not undoable),
+		//! when there is no active rasterizer, or when the active rasterizer
+		//! takes no radiance map (MLT).  An empty `value` for `radiance_map`
+		//! UNBINDS (live: no map; CST: erase all four radiance_* params).
+		bool SetEnvironmentRadianceParam_( const char* paramName, const std::string& value );
 
 		//! Re-point mEditor at the Job's CURRENT scene + managers.  Called at construction AND after any
 		//! whole-scene re-derive (a scene_variant switch ClearAll's + recreates the Scene + managers); without

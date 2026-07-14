@@ -3395,6 +3395,13 @@ namespace RISE
 		//! failure (legacy scene with no retained Document -> clean 0).  Default no-op; see Job override.
 		virtual int ApplyCstFilmEdit( const char* width, const char* height, const char* pixelAR ) { return 0; }
 
+		//! GUI Environment section: mirror a `radiance_*` IBL-binding edit into the retained CST so a SAVE and a
+		//! future D2 re-derive preserve it (twin of ApplyCstFilmEdit for the singleton, active rasterizer chunk).
+		//! `radiance_map` with an empty/null value ERASES the whole binding (unbind); any other value sets/adds the
+		//! named param.  Document-only (no re-derive); 1 = recorded, 0 = no-op (legacy scene / no unique rasterizer
+		//! chunk of the active kind).  Default no-op; see Job override.
+		virtual int ApplyCstEnvironmentEdit( const char* paramName, const char* value ) { return 0; }
+
 		//! P5 Slice 3 expansion (object transform): 0 = not routable / 1 = matrix (standard_object) / 2 = components
 		//! (csg_object).  Default 0; see Job override.
 		virtual int CstObjectTransformKind( const char* name ) const { return 0; }

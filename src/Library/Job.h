@@ -2916,6 +2916,11 @@ namespace RISE
 		//! when the chunk omits it).  Document-only (no re-derive, no rebind) -> 1 on success / 0 on no-op/failure.
 		int ApplyCstFilmEdit( const char* width, const char* height, const char* pixelAR );
 
+		//! GUI Environment section: mirror a `radiance_*` IBL-binding edit into the retained Document so a SAVE / D2
+		//! preserves it (twin of ApplyCstFilmEdit for the active rasterizer singleton).  radiance_map with an empty
+		//! value ERASES the binding; else set/add the named param.  Document-only -> 1 on success / 0 on no-op.
+		int ApplyCstEnvironmentEdit( const char* paramName, const char* value );
+
 		//! Model-B F5 slice S2 (agent chunk CRUD): INSERT one complete chunk into the retained Document and
 		//! REALIZE it via a full re-derive (dry-run-guarded: a failed dry-run leaves Document + live scene
 		//! byte-identical).  Contract + out-params (incl. round-1 P1-A's `outInsertedAt`) documented on the

@@ -44,6 +44,7 @@
 #include "Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for SetTransparentShadows (PT only)
 #include "Rendering/PixelBasedRasterizerHelper.h"	// GetRayCaster() — reach the active rasterizer's caster for radiance_scale
 #include "Utilities/RString.h"
+#include "Utilities/Math3D/Constants.h"   // DEG_TO_RAD / RAD_TO_DEG for radiance_orient round-trip
 #include "Utilities/RasterizerDefaults.h"
 #include "SceneEditor/ChunkDescriptorRegistry.h"   // F5 S2 round 2: insert positioning + rasterizer-class detection by ChunkCategory
 #include <stdio.h>
@@ -11340,6 +11341,57 @@ int Job::ApplyCstFilmEdit( const char* width, const char* height, const char* pi
 	return 1;
 }
 
+// Environment / IBL binding: mirror a `radiance_*` edit into the CST Document so it
+// SURVIVES A SAVE (twin of ApplyCstFilmEdit for the singleton, active rasterizer
+// chunk).  The active rasterizer is an UNNAMED unique-in-kind chunk whose CST role
+// == its keyword (e.g. "pathtracing_pel_rasterizer"), so resolve it by KIND via the
+// empty-bareName + uniqueFallback path (the SAME resolution ApplyCstFilmEdit uses for
+// the `film` singleton).  Behaviour by `paramName`:
+//   - radiance_map with a NON-EMPTY value -> set/add the binding painter name;
+//   - radiance_map with an EMPTY/null value -> ERASE all four radiance_* params
+//     (unbind the environment entirely, leaving no orphan scale/orient/background);
+//   - radiance_scale / radiance_orient / radiance_background -> set/add that param.
+// Document-only: NO re-derive (the caller already applied the live edit).  Returns 1
+// on a Document mutation, 0 on a clean no-op (legacy scene with no retained Document,
+// or no unique rasterizer chunk of the active kind -> the live edit still stands, but
+// a save / D2 re-derive would revert it; a warning is logged in the absent-chunk case).
+int Job::ApplyCstEnvironmentEdit( const char* paramName, const char* value )
+{
+	if( !pCstDocument || !paramName ) return 0;   // legacy / no-Document scene -> clean no-op (live edit already applied)
+
+	const std::string rasterKind = GetActiveRasterizerName();
+	if( rasterKind.empty() ) return 0;
+
+	const RISE::Cst::NodeId rasterId =
+		RISE::Cst::DocFindByNameAnyRole( *pCstDocument, "", nullptr, rasterKind, true );
+	if( rasterId == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::ApplyCstEnvironmentEdit:: no unique `%s` chunk in the CST Document; environment `%s` not recorded (live edit stands, but a save / D2 will revert it)",
+			rasterKind.c_str(), paramName );
+		return 0;
+	}
+
+	const std::string pn( paramName );
+	const bool eraseBinding = ( pn == "radiance_map" && ( !value || value[0] == '\0' ) );
+
+	RISE::Cst::Document d1 = *pCstDocument;
+	if( eraseBinding ) {
+		// Unbind: strip radiance_map AND the now-orphaned scale/orient/background so a
+		// re-derive sees a clean, environment-free rasterizer chunk.  DocRemoveParam
+		// no-ops on an absent param, so erasing all four is safe regardless of which
+		// were authored.
+		d1 = RISE::Cst::DocRemoveParam( d1, rasterId, "radiance_map" );
+		d1 = RISE::Cst::DocRemoveParam( d1, rasterId, "radiance_scale" );
+		d1 = RISE::Cst::DocRemoveParam( d1, rasterId, "radiance_orient" );
+		d1 = RISE::Cst::DocRemoveParam( d1, rasterId, "radiance_background" );
+	} else {
+		d1 = RISE::Cst::DocSetOrAddParamValue( d1, rasterId, pn, 0, value ? value : "" );
+	}
+	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
+	BumpCstHeadRevision();
+	return 1;
+}
+
 // L6b — push the canonical FrameStore to every registered rasterizer.
 // Called after scene load completes and after SetActiveCamera in case
 // the new camera has different dimensions.  Each rasterizer addrefs
@@ -12084,6 +12136,29 @@ std::string FormatRasterizerParam( const Job::RasterizerParams& p, const std::st
 			default:                         return "auto";
 		}
 	}
+	// Environment / IBL binding params.  `radiance_orient` round-trips in
+	// DEGREES (the scene-file convention) though the config stores RADIANS
+	// (`* DEG_TO_RAD` at parse) -- convert back with RAD_TO_DEG here so the
+	// GUI and a re-serialize both show the authored degrees.
+	if( paramName == "radiance_map" ) {
+		// "none" is the parser's disabled sentinel -> surface it empty so
+		// the GUI reads "no environment bound" rather than a literal "none".
+		return ( p.radianceMap.name == String( "none" ) ) ? std::string() : std::string( p.radianceMap.name.c_str() );
+	}
+	if( paramName == "radiance_scale" ) {
+		std::snprintf( buf, sizeof(buf), "%g", static_cast<double>( p.radianceMap.scale ) );
+		return buf;
+	}
+	if( paramName == "radiance_background" ) {
+		return p.radianceMap.isBackground ? "true" : "false";
+	}
+	if( paramName == "radiance_orient" ) {
+		std::snprintf( buf, sizeof(buf), "%g %g %g",
+			static_cast<double>( p.radianceMap.orientation[0] ) * RAD_TO_DEG,
+			static_cast<double>( p.radianceMap.orientation[1] ) * RAD_TO_DEG,
+			static_cast<double>( p.radianceMap.orientation[2] ) * RAD_TO_DEG );
+		return buf;
+	}
 	return std::string();
 }
 
@@ -12155,6 +12230,26 @@ bool ApplyRasterizerParam( Job::RasterizerParams& p, const std::string& paramNam
 		if( iv == "vcm" )  { p.autoIntegrator = AutoIntegratorChoice::VCM;  return true; }
 		if( iv == "auto" ) { p.autoIntegrator = AutoIntegratorChoice::Auto; return true; }
 		return false;
+	}
+	// Environment / IBL binding params (symmetric with FormatRasterizerParam).
+	if( paramName == "radiance_map" ) {
+		// Empty string clears the binding to the parser's "none" sentinel;
+		// any other value names the painter to install as the radiance map.
+		p.radianceMap.name = valueStr.empty() ? "none" : valueStr.c_str();
+		return true;
+	}
+	if( paramName == "radiance_scale" )
+		return ParseRasterizerDouble( valueStr, p.radianceMap.scale );
+	if( paramName == "radiance_background" )
+		return ParseRasterizerBool( valueStr, p.radianceMap.isBackground );
+	if( paramName == "radiance_orient" ) {
+		// Scene-file / GUI convention is DEGREES; the config stores RADIANS.
+		double x = 0, y = 0, z = 0;
+		if( std::sscanf( valueStr.c_str(), "%lf %lf %lf", &x, &y, &z ) != 3 ) return false;
+		p.radianceMap.orientation[0] = Scalar( x ) * DEG_TO_RAD;
+		p.radianceMap.orientation[1] = Scalar( y ) * DEG_TO_RAD;
+		p.radianceMap.orientation[2] = Scalar( z ) * DEG_TO_RAD;
+		return true;
 	}
 	return false;
 }

@@ -4030,6 +4030,48 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p, int category, const char* name,
 		char* outStatus, unsigned int outStatusLen,
 		char* outMessage, unsigned int outMessageLen );
+
+	//! -------- Environment / IBL section (GUI Environment panel) --------
+	//! See SceneEditController's EnvironmentInfo + env accessors and
+	//! docs/gui/ENVIRONMENT_SECTION.md.  The environment is a scene-level
+	//! singleton (an hdr/exr painter bound via `radiance_*` on the active
+	//! rasterizer), not an ILight.
+
+	//! Read the current environment binding.  Returns false only when there is
+	//! no scene / no active rasterizer; otherwise every optional out-param is
+	//! filled (int flags are 0/1; `outHasEnvironment=0` means unbound).
+	bool RISE_API_SceneEditController_GetEnvironment(
+		SceneEditController* p,
+		int* outHasEnvironment, int* outProceduralSky, int* outEditable,
+		char* outPainterName, unsigned int outPainterNameLen,
+		char* outFile, unsigned int outFileLen,
+		double* outScale, double* outOrientX, double* outOrientY, double* outOrientZ,
+		int* outBackground );
+
+	//! Set the environment intensity / background-visibility / rotation (degrees).
+	//! Each applies live (viewport re-renders) and persists (CST mirror).
+	//! Returns false when no editable bound environment exists.
+	bool RISE_API_SceneEditController_SetEnvironmentScale( SceneEditController* p, double scale );
+	bool RISE_API_SceneEditController_SetEnvironmentBackground( SceneEditController* p, int background );
+	bool RISE_API_SceneEditController_SetEnvironmentOrient(
+		SceneEditController* p, double xDeg, double yDeg, double zDeg );
+
+	//! Swap the bound environment painter's HDRI file (an existing path; the
+	//! GUI file picker is the guard).  Returns false when none is bound.
+	bool RISE_API_SceneEditController_SetEnvironmentFile( SceneEditController* p, const char* absPath );
+
+	//! Create an environment from an HDRI file when none exists (inserts an
+	//! hdr/exr painter chosen from the extension + binds radiance_map).
+	//! Returns `applied`; out-params as the entity CRUD wrappers above.
+	bool RISE_API_SceneEditController_AddEnvironment(
+		SceneEditController* p, const char* hdriPath,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
+
+	//! Remove the environment (unbinds radiance_map, live + CST).  Returns false
+	//! when no editable environment exists.
+	bool RISE_API_SceneEditController_RemoveEnvironment( SceneEditController* p );
 }
 
 #endif

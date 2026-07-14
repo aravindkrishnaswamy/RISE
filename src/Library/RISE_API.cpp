@@ -8068,6 +8068,81 @@ namespace RISE
 	}
 
 	// -------------------------------------------------------------------
+	// Environment / IBL section (GUI Environment panel).  Thin wrappers over
+	// SceneEditController's environment accessors; see docs/gui/ENVIRONMENT_SECTION.md.
+	// -------------------------------------------------------------------
+
+	bool RISE_API_SceneEditController_GetEnvironment(
+		SceneEditController* p,
+		int* outHasEnvironment, int* outProceduralSky, int* outEditable,
+		char* outPainterName, unsigned int outPainterNameLen,
+		char* outFile, unsigned int outFileLen,
+		double* outScale, double* outOrientX, double* outOrientY, double* outOrientZ,
+		int* outBackground )
+	{
+		if( !p ) return false;
+		SceneEditController::EnvironmentInfo info;
+		if( !p->GetEnvironment( info ) ) return false;
+		if( outHasEnvironment ) *outHasEnvironment = info.hasEnvironment ? 1 : 0;
+		if( outProceduralSky )  *outProceduralSky  = info.proceduralSky ? 1 : 0;
+		if( outEditable )       *outEditable       = info.editable ? 1 : 0;
+		if( outPainterName && outPainterNameLen > 0 ) CopyToBuf( info.painterName, outPainterName, outPainterNameLen );
+		if( outFile && outFileLen > 0 )               CopyToBuf( info.file, outFile, outFileLen );
+		if( outScale )      *outScale      = info.scale;
+		if( outOrientX )    *outOrientX    = info.orientDeg[0];
+		if( outOrientY )    *outOrientY    = info.orientDeg[1];
+		if( outOrientZ )    *outOrientZ    = info.orientDeg[2];
+		if( outBackground ) *outBackground = info.background ? 1 : 0;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetEnvironmentScale( SceneEditController* p, double scale )
+	{
+		if( !p ) return false;
+		return p->SetEnvironmentScale( scale );
+	}
+
+	bool RISE_API_SceneEditController_SetEnvironmentBackground( SceneEditController* p, int background )
+	{
+		if( !p ) return false;
+		return p->SetEnvironmentBackground( background != 0 );
+	}
+
+	bool RISE_API_SceneEditController_SetEnvironmentOrient(
+		SceneEditController* p, double xDeg, double yDeg, double zDeg )
+	{
+		if( !p ) return false;
+		return p->SetEnvironmentOrient( xDeg, yDeg, zDeg );
+	}
+
+	bool RISE_API_SceneEditController_SetEnvironmentFile( SceneEditController* p, const char* absPath )
+	{
+		if( !p || !absPath ) return false;
+		return p->SetEnvironmentFile( String( absPath ) );
+	}
+
+	bool RISE_API_SceneEditController_AddEnvironment(
+		SceneEditController* p, const char* hdriPath,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( !p || !hdriPath ) return false;
+		String name;
+		const SceneEditController::AgentCommitResult r = p->AddEnvironment( String( hdriPath ), &name );
+		if( outName && outNameLen > 0 )       CopyToBuf( name, outName, outNameLen );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
+		return r.applied;
+	}
+
+	bool RISE_API_SceneEditController_RemoveEnvironment( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->RemoveEnvironment();
+	}
+
+	// -------------------------------------------------------------------
 	// Phase 4b — per-category selection + per-category property accessors.
 	// Each is a thin wrapper around the matching SceneEditController
 	// method.  The buffer-handling pattern follows the rest of the
