@@ -7515,6 +7515,94 @@ namespace RISE
 		return p->ActiveGizmoAxis();
 	}
 
+	// -------- Navigation axis-ball gizmo (Tier 2 §4) --------
+
+	bool RISE_API_SceneEditController_RefreshNavGizmo(
+		SceneEditController* p,
+		double centerX, double centerY, double ballRadius, double nubRadius )
+	{
+		if( !p ) return false;
+		return p->RefreshNavGizmo( centerX, centerY, ballRadius, nubRadius );
+	}
+
+	unsigned int RISE_API_SceneEditController_NavGizmoNubCount(
+		SceneEditController* p )
+	{
+		if( !p ) return 0;
+		return p->NavGizmoNubCount();
+	}
+
+	bool RISE_API_SceneEditController_NavGizmoNub(
+		SceneEditController* p, unsigned int idx,
+		int* outAxis, int* outNegative,
+		double* outScreenX, double* outScreenY, double* outScreenRadius,
+		int* outFacing )
+	{
+		if( !p ) return false;
+		int    axis = 0;   bool neg = false, facing = false;
+		double sx = 0, sy = 0, r = 0;
+		if( !p->NavGizmoNubInfo( idx, axis, neg, sx, sy, r, facing ) ) return false;
+		if( outAxis         ) *outAxis         = axis;
+		if( outNegative     ) *outNegative     = neg ? 1 : 0;
+		if( outScreenX      ) *outScreenX      = sx;
+		if( outScreenY      ) *outScreenY      = sy;
+		if( outScreenRadius ) *outScreenRadius = r;
+		if( outFacing       ) *outFacing       = facing ? 1 : 0;
+		return true;
+	}
+
+	int RISE_API_SceneEditController_NavGizmoNubAt(
+		SceneEditController* p, double x, double y )
+	{
+		if( !p ) return -1;
+		return p->NavGizmoNubAt( x, y );
+	}
+
+	// -------- View navigation (Tier 2 §4-5): non-destructive --------
+
+	bool RISE_API_SceneEditController_SnapViewToAxis(
+		SceneEditController* p, int axis, int negative )
+	{
+		if( !p ) return false;
+		return p->SnapViewToAxis( axis, negative != 0 );
+	}
+
+	bool RISE_API_SceneEditController_EnterFreeFly( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->EnterFreeFlyFromActiveCamera();
+	}
+
+	bool RISE_API_SceneEditController_ExitFreeFly( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->ExitFreeFly();
+	}
+
+	bool RISE_API_SceneEditController_IsFreeFlyActive( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->IsFreeFlyActive();
+	}
+
+	bool RISE_API_SceneEditController_SetHomeView( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->SetHomeView();
+	}
+
+	bool RISE_API_SceneEditController_GoToHomeView( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->GoToHomeView();
+	}
+
+	bool RISE_API_SceneEditController_HasHomeView( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->HasHomeView();
+	}
+
 	bool RISE_API_SceneEditController_OnPointerDown(
 		SceneEditController* p, Scalar x, Scalar y )
 	{

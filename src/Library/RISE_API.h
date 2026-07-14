@@ -3592,6 +3592,50 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	int  RISE_API_SceneEditController_ActiveGizmoKind( SceneEditController* p );
 	int  RISE_API_SceneEditController_ActiveGizmoAxis( SceneEditController* p );
 
+	//! -------- Navigation axis-ball gizmo (Tier 2 §4) --------
+	//! Recompute the six ±X/±Y/±Z nubs for a ball centered at (centerX,
+	//! centerY) with `ballRadius`, each nub `nubRadius`, all in the caller's
+	//! widget space.  Returns false (count 0) when there is no supported
+	//! (pinhole) interactive camera or the geometry is non-positive.  Call
+	//! once per preview frame before reading nubs.
+	bool RISE_API_SceneEditController_RefreshNavGizmo(
+		SceneEditController* p,
+		double centerX, double centerY, double ballRadius, double nubRadius );
+
+	//! Number of nav-gizmo nubs (0 or 6).  Read AFTER RefreshNavGizmo.
+	unsigned int RISE_API_SceneEditController_NavGizmoNubCount(
+		SceneEditController* p );
+
+	//! Read one nub.  outAxis: 0=X,1=Y,2=Z; outNegative/outFacing are
+	//! bool-as-int (0/1); outScreenX/Y + outScreenRadius in the caller's
+	//! ball-geometry space.  Returns false on null controller, out-of-range
+	//! idx, or any null out-parameter (all fields optional per pointer).
+	bool RISE_API_SceneEditController_NavGizmoNub(
+		SceneEditController* p, unsigned int idx,
+		int* outAxis, int* outNegative,
+		double* outScreenX, double* outScreenY, double* outScreenRadius,
+		int* outFacing );
+
+	//! Hit-test a pointer position (same space as RefreshNavGizmo geometry)
+	//! against the nubs; front-facing nubs win ties.  Returns the nub index
+	//! or -1 (miss / null controller).
+	int  RISE_API_SceneEditController_NavGizmoNubAt(
+		SceneEditController* p, double x, double y );
+
+	//! -------- View navigation (Tier 2 §4-5): non-destructive --------
+	//! These drive the transient free-fly ViewportPose (the interactive pass
+	//! renders through it) and NEVER mutate a scene camera.  All return false
+	//! on null controller / the documented refusal cases.  `negative` is
+	//! bool-as-int.  See SceneEditController for the contracts.
+	bool RISE_API_SceneEditController_SnapViewToAxis(
+		SceneEditController* p, int axis, int negative );
+	bool RISE_API_SceneEditController_EnterFreeFly( SceneEditController* p );
+	bool RISE_API_SceneEditController_ExitFreeFly( SceneEditController* p );
+	bool RISE_API_SceneEditController_IsFreeFlyActive( SceneEditController* p );
+	bool RISE_API_SceneEditController_SetHomeView( SceneEditController* p );
+	bool RISE_API_SceneEditController_GoToHomeView( SceneEditController* p );
+	bool RISE_API_SceneEditController_HasHomeView( SceneEditController* p );
+
 	//! Pointer events from the platform UI.  Coordinates are in the
 	//! preview surface's pixel space.
 	bool RISE_API_SceneEditController_OnPointerDown(
