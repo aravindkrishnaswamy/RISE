@@ -363,6 +363,46 @@ namespace
 		pJob->release();
 		std::remove( tmp.c_str() );
 	}
+
+	// override_object: a legacy MODIFIER whose `name` references an existing object.
+	const char* const kOverrideScene =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
+		"uniformcolor_painter\n{\nname pnt\ncolor 0.5 0.5 0.5\n}\n\n"
+		"lambertian_material\n{\nname mat\nreflectance pnt\n}\n\n"
+		"sphere_geometry\n{\nname sph\nradius 1\n}\n\n"
+		"standard_object\n{\nname ball\ngeometry sph\nmaterial mat\n}\n\n"
+		"override_object\n{\nname ball\nposition 1 0 0\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\nsamples 8\npixel_filter box\noidn_denoise false\n}\n\n"
+		"film\n{\nwidth 16\nheight 12\n}\n\n"
+		"pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 40.0\n}\n";
+
+	void TestOverrideObjectExclusion()
+	{
+		std::printf( "S7: override_object (references an object, isn't one) reverses to false...\n" );
+		const std::string tmp = TempPath( "srctrace_s7.RISEscene" );
+		Job* pJob = LoadScene( kOverrideScene, tmp );
+		Check( pJob != nullptr, "fixture loads (standard_object + override_object)" );
+		if( !pJob ) return;
+		SceneEditController ctrl( *pJob, nullptr );
+		const std::string full = Serialized( *pJob );
+		Category c; String n, p;
+
+		const size_t ovPos = full.find( "override_object" );
+		Check( ovPos != std::string::npos, "scene has an override_object chunk" );
+		Check( !ctrl.SourceRefAtByteOffset( ovPos + 2, c, n, p ),
+			"reverse into override_object -> false (references `ball`, isn't the entity)" );
+
+		// Control: the real standard_object `ball` still reverses to (Object, ball).
+		const size_t soPos = full.find( "standard_object" );
+		Check( soPos != std::string::npos, "scene has a standard_object chunk" );
+		Check( ctrl.SourceRefAtByteOffset( soPos + 2, c, n, p )
+			&& c == Category::Object && std::string( n.c_str() ) == "ball",
+			"reverse into standard_object -> (Object, ball)" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
 }   // anonymous namespace
 
 int main()
@@ -374,6 +414,7 @@ int main()
 	TestReviewFixes();
 	TestNonEntityExclusions();
 	TestConfigAndVariantCollision();
+	TestOverrideObjectExclusion();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

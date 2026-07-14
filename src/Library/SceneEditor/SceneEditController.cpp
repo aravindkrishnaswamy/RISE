@@ -5516,6 +5516,12 @@ bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category&
 	const Category cat = CategoryForChunkKeyword( chunk->role );
 	if( cat == Category::None ) return false;   // not a UI-addressable entity/singleton chunk
 
+	// override_object is a legacy MODIFIER whose `name` param REFERENCES an existing
+	// object (it modifies, it doesn't declare) -- so its name is present in the Object
+	// enumeration but this chunk is NOT that entity.  Reject it so a click inside an
+	// override_object block doesn't jump to the referenced standard_object elsewhere.
+	if( chunk->role == "override_object" ) return false;
+
 	auto ends = []( const std::string& s, const char* suf ) {
 		const std::string t( suf );
 		return s.size() >= t.size() && s.compare( s.size() - t.size(), t.size(), t ) == 0;
@@ -5563,6 +5569,11 @@ bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category&
 	case Category::Camera:
 		// A camera chunk (keyword) -- excludes scene_options/camera_defaults.  Named
 		// -> must be in the camera list; unnamed -> the active camera (addressable).
+		// KNOWN EDGE (accepted): with 2+ UNNAMED cameras, a click in a non-active one
+		// still maps to (Camera,"") = the active camera -- the CST has no name to
+		// distinguish them and the (Camera,"") convention resolves the active one.
+		// Very narrow (multiple unnamed cameras); a net improvement over the prior
+		// guard, which over-rejected the active unnamed camera whenever >=2 existed.
 		if( chunk->role == "camera" || ends( chunk->role, "_camera" ) )
 			addressable = nm.empty() ? true : nameInEnum( Category::Camera, nm );
 		break;
