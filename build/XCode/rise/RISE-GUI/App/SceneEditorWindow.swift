@@ -146,11 +146,12 @@ struct SceneTextEditor: NSViewRepresentable {
             // harmless.
             let text = self.text
             let byteOffset = request.byteOffset
+            let byteLength = request.byteLength
             let flash = context.coordinator.highlighter?.theme.caret
             DispatchQueue.main.async { [weak textView] in
                 guard let textView else { return }
                 Self.reveal(in: textView, text: text, byteOffset: byteOffset,
-                            flashColor: flash)
+                            byteLength: byteLength, flashColor: flash)
             }
         }
     }
@@ -166,14 +167,23 @@ struct SceneTextEditor: NSViewRepresentable {
     /// before the target), this bails out silently rather than crashing
     /// or landing on the wrong line — a stale reveal is a no-op, not a
     /// misleading one.
-    private static func reveal(in textView: NSTextView, text: String, byteOffset: UInt64, flashColor: NSColor?) {
+    private static func reveal(in textView: NSTextView, text: String, byteOffset: UInt64, byteLength: UInt64, flashColor: NSColor?) {
         let utf8 = text.utf8
         guard byteOffset < UInt64(utf8.count) else { return }
         guard let byteIndex = utf8.index(utf8.startIndex, offsetBy: Int(byteOffset), limitedBy: utf8.endIndex),
               let stringIndex = byteIndex.samePosition(in: text) else { return }
 
-        let lineRange = text.lineRange(for: stringIndex..<stringIndex)
-        let nsRange = NSRange(lineRange, in: text)
+        // byteLength > 0 highlights the EXACT span (a param row: `role value`);
+        // byteLength == 0 selects the whole line (an entity / whole-chunk reveal).
+        let nsRange: NSRange
+        if byteLength > 0,
+           let endByteIndex = utf8.index(byteIndex, offsetBy: Int(byteLength), limitedBy: utf8.endIndex),
+           let endStringIndex = endByteIndex.samePosition(in: text) {
+            nsRange = NSRange(stringIndex..<endStringIndex, in: text)
+        } else {
+            let lineRange = text.lineRange(for: stringIndex..<stringIndex)
+            nsRange = NSRange(lineRange, in: text)
+        }
 
         textView.scrollRangeToVisible(nsRange)
         textView.setSelectedRange(nsRange)

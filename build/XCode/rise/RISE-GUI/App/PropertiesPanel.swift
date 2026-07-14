@@ -263,6 +263,18 @@ struct PropertiesPanel: View {
             onScrubBegin: { bridge.beginPropertyScrub() },
             onScrubEnd:   { bridge.endPropertyScrub()   }
         )
+        // Source traceability: reveal THIS param's exact span in the Scene-file
+        // editor.  Shown only when the entity resolves to a scene-file chunk
+        // (sourceLine != nil) — the same gate as the whole-entity ⌗ chip.
+        .contextMenu {
+            if sourceLine != nil {
+                Button {
+                    viewModel.revealSourceSpan(category: selectionCategory, name: selectionName, param: row.name)
+                } label: {
+                    Label("Reveal “\(row.name)” in Scene File", systemImage: "text.magnifyingglass")
+                }
+            }
+        }
     }
 
     private func advancedDisclosure(_ advanced: [PropertyRow]) -> some View {

@@ -52,6 +52,23 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
 @property (nonatomic, readonly, copy) NSString *message;
 @end
 
+/// Snapshot of the scene's IBL environment (a scene-level singleton: an
+/// hdr/exr painter bound via `radiance_*` on the active rasterizer, NOT
+/// an ILight).  See SceneEditController::EnvironmentInfo and
+/// docs/gui/ENVIRONMENT_SECTION.md.  Returned by -[RISEViewportBridge environmentInfo].
+@interface RISEEnvironmentInfo : NSObject
+@property (nonatomic, readonly) BOOL hasEnvironment;   ///< a radiance_map painter is bound
+@property (nonatomic, readonly) BOOL proceduralSky;    ///< a procedural sky / non-painter map is installed (read-only)
+@property (nonatomic, readonly) BOOL editable;         ///< false when the active rasterizer takes no radiance map (MLT / pixel*)
+@property (nonatomic, readonly) NSString *painterName; ///< bound painter name ("" if none)
+@property (nonatomic, readonly) NSString *file;        ///< resolved HDRI path ("" if unresolved / procedural)
+@property (nonatomic, readonly) double scale;          ///< intensity multiplier
+@property (nonatomic, readonly) double orientX;        ///< Euler rotation X in DEGREES
+@property (nonatomic, readonly) double orientY;        ///< Euler rotation Y in DEGREES
+@property (nonatomic, readonly) double orientZ;        ///< Euler rotation Z in DEGREES
+@property (nonatomic, readonly) BOOL background;        ///< map visible behind geometry
+@end
+
 @interface RISEViewportBridge : NSObject
 
 /// Construct over an existing RISEBridge.  The RISEBridge must have
@@ -519,6 +536,36 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
                                        line:(unsigned int *)outLine
     NS_SWIFT_NAME(getEntitySourceLocation(for:name:byteOffset:line:));
 
+#pragma mark - Source traceability (any UI element <-> scene-file span)
+
+/// Resolve a UI element's scene-file span (SceneEditController::ResolveSourceSpan).
+/// `param` empty = the whole chunk (byteLength 0); non-empty = the `occ`-th matching
+/// param's tight `role value` run.  Fills byteOffset/byteLength (UTF-8 bytes into
+/// -serializedSceneText) + 1-based line/column.  Returns NO (outputs untouched) on a
+/// null controller, no retained CST, or an unresolvable ref.  Same
+/// do-not-call-during-renders caveat as -getEntitySourceLocation.
+- (BOOL)resolveSourceSpanForCategory:(RISEViewportCategory)category
+                                name:(NSString *)name
+                               param:(NSString *)param
+                          occurrence:(int)occ
+                          byteOffset:(unsigned long long *)outOffset
+                          byteLength:(unsigned long long *)outLength
+                                line:(unsigned int *)outLine
+                              column:(unsigned int *)outColumn
+    NS_SWIFT_NAME(resolveSourceSpan(for:name:param:occurrence:byteOffset:byteLength:line:column:));
+
+/// Reverse: the UI element whose scene-file source contains UTF-8 byte `offset`
+/// (SceneEditController::SourceRefAtByteOffset).  On success fills `outCategory`
+/// (a RISEViewportCategory raw value), `outName`, `outParam` (empty if not on a
+/// specific param), and `outOccurrence`.  Returns NO when the offset isn't inside an
+/// addressable entity/singleton chunk.
+- (BOOL)sourceRefAtByteOffset:(unsigned long long)offset
+                     category:(RISEViewportCategory *)outCategory
+                         name:(NSString * _Nullable * _Nullable)outName
+                        param:(NSString * _Nullable * _Nullable)outParam
+                   occurrence:(int *)outOccurrence
+    NS_SWIFT_NAME(sourceRef(atByteOffset:category:name:param:occurrence:));
+
 #pragma mark - Entity creation + painter CRUD (entity-creation slice)
 //
 // Mirrors RISE_API_SceneEditController_{EntityTemplateCount,
@@ -571,6 +618,37 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
                             name:(NSString *)name
                       outMessage:(NSString * _Nullable * _Nullable)outMessage
     NS_SWIFT_NAME(removeEntity(for:name:outMessage:));
+
+#pragma mark - Environment / IBL section
+
+/// Read the current environment binding.  Returns nil only when there is
+/// no scene / no active rasterizer; otherwise a fully-populated snapshot
+/// (with `hasEnvironment == NO` when unbound).
+- (nullable RISEEnvironmentInfo *)environmentInfo;
+
+/// Set the environment intensity / background-visibility / rotation
+/// (degrees).  Each applies live (viewport re-renders) AND persists (CST
+/// mirror).  Returns NO when no editable bound environment exists.
+- (BOOL)setEnvironmentScale:(double)scale;
+- (BOOL)setEnvironmentBackground:(BOOL)background;
+- (BOOL)setEnvironmentOrientX:(double)x y:(double)y z:(double)z
+    NS_SWIFT_NAME(setEnvironmentOrient(x:y:z:));
+
+/// Swap the bound environment painter's HDRI file (an existing path; the
+/// file picker is the guard).  Returns NO when none is bound.
+- (BOOL)setEnvironmentFile:(NSString *)absPath;
+
+/// Create an environment from an HDRI file when none exists (inserts an
+/// hdr/exr painter chosen from the extension + binds radiance_map).
+/// Returns `applied`; `outName` / `outMessage` optional (may be NULL).
+- (BOOL)addEnvironment:(NSString *)hdriPath
+               outName:(NSString * _Nullable * _Nullable)outName
+            outMessage:(NSString * _Nullable * _Nullable)outMessage
+    NS_SWIFT_NAME(addEnvironment(_:outName:outMessage:));
+
+/// Remove the environment (unbinds radiance_map, live + CST).  Returns
+/// NO when no editable environment exists.
+- (BOOL)removeEnvironment;
 
 #pragma mark - Multi-camera
 

@@ -113,6 +113,20 @@
 		A6E7B092000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */; };
 		A6E7B093000000000000C0DE /* AgentLoopbackHttpServer.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */; };
 		A6E7B094000000000000C0DE /* AgentLoopbackHttpServer.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */; };
+		A6E7B0C1000000000000C0DE /* ChatTrajectory.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0C1000000000000C0DE /* ChatTrajectory.cpp */; };
+		A6E7B0C2000000000000C0DE /* ChatTrajectory.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0C1000000000000C0DE /* ChatTrajectory.cpp */; };
+		A6E7B0C3000000000000C0DE /* ChatTrajectory.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E0C2000000000000C0DE /* ChatTrajectory.h */; };
+		A6E7B0C4000000000000C0DE /* ChatTrajectory.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0C2000000000000C0DE /* ChatTrajectory.h */; };
+		A6E7B0D1000000000000C0DE /* AgentEvalRunner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0D1000000000000C0DE /* AgentEvalRunner.cpp */; };
+		A6E7B0D2000000000000C0DE /* AgentEvalRunner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0D1000000000000C0DE /* AgentEvalRunner.cpp */; };
+		A6E7B0D3000000000000C0DE /* AgentEvalRunner.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E0D2000000000000C0DE /* AgentEvalRunner.h */; };
+		A6E7B0D4000000000000C0DE /* AgentEvalRunner.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0D2000000000000C0DE /* AgentEvalRunner.h */; };
+		A6E7B0E1000000000000C0DE /* ChatHttpTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E0E1000000000000C0DE /* ChatHttpTransport.h */; };
+		A6E7B0E2000000000000C0DE /* ChatHttpTransport.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0E1000000000000C0DE /* ChatHttpTransport.h */; };
+		A6E7B0E3000000000000C0DE /* TlsTransportMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0E2000000000000C0DE /* TlsTransportMac.mm */; };
+		A6E7B0E4000000000000C0DE /* TlsTransportMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0E2000000000000C0DE /* TlsTransportMac.mm */; };
+		A6E7B0F1000000000000C0DE /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A6E7E0F0000000000000C0DE /* Foundation.framework */; };
+		A6E7B0F2000000000000C0DE /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A6E7E0F0000000000000C0DE /* Foundation.framework */; };
 		AA0000030000000000000003 /* AutoRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000010000000000000001 /* AutoRasterizer.h */; };
 		AA0000040000000000000004 /* AutoRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA0000020000000000000002 /* AutoRasterizer.cpp */; };
 		AA0000050000000000000005 /* AutoRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA0000020000000000000002 /* AutoRasterizer.cpp */; };
@@ -237,68 +251,6 @@
 		F24B722B2F52A632008304C4 /* GeometryUtilities.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0836069C428F0069C9E5 /* GeometryUtilities.h */; };
 		F24B722C2F52A632008304C4 /* InfinitePlaneGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0837069C428F0069C9E5 /* InfinitePlaneGeometry.cpp */; };
 		F24B722D2F52A632008304C4 /* InfinitePlaneGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0838069C428F0069C9E5 /* InfinitePlaneGeometry.h */; };
-		5DF0B001000000000000C0DE /* SDFGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E011000000000000C0DE /* SDFGeometry.cpp */; };
-		5DF0B002000000000000C0DE /* SDFGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E012000000000000C0DE /* SDFGeometry.h */; };
-		5C57B001000000000000C0DE /* Cst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E011000000000000C0DE /* Cst.cpp */; };
-		5C57B002000000000000C0DE /* Cst.h in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E012000000000000C0DE /* Cst.h */; };
-		5C57B003000000000000C0DE /* Cst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E011000000000000C0DE /* Cst.cpp */; };
-		5C57B004000000000000C0DE /* Cst.h in Headers */ = {isa = PBXBuildFile; fileRef = 5C57E012000000000000C0DE /* Cst.h */; };
-		A6E7B001000000000000C0DE /* AgentSession.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E001000000000000C0DE /* AgentSession.cpp */; };
-		A6E7B002000000000000C0DE /* AgentSession.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E001000000000000C0DE /* AgentSession.cpp */; };
-		A6E7B003000000000000C0DE /* SchemaGen.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E002000000000000C0DE /* SchemaGen.cpp */; };
-		A6E7B004000000000000C0DE /* SchemaGen.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E002000000000000C0DE /* SchemaGen.cpp */; };
-		A6E7B011000000000000C0DE /* AgentDiagnostic.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E011000000000000C0DE /* AgentDiagnostic.h */; };
-		A6E7B012000000000000C0DE /* AgentDiagnostic.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E011000000000000C0DE /* AgentDiagnostic.h */; };
-		A6E7B013000000000000C0DE /* AgentSession.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E012000000000000C0DE /* AgentSession.h */; };
-		A6E7B014000000000000C0DE /* AgentSession.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E012000000000000C0DE /* AgentSession.h */; };
-		A6E7B015000000000000C0DE /* SchemaGen.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E013000000000000C0DE /* SchemaGen.h */; };
-		A6E7B016000000000000C0DE /* SchemaGen.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E013000000000000C0DE /* SchemaGen.h */; };
-		A6E7B021000000000000C0DE /* InMemoryRasterizerOutput.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */; };
-		A6E7B022000000000000C0DE /* InMemoryRasterizerOutput.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */; };
-		A6E7B023000000000000C0DE /* InMemoryRasterizerOutput.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E022000000000000C0DE /* InMemoryRasterizerOutput.h */; };
-		A6E7B024000000000000C0DE /* InMemoryRasterizerOutput.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E022000000000000C0DE /* InMemoryRasterizerOutput.h */; };
-		A6E7B061000000000000C0DE /* AgentChatCodecs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E061000000000000C0DE /* AgentChatCodecs.cpp */; };
-		A6E7B062000000000000C0DE /* AgentChatCodecs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E061000000000000C0DE /* AgentChatCodecs.cpp */; };
-		A6E7B063000000000000C0DE /* AgentChatCodecs.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E062000000000000C0DE /* AgentChatCodecs.h */; };
-		A6E7B064000000000000C0DE /* AgentChatCodecs.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E062000000000000C0DE /* AgentChatCodecs.h */; };
-		A6E7B071000000000000C0DE /* AgentChatLoop.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E071000000000000C0DE /* AgentChatLoop.cpp */; };
-		A6E7B072000000000000C0DE /* AgentChatLoop.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E071000000000000C0DE /* AgentChatLoop.cpp */; };
-		A6E7B073000000000000C0DE /* AgentChatLoop.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E072000000000000C0DE /* AgentChatLoop.h */; };
-		A6E7B074000000000000C0DE /* AgentChatLoop.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E072000000000000C0DE /* AgentChatLoop.h */; };
-		A6E7B0C1000000000000C0DE /* ChatTrajectory.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0C1000000000000C0DE /* ChatTrajectory.cpp */; };
-		A6E7B0C2000000000000C0DE /* ChatTrajectory.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0C1000000000000C0DE /* ChatTrajectory.cpp */; };
-		A6E7B0C3000000000000C0DE /* ChatTrajectory.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E0C2000000000000C0DE /* ChatTrajectory.h */; };
-		A6E7B0C4000000000000C0DE /* ChatTrajectory.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0C2000000000000C0DE /* ChatTrajectory.h */; };
-		A6E7B0D1000000000000C0DE /* AgentEvalRunner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0D1000000000000C0DE /* AgentEvalRunner.cpp */; };
-		A6E7B0D2000000000000C0DE /* AgentEvalRunner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0D1000000000000C0DE /* AgentEvalRunner.cpp */; };
-		A6E7B0D3000000000000C0DE /* AgentEvalRunner.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E0D2000000000000C0DE /* AgentEvalRunner.h */; };
-		A6E7B0D4000000000000C0DE /* AgentEvalRunner.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0D2000000000000C0DE /* AgentEvalRunner.h */; };
-		A6E7B0E1000000000000C0DE /* ChatHttpTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E0E1000000000000C0DE /* ChatHttpTransport.h */; };
-		A6E7B0E2000000000000C0DE /* ChatHttpTransport.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0E1000000000000C0DE /* ChatHttpTransport.h */; };
-		A6E7B0E3000000000000C0DE /* TlsTransportMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0E2000000000000C0DE /* TlsTransportMac.mm */; };
-		A6E7B0E4000000000000C0DE /* TlsTransportMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0E2000000000000C0DE /* TlsTransportMac.mm */; };
-		A6E7B0F1000000000000C0DE /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A6E7E0F0000000000000C0DE /* Foundation.framework */; };
-		A6E7B0F2000000000000C0DE /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A6E7E0F0000000000000C0DE /* Foundation.framework */; };
-		A6E7B031000000000000C0DE /* AgentRpc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E031000000000000C0DE /* AgentRpc.cpp */; };
-		A6E7B032000000000000C0DE /* AgentRpc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E031000000000000C0DE /* AgentRpc.cpp */; };
-		A6E7B033000000000000C0DE /* AgentRpc.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E032000000000000C0DE /* AgentRpc.h */; };
-		A6E7B034000000000000C0DE /* AgentRpc.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E032000000000000C0DE /* AgentRpc.h */; };
-		A6E7B081000000000000C0DE /* AgentMcpAdapter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */; };
-		A6E7B082000000000000C0DE /* AgentMcpAdapter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */; };
-		A6E7B083000000000000C0DE /* AgentMcpAdapter.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E082000000000000C0DE /* AgentMcpAdapter.h */; };
-		A6E7B084000000000000C0DE /* AgentMcpAdapter.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E082000000000000C0DE /* AgentMcpAdapter.h */; };
-		A6E7B091000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */; };
-		A6E7B092000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */; };
-		A6E7B093000000000000C0DE /* AgentLoopbackHttpServer.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */; };
-		A6E7B094000000000000C0DE /* AgentLoopbackHttpServer.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */; };
-		A6E7B041000000000000C0DE /* Base64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E041000000000000C0DE /* Base64.cpp */; };
-		A6E7B042000000000000C0DE /* Base64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E041000000000000C0DE /* Base64.cpp */; };
-		A6E7B043000000000000C0DE /* Base64.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E042000000000000C0DE /* Base64.h */; };
-		A6E7B044000000000000C0DE /* Base64.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E042000000000000C0DE /* Base64.h */; };
-		A6E7B051000000000000C0DE /* Json.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E051000000000000C0DE /* Json.cpp */; };
-		A6E7B052000000000000C0DE /* Json.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E051000000000000C0DE /* Json.cpp */; };
-		A6E7B053000000000000C0DE /* Json.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E052000000000000C0DE /* Json.h */; };
-		A6E7B054000000000000C0DE /* Json.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E052000000000000C0DE /* Json.h */; };
 		F24B722E2F52A632008304C4 /* SphereGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0839069C428F0069C9E5 /* SphereGeometry.cpp */; };
 		F24B722F2F52A632008304C4 /* SphereGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F083A069C428F0069C9E5 /* SphereGeometry.h */; };
 		F24B72302F52A632008304C4 /* SphericalUVGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F083B069C428F0069C9E5 /* SphericalUVGenerator.cpp */; };
@@ -2025,6 +1977,13 @@
 		A6E7E082000000000000C0DE /* AgentMcpAdapter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentMcpAdapter.h; sourceTree = "<group>"; };
 		A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentLoopbackHttpServer.cpp; sourceTree = "<group>"; };
 		A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentLoopbackHttpServer.h; sourceTree = "<group>"; };
+		A6E7E0C1000000000000C0DE /* ChatTrajectory.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ChatTrajectory.cpp; sourceTree = "<group>"; };
+		A6E7E0C2000000000000C0DE /* ChatTrajectory.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChatTrajectory.h; sourceTree = "<group>"; };
+		A6E7E0D1000000000000C0DE /* AgentEvalRunner.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentEvalRunner.cpp; sourceTree = "<group>"; };
+		A6E7E0D2000000000000C0DE /* AgentEvalRunner.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentEvalRunner.h; sourceTree = "<group>"; };
+		A6E7E0E1000000000000C0DE /* ChatHttpTransport.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChatHttpTransport.h; sourceTree = "<group>"; };
+		A6E7E0E2000000000000C0DE /* TlsTransportMac.mm */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.objcpp; path = TlsTransportMac.mm; sourceTree = "<group>"; };
+		A6E7E0F0000000000000C0DE /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
 		AA0000010000000000000001 /* AutoRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AutoRasterizer.h; sourceTree = "<group>"; };
 		AA0000020000000000000002 /* AutoRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = AutoRasterizer.cpp; sourceTree = "<group>"; };
 		AAB7C04202604280000000A3 /* VertexColorPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = VertexColorPainter.h; sourceTree = "<group>"; };
@@ -2183,38 +2142,6 @@
 		F27F0836069C428F0069C9E5 /* GeometryUtilities.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GeometryUtilities.h; sourceTree = "<group>"; };
 		F27F0837069C428F0069C9E5 /* InfinitePlaneGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = InfinitePlaneGeometry.cpp; sourceTree = "<group>"; };
 		F27F0838069C428F0069C9E5 /* InfinitePlaneGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = InfinitePlaneGeometry.h; sourceTree = "<group>"; };
-		5DF0E011000000000000C0DE /* SDFGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SDFGeometry.cpp; sourceTree = "<group>"; };
-		5DF0E012000000000000C0DE /* SDFGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SDFGeometry.h; sourceTree = "<group>"; };
-		5C57E011000000000000C0DE /* Cst.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Cst.cpp; sourceTree = "<group>"; };
-		5C57E012000000000000C0DE /* Cst.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Cst.h; sourceTree = "<group>"; };
-		A6E7E001000000000000C0DE /* AgentSession.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentSession.cpp; sourceTree = "<group>"; };
-		A6E7E002000000000000C0DE /* SchemaGen.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SchemaGen.cpp; sourceTree = "<group>"; };
-		A6E7E011000000000000C0DE /* AgentDiagnostic.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentDiagnostic.h; sourceTree = "<group>"; };
-		A6E7E012000000000000C0DE /* AgentSession.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentSession.h; sourceTree = "<group>"; };
-		A6E7E013000000000000C0DE /* SchemaGen.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SchemaGen.h; sourceTree = "<group>"; };
-		A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = InMemoryRasterizerOutput.cpp; sourceTree = "<group>"; };
-		A6E7E022000000000000C0DE /* InMemoryRasterizerOutput.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = InMemoryRasterizerOutput.h; sourceTree = "<group>"; };
-		A6E7E061000000000000C0DE /* AgentChatCodecs.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentChatCodecs.cpp; sourceTree = "<group>"; };
-		A6E7E062000000000000C0DE /* AgentChatCodecs.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentChatCodecs.h; sourceTree = "<group>"; };
-		A6E7E071000000000000C0DE /* AgentChatLoop.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentChatLoop.cpp; sourceTree = "<group>"; };
-		A6E7E072000000000000C0DE /* AgentChatLoop.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentChatLoop.h; sourceTree = "<group>"; };
-		A6E7E0C1000000000000C0DE /* ChatTrajectory.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ChatTrajectory.cpp; sourceTree = "<group>"; };
-		A6E7E0C2000000000000C0DE /* ChatTrajectory.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChatTrajectory.h; sourceTree = "<group>"; };
-		A6E7E0D1000000000000C0DE /* AgentEvalRunner.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentEvalRunner.cpp; sourceTree = "<group>"; };
-		A6E7E0D2000000000000C0DE /* AgentEvalRunner.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentEvalRunner.h; sourceTree = "<group>"; };
-		A6E7E0E1000000000000C0DE /* ChatHttpTransport.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChatHttpTransport.h; sourceTree = "<group>"; };
-		A6E7E0E2000000000000C0DE /* TlsTransportMac.mm */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.objcpp; path = TlsTransportMac.mm; sourceTree = "<group>"; };
-		A6E7E0F0000000000000C0DE /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
-		A6E7E031000000000000C0DE /* AgentRpc.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentRpc.cpp; sourceTree = "<group>"; };
-		A6E7E032000000000000C0DE /* AgentRpc.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentRpc.h; sourceTree = "<group>"; };
-		A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentMcpAdapter.cpp; sourceTree = "<group>"; };
-		A6E7E082000000000000C0DE /* AgentMcpAdapter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentMcpAdapter.h; sourceTree = "<group>"; };
-		A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentLoopbackHttpServer.cpp; sourceTree = "<group>"; };
-		A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentLoopbackHttpServer.h; sourceTree = "<group>"; };
-		A6E7E041000000000000C0DE /* Base64.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Base64.cpp; sourceTree = "<group>"; };
-		A6E7E042000000000000C0DE /* Base64.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Base64.h; sourceTree = "<group>"; };
-		A6E7E051000000000000C0DE /* Json.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Json.cpp; sourceTree = "<group>"; };
-		A6E7E052000000000000C0DE /* Json.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Json.h; sourceTree = "<group>"; };
 		F27F0839069C428F0069C9E5 /* SphereGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SphereGeometry.cpp; sourceTree = "<group>"; };
 		F27F083A069C428F0069C9E5 /* SphereGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SphereGeometry.h; sourceTree = "<group>"; };
 		F27F083B069C428F0069C9E5 /* SphericalUVGenerator.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SphericalUVGenerator.cpp; sourceTree = "<group>"; };
@@ -3079,6 +3006,12 @@
 				A6E7E062000000000000C0DE /* AgentChatCodecs.h */,
 				A6E7E071000000000000C0DE /* AgentChatLoop.cpp */,
 				A6E7E072000000000000C0DE /* AgentChatLoop.h */,
+				A6E7E0C1000000000000C0DE /* ChatTrajectory.cpp */,
+				A6E7E0C2000000000000C0DE /* ChatTrajectory.h */,
+				A6E7E0D1000000000000C0DE /* AgentEvalRunner.cpp */,
+				A6E7E0D2000000000000C0DE /* AgentEvalRunner.h */,
+				A6E7E0E1000000000000C0DE /* ChatHttpTransport.h */,
+				A6E7E0E2000000000000C0DE /* TlsTransportMac.mm */,
 				A6E7E031000000000000C0DE /* AgentRpc.cpp */,
 				A6E7E032000000000000C0DE /* AgentRpc.h */,
 				A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */,
@@ -3247,49 +3180,6 @@
 				F27F081B069C428F0069C9E5 /* Resultant.h */,
 			);
 			path = Functions;
-			sourceTree = "<group>";
-		};
-		5C570000000000000000C0DE /* Cst */ = {
-			isa = PBXGroup;
-			children = (
-				5C57E011000000000000C0DE /* Cst.cpp */,
-				5C57E012000000000000C0DE /* Cst.h */,
-			);
-			path = Cst;
-			sourceTree = "<group>";
-		};
-		A6E70000000000000000C0DE /* Agent */ = {
-			isa = PBXGroup;
-			children = (
-				A6E7E001000000000000C0DE /* AgentSession.cpp */,
-				A6E7E012000000000000C0DE /* AgentSession.h */,
-				A6E7E011000000000000C0DE /* AgentDiagnostic.h */,
-				A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */,
-				A6E7E022000000000000C0DE /* InMemoryRasterizerOutput.h */,
-				A6E7E061000000000000C0DE /* AgentChatCodecs.cpp */,
-				A6E7E062000000000000C0DE /* AgentChatCodecs.h */,
-				A6E7E071000000000000C0DE /* AgentChatLoop.cpp */,
-				A6E7E072000000000000C0DE /* AgentChatLoop.h */,
-				A6E7E0C1000000000000C0DE /* ChatTrajectory.cpp */,
-				A6E7E0C2000000000000C0DE /* ChatTrajectory.h */,
-				A6E7E0D1000000000000C0DE /* AgentEvalRunner.cpp */,
-				A6E7E0D2000000000000C0DE /* AgentEvalRunner.h */,
-				A6E7E0E1000000000000C0DE /* ChatHttpTransport.h */,
-				A6E7E0E2000000000000C0DE /* TlsTransportMac.mm */,
-				A6E7E031000000000000C0DE /* AgentRpc.cpp */,
-				A6E7E032000000000000C0DE /* AgentRpc.h */,
-				A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */,
-				A6E7E082000000000000C0DE /* AgentMcpAdapter.h */,
-				A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */,
-				A6E7E092000000000000C0DE /* AgentLoopbackHttpServer.h */,
-				A6E7E041000000000000C0DE /* Base64.cpp */,
-				A6E7E042000000000000C0DE /* Base64.h */,
-				A6E7E051000000000000C0DE /* Json.cpp */,
-				A6E7E052000000000000C0DE /* Json.h */,
-				A6E7E002000000000000C0DE /* SchemaGen.cpp */,
-				A6E7E013000000000000C0DE /* SchemaGen.h */,
-			);
-			path = Agent;
 			sourceTree = "<group>";
 		};
 		F27F081C069C428F0069C9E5 /* Geometry */ = {

@@ -7701,6 +7701,54 @@ namespace RISE
 		return true;
 	}
 
+	// Source traceability — any UI element -> its scene-file span, + the reverse.
+	// See SceneEditController::ResolveSourceSpan / SourceRefAtByteOffset.
+
+	bool RISE_API_SceneEditController_ResolveSourceSpan(
+		SceneEditController* p, int category, const char* name, const char* param, int occ,
+		unsigned long long* outByteOffset, unsigned long long* outByteLength,
+		unsigned int* outLine, unsigned int* outColumn )
+	{
+		if( !p ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		SceneEditController::SourceSpan sp;
+		if( !p->ResolveSourceSpan( cat, String( name ? name : "" ), String( param ? param : "" ), occ, sp ) )
+			return false;
+		if( outByteOffset ) *outByteOffset = sp.byteOffset;
+		if( outByteLength ) *outByteLength = sp.byteLength;
+		if( outLine )       *outLine       = sp.line;
+		if( outColumn )     *outColumn     = sp.column;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SourceRefAtByteOffset(
+		SceneEditController* p, unsigned long long offset,
+		int* outCategory,
+		char* outName, unsigned int outNameLen,
+		char* outParam, unsigned int outParamLen,
+		int* outOccurrence )
+	{
+		if( !p ) return false;
+		SceneEditController::Category cat = SceneEditController::Category::None;
+		String name, param;
+		int occ = 0;
+		if( !p->SourceRefAtByteOffset( offset, cat, name, param, &occ ) ) return false;
+		if( outCategory )   *outCategory   = static_cast<int>( cat );
+		if( outOccurrence ) *outOccurrence = occ;
+		// Inline truncating copy (CopyToBuf is defined later in this TU): NUL-terminate.
+		auto copyOut = []( const String& s, char* buf, unsigned int cap ) {
+			if( !buf || cap == 0 ) return;
+			const char* src = s.c_str();
+			unsigned int i = 0;
+			while( src && src[i] && i + 1 < cap ) { buf[i] = src[i]; ++i; }
+			buf[i] = '\0';
+		};
+		copyOut( name, outName, outNameLen );
+		copyOut( param, outParam, outParamLen );
+		return true;
+	}
+
 	bool RISE_API_SceneEditController_HasUnsavedChanges( SceneEditController* p )
 	{
 		if( !p ) return false;
@@ -8065,6 +8113,81 @@ namespace RISE
 		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
 		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
 		return r.applied;
+	}
+
+	// -------------------------------------------------------------------
+	// Environment / IBL section (GUI Environment panel).  Thin wrappers over
+	// SceneEditController's environment accessors; see docs/gui/ENVIRONMENT_SECTION.md.
+	// -------------------------------------------------------------------
+
+	bool RISE_API_SceneEditController_GetEnvironment(
+		SceneEditController* p,
+		int* outHasEnvironment, int* outProceduralSky, int* outEditable,
+		char* outPainterName, unsigned int outPainterNameLen,
+		char* outFile, unsigned int outFileLen,
+		double* outScale, double* outOrientX, double* outOrientY, double* outOrientZ,
+		int* outBackground )
+	{
+		if( !p ) return false;
+		SceneEditController::EnvironmentInfo info;
+		if( !p->GetEnvironment( info ) ) return false;
+		if( outHasEnvironment ) *outHasEnvironment = info.hasEnvironment ? 1 : 0;
+		if( outProceduralSky )  *outProceduralSky  = info.proceduralSky ? 1 : 0;
+		if( outEditable )       *outEditable       = info.editable ? 1 : 0;
+		if( outPainterName && outPainterNameLen > 0 ) CopyToBuf( info.painterName, outPainterName, outPainterNameLen );
+		if( outFile && outFileLen > 0 )               CopyToBuf( info.file, outFile, outFileLen );
+		if( outScale )      *outScale      = info.scale;
+		if( outOrientX )    *outOrientX    = info.orientDeg[0];
+		if( outOrientY )    *outOrientY    = info.orientDeg[1];
+		if( outOrientZ )    *outOrientZ    = info.orientDeg[2];
+		if( outBackground ) *outBackground = info.background ? 1 : 0;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetEnvironmentScale( SceneEditController* p, double scale )
+	{
+		if( !p ) return false;
+		return p->SetEnvironmentScale( scale );
+	}
+
+	bool RISE_API_SceneEditController_SetEnvironmentBackground( SceneEditController* p, int background )
+	{
+		if( !p ) return false;
+		return p->SetEnvironmentBackground( background != 0 );
+	}
+
+	bool RISE_API_SceneEditController_SetEnvironmentOrient(
+		SceneEditController* p, double xDeg, double yDeg, double zDeg )
+	{
+		if( !p ) return false;
+		return p->SetEnvironmentOrient( xDeg, yDeg, zDeg );
+	}
+
+	bool RISE_API_SceneEditController_SetEnvironmentFile( SceneEditController* p, const char* absPath )
+	{
+		if( !p || !absPath ) return false;
+		return p->SetEnvironmentFile( String( absPath ) );
+	}
+
+	bool RISE_API_SceneEditController_AddEnvironment(
+		SceneEditController* p, const char* hdriPath,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( !p || !hdriPath ) return false;
+		String name;
+		const SceneEditController::AgentCommitResult r = p->AddEnvironment( String( hdriPath ), &name );
+		if( outName && outNameLen > 0 )       CopyToBuf( name, outName, outNameLen );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
+		return r.applied;
+	}
+
+	bool RISE_API_SceneEditController_RemoveEnvironment( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->RemoveEnvironment();
 	}
 
 	// -------------------------------------------------------------------

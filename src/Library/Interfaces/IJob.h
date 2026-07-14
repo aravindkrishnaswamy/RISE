@@ -3118,6 +3118,13 @@ namespace RISE
 									class IRadianceMap* /*pRm*/		///< [in] IRadianceMap impl to install (e.g. HosekWilkieSpectralRadianceMap)
 									) { return false; }
 
+		//! Un-install the global (environment) radiance map from the live
+		//! scene.  Backs the editor's RemoveEnvironment: a rasterizer rebuild
+		//! with radiance_map "none" does NOT clear the previously-installed map
+		//! (setup only installs one), so this is the explicit clear path.
+		/// \return TRUE if a scene was present to clear, FALSE otherwise
+		virtual bool ClearGlobalRadianceMap() { return false; }
+
 		//! Atomically create a Hosek-Wilkie analytic spectral sun-and-
 		//! sky pair: registers the IRadianceMap as the scene's global
 		//! radiance map AND optionally creates a matched directional
@@ -3394,6 +3401,13 @@ namespace RISE
 		//! width+height with pixelAR=nullptr).  Document-only (no re-derive, no rebind); 1 = recorded, 0 = no-op /
 		//! failure (legacy scene with no retained Document -> clean 0).  Default no-op; see Job override.
 		virtual int ApplyCstFilmEdit( const char* width, const char* height, const char* pixelAR ) { return 0; }
+
+		//! GUI Environment section: mirror a `radiance_*` IBL-binding edit into the retained CST so a SAVE and a
+		//! future D2 re-derive preserve it (twin of ApplyCstFilmEdit for the singleton, active rasterizer chunk).
+		//! `radiance_map` with an empty/null value ERASES the whole binding (unbind); any other value sets/adds the
+		//! named param.  Document-only (no re-derive); 1 = recorded, 0 = no-op (legacy scene / no unique rasterizer
+		//! chunk of the active kind).  Default no-op; see Job override.
+		virtual int ApplyCstEnvironmentEdit( const char* paramName, const char* value ) { return 0; }
 
 		//! P5 Slice 3 expansion (object transform): 0 = not routable / 1 = matrix (standard_object) / 2 = components
 		//! (csg_object).  Default 0; see Job override.

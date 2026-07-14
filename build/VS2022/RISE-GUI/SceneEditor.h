@@ -59,6 +59,17 @@ public slots:
     /// crashing or landing on the wrong line.
     void revealAt(quint64 byteOffset);
 
+    /// Source-traceability overload: when `byteLength > 0`, select+flash
+    /// EXACTLY [byteOffset, byteOffset+byteLength) (a param's `role value`
+    /// run) instead of the whole line; `byteLength == 0` falls back to the
+    /// line-selecting behaviour of `revealAt(byteOffset)` above.  Both byte
+    /// offsets are converted to UTF-16 char indices the same way (the
+    /// inverse of SceneTextEdit::cursorByteOffsetUtf8).  Same stale/out-of-
+    /// range guard: an offset (or offset+length) past the buffer end is a
+    /// silent no-op, and a range that would end before it starts falls back
+    /// to the line rather than selecting nothing.
+    void revealAt(quint64 byteOffset, quint64 byteLength);
+
     /// Amber "scene changed elsewhere" warning: true when the live CST
     /// has moved on while the buffer still has unsaved edits (set by
     /// MainWindow's poll; only ever true alongside isDirty() -- see
