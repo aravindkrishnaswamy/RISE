@@ -238,11 +238,17 @@ struct EnvironmentPanel: View {
             .padding(.vertical, 5)
             .background(RoundedRectangle(cornerRadius: 5).fill(Theme.bgWell))
             .overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.borderHairline, lineWidth: 1))
-            .onSubmit { commitOrRevert(text: text, modelValue: modelValue, commit: commit) }
+            // Return just RESIGNS focus; the single .onChange below is the sole
+            // commit path.  Committing here too would double-fire on
+            // Return-then-blur (a redundant identical live edit + render
+            // restart), since onSubmit does not itself clear focusedField.
+            .onSubmit { focusedField = nil }
             .onChange(of: focusedField) { old, now in
                 // Commit ONLY when focus leaves THIS field (old == field) — a
                 // shared @FocusState would otherwise fire every field's handler
-                // on any focus change, spamming no-op live edits.
+                // on any focus change, spamming no-op live edits.  Return routes
+                // here via the onSubmit `focusedField = nil` above, so each edit
+                // commits exactly once whether ended by Return or by blur.
                 guard old == field, now != field else { return }
                 commitOrRevert(text: text, modelValue: modelValue, commit: commit)
             }
