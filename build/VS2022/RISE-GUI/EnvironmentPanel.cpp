@@ -22,6 +22,7 @@
 #include <QFontMetrics>
 #include <QMessageBox>
 #include <QLayoutItem>
+#include <QColor>
 
 #include <cmath>
 #include <utility>
@@ -77,10 +78,13 @@ QString lineEditStyleSheet(const QColor& textColor)
 // Mirrors the Mac panel's trimNumber(_:).
 QString trimNumber(double v)
 {
-    // Guard non-finite / out-of-range first: static_cast<long long>(v) is UB
-    // (traps) on inf or |v| beyond int64 range (a scene could carry a
-    // huge/degenerate value).  Mirrors the Mac panel's trimNumber guard.
-    if (std::isfinite(v) && v == std::floor(v) && std::abs(v) < 1e15) {
+    // Non-finite -> "0" (parity with the Mac panel; a degenerate inf/nan value
+    // in a field is meaningless).  Guarding it also fences the long long cast
+    // below, which is UB on inf / |v| beyond int64 range.
+    if (!std::isfinite(v)) {
+        return QStringLiteral("0");
+    }
+    if (v == std::floor(v) && std::abs(v) < 1e15) {
         return QString::number(static_cast<long long>(v));
     }
     return QString::asprintf("%g", v);
