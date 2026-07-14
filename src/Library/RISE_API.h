@@ -3717,7 +3717,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p, unsigned long long offset,
 		int* outCategory,
 		char* outName, unsigned int outNameLen,
-		char* outParam, unsigned int outParamLen );
+		char* outParam, unsigned int outParamLen,
+		int* outOccurrence );
 
 	//! Save the in-memory edits to `filePath`.  Returns the engine's
 	//! SaveResult.status numerically (0=Saved, 1=NoOp, 2=Refused,

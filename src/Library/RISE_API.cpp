@@ -7726,13 +7726,16 @@ namespace RISE
 		SceneEditController* p, unsigned long long offset,
 		int* outCategory,
 		char* outName, unsigned int outNameLen,
-		char* outParam, unsigned int outParamLen )
+		char* outParam, unsigned int outParamLen,
+		int* outOccurrence )
 	{
 		if( !p ) return false;
 		SceneEditController::Category cat = SceneEditController::Category::None;
 		String name, param;
-		if( !p->SourceRefAtByteOffset( offset, cat, name, param ) ) return false;
-		if( outCategory ) *outCategory = static_cast<int>( cat );
+		int occ = 0;
+		if( !p->SourceRefAtByteOffset( offset, cat, name, param, &occ ) ) return false;
+		if( outCategory )   *outCategory   = static_cast<int>( cat );
+		if( outOccurrence ) *outOccurrence = occ;
 		// Inline truncating copy (CopyToBuf is defined later in this TU): NUL-terminate.
 		auto copyOut = []( const String& s, char* buf, unsigned int cap ) {
 			if( !buf || cap == 0 ) return;

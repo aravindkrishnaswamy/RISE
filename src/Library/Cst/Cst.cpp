@@ -3028,9 +3028,10 @@ bool DocByteRangeOfParam( const Document& doc, NodeId chunkId, const std::string
 	int    seen  = 0;
 	for( const NodeRef& kid : chunk->kids )
 	{
+		if( !kid ) continue;   // defensive (kernel never populates null kids)
 		std::string kidBytes;
 		Serialize( kid, kidBytes );
-		if( kid && kid->kind == NodeKind::Param && kid->role == role )
+		if( kid->kind == NodeKind::Param && kid->role == role )
 		{
 			if( seen == occ )
 			{

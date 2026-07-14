@@ -207,6 +207,69 @@ namespace
 		pJob->release();
 		std::remove( tmp.c_str() );
 	}
+	// Scene exercising the review-fix cases: a non-*_painter-suffix Painter entity
+	// (expression_function2d) with a REPEATED `def` param, and TWO rasterizer chunks.
+	const char* const kFixScene =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
+		"expression_function2d\n{\nname fn\ndef a 1\ndef b 2\nexpr a+b\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\nsamples 8\npixel_filter box\noidn_denoise false\n}\n\n"
+		"bdpt_pel_rasterizer\n{\nsamples 4\nmax_eye_depth 8\nmax_light_depth 8\npixel_filter box\noidn_denoise false\n}\n\n"
+		"film\n{\nwidth 16\nheight 12\n}\n\n"
+		"pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 40.0\n}\n";
+
+	void TestReviewFixes()
+	{
+		std::printf( "S4: review fixes — registry-classifier P1, multi-rasterizer P2a, occ P2b...\n" );
+		const std::string tmp = TempPath( "srctrace_s4.RISEscene" );
+		Job* pJob = LoadScene( kFixScene, tmp );
+		Check( pJob != nullptr, "fixture loads (two rasterizers + function2d)" );
+		if( !pJob ) return;
+		SceneEditController ctrl( *pJob, nullptr );
+		const std::string full = Serialized( *pJob );
+
+		// P1: expression_function2d (does NOT end in _painter) is a registry Painter
+		// entity — forward resolves it by name, and reverse now recovers Painter.
+		SourceSpan fnExpr;
+		Check( ctrl.ResolveSourceSpan( Category::Painter, String( "fn" ), String( "expr" ), 0, fnExpr ),
+			"forward fn.expr (function2d addressable as Painter by name)" );
+		Category c; String n, p; int occ = -1;
+		Check( ctrl.SourceRefAtByteOffset( fnExpr.byteOffset, c, n, p, &occ ), "reverse at fn.expr" );
+		Check( c == Category::Painter && std::string( n.c_str() ) == "fn",
+			"P1: expression_function2d reverses to Painter `fn` (registry classifier, not a suffix)" );
+		Check( std::string( p.c_str() ) == "expr", "reverse recovers param expr" );
+
+		// P2b: the repeated `def` param — occ addresses the right one, and reverse
+		// into the 2nd occurrence recovers occ=1.
+		SourceSpan def0, def1;
+		Check( ctrl.ResolveSourceSpan( Category::Painter, String( "fn" ), String( "def" ), 0, def0 )
+			&& full.substr( def0.byteOffset, def0.byteLength ) == "def a 1", "forward def occ=0 == `def a 1`" );
+		Check( ctrl.ResolveSourceSpan( Category::Painter, String( "fn" ), String( "def" ), 1, def1 )
+			&& full.substr( def1.byteOffset, def1.byteLength ) == "def b 2", "forward def occ=1 == `def b 2`" );
+		Check( ctrl.SourceRefAtByteOffset( def1.byteOffset, c, n, p, &occ )
+			&& std::string( p.c_str() ) == "def" && occ == 1,
+			"P2b: reverse into the 2nd def recovers occ=1" );
+		Check( ctrl.SourceRefAtByteOffset( def0.byteOffset, c, n, p, &occ ) && occ == 0,
+			"reverse into the 1st def recovers occ=0" );
+
+		// P2a: multi-rasterizer round-trip.  Reverse into a rasterizer chunk yields
+		// (Rasterizer, KIND); forward that kind resolves the SAME chunk (regardless
+		// of which rasterizer is active).
+		const size_t bdptPos = full.find( "bdpt_pel_rasterizer" );
+		Check( bdptPos != std::string::npos, "scene text has a bdpt_pel_rasterizer chunk" );
+		Category rc; String rn, rp;
+		Check( ctrl.SourceRefAtByteOffset( bdptPos + 2, rc, rn, rp ), "reverse into the bdpt rasterizer chunk" );
+		Check( rc == Category::Rasterizer && std::string( rn.c_str() ) == "bdpt_pel_rasterizer",
+			"P2a: rasterizer reverse yields the KIND as name" );
+		SourceSpan rfwd;
+		Check( ctrl.ResolveSourceSpan( Category::Rasterizer, rn, String(), 0, rfwd ),
+			"forward the reversed rasterizer kind" );
+		Check( rfwd.byteOffset == bdptPos,
+			"P2a: rasterizer round-trip resolves the SAME chunk (not the active one)" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
 }   // anonymous namespace
 
 int main()
@@ -215,6 +278,7 @@ int main()
 	TestForwardParamSpans();
 	TestHonestRefusal();
 	TestReverse();
+	TestReviewFixes();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

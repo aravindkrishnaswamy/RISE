@@ -35,6 +35,8 @@
 #include "pch.h"
 #include "SceneEditController.h"
 #include "../Cst/Cst.h"                   // Shared-undo U1: DocFindByNameAnyRole / DocResolveNodeId (prior-value capture)
+#include "../Parsers/ChunkParserRegistry.h"  // source-traceability reverse: authoritative keyword -> ChunkCategory
+#include <map>                            // source-traceability reverse: cached keyword -> Category map
 #include "../Utilities/Transformable.h"   // F6: CaptureTransformState at gizmo drag-start
 #include "ObjectIntrospection.h"
 #include "LightIntrospection.h"
@@ -5323,39 +5325,61 @@ RISE::Cst::NodeId ResolveSourceChunkId( const RISE::Cst::Document& doc,
 		if( name.empty() && !uf ) return 0;   // an empty name resolves only via the unique-fallback
 		return RISE::Cst::DocFindByNameAnyRole( doc, name, nullptr, suffix, uf );
 	}
-	// Singletons RoleKindSuffixForCategory rejects: resolve by KIND, unique-fallback.
+	// Singletons RoleKindSuffixForCategory rejects.  Film is a single unnamed
+	// chunk (resolve by kind).  Rasterizer chunks are unnamed and identified by
+	// KIND (their keyword), so `name` here carries the rasterizer KIND: empty ->
+	// the ACTIVE rasterizer (the Environment section's (Rasterizer,"") convention);
+	// non-empty -> that specific kind (so a reverse ref into a NON-active rasterizer
+	// chunk round-trips to the SAME chunk instead of collapsing to the active one).
 	if( cat == SceneEditController::Category::Film )
 		return RISE::Cst::DocFindByNameAnyRole( doc, "", nullptr, "film", true );
 	if( cat == SceneEditController::Category::Rasterizer ) {
-		if( activeRasterizerKind.empty() ) return 0;
-		return RISE::Cst::DocFindByNameAnyRole( doc, "", nullptr, activeRasterizerKind, true );
+		const std::string kind = name.empty() ? activeRasterizerKind : name;
+		if( kind.empty() ) return 0;
+		return RISE::Cst::DocFindByNameAnyRole( doc, "", nullptr, kind, true );
 	}
 	return 0;
 }
 
 // Source traceability (reverse): a CST chunk keyword (its role) -> the UI Category,
-// for the text->UI direction.  Covers every category a SourceRef can name (the
-// reverse of RoleKindSuffixForCategory + the Film / Rasterizer singletons).
-// Category::None for a keyword that is not an addressable entity/singleton chunk
-// (standard_shader, geometry sub-chunks, `let`, etc.).
+// for the text->UI direction.  DRIFT-PROOF: classifies by the parser registry's
+// AUTHORITATIVE per-chunk ChunkCategory (built once, cached) rather than a
+// hand-maintained suffix list -- a hand list silently misses non-suffix entity
+// keywords the forward path resolves by name (csg_object / override_object ->
+// Object, expression_function2d -> Painter, ...).  Category::None for a keyword
+// whose chunk isn't a UI-addressable entity/singleton (Geometry / Shader / ShaderOp
+// / Modifier / RasterizerOutput / PhotonMap / PhotonGather / IrradianceCache).
 SceneEditController::Category CategoryForChunkKeyword( const std::string& kw )
 {
 	using Cat = SceneEditController::Category;
-	auto ends = []( const std::string& s, const char* suf ) {
-		const std::string t( suf );
-		return s.size() >= t.size() && s.compare( s.size() - t.size(), t.size(), t ) == 0;
-	};
-	if( kw == "standard_object" )                     return Cat::Object;
-	if( kw == "camera" || ends( kw, "_camera" ) )     return Cat::Camera;
-	if( ends( kw, "_light" ) )                        return Cat::Light;
-	if( kw == "material" || ends( kw, "_material" ) ) return Cat::Material;
-	if( ends( kw, "_medium" ) )                       return Cat::Medium;
-	if( ends( kw, "_painter" ) )                      return Cat::Painter;
-	if( kw == "animation" )                           return Cat::Animation;
-	if( kw == "scene_variant" )                       return Cat::SceneVariant;
-	if( kw == "film" )                                return Cat::Film;
-	if( ends( kw, "_rasterizer" ) )                   return Cat::Rasterizer;
-	return Cat::None;
+	static const std::map<std::string, Cat> kMap = []() {
+		auto toCat = []( ChunkCategory cc ) -> Cat {
+			switch( cc ) {
+			case ChunkCategory::Painter:
+			case ChunkCategory::Function:     return Cat::Painter;   // both feed the painter managers
+			case ChunkCategory::Material:     return Cat::Material;
+			case ChunkCategory::Camera:       return Cat::Camera;
+			case ChunkCategory::Film:         return Cat::Film;
+			case ChunkCategory::Object:       return Cat::Object;    // standard_object / csg_object / override_object
+			case ChunkCategory::Medium:       return Cat::Medium;
+			case ChunkCategory::Rasterizer:   return Cat::Rasterizer;
+			case ChunkCategory::Light:        return Cat::Light;
+			case ChunkCategory::Animation:    return Cat::Animation;
+			case ChunkCategory::SceneVariant: return Cat::SceneVariant;
+			default:                          return Cat::None;      // not a UI-addressable category
+			}
+		};
+		std::map<std::string, Cat> m;
+		const std::vector<ChunkParserEntry> entries = CreateAllChunkParsers();
+		for( const ChunkParserEntry& e : entries ) {
+			if( !e.parser ) continue;
+			const Cat c = toCat( e.parser->Describe().category );
+			if( c != Cat::None && !e.keyword.empty() ) m[ e.keyword ] = c;
+		}
+		return m;
+	}();
+	const auto it = kMap.find( kw );
+	return ( it != kMap.end() ) ? it->second : Cat::None;
 }
 
 // Line (1-based) + column (1-based) of a byte offset in the serialized doc text.
@@ -5453,11 +5477,13 @@ bool SceneEditController::ResolveSourceSpan( Category cat, const String& name, c
 }
 
 bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category& outCat,
-                                                 String& outName, String& outParam ) const
+                                                 String& outName, String& outParam,
+                                                 int* outOccurrence ) const
 {
 	outCat   = Category::None;
 	outName  = String();
 	outParam = String();
+	if( outOccurrence ) *outOccurrence = 0;
 
 	std::lock_guard<std::mutex> lk( mMutex );
 	if( !mJob.HasRetainedCstDocument() ) return false;
@@ -5485,17 +5511,35 @@ bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category&
 	const Category cat = CategoryForChunkKeyword( chunk->role );
 	if( cat == Category::None ) return false;   // not an addressable entity/singleton chunk
 
-	// Name from ChunkNamePath ("keyword/name" for a named chunk, "keyword" for an
-	// unnamed singleton) — the segment after the last '/'.
-	const std::string np = RISE::Cst::ChunkNamePath( chunk );
+	// Name.  Rasterizer chunks are unnamed and addressed by KIND, so the name IS
+	// the keyword (so a ref into a non-active rasterizer round-trips).  Every other
+	// category takes the name from ChunkNamePath ("keyword/name" -> segment after
+	// the last '/'; an unnamed singleton like `film` yields empty).
 	std::string nm;
-	const size_t slash = np.rfind( '/' );
-	if( slash != std::string::npos ) nm = np.substr( slash + 1 );
+	if( cat == Category::Rasterizer ) {
+		nm = chunk->role;
+	} else {
+		const std::string np = RISE::Cst::ChunkNamePath( chunk );
+		const size_t slash = np.rfind( '/' );
+		if( slash != std::string::npos ) nm = np.substr( slash + 1 );
+	}
 
 	outCat  = cat;
 	outName = String( nm.c_str() );
-	if( paramNode && paramNode->kind == RISE::Cst::NodeKind::Param )
+	if( paramNode && paramNode->kind == RISE::Cst::NodeKind::Param ) {
 		outParam = String( paramNode->role.c_str() );
+		// Occurrence: index of this param among same-role Param siblings (so a click
+		// inside the k-th repeat of a repeatable param round-trips to occ=k).
+		if( outOccurrence ) {
+			int occ = 0;
+			for( const RISE::Cst::NodeRef& kid : chunk->kids ) {
+				if( !kid || kid->kind != RISE::Cst::NodeKind::Param || kid->role != paramNode->role ) continue;
+				if( kid.get() == paramNode.get() ) break;   // reached the matched param
+				++occ;
+			}
+			*outOccurrence = occ;
+		}
+	}
 	return true;
 }
 

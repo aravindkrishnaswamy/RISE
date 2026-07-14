@@ -1808,13 +1808,21 @@ namespace RISE
 		//! Reverse: the UI element whose scene-file source contains byte `offset`
 		//! (a text-editor cursor / selection) -> fills (outCat, outName, outParam)
 		//! so the caller can select + highlight that element.  outParam is empty
-		//! when the offset is inside a chunk but not on a specific param.  Returns
-		//! false when there is no retained CST or the offset isn't inside an
-		//! addressable chunk (inter-chunk trivia, a non-entity chunk kind, EOF).
-		//! Completes the round-trip (text -> UI) using the CST's byte->node map
-		//! (DocParamAtByteOffset / DocItemAtByteOffset).
+		//! when the offset is inside a chunk but not on a specific param;
+		//! `*outOccurrence` (if non-null) is the 0-based occurrence index of that
+		//! param among its same-role siblings (0 for a non-repeated param / no
+		//! param), so a click inside the k-th repeat round-trips to
+		//! ResolveSourceSpan(...,occ=k).  For the Rasterizer category outName is the
+		//! rasterizer KIND (its keyword) -- rasterizer chunks are unnamed and
+		//! addressed by kind -- so a reverse ref into a non-active rasterizer chunk
+		//! forward-resolves to that SAME chunk.  Returns false when there is no
+		//! retained CST or the offset isn't inside an addressable chunk (inter-chunk
+		//! trivia, a non-entity chunk kind, EOF).  Completes the round-trip (text ->
+		//! UI) using the CST's byte->node map (DocParamAtByteOffset /
+		//! DocItemAtByteOffset).
 		bool SourceRefAtByteOffset( std::uint64_t offset, Category& outCat,
-		                            String& outName, String& outParam ) const;
+		                            String& outName, String& outParam,
+		                            int* outOccurrence = nullptr ) const;
 
 		//! Phase 6.5 UI hook: install a listener that fires when
 		//! `HasUnsavedChanges()` flips (clean→dirty or dirty→clean).
