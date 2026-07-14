@@ -38,10 +38,18 @@
 #include <iostream>
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
-#include <unistd.h>
 #include <vector>
+
+#if defined( _WIN32 )
+	#include <process.h>
+	#define RISE_TEST_GETPID _getpid
+#else
+	#include <unistd.h>
+	#define RISE_TEST_GETPID getpid
+#endif
 
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
@@ -113,19 +121,34 @@ public:
 
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
-	char path[512];
-	std::snprintf( path, sizeof(path),
-		"/tmp/deferred_realize_%s_%d.RISEscene",
-		tag, static_cast<int>(::getpid()) );
+	const char* tempDir = std::getenv( "TMPDIR" );
+#if defined( _WIN32 )
+	if( !tempDir || !*tempDir ) {
+		tempDir = std::getenv( "TEMP" );
+	}
+#endif
+	if( !tempDir || !*tempDir ) {
+		tempDir = ".";
+	}
 
-	std::ofstream ofs( path );
+	std::string path( tempDir );
+	if( path.back() != '/' && path.back() != '\\' ) {
+		path += '/';
+	}
+	char filename[256];
+	std::snprintf( filename, sizeof(filename),
+		"deferred_realize_%s_%d.RISEscene",
+		tag, static_cast<int>( RISE_TEST_GETPID() ) );
+	path += filename;
+
+	std::ofstream ofs( path.c_str() );
 	if( !ofs.is_open() ) {
 		return std::string();
 	}
 	ofs << sceneText;
 	ofs.close();
 	g_tmpScenes.push_back( path );
-	return std::string( path );
+	return path;
 }
 
 // FOUR-case scene.  base_sphere is the shared tessellatable base.  Only

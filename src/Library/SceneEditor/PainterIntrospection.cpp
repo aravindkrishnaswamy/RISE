@@ -9,6 +9,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include "pch.h"
 #include "PainterIntrospection.h"
 #include "ChunkDescriptorRegistry.h"
 
