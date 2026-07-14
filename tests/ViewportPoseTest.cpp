@@ -235,6 +235,103 @@ namespace
 			std::remove( tmp2.c_str() );
 		}
 	}
+
+	//------------------------------------------------------------------
+	// V5: axis snaps — auto-enter free-fly, re-pose to an axis, preserve
+	// distance, and leave the scene camera untouched.
+	//------------------------------------------------------------------
+	void TestAxisSnaps()
+	{
+		std::printf( "V5: axis snaps (auto-enter, distance-preserving, non-destructive)...\n" );
+		const std::string tmp = TempPath( "vpose_v5.RISEscene" );
+		Job* pJob = LoadScene( kPinholeScene, tmp );   // active cam at (0,0,5) looking at origin, dist 5
+		Check( pJob != nullptr, "fixture loads" );
+		if( !pJob ) return;
+
+		SceneEditController ctrl( *pJob, nullptr );
+		const std::string serBefore = SerializedScene( *pJob );
+		CameraSnapshot camBefore;
+		Check( CaptureActive( *pJob, camBefore ), "active camera captured (pre)" );
+
+		// Snap +X from a NON-free-fly state -> auto-enters free-fly.
+		Check( !ctrl.IsFreeFlyActive(), "not in free-fly before snap" );
+		Check( ctrl.SnapViewToAxis( /*axis X*/0, /*negative*/false ), "SnapViewToAxis(+X) succeeds" );
+		Check( ctrl.IsFreeFlyActive(), "free-fly auto-entered by the snap" );
+		CameraSnapshot px;
+		Check( ctrl.GetViewportPose( px ), "pose after +X snap" );
+		auto near = []( double a, double b ) { return std::fabs( a - b ) < 1e-9; };
+		Check( near( px.location[0], 5.0 ) && near( px.location[1], 0.0 ) && near( px.location[2], 0.0 ),
+			"+X snap positions the eye at pivot + (dist,0,0)" );
+		Check( near( px.lookat[0], 0.0 ) && near( px.lookat[1], 0.0 ) && near( px.lookat[2], 0.0 ),
+			"+X snap looks at the pivot" );
+		Check( near( px.up[1], 1.0 ) && near( px.up[0], 0.0 ) && near( px.up[2], 0.0 ),
+			"+X snap up is world-Y" );
+
+		// Snap +Y (top) -> up must be -Z (not parallel to the view).
+		Check( ctrl.SnapViewToAxis( /*axis Y*/1, /*negative*/false ), "SnapViewToAxis(+Y) succeeds" );
+		CameraSnapshot py;
+		Check( ctrl.GetViewportPose( py ), "pose after +Y snap" );
+		Check( near( py.location[1], 5.0 ) && near( py.location[0], 0.0 ) && near( py.location[2], 0.0 ),
+			"+Y snap positions the eye at pivot + (0,dist,0)" );
+		Check( near( py.up[2], -1.0 ) && near( py.up[1], 0.0 ),
+			"+Y (top) snap up is -Z (not parallel to the down-axis view)" );
+
+		// −Y (bottom) up flips to +Z.
+		Check( ctrl.SnapViewToAxis( 1, /*negative*/true ), "SnapViewToAxis(-Y) succeeds" );
+		CameraSnapshot ny;
+		Check( ctrl.GetViewportPose( ny ), "pose after -Y snap" );
+		Check( near( ny.location[1], -5.0 ), "-Y snap positions the eye at pivot + (0,-dist,0)" );
+		Check( near( ny.up[2], 1.0 ), "-Y (bottom) snap up is +Z" );
+
+		// NON-DESTRUCTIVE throughout: the scene camera + CST are untouched.
+		Check( SerializedScene( *pJob ) == serBefore, "CST byte-identical after snaps (no scene mutation)" );
+		CameraSnapshot camAfter;
+		Check( CaptureActive( *pJob, camAfter ), "active camera captured (post)" );
+		Check( SameCamera( camAfter, camBefore ), "active scene camera untouched by snaps" );
+
+		// Bad axis is refused.
+		Check( !ctrl.SnapViewToAxis( 3, false ), "SnapViewToAxis(bad axis) refused" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// V6: Home — capture, navigate away, restore.
+	//------------------------------------------------------------------
+	void TestHomeView()
+	{
+		std::printf( "V6: Home view capture + restore...\n" );
+		const std::string tmp = TempPath( "vpose_v6.RISEscene" );
+		Job* pJob = LoadScene( kPinholeScene, tmp );
+		Check( pJob != nullptr, "fixture loads" );
+		if( !pJob ) return;
+
+		SceneEditController ctrl( *pJob, nullptr );
+		auto near = []( double a, double b ) { return std::fabs( a - b ) < 1e-9; };
+
+		Check( !ctrl.HasHomeView(), "no home view initially" );
+		Check( !ctrl.GoToHomeView(), "GoToHomeView refused when no home set" );
+
+		// Capture the active camera (at 0,0,5) as home.
+		Check( ctrl.SetHomeView(), "SetHomeView captures the active camera" );
+		Check( ctrl.HasHomeView(), "HasHomeView true after capture" );
+
+		// Navigate away (snap +X -> eye at 5,0,0).
+		Check( ctrl.SnapViewToAxis( 0, false ), "snap +X (navigate away)" );
+		CameraSnapshot away;
+		Check( ctrl.GetViewportPose( away ) && near( away.location[0], 5.0 ), "moved to +X" );
+
+		// Home restores the captured pose (eye back at 0,0,5).
+		Check( ctrl.GoToHomeView(), "GoToHomeView restores" );
+		CameraSnapshot home;
+		Check( ctrl.GetViewportPose( home ), "pose after GoToHomeView" );
+		Check( near( home.location[0], 0.0 ) && near( home.location[1], 0.0 ) && near( home.location[2], 5.0 ),
+			"home restored the captured eye position (0,0,5)" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
 }   // anonymous namespace
 
 int main()
@@ -243,6 +340,8 @@ int main()
 	TestEnterAndNonDestructive();
 	TestDifferentKindPose();
 	TestExitAndRefusal();
+	TestAxisSnaps();
+	TestHomeView();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -1953,6 +1953,34 @@ namespace RISE
 		//! free-fly isn't active (out untouched).
 		bool GetViewportPose( CameraSnapshot& out ) const;
 
+		//! -------- Axis snaps + Home (Tier 2 / Direction B §4.2) --------
+		//!
+		//! Non-destructive VIEW navigation: re-pose the transient ViewportPose
+		//! (auto-entering free-fly from the active camera first if needed) to look
+		//! straight down a world axis at the current pivot, PRESERVING distance and
+		//! the camera's optics — the same pose-only math applied to the view, never
+		//! to a scene camera (no SceneEdit / revision bump / undo entry, §4.2).
+
+		//! Enumerates the six axis nubs.  `axis`: 0=X, 1=Y, 2=Z; `negative` picks
+		//! the −axis side (Blender: click again = opposite).  Snap positions the
+		//! camera on the chosen side of the pivot looking back down the axis, with
+		//! a sensible up (world-Y for X/Z axes; ∓Z for the Y/top-bottom axis so up
+		//! isn't parallel to the view).  Returns false on a bad axis, no seedable
+		//! camera, or a realization failure.
+		bool SnapViewToAxis( int axis, bool negative );
+
+		//! Capture the CURRENT view (the transient pose if in free-fly, else the
+		//! active camera) into the single reserved "home" slot.  Returns false when
+		//! there is no camera to capture.
+		bool SetHomeView();
+
+		//! Restore the home slot into the transient pose (a degenerate named-view
+		//! restore, §4.2).  Returns false when no home has been set.
+		bool GoToHomeView();
+
+		//! Whether a home view has been captured this session.
+		bool HasHomeView() const;
+
 		//! Entity-creation slice: number of "Add Entity" templates
 		//! registered for `cat` (see EntityTemplates.h).  0 for
 		//! categories with none (Camera/Rasterizer/Film/Animation/
@@ -2931,6 +2959,11 @@ namespace RISE
 		CameraSnapshot              mViewportPose;
 		bool                        mViewportPoseActive = false;
 		ICamera*                    mViewportOverrideCamera = nullptr;
+
+		// Home view (Tier 2 §4.2): a single reserved pose slot, session UI state
+		// (never a scene write).  Captured by SetHomeView, restored by GoToHomeView.
+		CameraSnapshot              mHomeView;
+		bool                        mHasHomeView = false;
 
 		// Properties-panel snapshot (rebuilt on RefreshProperties).
 		// `mProperties` is the PRIMARY-selection snapshot (kept for

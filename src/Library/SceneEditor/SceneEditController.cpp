@@ -6360,6 +6360,89 @@ bool SceneEditController::GetViewportPose( CameraSnapshot& out ) const
 	return true;
 }
 
+// ===================== Axis snaps + Home (Tier 2 §4.2) =========================
+
+bool SceneEditController::SnapViewToAxis( int axis, bool negative )
+{
+	if( axis < 0 || axis > 2 ) return false;
+
+	// Source pose: the current free-fly pose, or (auto-enter) the active camera.
+	CameraSnapshot src;
+	if( IsFreeFlyActive() ) {
+		if( !GetViewportPose( src ) ) return false;
+	} else {
+		if( !EnterFreeFlyFromActiveCamera() ) return false;
+		if( !GetViewportPose( src ) ) return false;   // now seeded from the active camera
+	}
+
+	// Pivot = the current lookat; preserve the eye->pivot distance and the optics.
+	const double pivot[3] = { src.lookat[0], src.lookat[1], src.lookat[2] };
+	const double dx = src.location[0] - pivot[0];
+	const double dy = src.location[1] - pivot[1];
+	const double dz = src.location[2] - pivot[2];
+	double dist = std::sqrt( dx*dx + dy*dy + dz*dz );
+	if( dist < 1e-6 ) dist = 5.0;   // degenerate (eye == pivot) -> a sane default distance
+
+	const double sign = negative ? -1.0 : 1.0;
+
+	CameraSnapshot snap = src;   // keep kind + optics
+	snap.location[0] = pivot[0]; snap.location[1] = pivot[1]; snap.location[2] = pivot[2];
+	snap.location[axis] += sign * dist;
+	snap.lookat[0] = pivot[0]; snap.lookat[1] = pivot[1]; snap.lookat[2] = pivot[2];
+	// Up: world-Y for the X/Z axes; for the Y axis (top/bottom) use -/+Z so up is
+	// not parallel to the view direction.
+	snap.up[0] = 0.0; snap.up[1] = 0.0; snap.up[2] = 0.0;
+	if( axis == 1 ) snap.up[2] = negative ? 1.0 : -1.0;
+	else            snap.up[1] = 1.0;
+	// A clean axis-aligned view drops any extra euler / target orientation.
+	snap.orientation[0] = snap.orientation[1] = snap.orientation[2] = 0.0;
+	snap.target_orientation[0] = snap.target_orientation[1] = 0.0;
+
+	return SetViewportPose( snap );
+}
+
+bool SceneEditController::SetHomeView()
+{
+	CameraSnapshot cur;
+	if( IsFreeFlyActive() ) {
+		if( !GetViewportPose( cur ) ) return false;
+	} else {
+		// Capture the active camera under the park (its fields tear under a
+		// concurrent orbit-drag write — same reason CloneActiveCamera parks).
+		std::unique_lock<std::mutex> lk( mMutex );
+		const IScene* scene = mJob.GetScene();
+		if( !scene ) return false;
+		if( mRendering.load( std::memory_order_acquire ) ) {
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+		const ICamera* cam = scene->GetCamera();
+		if( !cam || !CameraIntrospection::CaptureCameraSnapshot( *cam, cur ) ) return false;
+	}
+	std::lock_guard<std::mutex> lk( mMutex );
+	mHomeView = cur;
+	mHasHomeView = true;
+	return true;
+}
+
+bool SceneEditController::GoToHomeView()
+{
+	CameraSnapshot home;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		if( !mHasHomeView ) return false;
+		home = mHomeView;
+	}
+	return SetViewportPose( home );   // takes mMutex itself
+}
+
+bool SceneEditController::HasHomeView() const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	return mHasHomeView;
+}
+
 namespace {
 
 // Generalizes UniqueCameraName (above) across every category: build the
