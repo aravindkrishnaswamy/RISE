@@ -1884,6 +1884,14 @@ final class RenderViewModel: ObservableObject {
         alert.runModal()
     }
 
+    /// Public surface for the Environment panel to report a refused / partial
+    /// environment edit (e.g. "already bound", or a live bind that couldn't be
+    /// recorded in the scene file).  Routes through the same warning alert the
+    /// entity-CRUD failures use.
+    func presentEnvironmentNotice(_ message: String) {
+        presentEntityEditAlert(title: "Environment", message: message)
+    }
+
     func saveAndReloadScene() {
         guard let path = loadedFilePath else { return }
 

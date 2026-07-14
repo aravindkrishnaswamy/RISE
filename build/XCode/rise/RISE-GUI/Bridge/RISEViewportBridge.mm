@@ -63,6 +63,22 @@ using namespace RISE;
 - (instancetype)initWithLabel:(NSString *)label value:(NSString *)value;
 @end
 
+// Class extension: private initialiser for RISEEnvironmentInfo — hoists the
+// selector into scope for the `environmentInfo` accessor (the implementation
+// lives near the bottom of this file, after RISEViewportProperty's).
+@interface RISEEnvironmentInfo ()
+- (instancetype)initWithHasEnvironment:(BOOL)hasEnvironment
+                         proceduralSky:(BOOL)proceduralSky
+                              editable:(BOOL)editable
+                           painterName:(NSString *)painterName
+                                  file:(NSString *)file
+                                 scale:(double)scale
+                               orientX:(double)orientX
+                               orientY:(double)orientY
+                               orientZ:(double)orientZ
+                            background:(BOOL)background;
+@end
+
 // Class extension: private initialiser for RISEViewportGizmoHandle —
 // needed by the `gizmoHandles` accessor on RISEViewportBridge which
 // builds the snapshot array.  The implementation lives at the bottom
@@ -1265,6 +1281,93 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     return applied;
 }
 
+#pragma mark - Environment / IBL section
+
+- (nullable RISEEnvironmentInfo *)environmentInfo {
+    if (!_controller) return nil;
+    int hasEnv = 0, procSky = 0, editable = 0, background = 0;
+    char nameBuf[256] = {0};
+    char fileBuf[1024] = {0};
+    double scale = 1.0, ox = 0.0, oy = 0.0, oz = 0.0;
+    if (!RISE_API_SceneEditController_GetEnvironment(
+            _controller, &hasEnv, &procSky, &editable,
+            nameBuf, sizeof(nameBuf), fileBuf, sizeof(fileBuf),
+            &scale, &ox, &oy, &oz, &background)) {
+        return nil;
+    }
+    NSString *nm = [NSString stringWithUTF8String:nameBuf] ?: @"";
+    NSString *fl = [NSString stringWithUTF8String:fileBuf] ?: @"";
+    return [[RISEEnvironmentInfo alloc] initWithHasEnvironment:(hasEnv != 0)
+                                                 proceduralSky:(procSky != 0)
+                                                      editable:(editable != 0)
+                                                   painterName:nm
+                                                          file:fl
+                                                         scale:scale
+                                                       orientX:ox
+                                                       orientY:oy
+                                                       orientZ:oz
+                                                    background:(background != 0)];
+}
+
+- (BOOL)setEnvironmentScale:(double)scale {
+    if (!_controller) return NO;
+    const BOOL ok = RISE_API_SceneEditController_SetEnvironmentScale(_controller, scale) ? YES : NO;
+    if (ok) [self refreshProperties];
+    return ok;
+}
+
+- (BOOL)setEnvironmentBackground:(BOOL)background {
+    if (!_controller) return NO;
+    const BOOL ok = RISE_API_SceneEditController_SetEnvironmentBackground(_controller, background ? 1 : 0) ? YES : NO;
+    if (ok) [self refreshProperties];
+    return ok;
+}
+
+- (BOOL)setEnvironmentOrientX:(double)x y:(double)y z:(double)z {
+    if (!_controller) return NO;
+    const BOOL ok = RISE_API_SceneEditController_SetEnvironmentOrient(_controller, x, y, z) ? YES : NO;
+    if (ok) [self refreshProperties];
+    return ok;
+}
+
+- (BOOL)setEnvironmentFile:(NSString *)absPath {
+    if (!_controller || !absPath) return NO;
+    const BOOL ok = RISE_API_SceneEditController_SetEnvironmentFile(_controller, absPath.UTF8String) ? YES : NO;
+    if (ok) [self refreshProperties];
+    return ok;
+}
+
+- (BOOL)addEnvironment:(NSString *)hdriPath
+               outName:(NSString **)outName
+            outMessage:(NSString **)outMessage {
+    if (outName)    *outName    = nil;
+    if (outMessage) *outMessage = nil;
+    if (!_controller || !hdriPath) return NO;
+    char nameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[1024] = {0};
+    const BOOL applied = RISE_API_SceneEditController_AddEnvironment(
+        _controller, hdriPath.UTF8String,
+        nameBuf, sizeof(nameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf)) ? YES : NO;
+    if (outName && nameBuf[0] != '\0') {
+        *outName = [NSString stringWithUTF8String:nameBuf];
+    }
+    if (outMessage && messageBuf[0] != '\0') {
+        *outMessage = [NSString stringWithUTF8String:messageBuf];
+    }
+    if (applied) [self refreshProperties];
+    return applied;
+}
+
+- (BOOL)removeEnvironment {
+    if (!_controller) return NO;
+    const BOOL ok = RISE_API_SceneEditController_RemoveEnvironment(_controller) ? YES : NO;
+    if (ok) [self refreshProperties];
+    return ok;
+}
+
 - (nullable NSString *)addCameraFromActive:(NSString *)proposedName {
     if (!_controller) return nil;
     const char* utf8 = proposedName ? [proposedName UTF8String] : "";
@@ -1735,6 +1838,59 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 - (BOOL)editable          { return _editable; }
 - (NSArray<RISEViewportPropertyPreset *> *)presets { return _presets; }
 - (NSString *)unitLabel   { return _unitLabel; }
+
+@end
+
+@implementation RISEEnvironmentInfo {
+    BOOL _hasEnvironment;
+    BOOL _proceduralSky;
+    BOOL _editable;
+    NSString *_painterName;
+    NSString *_file;
+    double _scale;
+    double _orientX;
+    double _orientY;
+    double _orientZ;
+    BOOL _background;
+}
+
+- (instancetype)initWithHasEnvironment:(BOOL)hasEnvironment
+                         proceduralSky:(BOOL)proceduralSky
+                              editable:(BOOL)editable
+                           painterName:(NSString *)painterName
+                                  file:(NSString *)file
+                                 scale:(double)scale
+                               orientX:(double)orientX
+                               orientY:(double)orientY
+                               orientZ:(double)orientZ
+                            background:(BOOL)background
+{
+    self = [super init];
+    if (self) {
+        _hasEnvironment = hasEnvironment;
+        _proceduralSky = proceduralSky;
+        _editable = editable;
+        _painterName = [painterName copy] ?: @"";
+        _file = [file copy] ?: @"";
+        _scale = scale;
+        _orientX = orientX;
+        _orientY = orientY;
+        _orientZ = orientZ;
+        _background = background;
+    }
+    return self;
+}
+
+- (BOOL)hasEnvironment { return _hasEnvironment; }
+- (BOOL)proceduralSky  { return _proceduralSky; }
+- (BOOL)editable       { return _editable; }
+- (NSString *)painterName { return _painterName; }
+- (NSString *)file     { return _file; }
+- (double)scale        { return _scale; }
+- (double)orientX      { return _orientX; }
+- (double)orientY      { return _orientY; }
+- (double)orientZ      { return _orientZ; }
+- (BOOL)background     { return _background; }
 
 @end
 

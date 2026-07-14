@@ -52,6 +52,23 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
 @property (nonatomic, readonly, copy) NSString *message;
 @end
 
+/// Snapshot of the scene's IBL environment (a scene-level singleton: an
+/// hdr/exr painter bound via `radiance_*` on the active rasterizer, NOT
+/// an ILight).  See SceneEditController::EnvironmentInfo and
+/// docs/gui/ENVIRONMENT_SECTION.md.  Returned by -[RISEViewportBridge environmentInfo].
+@interface RISEEnvironmentInfo : NSObject
+@property (nonatomic, readonly) BOOL hasEnvironment;   ///< a radiance_map painter is bound
+@property (nonatomic, readonly) BOOL proceduralSky;    ///< a procedural sky / non-painter map is installed (read-only)
+@property (nonatomic, readonly) BOOL editable;         ///< false when the active rasterizer takes no radiance map (MLT / pixel*)
+@property (nonatomic, readonly) NSString *painterName; ///< bound painter name ("" if none)
+@property (nonatomic, readonly) NSString *file;        ///< resolved HDRI path ("" if unresolved / procedural)
+@property (nonatomic, readonly) double scale;          ///< intensity multiplier
+@property (nonatomic, readonly) double orientX;        ///< Euler rotation X in DEGREES
+@property (nonatomic, readonly) double orientY;        ///< Euler rotation Y in DEGREES
+@property (nonatomic, readonly) double orientZ;        ///< Euler rotation Z in DEGREES
+@property (nonatomic, readonly) BOOL background;        ///< map visible behind geometry
+@end
+
 @interface RISEViewportBridge : NSObject
 
 /// Construct over an existing RISEBridge.  The RISEBridge must have
@@ -571,6 +588,37 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
                             name:(NSString *)name
                       outMessage:(NSString * _Nullable * _Nullable)outMessage
     NS_SWIFT_NAME(removeEntity(for:name:outMessage:));
+
+#pragma mark - Environment / IBL section
+
+/// Read the current environment binding.  Returns nil only when there is
+/// no scene / no active rasterizer; otherwise a fully-populated snapshot
+/// (with `hasEnvironment == NO` when unbound).
+- (nullable RISEEnvironmentInfo *)environmentInfo;
+
+/// Set the environment intensity / background-visibility / rotation
+/// (degrees).  Each applies live (viewport re-renders) AND persists (CST
+/// mirror).  Returns NO when no editable bound environment exists.
+- (BOOL)setEnvironmentScale:(double)scale;
+- (BOOL)setEnvironmentBackground:(BOOL)background;
+- (BOOL)setEnvironmentOrientX:(double)x y:(double)y z:(double)z
+    NS_SWIFT_NAME(setEnvironmentOrient(x:y:z:));
+
+/// Swap the bound environment painter's HDRI file (an existing path; the
+/// file picker is the guard).  Returns NO when none is bound.
+- (BOOL)setEnvironmentFile:(NSString *)absPath;
+
+/// Create an environment from an HDRI file when none exists (inserts an
+/// hdr/exr painter chosen from the extension + binds radiance_map).
+/// Returns `applied`; `outName` / `outMessage` optional (may be NULL).
+- (BOOL)addEnvironment:(NSString *)hdriPath
+               outName:(NSString * _Nullable * _Nullable)outName
+            outMessage:(NSString * _Nullable * _Nullable)outMessage
+    NS_SWIFT_NAME(addEnvironment(_:outName:outMessage:));
+
+/// Remove the environment (unbinds radiance_map, live + CST).  Returns
+/// NO when no editable environment exists.
+- (BOOL)removeEnvironment;
 
 #pragma mark - Multi-camera
 
