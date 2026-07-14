@@ -563,6 +563,35 @@ public:
     bool getEntitySourceLocation(Category category, const QString& name,
                                   quint64* outByteOffset, quint32* outLine) const;
 
+    // ---- Source traceability (any UI element <-> scene-file span) ----
+    // Mirrors the macOS RISEViewportBridge's identically-named section and
+    // the RISE_API_SceneEditController_ResolveSourceSpan /
+    // SourceRefAtByteOffset C exports.  Same do-not-poll-during-renders
+    // caveat as getEntitySourceLocation (both take the controller's commit
+    // mutex) -- gate on MainWindow::canUseSceneTransport().
+
+    /// Resolve a UI element's scene-file span (generalizes
+    /// getEntitySourceLocation to param granularity + the Film / Rasterizer
+    /// singletons).  `param` empty = the whole chunk (outLength 0); non-empty
+    /// = the `occ`-th matching param's tight `role value` run.  Fills
+    /// byteOffset/byteLength (UTF-8 bytes into serializedSceneText()) + 1-based
+    /// line/column.  Returns false (outputs left untouched) on a null
+    /// controller, no retained CST document, or an unresolvable ref.
+    bool resolveSourceSpan(Category cat, const QString& name, const QString& param,
+                            int occ, quint64* outOffset, quint64* outLength,
+                            quint32* outLine, quint32* outColumn) const;
+
+    /// Reverse (a text-editor byte offset -> the UI element it backs).  On
+    /// success fills `outCat` (a Category), `outName` (the entity name, empty
+    /// for an unnamed singleton), `outParam` (empty when the offset is on a
+    /// chunk header rather than a specific param), and `outOccurrence`.
+    /// Returns false when there's no retained CST or the offset isn't inside
+    /// an addressable entity/singleton chunk.  Exposed now for a later
+    /// text-cursor -> UI-select slice; the forward (resolveSourceSpan) is the
+    /// one wired in this slice.
+    bool sourceRefAtByteOffset(quint64 offset, Category* outCat, QString* outName,
+                                QString* outParam, int* outOccurrence) const;
+
     // ---- Entity creation + painter CRUD (entity-creation slice) -----
     // Mirrors RISE_API_SceneEditController_{EntityTemplateCount,
     // EntityTemplateLabel,InstantiateEntityTemplate,DuplicateEntity,

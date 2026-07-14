@@ -218,6 +218,18 @@ private:
     /// resolve.
     void revealEntityInSceneText(int category, const QString& name);
 
+    /// Source traceability (param + Environment granularity): resolve a
+    /// specific UI element's EXACT scene-file span via
+    /// ViewportBridge::resolveSourceSpan, switch to the Scene-file tab, and
+    /// select/flash [offset, offset+length) in the SceneEditor.  `param`
+    /// empty falls back to a whole-chunk (line) reveal.  Same
+    /// canUseSceneTransport() gate + stale-buffer (isDirty) skip as
+    /// revealEntityInSceneText -- a reveal must be right or absent, never
+    /// misleading.  `category` uses the SAME raw-int convention as
+    /// revealEntityInSceneText above (ViewportBridge::Category numbering).
+    void revealSourceSpan(int category, const QString& name,
+                           const QString& param, int occurrence);
+
     // Entity creation + painter CRUD (entity-creation slice) -- mirrors
     // macOS RenderViewModel.addEntity / duplicateSelectedOrNamed /
     // removeEntity.  `category` uses the SAME raw-int convention as

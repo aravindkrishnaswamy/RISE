@@ -818,6 +818,27 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
     rowLayout->setSpacing(8);
     rowLayout->setAlignment(Qt::AlignTop);
 
+    // Source traceability: right-clicking a property row reveals THIS
+    // param's exact `role value` span in the Scene-file editor.  Shown
+    // only when the current entity resolves to a scene-file chunk
+    // (m_sourceLineKnown) -- the same gate as the whole-entity ⌗ chip.
+    // Captures the param name by value; the current category/name come
+    // from the members at right-click time (the row is rebuilt on any
+    // selection change, so they always match this row's entity).
+    row->setContextMenuPolicy(Qt::CustomContextMenu);
+    const QString paramName = p.name;
+    connect(row, &QWidget::customContextMenuRequested, this,
+            [this, row, paramName](const QPoint& pos) {
+                if (!m_sourceLineKnown) return;
+                QMenu menu(this);
+                QAction* reveal = menu.addAction(
+                    tr("Reveal \xE2\x80\x9C%1\xE2\x80\x9D in Scene File").arg(paramName));   // “<param>”
+                connect(reveal, &QAction::triggered, this, [this, paramName]() {
+                    emit revealParamRequested(m_currentSelectionCat, m_currentSelectionName, paramName);
+                });
+                menu.exec(row->mapToGlobal(pos));
+            });
+
     auto* label = new QLabel(p.name);
     label->setFont(Theme::sans(11));
     label->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textFaint)));

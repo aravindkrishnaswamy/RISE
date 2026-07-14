@@ -76,6 +76,16 @@ signals:
     /// panel's refreshTrigger bump.
     void environmentEdited();
 
+    /// Source traceability: a per-row context menu ("Reveal ... in Scene
+    /// File") was invoked.  MainWindow connects this to revealSourceSpan(),
+    /// which highlights the backing param's EXACT span: the HDRI file lives
+    /// on the bound PAINTER chunk (category Painter, name = m_env.painterName,
+    /// param "file"); intensity/rotation/background are radiance_* params on
+    /// the ACTIVE RASTERIZER chunk (category Rasterizer, empty name).
+    /// `category` is a raw int using ViewportBridge::Category numbering
+    /// (Rasterizer = 2, Painter = 10), matching MainWindow::revealSourceSpan.
+    void revealEnvParamRequested(int category, const QString& name, const QString& param);
+
 private:
     /// True iff editing is currently allowed: an editable bound
     /// environment AND the scene isn't wedged by an in-flight render.
@@ -98,6 +108,15 @@ private:
     /// with the picked absolute path (the picker is the guard against a
     /// non-existent file).
     void pickFile(const std::function<void(const QString&)>& chosen);
+
+    /// Install a custom context menu on `target` that emits
+    /// revealEnvParamRequested(category, name, param) when its single
+    /// "Reveal ... in Scene File" item is chosen -- the Windows/Qt analogue
+    /// of the Mac panel's per-row `.contextMenu { revealButton(...) }`.
+    /// `label` is the already-translated menu-item text.  `category` is a
+    /// raw int (ViewportBridge::Category numbering).
+    void installRevealMenu(QWidget* target, const QString& label,
+                            int category, const QString& name, const QString& param);
 
     ViewportBridge* m_bridge = nullptr;
     QVBoxLayout*    m_rootLayout = nullptr;

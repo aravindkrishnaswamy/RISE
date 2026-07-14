@@ -771,6 +771,48 @@ bool ViewportBridge::getEntitySourceLocation(Category category, const QString& n
         outByteOffset, outLine);
 }
 
+// ---- Source traceability (any UI element <-> scene-file span) ------
+
+bool ViewportBridge::resolveSourceSpan(Category cat, const QString& name, const QString& param,
+                                        int occ, quint64* outOffset, quint64* outLength,
+                                        quint32* outLine, quint32* outColumn) const
+{
+    if (outOffset) *outOffset = 0;
+    if (outLength) *outLength = 0;
+    if (outLine)   *outLine   = 0;
+    if (outColumn) *outColumn = 0;
+    if (!m_controller) return false;
+    const QByteArray nameUtf8  = name.toUtf8();
+    const QByteArray paramUtf8 = param.toUtf8();
+    return RISE_API_SceneEditController_ResolveSourceSpan(
+        m_controller, static_cast<int>(cat),
+        nameUtf8.constData(), paramUtf8.constData(), occ,
+        outOffset, outLength, outLine, outColumn);
+}
+
+bool ViewportBridge::sourceRefAtByteOffset(quint64 offset, Category* outCat, QString* outName,
+                                            QString* outParam, int* outOccurrence) const
+{
+    if (outName)       *outName       = QString();
+    if (outParam)      *outParam      = QString();
+    if (outOccurrence) *outOccurrence = 0;
+    if (!m_controller) return false;
+    int catInt = 0;
+    int occ = 0;
+    char nameBuf[256] = {0};
+    char paramBuf[128] = {0};
+    if (!RISE_API_SceneEditController_SourceRefAtByteOffset(
+            m_controller, offset, &catInt,
+            nameBuf, sizeof(nameBuf), paramBuf, sizeof(paramBuf), &occ)) {
+        return false;
+    }
+    if (outCat)        *outCat        = static_cast<Category>(catInt);
+    if (outName)       *outName       = QString::fromUtf8(nameBuf);
+    if (outParam)      *outParam      = QString::fromUtf8(paramBuf);
+    if (outOccurrence) *outOccurrence = occ;
+    return true;
+}
+
 // ---- Entity creation + painter CRUD (entity-creation slice) --------
 
 unsigned int ViewportBridge::entityTemplateCount(Category category) const

@@ -15,6 +15,7 @@
 #include <QLineEdit>
 #include <QCheckBox>
 #include <QToolButton>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPalette>
 #include <QFileDialog>
@@ -328,6 +329,11 @@ void EnvironmentPanel::rebuild()
             fileLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textTertiary)));
             fileLabel->setText(fileLabel->fontMetrics().elidedText(displayName, Qt::ElideMiddle, 180));
             fileLabel->setToolTip(m_env.file.isEmpty() ? m_env.painterName : m_env.file);
+            // Source traceability: the HDRI file lives on the bound PAINTER
+            // chunk's `file` param.
+            installRevealMenu(fileLabel, tr("Reveal HDRI file in Scene File"),
+                              static_cast<int>(ViewportBridge::Category::Painter),
+                              m_env.painterName, QStringLiteral("file"));
             fileRow->addWidget(fileLabel);
             fileRow->addStretch(1);
 
@@ -375,13 +381,21 @@ void EnvironmentPanel::rebuild()
                 if (!canEdit() || !ok) { m_scaleEdit->setText(trimNumber(m_env.scale)); return; }
                 finishEdit(m_bridge->setEnvironmentScale(v), QString());
             });
+            // Source traceability: intensity is radiance_scale on the active
+            // rasterizer (a singleton -> empty entity name).
+            installRevealMenu(well, tr("Reveal \xE2\x80\x9Cradiance_scale\xE2\x80\x9D in Scene File"),
+                              static_cast<int>(ViewportBridge::Category::Rasterizer),
+                              QString(), QStringLiteral("radiance_scale"));
             contentLayout->addWidget(well);
         }
 
         // Rotation (degrees) -- three fields, committed together.
         contentLayout->addWidget(makeFieldLabel(tr("Rotation (\xC2\xB0)")));
         {
-            auto* rotRow = new QHBoxLayout;
+            // Wrapped in a widget (not a bare layout) so the source-
+            // traceability context menu has something to attach to.
+            auto* rotWrap = new QWidget(content);
+            auto* rotRow = new QHBoxLayout(rotWrap);
             rotRow->setContentsMargins(0, 0, 0, 0);
             rotRow->setSpacing(6);
 
@@ -419,7 +433,12 @@ void EnvironmentPanel::rebuild()
 
                 rotRow->addWidget(axisWrap, 1);
             }
-            contentLayout->addLayout(rotRow);
+            // Source traceability: rotation is radiance_orient on the active
+            // rasterizer (a singleton -> empty entity name).
+            installRevealMenu(rotWrap, tr("Reveal \xE2\x80\x9Cradiance_orient\xE2\x80\x9D in Scene File"),
+                              static_cast<int>(ViewportBridge::Category::Rasterizer),
+                              QString(), QStringLiteral("radiance_orient"));
+            contentLayout->addWidget(rotWrap);
         }
 
         // Background toggle.
@@ -436,6 +455,11 @@ void EnvironmentPanel::rebuild()
                 if (!m_bridge || !canEdit()) return;
                 finishEdit(m_bridge->setEnvironmentBackground(on), QString());
             });
+            // Source traceability: background toggle is radiance_background
+            // on the active rasterizer (a singleton -> empty entity name).
+            installRevealMenu(check, tr("Reveal \xE2\x80\x9Cradiance_background\xE2\x80\x9D in Scene File"),
+                              static_cast<int>(ViewportBridge::Category::Rasterizer),
+                              QString(), QStringLiteral("radiance_background"));
             contentLayout->addWidget(check);
         }
 
@@ -520,4 +544,20 @@ void EnvironmentPanel::pickFile(const std::function<void(const QString&)>& chose
         tr("HDRI Images (*.hdr *.exr)"));
     if (picked.isEmpty()) return;   // user cancelled
     chosen(picked);
+}
+
+void EnvironmentPanel::installRevealMenu(QWidget* target, const QString& label,
+                                         int category, const QString& name, const QString& param)
+{
+    if (!target) return;
+    target->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(target, &QWidget::customContextMenuRequested, this,
+            [this, target, label, category, name, param](const QPoint& pos) {
+                QMenu menu(this);
+                QAction* reveal = menu.addAction(label);
+                connect(reveal, &QAction::triggered, this, [this, category, name, param]() {
+                    emit revealEnvParamRequested(category, name, param);
+                });
+                menu.exec(target->mapToGlobal(pos));
+            });
 }
