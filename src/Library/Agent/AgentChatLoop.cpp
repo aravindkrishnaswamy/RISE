@@ -13,6 +13,7 @@
 
 #include "Json.h"
 
+#include <algorithm> // std::min -- clamping imageContentBytes decrements (context-compaction P1-1 fix)
 #include <cstdlib>   // getenv -- ONLY for RISE_LOCAL_LLM_BASE_URL (config, not a credential; see MakeCodec)
 #include <cstring>   // strlen -- ASCII case-insensitive substring match (multimodal-400 detection)
 
@@ -236,10 +237,69 @@ namespace RISE
 			mSkillIndexText = indexText;
 		}
 
+		void AgentChatLoop::SetContextBudget( std::size_t highWaterTokens, std::size_t lowWaterTokens )
+		{
+			// Provider-neutral config (like SetSkillIndex above): stored
+			// verbatim, no clamping.  Survives Reset()/SetProvider().
+			mContextBudgetHighTokens = highWaterTokens;
+			mContextBudgetLowTokens = lowWaterTokens;
+		}
+
+		std::size_t AgentChatLoop::EstimateContextTokens() const
+		{
+			// Context-compaction slice S1 (observability only -- nothing
+			// acts on this estimate yet; S2 will).  Deterministic, provider-
+			// aware, IMAGE-DISCOUNTED text-proxy estimator:
+			//
+			//   text tokens  ~= (system prompt + tool defs + PER-ENTRY
+			//                    (rawJson bytes - tracked live image
+			//                    payload bytes)) / kCharsPerToken
+			//   image tokens ~= (live image count) * kTokensPerImage
+			//
+			// IMAGES ARE DISCOUNTED DELIBERATELY: a base64 image blob bills
+			// by pixel area on every real provider, NOT by encoded byte
+			// length -- counting its (huge) base64 bytes at the same
+			// chars-per-token rate as text would wildly overcount and
+			// trigger compaction on image-heavy turns that are actually
+			// cheap in text terms.  Live images are already bounded (at
+			// most one live render + kMaxLiveUserImages user images -- see
+			// the IMAGE RETENTION / USER IMAGE RETENTION rules in the file
+			// header), so each is charged a flat per-image token cost
+			// instead.  What's subtracted from the text proxy is NOT a flat
+			// per-entry charge but the entry's OWN tracked
+			// imageContentBytes -- an image-bearing ToolResults entry can
+			// co-pack a large non-image tool result (e.g. a read_document
+			// alongside a read_image) in the SAME PackToolResults call, and
+			// a user message can co-pack a long caption alongside an
+			// attachment; a flat per-entry text charge silently dropped
+			// that co-packed text from the estimate, under-counting in the
+			// dangerous direction (compaction failing to trigger).
+			// imageContentBytes is maintained wherever carriesLiveImage /
+			// liveUserImageCount change (see ChatTranscriptEntry's doc).
+			const std::size_t kCharsPerToken = 4;          // standard rough text proxy
+			const std::size_t kTokensPerImage = 1600;      // image billed by area, not base64 len
+
+			std::size_t chars = ComposeSystemPrompt().size();
+			if( mCodec ) chars += mCodec->ToolsWireBytes();
+
+			std::size_t imageTokens = 0;
+			for( std::size_t i = 0; i < mTranscript.size(); ++i ) {
+				const ChatTranscriptEntry& e = mTranscript[i];
+				const std::size_t imgs = ( e.carriesLiveImage ? 1u : 0u ) +
+				                          static_cast<std::size_t>( e.liveUserImageCount );
+				imageTokens += imgs * kTokensPerImage;   // 0 for non-image entries
+				chars += ( e.rawJson.size() > e.imageContentBytes )
+				         ? ( e.rawJson.size() - e.imageContentBytes ) : 0;
+			}
+			return chars / kCharsPerToken + imageTokens;
+		}
+
 		AgentChatLoop::AgentChatLoop() :
 			mCodec( MakeCodec( ChatProvider::OpenAI ) ),
 			mProvider( ChatProvider::OpenAI ),
 			mModelId( mCodec->DefaultModelId() ),
+			mContextBudgetHighTokens( 0 ),
+			mContextBudgetLowTokens( 0 ),
 			mToolRounds( 0 ),
 			mSessionEmitted( false ),
 			mElideAllImages( false ),
@@ -423,6 +483,12 @@ namespace RISE
 			entry.displayText = text;
 			entry.rawJson = mCodec->MakeUserEntry( text, attachments );
 			entry.liveUserImageCount = static_cast<int>( attachments.size() );
+			// EstimateContextTokens's per-entry text proxy excludes tracked
+			// live image payload bytes (images bill by area, not encoded
+			// length) -- track the raw base64 payload size here so a long
+			// co-packed caption is NOT silently dropped from the estimate.
+			for( std::size_t i = 0; i < attachments.size(); ++i )
+				entry.imageContentBytes += attachments[i].base64Data.size();
 			mTranscript.push_back( entry );
 
 			// Eval-harness E1: record the user turn (text + attachment count).
@@ -454,6 +520,12 @@ namespace RISE
 					e.rawJson = mCodec->RewriteElidedUserImages( e.rawJson, elideHere );
 					e.liveUserImageCount -= elideHere;
 					toElide -= elideHere;
+					// Shrink the tracked live-image payload by the byte
+					// delta this rewrite just removed (see
+					// EstimateContextTokens); force to 0 once no live
+					// images remain so rounding never leaves a residue.
+					e.imageContentBytes -= std::min( e.imageContentBytes, beforeBytes - e.rawJson.size() );
+					if( e.liveUserImageCount == 0 ) e.imageContentBytes = 0;
 					// Eval-harness E1: record the transcript rewrite.
 					if( mRecorder ) {
 						TrajectoryHistoryEditRecord h;
@@ -486,6 +558,14 @@ namespace RISE
 			// Documented in the header; the caller must not perform it.
 			if( mTranscript.empty() )
 				return ChatHttpRequest();
+
+			// Context-compaction slice S2: drop the oldest whole spans when
+			// over the token budget.  Runs AFTER the flush + image-elision
+			// passes above (so there are no unanswered tool_use blocks to
+			// split) and BEFORE rawEntries assembly (so it sees the final
+			// transcript before it is serialized).  A no-op when the budget
+			// is disabled/invalid or we are under the high-water mark.
+			CompactTranscript();
 
 			std::vector<std::string> rawEntries;
 			rawEntries.reserve( mTranscript.size() );
@@ -784,6 +864,9 @@ namespace RISE
 					const std::size_t beforeBytes = mTranscript[i].rawJson.size();
 					mTranscript[i].rawJson = mCodec->RewriteElidedImages( mTranscript[i].rawJson );
 					mTranscript[i].carriesLiveImage = false;
+					// The entry's live image is gone -- its whole tracked
+					// payload goes with it (see EstimateContextTokens).
+					mTranscript[i].imageContentBytes = 0;
 					// Eval-harness E1: record the transcript rewrite.
 					if( mRecorder ) {
 						EnsureSessionRecordEmitted();
@@ -802,6 +885,19 @@ namespace RISE
 			entry.displayText = "[tool results: " + names + "]";
 			entry.rawJson = mCodec->PackToolResults( ordered );
 			entry.carriesLiveImage = carriesImage;
+			if( carriesImage ) {
+				// EstimateContextTokens's per-entry text proxy excludes
+				// tracked live image payload bytes -- approximate that
+				// payload as the byte delta between the packed entry and
+				// its already-elided form (RewriteElidedImages replaces the
+				// image block with a short note), so a co-packed
+				// read_document's text is NOT silently dropped from the
+				// estimate.  This slightly OVER-counts text (the elided
+				// note itself has nonzero length), which is the SAFE
+				// direction -- it only makes compaction trigger sooner.
+				entry.imageContentBytes = entry.rawJson.size() -
+					mCodec->RewriteElidedImages( entry.rawJson ).size();
+			}
 			mTranscript.push_back( entry );
 
 			mPendingResults.clear();
@@ -831,6 +927,9 @@ namespace RISE
 					const std::size_t beforeBytes = e.rawJson.size();
 					e.rawJson = mCodec->RewriteElidedImages( e.rawJson );
 					e.carriesLiveImage = false;
+					// The entry's live image is gone -- its whole tracked
+					// payload goes with it (see EstimateContextTokens).
+					e.imageContentBytes = 0;
 					if( mRecorder ) {
 						EnsureSessionRecordEmitted();
 						TrajectoryHistoryEditRecord h;
@@ -845,6 +944,12 @@ namespace RISE
 					const std::size_t beforeBytes = e.rawJson.size();
 					e.rawJson = mCodec->RewriteElidedUserImages( e.rawJson, e.liveUserImageCount );
 					e.liveUserImageCount = 0;
+					// All live user images in this entry are gone -- the
+					// tracked payload goes to 0 too (see
+					// EstimateContextTokens); ElideAllLiveImages sweeps
+					// every image in the entry at once, unlike the partial
+					// cap-enforcement elision in AddUserMessage.
+					e.imageContentBytes = 0;
 					if( mRecorder ) {
 						EnsureSessionRecordEmitted();
 						TrajectoryHistoryEditRecord h;
@@ -856,6 +961,65 @@ namespace RISE
 					}
 				}
 			}
+		}
+
+		void AgentChatLoop::CompactTranscript()
+		{
+			// Context-compaction slice S2 (design doc 71 §7): the structural
+			// span-dropper.  Deterministic pure function of (mTranscript, the
+			// budget, the S1 estimator) -- no LLM call, replay-safe.
+
+			// No-op unless a valid budget window is set and we're over the
+			// high-water mark.  A disabled (0) or inverted (low >= high)
+			// window never compacts -- ContextBudgetActive() is the SAME
+			// guard WouldCompactNow() uses, so the two never disagree.
+			if( !ContextBudgetActive() ) return;
+			if( EstimateContextTokens() < mContextBudgetHighTokens ) return;
+
+			// A "span" is a maximal run beginning at a Role::User entry, up
+			// to (not including) the next Role::User entry.  The transcript
+			// always starts with a User entry (wire invariant 1), so the
+			// scan below always finds spanStarts[0] == 0.  Dropping WHOLE
+			// spans from the FRONT keeps mTranscript[0] a User entry and
+			// never orphans a tool_result from its preceding tool_use.
+			const std::size_t beforeEstimate = EstimateContextTokens();
+			bool dropped = false;
+
+			// Local helper: index of the next span start after index 0, or
+			// the transcript size when only one span remains.  (Recomputed
+			// each iteration -- transcripts are small; clarity over cleverness.)
+			for( ;; ) {
+				// Count spans + find the erase boundary (start of span #1).
+				std::size_t spanCount = 0;
+				std::size_t secondSpanStart = mTranscript.size();
+				for( std::size_t i = 0; i < mTranscript.size(); ++i ) {
+					if( mTranscript[i].role == ChatTranscriptEntry::Role::User ) {
+						++spanCount;
+						if( spanCount == 2 ) secondSpanStart = i;
+					}
+				}
+
+				// Stop when only the floor of trailing spans remains -- a
+				// single turn larger than the budget cannot be span-compacted
+				// further, so accept it.
+				if( spanCount <= static_cast<std::size_t>( kMinRetainedSpans ) ) break;
+
+				// Stop once we're back at (or below) the low-water target.
+				if( EstimateContextTokens() <= mContextBudgetLowTokens ) break;
+
+				// Erase the OLDEST whole span: entries [0 .. secondSpanStart).
+				mTranscript.erase( mTranscript.begin(),
+				                   mTranscript.begin() + static_cast<std::ptrdiff_t>( secondSpanStart ) );
+				dropped = true;
+			}
+
+			// Observability: one history_edit per compaction event (no-op
+			// with no trajectory sink attached).  entryIndex -1: not tied to
+			// a single transcript entry (a whole-span structural edit).
+			if( dropped )
+				RecordHistoryEdit( "context_compaction",
+				                   static_cast<long long>( beforeEstimate ),
+				                   static_cast<long long>( EstimateContextTokens() ), -1 );
 		}
 
 		const ChatTranscriptEntry& AgentChatLoop::TranscriptAt( std::size_t i ) const

@@ -701,18 +701,25 @@ static void TestChatLoopWiring()
 		loop.SetProvider( ChatProvider::Anthropic );
 		loop.AddUserMessage( "hello" );
 
+		// Anthropic emits system as a one-block array carrying a
+		// cache_control:ephemeral breakpoint (prompt caching); the prompt
+		// text is the single block's "text".
+		auto anthroSys = []( const JsonValue& r ) {
+			return r.get( "system" ).at( 0 ).get( "text" ).asString();
+		};
+
 		loop.SetSkillIndex( "" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
-		Check( root.get( "system" ).asString() == AgentChatLoop::SystemPrompt(),
+		Check( anthroSys( root ) == AgentChatLoop::SystemPrompt(),
 		       "SetSkillIndex(\"\") sends the base system prompt unchanged (section omitted)" );
-		Check( root.get( "system" ).asString().find( "Available skills:" ) == std::string::npos,
+		Check( anthroSys( root ).find( "Available skills:" ) == std::string::npos,
 		       "empty index -> no 'Available skills:' section" );
 
 		const std::string index =
 			"scene-skeleton-and-conventions -- Read before authoring a scene from scratch.";
 		loop.SetSkillIndex( index );
 		root = ParseBody( loop.BuildRequest( "sk-test" ).body );
-		const std::string sys = root.get( "system" ).asString();
+		const std::string sys = anthroSys( root );
 		Check( sys.rfind( AgentChatLoop::SystemPrompt(), 0 ) == 0,
 		       "skills section is APPENDED (the base prompt is the prefix)" );
 		Check( sys.find( "Available skills:\n" + index ) != std::string::npos,
