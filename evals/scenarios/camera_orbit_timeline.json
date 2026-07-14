@@ -27,7 +27,7 @@
         { "name": "glassprism" }
       ]
     },
-    { "kind": "trajectory", "maxToolCalls": 4, "noMechanicalLoop": true },
+    { "kind": "trajectory", "terminalStatus": "final_text", "maxToolCalls": 4, "noMechanicalLoop": true },
     { "kind": "diagnostics", "expect": "clean" }
   ]
 }
