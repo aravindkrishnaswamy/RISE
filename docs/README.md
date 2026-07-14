@@ -58,6 +58,7 @@ These describe shipped work. Retained as historical design records; the body sho
 - [../scenes/FeatureBased/README.md](../scenes/FeatureBased/README.md): curated showcase and torture scenes
 - [../scenes/Tests/README.md](../scenes/Tests/README.md): focused regression and comparison scenes
 - [../tests/README.md](../tests/README.md): executable tests and validation scenes
+- [../evals/README.md](../evals/README.md): agent eval harness — scenario/fixture/run-config formats, the checker ops reference, and the `rise --agent-eval` + `tools/eval_report.py` workflow
 - [../README.txt](../README.txt): historical manual and user-facing background
 
 ## Organization Rule Of Thumb
