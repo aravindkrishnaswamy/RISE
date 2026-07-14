@@ -319,6 +319,50 @@ namespace
 		pJob->release();
 		std::remove( tmp.c_str() );
 	}
+
+	// The two final-verification cases: light_rr_threshold (ChunkCategory::Rasterizer
+	// config, defeats a self-consistency guard) + a real scene_variant colliding by
+	// name with an active_scene_variant selector.
+	const char* const kConfigCollideScene =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
+		"light_rr_threshold\n{\nthreshold 0.5\n}\n\n"
+		"scene_variant\n{\nname night\n}\n\n"
+		"active_scene_variant\n{\nname night\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\nsamples 8\npixel_filter box\noidn_denoise false\n}\n\n"
+		"film\n{\nwidth 16\nheight 12\n}\n\n"
+		"pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 40.0\n}\n";
+
+	void TestConfigAndVariantCollision()
+	{
+		std::printf( "S6: light_rr_threshold reject + scene_variant not over-rejected by the collision...\n" );
+		const std::string tmp = TempPath( "srctrace_s6.RISEscene" );
+		Job* pJob = LoadScene( kConfigCollideScene, tmp );
+		Check( pJob != nullptr, "fixture loads (light_rr_threshold + variant collision)" );
+		if( !pJob ) return;
+		SceneEditController ctrl( *pJob, nullptr );
+		const std::string full = Serialized( *pJob );
+		Category c; String n, p;
+
+		// P2-a: light_rr_threshold is a ChunkCategory::Rasterizer scene setting, NOT a
+		// rasterizer -> its role doesn't end in _rasterizer -> not addressable.
+		const size_t lrtPos = full.find( "light_rr_threshold" );
+		Check( lrtPos != std::string::npos, "scene has a light_rr_threshold chunk" );
+		Check( !ctrl.SourceRefAtByteOffset( lrtPos + 2, c, n, p ),
+			"reverse into light_rr_threshold -> false (config, not a rasterizer entity)" );
+
+		// P2-b: the REAL scene_variant `night` must NOT be over-rejected even though an
+		// active_scene_variant `night` selector collides by name.  (The enum check
+		// doesn't call the ambiguous forward resolver, so no over-rejection.)
+		const size_t svPos = full.find( "scene_variant\n" );   // the declaration (not active_scene_variant)
+		Check( svPos != std::string::npos, "scene has a scene_variant chunk" );
+		Check( ctrl.SourceRefAtByteOffset( svPos + 2, c, n, p )
+			&& c == Category::SceneVariant && std::string( n.c_str() ) == "night",
+			"reverse into the real scene_variant -> (SceneVariant, night), not over-rejected" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
 }   // anonymous namespace
 
 int main()
@@ -329,6 +373,7 @@ int main()
 	TestReverse();
 	TestReviewFixes();
 	TestNonEntityExclusions();
+	TestConfigAndVariantCollision();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

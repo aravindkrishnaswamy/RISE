@@ -5497,13 +5497,11 @@ bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category&
 
 	// Locate the chunk (and param, if the offset is on one) containing `offset`.
 	// DocParamAtByteOffset returns the Param node (or null) and fills the enclosing
-	// chunk + its NodeId; when the offset is inside a chunk but not on a param, chunk
-	// is still set.
+	// chunk; when the offset is inside a chunk but not on a param, chunk is still set.
 	RISE::Cst::NodeRef chunk;
 	int v = 0;
-	RISE::Cst::NodeId chunkId = 0;
 	RISE::Cst::NodeRef paramNode =
-		RISE::Cst::DocParamAtByteOffset( *doc, static_cast<size_t>( offset ), &chunk, &v, nullptr, &chunkId );
+		RISE::Cst::DocParamAtByteOffset( *doc, static_cast<size_t>( offset ), &chunk, &v );
 
 	if( !chunk ) {
 		// Offset not resolved to a param's chunk (e.g. on the chunk header/braces):
@@ -5511,18 +5509,22 @@ bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category&
 		RISE::Cst::NodeRef item; size_t start = 0; int v2 = 0;
 		const int idx = RISE::Cst::DocItemAtByteOffset( *doc, static_cast<size_t>( offset ), &item, &start, &v2 );
 		if( idx < 0 || !item ) return false;
-		chunk   = item;
-		chunkId = RISE::Cst::DocNodeIdAt( *doc, idx );
+		chunk = item;
 	}
 	if( !chunk || chunk->kind != RISE::Cst::NodeKind::Chunk ) return false;   // inter-chunk trivia / EOF
 
 	const Category cat = CategoryForChunkKeyword( chunk->role );
-	if( cat == Category::None ) return false;   // not an addressable entity/singleton chunk
+	if( cat == Category::None ) return false;   // not a UI-addressable entity/singleton chunk
+
+	auto ends = []( const std::string& s, const char* suf ) {
+		const std::string t( suf );
+		return s.size() >= t.size() && s.compare( s.size() - t.size(), t.size(), t ) == 0;
+	};
 
 	// Name.  Rasterizer chunks are unnamed and addressed by KIND, so the name IS
-	// the keyword (so a ref into a non-active rasterizer round-trips).  Every other
-	// category takes the name from ChunkNamePath ("keyword/name" -> segment after
-	// the last '/'; an unnamed singleton like `film` yields empty).
+	// the keyword (a ref into a non-active rasterizer then round-trips).  Every
+	// other category takes the name from ChunkNamePath ("keyword/name" -> segment
+	// after the last '/'; an unnamed chunk yields empty).
 	std::string nm;
 	if( cat == Category::Rasterizer ) {
 		nm = chunk->role;
@@ -5532,17 +5534,47 @@ bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category&
 		if( slash != std::string::npos ) nm = np.substr( slash + 1 );
 	}
 
-	// SELF-CONSISTENCY: the (cat, name) we're about to return must forward-resolve
-	// back to THIS SAME chunk.  This drift-proofly rejects non-entity chunks that
-	// merely carry an entity ChunkCategory -- e.g. scene_options / camera_defaults
-	// (ChunkCategory::Camera, unnamed) would classify as Camera but forward-resolve
-	// the actual camera chunk (a different NodeId); the active_scene_variant SELECTOR
-	// forward-resolves the declared scene_variant chunk; timeline / animation_options
-	// forward-resolve to nothing.  Only a real, forward-addressable entity/singleton
-	// round-trips to its own NodeId.
-	const std::string activeRast = mJob.GetActiveRasterizerName();
-	const RISE::Cst::NodeId fwdId = ResolveSourceChunkId( *doc, cat, nm, activeRast );
-	if( fwdId == 0 || fwdId != chunkId ) return false;
+	// ADDRESSABILITY: registry ChunkCategory is a PARSE grouping, not a statement
+	// that a chunk is a UI-SELECTABLE entity -- several config/selector chunks carry
+	// an entity category (scene_options/camera_defaults -> Camera; light_rr_threshold
+	// -> Rasterizer; timeline/animation_options -> Animation; piecewise -> Function).
+	// A chunk is reverse-addressable iff it's a real row the UI can select: a named
+	// entity present in its category's LIVE enumeration, or the film / a rasterizer /
+	// a camera SINGLETON identified by its keyword.  This is grounded in "can the
+	// user actually select this?" and rejects every non-entity family robustly (no
+	// keyword blocklist, no forward-round-trip that role-keyed configs can defeat).
+	auto nameInEnum = [&]( Category c, const std::string& name ) {
+		if( name.empty() ) return false;
+		const unsigned int n = CategoryEntityCount( c );   // lock-free; safe under mMutex
+		for( unsigned int i = 0; i < n; ++i )
+			if( std::string( CategoryEntityName( c, i ).c_str() ) == name ) return true;
+		return false;
+	};
+
+	bool addressable = false;
+	switch( cat ) {
+	case Category::Film:
+		addressable = ( chunk->role == "film" );                 // the film singleton (not camera_defaults etc.)
+		nm.clear();
+		break;
+	case Category::Rasterizer:
+		addressable = ends( chunk->role, "_rasterizer" );        // a real rasterizer kind, NOT light_rr_threshold
+		break;
+	case Category::Camera:
+		// A camera chunk (keyword) -- excludes scene_options/camera_defaults.  Named
+		// -> must be in the camera list; unnamed -> the active camera (addressable).
+		if( chunk->role == "camera" || ends( chunk->role, "_camera" ) )
+			addressable = nm.empty() ? true : nameInEnum( Category::Camera, nm );
+		break;
+	default:
+		// Object / Light / Material / Medium / Painter / Animation / SceneVariant:
+		// a genuine entity is enumerated in its category's live UI list (excludes the
+		// unnamed animation_options/timeline and the non-painter piecewise chunks;
+		// maps the active_scene_variant selector to the declared variant it names).
+		addressable = nameInEnum( cat, nm );
+		break;
+	}
+	if( !addressable ) return false;
 
 	outCat  = cat;
 	outName = String( nm.c_str() );
