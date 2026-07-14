@@ -48,7 +48,7 @@
       "expect": "clean"
     },
     {
-      "kind": "trajectory",
+      "kind": "trajectory", "terminalStatus": "final_text",
       "maxToolCalls": 6,
       "noMechanicalLoop": true
     }

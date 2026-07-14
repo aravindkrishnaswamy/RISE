@@ -870,6 +870,20 @@ namespace RISE
 							}
 
 							const FetchOutcome fo = fetch( req );
+							// Count EVERY POST attempted, BEFORE the proceed check.  A
+							// request whose response was lost to a transport failure
+							// (proceed == false, status 0) may still have reached --
+							// and been billed by -- the provider, so it counts against
+							// maxLlmCalls; counting it here is also what lets the inner
+							// budget check above bound a transport-error RETRY (whose
+							// failed attempt returns proceed=false and, if counted only
+							// after a received response, would never increment the
+							// counter -- so maxLlmCalls:1 could still send a 2nd POST).
+							// CONSEQUENCE: llmCalls is REQUESTS SENT, which can exceed
+							// the number of RECORDED llm rounds (RecordHttpRound fires
+							// only on a received response) by the count of transport-
+							// failed attempts -- the honest cost measure.
+							++llmCalls;
 							if( !fo.proceed ) {
 								if( attempt == 1 && fo.stopStatus == "transport_error" )
 									continue;   // one same-round retry of a transport failure
@@ -881,7 +895,6 @@ namespace RISE
 
 							loop.RecordHttpRound( fo.status, fo.body, fo.elapsedMs,
 							                      attempt, attempt > 1 ? attempt - 1 : -1 );
-							++llmCalls;
 							st = loop.HandleResponse( fo.status, fo.body );
 
 							if( attempt == 1 && fo.status >= 500 && fo.status <= 599 )
