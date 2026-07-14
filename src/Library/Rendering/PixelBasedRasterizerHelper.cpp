@@ -945,8 +945,13 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
-	// Snapshot once at entry — see PredictTimeToRasterizeScene.
-	const ICamera* pCam = pScene.GetCamera();
+	// Snapshot once at entry — see PredictTimeToRasterizeScene.  Tier 2 §5.5:
+	// a free-fly ViewportPose supplies a viewport-private override camera the
+	// interactive still-frame renders THROUGH; the real scene still flows to the
+	// caster (so IScenePriv/Scene downcasts — photon build, light-sampler regen —
+	// keep working).  nullptr = render through the scene camera (the default and
+	// the only path production / animation ever take).
+	const ICamera* pCam = m_pViewportCameraOverride ? m_pViewportCameraOverride : pScene.GetCamera();
 	if( !pCam ) {
 		GlobalLog()->PrintSourceError( "PixelBasedRasterizerHelper::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
 		return;

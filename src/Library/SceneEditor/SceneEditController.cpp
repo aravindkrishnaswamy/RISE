@@ -120,57 +120,14 @@ namespace {
 // The foundational mechanism for the non-destructive view features (B2 axis
 // snaps, B1 named-view restore, B3 free-fly): render the interactive preview
 // through a viewport-private OVERRIDE camera without mutating Scene::pActiveCamera
-// (the scene's authoritative camera) and without touching production render.
-//
-// `CameraOverrideScene` presents the real scene UNCHANGED except GetCamera(),
-// which returns the override.  The four `pScene.GetCamera()` sites in
-// PixelBasedRasterizerHelper then transparently pick it up -- ZERO rasterizer /
-// integrator changes (the correctness invariant: byte-identical render math; only
-// WHICH camera changes).  This is §5.5 option (b): a render-time scene view, chosen
-// over an added RasterizeScene parameter because RasterizeScene is a frozen pure
-// virtual (an added param would break every implementor + the abi-preserving skill).
-//
-// The wrapper is a controller-owned object that lives ONLY for the duration of one
-// RasterizeScene call, so its IReference impl is NON-OWNING: addref is a no-op and
-// release NEVER self-deletes (returns false).  The rasterizer takes IScene by const
-// reference and must not manage this object's lifetime.
-class CameraOverrideScene : public IScene
-{
-public:
-	CameraOverrideScene( const IScene& wrapped, const ICamera* overrideCam )
-		: mWrapped( wrapped ), mOverride( overrideCam ) {}
-
-	// IReference -- non-owning (the controller owns this stack/local object).
-	void         addref()   const override {}
-	bool         release()  const override { return false; }
-	unsigned int refcount() const override { return 1; }
-
-	// The one substitution.
-	const ICamera* GetCamera() const override { return mOverride; }
-
-	// Everything else forwards verbatim to the real scene.
-	const IObjectManager*     GetObjects()            const override { return mWrapped.GetObjects(); }
-	const ILightManager*      GetLights()             const override { return mWrapped.GetLights(); }
-	const ICameraManager*     GetCameras()            const override { return mWrapped.GetCameras(); }
-	String                    GetActiveCameraName()   const override { return mWrapped.GetActiveCameraName(); }
-	const IRadianceMap*       GetGlobalRadianceMap()  const override { return mWrapped.GetGlobalRadianceMap(); }
-	const IPhotonMap*         GetCausticPelMap()      const override { return mWrapped.GetCausticPelMap(); }
-	const IPhotonMap*         GetGlobalPelMap()       const override { return mWrapped.GetGlobalPelMap(); }
-	const IPhotonMap*         GetTranslucentPelMap()  const override { return mWrapped.GetTranslucentPelMap(); }
-	const ISpectralPhotonMap* GetCausticSpectralMap() const override { return mWrapped.GetCausticSpectralMap(); }
-	const ISpectralPhotonMap* GetGlobalSpectralMap()  const override { return mWrapped.GetGlobalSpectralMap(); }
-	const IShadowPhotonMap*   GetShadowMap()          const override { return mWrapped.GetShadowMap(); }
-	const IIrradianceCache*   GetIrradianceCache()    const override { return mWrapped.GetIrradianceCache(); }
-	IAnimator*                GetAnimator()           const override { return mWrapped.GetAnimator(); }
-	const IMedium*            GetGlobalMedium()        const override { return mWrapped.GetGlobalMedium(); }
-	void SetSceneTime( const Scalar t )           const override { mWrapped.SetSceneTime( t ); }
-	void SetSceneTimeForPreview( const Scalar t ) const override { mWrapped.SetSceneTimeForPreview( t ); }
-	const IFilm*              GetFilm()               const override { return mWrapped.GetFilm(); }
-
-private:
-	const IScene&  mWrapped;
-	const ICamera* mOverride;
-};
+// and without touching production render.  The override is installed on the
+// interactive rasterizer via PixelBasedRasterizerHelper::SetViewportCameraOverride
+// (consulted at its RasterizeScene camera-read site) -- NOT by wrapping the IScene,
+// because the caster stores + addrefs the scene across passes (a wrapper would
+// dangle) and the render path downcasts the scene to IScenePriv/Scene (photon-map
+// build, light-sampler regen) which a wrapper would defeat.  Overriding at the
+// camera-read site keeps the REAL scene flowing to the caster.  The pose is
+// realized into a standalone camera below.
 
 // Realize a CameraSnapshot into a STANDALONE ICamera (NOT added to any manager),
 // sized to the scene's current Film.  Parallel to CameraIntrospection::
@@ -7950,35 +7907,41 @@ void SceneEditController::DoOneRenderPass()
 		}
 	}
 
-	const auto t0 = std::chrono::steady_clock::now();
-	if( mViewportPoseActive && mViewportOverrideCamera )
+	// Free-fly (Tier 2 §5.5): install (or clear) the viewport-private render-camera
+	// override on the interactive helper for THIS pass.  The interactive
+	// RasterizeScene then renders THROUGH the override instead of
+	// Scene::pActiveCamera, while the REAL scene still flows to the caster (so the
+	// render path's IScenePriv/Scene downcasts -- photon-map build, light-sampler
+	// regen -- keep working) and production render (a separate rasterizer, never
+	// given an override) is untouched.  Render-thread-only: the UI thread swaps
+	// mViewportOverrideCamera only while parked, and we set the helper here.  We
+	// UNCONDITIONALLY set it every pass (override or nullptr), so a stale override
+	// can never leak into a non-free-fly pass.
+	if( Implementation::PixelBasedRasterizerHelper* helper =
+			dynamic_cast<Implementation::PixelBasedRasterizerHelper*>( mInteractiveRasterizer ) )
 	{
-		// Free-fly (Tier 2 §5.5): render the interactive preview THROUGH the
-		// viewport-private override camera instead of Scene::pActiveCamera.  The
-		// CameraOverrideScene wrapper substitutes only GetCamera(); every rasterizer
-		// / integrator is byte-untouched.  Production render never reaches here (it
-		// passes the real scene) so the scene camera stays authoritative.
-		//
-		// Keep the override's raster dims in lock-step with THIS pass's film: the
-		// preview-scale swap resized the film and re-synced MANAGER cameras via
-		// ResizeFilm, but the override isn't in the manager, so sync it here
-		// (SetDimensionsAndPixelAR calls RegenerateData internally).  Safe to mutate
-		// the override on the render thread: the UI thread parks before it ever
-		// releases/replaces the override.
-		if( const IFilm* passFilm = scene->GetFilm() )
+		const ICamera* overrideCam = ( mViewportPoseActive ? mViewportOverrideCamera : nullptr );
+		if( overrideCam )
 		{
-			if( Implementation::CameraCommon* cc = dynamic_cast<Implementation::CameraCommon*>( mViewportOverrideCamera ) )
+			// Keep the override's raster dims in lock-step with THIS pass's film:
+			// the preview-scale swap resized the film and re-synced MANAGER cameras
+			// via ResizeFilm, but the override isn't in the manager, so sync it
+			// here (SetDimensionsAndPixelAR calls RegenerateData internally).  Safe
+			// to mutate the override on the render thread: the UI thread parks
+			// before it ever releases/replaces the override.
+			if( const IFilm* passFilm = scene->GetFilm() )
 			{
-				cc->SetDimensionsAndPixelAR( passFilm->GetWidth(), passFilm->GetHeight(), passFilm->GetPixelAR() );
+				if( Implementation::CameraCommon* cc = dynamic_cast<Implementation::CameraCommon*>( mViewportOverrideCamera ) )
+				{
+					cc->SetDimensionsAndPixelAR( passFilm->GetWidth(), passFilm->GetHeight(), passFilm->GetPixelAR() );
+				}
 			}
 		}
-		CameraOverrideScene ovScene( *scene, mViewportOverrideCamera );
-		mInteractiveRasterizer->RasterizeScene( ovScene, pRegion, /*seq*/0 );
+		helper->SetViewportCameraOverride( overrideCam );
 	}
-	else
-	{
-		mInteractiveRasterizer->RasterizeScene( *scene, pRegion, /*seq*/0 );
-	}
+
+	const auto t0 = std::chrono::steady_clock::now();
+	mInteractiveRasterizer->RasterizeScene( *scene, pRegion, /*seq*/0 );
 	const auto elapsed = std::chrono::steady_clock::now() - t0;
 	// restoreGuard's destructor runs at the end of this scope and
 	// restores rest dims whether we exited normally, via cancellation,
