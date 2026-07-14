@@ -428,6 +428,89 @@ int ViewportBridge::activeGizmoAxis() const
     return RISE_API_SceneEditController_ActiveGizmoAxis(m_controller);
 }
 
+// -------- Navigation axis-ball gizmo (Tier 2 §4) --------
+
+bool ViewportBridge::refreshNavGizmo(double centerX, double centerY,
+                                     double ballRadius, double nubRadius)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_RefreshNavGizmo(
+        m_controller, centerX, centerY, ballRadius, nubRadius);
+}
+
+QVector<ViewportBridge::NavNub> ViewportBridge::navGizmoNubs() const
+{
+    QVector<NavNub> out;
+    if (!m_controller) return out;
+    const unsigned int n = RISE_API_SceneEditController_NavGizmoNubCount(m_controller);
+    out.reserve(static_cast<int>(n));
+    for (unsigned int i = 0; i < n; ++i) {
+        int axis = 0, negative = 0, facing = 0;
+        double x = 0, y = 0, r = 0;
+        if (!RISE_API_SceneEditController_NavGizmoNub(
+                m_controller, i, &axis, &negative, &x, &y, &r, &facing)) {
+            continue;
+        }
+        NavNub nub;
+        nub.axis         = axis;
+        nub.negative     = (negative != 0);
+        nub.screenX      = x;
+        nub.screenY      = y;
+        nub.screenRadius = r;
+        nub.facing       = (facing != 0);
+        out.push_back(nub);
+    }
+    return out;
+}
+
+int ViewportBridge::navGizmoNubAt(double x, double y) const
+{
+    if (!m_controller) return -1;
+    return RISE_API_SceneEditController_NavGizmoNubAt(m_controller, x, y);
+}
+
+bool ViewportBridge::snapViewToAxis(int axis, bool negative)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SnapViewToAxis(m_controller, axis, negative ? 1 : 0);
+}
+
+bool ViewportBridge::enterFreeFly()
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_EnterFreeFly(m_controller);
+}
+
+bool ViewportBridge::exitFreeFly()
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_ExitFreeFly(m_controller);
+}
+
+bool ViewportBridge::isFreeFlyActive() const
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_IsFreeFlyActive(m_controller);
+}
+
+bool ViewportBridge::setHomeView()
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetHomeView(m_controller);
+}
+
+bool ViewportBridge::goToHomeView()
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_GoToHomeView(m_controller);
+}
+
+bool ViewportBridge::hasHomeView() const
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_HasHomeView(m_controller);
+}
+
 void ViewportBridge::pointerDown(double x, double y) { if (m_controller) RISE_API_SceneEditController_OnPointerDown(m_controller, x, y); }
 void ViewportBridge::pointerMove(double x, double y) { if (m_controller) RISE_API_SceneEditController_OnPointerMove(m_controller, x, y); }
 void ViewportBridge::pointerUp(double x, double y)   { if (m_controller) RISE_API_SceneEditController_OnPointerUp(m_controller, x, y); }

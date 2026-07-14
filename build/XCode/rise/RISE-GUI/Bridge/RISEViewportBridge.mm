@@ -92,6 +92,16 @@ using namespace RISE;
                  screenRadius:(CGFloat)screenRadius;
 @end
 
+// Same hoist for the nav-gizmo nub value object (impl at the bottom).
+@interface RISEViewportNavNub ()
+- (instancetype)_initWithAxis:(NSInteger)axis
+                     negative:(BOOL)negative
+                      screenX:(CGFloat)screenX
+                      screenY:(CGFloat)screenY
+                 screenRadius:(CGFloat)screenRadius
+                       facing:(BOOL)facing;
+@end
+
 namespace {
 
 // ============================================================
@@ -812,6 +822,79 @@ private:
 - (NSInteger)activeGizmoAxis {
     if (!_controller) return -1;
     return RISE_API_SceneEditController_ActiveGizmoAxis(_controller);
+}
+
+#pragma mark - Nav gizmo (axis-ball) + view navigation
+
+- (BOOL)refreshNavGizmoWithCenterX:(CGFloat)centerX centerY:(CGFloat)centerY
+                        ballRadius:(CGFloat)ballRadius nubRadius:(CGFloat)nubRadius {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_RefreshNavGizmo(
+        _controller, centerX, centerY, ballRadius, nubRadius) ? YES : NO;
+}
+
+- (NSArray<RISEViewportNavNub *> *)navGizmoNubs {
+    if (!_controller) return @[];
+    const unsigned int n = RISE_API_SceneEditController_NavGizmoNubCount(_controller);
+    NSMutableArray<RISEViewportNavNub *> *out = [NSMutableArray arrayWithCapacity:n];
+    for (unsigned int i = 0; i < n; ++i) {
+        int axis = 0, negative = 0, facing = 0;
+        double x = 0, y = 0, r = 0;
+        if (!RISE_API_SceneEditController_NavGizmoNub(
+                _controller, i, &axis, &negative, &x, &y, &r, &facing)) {
+            continue;
+        }
+        RISEViewportNavNub *nub = [[RISEViewportNavNub alloc]
+            _initWithAxis:static_cast<NSInteger>(axis)
+                 negative:(negative != 0)
+                  screenX:static_cast<CGFloat>(x)
+                  screenY:static_cast<CGFloat>(y)
+             screenRadius:static_cast<CGFloat>(r)
+                   facing:(facing != 0)];
+        [out addObject:nub];
+    }
+    return out;
+}
+
+- (NSInteger)navGizmoNubAtX:(CGFloat)x y:(CGFloat)y {
+    if (!_controller) return -1;
+    return RISE_API_SceneEditController_NavGizmoNubAt(_controller, x, y);
+}
+
+- (BOOL)snapViewToAxis:(NSInteger)axis negative:(BOOL)negative {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_SnapViewToAxis(
+        _controller, static_cast<int>(axis), negative ? 1 : 0) ? YES : NO;
+}
+
+- (BOOL)enterFreeFly {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_EnterFreeFly(_controller) ? YES : NO;
+}
+
+- (BOOL)exitFreeFly {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_ExitFreeFly(_controller) ? YES : NO;
+}
+
+- (BOOL)freeFlyActive {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_IsFreeFlyActive(_controller) ? YES : NO;
+}
+
+- (BOOL)setHomeView {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_SetHomeView(_controller) ? YES : NO;
+}
+
+- (BOOL)goToHomeView {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_GoToHomeView(_controller) ? YES : NO;
+}
+
+- (BOOL)hasHomeView {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_HasHomeView(_controller) ? YES : NO;
 }
 
 #pragma mark - Pointer events
@@ -1994,5 +2077,42 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 - (CGFloat)screenX                    { return _screenX; }
 - (CGFloat)screenY                    { return _screenY; }
 - (CGFloat)screenRadius               { return _screenRadius; }
+
+@end
+
+@implementation RISEViewportNavNub {
+    NSInteger _axis;
+    BOOL      _negative;
+    CGFloat   _screenX;
+    CGFloat   _screenY;
+    CGFloat   _screenRadius;
+    BOOL      _facing;
+}
+
+- (instancetype)_initWithAxis:(NSInteger)axis
+                     negative:(BOOL)negative
+                      screenX:(CGFloat)screenX
+                      screenY:(CGFloat)screenY
+                 screenRadius:(CGFloat)screenRadius
+                       facing:(BOOL)facing
+{
+    self = [super init];
+    if (self) {
+        _axis = axis;
+        _negative = negative;
+        _screenX = screenX;
+        _screenY = screenY;
+        _screenRadius = screenRadius;
+        _facing = facing;
+    }
+    return self;
+}
+
+- (NSInteger)axis        { return _axis; }
+- (BOOL)negative         { return _negative; }
+- (CGFloat)screenX       { return _screenX; }
+- (CGFloat)screenY       { return _screenY; }
+- (CGFloat)screenRadius  { return _screenRadius; }
+- (BOOL)facing           { return _facing; }
 
 @end

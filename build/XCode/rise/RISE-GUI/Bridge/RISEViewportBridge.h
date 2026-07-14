@@ -18,6 +18,7 @@
 @class RISEBridge;
 @class RISEViewportProperty;
 @class RISEViewportGizmoHandle;
+@class RISEViewportNavNub;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -201,6 +202,38 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 /// overlay's active-handle styling.
 @property (nonatomic, readonly) RISEViewportGizmoKind activeGizmoKind;
 @property (nonatomic, readonly) NSInteger             activeGizmoAxis;
+
+#pragma mark - Nav gizmo (axis-ball) + view navigation
+
+/// Recompute the six axis-ball nubs (±X/±Y/±Z) for a ball centered at
+/// (centerX, centerY) with `ballRadius`, each nub `nubRadius`, all in widget
+/// points.  Returns NO (empty nub array) when there's no supported (pinhole)
+/// interactive camera.  Call once per preview frame before reading
+/// `navGizmoNubs` — see docs/gui/CAMERAS_AND_VIEWS.md §4.
+- (BOOL)refreshNavGizmoWithCenterX:(CGFloat)centerX centerY:(CGFloat)centerY
+                        ballRadius:(CGFloat)ballRadius nubRadius:(CGFloat)nubRadius
+    NS_SWIFT_NAME(refreshNavGizmo(centerX:centerY:ballRadius:nubRadius:));
+
+/// Snapshot of the current nub array (empty if the gizmo isn't shown).
+/// Read AFTER `refreshNavGizmo…`.
+@property (nonatomic, readonly) NSArray<RISEViewportNavNub *> *navGizmoNubs;
+
+/// Hit-test a widget-space point against the nubs (front-facing win ties).
+/// Returns the nub index or -1.
+- (NSInteger)navGizmoNubAtX:(CGFloat)x y:(CGFloat)y
+    NS_SWIFT_NAME(navGizmoNubAt(x:y:));
+
+/// Non-destructive view navigation: these drive the transient free-fly
+/// ViewportPose (the interactive pass renders through it) and NEVER mutate a
+/// scene camera.  Each returns YES on success / the documented refusal cases.
+- (BOOL)snapViewToAxis:(NSInteger)axis negative:(BOOL)negative
+    NS_SWIFT_NAME(snapView(toAxis:negative:));
+- (BOOL)enterFreeFly;
+- (BOOL)exitFreeFly;
+@property (nonatomic, readonly) BOOL freeFlyActive;
+- (BOOL)setHomeView;
+- (BOOL)goToHomeView;
+@property (nonatomic, readonly) BOOL hasHomeView;
 
 #pragma mark - Pointer events
 //
@@ -870,6 +903,18 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 @property (nonatomic, readonly) CGFloat screenX;
 @property (nonatomic, readonly) CGFloat screenY;
 @property (nonatomic, readonly) CGFloat screenRadius;
+@end
+
+/// One navigation axis-ball nub from the controller's layout.  Positions are
+/// in the widget space the overlay passed to `refreshNavGizmo…` (and the same
+/// space it feeds `navGizmoNubAt…`).
+@interface RISEViewportNavNub : NSObject
+@property (nonatomic, readonly) NSInteger axis;       ///< 0=X, 1=Y, 2=Z
+@property (nonatomic, readonly) BOOL negative;        ///< NO=+axis, YES=−axis
+@property (nonatomic, readonly) CGFloat screenX;
+@property (nonatomic, readonly) CGFloat screenY;
+@property (nonatomic, readonly) CGFloat screenRadius;
+@property (nonatomic, readonly) BOOL facing;          ///< YES=toward viewer (bright)
 @end
 
 /// Single quick-pick preset, surfaced from the descriptor's

@@ -217,6 +217,44 @@ public:
     GizmoKind activeGizmoKind() const;
     int       activeGizmoAxis() const;
 
+    // -------- Navigation axis-ball gizmo (Tier 2 §4) --------
+
+    /// One nav-gizmo nub.  Positions are in the widget space the overlay
+    /// passed to refreshNavGizmo() (and the same space it feeds navGizmoNubAt).
+    struct NavNub {
+        int    axis         = 0;      ///< 0=X, 1=Y, 2=Z
+        bool   negative     = false;  ///< false=+axis, true=−axis
+        double screenX      = 0.0;
+        double screenY      = 0.0;
+        double screenRadius = 0.0;
+        bool   facing       = true;   ///< true=toward viewer (bright)
+    };
+
+    /// Recompute the six ±X/±Y/±Z nubs for a ball centered at (centerX,
+    /// centerY) with `ballRadius`, each nub `nubRadius`, all in widget space.
+    /// Returns false (empty array) when there's no supported (pinhole)
+    /// interactive camera.  Call once per paint before reading navGizmoNubs().
+    bool refreshNavGizmo(double centerX, double centerY,
+                         double ballRadius, double nubRadius);
+
+    /// Snapshot of the current nub array (empty when not shown).
+    QVector<NavNub> navGizmoNubs() const;
+
+    /// Hit-test a widget-space point against the nubs (front-facing win ties).
+    /// Returns the nub index or -1.
+    int navGizmoNubAt(double x, double y) const;
+
+    // View navigation (Tier 2 §4-5): non-destructive — drive the transient
+    // free-fly ViewportPose (the interactive pass renders through it) and
+    // NEVER mutate a scene camera.  Each returns true on success.
+    bool snapViewToAxis(int axis, bool negative);
+    bool enterFreeFly();
+    bool exitFreeFly();
+    bool isFreeFlyActive() const;
+    bool setHomeView();
+    bool goToHomeView();
+    bool hasHomeView() const;
+
     // Pointer events — coordinates are in viewport surface pixel space.
     void pointerDown(double x, double y);
     void pointerMove(double x, double y);
