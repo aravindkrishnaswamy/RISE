@@ -217,6 +217,14 @@ MainWindow::MainWindow(QWidget* parent)
     // the Agent tab instead of hiding a splitter pane.
     connect(m_sceneEditor, &SceneEditor::closeRequested, this, [this]() { setLeftTab(0); });
     connect(m_sceneEditor, &SceneEditor::saveAndReloadRequested, this, &MainWindow::onSaveAndReload);
+    connect(m_sceneEditor, &SceneEditor::selectEntityAtByteOffsetRequested,
+            this, &MainWindow::selectEntityAtByteOffset);
+    // Reverse source traceability: gate the "Select in Inspector" item's
+    // enablement on the SAME conditions selectEntityAtByteOffset checks, so
+    // it greys out (rather than silently no-opping) on a dirty buffer or
+    // while a render owns the scene.  Evaluated lazily at right-click time,
+    // so it always reflects the current transport + dirty state.
+    m_sceneEditor->setCanSelectEntityPredicate([this]() { return canReverseSelect(); });
 
     // Set initial status
     statusBar()->showMessage(QString("RISE %1 — Ready").arg(m_engine->versionString()));
@@ -736,6 +744,11 @@ bool MainWindow::canUseSceneTransport() const
     return !productionActive && !chatOutstanding;
 }
 
+bool MainWindow::canReverseSelect() const
+{
+    return canUseSceneTransport() && m_sceneEditor && !m_sceneEditor->isDirty();
+}
+
 void MainWindow::updateMenuActionStates()
 {
     const auto state = m_engine->state();
@@ -1178,6 +1191,38 @@ void MainWindow::revealSourceSpan(int category, const QString& name,
     // right or absent, never misleading.
     if (m_sceneEditor && !m_sceneEditor->isDirty()) {
         m_sceneEditor->revealAt(offset, length);
+    }
+}
+
+void MainWindow::selectEntityAtByteOffset(quint64 byteOffset)
+{
+    if (!m_viewportBridge || !canUseSceneTransport()) return;
+
+    // The offset comes FROM the buffer but resolves against the live CST
+    // serialization; they only agree when the buffer is clean.  A dirty
+    // buffer (unsaved hand edits) would resolve the wrong entity, so refuse
+    // silently -- the inverse of the forward reveals' stale-buffer guard.
+    if (!m_sceneEditor || m_sceneEditor->isDirty()) return;
+
+    ViewportBridge::Category cat = ViewportBridge::Category::None;
+    QString name;
+    QString param;
+    int occurrence = 0;
+    if (!m_viewportBridge->sourceRefAtByteOffset(byteOffset, &cat, &name,
+                                                 &param, &occurrence)) {
+        return;   // inter-chunk trivia, non-entity chunk, or EOF
+    }
+
+    // Select the resolved entity.  A right-click in the text editor produces
+    // no imageUpdated frame, so (unlike a render-driven refresh) we must
+    // re-pull both panels explicitly -- mirrors the outliner's own selection
+    // path.  Selection never mutates the document text, so this cannot dirty
+    // the buffer or feed back into another resolve.  Refresh only if the
+    // selection took (the resolver already validated addressability, so this
+    // normally succeeds; gating avoids a stale re-snapshot on the rare miss).
+    if (m_viewportBridge->setSelection(cat, name)) {
+        if (m_viewportProps)    m_viewportProps->refresh();
+        if (m_outlinerWidget)   m_outlinerWidget->refresh();
     }
 }
 

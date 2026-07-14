@@ -281,6 +281,13 @@ struct ContentView: View {
                     // (focused field is left alone).
                     propertyRefresh &+= 1
                 }
+                .onChange(of: viewModel.reverseSelectEpoch) { _, _ in
+                    // Reverse source traceability: a right-click "Select in
+                    // Inspector" changed the bridge selection but rendered no
+                    // frame, so drive the shared refresh here — the inspector
+                    // re-snapshots and the outliner highlight follows.
+                    propertyRefresh &+= 1
+                }
             } else {
                 RenderImageView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

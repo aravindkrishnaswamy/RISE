@@ -73,53 +73,67 @@ void SceneTextEdit::contextMenuEvent(QContextMenuEvent* event)
     SuggestionEngine engine;
     const std::vector<Suggestion> sugs = engine.GetSuggestions(buffer, cursorByte, SuggestionMode::ContextMenu);
 
-    if (sugs.empty()) {
-        // Fall back to Qt's default context menu so the user can still cut/copy/paste.
-        QMenu* def = createStandardContextMenu();
-        def->exec(event->globalPos());
-        delete def;
-        return;
-    }
-
     QMenu topMenu(this);
+    topMenu.setToolTipsVisible(true);   // show the disabled-state tooltip below
+
+    // Reverse source traceability (text -> UI select): always the first
+    // item, independent of whether there are suggestions here.  It resolves
+    // the click position to its containing scene entity and selects that
+    // entity in the outliner/inspector.  We just emit the caret's UTF-8 byte
+    // offset (the caret was moved to the click above); MainWindow does the
+    // resolve + selection.  Enablement mirrors the forward reveal affordances:
+    // disabled (not silently dead) when the buffer is dirty or a render owns
+    // the scene, so the affordance stays "right or absent, never misleading".
+    const bool canSelect = m_canSelectEntity ? m_canSelectEntity() : true;
+    QAction* selectEntity = topMenu.addAction(tr("Select in Inspector"));
+    selectEntity->setEnabled(canSelect);
+    selectEntity->setToolTip(canSelect
+        ? tr("Select the scene entity this text belongs to")
+        : tr("Unavailable while rendering or with unsaved edits"));
+    connect(selectEntity, &QAction::triggered, this, [this, cursorByte]() {
+        emit selectEntityAtByteOffsetRequested(static_cast<quint64>(cursorByte));
+    });
+    topMenu.addSeparator();
 
     // Group by category — useful at SceneRoot where there are ~126 entries
     // across 17 categories; flat for inside-a-block where the list is the
     // parameters of a single chunk.
-    std::map<RISE::ChunkCategory, std::vector<const Suggestion*>> byCat;
-    bool hasChunkKeyword = false;
-    for (const auto& s : sugs) {
-        byCat[s.category].push_back(&s);
-        if (s.kind == SuggestionKind::ChunkKeyword) hasChunkKeyword = true;
-    }
-
-    auto insertSuggestionAction = [this](QMenu* m, const Suggestion& s) {
-        QString text = QString::fromStdString(s.insertText);
-        QString label = QString::fromStdString(s.displayText);
-        QAction* act = m->addAction(label);
-        if (!s.description.empty()) {
-            act->setToolTip(QString::fromStdString(s.description));
+    if (!sugs.empty()) {
+        std::map<RISE::ChunkCategory, std::vector<const Suggestion*>> byCat;
+        bool hasChunkKeyword = false;
+        for (const auto& s : sugs) {
+            byCat[s.category].push_back(&s);
+            if (s.kind == SuggestionKind::ChunkKeyword) hasChunkKeyword = true;
         }
-        connect(act, &QAction::triggered, this, [this, text]() {
-            this->textCursor().insertText(text);
-        });
-    };
 
-    if (hasChunkKeyword && byCat.size() > 1) {
-        const auto& grammar = SceneGrammar::Instance();
-        for (auto& kv : byCat) {
-            QMenu* sub = topMenu.addMenu(QString::fromUtf8(grammar.CategoryDisplayName(kv.first)));
-            for (const Suggestion* s : kv.second) {
-                insertSuggestionAction(sub, *s);
+        auto insertSuggestionAction = [this](QMenu* m, const Suggestion& s) {
+            QString text = QString::fromStdString(s.insertText);
+            QString label = QString::fromStdString(s.displayText);
+            QAction* act = m->addAction(label);
+            if (!s.description.empty()) {
+                act->setToolTip(QString::fromStdString(s.description));
+            }
+            connect(act, &QAction::triggered, this, [this, text]() {
+                this->textCursor().insertText(text);
+            });
+        };
+
+        if (hasChunkKeyword && byCat.size() > 1) {
+            const auto& grammar = SceneGrammar::Instance();
+            for (auto& kv : byCat) {
+                QMenu* sub = topMenu.addMenu(QString::fromUtf8(grammar.CategoryDisplayName(kv.first)));
+                for (const Suggestion* s : kv.second) {
+                    insertSuggestionAction(sub, *s);
+                }
+            }
+        } else {
+            for (const auto& s : sugs) {
+                insertSuggestionAction(&topMenu, s);
             }
         }
-    } else {
-        for (const auto& s : sugs) {
-            insertSuggestionAction(&topMenu, s);
-        }
-    }
 
-    topMenu.addSeparator();
+        topMenu.addSeparator();
+    }
     // Parent the default edit actions (Cut/Copy/Paste/…) to topMenu so
     // they outlive the helper QMenu we pull them from.  Deleting stdMenu
     // while topMenu still references its QActions would leave dangling

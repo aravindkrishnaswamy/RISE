@@ -13,6 +13,7 @@
 #include <QWidget>
 #include <QPushButton>
 #include <QLabel>
+#include <functional>
 
 class RISESyntaxHighlighter;
 class SceneTextEdit;
@@ -29,9 +30,21 @@ public:
     bool isDirty() const;
     QString filePath() const { return m_filePath; }
 
+    /// Reverse source traceability: forward an enablement predicate to the
+    /// embedded SceneTextEdit's "Select in Inspector" item.  MainWindow sets
+    /// this (folding in its render-transport gate + this editor's dirty
+    /// state) so the item greys out instead of silently no-opping.
+    void setCanSelectEntityPredicate(std::function<bool()> pred);
+
 signals:
     void closeRequested();
     void saveAndReloadRequested(const QString& filePath);
+
+    /// Reverse source traceability: relayed from the embedded SceneTextEdit
+    /// when the user picks "Select in Inspector"; carries the UTF-8 byte
+    /// offset of the click.  MainWindow resolves it to a scene entity and
+    /// selects it.  (Forward direction: the revealAt slots above.)
+    void selectEntityAtByteOffsetRequested(quint64 byteOffset);
 
 public slots:
     void save();

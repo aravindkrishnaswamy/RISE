@@ -168,6 +168,10 @@ SceneEditor::SceneEditor(QWidget* parent)
     connect(m_saveBtn, &QPushButton::clicked, this, &SceneEditor::save);
     connect(m_saveReloadBtn, &QPushButton::clicked, this, &SceneEditor::saveAndReload);
     connect(m_editor, &QPlainTextEdit::textChanged, this, &SceneEditor::onTextChanged);
+    // Reverse source traceability: relay the editor's "Select in Inspector"
+    // request up to MainWindow (which owns the bridge + selection).
+    connect(m_editor, &SceneTextEdit::selectEntityAtByteOffsetRequested,
+            this, &SceneEditor::selectEntityAtByteOffsetRequested);
 
     updateDirtyState();
 }
@@ -201,6 +205,11 @@ void SceneEditor::refreshFromDisk()
 bool SceneEditor::isDirty() const
 {
     return m_editor->toPlainText() != m_originalText;
+}
+
+void SceneEditor::setCanSelectEntityPredicate(std::function<bool()> pred)
+{
+    m_editor->setCanSelectEntityPredicate(std::move(pred));
 }
 
 void SceneEditor::save()

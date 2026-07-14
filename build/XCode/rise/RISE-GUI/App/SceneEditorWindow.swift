@@ -23,6 +23,14 @@ struct SceneTextEditor: NSViewRepresentable {
     /// `byteOffset`, selects the containing line, and briefly flashes it.
     /// See `RenderViewModel.revealEntityInSceneText`.
     var revealRequest: RenderViewModel.EditorRevealRequest? = nil
+    /// Reverse source traceability (text -> UI select): invoked with the
+    /// UTF-8 byte offset of a right-click "Select in Inspector".  Wired to
+    /// `RenderViewModel.reverseSelectEntity`.
+    var onSelectEntity: ((Int) -> Void)? = nil
+    /// Whether the "Select in Inspector" item is enabled right now
+    /// (`RenderViewModel.canReverseSelect`); false greys it out instead of
+    /// letting it silently no-op on a dirty / uneditable buffer.
+    var canSelectEntity: (() -> Bool)? = nil
 
     func makeNSView(context: Context) -> NSScrollView {
         // Build an NSScrollView around our custom SceneSuggestionTextView
@@ -110,6 +118,8 @@ struct SceneTextEditor: NSViewRepresentable {
         textView.delegate = context.coordinator
         context.coordinator.textView = textView
         context.coordinator.suggestionTextView = textView
+        textView.onSelectEntityAtByteOffset = onSelectEntity
+        textView.canSelectEntityAtByteOffset = canSelectEntity
 
         // Defer initial text population until after the view is fully
         // installed in the window's view hierarchy, avoiding the
@@ -123,6 +133,10 @@ struct SceneTextEditor: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let textView = context.coordinator.textView else { return }
+        if let sv = textView as? SceneSuggestionTextView {
+            sv.onSelectEntityAtByteOffset = onSelectEntity
+            sv.canSelectEntityAtByteOffset = canSelectEntity
+        }
         if textView.string != text {
             let selectedRanges = textView.selectedRanges
             textView.string = text
@@ -353,7 +367,12 @@ struct SceneEditorPanel: View {
             toolbar
             Rectangle().fill(Theme.borderHairline).frame(height: 1)
 
-            SceneTextEditor(text: $viewModel.editorText, revealRequest: viewModel.editorRevealRequest)
+            SceneTextEditor(text: $viewModel.editorText,
+                            revealRequest: viewModel.editorRevealRequest,
+                            onSelectEntity: { offset in
+                                viewModel.reverseSelectEntity(atByteOffset: UInt64(max(0, offset)))
+                            },
+                            canSelectEntity: { viewModel.canReverseSelect })
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             statusBar
