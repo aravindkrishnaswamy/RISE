@@ -21,6 +21,7 @@
 #include "ViewportTimeline.h"
 #include "ViewportProperties.h"
 #include "OutlinerWidget.h"
+#include "EnvironmentPanel.h"
 #include "Theme.h"
 
 #include <QAction>
@@ -423,6 +424,24 @@ QWidget* MainWindow::buildRightPanel()
                 removeEntity(static_cast<int>(category), name);
             });
 
+    // Environment / IBL section, between the outliner and the per-scene
+    // ViewportProperties (which rebuildViewportForLoadedScene appends
+    // below it).  Persistent like the outliner -- setBridge() gives it a
+    // live scene on load, nullptr on teardown; it hides itself when the
+    // scene has no active rasterizer.  Mirrors the macOS EnvironmentPanel
+    // sitting between OutlinerView and PropertiesPanel.
+    m_environmentPanel = new EnvironmentPanel(panel);
+    m_rightPanelLayout->addWidget(m_environmentPanel);
+
+    // A landed environment edit changes the Painter list (Add/Remove) and
+    // re-renders (live edits) -- refresh the outliner so it follows.  The
+    // per-scene ViewportProperties is connected in
+    // rebuildViewportForLoadedScene (same persistent-to-per-scene split as
+    // the outliner's selectionActivated connect).  Both m_environmentPanel
+    // and m_outlinerWidget are persistent, so this connects once.
+    connect(m_environmentPanel, &EnvironmentPanel::environmentEdited,
+            m_outlinerWidget, &OutlinerWidget::refresh);
+
     return panel;
 }
 
@@ -761,6 +780,10 @@ void MainWindow::updateMenuActionStates()
     // chat-driven render can never be wedged against by either affordance.
     if (m_viewportProps)  m_viewportProps->setSceneEditable(bridgeInteractingEnabled);
     if (m_outlinerWidget) m_outlinerWidget->setSceneEditable(bridgeInteractingEnabled);
+    // Environment section's mutating controls gate on the IDENTICAL term:
+    // each ViewportBridge setEnvironment* call takes the controller's
+    // commit mutex a production / chat-driven render owns.
+    if (m_environmentPanel) m_environmentPanel->setSceneEditable(bridgeInteractingEnabled);
 
     const bool refinementDisabled = !m_viewportBridge
         || state == RenderEngine::Rendering
@@ -1770,6 +1793,18 @@ void MainWindow::rebuildViewportForLoadedScene()
                 m_viewportProps, &ViewportProperties::refresh);
     }
 
+    if (m_environmentPanel) {
+        m_environmentPanel->setBridge(m_viewportBridge);
+        // An environment edit doesn't necessarily touch the PRIMARY
+        // selection, but Add/Remove change the Painter list and a live
+        // edit re-renders -- follow it so the single-entity inspector
+        // stays in sync (same persistent-to-per-scene connect as the
+        // outliner's selectionActivated above; m_viewportProps is
+        // recreated per load so this reconnects fresh each time).
+        connect(m_environmentPanel, &EnvironmentPanel::environmentEdited,
+                m_viewportProps, &ViewportProperties::refresh);
+    }
+
     // Pull the timeline range from the scene's animation_options
     // chunk via the bridge.  Defaults are (0, 1) when the scene
     // declares no animation_options; we keep the slider's max above
@@ -1859,6 +1894,14 @@ void MainWindow::rebuildViewportForLoadedScene()
         connect(m_viewportBridge, &ViewportBridge::imageUpdated,
                 m_outlinerWidget, &OutlinerWidget::refresh);
     }
+    if (m_environmentPanel) {
+        // Rides every preview frame like the outliner so a scene load /
+        // active-rasterizer change / undone edit re-reads environmentInfo
+        // (reload() self-skips while one of its own fields has focus, so a
+        // frame can't blow away an in-progress edit).
+        connect(m_viewportBridge, &ViewportBridge::imageUpdated,
+                m_environmentPanel, &EnvironmentPanel::reload);
+    }
 
     // Round-trip save success: pull the just-written bytes into the
     // SceneEditor text pane so it reflects the saved edits, refresh
@@ -1910,6 +1953,12 @@ void MainWindow::teardownViewport()
     }
     if (m_outlinerWidget) {
         m_outlinerWidget->setBridge(nullptr);
+    }
+    if (m_environmentPanel) {
+        // Drops the bridge and hides the section (environmentInfo returns
+        // false with no controller).  m_environmentPanel is persistent, so
+        // it is NOT deleted here -- only its bridge borrow is cleared.
+        m_environmentPanel->setBridge(nullptr);
     }
 
     // Close any looping preview-play (and its open scrub bracket) through the

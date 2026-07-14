@@ -65,6 +65,23 @@ enum class ViewportTool {
     RollCamera      = 8
 };
 
+/// Snapshot of the scene's IBL environment (a scene-level singleton: an
+/// hdr/exr painter bound via `radiance_*` on the active rasterizer, NOT an
+/// ILight).  Mirrors SceneEditController::EnvironmentInfo and the macOS
+/// RISEEnvironmentInfo.  Filled by ViewportBridge::environmentInfo().
+struct EnvironmentInfo {
+    bool    hasEnvironment = false;   ///< a radiance_map painter is bound
+    bool    proceduralSky  = false;   ///< a procedural sky / non-painter map is installed (read-only)
+    bool    editable       = false;   ///< false when the active rasterizer takes no radiance map (MLT / pixel*)
+    QString painterName;              ///< bound painter name (empty if none)
+    QString file;                     ///< resolved HDRI path (empty if unresolved / procedural)
+    double  scale          = 1.0;     ///< intensity multiplier
+    double  orientX        = 0.0;     ///< Euler rotation X in DEGREES
+    double  orientY        = 0.0;     ///< Euler rotation Y in DEGREES
+    double  orientZ        = 0.0;     ///< Euler rotation Z in DEGREES
+    bool    background     = true;    ///< map visible behind geometry
+};
+
 class ViewportBridge : public QObject
 {
     Q_OBJECT
@@ -603,6 +620,39 @@ public:
     /// work).  Caller should surface a one-shot warning the first
     /// time per session.
     QString addCameraFromActive(const QString& proposedName);
+
+    // ---- Environment / IBL section ----------------------------------
+    // Mirrors the macOS RISEViewportBridge's identically-named section and
+    // the RISE_API_SceneEditController_*Environment* C exports.  The
+    // mutating calls take the controller's commit mutex -- gate on
+    // MainWindow::canUseSceneTransport() before calling.
+
+    /// Read the current environment binding into `out`.  Returns false only
+    /// when there is no scene / no active rasterizer; otherwise fills `out`
+    /// (with hasEnvironment == false when unbound).
+    bool environmentInfo(EnvironmentInfo* out) const;
+
+    /// Set the environment intensity / background-visibility / rotation
+    /// (degrees).  Each applies live (viewport re-renders) AND persists (CST
+    /// mirror).  Returns false when no editable bound environment exists.
+    bool setEnvironmentScale(double scale);
+    bool setEnvironmentBackground(bool background);
+    bool setEnvironmentOrient(double xDeg, double yDeg, double zDeg);
+
+    /// Swap the bound environment painter's HDRI file (an existing path; the
+    /// file picker is the guard).  Returns false when none is bound.
+    bool setEnvironmentFile(const QString& absPath);
+
+    /// Create an environment from an HDRI file when none exists (inserts an
+    /// hdr/exr painter chosen from the extension + binds radiance_map).
+    /// Returns `applied`; `outName` / `outMessage` optional (may be null).
+    bool addEnvironment(const QString& hdriPath,
+                         QString* outName = nullptr,
+                         QString* outMessage = nullptr);
+
+    /// Remove the environment (unbinds radiance_map, live + CST).  Returns
+    /// false when no editable environment exists.
+    bool removeEnvironment();
 
 signals:
     /// Emitted on the UI thread with each completed preview frame.

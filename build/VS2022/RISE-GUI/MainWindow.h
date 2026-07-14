@@ -47,6 +47,7 @@ class ViewportToolbar;
 class ViewportTimeline;
 class ViewportProperties;
 class OutlinerWidget;
+class EnvironmentPanel;
 
 class MainWindow : public QMainWindow
 {
@@ -291,6 +292,11 @@ private:
     QWidget*         m_rightPanel = nullptr;
     QVBoxLayout*     m_rightPanelLayout = nullptr;
     OutlinerWidget*  m_outlinerWidget = nullptr;
+    // Environment / IBL section, persistent (built once, like the
+    // outliner) between the outliner and the per-scene ViewportProperties.
+    // Shows nothing until setBridge() gives it a live scene; hides itself
+    // entirely when the scene has no active rasterizer.
+    EnvironmentPanel* m_environmentPanel = nullptr;
 
     // Center column: persistent host for the view stack / timeline /
     // log drawer.  m_viewportTimeline is inserted/removed at index 1
