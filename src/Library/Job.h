@@ -3125,6 +3125,9 @@ namespace RISE
 									IRadianceMap* pRm				///< [in] Radiance map; Job adds a ref
 									);
 
+		//! Un-install the global radiance map from the live scene.  See IJob.h.
+		bool ClearGlobalRadianceMap();
+
 		//! L3.D: atomic HW skylight construction.  See IJob.h.
 		bool AddHosekWilkieSkylight(
 									const double solarElevationDegrees,

@@ -116,7 +116,8 @@ namespace
 		"pinhole_camera\n{\nlocation 0 0 3\nlookat 0 0 0\nup 0 1 0\nfov 40.0\n}\n"
 		"omni_light\n{\nname lgt\npower 3.0\ncolor 1 1 1\nposition 0 3 0\n}\n";
 
-	// MLT rasterizer scene (takes no radiance map).
+	// MLT rasterizer scene (RebuildRasterizer handles it, but the MLT factory
+	// takes NO radiance map -> not env-editable).
 	const char* const kMltScene =
 		"RISE ASCII SCENE 7\n"
 		"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
@@ -124,6 +125,21 @@ namespace
 		"film\n{\nwidth 16\nheight 16\n}\n\n"
 		"pinhole_camera\n{\nlocation 0 0 3\nlookat 0 0 0\nup 0 1 0\nfov 40.0\n}\n"
 		"omni_light\n{\nname lgt\npower 3.0\ncolor 1 1 1\nposition 0 3 0\n}\n";
+
+	// pixelpel_rasterizer ACCEPTS radiance_* in scene files, but RebuildRasterizer
+	// has no case for it -> a live env edit would silently no-op, so it must
+	// report editable==false (the allow-list, not an MLT-only deny-list).
+	std::string PixelPelEnvScene()
+	{
+		return std::string(
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
+			"hdr_painter\n{\nname pnt_env\nfile " ) + kHdriFile + "\n}\n\n"
+			"pixelpel_rasterizer\n{\nsamples 4\npixel_filter box\noidn_denoise false\n"
+			"radiance_map pnt_env\nradiance_scale 1.5\n}\n\n"
+			"film\n{\nwidth 16\nheight 16\n}\n\n"
+			"pinhole_camera\n{\nlocation 0 0 3\nlookat 0 0 0\nup 0 1 0\nfov 40.0\n}\n";
+	}
 
 	//------------------------------------------------------------------
 	// E1: read a bound environment.
@@ -228,10 +244,43 @@ namespace
 		Env e2;
 		Check( ctrl.GetEnvironment( e2 ), "GetEnvironment after remove" );
 		Check( !e2.hasEnvironment, "hasEnvironment == false after remove" );
+		// The stale-map regression: the live global map must actually be gone,
+		// else GetEnvironment's else-branch would misreport proceduralSky==true.
+		Check( !e2.proceduralSky, "proceduralSky == false after remove (live map cleared, not stale)" );
 
 		const std::string serRem = SerializedScene( *pJob );
 		Check( !Contains( serRem, "radiance_map" ), "CST radiance_map erased after remove (persists)" );
 		Check( Contains( serRem, "hdr_painter" ), "CST still has the (now-orphan) hdr_painter chunk" );
+
+		// Removing again when nothing is bound is an honest no-op (returns false),
+		// and must NOT touch any (hypothetical procedural-sky) global map.
+		Check( !ctrl.RemoveEnvironment(), "RemoveEnvironment returns false when nothing is bound" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// E3b: AddEnvironment refuses when an environment is already bound.
+	//------------------------------------------------------------------
+	void TestAddWhenAlreadyBound()
+	{
+		std::printf( "E3b: AddEnvironment refuses when already bound...\n" );
+		const std::string tmp = TempPath( "env_e3b.RISEscene" );
+		Job* pJob = LoadScene( EnvBoundScene(), tmp );
+		Check( pJob != nullptr, "E3b fixture loads" );
+		if( !pJob ) return;
+
+		SceneEditController ctrl( *pJob, nullptr );
+		String nm;
+		const SceneEditController::AgentCommitResult r =
+			ctrl.AddEnvironment( String( "/tmp/rise_env_test_other.hdr" ), &nm );
+		Check( !r.applied, "AddEnvironment refused (env already bound)" );
+		Check( !std::string( r.message.c_str() ).empty(), "refusal carries a message" );
+		// The original binding is untouched.
+		Env e;
+		Check( ctrl.GetEnvironment( e ) && std::string( e.painterName.c_str() ) == "pnt_env",
+			"original binding intact after refused Add" );
 
 		pJob->release();
 		std::remove( tmp.c_str() );
@@ -289,6 +338,69 @@ namespace
 		pJob->release();
 		std::remove( tmp.c_str() );
 	}
+
+	//------------------------------------------------------------------
+	// E7: AddEnvironment after a LIVE-ONLY rasterizer switch still persists.
+	// A live SetActiveRasterizer to a kind absent from the scene text does
+	// NOT touch the CST; AddEnvironment's painter insert then runs a D2
+	// re-derive that rebuilds the scene from the CST, resetting the active
+	// rasterizer to the CST-authored one -- so the radiance_map binding lands
+	// on a chunk that actually saves.  This documents that the "chunkless
+	// active rasterizer" path self-heals into an honest, persisting bind
+	// (rather than a silent applied-but-dropped-on-save).
+	//------------------------------------------------------------------
+	void TestAddAfterLiveRasterizerSwitch()
+	{
+		std::printf( "E7: AddEnvironment after a live-only rasterizer switch persists (re-derive rebinds to the CST rasterizer)...\n" );
+		const std::string tmp = TempPath( "env_e7.RISEscene" );
+		Job* pJob = LoadScene( kNoEnvScene, tmp );   // authors only pathtracing_pel_rasterizer
+		Check( pJob != nullptr, "E7 fixture loads" );
+		if( !pJob ) return;
+
+		// Live-only switch to a kind absent from the scene text (lazy-built).
+		Check( pJob->SetActiveRasterizer( "vcm_pel_rasterizer" ), "live switch active rasterizer to vcm_pel" );
+
+		SceneEditController ctrl( *pJob, nullptr );
+		String nm;
+		const SceneEditController::AgentCommitResult r =
+			ctrl.AddEnvironment( String( kHdriFile.c_str() ), &nm );
+		// The insert's re-derive resets active to the CST-authored pathtracing_pel,
+		// so the bind lands on a chunk that persists -> honest "applied".
+		Check( r.applied, "AddEnvironment applied (bind lands on the re-derived CST rasterizer)" );
+		Check( std::string( r.status.c_str() ) == "applied", "status == applied (not a dropped partial)" );
+		Env e;
+		Check( ctrl.GetEnvironment( e ) && e.hasEnvironment, "environment bound after add" );
+		const std::string ser = SerializedScene( *pJob );
+		Check( Contains( ser, "radiance_map " + std::string( nm.c_str() ) ),
+			"CST records the binding on the (re-derived) rasterizer chunk -- no silent loss on save" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// E6: pixelpel_rasterizer reports editable==false (allow-list P1).
+	//------------------------------------------------------------------
+	void TestPixelPelNotEditable()
+	{
+		std::printf( "E6: pixelpel_rasterizer reports editable==false (no RebuildRasterizer case)...\n" );
+		const std::string tmp = TempPath( "env_e6.RISEscene" );
+		Job* pJob = LoadScene( PixelPelEnvScene(), tmp );
+		Check( pJob != nullptr, "E6 fixture loads" );
+		if( !pJob ) return;
+
+		SceneEditController ctrl( *pJob, nullptr );
+		Env e;
+		Check( ctrl.GetEnvironment( e ), "GetEnvironment on pixelpel scene" );
+		// The env is BOUND (read path works) but NOT editable (the live rebuild
+		// path can't apply an edit) -- the GUI keeps the controls disabled.
+		Check( e.hasEnvironment, "hasEnvironment == true (binding is readable)" );
+		Check( !e.editable, "editable == false (pixelpel has no RebuildRasterizer case)" );
+		Check( !ctrl.SetEnvironmentScale( 3.0 ), "SetEnvironmentScale refused on pixelpel" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
 }   // anonymous namespace
 
 int main()
@@ -297,8 +409,11 @@ int main()
 	TestReadBoundEnvironment();
 	TestWriteAndPersist();
 	TestAddAndRemove();
+	TestAddWhenAlreadyBound();
 	TestFileSwap();
 	TestMltRefusal();
+	TestPixelPelNotEditable();
+	TestAddAfterLiveRasterizerSwitch();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -2231,7 +2231,12 @@ namespace RISE
 		//! when there is no active rasterizer, or when the active rasterizer
 		//! takes no radiance map (MLT).  An empty `value` for `radiance_map`
 		//! UNBINDS (live: no map; CST: erase all four radiance_* params).
-		bool SetEnvironmentRadianceParam_( const char* paramName, const std::string& value );
+		//! `*outPersisted` (if non-null) reports whether the CST MIRROR recorded
+		//! the edit (true) or no-oped because the active rasterizer has no unique
+		//! chunk in the Document (false -> the live edit stands but a save would
+		//! drop it) -- callers surface that so a bind is never falsely "applied".
+		bool SetEnvironmentRadianceParam_( const char* paramName, const std::string& value,
+			bool* outPersisted = nullptr );
 
 		//! Re-point mEditor at the Job's CURRENT scene + managers.  Called at construction AND after any
 		//! whole-scene re-derive (a scene_variant switch ClearAll's + recreates the Scene + managers); without

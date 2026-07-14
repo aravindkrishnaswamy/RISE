@@ -3118,6 +3118,13 @@ namespace RISE
 									class IRadianceMap* /*pRm*/		///< [in] IRadianceMap impl to install (e.g. HosekWilkieSpectralRadianceMap)
 									) { return false; }
 
+		//! Un-install the global (environment) radiance map from the live
+		//! scene.  Backs the editor's RemoveEnvironment: a rasterizer rebuild
+		//! with radiance_map "none" does NOT clear the previously-installed map
+		//! (setup only installs one), so this is the explicit clear path.
+		/// \return TRUE if a scene was present to clear, FALSE otherwise
+		virtual bool ClearGlobalRadianceMap() { return false; }
+
 		//! Atomically create a Hosek-Wilkie analytic spectral sun-and-
 		//! sky pair: registers the IRadianceMap as the scene's global
 		//! radiance map AND optionally creates a matched directional

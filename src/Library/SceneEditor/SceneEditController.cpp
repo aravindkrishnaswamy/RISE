@@ -6569,13 +6569,31 @@ SceneEditController::AgentCommitResult SceneEditController::RemoveEntity( Catego
 
 namespace {
 
-// Rasterizer kinds that take NO radiance map: MLT's SetMLTRasterizer /
-// SetMLTSpectralRasterizer factories have no radianceMapConfig parameter, so a
-// RebuildRasterizer would silently DROP any env edit.  Env editing is refused
-// on these (EnvironmentInfo.editable = false).
-inline bool RasterizerTakesNoRadianceMap( const std::string& kind )
+// POSITIVE allow-list of the rasterizer kinds on which a live radiance-map edit
+// actually lands.  A live edit goes SetRasterizerParameter -> RebuildRasterizer,
+// which reconstructs the rasterizer from its snapshot -- so a kind is env-editable
+// ONLY if (a) RebuildRasterizer has a case for it AND (b) that factory takes a
+// radianceMapConfig.  This is deliberately an allow-list, not a deny-list: three
+// kinds fail one of those conditions and would SILENTLY drop a scale/orient/
+// background edit if we advertised them editable --
+//   - mlt_rasterizer / mlt_spectral_rasterizer: RebuildRasterizer handles them
+//     but SetMLTRasterizer / SetMLTSpectralRasterizer take NO radianceMapConfig;
+//   - pixelpel_rasterizer / pixelintegratingspectral_rasterizer: they ACCEPT
+//     radiance_* in scene files, but RebuildRasterizer has no case for them
+//     (returns false), so SetRasterizerParameter fails.
+// Any of those reports editable=false so the GUI keeps the env controls disabled
+// rather than offering an edit that no-ops.  (The pixel* rebuild gap is a broader
+// pre-existing limitation of the rasterizer-param edit path, tracked separately.)
+inline bool RasterizerSupportsRadianceMapEdit( const std::string& kind )
 {
-	return kind == "mlt_rasterizer" || kind == "mlt_spectral_rasterizer";
+	return kind == "pathtracing_pel_rasterizer"
+	    || kind == "pathtracing_spectral_rasterizer"
+	    || kind == "bdpt_pel_rasterizer"
+	    || kind == "bdpt_spectral_rasterizer"
+	    || kind == "vcm_pel_rasterizer"
+	    || kind == "vcm_spectral_rasterizer"
+	    || kind == "auto_rasterizer"
+	    || kind == "auto_spectral_rasterizer";
 }
 
 }  // namespace
@@ -6589,7 +6607,7 @@ bool SceneEditController::GetEnvironment( EnvironmentInfo& out ) const
 	const std::string activeName = mJob.GetActiveRasterizerName();
 	if( activeName.empty() ) return false;
 
-	out.editable = !RasterizerTakesNoRadianceMap( activeName );
+	out.editable = RasterizerSupportsRadianceMapEdit( activeName );
 
 	// Live snapshot's radiance binding (FormatRasterizerParam handles these;
 	// radiance_map is "" when unbound / "none").
@@ -6631,8 +6649,11 @@ bool SceneEditController::GetEnvironment( EnvironmentInfo& out ) const
 	return true;
 }
 
-bool SceneEditController::SetEnvironmentRadianceParam_( const char* paramName, const std::string& value )
+bool SceneEditController::SetEnvironmentRadianceParam_( const char* paramName, const std::string& value,
+	bool* outPersisted )
 {
+	if( outPersisted ) *outPersisted = false;
+
 	if( mTxnOpen ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: environment edit refused inside an open transaction (not undoable -> rollback cannot revert it)." );
 		return false;
@@ -6640,7 +6661,7 @@ bool SceneEditController::SetEnvironmentRadianceParam_( const char* paramName, c
 
 	std::unique_lock<std::mutex> lk( mMutex );
 	const std::string activeName = mJob.GetActiveRasterizerName();
-	if( activeName.empty() || RasterizerTakesNoRadianceMap( activeName ) ) return false;
+	if( activeName.empty() || !RasterizerSupportsRadianceMapEdit( activeName ) ) return false;
 
 	// Cancel-and-park: a rasterizer rebuild releases the old instance and
 	// constructs a new one; the render thread reads `pRasterizer` per-pixel, so
@@ -6655,8 +6676,11 @@ bool SceneEditController::SetEnvironmentRadianceParam_( const char* paramName, c
 	if( !ok ) return false;
 
 	// Mirror to the CST so the edit survives a save (Document-only, no re-derive;
-	// safe under the lock -- pCstDocument is swapped here too).
-	mJob.ApplyCstEnvironmentEdit( paramName, value.c_str() );
+	// safe under the lock -- pCstDocument is swapped here too).  A 0 return means
+	// the active rasterizer has no unique chunk in the Document, so the edit will
+	// NOT persist -- reported via outPersisted so callers can be honest.
+	const int cstResult = mJob.ApplyCstEnvironmentEdit( paramName, value.c_str() );
+	if( outPersisted ) *outPersisted = ( cstResult != 0 );
 
 	mEditPending.store( true, std::memory_order_release );
 	lk.unlock();
@@ -6716,14 +6740,26 @@ SceneEditController::AgentCommitResult SceneEditController::AddEnvironment( cons
 		return rej;
 	}
 
-	// Refuse if the active rasterizer takes no radiance map (MLT) or none exists.
+	// Refuse if the active rasterizer takes no radiance map, or an environment is
+	// already bound (contract: AddEnvironment is "create when none exists"; the
+	// bound-replacement path is SetEnvironmentFile / RemoveEnvironment-then-Add).
 	std::string activeName;
+	bool alreadyBound = false;
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
 		activeName = mJob.GetActiveRasterizerName();
+		if( !activeName.empty() ) {
+			alreadyBound = !mJob.GetRasterizerParameter( activeName.c_str(), "radiance_map" ).empty();
+		}
 	}
-	if( activeName.empty() || RasterizerTakesNoRadianceMap( activeName ) ) {
+	if( activeName.empty() || !RasterizerSupportsRadianceMapEdit( activeName ) ) {
 		rej.message = String( "the active rasterizer takes no environment map (use a PT/BDPT/VCM rasterizer)" );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		rej.headVersion = mJob.GetCstHeadVersion();
+		return rej;
+	}
+	if( alreadyBound ) {
+		rej.message = String( "an environment is already bound; swap its file or remove it first" );
 		std::lock_guard<std::mutex> hlk( mMutex );
 		rej.headVersion = mJob.GetCstHeadVersion();
 		return rej;
@@ -6765,13 +6801,28 @@ SceneEditController::AgentCommitResult SceneEditController::AddEnvironment( cons
 	if( !ins.applied ) return ins;   // insert rejected (e.g. malformed / dup) -> surface verbatim
 
 	// Bind radiance_map on the active rasterizer (live rebuild + CST mirror).
-	if( !SetEnvironmentRadianceParam_( "radiance_map", painterName ) ) {
-		// The painter DID land but the binding failed -- honest partial result
+	bool bindPersisted = false;
+	if( !SetEnvironmentRadianceParam_( "radiance_map", painterName, &bindPersisted ) ) {
+		// The painter DID land but the LIVE binding failed -- honest partial result
 		// (the orphan painter chunk is reusable / removable, not a silent loss).
 		if( outPainterName ) *outPainterName = String( painterName.c_str() );
 		AgentCommitResult r = ins;
 		r.status  = String( "partial" );
 		r.message = String( "HDRI painter inserted but binding radiance_map to the active rasterizer failed" );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
+	if( !bindPersisted ) {
+		// The live bind succeeded (viewport shows the HDRI) but the CST mirror
+		// could NOT record it -- the active rasterizer has no unique chunk in the
+		// Document (e.g. a rasterizer kind switched to but never authored in the
+		// scene file).  Surface this honestly so the user isn't told "applied"
+		// while a save would drop the binding and orphan the painter.
+		if( outPainterName ) *outPainterName = String( painterName.c_str() );
+		AgentCommitResult r = ins;
+		r.status  = String( "partial" );
+		r.message = String( "environment applied live but NOT recorded in the scene file -- the active rasterizer has no chunk to bind radiance_map to (a save would drop it)" );
 		std::lock_guard<std::mutex> hlk( mMutex );
 		r.headVersion = mJob.GetCstHeadVersion();
 		return r;
@@ -6789,9 +6840,37 @@ SceneEditController::AgentCommitResult SceneEditController::AddEnvironment( cons
 
 bool SceneEditController::RemoveEnvironment()
 {
+	// Precheck: only unbind when a radiance_map is ACTUALLY bound.  This matters
+	// for correctness, not just cosmetics: the live-map clear below must NOT fire
+	// when nothing was bound, because the global map might then belong to a
+	// procedural sky (hosek) or ambient light this method must not clobber.
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		const std::string activeName = mJob.GetActiveRasterizerName();
+		if( activeName.empty() ) return false;
+		if( mJob.GetRasterizerParameter( activeName.c_str(), "radiance_map" ).empty() ) return false;
+	}
+
 	// Unbind: live radiance_map "" -> the snapshot name becomes "none" and the
-	// rebuild installs no map; the CST mirror erases all four radiance_* params.
-	return SetEnvironmentRadianceParam_( "radiance_map", std::string() );
+	// rebuild installs no NEW map; the CST mirror erases all four radiance_* params.
+	if( !SetEnvironmentRadianceParam_( "radiance_map", std::string(), nullptr ) ) return false;
+
+	// The rebuild with name=="none" does NOT un-install the previously-installed
+	// global map (rasterizer setup only ever INSTALLS one) -- so the stale
+	// IRadianceMap would keep rendering.  Clear it explicitly now.  Safe because
+	// the precheck confirmed a radiance_map painter was bound, so the live map is
+	// that painter's, not a procedural sky's.  Same cancel-and-park as the setters.
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+	mJob.ClearGlobalRadianceMap();
+	mEditPending.store( true, std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+	return true;
 }
 
 bool SceneEditController::SetPropertyForCategory( Category cat, const String& name, const String& valueStr )

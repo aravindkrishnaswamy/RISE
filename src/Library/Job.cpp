@@ -2697,6 +2697,18 @@ bool Job::SetGlobalRadianceMap( IRadianceMap* pRm )
 	return true;
 }
 
+bool Job::ClearGlobalRadianceMap()
+{
+	if( !pScene ) return false;
+	// Un-install the environment map from the LIVE scene.  Needed by the editor's
+	// RemoveEnvironment: a rasterizer rebuild with radiance_map "none" does NOT
+	// clear the previously-installed map (rasterizer setup only ever INSTALLS one),
+	// so without this the stale IRadianceMap keeps rendering until a reload.
+	pScene->SetGlobalRadianceMap( nullptr );   // null CLEARS (Scene::SetGlobalRadianceMap)
+	BumpSceneLightGen( pScene );               // environment removed -> env sampler stale
+	return true;
+}
+
 bool Job::AddHosekWilkieSkylight(
 	const double solarElevationDegrees,
 	const double solarAzimuthDegrees,

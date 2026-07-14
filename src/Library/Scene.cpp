@@ -407,10 +407,14 @@ void Scene::SetLightManager( const ILightManager* pLightManager_ )
 }
 void Scene::SetGlobalRadianceMap( const IRadianceMap* pRadianceMap )
 {
-	if( pRadianceMap ) {
-		safe_release( pGlobalRadianceMap );
-
-		pGlobalRadianceMap = pRadianceMap;
+	// A null argument CLEARS the environment map (release the old, leave none
+	// installed).  Previously a null was a silent no-op, which meant nothing in
+	// the tree could ever un-install the global radiance map -- so removing an
+	// IBL environment from the editor left the old map rendering until a reload.
+	// Every existing caller passes a real map; null-as-clear is additive.
+	safe_release( pGlobalRadianceMap );
+	pGlobalRadianceMap = pRadianceMap;
+	if( pGlobalRadianceMap ) {
 		pGlobalRadianceMap->addref();
 	}
 }
