@@ -119,6 +119,7 @@
 #ifndef RISE_AGENT_AGENTCHATCODECS_
 #define RISE_AGENT_AGENTCHATCODECS_
 
+#include <cstddef>
 #include <string>
 #include <utility>
 #include <vector>
@@ -400,6 +401,12 @@ namespace RISE
 			//! omits it or the body does not parse.  NEVER throws.  Pure
 			//! (like every codec method) -- the raw body is the sole input.
 			virtual ChatUsage ParseUsage( const std::string& rawBody ) const = 0;
+
+			//! Byte length of this codec's fixed tool-declarations payload
+			//! sent on every request -- the fixed-prefix contribution to
+			//! the context-budget estimate (Facet 5 context-compaction
+			//! slice S1; see AgentChatLoop::EstimateContextTokens).
+			virtual std::size_t ToolsWireBytes() const = 0;
 		};
 
 		//! Anthropic Messages API codec (see file header).
@@ -425,6 +432,7 @@ namespace RISE
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
 			virtual ChatUsage ParseUsage( const std::string& rawBody ) const;
+			virtual std::size_t ToolsWireBytes() const;
 		};
 
 		//! Google Gemini v1beta REST codec (see file header).  The
@@ -455,6 +463,7 @@ namespace RISE
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
 			virtual ChatUsage ParseUsage( const std::string& rawBody ) const;
+			virtual std::size_t ToolsWireBytes() const;
 		};
 
 		//! OpenAI Chat Completions codec (see file header).  The GUI
@@ -528,6 +537,7 @@ namespace RISE
 			virtual ChatParsedResponse ParseResponse(
 				long httpStatus, const std::string& rawBody ) const;
 			virtual ChatUsage ParseUsage( const std::string& rawBody ) const;
+			virtual std::size_t ToolsWireBytes() const;
 
 		private:
 			Config mConfig;

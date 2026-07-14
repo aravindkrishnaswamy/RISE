@@ -1017,8 +1017,31 @@ namespace RISE
 			// is set (omitted = adaptive on models that support it).
 			std::string body = "{\"model\":";
 			JsonAppendEscapedString( body, modelId );
-			body += ",\"max_tokens\":" + std::to_string( kAnthropicMaxTokens ) + ",\"system\":";
-			JsonAppendEscapedString( body, systemPrompt );
+			body += ",\"max_tokens\":" + std::to_string( kAnthropicMaxTokens );
+			// Prompt caching: the system prompt + the tool definitions are a
+			// large, byte-identical prefix on EVERY request in a session (the
+			// system string is fixed and AnthropicToolsJson() is a static
+			// built once from a fixed-order table).  Mark the single system
+			// block with cache_control:ephemeral so Anthropic caches that
+			// whole prefix -- tools render before system in the cache prefix,
+			// so one breakpoint on the last (only) system block covers tools
+			// AND system together (max 4 breakpoints/request; we use 1).
+			// Cache reads bill at ~0.1x input and the 5-minute TTL is
+			// refreshed by any request in the window, which a live chat turn
+			// trivially satisfies.  Only this codec needs an explicit marker:
+			// OpenAI/xAI (auto prefix caching >=1024 tokens) and Gemini
+			// (implicit caching) reuse the identical leading prefix with no
+			// client action.  An empty system prompt would be an illegal
+			// empty cacheable text block, so fall back to the plain-string
+			// form in that (never-in-practice) case.
+			if( systemPrompt.empty() ) {
+				body += ",\"system\":\"\"";
+			}
+			else {
+				body += ",\"system\":[{\"type\":\"text\",\"text\":";
+				JsonAppendEscapedString( body, systemPrompt );
+				body += ",\"cache_control\":{\"type\":\"ephemeral\"}}]";
+			}
 			body += ",\"tools\":";
 			body += AnthropicToolsJson();
 			body += ",\"messages\":[";
@@ -1211,6 +1234,11 @@ namespace RISE
 			if( usage.get( "cache_read_input_tokens" ).isNumber() )
 				u.cacheReadInputTokens = static_cast<long long>( usage.get( "cache_read_input_tokens" ).asNumber() );
 			return u;
+		}
+
+		std::size_t AnthropicChatCodec::ToolsWireBytes() const
+		{
+			return AnthropicToolsJson().size();
 		}
 
 		//======================================================================
@@ -1871,6 +1899,11 @@ namespace RISE
 			return u;
 		}
 
+		std::size_t GeminiChatCodec::ToolsWireBytes() const
+		{
+			return GeminiFunctionDeclarationsJson().size();
+		}
+
 		//======================================================================
 		// (5) OpenAIChatCodec
 		//======================================================================
@@ -2333,6 +2366,11 @@ namespace RISE
 			if( details.isObject() && details.get( "cached_tokens" ).isNumber() )
 				u.cacheReadInputTokens = static_cast<long long>( details.get( "cached_tokens" ).asNumber() );
 			return u;
+		}
+
+		std::size_t OpenAIChatCodec::ToolsWireBytes() const
+		{
+			return OpenAIToolsJson().size();
 		}
 
 		//======================================================================
