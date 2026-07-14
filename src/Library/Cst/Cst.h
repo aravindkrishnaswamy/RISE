@@ -443,6 +443,20 @@ namespace RISE
 		//! sentinel (size_t)-1.
 		size_t DocByteOffsetOfItem( const Document& doc, int index );
 
+		//! Byte range of the `occ`-th (0-based) Param named `role` inside the
+		//! top-level chunk `chunkId`, in the FULL-document serialization (the same
+		//! byte space DocByteOffsetOfItem returns and SerializeCst produces).  This
+		//! is the param-granular twin of DocByteOffsetOfItem for a "reveal THIS row
+		//! in the scene file" affordance: `*outOffset` = the absolute byte offset of
+		//! the param's `role value` text (its own leading indentation trivia is a
+		//! preceding SIBLING node and is NOT included, so the span is the tight
+		//! `role value…` run), `*outLength` = that param node's serialized byte
+		//! width.  The forward dual of DocParamAtByteOffset (byte -> param).  Returns
+		//! false when `chunkId` is not a resolvable top-level item, or the chunk has
+		//! no `occ`-th `role` param.  Either out-pointer may be null.  O(chunk kids).
+		bool DocByteRangeOfParam( const Document& doc, NodeId chunkId, const std::string& role,
+		                          int occ, size_t* outOffset, size_t* outLength );
+
 		//! Replace top-level item `index` with `newItem` (path-copy: O(log N) new
 		//! sequence nodes, the rest shared by pointer; aggregates recomputed along
 		//! the spine). `*visits` (if non-null) receives the rebuilt-node count.

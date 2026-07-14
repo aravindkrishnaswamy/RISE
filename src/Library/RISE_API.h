@@ -3693,6 +3693,32 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p, int category, const char* name,
 		unsigned long long* outByteOffset, unsigned int* outLine );
 
+	//! Source traceability (any UI element -> its scene-file span).  Generalizes
+	//! GetEntitySourceLocation to param granularity (`param` empty = whole chunk;
+	//! non-empty = the `occ`-th matching param's tight `role value` run) and to the
+	//! Film / Rasterizer singletons (so the Environment section reveals its
+	//! radiance_* rows via category=Rasterizer + the HDRI file via category=Painter
+	//! + the bound painter name).  Fills byteOffset/byteLength (length 0 for a whole
+	//! chunk) + 1-based line/column.  Returns false (outputs unchanged) on a null
+	//! controller, no retained CST, or an unresolvable ref.  Same no-poll-during-
+	//! render caveat as GetEntitySourceLocation.
+	bool RISE_API_SceneEditController_ResolveSourceSpan(
+		SceneEditController* p, int category, const char* name, const char* param, int occ,
+		unsigned long long* outByteOffset, unsigned long long* outByteLength,
+		unsigned int* outLine, unsigned int* outColumn );
+
+	//! Reverse (a text-editor byte offset -> the UI element it backs).  Fills
+	//! `outCategory` (a SceneEditCategory_* int), `outName` (the entity name, empty
+	//! for an unnamed singleton), and `outParam` (empty when the offset is on a
+	//! chunk header rather than a specific param) so the caller can select +
+	//! highlight that element.  Returns false when there is no retained CST or the
+	//! offset isn't inside an addressable entity/singleton chunk.
+	bool RISE_API_SceneEditController_SourceRefAtByteOffset(
+		SceneEditController* p, unsigned long long offset,
+		int* outCategory,
+		char* outName, unsigned int outNameLen,
+		char* outParam, unsigned int outParamLen );
+
 	//! Save the in-memory edits to `filePath`.  Returns the engine's
 	//! SaveResult.status numerically (0=Saved, 1=NoOp, 2=Refused,
 	//! 3=Failed).  On Refused / Failed, `errOut` is filled with the

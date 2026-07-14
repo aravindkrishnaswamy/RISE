@@ -7701,6 +7701,51 @@ namespace RISE
 		return true;
 	}
 
+	// Source traceability — any UI element -> its scene-file span, + the reverse.
+	// See SceneEditController::ResolveSourceSpan / SourceRefAtByteOffset.
+
+	bool RISE_API_SceneEditController_ResolveSourceSpan(
+		SceneEditController* p, int category, const char* name, const char* param, int occ,
+		unsigned long long* outByteOffset, unsigned long long* outByteLength,
+		unsigned int* outLine, unsigned int* outColumn )
+	{
+		if( !p ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		SceneEditController::SourceSpan sp;
+		if( !p->ResolveSourceSpan( cat, String( name ? name : "" ), String( param ? param : "" ), occ, sp ) )
+			return false;
+		if( outByteOffset ) *outByteOffset = sp.byteOffset;
+		if( outByteLength ) *outByteLength = sp.byteLength;
+		if( outLine )       *outLine       = sp.line;
+		if( outColumn )     *outColumn     = sp.column;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SourceRefAtByteOffset(
+		SceneEditController* p, unsigned long long offset,
+		int* outCategory,
+		char* outName, unsigned int outNameLen,
+		char* outParam, unsigned int outParamLen )
+	{
+		if( !p ) return false;
+		SceneEditController::Category cat = SceneEditController::Category::None;
+		String name, param;
+		if( !p->SourceRefAtByteOffset( offset, cat, name, param ) ) return false;
+		if( outCategory ) *outCategory = static_cast<int>( cat );
+		// Inline truncating copy (CopyToBuf is defined later in this TU): NUL-terminate.
+		auto copyOut = []( const String& s, char* buf, unsigned int cap ) {
+			if( !buf || cap == 0 ) return;
+			const char* src = s.c_str();
+			unsigned int i = 0;
+			while( src && src[i] && i + 1 < cap ) { buf[i] = src[i]; ++i; }
+			buf[i] = '\0';
+		};
+		copyOut( name, outName, outNameLen );
+		copyOut( param, outParam, outParamLen );
+		return true;
+	}
+
 	bool RISE_API_SceneEditController_HasUnsavedChanges( SceneEditController* p )
 	{
 		if( !p ) return false;

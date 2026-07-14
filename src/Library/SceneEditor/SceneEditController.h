@@ -1769,6 +1769,53 @@ namespace RISE
 		bool EntitySourceLocation( Category cat, const String& name,
 		                          std::uint64_t& outByteOffset, std::uint32_t& outLine ) const;
 
+		//! -------- Source traceability: any UI element -> its scene-file span -----
+		//!
+		//! Generalizes EntitySourceLocation from "a named entity's chunk" to "any
+		//! scene-derived UI element", at three granularities, keyed by the SAME
+		//! (Category, name, param) address the CST EDIT path uses -- so what a UI
+		//! element can REVEAL is exactly what it can EDIT (they resolve through one
+		//! CST-node path and cannot drift).  A byte RANGE (offset+length) lets the
+		//! editor highlight the exact span; line/column are 1-based.
+		//!
+		//! Resolution of (cat, name) -> chunk covers the named categories (Object /
+		//! Light / Material / Medium / Painter / Animation / SceneVariant), the
+		//! unnamed-active Camera (unique-fallback), AND the unnamed unique-in-kind
+		//! singletons Film and Rasterizer (which EntitySourceLocation /
+		//! RoleKindSuffixForCategory reject) -- so the Environment section reveals
+		//! its radiance_* rows via (Rasterizer, "", "radiance_scale"...) and its
+		//! HDRI file via (Painter, <bound painter>, "file").  Reference-following is
+		//! the WIDGET's job: it already knows the referenced entity's name, so it
+		//! builds the ref for the referenced chunk directly (no indirection here).
+		//!
+		//! `param` empty = whole-chunk span (byteLength 0; highlight the line);
+		//! non-empty = the `occ`-th (0-based) matching param's tight `role value…`
+		//! run.  Returns false (out.present stays false) on no retained CST, an
+		//! unresolvable ref (removed entity / bad param), or a session-only element
+		//! whose widget shouldn't have called this.  Same mMutex / no-poll-during-
+		//! render caveat + O(doc bytes) line-count cost as EntitySourceLocation.
+		struct SourceSpan
+		{
+			bool          present    = false;  //!< a scene-file span was resolved
+			std::uint64_t byteOffset = 0;      //!< absolute byte offset in SerializeCst(doc)
+			std::uint64_t byteLength = 0;      //!< param span width; 0 for a whole-chunk reveal
+			std::uint32_t line       = 1;      //!< 1-based line of byteOffset
+			std::uint32_t column     = 1;      //!< 1-based column of byteOffset
+		};
+		bool ResolveSourceSpan( Category cat, const String& name, const String& param,
+		                        int occ, SourceSpan& out ) const;
+
+		//! Reverse: the UI element whose scene-file source contains byte `offset`
+		//! (a text-editor cursor / selection) -> fills (outCat, outName, outParam)
+		//! so the caller can select + highlight that element.  outParam is empty
+		//! when the offset is inside a chunk but not on a specific param.  Returns
+		//! false when there is no retained CST or the offset isn't inside an
+		//! addressable chunk (inter-chunk trivia, a non-entity chunk kind, EOF).
+		//! Completes the round-trip (text -> UI) using the CST's byte->node map
+		//! (DocParamAtByteOffset / DocItemAtByteOffset).
+		bool SourceRefAtByteOffset( std::uint64_t offset, Category& outCat,
+		                            String& outName, String& outParam ) const;
+
 		//! Phase 6.5 UI hook: install a listener that fires when
 		//! `HasUnsavedChanges()` flips (clean→dirty or dirty→clean).
 		//! The listener runs on the thread that drove the transition

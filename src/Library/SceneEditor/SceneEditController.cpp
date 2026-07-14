@@ -5307,6 +5307,71 @@ bool RoleKindSuffixForCategory( SceneEditController::Category cat, std::string& 
 
 }  // namespace
 
+namespace {
+
+// Source traceability (forward): resolve a (Category, name) UI address to its
+// top-level CST chunk NodeId, covering the named categories + the unnamed-active
+// Camera (via RoleKindSuffixForCategory's unique-fallback) AND the unnamed
+// unique-in-kind singletons Film / Rasterizer (which RoleKindSuffixForCategory
+// rejects, since they have no chunk-`name` addressing).  `activeRasterizerKind` is
+// the active rasterizer's keyword (its CST role) for the Rasterizer singleton.
+RISE::Cst::NodeId ResolveSourceChunkId( const RISE::Cst::Document& doc,
+	SceneEditController::Category cat, const std::string& name, const std::string& activeRasterizerKind )
+{
+	std::string suffix; bool uf = false;
+	if( RoleKindSuffixForCategory( cat, suffix, uf ) ) {
+		if( name.empty() && !uf ) return 0;   // an empty name resolves only via the unique-fallback
+		return RISE::Cst::DocFindByNameAnyRole( doc, name, nullptr, suffix, uf );
+	}
+	// Singletons RoleKindSuffixForCategory rejects: resolve by KIND, unique-fallback.
+	if( cat == SceneEditController::Category::Film )
+		return RISE::Cst::DocFindByNameAnyRole( doc, "", nullptr, "film", true );
+	if( cat == SceneEditController::Category::Rasterizer ) {
+		if( activeRasterizerKind.empty() ) return 0;
+		return RISE::Cst::DocFindByNameAnyRole( doc, "", nullptr, activeRasterizerKind, true );
+	}
+	return 0;
+}
+
+// Source traceability (reverse): a CST chunk keyword (its role) -> the UI Category,
+// for the text->UI direction.  Covers every category a SourceRef can name (the
+// reverse of RoleKindSuffixForCategory + the Film / Rasterizer singletons).
+// Category::None for a keyword that is not an addressable entity/singleton chunk
+// (standard_shader, geometry sub-chunks, `let`, etc.).
+SceneEditController::Category CategoryForChunkKeyword( const std::string& kw )
+{
+	using Cat = SceneEditController::Category;
+	auto ends = []( const std::string& s, const char* suf ) {
+		const std::string t( suf );
+		return s.size() >= t.size() && s.compare( s.size() - t.size(), t.size(), t ) == 0;
+	};
+	if( kw == "standard_object" )                     return Cat::Object;
+	if( kw == "camera" || ends( kw, "_camera" ) )     return Cat::Camera;
+	if( ends( kw, "_light" ) )                        return Cat::Light;
+	if( kw == "material" || ends( kw, "_material" ) ) return Cat::Material;
+	if( ends( kw, "_medium" ) )                       return Cat::Medium;
+	if( ends( kw, "_painter" ) )                      return Cat::Painter;
+	if( kw == "animation" )                           return Cat::Animation;
+	if( kw == "scene_variant" )                       return Cat::SceneVariant;
+	if( kw == "film" )                                return Cat::Film;
+	if( ends( kw, "_rasterizer" ) )                   return Cat::Rasterizer;
+	return Cat::None;
+}
+
+// Line (1-based) + column (1-based) of a byte offset in the serialized doc text.
+void LineColOfOffset( const std::string& full, size_t off, unsigned int& outLine, unsigned int& outCol )
+{
+	unsigned int line = 1, col = 1;
+	const size_t n = ( off <= full.size() ) ? off : full.size();
+	for( size_t i = 0; i < n; ++i ) {
+		if( full[i] == '\n' ) { ++line; col = 1; } else ++col;
+	}
+	outLine = line;
+	outCol  = col;
+}
+
+}  // namespace
+
 bool SceneEditController::EntitySourceLocation( Category cat, const String& name,
                                                  std::uint64_t& outByteOffset, std::uint32_t& outLine ) const
 {
@@ -5340,6 +5405,97 @@ bool SceneEditController::EntitySourceLocation( Category cat, const String& name
 
 	outByteOffset = static_cast<std::uint64_t>( off );
 	outLine       = line;
+	return true;
+}
+
+bool SceneEditController::ResolveSourceSpan( Category cat, const String& name, const String& param,
+                                             int occ, SourceSpan& out ) const
+{
+	out = SourceSpan();
+
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( !mJob.HasRetainedCstDocument() ) return false;
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return false;
+
+	const std::string activeRast = mJob.GetActiveRasterizerName();
+	const RISE::Cst::NodeId chunkId =
+		ResolveSourceChunkId( *doc, cat, std::string( name.c_str() ), activeRast );
+	if( chunkId == 0 ) return false;   // unresolvable ref (removed entity / ambiguous / no such singleton)
+
+	size_t off = 0, len = 0;
+	const std::string p( param.c_str() );
+	if( p.empty() ) {
+		// Whole-chunk span: byte offset of the chunk, no explicit length (the caller
+		// may highlight the chunk's first line).
+		const int idx = RISE::Cst::DocIndexOfNodeId( *doc, chunkId, nullptr );
+		if( idx < 0 ) return false;
+		off = RISE::Cst::DocByteOffsetOfItem( *doc, idx );
+		if( off == static_cast<size_t>( -1 ) ) return false;
+		len = 0;
+	} else {
+		// Param-granular span: the tight `role value…` run of the occ-th match.
+		if( !RISE::Cst::DocByteRangeOfParam( *doc, chunkId, p, occ, &off, &len ) ) return false;
+	}
+
+	// Byte offset -> line/column over the serialized prefix (O(doc bytes); click cadence).
+	const std::string full = RISE::Cst::SerializeCst( *doc );
+	if( off > full.size() ) return false;   // defensive
+	unsigned int line = 1, col = 1;
+	LineColOfOffset( full, off, line, col );
+
+	out.present    = true;
+	out.byteOffset = static_cast<std::uint64_t>( off );
+	out.byteLength = static_cast<std::uint64_t>( len );
+	out.line       = line;
+	out.column     = col;
+	return true;
+}
+
+bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category& outCat,
+                                                 String& outName, String& outParam ) const
+{
+	outCat   = Category::None;
+	outName  = String();
+	outParam = String();
+
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( !mJob.HasRetainedCstDocument() ) return false;
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return false;
+
+	// Locate the chunk (and param, if the offset is on one) containing `offset`.
+	// DocParamAtByteOffset returns the Param node (or null) and fills the enclosing
+	// chunk; when the offset is inside a chunk but not on a param, chunk is still set.
+	RISE::Cst::NodeRef chunk;
+	int v = 0;
+	RISE::Cst::NodeRef paramNode =
+		RISE::Cst::DocParamAtByteOffset( *doc, static_cast<size_t>( offset ), &chunk, &v );
+
+	if( !chunk ) {
+		// Offset not resolved to a param's chunk (e.g. on the chunk header/braces):
+		// fall back to the top-level item at this offset.
+		RISE::Cst::NodeRef item; size_t start = 0; int v2 = 0;
+		const int idx = RISE::Cst::DocItemAtByteOffset( *doc, static_cast<size_t>( offset ), &item, &start, &v2 );
+		if( idx < 0 || !item ) return false;
+		chunk = item;
+	}
+	if( !chunk || chunk->kind != RISE::Cst::NodeKind::Chunk ) return false;   // inter-chunk trivia / EOF
+
+	const Category cat = CategoryForChunkKeyword( chunk->role );
+	if( cat == Category::None ) return false;   // not an addressable entity/singleton chunk
+
+	// Name from ChunkNamePath ("keyword/name" for a named chunk, "keyword" for an
+	// unnamed singleton) — the segment after the last '/'.
+	const std::string np = RISE::Cst::ChunkNamePath( chunk );
+	std::string nm;
+	const size_t slash = np.rfind( '/' );
+	if( slash != std::string::npos ) nm = np.substr( slash + 1 );
+
+	outCat  = cat;
+	outName = String( nm.c_str() );
+	if( paramNode && paramNode->kind == RISE::Cst::NodeKind::Param )
+		outParam = String( paramNode->role.c_str() );
 	return true;
 }
 
