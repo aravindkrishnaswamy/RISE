@@ -1913,6 +1913,46 @@ namespace RISE
 		bool CloneActiveCamera( const String& proposedName,
 		                        char* outName, unsigned int outLen );
 
+		//! -------- Free-fly viewport pose (Tier 2 / Direction B §5.3-5.5) --------
+		//!
+		//! A transient, viewport-private "pose" the interactive preview renders
+		//! THROUGH (via a render-camera override, §5.5) so navigating / snapping /
+		//! restoring a named view never mutates Scene::pActiveCamera and never
+		//! touches production render.  The pose payload IS a CameraSnapshot (pose +
+		//! full optics + kind), the same value the clone/named-view paths use.
+		//! Entering free-fly seeds the pose from the current active camera; while
+		//! active, the interactive pass renders through the override; exiting
+		//! reverts to rendering through the scene's active camera.  NONE of these
+		//! is a scene mutation: no SceneEdit, no revision bump, no undo entry
+		//! (identical cost/side-effect profile to today's active-camera navigation,
+		//! but non-destructive).  Stamp/promote (a later slice) is the only action
+		//! that writes a scene camera.  See docs/gui/CAMERAS_AND_VIEWS.md.
+
+		//! Enter free-fly: capture the active camera into the transient pose and
+		//! realize the override.  Returns false when there is no active camera or
+		//! its kind isn't realizable (same clonability gate as CloneActiveCamera).
+		//! Cancel-and-parks (swaps the render-thread-read override under the lock).
+		bool EnterFreeFlyFromActiveCamera();
+
+		//! Set the transient pose explicitly (e.g. a named-view restore or an
+		//! axis snap computes the target pose).  Realizes a fresh override camera
+		//! from `pose`.  Returns false when the pose kind isn't realizable / no
+		//! film.  Cancel-and-parks.
+		bool SetViewportPose( const CameraSnapshot& pose );
+
+		//! Exit free-fly: drop the transient pose + release the override so the
+		//! interactive pass renders through Scene::pActiveCamera again.  No-op
+		//! (returns false) when free-fly isn't active.  Cancel-and-parks.
+		bool ExitFreeFly();
+
+		//! Whether a transient viewport pose is currently overriding the
+		//! interactive render camera.
+		bool IsFreeFlyActive() const;
+
+		//! Copy the current transient pose into `out`.  Returns false when
+		//! free-fly isn't active (out untouched).
+		bool GetViewportPose( CameraSnapshot& out ) const;
+
 		//! Entity-creation slice: number of "Add Entity" templates
 		//! registered for `cat` (see EntityTemplates.h).  0 for
 		//! categories with none (Camera/Rasterizer/Film/Animation/
@@ -2877,6 +2917,20 @@ namespace RISE
 		// clamped at set time (no real film is that large).
 		std::atomic<bool>           mInteractiveRegionActive{ false };
 		std::atomic<std::uint64_t>  mInteractiveRegionPacked{ 0 };
+
+		// Free-fly viewport pose (Tier 2 §5.3-5.5).  `mViewportPoseActive` gates
+		// the render-camera override in DoOneRenderPass; when set,
+		// `mViewportOverrideCamera` is a viewport-private, addref'd standalone
+		// ICamera (realized from `mViewportPose` via RealizeStandaloneCamera) that
+		// the interactive pass renders through IN PLACE OF Scene::pActiveCamera.
+		// These are swapped ONLY under the cancel-and-park critical section (the
+		// render thread reads mViewportOverrideCamera at the top of a pass), so a
+		// plain bool + raw pointer are safe (no atomics needed — set while parked).
+		// The override is released on exit / re-realize / destruction.  `mViewportPose`
+		// keeps the source snapshot so a film-dim change can re-sync the override.
+		CameraSnapshot              mViewportPose;
+		bool                        mViewportPoseActive = false;
+		ICamera*                    mViewportOverrideCamera = nullptr;
 
 		// Properties-panel snapshot (rebuilt on RefreshProperties).
 		// `mProperties` is the PRIMARY-selection snapshot (kept for

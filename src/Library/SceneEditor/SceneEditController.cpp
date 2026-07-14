@@ -113,6 +113,119 @@ static std::atomic<unsigned int>& NextEpoch() {
 	return s_next;
 }
 
+namespace {
+
+// ===================== Render-camera override (Tier 2 / Direction B §5.5) ======
+//
+// The foundational mechanism for the non-destructive view features (B2 axis
+// snaps, B1 named-view restore, B3 free-fly): render the interactive preview
+// through a viewport-private OVERRIDE camera without mutating Scene::pActiveCamera
+// (the scene's authoritative camera) and without touching production render.
+//
+// `CameraOverrideScene` presents the real scene UNCHANGED except GetCamera(),
+// which returns the override.  The four `pScene.GetCamera()` sites in
+// PixelBasedRasterizerHelper then transparently pick it up -- ZERO rasterizer /
+// integrator changes (the correctness invariant: byte-identical render math; only
+// WHICH camera changes).  This is §5.5 option (b): a render-time scene view, chosen
+// over an added RasterizeScene parameter because RasterizeScene is a frozen pure
+// virtual (an added param would break every implementor + the abi-preserving skill).
+//
+// The wrapper is a controller-owned object that lives ONLY for the duration of one
+// RasterizeScene call, so its IReference impl is NON-OWNING: addref is a no-op and
+// release NEVER self-deletes (returns false).  The rasterizer takes IScene by const
+// reference and must not manage this object's lifetime.
+class CameraOverrideScene : public IScene
+{
+public:
+	CameraOverrideScene( const IScene& wrapped, const ICamera* overrideCam )
+		: mWrapped( wrapped ), mOverride( overrideCam ) {}
+
+	// IReference -- non-owning (the controller owns this stack/local object).
+	void         addref()   const override {}
+	bool         release()  const override { return false; }
+	unsigned int refcount() const override { return 1; }
+
+	// The one substitution.
+	const ICamera* GetCamera() const override { return mOverride; }
+
+	// Everything else forwards verbatim to the real scene.
+	const IObjectManager*     GetObjects()            const override { return mWrapped.GetObjects(); }
+	const ILightManager*      GetLights()             const override { return mWrapped.GetLights(); }
+	const ICameraManager*     GetCameras()            const override { return mWrapped.GetCameras(); }
+	String                    GetActiveCameraName()   const override { return mWrapped.GetActiveCameraName(); }
+	const IRadianceMap*       GetGlobalRadianceMap()  const override { return mWrapped.GetGlobalRadianceMap(); }
+	const IPhotonMap*         GetCausticPelMap()      const override { return mWrapped.GetCausticPelMap(); }
+	const IPhotonMap*         GetGlobalPelMap()       const override { return mWrapped.GetGlobalPelMap(); }
+	const IPhotonMap*         GetTranslucentPelMap()  const override { return mWrapped.GetTranslucentPelMap(); }
+	const ISpectralPhotonMap* GetCausticSpectralMap() const override { return mWrapped.GetCausticSpectralMap(); }
+	const ISpectralPhotonMap* GetGlobalSpectralMap()  const override { return mWrapped.GetGlobalSpectralMap(); }
+	const IShadowPhotonMap*   GetShadowMap()          const override { return mWrapped.GetShadowMap(); }
+	const IIrradianceCache*   GetIrradianceCache()    const override { return mWrapped.GetIrradianceCache(); }
+	IAnimator*                GetAnimator()           const override { return mWrapped.GetAnimator(); }
+	const IMedium*            GetGlobalMedium()        const override { return mWrapped.GetGlobalMedium(); }
+	void SetSceneTime( const Scalar t )           const override { mWrapped.SetSceneTime( t ); }
+	void SetSceneTimeForPreview( const Scalar t ) const override { mWrapped.SetSceneTimeForPreview( t ); }
+	const IFilm*              GetFilm()               const override { return mWrapped.GetFilm(); }
+
+private:
+	const IScene&  mWrapped;
+	const ICamera* mOverride;
+};
+
+// Realize a CameraSnapshot into a STANDALONE ICamera (NOT added to any manager),
+// sized to the scene's current Film.  Parallel to CameraIntrospection::
+// AddCameraFromSnapshot but using the RISE_API_Create*Camera factories (which yield
+// a standalone, addref'd camera) instead of the manager-adding IJob::Add*Camera.
+// Returns an addref'd ICamera (caller owns the ref) or nullptr on an unknown type /
+// factory failure / no film.
+ICamera* RealizeStandaloneCamera( const CameraSnapshot& s, const IScene& scene )
+{
+	const IFilm* film = scene.GetFilm();
+	if( !film ) return nullptr;
+	const unsigned int xres    = film->GetWidth();
+	const unsigned int yres    = film->GetHeight();
+	const Scalar       pixelAR = ( s.pixelAR > 0 ) ? Scalar( s.pixelAR ) : film->GetPixelAR();
+
+	ICamera* pCam = nullptr;
+	switch( s.type ) {
+	case CameraSnapshot::Pinhole:
+		RISE_API_CreatePinholeCamera( &pCam,
+			Point3( s.location ), Point3( s.lookat ), Vector3( s.up ),
+			s.fov, xres, yres, pixelAR, s.exposure, s.scanningRate, s.pixelRate,
+			Vector3( s.orientation ), Vector2( s.target_orientation ),
+			s.iso, s.fstop );
+		break;
+	case CameraSnapshot::ThinLens:
+		RISE_API_CreateThinlensCamera( &pCam,
+			Point3( s.location ), Point3( s.lookat ), Vector3( s.up ),
+			s.sensorSize, s.focalLength, s.fstop, s.focusDistance, s.sceneUnitMeters,
+			xres, yres, pixelAR, s.exposure, s.scanningRate, s.pixelRate,
+			Vector3( s.orientation ), Vector2( s.target_orientation ),
+			s.apertureBlades, s.apertureRotation, s.anamorphicSqueeze,
+			s.tiltX, s.tiltY, s.shiftX, s.shiftY, s.iso );
+		break;
+	case CameraSnapshot::Fisheye:
+		RISE_API_CreateFisheyeCamera( &pCam,
+			Point3( s.location ), Point3( s.lookat ), Vector3( s.up ),
+			xres, yres, pixelAR, s.exposure, s.scanningRate, s.pixelRate,
+			Vector3( s.orientation ), Vector2( s.target_orientation ),
+			s.fisheyeScale );
+		break;
+	case CameraSnapshot::Orthographic:
+		RISE_API_CreateOrthographicCamera( &pCam,
+			Point3( s.location ), Point3( s.lookat ), Vector3( s.up ),
+			xres, yres, Vector2( s.viewportScale ), pixelAR,
+			s.exposure, s.scanningRate, s.pixelRate,
+			Vector3( s.orientation ), Vector2( s.target_orientation ) );
+		break;
+	default:
+		return nullptr;
+	}
+	return pCam;   // addref'd by the factory (or nullptr on failure)
+}
+
+}  // namespace
+
 SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiveRasterizer )
 : mJob( job )
 , mInteractiveRasterizer( interactiveRasterizer )
@@ -596,6 +709,13 @@ SceneEditController::~SceneEditController()
 	{
 		mInteractiveFrameStore->release();
 		mInteractiveFrameStore = 0;
+	}
+	// Free-fly override camera (Tier 2 §5.5).  Stop() joined the render thread
+	// above, so no DoOneRenderPass is reading it.
+	if( mViewportOverrideCamera )
+	{
+		mViewportOverrideCamera->release();
+		mViewportOverrideCamera = 0;
 	}
 	// Inverse-edit rollback holds NO snapshot — a transaction left open
 	// at teardown needs no resource release; the (uncommitted) live edits
@@ -6182,6 +6302,107 @@ bool SceneEditController::CloneActiveCamera(
 	return true;
 }
 
+// ===================== Free-fly viewport pose (Tier 2 §5.3-5.5) =================
+
+bool SceneEditController::EnterFreeFlyFromActiveCamera()
+{
+	// Capture the active camera's full pose+optics, then set it as the transient
+	// pose (SetViewportPose realizes the override).  The capture is done under the
+	// same cancel-and-park CloneActiveCamera uses (the snapshot fields tear under a
+	// concurrent orbit-drag write), so read it there rather than here.
+	CameraSnapshot snap;
+	{
+		std::unique_lock<std::mutex> lk( mMutex );
+		const IScene* scene = mJob.GetScene();
+		if( !scene ) return false;
+		if( mRendering.load( std::memory_order_acquire ) ) {
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+		const ICamera* activeCam = scene->GetCamera();
+		if( !activeCam ) return false;
+		if( !CameraIntrospection::CaptureCameraSnapshot( *activeCam, snap ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController::EnterFreeFlyFromActiveCamera: active camera kind not realizable "
+				"(non-ONB Pinhole / ThinLens / Fisheye / Orthographic only)" );
+			return false;
+		}
+	}
+	return SetViewportPose( snap );
+}
+
+bool SceneEditController::SetViewportPose( const CameraSnapshot& pose )
+{
+	std::unique_lock<std::mutex> lk( mMutex );
+	const IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+
+	// Cancel-and-park: the render thread reads mViewportOverrideCamera at the top
+	// of a pass; we must swap it while no pass is in flight.
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	ICamera* realized = RealizeStandaloneCamera( pose, *scene );
+	if( !realized ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::SetViewportPose: could not realize a camera for the pose (unknown kind / no film)" );
+		return false;
+	}
+
+	// Swap in the new override, releasing any prior one.
+	if( mViewportOverrideCamera ) mViewportOverrideCamera->release();
+	mViewportOverrideCamera = realized;   // owns the factory's addref
+	mViewportPose           = pose;
+	mViewportPoseActive     = true;
+
+	mEditPending.store( true, std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+	return true;
+}
+
+bool SceneEditController::ExitFreeFly()
+{
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( !mViewportPoseActive ) return false;
+
+	// Park before releasing the override the render thread reads.
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	if( mViewportOverrideCamera ) {
+		mViewportOverrideCamera->release();
+		mViewportOverrideCamera = nullptr;
+	}
+	mViewportPoseActive = false;
+
+	mEditPending.store( true, std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+	return true;
+}
+
+bool SceneEditController::IsFreeFlyActive() const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	return mViewportPoseActive;
+}
+
+bool SceneEditController::GetViewportPose( CameraSnapshot& out ) const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( !mViewportPoseActive ) return false;
+	out = mViewportPose;
+	return true;
+}
+
 namespace {
 
 // Generalizes UniqueCameraName (above) across every category: build the
@@ -7730,7 +7951,34 @@ void SceneEditController::DoOneRenderPass()
 	}
 
 	const auto t0 = std::chrono::steady_clock::now();
-	mInteractiveRasterizer->RasterizeScene( *scene, pRegion, /*seq*/0 );
+	if( mViewportPoseActive && mViewportOverrideCamera )
+	{
+		// Free-fly (Tier 2 §5.5): render the interactive preview THROUGH the
+		// viewport-private override camera instead of Scene::pActiveCamera.  The
+		// CameraOverrideScene wrapper substitutes only GetCamera(); every rasterizer
+		// / integrator is byte-untouched.  Production render never reaches here (it
+		// passes the real scene) so the scene camera stays authoritative.
+		//
+		// Keep the override's raster dims in lock-step with THIS pass's film: the
+		// preview-scale swap resized the film and re-synced MANAGER cameras via
+		// ResizeFilm, but the override isn't in the manager, so sync it here
+		// (SetDimensionsAndPixelAR calls RegenerateData internally).  Safe to mutate
+		// the override on the render thread: the UI thread parks before it ever
+		// releases/replaces the override.
+		if( const IFilm* passFilm = scene->GetFilm() )
+		{
+			if( Implementation::CameraCommon* cc = dynamic_cast<Implementation::CameraCommon*>( mViewportOverrideCamera ) )
+			{
+				cc->SetDimensionsAndPixelAR( passFilm->GetWidth(), passFilm->GetHeight(), passFilm->GetPixelAR() );
+			}
+		}
+		CameraOverrideScene ovScene( *scene, mViewportOverrideCamera );
+		mInteractiveRasterizer->RasterizeScene( ovScene, pRegion, /*seq*/0 );
+	}
+	else
+	{
+		mInteractiveRasterizer->RasterizeScene( *scene, pRegion, /*seq*/0 );
+	}
 	const auto elapsed = std::chrono::steady_clock::now() - t0;
 	// restoreGuard's destructor runs at the end of this scope and
 	// restores rest dims whether we exited normally, via cancellation,
