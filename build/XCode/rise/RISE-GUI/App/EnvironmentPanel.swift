@@ -141,7 +141,7 @@ struct EnvironmentPanel: View {
 
     private func boundState(_ e: RISEEnvironmentInfo) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            // File row
+            // File row (the HDRI file lives on the bound PAINTER chunk).
             fieldLabel("Image")
             HStack(spacing: 6) {
                 Text((e.file as NSString).lastPathComponent.isEmpty
@@ -160,20 +160,23 @@ struct EnvironmentPanel: View {
                     }
                 }
             }
+            .contextMenu { revealButton("Reveal HDRI file in Scene File", .painter, e.painterName, "file") }
 
-            // Intensity
+            // Intensity / rotation / background live on the ACTIVE RASTERIZER chunk
+            // as radiance_* params.
             fieldLabel("Intensity")
             numericField(text: $scaleText, field: .scale, modelValue: e.scale, enabled: canEdit) { v in
                 finishEdit(ok: bridge.setEnvironmentScale(v), failureMessage: nil)
             }
+            .contextMenu { revealButton("Reveal “radiance_scale” in Scene File", .rasterizer, "", "radiance_scale") }
 
-            // Rotation (degrees)
             fieldLabel("Rotation (°)")
             HStack(spacing: 6) {
                 axisField(text: $orientXText, field: .ox, axis: "X", modelValue: e.orientX)
                 axisField(text: $orientYText, field: .oy, axis: "Y", modelValue: e.orientY)
                 axisField(text: $orientZText, field: .oz, axis: "Z", modelValue: e.orientZ)
             }
+            .contextMenu { revealButton("Reveal “radiance_orient” in Scene File", .rasterizer, "", "radiance_orient") }
 
             // Background toggle
             Toggle(isOn: Binding(
@@ -187,6 +190,7 @@ struct EnvironmentPanel: View {
             .toggleStyle(.switch)
             .controlSize(.mini)
             .disabled(!canEdit)
+            .contextMenu { revealButton("Reveal “radiance_background” in Scene File", .rasterizer, "", "radiance_background") }
 
             HStack {
                 Spacer(minLength: 0)
@@ -209,6 +213,19 @@ struct EnvironmentPanel: View {
         Text(s)
             .font(Theme.mono(9.5))
             .foregroundColor(Theme.textDim)
+    }
+
+    /// Source-traceability context-menu item: reveal the exact scene-file span of an
+    /// env-backing param (radiance_* on the active rasterizer, or the HDRI `file` on
+    /// the bound painter).  A no-op if the scene isn't currently readable (render in
+    /// flight) or the ref doesn't resolve — a reveal is right or absent, never wrong.
+    private func revealButton(_ label: String, _ category: RISEViewportCategory,
+                              _ name: String, _ param: String) -> some View {
+        Button {
+            viewModel.revealSourceSpan(category: category, name: name, param: param)
+        } label: {
+            Label(label, systemImage: "text.magnifyingglass")
+        }
     }
 
     private func infoNote(_ s: String) -> some View {

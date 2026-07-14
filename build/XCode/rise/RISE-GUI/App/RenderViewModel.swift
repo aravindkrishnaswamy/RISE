@@ -178,6 +178,10 @@ final class RenderViewModel: ObservableObject {
     /// value and skip the reveal on the second click.
     struct EditorRevealRequest {
         let byteOffset: UInt64
+        /// UTF-8 byte length of the exact span to select+flash.  0 = select the
+        /// whole line containing byteOffset (the entity/whole-chunk reveal); > 0 =
+        /// highlight exactly [byteOffset, byteOffset+byteLength) (a param row).
+        let byteLength: UInt64
         let generation: Int
     }
     @Published var editorRevealRequest: EditorRevealRequest? = nil
@@ -1769,7 +1773,26 @@ final class RenderViewModel: ObservableObject {
         // stale-buffer warning is already showing) — a reveal must be
         // right or absent, never misleading.
         guard !isEditorDirty else { return }
-        editorRevealRequest = EditorRevealRequest(byteOffset: offset, generation: nextEditorRevealGeneration)
+        editorRevealRequest = EditorRevealRequest(byteOffset: offset, byteLength: 0, generation: nextEditorRevealGeneration)
+        nextEditorRevealGeneration += 1
+    }
+
+    /// Source traceability: reveal a specific UI element's span in the Scene-file
+    /// editor, highlighting the EXACT byte range (a param row) rather than the whole
+    /// line.  `param` empty falls back to a whole-chunk (line) reveal.  Same
+    /// stale-buffer guard as revealEntityInSceneText — a reveal must be right or
+    /// absent, never misleading.
+    func revealSourceSpan(category: RISEViewportCategory, name: String, param: String, occurrence: Int = 0) {
+        guard let vb = viewportBridge, isSceneEditableForAgents else { return }
+        var offset: UInt64 = 0
+        var length: UInt64 = 0
+        var line: UInt32 = 0
+        var col: UInt32 = 0
+        guard vb.resolveSourceSpan(for: category, name: name, param: param, occurrence: Int32(occurrence),
+                                   byteOffset: &offset, byteLength: &length, line: &line, column: &col) else { return }
+        leftTab = .sceneFile
+        guard !isEditorDirty else { return }
+        editorRevealRequest = EditorRevealRequest(byteOffset: offset, byteLength: length, generation: nextEditorRevealGeneration)
         nextEditorRevealGeneration += 1
     }
 

@@ -1184,6 +1184,51 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
                _controller, cat, name.UTF8String, outOffset, outLine) ? YES : NO;
 }
 
+#pragma mark - Source traceability
+
+- (BOOL)resolveSourceSpanForCategory:(RISEViewportCategory)category
+                                name:(NSString *)name
+                               param:(NSString *)param
+                          occurrence:(int)occ
+                          byteOffset:(unsigned long long *)outOffset
+                          byteLength:(unsigned long long *)outLength
+                                line:(unsigned int *)outLine
+                              column:(unsigned int *)outColumn {
+    if (outOffset) *outOffset = 0;
+    if (outLength) *outLength = 0;
+    if (outLine)   *outLine   = 0;
+    if (outColumn) *outColumn = 0;
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_ResolveSourceSpan(
+               _controller, (int)category,
+               name  ? name.UTF8String  : "",
+               param ? param.UTF8String : "",
+               occ, outOffset, outLength, outLine, outColumn) ? YES : NO;
+}
+
+- (BOOL)sourceRefAtByteOffset:(unsigned long long)offset
+                     category:(RISEViewportCategory *)outCategory
+                         name:(NSString **)outName
+                        param:(NSString **)outParam
+                   occurrence:(int *)outOccurrence {
+    if (outName)  *outName  = nil;
+    if (outParam) *outParam = nil;
+    if (outOccurrence) *outOccurrence = 0;
+    if (!_controller) return NO;
+    int catInt = 0, occ = 0;
+    char nameBuf[256] = {0};
+    char paramBuf[128] = {0};
+    const BOOL ok = RISE_API_SceneEditController_SourceRefAtByteOffset(
+        _controller, offset, &catInt,
+        nameBuf, sizeof(nameBuf), paramBuf, sizeof(paramBuf), &occ) ? YES : NO;
+    if (!ok) return NO;
+    if (outCategory)   *outCategory   = (RISEViewportCategory)catInt;
+    if (outName)       *outName       = [NSString stringWithUTF8String:nameBuf] ?: @"";
+    if (outParam)      *outParam      = [NSString stringWithUTF8String:paramBuf] ?: @"";
+    if (outOccurrence) *outOccurrence = occ;
+    return YES;
+}
+
 #pragma mark - Entity creation + painter CRUD (entity-creation slice)
 
 - (NSUInteger)entityTemplateCountForCategory:(RISEViewportCategory)category {

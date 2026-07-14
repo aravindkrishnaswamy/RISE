@@ -536,6 +536,36 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
                                        line:(unsigned int *)outLine
     NS_SWIFT_NAME(getEntitySourceLocation(for:name:byteOffset:line:));
 
+#pragma mark - Source traceability (any UI element <-> scene-file span)
+
+/// Resolve a UI element's scene-file span (SceneEditController::ResolveSourceSpan).
+/// `param` empty = the whole chunk (byteLength 0); non-empty = the `occ`-th matching
+/// param's tight `role value` run.  Fills byteOffset/byteLength (UTF-8 bytes into
+/// -serializedSceneText) + 1-based line/column.  Returns NO (outputs untouched) on a
+/// null controller, no retained CST, or an unresolvable ref.  Same
+/// do-not-call-during-renders caveat as -getEntitySourceLocation.
+- (BOOL)resolveSourceSpanForCategory:(RISEViewportCategory)category
+                                name:(NSString *)name
+                               param:(NSString *)param
+                          occurrence:(int)occ
+                          byteOffset:(unsigned long long *)outOffset
+                          byteLength:(unsigned long long *)outLength
+                                line:(unsigned int *)outLine
+                              column:(unsigned int *)outColumn
+    NS_SWIFT_NAME(resolveSourceSpan(for:name:param:occurrence:byteOffset:byteLength:line:column:));
+
+/// Reverse: the UI element whose scene-file source contains UTF-8 byte `offset`
+/// (SceneEditController::SourceRefAtByteOffset).  On success fills `outCategory`
+/// (a RISEViewportCategory raw value), `outName`, `outParam` (empty if not on a
+/// specific param), and `outOccurrence`.  Returns NO when the offset isn't inside an
+/// addressable entity/singleton chunk.
+- (BOOL)sourceRefAtByteOffset:(unsigned long long)offset
+                     category:(RISEViewportCategory *)outCategory
+                         name:(NSString * _Nullable * _Nullable)outName
+                        param:(NSString * _Nullable * _Nullable)outParam
+                   occurrence:(int *)outOccurrence
+    NS_SWIFT_NAME(sourceRef(atByteOffset:category:name:param:occurrence:));
+
 #pragma mark - Entity creation + painter CRUD (entity-creation slice)
 //
 // Mirrors RISE_API_SceneEditController_{EntityTemplateCount,
