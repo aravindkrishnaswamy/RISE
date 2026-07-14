@@ -270,6 +270,55 @@ namespace
 		pJob->release();
 		std::remove( tmp.c_str() );
 	}
+	// Non-entity chunks that carry an entity ChunkCategory (parse grouping) but are
+	// NOT UI-addressable: scene_options (Camera), piecewise_linear_function (Function).
+	const char* const kNonEntityScene =
+		"RISE ASCII SCENE 7\n"
+		"scene_options\n{\nscene_unit 1.0\n}\n\n"
+		"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
+		"piecewise_linear_function\n{\nname plf\ncp 400 1.0\ncp 500 2.0\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\nsamples 8\npixel_filter box\noidn_denoise false\n}\n\n"
+		"film\n{\nwidth 16\nheight 12\n}\n\n"
+		"pinhole_camera\n{\nname cam\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 40.0\n}\n";
+
+	void TestNonEntityExclusions()
+	{
+		std::printf( "S5: non-entity chunks with an entity ChunkCategory reverse to false...\n" );
+		const std::string tmp = TempPath( "srctrace_s5.RISEscene" );
+		Job* pJob = LoadScene( kNonEntityScene, tmp );
+		Check( pJob != nullptr, "fixture loads" );
+		if( !pJob ) return;
+		SceneEditController ctrl( *pJob, nullptr );
+		const std::string full = Serialized( *pJob );
+
+		Category c; String n, p;
+
+		// scene_options is ChunkCategory::Camera + unnamed -> would mis-classify as
+		// Camera and (via the camera unique-fallback) resolve the actual camera chunk.
+		// The self-consistency check rejects it (forward doesn't round-trip to itself).
+		const size_t soPos = full.find( "scene_options" );
+		Check( soPos != std::string::npos, "scene has a scene_options chunk" );
+		Check( !ctrl.SourceRefAtByteOffset( soPos + 2, c, n, p ),
+			"reverse into scene_options -> false (not the camera)" );
+
+		// piecewise_linear_function is ChunkCategory::Function -> Category::None
+		// (registers into the Function manager, not the Painter union).
+		const size_t plfPos = full.find( "piecewise_linear_function" );
+		Check( plfPos != std::string::npos, "scene has a piecewise_linear_function chunk" );
+		Check( !ctrl.SourceRefAtByteOffset( plfPos + 2, c, n, p ),
+			"reverse into piecewise_linear_function -> false (Function, not a UI Painter)" );
+
+		// Control: the REAL camera still round-trips (the self-consistency check does
+		// not over-reject legitimate entities).
+		const size_t camPos = full.find( "pinhole_camera" );
+		Check( camPos != std::string::npos, "scene has a pinhole_camera chunk" );
+		Check( ctrl.SourceRefAtByteOffset( camPos + 2, c, n, p )
+			&& c == Category::Camera && std::string( n.c_str() ) == "cam",
+			"reverse into the real camera -> (Camera, cam)" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
 }   // anonymous namespace
 
 int main()
@@ -279,6 +328,7 @@ int main()
 	TestHonestRefusal();
 	TestReverse();
 	TestReviewFixes();
+	TestNonEntityExclusions();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

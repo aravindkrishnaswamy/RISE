@@ -5355,8 +5355,13 @@ SceneEditController::Category CategoryForChunkKeyword( const std::string& kw )
 	static const std::map<std::string, Cat> kMap = []() {
 		auto toCat = []( ChunkCategory cc ) -> Cat {
 			switch( cc ) {
-			case ChunkCategory::Painter:
-			case ChunkCategory::Function:     return Cat::Painter;   // both feed the painter managers
+			case ChunkCategory::Painter:      return Cat::Painter;
+			// NOTE: ChunkCategory::Function is NOT mapped to Painter.  The only two
+			// Function chunks (piecewise_linear_function / _function2d) register into
+			// the Function1D/2D managers, NOT the painter managers, so they never
+			// appear in the Painter UI list -- mapping them to Painter would surface
+			// a ref no Painter row can select.  (expression_function2d is registered
+			// as ChunkCategory::Painter, so it is still covered by the Painter arm.)
 			case ChunkCategory::Material:     return Cat::Material;
 			case ChunkCategory::Camera:       return Cat::Camera;
 			case ChunkCategory::Film:         return Cat::Film;
@@ -5492,11 +5497,13 @@ bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category&
 
 	// Locate the chunk (and param, if the offset is on one) containing `offset`.
 	// DocParamAtByteOffset returns the Param node (or null) and fills the enclosing
-	// chunk; when the offset is inside a chunk but not on a param, chunk is still set.
+	// chunk + its NodeId; when the offset is inside a chunk but not on a param, chunk
+	// is still set.
 	RISE::Cst::NodeRef chunk;
 	int v = 0;
+	RISE::Cst::NodeId chunkId = 0;
 	RISE::Cst::NodeRef paramNode =
-		RISE::Cst::DocParamAtByteOffset( *doc, static_cast<size_t>( offset ), &chunk, &v );
+		RISE::Cst::DocParamAtByteOffset( *doc, static_cast<size_t>( offset ), &chunk, &v, nullptr, &chunkId );
 
 	if( !chunk ) {
 		// Offset not resolved to a param's chunk (e.g. on the chunk header/braces):
@@ -5504,7 +5511,8 @@ bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category&
 		RISE::Cst::NodeRef item; size_t start = 0; int v2 = 0;
 		const int idx = RISE::Cst::DocItemAtByteOffset( *doc, static_cast<size_t>( offset ), &item, &start, &v2 );
 		if( idx < 0 || !item ) return false;
-		chunk = item;
+		chunk   = item;
+		chunkId = RISE::Cst::DocNodeIdAt( *doc, idx );
 	}
 	if( !chunk || chunk->kind != RISE::Cst::NodeKind::Chunk ) return false;   // inter-chunk trivia / EOF
 
@@ -5523,6 +5531,18 @@ bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category&
 		const size_t slash = np.rfind( '/' );
 		if( slash != std::string::npos ) nm = np.substr( slash + 1 );
 	}
+
+	// SELF-CONSISTENCY: the (cat, name) we're about to return must forward-resolve
+	// back to THIS SAME chunk.  This drift-proofly rejects non-entity chunks that
+	// merely carry an entity ChunkCategory -- e.g. scene_options / camera_defaults
+	// (ChunkCategory::Camera, unnamed) would classify as Camera but forward-resolve
+	// the actual camera chunk (a different NodeId); the active_scene_variant SELECTOR
+	// forward-resolves the declared scene_variant chunk; timeline / animation_options
+	// forward-resolve to nothing.  Only a real, forward-addressable entity/singleton
+	// round-trips to its own NodeId.
+	const std::string activeRast = mJob.GetActiveRasterizerName();
+	const RISE::Cst::NodeId fwdId = ResolveSourceChunkId( *doc, cat, nm, activeRast );
+	if( fwdId == 0 || fwdId != chunkId ) return false;
 
 	outCat  = cat;
 	outName = String( nm.c_str() );
