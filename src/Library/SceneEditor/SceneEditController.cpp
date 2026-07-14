@@ -1231,6 +1231,160 @@ int SceneEditController::ActiveGizmoAxis() const
 	return mGizmoDrag.active ? mGizmoDrag.axis : -1;
 }
 
+// Navigation axis-ball gizmo (Tier 2 §4) ------------------------------
+//
+// Lays out six nubs (±X/±Y/±Z) around a ball the platform draws in a
+// viewport corner.  Reuses the proven `ProjectWorldToScreen_` probe to get
+// each world axis's screen-space direction through the CURRENT interactive
+// camera (the free-fly override when active, else the scene's active camera);
+// facing (toward/away) comes from comparing the two endpoints' along-view
+// depth in inv-camera space.  Pinhole-gated for the same reason the object
+// gizmo is (`ProjectWorldToScreen_`'s derivation is pinhole-only).  Reads
+// camera state only — no scene mutation, zero render cost.  UI-thread only:
+// the override pointer is mutated solely by SetViewportPose / ExitFreeFly on
+// the same thread, so the read needs no lock (matches RefreshGizmoHandles).
+
+bool SceneEditController::RefreshNavGizmo( double centerX, double centerY,
+                                           double ballRadius, double nubRadius )
+{
+	mNavGizmoNubs.clear();
+	if( !( ballRadius > 0.0 ) || !( nubRadius > 0.0 ) ) return false;
+
+	const IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+	const ICamera* cam = ( mViewportPoseActive && mViewportOverrideCamera )
+	                   ? mViewportOverrideCamera
+	                   : scene->GetCamera();
+	if( !cam || !IsGizmoSupportedCamera_( cam ) ) return false;
+
+	// A world pivot the camera is guaranteed to look at (projects on-screen):
+	// the free-fly pose's lookat, else the active camera's captured lookat.
+	CameraSnapshot snap;
+	if( mViewportPoseActive ) snap = mViewportPose;
+	else if( !CameraIntrospection::CaptureCameraSnapshot( *cam, snap ) ) return false;
+	const Point3 pivot( Scalar( snap.lookat[0] ), Scalar( snap.lookat[1] ), Scalar( snap.lookat[2] ) );
+
+	unsigned int stableW = 0, stableH = 0;
+	if( !GetCameraDimensions( stableW, stableH ) || stableW == 0 || stableH == 0 ) return false;
+	const Implementation::CameraCommon* camC =
+		dynamic_cast<const Implementation::CameraCommon*>( cam );
+	const unsigned int curW = camC ? camC->GetWidth()  : stableW;
+	const unsigned int curH = camC ? camC->GetHeight() : stableH;
+	if( curW == 0 || curH == 0 ) return false;
+
+	const Matrix4 mxTrans = cam->GetMatrix();
+	const Point3  origin  = cam->GetLocation();
+
+	double px = 0, py = 0;
+	if( !ProjectWorldToScreen_( mxTrans, origin, pivot,
+		double( curW ), double( curH ), double( stableW ), double( stableH ), px, py ) ) return false;
+
+	const Matrix4 inv  = Matrix4Ops::Inverse( mxTrans );
+	const Point3  eyeV = Point3Ops::Transform( inv, origin );   // eye in inv-camera space
+
+	auto probeDir = [&]( const Point3& p, double& outDx, double& outDy ) -> bool {
+		double sx = 0, sy = 0;
+		if( !ProjectWorldToScreen_( mxTrans, origin, p,
+			double( curW ), double( curH ), double( stableW ), double( stableH ), sx, sy ) ) return false;
+		const double tx = sx - px, ty = sy - py;
+		const double mag = std::sqrt( tx * tx + ty * ty );
+		if( !( mag > 1e-6 ) || !std::isfinite( mag ) ) return false;
+		outDx = tx / mag; outDy = ty / mag;
+		return true;
+	};
+
+	std::vector<NavGizmoNub> nubs;
+	nubs.reserve( 6 );
+	for( int a = 0; a < 3; ++a ) {
+		Vector3 v( a == 0 ? 1.0 : 0.0, a == 1 ? 1.0 : 0.0, a == 2 ? 1.0 : 0.0 );
+		const Point3 pPlus ( pivot.x + v.x, pivot.y + v.y, pivot.z + v.z );
+		const Point3 pMinus( pivot.x - v.x, pivot.y - v.y, pivot.z - v.z );
+
+		// Screen direction of the +axis (proven-correct probe from the gizmo
+		// builder).  When the +axis endpoint is degenerate (view-aligned, so
+		// no screen direction, or off-screen) fall back to the negated −axis
+		// direction; if both are degenerate the axis points straight at/away
+		// from the eye, so both nubs sit at the ball center (dx=dy=0) — the
+		// front one draws as a dot, the back one hides behind it.  Either way
+		// the axis still emits its two nubs, so a view looking straight down an
+		// axis never makes the gizmo vanish.
+		double dx = 0.0, dy = 0.0;
+		double td = 0.0, te = 0.0;
+		if( probeDir( pPlus, td, te ) )        { dx = td;  dy = te;  }
+		else if( probeDir( pMinus, td, te ) )  { dx = -td; dy = -te; }
+
+		// Facing: the endpoint nearer the eye (smaller along-view depth) faces
+		// the viewer.  `inv`-space z is the along-view coordinate (see
+		// ProjectWorldToScreen_: denom = A.z - B.z).
+		const Point3 aPlus  = Point3Ops::Transform( inv, pPlus );
+		const Point3 aMinus = Point3Ops::Transform( inv, pMinus );
+		const double depthPlus  = std::fabs( double( aPlus.z )  - double( eyeV.z ) );
+		const double depthMinus = std::fabs( double( aMinus.z ) - double( eyeV.z ) );
+		const bool positiveFaces = depthPlus <= depthMinus;
+
+		NavGizmoNub plus;
+		plus.axis = a; plus.negative = false;
+		plus.screenX = centerX + dx * ballRadius;
+		plus.screenY = centerY + dy * ballRadius;
+		plus.screenRadius = nubRadius;
+		plus.facing = positiveFaces;
+
+		NavGizmoNub minus;
+		minus.axis = a; minus.negative = true;
+		minus.screenX = centerX - dx * ballRadius;
+		minus.screenY = centerY - dy * ballRadius;
+		minus.screenRadius = nubRadius;
+		minus.facing = !positiveFaces;
+
+		nubs.push_back( plus );
+		nubs.push_back( minus );
+	}
+
+	mNavGizmoNubs.swap( nubs );   // always 6 nubs once the pivot projects
+	return true;
+}
+
+unsigned int SceneEditController::NavGizmoNubCount() const
+{
+	return static_cast<unsigned int>( mNavGizmoNubs.size() );
+}
+
+bool SceneEditController::NavGizmoNubInfo( unsigned int idx, int& outAxis, bool& outNegative,
+                                           double& outScreenX, double& outScreenY,
+                                           double& outScreenRadius, bool& outFacing ) const
+{
+	if( idx >= mNavGizmoNubs.size() ) return false;
+	const NavGizmoNub& n = mNavGizmoNubs[ idx ];
+	outAxis         = n.axis;
+	outNegative     = n.negative;
+	outScreenX      = n.screenX;
+	outScreenY      = n.screenY;
+	outScreenRadius = n.screenRadius;
+	outFacing       = n.facing;
+	return true;
+}
+
+int SceneEditController::NavGizmoNubAt( double px, double py ) const
+{
+	int    hitIdx    = -1;
+	double hitDist2  = 0.0;
+	bool   hitFacing = false;
+	for( unsigned int i = 0; i < mNavGizmoNubs.size(); ++i ) {
+		const NavGizmoNub& n = mNavGizmoNubs[ i ];
+		const double dx = px - n.screenX;
+		const double dy = py - n.screenY;
+		const double d2 = dx * dx + dy * dy;
+		if( d2 > n.screenRadius * n.screenRadius ) continue;
+		// Front-facing nubs (drawn on top) win over back-facing ones; among
+		// equal facing, the nub whose center is nearer the pointer wins.
+		const bool better = ( hitIdx < 0 )
+		                 || ( n.facing && !hitFacing )
+		                 || ( n.facing == hitFacing && d2 < hitDist2 );
+		if( better ) { hitIdx = static_cast<int>( i ); hitDist2 = d2; hitFacing = n.facing; }
+	}
+	return hitIdx;
+}
+
 // Pointer events ------------------------------------------------------
 
 void SceneEditController::OnPointerDown( const Point2& px )

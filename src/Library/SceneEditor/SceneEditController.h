@@ -198,6 +198,46 @@ namespace RISE
 		int  ActiveGizmoKind() const;
 		int  ActiveGizmoAxis() const;
 
+		//! -------- Navigation axis-ball gizmo (Tier 2 / Direction B §4) --------
+		//!
+		//! Six nubs (+X/−X/+Y/−Y/+Z/−Z) laid out around a ball the platform
+		//! draws in a viewport corner; clicking a nub snaps the VIEW down that
+		//! world axis (SnapViewToAxis, non-destructive).  Mirrors the object
+		//! gizmo's shared-math / thin-platform-draw split: C++ projects the
+		//! world axes through the CURRENT interactive camera (the free-fly
+		//! viewport pose when active, else the scene's active camera), places
+		//! the nubs, and hit-tests; the platform only draws + routes the click.
+		//! See docs/gui/CAMERAS_AND_VIEWS.md §4.
+		struct NavGizmoNub
+		{
+			int    axis         = 0;      ///< 0=X, 1=Y, 2=Z (C-API surface)
+			bool   negative     = false;  ///< false=+axis, true=−axis
+			double screenX      = 0.0;    ///< nub center, in the caller's ball-geometry space
+			double screenY      = 0.0;
+			double screenRadius = 0.0;    ///< hit-test / draw radius (== nubRadius arg)
+			bool   facing       = true;   ///< true=toward viewer (bright), false=away (dim)
+		};
+
+		//! Recompute the six nubs for a ball centered at (centerX, centerY)
+		//! with `ballRadius`, each nub `nubRadius`, all in the caller's widget
+		//! space (whatever consistent space it also feeds NavGizmoHitTest).
+		//! Sets the count to 0 (nothing to draw) when there is no supported
+		//! (pinhole) interactive camera or the geometry args are non-positive.
+		//! Reads camera state only — no scene mutation, zero render cost.
+		bool RefreshNavGizmo( double centerX, double centerY,
+		                      double ballRadius, double nubRadius );
+
+		unsigned int NavGizmoNubCount() const;   ///< 0 or 6
+		//! Read nub `idx`; false (outputs untouched) when out of range.
+		bool NavGizmoNubInfo( unsigned int idx, int& outAxis, bool& outNegative,
+		                      double& outScreenX, double& outScreenY,
+		                      double& outScreenRadius, bool& outFacing ) const;
+
+		//! Hit-test a pointer position (same space as RefreshNavGizmo's ball
+		//! geometry) against the nubs.  Front-facing nubs win ties (they draw
+		//! on top of the ones pointing away).  Returns the nub index or -1.
+		int NavGizmoNubAt( double px, double py ) const;
+
 		//! Discriminator for the right-side accordion sections.
 		//! Selection is a (Category, entityName) tuple — see
 		//! `mSelectionCategory` / `mSelectionName`.  Numeric values are
@@ -2410,6 +2450,10 @@ namespace RISE
 		//! when the active tool isn't an Object-transform tool or no
 		//! Object is selected.
 		std::vector<GizmoHandle>    mGizmoHandles;
+
+		//! Navigation axis-ball nubs, recomputed by RefreshNavGizmo (Tier 2
+		//! §4).  0 or 6 entries; read out through the count + per-index getter.
+		std::vector<NavGizmoNub>    mNavGizmoNubs;
 
 		//! Active gizmo drag state.  Captured at OnPointerDown when
 		//! the pointer hits a handle; consumed by OnPointerMove to

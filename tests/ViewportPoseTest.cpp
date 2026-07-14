@@ -332,6 +332,88 @@ namespace
 		pJob->release();
 		std::remove( tmp.c_str() );
 	}
+
+	//------------------------------------------------------------------
+	// V7: nav axis-ball gizmo — layout, facing, hit-test, and the
+	// view-aligned-axis degenerate (looking straight down an axis must
+	// still emit six nubs, not make the gizmo vanish).
+	//------------------------------------------------------------------
+	void TestNavGizmo()
+	{
+		std::printf( "V7: nav axis-ball gizmo (layout + facing + hit-test)...\n" );
+		const std::string tmp = TempPath( "vpose_v7.RISEscene" );
+		Job* pJob = LoadScene( kPinholeScene, tmp );   // cam (0,0,5) -> origin, up +Y (down -Z)
+		Check( pJob != nullptr, "fixture loads" );
+		if( !pJob ) return;
+
+		SceneEditController ctrl( *pJob, nullptr );
+		auto near = []( double a, double b ) { return std::fabs( a - b ) < 1e-6; };
+
+		// Guard: non-positive geometry is refused, nothing drawn.
+		Check( !ctrl.RefreshNavGizmo( 100, 100, 0.0, 10.0 ), "RefreshNavGizmo refuses zero ball radius" );
+		Check( ctrl.NavGizmoNubCount() == 0, "no nubs after a refused refresh" );
+
+		const double cx = 100, cy = 100, R = 40, nub = 10;
+		Check( ctrl.RefreshNavGizmo( cx, cy, R, nub ), "RefreshNavGizmo succeeds on a pinhole scene" );
+		Check( ctrl.NavGizmoNubCount() == 6, "six nubs (even looking straight down -Z)" );
+
+		struct N { int axis; bool neg; double x, y, r; bool facing; };
+		std::vector<N> ns;
+		for( unsigned i = 0; i < ctrl.NavGizmoNubCount(); ++i ) {
+			N n;
+			Check( ctrl.NavGizmoNubInfo( i, n.axis, n.neg, n.x, n.y, n.r, n.facing ), "NavGizmoNubInfo in range" );
+			ns.push_back( n );
+		}
+		{
+			int a; bool ng, f; double x, y, r;
+			Check( !ctrl.NavGizmoNubInfo( 6, a, ng, x, y, r, f ), "NavGizmoNubInfo out of range is false" );
+		}
+
+		// Axis coverage: two nubs per axis, exactly one + per axis.
+		int axisCount[3] = { 0, 0, 0 }, posCount[3] = { 0, 0, 0 };
+		for( auto& n : ns ) if( n.axis >= 0 && n.axis < 3 ) { ++axisCount[n.axis]; if( !n.neg ) ++posCount[n.axis]; }
+		Check( axisCount[0] == 2 && axisCount[1] == 2 && axisCount[2] == 2, "two nubs per axis" );
+		Check( posCount[0] == 1 && posCount[1] == 1 && posCount[2] == 1, "one +axis nub per axis" );
+
+		bool within = true, radiusOK = true;
+		for( auto& n : ns ) {
+			const double d = std::sqrt( ( n.x - cx ) * ( n.x - cx ) + ( n.y - cy ) * ( n.y - cy ) );
+			if( d > R + 1e-6 ) within = false;
+			if( !near( n.r, nub ) ) radiusOK = false;
+		}
+		Check( within, "every nub sits within the ball radius of center" );
+		Check( radiusOK, "nub radius passes through to screenRadius" );
+
+		auto find = [&]( int axis, bool neg ) -> const N* {
+			for( auto& n : ns ) if( n.axis == axis && n.neg == neg ) return &n;
+			return nullptr;
+		};
+		const N* xp = find( 0, false );
+		const N* yp = find( 1, false );
+		const N* zp = find( 2, false );
+		const N* zn = find( 2, true );
+		Check( xp && xp->x > cx + 1.0, "+X nub is to screen-right of center" );
+		Check( yp && yp->y < cy - 1.0, "+Y nub is above center (widget-Y-down)" );
+
+		// Camera looks down -Z from +Z, so +Z points toward the viewer.
+		Check( zp && zp->facing, "+Z nub faces the viewer" );
+		Check( zn && !zn->facing, "-Z nub faces away" );
+		// View-aligned Z axis: both nubs collapse onto the ball center.
+		Check( zp && near( zp->x, cx ) && near( zp->y, cy ), "+Z nub sits at the ball center (view-aligned)" );
+
+		// Hit-test: on the +X nub returns it; far away misses.
+		if( xp ) {
+			const int hit = ctrl.NavGizmoNubAt( xp->x, xp->y );
+			Check( hit >= 0 && ns[hit].axis == 0 && !ns[hit].neg, "NavGizmoNubAt on +X returns the +X nub" );
+		}
+		Check( ctrl.NavGizmoNubAt( 10000, 10000 ) == -1, "NavGizmoNubAt far away misses" );
+		// At the center both Z nubs overlap; the FRONT-facing (+Z) one wins.
+		const int cHit = ctrl.NavGizmoNubAt( cx, cy );
+		Check( cHit >= 0 && ns[cHit].axis == 2 && !ns[cHit].neg, "center hit returns the front-facing +Z nub" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
 }   // anonymous namespace
 
 int main()
@@ -342,6 +424,7 @@ int main()
 	TestExitAndRefusal();
 	TestAxisSnaps();
 	TestHomeView();
+	TestNavGizmo();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
