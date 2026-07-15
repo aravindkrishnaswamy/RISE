@@ -123,6 +123,12 @@ PROVIDER_PRICING = {
         "gpt-4o": {"input": 2.50, "output": 10.00, "cached_input": 1.25},
         "gpt-4.1-mini": {"input": 0.40, "output": 1.60, "cached_input": 0.10},
         "gpt-4.1": {"input": 2.00, "output": 8.00, "cached_input": 0.50},
+        # Shootout model. Official rates (developers.openai.com/api/docs/models/
+        # gpt-5.6-terra, verified 2026-07-15). Standard tier; the 2x-input/1.5x-
+        # output tier for >272K-token prompts never applies to the eval scenarios
+        # (tiny prompts). cached_input is the cache-READ rate (cache writes bill
+        # at 1.25x input, not modelled here -- same as every other openai entry).
+        "gpt-5.6-terra": {"input": 2.50, "output": 15.00, "cached_input": 0.25},
     },
     "gemini": {
         "cached_in_input": True,
@@ -130,15 +136,24 @@ PROVIDER_PRICING = {
         "gemini-1.5-flash": {"input": 0.075, "output": 0.30, "cached_input": 0.01875},
         "gemini-1.5-pro": {"input": 1.25, "output": 5.00, "cached_input": 0.3125},
         "gemini-2.0-flash": {"input": 0.10, "output": 0.40, "cached_input": 0.025},
+        # Shootout model. Official rates (ai.google.dev/gemini-api/docs/pricing,
+        # verified 2026-07-15): flat, no context-length tier. Cache storage
+        # ($1/1M-tok-hour) is not modelled (per-token read rate only).
+        "gemini-3.5-flash": {"input": 1.50, "output": 9.00, "cached_input": 0.15},
     },
     "xai": {
         # xAI (Grok) bills like OpenAI: cached-read tokens are a SUBSET of the
         # reported input tokens, not additive.
         "cached_in_input": True,
-        # EDIT-ME: grok-4.5 cached price unpublished as of 2026-07 -- billed at
-        # the input rate here (an OVERESTIMATE of true cost when caching hits).
+        # _default: a conservative fallback for any UNLISTED xai model (cached ==
+        # input, an overestimate when caching hits). grok-4.5 now has its own
+        # exact entry below, so this default no longer applies to it.
         "_default": {"input": 2.00, "output": 6.00, "cached_input": 2.00},
         "grok-4.3": {"input": 1.25, "output": 2.50, "cached_input": 0.20},
+        # Shootout model. Official rates (docs.x.ai/developers/models/grok-4.5,
+        # verified 2026-07-15). Standard tier (<200k prompt tokens); the
+        # 2x higher-context tier (>=200k) never applies to the eval scenarios.
+        "grok-4.5": {"input": 2.00, "output": 6.00, "cached_input": 0.50},
     },
     "local": {
         # Local inference (Ollama et al.): no marginal per-token cost, so every
@@ -154,16 +169,15 @@ PROVIDER_PRICING = {
     },
 }
 
-# EDIT-ME: the currently-shipped shootout models have NO specific pricing entry
-# above, so the report shows their $/success as "n/a (no pricing)" (honest --
-# their real rates are not encoded here) rather than billing them at the generic
-# per-provider _default. To price them, add a specific entry under the matching
-# provider with the published USD/1M-token rates, e.g.:
-#   gemini "gemini-3.5-flash": {"input": ?, "output": ?, "cached_input": ?}
-#   openai "gpt-5.6-terra":    {"input": ?, "output": ?, "cached_input": ?}
-#   xai    "grok-4.5":         {"input": ?, "output": ?, "cached_input": ?}
-# (grok-4.3 is already priced above.) Once added, that model reports a real
-# $/success. Do NOT invent rates -- an unpriced row is better than a wrong one.
+# The three shootout models are now PRICED with published rates verified against
+# the official provider docs on 2026-07-15 (gemini-3.5-flash, gpt-5.6-terra,
+# grok-4.5 -- see the per-entry comments above for the source URLs), so they
+# report a real $/success. To price a NEWLY-added shootout model, add a specific
+# entry under the matching provider with the published USD/1M-token rates:
+#   provider "model-id": {"input": ?, "output": ?, "cached_input": ?}
+# A model with no specific entry falls back to "n/a (no pricing)" (honest) rather
+# than the generic per-provider _default. Do NOT invent rates -- an unpriced row
+# is better than a wrong one.
 
 # Must stay in lockstep with the provider set recognized by
 # `ParseReplayProviderName` / `ChatProvider` in
@@ -256,9 +270,10 @@ def estimate_cost(provider, model, input_tokens, output_tokens, cached_tokens):
     # marks its default authoritative -- `local` alone does (no marginal
     # per-token cost, so $0 is definitional, not an estimate). For every hosted
     # provider the `_default` is a GENERIC rate that is simply wrong for an
-    # unlisted model (gemini-3.5-flash, gpt-5.6-terra, grok-4.5 all lack a
-    # specific entry), so report those UNPRICED rather than present a fabricated
-    # $/success. Add a specific PROVIDER_PRICING entry for a model to price it.
+    # unlisted model, so report those UNPRICED rather than present a fabricated
+    # $/success. Add a specific PROVIDER_PRICING entry for a model to price it
+    # (the three shootout models now have exact entries; a future unlisted model
+    # reports n/a until one is added).
     if not exact and not prov_table.get("default_is_authoritative", False):
         return (0.0, False)
     # Provider is guaranteed present in PROVIDER_PRICING here (lookup_pricing
@@ -935,16 +950,31 @@ def selftest():
     _assert_close(est_cost, PROVIDER_PRICING["anthropic"]["claude-sonnet"]["input"], 1e-9,
                   "estimate_cost anthropic sonnet substring match")
 
-    # --- P1(d) regression: an unlisted HOSTED model must report UNPRICED, not
-    # silently bill at the generic provider _default (which is what shipped the
-    # wrong gemini-3.5-flash / gpt-5.6-terra $/success numbers) ---
-    _, flash_priced = estimate_cost("gemini", "gemini-3.5-flash", 1_000_000, 0, 0)
-    if flash_priced:
-        raise AssertionError("gemini-3.5-flash has no specific pricing entry -> must be UNPRICED, not the generic _default")
-    _, terra_priced = estimate_cost("openai", "gpt-5.6-terra", 1_000_000, 0, 0)
-    if terra_priced:
-        raise AssertionError("gpt-5.6-terra has no specific pricing entry -> must be UNPRICED, not the generic _default")
-    if cost_per_success(0.0, flash_priced, 5) != "n/a (no pricing)":
+    # --- Shootout-model pricing: the three shootout models now have SPECIFIC
+    # entries (published rates verified against the official provider docs
+    # 2026-07-15), so they must be PRICED at exactly those rates. For 1M input
+    # tokens with no cache/output, the cost equals the input rate for every
+    # provider (subset-convention: noncached_input == input_tokens). ---
+    flash_cost, flash_priced = estimate_cost("gemini", "gemini-3.5-flash", 1_000_000, 0, 0)
+    if not flash_priced:
+        raise AssertionError("gemini-3.5-flash has a specific pricing entry -> must be priced")
+    _assert_close(flash_cost, 1.50, 1e-9, "gemini-3.5-flash input rate")
+    terra_cost, terra_priced = estimate_cost("openai", "gpt-5.6-terra", 1_000_000, 0, 0)
+    if not terra_priced:
+        raise AssertionError("gpt-5.6-terra has a specific pricing entry -> must be priced")
+    _assert_close(terra_cost, 2.50, 1e-9, "gpt-5.6-terra input rate")
+    grok45_cost, grok45_priced = estimate_cost("xai", "grok-4.5", 1_000_000, 0, 0)
+    if not grok45_priced:
+        raise AssertionError("grok-4.5 has a specific pricing entry -> must be priced")
+    _assert_close(grok45_cost, 2.00, 1e-9, "grok-4.5 input rate")
+
+    # --- P1(d) regression (invariant preserved): a genuinely UNLISTED hosted
+    # model must still report UNPRICED, not silently bill at the generic provider
+    # _default. Use a synthetic id that matches no specific key. ---
+    _, unlisted_priced = estimate_cost("gemini", "gemini-9.9-nonexistent-xyz", 1_000_000, 0, 0)
+    if unlisted_priced:
+        raise AssertionError("an unlisted hosted model must be UNPRICED, not billed at the generic _default")
+    if cost_per_success(0.0, unlisted_priced, 5) != "n/a (no pricing)":
         raise AssertionError("an unpriced hosted model's $/success must render 'n/a (no pricing)'")
     # local's _default is DEFINITIONAL $0 (default_is_authoritative), so an
     # unlisted local model is still PRICED -- at $0.00, not unpriced.
@@ -1008,8 +1038,8 @@ def selftest():
     #   noncached_input = 10000 - 4000 = 6000
     #   cost = 6000/1e6*1.25 + 4000/1e6*0.20 + 1000/1e6*2.50
     #        = 0.0075        + 0.0008        + 0.0025        = 0.0108
-    # (grok-4.5 has NO specific entry -> unpriced per P1(d); grok-4.3 is priced,
-    # so it exercises the xai cached-as-subset accounting.)
+    # (grok-4.3's specific entry exercises the xai cached-as-subset accounting;
+    # grok-4.5 is now priced too but with a different cached rate.)
     xai_cost, xai_priced = estimate_cost("xai", "grok-4.3", 10000, 1000, 4000)
     if not xai_priced:
         raise AssertionError("expected xai/grok-4.3 to be priced")
