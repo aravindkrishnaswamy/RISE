@@ -235,6 +235,13 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 - (BOOL)goToHomeView;
 @property (nonatomic, readonly) BOOL hasHomeView;
 
+/// B3 fly-then-stamp: promote the current free-fly view into a NEW named
+/// scene camera (auto-named from `proposedName`, dedup-suffixed; the new
+/// camera becomes active).  Returns the created camera's name, or nil when
+/// there's no free-fly pose to stamp or the edit was refused.
+- (nullable NSString *)stampViewToNewCamera:(NSString *)proposedName
+    NS_SWIFT_NAME(stampViewToNewCamera(_:));
+
 #pragma mark - Pointer events
 //
 // Coordinates are in the viewport surface's pixel space.  Bridge

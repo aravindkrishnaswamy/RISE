@@ -89,7 +89,8 @@ private:
     // three labeled controls Go-Home / Set-Home / Back-to-camera drive the
     // free-fly ViewportPose.  All layout/hit-test math is shared C++.
     QPointF navBallCenter() const;
-    void    navControlRects(QRectF& outHome, QRectF& outSet, QRectF& outExit) const;
+    void    navControlRects(QRectF& outHome, QRectF& outSet,
+                            QRectF& outStamp, QRectF& outExit) const;
     void    paintNavOverlay(QPainter& p);
     bool    handleNavClick(const QPointF& widgetPos);   // true == consumed
     void    paintRegionOverlay(QPainter& p, const QRect& drawRect, const QSize& surface);

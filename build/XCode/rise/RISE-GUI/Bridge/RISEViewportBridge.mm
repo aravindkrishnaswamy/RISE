@@ -897,6 +897,17 @@ private:
     return RISE_API_SceneEditController_HasHomeView(_controller) ? YES : NO;
 }
 
+- (NSString *)stampViewToNewCamera:(NSString *)proposedName {
+    if (!_controller) return nil;
+    char name[256] = {0};
+    const char* prop = proposedName ? [proposedName UTF8String] : "";
+    if (!RISE_API_SceneEditController_StampViewToNewCamera(
+            _controller, prop, name, sizeof(name))) {
+        return nil;
+    }
+    return [NSString stringWithUTF8String:name];
+}
+
 #pragma mark - Pointer events
 
 - (void)pointerDownX:(double)x y:(double)y {

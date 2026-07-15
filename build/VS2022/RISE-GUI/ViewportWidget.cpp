@@ -422,19 +422,22 @@ QPointF ViewportWidget::navBallCenter() const
     return QPointF(width() - kNavInset - kNavBallR, kNavInset + kNavBallR);
 }
 
-void ViewportWidget::navControlRects(QRectF& outHome, QRectF& outSet, QRectF& outExit) const
+void ViewportWidget::navControlRects(QRectF& outHome, QRectF& outSet,
+                                     QRectF& outStamp, QRectF& outExit) const
 {
     // A centered row just below the ball: Home, Set-home, and (only while
-    // free-flying) Back-to-camera.
+    // free-flying) Stamp-to-camera + Back-to-camera.
     const QPointF c = navBallCenter();
     const double rowY = c.y() + kNavBallR + kNavNubR + 6.0;
     const bool freeFly = m_bridge && m_bridge->isFreeFlyActive();
-    const int nButtons = freeFly ? 3 : 2;
+    const int nButtons = freeFly ? 4 : 2;
     const double totalW = nButtons * kNavBtnW + (nButtons - 1) * kNavBtnGap;
     double x = c.x() - totalW / 2.0;
-    outHome = QRectF(x, rowY, kNavBtnW, kNavBtnH); x += kNavBtnW + kNavBtnGap;
-    outSet  = QRectF(x, rowY, kNavBtnW, kNavBtnH); x += kNavBtnW + kNavBtnGap;
-    outExit = freeFly ? QRectF(x, rowY, kNavBtnW, kNavBtnH) : QRectF();
+    outHome  = QRectF(x, rowY, kNavBtnW, kNavBtnH); x += kNavBtnW + kNavBtnGap;
+    outSet   = QRectF(x, rowY, kNavBtnW, kNavBtnH); x += kNavBtnW + kNavBtnGap;
+    outStamp = freeFly ? QRectF(x, rowY, kNavBtnW, kNavBtnH) : QRectF();
+    if (freeFly) x += kNavBtnW + kNavBtnGap;
+    outExit  = freeFly ? QRectF(x, rowY, kNavBtnW, kNavBtnH) : QRectF();
 }
 
 void ViewportWidget::paintNavOverlay(QPainter& p)
@@ -492,8 +495,8 @@ void ViewportWidget::paintNavOverlay(QPainter& p)
     }
 
     // Control buttons.
-    QRectF homeR, setR, exitR;
-    navControlRects(homeR, setR, exitR);
+    QRectF homeR, setR, stampR, exitR;
+    navControlRects(homeR, setR, stampR, exitR);
     const bool homeEnabled = m_bridge->hasHomeView();
     auto drawBtn = [&](const QRectF& rc, const QString& label, bool enabled) {
         if (rc.isNull()) return;
@@ -506,7 +509,8 @@ void ViewportWidget::paintNavOverlay(QPainter& p)
     };
     drawBtn(homeR, QStringLiteral("H"), homeEnabled);   // go Home
     drawBtn(setR,  QStringLiteral("S"), true);           // Set home
-    if (!exitR.isNull()) drawBtn(exitR, QStringLiteral("C"), true);   // back to scene Camera
+    if (!stampR.isNull()) drawBtn(stampR, QStringLiteral("+"), true);  // stamp view to new camera
+    if (!exitR.isNull())  drawBtn(exitR,  QStringLiteral("C"), true);  // back to scene Camera
 
     p.restore();
 }
@@ -525,13 +529,20 @@ bool ViewportWidget::handleNavClick(const QPointF& widgetPos)
     if (!m_bridge->refreshNavGizmo(c.x(), c.y(), kNavBallR, kNavNubR)) return false;
 
     // Control buttons first (they sit below the ball, overlapping no nub).
-    QRectF homeR, setR, exitR;
-    navControlRects(homeR, setR, exitR);
+    QRectF homeR, setR, stampR, exitR;
+    navControlRects(homeR, setR, stampR, exitR);
     if (homeR.contains(widgetPos)) {
         if (m_bridge->hasHomeView()) { m_bridge->goToHomeView(); update(); }
         return true;   // consume even when disabled — it's our visible control area
     }
     if (setR.contains(widgetPos)) { m_bridge->setHomeView(); update(); return true; }
+    if (!stampR.isNull() && stampR.contains(widgetPos)) {
+        // Auto-named + dedup-suffixed by the core; the new camera becomes
+        // active. The outliner picks it up via its scene-epoch poll.
+        m_bridge->stampViewToNewCamera(QStringLiteral("view_camera"));
+        update();
+        return true;
+    }
     if (!exitR.isNull() && exitR.contains(widgetPos)) { m_bridge->exitFreeFly(); update(); return true; }
 
     // Nub hit-test → snap the view.

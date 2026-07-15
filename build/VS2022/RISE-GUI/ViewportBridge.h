@@ -255,6 +255,12 @@ public:
     bool goToHomeView();
     bool hasHomeView() const;
 
+    /// B3 fly-then-stamp: promote the current free-fly view into a NEW named
+    /// scene camera (auto-named from `proposedName`, dedup-suffixed; the new
+    /// camera becomes active).  Returns the created camera's name, or an empty
+    /// QString when there's no free-fly pose to stamp / the edit was refused.
+    QString stampViewToNewCamera(const QString& proposedName);
+
     // Pointer events — coordinates are in viewport surface pixel space.
     void pointerDown(double x, double y);
     void pointerMove(double x, double y);

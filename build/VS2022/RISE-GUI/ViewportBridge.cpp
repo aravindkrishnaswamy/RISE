@@ -511,6 +511,18 @@ bool ViewportBridge::hasHomeView() const
     return RISE_API_SceneEditController_HasHomeView(m_controller);
 }
 
+QString ViewportBridge::stampViewToNewCamera(const QString& proposedName)
+{
+    if (!m_controller) return QString();
+    char name[256] = { 0 };
+    const QByteArray prop = proposedName.toUtf8();
+    if (!RISE_API_SceneEditController_StampViewToNewCamera(
+            m_controller, prop.constData(), name, sizeof(name))) {
+        return QString();
+    }
+    return QString::fromUtf8(name);
+}
+
 void ViewportBridge::pointerDown(double x, double y) { if (m_controller) RISE_API_SceneEditController_OnPointerDown(m_controller, x, y); }
 void ViewportBridge::pointerMove(double x, double y) { if (m_controller) RISE_API_SceneEditController_OnPointerMove(m_controller, x, y); }
 void ViewportBridge::pointerUp(double x, double y)   { if (m_controller) RISE_API_SceneEditController_OnPointerUp(m_controller, x, y); }

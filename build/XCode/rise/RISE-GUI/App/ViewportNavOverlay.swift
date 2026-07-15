@@ -88,6 +88,12 @@ struct ViewportNavOverlay: View {
                 _ = bridge.setHomeView(); reload()
             }
             if freeFly {
+                navButton(system: "camera.badge.plus", help: "Stamp this view into a new camera", enabled: true) {
+                    // Auto-named + dedup-suffixed by the core; the new camera
+                    // becomes active. The outliner picks it up on its next poll.
+                    _ = bridge.stampViewToNewCamera("view_camera")
+                    reload()
+                }
                 navButton(system: "camera.fill", help: "Back to scene camera", enabled: true) {
                     _ = bridge.exitFreeFly(); reload()
                 }
