@@ -254,7 +254,7 @@ namespace
 static bool TestRGBSpecColorInsideMultiscatter()
 {
 	std::cout << "--- Test A (RGB value()): specColor INSIDE Kulla-Conty Fms ---\n";
-	const bool startFail = s_fail;
+	const int startFail = s_fail;
 
 	const Scalar alpha = kAlpha;
 	const Scalar Eavg  = MicrofacetEnergyLUT::LookupEavg( alpha );
@@ -362,7 +362,7 @@ static bool TestRGBSpecColorInsideMultiscatter()
 static bool TestNMSpecColorInsideMultiscatter()
 {
 	std::cout << "\n--- Test B (spectral valueNM()): specColor INSIDE Kulla-Conty Fms ---\n";
-	const bool startFail = s_fail;
+	const int startFail = s_fail;
 
 	const Scalar alpha = kAlpha;
 	const Scalar Eavg  = MicrofacetEnergyLUT::LookupEavg( alpha );
@@ -500,7 +500,7 @@ static bool TestNMSpecColorInsideMultiscatter()
 static bool TestBRDFvsSPFMultiscatter()
 {
 	std::cout << "\n--- Test E: BRDF value() multiscatter == SPF kray multiscatter ---\n";
-	const bool startFail = s_fail;
+	const int startFail = s_fail;
 
 	const Scalar alpha = kAlpha;
 	const Scalar Eavg  = MicrofacetEnergyLUT::LookupEavg( alpha );
@@ -628,7 +628,7 @@ namespace
 static bool TestMSPdfIntegratesToOne()
 {
 	std::cout << "\n--- H6 Test 1: MSPdf integrates to 1 over the hemisphere ---\n";
-	const bool startFail = s_fail;
+	const int startFail = s_fail;
 
 	const Scalar alphas[] = { 0.01, 0.02, 0.1, 0.5 };
 	bool allOk = true;
@@ -660,7 +660,7 @@ static bool TestMSPdfIntegratesToOne()
 static bool TestMSHistogramVsPdf()
 {
 	std::cout << "\n--- H6 Test 2: SampleMSCosTheta histogram vs MSPdf ---\n";
-	const bool startFail = s_fail;
+	const int startFail = s_fail;
 
 	const Scalar alphas[] = { 0.02, 0.5 };
 	const int nBins = 20;
@@ -736,7 +736,7 @@ static bool TestMSHistogramVsPdf()
 static bool TestMSKrayClosedFormConstant()
 {
 	std::cout << "\n--- H6 Test 3: MS-lobe kray == closed-form constant (grazing cosWi incl.) ---\n";
-	const bool startFail = s_fail;
+	const int startFail = s_fail;
 
 	const Scalar alphas[] = { 0.01, 0.02, 0.1, 0.5 };
 	const Scalar cosWis[]  = { 0.999, 0.5, 0.05, 0.005 };
@@ -793,7 +793,7 @@ static bool TestMSKrayClosedFormConstant()
 static bool TestMSSPFGrazingKraySanity()
 {
 	std::cout << "\n--- H6 Test 4: CookTorranceSPF MS-lobe kray at grazing cosWi ---\n";
-	const bool startFail = s_fail;
+	const int startFail = s_fail;
 
 	const Scalar alpha = 0.02;	// smooth: 1-Eavg is tiny, the old estimator's danger zone
 	const Scalar rs = 0.9;

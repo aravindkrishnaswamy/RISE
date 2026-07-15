@@ -19,11 +19,11 @@
   "checkpoints": [
     {
       "kind": "document",
-      "op": "param_equals",
+      "op": "param_range",
       "target": "mat_emit",
       "param": "scale",
-      "value": "60.0",
-      "numeric": true
+      "min": [12],
+      "max": [600]
     },
     {
       "kind": "render",

@@ -96,7 +96,12 @@
 #include <string>
 #include <vector>
 #include <map>
-#include <unistd.h>
+
+#if defined( _WIN32 )
+	#include <direct.h>
+#else
+	#include <unistd.h>
+#endif
 
 using namespace RISE;
 using namespace RISE::Cst;
@@ -184,6 +189,45 @@ std::string Sha256Hex( const std::string& s ) {
 	Sha256 sh; sh.Update( s.data(), s.size() ); return sh.HexDigest();
 }
 
+char* GetWorkingDirectory( char* path, size_t size )
+{
+#if defined( _WIN32 )
+	return _getcwd( path, static_cast<int>( size ) );
+#else
+	return getcwd( path, size );
+#endif
+}
+
+int SetEnvironmentIfUnset( const char* name, const char* value )
+{
+	if( std::getenv( name ) ) {
+		return 0;
+	}
+#if defined( _WIN32 )
+	return _putenv_s( name, value );
+#else
+	return setenv( name, value, 0 );
+#endif
+}
+
+FILE* OpenReadPipe( const char* command )
+{
+#if defined( _WIN32 )
+	return _popen( command, "r" );
+#else
+	return popen( command, "r" );
+#endif
+}
+
+int ClosePipe( FILE* pipe )
+{
+#if defined( _WIN32 )
+	return _pclose( pipe );
+#else
+	return pclose( pipe );
+#endif
+}
+
 //////////////////////////////////////////////////////////////////////
 // Corpus enumeration -- TRACKED, non-Internal (scenes/Internal is gitignored)
 // *.RISEscene, sorted by path.  Uses `git ls-files` so the golden covers exactly
@@ -199,15 +243,15 @@ std::string Sha256Hex( const std::string& s ) {
 //////////////////////////////////////////////////////////////////////
 std::vector<std::string> EnumerateCorpus() {
 	std::vector<std::string> paths;
-	FILE* pp = popen( "git ls-files 'scenes/*.RISEscene' | grep -v '^scenes/Internal/'", "r" );
+	FILE* pp = OpenReadPipe( "git ls-files \"scenes/*.RISEscene\"" );
 	if( !pp ) return paths;
 	char line[8192];
 	while( std::fgets( line, sizeof(line), pp ) ) {
 		std::string s( line );
 		while( !s.empty() && ( s.back()=='\n' || s.back()=='\r' ) ) s.pop_back();
-		if( !s.empty() ) paths.push_back( s );
+		if( !s.empty() && s.rfind( "scenes/Internal/", 0 ) != 0 ) paths.push_back( s );
 	}
-	pclose( pp );
+	ClosePipe( pp );
 	std::sort( paths.begin(), paths.end() );   // locale-independent byte order (== LC_ALL=C)
 	return paths;
 }
@@ -268,7 +312,7 @@ int Generate() {
 	// Media root defaults to the repo-root cwd (matches the oracle's setenv) so
 	// relative includes/media resolve during the derive.
 	char cwd[4096];
-	if( getcwd( cwd, sizeof(cwd) ) ) setenv( "RISE_MEDIA_PATH", ( std::string(cwd) + "/" ).c_str(), 0 );
+	if( GetWorkingDirectory( cwd, sizeof(cwd) ) ) SetEnvironmentIfUnset( "RISE_MEDIA_PATH", ( std::string(cwd) + "/" ).c_str() );
 
 	std::vector<std::string> paths = EnumerateCorpus();
 	if( paths.empty() ) { std::printf( "GENERATE: no corpus scenes found (run from repo root; `git ls-files` must see scenes/)\n" ); return 2; }
@@ -317,7 +361,7 @@ int Verify() {
 	// RISE_MEDIA_PATH is already set, default it to the cwd so relative media
 	// resolves; the probe still guards the case where even that is wrong.
 	char cwd[4096];
-	if( getcwd( cwd, sizeof(cwd) ) ) setenv( "RISE_MEDIA_PATH", ( std::string(cwd) + "/" ).c_str(), 0 );
+	if( GetWorkingDirectory( cwd, sizeof(cwd) ) ) SetEnvironmentIfUnset( "RISE_MEDIA_PATH", ( std::string(cwd) + "/" ).c_str() );
 
 	{
 		const std::string probe = DeriveDump( golden.front().path );

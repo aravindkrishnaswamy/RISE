@@ -103,16 +103,6 @@ if(NOT DEFINED OPENPGL_DIR)
     set(OPENPGL_DIR "C:/Dev/openpgl-install")
 endif()
 
-# OpenPGL install — must match the path baked into Library.vcxproj /
-# RISE-CLI.vcxproj (currently C:/Dev/openpgl-install).  RISE.lib is
-# compiled with RISE_ENABLE_OPENPGL on the VS2022 side, so every test
-# .exe must link openpgl.lib to resolve the pgl* symbols pulled in
-# from RISE.lib.  Override with -DOPENPGL_DIR=... at configure time
-# if installed elsewhere.
-if(NOT DEFINED OPENPGL_DIR)
-    set(OPENPGL_DIR "C:/Dev/openpgl-install")
-endif()
-
 # RISE static library produced by Library.vcxproj.
 set(RISE_LIB_RELEASE "${RISE_ROOT}/bin/RISE.lib")
 set(RISE_LIB_DEBUG   "${RISE_ROOT}/dbin/RISE.lib")
@@ -139,6 +129,13 @@ if(NOT EXISTS "${OPENPGL_DIR}/lib/openpgl.lib")
         "Pass -DOPENPGL_DIR=<path> at configure time. RISE.lib is "
         "compiled with RISE_ENABLE_OPENPGL so test exes must link "
         "openpgl.lib to resolve pgl* symbols.")
+endif()
+
+if(NOT EXISTS "${RISE_LIB_RELEASE}" OR NOT EXISTS "${RISE_LIB_DEBUG}")
+    message(FATAL_ERROR
+        "RISE.lib not found in bin/ and/or dbin/. Build the Library project in "
+        "Release and Debug before building rise-tests. Expected: "
+        "${RISE_LIB_RELEASE} and ${RISE_LIB_DEBUG}.")
 endif()
 
 # -----------------------------------------------------------------------------
@@ -317,6 +314,7 @@ foreach(test_src ${TEST_SOURCES})
         gdi32
         ws2_32                     # AgentLoopbackHttpServer / SocketCommunications (Winsock)
         bcrypt                     # per-launch bearer-token CSPRNG (BCryptGenRandom)
+        winhttp                    # TlsTransportWin (Windows HTTPS transport)
     )
 
     set_target_properties(${test_name} PROPERTIES
