@@ -24,6 +24,10 @@ struct NamedViewsPanel: View {
             header
             if expanded {
                 content
+                    // A chat-owned render does not change renderState, but it
+                    // holds the controller mutex for its whole pass.  Keep
+                    // these synchronous bridge calls from blocking the main UI.
+                    .disabled(!viewModel.isSceneEditableForAgents)
                     .padding(.horizontal, 14)
                     .padding(.bottom, 12)
             }
@@ -88,6 +92,7 @@ struct NamedViewsPanel: View {
                 .font(Theme.sans(11))
                 .frame(maxWidth: .infinity)
             Button {
+                guard viewModel.isSceneEditableForAgents else { return }
                 let proposed = captureText.trimmingCharacters(in: .whitespaces)
                 let name = proposed.isEmpty ? "View \(names.count + 1)" : proposed
                 if bridge.captureNamedView(name) {
@@ -106,6 +111,7 @@ struct NamedViewsPanel: View {
         HStack(spacing: 6) {
             // Restore on the label tap (the primary, non-destructive action).
             Button {
+                guard viewModel.isSceneEditableForAgents else { return }
                 _ = bridge.restoreNamedView(idx)
             } label: {
                 HStack(spacing: 6) {
@@ -124,14 +130,17 @@ struct NamedViewsPanel: View {
             .help("Restore this view (non-destructive)")
 
             iconButton("arrow.clockwise", help: "Update to current view") {
+                guard viewModel.isSceneEditableForAgents else { return }
                 _ = bridge.updateNamedView(idx); reload()
             }
             iconButton("camera.badge.plus", help: "Promote to a scene camera") {
+                guard viewModel.isSceneEditableForAgents else { return }
                 _ = bridge.promoteNamedView(idx, name: name)
                 // The new active camera surfaces in the outliner via its poll.
                 viewModel.entityListEpoch &+= 1
             }
             iconButton("trash", help: "Delete this view") {
+                guard viewModel.isSceneEditableForAgents else { return }
                 _ = bridge.deleteNamedView(idx); reload()
             }
         }
@@ -153,6 +162,7 @@ struct NamedViewsPanel: View {
     // MARK: - State pull
 
     private func reload() {
+        guard viewModel.isSceneEditableForAgents else { return }
         names = bridge.namedViewNames
     }
 }

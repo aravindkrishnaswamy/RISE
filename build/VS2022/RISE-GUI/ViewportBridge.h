@@ -256,8 +256,9 @@ public:
     bool hasHomeView() const;
 
     /// B3 fly-then-stamp: promote the current free-fly view into a NEW named
-    /// scene camera (auto-named from `proposedName`, dedup-suffixed; the new
-    /// camera becomes active).  Returns the created camera's name, or an empty
+    /// scene camera (named from a CST-safe canonicalization of `proposedName`,
+    /// then dedup-suffixed; the new camera becomes active). Returns the
+    /// created camera's name, or an empty
     /// QString when there's no free-fly pose to stamp / the edit was refused.
     QString stampViewToNewCamera(const QString& proposedName);
 
@@ -273,8 +274,9 @@ public:
     bool updateNamedView(int idx);
     /// Remove view `idx`.
     bool deleteNamedView(int idx);
-    /// Promote view `idx` into a NEW scene camera (auto-named; becomes active).
-    /// Returns the created camera's name, or empty on refusal.
+    /// Promote view `idx` into a NEW scene camera (named from a CST-safe
+    /// canonicalization of `proposedName`; becomes active). Returns the
+    /// created camera's name, or empty on refusal.
     QString promoteNamedView(int idx, const QString& proposedName);
 
     // Pointer events — coordinates are in viewport surface pixel space.
@@ -697,10 +699,9 @@ public:
                        QString* outMessage = nullptr);
 
     /// Clone the currently-active camera under a new name and
-    /// promote the clone to active.  `proposedName` is the user's
-    /// choice; on duplicate the controller appends a numeric dedup
-    /// suffix.  Returns the actual name registered (the proposal
-    /// verbatim if available, or a deduplicated variant), or an
+    /// promote the clone to active. `proposedName` is canonicalized to a
+    /// CST-safe identifier, then deduplicated with a numeric suffix.
+    /// Returns the actual name registered, or an
     /// empty QString on no-active-camera / unclonable type.
     ///
     /// Persistence caveat: the clone lives only in the in-memory

@@ -1143,8 +1143,11 @@ namespace RISE
 		//! AgentRenderProgress() below, which AgentSession's doRenderWork
 		//! installs on the Job before calling Rasterize() when a controller
 		//! is attached, exactly mirroring how the interactive rasterizer
-		//! gets it.  Safe to call whether or not a render is actually in
-		//! flight (a no-op cancel on an idle controller).  Called by
+		//! gets it. A cancel received after async submission but before the
+		//! worker begins is retained for that occupant, so the worker cannot
+		//! erase it with its per-render Reset(). Safe to call whether or not a
+		//! render is actually in flight (a no-op cancel on an idle controller).
+		//! Called by
 		//! Stop() (so a slow agent render does not stall teardown
 		//! unboundedly) and by AgentSession's DrainAsyncRender_ (so a
 		//! session teardown mid-render completes promptly instead of
@@ -1988,10 +1991,10 @@ namespace RISE
 		bool SetPropertyForCategory( Category cat, const String& name, const String& valueStr );
 
 		//! Clone the currently-active camera under a new name and
-		//! promote the clone to active.  `proposedName` is the user's
-		//! choice; on duplicate the controller appends a numeric
-		//! dedup suffix so the call always succeeds when there IS an
-		//! active camera to clone.  The chosen name is written into
+		//! promote the clone to active. `proposedName` is canonicalized to a
+		//! CST-safe identifier before a numeric dedup suffix is appended, so
+		//! the call always succeeds when there IS an active camera to clone.
+		//! The chosen name is written into
 		//! `outName` (NUL-terminated; caller-owned buffer of
 		//! `outLen` bytes).  Returns false on no-active-camera, an
 		//! unsupported camera type, or `outLen == 0`.  Bumps
@@ -2013,8 +2016,9 @@ namespace RISE
 		//! B3 action that mutates the scene — an AddCamera transaction seeded
 		//! from the pose (which IS a CameraSnapshot) instead of the active
 		//! camera; it persists via the retained CST Document exactly like
-		//! CloneActiveCamera, and is undoable.  `outName` receives the chosen
-		//! (dedup-suffixed) name.  Returns false — outName cleared — when
+		//! CloneActiveCamera, and is undoable. `proposedName` is canonicalized
+		//! to a CST-safe identifier before deduplication; `outName` receives the
+		//! chosen name. Returns false — outName cleared — when
 		//! free-fly isn't active (nothing transient to stamp), there's no
 		//! camera manager, the buffer is too small, or the edit is refused.
 		//! Non-destructive navigation (fly/snap/Home) stays pose-only; THIS is
@@ -2108,7 +2112,9 @@ namespace RISE
 
 		//! Capture the CURRENT view (the free-fly pose if active, else the
 		//! active scene camera) as a NEW named view.  Returns false when there
-		//! is no capturable camera.  `name` is used as-is (caller dedups if it
+		//! is no capturable camera or `name` exceeds 255 payload bytes (the
+		//! platform bridge enumeration ABI reserves one byte for its
+		//! trailing NUL).  `name` is otherwise used as-is (caller dedups if it
 		//! wants unique labels).
 		bool CaptureNamedView( const String& name );
 
@@ -2131,8 +2137,9 @@ namespace RISE
 
 		//! Promote view `idx` into a NEW named scene camera (§3.4) — the same
 		//! AddCamera-from-a-pose write B3 stamp uses, sourced from the stored
-		//! view instead of the live pose.  `outName` receives the chosen
-		//! (dedup-suffixed) name; the new camera becomes active.  False on a
+		//! view instead of the live pose. `proposedName` is canonicalized to a
+		//! CST-safe identifier before deduplication; `outName` receives the
+		//! chosen name and the new camera becomes active. False on a
 		//! bad index, no camera manager, a too-small buffer, or a refused edit.
 		bool PromoteNamedViewToCamera( unsigned int idx, const String& proposedName,
 		                               char* outName, unsigned int outLen );
@@ -2921,6 +2928,13 @@ namespace RISE
 		std::atomic<bool>           mAgentRenderStop;      // set by Stop(); wakes the worker to exit
 		bool                        mAgentRenderPending;   // a submission is queued or currently running -- guarded by mAgentRenderSlotMutex
 		std::function<void()>       mAgentRenderFn;        // the pending/running submission -- guarded by mAgentRenderSlotMutex
+		//! True iff CancelAgentRender_ observed the current slot occupant.
+		//! Written while mAgentRenderSlotMutex is held, but atomic because the
+		//! worker re-checks it after taking mMutex (the two locks deliberately
+		//! never nest in that direction). Cleared for every fresh submission
+		//! and again when the occupant releases the slot, preventing a cancel
+		//! for one job from leaking into its successor.
+		std::atomic<bool>           mAgentRenderCancelRequested;
 		// Fix-round-1 P3-c: mAgentRenderClass / mAgentRenderClientLabel
 		// (a second, slot-scoped copy of this bookkeeping) were DELETED --
 		// both were write-only dead state (set on every submit, never read

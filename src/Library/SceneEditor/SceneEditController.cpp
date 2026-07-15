@@ -246,6 +246,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mAgentRenderStop( false )
 , mAgentRenderPending( false )
 , mAgentRenderFn()
+, mAgentRenderCancelRequested( false )
 , mAgentRenderJobId( kInvalidRenderJobId )
 , mAgentRenderPinned( false )
 , mAgentRenderException()
@@ -3390,8 +3391,9 @@ void SceneEditController::CancelAndParkRender_( std::unique_lock<std::mutex>& lk
 // since we have no direct visibility here into "is the agent worker's fn
 // actually calling Rasterize() right now") mCancelProgress itself, which
 // AgentRenderProgress() hands to the agent-render fn as its Job progress
-// callback.  This does NOT take mMutex and does NOT wait -- a caller that
-// needs "cancelled AND drained" calls this THEN separately waits.
+// callback. This does NOT take the render-duration mMutex and does NOT wait
+// (it only takes the narrow slot mutex to retain a queued cancellation) -- a
+// caller that needs "cancelled AND drained" calls this THEN separately waits.
 //
 // Round-2 P3-a doc fix: the claim this replaced ("does not linger and
 // false-cancel a LATER, unrelated render... DrainAsyncRender_ detaches
@@ -3450,6 +3452,15 @@ void SceneEditController::CancelAndParkRender_( std::unique_lock<std::mutex>& lk
 //     (an interrupting newer intent) doesn't need it.
 void SceneEditController::CancelAgentRender_()
 {
+	// Serialize the target choice with submit/slot-release. The shared
+	// progress flag still handles a currently-running render immediately;
+	// the per-occupant bit closes the queued-before-start window where the
+	// worker's mandatory Reset() would otherwise erase this cancellation.
+	std::lock_guard<std::mutex> slotLk( mAgentRenderSlotMutex );
+	if( mAgentRenderPending )
+	{
+		mAgentRenderCancelRequested.store( true, std::memory_order_release );
+	}
 	mCancelProgress.RequestCancel();
 }
 
@@ -4270,11 +4281,19 @@ void SceneEditController::AgentRenderWorkerLoop_()
 			// cancelled) before this fresh render's `fn` runs -- otherwise a
 			// cancel from an unrelated previous render would instantly
 			// self-cancel this new one.  Mirrors RenderLoop's own per-pass
-			// Reset() (see that call site).  Safe here: mMutex is held for
-			// the whole render (this is the ONLY place that can touch
-			// mCancelProgress until fn() returns), so no concurrent reader
-			// can observe a torn Reset-then-cancel window.
+			// Reset() (see that call site). A concurrent CancelAgentRender_()
+			// is retained through the slot-scoped atomic below; the shared
+			// callback's own flag is atomic, so Reset/RequestCancel has no
+			// torn state even though the cancel caller does not take mMutex.
 			mCancelProgress.Reset();
+			// A cancellation can land after the submission has claimed the
+			// slot but before this worker reaches its per-render Reset().
+			// Preserve that request for THIS occupant; otherwise Reset() would
+			// silently turn a queued cancellation into a full render.
+			if( mAgentRenderCancelRequested.load( std::memory_order_acquire ) )
+			{
+				mCancelProgress.RequestCancel();
+			}
 
 			// RAII: flips the job record's `active` false AND releases the
 			// interactive-loop gate on EVERY exit, including a throw out
@@ -4347,6 +4366,7 @@ void SceneEditController::AgentRenderWorkerLoop_()
 			std::lock_guard<std::mutex> slotLk( mAgentRenderSlotMutex );
 			mAgentRenderException = caught;
 			mAgentRenderPending   = false;
+			mAgentRenderCancelRequested.store( false, std::memory_order_release );
 			// Model-B F2 S3 fix round (P3-b): defensive clear alongside
 			// mAgentRenderPending above.  Benign today -- every reader of
 			// mAgentRenderPinned (SubmitAgentRenderAsync_Locked's pinned-
@@ -4483,6 +4503,7 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 	}
 
 	mAgentRenderFn          = std::move( fn );
+	mAgentRenderCancelRequested.store( false, std::memory_order_release );
 	mAgentRenderJobId       = jobId;
 	mAgentRenderException   = nullptr;
 	mAgentRenderPending     = true;
@@ -6570,26 +6591,52 @@ String SceneEditController::PropertyUnitLabelFor( Category cat, unsigned int idx
 
 namespace {
 
-// Generate a unique camera name from a user-proposed base + the
-// existing camera-name set in the scene.  If `proposed` isn't taken,
-// returns it verbatim; otherwise appends "_2", "_3", ... until an
-// unused name is found.  At most 1000 suffix attempts before
-// fallback to a timestamp-style suffix; in practice this branch is
-// unreachable since the scene won't accumulate thousands of clones.
+// Convert a UI-provided camera label into one token the CST scene grammar can
+// write without quoting.  Camera names are later emitted as `name <value>`;
+// whitespace, comments, and braces would otherwise alter the generated chunk
+// and leave the live manager and retained Document with different cameras.
+// Keep this at the one shared clone/stamp/promote choke point so every
+// externally proposed camera name obeys the same serialization contract.
+String CanonicalCameraName( const String& proposed )
+{
+	std::string out;
+	for( const char* p = proposed.c_str(); *p; ++p ) {
+		const unsigned char c = static_cast<unsigned char>( *p );
+		const bool safe = ( c >= 'a' && c <= 'z' ) ||
+			( c >= 'A' && c <= 'Z' ) ||
+			( c >= '0' && c <= '9' ) || c == '_' || c == '-' || c == '.';
+		out += safe ? static_cast<char>( c ) : '_';
+	}
+	return out.empty() ? String( "camera_copy" ) : String( out.c_str() );
+}
+
+// Generate a unique camera name from a canonicalized user-proposed base + the
+// existing camera-name set in the scene.  If the base isn't taken, returns it;
+// otherwise appends "_2", "_3", ... until an unused name is found.  At most
+// 1000 suffix attempts before fallback to a timestamp-style suffix; in
+// practice this branch is unreachable since the scene won't accumulate
+// thousands of clones.
 String UniqueCameraName( const String& proposed, const ICameraManager& cams )
 {
-	if( proposed.size() <= 1 ) {
-		// Empty proposal — default to "camera_copy"
-		return String( "camera_copy" );
-	}
-	if( !cams.GetItem( proposed.c_str() ) ) return proposed;
-	char buf[256];
+	const String base = CanonicalCameraName( proposed );
+	const std::string baseText( base.c_str() );
+	const size_t kMaxPayloadBytes = 255;   // GUI C ABI output buffers are 256 bytes incl. NUL
+	const std::string initial = baseText.substr( 0, kMaxPayloadBytes );
+	if( !cams.GetItem( initial.c_str() ) ) return String( initial.c_str() );
+
+	// Reserve suffix bytes BEFORE truncating the base.  Formatting the suffix
+	// into a fixed buffer after a 255-byte base would erase the suffix, return
+	// the already-occupied original name, and make a second promotion fail.
 	for( int i = 2; i < 1000; ++i ) {
-		std::snprintf( buf, sizeof(buf), "%s_%d", proposed.c_str(), i );
-		if( !cams.GetItem( buf ) ) return String( buf );
+		const std::string suffix = "_" + std::to_string( i );
+		const std::string candidate =
+			baseText.substr( 0, kMaxPayloadBytes - suffix.size() ) + suffix;
+		if( !cams.GetItem( candidate.c_str() ) ) return String( candidate.c_str() );
 	}
-	std::snprintf( buf, sizeof(buf), "%s_%lld", proposed.c_str(), static_cast<long long>( std::time( 0 ) ) );
-	return String( buf );
+	const std::string suffix = "_" + std::to_string( static_cast<long long>( std::time( 0 ) ) );
+	const std::string candidate =
+		baseText.substr( 0, kMaxPayloadBytes - suffix.size() ) + suffix;
+	return String( candidate.c_str() );
 }
 
 }  // namespace
@@ -6955,6 +7002,11 @@ bool SceneEditController::CaptureCurrentView( CameraSnapshot& out )
 
 bool SceneEditController::CaptureNamedView( const String& name )
 {
+	// Both platform bridges enumerate names through a 256-byte caller-owned
+	// buffer.  Rejecting an overlong name here keeps count and list positions
+	// identical, rather than creating an invisible slot whose later actions
+	// would target the wrong view.
+	if( name.size() > 256 ) return false;   // RString size() includes the NUL
 	CameraSnapshot snap;
 	if( !CaptureCurrentView( snap ) ) return false;
 	NamedView v;

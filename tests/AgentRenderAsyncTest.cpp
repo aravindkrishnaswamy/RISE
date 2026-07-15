@@ -2364,6 +2364,99 @@ protected:
 };
 
 //////////////////////////////////////////////////////////////////////
+// Queued-cancellation seam: holds the worker after it has accepted a slot
+// occupant but before it can take mMutex and perform its per-render Reset().
+// This makes the otherwise scheduler-dependent submit-then-cancel handoff
+// deterministic.
+//////////////////////////////////////////////////////////////////////
+class QueuedCancellationSeamController : public SceneEditController
+{
+public:
+	explicit QueuedCancellationSeamController( IJobPriv& job )
+	: SceneEditController( job, /*interactiveRasterizer*/0 ) {}
+
+	std::atomic<bool> workerHookEntered{ false };
+	std::atomic<bool> releaseWorkerGate{ false };
+
+protected:
+	void ForTest_OnAgentWorkerAboutToParkRender() override
+	{
+		workerHookEntered.store( true, std::memory_order_release );
+		while( !releaseWorkerGate.load( std::memory_order_acquire ) )
+		{
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+};
+
+//////////////////////////////////////////////////////////////////////
+// (q0) Queued cancellation must survive the worker's per-render Reset().
+// A cancel after an async submission but before the worker starts used to be
+// silently erased, turning Stop/render_cancel into a full render.
+//////////////////////////////////////////////////////////////////////
+static void RunQueuedCancellationSurvivesWorkerStartTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (q0) queued cancellation survives worker Reset ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_queued_cancel.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the queued-cancel scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the queued-cancel scene" );
+
+	QueuedCancellationSeamController controller( *pJob );
+	std::atomic<bool> firstSawCancellation{ false };
+	SceneEditController::RenderJobId firstId = SceneEditController::kInvalidRenderJobId;
+	const bool firstAccepted = controller.SubmitAgentRenderAsync(
+		[&]() {
+			firstSawCancellation.store(
+				controller.AgentRenderProgress()->IsCancelled(), std::memory_order_release );
+		},
+		String( "queued_cancel_probe" ), &firstId );
+	Check( firstAccepted, "the queued-cancel agent submission is accepted" );
+
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds( 2 );
+		while( !controller.workerHookEntered.load( std::memory_order_acquire ) &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( controller.workerHookEntered.load( std::memory_order_acquire ),
+	       "the worker is deterministically parked before its Reset()" );
+
+	// This is the precise formerly-lost handoff: the slot is occupied, but
+	// the worker has not reset or invoked the closure yet.
+	controller.CancelAgentRender_();
+	controller.releaseWorkerGate.store( true, std::memory_order_release );
+	Check( controller.WaitForRenderJob( firstId, 5000 ),
+	       "the queued-cancel job drains after its worker gate is released" );
+	Check( firstSawCancellation.load( std::memory_order_acquire ),
+	       "MONEY ASSERTION (q0): a cancellation issued before worker start is still visible inside the submitted closure "
+	       "after the worker's Reset() -- pre-fix Reset cleared it and this read was false" );
+
+	// The per-job handoff must not poison the next slot occupant.
+	std::atomic<bool> nextStartedClean{ false };
+	SceneEditController::RenderJobId nextId = SceneEditController::kInvalidRenderJobId;
+	const bool nextAccepted = controller.SubmitAgentRenderAsync(
+		[&]() {
+			nextStartedClean.store(
+				!controller.AgentRenderProgress()->IsCancelled(), std::memory_order_release );
+		},
+		String( "queued_cancel_control" ), &nextId );
+	Check( nextAccepted, "a fresh agent submission is accepted after queued cancellation drains" );
+	Check( controller.WaitForRenderJob( nextId, 5000 ), "the fresh control job completes" );
+	Check( nextStartedClean.load( std::memory_order_acquire ),
+	       "the queued cancellation is scoped to its original slot occupant, not the next job" );
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (q0) queued cancellation survives worker Reset: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
 // (q) Fix-round-4 P2 DETERMINISTIC RED-PROVE: mint an agent job (its mint
 //     + flag-set fully lands), with BOTH RenderLoop's mint attempt and the
 //     agent worker's own mMutex acquisition held open on separate gates,
@@ -4428,6 +4521,7 @@ int main()
 	RunNoStaleOutstandingIdTest();
 	RunProgressRestoredOnThrowTest();
 	RunInterleavedMintNoClobberTest();
+	RunQueuedCancellationSurvivesWorkerStartTest();
 	RunMintClobberRedProveTest();
 	RunLostEditWedgeRedProveTest();
 	RunSaveVsRenderRedProveTest();

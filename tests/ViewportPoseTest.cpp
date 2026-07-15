@@ -504,6 +504,29 @@ namespace
 		Check( !ctrl.DeleteNamedView( 0 ), "delete bad index refused" );
 		Check( !ctrl.UpdateNamedView( 0 ), "update bad index refused" );
 
+		// The bridge name ABI has a fixed 256-byte output buffer.  The core
+		// must reject an overlong capture rather than leave an invisible slot
+		// that shifts every later UI action to the wrong named view.
+		const std::string maxViewName( 255, 'm' );
+		Check( ctrl.CaptureNamedView( String( maxViewName.c_str() ) ), "capture accepts a 255-byte view name" );
+		char maxNm[256] = { 0 };
+		Check( ctrl.NamedViewName( 0, maxNm, sizeof(maxNm) ) && std::string( maxNm ) == maxViewName,
+			"maximum-length view name round-trips through the bridge-sized buffer" );
+		char maxPromotedA[256] = { 0 };
+		char maxPromotedB[256] = { 0 };
+		Check( ctrl.PromoteNamedViewToCamera( 0, maxViewName.c_str(), maxPromotedA, sizeof(maxPromotedA) ),
+			"first promotion of a maximum-length view name succeeds" );
+		Check( ctrl.PromoteNamedViewToCamera( 0, maxViewName.c_str(), maxPromotedB, sizeof(maxPromotedB) ),
+			"second promotion of a maximum-length view name deduplicates" );
+		Check( std::string( maxPromotedA ) != std::string( maxPromotedB ) &&
+			std::string( maxPromotedA ).size() <= 255 && std::string( maxPromotedB ).size() <= 255,
+			"maximum-length promotion names stay distinct and bridge-addressable" );
+		const std::string tooLongViewName( 256, 'm' );
+		Check( !ctrl.CaptureNamedView( String( tooLongViewName.c_str() ) ), "capture rejects a 256-byte view name" );
+		Check( ctrl.NamedViewCount() == 1, "overlong capture created no hidden named-view slot" );
+		Check( ctrl.DeleteNamedView( 0 ), "delete maximum-length test view" );
+		Check( ctrl.NamedViewCount() == 0, "maximum-length test cleanup restored an empty store" );
+
 		// Capture the active-camera view (not free-flying yet -> parks + captures active).
 		Check( ctrl.CaptureNamedView( "front" ), "capture 'front' (from active camera)" );
 		Check( ctrl.NamedViewCount() == 1, "one named view" );
@@ -542,8 +565,10 @@ namespace
 		CameraSnapshot activeBefore;
 		Check( CaptureActive( *pJob, activeBefore ), "active captured (pre-promote)" );
 		char camName[64] = { 0 };
-		Check( ctrl.PromoteNamedViewToCamera( 1, "from_view", camName, sizeof(camName) ), "promote 'side' to a camera" );
+		Check( ctrl.PromoteNamedViewToCamera( 1, "from } view", camName, sizeof(camName) ), "promote 'side' to a camera" );
 		Check( camName[0] != '\0', "promote returns the new camera name" );
+		Check( std::string( camName ).find_first_of( " \t\r\n#{}" ) == std::string::npos,
+			"promote canonicalizes a UI label into a CST-safe camera identifier" );
 		const IScene* scene = pJob->GetScene();
 		const ICameraManager* cams = scene ? scene->GetCameras() : nullptr;
 		const ICamera* promoted = cams ? cams->GetItem( camName ) : nullptr;
@@ -554,6 +579,18 @@ namespace
 			Check( near( got.location[0], 5.0 ), "promoted camera carries the view's +X framing" );
 		}
 		Check( SerializedScene( *pJob ) != serBefore, "promote mutated the scene (a camera was added)" );
+		const std::string persisted = SerializedScene( *pJob );
+		const std::string reloadPath = TempPath( "vpose_v9_promoted_name.RISEscene" );
+		Job* reloaded = LoadScene( persisted, reloadPath );
+		Check( reloaded != nullptr, "promoted camera scene reloads after a punctuation-bearing label" );
+		if( reloaded ) {
+			const IScene* reloadedScene = reloaded->GetScene();
+			const ICameraManager* reloadedCams = reloadedScene ? reloadedScene->GetCameras() : nullptr;
+			Check( reloadedCams && reloadedCams->GetItem( camName ),
+				"promoted camera survives reload under its canonical identifier" );
+			reloaded->release();
+		}
+		std::remove( reloadPath.c_str() );
 		Check( !ctrl.PromoteNamedViewToCamera( 9, "bad", camName, sizeof(camName) ), "promote bad index refused" );
 
 		// Delete 'front'.

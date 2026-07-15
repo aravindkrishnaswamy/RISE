@@ -236,8 +236,9 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 @property (nonatomic, readonly) BOOL hasHomeView;
 
 /// B3 fly-then-stamp: promote the current free-fly view into a NEW named
-/// scene camera (auto-named from `proposedName`, dedup-suffixed; the new
-/// camera becomes active).  Returns the created camera's name, or nil when
+/// scene camera (named from a CST-safe canonicalization of `proposedName`,
+/// then dedup-suffixed; the new camera becomes active). Returns the created
+/// camera's name, or nil when
 /// there's no free-fly pose to stamp or the edit was refused.
 - (nullable NSString *)stampViewToNewCamera:(NSString *)proposedName
     NS_SWIFT_NAME(stampViewToNewCamera(_:));
@@ -255,8 +256,9 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 - (BOOL)updateNamedView:(NSInteger)idx NS_SWIFT_NAME(updateNamedView(_:));
 /// Remove view `idx`.
 - (BOOL)deleteNamedView:(NSInteger)idx NS_SWIFT_NAME(deleteNamedView(_:));
-/// Promote view `idx` into a NEW scene camera (auto-named from `proposedName`;
-/// becomes active).  Returns the created camera's name, or nil on refusal.
+/// Promote view `idx` into a NEW scene camera (named from a CST-safe
+/// canonicalization of `proposedName`; becomes active). Returns the created
+/// camera's name, or nil on refusal.
 - (nullable NSString *)promoteNamedView:(NSInteger)idx name:(NSString *)proposedName
     NS_SWIFT_NAME(promoteNamedView(_:name:));
 
@@ -711,10 +713,9 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 #pragma mark - Multi-camera
 
 /// Clone the currently-active camera under a new name and switch
-/// the scene to it.  `proposedName` is the user's choice; on
-/// duplicate the controller appends a numeric dedup suffix.
-/// Returns the actual name registered (the proposal verbatim if
-/// available, or a deduplicated variant), or `nil` on no-active-
+/// the scene to it. `proposedName` is canonicalized to a CST-safe identifier,
+/// then deduplicated with a numeric suffix.
+/// Returns the actual name registered, or `nil` on no-active-
 /// camera / unclonable type.  Caller passes a non-empty NSString
 /// (an empty string falls back to "camera_copy").
 ///

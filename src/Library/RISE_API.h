@@ -4038,9 +4038,10 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p, int category, const char* name, const char* valueStr );
 
 	//! Clone the currently-active camera under a new name and switch
-	//! the scene to the new camera.  `proposedName` is the user's
-	//! choice; on duplicate the controller appends a numeric dedup
-	//! suffix.  The actual chosen name is written to `outName`
+	//! the scene to the new camera.  `proposedName` is canonicalized to a
+	//! CST-safe identifier (ASCII letters, digits, `_`, `-`, and `.`;
+	//! other bytes become `_`) before a numeric dedup suffix is appended.
+	//! The actual chosen name is written to `outName`
 	//! (NUL-terminated; caller-owned buffer of `outLen` bytes).
 	//! Returns false on null controller, no-active-camera, an
 	//! unclonable camera type, or `outLen == 0`.  Bumps the controller's
@@ -4055,8 +4056,9 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		char* outName, unsigned int outLen );
 
 	//! B3 fly-then-stamp (Tier 2 §5.3): promote the CURRENT free-fly
-	//! ViewportPose into a NEW named scene camera.  `outName` receives the
-	//! chosen (dedup-suffixed) name.  Returns false — outName cleared — on
+	//! ViewportPose into a NEW named scene camera.  `proposedName` is
+	//! canonicalized to a CST-safe identifier before deduplication; `outName`
+	//! receives the chosen name.  Returns false — outName cleared — on
 	//! null controller, `outLen == 0`, no active free-fly pose to stamp, no
 	//! camera manager, a too-small buffer, or a refused edit.  Bumps the
 	//! SceneEpoch; persists via the retained CST Document; undoable.
@@ -4067,10 +4069,12 @@ bool RISE_API_CreateFinalGatherShaderOp(
 
 	//! -------- Named Views (Tier 2 §3): session/UI bookmarks --------
 	//! Capture the current view (free-fly pose if active, else the active
-	//! camera) as a new named view.  Restore lands the payload in the
-	//! transient ViewportPose (non-destructive — no scene write); promote is
-	//! the only scene write.  All return false on null controller / the
-	//! documented refusal cases.
+	//! camera) as a new named view.  Names are limited to 255 payload bytes
+	//! so they round-trip through the platform bridges' 256-byte (including
+	//! NUL) enumeration buffer.  Restore lands the payload in the transient
+	//! ViewportPose (non-destructive — no scene write); promote is the only
+	//! scene write.  All return false on null controller / the documented
+	//! refusal cases.
 	bool RISE_API_SceneEditController_CaptureNamedView(
 		SceneEditController* p, const char* name );
 	unsigned int RISE_API_SceneEditController_NamedViewCount(
@@ -4083,8 +4087,9 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p, unsigned int idx );
 	bool RISE_API_SceneEditController_DeleteNamedView(
 		SceneEditController* p, unsigned int idx );
-	//! Promote view `idx` into a NEW named scene camera; `outName` receives the
-	//! chosen (dedup-suffixed) name; the new camera becomes active.
+	//! Promote view `idx` into a NEW named scene camera. `proposedName` is
+	//! canonicalized to a CST-safe identifier before deduplication; `outName`
+	//! receives the chosen name and the new camera becomes active.
 	bool RISE_API_SceneEditController_PromoteNamedViewToCamera(
 		SceneEditController* p, unsigned int idx, const char* proposedName,
 		char* outName, unsigned int outLen );

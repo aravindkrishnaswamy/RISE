@@ -36,8 +36,36 @@
 #include <thread>
 #include <vector>
 #include <cstring>
+#include <limits>
 
 using namespace RISE;
+
+namespace {
+
+bool NamedViewIndexFitsCAbi( const NSInteger idx )
+{
+    return idx >= 0 &&
+        static_cast<unsigned long long>(idx) <=
+        static_cast<unsigned long long>(std::numeric_limits<unsigned int>::max());
+}
+
+NSString* NamedViewDisplayName( const char* bytes )
+{
+    if( !bytes ) return nil;
+    NSString* decoded = [[NSString alloc] initWithBytes:bytes
+                                                   length:std::strlen(bytes)
+                                                 encoding:NSUTF8StringEncoding];
+    // The C ABI carries bytes, not an NSString.  Preserve every byte in a
+    // displayable fallback instead of inserting nil into NSMutableArray.
+    if( !decoded ) {
+        decoded = [[NSString alloc] initWithBytes:bytes
+                                            length:std::strlen(bytes)
+                                          encoding:NSISOLatin1StringEncoding];
+    }
+    return decoded;
+}
+
+}  // namespace
 
 // Class extension: private dirty-changed trampoline target on
 // RISEViewportBridge.  The C trampoline can't message a method that
@@ -923,32 +951,34 @@ private:
     for (unsigned int i = 0; i < n; ++i) {
         char nm[256] = {0};
         if (RISE_API_SceneEditController_NamedViewName(_controller, i, nm, sizeof(nm))) {
-            [out addObject:[NSString stringWithUTF8String:nm]];
+            if (NSString* displayName = NamedViewDisplayName(nm)) {
+                [out addObject:displayName];
+            }
         }
     }
     return out;
 }
 
 - (BOOL)restoreNamedView:(NSInteger)idx {
-    if (!_controller || idx < 0) return NO;
+    if (!_controller || !NamedViewIndexFitsCAbi(idx)) return NO;
     return RISE_API_SceneEditController_RestoreNamedView(
         _controller, static_cast<unsigned int>(idx)) ? YES : NO;
 }
 
 - (BOOL)updateNamedView:(NSInteger)idx {
-    if (!_controller || idx < 0) return NO;
+    if (!_controller || !NamedViewIndexFitsCAbi(idx)) return NO;
     return RISE_API_SceneEditController_UpdateNamedView(
         _controller, static_cast<unsigned int>(idx)) ? YES : NO;
 }
 
 - (BOOL)deleteNamedView:(NSInteger)idx {
-    if (!_controller || idx < 0) return NO;
+    if (!_controller || !NamedViewIndexFitsCAbi(idx)) return NO;
     return RISE_API_SceneEditController_DeleteNamedView(
         _controller, static_cast<unsigned int>(idx)) ? YES : NO;
 }
 
 - (NSString *)promoteNamedView:(NSInteger)idx name:(NSString *)proposedName {
-    if (!_controller || idx < 0) return nil;
+    if (!_controller || !NamedViewIndexFitsCAbi(idx)) return nil;
     char name[256] = {0};
     const char* prop = proposedName ? [proposedName UTF8String] : "";
     if (!RISE_API_SceneEditController_PromoteNamedViewToCamera(
