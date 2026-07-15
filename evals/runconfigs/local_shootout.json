@@ -3,7 +3,8 @@
     "evals/scenarios/remove_object.json",
     "evals/scenarios/material_add_and_bind.json",
     "evals/scenarios/conflict_retry.json",
-    "evals/scenarios/reserved_name_recovery.json"
+    "evals/scenarios/reserved_name_recovery.json",
+    "evals/scenarios/reserved_name_clarify.json"
   ],
   "providers": [
     {

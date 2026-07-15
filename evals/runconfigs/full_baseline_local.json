@@ -7,6 +7,7 @@
     "evals/scenarios/material_add_and_bind.json",
     "evals/scenarios/conflict_retry.json",
     "evals/scenarios/reserved_name_recovery.json",
+    "evals/scenarios/reserved_name_clarify.json",
     "evals/scenarios/objectmap_frame_object.json",
     "evals/scenarios/multi_step_build.json",
     "evals/scenarios/lighting_luma_band.json",
