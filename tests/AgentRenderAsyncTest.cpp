@@ -4500,9 +4500,80 @@ static void RunAgentRenderRestoresPersistentCallbackRedProveTest()
 	std::printf( "=== (z4) agent render restores persistent callback: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+// (guard) render-owns-scene: a UI-callable mMutex-locking method, called on
+// another thread WHILE a production/agent render owns the scene (holds mMutex
+// across its closure), must NO-OP and return immediately -- never block on
+// mMutex for the render's whole duration.  Deterministic proof of the
+// render-owns-scene guard that closes the chat-render wedge class (a chat/agent
+// render holds mMutex WITHOUT flipping renderState, so the GUI can still call
+// these mid-render).  RunWatchdogged turns a wedge (block >> the render) into a
+// test FAILURE rather than a suite hang.
+static void RunRenderOwnsSceneGuardTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (guard) UI mMutex methods no-op (never wedge) while a render owns the scene ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_render_owns_scene_guard.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the guard-test scene" );
+
+	auto insideRasterize = std::make_shared<std::atomic<int>>( 0 );
+	CanaryJob* pJob = new CanaryJob( /*sleepMs*/ 800, insideRasterize );
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "CanaryJob loads the guard-test scene via the CST path" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+	Check( !controller.ForTest_RenderOwnsScene(), "render-owns-scene flag is FALSE before any render" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession wraps the CanaryJob" );
+	if( session )
+	{
+		session->AttachController( &controller );
+		const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( AgentRenderParams() );
+		Check( ar.accepted && ar.renderJobId != 0, "async render accepted" );
+
+		// Wait until the worker is genuinely INSIDE Rasterize() -- i.e. the RAII
+		// RenderOwnershipScope has set mRenderOwnsScene true and mMutex is held
+		// for the ~800ms sleep.  CanaryJob bumps `insideRasterize` on entry.
+		bool inside = false;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( std::chrono::steady_clock::now() < deadline ) {
+			if( insideRasterize->load( std::memory_order_acquire ) > 0 ) { inside = true; break; }
+			std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+		}
+		Check( inside, "worker entered Rasterize() (render now owns mMutex)" );
+		Check( controller.ForTest_RenderOwnsScene(), "render-owns-scene flag is TRUE while the render runs" );
+
+		// MONEY: a guarded GETTER (GetEnvironment -- the exact method whose
+		// main-thread call caused the original production-render hang) and a
+		// guarded MUTATOR (GoToHomeView), invoked while the render holds mMutex
+		// for ~800ms, must each return in well under 200ms (no-op) -- NOT block
+		// for the render.  A wedge trips the 200ms watchdog -> FAIL.
+		const bool getterQuick = RunWatchdogged(
+			"GetEnvironment() while a render owns the scene", 200, [&]{
+				SceneEditController::EnvironmentInfo env;
+				(void)controller.GetEnvironment( env );
+			} );
+		Check( getterQuick, "MONEY: GetEnvironment() did NOT wedge on mMutex during a render (< 200ms of an 800ms render)" );
+
+		const bool mutatorQuick = RunWatchdogged(
+			"GoToHomeView() while a render owns the scene", 200, [&]{
+				(void)controller.GoToHomeView();
+			} );
+		Check( mutatorQuick, "MONEY: GoToHomeView() did NOT wedge on mMutex during a render" );
+
+		const bool completed = session->RenderWait( ar.renderJobId, 5000 );
+		Check( completed, "render completed within the timeout" );
+		Check( !controller.ForTest_RenderOwnsScene(), "render-owns-scene flag CLEARED after the render finished" );
+
+		session->AttachController( nullptr );
+	}
+	controller.Stop();
+}
+
 int main()
 {
 	RunAsyncReturnsQuicklyTest();
+	RunRenderOwnsSceneGuardTest();
 	RunSingleSlotRejectionTest();
 	RunPinnedRenderTests();
 	RunConcurrencyRaceClosureTest();

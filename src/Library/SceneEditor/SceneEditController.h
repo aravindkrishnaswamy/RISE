@@ -1707,6 +1707,12 @@ namespace RISE
 		//! for settling without sleep-polling.
 		bool ForTest_WaitForRenders( unsigned int count, unsigned int timeoutMs );
 
+		//! Test-only: the render-owns-scene guard flag (true while a
+		//! production/agent render holds mMutex across its closure).  Lets a
+		//! test PROVE a guarded UI method no-ops (not wedges) mid-render and
+		//! that the flag clears afterward.
+		bool ForTest_RenderOwnsScene() const { return mRenderOwnsScene.load( std::memory_order_acquire ); }
+
 		const SceneEditor& Editor() const { return mEditor; }
 		SceneEditor&       Editor()       { return mEditor; }
 
