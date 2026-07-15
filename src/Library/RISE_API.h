@@ -4054,6 +4054,17 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		const char* proposedName,
 		char* outName, unsigned int outLen );
 
+	//! B3 fly-then-stamp (Tier 2 §5.3): promote the CURRENT free-fly
+	//! ViewportPose into a NEW named scene camera.  `outName` receives the
+	//! chosen (dedup-suffixed) name.  Returns false — outName cleared — on
+	//! null controller, `outLen == 0`, no active free-fly pose to stamp, no
+	//! camera manager, a too-small buffer, or a refused edit.  Bumps the
+	//! SceneEpoch; persists via the retained CST Document; undoable.
+	bool RISE_API_SceneEditController_StampViewToNewCamera(
+		SceneEditController* p,
+		const char* proposedName,
+		char* outName, unsigned int outLen );
+
 	//! Entity-creation slice: number of "Add Entity" templates
 	//! registered for `category` (0 for categories with none —
 	//! Camera/Rasterizer/Film/Animation/SceneVariant/None).

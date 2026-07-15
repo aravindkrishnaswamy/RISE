@@ -6676,6 +6676,70 @@ bool SceneEditController::CloneActiveCamera(
 	return true;
 }
 
+bool SceneEditController::StampViewToNewCamera(
+	const String& proposedName, char* outName, unsigned int outLen )
+{
+	if( !outName || outLen == 0 ) return false;
+	outName[0] = '\0';
+
+	IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+	ICameraManager* cams = const_cast<ICameraManager*>( scene->GetCameras() );
+	if( !cams ) return false;
+
+	// Park before reading mViewportPose + mutating the ICameraManager (same
+	// reason CloneActiveCamera parks: the render thread and other UI-thread
+	// edits touch these).  The pose fields are the value we stamp.
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	// Nothing transient to stamp when not free-flying.
+	if( !mViewportPoseActive ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::StampViewToNewCamera: no active free-fly pose to stamp "
+			"(navigate the viewport first, then stamp)" );
+		return false;
+	}
+	const CameraSnapshot snapshot = mViewportPose;   // the pose IS a CameraSnapshot
+
+	// Pick a unique name under the lock so concurrent adds can't collide.
+	const String finalName = UniqueCameraName( proposedName, *cams );
+
+	// Buffer precheck: refuse to mutate the scene if the chosen name won't fit
+	// (an after-the-fact check would leave a registered orphan while reporting
+	// failure — same rationale as CloneActiveCamera).
+	if( finalName.size() > outLen ) {
+		outName[0] = '\0';
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::StampViewToNewCamera: outName buffer too small for `%s` (need %u, got %u) — not adding camera",
+			finalName.c_str(), static_cast<unsigned>( finalName.size() ), outLen );
+		return false;
+	}
+
+	SceneEdit edit;
+	edit.op             = SceneEdit::AddCamera;
+	edit.objectName     = finalName;
+	edit.cameraSnapshot = snapshot;
+
+	if( !mEditor.Apply( edit ) ) return false;
+
+	{
+		const char* s = finalName.c_str();
+		const size_t needed = finalName.size();
+		for( size_t i = 0; i < needed; ++i ) outName[i] = s[i];
+	}
+
+	mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+	mEditPending.store( true, std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+	return true;
+}
+
 // ===================== Free-fly viewport pose (Tier 2 §5.3-5.5) =================
 
 bool SceneEditController::EnterFreeFlyFromActiveCamera()

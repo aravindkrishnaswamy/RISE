@@ -43,6 +43,7 @@
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Interfaces/IScene.h"
 #include "../src/Library/Interfaces/ICamera.h"
+#include "../src/Library/Interfaces/ICameraManager.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/SceneEditor/CameraIntrospection.h"
 
@@ -414,6 +415,75 @@ namespace
 		pJob->release();
 		std::remove( tmp.c_str() );
 	}
+	//------------------------------------------------------------------
+	// V8: B3 fly-then-stamp — stamping the free-fly pose adds a NEW named
+	// scene camera with the pose's framing, mutates the scene by exactly
+	// that add, leaves the active camera untouched, and is refused when
+	// there's no transient pose to stamp.
+	//------------------------------------------------------------------
+	void TestStampView()
+	{
+		std::printf( "V8: B3 fly-then-stamp (adds a camera from the pose, non-destructive to active)...\n" );
+		const std::string tmp = TempPath( "vpose_v8.RISEscene" );
+		Job* pJob = LoadScene( kPinholeScene, tmp );   // active cam (0,0,5) -> origin, dist 5
+		Check( pJob != nullptr, "fixture loads" );
+		if( !pJob ) return;
+
+		SceneEditController ctrl( *pJob, nullptr );
+		auto near = []( double a, double b ) { return std::fabs( a - b ) < 1e-6; };
+
+		// Refused before any free-fly (nothing transient to stamp).
+		char buf0[64] = { 'x', 0 };
+		Check( !ctrl.StampViewToNewCamera( "view_cam", buf0, sizeof(buf0) ), "stamp refused with no free-fly pose" );
+		Check( buf0[0] == '\0', "outName cleared on refusal" );
+
+		// Fly: snap +X -> pose eye at (5,0,0) looking at origin.
+		Check( ctrl.SnapViewToAxis( 0, false ), "snap +X (fly)" );
+		CameraSnapshot pose;
+		Check( ctrl.GetViewportPose( pose ) && near( pose.location[0], 5.0 ), "pose eye at +X" );
+
+		const std::string serBefore = SerializedScene( *pJob );
+		CameraSnapshot activeBefore;
+		Check( CaptureActive( *pJob, activeBefore ), "active camera captured (pre-stamp)" );
+
+		// Stamp -> a new named camera.
+		char name[64] = { 0 };
+		Check( ctrl.StampViewToNewCamera( "view_cam", name, sizeof(name) ), "StampViewToNewCamera succeeds while free-flying" );
+		Check( name[0] != '\0', "outName filled with the chosen camera name" );
+
+		// The new camera exists and carries the pose's framing.
+		const IScene* scene = pJob->GetScene();
+		const ICameraManager* cams = scene ? scene->GetCameras() : nullptr;
+		const ICamera* stamped = cams ? cams->GetItem( name ) : nullptr;
+		Check( stamped != nullptr, "the stamped camera is registered under its name" );
+		if( stamped ) {
+			CameraSnapshot got;
+			Check( CameraIntrospection::CaptureCameraSnapshot( *stamped, got ), "stamped camera introspects" );
+			Check( near( got.location[0], 5.0 ) && near( got.location[1], 0.0 ) && near( got.location[2], 0.0 ),
+				"stamped camera eye matches the free-fly pose (5,0,0)" );
+			Check( near( got.lookat[0], 0.0 ) && near( got.lookat[1], 0.0 ) && near( got.lookat[2], 0.0 ),
+				"stamped camera looks at the pose pivot (origin)" );
+		}
+
+		// The scene CHANGED (a camera chunk was added) and names the new camera.
+		const std::string serAfter = SerializedScene( *pJob );
+		Check( serAfter != serBefore, "stamp mutated the scene (a camera was added)" );
+		Check( serAfter.find( name ) != std::string::npos, "the new camera name appears in the serialized scene" );
+
+		// Stamp PROMOTES the flown view: the new camera becomes the active
+		// scene camera (the AddCamera convention — SceneEditor.cpp:2453 — so a
+		// subsequent production render uses the stamped view; undo restores the
+		// prior active).  This is the point of fly-then-stamp: commit the cheap
+		// exploration into the camera the final render will use.
+		CameraSnapshot activeAfter;
+		Check( CaptureActive( *pJob, activeAfter ), "active camera captured (post-stamp)" );
+		Check( !SameCamera( activeAfter, activeBefore ), "stamp promoted a NEW active camera (differs from the original)" );
+		Check( near( activeAfter.location[0], 5.0 ) && near( activeAfter.location[1], 0.0 ) && near( activeAfter.location[2], 0.0 ),
+			"the stamped view is now the active camera (eye at 5,0,0)" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
 }   // anonymous namespace
 
 int main()
@@ -425,6 +495,7 @@ int main()
 	TestAxisSnaps();
 	TestHomeView();
 	TestNavGizmo();
+	TestStampView();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

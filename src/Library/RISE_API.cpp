@@ -8130,6 +8130,16 @@ namespace RISE
 		return p->CloneActiveCamera( prop, outName, outLen );
 	}
 
+	bool RISE_API_SceneEditController_StampViewToNewCamera(
+		SceneEditController* p,
+		const char* proposedName,
+		char* outName, unsigned int outLen )
+	{
+		if( !p || !outName || outLen == 0 ) return false;
+		const String prop = String( proposedName ? proposedName : "" );
+		return p->StampViewToNewCamera( prop, outName, outLen );
+	}
+
 	// -------------------------------------------------------------------
 	// Entity-creation slice.  AgentCommitResult carries more fields
 	// (rawCode / conflict / retriable / headVersion / chunkKeyword /

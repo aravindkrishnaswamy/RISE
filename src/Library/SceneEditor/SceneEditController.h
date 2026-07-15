@@ -2008,6 +2008,20 @@ namespace RISE
 		bool CloneActiveCamera( const String& proposedName,
 		                        char* outName, unsigned int outLen );
 
+		//! B3 fly-then-stamp (Tier 2 §5.3): promote the CURRENT transient
+		//! free-fly ViewportPose into a NEW named scene camera.  The single
+		//! B3 action that mutates the scene — an AddCamera transaction seeded
+		//! from the pose (which IS a CameraSnapshot) instead of the active
+		//! camera; it persists via the retained CST Document exactly like
+		//! CloneActiveCamera, and is undoable.  `outName` receives the chosen
+		//! (dedup-suffixed) name.  Returns false — outName cleared — when
+		//! free-fly isn't active (nothing transient to stamp), there's no
+		//! camera manager, the buffer is too small, or the edit is refused.
+		//! Non-destructive navigation (fly/snap/Home) stays pose-only; THIS is
+		//! the deliberate bridge to a durable camera.
+		bool StampViewToNewCamera( const String& proposedName,
+		                           char* outName, unsigned int outLen );
+
 		//! -------- Free-fly viewport pose (Tier 2 / Direction B §5.3-5.5) --------
 		//!
 		//! A transient, viewport-private "pose" the interactive preview renders
