@@ -43,6 +43,10 @@
 //        tool call is actually refused (-32011); requiredToolInOrder
 //        subsequence pass/fail; noMechanicalLoop fails on two identical
 //        consecutive tool calls, passes on two DIFFERENT ones.
+//    T7b "finalText" -- containsAll/containsAny/absent pass/fail against
+//        handle.result.finalText; caseSensitive true/false/omitted; a
+//        checkpoint with none of the three arrays fails loudly (never a
+//        vacuous pass).
 //    T8  Unknown checkpoint kind -> a FAILED checkpoint with a detail,
 //        never a crash.  A non-object / kind-less checkpoint -> same.
 //    T9  Partial-credit arithmetic: a scenario with a 2:1-weighted mix of
@@ -131,6 +135,12 @@ static const char* const kMechanicalLoopFixture =
 static const char* const kNoLoopFixture =
 	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_1\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"toolu_render\\\",\\\"name\\\":\\\"render\\\",\\\"input\\\":{}},{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"toolu_img\\\",\\\"name\\\":\\\"read_image\\\",\\\"input\\\":{}}],\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":100,\\\"output_tokens\\\":40}}\"}\n"
 	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_2\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"done\\\"}],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":30,\\\"output_tokens\\\":8}}\"}\n";
+
+// A single-round fixture whose final (only) turn carries a KNOWN, controlled
+// text -- for the "finalText" checkpoint kind, which asserts on
+// handle.result.finalText rather than tool calls or document state.
+static const char* const kFinalTextFixture =
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_1\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"The name none is reserved as the unbind sentinel.\\\"}],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":30,\\\"output_tokens\\\":10}}\"}\n";
 
 // A single-round fixture that attempts propose_patch (a mutating verb) --
 // paired with autonomy:"read" this gets refused (-32011) at the dispatcher.
@@ -796,6 +806,97 @@ static void TestTrajectoryCheckpoint()
 }
 
 //----------------------------------------------------------------------
+// T7b: "finalText" checkpoint kind -- asserts on handle.result.finalText
+// (the last FinalText turn's text) rather than tool calls or document
+// state, so refusal/clarification scenarios can check the ask-back
+// message actually surfaces the right content.
+//----------------------------------------------------------------------
+static void TestFinalTextCheckpoint()
+{
+	std::printf( "T7b: \"finalText\" checkpoint kind...\n" );
+	const std::string dir = ScratchRunDir( "t7b_finaltext" );
+
+	AgentEvalScenario s = MakeScenario( "finaltext_probe", kScene, "Explain the reserved name", "commit",
+		kFinalTextFixture, dir, "[]" );
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( s, opts );
+	Check( h.result.terminalStatus == "final_text", "finaltext_probe run reached final_text" );
+	Check( h.result.finalText == "The name none is reserved as the unbind sentinel.",
+		"finaltext_probe run's finalText matches the fixture's text (got: " + h.result.finalText + ")" );
+
+	auto checkOne = [&]( const std::string& cpJson, bool expectPass, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+			Check( !r.checkpoints[0].detail.empty(), label + ": detail is never empty" );
+		} else Check( false, label + ": expected exactly one checkpoint result" );
+	};
+
+	// containsAll: PASSES when every needle is present, FAILS when one is missing.
+	checkOne( "[{\"kind\":\"finalText\",\"containsAll\":[\"reserved\",\"none\"]}]", true,
+		"containsAll [reserved,none] passes (case-insensitive)" );
+	checkOne( "[{\"kind\":\"finalText\",\"containsAll\":[\"reserved\",\"MISSING_WORD\"]}]", false,
+		"containsAll with a missing needle fails" );
+
+	// containsAny: PASSES when at least one candidate is present, FAILS when none are.
+	checkOne( "[{\"kind\":\"finalText\",\"containsAny\":[\"absent1\",\"none\"]}]", true,
+		"containsAny with one matching candidate passes" );
+	checkOne( "[{\"kind\":\"finalText\",\"containsAny\":[\"absent1\",\"absent2\"]}]", false,
+		"containsAny with no matching candidates fails" );
+
+	// absent: PASSES when none of the forbidden needles are present, FAILS when one is.
+	checkOne( "[{\"kind\":\"finalText\",\"absent\":[\"kittens\"]}]", true,
+		"absent: a genuinely-missing word passes" );
+	checkOne( "[{\"kind\":\"finalText\",\"absent\":[\"reserved\"]}]", false,
+		"absent: a present word fails" );
+
+	// caseSensitive: true refuses a differently-cased needle; false (default,
+	// explicit or omitted) matches case-insensitively.
+	checkOne( "[{\"kind\":\"finalText\",\"containsAll\":[\"Reserved\"],\"caseSensitive\":true}]", false,
+		"caseSensitive:true fails to match the lowercase \"reserved\" in the text" );
+	checkOne( "[{\"kind\":\"finalText\",\"containsAll\":[\"Reserved\"],\"caseSensitive\":false}]", true,
+		"caseSensitive:false (explicit) still matches case-insensitively" );
+	checkOne( "[{\"kind\":\"finalText\",\"containsAll\":[\"Reserved\"]}]", true,
+		"caseSensitive omitted defaults to case-insensitive" );
+
+	// None of containsAll/containsAny/absent present -> FAILS LOUDLY, never a
+	// silent vacuous pass.
+	checkOne( "[{\"kind\":\"finalText\"}]", false,
+		"finalText checkpoint with no assertion array fails loudly (not a vacuous pass)" );
+
+	// An EMPTY array -- or one holding only empty-string needles -- asserts
+	// nothing and must also fail loudly (the vacuous-pass hole the guard closes).
+	checkOne( "[{\"kind\":\"finalText\",\"containsAll\":[]}]", false,
+		"empty containsAll array asserts nothing -> loud fail (no silent vacuous pass)" );
+	checkOne( "[{\"kind\":\"finalText\",\"containsAll\":[\"\"]}]", false,
+		"containsAll with only an empty-string needle asserts nothing -> loud fail" );
+
+	// An empty-string needle ALONGSIDE a real one is SKIPPED, never a spurious
+	// match (contains) or spurious trip (absent): the real needle still grades.
+	checkOne( "[{\"kind\":\"finalText\",\"containsAll\":[\"reserved\",\"\"]}]", true,
+		"empty needle skipped in containsAll; the real needle still grades (pass)" );
+	checkOne( "[{\"kind\":\"finalText\",\"absent\":[\"kittens\",\"\"]}]", true,
+		"empty needle skipped in absent; does not spuriously trip the forbidden check (pass)" );
+
+	// Empty finalText (a run that ended on a budget/error before any final_text
+	// turn): contains checks fail (nothing to match), absent checks pass.
+	{
+		const std::string savedFinal = h.result.finalText;
+		h.result.finalText.clear();
+		checkOne( "[{\"kind\":\"finalText\",\"containsAll\":[\"reserved\"]}]", false,
+			"empty finalText: containsAll fails (nothing to match)" );
+		checkOne( "[{\"kind\":\"finalText\",\"absent\":[\"reserved\"]}]", true,
+			"empty finalText: absent passes (nothing forbidden is present)" );
+		h.result.finalText = savedFinal;
+	}
+}
+
+//----------------------------------------------------------------------
 // T8: unknown checkpoint kind + malformed checkpoint shape -> FAILED, not
 // a crash.
 //----------------------------------------------------------------------
@@ -1199,6 +1300,24 @@ static void TestLoadEvalScenarioStrictCheckpointFieldTypes()
 		AgentEvalScenario s; std::string err;
 		Check( LoadEvalScenario( path, s, err ), "correctly-typed param_range min/max arrays load (" + err + ")" );
 	}
+
+	// "finalText".containsAll as a bare NUMBER (not a string array) -- must
+	// fail loudly, naming the offending field.
+	{
+		const std::string path = writeScenario( "bad_finaltext_type",
+			"[{\"kind\":\"finalText\",\"containsAll\":42}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "wrong-typed containsAll (number 42) FAILS to load" );
+		Check( err.find( "containsAll" ) != std::string::npos,
+			"the load error names the offending field \"containsAll\" (got: " + err + ")" );
+	}
+	// The correctly-typed sibling still loads cleanly.
+	{
+		const std::string path = writeScenario( "good_finaltext_type",
+			"[{\"kind\":\"finalText\",\"containsAll\":[\"reserved\",\"none\"]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "correctly-typed containsAll (string array) loads (" + err + ")" );
+	}
 }
 
 int main()
@@ -1212,6 +1331,7 @@ int main()
 	TestDiagnosticsCheckpointClean();
 	TestDiagnosticsLiveDocInvariant();
 	TestTrajectoryCheckpoint();
+	TestFinalTextCheckpoint();
 	TestUnknownKindAndMalformedShape();
 	TestPartialCreditArithmetic();
 	TestScenarioIntervention();

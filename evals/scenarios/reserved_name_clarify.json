@@ -55,6 +55,10 @@
         "insert_chunk"
       ],
       "noMechanicalLoop": true
+    },
+    {
+      "kind": "finalText",
+      "containsAll": ["reserved", "none"]
     }
   ]
 }
