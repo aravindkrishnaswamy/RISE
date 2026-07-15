@@ -523,6 +523,62 @@ QString ViewportBridge::stampViewToNewCamera(const QString& proposedName)
     return QString::fromUtf8(name);
 }
 
+// -------- Named Views (Tier 2 §3) --------
+
+bool ViewportBridge::captureNamedView(const QString& name)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_CaptureNamedView(
+        m_controller, name.toUtf8().constData());
+}
+
+QStringList ViewportBridge::namedViewNames() const
+{
+    QStringList out;
+    if (!m_controller) return out;
+    const unsigned int n = RISE_API_SceneEditController_NamedViewCount(m_controller);
+    for (unsigned int i = 0; i < n; ++i) {
+        char nm[256] = { 0 };
+        if (RISE_API_SceneEditController_NamedViewName(m_controller, i, nm, sizeof(nm))) {
+            out.push_back(QString::fromUtf8(nm));
+        }
+    }
+    return out;
+}
+
+bool ViewportBridge::restoreNamedView(int idx)
+{
+    if (!m_controller || idx < 0) return false;
+    return RISE_API_SceneEditController_RestoreNamedView(
+        m_controller, static_cast<unsigned int>(idx));
+}
+
+bool ViewportBridge::updateNamedView(int idx)
+{
+    if (!m_controller || idx < 0) return false;
+    return RISE_API_SceneEditController_UpdateNamedView(
+        m_controller, static_cast<unsigned int>(idx));
+}
+
+bool ViewportBridge::deleteNamedView(int idx)
+{
+    if (!m_controller || idx < 0) return false;
+    return RISE_API_SceneEditController_DeleteNamedView(
+        m_controller, static_cast<unsigned int>(idx));
+}
+
+QString ViewportBridge::promoteNamedView(int idx, const QString& proposedName)
+{
+    if (!m_controller || idx < 0) return QString();
+    char name[256] = { 0 };
+    const QByteArray prop = proposedName.toUtf8();
+    if (!RISE_API_SceneEditController_PromoteNamedViewToCamera(
+            m_controller, static_cast<unsigned int>(idx), prop.constData(), name, sizeof(name))) {
+        return QString();
+    }
+    return QString::fromUtf8(name);
+}
+
 void ViewportBridge::pointerDown(double x, double y) { if (m_controller) RISE_API_SceneEditController_OnPointerDown(m_controller, x, y); }
 void ViewportBridge::pointerMove(double x, double y) { if (m_controller) RISE_API_SceneEditController_OnPointerMove(m_controller, x, y); }
 void ViewportBridge::pointerUp(double x, double y)   { if (m_controller) RISE_API_SceneEditController_OnPointerUp(m_controller, x, y); }

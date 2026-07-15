@@ -614,6 +614,7 @@ struct ContentView: View {
         VStack(spacing: 0) {
             OutlinerView(bridge: vb, refreshTrigger: $propertyRefresh)
             EnvironmentPanel(bridge: vb, refreshTrigger: $propertyRefresh)
+            NamedViewsPanel(bridge: vb, refreshTrigger: $propertyRefresh)
             PropertiesPanel(bridge: vb, refreshTrigger: $propertyRefresh)
         }
         .frame(width: 344)

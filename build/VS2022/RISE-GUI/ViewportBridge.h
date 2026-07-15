@@ -261,6 +261,22 @@ public:
     /// QString when there's no free-fly pose to stamp / the edit was refused.
     QString stampViewToNewCamera(const QString& proposedName);
 
+    // -------- Named Views (Tier 2 §3) --------
+    /// Capture the current view (free-fly pose if active, else the active
+    /// camera) as a new named view.  False when there's no capturable camera.
+    bool captureNamedView(const QString& name);
+    /// The named views' names, in order.
+    QStringList namedViewNames() const;
+    /// Restore view `idx` into the transient ViewportPose (non-destructive).
+    bool restoreNamedView(int idx);
+    /// Re-capture the current view into slot `idx`.
+    bool updateNamedView(int idx);
+    /// Remove view `idx`.
+    bool deleteNamedView(int idx);
+    /// Promote view `idx` into a NEW scene camera (auto-named; becomes active).
+    /// Returns the created camera's name, or empty on refusal.
+    QString promoteNamedView(int idx, const QString& proposedName);
+
     // Pointer events — coordinates are in viewport surface pixel space.
     void pointerDown(double x, double y);
     void pointerMove(double x, double y);

@@ -242,6 +242,24 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 - (nullable NSString *)stampViewToNewCamera:(NSString *)proposedName
     NS_SWIFT_NAME(stampViewToNewCamera(_:));
 
+#pragma mark - Named Views (B1)
+
+/// Capture the current view (free-fly pose if active, else the active camera)
+/// as a new named view.  Returns NO when there's no capturable camera.
+- (BOOL)captureNamedView:(NSString *)name NS_SWIFT_NAME(captureNamedView(_:));
+/// The named views, in order (an NSArray of their names).
+@property (nonatomic, readonly) NSArray<NSString *> *namedViewNames;
+/// Restore view `idx` into the transient ViewportPose (non-destructive).
+- (BOOL)restoreNamedView:(NSInteger)idx NS_SWIFT_NAME(restoreNamedView(_:));
+/// Re-capture the current view into slot `idx`.
+- (BOOL)updateNamedView:(NSInteger)idx NS_SWIFT_NAME(updateNamedView(_:));
+/// Remove view `idx`.
+- (BOOL)deleteNamedView:(NSInteger)idx NS_SWIFT_NAME(deleteNamedView(_:));
+/// Promote view `idx` into a NEW scene camera (auto-named from `proposedName`;
+/// becomes active).  Returns the created camera's name, or nil on refusal.
+- (nullable NSString *)promoteNamedView:(NSInteger)idx name:(NSString *)proposedName
+    NS_SWIFT_NAME(promoteNamedView(_:name:));
+
 #pragma mark - Pointer events
 //
 // Coordinates are in the viewport surface's pixel space.  Bridge

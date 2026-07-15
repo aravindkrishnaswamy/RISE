@@ -908,6 +908,56 @@ private:
     return [NSString stringWithUTF8String:name];
 }
 
+#pragma mark - Named Views (B1)
+
+- (BOOL)captureNamedView:(NSString *)name {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_CaptureNamedView(
+        _controller, name ? [name UTF8String] : "") ? YES : NO;
+}
+
+- (NSArray<NSString *> *)namedViewNames {
+    if (!_controller) return @[];
+    const unsigned int n = RISE_API_SceneEditController_NamedViewCount(_controller);
+    NSMutableArray<NSString *> *out = [NSMutableArray arrayWithCapacity:n];
+    for (unsigned int i = 0; i < n; ++i) {
+        char nm[256] = {0};
+        if (RISE_API_SceneEditController_NamedViewName(_controller, i, nm, sizeof(nm))) {
+            [out addObject:[NSString stringWithUTF8String:nm]];
+        }
+    }
+    return out;
+}
+
+- (BOOL)restoreNamedView:(NSInteger)idx {
+    if (!_controller || idx < 0) return NO;
+    return RISE_API_SceneEditController_RestoreNamedView(
+        _controller, static_cast<unsigned int>(idx)) ? YES : NO;
+}
+
+- (BOOL)updateNamedView:(NSInteger)idx {
+    if (!_controller || idx < 0) return NO;
+    return RISE_API_SceneEditController_UpdateNamedView(
+        _controller, static_cast<unsigned int>(idx)) ? YES : NO;
+}
+
+- (BOOL)deleteNamedView:(NSInteger)idx {
+    if (!_controller || idx < 0) return NO;
+    return RISE_API_SceneEditController_DeleteNamedView(
+        _controller, static_cast<unsigned int>(idx)) ? YES : NO;
+}
+
+- (NSString *)promoteNamedView:(NSInteger)idx name:(NSString *)proposedName {
+    if (!_controller || idx < 0) return nil;
+    char name[256] = {0};
+    const char* prop = proposedName ? [proposedName UTF8String] : "";
+    if (!RISE_API_SceneEditController_PromoteNamedViewToCamera(
+            _controller, static_cast<unsigned int>(idx), prop, name, sizeof(name))) {
+        return nil;
+    }
+    return [NSString stringWithUTF8String:name];
+}
+
 #pragma mark - Pointer events
 
 - (void)pointerDownX:(double)x y:(double)y {
