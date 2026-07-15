@@ -107,6 +107,11 @@ PROVIDER_PRICING = {
     "anthropic": {
         "cached_in_input": False,
         "_default": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
+        # NOTE: the generic "claude-opus" below is Opus-3-era pricing; current
+        # Opus (4.6/4.7/4.8) is $5/$25. The specific "claude-opus-4-8" key is
+        # longer and so wins the most-specific-match lookup for the 4.8 shootout
+        # runs, leaving the generic as a legacy fallback only.
+        "claude-opus-4-8": {"input": 5.00, "output": 25.00, "cached_input": 0.50},
         "claude-opus": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
         "claude-sonnet": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
         "claude-haiku": {"input": 0.80, "output": 4.00, "cached_input": 0.08},
