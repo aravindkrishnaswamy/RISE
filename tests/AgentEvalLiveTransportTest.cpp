@@ -1033,15 +1033,20 @@ static void TestRunEvalMatrix()
 }
 
 //----------------------------------------------------------------------
-// T7b: RunEvalMatrix emits <runDir>/run.manifest.json -- the per-run
-//      reproducibility manifest.  Proves the injected clock feeds
-//      createdUtcMs, the git/build/config/scenario/provider/result fields
-//      are all present and correctly shaped, and -- the key-hygiene
-//      red-prove -- the fake key never lands in the manifest text.
+// T7b: RunEvalMatrix emits <runDir>/run.manifest.jsonl -- the per-run
+//      reproducibility manifest, an APPEND-ONLY provenance log (one JSON
+//      record per line per RunEvalMatrix invocation into a runDir).
+//      Proves the injected clock feeds createdUtcMs, the
+//      git/build/config/scenario/provider/result fields are all present
+//      and correctly shaped in the LAST record, the key-hygiene red-prove
+//      (the fake key never lands in the manifest text), and -- the
+//      provenance regression proof -- that a SECOND invocation into the
+//      SAME runDir APPENDS a second record rather than overwriting the
+//      first.
 //----------------------------------------------------------------------
 static void TestRunEvalMatrixManifest()
 {
-	std::printf( "T7b: RunEvalMatrix emits run.manifest.json...\n" );
+	std::printf( "T7b: RunEvalMatrix emits run.manifest.jsonl...\n" );
 
 	AgentEvalScenario scenario;
 	std::string err;
@@ -1073,8 +1078,22 @@ static void TestRunEvalMatrixManifest()
 	AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
 	Check( mr.runsExecuted == 1, "manifest test: the one configured run executed" );
 
-	const std::string manifestPath = ( std::filesystem::path( cfg.runDir ) / "run.manifest.json" ).string();
-	Check( std::filesystem::exists( manifestPath ), "run.manifest.json exists under runDir" );
+	const std::string manifestPath = ( std::filesystem::path( cfg.runDir ) / "run.manifest.jsonl" ).string();
+	Check( std::filesystem::exists( manifestPath ), "run.manifest.jsonl exists under runDir" );
+
+	// Split into non-empty lines; each line is one appended provenance record.
+	auto readNonEmptyLines = [&]( const std::string& path ) -> std::vector<std::string> {
+		std::vector<std::string> lines;
+		std::ifstream f( path.c_str(), std::ios::binary );
+		std::string line;
+		while( std::getline( f, line ) ) {
+			if( !line.empty() ) lines.push_back( line );
+		}
+		return lines;
+	};
+
+	std::vector<std::string> lines1 = readNonEmptyLines( manifestPath );
+	Check( lines1.size() == 1, "run.manifest.jsonl has exactly 1 record after the first invocation" );
 
 	std::string manifestText;
 	{
@@ -1084,7 +1103,7 @@ static void TestRunEvalMatrixManifest()
 	}
 
 	JsonValue root; std::string perr;
-	Check( JsonParse( manifestText, root, perr ), "run.manifest.json parses as JSON: " + perr );
+	Check( JsonParse( lines1.back(), root, perr ), "run.manifest.jsonl last record parses as JSON: " + perr );
 
 	Check( root.get( "schemaVersion" ).asNumber( -1 ) == 1, "manifest schemaVersion == 1" );
 	Check( static_cast<int64_t>( root.get( "createdUtcMs" ).asNumber( -1 ) ) == 1234567890000,
@@ -1139,7 +1158,25 @@ static void TestRunEvalMatrixManifest()
 	Check( !AnyFileUnderContains( cfg.runDir, kFakeKey ),
 	       "manifest test: the fake key appears in NO output file under runDir" );
 	Check( manifestText.find( kFakeKey ) == std::string::npos,
-	       "run.manifest.json text does NOT contain the fake key" );
+	       "run.manifest.jsonl text does NOT contain the fake key" );
+
+	// Provenance regression proof: a SECOND invocation into the SAME runDir
+	// with the SAME config must APPEND a second record, not overwrite the
+	// first.  The resume guard will skip the already-complete run (its
+	// result.jsonl is non-empty from the first invocation), so this second
+	// call executes zero NEW runs but still appends its own manifest record.
+	AgentEvalMatrixResult mr2 = RunEvalMatrix( cfg, scenarios, mo );
+
+	std::vector<std::string> lines2 = readNonEmptyLines( manifestPath );
+	Check( lines2.size() == 2,
+	       "run.manifest.jsonl has exactly 2 records after a second invocation into the same runDir "
+	       "(the first record was preserved, not overwritten)" );
+
+	JsonValue root2; std::string perr2;
+	Check( JsonParse( lines2.back(), root2, perr2 ), "run.manifest.jsonl second record parses as JSON: " + perr2 );
+	Check( root2.get( "result" ).get( "runsAlreadyComplete" ).asNumber( -1 ) >= 1,
+	       "run.manifest.jsonl second record's result.runsAlreadyComplete >= 1 (the resume happened)" );
+	Check( mr2.runsAlreadyComplete >= 1, "second RunEvalMatrix invocation actually resumed (runsAlreadyComplete >= 1)" );
 }
 
 //----------------------------------------------------------------------

@@ -1200,8 +1200,9 @@ static void TestBudgetLlmCallsNotBypassedByRetry()
 // P1(a): CheckScenario's results ledger (<runDir>/results.jsonl) RECORDS
 // terminalStatus alongside checkpointFraction/allPassed -- a reviewer can
 // see that a run which passed every checkpoint nonetheless ended on a
-// non-clean status.  Recorded only -- pass/fail stays checkpoint-fraction
-// based, never gated on terminalStatus.
+// non-clean status.  This scenario reaches "final_text", so the P2
+// terminal-success gate (see TestTerminalSuccessGuard) never fires here;
+// pass/fail stays checkpoint-fraction based.
 //----------------------------------------------------------------------
 static void TestResultsLedgerRecordsTerminalStatus()
 {
@@ -1320,6 +1321,76 @@ static void TestLoadEvalScenarioStrictCheckpointFieldTypes()
 	}
 }
 
+//----------------------------------------------------------------------
+// P2: the terminal-success gate on CheckScenario's allPassed.  A run that
+// ended on a non-"final_text" terminal status is NOT a success regardless
+// of checkpoint state, UNLESS the scenario explicitly asserts that
+// terminalStatus via a "trajectory" checkpoint (an intentional
+// budget/refusal test).  All 16 current scenarios assert
+// terminalStatus:"final_text", so a passing run already ends final_text
+// and this gate never fires for them (T1 below is that control); it
+// guards a FUTURE scenario that omits the assertion from silently
+// scoring a budget/provider-killed run as a success (T2), while still
+// letting an intentional budget/refusal scenario opt in (T3).
+//----------------------------------------------------------------------
+static void TestTerminalSuccessGuard()
+{
+	std::printf( "P2: terminal-success gate on CheckScenario's allPassed...\n" );
+	const std::string dir = ScratchRunDir( "p2_terminal_gate" );
+
+	// A scenario with one checkpoint that passes on kScene (mirrors
+	// TestDocumentCheckpoint's chunk_exists control) and does NOT assert
+	// terminalStatus at all.
+	AgentEvalScenario s = MakeScenario( "guard_probe", kScene, "Recolor", "commit", kParamEditFixture, dir,
+		"[{\"kind\":\"document\",\"op\":\"chunk_exists\",\"name\":\"pnt_albedo\"}]" );
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( s, opts );
+	Check( h.result.terminalStatus == "final_text", "guard_probe run reached final_text" );
+
+	// T1 -- control: final_text + a passing checkpoint -> allPassed true,
+	// the gate stays silent (terminalGateNote empty).
+	{
+		AgentEvalCheckResult r = CheckScenario( h, s );
+		Check( !r.checkpoints.empty() && r.checkpoints[0].passed, "control: precondition -- the checkpoint itself passes" );
+		Check( r.allPassed, "control: final_text run with passing checkpoint -> allPassed true" );
+		Check( r.terminalGateNote.empty(), "control: terminalGateNote empty when the gate doesn't fire" );
+	}
+
+	// T2 -- guard fires: overwrite the handle's terminal status to a
+	// non-success status the scenario never asserts.  The checkpoint set
+	// is unchanged (still passes on its own), so this isolates the gate:
+	// allPassed must flip to false and terminalGateNote must explain why.
+	h.result.terminalStatus = "budget_tool_calls";
+	{
+		AgentEvalCheckResult r = CheckScenario( h, s );
+		Check( !r.checkpoints.empty() && r.checkpoints[0].passed,
+			"guard fires: precondition -- the checkpoint itself still passes" );
+		Check( !r.allPassed, "guard fires: budget_tool_calls with no asserting checkpoint -> allPassed false" );
+		Check( !r.terminalGateNote.empty(), "guard fires: terminalGateNote is non-empty" );
+		Check( r.terminalGateNote.find( "budget_tool_calls" ) != std::string::npos,
+			"guard fires: terminalGateNote names the actual terminal status (got: " + r.terminalGateNote + ")" );
+	}
+
+	// T3 -- opt-in: the SAME budget_tool_calls handle, but the scenario's
+	// checkpoints now include a "trajectory" checkpoint asserting
+	// terminalStatus == "budget_tool_calls" -- the scenario intentionally
+	// expects that terminal, so the gate must NOT fire.  That trajectory
+	// checkpoint itself must PASS (it matches the handle's actual status).
+	{
+		AgentEvalScenario sOptIn = MakeScenario( "guard_optin", kScene, "Recolor", "commit", kParamEditFixture, dir,
+			"[{\"kind\":\"document\",\"op\":\"chunk_exists\",\"name\":\"pnt_albedo\"},"
+			"{\"kind\":\"trajectory\",\"terminalStatus\":\"budget_tool_calls\"}]" );
+		AgentEvalCheckResult r = CheckScenario( h, sOptIn );
+		Check( r.checkpoints.size() == 2, "opt-in: two checkpoint results" );
+		if( r.checkpoints.size() == 2 ) {
+			Check( r.checkpoints[0].passed, "opt-in: the document checkpoint still passes" );
+			Check( r.checkpoints[1].passed, "opt-in: the trajectory terminalStatus checkpoint matches and passes" );
+		}
+		Check( r.allPassed, "opt-in: scenario asserting terminalStatus:\"budget_tool_calls\" -> gate does not fire, allPassed true" );
+		Check( r.terminalGateNote.empty(), "opt-in: terminalGateNote empty when the gate doesn't fire" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalCheckTest (Eval-harness slice E3: the checker engine) ===\n" );
@@ -1339,6 +1410,7 @@ int main()
 	TestBudgetLlmCallsNotBypassedByRetry();
 	TestResultsLedgerRecordsTerminalStatus();
 	TestLoadEvalScenarioStrictCheckpointFieldTypes();
+	TestTerminalSuccessGuard();
 
 	std::printf( "=== AgentEvalCheckTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

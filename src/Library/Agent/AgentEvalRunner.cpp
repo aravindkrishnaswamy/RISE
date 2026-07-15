@@ -1518,22 +1518,31 @@ namespace RISE
 				}
 			}
 
-			//! Emit the per-run reproducibility MANIFEST: one file,
-			//! <config.runDir>/run.manifest.json, capturing enough of the
-			//! run's conditions -- git commit, RISE build, the config that
-			//! was fed in, the resolved scenario/provider set, and the run
-			//! outcome counts -- that a committed run directory can be
-			//! traced back to "what code, what config, what commit produced
-			//! this."  It fires once the matrix reaches this point (i.e. past
-			//! the fatal pre-flight refusals -- no transport, no envLookup, a
-			//! duplicate scenario id -- which return early ABOVE and leave no
-			//! manifest), covering every run OUTCOME from here: it is emitted
-			//! even when every provider column was key-skipped or every run was
-			//! already-complete, so the manifest still records what WAS
-			//! configured and why nothing ran.  OVERWRITE semantics: it
-			//! TRUNCATES any manifest already on disk from a prior invocation
-			//! into the same runDir -- it always reflects the MOST RECENT
-			//! invocation, not an append log.
+			//! Emit the per-run reproducibility MANIFEST: an APPEND-ONLY
+			//! provenance LOG at <config.runDir>/run.manifest.jsonl, one JSON
+			//! object per line, appended once per RunEvalMatrix invocation
+			//! into this runDir.  Each record captures enough of the run's
+			//! conditions -- git commit, RISE build, the config that was fed
+			//! in, the resolved scenario/provider set, and the run outcome
+			//! counts -- that a committed run directory can be traced back to
+			//! "what code, what config, what commit produced this."  It fires
+			//! once the matrix reaches this point (i.e. past the fatal
+			//! pre-flight refusals -- no transport, no envLookup, a duplicate
+			//! scenario id -- which return early ABOVE and leave no manifest
+			//! record), covering every run OUTCOME from here: a record is
+			//! appended even when every provider column was key-skipped or
+			//! every run was already-complete, so the log still records what
+			//! WAS configured and why nothing ran.  APPEND semantics: the LAST
+			//! line is the most-recent invocation; the full file is the
+			//! provenance CHAIN across incremental/selective re-invocations
+			//! into the same runDir (resume-to-add-a-provider, a targeted
+			//! re-measurement) -- a selective run no longer erases the
+			//! full-matrix record.  The usage model is SERIAL (one matrix
+			//! invocation at a time, matching the resume guard's design); the
+			//! append is a single unlocked write per invocation, so two TRULY
+			//! concurrent matrices into one runDir could interleave records --
+			//! out of scope, and still strictly safer than the prior
+			//! truncate-overwrite it replaced.
 			if( !config.runDir.empty() ) {
 				const GitRevision git = CaptureGitRevision();
 
@@ -1602,13 +1611,13 @@ namespace RISE
 
 				std::error_code ec;
 				std::filesystem::create_directories( config.runDir, ec );
-				const std::string manifestPath = ( std::filesystem::path( config.runDir ) / "run.manifest.json" ).string();
-				std::ofstream f( manifestPath.c_str(), std::ios::binary | std::ios::trunc );
+				const std::string manifestPath = ( std::filesystem::path( config.runDir ) / "run.manifest.jsonl" ).string();
+				std::ofstream f( manifestPath.c_str(), std::ios::binary | std::ios::app );
 				if( f ) { f << JsonSerialize( root ) << "\n"; }
 				// Best-effort artifact: a write failure (permissions, disk full,
 				// runDir colliding with a non-directory) never fails the matrix,
-				// but log it so the missing manifest isn't a silent mystery.
-				else    { logLine( "RunEvalMatrix: WARNING -- could not write run manifest to " + manifestPath ); }
+				// but log it so the missing manifest record isn't a silent mystery.
+				else    { logLine( "RunEvalMatrix: WARNING -- could not append run manifest record to " + manifestPath ); }
 			}
 
 			return result;
@@ -2551,6 +2560,33 @@ namespace RISE
 				result.allPassed = true;
 				for( const auto& c : result.checkpoints ) if( !c.passed ) { result.allPassed = false; break; }
 
+				// Terminal-success precondition: a run that ended on a non-success terminal
+				// status (a budget stop, provider/transport error, load error, replay
+				// exhaustion -- anything but "final_text") is NOT a success regardless of
+				// checkpoint state, UNLESS the scenario explicitly expects that status (a
+				// trajectory checkpoint asserting terminalStatus == the actual status -- an
+				// intentional budget/refusal test). Every current scenario asserts
+				// terminalStatus:"final_text", so a passing run already ends final_text and
+				// this changes nothing for them; it guards a FUTURE scenario that omits the
+				// assertion from silently scoring a budget/provider-killed run as a success.
+				const std::string ts = handle.result.terminalStatus;
+				if( result.allPassed && ts != "final_text" ) {
+					bool expected = false;
+					if( scenario.checkpoints.isArray() ) {
+						for( std::size_t i = 0; i < scenario.checkpoints.size(); ++i ) {
+							const JsonValue& cp = scenario.checkpoints.at( i );
+							if( !cp.isObject() ) continue;
+							if( !cp.has( "kind" ) || !cp.get( "kind" ).isString() || cp.get( "kind" ).asString() != "trajectory" ) continue;
+							if( !cp.has( "terminalStatus" ) || !cp.get( "terminalStatus" ).isString() ) continue;
+							if( cp.get( "terminalStatus" ).asString() == ts ) { expected = true; break; }
+						}
+					}
+					if( !expected ) {
+						result.allPassed = false;
+						result.terminalGateNote = "run ended on non-success terminal status '" + ts + "' with no checkpoint asserting it -- scored as failure";
+					}
+				}
+
 				// Write the results ledger alongside the trajectory.  runDir is
 				// recovered from trajectoryPath (or, failing that, resultPath)
 				// rather than taken as a parameter -- CheckScenario's signature
@@ -2566,12 +2602,14 @@ namespace RISE
 					root.set( "scenarioId", JsonValue::MakeString( result.scenarioId ) );
 					root.set( "checkpointFraction", JsonValue::MakeNumber( result.checkpointFraction ) );
 					root.set( "allPassed", JsonValue::MakeBool( result.allPassed ) );
-					// RECORDED, not gated: pass/fail stays checkpoint-fraction-based
-					// (final-scene-state) -- terminalStatus just lets a reviewer see
-					// that a run which passed every checkpoint nonetheless ended on
-					// a non-clean status (e.g. a budget stop that still landed the
-					// edit).  handle.result is the same summary line RunScenario/
-					// RunScenarioLive already wrote to <id>.result.jsonl.
+					if( !result.terminalGateNote.empty() ) root.set( "terminalGateNote", JsonValue::MakeString( result.terminalGateNote ) );
+					// RECORDED either way: terminalStatus lets a reviewer see what the
+					// run actually ended on.  Pass/fail stays checkpoint-fraction-based
+					// (final-scene-state) UNLESS the terminal-success gate above forced
+					// allPassed=false for a non-"final_text" status the scenario never
+					// asserted -- in that case terminalGateNote (set above) explains why.
+					// handle.result is the same summary line RunScenario/RunScenarioLive
+					// already wrote to <id>.result.jsonl.
 					root.set( "terminalStatus", JsonValue::MakeString( handle.result.terminalStatus ) );
 					JsonValue arr = JsonValue::MakeArray();
 					for( const auto& c : result.checkpoints ) {

@@ -546,13 +546,20 @@ namespace RISE
 		//! checkpoints at all.  `allPassed` is true iff every checkpoint
 		//! passed (equivalently: no failed entries in `checkpoints`,
 		//! independent of weight -- a single failed checkpoint, however
-		//! small its weight, means NOT allPassed).
+		//! small its weight, means NOT allPassed) AND the run met the
+		//! terminal-success precondition: a run that ended on a non-success
+		//! terminal status (anything but "final_text") is forced to
+		//! allPassed=false unless a trajectory checkpoint explicitly asserts
+		//! that status -- so `allPassed` can be false with every checkpoint
+		//! passing (and `checkpointFraction` still 1.0); `terminalGateNote`
+		//! is then non-empty and explains the override.
 		struct AgentEvalCheckResult
 		{
 			std::string scenarioId;
 			std::vector<AgentEvalCheckpointResult> checkpoints;
 			double checkpointFraction = 1.0;
 			bool   allPassed = true;
+			std::string terminalGateNote;   //!< non-empty iff the terminal-success gate forced allPassed=false
 		};
 
 		//! Interpret and run `scenario.checkpoints` (see the file header's
@@ -570,7 +577,8 @@ namespace RISE
 		//! crashes on a malformed checkpoint or a null/incomplete handle
 		//! (e.g. a "load_error" run with a null dispatcher).  As a side
 		//! effect, appends one JSON line (scenarioId, checkpointFraction,
-		//! allPassed, checkpoints[]) to <runDir>/results.jsonl, where
+		//! allPassed, terminalStatus, checkpoints[], and terminalGateNote
+		//! when the terminal gate fired) to <runDir>/results.jsonl, where
 		//! runDir is recovered from handle.trajectoryPath's (or, failing
 		//! that, handle.resultPath's) parent directory -- a no-op when
 		//! neither path is available (nothing was ever written for this
