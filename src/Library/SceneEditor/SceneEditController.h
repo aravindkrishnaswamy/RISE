@@ -2935,6 +2935,25 @@ namespace RISE
 		//! and again when the occupant releases the slot, preventing a cancel
 		//! for one job from leaking into its successor.
 		std::atomic<bool>           mAgentRenderCancelRequested;
+		//! Lock-free "a production/agent render owns the scene" flag: true while
+		//! the render CLOSURE runs under the mMutex render-hold.  Set by a RAII
+		//! scope around BOTH fn() sites -- the async AgentRenderWorkerLoop_ and the
+		//! sync RunPreviewRenderParked (RenderClass::AgentPreview; despite the name
+		//! it runs an AGENT render, not a brief interactive preview).  UI-callable
+		//! mMutex methods check this FIRST and early-return a no-op (mutators) /
+		//! default (getters) WITHOUT taking mMutex, so a main-thread call during a
+		//! render no-ops instead of blocking.  It SHRINKS the wedge window from the
+		//! whole render duration to the render-SETUP interval only: the flag is set
+		//! just AFTER mMutex is acquired, so the park+jobId-mint prologue runs under
+		//! mMutex with the flag still false -- a UI call landing in that ~microsecond
+		//! window still wedges once, then self-heals (the next call sees the flag).
+		//! Scoped to fn() (not the whole mMutex hold) on purpose: CancelAndParkRender_
+		//! RELEASES mMutex in its mCV.wait, so a wider scope would false-no-op edits
+		//! while mMutex is momentarily free.  NOT set for the interactive RenderLoop
+		//! (brief per-pass mMutex holds) nor the no-mMutex UI-thread RasterizeScene
+		//! path.  Render-lifecycle methods (Stop*, WaitForRenderJob, worker/loop) are
+		//! deliberately NOT guarded.
+		std::atomic<bool>           mRenderOwnsScene;
 		// Fix-round-1 P3-c: mAgentRenderClass / mAgentRenderClientLabel
 		// (a second, slot-scoped copy of this bookkeeping) were DELETED --
 		// both were write-only dead state (set on every submit, never read

@@ -247,6 +247,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mAgentRenderPending( false )
 , mAgentRenderFn()
 , mAgentRenderCancelRequested( false )
+, mRenderOwnsScene( false )
 , mAgentRenderJobId( kInvalidRenderJobId )
 , mAgentRenderPinned( false )
 , mAgentRenderException()
@@ -1565,6 +1566,7 @@ void SceneEditController::OnPointerDown( const Point2& px )
 
 void SceneEditController::OnPointerMove( const Point2& px )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
 	if( !mPointerDown.load( std::memory_order_acquire ) ) return;
 
 	// Resume-after-pause snap.  If the pointer has been still long
@@ -1900,6 +1902,7 @@ void SceneEditController::OnPointerMove( const Point2& px )
 
 void SceneEditController::OnPointerUp( const Point2& px )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
 	(void)px;
 	if( !mPointerDown.load( std::memory_order_acquire ) ) return;
 	mPointerDown.store( false, std::memory_order_release );
@@ -1986,6 +1989,7 @@ void SceneEditController::OnTimeScrubBegin()
 
 void SceneEditController::OnTimeScrub( Scalar t )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
 	// Time-scrub mutations cascade through the animator's observer
 	// chain — a keyframed DisplacedGeometry, for example, destroys
 	// its TriangleMeshGeometryIndexed (and the BSP tree inside) and
@@ -2175,6 +2179,7 @@ void SceneEditController::DropStaleSelection_()
 
 void SceneEditController::Undo()
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
 	// Latent-guard (re-review): refuse user Undo while a transaction is open --
 	// undoing PAST the baseline would break RollbackTransaction's revert
 	// guarantee (and ClearRedo would then drop a pre-baseline edit).  The
@@ -2245,6 +2250,7 @@ void SceneEditController::Undo()
 
 void SceneEditController::Redo()
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
 	if( mTxnOpen ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Redo refused: a transaction is open." );
 		return;
@@ -2995,6 +3001,7 @@ void SceneEditController::CollapseSection( Category cat )
 
 bool SceneEditController::SetSelection( Category cat, const String& entityName )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	// Category::None: clear every per-category selection + the
 	// expanded flags AND the primary tuple.  No side effect on
 	// the scene.  The panel's "collapse this section without
@@ -3954,12 +3961,14 @@ std::uint64_t SceneEditController::StageProposal( const AgentProposal& proposal,
 
 std::vector<SceneEditController::AgentProposal> SceneEditController::ListProposals() const
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return {};  // render-owns-scene guard
 	std::lock_guard<std::mutex> lk( mMutex );
 	return mProposals;   // copy out under the lock -- the caller's snapshot is stable
 }
 
 bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, AgentCommitResult* outResult )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	// The whole resolve -- find, re-check, and (on approve) apply -- runs
 	// under ONE mMutex hold, so there is no window between "the base
 	// version matched" and "the apply actually ran" for a concurrent commit
@@ -4122,6 +4131,26 @@ bool SceneEditController::RunPreviewRenderParked( const std::function<void()>& f
 // whose destructor flips `active` false on EVERY exit -- normal return OR
 // exception unwind -- runs under the lock already held here, so no new
 // locking in the destructor.
+namespace {
+// RAII scope that marks "a production/agent render owns the scene" for the
+// duration of the render closure running under the mMutex render-hold.  Set
+// around BOTH fn() sites (RunPreviewRenderParked sync-inline + the async
+// AgentRenderWorkerLoop_).  A UI-callable mMutex method checks the same flag
+// FIRST and no-ops/returns default instead of blocking on mMutex.  bool (not a
+// counter) is correct: fn() is job->Rasterize(), which never re-enters either
+// render path, so these two scopes never nest.
+struct RenderOwnershipScope {
+	explicit RenderOwnershipScope( std::atomic<bool>& f ) : mFlag( f ) {
+		mFlag.store( true, std::memory_order_release );
+	}
+	~RenderOwnershipScope() { mFlag.store( false, std::memory_order_release ); }
+	RenderOwnershipScope( const RenderOwnershipScope& ) = delete;
+	RenderOwnershipScope& operator=( const RenderOwnershipScope& ) = delete;
+private:
+	std::atomic<bool>& mFlag;
+};
+}  // namespace
+
 bool SceneEditController::RunPreviewRenderParked(
 	const std::function<void()>& fn,
 	RenderClass                  renderClass,
@@ -4189,7 +4218,10 @@ bool SceneEditController::RunPreviewRenderParked(
 		}
 	} activeFlipGuard{ *this, jobId };
 
-	if( fn ) fn();
+	{
+		RenderOwnershipScope ownScope_( mRenderOwnsScene );
+		if( fn ) fn();
+	}
 
 	// Unlock (end of scope) resumes the render loop's normal wait/cycle --
 	// no kick needed: we made no Document/scene edit, so the interactive
@@ -4332,6 +4364,7 @@ void SceneEditController::AgentRenderWorkerLoop_()
 			} activeFlipGuard{ *this, thisOccupantJobId };
 
 			try {
+				RenderOwnershipScope ownScope_( mRenderOwnsScene );
 				if( fn ) fn();
 			}
 			catch( ... ) {
@@ -5304,6 +5337,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 
 void SceneEditController::KickRender()
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
 	// Stamp the edit time first so the render loop sees a fresh
 	// value when it wakes — the refinement-vs-edit branch in
 	// RenderLoop reads mLastEditTimeMs only after seeing
@@ -5352,6 +5386,11 @@ void SceneEditController::KickRender()
 // ClearDirtyState() on success.
 SaveResult SceneEditController::RequestSave( const std::string& filePath )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {  // render-owns-scene guard
+		SaveResult roR; roR.status = SaveResult::Status::Refused;
+		roR.filePath = filePath; roR.errorMessage = "save refused: a render is in progress";
+		return roR;
+	}
 	// ---- Step 1: park render thread + mark save in flight -----------
 	// Editor live-sync follow-up: remember whether we CANCELLED an
 	// in-flight pass to get here — that pass's frame is left partially
@@ -5420,6 +5459,7 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 
 String SceneEditController::SerializedSceneText() const
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return String();  // render-owns-scene guard
 	std::lock_guard<std::mutex> lk( mMutex );
 	if( !mJob.HasRetainedCstDocument() ) return String();
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
@@ -5431,6 +5471,7 @@ String SceneEditController::SerializedSceneText() const
 void SceneEditController::GetSceneTextVersion( std::uint64_t& outUuid,
                                                std::uint64_t& outRevision ) const
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
 	std::lock_guard<std::mutex> lk( mMutex );
 	const RISE::Cst::CstHeadVersion v = mJob.GetCstHeadVersion();
 	outUuid     = v.uuid;
@@ -5579,6 +5620,7 @@ void LineColOfOffset( const std::string& full, size_t off, unsigned int& outLine
 bool SceneEditController::EntitySourceLocation( Category cat, const String& name,
                                                  std::uint64_t& outByteOffset, std::uint32_t& outLine ) const
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	std::lock_guard<std::mutex> lk( mMutex );
 	if( !mJob.HasRetainedCstDocument() ) return false;
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
@@ -5615,6 +5657,7 @@ bool SceneEditController::EntitySourceLocation( Category cat, const String& name
 bool SceneEditController::ResolveSourceSpan( Category cat, const String& name, const String& param,
                                              int occ, SourceSpan& out ) const
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	out = SourceSpan();
 
 	std::lock_guard<std::mutex> lk( mMutex );
@@ -5660,6 +5703,7 @@ bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category&
                                                  String& outName, String& outParam,
                                                  int* outOccurrence ) const
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	outCat   = Category::None;
 	outName  = String();
 	outParam = String();
@@ -5783,6 +5827,7 @@ bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category&
 
 std::string SceneEditController::LastSaveError() const
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return std::string();  // render-owns-scene guard
 	// Snapshot under the lock for the diagnostic-logger thread-safety
 	// concern (P2.2 review fix): a reader holding the result by
 	// reference across a subsequent RequestSave would see a torn
@@ -6644,6 +6689,7 @@ String UniqueCameraName( const String& proposed, const ICameraManager& cams )
 bool SceneEditController::CloneActiveCamera(
 	const String& proposedName, char* outName, unsigned int outLen )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	if( !outName || outLen == 0 ) return false;
 	outName[0] = '\0';
 
@@ -6726,6 +6772,7 @@ bool SceneEditController::CloneActiveCamera(
 bool SceneEditController::StampViewToNewCamera(
 	const String& proposedName, char* outName, unsigned int outLen )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	if( !outName || outLen == 0 ) return false;
 	outName[0] = '\0';
 
@@ -6791,6 +6838,7 @@ bool SceneEditController::StampViewToNewCamera(
 
 bool SceneEditController::EnterFreeFlyFromActiveCamera()
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	// Capture the active camera's full pose+optics, then set it as the transient
 	// pose (SetViewportPose realizes the override).  The capture is done under the
 	// same cancel-and-park CloneActiveCamera uses (the snapshot fields tear under a
@@ -6819,6 +6867,7 @@ bool SceneEditController::EnterFreeFlyFromActiveCamera()
 
 bool SceneEditController::SetViewportPose( const CameraSnapshot& pose )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	std::unique_lock<std::mutex> lk( mMutex );
 	const IScene* scene = mJob.GetScene();
 	if( !scene ) return false;
@@ -6852,6 +6901,7 @@ bool SceneEditController::SetViewportPose( const CameraSnapshot& pose )
 
 bool SceneEditController::ExitFreeFly()
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	std::unique_lock<std::mutex> lk( mMutex );
 	if( !mViewportPoseActive ) return false;
 
@@ -6876,12 +6926,14 @@ bool SceneEditController::ExitFreeFly()
 
 bool SceneEditController::IsFreeFlyActive() const
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	std::lock_guard<std::mutex> lk( mMutex );
 	return mViewportPoseActive;
 }
 
 bool SceneEditController::GetViewportPose( CameraSnapshot& out ) const
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	std::lock_guard<std::mutex> lk( mMutex );
 	if( !mViewportPoseActive ) return false;
 	out = mViewportPose;
@@ -6931,6 +6983,7 @@ bool SceneEditController::SnapViewToAxis( int axis, bool negative )
 
 bool SceneEditController::SetHomeView()
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	CameraSnapshot cur;
 	if( IsFreeFlyActive() ) {
 		if( !GetViewportPose( cur ) ) return false;
@@ -6956,6 +7009,7 @@ bool SceneEditController::SetHomeView()
 
 bool SceneEditController::GoToHomeView()
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	CameraSnapshot home;
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
@@ -6967,6 +7021,7 @@ bool SceneEditController::GoToHomeView()
 
 bool SceneEditController::HasHomeView() const
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	std::lock_guard<std::mutex> lk( mMutex );
 	return mHasHomeView;
 }
@@ -6980,6 +7035,7 @@ bool SceneEditController::HasHomeView() const
 
 bool SceneEditController::CaptureCurrentView( CameraSnapshot& out )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	// Free-fly active: the transient pose IS the current view (GetViewportPose
 	// locks internally).  Otherwise capture the active scene camera under the
 	// cancel-and-park (its fields tear under a concurrent orbit-drag write —
@@ -7059,6 +7115,7 @@ bool SceneEditController::DeleteNamedView( unsigned int idx )
 bool SceneEditController::PromoteNamedViewToCamera(
 	unsigned int idx, const String& proposedName, char* outName, unsigned int outLen )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	if( !outName || outLen == 0 ) return false;
 	outName[0] = '\0';
 	if( idx >= mNamedViews.size() ) return false;
@@ -7259,6 +7316,11 @@ String SceneEditController::EntityTemplateLabel( Category cat, unsigned int idx 
 SceneEditController::AgentCommitResult SceneEditController::InstantiateEntityTemplate(
 	Category cat, unsigned int idx, String* outName )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {  // render-owns-scene guard
+		AgentCommitResult roR; roR.applied = false; roR.rawCode = 0;
+		roR.status = String( "rejected" ); roR.message = String( "scene is render-locked" );
+		return roR;
+	}
 	if( outName ) *outName = String();
 
 	const EntityTemplateDef* tpl = EntityTemplates::At( cat, idx );
@@ -7402,6 +7464,11 @@ SceneEditController::AgentCommitResult SceneEditController::InstantiateEntityTem
 SceneEditController::AgentCommitResult SceneEditController::DuplicateEntity(
 	Category cat, const String& name, String* outName )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {  // render-owns-scene guard
+		AgentCommitResult roR; roR.applied = false; roR.rawCode = 0;
+		roR.status = String( "rejected" ); roR.message = String( "scene is render-locked" );
+		return roR;
+	}
 	if( outName ) *outName = String();
 	AgentCommitResult r;
 
@@ -7465,6 +7532,11 @@ SceneEditController::AgentCommitResult SceneEditController::DuplicateEntity(
 
 SceneEditController::AgentCommitResult SceneEditController::RemoveEntity( Category cat, const String& name )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {  // render-owns-scene guard
+		AgentCommitResult roR; roR.applied = false; roR.rawCode = 0;
+		roR.status = String( "rejected" ); roR.message = String( "scene is render-locked" );
+		return roR;
+	}
 	std::string suffix; bool uniqueFallback = false;
 	if( !RoleKindSuffixForCategory( cat, suffix, uniqueFallback ) )
 	{
@@ -7523,6 +7595,7 @@ inline bool RasterizerSupportsRadianceMapEdit( const std::string& kind )
 
 bool SceneEditController::GetEnvironment( EnvironmentInfo& out ) const
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	out = EnvironmentInfo();
 
 	std::lock_guard<std::mutex> lk( mMutex );
@@ -7575,6 +7648,7 @@ bool SceneEditController::GetEnvironment( EnvironmentInfo& out ) const
 bool SceneEditController::SetEnvironmentRadianceParam_( const char* paramName, const std::string& value,
 	bool* outPersisted )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	if( outPersisted ) *outPersisted = false;
 
 	if( mTxnOpen ) {
@@ -7632,6 +7706,7 @@ bool SceneEditController::SetEnvironmentOrient( double xDeg, double yDeg, double
 
 bool SceneEditController::SetEnvironmentFile( const String& absPath )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	// Resolve the currently-bound painter, then edit its `file` via the Painter
 	// CST-param path (a full re-derive that reloads the texture -> live + persists).
 	std::string painterName;
@@ -7650,6 +7725,11 @@ bool SceneEditController::SetEnvironmentFile( const String& absPath )
 
 SceneEditController::AgentCommitResult SceneEditController::AddEnvironment( const String& hdriPath, String* outPainterName )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {  // render-owns-scene guard
+		AgentCommitResult roR; roR.applied = false; roR.rawCode = 0;
+		roR.status = String( "rejected" ); roR.message = String( "scene is render-locked" );
+		return roR;
+	}
 	AgentCommitResult rej;
 	rej.applied = false;
 	rej.rawCode = 0;
@@ -7763,6 +7843,7 @@ SceneEditController::AgentCommitResult SceneEditController::AddEnvironment( cons
 
 bool SceneEditController::RemoveEnvironment()
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	// Precheck: only unbind when a radiance_map is ACTUALLY bound.  This matters
 	// for correctness, not just cosmetics: the live-map clear below must NOT fire
 	// when nothing was bound, because the global map might then belong to a
@@ -7821,6 +7902,7 @@ bool SceneEditController::SetPropertyForCategory( Category cat, const String& na
 
 bool SceneEditController::SetProperty( const String& name, const String& valueStr )
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	switch( mSelectionCategory ) {
 
 	case Category::Camera: {
