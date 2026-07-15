@@ -483,6 +483,17 @@ namespace RISE
 				return true;
 			}
 
+			//! "finalText" (mirrors CheckFinalTextKind):
+			//! {containsAll?/containsAny?/absent?:string array, caseSensitive?:bool}.
+			bool ValidateFinalTextCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
+			{
+				if( !RequireArrayOfType( cp, "containsAll", JsonValue::Type::String, scenarioId, idx, "containsAll", err ) ) return false;
+				if( !RequireArrayOfType( cp, "containsAny", JsonValue::Type::String, scenarioId, idx, "containsAny", err ) ) return false;
+				if( !RequireArrayOfType( cp, "absent", JsonValue::Type::String, scenarioId, idx, "absent", err ) ) return false;
+				if( !RequireFieldType( cp, "caseSensitive", JsonValue::Type::Bool, scenarioId, idx, "caseSensitive", err ) ) return false;
+				return true;
+			}
+
 			//! Dispatch by "kind" (only when present AND a string -- a
 			//! missing/wrong-typed "kind" is caught elsewhere, at
 			//! CheckOneCheckpoint's RUNTIME dispatch, as a malformed/failed
@@ -501,6 +512,7 @@ namespace RISE
 				if( kind == "objectmap" )   return ValidateObjectmapCheckpointTypes( cp, idx, scenarioId, err );
 				if( kind == "diagnostics" ) return ValidateDiagnosticsCheckpointTypes( cp, idx, scenarioId, err );
 				if( kind == "trajectory" )  return ValidateTrajectoryCheckpointTypes( cp, idx, scenarioId, err );
+				if( kind == "finalText" )   return ValidateFinalTextCheckpointTypes( cp, idx, scenarioId, err );
 				return true;
 			}
 		}
@@ -2385,6 +2397,95 @@ namespace RISE
 					return { true, "trajectory assertion(s) satisfied" };
 				}
 
+				//! "finalText": {containsAll?/containsAny?/absent?:string array,
+				//! caseSensitive?:bool} -- asserts on handle.result.finalText
+				//! (the last FinalText turn's text) so refusal/clarification
+				//! scenarios can check the ask-back message actually surfaces
+				//! the right content, not just structural state.  At least one
+				//! of containsAll/containsAny/absent must be present -- a
+				//! checkpoint with none of the three is a FAILED checkpoint
+				//! (loud), never a silent vacuous pass.
+				CheckOutcome CheckFinalTextKind( const JsonValue& cp, const AgentEvalRunHandle& handle )
+				{
+					const bool caseSensitive = cp.has( "caseSensitive" ) && cp.get( "caseSensitive" ).isBool() && cp.get( "caseSensitive" ).asBool();
+
+					auto toLowerAscii = []( std::string s ) {
+						for( char& c : s ) c = static_cast<char>( std::tolower( static_cast<unsigned char>( c ) ) );
+						return s;
+					};
+
+					const std::string haystack = caseSensitive ? handle.result.finalText : toLowerAscii( handle.result.finalText );
+
+					auto contains = [&]( const std::string& needle ) {
+						const std::string n = caseSensitive ? needle : toLowerAscii( needle );
+						return haystack.find( n ) != std::string::npos;
+					};
+
+					auto truncate = []( const std::string& s ) {
+						return s.size() > 60 ? s.substr( 0, 60 ) + "..." : s;
+					};
+
+					// A "needle" is a non-empty STRING array entry -- empty ("")
+					// and non-string entries assert nothing (an empty needle would
+					// spuriously always-match on contains / always-trip on absent),
+					// so they are skipped everywhere below.  The load-time validator
+					// already rejects non-string entries; this is belt-and-suspenders
+					// for a hand-built scenario (as the unit tests use).
+					auto meaningfulNeedles = [&]( const char* key ) -> std::size_t {
+						if( !cp.has( key ) || !cp.get( key ).isArray() ) return 0;
+						const JsonValue& a = cp.get( key );
+						std::size_t n = 0;
+						for( std::size_t i = 0; i < a.size(); ++i )
+							if( a.at( i ).isString() && !a.at( i ).asString().empty() ) ++n;
+						return n;
+					};
+
+					// LOUD, never a silent vacuous pass: a finalText checkpoint must
+					// carry at least ONE meaningful needle across the three arrays.
+					// This catches both the all-keys-absent case AND the
+					// present-but-empty case (containsAll:[] or containsAll:[""]).
+					if( meaningfulNeedles( "containsAll" ) + meaningfulNeedles( "containsAny" ) + meaningfulNeedles( "absent" ) == 0 )
+						return { false, "finalText checkpoint has no assertion "
+							"(needs a non-empty containsAll, containsAny, or absent string)" };
+
+					if( cp.has( "containsAll" ) && cp.get( "containsAll" ).isArray() ) {
+						const JsonValue& arr = cp.get( "containsAll" );
+						for( std::size_t i = 0; i < arr.size(); ++i ) {
+							if( !arr.at( i ).isString() ) continue;
+							const std::string needle = arr.at( i ).asString();
+							if( needle.empty() ) continue;
+							if( !contains( needle ) )
+								return { false, "finalText: containsAll failed -- missing \"" + truncate( needle ) + "\"" };
+						}
+					}
+					if( cp.has( "containsAny" ) && cp.get( "containsAny" ).isArray() ) {
+						const JsonValue& arr = cp.get( "containsAny" );
+						bool sawNeedle = false, any = false;
+						for( std::size_t i = 0; i < arr.size(); ++i ) {
+							if( !arr.at( i ).isString() ) continue;
+							const std::string needle = arr.at( i ).asString();
+							if( needle.empty() ) continue;
+							sawNeedle = true;
+							if( contains( needle ) ) { any = true; break; }
+						}
+						// Only enforce when this array actually carried needles -- an
+						// empty containsAny alongside a real containsAll asserts nothing.
+						if( sawNeedle && !any )
+							return { false, "finalText: containsAny failed -- none of the candidates were found" };
+					}
+					if( cp.has( "absent" ) && cp.get( "absent" ).isArray() ) {
+						const JsonValue& arr = cp.get( "absent" );
+						for( std::size_t i = 0; i < arr.size(); ++i ) {
+							if( !arr.at( i ).isString() ) continue;
+							const std::string needle = arr.at( i ).asString();
+							if( needle.empty() ) continue;
+							if( contains( needle ) )
+								return { false, "finalText: absent failed -- found forbidden \"" + truncate( needle ) + "\"" };
+						}
+					}
+					return { true, "finalText assertion(s) satisfied" };
+				}
+
 				//! Dispatch one checkpoint object by its "kind".  An
 				//! unrecognized kind is a FAILED checkpoint (loud), never a
 				//! silent skip -- see CheckScenario's doc.
@@ -2401,6 +2502,7 @@ namespace RISE
 					if( kind == "objectmap" )   return CheckObjectmapKind( cp, session );
 					if( kind == "diagnostics" ) return CheckDiagnosticsKind( cp, session );
 					if( kind == "trajectory" )  return CheckTrajectoryKind( cp, handle );
+					if( kind == "finalText" )   return CheckFinalTextKind( cp, handle );
 
 					return { false, "unknown checkpoint kind '" + kind + "'" };
 				}

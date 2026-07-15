@@ -267,6 +267,7 @@ an explanatory `detail` — never a silent skip.
 | `trajectory` | `noAutonomyRefusal?:true` | no dispatched tool call's JSON-RPC response carried error code `-32011` (an autonomy refusal) |
 | `trajectory` | `requiredToolInOrder:[names...]` | the trajectory's `tool` records contain these names as an (not-necessarily-contiguous) **subsequence** in order |
 | `trajectory` | `noMechanicalLoop:true` | no two consecutive `tool` records have the same name AND byte-identical args (a "stuck repeating itself" guard) |
+| `finalText` | `containsAll?:[...]`, `containsAny?:[...]`, `absent?:[...]`, `caseSensitive?:false` | keyword assertions over the agent's final assistant message (`handle.result.finalText`): every `containsAll` substring present, at least one `containsAny` present, no `absent` substring present — all present conditions must hold. Case-insensitive (ASCII) unless `caseSensitive:true`. Empty/missing needles assert nothing; a checkpoint with NO meaningful needle fails loudly (never a silent vacuous pass). Grades a refusal/clarification that must SURFACE something (e.g. `reserved_name_clarify` asserts the ask-back names the conflict) without an LLM judge |
 
 `conflict_retry`'s checkpoints show `param_range` (grading "close enough to
 blue" rather than one exact fixture literal) plus `requiredToolInOrder:
