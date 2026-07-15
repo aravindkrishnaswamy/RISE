@@ -142,12 +142,13 @@ public:
 // while opening up live exposure scrubbing and multi-format Save-As
 // without re-rendering.
 //
-// Threading: VFS observer callbacks fire from rasterizer worker
-// threads (multiple may concurrently land tile callbacks).  The
-// helper serialises buffer / block access on `bufferMutex_` so two
-// workers can't tear each other's `RenderToBuffer` writes; the
-// block call runs synchronously inside the lock so the Swift
-// receiver completes its read before the next tile fires.
+// Threading: production tile notifications never enter this helper.
+// A bounded Swift polling queue notices the FrameStore generation at
+// display cadence and calls `PollAndEmitIfDirty`; frame-complete
+// notifications still deliver a final coherent image.  The helper
+// serialises staging-buffer access with `bufferMutex_`, and invokes
+// the Swift block while holding that lock so its input pointer remains
+// valid for the duration of the call.
 //
 // Lifetime: bridge owns this helper; lambda captures pass a raw
 // pointer.  The bridge tears down by (a) releasing its
@@ -257,13 +258,16 @@ public:
     void PollAndEmitIfDirty(Implementation::ViewportFrameStore* vfs) {
         if (!vfs) return;
         const uint64_t gen = vfs->Generation();
-        if (gen == lastSeenGeneration_) return;  // no new pixels
         std::lock_guard<std::mutex> lock(bufferMutex_);
+        // Polling runs on its background serial queue, while exposure
+        // repaint can originate on the main thread.  Keep the generation
+        // sentinel under the same lock as Repaint rather than assuming a
+        // single UI caller.
+        if (gen == lastSeenGeneration_) return;  // no new pixels
         // L8 round 14 — `nonBlocking=true`.  A slow per-pixel block
         // on a worker can hold a tile's exclusive lock for seconds;
-        // a blocking RenderToBuffer would beachball the poll thread
-        // (which is the Mac main thread, driving the UI run loop)
-        // for that whole duration.  Non-blocking variant skips
+        // a blocking RenderToBuffer would stall the display polling
+        // queue for that whole duration.  Non-blocking variant skips
         // contended tiles — their staging-buffer bytes keep the
         // previous poll's content, and the next poll within 100 ms
         // catches them when the worker's intra-block flush
@@ -272,12 +276,18 @@ public:
         lastSeenGeneration_ = gen;
     }
 
-    // Tile-complete callback.  Renders ONLY the changed region into
-    // the staging buffer at its image-space offset and fires the
-    // block with that region's bounds.  The Swift consumer
-    // (`RenderImageBuffer.handleOutput`) iterates only the supplied
-    // bounds when downconverting RGBA16 → RGBA8, so passing the
-    // tile region keeps per-tile work O(tile) rather than O(image).
+    // ---- Per-tile progressive emit (RESTORED) --------------------------
+    // These + the SetTileCompleteCallback binding in
+    // ensureProductionVFSCreated were removed in the same working-tree pass
+    // that first tried to fix the "production render hangs" report by
+    // unbinding the tile callback (on the theory that per-tile emits starved
+    // the event loop).  The real hang was EnvironmentPanel.reload() blocking
+    // on the render's mMutex (fixed separately); unbinding the tile callback
+    // only cost the user the progressive "toggle" markers — the poll can't
+    // catch the microsecond EndTile→BeginTile toggle window.  Restored so
+    // toggles are visible again.  MainActor flooding (the removal's stated
+    // concern) is now bounded by CoalescedImageDelivery on the Swift side,
+    // and the worker side is self-limited by the try_lock below.
     void OnTileComplete(Implementation::ViewportFrameStore* vfs,
                         const RISE::Rect& halfOpenRoi,
                         uint64_t          /*generation*/) {
@@ -342,6 +352,51 @@ public:
         EmitRegion_locked(vfs, halfOpenRoi);
     }
 
+    // Render a sub-region of the FrameStore into the matching slice
+    // of the staging buffer + fire the block with inclusive bounds.
+    // Per-tile work is O(tile-area) for the encode; FireBlock_locked's
+    // Swift receiver rebuilds a full NSImage (see RenderImageBuffer),
+    // but CoalescedImageDelivery collapses that to one MainActor drain.
+    void EmitRegion_locked(Implementation::ViewportFrameStore* vfs,
+                           const RISE::Rect& halfOpenRoi) {
+        unsigned int W = 0, H = 0;
+        if (!EnsureBuffer_locked(vfs, W, H)) return;
+
+        // Clip the half-open roi to image bounds defensively.
+        const unsigned int y0 = halfOpenRoi.top;
+        const unsigned int x0 = halfOpenRoi.left;
+        const unsigned int y1 = std::min<unsigned int>(halfOpenRoi.bottom, H);
+        const unsigned int x1 = std::min<unsigned int>(halfOpenRoi.right,  W);
+        if (y1 <= y0 || x1 <= x0) return;
+
+        // RenderToBuffer writes pixels at offset
+        //   dst[(y - y0) * dstStride + (x - x0) * bpp]
+        // (FrameStore.cpp:748-750), so to land them at their actual
+        // (y, x) image coordinates we point `dst` at the (y0, x0)
+        // pixel of the full-image buffer and pass the FULL row stride.
+        // L5a round-2 P2-A: snapshot HDR mode + EV ONCE so encode
+        // (RenderToBuffer) and dispatch (FireBlock_locked) agree
+        // even if setHDREnabled lands in between.
+        const bool useHDR    = hdrEnabled_.load();
+        const float ev       = static_cast<float>(exposureEV_.load());
+        const int   tcInt    = toneCurve_.load();
+        TargetFormat fmt; ViewTransform xf;
+        SelectTargetFormatAndXform(useHDR, ev, tcInt, fmt, xf);
+        uint16_t* base = buffer_.data()
+                         + (static_cast<size_t>(y0) * W + x0) * 4;
+        const size_t dstStride = static_cast<size_t>(W) * 4 * sizeof(uint16_t);
+        // nonBlocking=true (review P2 + parity with the Windows
+        // onProductionVFSTileComplete sibling): if another worker re-acquired
+        // this just-EndTile'd tile in the EndTile→Render window, skip it
+        // rather than block on its shared_lock while holding bufferMutex_ (a
+        // brief stall of the bg pollQueue).  The poll / next tile / frame-
+        // complete still deliver those pixels.
+        vfs->RenderToBuffer(base, dstStride, halfOpenRoi, fmt, xf, /*nonBlocking=*/true);
+        FireBlock_locked(useHDR, W, H,
+                         /*top=*/y0, /*left=*/x0,
+                         /*bottom=*/y1 - 1, /*right=*/x1 - 1);
+    }
+
     void OnFrameComplete(Implementation::ViewportFrameStore* vfs,
                          unsigned int /*frame*/,
                          uint64_t     /*generation*/) {
@@ -382,7 +437,7 @@ private:
     // mode emits uint16 sRGB (tone-curve + sRGB transfer applied).
     //
     // L5a round-2 P2-A fix — `useHDR` is a snapshot taken ONCE per
-    // emit (at the start of EmitRegion_locked / EmitFullImage_locked)
+    // emit (at the start of EmitFullImage_locked)
     // and used for both the encode (here) and the block dispatch
     // (`FireBlock_locked` below).  The previous code read
     // `hdrEnabled_.load()` independently in both places, so a UI
@@ -436,47 +491,6 @@ private:
         }
     }
 
-    // Render a sub-region of the FrameStore into the matching slice
-    // of the staging buffer + fire the block with inclusive bounds.
-    // L4 round-7 P1 perf fix: per-tile work is now O(tile-area) not
-    // O(image-area), matching the legacy dispatch path.
-    // L5a: format + view-transform now selected by SelectTargetFormat-
-    // AndXform (LDR vs HDR-EDR).  Buffer fmt+stride are 8bpp either
-    // way, so the same staging buffer fits both modes.
-    void EmitRegion_locked(Implementation::ViewportFrameStore* vfs,
-                           const RISE::Rect& halfOpenRoi) {
-        unsigned int W = 0, H = 0;
-        if (!EnsureBuffer_locked(vfs, W, H)) return;
-
-        // Clip the half-open roi to image bounds defensively.
-        const unsigned int y0 = halfOpenRoi.top;
-        const unsigned int x0 = halfOpenRoi.left;
-        const unsigned int y1 = std::min<unsigned int>(halfOpenRoi.bottom, H);
-        const unsigned int x1 = std::min<unsigned int>(halfOpenRoi.right,  W);
-        if (y1 <= y0 || x1 <= x0) return;
-
-        // RenderToBuffer writes pixels at offset
-        //   dst[(y - y0) * dstStride + (x - x0) * bpp]
-        // (FrameStore.cpp:748-750), so to land them at their actual
-        // (y, x) image coordinates we point `dst` at the (y0, x0)
-        // pixel of the full-image buffer and pass the FULL row stride.
-        // L5a round-2 P2-A: snapshot HDR mode + EV ONCE so encode
-        // (RenderToBuffer) and dispatch (FireBlock_locked) agree
-        // even if setHDREnabled lands in between.
-        const bool useHDR    = hdrEnabled_.load();
-        const float ev       = static_cast<float>(exposureEV_.load());
-        const int   tcInt    = toneCurve_.load();
-        TargetFormat fmt; ViewTransform xf;
-        SelectTargetFormatAndXform(useHDR, ev, tcInt, fmt, xf);
-        uint16_t* base = buffer_.data()
-                         + (static_cast<size_t>(y0) * W + x0) * 4;
-        const size_t dstStride = static_cast<size_t>(W) * 4 * sizeof(uint16_t);
-        vfs->RenderToBuffer(base, dstStride, halfOpenRoi, fmt, xf);
-        FireBlock_locked(useHDR, W, H,
-                         /*top=*/y0, /*left=*/x0,
-                         /*bottom=*/y1 - 1, /*right=*/x1 - 1);
-    }
-
     // Render the full image — used by Repaint() (live exposure
     // scrub on the UI thread, no roi available) and OnFrameComplete
     // (per-frame final pass).  Format selected by HDR toggle:
@@ -504,8 +518,7 @@ private:
                               bool nonBlocking = false) {
         unsigned int W = 0, H = 0;
         if (!EnsureBuffer_locked(vfs, W, H)) return;
-        // L5a round-2 P2-A: same mode-snapshot pattern as
-        // EmitRegion_locked — snapshot once so encode + dispatch
+        // L5a round-2 P2-A: snapshot mode once so encode + dispatch
         // agree across a concurrent setHDREnabled.
         const bool useHDR    = hdrEnabled_.load();
         const float ev       = static_cast<float>(exposureEV_.load());
@@ -537,14 +550,9 @@ private:
     // consumption inside SelectTargetFormatAndXform.
     std::atomic<int>      toneCurve_{static_cast<int>(eDisplayTransform_ACES)};
 
-    // L8 round 9 — sentinel for the lockless polling path.
-    // Read + written ONLY on the UI thread that drives Poll() — no
-    // synchronisation needed.  Initialised to 0 so the first poll
-    // unconditionally emits (matches the workers' generation, which
-    // starts at 0 too and bumps on the first EndTile).  Reset
-    // implicitly by Repaint(), which syncs to the current generation
-    // after its full-image emit so the next poll doesn't redo the
-    // same work.
+    // Guarded by bufferMutex_.  Initialised to 0 so the first poll
+    // observes the first completed tile; Repaint syncs it after a
+    // full-image emit so the next poll does not repeat that frame.
     uint64_t lastSeenGeneration_ = 0;
 };
 
@@ -1121,10 +1129,11 @@ static BOOL RunProductionRenderThroughController(
         std::string([path UTF8String]), enc, opts) ? YES : NO;
 }
 
-// Lazy-allocate the PRODUCTION VFS + bind its observer callbacks
-// to the production helper.  Tile-complete + frame-complete +
-// pre-denoise + denoise are all wired so production renders show
-// per-tile progressive fills.  Called from the
+// Lazy-allocate the PRODUCTION VFS + bind its frame-complete,
+// pre-denoise, and denoise callbacks to the production helper.
+// In-progress presentation is generation-polled at a bounded display
+// cadence; frame-complete notifications guarantee the final coherent
+// image. Called from the
 // rasterize / rasterizeAnimation / rasterizeRegion paths via
 // `-ensureVFSAttachedToRasterizer:`.
 - (void)ensureProductionVFSCreated {
@@ -1132,26 +1141,16 @@ static BOOL RunProductionRenderThroughController(
     _productionVFS = new Implementation::ViewportFrameStore();
     ViewportFrameStoreCallbacks* helper = _productionVFSCallbacks.get();
     Implementation::ViewportFrameStore* vfs = _productionVFS;
-    // L8 round 9 / 17 — Tile-complete callback wired to a
-    // try_lock-protected synchronous emit (round 17), restoring
-    // per-tile red-toggle visibility that round 9's unwired
-    // tile-callback design + 30 Hz polling could not deliver
-    // (the toggle "unlock window" between the round-13
-    // split-bracket's EndTile-all and BeginTile-all is microseconds,
-    // versus the 33 ms poll interval — almost never caught).
-    //
-    // The synchronous callback runs on the rasterizer worker thread,
-    // immediately after the tile's exclusive lock has been released.
-    // It TRY-locks the helper's `bufferMutex_` so a concurrent
-    // background-queue poll can't make the worker block; on a
-    // try-lock miss it simply returns and the bg poll will pick the
-    // tile up at the next 33 ms tick (the toggle visualisation for
-    // that specific tile is lost in that case, but per-block partial
-    // updates and end-of-block final pixels are unaffected).  The
-    // emit reads ONLY the just-released tile's region — no
-    // cross-tile reads, so the round-1 `bufferMutex_ ↔ tile-mutex`
-    // inversion can't re-form.  See `OnTileCompleteTry` doc for
-    // the full rationale.
+    // Per-tile progressive emit (RESTORED — see the OnTileComplete banner):
+    // fires the toggle-decorated tile pixels to the UI synchronously on the
+    // worker thread, so the brief split-bracket EndTile→BeginTile "toggle"
+    // window is caught (the 30 Hz poll almost never catches it).  Safe
+    // against the event-loop starvation the earlier removal feared:
+    // OnTileCompleteTry try_locks bufferMutex_ (skips when the bg poll owns
+    // it, so workers never block), and CoalescedImageDelivery on the Swift
+    // side bounds MainActor delivery to one drain at a time regardless of the
+    // producer rate.  The frame-complete / denoise callbacks below still
+    // guarantee the final coherent image.
     vfs->SetTileCompleteCallback(
         [helper, vfs](const RISE::Rect& roi, uint64_t gen) {
             helper->OnTileCompleteTry(vfs, roi, gen);
@@ -1321,22 +1320,14 @@ static BOOL RunProductionRenderThroughController(
     return film->GetHeight();
 }
 
-- (void)setSceneTime:(double)t {
-    if (!_job) return;
-    IScenePriv* scene = _job->GetScene();
-    if (!scene) return;
-    // Full SetSceneTime: advances the animator AND regenerates every
-    // populated photon map at time `t`.  The interactive scrub path
-    // calls SetSceneTimeForPreview (animator-only, no photon regen)
-    // for responsiveness; this method runs the expensive photon
-    // regen so the next production render gets caustics consistent
-    // with the scrubbed scene state.  Production rasterizers may
-    // wait minutes here on photon-heavy scenes — the caller should
-    // already be in a "rendering" UI state.
-    scene->SetSceneTime(t);
+- (BOOL)rasterize {
+    const double sceneTime = _viewportController
+        ? static_cast<double>(_viewportController->LastSceneTime())
+        : 0.0;
+    return [self rasterizeAtSceneTime:sceneTime];
 }
 
-- (BOOL)rasterize {
+- (BOOL)rasterizeAtSceneTime:(double)t {
     if (!_job) return NO;
 
     // Clear previous rasterizer outputs before reattaching VFS.
@@ -1355,9 +1346,19 @@ static BOOL RunProductionRenderThroughController(
     [self ensureVFSAttachedToRasterizer:rasterizer];
 
     IJobPriv* job = _job;
+    const Scalar sceneTime = static_cast<Scalar>(t);
     return RunProductionRenderThroughController(
         _job, _viewportController, String("gui_rasterize"), _progressCallback,
-        [job]() -> BOOL { return job->Rasterize() ? YES : NO; });
+        [job, sceneTime]() -> BOOL {
+            // This can regenerate photon maps for a long time. It belongs
+            // inside the coordinator's worker-held critical section: running
+            // it on MainActor freezes the app, while running it before the
+            // coordinator could race an agent render against the same scene.
+            if (IScenePriv* scene = job->GetScene()) {
+                scene->SetSceneTime(sceneTime);
+            }
+            return job->Rasterize() ? YES : NO;
+        });
 }
 
 - (void)setAnimationVideoOutputPath:(NSString *)path {

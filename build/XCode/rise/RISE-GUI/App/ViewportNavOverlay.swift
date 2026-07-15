@@ -21,6 +21,13 @@ struct ViewportNavOverlay: View {
     /// ball re-layouts to track the live view.  Reuses the viewport's gizmo
     /// refresh trigger.
     let refreshTrigger: Int
+    /// Chat-inclusive scene-editability gate.  reload() reads freeFlyActive /
+    /// hasHomeView, which take the controller's commit mutex; a production OR
+    /// chat-driven render holds that mutex for the render's whole duration, so
+    /// calling them then wedges the main thread (same class as the
+    /// EnvironmentPanel hang).  Skip reload while render-owned; the re-sync
+    /// onChange in `body` refreshes once the scene is editable again.
+    let sceneEditable: Bool
 
     @State private var nubs: [RISEViewportNavNub] = []
     @State private var freeFly = false
@@ -45,6 +52,9 @@ struct ViewportNavOverlay: View {
         }
         .onAppear(perform: reload)
         .onChange(of: refreshTrigger) { _, _ in reload() }
+        // reload() no-ops while render-owned; re-sync when the scene becomes
+        // editable again so nav state reflects any change once the render ends.
+        .onChange(of: sceneEditable) { _, editable in if editable { reload() } }
     }
 
     // MARK: - Axis ball
@@ -119,6 +129,12 @@ struct ViewportNavOverlay: View {
     // MARK: - State pull + drawing
 
     private func reload() {
+        // freeFlyActive / hasHomeView take the controller's commit mutex that a
+        // render holds for its whole duration — skip while render-owned so a
+        // refreshTrigger bump (e.g. a tool switch, which isn't a viewport
+        // gesture and so isn't otherwise gated) during a chat render can't
+        // wedge the main thread.  Nav state can't change during a render.
+        guard sceneEditable else { return }
         let center = CGPoint(x: ballBox / 2, y: ballBox / 2)
         _ = bridge.refreshNavGizmo(centerX: center.x, centerY: center.y,
                                    ballRadius: ballRadius, nubRadius: nubRadius)

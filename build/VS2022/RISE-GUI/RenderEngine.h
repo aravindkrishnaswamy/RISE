@@ -153,7 +153,10 @@ public:
 
 public slots:
     void loadScene(const QString& filePath);
-    void startRender();
+    /// Start a still render at `sceneTime`. Full SetSceneTime, including
+    /// photon-map regeneration, runs on the render worker rather than the
+    /// UI thread and inside the production-render coordinator.
+    void startRender(double sceneTime);
     void startAnimationRender(const QString& videoOutputPath);
     void cancelRender();
     void clearScene();
@@ -192,17 +195,6 @@ public slots:
     // handles the display map).
     void setViewToneCurve(int curve);
     int  viewToneCurve() const { return m_viewToneCurve.load(); }
-
-    /// Advance the in-memory scene to time `t` AND regenerate every
-    /// populated photon map.  Called by MainWindow before kicking the
-    /// production rasterizer so post-scrub renders pick up caustics
-    /// consistent with the scrubbed scene state.  The interactive
-    /// viewport's scrub path uses SetSceneTimeForPreview (animator-only,
-    /// no photon regen) for responsiveness; that's why we need a
-    /// distinct full-fidelity entry point at production-render time.
-    /// Photon-heavy scenes may pause many seconds inside this call;
-    /// the caller should already be in a "rendering" UI state.
-    void setSceneTime(double t);
 
     // ---- Production render pause (UI refinement item 4) -------------
     // Mirrors the macOS RISEBridge.mm BlockProgressCallback pause gate:

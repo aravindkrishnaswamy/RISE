@@ -160,20 +160,16 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
 /// active rasterizer is not the auto-dispatcher).
 - (nullable NSString *)autoResolveReason;
 
-/// Sets the scene time the next `rasterize` call should render at.
-/// Internally invokes `IScene::SetSceneTime(t)` immediately, which:
-///   - Advances the animator (camera, transforms, materials at time t).
-///   - Regenerates every populated photon map at time t — the
-///     expensive step the interactive scrub deliberately skips.
-/// Call this AFTER stopping the viewport bridge's interactive thread
-/// (the viewport's preview path uses `SetSceneTimeForPreview` which
-/// skips photon regen — without an explicit full SetSceneTime here,
-/// hitting Render after scrubbing produces the right transforms but
-/// caustics from the pre-scrub time).
-- (void)setSceneTime:(double)t;
-
-/// Rasterizes the entire scene. This is BLOCKING -- call from a background thread.
+/// Rasterizes the entire scene at the controller's canonical scene time.
+/// This is BLOCKING -- call from a background thread.
 - (BOOL)rasterize;
+
+/// Rasterizes the entire scene at `t`. The full SetSceneTime, including
+/// photon-map regeneration, runs inside the production-render coordinator,
+/// after the UI has entered its rendering state and while no agent or
+/// interactive render can read the scene. This is BLOCKING -- call from a
+/// background thread.
+- (BOOL)rasterizeAtSceneTime:(double)t;
 
 /// Sets the output path for animation video (.mov). Pass nil to disable video output.
 - (void)setAnimationVideoOutputPath:(nullable NSString *)path;

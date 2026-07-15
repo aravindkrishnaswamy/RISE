@@ -130,9 +130,14 @@ struct ContentView: View {
     /// gesture handling and the properties panel disable themselves on
     /// this so they can't race the production rasterizer's workers).
     private var interacting: Bool {
-        viewModel.renderState != .rendering
-            && viewModel.renderState != .cancelling
-            && viewModel.renderState != .loading
+        // Chat-inclusive.  A chat/agent-driven render holds the controller's
+        // commit mutex for its WHOLE duration but does NOT flip renderState,
+        // so a renderState-only gate let viewport pointer gestures
+        // (OnPointerMove, mMutex) and the nav overlay's freeFlyActive /
+        // hasHomeView reads wedge the main thread during a chat render — the
+        // same class as the EnvironmentPanel hang.  isSceneEditableForAgents
+        // folds in !isChatRenderOutstanding on top of the render-state check.
+        viewModel.isSceneEditableForAgents
     }
 
     // MARK: - Left panel (Agent / Scene file tabs)

@@ -672,14 +672,11 @@ final class ChatViewModel: ObservableObject {
     /// — only an actual scene teardown invalidates an in-flight attach.
     private var sceneGeneration: Int = 0
 
-    /// Model-B F2 slice S2b: the renderJobId of a chat-driven `render`
-    /// tool call currently outstanding on the LIVE controller's async
-    /// worker (0 = none).  Set right after a successful async submit, in
-    /// `executeRenderToolCallAsync`; cleared there (via `defer`) once
-    /// that call's render_wait loop observes completion, AND cleared by
-    /// `cancelAnyOutstandingChatRender()` the instant it fires a cancel
-    /// (belt-and-suspenders — see that method's doc for why it cannot
-    /// rely solely on the loop's own `defer`).  Read by
+    /// Model-B F2 slice S2b: the renderJobId used to address a chat-driven
+    /// async render for cancellation (0 = no cancel request is needed).
+    /// This is deliberately NOT the UI safety gate: render_cancel is
+    /// fire-and-forget, so its id must be cleared promptly while the worker
+    /// can still own the controller. Read by
     /// `cancelAnyOutstandingChatRender()` so productionRenderStarting /
     /// cancelTurn / a user Stop can trip `render_cancel` on it WITHOUT
     /// waiting for the render to actually finish — the point being that a
@@ -689,9 +686,19 @@ final class ChatViewModel: ObservableObject {
     /// like every other piece of driver state in this class.
     private var outstandingChatRenderJobId: UInt64 = 0
 
-    /// Model-B F2 slice S2b: true while a chat-driven `render` tool call
-    /// has an async render outstanding on the controller's single-slot
-    /// worker.  This is truth `renderState` (a pure GUI/Swift notion)
+    /// The controller worker is still occupied by this chat render, including
+    /// after a fire-and-forget cancellation request. RenderViewModel forwards
+    /// this published state to every control that relies on its single scene
+    /// edit gate, preventing a synchronous bridge call from blocking on the
+    /// worker's mutex during cancellation drain.
+    @Published private var chatRenderWorkerOccupied: Bool = false
+    private var chatRenderOccupancyJobId: UInt64 = 0
+    private var chatRenderDrainTask: Task<Void, Never>? = nil
+
+    /// Model-B F2 slice S2b: true while the controller's single-slot worker
+    /// is occupied by a chat-driven render. This remains true after a cancel
+    /// request until render_wait observes actual worker completion. This is
+    /// truth `renderState` (a pure GUI/Swift notion)
     /// cannot see on its own — an agent render does not flip `renderState`
     /// out of `.sceneLoaded`/`.completed` — so `RenderViewModel`'s single
     /// `isSceneEditableForAgents` predicate (the ONE gate both the chat
@@ -701,7 +708,7 @@ final class ChatViewModel: ObservableObject {
     /// concurrently with a chat-driven render still running on the same
     /// controller.  MainActor-only, like `outstandingChatRenderJobId`
     /// itself.
-    var isChatRenderOutstanding: Bool { outstandingChatRenderJobId != 0 }
+    var isChatRenderOutstanding: Bool { chatRenderWorkerOccupied }
 
     private static let providerKey = "agentChat.provider"
     private static let recordTrajectoriesKey = "agentChat.recordTrajectories"
@@ -872,6 +879,14 @@ final class ChatViewModel: ObservableObject {
     /// scene identity (closing-verify P3).
     func sceneOpened(viewportBridge vb: RISEViewportBridge, scenePath: String = "") {
         cancelTurn()
+        // RenderViewModel calls sceneClosed(), then synchronously shuts down
+        // the previous bridge before constructing this fresh one. That join
+        // proves an old worker is drained, so discard any cancellation poll
+        // that was waiting on the now-gone bridge and start this scene clean.
+        chatRenderDrainTask?.cancel()
+        chatRenderDrainTask = nil
+        chatRenderOccupancyJobId = 0
+        chatRenderWorkerOccupied = false
         sceneGeneration += 1
         viewportBridge = vb
         // Agent autonomy selector: a fresh bridge's dispatchers default to
@@ -1523,22 +1538,19 @@ final class ChatViewModel: ObservableObject {
     /// render_cancel's `renderJobId` param is optional) and safe to call
     /// with no viewport bridge attached (guarded below).
     ///
-    /// Clears `outstandingChatRenderJobId` immediately after firing the
-    /// cancel (rather than leaving that to the render_wait loop's own
-    /// `defer`): this method is ALSO called from paths where that loop
-    /// may no longer be running at all (e.g. `sceneOpened`/`sceneClosed`
-    /// calling `cancelTurn()` when the turn was already idle, or a
-    /// Stop/cancelTurn landing after the loop already returned but
-    /// before its `defer` ran) — leaving the stale id set in those cases
-    /// would incorrectly persist a cancelled job's id across scenes/
-    /// turns.  The render_wait loop's own `defer { outstandingChatRenderJobId
-    /// = 0 }` is therefore a harmless redundant clear on the common path
-    /// where the loop is still alive when this fires — setting a UInt64
-    /// to 0 twice from the same MainActor is not a race.
+    /// Clears only the cancellation id immediately. The distinct published
+    /// occupancy state stays true until a cancellation-safe poll observes the
+    /// worker has actually drained; otherwise controls could re-enable and
+    /// synchronously block on the controller mutex in the cancellation gap.
     private func cancelAnyOutstandingChatRender() {
-        guard outstandingChatRenderJobId != 0, let vb = viewportBridge else { return }
+        guard outstandingChatRenderJobId != 0 else { return }
         let jobId = outstandingChatRenderJobId
         outstandingChatRenderJobId = 0
+        guard let vb = viewportBridge else {
+            // No live bridge remains that UI can call. A subsequent
+            // sceneOpened happens only after its old bridge was shut down.
+            return
+        }
         let line = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"render_cancel\"," +
                    "\"params\":{\"renderJobId\":\(jobId)}}"
         // Response intentionally discarded: its `cancelled:true` means only
@@ -1549,6 +1561,55 @@ final class ChatViewModel: ObservableObject {
         // above), and the fire-and-forget contract means we don't wait to
         // find out whether it actually stopped.
         _ = vb.agentHandleLine(line)
+        beginChatRenderDrain(jobId: jobId, bridge: vb)
+    }
+
+    /// Poll the already-cancelled worker without coupling it to the turn task:
+    /// cancelling that task is precisely what leaves its normal render_wait
+    /// loop early. Every dispatcher call remains on MainActor, preserving the
+    /// bridge's single-caller contract.
+    private func beginChatRenderDrain(jobId: UInt64, bridge vb: RISEViewportBridge) {
+        guard chatRenderWorkerOccupied, chatRenderOccupancyJobId == jobId else { return }
+        chatRenderDrainTask?.cancel()
+        chatRenderDrainTask = Task { @MainActor [weak self, weak vb] in
+            guard let self, let vb else { return }
+            await self.waitForChatRenderDrain(jobId: jobId, bridge: vb)
+        }
+    }
+
+    private func waitForChatRenderDrain(jobId: UInt64, bridge vb: RISEViewportBridge) async {
+        let sliceMs: UInt64 = 250
+        while !Task.isCancelled && chatRenderOccupancyJobId == jobId {
+            // sceneClosed() detaches this bridge before shutdown. Its
+            // synchronous shutdown joins the worker; sceneOpened() then
+            // resets the stale occupancy state before binding a new bridge.
+            guard viewportBridge === vb else { return }
+            let waitLine = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"render_wait\"," +
+                "\"params\":{\"renderJobId\":\(jobId),\"timeoutMs\":0}}"
+            let waitResponse = vb.agentHandleLine(waitLine)
+            if Self.renderWaitCompleted(waitResponse) {
+                finishChatRenderOccupancy(jobId: jobId)
+                return
+            }
+            try? await Task.sleep(nanoseconds: sliceMs * 1_000_000)
+        }
+    }
+
+    private func finishChatRenderOccupancy(jobId: UInt64) {
+        guard chatRenderOccupancyJobId == jobId else { return }
+        chatRenderOccupancyJobId = 0
+        chatRenderWorkerOccupied = false
+        chatRenderDrainTask = nil
+    }
+
+    private static func renderWaitCompleted(_ response: String) -> Bool {
+        guard
+            let data = response.data(using: .utf8),
+            let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            let result = object["result"] as? [String: Any],
+            let completed = result["completed"] as? Bool
+        else { return false }
+        return completed
     }
 
     private func startTurn() {
@@ -1898,7 +1959,16 @@ final class ChatViewModel: ObservableObject {
         // productionRenderStarting can trip render_cancel on it without
         // waiting for THIS wait loop to notice.
         outstandingChatRenderJobId = jobId
-        defer { outstandingChatRenderJobId = 0 }
+        chatRenderOccupancyJobId = jobId
+        chatRenderWorkerOccupied = true
+        defer {
+            // A cancellation path clears this id first so it cannot cancel a
+            // later job. It must NOT clear worker occupancy: the dedicated
+            // drain poll owns that transition after cancellation.
+            if outstandingChatRenderJobId == jobId {
+                outstandingChatRenderJobId = 0
+            }
+        }
 
         // Poll render_wait(timeoutMs:0) — a POLL-ONCE call, not a bounded
         // wait — separated by an `await Task.sleep`.  S2b P2-2: the prior
@@ -1960,6 +2030,7 @@ final class ChatViewModel: ObservableObject {
                 // JSON-RPC success envelope so it is indistinguishable
                 // from what a synchronous `render` call would have
                 // returned for this same tool call.
+                finishChatRenderOccupancy(jobId: jobId)
                 if let inner = waitResult["result"] as? [String: Any] {
                     return Self.makeSyntheticResponseLine(result: inner)
                 }

@@ -81,6 +81,21 @@ void ViewportWidget::setProductionRendering(bool inProgress)
     update();
 }
 
+void ViewportWidget::setSceneEditable(bool editable)
+{
+    if (m_sceneEditable == editable) return;
+    m_sceneEditable = editable;
+    if (!editable) {
+        // A render now owns the scene: cancel any armed / in-progress region
+        // interaction so a mid-render release can't commit it
+        // (setInteractiveRegion -> KickRender -> mMutex) and it doesn't linger
+        // armed across the render.
+        m_regionArmed = false;
+        m_regionDragging = false;
+    }
+    update();   // re-evaluate the nav-overlay draw gate at the new state
+}
+
 void ViewportWidget::setRegionArmed(bool armed)
 {
     if (m_regionArmed == armed) return;
@@ -204,7 +219,11 @@ void ViewportWidget::paintEvent(QPaintEvent* /*event*/)
     // Navigation axis-ball (Tier 2 §4): always available (not tool-gated),
     // hidden during a production render since the interactive camera state may
     // not match the production frame.
-    if (!m_productionRendering && m_bridge) {
+    if (!m_productionRendering && m_sceneEditable && m_bridge) {
+        // m_sceneEditable is chat-inclusive: paintNavOverlay reads
+        // isFreeFlyActive()/hasHomeView() (controller mutex), which a
+        // chat-driven render holds — skip the overlay while render-owned so
+        // a repaint can't wedge the Qt main thread.
         paintNavOverlay(p);
     }
 }
@@ -580,8 +599,10 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event)
 
     // A click on the persistent region badge clears the region --
     // consumes the click rather than also forwarding it as a pick.
-    if (!m_regionArmed && m_hasRegion && event->button() == Qt::LeftButton
+    if (m_sceneEditable && !m_regionArmed && m_hasRegion && event->button() == Qt::LeftButton
         && m_regionBadgeRect.contains(event->pos())) {
+        // m_sceneEditable gate: clearInteractiveRegion -> KickRender takes the
+        // controller mutex a chat/production render holds for its duration.
         if (m_bridge) m_bridge->clearInteractiveRegion();
         m_hasRegion = false;
         update();
@@ -592,13 +613,19 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event)
     // Navigation axis-ball: a nub click snaps the view; the labeled controls
     // drive Home / free-fly.  Consumes the click so it isn't also forwarded as
     // a scene pick.  Gated off during production render (the ball isn't drawn).
-    if (!m_productionRendering && event->button() == Qt::LeftButton
+    if (!m_productionRendering && m_sceneEditable && event->button() == Qt::LeftButton
         && handleNavClick(event->position())) {
         event->accept();
         return;
     }
 
-    if (m_bridge) {
+    // m_sceneEditable is chat-inclusive: pointerDown/Move/Up all take the
+    // controller commit mutex, which a chat-driven render holds for its whole
+    // duration — gate them so a viewport gesture during a chat render can't
+    // wedge the Qt main thread.  A chat render that begins mid-gesture drops
+    // the matching Up (same as an already-handled lost release; the next
+    // pointerDown re-establishes clean state).
+    if (m_bridge && m_sceneEditable) {
         const QPointF p = surfacePoint(event->position());
         m_bridge->pointerDown(p.x(), p.y());
     }
@@ -626,7 +653,7 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent* event)
         return;
     }
 
-    if (m_bridge && (event->buttons() & Qt::LeftButton)) {
+    if (m_bridge && m_sceneEditable && (event->buttons() & Qt::LeftButton)) {
         const QPointF p = surfacePoint(event->position());
         m_bridge->pointerMove(p.x(), p.y());
     }
@@ -666,7 +693,10 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent* event)
 
         // Reject a degenerate (near-zero-size) drag -- a stray click
         // while armed shouldn't silently set a 1x1 region.
-        if (m_bridge && (sx1 - sx0) >= 2 && (sy1 - sy0) >= 2) {
+        if (m_bridge && m_sceneEditable && (sx1 - sx0) >= 2 && (sy1 - sy0) >= 2) {
+            // m_sceneEditable gate: setInteractiveRegion -> KickRender takes the
+            // controller mutex a chat/production render holds (a chat render can
+            // begin between this drag's press and release).
             m_bridge->setInteractiveRegion(
                 static_cast<unsigned int>(sx0), static_cast<unsigned int>(sy0),
                 static_cast<unsigned int>(sx1), static_cast<unsigned int>(sy1));
@@ -689,7 +719,7 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent* event)
         return;
     }
 
-    if (m_bridge) {
+    if (m_bridge && m_sceneEditable) {
         const QPointF p = surfacePoint(event->position());
         m_bridge->pointerUp(p.x(), p.y());
     }

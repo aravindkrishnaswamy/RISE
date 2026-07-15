@@ -807,6 +807,17 @@ void MainWindow::updateMenuActionStates()
     // each ViewportBridge setEnvironment* call takes the controller's
     // commit mutex a production / chat-driven render owns.
     if (m_environmentPanel) m_environmentPanel->setSceneEditable(bridgeInteractingEnabled);
+    // The viewport's nav axis-ball reads isFreeFlyActive()/hasHomeView() and
+    // its pointer* calls all take the controller commit mutex; gate them on the
+    // SAME chat-inclusive term.  onStateChanged's setEnabled(interacting) is
+    // render-state-only and misses the chat-render clause, so without this a
+    // chat-driven render would wedge the viewport (nav overlay repaint on
+    // Windows needs no gesture at all).
+    if (m_viewportWidget) m_viewportWidget->setSceneEditable(bridgeInteractingEnabled);
+    // The timeline scrub signal -> OnTimeScrub takes the controller mutex; its
+    // onStateChanged setEnabled(interacting) is render-state-only and misses the
+    // chat-render clause, so disable it on the chat-inclusive term here too.
+    if (m_viewportTimeline) m_viewportTimeline->setEnabled(bridgeInteractingEnabled);
 
     const bool refinementDisabled = !m_viewportBridge
         || state == RenderEngine::Rendering
@@ -1512,13 +1523,9 @@ void MainWindow::onRender()
     // the REGION chip doesn't lie about being armed through a render.
     if (m_viewportToolbar) m_viewportToolbar->cancelRegionArm();
 
-    // Advance scene state to the canonical scrubbed time AND
-    // regenerate photon maps before the production rasterizer fires.
-    // The viewport's scrub path calls SetSceneTimeForPreview, which
-    // advances the animator but skips photon regen for
-    // responsiveness; without this full SetSceneTime, hitting Render
-    // after scrubbing renders the right object positions but
-    // caustics frozen at the pre-scrub time.
+    // Capture the canonical scrubbed time for the production worker.
+    // The worker advances scene state and regenerates photon maps inside
+    // the coordinated render path, rather than blocking this UI handler.
     //
     // We prefer the controller's lastSceneTime over
     // m_viewportTimeline->currentTime because Undo / Redo can change
@@ -1528,9 +1535,7 @@ void MainWindow::onRender()
     // is absent (no scene loaded, no scrubs possible).
     double sceneTime = m_viewportTimeline ? m_viewportTimeline->currentTime() : 0.0;
     if (m_viewportBridge) sceneTime = m_viewportBridge->lastSceneTime();
-    m_engine->setSceneTime(sceneTime);
-
-    m_engine->startRender();
+    m_engine->startRender(sceneTime);
 }
 
 void MainWindow::onRenderAnimation()

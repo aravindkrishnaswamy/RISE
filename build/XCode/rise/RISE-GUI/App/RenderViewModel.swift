@@ -132,6 +132,66 @@ final class AtomicBool: @unchecked Sendable {
     }
 }
 
+/// Keeps a hot render worker from queuing an unbounded number of UI updates.
+/// Each consumer receives the latest value available when it reaches the main
+/// actor; producer-side cancellation checks remain synchronous.
+final class CoalescedProgressDelivery: @unchecked Sendable {
+    struct Update: Sendable {
+        let progress: Double
+        let total: Double
+        let title: String
+    }
+
+    private let lock = NSLock()
+    private var latest: Update? = nil
+    private var deliveryScheduled = false
+
+    /// Returns true exactly when the caller must schedule a main-actor drain.
+    func submit(progress: Double, total: Double, title: String) -> Bool {
+        lock.lock()
+        latest = Update(progress: progress, total: total, title: title)
+        defer { lock.unlock() }
+        guard !deliveryScheduled else { return false }
+        deliveryScheduled = true
+        return true
+    }
+
+    /// Returns the newest pending value and opens the gate for a subsequent
+    /// producer update to schedule the next main-actor drain.
+    func takeLatest() -> Update? {
+        lock.lock()
+        defer { lock.unlock() }
+        deliveryScheduled = false
+        defer { latest = nil }
+        return latest
+    }
+}
+
+/// Same coalescing contract as `CoalescedProgressDelivery`, but for display
+/// images produced by the background VFS polling queue.
+final class CoalescedImageDelivery: @unchecked Sendable {
+    private let lock = NSLock()
+    private var latest: NSImage? = nil
+    private var deliveryScheduled = false
+
+    func submit(_ image: NSImage) -> Bool {
+        lock.lock()
+        latest = image
+        defer { lock.unlock() }
+        guard !deliveryScheduled else { return false }
+        deliveryScheduled = true
+        return true
+    }
+
+    func takeLatest() -> NSImage? {
+        lock.lock()
+        defer { lock.unlock() }
+        deliveryScheduled = false
+        defer { latest = nil }
+        return latest
+    }
+}
+
 @MainActor
 final class RenderViewModel: ObservableObject {
     @Published var renderState: RenderState = .idle
@@ -229,6 +289,11 @@ final class RenderViewModel: ObservableObject {
     /// App-lifetime chat state (provider/model selection outlives any
     /// one scene; the conversation itself resets per scene).
     let chat = ChatViewModel()
+    /// Named-views and other scene controls observe this view model, while
+    /// the chat render-in-flight state lives on `chat`.  Forward that change
+    /// notification so their `isSceneEditableForAgents` bindings invalidate
+    /// as soon as a chat-owned render starts or ends.
+    private var chatStateChangeObserver: AnyCancellable? = nil
 
     /// B2 review round 1 (refined Model-B F2 slice S2b — see the S2b note
     /// below): may agent tool calls (the chat driver and the Agent
@@ -620,6 +685,9 @@ final class RenderViewModel: ObservableObject {
         versionString = RISEBridge.versionString()
         recentFiles = UserDefaults.standard.stringArray(forKey: Self.recentFilesKey) ?? []
         showAgentDebugPanel = UserDefaults.standard.bool(forKey: Self.showAgentDebugPanelKey)
+        chatStateChangeObserver = chat.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
         // B2 review round 1: the chat driver re-checks this predicate
         // after every await and before each tool call, so a turn
         // resuming from its HTTP suspension can never mutate the
@@ -912,11 +980,15 @@ final class RenderViewModel: ObservableObject {
         }
 
         let cancelRef = cancelFlag
+        let progressDelivery = CoalescedProgressDelivery()
         bridge.setProgressBlock { [weak self] (prog: Double, total: Double, title: String) -> Bool in
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                self.progress = total > 0 ? prog / total : 0
-                self.progressTitle = title
+            if progressDelivery.submit(progress: prog, total: total, title: title) {
+                Task { @MainActor [weak self] in
+                    guard let update = progressDelivery.takeLatest() else { return }
+                    guard let self = self else { return }
+                    self.progress = update.total > 0 ? update.progress / update.total : 0
+                    self.progressTitle = update.title
+                }
             }
             return !cancelRef.value
         }
@@ -1032,14 +1104,14 @@ final class RenderViewModel: ObservableObject {
         chat.productionRenderStarting()
         viewportBridge?.stop()
 
-        // Advance scene state to the canonical scrubbed time AND
-        // regenerate photon maps before the production rasterizer
-        // fires.  The viewport's scrub path calls
-        // SetSceneTimeForPreview, which advances the animator but
-        // skips photon regen for responsiveness; without this full
-        // SetSceneTime, hitting Render after scrubbing renders the
-        // right object positions but caustics frozen at the
-        // pre-scrub time.
+        // Capture the canonical scrubbed time now, but advance the scene
+        // inside the coordinated background render path below. A full
+        // SetSceneTime regenerates photon maps and can take minutes; doing
+        // it synchronously on MainActor made the app appear hung before it
+        // could even publish `.rendering` or repaint the Cancel control.
+        // The viewport's scrub path calls SetSceneTimeForPreview, which
+        // skips photon regeneration for responsiveness, so production still
+        // must run the full operation before rasterization.
         //
         // We prefer the controller's LastSceneTime over the SwiftUI
         // `sceneTime` because Undo / Redo can change scene time
@@ -1047,8 +1119,7 @@ final class RenderViewModel: ObservableObject {
         // local value in that window would roll the scene back to
         // a stale time.  Fall back to `sceneTime` when no viewport
         // bridge is attached (no controller, no scrubs possible).
-        let canonical = viewportBridge?.lastSceneTime() ?? sceneTime
-        bridge.setSceneTime(canonical)
+        let canonicalSceneTime = viewportBridge?.lastSceneTime() ?? sceneTime
 
         renderState = .rendering
         progress = 0.0
@@ -1128,6 +1199,7 @@ final class RenderViewModel: ObservableObject {
         let cancelRef = cancelFlag
         let bridgeForProgress = bridge
         let pausedRef = productionPausedRef
+        let progressDelivery = CoalescedProgressDelivery()
         bridge.setProgressBlock { [weak self] (prog: Double, total: Double, title: String) -> Bool in
             // Don't feed the ETA estimator while paused (item 4): wall
             // time advances with zero progress, which would poison the
@@ -1135,15 +1207,19 @@ final class RenderViewModel: ObservableObject {
             if !pausedRef.value {
                 bridgeForProgress.etaUpdateProgress(prog, total: total)
             }
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                self.progress = total > 0 ? prog / total : 0
-                self.progressTitle = title
+            if progressDelivery.submit(progress: prog, total: total, title: title) {
+                Task { @MainActor [weak self] in
+                    guard let update = progressDelivery.takeLatest() else { return }
+                    guard let self = self else { return }
+                    self.progress = update.total > 0 ? update.progress / update.total : 0
+                    self.progressTitle = update.title
+                }
             }
             return !cancelRef.value
         }
 
         let buffer = imageBuffer
+        let imageDelivery = CoalescedImageDelivery()
         bridge.setImageOutputBlock { [weak self]
             (pImageData: UnsafePointer<UInt16>?,
              width: UInt32, height: UInt32,
@@ -1158,14 +1234,17 @@ final class RenderViewModel: ObservableObject {
                 rcBottom: rcBottom, rcRight: rcRight
             ) else { return }
 
-            Task { @MainActor [weak self] in
-                self?.renderedImage = nsImage
+            if imageDelivery.submit(nsImage) {
+                Task { @MainActor [weak self] in
+                    guard let image = imageDelivery.takeLatest() else { return }
+                    self?.renderedImage = image
+                }
             }
         }
 
         let bridgeRef = bridge
         renderTask = Task.detached { [weak self] in
-            let success = bridgeRef.rasterize()
+            let success = bridgeRef.rasterize(atSceneTime: canonicalSceneTime)
 
             await MainActor.run { [weak self] in
                 guard let self = self else { return }
@@ -1304,6 +1383,7 @@ final class RenderViewModel: ObservableObject {
         let cancelRef = cancelFlag
         let bridgeForProgress = bridge
         let pausedRef = productionPausedRef
+        let progressDelivery = CoalescedProgressDelivery()
         bridge.setProgressBlock { [weak self] (prog: Double, total: Double, title: String) -> Bool in
             // Don't feed the ETA estimator while paused (item 4): wall
             // time advances with zero progress, which would poison the
@@ -1311,15 +1391,19 @@ final class RenderViewModel: ObservableObject {
             if !pausedRef.value {
                 bridgeForProgress.etaUpdateProgress(prog, total: total)
             }
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                self.progress = total > 0 ? prog / total : 0
-                self.progressTitle = title
+            if progressDelivery.submit(progress: prog, total: total, title: title) {
+                Task { @MainActor [weak self] in
+                    guard let update = progressDelivery.takeLatest() else { return }
+                    guard let self = self else { return }
+                    self.progress = update.total > 0 ? update.progress / update.total : 0
+                    self.progressTitle = update.title
+                }
             }
             return !cancelRef.value
         }
 
         let buffer = imageBuffer
+        let imageDelivery = CoalescedImageDelivery()
         bridge.setImageOutputBlock { [weak self]
             (pImageData: UnsafePointer<UInt16>?,
              width: UInt32, height: UInt32,
@@ -1334,8 +1418,11 @@ final class RenderViewModel: ObservableObject {
                 rcBottom: rcBottom, rcRight: rcRight
             ) else { return }
 
-            Task { @MainActor [weak self] in
-                self?.renderedImage = nsImage
+            if imageDelivery.submit(nsImage) {
+                Task { @MainActor [weak self] in
+                    guard let image = imageDelivery.takeLatest() else { return }
+                    self?.renderedImage = image
+                }
             }
         }
 

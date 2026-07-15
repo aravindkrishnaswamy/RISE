@@ -164,8 +164,23 @@ void EnvironmentPanel::reload()
     // guard.
     if (anyFieldFocused()) return;
 
-    m_hasInfo = m_bridge && m_bridge->environmentInfo(&m_env);
-    if (!m_hasInfo) m_env = EnvironmentInfo{};
+    // environmentInfo() -> GetEnvironment() takes the controller's commit
+    // mutex, which a production / chat-driven render holds for its ENTIRE
+    // duration.  reload() rides the per-frame imageUpdated signal, so
+    // re-reading environmentInfo() mid-render would wedge the Qt main thread
+    // on that mutex until the render finishes (the macOS panel hit the
+    // identical bug, diagnosed from a hung-process sample:
+    //   EnvironmentPanel.reload -> environmentInfo -> GetEnvironment
+    //   -> std::mutex::lock, blocked on the render worker's mMutex hold).
+    // While render-owned, keep the last m_env (the environment can't change
+    // during a render) and still rebuild() so the controls re-derive their
+    // disabled state via canEdit(); a post-render imageUpdated frame — and the
+    // setSceneEditable(true) transition itself — refresh the info once
+    // editable again.
+    if (m_sceneEditable) {
+        m_hasInfo = m_bridge && m_bridge->environmentInfo(&m_env);
+        if (!m_hasInfo) m_env = EnvironmentInfo{};
+    }
     rebuild();
 }
 

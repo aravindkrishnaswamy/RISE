@@ -69,6 +69,12 @@ struct EnvironmentPanel: View {
         .onAppear { reload() }
         .onChange(of: refreshTrigger) { _, _ in reload() }
         .onChange(of: viewModel.entityListEpoch) { _, _ in reload() }
+        // reload() no-ops while a render owns the scene (mMutex guard above);
+        // re-sync when the scene becomes editable again so an agent edit that
+        // landed mid-render is reflected once the render releases it.
+        .onChange(of: viewModel.isSceneEditableForAgents) { _, editable in
+            if editable { reload() }
+        }
     }
 
     // MARK: - Header
@@ -335,6 +341,18 @@ struct EnvironmentPanel: View {
     // MARK: - Actions
 
     private func reload() {
+        // -environmentInfo -> GetEnvironment() takes the controller's commit
+        // mutex, which a production (or agent) render holds for its ENTIRE
+        // duration.  reload() runs inside a SwiftUI layout pass, so calling it
+        // while a render owns the scene wedges the main thread until the render
+        // finishes — diagnosed from a hung-process sample:
+        //   EnvironmentPanel.reload -> environmentInfo -> GetEnvironment
+        //   -> std::mutex::lock  (blocked on the render worker's mMutex hold).
+        // Skip while render-owned, matching NamedViewsPanel and the proposals /
+        // CST-sync polls.  The environment can't change during a render, so the
+        // last value stays valid; the isSceneEditableForAgents re-sync trigger
+        // refreshes once the render releases the scene.
+        guard viewModel.isSceneEditableForAgents else { return }
         let e = bridge.environmentInfo()
         env = e
         if let e = e, !focusedFieldIsActive {

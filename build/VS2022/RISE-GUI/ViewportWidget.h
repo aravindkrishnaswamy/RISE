@@ -41,6 +41,16 @@ public slots:
     /// from `RenderEngine::onStateChanged`.
     void setProductionRendering(bool inProgress);
 
+    /// Chat-inclusive scene-editability gate (mirrors the props / outliner /
+    /// environment panels' setSceneEditable).  A chat/agent-driven render holds
+    /// the controller's commit mutex for its whole duration but does NOT change
+    /// RenderEngine::state, so `m_productionRendering` (driven by onStateChanged)
+    /// stays false during it.  MainWindow drives this from the chat-aware
+    /// `updateMenuActionStates` fan-out so the nav overlay's isFreeFlyActive() /
+    /// hasHomeView() reads and the pointer* calls (all of which take the
+    /// controller mutex) can't wedge the UI during a chat-driven render.
+    void setSceneEditable(bool editable);
+
     /// RISE UI redesign (A4 region refinement): wired to
     /// ViewportToolbar::regionArmedChanged.  While armed, the next
     /// press-drag-release draws the region box instead of routing
@@ -101,6 +111,7 @@ private:
     Qt::CursorShape  m_toolCursor = Qt::ArrowCursor;
     ViewportTool     m_activeTool = ViewportTool::Select;
     bool             m_productionRendering = false;
+    bool             m_sceneEditable = true;   // chat-inclusive; see setSceneEditable
 
     // ---- RISE UI redesign: region refinement drag + persistent overlay --
     bool    m_regionArmed = false;

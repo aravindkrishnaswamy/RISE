@@ -650,7 +650,7 @@ void RenderEngine::loadScene(const QString& filePath)
     thread->start();
 }
 
-void RenderEngine::startRender()
+void RenderEngine::startRender(double sceneTime)
 {
     if (!m_job) return;
 
@@ -709,11 +709,20 @@ void RenderEngine::startRender()
     // -- the dtor drains the queue -- but kept as defense in depth),
     // the `delete progressCb` in its !guard branch does.
     QPointer<RenderEngine> guard(this);
-    QThread* thread = QThread::create([this, progressCb, guard]() {
+    QThread* thread = QThread::create([this, progressCb, guard, sceneTime]() {
         IJobPriv* job = m_job;
         bool ok = RunProductionRenderThroughController(
             job, m_viewportController, "gui_render", progressCb,
-            [job]() -> bool { return job->Rasterize(); });
+            [job, sceneTime]() -> bool {
+                // Full SetSceneTime may regenerate photon maps for a long
+                // time. Execute it on this worker, inside the coordinator,
+                // so the GUI remains responsive and no agent render can
+                // traverse the scene concurrently.
+                if (IScenePriv* scene = job->GetScene()) {
+                    scene->SetSceneTime(static_cast<Scalar>(sceneTime));
+                }
+                return job->Rasterize();
+            });
 
         QMetaObject::invokeMethod(this, [guard, ok, progressCb]() {
             if (!guard) { delete progressCb; return; }
@@ -962,20 +971,6 @@ void RenderEngine::resetProductionPauseState()
     if (m_activeProgressCallback) {
         m_activeProgressCallback->paused.store(false, std::memory_order_release);
     }
-}
-
-void RenderEngine::setSceneTime(double t)
-{
-    if (!m_job) return;
-    IScenePriv* scene = m_job->GetScene();
-    if (!scene) return;
-    // Full SetSceneTime: advances the animator AND regenerates every
-    // populated photon map at time `t`.  The interactive viewport's
-    // scrub path calls SetSceneTimeForPreview (animator-only, no
-    // photon regen) for responsiveness; this method runs the
-    // expensive photon regen so the next production render gets
-    // caustics consistent with the scrubbed scene state.
-    scene->SetSceneTime(static_cast<Scalar>(t));
 }
 
 void RenderEngine::clearScene()
@@ -1227,8 +1222,22 @@ void RenderEngine::onProductionVFSTileComplete(const RISE::Rect& halfOpenRoi)
     m_productionVFS->GetDimensions(W, H);
     if (W == 0 || H == 0) return;
 
-    std::lock_guard<std::mutex> lock(m_bufferMutex);
-    renderViewportToBufferAndEmit_locked(W, H, &halfOpenRoi);
+    // try_lock (NOT the earlier blocking lock_guard) — parity with the
+    // macOS bridge's OnTileCompleteTry.  This fires on the rasterizer
+    // worker thread right after that worker EndTile'd `halfOpenRoi`, so
+    // the brief toggle-decorated window is caught.  Inversion-safe:
+    //   * A worker that can't take m_bufferMutex immediately SKIPS this
+    //     tile's toggle (poll / next tile / frame-complete still deliver
+    //     its pixels) — it never blocks on the UI side, so the
+    //     `m_bufferMutex ↔ tile-mutex` cycle the blocking version could
+    //     form cannot occur.
+    //   * The emit reads ONLY `halfOpenRoi` — the tile this worker just
+    //     EndTile'd, so no writer holds it and its shared_lock succeeds
+    //     immediately; `nonBlocking=true` is belt-and-suspenders,
+    //     skipping any contended tile rather than waiting.
+    std::unique_lock<std::mutex> lock(m_bufferMutex, std::try_to_lock);
+    if (!lock.owns_lock()) return;  // UI (poll/scrub) busy — skip this toggle
+    renderViewportToBufferAndEmit_locked(W, H, &halfOpenRoi, /*nonBlocking=*/true);
 }
 
 void RenderEngine::onProductionVFSFrameComplete()
@@ -1293,24 +1302,30 @@ void RenderEngine::ensureProductionVFSAttachedToRasterizer()
         // time any in-flight observer callback completes, `this` is
         // still valid.  See -RenderEngine() ordering rationale.
         //
-        // L8 round 9 — tile-complete callback DELIBERATELY NOT WIRED.
-        // The previous design ran a synchronous `OnTileComplete` from
-        // every rasterizer worker thread, acquiring `m_bufferMutex`
-        // for ~85 µs per tile and serialising workers across that one
-        // mutex.  Combined with the per-tile `vfs->RenderToBuffer`
-        // inside the lock (taking FrameStore shared_locks), it
-        // produced a `m_bufferMutex ↔ tile-mutex` inversion when two
-        // worker blocks landed on the same FrameStore tile.
+        // Tile-complete callback WIRED via a try_lock handler
+        // (`onProductionVFSTileComplete`) — parity with the macOS
+        // bridge's `OnTileCompleteTry`, restoring the progressive
+        // "toggle" markers.  The 30 Hz poll below almost never catches
+        // the microsecond split-bracket EndTile→BeginTile window in
+        // which the toggle-decorated pixels are visible; only a
+        // synchronous per-tile fire does.
         //
-        // Lockless replacement: the Qt main thread's `QTimer`
-        // (`m_progressivePollTimer`, started in `startRender`) polls
-        // `vfs->Generation()` at 30 Hz on the GUI thread.  When the
-        // counter advances, `pollProductionVFS` re-emits the full
-        // image.  Workers never block on the bridge; their per-tile
-        // EndTile calls just bump the atomic generation counter
-        // inside `FrameStore`.  See `pollProductionVFS` impl below
-        // and `ViewportFrameStoreCallbacks::PollAndEmitIfDirty`
-        // header doc (RISEBridge.mm) for the full architecture.
+        // The EARLIER design here left this unwired because its handler
+        // took a BLOCKING `m_bufferMutex` lock and, with the per-tile
+        // `RenderToBuffer` inside it (taking FrameStore shared_locks),
+        // could deadlock (`m_bufferMutex ↔ tile-mutex`) under worker
+        // contention.  `onProductionVFSTileComplete` now try_locks
+        // (skip-on-busy, so a worker never blocks on the UI side) and
+        // reads ONLY the just-EndTile'd `roi` — no writer holds that
+        // tile, so its shared_lock succeeds immediately and the
+        // cross-tile wait that formed the cycle cannot occur.  The poll
+        // (`pollProductionVFS`, 30 Hz) and the frame-complete callback
+        // below remain and still guarantee the progressive fill and the
+        // final coherent image.
+        m_productionVFS->SetTileCompleteCallback(
+            [this](const RISE::Rect& roi, uint64_t /*gen*/) {
+                this->onProductionVFSTileComplete(roi);
+            });
         m_productionVFS->SetFrameCompleteCallback(
             [this](unsigned int /*frame*/, uint64_t /*gen*/) {
                 this->onProductionVFSFrameComplete();

@@ -213,7 +213,12 @@ struct ViewportView: View {
                             suppressPointerUntilUp = true
                         } else if regionArmed {
                             regionArmed = false
-                        } else if viewModel.activeRegion != nil {
+                        } else if viewModel.activeRegion != nil, interactionEnabled {
+                            // clearInteractiveRegion -> KickRender takes the
+                            // controller mutex a chat/production render holds
+                            // for its whole duration; skip the clear while
+                            // render-owned (the local disarm/cancel branches
+                            // above stay live — they touch no mutex).
                             bridge.clearInteractiveRegion()
                             viewModel.activeRegion = nil
                         }
@@ -255,6 +260,11 @@ struct ViewportView: View {
                         bridge?.cameraSurfaceDimensions ?? .zero
                     },
                     onClearActiveRegion: {
+                        // The clear badge stays hit-testable during a chat
+                        // render; clearInteractiveRegion -> KickRender takes the
+                        // controller mutex that render holds, so gate on the
+                        // chat-inclusive interactionEnabled.
+                        guard interactionEnabled else { return }
                         bridge.clearInteractiveRegion()
                         viewModel.activeRegion = nil
                     }
@@ -266,7 +276,8 @@ struct ViewportView: View {
                 // the interactive camera state may not match the production
                 // frame.  Hit-testable — a nub click snaps the view.
                 if !isProductionRendering {
-                    ViewportNavOverlay(bridge: bridge, refreshTrigger: gizmoRefreshTrigger)
+                    ViewportNavOverlay(bridge: bridge, refreshTrigger: gizmoRefreshTrigger,
+                                       sceneEditable: interactionEnabled)
                         .padding(12)
                 }
             }
