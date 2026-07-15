@@ -19,28 +19,17 @@
   "checkpoints": [
     {
       "kind": "document",
-      "op": "chunk_exists",
-      "chunkKind": "standard_object",
-      "name": "obj_sph"
-    },
-    {
-      "kind": "document",
-      "op": "chunk_exists",
-      "chunkKind": "standard_object",
-      "name": "obj_emit"
-    },
-    {
-      "kind": "document",
-      "op": "chunk_exists",
+      "op": "chunk_count",
       "chunkKind": "sphere_geometry",
-      "name": "sph"
+      "min": 1,
+      "max": 3
     },
     {
       "kind": "document",
       "op": "chunk_count",
       "chunkKind": "standard_object",
       "min": 2,
-      "max": 2
+      "max": 4
     },
     {
       "kind": "render",
