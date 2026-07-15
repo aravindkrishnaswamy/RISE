@@ -18,11 +18,11 @@
   "checkpoints": [
     {
       "kind": "document",
-      "op": "param_equals",
+      "op": "param_range",
       "target": "pnt_albedo",
       "param": "color",
-      "value": "0.9 0.1 0.1",
-      "numeric": true
+      "min": [0.5, 0.0, 0.0],
+      "max": [1.0, 0.45, 0.45]
     },
     {
       "kind": "diagnostics",

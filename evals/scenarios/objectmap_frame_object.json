@@ -19,11 +19,11 @@
   "checkpoints": [
     {
       "kind": "document",
-      "op": "param_equals",
+      "op": "param_range",
       "target": "sph",
       "param": "radius",
-      "value": "0.9",
-      "numeric": true
+      "min": [0.6],
+      "max": [3.0]
     },
     {
       "kind": "objectmap",
