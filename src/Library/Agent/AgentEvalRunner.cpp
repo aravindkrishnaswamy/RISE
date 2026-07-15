@@ -961,6 +961,11 @@ namespace RISE
 					}
 				}
 
+				// Wall-clock completion time of the run -- the whole turn loop
+				// (LLM round-trips + tool dispatch), captured BEFORE the post-run
+				// checker so it measures the agent's time, not the grader's.
+				// Same clock as maxWallMs above (startMs at the top of RunScenario).
+				const int64_t endMs = clock();
 				if( terminalStatus.empty() ) terminalStatus = "final_text";
 				loop.FinishTrajectory( terminalStatus );
 
@@ -968,6 +973,7 @@ namespace RISE
 				handle.result.llmCalls = llmCalls;
 				handle.result.toolCalls = toolCalls;
 				handle.result.budgetHit = budgetHit;
+				handle.result.wallMs = endMs - startMs;
 				handle.result.finalText = finalText;
 				handle.result.errorMessage = errorMessage;
 				handle.result.headVersionFinal = dispatcher->Session()
@@ -982,6 +988,7 @@ namespace RISE
 				r.set( "llmCalls", JsonValue::MakeNumber( static_cast<double>( handle.result.llmCalls ) ) );
 				r.set( "toolCalls", JsonValue::MakeNumber( static_cast<double>( handle.result.toolCalls ) ) );
 				r.set( "budgetHit", JsonValue::MakeBool( handle.result.budgetHit ) );
+				r.set( "wallMs", JsonValue::MakeNumber( static_cast<double>( handle.result.wallMs ) ) );
 				r.set( "headVersionStart", JsonValue::MakeNumber( static_cast<double>( handle.result.headVersionStart ) ) );
 				r.set( "headVersionFinal", JsonValue::MakeNumber( static_cast<double>( handle.result.headVersionFinal ) ) );
 				r.set( "finalText", JsonValue::MakeString( handle.result.finalText ) );

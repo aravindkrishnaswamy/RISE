@@ -12,7 +12,7 @@ subdirectory is written per (scenario, provider, model, repeat):
                                          see src/Library/Agent/ChatTrajectory.cpp)
         <scenarioId>.result.jsonl       one-line run result: scenarioId,
                                          terminalStatus, llmCalls, toolCalls,
-                                         budgetHit, headVersionStart,
+                                         budgetHit, wallMs, headVersionStart,
                                          headVersionFinal, finalText,
                                          optional errorMessage
                                          (AgentEvalRunner.cpp ~line 584-601)
@@ -36,8 +36,9 @@ Subcommands
       Aggregate every run subdirectory under <runDir>, grouped by
       (scenarioId, provider, model).  Prints pass@1, pass^k (all-repeats-pass
       reliability), a 95% Wilson score interval on pass@1, mean partial-credit
-      checkpointFraction, an estimated $-per-successful-task cost, and a
-      terminalStatus failure-label breakdown per group.
+      checkpointFraction, an estimated $-per-successful-task cost, a mean wall-clock completion
+      time per run (the provider speed metric), and a terminalStatus
+      failure-label breakdown per group.
         Example: python3 tools/eval_report.py report evals/runs/2026-07-10
 
   diff <trajectoryA.jsonl> <trajectoryB.jsonl>
@@ -485,6 +486,7 @@ def compute_group_stats(key, recs):
     checkpoint_fracs = []
     status_counter = Counter()
     total_input = total_output = total_cached = 0
+    wall_ms_list = []
 
     for r in recs:
         all_passed = False
@@ -503,6 +505,12 @@ def compute_group_stats(key, recs):
         else:
             status_counter["<missing result>"] += 1
 
+        # Wall-clock completion time per run (ms) -- the provider "time to
+        # completion" comparison. Skip -1 (load_error, never timed) and a
+        # missing field (result.jsonl written before wallMs existed).
+        if r.result is not None and isinstance(r.result.get("wallMs"), (int, float)) and r.result["wallMs"] >= 0:
+            wall_ms_list.append(r.result["wallMs"])
+
         total_input += r.input_tokens
         total_output += r.output_tokens
         total_cached += r.cached_tokens
@@ -511,6 +519,7 @@ def compute_group_stats(key, recs):
     pk = pass_at_k(successes, n)
     lower, upper = wilson_score_interval(successes, n)
     mean_ckpt = (sum(checkpoint_fracs) / len(checkpoint_fracs)) if checkpoint_fracs else None
+    mean_wall_ms = (sum(wall_ms_list) / len(wall_ms_list)) if wall_ms_list else None
 
     cost, priced = estimate_cost(provider, model, total_input, total_output, total_cached)
     cps = cost_per_success(cost, priced, successes)
@@ -531,6 +540,7 @@ def compute_group_stats(key, recs):
         "total_cached_tokens": total_cached,
         "estimated_cost_usd": cost if priced else None,
         "cost_per_success": cps,
+        "mean_wall_ms": mean_wall_ms,
         "terminal_status_counts": dict(status_counter),
     }
 
@@ -579,6 +589,13 @@ def fmt_cost(x):
     return f"${x:.4f}"
 
 
+def fmt_wall(mean_ms):
+    """Mean wall-clock completion time per run, formatted in seconds."""
+    if mean_ms is None:
+        return "n/a"
+    return f"{mean_ms / 1000.0:.2f}s"
+
+
 def fmt_status_counts(counts):
     return " ".join(f"{k}:{v}" for k, v in sorted(counts.items())) if counts else "-"
 
@@ -586,7 +603,7 @@ def fmt_status_counts(counts):
 def render_text_report(stats_list, warnings):
     headers = [
         "scenario", "provider", "model", "N", "pass@1", "wilson95%",
-        "pass^k", "meanCkpt", "$/success", "failureBreakdown",
+        "pass^k", "meanCkpt", "$/success", "wall(s)", "failureBreakdown",
     ]
     rows = []
     for s in stats_list:
@@ -597,6 +614,7 @@ def render_text_report(stats_list, warnings):
             str(s["pass_at_k"]),
             "n/a" if s["mean_checkpoint_fraction"] is None else f"{s['mean_checkpoint_fraction']:.3f}",
             fmt_cost(s["cost_per_success"]),
+            fmt_wall(s["mean_wall_ms"]),
             fmt_status_counts(s["terminal_status_counts"]),
         ])
 
@@ -631,8 +649,10 @@ def render_text_report(stats_list, warnings):
         "pass^k (NOT pass@k) = 1 only when ALL N repeats passed -- a per-group "
         "reliability indicator, distinct from the conventional pass@k "
         "(>=1 of k). $/success = total cost / successes ('n/a (no pricing)' when "
-        "the model has no specific pricing entry). failureBreakdown = "
-        "terminal-status counts across the N repeats."
+        "the model has no specific pricing entry). wall(s) = mean wall-clock "
+        "completion time per run in seconds (LLM round-trips + tool dispatch; "
+        "the provider speed metric -- runs are serialized so it is comparable). "
+        "failureBreakdown = terminal-status counts across the N repeats."
     )
 
     if warnings:
@@ -646,7 +666,7 @@ def render_text_report(stats_list, warnings):
 def render_markdown_report(stats_list, warnings):
     headers = [
         "scenario", "provider", "model", "N", "pass@1", "wilson95%",
-        "pass^k", "meanCkpt", "$/success", "failureBreakdown",
+        "pass^k", "meanCkpt", "$/success", "wall(s)", "failureBreakdown",
     ]
     lines = []
     lines.append("| " + " | ".join(headers) + " |")
@@ -659,6 +679,7 @@ def render_markdown_report(stats_list, warnings):
             str(s["pass_at_k"]),
             "n/a" if s["mean_checkpoint_fraction"] is None else f"{s['mean_checkpoint_fraction']:.3f}",
             fmt_cost(s["cost_per_success"]),
+            fmt_wall(s["mean_wall_ms"]),
             fmt_status_counts(s["terminal_status_counts"]).replace("|", "\\|"),
         ]
         lines.append("| " + " | ".join(row) + " |")
@@ -677,7 +698,9 @@ def render_markdown_report(stats_list, warnings):
         "`pass^k` (NOT pass@k) = 1 only when ALL N repeats passed -- a per-group "
         "reliability indicator, distinct from the conventional pass@k (>=1 of k). "
         "`$/success` = total cost / successes (`n/a (no pricing)` when the model "
-        "has no specific pricing entry). `failureBreakdown` = terminal-status "
+        "has no specific pricing entry). `wall(s)` = mean wall-clock completion "
+        "time per run in seconds (the provider speed metric; runs are "
+        "serialized so it is comparable). `failureBreakdown` = terminal-status "
         "counts across the N repeats."
     )
     if warnings:
@@ -1040,7 +1063,8 @@ def selftest():
     def _mk_rec(all_passed):
         r = RunRecord()
         r.check = {"allPassed": all_passed, "checkpointFraction": 1.0 if all_passed else 0.0}
-        r.result = {"terminalStatus": "success" if all_passed else "failed"}
+        r.result = {"terminalStatus": "success" if all_passed else "failed",
+                    "wallMs": 1200 if all_passed else 800}
         r.input_tokens = r.output_tokens = r.cached_tokens = 0
         return r
 
@@ -1050,6 +1074,20 @@ def selftest():
     if stats_a["n"] != 10 or stats_a["successes"] != 8:
         raise AssertionError(f"group A n/successes wrong: {stats_a}")
     _assert_close(stats_a["pass_at_1"], 0.8, 1e-12, "group A pass@1 = successes/n")
+    # wall-time mean over all runs: (8*1200 + 2*800)/10 = 1120 ms
+    _assert_close(stats_a["mean_wall_ms"], 1120.0, 1e-9, "mean_wall_ms = mean run wall-clock")
+
+    # wallMs == -1 (load_error, never timed) and a MISSING wallMs are both
+    # excluded from the mean -- only genuinely-timed runs count.
+    r_untimed = RunRecord()
+    r_untimed.check = {"allPassed": True, "checkpointFraction": 1.0}
+    r_untimed.result = {"terminalStatus": "load_error", "wallMs": -1}
+    r_untimed.input_tokens = r_untimed.output_tokens = r_untimed.cached_tokens = 0
+    r_nowall = _mk_rec(True)
+    del r_nowall.result["wallMs"]
+    stats_mixed = compute_group_stats(("scenC", "anthropic", ""), [_mk_rec(True), r_untimed, r_nowall])
+    _assert_close(stats_mixed["mean_wall_ms"], 1200.0, 1e-9,
+                  "mean_wall_ms excludes -1 and missing (only the one timed 1200ms run counts)")
 
     # Group B: 2 repeats, 0 successes -> pass@1 = 0.0
     group_b = [_mk_rec(False)] * 2

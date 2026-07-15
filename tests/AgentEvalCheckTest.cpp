@@ -978,6 +978,8 @@ static void TestSeedScenariosCheckpointsAreTrue()
 		AgentEvalRunHandle h = RunScenario( s, opts );
 		Check( h.result.terminalStatus != "load_error",
 			id + ": run did not load_error (" + h.result.errorMessage + ")" );
+		Check( h.result.wallMs >= 0,
+			id + ": records a wall-clock completion duration (wallMs >= 0)" );
 
 		AgentEvalCheckResult r = CheckScenario( h, s );
 		Check( r.checkpoints.size() == s.checkpoints.size(),

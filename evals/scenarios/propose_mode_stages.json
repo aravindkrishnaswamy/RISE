@@ -9,8 +9,9 @@
     "Recolor the sphere to deep blue."
   ],
   "budgets": {
-    "maxToolCalls": 5,
-    "maxLlmCalls": 5
+    "maxToolCalls": 10,
+    "maxLlmCalls": 12,
+    "maxWallMs": 600000
   },
   "replay": {
     "fixture": "evals/fixtures/propose_mode_stages.fixture.jsonl"

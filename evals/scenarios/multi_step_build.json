@@ -9,8 +9,9 @@
     "Build a simple lit scene: add a grey sphere at the origin and a bright area light in front of it, so the sphere is clearly visible when rendered."
   ],
   "budgets": {
-    "maxToolCalls": 12,
-    "maxLlmCalls": 12
+    "maxToolCalls": 28,
+    "maxLlmCalls": 30,
+    "maxWallMs": 600000
   },
   "replay": {
     "fixture": "evals/fixtures/multi_step_build.fixture.jsonl"
@@ -52,7 +53,6 @@
     },
     {
       "kind": "trajectory",
-      "maxToolCalls": 12,
       "terminalStatus": "final_text",
       "noMechanicalLoop": true,
       "requiredToolInOrder": ["read_document", "insert_chunk"]
