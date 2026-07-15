@@ -23,6 +23,7 @@
 #include "AgentRpc.h"
 #include "AgentDiagnostic.h"
 #include "../Cst/Cst.h"   // Eval-harness slice E3: the "document"/"untouched" checkpoint kinds walk the CST directly
+#include "../Version.h"   // RISE_VER_* -- the run manifest's riseBuild string
 
 #include <cctype>
 #include <cmath>     // std::isfinite -- numeric param_equals tolerance
@@ -78,6 +79,100 @@ namespace RISE
 				std::filesystem::path p( dir );
 				p /= leaf;
 				return p.string();
+			}
+
+			//----------------------------------------------------------
+			// Git-revision capture, for the run manifest (see RunEvalMatrix's
+			// end-of-run write below).
+			//----------------------------------------------------------
+
+			//! The repo state a manifest needs to trace a run directory back
+			//! to a commit.  `available` is false (sha stays "unknown") when
+			//! git isn't on PATH, the cwd isn't a git checkout, or the popen
+			//! round-trip otherwise fails -- an honest fallback, never a
+			//! guess.
+			struct GitRevision
+			{
+				std::string sha = "unknown";
+				bool        dirty = false;
+				bool        available = false;
+			};
+
+			//! Runs `git rev-parse HEAD` and `git status --porcelain` via
+			//! popen to capture the commit + dirty-tree state.  Both command
+			//! strings below are FIXED LITERALS -- no external input (scene
+			//! paths, scenario ids, config contents, env vars) is ever
+			//! interpolated into them, so there is no shell-injection surface
+			//! here despite the popen call.  Never throws; any popen/read
+			//! failure or unexpected output (missing git, non-40-hex sha,
+			//! detached/shallow-clone oddities) leaves the honest
+			//! "unknown"/unavailable default rather than fabricating a sha.
+			GitRevision CaptureGitRevision()
+			{
+				GitRevision rev;
+
+#if defined(_WIN32)
+	#define RISE_EVAL_POPEN   _popen
+	#define RISE_EVAL_PCLOSE  _pclose
+	#define RISE_EVAL_DEVNULL "NUL"    //!< _popen shells via cmd.exe, whose null device is NUL (not /dev/null)
+#else
+	#define RISE_EVAL_POPEN   popen
+	#define RISE_EVAL_PCLOSE  pclose
+	#define RISE_EVAL_DEVNULL "/dev/null"
+#endif
+
+				// (1) HEAD sha -- accepted only if it's exactly 40 lowercase
+				// hex chars (a well-formed full sha; anything else -- an
+				// error message that slipped past the 2>/dev/null redirect,
+				// a truncated read, etc. -- is rejected rather than stored).
+				{
+					FILE* p = RISE_EVAL_POPEN( "git rev-parse HEAD 2>" RISE_EVAL_DEVNULL, "r" );
+					if( p ) {
+						std::string out;
+						char buf[256];
+						while( std::fgets( buf, sizeof( buf ), p ) ) out += buf;
+						RISE_EVAL_PCLOSE( p );
+
+						while( !out.empty() &&
+						       std::isspace( static_cast<unsigned char>( out.back() ) ) ) out.pop_back();
+
+						bool validHex = out.size() == 40;
+						if( validHex ) {
+							for( std::size_t i = 0; i < out.size(); ++i ) {
+								const char c = out[i];
+								if( !( ( c >= '0' && c <= '9' ) || ( c >= 'a' && c <= 'f' ) ) ) { validHex = false; break; }
+							}
+						}
+						if( validHex ) { rev.sha = out; rev.available = true; }
+					}
+				}
+
+				// (2) dirty-tree check -- any non-blank porcelain line means a
+				// tracked-file change is pending.  Drains the WHOLE pipe
+				// (rather than stopping at the first hit) so a large status
+				// output can't leave the child process blocked writing to a
+				// full pipe while we've already stopped reading.
+				if( rev.available ) {
+					FILE* p = RISE_EVAL_POPEN( "git status --porcelain --untracked-files=no 2>" RISE_EVAL_DEVNULL, "r" );
+					if( p ) {
+						char buf[512];
+						while( std::fgets( buf, sizeof( buf ), p ) ) {
+							if( rev.dirty ) continue;
+							bool blank = true;
+							for( char* c = buf; *c; ++c ) {
+								if( !std::isspace( static_cast<unsigned char>( *c ) ) ) { blank = false; break; }
+							}
+							if( !blank ) rev.dirty = true;
+						}
+						RISE_EVAL_PCLOSE( p );
+					}
+				}
+
+#undef RISE_EVAL_POPEN
+#undef RISE_EVAL_PCLOSE
+#undef RISE_EVAL_DEVNULL
+
+				return rev;
 			}
 		}
 
@@ -1409,6 +1504,99 @@ namespace RISE
 						++result.runsExecuted;
 					}
 				}
+			}
+
+			//! Emit the per-run reproducibility MANIFEST: one file,
+			//! <config.runDir>/run.manifest.json, capturing enough of the
+			//! run's conditions -- git commit, RISE build, the config that
+			//! was fed in, the resolved scenario/provider set, and the run
+			//! outcome counts -- that a committed run directory can be
+			//! traced back to "what code, what config, what commit produced
+			//! this."  It fires once the matrix reaches this point (i.e. past
+			//! the fatal pre-flight refusals -- no transport, no envLookup, a
+			//! duplicate scenario id -- which return early ABOVE and leave no
+			//! manifest), covering every run OUTCOME from here: it is emitted
+			//! even when every provider column was key-skipped or every run was
+			//! already-complete, so the manifest still records what WAS
+			//! configured and why nothing ran.  OVERWRITE semantics: it
+			//! TRUNCATES any manifest already on disk from a prior invocation
+			//! into the same runDir -- it always reflects the MOST RECENT
+			//! invocation, not an append log.
+			if( !config.runDir.empty() ) {
+				const GitRevision git = CaptureGitRevision();
+
+				JsonValue root = JsonValue::MakeObject();
+				root.set( "schemaVersion", JsonValue::MakeNumber( 1 ) );
+
+				const int64_t createdUtcMs = options.clock ? options.clock() : TrajectoryNowMs();
+				root.set( "createdUtcMs", JsonValue::MakeNumber( static_cast<double>( createdUtcMs ) ) );
+
+				const std::string riseBuild =
+					std::to_string( RISE_VER_MAJOR_VERSION ) + "." +
+					std::to_string( RISE_VER_MINOR_VERSION ) + "." +
+					std::to_string( RISE_VER_REVISION_VERSION ) + " build " +
+					std::to_string( RISE_VER_BUILD_VERSION );
+				root.set( "riseBuild", JsonValue::MakeString( riseBuild ) );
+
+				JsonValue gitObj = JsonValue::MakeObject();
+				gitObj.set( "sha",       JsonValue::MakeString( git.sha ) );
+				gitObj.set( "dirty",     JsonValue::MakeBool( git.dirty ) );
+				gitObj.set( "available", JsonValue::MakeBool( git.available ) );
+				root.set( "git", gitObj );
+
+				root.set( "runDir",  JsonValue::MakeString( config.runDir ) );
+				// `reps` (the clamped loop bound), not the raw config.repeats --
+				// so the manifest reports the repeat count actually EXECUTED even
+				// if a programmatically-built config passed repeats <= 0 (the CLI
+				// path can't: LoadEvalRunConfig rejects non-positive repeats).
+				root.set( "repeats", JsonValue::MakeNumber( reps ) );
+
+				JsonValue scenarioSources = JsonValue::MakeArray();
+				for( std::size_t i = 0; i < config.scenarios.size(); ++i ) {
+					scenarioSources.push_back( JsonValue::MakeString( config.scenarios[i] ) );
+				}
+				root.set( "scenarioSources", scenarioSources );
+
+				JsonValue scenariosArr = JsonValue::MakeArray();
+				for( std::size_t i = 0; i < scenarios.size(); ++i ) {
+					JsonValue o = JsonValue::MakeObject();
+					o.set( "id", JsonValue::MakeString( scenarios[i].id ) );
+					scenariosArr.push_back( o );
+				}
+				root.set( "scenarios", scenariosArr );
+
+				// keyEnvVar is the ENV VAR NAME ONLY -- NEVER the resolved
+				// key VALUE.  This builder never calls options.envLookup, so
+				// there is no key material in scope here to leak even by
+				// accident; only the provider config's declared NAME is
+				// ever written.
+				JsonValue providersArr = JsonValue::MakeArray();
+				for( std::size_t i = 0; i < config.providers.size(); ++i ) {
+					JsonValue o = JsonValue::MakeObject();
+					o.set( "provider",  JsonValue::MakeString( config.providers[i].provider ) );
+					o.set( "model",     JsonValue::MakeString( config.providers[i].model ) );
+					o.set( "keyEnvVar", JsonValue::MakeString( config.providers[i].keyEnvVar ) );
+					providersArr.push_back( o );
+				}
+				root.set( "providers", providersArr );
+
+				JsonValue resultObj = JsonValue::MakeObject();
+				resultObj.set( "runsExecuted",        JsonValue::MakeNumber( result.runsExecuted ) );
+				resultObj.set( "runsSkipped",         JsonValue::MakeNumber( result.runsSkipped ) );
+				resultObj.set( "runsAlreadyComplete", JsonValue::MakeNumber( result.runsAlreadyComplete ) );
+				resultObj.set( "providersUsed",       JsonValue::MakeNumber( result.providersUsed ) );
+				resultObj.set( "providersSkipped",    JsonValue::MakeNumber( result.providersSkipped ) );
+				root.set( "result", resultObj );
+
+				std::error_code ec;
+				std::filesystem::create_directories( config.runDir, ec );
+				const std::string manifestPath = ( std::filesystem::path( config.runDir ) / "run.manifest.json" ).string();
+				std::ofstream f( manifestPath.c_str(), std::ios::binary | std::ios::trunc );
+				if( f ) { f << JsonSerialize( root ) << "\n"; }
+				// Best-effort artifact: a write failure (permissions, disk full,
+				// runDir colliding with a non-directory) never fails the matrix,
+				// but log it so the missing manifest isn't a silent mystery.
+				else    { logLine( "RunEvalMatrix: WARNING -- could not write run manifest to " + manifestPath ); }
 			}
 
 			return result;

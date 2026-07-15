@@ -840,7 +840,7 @@ static void TestRunConfigLoad()
 		AgentEvalRunConfig cfg; std::string err;
 		Check( LoadEvalRunConfig( "evals/runconfigs/local_shootout.json", cfg, err ),
 		       "evals/runconfigs/local_shootout.json loads (" + err + ")" );
-		Check( cfg.scenarios.size() == 4, "local_shootout.json: 4 scenarios" );
+		Check( cfg.scenarios.size() == 5, "local_shootout.json: 5 scenarios (reserved_name_recovery + its reserved_name_clarify sibling)" );
 		Check( cfg.providers.size() == 7, "local_shootout.json: 7 providers (gemini + openai + xai + 4 distinct-model local)" );
 		int localCount = 0;
 		for( std::size_t i = 0; i < cfg.providers.size(); ++i )
@@ -1030,6 +1030,116 @@ static void TestRunEvalMatrix()
 		Check( mr.runsSkipped == static_cast<int>( scenarios.size() ) * 2, "skip count = scenarios x repeats" );
 		Check( mock.seenRequests.empty(), "the transport was NEVER called for an empty-keyEnvVar non-local provider" );
 	}
+}
+
+//----------------------------------------------------------------------
+// T7b: RunEvalMatrix emits <runDir>/run.manifest.json -- the per-run
+//      reproducibility manifest.  Proves the injected clock feeds
+//      createdUtcMs, the git/build/config/scenario/provider/result fields
+//      are all present and correctly shaped, and -- the key-hygiene
+//      red-prove -- the fake key never lands in the manifest text.
+//----------------------------------------------------------------------
+static void TestRunEvalMatrixManifest()
+{
+	std::printf( "T7b: RunEvalMatrix emits run.manifest.json...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads (manifest test)" );
+	std::vector<AgentEvalScenario> scenarios;
+	scenarios.push_back( scenario );
+
+	const std::string kFakeKey = "sk-ant-MANIFEST-FAKEKEY-DO-NOT-LEAK-012345";
+
+	AgentEvalRunConfig cfg;
+	cfg.scenarios.push_back( "evals/scenarios/param_edit.json" );
+	AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+	cfg.providers.push_back( p );
+	cfg.repeats = 1;
+	cfg.runDir = ScratchRunDir( "t7b_matrix_manifest" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+	mock.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+	mock.repeatLast = true;
+
+	AgentEvalMatrixOptions mo;
+	mo.transport = &mock;
+	mo.envLookup = [&]( const std::string& name ) -> const char* {
+		return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+	};
+	mo.clock = []() -> int64_t { return int64_t( 1234567890000 ); };   // injected -- proves createdUtcMs uses it, not wall time
+
+	AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+	Check( mr.runsExecuted == 1, "manifest test: the one configured run executed" );
+
+	const std::string manifestPath = ( std::filesystem::path( cfg.runDir ) / "run.manifest.json" ).string();
+	Check( std::filesystem::exists( manifestPath ), "run.manifest.json exists under runDir" );
+
+	std::string manifestText;
+	{
+		std::ifstream f( manifestPath.c_str(), std::ios::binary );
+		std::ostringstream ss; ss << f.rdbuf();
+		manifestText = ss.str();
+	}
+
+	JsonValue root; std::string perr;
+	Check( JsonParse( manifestText, root, perr ), "run.manifest.json parses as JSON: " + perr );
+
+	Check( root.get( "schemaVersion" ).asNumber( -1 ) == 1, "manifest schemaVersion == 1" );
+	Check( static_cast<int64_t>( root.get( "createdUtcMs" ).asNumber( -1 ) ) == 1234567890000,
+	       "manifest createdUtcMs reflects the INJECTED clock, not wall time" );
+
+	Check( !root.get( "riseBuild" ).asString().empty(), "manifest riseBuild is a non-empty version string" );
+
+	const JsonValue& gitObj = root.get( "git" );
+	Check( gitObj.isObject(), "manifest git field is an object" );
+	Check( gitObj.has( "sha" ) && gitObj.get( "sha" ).isString(), "manifest git.sha is a string" );
+	Check( gitObj.has( "dirty" ) && gitObj.get( "dirty" ).isBool(), "manifest git.dirty is a bool" );
+	Check( gitObj.has( "available" ) && gitObj.get( "available" ).isBool(), "manifest git.available is a bool" );
+	// git-integrity invariant (portable: does NOT force available==true, so a
+	// tarball build with no .git still passes): IF the capture succeeded, the
+	// sha MUST be a well-formed 40-char lowercase-hex commit, never a partial
+	// or error-text value.  This is the assertion that would fail on a broken
+	// git-capture (e.g. the Windows null-device redirect bug) in a real checkout.
+	if( gitObj.get( "available" ).asBool( false ) ) {
+		const std::string sha = gitObj.get( "sha" ).asString();
+		bool wellFormed = sha.size() == 40;
+		for( std::size_t i = 0; wellFormed && i < sha.size(); ++i ) {
+			const char c = sha[i];
+			if( !( ( c >= '0' && c <= '9' ) || ( c >= 'a' && c <= 'f' ) ) ) wellFormed = false;
+		}
+		Check( wellFormed, "manifest git.sha is 40-char lowercase hex when git.available is true" );
+	}
+
+	Check( root.get( "runDir" ).asString() == cfg.runDir, "manifest runDir matches the config" );
+	Check( root.get( "repeats" ).asNumber( -1 ) == 1, "manifest repeats == 1" );
+
+	const JsonValue& sourcesArr = root.get( "scenarioSources" );
+	Check( sourcesArr.isArray() && sourcesArr.size() == 1, "manifest scenarioSources array has 1 entry" );
+	Check( sourcesArr.at( 0 ).asString() == "evals/scenarios/param_edit.json",
+	       "manifest scenarioSources[0] is the verbatim config path (NOT the loaded id -- guards against array swap)" );
+
+	const JsonValue& scenariosArr = root.get( "scenarios" );
+	Check( scenariosArr.isArray() && scenariosArr.size() == 1, "manifest scenarios array has 1 entry" );
+	Check( scenariosArr.at( 0 ).get( "id" ).asString() == "param_edit", "manifest scenarios[0].id == param_edit" );
+
+	const JsonValue& providersArr = root.get( "providers" );
+	Check( providersArr.isArray() && providersArr.size() == 1, "manifest providers array has 1 entry" );
+	Check( providersArr.at( 0 ).get( "provider" ).asString() == "anthropic", "manifest providers[0].provider == anthropic" );
+	Check( providersArr.at( 0 ).get( "model" ).asString() == "claude-sonnet-5", "manifest providers[0].model == claude-sonnet-5" );
+	Check( providersArr.at( 0 ).get( "keyEnvVar" ).asString() == "RISE_TEST_FAKE_KEY",
+	       "manifest providers[0].keyEnvVar == RISE_TEST_FAKE_KEY (the NAME, never the key value)" );
+
+	Check( root.get( "result" ).get( "runsExecuted" ).asNumber( -1 ) == 1, "manifest result.runsExecuted == 1" );
+
+	// Key-hygiene red-prove: the fake key rode the mock's auth header (the
+	// run actually executed live) yet must appear in NO output file --
+	// including this new manifest -- and not in the manifest text directly.
+	Check( !AnyFileUnderContains( cfg.runDir, kFakeKey ),
+	       "manifest test: the fake key appears in NO output file under runDir" );
+	Check( manifestText.find( kFakeKey ) == std::string::npos,
+	       "run.manifest.json text does NOT contain the fake key" );
 }
 
 //----------------------------------------------------------------------
@@ -1256,6 +1366,7 @@ int main()
 	TestLiveTransportRetryDoesNotStackWith5xx();
 	TestRunConfigLoad();
 	TestRunEvalMatrix();
+	TestRunEvalMatrixManifest();
 	TestRunEvalMatrixDuplicateId();
 	TestRunEvalMatrixResumeSkipsCompleted();
 	TestRunEvalMatrixResumeRerunsPartial();
