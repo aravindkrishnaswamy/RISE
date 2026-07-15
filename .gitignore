@@ -130,3 +130,8 @@ evals/runs/
 /scenes/FeatureBased/GuillocheWatch/oxide_thickness.png
 /scenes/FeatureBased/GuillocheWatch/*_preview.png
 /rendered/temper_*.png
+
+# Local API-key secrets for the agent-eval hosted shootout (never commit real keys)
+.env
+*.secrets.env
+evals/.secrets.env
